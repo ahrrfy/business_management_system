@@ -21,6 +21,7 @@ import Inventory from "./pages/Inventory";
 import EStore from "./pages/EStore";
 import Checkout from "./pages/Checkout";
 import OnlineOrderManagement from "./pages/OnlineOrderManagement";
+import EcommerceSalesReports from "./pages/EcommerceSalesReports";
 
 function Router() {
   return (
@@ -42,6 +43,7 @@ function Router() {
         <Route path="/estore" component={EStore} />
         <Route path="/checkout" component={Checkout} />
         <Route path="/online-orders" component={OnlineOrderManagement} />
+      <Route path="/ecommerce-reports" component={EcommerceSalesReports} />
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />
       </Switch>

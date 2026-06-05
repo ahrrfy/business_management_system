@@ -60,6 +60,7 @@ const menuItems = [
   { icon: Upload, label: "استيراد/تصدير", path: "/import-export" },
   { icon: ShoppingBag, label: "المتجر الإلكتروني", path: "/estore" },
   { icon: Package, label: "إدارة الطلبات", path: "/online-orders" },
+  { icon: BarChart3, label: "تقارير المبيعات الإلكترونية", path: "/ecommerce-reports" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
