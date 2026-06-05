@@ -20,6 +20,7 @@ import ImportExport from "./pages/ImportExport";
 import Inventory from "./pages/Inventory";
 import EStore from "./pages/EStore";
 import Checkout from "./pages/Checkout";
+import OnlineOrderManagement from "./pages/OnlineOrderManagement";
 
 function Router() {
   return (
@@ -40,6 +41,7 @@ function Router() {
         <Route path="/import-export" component={ImportExport} />
         <Route path="/estore" component={EStore} />
         <Route path="/checkout" component={Checkout} />
+        <Route path="/online-orders" component={OnlineOrderManagement} />
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />
       </Switch>

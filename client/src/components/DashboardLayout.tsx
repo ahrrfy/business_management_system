@@ -37,6 +37,7 @@ import {
   Clock,
   BarChart3,
   Upload,
+  Package as BoxOpen,
 } from "lucide-react";
 import { CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
@@ -58,6 +59,7 @@ const menuItems = [
   { icon: BarChart3, label: "التقارير", path: "/reports" },
   { icon: Upload, label: "استيراد/تصدير", path: "/import-export" },
   { icon: ShoppingBag, label: "المتجر الإلكتروني", path: "/estore" },
+  { icon: Package, label: "إدارة الطلبات", path: "/online-orders" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";
