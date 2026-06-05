@@ -5,6 +5,9 @@ import { publicProcedure, router } from "./_core/trpc";
 import { invoiceRouter } from "./routers/invoiceRouter";
 import { biometricRouter } from "./routers/biometricRouter";
 import { productRouter, customerRouter } from "./routers/productRouter";
+import { supplierRouter, purchaseRouter, accountsRouter, hrRouter, inventoryRouter } from "./routers/businessRouter";
+import { importExportRouter } from "./routers/importExportRouter";
+import { dashboardRouter } from "./routers/dashboardRouter";
 
 export const appRouter = router({
   system: systemRouter,
@@ -22,6 +25,13 @@ export const appRouter = router({
   biometric: biometricRouter,
   products: productRouter,
   customers: customerRouter,
+  suppliers: supplierRouter,
+  purchases: purchaseRouter,
+  accounts: accountsRouter,
+  hr: hrRouter,
+  importExport: importExportRouter,
+  inventory: inventoryRouter,
+  dashboard: dashboardRouter,
 });
 
 export type AppRouter = typeof appRouter;
