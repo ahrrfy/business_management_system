@@ -4,23 +4,18 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ShoppingCart, Search, Filter, Heart, Star } from "lucide-react";
+import { ShoppingCart, Search, Filter, Heart, Star, Trash2, Plus, Minus } from "lucide-react";
 import { toast } from "sonner";
 import { trpc } from "@/lib/trpc";
-
-interface CartItem {
-  id: string;
-  name: string;
-  price: number;
-  quantity: number;
-  image?: string;
-}
+import { useCart } from "@/contexts/CartContext";
+import { useLocation } from "wouter";
 
 export default function EStore() {
   const [searchQuery, setSearchQuery] = useState("");
   const [sortBy, setSortBy] = useState("popular");
-  const [cart, setCart] = useState<CartItem[]>([]);
   const [showCart, setShowCart] = useState(false);
+  const [, setLocation] = useLocation();
+  const { items: cartItems, addItem, removeItem, updateQuantity } = useCart();
 
   const products = trpc.products.list.useQuery({ limit: 100, offset: 0 });
   const filteredProducts = (products.data || []).filter(p =>
@@ -28,38 +23,26 @@ export default function EStore() {
   );
 
   function addToCart(product: any) {
-    const existingItem = cart.find(item => item.id === product.id);
-    if (existingItem) {
-      setCart(cart.map(item =>
-        item.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
-      ));
-    } else {
-      setCart([...cart, {
-        id: product.id,
-        name: product.name,
-        price: parseFloat(product.salePrice),
-        quantity: 1,
-      }]);
-    }
+    addItem({
+      productId: product.id,
+      productName: product.name,
+      quantity: 1,
+      unitPrice: parseFloat(product.salePrice),
+      total: parseFloat(product.salePrice),
+    });
     toast.success(`تم إضافة ${product.name} إلى السلة`);
   }
 
-  function removeFromCart(productId: string) {
-    setCart(cart.filter(item => item.id !== productId));
-  }
+  const cartTotal = cartItems.reduce((sum, item) => sum + item.total, 0);
+  const cartCount = cartItems.reduce((sum, item) => sum + item.quantity, 0);
 
-  function updateQuantity(productId: string, quantity: number) {
-    if (quantity <= 0) {
-      removeFromCart(productId);
-    } else {
-      setCart(cart.map(item =>
-        item.id === productId ? { ...item, quantity } : item
-      ));
+  function handleCheckout() {
+    if (cartItems.length === 0) {
+      toast.error("السلة فارغة");
+      return;
     }
+    setLocation("/checkout");
   }
-
-  const cartTotal = cart.reduce((sum, item) => sum + (item.price * item.quantity), 0);
-  const cartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   return (
     <div className="space-y-6">
@@ -78,28 +61,28 @@ export default function EStore() {
               <div className="space-y-4">
                 <div className="flex gap-2">
                   <div className="flex-1 relative">
-                    <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <Search className="absolute right-3 top-3 h-4 w-4 text-muted-foreground" />
                     <Input
                       placeholder="ابحث عن المنتجات..."
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
-                      className="pl-10"
+                      className="pr-10"
                     />
                   </div>
-                  <Button variant="outline" size="icon">
+                  <Button variant="outline">
                     <Filter className="h-4 w-4" />
                   </Button>
                 </div>
 
                 <div className="flex gap-2">
                   <Select value={sortBy} onValueChange={setSortBy}>
-                    <SelectTrigger className="w-40">
+                    <SelectTrigger className="w-[200px]">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="popular">الأكثر شيوعاً</SelectItem>
-                      <SelectItem value="price-low">السعر: الأقل أولاً</SelectItem>
-                      <SelectItem value="price-high">السعر: الأعلى أولاً</SelectItem>
+                      <SelectItem value="popular">الأكثر شهرة</SelectItem>
+                      <SelectItem value="price-low">السعر: من الأقل للأعلى</SelectItem>
+                      <SelectItem value="price-high">السعر: من الأعلى للأقل</SelectItem>
                       <SelectItem value="newest">الأحدث</SelectItem>
                     </SelectContent>
                   </Select>
@@ -109,132 +92,142 @@ export default function EStore() {
           </Card>
 
           {/* Products Grid */}
-          {products.isLoading ? (
-            <div className="text-center py-12">
-              <p className="text-muted-foreground">جاري تحميل المنتجات...</p>
-            </div>
-          ) : filteredProducts.length === 0 ? (
-            <div className="text-center py-12">
-              <p className="text-muted-foreground">لا توجد منتجات متطابقة</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {filteredProducts.map((product: any) => (
-                <Card key={product.id} className="overflow-hidden hover:shadow-lg transition-shadow">
-                  <div className="bg-muted h-40 flex items-center justify-center relative">
-                    <div className="text-center">
-                      <p className="text-muted-foreground text-sm">{product.name}</p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {filteredProducts.map((product: any) => (
+              <Card key={product.id} className="hover:shadow-lg transition-shadow">
+                <CardHeader className="pb-3">
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1">
+                      <CardTitle className="text-lg">{product.name}</CardTitle>
+                      <CardDescription className="text-sm mt-1">
+                        {product.description || "منتج متميز"}
+                      </CardDescription>
                     </div>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="absolute top-2 right-2"
-                      onClick={() => toast.info("تم إضافة إلى المفضلة")}
-                    >
+                    <Button variant="ghost" size="sm">
                       <Heart className="h-4 w-4" />
                     </Button>
                   </div>
-                  <CardContent className="pt-4">
-                    <div className="space-y-3">
-                      <div>
-                        <h3 className="font-semibold text-right">{product.name}</h3>
-                        <p className="text-sm text-muted-foreground text-right">{product.description}</p>
-                      </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Rating */}
+                  <div className="flex items-center gap-1">
+                    {[...Array(5)].map((_, i) => (
+                      <Star
+                        key={i}
+                        className="h-4 w-4 fill-yellow-400 text-yellow-400"
+                      />
+                    ))}
+                    <span className="text-sm text-muted-foreground ml-2">(45)</span>
+                  </div>
 
-                      <div className="flex items-center justify-between">
-                        <div className="flex gap-1">
-                          {[...Array(5)].map((_, i) => (
-                            <Star key={i} className="h-3 w-3 fill-yellow-400 text-yellow-400" />
-                          ))}
-                        </div>
-                        <Badge variant="secondary">متوفر</Badge>
-                      </div>
-
-                      <div className="flex items-center justify-between">
-                        <div className="text-right">
-                          <p className="text-2xl font-bold text-primary">
-                            {parseFloat(product.salePrice).toLocaleString()} ر.س
-                          </p>
-                          {product.costPrice && (
-                            <p className="text-xs text-muted-foreground line-through">
-                              {parseFloat(product.costPrice).toLocaleString()} ر.س
-                            </p>
-                          )}
-                        </div>
-                      </div>
-
-                      <Button
-                        onClick={() => addToCart(product)}
-                        className="w-full"
-                      >
-                        <ShoppingCart className="h-4 w-4 ml-2" />
-                        أضف إلى السلة
-                      </Button>
+                  {/* Price */}
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-2xl font-bold text-blue-600">
+                        {parseFloat(product.salePrice).toLocaleString()} ر.س
+                      </p>
+                      {product.costPrice && (
+                        <p className="text-sm text-muted-foreground line-through">
+                          {parseFloat(product.costPrice).toLocaleString()} ر.س
+                        </p>
+                      )}
                     </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+                    <Badge variant="secondary">
+                      {product.quantityOnHand > 0 ? "متوفر" : "غير متوفر"}
+                    </Badge>
+                  </div>
+
+                  {/* Add to Cart Button */}
+                  <Button
+                    onClick={() => addToCart(product)}
+                    disabled={product.quantityOnHand <= 0}
+                    className="w-full"
+                  >
+                    <ShoppingCart className="h-4 w-4 ml-2" />
+                    إضافة إلى السلة
+                  </Button>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+
+          {filteredProducts.length === 0 && (
+            <Card>
+              <CardContent className="py-12 text-center">
+                <p className="text-muted-foreground">لم يتم العثور على منتجات</p>
+              </CardContent>
+            </Card>
           )}
         </div>
 
-        {/* Sidebar - Shopping Cart */}
-        <div className="space-y-4">
+        {/* Cart Sidebar */}
+        <div className="lg:col-span-1">
           <Card className="sticky top-4">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <ShoppingCart className="h-5 w-5" />
-                سلة التسوق
+                السلة ({cartCount})
               </CardTitle>
-              <CardDescription>{cartCount} عنصر</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              {cart.length === 0 ? (
-                <p className="text-center text-muted-foreground text-sm py-4">السلة فارغة</p>
+              {cartItems.length === 0 ? (
+                <p className="text-center text-muted-foreground py-8">السلة فارغة</p>
               ) : (
-                <div className="space-y-3 max-h-96 overflow-y-auto">
-                  {cart.map(item => (
-                    <div key={item.id} className="flex justify-between items-start gap-2 p-2 border rounded">
-                      <div className="flex-1 text-right">
-                        <p className="text-sm font-medium">{item.name}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {item.price.toLocaleString()} ر.س
-                        </p>
+                <>
+                  <div className="space-y-2 max-h-[400px] overflow-y-auto">
+                    {cartItems.map((item) => (
+                      <div key={item.productId} className="flex items-center justify-between p-2 bg-muted rounded">
+                        <div className="flex-1">
+                          <p className="text-sm font-medium">{item.productName}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {item.quantity} × {item.unitPrice.toLocaleString()} ر.س
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => updateQuantity(item.productId, item.quantity - 1)}
+                          >
+                            <Minus className="h-3 w-3" />
+                          </Button>
+                          <span className="w-6 text-center text-sm">{item.quantity}</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => updateQuantity(item.productId, item.quantity + 1)}
+                          >
+                            <Plus className="h-3 w-3" />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => removeItem(item.productId)}
+                          >
+                            <Trash2 className="h-3 w-3 text-red-500" />
+                          </Button>
+                        </div>
                       </div>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => updateQuantity(item.id, item.quantity - 1)}
-                        >
-                          −
-                        </Button>
-                        <span className="w-6 text-center text-sm">{item.quantity}</span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => updateQuantity(item.id, item.quantity + 1)}
-                        >
-                          +
-                        </Button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
 
-              <div className="border-t pt-3 space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>المجموع:</span>
-                  <span className="font-bold">{cartTotal.toLocaleString()} ر.س</span>
-                </div>
-                <Button className="w-full" disabled={cart.length === 0}>
-                  متابعة الدفع
-                </Button>
-                <Button variant="outline" className="w-full" onClick={() => setCart([])}>
-                  مسح السلة
-                </Button>
-              </div>
+                  {/* Cart Summary */}
+                  <div className="border-t pt-4 space-y-2">
+                    <div className="flex justify-between text-sm">
+                      <span>المجموع:</span>
+                      <span className="font-bold">{cartTotal.toLocaleString()} ر.س</span>
+                    </div>
+                  </div>
+
+                  {/* Checkout Button */}
+                  <Button
+                    onClick={handleCheckout}
+                    className="w-full bg-green-600 hover:bg-green-700"
+                  >
+                    متابعة الدفع
+                  </Button>
+                </>
+              )}
             </CardContent>
           </Card>
         </div>
