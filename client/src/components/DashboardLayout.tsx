@@ -57,6 +57,7 @@ const menuItems = [
   { icon: Clock, label: "الحضور", path: "/attendance" },
   { icon: BarChart3, label: "التقارير", path: "/reports" },
   { icon: Upload, label: "استيراد/تصدير", path: "/import-export" },
+  { icon: ShoppingBag, label: "المتجر الإلكتروني", path: "/estore" },
 ];
 
 const SIDEBAR_WIDTH_KEY = "sidebar-width";

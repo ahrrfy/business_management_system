@@ -18,6 +18,8 @@ import HR from "./pages/HR";
 import Reports from "./pages/Reports";
 import ImportExport from "./pages/ImportExport";
 import Inventory from "./pages/Inventory";
+import EStore from "./pages/EStore";
+import Checkout from "./pages/Checkout";
 
 function Router() {
   return (
@@ -36,6 +38,8 @@ function Router() {
         <Route path="/attendance" component={Attendance} />
         <Route path="/reports" component={Reports} />
         <Route path="/import-export" component={ImportExport} />
+        <Route path="/estore" component={EStore} />
+        <Route path="/checkout" component={Checkout} />
         <Route path="/404" component={NotFound} />
         <Route component={NotFound} />
       </Switch>
