@@ -1,0 +1,44 @@
+# Dependencies
+**/node_modules
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Coverage
+coverage/
+
+# Database dumps
+*.db
+*.sqlite
+*.sqlite3
+
+# Archived legacy (Manus) — reference only, not part of the clean repo
+_legacy/
+
+# Local Claude settings (workflows + launch.json are shared/committed)
+.claude/settings.local.json
+boot-diag.log

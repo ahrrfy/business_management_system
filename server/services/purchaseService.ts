@@ -1,0 +1,222 @@
+import { TRPCError } from "@trpc/server";
+import Decimal from "decimal.js";
+import { desc, eq, like } from "drizzle-orm";
+import { productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts } from "../../drizzle/schema";
+import { applyMovement, convertToBaseQuantity } from "./inventoryService";
+import { adjustSupplierBalance, postEntry } from "./ledgerService";
+import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
+import { withTx, type Actor } from "./tx";
+
+type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+
+export interface PurchaseLineInput {
+  variantId: number;
+  productUnitId: number;
+  quantity: string; // in purchase unit
+  unitPrice: string; // price per purchase unit
+}
+export interface CreatePurchaseOrderInput {
+  supplierId: number;
+  branchId: number;
+  taxRatePercent?: string | null;
+  status?: "DRAFT" | "SENT" | "CONFIRMED";
+  items: PurchaseLineInput[];
+  notes?: string | null;
+}
+
+export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
+  return withTx(async (tx) => {
+    if (!input.items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء بلا أصناف" });
+
+    const rows = [];
+    const lineNets: string[] = [];
+    for (const it of input.items) {
+      const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
+      const lineNet = round2(money(it.unitPrice).times(money(it.quantity)));
+      lineNets.push(lineNet.toFixed(2));
+      rows.push({
+        variantId: it.variantId,
+        productUnitId: it.productUnitId,
+        quantity: money(it.quantity).toFixed(3),
+        baseQuantity,
+        unitPrice: toDbMoney(it.unitPrice),
+        total: lineNet.toFixed(2),
+      });
+    }
+    const subtotal = round2(sumMoney(lineNets));
+    const tax = round2(subtotal.times(money(input.taxRatePercent ?? "0")).dividedBy(100));
+    const total = round2(subtotal.plus(tax));
+
+    const ymd = toDateStr().replace(/-/g, "");
+    const prefix = `PO-${input.branchId}-${ymd}-`;
+    const lastRows = await tx
+      .select({ n: purchaseOrders.poNumber })
+      .from(purchaseOrders)
+      .where(like(purchaseOrders.poNumber, `${prefix}%`))
+      .orderBy(desc(purchaseOrders.id))
+      .for("update")
+      .limit(1);
+    const seq = lastRows[0]?.n ? parseInt(lastRows[0].n.slice(prefix.length), 10) + 1 : 1;
+    const poNumber = prefix + String(seq).padStart(5, "0");
+
+    const insRes = await tx.insert(purchaseOrders).values({
+      poNumber,
+      supplierId: input.supplierId,
+      branchId: input.branchId,
+      subtotal: subtotal.toFixed(2),
+      taxAmount: tax.toFixed(2),
+      total: total.toFixed(2),
+      status: input.status ?? "CONFIRMED",
+      notes: input.notes ?? null,
+      createdBy: actor.userId,
+    });
+    const purchaseOrderId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+
+    for (const r of rows) {
+      await tx.insert(purchaseOrderItems).values({ purchaseOrderId, ...r });
+    }
+    return { purchaseOrderId, poNumber, total: total.toFixed(2) };
+  });
+}
+
+export interface ReceiveLineInput {
+  purchaseOrderItemId: number;
+  receivedBaseQuantity: number;
+}
+export interface ReceivePurchaseInput {
+  purchaseOrderId: number;
+  lines: ReceiveLineInput[];
+  payment?: { amount: string; method: PaymentMethod } | null;
+}
+
+export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor) {
+  return withTx(async (tx) => {
+    const poRows = await tx
+      .select()
+      .from(purchaseOrders)
+      .where(eq(purchaseOrders.id, input.purchaseOrderId))
+      .for("update")
+      .limit(1);
+    const po = poRows[0];
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    if (po.status === "RECEIVED" || po.status === "CANCELLED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء مستلَم أو ملغى" });
+    }
+
+    const items = await tx
+      .select()
+      .from(purchaseOrderItems)
+      .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+    const itemById = new Map(items.map((i) => [Number(i.id), i]));
+
+    // Validate, then sort received lines by variantId for deterministic locking.
+    const work = input.lines.map((l) => {
+      const item = itemById.get(l.purchaseOrderItemId);
+      if (!item) throw new TRPCError({ code: "BAD_REQUEST", message: `بند الشراء ${l.purchaseOrderItemId} لا يخص هذا الأمر` });
+      if (!Number.isInteger(l.receivedBaseQuantity) || l.receivedBaseQuantity <= 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية المستلمة يجب أن تكون صحيحة موجبة" });
+      }
+      const alreadyReceived = item.receivedBaseQuantity ?? 0;
+      if (alreadyReceived + l.receivedBaseQuantity > item.baseQuantity) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `الكمية المستلمة تتجاوز المطلوب للبند ${l.purchaseOrderItemId}` });
+      }
+      return { line: l, item };
+    });
+    work.sort((a, b) => Number(a.item.variantId) - Number(b.item.variantId));
+
+    let receivedNet = new Decimal(0);
+    for (const { line, item } of work) {
+      // Cost per base unit = purchase unitPrice / conversionFactor (for last-cost only).
+      const uRows = await tx
+        .select({ factor: productUnits.conversionFactor })
+        .from(productUnits)
+        .where(eq(productUnits.id, Number(item.productUnitId)))
+        .limit(1);
+      const factor = new Decimal(uRows[0]?.factor ?? "1");
+      const costPerBase = round2(money(item.unitPrice).dividedBy(factor.lte(0) ? new Decimal(1) : factor));
+
+      await applyMovement(tx, {
+        variantId: Number(item.variantId),
+        branchId: Number(po.branchId),
+        baseQuantity: line.receivedBaseQuantity,
+        movementType: "IN",
+        referenceType: "PURCHASE_ORDER",
+        referenceId: input.purchaseOrderId,
+        createdBy: actor.userId,
+      });
+      await tx
+        .update(purchaseOrderItems)
+        .set({ receivedBaseQuantity: (item.receivedBaseQuantity ?? 0) + line.receivedBaseQuantity })
+        .where(eq(purchaseOrderItems.id, Number(item.id)));
+      // Last-cost policy: update the variant's cost to the most recent purchase cost.
+      await tx
+        .update(productVariants)
+        .set({ costPrice: costPerBase.toFixed(2) })
+        .where(eq(productVariants.id, Number(item.variantId)));
+
+      // Ledger/AP value derives from the stored line total (proportional to received),
+      // not from the rounded per-base cost — so a full receive matches the PO exactly.
+      const portion = new Decimal(line.receivedBaseQuantity).dividedBy(item.baseQuantity);
+      receivedNet = receivedNet.plus(round2(money(item.total).times(portion)));
+    }
+    receivedNet = round2(receivedNet);
+
+    // Proportional tax from the PO's effective rate.
+    const poSubtotal = money(po.subtotal);
+    const rate = poSubtotal.gt(0) ? money(po.taxAmount).dividedBy(poSubtotal) : new Decimal(0);
+    const receivedTax = round2(receivedNet.times(rate));
+    const receivedTotal = round2(receivedNet.plus(receivedTax));
+
+    // Final status: fully received if every item meets its ordered base qty.
+    const refreshed = await tx
+      .select({ baseQuantity: purchaseOrderItems.baseQuantity, receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity })
+      .from(purchaseOrderItems)
+      .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+    const fullyReceived = refreshed.every((r) => (r.receivedBaseQuantity ?? 0) >= r.baseQuantity);
+    await tx
+      .update(purchaseOrders)
+      .set({ status: fullyReceived ? "RECEIVED" : "CONFIRMED" })
+      .where(eq(purchaseOrders.id, input.purchaseOrderId));
+
+    // PURCHASE ledger entry + AP.
+    await postEntry(tx, {
+      entryType: "PURCHASE",
+      branchId: Number(po.branchId),
+      purchaseOrderId: input.purchaseOrderId,
+      supplierId: Number(po.supplierId),
+      cost: receivedNet,
+      taxAmount: receivedTax,
+      amount: receivedTotal,
+    });
+    await adjustSupplierBalance(tx, Number(po.supplierId), receivedTotal);
+
+    // Optional payment to supplier.
+    const paidNow = money(input.payment?.amount ?? "0");
+    if (paidNow.gt(0)) {
+      const rRes = await tx.insert(receipts).values({
+        branchId: Number(po.branchId),
+        direction: "OUT",
+        amount: toDbMoney(paidNow),
+        paymentMethod: input.payment!.method,
+        status: "COMPLETED",
+        createdBy: actor.userId,
+      });
+      const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+      await postEntry(tx, {
+        entryType: "PAYMENT_OUT",
+        branchId: Number(po.branchId),
+        purchaseOrderId: input.purchaseOrderId,
+        supplierId: Number(po.supplierId),
+        receiptId,
+        amount: paidNow,
+      });
+      await adjustSupplierBalance(tx, Number(po.supplierId), paidNow.neg());
+      await tx
+        .update(purchaseOrders)
+        .set({ paidAmount: toDbMoney(money(po.paidAmount).plus(paidNow)) })
+        .where(eq(purchaseOrders.id, input.purchaseOrderId));
+    }
+
+    return { purchaseOrderId: input.purchaseOrderId, fullyReceived, receivedTotal: receivedTotal.toFixed(2) };
+  });
+}

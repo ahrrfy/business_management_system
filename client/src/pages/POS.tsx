@@ -1,0 +1,332 @@
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { isPaired, isWebUsbSupported, pairPrinter, printDoc, type PrintDoc } from "@/lib/printing/print";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useState } from "react";
+import { Link } from "wouter";
+
+type PosRow = RouterOutputs["catalog"]["posList"][number];
+type CartItem = { row: PosRow; qty: number };
+type Receipt = {
+  invoiceNumber: string;
+  date: string;
+  lines: { name: string; unit: string; qty: number; price: number; total: number }[];
+  total: number;
+  received: number;
+  change: number;
+};
+
+const money = (n: number) => n.toFixed(2);
+const SHOP = "الرؤية العربية";
+
+function buildReceiptDoc(r: Receipt): PrintDoc {
+  return {
+    kind: "receipt",
+    title: SHOP,
+    subtitle: "للتجارة العامة والقرطاسية",
+    meta: [`فاتورة: ${r.invoiceNumber}`, r.date],
+    columns: ["الصنف", "كمية", "سعر", "إجمالي"],
+    rows: r.lines.map((l) => [`${l.name} (${l.unit})`, String(l.qty), money(l.price), money(l.total)]),
+    totals: [
+      { label: "الإجمالي", value: money(r.total) },
+      { label: "المستلم", value: money(r.received) },
+      { label: "الباقي", value: money(r.change) },
+    ],
+    footer: "شكراً لتعاملكم معنا",
+  };
+}
+
+export default function POS() {
+  const me = trpc.auth.me.useQuery();
+  const branchId = me.data?.branchId ?? 1;
+  const tier = "RETAIL" as const;
+  const utils = trpc.useUtils();
+
+  const shiftQ = trpc.shifts.current.useQuery({ branchId });
+  const shift = shiftQ.data;
+
+  const [cart, setCart] = useState<CartItem[]>([]);
+  const [barcode, setBarcode] = useState("");
+  const [search, setSearch] = useState("");
+  const [calc, setCalc] = useState("");
+  const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [lastReceipt, setLastReceipt] = useState<Receipt | null>(null);
+  const [printerReady, setPrinterReady] = useState(isPaired());
+  const [opening, setOpening] = useState("0");
+
+  const total = cart.reduce((s, c) => s + Number(c.row.price ?? 0) * c.qty, 0);
+  const received = Number(calc || 0);
+  const change = received - total;
+
+  const searchResults = trpc.catalog.posList.useQuery(
+    { branchId, tier, query: search, limit: 8 },
+    { enabled: search.trim().length > 0 }
+  );
+
+  function addRow(row: PosRow) {
+    if (row.price == null) {
+      setMessage({ kind: "err", text: `لا سعر مُعرّف لـ ${row.productName} (${row.unitName})` });
+      return;
+    }
+    setMessage(null);
+    setCart((prev) => {
+      const i = prev.findIndex((c) => c.row.productUnitId === row.productUnitId);
+      if (i >= 0) {
+        const next = [...prev];
+        next[i] = { ...next[i], qty: next[i].qty + 1 };
+        return next;
+      }
+      return [...prev, { row, qty: 1 }];
+    });
+  }
+  function setQty(id: number, qty: number) {
+    setCart((prev) => (qty <= 0 ? prev.filter((c) => c.row.productUnitId !== id) : prev.map((c) => (c.row.productUnitId === id ? { ...c, qty } : c))));
+  }
+
+  async function scanBarcode() {
+    const code = barcode.trim();
+    if (!code) return;
+    try {
+      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+      if (!row) setMessage({ kind: "err", text: `باركود غير معروف: ${code}` });
+      else addRow(row);
+    } catch (e: any) {
+      setMessage({ kind: "err", text: e?.message ?? "خطأ في المسح" });
+    } finally {
+      setBarcode("");
+    }
+  }
+
+  async function connectPrinter() {
+    try {
+      await pairPrinter();
+      setPrinterReady(true);
+      setMessage({ kind: "ok", text: "تم ربط الطابعة الحرارية ✓" });
+    } catch (e: any) {
+      setMessage({ kind: "err", text: e?.message ?? "تعذّر ربط الطابعة" });
+    }
+  }
+
+  const openShift = trpc.shifts.open.useMutation({
+    onSuccess: async (res) => {
+      await shiftQ.refetch();
+      await printDoc({
+        kind: "opening",
+        title: SHOP,
+        subtitle: "بيان الرصيد الافتتاحي",
+        meta: [`وردية #${res.shiftId}`, new Date().toLocaleString("ar-IQ")],
+        totals: [{ label: "الرصيد الافتتاحي", value: money(Number(opening || 0)) }],
+        footer: "بداية الوردية",
+      });
+    },
+    onError: (e) => setMessage({ kind: "err", text: e.message }),
+  });
+
+  const closeShift = trpc.shifts.close.useMutation({
+    onSuccess: async (r) => {
+      setMessage({ kind: "ok", text: `أُغلقت الوردية — المتوقع ${r.expectedCash}، المعدود ${r.countedCash}، الفروقات ${r.variance}` });
+      await shiftQ.refetch();
+      const rep = await utils.shifts.report.fetch({ shiftId: r.shiftId });
+      const payRows = (rep?.payments ?? []).map((p) => [
+        `${p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`,
+        String(p.count),
+        money(Number(p.total)),
+      ]);
+      await printDoc({
+        kind: "zreport",
+        title: SHOP,
+        subtitle: "تقرير نهاية الوردية (Z)",
+        meta: [`وردية #${r.shiftId}`, new Date().toLocaleString("ar-IQ")],
+        columns: ["الحركة", "عدد", "مبلغ"],
+        rows: payRows.length ? payRows : [["لا حركات", "0", "0.00"]],
+        totals: [
+          { label: "عدد الفواتير", value: String(rep?.invoiceCount ?? 0) },
+          { label: "إجمالي المبيعات", value: money(Number(rep?.salesTotal ?? 0)) },
+          { label: "الرصيد الافتتاحي", value: r.openingBalance },
+          { label: "النقد المتوقع", value: r.expectedCash },
+          { label: "النقد المعدود", value: r.countedCash },
+          { label: "الفروقات", value: r.variance },
+        ],
+        footer: "نهاية الوردية",
+      });
+    },
+    onError: (e) => setMessage({ kind: "err", text: e.message }),
+  });
+
+  const sale = trpc.sales.create.useMutation({
+    onSuccess: async (r) => {
+      const rec: Receipt = {
+        invoiceNumber: r.invoiceNumber,
+        date: new Date().toLocaleString("ar-IQ"),
+        lines: cart.map((c) => ({ name: c.row.productName, unit: c.row.unitName, qty: c.qty, price: Number(c.row.price), total: Number(c.row.price) * c.qty })),
+        total,
+        received: received || total,
+        change: (received || total) - total,
+      };
+      setLastReceipt(rec);
+      setMessage({ kind: "ok", text: `تم البيع ✓ فاتورة ${r.invoiceNumber} — الإجمالي ${r.total}` });
+      setCart([]);
+      setCalc("");
+      await printDoc(buildReceiptDoc(rec));
+      await Promise.all([utils.catalog.posList.invalidate(), shiftQ.refetch()]);
+    },
+    onError: (e) => setMessage({ kind: "err", text: e.message }),
+  });
+
+  function completeSale() {
+    if (!shift || !cart.length) return;
+    sale.mutate({
+      branchId,
+      shiftId: shift.id,
+      sourceType: "POS",
+      priceTier: tier,
+      lines: cart.map((c) => ({ variantId: c.row.variantId, productUnitId: c.row.productUnitId, quantity: String(c.qty) })),
+      payment: { amount: money(total), method: "CASH" },
+    });
+  }
+
+  if (shiftQ.isLoading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">جارٍ التحميل…</div>;
+
+  if (!shift) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-6 bg-background">
+        <Card className="w-full max-w-sm">
+          <CardHeader><CardTitle>افتح وردية للبدء</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="opening">الرصيد الافتتاحي للصندوق</Label>
+              <Input id="opening" dir="ltr" value={opening} onChange={(e) => setOpening(e.target.value)} />
+            </div>
+            {message && <p className={message.kind === "ok" ? "text-sm text-green-600" : "text-sm text-destructive"}>{message.text}</p>}
+            <Button className="w-full" disabled={openShift.isPending} onClick={() => openShift.mutate({ branchId, openingBalance: opening })}>فتح الوردية</Button>
+            <Link href="/" className="block text-center text-sm text-muted-foreground">← الرئيسية</Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  const keys = ["7", "8", "9", "4", "5", "6", "1", "2", "3", "0", "00", "."];
+
+  return (
+    <div className="min-h-screen bg-background p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h1 className="text-xl font-semibold">نقطة البيع — {SHOP}</h1>
+        <div className="flex items-center gap-3 text-sm">
+          <span className="text-muted-foreground">وردية #{shift.id} مفتوحة</span>
+          <Button variant="outline" size="sm" disabled={closeShift.isPending}
+            onClick={() => { const c = window.prompt("النقد المعدود في الصندوق:", "0"); if (c != null) closeShift.mutate({ shiftId: shift.id, countedCash: c }); }}>
+            إغلاق الوردية
+          </Button>
+          <Link href="/" className="text-muted-foreground">الرئيسية</Link>
+        </div>
+      </div>
+
+      {message && <p className={`mb-3 text-sm ${message.kind === "ok" ? "text-green-600" : "text-destructive"}`}>{message.text}</p>}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <div className="lg:col-span-2 space-y-3">
+          <div className="flex gap-2 relative">
+            <Input autoFocus placeholder="امسح الباركود ثم Enter" dir="ltr" value={barcode}
+              onChange={(e) => setBarcode(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") scanBarcode(); }} />
+            <div className="relative w-64">
+              <Input placeholder="بحث بالاسم/SKU" value={search} onChange={(e) => setSearch(e.target.value)} />
+              {search.trim() && (searchResults.data?.length ?? 0) > 0 && (
+                <div className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-64 overflow-auto">
+                  {searchResults.data!.map((row) => (
+                    <button key={row.productUnitId} className="block w-full text-right px-3 py-2 text-sm hover:bg-accent"
+                      onClick={() => { addRow(row); setSearch(""); }}>
+                      {row.productName} <span className="text-muted-foreground">({row.unitName})</span> — {row.price == null ? "بلا سعر" : money(Number(row.price))}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <Card>
+            <CardContent className="p-0">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr className="text-right">
+                    <th className="p-2">الصنف</th>
+                    <th className="p-2">الوحدة</th>
+                    <th className="p-2 text-left">السعر</th>
+                    <th className="p-2 text-center">الكمية</th>
+                    <th className="p-2 text-left">الإجمالي</th>
+                    <th className="p-2"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cart.length === 0 && (
+                    <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">السلة فارغة — امسح باركوداً للإضافة.</td></tr>
+                  )}
+                  {cart.map((c) => (
+                    <tr key={c.row.productUnitId} className="border-t">
+                      <td className="p-2">{c.row.productName}</td>
+                      <td className="p-2 text-muted-foreground">{c.row.unitName}</td>
+                      <td className="p-2 text-left">{money(Number(c.row.price))}</td>
+                      <td className="p-2">
+                        <div className="flex items-center justify-center gap-1">
+                          <Button variant="outline" size="sm" onClick={() => setQty(c.row.productUnitId, c.qty - 1)}>−</Button>
+                          <span className="w-7 text-center">{c.qty}</span>
+                          <Button variant="outline" size="sm" onClick={() => setQty(c.row.productUnitId, c.qty + 1)}>+</Button>
+                        </div>
+                      </td>
+                      <td className="p-2 text-left font-medium">{money(Number(c.row.price) * c.qty)}</td>
+                      <td className="p-2 text-center"><Button variant="ghost" size="sm" onClick={() => setQty(c.row.productUnitId, 0)}>✕</Button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </CardContent>
+          </Card>
+        </div>
+
+        <Card className="h-fit sticky top-4">
+          <CardHeader><CardTitle>الدفع</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex justify-between text-lg font-bold"><span>الإجمالي</span><span>{money(total)}</span></div>
+            <div className="space-y-1">
+              <Label>النقد المستلم</Label>
+              <div className="border rounded-md p-2 text-left text-xl font-mono tabular-nums">{calc || "0"}</div>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-muted-foreground">الباقي</span>
+              <span className={change < 0 ? "text-destructive" : "text-green-600"}>{money(change)}</span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              {keys.map((k) => (
+                <Button key={k} variant="outline" className="h-11 text-lg" onClick={() => setCalc((p) => (k === "." && p.includes(".") ? p : p + k))}>{k}</Button>
+              ))}
+              <Button variant="outline" className="h-11" onClick={() => setCalc((p) => p.slice(0, -1))}>⌫</Button>
+              <Button variant="outline" className="h-11" onClick={() => setCalc("")}>C</Button>
+              <Button variant="outline" className="h-11" onClick={() => setCalc(money(total))}>= الإجمالي</Button>
+            </div>
+
+            <Button className="w-full h-12 text-base" disabled={!cart.length || sale.isPending} onClick={completeSale}>
+              {sale.isPending ? "جارٍ…" : `إتمام الدفع نقداً (${money(total)})`}
+            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" className="flex-1" disabled={!lastReceipt} onClick={() => lastReceipt && printDoc(buildReceiptDoc(lastReceipt))}>
+                طباعة آخر فاتورة
+              </Button>
+              {isWebUsbSupported() && (
+                <Button variant="outline" className="flex-1" onClick={connectPrinter}>
+                  {printerReady ? "طابعة مربوطة ✓" : "ربط طابعة حرارية"}
+                </Button>
+              )}
+            </div>
+            <p className="text-xs text-muted-foreground text-center">
+              {printerReady ? "الطباعة عبر الطابعة الحرارية (USB)" : "الطباعة عبر حوار المتصفّح (بديل)"}
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
