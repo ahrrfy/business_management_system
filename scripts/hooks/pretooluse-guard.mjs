@@ -46,6 +46,9 @@ try {
   if (!coordInitialized(coordRoot)) allow();
 
   const rel = toRepoRel(info.root, cwd, file);
+  // ملف خارج المستودع (ذاكرة/خطط/مشروع آخر) ⇒ لا يحكمه coord مطلقاً (حتى على main).
+  if (rel.startsWith("..") || /^[A-Za-z]:\//.test(rel)) allow();
+
   const mySessionKey = sessionKeyFor(info.root, info.branch);
   const myHost = hostname();
   const now = Date.now();
