@@ -7,7 +7,7 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift, openShift as openShiftSvc } from "../shiftService";
-import { createProduct } from "../catalogService";
+import { createProduct, getProductForEdit, updateProduct } from "../catalogService";
 import {
   cancelWorkOrder,
   createWorkOrder,
@@ -524,6 +524,103 @@ describe("إدارة الورديات (Z-report)", () => {
   it("لا يُسمح بوردية مفتوحة ثانية لنفس المستخدم/الفرع", async () => {
     await openShiftSvc({ branchId: 1, openingBalance: "0" }, actor);
     await expect(openShiftSvc({ branchId: 1, openingBalance: "0" }, actor)).rejects.toThrow();
+  });
+});
+
+describe("الكتالوج: تعديل المنتج", () => {
+  it("updateProduct: إعادة تسمية + إضافة وحدة جديدة + تعديل سعر + إلغاء وحدة قديمة", async () => {
+    // ابدأ بمنتج له وحدة قطعة فقط
+    const c = await createProduct(
+      {
+        name: "ورقة A4",
+        variants: [
+          {
+            sku: "PAPER-A4",
+            costPrice: "50.00",
+            units: [
+              { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "100.00" }] },
+            ],
+          },
+        ],
+      },
+      actor
+    );
+    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "PAPER-A4")))[0];
+    const baseUnit = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id))))[0];
+
+    // عدّل: اسم جديد + سعر RETAIL جديد + أضف وحدة "رزمة" بمعامل 100 وسعر مفرد
+    await updateProduct(
+      {
+        productId: c.productId,
+        name: "ورقة A4 — تعديل",
+        variants: [
+          {
+            id: Number(v.id),
+            sku: "PAPER-A4",
+            costPrice: "55.00",
+            units: [
+              { id: Number(baseUnit.id), unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "120.00" }] },
+              { unitName: "رزمة", conversionFactor: "100", isBaseUnit: false, prices: [{ priceTier: "RETAIL", price: "10000.00" }] },
+            ],
+          },
+        ],
+      },
+      actor
+    );
+
+    const updated = await getProductForEdit(c.productId);
+    expect(updated).not.toBeNull();
+    expect(updated!.name).toBe("ورقة A4 — تعديل");
+    expect(updated!.variants[0].costPrice).toBe("55.00");
+    expect(updated!.variants[0].units).toHaveLength(2);
+    const baseAfter = updated!.variants[0].units.find((u) => u.isBaseUnit)!;
+    expect(baseAfter.prices.find((p) => p.priceTier === "RETAIL")!.price).toBe("120.00");
+    const newUnit = updated!.variants[0].units.find((u) => !u.isBaseUnit)!;
+    expect(newUnit.unitName).toBe("رزمة");
+    expect(newUnit.prices[0].price).toBe("10000.00");
+
+    // الآن احذف الوحدة الجديدة → ينبغي إلغاء تفعيلها (لا حذف نهائي)
+    await updateProduct(
+      {
+        productId: c.productId,
+        name: "ورقة A4 — تعديل",
+        variants: [
+          {
+            id: Number(v.id),
+            sku: "PAPER-A4",
+            costPrice: "55.00",
+            units: [{ id: Number(baseUnit.id), unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "120.00" }] }],
+          },
+        ],
+      },
+      actor
+    );
+    const after = await getProductForEdit(c.productId);
+    expect(after!.variants[0].units).toHaveLength(1); // getProductForEdit يُرجع النشط فقط
+    const allUnits = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id)));
+    expect(allUnits).toHaveLength(2); // ما زالت في DB
+    expect(allUnits.find((u) => !u.isBaseUnit)!.isActive).toBe(false);
+  });
+
+  it("updateProduct يرفض غياب وحدة الأساس", async () => {
+    const c = await createProduct(
+      { name: "تجربة", variants: [{ sku: "T-1", costPrice: "1.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] },
+      actor
+    );
+    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "T-1")))[0];
+    const u = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id))))[0];
+    await expect(
+      updateProduct(
+        {
+          productId: c.productId,
+          name: "تجربة",
+          variants: [
+            { id: Number(v.id), sku: "T-1", costPrice: "1.00", units: [{ id: Number(u.id), unitName: "قطعة", conversionFactor: "1", isBaseUnit: false }] },
+          ],
+        },
+        actor
+      )
+    ).rejects.toThrow();
   });
 });
 

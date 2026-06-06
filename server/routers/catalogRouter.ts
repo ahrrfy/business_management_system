@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createProduct, listForPos, listForPurchase, lookupByBarcode } from "../services/catalogService";
+import { createProduct, getProductForEdit, listForPos, listForPurchase, lookupByBarcode, updateProduct } from "../services/catalogService";
 import { protectedProcedure, router } from "../trpc";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
@@ -46,4 +46,44 @@ export const catalogRouter = router({
       })
     )
     .mutation(({ input, ctx }) => createProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+
+  getForEdit: protectedProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => getProductForEdit(input.productId)),
+
+  updateProduct: protectedProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        name: z.string().min(1),
+        categoryId: z.number().int().positive().nullish(),
+        isCustomizable: z.boolean().optional(),
+        isActive: z.boolean().optional(),
+        variants: z
+          .array(
+            z.object({
+              id: z.number().int().positive(),
+              sku: z.string().min(1),
+              variantName: z.string().nullish(),
+              color: z.string().nullish(),
+              size: z.string().nullish(),
+              costPrice: z.string(),
+              units: z
+                .array(
+                  z.object({
+                    id: z.number().int().positive().optional(),
+                    unitName: z.string().min(1),
+                    conversionFactor: z.string(),
+                    barcode: z.string().nullish(),
+                    isBaseUnit: z.boolean().optional(),
+                    prices: z.array(priceSchema).optional(),
+                  })
+                )
+                .min(1),
+            })
+          )
+          .min(1),
+      })
+    )
+    .mutation(({ input, ctx }) => updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
 });

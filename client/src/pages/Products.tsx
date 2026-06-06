@@ -26,6 +26,7 @@ export default function Products() {
                 <th className="p-2">الباركود</th>
                 <th className="p-2 text-left">السعر (مفرد)</th>
                 <th className="p-2 text-center">المخزون</th>
+                <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>
             <tbody>
@@ -37,10 +38,15 @@ export default function Products() {
                   <td className="p-2 font-mono text-xs" dir="ltr">{r.barcode ?? "—"}</td>
                   <td className="p-2 text-left">{r.price ?? "—"}</td>
                   <td className="p-2 text-center">{r.stockBase}</td>
+                  <td className="p-2 text-center">
+                    <Link href={`/products/${r.productId}/edit`}>
+                      <Button variant="outline" size="sm">تعديل</Button>
+                    </Link>
+                  </td>
                 </tr>
               ))}
               {rows.data && rows.data.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">لا منتجات.</td></tr>
+                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا منتجات.</td></tr>
               )}
             </tbody>
           </table>

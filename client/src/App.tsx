@@ -5,6 +5,7 @@ import Inventory from "@/pages/Inventory";
 import Invoices from "@/pages/Invoices";
 import Login from "@/pages/Login";
 import POS from "@/pages/POS";
+import ProductEdit from "@/pages/ProductEdit";
 import ProductNew from "@/pages/ProductNew";
 import Products from "@/pages/Products";
 import Purchases from "@/pages/Purchases";
@@ -51,6 +52,7 @@ export default function App() {
       <Route path="/"><Shell><Dashboard /></Shell></Route>
       <Route path="/products"><Shell><Products /></Shell></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
+      <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
       <Route path="/invoices"><Shell><Invoices /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
       <Route path="/purchases"><Shell><Purchases /></Shell></Route>
