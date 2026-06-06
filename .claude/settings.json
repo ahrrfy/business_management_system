@@ -1,0 +1,26 @@
+{
+  "$comment": "إعدادات Claude Code المشتركة للمشروع (مُلتزمة في git). تُفعّل نظام تنسيق الجلسات (coord) — انظر scripts/coord-core.mjs و docs/playbook.md. للتعطيل المؤقت: عيّن COORD_BYPASS=1 في الجلسة، أو أنشئ ملف BYPASS داخل مجلّد سجلّ التنسيق.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"%CLAUDE_PROJECT_DIR%\\scripts\\hooks\\session-start.mjs\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"%CLAUDE_PROJECT_DIR%\\scripts\\hooks\\pretooluse-guard.mjs\""
+          }
+        ]
+      }
+    ]
+  }
+}

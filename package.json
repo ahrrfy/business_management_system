@@ -17,7 +17,15 @@
     "db:backup": "node scripts/backup.mjs",
     "session:new": "node scripts/session.mjs new",
     "session:list": "node scripts/session.mjs list",
-    "session:remove": "node scripts/session.mjs remove"
+    "session:remove": "node scripts/session.mjs remove",
+    "coord": "node scripts/coord.mjs",
+    "coord:claim": "node scripts/coord.mjs claim",
+    "coord:release": "node scripts/coord.mjs release",
+    "coord:list": "node scripts/coord.mjs list",
+    "coord:status": "node scripts/coord.mjs status",
+    "coord:heartbeat": "node scripts/coord.mjs heartbeat",
+    "coord:reclaim": "node scripts/coord.mjs reclaim-stale",
+    "coord:test": "node scripts/coord-core.test.mjs && node scripts/coord-race.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
