@@ -2,6 +2,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import Dashboard from "@/pages/Dashboard";
 import Inventory from "@/pages/Inventory";
+import InvoiceDetail from "@/pages/InvoiceDetail";
 import Invoices from "@/pages/Invoices";
 import Login from "@/pages/Login";
 import POS from "@/pages/POS";
@@ -54,6 +55,7 @@ export default function App() {
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
       <Route path="/invoices"><Shell><Invoices /></Shell></Route>
+      <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
       <Route path="/purchases"><Shell><Purchases /></Shell></Route>
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>

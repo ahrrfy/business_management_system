@@ -1,7 +1,15 @@
 import { TRPCError } from "@trpc/server";
-import { desc, eq } from "drizzle-orm";
+import { asc, desc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { invoiceItems, invoices } from "../../drizzle/schema";
+import {
+  customers,
+  invoiceItems,
+  invoices,
+  productUnits,
+  productVariants,
+  products,
+  receipts,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 import { createSale, processPayment } from "../services/saleService";
 import { protectedProcedure, router } from "../trpc";
@@ -57,15 +65,90 @@ export const saleRouter = router({
     .query(async ({ input }) => {
       const db = getDb();
       if (!db) return [];
-      return db.select().from(invoices).orderBy(desc(invoices.id)).limit(input?.limit ?? 50).offset(input?.offset ?? 0);
+      return db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          sourceType: invoices.sourceType,
+          invoiceDate: invoices.invoiceDate,
+          total: invoices.total,
+          paidAmount: invoices.paidAmount,
+          status: invoices.status,
+          customerName: customers.name,
+        })
+        .from(invoices)
+        .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .orderBy(desc(invoices.id))
+        .limit(input?.limit ?? 50)
+        .offset(input?.offset ?? 0);
     }),
 
   get: protectedProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input }) => {
     const db = getDb();
     if (!db) return null;
-    const inv = (await db.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
+    const inv = (
+      await db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          sourceType: invoices.sourceType,
+          branchId: invoices.branchId,
+          customerId: invoices.customerId,
+          customerName: customers.name,
+          customerBalance: customers.currentBalance,
+          priceTier: invoices.priceTier,
+          invoiceDate: invoices.invoiceDate,
+          dueDate: invoices.dueDate,
+          subtotal: invoices.subtotal,
+          taxAmount: invoices.taxAmount,
+          discountAmount: invoices.discountAmount,
+          total: invoices.total,
+          costTotal: invoices.costTotal,
+          paidAmount: invoices.paidAmount,
+          status: invoices.status,
+          paymentMethod: invoices.paymentMethod,
+          notes: invoices.notes,
+        })
+        .from(invoices)
+        .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .where(eq(invoices.id, input.invoiceId))
+        .limit(1)
+    )[0];
     if (!inv) return null;
-    const items = await db.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, input.invoiceId));
-    return { ...inv, items };
+    const items = await db
+      .select({
+        id: invoiceItems.id,
+        variantId: invoiceItems.variantId,
+        productUnitId: invoiceItems.productUnitId,
+        quantity: invoiceItems.quantity,
+        baseQuantity: invoiceItems.baseQuantity,
+        returnedBaseQuantity: invoiceItems.returnedBaseQuantity,
+        unitPrice: invoiceItems.unitPrice,
+        unitCost: invoiceItems.unitCost,
+        discountAmount: invoiceItems.discountAmount,
+        total: invoiceItems.total,
+        productName: products.name,
+        sku: productVariants.sku,
+        variantName: productVariants.variantName,
+        unitName: productUnits.unitName,
+      })
+      .from(invoiceItems)
+      .leftJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
+      .leftJoin(products, eq(productVariants.productId, products.id))
+      .leftJoin(productUnits, eq(invoiceItems.productUnitId, productUnits.id))
+      .where(eq(invoiceItems.invoiceId, input.invoiceId));
+    const payments = await db
+      .select({
+        id: receipts.id,
+        direction: receipts.direction,
+        amount: receipts.amount,
+        paymentMethod: receipts.paymentMethod,
+        status: receipts.status,
+        createdAt: receipts.createdAt,
+      })
+      .from(receipts)
+      .where(eq(receipts.invoiceId, input.invoiceId))
+      .orderBy(asc(receipts.id));
+    return { ...inv, items, payments };
   }),
 });
