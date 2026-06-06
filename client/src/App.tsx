@@ -5,6 +5,7 @@ import Inventory from "@/pages/Inventory";
 import Invoices from "@/pages/Invoices";
 import Login from "@/pages/Login";
 import POS from "@/pages/POS";
+import ProductNew from "@/pages/ProductNew";
 import Products from "@/pages/Products";
 import Purchases from "@/pages/Purchases";
 import { Redirect, Route, Switch } from "wouter";
@@ -42,6 +43,7 @@ export default function App() {
       </Route>
       <Route path="/"><Shell><Dashboard /></Shell></Route>
       <Route path="/products"><Shell><Products /></Shell></Route>
+      <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/invoices"><Shell><Invoices /></Shell></Route>
       <Route path="/purchases"><Shell><Purchases /></Shell></Route>
       <Route path="/inventory"><Shell><Inventory /></Shell></Route>

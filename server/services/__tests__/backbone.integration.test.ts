@@ -7,6 +7,7 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift, openShift as openShiftSvc } from "../shiftService";
+import { createProduct } from "../catalogService";
 import { withTx } from "../tx";
 
 const actor = { userId: 1, branchId: 1 };
@@ -347,5 +348,36 @@ describe("إدارة الورديات (Z-report)", () => {
   it("لا يُسمح بوردية مفتوحة ثانية لنفس المستخدم/الفرع", async () => {
     await openShiftSvc({ branchId: 1, openingBalance: "0" }, actor);
     await expect(openShiftSvc({ branchId: 1, openingBalance: "0" }, actor)).rejects.toThrow();
+  });
+});
+
+describe("الكتالوج: إنشاء منتج بمخزون افتتاحي", () => {
+  it("createProduct يُنشئ منتجاً + متغيّراً + وحدات + أسعاراً + مخزوناً افتتاحياً", async () => {
+    const r = await createProduct(
+      {
+        name: "منتج اختبار",
+        variants: [
+          {
+            sku: "TST-1",
+            costPrice: "100.00",
+            openingStock: 50,
+            units: [
+              { unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "TSTBC1", prices: [{ priceTier: "RETAIL", price: "150.00" }, { priceTier: "WHOLESALE", price: "130.00" }] },
+              { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL", price: "1700.00" }] },
+            ],
+          },
+        ],
+      },
+      actor
+    );
+    expect(r.productId).toBeGreaterThan(0);
+    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "TST-1")))[0];
+    expect(v).toBeTruthy();
+    expect(await stockOf(Number(v.id), 1)).toBe(50); // المخزون الافتتاحي
+    const units = await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id)));
+    expect(units).toHaveLength(2);
+    const baseUnit = units.find((u) => u.isBaseUnit)!;
+    const prices = await db().select().from(s.productPrices).where(eq(s.productPrices.productUnitId, Number(baseUnit.id)));
+    expect(prices.map((p) => p.priceTier).sort()).toEqual(["RETAIL", "WHOLESALE"]);
   });
 });

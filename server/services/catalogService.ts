@@ -4,6 +4,7 @@ import { branchStock, productPrices, productUnits, productVariants, products } f
 import { getDb } from "../db";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
+import { setStock } from "./inventoryService";
 import { withTx, type Actor } from "./tx";
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
@@ -110,6 +111,7 @@ export interface CreateProductInput {
     color?: string | null;
     size?: string | null;
     costPrice: string;
+    openingStock?: number;
     units: Array<{
       unitName: string;
       conversionFactor: string;
@@ -121,7 +123,7 @@ export interface CreateProductInput {
 }
 
 /** Create a product with its variants, units and prices in one transaction. */
-export async function createProduct(input: CreateProductInput, _actor: Actor) {
+export async function createProduct(input: CreateProductInput, actor: Actor) {
   if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
   return withTx(async (tx) => {
     const pRes = await tx.insert(products).values({
@@ -157,6 +159,18 @@ export async function createProduct(input: CreateProductInput, _actor: Actor) {
         for (const p of u.prices ?? []) {
           await tx.insert(productPrices).values({ productUnitId, priceTier: p.priceTier, price: toDbMoney(p.price) });
         }
+      }
+
+      // المخزون الافتتاحي (في فرع الموظف) كحركة ADJUST مُسجَّلة.
+      if (v.openingStock && v.openingStock > 0) {
+        await setStock(tx, {
+          variantId,
+          branchId: actor.branchId,
+          targetQuantity: v.openingStock,
+          referenceType: "OPENING",
+          notes: "رصيد افتتاحي",
+          createdBy: actor.userId,
+        });
       }
     }
     return { productId };

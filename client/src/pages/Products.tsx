@@ -1,5 +1,7 @@
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
+import { Link } from "wouter";
 
 export default function Products() {
   const me = trpc.auth.me.useQuery();
@@ -8,8 +10,11 @@ export default function Products() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">المنتجات</h1>
-      <p className="text-sm text-muted-foreground">عرض الأصناف بوحداتها وأسعارها ومخزونها. (إضافة/تعديل المنتجات وحدةٌ قادمة.)</p>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">المنتجات</h1>
+        <Link href="/products/new"><Button>+ إضافة منتج</Button></Link>
+      </div>
+      <p className="text-sm text-muted-foreground">عرض الأصناف بوحداتها وأسعارها ومخزونها، وإضافة منتجات جديدة.</p>
       <Card>
         <CardContent className="p-0">
           <table className="w-full text-sm">

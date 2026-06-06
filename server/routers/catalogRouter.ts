@@ -18,6 +18,7 @@ const variantSchema = z.object({
   color: z.string().optional(),
   size: z.string().optional(),
   costPrice: z.string(),
+  openingStock: z.number().int().min(0).optional(),
   units: z.array(unitSchema).min(1),
 });
 
