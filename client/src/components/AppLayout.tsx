@@ -7,6 +7,7 @@ const NAV: { href: string; label: string }[] = [
   { href: "/pos", label: "نقطة البيع" },
   { href: "/products", label: "المنتجات" },
   { href: "/invoices", label: "المبيعات" },
+  { href: "/returns", label: "المرتجعات" },
   { href: "/purchases", label: "المشتريات" },
   { href: "/inventory", label: "حركات المخزون" },
 ];
