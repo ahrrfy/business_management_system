@@ -16,8 +16,10 @@ export default defineConfig({
     fileParallelism: false,
     env: {
       // Integration tests run against a dedicated test database.
-      DATABASE_URL: "mysql://root:erp_root_pw@127.0.0.1:3306/erp_test",
-      JWT_SECRET: "test_secret",
+      // Each session/agent may set TEST_DATABASE_URL to its own DB to avoid
+      // truncation conflicts when running tests concurrently.
+      DATABASE_URL: process.env.TEST_DATABASE_URL ?? "mysql://root:erp_root_pw@127.0.0.1:3306/erp_test",
+      JWT_SECRET: process.env.JWT_SECRET ?? "test_secret",
     },
   },
 });
