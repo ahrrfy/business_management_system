@@ -8,6 +8,13 @@ import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift, openShift as openShiftSvc } from "../shiftService";
 import { createProduct } from "../catalogService";
+import {
+  cancelWorkOrder,
+  createWorkOrder,
+  deliverWorkOrder,
+  markWorkOrderReady,
+  startWorkOrder,
+} from "../workOrderService";
 import { withTx } from "../tx";
 
 const actor = { userId: 1, branchId: 1 };
@@ -393,6 +400,109 @@ describe("شراء: استلام جزئي ثم استلام تكميلي مع د
       receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 11 }] }, actor)
     ).rejects.toThrow();
     expect(await stockOf(1, 1)).toBe(0);
+  });
+});
+
+describe("أوامر الشغل/المطبعة", () => {
+  it("دورة كاملة: إنشاء → بدء (خصم مواد) → جاهز → تسليم (فاتورة WORKORDER + قيد SALE + نقد)", async () => {
+    await setStock(1, 1, 10); // مخزون الأساس (قلم — يُستخدم كمنتج أساس بسيط)
+    // مادة إضافية: متغيّر آخر
+    await db().insert(s.products).values({ id: 99, name: "حبر طباعة" });
+    await db().insert(s.productVariants).values({ id: 99, productId: 99, sku: "INK-BL", costPrice: "20.00" });
+    await db().insert(s.productUnits).values({ id: 99, variantId: 99, unitName: "علبة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.branchStock).values({ variantId: 99, branchId: 1, quantity: 5 });
+
+    const r = await createWorkOrder(
+      {
+        branchId: 1,
+        baseVariantId: 1,
+        title: "درع تكريم — مناسبة",
+        quantity: 2,
+        laborCost: "100.00",
+        salePrice: "500.00",
+        materials: [{ variantId: 99, baseQuantity: 1 }],
+      },
+      actor
+    );
+    expect(r.orderNumber).toMatch(/^WO-1-\d{8}-00001$/);
+
+    // RECEIVED → IN_PROGRESS: خصم المادة (1 من INK-BL)
+    await startWorkOrder(r.workOrderId, actor);
+    expect(await stockOf(99, 1)).toBe(4);
+    let wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
+    expect(wo.status).toBe("IN_PROGRESS");
+    expect(wo.materialsCost).toBe("20.00"); // 1 × 20.00
+    const mats = await db().select().from(s.workOrderMaterials).where(eq(s.workOrderMaterials.workOrderId, r.workOrderId));
+    expect(mats[0].unitCost).toBe("20.00"); // snapshot
+
+    // IN_PROGRESS → READY
+    await markWorkOrderReady(r.workOrderId);
+    wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
+    expect(wo.status).toBe("READY");
+
+    // READY → DELIVERED مع دفعة نقدية كاملة 500
+    const d = await deliverWorkOrder({ workOrderId: r.workOrderId, payment: { amount: "500.00", method: "CASH" } }, actor);
+    wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
+    expect(wo.status).toBe("DELIVERED");
+    expect(wo.invoiceId).toBe(d.invoiceId);
+    expect(wo.deliveredAt).not.toBeNull();
+
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, d.invoiceId)))[0];
+    expect(inv.sourceType).toBe("WORKORDER");
+    expect(inv.total).toBe("500.00");
+    expect(inv.costTotal).toBe("120.00"); // مواد 20 + عمالة 100
+    expect(inv.paidAmount).toBe("500.00");
+    expect(inv.status).toBe("PAID");
+
+    // قيد SALE + قيد PAYMENT_IN + إيصال IN
+    const sale = (await entries("SALE"))[0];
+    expect(sale.revenue).toBe("500.00");
+    expect(sale.cost).toBe("120.00");
+    expect(sale.profit).toBe("380.00");
+
+    const pin = await entries("PAYMENT_IN");
+    expect(pin).toHaveLength(1);
+    expect(pin[0].amount).toBe("500.00");
+
+    const inn = await db().select().from(s.receipts).where(eq(s.receipts.direction, "IN"));
+    expect(inn).toHaveLength(1);
+    expect(inn[0].amount).toBe("500.00");
+
+    // التسليم لا يلمس المخزون مرة أخرى (المواد خُصمت عند البدء)
+    expect(await stockOf(99, 1)).toBe(4);
+  });
+
+  it("إلغاء بعد البدء: المواد تعود للمخزون والحالة CANCELLED", async () => {
+    await db().insert(s.products).values({ id: 99, name: "حبر" });
+    await db().insert(s.productVariants).values({ id: 99, productId: 99, sku: "INK-X", costPrice: "10.00" });
+    await db().insert(s.productUnits).values({ id: 99, variantId: 99, unitName: "علبة", conversionFactor: "1", isBaseUnit: true });
+    await db().insert(s.branchStock).values({ variantId: 99, branchId: 1, quantity: 3 });
+
+    const r = await createWorkOrder(
+      { branchId: 1, baseVariantId: 1, title: "بنر إعلاني", quantity: 1, salePrice: "200.00", materials: [{ variantId: 99, baseQuantity: 2 }] },
+      actor
+    );
+    await startWorkOrder(r.workOrderId, actor);
+    expect(await stockOf(99, 1)).toBe(1);
+    await cancelWorkOrder(r.workOrderId, actor);
+    expect(await stockOf(99, 1)).toBe(3); // عادت
+    const wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
+    expect(wo.status).toBe("CANCELLED");
+    // لا فاتورة، لا قيد SALE
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await entries("SALE")).toHaveLength(0);
+  });
+
+  it("رفض البيع الآجل بلا عميل", async () => {
+    const r = await createWorkOrder(
+      { branchId: 1, baseVariantId: 1, title: "أمر بسيط", quantity: 1, salePrice: "300.00" },
+      actor
+    );
+    await startWorkOrder(r.workOrderId, actor);
+    await markWorkOrderReady(r.workOrderId);
+    await expect(
+      deliverWorkOrder({ workOrderId: r.workOrderId, payment: { amount: "100.00", method: "CASH" } }, actor)
+    ).rejects.toThrow();
   });
 });
 

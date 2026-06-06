@@ -12,6 +12,9 @@ import PurchaseNew from "@/pages/PurchaseNew";
 import PurchaseReceive from "@/pages/PurchaseReceive";
 import Returns from "@/pages/Returns";
 import Transfers from "@/pages/Transfers";
+import WorkOrderDetail from "@/pages/WorkOrderDetail";
+import WorkOrderNew from "@/pages/WorkOrderNew";
+import WorkOrders from "@/pages/WorkOrders";
 import { Redirect, Route, Switch } from "wouter";
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -55,6 +58,9 @@ export default function App() {
       <Route path="/purchases/:id/receive"><Shell><PurchaseReceive /></Shell></Route>
       <Route path="/inventory"><Shell><Inventory /></Shell></Route>
       <Route path="/transfers"><Shell><Transfers /></Shell></Route>
+      <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>
+      <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
+      <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
   );
