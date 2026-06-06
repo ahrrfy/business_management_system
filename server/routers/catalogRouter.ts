@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createProduct, listForPos, lookupByBarcode } from "../services/catalogService";
+import { createProduct, listForPos, listForPurchase, lookupByBarcode } from "../services/catalogService";
 import { protectedProcedure, router } from "../trpc";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
@@ -30,6 +30,11 @@ export const catalogRouter = router({
   byBarcode: protectedProcedure
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier }))
     .query(({ input }) => lookupByBarcode(input.barcode, input.branchId, input.tier)),
+
+  // Purchase-side product search: carries COST (not a sell price). Used only by the purchase-order screen.
+  forPurchase: protectedProcedure
+    .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().default(50) }))
+    .query(({ input }) => listForPurchase(input.branchId, input.query, input.limit)),
 
   createProduct: protectedProcedure
     .input(

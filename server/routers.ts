@@ -6,6 +6,8 @@ import { inventoryRouter } from "./routers/inventoryRouter";
 import { returnRouter } from "./routers/returnRouter";
 import { shiftRouter } from "./routers/shiftRouter";
 import { catalogRouter } from "./routers/catalogRouter";
+import { supplierRouter } from "./routers/supplierRouter";
+import { branchRouter } from "./routers/branchRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -24,6 +26,8 @@ export const appRouter = router({
   returns: returnRouter,
   shifts: shiftRouter,
   catalog: catalogRouter,
+  suppliers: supplierRouter,
+  branches: branchRouter,
 });
 
 export type AppRouter = typeof appRouter;

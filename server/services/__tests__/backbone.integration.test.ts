@@ -330,6 +330,72 @@ describe("إصلاحات المراجعة العدائية", () => {
   });
 });
 
+describe("شراء: استلام جزئي ثم استلام تكميلي مع دفعة", () => {
+  it("الجزئي يُبقي الحالة CONFIRMED + يقيّد ما استُلم فقط؛ التكميلي يُكمل ويسجّل دفعة OUT", async () => {
+    await setStock(1, 1, 0);
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد جزئي", currentBalance: "0" });
+    // أمر بـ100 قطعة بسعر 5 — إجمالي 500
+    const po = await createPurchaseOrder(
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: "100", unitPrice: "5.00" }] },
+      actor
+    );
+    const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+
+    // استلام جزئي 30 — لا دفعة
+    await receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 30 }] }, actor);
+    expect(await stockOf(1, 1)).toBe(30);
+    let poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
+    expect(poRow.status).toBe("CONFIRMED"); // ليس مُستلَماً بعد
+    let sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    expect(sup.currentBalance).toBe("150.00"); // 30 × 5
+
+    // استلام تكميلي 70 + دفعة 200 نقد
+    await receivePurchase(
+      {
+        purchaseOrderId: po.purchaseOrderId,
+        lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 70 }],
+        payment: { amount: "200.00", method: "CASH" },
+      },
+      actor
+    );
+    expect(await stockOf(1, 1)).toBe(100);
+    poRow = (await db().select().from(s.purchaseOrders).where(eq(s.purchaseOrders.id, po.purchaseOrderId)))[0];
+    expect(poRow.status).toBe("RECEIVED");
+    expect(poRow.paidAmount).toBe("200.00");
+
+    // ذمة المورد = 500 (شراء) − 200 (دفعة) = 300
+    sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    expect(sup.currentBalance).toBe("300.00");
+
+    // قيدا PURCHASE (150 + 350) + قيد PAYMENT_OUT (200)
+    const pe = await entries("PURCHASE");
+    expect(pe).toHaveLength(2);
+    expect(pe.map((e) => e.amount).sort()).toEqual(["150.00", "350.00"]);
+    const pout = await entries("PAYMENT_OUT");
+    expect(pout).toHaveLength(1);
+    expect(pout[0].amount).toBe("200.00");
+
+    // إيصال OUT للدفعة
+    const out = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    expect(out).toHaveLength(1);
+    expect(out[0].amount).toBe("200.00");
+  });
+
+  it("لا يُسمح بتجاوز الكمية المطلوبة في الاستلام", async () => {
+    await setStock(1, 1, 0);
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+    const po = await createPurchaseOrder(
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }] },
+      actor
+    );
+    const poItem = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+    await expect(
+      receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 11 }] }, actor)
+    ).rejects.toThrow();
+    expect(await stockOf(1, 1)).toBe(0);
+  });
+});
+
 describe("إدارة الورديات (Z-report)", () => {
   it("فتح برصيد افتتاحي → بيع نقدي → إغلاق: المتوقع والفروقات صحيحة", async () => {
     await setStock(1, 1, 24);

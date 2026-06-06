@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { branches, categories, productVariants, products, users } from "../drizzle/schema";
+import { branches, categories, productVariants, products, suppliers, users } from "../drizzle/schema";
 import { hashPassword } from "./auth/password";
 import { getDb } from "./db";
 import { createProduct } from "./services/catalogService";
@@ -24,6 +24,15 @@ async function seed() {
     console.log("• branches already exist, skipping");
   }
   const mainBranch = (await db.select().from(branches).where(eq(branches.code, "MAIN")).limit(1))[0];
+
+  // Sample supplier (so the purchase-order screen isn't empty on first run)
+  const existingSuppliers = await db.select().from(suppliers).limit(1);
+  if (!existingSuppliers.length) {
+    await db.insert(suppliers).values({ name: "مورد القرطاسية العام", phone: "07700000000", city: "بغداد", paymentTerms: "آجل ٣٠ يوم" });
+    console.log("✓ seeded sample supplier");
+  } else {
+    console.log("• suppliers already exist, skipping");
+  }
 
   // Admin user
   const email = process.env.ADMIN_EMAIL ?? "admin@alroya.local";
