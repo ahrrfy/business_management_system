@@ -12,16 +12,17 @@ async function seed() {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL is required to seed");
 
-  // Main branch
-  const existingBranches = await db.select().from(branches).limit(1);
-  if (!existingBranches.length) {
-    await db.insert(branches).values([
-      { name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" },
-      { name: "فرع المبيعات", code: "SALES", type: "SALES" },
-    ]);
-    console.log("✓ seeded branches (MAIN, SALES)");
-  } else {
-    console.log("• branches already exist, skipping");
+  // Branches — idempotent per-code so older DBs that only have MAIN backfill SALES.
+  const targetBranches = [
+    { name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" as const },
+    { name: "فرع المبيعات", code: "SALES", type: "SALES" as const },
+  ];
+  for (const b of targetBranches) {
+    const exists = (await db.select().from(branches).where(eq(branches.code, b.code)).limit(1))[0];
+    if (!exists) {
+      await db.insert(branches).values(b);
+      console.log(`✓ seeded branch ${b.code}`);
+    }
   }
   const mainBranch = (await db.select().from(branches).where(eq(branches.code, "MAIN")).limit(1))[0];
 
