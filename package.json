@@ -13,7 +13,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
-    "seed": "cross-env NODE_ENV=development tsx server/seed.ts"
+    "seed": "cross-env NODE_ENV=development tsx server/seed.ts",
+    "db:backup": "node scripts/backup.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
