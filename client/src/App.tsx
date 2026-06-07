@@ -39,6 +39,7 @@ import UserNew from "@/pages/UserNew";
 import UserEdit from "@/pages/UserEdit";
 import Account from "@/pages/Account";
 import AuditLogs from "@/pages/AuditLogs";
+import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { Redirect, Route, Switch } from "wouter";
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -53,7 +54,10 @@ function Protected({ children }: { children: React.ReactNode }) {
 function Shell({ children }: { children: React.ReactNode }) {
   return (
     <Protected>
-      <AppLayout>{children}</AppLayout>
+      <AppLayout>
+        {/* حدّ خطأ لكل صفحة: عطل شاشة واحدة لا يُعطّل التنقّل/الشريط الجانبي. */}
+        <RouteErrorBoundary>{children}</RouteErrorBoundary>
+      </AppLayout>
     </Protected>
   );
 }
