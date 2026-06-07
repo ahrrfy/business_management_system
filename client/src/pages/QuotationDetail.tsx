@@ -1,0 +1,180 @@
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { fmt } from "@/lib/money";
+import { trpc } from "@/lib/trpc";
+import { useState } from "react";
+import { Link, useParams } from "wouter";
+
+const STATUS: Record<string, string> = {
+  DRAFT: "مسودّة",
+  SENT: "مُرسَل",
+  ACCEPTED: "مقبول",
+  REJECTED: "مرفوض",
+  CONVERTED: "محوّل لفاتورة",
+  EXPIRED: "منتهٍ",
+};
+const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
+const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
+  { v: "CASH", label: "نقد" },
+  { v: "TRANSFER", label: "تحويل" },
+  { v: "CHECK", label: "صك" },
+  { v: "CARD", label: "بطاقة" },
+  { v: "WALLET", label: "محفظة" },
+];
+const selectCls =
+  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+export default function QuotationDetail() {
+  const params = useParams();
+  const quotationId = Number(params.id);
+  const utils = trpc.useUtils();
+  const q = trpc.quotations.get.useQuery({ quotationId }, { enabled: Number.isFinite(quotationId) });
+
+  const [error, setError] = useState("");
+  const [done, setDone] = useState("");
+  const [payAmount, setPayAmount] = useState("");
+  const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+
+  const refresh = async () => {
+    await Promise.all([utils.quotations.get.invalidate({ quotationId }), utils.quotations.list.invalidate()]);
+  };
+
+  const setStatus = trpc.quotations.setStatus.useMutation({
+    onSuccess: async () => { setDone("تم تحديث الحالة."); setError(""); await refresh(); },
+    onError: (e) => { setError(e.message); setDone(""); },
+  });
+  const convert = trpc.quotations.convert.useMutation({
+    onSuccess: async (r) => {
+      setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل ✓ فاتورة ${r.invoiceNumber ?? r.invoiceId}.`);
+      setError("");
+      await refresh();
+    },
+    onError: (e) => { setError(e.message); setDone(""); },
+  });
+
+  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (!q.data) return <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>;
+  const data = q.data;
+  const isOpen = data.status === "DRAFT" || data.status === "SENT" || data.status === "ACCEPTED";
+
+  function printQuote() {
+    const rows = data.items
+      .map((it) => `<tr><td style="text-align:right">${esc(it.productName ?? "")}${it.variantName ? " — " + esc(it.variantName) : ""}</td><td>${esc(it.unitName ?? "")}</td><td>${it.quantity}</td><td style="text-align:left">${fmt(it.unitPrice)}</td><td style="text-align:left">${fmt(it.total)}</td></tr>`)
+      .join("");
+    const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>عرض سعر ${esc(data.quoteNumber)}</title>
+<style>body{font-family:Cairo,sans-serif;padding:24px;color:#000}h1{font-size:20px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #ccc;padding:6px;font-size:13px}th{background:#f3f3f3}.tot{margin-top:12px;text-align:left;font-weight:bold}</style></head>
+<body onload="window.print();setTimeout(()=>window.close(),400)">
+<h1>عرض سعر — الرؤية العربية</h1>
+<p>رقم: ${esc(data.quoteNumber)} · العميل: ${esc(data.customerName ?? "—")} · صالح حتى: ${data.validUntil ? String(data.validUntil).slice(0, 10) : "—"}</p>
+<table><thead><tr><th style="text-align:right">الصنف</th><th>الوحدة</th><th>الكمية</th><th style="text-align:left">السعر</th><th style="text-align:left">الإجمالي</th></tr></thead><tbody>${rows}</tbody></table>
+<div class="tot">المجموع: ${fmt(data.subtotal)} · الضريبة: ${fmt(data.taxAmount)} · الإجمالي: ${fmt(data.total)} د.ع</div>
+${data.notes ? `<p>${esc(data.notes)}</p>` : ""}
+</body></html>`;
+    const w = window.open("", "_blank", "width=820,height=1000");
+    if (w) { w.document.write(html); w.document.close(); }
+  }
+
+  return (
+    <div className="space-y-4 max-w-4xl">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">عرض سعر</h1>
+        <Link href="/quotations" className="text-sm text-muted-foreground">← رجوع للعروض</Link>
+      </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center justify-between">
+            <span className="font-mono" dir="ltr">{data.quoteNumber}</span>
+            <span className="text-xs rounded-full px-2 py-0.5 bg-muted">{STATUS[data.status] ?? data.status}</span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "—"}</div></div>
+          <div><div className="text-muted-foreground text-xs">فئة السعر</div><div>{TIER[data.priceTier] ?? data.priceTier}</div></div>
+          <div><div className="text-muted-foreground text-xs">التاريخ</div><div>{new Date(data.quoteDate).toLocaleDateString("ar-IQ")}</div></div>
+          <div><div className="text-muted-foreground text-xs">صالح حتى</div><div>{data.validUntil ? String(data.validUntil).slice(0, 10) : "—"}</div></div>
+          <div><div className="text-muted-foreground text-xs">المجموع</div><div dir="ltr" className="tabular-nums">{fmt(data.subtotal)}</div></div>
+          <div><div className="text-muted-foreground text-xs">الضريبة</div><div dir="ltr" className="tabular-nums">{fmt(data.taxAmount)}</div></div>
+          <div><div className="text-muted-foreground text-xs">الإجمالي</div><div dir="ltr" className="tabular-nums font-semibold">{fmt(data.total)}</div></div>
+          {data.convertedInvoiceId && (
+            <div><div className="text-muted-foreground text-xs">الفاتورة</div><Link href={`/invoices/${data.convertedInvoiceId}`} className="underline">#{data.convertedInvoiceId}</Link></div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">البنود</CardTitle></CardHeader>
+        <CardContent className="p-0">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr className="text-right">
+                <th className="p-2">الصنف</th>
+                <th className="p-2">الوحدة</th>
+                <th className="p-2 text-center">الكمية</th>
+                <th className="p-2 text-left">سعر الوحدة</th>
+                <th className="p-2 text-left">الإجمالي</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.items.map((it) => (
+                <tr key={it.id} className="border-t">
+                  <td className="p-2">{it.productName}{it.variantName ? ` — ${it.variantName}` : ""} <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span></td>
+                  <td className="p-2 text-muted-foreground">{it.unitName}</td>
+                  <td className="p-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
+                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
+                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(it.total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      {data.status === "ACCEPTED" && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">تحويل لفاتورة</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+            <div className="space-y-1">
+              <Label>دفعة عند التحويل (اختياري)</Label>
+              <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder={data.customerName ? "اتركه فارغاً = آجل" : `أقل من ${fmt(data.total)} يتطلّب عميلاً`} />
+            </div>
+            <div className="space-y-1">
+              <Label>طريقة الدفع</Label>
+              <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
+                {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+              </select>
+            </div>
+            <Button
+              onClick={() => convert.mutate({ quotationId, payment: Number(payAmount) > 0 ? { amount: String(Number(payAmount)), method: payMethod } : undefined })}
+              disabled={convert.isPending}
+            >
+              {convert.isPending ? "جارٍ…" : "تحويل وإصدار فاتورة"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {error && <p className="text-sm text-destructive">{error}</p>}
+      {done && <p className="text-sm text-emerald-600">{done}</p>}
+
+      <div className="flex gap-2 flex-wrap">
+        {data.status === "DRAFT" && (
+          <Button variant="outline" onClick={() => setStatus.mutate({ quotationId, status: "SENT" })} disabled={setStatus.isPending}>وضع علامة «مُرسَل»</Button>
+        )}
+        {isOpen && data.status !== "ACCEPTED" && (
+          <Button variant="outline" onClick={() => setStatus.mutate({ quotationId, status: "ACCEPTED" })} disabled={setStatus.isPending}>قبول</Button>
+        )}
+        {isOpen && (
+          <Button variant="outline" onClick={() => setStatus.mutate({ quotationId, status: "REJECTED" })} disabled={setStatus.isPending}>رفض</Button>
+        )}
+        <Button variant="outline" onClick={printQuote}>طباعة العرض</Button>
+      </div>
+    </div>
+  );
+}
+
+function esc(s: string): string {
+  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
+}

@@ -8,6 +8,7 @@ const NAV: { href: string; label: string }[] = [
   { href: "/products", label: "المنتجات" },
   { href: "/barcode-labels", label: "ملصقات الباركود" },
   { href: "/invoices", label: "المبيعات" },
+  { href: "/quotations", label: "عروض الأسعار" },
   { href: "/customers", label: "العملاء" },
   { href: "/returns", label: "المرتجعات" },
   { href: "/purchases", label: "المشتريات" },

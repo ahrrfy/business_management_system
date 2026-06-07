@@ -391,6 +391,63 @@ export const invoiceItems = mysqlTable(
 export type InvoiceItem = typeof invoiceItems.$inferSelect;
 export type InsertInvoiceItem = typeof invoiceItems.$inferInsert;
 
+/* ============================ عروض الأسعار (Quotations) ============================ */
+
+/** عرض سعر — مستند تفاوضي بلا أثر على المخزون أو الدفتر حتى يُحوَّل إلى فاتورة. */
+export const quotations = mysqlTable(
+  "quotations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    quoteNumber: varchar("quoteNumber", { length: 50 }).notNull().unique(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    priceTier: mysqlEnum("quotePriceTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL").notNull(),
+    quoteDate: timestamp("quoteDate").defaultNow().notNull(),
+    validUntil: date("validUntil"),
+    subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
+    taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    total: decimal("total", { precision: 15, scale: 2 }).notNull(),
+    status: mysqlEnum("quoteStatus", ["DRAFT", "SENT", "ACCEPTED", "REJECTED", "CONVERTED", "EXPIRED"]).default("DRAFT").notNull(),
+    convertedInvoiceId: bigint("convertedInvoiceId", { mode: "number" }).references(() => invoices.id),
+    notes: text("notes"),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    numberIdx: index("idx_quote_number").on(table.quoteNumber),
+    branchIdx: index("idx_quote_branch").on(table.branchId),
+    customerIdx: index("idx_quote_customer").on(table.customerId),
+    statusIdx: index("idx_quote_status").on(table.status),
+  })
+);
+
+export type Quotation = typeof quotations.$inferSelect;
+export type InsertQuotation = typeof quotations.$inferInsert;
+
+export const quotationItems = mysqlTable(
+  "quotationItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    quotationId: bigint("quotationId", { mode: "number" }).notNull().references(() => quotations.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull().references(() => productUnits.id),
+    quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0"),
+    total: decimal("total", { precision: 15, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    quoteIdx: index("idx_qitem_quote").on(table.quotationId),
+  })
+);
+
+export type QuotationItem = typeof quotationItems.$inferSelect;
+export type InsertQuotationItem = typeof quotationItems.$inferInsert;
+
 /* ============================ المقبوضات والمدفوعات ============================ */
 
 export const receipts = mysqlTable(

@@ -8,6 +8,7 @@ import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift, openShift as openShiftSvc } from "../shiftService";
 import { assignBarcode, createProduct, getProductForEdit, lookupByBarcode, updateProduct } from "../catalogService";
+import { convertQuotation, createQuotation, setQuotationStatus } from "../quotationService";
 import {
   cancelWorkOrder,
   createWorkOrder,
@@ -20,7 +21,8 @@ import { withTx } from "../tx";
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
-  "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
+  "accountingEntries", "receipts", "inventoryMovements", "quotationItems", "quotations",
+  "invoiceItems", "invoices",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "purchaseOrderItems", "purchaseOrders", "workOrderMaterials", "workOrders",
   "onlineOrderItems", "onlineOrders", "attendance", "employees", "importBatches",
@@ -690,5 +692,71 @@ describe("الكتالوج: إسناد الباركود (ملصقات)", () => {
     const v2 = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "B-1")))[0];
     const u2 = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v2.id))))[0];
     await expect(assignBarcode(Number(u2.id), "DUP-100")).rejects.toThrow();
+  });
+});
+
+describe("عروض الأسعار (Quotations)", () => {
+  it("إنشاء عرض لا يمسّ المخزون ولا الدفتر؛ التحويل يُنشئ فاتورة بالأسعار المعروضة ويخصم المخزون", async () => {
+    await setStock(1, 1, 24);
+    await db().insert(s.customers).values({ id: 1, name: "عميل عرض", defaultPriceTier: "RETAIL", currentBalance: "0" });
+
+    // عرض سعر: 1 درزن قلم بسعر مخصّص 100 (بدل سعر الكتالوج 2800)
+    const q = await createQuotation(
+      {
+        branchId: 1,
+        customerId: 1,
+        taxRatePercent: "0",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1", unitPriceOverride: "100.00" }],
+      },
+      actor
+    );
+    expect(q.quoteNumber).toMatch(/^QUO-1-\d{8}-00001$/);
+    expect(q.total).toBe("100.00");
+
+    // لا أثر على المخزون ولا الدفتر بعد الإنشاء.
+    expect(await stockOf(1, 1)).toBe(24);
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
+    const qRow = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
+    expect(qRow.status).toBe("DRAFT");
+
+    // اقبل ثم حوّل بدفعة كاملة 100.
+    await setQuotationStatus(q.quotationId, "ACCEPTED");
+    const conv = await convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "CASH" } }, actor);
+    expect(conv.alreadyConverted).toBe(false);
+
+    // الآن المخزون يُخصم (درزن = 12) والفاتورة بالأسعار المعروضة.
+    expect(await stockOf(1, 1)).toBe(12);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, conv.invoiceId!)))[0];
+    expect(inv.total).toBe("100.00");
+    expect(inv.status).toBe("PAID");
+    expect(inv.sourceType).toBe("ORDER");
+    const sale = (await entries("SALE"))[0];
+    expect(sale.revenue).toBe("100.00");
+
+    // الحالة CONVERTED + ربط الفاتورة.
+    const after = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
+    expect(after.status).toBe("CONVERTED");
+    expect(Number(after.convertedInvoiceId)).toBe(conv.invoiceId);
+  });
+
+  it("التحويل idempotent: لا فاتورة مكررة عند التحويل مرتين", async () => {
+    await setStock(1, 1, 24);
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    const q = await createQuotation({ branchId: 1, customerId: 1, taxRatePercent: "0", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
+    await setQuotationStatus(q.quotationId, "ACCEPTED");
+    const c1 = await convertQuotation({ quotationId: q.quotationId }, actor);
+    const c2 = await convertQuotation({ quotationId: q.quotationId }, actor);
+    expect(c2.alreadyConverted).toBe(true);
+    expect(c2.invoiceId).toBe(c1.invoiceId);
+    expect(await db().select().from(s.invoices)).toHaveLength(1);
+    expect(await stockOf(1, 1)).toBe(12); // خُصم مرة واحدة فقط
+  });
+
+  it("لا يمكن تحويل عرض مرفوض", async () => {
+    await setStock(1, 1, 24);
+    const q = await createQuotation({ branchId: 1, taxRatePercent: "0", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
+    await setQuotationStatus(q.quotationId, "REJECTED");
+    await expect(convertQuotation({ quotationId: q.quotationId, payment: { amount: "2800.00", method: "CASH" } }, actor)).rejects.toThrow();
   });
 });

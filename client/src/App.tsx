@@ -22,6 +22,9 @@ import Products from "@/pages/Products";
 import Purchases from "@/pages/Purchases";
 import PurchaseNew from "@/pages/PurchaseNew";
 import PurchaseReceive from "@/pages/PurchaseReceive";
+import Quotations from "@/pages/Quotations";
+import QuotationNew from "@/pages/QuotationNew";
+import QuotationDetail from "@/pages/QuotationDetail";
 import Returns from "@/pages/Returns";
 import Transfers from "@/pages/Transfers";
 import WorkOrderDetail from "@/pages/WorkOrderDetail";
@@ -67,6 +70,9 @@ export default function App() {
       <Route path="/barcode-labels"><Shell><BarcodeLabels /></Shell></Route>
       <Route path="/invoices"><Shell><Invoices /></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
+      <Route path="/quotations"><Shell><Quotations /></Shell></Route>
+      <Route path="/quotations/new"><Shell><QuotationNew /></Shell></Route>
+      <Route path="/quotations/:id"><Shell><QuotationDetail /></Shell></Route>
       <Route path="/customers"><Shell><Customers /></Shell></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
