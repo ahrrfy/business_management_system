@@ -3,6 +3,9 @@ import { trpc } from "@/lib/trpc";
 import APAging from "@/pages/APAging";
 import ARAging from "@/pages/ARAging";
 import CustomerStatement from "@/pages/CustomerStatement";
+import Customers from "@/pages/Customers";
+import CustomerNew from "@/pages/CustomerNew";
+import CustomerEdit from "@/pages/CustomerEdit";
 import SupplierStatement from "@/pages/SupplierStatement";
 import Dashboard from "@/pages/Dashboard";
 import ExpenseNew from "@/pages/ExpenseNew";
@@ -62,6 +65,9 @@ export default function App() {
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
       <Route path="/invoices"><Shell><Invoices /></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
+      <Route path="/customers"><Shell><Customers /></Shell></Route>
+      <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
+      <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
       <Route path="/purchases"><Shell><Purchases /></Shell></Route>
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>
