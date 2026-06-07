@@ -8,6 +8,9 @@ import Customers from "@/pages/Customers";
 import CustomerNew from "@/pages/CustomerNew";
 import CustomerEdit from "@/pages/CustomerEdit";
 import SupplierStatement from "@/pages/SupplierStatement";
+import Suppliers from "@/pages/Suppliers";
+import SupplierNew from "@/pages/SupplierNew";
+import SupplierEdit from "@/pages/SupplierEdit";
 import Dashboard from "@/pages/Dashboard";
 import ExpenseNew from "@/pages/ExpenseNew";
 import Expenses from "@/pages/Expenses";
@@ -93,6 +96,9 @@ export default function App() {
       <Route path="/expenses/new"><Shell><ExpenseNew /></Shell></Route>
       <Route path="/ar-aging"><Shell><ARAging /></Shell></Route>
       <Route path="/customers-statement"><Shell><CustomerStatement /></Shell></Route>
+      <Route path="/suppliers"><Shell><Suppliers /></Shell></Route>
+      <Route path="/suppliers/new"><Shell><SupplierNew /></Shell></Route>
+      <Route path="/suppliers/:id/edit"><Shell><SupplierEdit /></Shell></Route>
       <Route path="/ap-aging"><Shell><APAging /></Shell></Route>
       <Route path="/suppliers-statement"><Shell><SupplierStatement /></Shell></Route>
       <Route path="/users"><Shell><Users /></Shell></Route>

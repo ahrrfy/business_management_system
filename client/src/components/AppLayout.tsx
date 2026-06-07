@@ -11,6 +11,7 @@ const NAV: { href: string; label: string; adminOnly?: boolean }[] = [
   { href: "/invoices", label: "المبيعات" },
   { href: "/quotations", label: "عروض الأسعار" },
   { href: "/customers", label: "العملاء" },
+  { href: "/suppliers", label: "الموردون" },
   { href: "/returns", label: "المرتجعات" },
   { href: "/purchases", label: "المشتريات" },
   { href: "/work-orders", label: "أوامر الشغل/المطبعة" },
