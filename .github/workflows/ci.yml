@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check-test-build:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: erp_root_pw
+          MYSQL_DATABASE: erp_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -uroot -perp_root_pw"
+          --health-interval=10s --health-timeout=5s --health-retries=10
+    env:
+      DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_test
+      TEST_DATABASE_URL: mysql://root:erp_root_pw@127.0.0.1:3306/erp_test
+      JWT_SECRET: ci_test_secret_change_me_0123456789abcdef
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: تهيئة مخطّط قاعدة الاختبار
+        run: pnpm db:push
+      - name: فحص الأنواع
+        run: pnpm check
+      - name: الاختبارات
+        run: pnpm test
+      - name: بناء الإنتاج
+        run: pnpm build
