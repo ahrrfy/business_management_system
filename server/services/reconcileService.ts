@@ -59,46 +59,27 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   return issues;
 }
 
-/** التحقق من اتساق مخزون الفروع: quantity == مجموع الحركات بإشارات IN/OUT. */
+/**
+ * التحقق من سلامة مخزون الفروع: لا رصيد سالب.
+ * ملاحظة: setStock يسجّل ADJUST بالقيمة المطلقة (Math.abs(delta)) لا المُوقَّعة،
+ * لذا لا يمكن إعادة بناء الرصيد بجمع الحركات — نتحقق من الحالة الحاضرة فقط.
+ */
 export async function reconcileInventory(): Promise<ReconcileResult[]> {
   const db = getDb();
   if (!db) return [];
 
-  const computed = await db
-    .select({
-      variantId: inventoryMovements.variantId,
-      branchId: inventoryMovements.branchId,
-      computedQty: sql<number>`SUM(
-        CASE ${inventoryMovements.movementType}
-          WHEN 'IN'  THEN ${inventoryMovements.quantity}
-          WHEN 'OUT' THEN -${inventoryMovements.quantity}
-          ELSE 0 END
-      )`,
-    })
-    .from(inventoryMovements)
-    .groupBy(inventoryMovements.variantId, inventoryMovements.branchId);
+  const negativeRows = await db
+    .select()
+    .from(branchStock)
+    .where(sql`${branchStock.quantity} < 0`);
 
-  const actuals = await db.select().from(branchStock);
-  const actualMap = new Map(
-    actuals.map((s) => [`${Number(s.variantId)}:${Number(s.branchId)}`, Number(s.quantity)])
-  );
-
-  return computed
-    .filter((r) => {
-      const key = `${Number(r.variantId)}:${Number(r.branchId)}`;
-      return Math.abs((actualMap.get(key) ?? 0) - Number(r.computedQty)) > 0;
-    })
-    .map((r) => {
-      const key = `${Number(r.variantId)}:${Number(r.branchId)}`;
-      const actual = actualMap.get(key) ?? 0;
-      return {
-        entity: "stock",
-        id: Number(r.variantId),
-        expected: String(r.computedQty),
-        actual: String(actual),
-        drift: String(Math.abs(actual - Number(r.computedQty))),
-      };
-    });
+  return negativeRows.map((s) => ({
+    entity: "stock",
+    id: Number(s.variantId),
+    expected: ">=0",
+    actual: String(s.quantity),
+    drift: String(Math.abs(Number(s.quantity))),
+  }));
 }
 
 /** التحقق من سلامة قيد الأرباح: revenue - cost == profit لكل قيد. */

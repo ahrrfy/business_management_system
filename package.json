@@ -26,7 +26,8 @@
     "coord:status": "node scripts/coord.mjs status",
     "coord:heartbeat": "node scripts/coord.mjs heartbeat",
     "coord:reclaim": "node scripts/coord.mjs reclaim-stale",
-    "coord:test": "node scripts/coord-core.test.mjs && node scripts/coord-race.test.mjs"
+    "coord:test": "node scripts/coord-core.test.mjs && node scripts/coord-race.test.mjs",
+    "prepare": "husky"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
