@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
 import { Link } from "wouter";
 
@@ -25,7 +26,30 @@ export default function Invoices() {
   const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">المبيعات</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">المبيعات</h1>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!rows.data?.length}
+          onClick={() =>
+            exportRows(rows.data ?? [], {
+              filename: "المبيعات",
+              columns: [
+                { key: "invoiceNumber", header: "رقم الفاتورة" },
+                { key: "invoiceDate", header: "التاريخ", map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ") },
+                { key: "customerName", header: "العميل" },
+                { key: "sourceType", header: "المصدر" },
+                { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+                { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+                { key: "status", header: "الحالة" },
+              ],
+            })
+          }
+        >
+          تصدير Excel
+        </Button>
+      </div>
       <p className="text-sm text-muted-foreground">قائمة الفواتير. اضغط على فاتورة لمتابعتها أو تسديد دفعة.</p>
       <Card>
         <CardContent className="p-0">

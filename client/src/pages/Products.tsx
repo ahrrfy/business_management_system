@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
 import { Link } from "wouter";
 
@@ -12,7 +13,29 @@ export default function Products() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">المنتجات</h1>
-        <Link href="/products/new"><Button>+ إضافة منتج</Button></Link>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!rows.data?.length}
+            onClick={() =>
+              exportRows(rows.data ?? [], {
+                filename: "المنتجات",
+                columns: [
+                  { key: "productName", header: "المنتج" },
+                  { key: "variantName", header: "المتغيّر", map: (r) => r.variantName ?? r.color ?? r.sku },
+                  { key: "unitName", header: "الوحدة" },
+                  { key: "barcode", header: "الباركود" },
+                  { key: "price", header: "السعر (مفرد)", map: (r) => (r.price != null ? Number(r.price) : "") },
+                  { key: "stockBase", header: "المخزون", map: (r) => Number(r.stockBase ?? 0) },
+                ],
+              })
+            }
+          >
+            تصدير Excel
+          </Button>
+          <Link href="/products/new"><Button>+ إضافة منتج</Button></Link>
+        </div>
       </div>
       <p className="text-sm text-muted-foreground">عرض الأصناف بوحداتها وأسعارها ومخزونها، وإضافة منتجات جديدة.</p>
       <Card>

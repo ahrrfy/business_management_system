@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { exportRows } from "@/lib/export";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
@@ -128,8 +129,29 @@ export default function Inventory() {
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle className="text-base">الأرصدة الحالية</CardTitle>
-          <div className="text-xs text-muted-foreground">
-            {onHand.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ")} صنف`}
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">
+              {onHand.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ")} صنف`}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={rows.length === 0}
+              onClick={() =>
+                exportRows(rows, {
+                  filename: "المخزون",
+                  columns: [
+                    { key: "productName", header: "المنتج" },
+                    { key: "sku", header: "المتغيّر / SKU", map: (r) => variantLabel(r) + " (" + r.sku + ")" },
+                    { key: "quantity", header: "الرصيد", map: (r) => r.quantity },
+                    { key: "minStock", header: "الحد الأدنى", map: (r) => r.minStock ?? 0 },
+                    { key: "isLow", header: "الحالة", map: (r) => (r.isLow ? "منخفض" : "متوفّر") },
+                  ],
+                })
+              }
+            >
+              تصدير Excel
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="p-0">
