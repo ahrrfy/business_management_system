@@ -14,6 +14,7 @@ import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
 import { userRouter } from "./routers/userRouter";
+import { barcodeRouter } from "./routers/barcodeRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -40,6 +41,7 @@ export const appRouter = router({
   expenses: expenseRouter,
   reports: reportsRouter,
   quotations: quotationRouter,
+  barcode: barcodeRouter,
 });
 
 export type AppRouter = typeof appRouter;

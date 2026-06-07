@@ -1,4 +1,7 @@
 import { imageDataToRaster, type Raster } from "./escpos";
+import { code128Svg } from "./barcode";
+import { qrCodeSvg, qrCodeDataUrl } from "./qr";
+import type { BarcodeSet } from "@shared/barcodeTypes";
 
 /** مستند طباعة عام: فاتورة، Z-report، أو بيان رصيد افتتاحي. */
 export interface PrintDoc {
@@ -10,13 +13,48 @@ export interface PrintDoc {
   rows?: string[][];
   totals?: { label: string; value: string }[];
   footer?: string;
+  /** مجموعة باركود/QR اختيارية — تُضمَّن في نهاية الإيصال */
+  barcodeSet?: BarcodeSet;
 }
 
 const esc = (s: unknown): string =>
   String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
 
-/** قالب HTML بعرض 80مم — يُستخدم كبديل عبر حوار طباعة المتصفّح. */
-export function docToHtml(doc: PrintDoc): string {
+/** تحويل SVG string إلى data URL للرسم على Canvas */
+function svgToDataUrl(svg: string): string {
+  try {
+    return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
+  } catch {
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  }
+}
+
+/** رسم صورة من src (data URL) على Canvas — async لانتظار تحميل الصورة */
+function drawImage(
+  ctx: CanvasRenderingContext2D,
+  src: string,
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+): Promise<void> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => { ctx.drawImage(img, x, y, w, h); resolve(); };
+    img.onerror = () => resolve(); // تدهور سلس — لا يُوقف الطباعة
+    img.src = src;
+  });
+}
+
+// -------------------------------------------------------------------
+// HTML path (طباعة المتصفح)
+// -------------------------------------------------------------------
+
+/**
+ * قالب HTML بعرض 80مم — يُستخدم كبديل عبر حوار طباعة المتصفّح.
+ * async: تحتاج لتوليد QR SVG قبل بناء HTML.
+ */
+export async function docToHtml(doc: PrintDoc): Promise<string> {
   const meta = doc.meta.map((m) => `<p class="muted">${esc(m)}</p>`).join("");
   let table = "";
   if (doc.columns && doc.rows) {
@@ -29,25 +67,67 @@ export function docToHtml(doc: PrintDoc): string {
   const totals = (doc.totals ?? [])
     .map((t) => `<div class="tot"><span>${esc(t.label)}</span><span>${esc(t.value)}</span></div>`)
     .join("");
+
+  // قسم الباركود — QR + Code128 + نص العرض
+  let barcodeSection = "";
+  if (doc.barcodeSet) {
+    const [qrSvg, bc128Result] = await Promise.all([
+      qrCodeSvg(doc.barcodeSet.qrPayload, { size: 140, margin: 1 }),
+      Promise.resolve(code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 2, height: 48, showText: true })),
+    ]);
+    const labelHtml = doc.barcodeSet.displayLabel
+      .split("\n")
+      .map((l) => `<span>${esc(l)}</span>`)
+      .join("<br>");
+    barcodeSection = `<div class="bc-wrap">
+      <div class="bc-qr">${qrSvg}</div>
+      <p class="bc-lbl">${labelHtml}</p>
+      <div class="bc-128">${bc128Result.svg}</div>
+    </div>`;
+  }
+
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${esc(doc.title)}</title>
 <style>@page{size:80mm auto;margin:3mm}body{font-family:"Cairo",monospace;width:74mm;font-size:12px;color:#000}
 h2{text-align:center;margin:2px 0;font-size:15px}.muted{text-align:center;margin:0;color:#222}
 table{width:100%;border-collapse:collapse;margin-top:6px}th{border-bottom:1px dashed #000}th,td{padding:2px 0}
 .tot{display:flex;justify-content:space-between;border-top:1px dashed #000;padding-top:2px;font-weight:bold}
-.foot{text-align:center;margin-top:8px}</style></head>
+.foot{text-align:center;margin-top:8px}
+.bc-wrap{text-align:center;margin-top:10px;border-top:1px dashed #000;padding-top:8px}
+.bc-wrap svg{display:block;margin:0 auto}
+.bc-qr svg{width:140px;height:140px}
+.bc-lbl{font-size:10px;margin:4px 0;color:#333;line-height:1.4}
+.bc-128{margin-top:6px}
+.bc-128 svg{max-width:100%;height:auto}
+</style></head>
 <body onload="window.print();setTimeout(()=>window.close(),300)">
 <h2>${esc(doc.title)}</h2>${doc.subtitle ? `<p class="muted">${esc(doc.subtitle)}</p>` : ""}${meta}${table}${totals}
-${doc.footer ? `<p class="foot">${esc(doc.footer)}</p>` : ""}</body></html>`;
+${doc.footer ? `<p class="foot">${esc(doc.footer)}</p>` : ""}${barcodeSection}</body></html>`;
 }
 
-/** رسم المستند على Canvas وتحويله إلى نقطية ESC/POS (للطباعة الحرارية، يدعم العربية). */
-export function docToRaster(doc: PrintDoc, widthPx = 576): Raster | null {
+// -------------------------------------------------------------------
+// Thermal path (طباعة حرارية ESC/POS)
+// -------------------------------------------------------------------
+
+const BARCODE_SECTION_H = 150 + 16 + 76 + 20; // QR(150) + gap(16) + Code128(76) + label(20)
+
+/**
+ * رسم المستند على Canvas وتحويله إلى نقطية ESC/POS.
+ * async: تحتاج لتحميل صور QR وCode128 على Canvas.
+ */
+export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster | null> {
   if (typeof document === "undefined") return null;
   const line = 28;
   const pad = 14;
   const rowsCount =
-    1 + (doc.subtitle ? 1 : 0) + doc.meta.length + (doc.columns ? 1 : 0) + (doc.rows?.length ?? 0) + (doc.totals?.length ?? 0) + (doc.footer ? 2 : 0);
-  const height = pad * 2 + (rowsCount + 1) * line;
+    1 +
+    (doc.subtitle ? 1 : 0) +
+    doc.meta.length +
+    (doc.columns ? 1 : 0) +
+    (doc.rows?.length ?? 0) +
+    (doc.totals?.length ?? 0) +
+    (doc.footer ? 2 : 0);
+  const height =
+    pad * 2 + (rowsCount + 1) * line + (doc.barcodeSet ? BARCODE_SECTION_H : 0);
 
   const canvas = document.createElement("canvas");
   canvas.width = widthPx;
@@ -57,7 +137,7 @@ export function docToRaster(doc: PrintDoc, widthPx = 576): Raster | null {
   ctx.fillStyle = "#fff";
   ctx.fillRect(0, 0, widthPx, height);
   ctx.fillStyle = "#000";
-  (ctx as any).direction = "rtl";
+  (ctx as unknown as { direction: string }).direction = "rtl";
   const right = widthPx - pad;
   const left = pad;
   let y = pad + line;
@@ -88,7 +168,40 @@ export function docToRaster(doc: PrintDoc, widthPx = 576): Raster | null {
     ctx.font = "20px Cairo, sans-serif";
     y += line;
   }
-  if (doc.footer) { ctx.textAlign = "center"; ctx.fillText(doc.footer, widthPx / 2, y + line); }
+  if (doc.footer) {
+    ctx.textAlign = "center";
+    ctx.fillText(doc.footer, widthPx / 2, y + line);
+    y += line * 2;
+  }
+
+  // قسم الباركود — يُرسم آخراً على Canvas
+  if (doc.barcodeSet) {
+    y += 10; // gap قبل الباركود
+    const QR_SIZE = 150;
+
+    // QR — يُحمَّل كـ PNG data URL ويُرسم على Canvas
+    try {
+      const qrUrl = await qrCodeDataUrl(doc.barcodeSet.qrPayload, { size: QR_SIZE });
+      await drawImage(ctx, qrUrl, (widthPx - QR_SIZE) / 2, y, QR_SIZE, QR_SIZE);
+    } catch { /* تدهور سلس */ }
+    y += QR_SIZE + 6;
+
+    // نص العرض أسفل QR
+    ctx.font = "16px Cairo, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#444";
+    const labelLines = doc.barcodeSet.displayLabel.split("\n");
+    for (const ln of labelLines) { ctx.fillText(ln, widthPx / 2, y); y += 18; }
+    ctx.fillStyle = "#000";
+
+    // Code128 — يُحوَّل SVG إلى data URL ويُرسم على Canvas
+    try {
+      const bc128 = code128Svg(doc.barcodeSet.barcode128, { moduleWidth: 2, height: 60, showText: false });
+      const bc128Url = svgToDataUrl(bc128.svg);
+      const bc128X = (widthPx - bc128.widthPx) / 2;
+      await drawImage(ctx, bc128Url, bc128X, y, bc128.widthPx, bc128.heightPx);
+    } catch { /* تدهور سلس */ }
+  }
 
   const img = ctx.getImageData(0, 0, widthPx, height);
   return imageDataToRaster({ width: widthPx, height, data: img.data });

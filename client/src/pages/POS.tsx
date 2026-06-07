@@ -4,8 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { isPaired, isWebUsbSupported, pairPrinter, printDoc, type PrintDoc } from "@/lib/printing/print";
+import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
@@ -124,8 +126,7 @@ export default function POS() {
     setCart((prev) => (qty <= 0 ? prev.filter((c) => c.row.productUnitId !== id) : prev.map((c) => (c.row.productUnitId === id ? { ...c, qty } : c))));
   }
 
-  async function scanBarcode() {
-    const code = barcode.trim();
+  async function lookupProductBarcode(code: string) {
     if (!code) return;
     try {
       const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
@@ -133,10 +134,30 @@ export default function POS() {
       else addRow(row);
     } catch (e: any) {
       setMessage({ kind: "err", text: e?.message ?? "خطأ في المسح" });
-    } finally {
-      setBarcode("");
     }
   }
+
+  async function scanBarcode() {
+    const code = barcode.trim();
+    await lookupProductBarcode(code);
+    setBarcode("");
+  }
+
+  // معالج ماسح HID — يُفرَّق بين أنواع الرموز تلقائياً (Strategy Pattern)
+  const handleHidScan = useCallback(async (raw: string) => {
+    const result = parseScan(raw);
+    if (result.type === "product") {
+      await lookupProductBarcode(result.barcode);
+    } else if (result.type === "customer") {
+      setCustomerId(result.id);
+      setMessage({ kind: "ok", text: `تم تحديد العميل #${result.id}` });
+    }
+    // INV/WO/PO/QUO: لا إجراء في POS — تُعالَج من صفحاتها المختصة
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchId, effectiveTier]);
+
+  // تفعيل ماسح HID تلقائياً — بعد تعريف handleHidScan، يُعطَّل عند فتح نافذة الإيصال
+  useBarcodeScanner(handleHidScan, { enabled: !lastReceipt });
 
   async function connectPrinter() {
     try {

@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
@@ -207,6 +208,25 @@ export default function CustomerEdit() {
           </div>
         </CardContent>
       </Card>
+
+      {/* بطاقة QR العميل — تُمسح في POS لتحديده تلقائياً */}
+      {detail.data?.qrPayload && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">بطاقة العميل</CardTitle></CardHeader>
+          <CardContent className="flex flex-col items-center gap-3 py-4">
+            <BarcodeDisplay
+              barcodeSet={{
+                barcode128: `CUST-${String(customerId).padStart(5, "0")}`,
+                qrPayload: detail.data.qrPayload,
+                displayLabel: `${name}\nCUST-${String(customerId).padStart(5, "0")}`,
+              }}
+              size="md"
+              showCode128={false}
+            />
+            <p className="text-xs text-muted-foreground text-center">امسح هذا الـ QR في نقطة البيع لتحديد العميل تلقائياً</p>
+          </CardContent>
+        </Card>
+      )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {done && <p className="text-sm text-emerald-600">{done}</p>}

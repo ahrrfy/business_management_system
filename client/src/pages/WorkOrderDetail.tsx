@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
@@ -136,6 +137,23 @@ export default function WorkOrderDetail() {
                 {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
               </select>
             </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* باركود + QR تذكرة أمر الشغل */}
+      {data.qrPayload && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">باركود أمر الشغل</CardTitle></CardHeader>
+          <CardContent className="flex justify-center py-4">
+            <BarcodeDisplay
+              barcodeSet={{
+                barcode128: data.orderNumber,
+                qrPayload: data.qrPayload,
+                displayLabel: `أمر شغل: ${data.orderNumber}${data.customerName ? `\nالعميل: ${data.customerName}` : ""}`,
+              }}
+              size="md"
+            />
           </CardContent>
         </Card>
       )}
