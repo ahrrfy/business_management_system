@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -28,8 +29,14 @@ export default function Suppliers() {
     utils.suppliers.search.invalidate();
     utils.suppliers.list.invalidate();
   };
-  const deactivate = trpc.suppliers.deactivate.useMutation({ onSuccess: invalidate });
-  const activate = trpc.suppliers.activate.useMutation({ onSuccess: invalidate });
+  const deactivate = trpc.suppliers.deactivate.useMutation({
+    onSuccess: () => { invalidate(); notify.ok("تم تعطيل المورّد"); },
+    onError: (e) => notify.err(e),
+  });
+  const activate = trpc.suppliers.activate.useMutation({
+    onSuccess: () => { invalidate(); notify.ok("تم تفعيل المورّد"); },
+    onError: (e) => notify.err(e),
+  });
 
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];

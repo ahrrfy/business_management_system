@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -48,13 +49,17 @@ export default function Customers() {
     onSuccess: () => {
       utils.customers.search.invalidate();
       utils.customers.list.invalidate();
+      notify.ok("تم تعطيل العميل");
     },
+    onError: (e) => notify.err(e),
   });
   const activate = trpc.customers.activate.useMutation({
     onSuccess: () => {
       utils.customers.search.invalidate();
       utils.customers.list.invalidate();
+      notify.ok("تم تفعيل العميل");
     },
+    onError: (e) => notify.err(e),
   });
 
   const total = list.data?.total ?? 0;
