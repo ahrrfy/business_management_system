@@ -1,0 +1,42 @@
+# docker-compose للإنتاج — MySQL 8 مع تخزين دائم (named volume) لمنع فقد البيانات.
+#
+# السبب (CLAUDE.md §٩): حاوية erp-mysql القديمة أُنشئت بلا volume ⇒ `docker rm` يمحو كل
+# البيانات نهائياً. هذا الملف يربط البيانات بـnamed volume مستقلّ عن دورة حياة الحاوية،
+# فيبقى المخزون والفواتير والذمم سالمة حتى عند هدم الحاوية وإعادة بنائها.
+#
+# الاستخدام:
+#   docker compose up -d           # تشغيل (يُنشئ القاعدة في أول مرة)
+#   docker compose down            # إيقاف (البيانات تبقى في الـvolume)
+#   docker compose down -v         # ⛔ خطر: يحذف الـvolume والبيانات معه — لا تستعمله إلا عمداً
+#
+# الترحيل الآمن من الحاوية القديمة بلا volume: راجع docs/disaster-recovery.md (قسم «الترحيل»).
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: ${DB_CONTAINER:-erp-mysql}
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PW:-erp_root_pw}
+      MYSQL_DATABASE: ${DB_NAME:-erp}
+    ports:
+      - "${DB_PORT:-3306}:3306"
+    volumes:
+      - erp_data:/var/lib/mysql
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --innodb-buffer-pool-size=512M
+    healthcheck:
+      # يتأكّد أنّ القاعدة تستجيب فعلاً قبل أن يعتمد عليها التطبيق.
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_ROOT_PW:-erp_root_pw}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  # named volume مُدار من Docker — يعيش مستقلّاً عن الحاوية. لا يُحذف بـ`docker rm`.
+  erp_data:
+    name: erp_data
