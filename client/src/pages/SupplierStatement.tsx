@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { printSupplierStmt } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -45,7 +46,33 @@ export default function SupplierStatement() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">كشف حساب مورد</h1>
-        <Link href="/ap-aging"><Button variant="outline">أعمار الذمم الدائنة</Button></Link>
+        <div className="flex gap-2">
+          {stmt.data && (
+            <Button variant="outline" size="sm" onClick={() => {
+              const d = stmt.data!;
+              const poTxs = d.purchaseOrders.map(p => ({
+                date: new Date(p.orderDate).toLocaleDateString('en-GB'),
+                ref: p.poNumber, description: 'أمر شراء',
+                debit: null, credit: Number(p.total), balance: 0,
+              }));
+              const payTxs = d.payments.map(p => ({
+                date: new Date(p.entryDate).toLocaleDateString('en-GB'),
+                ref: 'دفعة', description: 'دفعة للمورد',
+                debit: Number(p.amount), credit: null, balance: 0,
+              }));
+              const merged = [...poTxs, ...payTxs].sort((a, b) => a.date.localeCompare(b.date));
+              let bal = 0;
+              const txs = merged.map(t => { bal += (t.credit ?? 0) - (t.debit ?? 0); return { ...t, balance: bal }; });
+              printSupplierStmt({
+                supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
+                toDate: new Date().toLocaleDateString('en-GB'), transactions: txs,
+                totalDebit: d.summary.totalPaid, totalCredit: d.summary.totalPurchases,
+                closingBalance: d.summary.currentBalance,
+              });
+            }}>طباعة الكشف</Button>
+          )}
+          <Link href="/ap-aging"><Button variant="outline">أعمار الذمم الدائنة</Button></Link>
+        </div>
       </div>
       <p className="text-sm text-muted-foreground">كل أوامر الشراء والدفعات لمورد واحد، مع ملخّص الرصيد الجارٍ.</p>
 

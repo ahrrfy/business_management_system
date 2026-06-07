@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
-import { printA4Invoice } from "@/lib/printing/a4Invoice";
+import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
@@ -86,7 +86,7 @@ export default function InvoiceDetail() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">تفاصيل الفاتورة</h1>
         <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" onClick={() => printA4Invoice({
+          <Button variant="outline" size="sm" onClick={async () => printInvoiceA4({
             invoiceNumber: data.invoiceNumber,
             invoiceDate: data.invoiceDate,
             customerName: data.customerName,

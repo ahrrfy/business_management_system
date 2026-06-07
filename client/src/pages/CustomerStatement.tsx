@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -50,7 +51,37 @@ export default function CustomerStatement() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">كشف حساب عميل</h1>
-        <Link href="/ar-aging"><Button variant="outline">أعمار الذمم</Button></Link>
+        <div className="flex gap-2">
+          {stmt.data && (
+            <Button variant="outline" size="sm" onClick={() => {
+              const d = stmt.data!;
+              const invTxs = d.invoices.map(i => ({
+                date: new Date(i.invoiceDate).toLocaleDateString('en-GB'),
+                ref: i.invoiceNumber, description: 'فاتورة مبيعات',
+                debit: Number(i.total), credit: null, balance: 0,
+              }));
+              const payTxs = d.payments.map(p => ({
+                date: new Date(p.createdAt).toLocaleDateString('en-GB'),
+                ref: `دفعة`, description: p.direction === 'IN' ? 'دفعة وارد' : 'استرداد',
+                debit: p.direction === 'OUT' ? Number(p.amount) : null,
+                credit: p.direction === 'IN' ? Number(p.amount) : null, balance: 0,
+              }));
+              const merged = [...invTxs, ...payTxs].sort((a, b) => a.date.localeCompare(b.date));
+              let bal = 0;
+              const txs = merged.map(t => {
+                bal += (t.debit ?? 0) - (t.credit ?? 0);
+                return { ...t, balance: bal };
+              });
+              printCustomerStmt({
+                customerName: d.customer.name, customerPhone: d.customer.phone ?? undefined,
+                toDate: new Date().toLocaleDateString('en-GB'), transactions: txs,
+                totalDebit: d.summary.totalSales, totalCredit: d.summary.totalPaid,
+                closingBalance: d.summary.currentBalance,
+              });
+            }}>طباعة الكشف</Button>
+          )}
+          <Link href="/ar-aging"><Button variant="outline">أعمار الذمم</Button></Link>
+        </div>
       </div>
       <p className="text-sm text-muted-foreground">كل الفواتير والدفعات لعميل واحد، مع ملخّص الرصيد الجارٍ.</p>
 

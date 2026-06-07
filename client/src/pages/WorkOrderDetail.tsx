@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { trpc } from "@/lib/trpc";
+import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
 
@@ -72,7 +73,26 @@ export default function WorkOrderDetail() {
     <div className="space-y-4 max-w-4xl">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">أمر شغل</h1>
-        <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={() => printWorkOrder({
+            woNumber: data.orderNumber,
+            woDate: data.createdAt ? String(data.createdAt).slice(0, 10) : undefined,
+            dueDate: data.dueDate ? String(data.dueDate).slice(0, 10) : undefined,
+            status: data.status,
+            customerName: data.customerName,
+            jobType: data.title,
+            specs: data.customizationText,
+            items: [{
+              name: data.title,
+              quantity: data.quantity,
+              unitPrice: data.salePrice,
+              total: data.salePrice,
+            }],
+            subtotal: data.salePrice,
+            total: data.salePrice,
+          })}>طباعة أمر شغل</Button>
+          <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
+        </div>
       </div>
 
       <Card>

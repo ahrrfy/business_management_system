@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
 import { Label } from "@/components/ui/label";
+import { printARAging } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -68,6 +69,15 @@ export default function ARAging() {
           >
             تصدير Excel
           </Button>
+          <Button variant="outline" size="sm" disabled={!aging.data?.length} onClick={() => printARAging({
+            date: new Date().toLocaleDateString('en-GB'),
+            rows: (aging.data ?? []).map(r => ({
+              name: r.customerName, d0_30: Number(r.d0_30||0), d31_60: Number(r.d31_60||0),
+              d61_90: Number(r.d61_90||0), d91p: Number(r.d91p||0),
+              unpaidTotal: Number(r.unpaidTotal||0), currentBalance: Number(r.currentBalance||0),
+            })),
+            totals,
+          })}>طباعة PDF</Button>
           <Link href="/customers-statement"><Button variant="outline">كشف حساب عميل</Button></Link>
         </div>
       </div>

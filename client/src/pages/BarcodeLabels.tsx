@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { code128Svg, internalBarcode } from "@/lib/printing/barcode";
+import { printBarcodeSheet } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useState } from "react";
 import { Link } from "wouter";
@@ -21,7 +22,6 @@ type QueueItem = {
 };
 
 const money = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
-const SHOP = "الرؤية العربية";
 
 export default function BarcodeLabels() {
   const me = trpc.auth.me.useQuery();
@@ -85,46 +85,16 @@ export default function BarcodeLabels() {
 
   function printLabels() {
     setError("");
-    const cells: string[] = [];
-    for (const item of queue) {
-      let svg: string;
-      try {
-        svg = code128Svg(item.barcode, { moduleWidth: 2, height: 50, showText: true }).svg;
-      } catch (e: any) {
-        setError(`تعذّر توليد باركود «${item.productName}»: ${e?.message ?? ""}`);
-        return;
-      }
-      const label = `<div class="label">
-        ${showName ? `<div class="nm">${escapeHtml(item.productName)} — ${escapeHtml(item.unitName)}</div>` : ""}
-        <div class="bc">${svg}</div>
-        ${showPrice && item.price != null ? `<div class="pr">${money(item.price)} د.ع</div>` : ""}
-      </div>`;
-      for (let i = 0; i < item.count; i++) cells.push(label);
-    }
-    if (!cells.length) {
-      setError("أضِف صنفاً واحداً على الأقل.");
-      return;
-    }
-    const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>ملصقات الباركود — ${SHOP}</title>
-<style>
-@page{size:A4;margin:8mm}
-body{font-family:Cairo,sans-serif;margin:0}
-.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:4mm}
-.label{border:1px dashed #bbb;border-radius:4px;padding:4px;text-align:center;page-break-inside:avoid;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:28mm}
-.nm{font-size:11px;font-weight:600;margin-bottom:2px;line-height:1.2}
-.pr{font-size:12px;font-weight:700;margin-top:2px}
-.bc svg{max-width:100%;height:auto}
-</style></head>
-<body onload="window.print();setTimeout(()=>window.close(),400)">
-<div class="grid">${cells.join("")}</div>
-</body></html>`;
-    const w = window.open("", "_blank", "width=820,height=1000");
-    if (w) {
-      w.document.write(html);
-      w.document.close();
-    } else {
-      setError("تعذّر فتح نافذة الطباعة — اسمح بالنوافذ المنبثقة.");
-    }
+    if (!queue.length) { setError("أضِف صنفاً واحداً على الأقل."); return; }
+    const expanded = queue.flatMap(item =>
+      Array.from({ length: item.count }, () => ({
+        name: `${item.productName}${showName ? ` — ${item.unitName}` : ""}`,
+        sku: item.sku,
+        price: showPrice && item.price != null ? item.price : "0",
+        barcode: item.barcode,
+      }))
+    );
+    printBarcodeSheet(expanded);
   }
 
   const totalLabels = queue.reduce((s, q) => s + q.count, 0);
@@ -230,6 +200,3 @@ body{font-family:Cairo,sans-serif;margin:0}
   );
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
-}

@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { fmt } from "@/lib/money";
+import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
@@ -60,20 +61,24 @@ export default function QuotationDetail() {
   const isOpen = data.status === "DRAFT" || data.status === "SENT" || data.status === "ACCEPTED";
 
   function printQuote() {
-    const rows = data.items
-      .map((it) => `<tr><td style="text-align:right">${esc(it.productName ?? "")}${it.variantName ? " — " + esc(it.variantName) : ""}</td><td>${esc(it.unitName ?? "")}</td><td>${it.quantity}</td><td style="text-align:left">${fmt(it.unitPrice)}</td><td style="text-align:left">${fmt(it.total)}</td></tr>`)
-      .join("");
-    const html = `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>عرض سعر ${esc(data.quoteNumber)}</title>
-<style>body{font-family:Cairo,sans-serif;padding:24px;color:#000}h1{font-size:20px}table{width:100%;border-collapse:collapse;margin-top:12px}th,td{border:1px solid #ccc;padding:6px;font-size:13px}th{background:#f3f3f3}.tot{margin-top:12px;text-align:left;font-weight:bold}</style></head>
-<body onload="window.print();setTimeout(()=>window.close(),400)">
-<h1>عرض سعر — الرؤية العربية</h1>
-<p>رقم: ${esc(data.quoteNumber)} · العميل: ${esc(data.customerName ?? "—")} · صالح حتى: ${data.validUntil ? String(data.validUntil).slice(0, 10) : "—"}</p>
-<table><thead><tr><th style="text-align:right">الصنف</th><th>الوحدة</th><th>الكمية</th><th style="text-align:left">السعر</th><th style="text-align:left">الإجمالي</th></tr></thead><tbody>${rows}</tbody></table>
-<div class="tot">المجموع: ${fmt(data.subtotal)} · الضريبة: ${fmt(data.taxAmount)} · الإجمالي: ${fmt(data.total)} د.ع</div>
-${data.notes ? `<p>${esc(data.notes)}</p>` : ""}
-</body></html>`;
-    const w = window.open("", "_blank", "width=820,height=1000");
-    if (w) { w.document.write(html); w.document.close(); }
+    printQuotation({
+      quoteNumber: data.quoteNumber,
+      quoteDate: data.quoteDate ? String(data.quoteDate).slice(0, 10) : undefined,
+      validUntil: data.validUntil ? String(data.validUntil).slice(0, 10) : undefined,
+      customerName: data.customerName,
+      notes: data.notes,
+      items: data.items.map((it) => ({
+        productName: it.productName ?? "",
+        variantName: it.variantName,
+        unitName: it.unitName,
+        quantity: it.quantity,
+        unitPrice: it.unitPrice,
+        total: it.total,
+      })),
+      subtotal: data.subtotal,
+      taxAmount: data.taxAmount,
+      total: data.total,
+    });
   }
 
   return (
