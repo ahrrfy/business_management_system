@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, like } from "drizzle-orm";
-import { productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts } from "../../drizzle/schema";
+import { desc, eq, like, sql } from "drizzle-orm";
+import { branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts } from "../../drizzle/schema";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
@@ -135,6 +135,32 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
       const factor = new Decimal(uRows[0]?.factor ?? "1");
       const costPerBase = round2(money(item.unitPrice).dividedBy(factor.lte(0) ? new Decimal(1) : factor));
 
+      // WAVG (المتوسّط المرجّح، من الآن فصاعداً): يُقرأ المخزون القائم + التكلفة القديمة
+      // قبل إضافة المستلَم. التكلفة صفة عالمية للصنف ⇒ الوزن بإجمالي الأساس عبر الفروع.
+      const existRow = (
+        await tx
+          .select({ q: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })
+          .from(branchStock)
+          .where(eq(branchStock.variantId, Number(item.variantId)))
+      )[0];
+      const existingQty = Decimal.max(new Decimal(existRow?.q ?? "0"), 0);
+      const vRow = (
+        await tx
+          .select({ cost: productVariants.costPrice })
+          .from(productVariants)
+          .where(eq(productVariants.id, Number(item.variantId)))
+          .for("update")
+          .limit(1)
+      )[0];
+      const oldCost = money(vRow?.cost ?? "0");
+      const recvQty = new Decimal(line.receivedBaseQuantity);
+      const denom = existingQty.plus(recvQty);
+      // لا مخزون قائم (أو تكلفة قديمة صفر) ⇒ المتوسّط = تكلفة الشراء الحالية.
+      const newCost =
+        denom.lte(0) || oldCost.lte(0)
+          ? costPerBase
+          : round2(existingQty.times(oldCost).plus(recvQty.times(costPerBase)).dividedBy(denom));
+
       await applyMovement(tx, {
         variantId: Number(item.variantId),
         branchId: Number(po.branchId),
@@ -148,10 +174,10 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
         .update(purchaseOrderItems)
         .set({ receivedBaseQuantity: (item.receivedBaseQuantity ?? 0) + line.receivedBaseQuantity })
         .where(eq(purchaseOrderItems.id, Number(item.id)));
-      // Last-cost policy: update the variant's cost to the most recent purchase cost.
+      // WAVG policy: تكلفة الصنف = المتوسّط المرجّح للمخزون القديم والمستلَم.
       await tx
         .update(productVariants)
-        .set({ costPrice: costPerBase.toFixed(2) })
+        .set({ costPrice: newCost.toFixed(2) })
         .where(eq(productVariants.id, Number(item.variantId)));
 
       // Ledger/AP value derives from the stored line total (proportional to received),

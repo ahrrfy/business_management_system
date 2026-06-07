@@ -148,7 +148,7 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     expect(await entries("PAYMENT_IN")).toHaveLength(2);
   });
 
-  it("استلام شراء: المخزون يزيد + قيد PURCHASE + ذمة المورد (AP) + آخر تكلفة", async () => {
+  it("استلام شراء: المخزون يزيد + قيد PURCHASE + ذمة المورد (AP) + تكلفة WAVG", async () => {
     await setStock(1, 1, 5);
     await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
     const po = await createPurchaseOrder(
@@ -169,8 +169,9 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     expect(pe.amount).toBe("500.00");
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
     expect(sup.currentBalance).toBe("500.00");
+    // WAVG (المتوسّط المرجّح): مخزون قائم ٥ @ ٤.٠٠ + مستلَم ١٠٠ @ ٥.٠٠ ⇒ (٢٠+٥٠٠)/١٠٥ = ٤.٩٥
     const variant = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
-    expect(variant.costPrice).toBe("5.00");
+    expect(variant.costPrice).toBe("4.95");
   });
 
   it("تحويل بين فرعين: ينقل الرصيد بحركتين دون فقد ولا قيد", async () => {
