@@ -18,6 +18,7 @@ const NAV: { href: string; label: string; adminOnly?: boolean }[] = [
   { href: "/transfers", label: "تحويل بين الفروع" },
   { href: "/inventory", label: "حركات المخزون" },
   { href: "/expenses", label: "المصروفات اليومية" },
+  { href: "/sales-report", label: "تقرير المبيعات" },
   { href: "/ar-aging", label: "أعمار الذمم" },
   { href: "/customers-statement", label: "كشف حساب عميل" },
   { href: "/ap-aging", label: "أعمار الذمم الدائنة" },
