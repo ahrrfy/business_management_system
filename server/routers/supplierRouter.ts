@@ -2,7 +2,8 @@ import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { protectedProcedure, router } from "../trpc";
+import { logAudit } from "../services/auditService";
+import { managerProcedure, protectedProcedure, router } from "../trpc";
 
 /** الموردون — قائمة بسيطة + إنشاء سريع (مطلوب لأوامر الشراء). */
 export const supplierRouter = router({
@@ -12,7 +13,7 @@ export const supplierRouter = router({
     return db.select().from(suppliers).where(eq(suppliers.isActive, true)).orderBy(asc(suppliers.name));
   }),
 
-  create: protectedProcedure
+  create: managerProcedure
     .input(
       z.object({
         name: z.string().min(1),
@@ -22,7 +23,7 @@ export const supplierRouter = router({
         notes: z.string().optional(),
       })
     )
-    .mutation(async ({ input }) => {
+    .mutation(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) throw new Error("DATABASE_URL مطلوب");
       const res = await db.insert(suppliers).values({
@@ -33,6 +34,7 @@ export const supplierRouter = router({
         notes: input.notes?.trim() || null,
       });
       const id = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+      await logAudit(ctx, { action: "supplier.create", entityType: "supplier", entityId: id, newValue: { name: input.name } });
       return { id };
     }),
 });

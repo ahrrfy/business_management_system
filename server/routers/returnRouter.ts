@@ -2,13 +2,15 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { customers, invoiceItems, invoices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { logAudit } from "../services/auditService";
 import { returnSale } from "../services/returnService";
-import { protectedProcedure, router } from "../trpc";
+import { managerProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
+// المرتجعات تعكس مخزوناً ونقداً ⇒ مدير فأعلى.
 export const returnRouter = router({
-  create: protectedProcedure
+  create: managerProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -17,9 +19,13 @@ export const returnRouter = router({
         restock: z.boolean().optional(),
       })
     )
-    .mutation(({ input, ctx }) => returnSale(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await returnSale(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "return.create", entityType: "invoice", entityId: input.invoiceId, newValue: { lines: input.lines.length, refund: input.refund?.amount } });
+      return res;
+    }),
 
-  getInvoice: protectedProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input }) => {
+  getInvoice: managerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (
