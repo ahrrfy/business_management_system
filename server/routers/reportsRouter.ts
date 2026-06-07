@@ -8,19 +8,19 @@ import {
   getCustomerStatement,
   getSupplierStatement,
 } from "../services/reportsService";
-import { protectedProcedure, router } from "../trpc";
+import { managerProcedure, router } from "../trpc";
 
 export const reportsRouter = router({
-  arAging: protectedProcedure
+  arAging: managerProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input }) => getARAging({ branchId: input?.branchId })),
 
-  customerStatement: protectedProcedure
+  customerStatement: managerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .query(async ({ input }) => getCustomerStatement(input.customerId)),
 
   /** Lightweight customer index for the statement picker. */
-  customersIndex: protectedProcedure.query(async () => {
+  customersIndex: managerProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
     return db
@@ -34,16 +34,16 @@ export const reportsRouter = router({
       .orderBy(asc(customers.name));
   }),
 
-  apAging: protectedProcedure
+  apAging: managerProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input }) => getAPAging({ branchId: input?.branchId })),
 
-  supplierStatement: protectedProcedure
+  supplierStatement: managerProcedure
     .input(z.object({ supplierId: z.number().int().positive() }))
     .query(async ({ input }) => getSupplierStatement(input.supplierId)),
 
   /** Lightweight supplier index for the statement picker. */
-  suppliersIndex: protectedProcedure.query(async () => {
+  suppliersIndex: managerProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
     return db

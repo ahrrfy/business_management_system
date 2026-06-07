@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { assignBarcode, createProduct, getProductForEdit, listForPos, listForPurchase, lookupByBarcode, updateProduct } from "../services/catalogService";
-import { protectedProcedure, router } from "../trpc";
+import { logAudit } from "../services/auditService";
+import { managerProcedure, protectedProcedure, router } from "../trpc";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
 
@@ -31,12 +32,12 @@ export const catalogRouter = router({
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier }))
     .query(({ input }) => lookupByBarcode(input.barcode, input.branchId, input.tier)),
 
-  // Purchase-side product search: carries COST (not a sell price). Used only by the purchase-order screen.
-  forPurchase: protectedProcedure
+  // Purchase-side product search: carries COST (not a sell price). مدير فأعلى (يكشف التكلفة).
+  forPurchase: managerProcedure
     .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().default(50) }))
     .query(({ input }) => listForPurchase(input.branchId, input.query, input.limit)),
 
-  createProduct: protectedProcedure
+  createProduct: managerProcedure
     .input(
       z.object({
         name: z.string().min(1),
@@ -45,9 +46,14 @@ export const catalogRouter = router({
         variants: z.array(variantSchema).min(1),
       })
     )
-    .mutation(({ input, ctx }) => createProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await createProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name } });
+      return res;
+    }),
 
-  getForEdit: protectedProcedure
+  // شاشة التعديل تكشف costPrice ⇒ مدير فأعلى.
+  getForEdit: managerProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => getProductForEdit(input.productId)),
 
@@ -85,9 +91,17 @@ export const catalogRouter = router({
           .min(1),
       })
     )
-    .mutation(({ input, ctx }) => updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "product.update", entityType: "product", entityId: input.productId, newValue: { name: input.name, isActive: input.isActive } });
+      return res;
+    }),
 
-  assignBarcode: protectedProcedure
+  assignBarcode: managerProcedure
     .input(z.object({ productUnitId: z.number().int().positive(), barcode: z.string().min(1) }))
-    .mutation(({ input }) => assignBarcode(input.productUnitId, input.barcode)),
+    .mutation(async ({ input, ctx }) => {
+      const res = await assignBarcode(input.productUnitId, input.barcode);
+      await logAudit(ctx, { action: "product.assignBarcode", entityType: "productUnit", entityId: input.productUnitId, newValue: { barcode: input.barcode } });
+      return res;
+    }),
 });

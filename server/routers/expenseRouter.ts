@@ -4,7 +4,8 @@ import {
   createExpense,
   listExpenses,
 } from "../services/expenseService";
-import { protectedProcedure, router } from "../trpc";
+import { logAudit } from "../services/auditService";
+import { branchScopedProcedure, cashierProcedure, managerProcedure, router } from "../trpc";
 
 const category = z.enum([
   "RENT",
@@ -20,7 +21,7 @@ const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const status = z.enum(["ACTIVE", "CANCELLED"]);
 
 export const expenseRouter = router({
-  list: protectedProcedure
+  list: branchScopedProcedure
     .input(
       z
         .object({
@@ -33,9 +34,12 @@ export const expenseRouter = router({
         })
         .optional()
     )
-    .query(async ({ input }) => listExpenses(input ?? {})),
+    .query(async ({ input, ctx }) =>
+      // عزل الفرع: غير المدير يرى مصروفات فرعه فقط.
+      listExpenses({ ...(input ?? {}), ...(ctx.scopedBranchId ? { branchId: ctx.scopedBranchId } : {}) })
+    ),
 
-  create: protectedProcedure
+  create: cashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -48,13 +52,18 @@ export const expenseRouter = router({
         referenceNumber: z.string().nullish(),
       })
     )
-    .mutation(({ input, ctx }) =>
-      createExpense(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId })
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const res = await createExpense(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+      await logAudit(ctx, { action: "expense.create", entityType: "expense", entityId: (res as { expenseId?: number })?.expenseId, newValue: { category: input.category, amount: input.amount } });
+      return res;
+    }),
 
-  cancel: protectedProcedure
+  // إلغاء مصروف يعكس نقداً ⇒ مدير فأعلى.
+  cancel: managerProcedure
     .input(z.object({ expenseId: z.number().int().positive() }))
-    .mutation(({ input, ctx }) =>
-      cancelExpense(input.expenseId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const res = await cancelExpense(input.expenseId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "expense.cancel", entityType: "expense", entityId: input.expenseId });
+      return res;
+    }),
 });

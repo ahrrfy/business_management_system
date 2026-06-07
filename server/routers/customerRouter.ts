@@ -7,7 +7,8 @@ import {
   listCustomers,
   updateCustomer,
 } from "../services/customerService";
-import { protectedProcedure, router } from "../trpc";
+import { logAudit } from "../services/auditService";
+import { managerProcedure, protectedProcedure, router } from "../trpc";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
@@ -44,7 +45,7 @@ export const customerRouter = router({
     .input(z.object({ customerId: z.number().int().positive() }))
     .query(({ input }) => getCustomer(input.customerId)),
 
-  create: protectedProcedure
+  create: managerProcedure
     .input(
       z.object({
         name: z.string().min(1).max(255),
@@ -61,11 +62,12 @@ export const customerRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const r = await createCustomer(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name } });
       // التوافق: المستهلكون القدامى يقرؤون `.id` (مثل WorkOrderNew)؛ نُبقي الكليهما.
       return { id: r.customerId, customerId: r.customerId };
     }),
 
-  update: protectedProcedure
+  update: managerProcedure
     .input(
       z.object({
         customerId: z.number().int().positive(),
@@ -81,19 +83,25 @@ export const customerRouter = router({
         notes: z.string().nullish(),
       })
     )
-    .mutation(({ input, ctx }) =>
-      updateCustomer(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const res = await updateCustomer(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "customer.update", entityType: "customer", entityId: input.customerId });
+      return res;
+    }),
 
-  deactivate: protectedProcedure
+  deactivate: managerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
-    .mutation(({ input, ctx }) =>
-      deactivateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const res = await deactivateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "customer.deactivate", entityType: "customer", entityId: input.customerId });
+      return res;
+    }),
 
-  activate: protectedProcedure
+  activate: managerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
-    .mutation(({ input, ctx }) =>
-      activateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const res = await activateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "customer.activate", entityType: "customer", entityId: input.customerId });
+      return res;
+    }),
 });

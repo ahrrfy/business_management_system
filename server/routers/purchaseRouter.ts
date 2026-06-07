@@ -2,13 +2,15 @@ import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { logAudit } from "../services/auditService";
 import { createPurchaseOrder, receivePurchase } from "../services/purchaseService";
-import { protectedProcedure, router } from "../trpc";
+import { managerProcedure, router, warehouseProcedure } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
+// المشتريات تحمل التكلفة (unitPrice = سعر الشراء) ⇒ مدير فأعلى للإنشاء والعرض، والمخزن للاستلام.
 export const purchaseRouter = router({
-  createOrder: protectedProcedure
+  createOrder: managerProcedure
     .input(
       z.object({
         supplierId: z.number().int().positive(),
@@ -28,9 +30,13 @@ export const purchaseRouter = router({
         notes: z.string().optional(),
       })
     )
-    .mutation(({ input, ctx }) => createPurchaseOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await createPurchaseOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+      await logAudit(ctx, { action: "purchase.createOrder", entityType: "purchaseOrder", entityId: (res as { purchaseOrderId?: number })?.purchaseOrderId, newValue: { supplierId: input.supplierId, items: input.items.length } });
+      return res;
+    }),
 
-  receive: protectedProcedure
+  receive: warehouseProcedure
     .input(
       z.object({
         purchaseOrderId: z.number().int().positive(),
@@ -38,9 +44,13 @@ export const purchaseRouter = router({
         payment: z.object({ amount: z.string(), method }).optional(),
       })
     )
-    .mutation(({ input, ctx }) => receivePurchase(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await receivePurchase(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "purchase.receive", entityType: "purchaseOrder", entityId: input.purchaseOrderId, newValue: { lines: input.lines.length } });
+      return res;
+    }),
 
-  list: protectedProcedure
+  list: managerProcedure
     .input(z.object({ limit: z.number().default(50), offset: z.number().default(0) }).optional())
     .query(async ({ input }) => {
       const db = getDb();
@@ -62,7 +72,7 @@ export const purchaseRouter = router({
         .offset(input?.offset ?? 0);
     }),
 
-  get: protectedProcedure.input(z.object({ purchaseOrderId: z.number().int().positive() })).query(async ({ input }) => {
+  get: managerProcedure.input(z.object({ purchaseOrderId: z.number().int().positive() })).query(async ({ input }) => {
     const db = getDb();
     if (!db) return null;
     const po = (
