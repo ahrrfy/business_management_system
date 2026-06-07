@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { exportRows } from "@/lib/export";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
@@ -112,8 +113,32 @@ export default function Customers() {
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle className="text-base">القائمة</CardTitle>
-          <div className="text-xs text-muted-foreground">
-            {list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ")} عميل`}
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">
+              {list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ")} عميل`}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={rows.length === 0}
+              onClick={() =>
+                exportRows(rows, {
+                  filename: "العملاء",
+                  columns: [
+                    { key: "name", header: "الاسم" },
+                    { key: "customerType", header: "النوع" },
+                    { key: "phone", header: "الهاتف" },
+                    { key: "city", header: "المدينة", map: (r) => [r.city, r.district].filter(Boolean).join(" / ") || "" },
+                    { key: "defaultPriceTier", header: "فئة السعر" },
+                    { key: "creditLimit", header: "سقف الائتمان", map: (r) => Number(r.creditLimit ?? 0) },
+                    { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance ?? 0) },
+                    { key: "isActive", header: "نشط", map: (r) => (r.isActive ? "نعم" : "لا") },
+                  ],
+                })
+              }
+            >
+              تصدير Excel
+            </Button>
           </div>
         </CardHeader>
         <CardContent className="p-0">

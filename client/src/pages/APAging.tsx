@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { exportRows } from "@/lib/export";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -34,7 +35,32 @@ export default function APAging() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">أعمار الذمم الدائنة (AP Aging)</h1>
-        <Link href="/suppliers-statement"><Button variant="outline">كشف حساب مورد</Button></Link>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!aging.data?.length}
+            onClick={() =>
+              exportRows(aging.data ?? [], {
+                filename: "ذمم-دائنة",
+                columns: [
+                  { key: "supplierName", header: "المورد" },
+                  { key: "phone", header: "الهاتف" },
+                  { key: "d0_30", header: "0–30", map: (r) => Number(r.d0_30) },
+                  { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
+                  { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
+                  { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
+                  { key: "unpaidTotal", header: "إجمالي غير المسدّد", map: (r) => Number(r.unpaidTotal) },
+                  { key: "currentBalance", header: "رصيد جارٍ", map: (r) => Number(r.currentBalance) },
+                  { key: "oldestPoDate", header: "أقدم أمر شراء" },
+                ],
+              })
+            }
+          >
+            تصدير Excel
+          </Button>
+          <Link href="/suppliers-statement"><Button variant="outline">كشف حساب مورد</Button></Link>
+        </div>
       </div>
       <p className="text-sm text-muted-foreground">
         المستحقّ للموردين مُجمَّعاً في أربع شرائح عمرية حسب تاريخ أمر الشراء.
