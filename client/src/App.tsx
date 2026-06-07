@@ -37,6 +37,7 @@ import Users from "@/pages/Users";
 import UserNew from "@/pages/UserNew";
 import UserEdit from "@/pages/UserEdit";
 import Account from "@/pages/Account";
+import AuditLogs from "@/pages/AuditLogs";
 import { Redirect, Route, Switch } from "wouter";
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -105,6 +106,7 @@ export default function App() {
       <Route path="/users/new"><Shell><UserNew /></Shell></Route>
       <Route path="/users/:id/edit"><Shell><UserEdit /></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
+      <Route path="/audit"><Shell><AuditLogs /></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
   );
