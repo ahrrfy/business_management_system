@@ -65,17 +65,24 @@ async function startServer() {
   );
 
   // حماية رؤوس HTTP. CSP مُفعَّل مع استثناء style-src unsafe-inline لـTailwind/SPA.
+  // في وضع التطوير: 'unsafe-inline' + 'unsafe-eval' مطلوبان لـVite HMR و source maps.
+  // في الإنتاج: نبقى على 'self' فقط (البنية المجمَّعة بلا inline scripts).
+  const isDev = process.env.NODE_ENV === "development";
   app.use(
     helmet({
       crossOriginEmbedderPolicy: false,
       contentSecurityPolicy: {
         directives: {
           defaultSrc: ["'self'"],
-          scriptSrc: ["'self'"],
+          scriptSrc: isDev
+            ? ["'self'", "'unsafe-inline'", "'unsafe-eval'"]
+            : ["'self'"],
           styleSrc: ["'self'", "'unsafe-inline'"],
           imgSrc: ["'self'", "data:", "blob:"],
-          connectSrc: ["'self'"],
-          fontSrc: ["'self'", "data:"],
+          connectSrc: isDev
+            ? ["'self'", "ws://localhost:*", "wss://localhost:*"]
+            : ["'self'"],
+          fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
         },
