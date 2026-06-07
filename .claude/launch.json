@@ -1,6 +1,11 @@
 {
   "version": "0.0.1",
   "configurations": [
-    { "name": "pos-credit", "runtimeExecutable": "pnpm", "runtimeArgs": ["dev"], "port": 3001 }
+    {
+      "name": "alroya",
+      "runtimeExecutable": "pnpm",
+      "runtimeArgs": ["dev"],
+      "port": 3000
+    }
   ]
 }
