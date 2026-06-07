@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { printA4Invoice } from "@/lib/printing/a4Invoice";
 import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
@@ -84,7 +85,20 @@ export default function InvoiceDetail() {
     <div className="space-y-4 max-w-4xl">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">تفاصيل الفاتورة</h1>
-        <Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={() => printA4Invoice({
+            invoiceNumber: data.invoiceNumber,
+            invoiceDate: data.invoiceDate,
+            customerName: data.customerName,
+            subtotal: data.subtotal,
+            discountAmount: data.discountAmount,
+            taxAmount: data.taxAmount,
+            total: data.total,
+            paidAmount: data.paidAmount,
+            items: data.items.map((it) => ({ productName: it.productName ?? "", unitName: it.unitName, quantity: it.quantity, unitPrice: it.unitPrice, total: it.total })),
+          })}>طباعة A4 / حفظ PDF</Button>
+          <Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>
+        </div>
       </div>
 
       <Card>
