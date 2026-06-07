@@ -1305,7 +1305,7 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
       <div style={{ padding: "4px 11px 2px", flexShrink: 0 }}>
         <button
           disabled={!cartLen || isPending}
-          onClick={onQuickPay}
+          onClick={() => onQuickPay()}
           style={{
             width: "100%", height: 52,
             background: cartLen && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted,
@@ -1327,7 +1327,7 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
       <div style={{ padding: "2px 11px 10px", flexShrink: 0 }}>
         <button
           disabled={!canPay || isPending}
-          onClick={onPay}
+          onClick={() => onPay()}
           style={{
             width: "100%", height: 52,
             background: canPay && !isPending ? C.success : C.muted,
