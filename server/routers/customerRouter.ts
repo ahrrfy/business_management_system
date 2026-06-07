@@ -1,36 +1,99 @@
-import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
-import { customers } from "../../drizzle/schema";
-import { getDb } from "../db";
+import {
+  activateCustomer,
+  createCustomer,
+  deactivateCustomer,
+  getCustomer,
+  listCustomers,
+  updateCustomer,
+} from "../services/customerService";
 import { protectedProcedure, router } from "../trpc";
 
-/** العملاء — قائمة بسيطة + إضافة سريعة (لازم لأوامر الشغل والبيع الآجل). */
+const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
+const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
+
+/**
+ * العملاء — شريحة كاملة:
+ * list (بحث+فلاتر+تقسيم صفحات) / get / create / update / deactivate / activate.
+ * `list` تبقى متوافقة مع شاشات الكاشير والقوائم المنسدلة (تعرض المفعّلين فقط بحدّ 500).
+ */
 export const customerRouter = router({
+  /** قائمة بسيطة سريعة — يحتاجها الكاشير وأوامر الشغل والبيع الآجل. */
   list: protectedProcedure.query(async () => {
-    const db = getDb();
-    if (!db) return [];
-    return db.select().from(customers).where(eq(customers.isActive, true)).orderBy(asc(customers.name));
+    const { rows } = await listCustomers({ includeInactive: false, limit: 500 });
+    return rows;
   }),
+
+  /** قائمة كاملة مع بحث وفلاتر وتقسيم صفحات — لشاشة الإدارة. */
+  search: protectedProcedure
+    .input(
+      z
+        .object({
+          q: z.string().optional(),
+          customerType: customerType.optional(),
+          priceTier: priceTier.optional(),
+          includeInactive: z.boolean().default(false),
+          limit: z.number().int().positive().max(500).default(50),
+          offset: z.number().int().min(0).default(0),
+        })
+        .optional()
+    )
+    .query(({ input }) => listCustomers(input ?? {})),
+
+  get: protectedProcedure
+    .input(z.object({ customerId: z.number().int().positive() }))
+    .query(({ input }) => getCustomer(input.customerId)),
 
   create: protectedProcedure
     .input(
       z.object({
-        name: z.string().min(1),
-        phone: z.string().optional(),
-        defaultPriceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL"),
-        notes: z.string().optional(),
+        name: z.string().min(1).max(255),
+        phone: z.string().max(20).nullish(),
+        whatsapp: z.string().max(20).nullish(),
+        address: z.string().nullish(),
+        city: z.string().max(100).nullish(),
+        district: z.string().max(100).nullish(),
+        customerType: customerType.default("فرد"),
+        defaultPriceTier: priceTier.default("RETAIL"),
+        creditLimit: z.string().nullish(),
+        notes: z.string().nullish(),
       })
     )
-    .mutation(async ({ input }) => {
-      const db = getDb();
-      if (!db) throw new Error("DATABASE_URL مطلوب");
-      const res = await db.insert(customers).values({
-        name: input.name.trim(),
-        phone: input.phone?.trim() || null,
-        defaultPriceTier: input.defaultPriceTier,
-        notes: input.notes?.trim() || null,
-      });
-      const id = Number((res as any)[0]?.insertId ?? (res as any).insertId);
-      return { id };
+    .mutation(async ({ input, ctx }) => {
+      const r = await createCustomer(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // التوافق: المستهلكون القدامى يقرؤون `.id` (مثل WorkOrderNew)؛ نُبقي الكليهما.
+      return { id: r.customerId, customerId: r.customerId };
     }),
+
+  update: protectedProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        name: z.string().min(1).max(255).optional(),
+        phone: z.string().max(20).nullish(),
+        whatsapp: z.string().max(20).nullish(),
+        address: z.string().nullish(),
+        city: z.string().max(100).nullish(),
+        district: z.string().max(100).nullish(),
+        customerType: customerType.optional(),
+        defaultPriceTier: priceTier.optional(),
+        creditLimit: z.string().nullish(),
+        notes: z.string().nullish(),
+      })
+    )
+    .mutation(({ input, ctx }) =>
+      updateCustomer(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
+    ),
+
+  deactivate: protectedProcedure
+    .input(z.object({ customerId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) =>
+      deactivateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
+    ),
+
+  activate: protectedProcedure
+    .input(z.object({ customerId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) =>
+      activateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
+    ),
 });
