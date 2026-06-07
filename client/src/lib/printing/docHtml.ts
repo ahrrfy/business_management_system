@@ -248,6 +248,9 @@ export function docFooter(): string {
     background:linear-gradient(135deg,${BRAND.greenMist},${BRAND.greenPale});
     border-radius:5px;border:1px solid ${BRAND.greenLight};">
     <span style="font-size:12px;font-weight:800;color:${BRAND.green};letter-spacing:-0.2px;">${esc(CO.footer)}</span>
+    <div style="font-size:8.5px;color:${BRAND.textFaint};margin-top:1mm;">
+      📍 ${esc(CO.address)}
+    </div>
   </div>
   <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:2mm 3mm;font-size:8.5px;
     padding:3mm 2mm;background:${BRAND.bg};border-radius:4px;border:1px solid ${BRAND.border};">

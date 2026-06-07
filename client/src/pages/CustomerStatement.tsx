@@ -63,8 +63,8 @@ export default function CustomerStatement() {
               const payTxs = d.payments.map(p => ({
                 date: new Date(p.createdAt).toLocaleDateString('en-GB'),
                 ref: `دفعة`, description: p.direction === 'IN' ? 'دفعة وارد' : 'استرداد',
-                debit: p.direction === 'OUT' ? Number(p.amount) : null,
-                credit: p.direction === 'IN' ? Number(p.amount) : null, balance: 0,
+                debit: null,
+                credit: Number(p.amount), balance: 0,
               }));
               const merged = [...invTxs, ...payTxs].sort((a, b) => a.date.localeCompare(b.date));
               let bal = 0;

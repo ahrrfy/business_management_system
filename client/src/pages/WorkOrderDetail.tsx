@@ -83,8 +83,9 @@ export default function WorkOrderDetail() {
             jobType: data.title,
             specs: data.customizationText,
             items: [{
-              name: data.title,
-              quantity: data.quantity,
+              name: `${data.title} (${data.quantity} نسخة)`,
+              unit: 'مهمة',
+              quantity: 1,
               unitPrice: data.salePrice,
               total: data.salePrice,
             }],

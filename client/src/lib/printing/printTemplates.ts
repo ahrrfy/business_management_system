@@ -677,7 +677,7 @@ export function printAPAging(d: APAgingPrintData): void {
 export interface BarcodeLabelItem {
   name: string;
   sku: string;
-  price: string | number;
+  price: string | number | null | undefined;
   barcode: string;
 }
 
@@ -697,7 +697,9 @@ export function printBarcodeSheet(items: BarcodeLabelItem[]): void {
       <div style="width:100%;overflow:hidden;">${barSvg}</div>
       <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1.5mm;padding:0 1mm;">
         <span style="font-size:8px;color:${B.textMuted};">${esc(item.sku)}</span>
-        <span style="font-size:10px;font-weight:700;color:${B.green};">${fmtC(item.price)}</span>
+        ${item.price !== '' && item.price != null
+          ? `<span style="font-size:10px;font-weight:700;color:${B.green};">${fmtC(item.price)}</span>`
+          : ''}
       </div>
     </div>`;
   }).join('');

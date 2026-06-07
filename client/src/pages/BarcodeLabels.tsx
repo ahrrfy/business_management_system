@@ -90,7 +90,7 @@ export default function BarcodeLabels() {
       Array.from({ length: item.count }, () => ({
         name: `${item.productName}${showName ? ` — ${item.unitName}` : ""}`,
         sku: item.sku,
-        price: showPrice && item.price != null ? item.price : "0",
+        price: showPrice && item.price != null ? item.price : "",
         barcode: item.barcode,
       }))
     );
