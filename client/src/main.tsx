@@ -10,6 +10,7 @@ import superjson from "superjson";
 import App from "./App";
 import "./index.css";
 import "./lib/theme/tokens.css";
+import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
 
 const queryClient = new QueryClient();
 

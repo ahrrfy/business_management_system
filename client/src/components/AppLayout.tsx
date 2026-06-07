@@ -1,3 +1,4 @@
+import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { Link, useLocation } from "wouter";
@@ -36,7 +37,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex bg-muted/30" dir="rtl">
       <aside className="w-56 shrink-0 border-l bg-card flex flex-col">
-        <div className="px-4 py-4 font-semibold text-lg border-b">الرؤية العربية</div>
+        <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
+          <span className="font-semibold text-lg">الرؤية العربية</span>
+          <ThemeToggle />
+        </div>
         <nav className="flex-1 p-2 space-y-1">
           {NAV.map((n) => {
             const active = loc === n.href;
