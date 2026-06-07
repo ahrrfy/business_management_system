@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -25,9 +26,10 @@ export default function SupplierNew() {
   const create = trpc.suppliers.create.useMutation({
     onSuccess: async () => {
       await Promise.all([utils.suppliers.search.invalidate(), utils.suppliers.list.invalidate()]);
+      notify.ok("تمّت إضافة المورّد");
       navigate("/suppliers");
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => { setError(e.message); notify.err(e); },
   });
 
   function submit() {

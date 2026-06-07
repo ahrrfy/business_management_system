@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { D } from "@/lib/money";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -54,9 +55,10 @@ export default function ExpenseNew() {
   const create = trpc.expenses.create.useMutation({
     onSuccess: async () => {
       await utils.expenses.list.invalidate();
+      notify.ok("تم تسجيل المصروف");
       navigate("/expenses");
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => { setError(e.message); notify.err(e); },
   });
 
   function submit() {
