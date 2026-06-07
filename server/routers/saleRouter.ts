@@ -14,6 +14,7 @@ import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
 import { branchScopedProcedure, canSeeCost, cashierProcedure, router } from "../trpc";
+import { invoiceBarcodeSet } from "../services/barcodeService";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -161,12 +162,20 @@ export const saleRouter = router({
       .where(eq(receipts.invoiceId, input.invoiceId))
       .orderBy(asc(receipts.id));
 
+    // توليد qrPayload موقَّعة بـ HMAC من الخادم — الواجهة تعرضها فقط
+    const qrPayload = invoiceBarcodeSet({
+      invoiceNumber: inv.invoiceNumber,
+      invoiceDate: String(inv.invoiceDate),
+      total: inv.total,
+      branchId: inv.branchId,
+    }).qrPayload;
+
     // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
     if (!canSeeCost(ctx.user.role)) {
       const { costTotal: _c, ...invNoCost } = inv;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
-      return { ...invNoCost, items: itemsNoCost, payments };
+      return { ...invNoCost, items: itemsNoCost, payments, qrPayload };
     }
-    return { ...inv, items, payments };
+    return { ...inv, items, payments, qrPayload };
   }),
 });

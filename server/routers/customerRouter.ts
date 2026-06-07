@@ -8,6 +8,7 @@ import {
   updateCustomer,
 } from "../services/customerService";
 import { logAudit } from "../services/auditService";
+import { customerBarcodeSet } from "../services/barcodeService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -43,7 +44,12 @@ export const customerRouter = router({
 
   get: protectedProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
-    .query(({ input }) => getCustomer(input.customerId)),
+    .query(async ({ input }) => {
+      const c = await getCustomer(input.customerId);
+      if (!c) return null;
+      const qrPayload = customerBarcodeSet({ id: c.id, name: c.name }).qrPayload;
+      return { ...c, qrPayload };
+    }),
 
   create: managerProcedure
     .input(

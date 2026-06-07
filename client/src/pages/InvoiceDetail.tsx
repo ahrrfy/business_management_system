@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
@@ -189,6 +190,23 @@ export default function InvoiceDetail() {
               </select>
             </div>
             <Button onClick={submit} disabled={pay.isPending}>{pay.isPending ? "جارٍ…" : "تسجيل الدفعة"}</Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* باركود + QR الفاتورة */}
+      {data.qrPayload && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">باركود الفاتورة</CardTitle></CardHeader>
+          <CardContent className="flex justify-center py-4">
+            <BarcodeDisplay
+              barcodeSet={{
+                barcode128: data.invoiceNumber,
+                qrPayload: data.qrPayload,
+                displayLabel: `فاتورة: ${data.invoiceNumber}\n${new Date(data.invoiceDate).toLocaleDateString("ar-IQ")} — ${fmt(data.total)} د.ع`,
+              }}
+              size="md"
+            />
           </CardContent>
         </Card>
       )}

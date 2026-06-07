@@ -17,6 +17,7 @@ import {
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
 import { cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
+import { workOrderBarcodeSet } from "../services/barcodeService";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
@@ -91,7 +92,12 @@ export const workOrderRouter = router({
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
     // ملاحظة: تكلفة أمر الشغل تبقى ظاهرة — عامل المطبعة يحتاجها لتسعير الأعمال.
     // حجب التكلفة الحرج مُطبَّق على البيع (sale.get) والمشتريات (catalog.forPurchase).
-    return { ...wo, materials };
+    const qrPayload = workOrderBarcodeSet({
+      orderNumber: wo.orderNumber,
+      createdAt: wo.createdAt instanceof Date ? wo.createdAt : new Date(wo.createdAt),
+      branchId: wo.branchId,
+    }).qrPayload;
+    return { ...wo, materials, qrPayload };
   }),
 
   create: cashierProcedure
