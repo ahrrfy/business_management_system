@@ -37,6 +37,8 @@ export interface CreateSaleInput {
   payment?: { amount: string; method: PaymentMethod } | null;
   clientRequestId?: string | null;
   notes?: string | null;
+  /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق من هوية المدير). */
+  creditApproved?: boolean;
 }
 
 export interface CreateSaleResult {
@@ -81,10 +83,12 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 
     // 3. Resolve the effective price tier.
     let customerTier: PriceTier | null = null;
+    let customerCredit: { limit: ReturnType<typeof money>; balance: ReturnType<typeof money> } | null = null;
     if (input.customerId) {
       const c = await tx.select().from(customers).where(eq(customers.id, input.customerId)).limit(1);
       if (!c[0]) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
       customerTier = c[0].defaultPriceTier as PriceTier;
+      customerCredit = { limit: money(c[0].creditLimit ?? "0"), balance: money(c[0].currentBalance ?? "0") };
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
 
@@ -140,8 +144,19 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 
     // 7. Credit-sale guard.
     const paidNow = money(input.payment?.amount ?? "0");
-    if (paidNow.lt(money(totals.total)) && !input.customerId) {
+    const unpaid = money(totals.total).minus(paidNow);
+    if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
+    }
+    // 7.b فحص حدّ الائتمان: إن تجاوز الرصيد المتوقّع السقف ⇒ موافقة مدير (creditApproved).
+    if (unpaid.gt(0) && customerCredit && customerCredit.limit.gt(0) && !input.creditApproved) {
+      const projected = customerCredit.balance.plus(unpaid);
+      if (projected.gt(customerCredit.limit)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `تجاوز حدّ الائتمان: الرصيد بعد البيع ${projected.toFixed(2)} يتجاوز السقف ${customerCredit.limit.toFixed(2)} — تلزم موافقة مدير.`,
+        });
+      }
     }
 
     // 8. Invoice header.

@@ -7,7 +7,7 @@ import { isPaired, isWebUsbSupported, pairPrinter, printDoc, type PrintDoc } fro
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
@@ -83,6 +83,12 @@ export default function POS() {
   const [lastInvoiceId, setLastInvoiceId] = useState<number | null>(null);
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [opening, setOpening] = useState("0");
+  // موافقة المدير على تجاوز حدّ الائتمان + اختصارات
+  const [creditPrompt, setCreditPrompt] = useState<string | null>(null);
+  const [mgrEmail, setMgrEmail] = useState("");
+  const [mgrPassword, setMgrPassword] = useState("");
+  const [showHotkeys, setShowHotkeys] = useState(false);
+  const barcodeRef = useRef<HTMLInputElement>(null);
 
   // Customer + tier (tier auto-syncs to customer.defaultPriceTier unless explicitly overridden).
   const [customerId, setCustomerId] = useState<number | null>(null);
@@ -243,14 +249,23 @@ export default function POS() {
         utils.customers.list.invalidate(),
         shiftQ.refetch(),
       ]);
+      setCreditPrompt(null);
+      setMgrEmail("");
+      setMgrPassword("");
     },
-    onError: (e) => setMessage({ kind: "err", text: e.message }),
+    onError: (e) => {
+      // تجاوز حدّ الائتمان ⇒ افتح نافذة موافقة المدير بدل رسالة خطأ عابرة.
+      if ((e.data as { code?: string } | undefined)?.code === "PRECONDITION_FAILED") {
+        setCreditPrompt(e.message);
+      } else {
+        setMessage({ kind: "err", text: e.message });
+      }
+    },
   });
 
-  function completeSale() {
+  function submitSale(approval?: { email: string; password: string }) {
     if (!shift || !cart.length) return;
     setMessage(null);
-    // Guard: credit (received < total) requires a customer (server also enforces, but we surface a clear message).
     if (isCredit && customerId == null) {
       setMessage({ kind: "err", text: "البيع الآجل (دفع أقل من الإجمالي) يتطلّب اختيار عميل." });
       return;
@@ -264,8 +279,27 @@ export default function POS() {
       priceTier: effectiveTier,
       lines: cart.map((c) => ({ variantId: c.row.variantId, productUnitId: c.row.productUnitId, quantity: String(c.qty) })),
       payment: { amount, method },
+      ...(approval ? { managerApproval: approval } : {}),
     });
   }
+  const completeSale = () => submitSale();
+
+  // اختصارات الكاشير: F2 بحث/مسح • F4 إتمام الدفع • F9 طباعة آخر فاتورة • F12 تفريغ السلّة • Esc إغلاق
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (creditPrompt) { if (e.key === "Escape") setCreditPrompt(null); return; }
+      switch (e.key) {
+        case "F2": e.preventDefault(); barcodeRef.current?.focus(); break;
+        case "F4": e.preventDefault(); if (cart.length && !sale.isPending) completeSale(); break;
+        case "F9": e.preventDefault(); if (lastReceipt) printDoc(buildReceiptDoc(lastReceipt)); break;
+        case "F12": e.preventDefault(); if (cart.length && window.confirm("تفريغ السلّة؟")) { setCart([]); setCalc(""); } break;
+        case "Escape": setShowHotkeys(false); setMessage(null); break;
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart, sale.isPending, lastReceipt, creditPrompt, isCredit, customerId, received, total, method, effectiveTier]);
 
   if (shiftQ.isLoading) return <div className="min-h-screen flex items-center justify-center text-muted-foreground">جارٍ التحميل…</div>;
 
@@ -300,6 +334,7 @@ export default function POS() {
         <h1 className="text-xl font-semibold">نقطة البيع — {SHOP}</h1>
         <div className="flex items-center gap-3 text-sm">
           <span className="text-muted-foreground">وردية #{shift.id} مفتوحة</span>
+          <Button variant="ghost" size="sm" onClick={() => setShowHotkeys((v) => !v)} title="اختصارات لوحة المفاتيح">؟ اختصارات</Button>
           <Button variant="outline" size="sm" disabled={closeShift.isPending}
             onClick={() => { const c = window.prompt("النقد المعدود في الصندوق:", "0"); if (c != null) closeShift.mutate({ shiftId: shift.id, countedCash: c }); }}>
             إغلاق الوردية
@@ -314,6 +349,43 @@ export default function POS() {
           {message.kind === "ok" && lastInvoiceId != null && (
             <Link href={`/invoices/${lastInvoiceId}`} className="underline">فتح الفاتورة</Link>
           )}
+        </div>
+      )}
+
+      {showHotkeys && (
+        <div className="mb-3 rounded-md border bg-muted/40 p-3 text-xs grid grid-cols-2 md:grid-cols-5 gap-2">
+          <span><kbd className="font-mono">F2</kbd> بحث/مسح</span>
+          <span><kbd className="font-mono">F4</kbd> إتمام الدفع</span>
+          <span><kbd className="font-mono">F9</kbd> طباعة آخر فاتورة</span>
+          <span><kbd className="font-mono">F12</kbd> تفريغ السلّة</span>
+          <span><kbd className="font-mono">Esc</kbd> إغلاق</span>
+        </div>
+      )}
+
+      {creditPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={() => setCreditPrompt(null)}>
+          <Card className="w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+            <CardHeader><CardTitle className="text-base text-amber-700">موافقة مدير مطلوبة</CardTitle></CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-sm text-muted-foreground">{creditPrompt}</p>
+              <div className="space-y-1">
+                <Label>بريد المدير</Label>
+                <Input dir="ltr" value={mgrEmail} onChange={(e) => setMgrEmail(e.target.value)} placeholder="manager@alroya.local" />
+              </div>
+              <div className="space-y-1">
+                <Label>كلمة مرور المدير</Label>
+                <Input type="password" dir="ltr" value={mgrPassword} onChange={(e) => setMgrPassword(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter" && mgrEmail && mgrPassword) submitSale({ email: mgrEmail, password: mgrPassword }); }} />
+              </div>
+              <div className="flex gap-2">
+                <Button className="flex-1" disabled={!mgrEmail || !mgrPassword || sale.isPending}
+                  onClick={() => submitSale({ email: mgrEmail, password: mgrPassword })}>
+                  {sale.isPending ? "جارٍ…" : "اعتمد وأكمل البيع"}
+                </Button>
+                <Button variant="outline" onClick={() => setCreditPrompt(null)}>إلغاء</Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 
@@ -347,7 +419,7 @@ export default function POS() {
           </Card>
 
           <div className="flex gap-2 relative">
-            <Input autoFocus placeholder="امسح الباركود ثم Enter" dir="ltr" value={barcode}
+            <Input ref={barcodeRef} autoFocus placeholder="امسح الباركود ثم Enter (F2)" dir="ltr" value={barcode}
               onChange={(e) => setBarcode(e.target.value)}
               onKeyDown={(e) => { if (e.key === "Enter") scanBarcode(); }} />
             <div className="relative w-64">

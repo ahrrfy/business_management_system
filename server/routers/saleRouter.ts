@@ -11,10 +11,22 @@ import {
   receipts,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { users } from "../../drizzle/schema";
+import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
 import { branchScopedProcedure, canSeeCost, cashierProcedure, router } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
+
+/** يتحقّق من هوية مدير (بريد + كلمة مرور) لاعتماد تجاوز حدّ الائتمان. يعيد معرّف المدير. */
+async function verifyManagerApproval(approval: { email: string; password: string }): Promise<number> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const u = (await db.select().from(users).where(eq(users.email, approval.email.trim().toLowerCase())).limit(1))[0];
+  const ok = u && u.isActive !== false && verifyPassword(approval.password, u.passwordHash) && (u.role === "manager" || u.role === "admin");
+  if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير)." });
+  return Number(u.id);
+}
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -42,14 +54,22 @@ export const saleRouter = router({
         payment: z.object({ amount: z.string(), method }).optional(),
         clientRequestId: z.string().optional(),
         notes: z.string().optional(),
+        // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId };
+      // تجاوز حدّ الائتمان: لا يُوثَق clientـ creditApproved؛ يُشتقّ من تحقّق هوية المدير هنا فقط.
+      let approvedBy: number | null = null;
+      const { managerApproval, ...saleInput } = input;
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval);
+      const effectiveInput = { ...saleInput, creditApproved: approvedBy != null };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createSale(input, actor);
-          await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length } });
+          const res = await createSale(effectiveInput, actor);
+          await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy } });
+          if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
           return res;
         } catch (e: any) {
           if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
