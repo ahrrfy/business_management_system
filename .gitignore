@@ -41,6 +41,7 @@ _legacy/
 
 # Local Claude settings (workflows + launch.json are shared/committed)
 .claude/settings.local.json
+.claude/worktrees/
 boot-diag.log
 
 # Database backups (local dumps — keep off git)

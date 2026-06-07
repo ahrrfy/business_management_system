@@ -1,6 +1,10 @@
 import { AppLayout } from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
+import ARAging from "@/pages/ARAging";
+import CustomerStatement from "@/pages/CustomerStatement";
 import Dashboard from "@/pages/Dashboard";
+import ExpenseNew from "@/pages/ExpenseNew";
+import Expenses from "@/pages/Expenses";
 import Inventory from "@/pages/Inventory";
 import InvoiceDetail from "@/pages/InvoiceDetail";
 import Invoices from "@/pages/Invoices";
@@ -65,6 +69,10 @@ export default function App() {
       <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>
       <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
+      <Route path="/expenses"><Shell><Expenses /></Shell></Route>
+      <Route path="/expenses/new"><Shell><ExpenseNew /></Shell></Route>
+      <Route path="/ar-aging"><Shell><ARAging /></Shell></Route>
+      <Route path="/customers-statement"><Shell><CustomerStatement /></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
   );

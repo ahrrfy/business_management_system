@@ -1,0 +1,180 @@
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { trpc } from "@/lib/trpc";
+import { useState } from "react";
+import { Link } from "wouter";
+
+const selectCls =
+  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+const CATEGORY_LABEL: Record<string, string> = {
+  RENT: "إيجار",
+  UTILITIES: "خدمات/فواتير",
+  SUPPLIES: "لوازم",
+  SALARY: "مرتبات",
+  TRANSPORT: "مواصلات/شحن",
+  MAINTENANCE: "صيانة",
+  MARKETING: "تسويق",
+  OTHER: "أخرى",
+};
+
+const METHOD_LABEL: Record<string, string> = {
+  CASH: "نقدي",
+  CARD: "بطاقة",
+  CHECK: "شيك",
+  TRANSFER: "تحويل",
+  WALLET: "محفظة",
+};
+
+const STATUS_CLS: Record<string, string> = {
+  ACTIVE: "bg-emerald-100 text-emerald-700",
+  CANCELLED: "bg-rose-100 text-rose-700",
+};
+const STATUS_LABEL: Record<string, string> = { ACTIVE: "نافذ", CANCELLED: "مُلغى" };
+
+export default function Expenses() {
+  const utils = trpc.useUtils();
+  const branches = trpc.branches.list.useQuery();
+  const [branchId, setBranchId] = useState<number | "">("");
+  const [category, setCategory] = useState<string>("");
+  const [status, setStatus] = useState<string>("ACTIVE");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+
+  const list = trpc.expenses.list.useQuery({
+    branchId: branchId ? Number(branchId) : undefined,
+    category: (category || undefined) as any,
+    status: (status || undefined) as any,
+    from: from || undefined,
+    to: to || undefined,
+    limit: 300,
+  });
+
+  const cancel = trpc.expenses.cancel.useMutation({
+    onSuccess: async () => {
+      await utils.expenses.list.invalidate();
+    },
+  });
+
+  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">المصروفات اليومية</h1>
+        <Link href="/expenses/new"><Button>+ مصروف جديد</Button></Link>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        كل مصروف يولّد قبضاً صادراً (يُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر.
+      </p>
+
+      <Card>
+        <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3 pt-6">
+          <div className="space-y-1">
+            <Label className="text-xs">الفرع</Label>
+            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">— كل الفروع —</option>
+              {(branches.data ?? []).map((b) => (
+                <option key={b.id} value={b.id}>{b.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">الفئة</Label>
+            <select className={selectCls} value={category} onChange={(e) => setCategory(e.target.value)}>
+              <option value="">— كل الفئات —</option>
+              {Object.entries(CATEGORY_LABEL).map(([k, v]) => (
+                <option key={k} value={k}>{v}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">الحالة</Label>
+            <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="">— الكل —</option>
+              <option value="ACTIVE">نافذ</option>
+              <option value="CANCELLED">مُلغى</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">من تاريخ</Label>
+            <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">إلى تاريخ</Label>
+            <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="pt-6 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+          <div>
+            <div className="text-muted-foreground">عدد السطور</div>
+            <div className="text-lg font-semibold">{list.data?.totals.count ?? 0}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">إجمالي النافذ</div>
+            <div className="text-lg font-semibold tabular-nums" dir="ltr">{fmt(list.data?.totals.active ?? "0")}</div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-0">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr className="text-right">
+                <th className="p-2">التاريخ</th>
+                <th className="p-2">الفرع</th>
+                <th className="p-2">الفئة</th>
+                <th className="p-2">الوصف</th>
+                <th className="p-2">طريقة الدفع</th>
+                <th className="p-2 text-left">المبلغ</th>
+                <th className="p-2">الحالة</th>
+                <th className="p-2 text-center">إجراء</th>
+              </tr>
+            </thead>
+            <tbody>
+              {(list.data?.rows ?? []).map((r) => (
+                <tr key={r.id} className="border-t">
+                  <td className="p-2 text-xs" dir="ltr">{r.expenseDate ? new Date(r.expenseDate as any).toISOString().slice(0, 10) : "—"}</td>
+                  <td className="p-2">{r.branchName ?? "—"}</td>
+                  <td className="p-2">{CATEGORY_LABEL[r.category] ?? r.category}</td>
+                  <td className="p-2 max-w-xs truncate" title={r.description ?? ""}>{r.description ?? "—"}</td>
+                  <td className="p-2">{METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}</td>
+                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.amount)}</td>
+                  <td className="p-2">
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
+                      {STATUS_LABEL[r.status] ?? r.status}
+                    </span>
+                  </td>
+                  <td className="p-2 text-center">
+                    {r.status === "ACTIVE" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={cancel.isPending}
+                        onClick={() => {
+                          if (confirm(`إلغاء المصروف بمبلغ ${r.amount}؟`)) cancel.mutate({ expenseId: Number(r.id) });
+                        }}
+                      >
+                        إلغاء
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {list.data && list.data.rows.length === 0 && (
+                <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا مصروفات لهذا الفلتر.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+      {cancel.error && <p className="text-sm text-destructive">{cancel.error.message}</p>}
+    </div>
+  );
+}

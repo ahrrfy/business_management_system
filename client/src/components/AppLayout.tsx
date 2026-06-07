@@ -12,6 +12,9 @@ const NAV: { href: string; label: string }[] = [
   { href: "/work-orders", label: "أوامر الشغل/المطبعة" },
   { href: "/transfers", label: "تحويل بين الفروع" },
   { href: "/inventory", label: "حركات المخزون" },
+  { href: "/expenses", label: "المصروفات اليومية" },
+  { href: "/ar-aging", label: "أعمار الذمم" },
+  { href: "/customers-statement", label: "كشف حساب عميل" },
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {

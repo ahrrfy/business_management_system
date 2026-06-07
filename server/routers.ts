@@ -10,6 +10,8 @@ import { supplierRouter } from "./routers/supplierRouter";
 import { branchRouter } from "./routers/branchRouter";
 import { workOrderRouter } from "./routers/workOrderRouter";
 import { customerRouter } from "./routers/customerRouter";
+import { expenseRouter } from "./routers/expenseRouter";
+import { reportsRouter } from "./routers/reportsRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -32,6 +34,8 @@ export const appRouter = router({
   branches: branchRouter,
   workOrders: workOrderRouter,
   customers: customerRouter,
+  expenses: expenseRouter,
+  reports: reportsRouter,
 });
 
 export type AppRouter = typeof appRouter;

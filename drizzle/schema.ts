@@ -452,6 +452,52 @@ export const accountingEntries = mysqlTable(
 export type AccountingEntry = typeof accountingEntries.$inferSelect;
 export type InsertAccountingEntry = typeof accountingEntries.$inferInsert;
 
+/* ============================ المصروفات اليومية ============================ */
+
+/**
+ * مصروف نقدي يومي (إيجار/فواتير/مرتبات/مواصلات…). يُولّد:
+ *  - receipt (direction=OUT) ⇒ يُخصم من صندوق الوردية إن كانت مفتوحة.
+ *  - PAYMENT_OUT entry في الدفتر المحاسبي.
+ * الإلغاء مسموح فقط ما دامت الوردية المرتبطة مفتوحة (أو بلا وردية).
+ */
+export const expenses = mysqlTable(
+  "expenses",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    shiftId: bigint("shiftId", { mode: "number" }).references(() => shifts.id),
+    expenseDate: date("expenseDate").notNull(),
+    category: mysqlEnum("expenseCategory", [
+      "RENT",
+      "UTILITIES",
+      "SUPPLIES",
+      "SALARY",
+      "TRANSPORT",
+      "MAINTENANCE",
+      "MARKETING",
+      "OTHER",
+    ]).default("OTHER").notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    paymentMethod: mysqlEnum("expensePaymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).default("CASH").notNull(),
+    description: text("description"),
+    referenceNumber: varchar("referenceNumber", { length: 100 }),
+    receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
+    status: mysqlEnum("expenseStatus", ["ACTIVE", "CANCELLED"]).default("ACTIVE").notNull(),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchIdx: index("idx_expense_branch").on(table.branchId),
+    dateIdx: index("idx_expense_date").on(table.expenseDate),
+    categoryIdx: index("idx_expense_category").on(table.category),
+    statusIdx: index("idx_expense_status").on(table.status),
+  })
+);
+
+export type Expense = typeof expenses.$inferSelect;
+export type InsertExpense = typeof expenses.$inferInsert;
+
 /* ============================ أوامر الشغل / التخصيص / المطبعة ============================ */
 
 export const workOrders = mysqlTable(
