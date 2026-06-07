@@ -6,6 +6,7 @@ import {
   listQuotations,
   setQuotationStatus,
 } from "../services/quotationService";
+import { logAudit } from "../services/auditService";
 import { protectedProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -44,11 +45,19 @@ export const quotationRouter = router({
           .min(1),
       })
     )
-    .mutation(({ input, ctx }) => createQuotation(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await createQuotation(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+      await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId } });
+      return res;
+    }),
 
   setStatus: protectedProcedure
     .input(z.object({ quotationId: z.number().int().positive(), status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "EXPIRED"]) }))
-    .mutation(({ input }) => setQuotationStatus(input.quotationId, input.status)),
+    .mutation(async ({ input, ctx }) => {
+      const res = await setQuotationStatus(input.quotationId, input.status);
+      await logAudit(ctx, { action: "quotation.setStatus", entityType: "quotation", entityId: input.quotationId, newValue: { status: input.status } });
+      return res;
+    }),
 
   convert: protectedProcedure
     .input(
@@ -57,5 +66,9 @@ export const quotationRouter = router({
         payment: z.object({ amount: z.string(), method }).optional(),
       })
     )
-    .mutation(({ input, ctx }) => convertQuotation(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await convertQuotation(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "quotation.convert", entityType: "quotation", entityId: input.quotationId, newValue: { invoiceId: (res as { invoiceId?: number })?.invoiceId } });
+      return res;
+    }),
 });
