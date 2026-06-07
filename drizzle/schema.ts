@@ -392,6 +392,7 @@ export const invoiceItems = mysqlTable(
   (table) => ({
     invoiceIdx: index("idx_item_invoice").on(table.invoiceId),
     variantIdx: index("idx_item_variant").on(table.variantId),
+    productUnitIdx: index("idx_item_productUnit").on(table.productUnitId),
   })
 );
 
@@ -449,6 +450,7 @@ export const quotationItems = mysqlTable(
   },
   (table) => ({
     quoteIdx: index("idx_qitem_quote").on(table.quotationId),
+    variantIdx: index("idx_qitem_variant").on(table.variantId),
   })
 );
 
@@ -476,6 +478,7 @@ export const receipts = mysqlTable(
   },
   (table) => ({
     invoiceIdx: index("idx_receipt_invoice").on(table.invoiceId),
+    branchIdx: index("idx_receipt_branch").on(table.branchId),
     dateIdx: index("idx_receipt_date").on(table.createdAt),
   })
 );
@@ -510,6 +513,8 @@ export const accountingEntries = mysqlTable(
     typeIdx: index("idx_entry_type").on(table.entryType),
     invoiceIdx: index("idx_entry_invoice").on(table.invoiceId),
     dateIdx: index("idx_entry_date").on(table.entryDate),
+    supplierIdx: index("idx_entry_supplier").on(table.supplierId),
+    customerIdx: index("idx_entry_customer").on(table.customerId),
   })
 );
 
@@ -591,6 +596,7 @@ export const workOrders = mysqlTable(
   (table) => ({
     numberIdx: index("idx_wo_number").on(table.orderNumber),
     branchIdx: index("idx_wo_branch").on(table.branchId),
+    customerIdx: index("idx_wo_customer").on(table.customerId),
     statusIdx: index("idx_wo_status").on(table.status),
   })
 );
@@ -611,6 +617,7 @@ export const workOrderMaterials = mysqlTable(
   },
   (table) => ({
     woIdx: index("idx_wom_wo").on(table.workOrderId),
+    variantIdx: index("idx_wom_variant").on(table.variantId),
   })
 );
 
@@ -641,6 +648,7 @@ export const purchaseOrders = mysqlTable(
   (table) => ({
     numberIdx: index("idx_po_number").on(table.poNumber),
     supplierIdx: index("idx_po_supplier").on(table.supplierId),
+    branchIdx: index("idx_po_branch").on(table.branchId),
     statusIdx: index("idx_po_status").on(table.status),
   })
 );
@@ -839,6 +847,7 @@ export const auditLogs = mysqlTable(
   },
   (table) => ({
     userIdx: index("idx_audit_user").on(table.userId),
+    branchIdx: index("idx_audit_branch").on(table.branchId),
     actionIdx: index("idx_audit_action").on(table.action),
     dateIdx: index("idx_audit_date").on(table.createdAt),
   })

@@ -1,4 +1,5 @@
 import { AppLayout } from "@/components/AppLayout";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { trpc } from "@/lib/trpc";
 import APAging from "@/pages/APAging";
 import ARAging from "@/pages/ARAging";
@@ -63,6 +64,7 @@ function NotFound() {
 
 export default function App() {
   return (
+    <ErrorBoundary>
     <Switch>
       <Route path="/login" component={Login} />
       {/* نقطة البيع بملء الشاشة (بلا قائمة جانبية) */}
@@ -109,5 +111,6 @@ export default function App() {
       <Route path="/audit"><Shell><AuditLogs /></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
+    </ErrorBoundary>
   );
 }

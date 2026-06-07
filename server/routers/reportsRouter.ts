@@ -8,7 +8,12 @@ import {
   getCustomerStatement,
   getSupplierStatement,
 } from "../services/reportsService";
-import { managerProcedure, router } from "../trpc";
+import {
+  reconcileCustomerBalances,
+  reconcileInventory,
+  reconcileLedgerProfit,
+} from "../services/reconcileService";
+import { adminProcedure, managerProcedure, router } from "../trpc";
 
 export const reportsRouter = router({
   arAging: managerProcedure
@@ -56,4 +61,12 @@ export const reportsRouter = router({
       .from(suppliers)
       .orderBy(asc(suppliers.name));
   }),
+
+  /** تدقيق التوافق المالي — للمشرف فقط. يكشف الانجراف الصامت في الأرصدة/المخزون/الدفتر. */
+  reconcile: adminProcedure.query(async () => ({
+    customers: await reconcileCustomerBalances(),
+    inventory: await reconcileInventory(),
+    ledger: await reconcileLedgerProfit(),
+    runAt: new Date().toISOString(),
+  })),
 });

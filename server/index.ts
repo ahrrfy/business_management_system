@@ -5,9 +5,10 @@ const sentryEnabled = initSentry();
 
 import { createExpressMiddleware } from "@trpc/server/adapters/express";
 import { sql } from "drizzle-orm";
-import express from "express";
+import express, { type NextFunction, type Request, type Response } from "express";
 import cors from "cors";
 import helmet from "helmet";
+import compression from "compression";
 import rateLimit from "express-rate-limit";
 import { pinoHttp } from "pino-http";
 import { nanoid } from "nanoid";
@@ -82,6 +83,9 @@ async function startServer() {
     })
   );
 
+  // HTTP compression (gzip/brotli) — مهم على الشبكات البطيئة (العراق).
+  app.use(compression());
+
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
@@ -136,6 +140,14 @@ async function startServer() {
   if (sentryEnabled) {
     Sentry.setupExpressErrorHandler(app);
   }
+
+  // معالج أخطاء عام — يلتقط أي استثناء وصل للـExpress بدل إغراق السجلّ أو تعطّل الخادم.
+  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    logger.error({ err }, "unhandled express error");
+    if (!res.headersSent) {
+      res.status(500).json({ error: "خطأ داخلي في الخادم" });
+    }
+  });
 }
 
 startServer().catch((err) => {

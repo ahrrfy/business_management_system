@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, like, sql } from "drizzle-orm";
+import { desc, eq, inArray, like, sql } from "drizzle-orm";
 import { branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts } from "../../drizzle/schema";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
@@ -124,35 +124,44 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
     });
     work.sort((a, b) => Number(a.item.variantId) - Number(b.item.variantId));
 
+    // Batch-load all required data before the loop (eliminates N×3 queries → 3 queries total).
+    const variantIds = work.map(({ item }) => Number(item.variantId));
+    const unitIds = work.map(({ item }) => Number(item.productUnitId));
+
+    const unitRows = await tx
+      .select({ id: productUnits.id, factor: productUnits.conversionFactor })
+      .from(productUnits)
+      .where(inArray(productUnits.id, unitIds));
+    const unitFactorMap = new Map(unitRows.map((u) => [Number(u.id), u.factor]));
+
+    // Read existing stock per variant (sum across all branches) BEFORE any movement is applied.
+    const stockRows = await tx
+      .select({
+        variantId: branchStock.variantId,
+        totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)`,
+      })
+      .from(branchStock)
+      .where(inArray(branchStock.variantId, variantIds))
+      .groupBy(branchStock.variantId);
+    const stockMap = new Map(stockRows.map((s) => [Number(s.variantId), s.totalQty]));
+
+    // Lock all variants for update in one query (deterministic order = ascending variantId).
+    const variantRows = await tx
+      .select({ id: productVariants.id, cost: productVariants.costPrice })
+      .from(productVariants)
+      .where(inArray(productVariants.id, variantIds))
+      .for("update");
+    const costMap = new Map(variantRows.map((v) => [Number(v.id), v.cost]));
+
     let receivedNet = new Decimal(0);
     for (const { line, item } of work) {
-      // Cost per base unit = purchase unitPrice / conversionFactor (for last-cost only).
-      const uRows = await tx
-        .select({ factor: productUnits.conversionFactor })
-        .from(productUnits)
-        .where(eq(productUnits.id, Number(item.productUnitId)))
-        .limit(1);
-      const factor = new Decimal(uRows[0]?.factor ?? "1");
+      const factor = new Decimal(unitFactorMap.get(Number(item.productUnitId)) ?? "1");
       const costPerBase = round2(money(item.unitPrice).dividedBy(factor.lte(0) ? new Decimal(1) : factor));
 
-      // WAVG (المتوسّط المرجّح، من الآن فصاعداً): يُقرأ المخزون القائم + التكلفة القديمة
-      // قبل إضافة المستلَم. التكلفة صفة عالمية للصنف ⇒ الوزن بإجمالي الأساس عبر الفروع.
-      const existRow = (
-        await tx
-          .select({ q: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })
-          .from(branchStock)
-          .where(eq(branchStock.variantId, Number(item.variantId)))
-      )[0];
-      const existingQty = Decimal.max(new Decimal(existRow?.q ?? "0"), 0);
-      const vRow = (
-        await tx
-          .select({ cost: productVariants.costPrice })
-          .from(productVariants)
-          .where(eq(productVariants.id, Number(item.variantId)))
-          .for("update")
-          .limit(1)
-      )[0];
-      const oldCost = money(vRow?.cost ?? "0");
+      // WAVG (المتوسّط المرجّح): المخزون القائم + التكلفة القديمة مُقرآن قبل الحلقة.
+      // التكلفة صفة عالمية للصنف ⇒ الوزن بإجمالي الأساس عبر الفروع.
+      const existingQty = Decimal.max(new Decimal(stockMap.get(Number(item.variantId)) ?? "0"), 0);
+      const oldCost = money(costMap.get(Number(item.variantId)) ?? "0");
       const recvQty = new Decimal(line.receivedBaseQuantity);
       const denom = existingQty.plus(recvQty);
       // لا مخزون قائم (أو تكلفة قديمة صفر) ⇒ المتوسّط = تكلفة الشراء الحالية.
