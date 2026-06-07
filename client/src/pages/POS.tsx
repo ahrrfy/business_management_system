@@ -1478,9 +1478,13 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed }: ShiftCloseD
     },
   });
 
-  const expectedNum  = report ? Number((report as unknown as { shift?: { expectedCash?: string } }).shift?.expectedCash ?? shift?.openingBalance ?? 0) : null;
-  const countedNum   = counted ? Number(counted) : null;
-  const diff         = expectedNum != null && countedNum != null ? countedNum - expectedNum : null;
+  // النقد المتوقع = رصيد افتتاحي + كل CASH وارد (مبيعات) - كل CASH صادر (مصروفات)
+  const cashIn      = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "IN" ).reduce((s, p) => s + Number(p.total), 0);
+  const cashOut     = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s + Number(p.total), 0);
+  const openingBal  = Number(shift?.openingBalance ?? 0);
+  const expectedNum = report != null ? openingBal + cashIn - cashOut : null;
+  const countedNum  = counted ? Number(counted) : null;
+  const diff        = expectedNum != null && countedNum != null ? countedNum - expectedNum : null;
 
   return (
     <div onClick={onClose}
@@ -1500,7 +1504,8 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed }: ShiftCloseD
             {([
               ["عدد الفواتير",     `${report?.invoiceCount ?? 0} فاتورة`],
               ["إجمالي المبيعات",  `${fmt(Number(report?.salesTotal ?? 0))} د.ع`],
-              ["الرصيد الافتتاحي", `${fmt(Number(shift?.openingBalance ?? 0))} د.ع`],
+              ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`],
+              ...(report != null ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut)} د.ع`] as [string, string]] : []),
             ] as [string, string][]).map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
                 <span style={{ color: C.mutedFg }}>{l}</span>
