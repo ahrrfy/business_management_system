@@ -3,7 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { Link } from "wouter";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -31,12 +31,11 @@ const METHOD_LABEL: Record<string, string> = {
 const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
 
 export default function CustomerStatement() {
-  const [loc] = useLocation();
+  // wouter's useLocation() strips the query string, so read it from window.location directly.
   const initial = useMemo(() => {
-    const q = new URLSearchParams(loc.split("?")[1] ?? "");
-    const id = q.get("id");
+    const id = new URLSearchParams(window.location.search).get("id");
     return id ? Number(id) : 0;
-  }, [loc]);
+  }, []);
 
   const [customerId, setCustomerId] = useState<number>(initial);
   useEffect(() => { if (initial && initial !== customerId) setCustomerId(initial); }, [initial]); // eslint-disable-line

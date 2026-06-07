@@ -1,5 +1,12 @@
-import { asc, desc, eq, inArray, sql } from "drizzle-orm";
-import { customers, invoices, receipts } from "../../drizzle/schema";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import {
+  accountingEntries,
+  customers,
+  invoices,
+  purchaseOrders,
+  receipts,
+  suppliers,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 
 /**
@@ -39,11 +46,11 @@ export async function getARAging(opts: { branchId?: number } = {}): Promise<ARAg
       CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
       CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) > 90 THEN GREATEST(i.total - i.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
       CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount, 0)), 0) AS CHAR) AS unpaidTotal,
-      DATE_FORMAT(MIN(CASE WHEN i.status IN ('PENDING','PARTIALLY_PAID') THEN i.invoiceDate END), '%Y-%m-%d') AS oldestInvoiceDate
+      DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN i.invoiceDate END), '%Y-%m-%d') AS oldestInvoiceDate
     FROM customers c
     LEFT JOIN invoices i
       ON i.customerId = c.id
-      AND i.status IN ('PENDING', 'PARTIALLY_PAID')
+      AND i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
       ${branchFilter}
     WHERE c.isActive = TRUE
     GROUP BY c.id, c.name, c.phone, c.customerType, c.currentBalance
@@ -159,6 +166,161 @@ export async function getCustomerStatement(customerId: number): Promise<Customer
       totalPaid: totalPaid.toFixed(2),
       unpaid: unpaid.toFixed(2),
       currentBalance: String(c.currentBalance ?? "0"),
+    },
+  };
+}
+
+/* ============================ AP — الذمم الدائنة (الموردون) ============================ */
+
+export interface APAgingRow {
+  supplierId: number;
+  supplierName: string;
+  phone: string | null;
+  currentBalance: string;
+  d0_30: string;
+  d31_60: string;
+  d61_90: string;
+  d91p: string;
+  unpaidTotal: string;
+  oldestPoDate: string | null;
+}
+
+/**
+ * AP aging — buckets per supplier على أوامر الشراء المستحقّة.
+ * DRAFT/SENT لم تُلتزَم مالياً ⇒ تُستبعد؛ CANCELLED تُستبعد؛
+ * CONFIRMED/RECEIVED حيث total > paidAmount = مستحق.
+ */
+export async function getAPAging(opts: { branchId?: number } = {}): Promise<APAgingRow[]> {
+  const db = getDb();
+  if (!db) return [];
+  const branchFilter = opts.branchId ? sql`AND po.branchId = ${opts.branchId}` : sql``;
+  const rows = await db.execute(sql`
+    SELECT
+      s.id AS supplierId,
+      s.name AS supplierName,
+      s.phone,
+      CAST(s.currentBalance AS CHAR) AS currentBalance,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(po.orderDate)) <= 30 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(po.orderDate)) BETWEEN 31 AND 60 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(po.orderDate)) BETWEEN 61 AND 90 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(po.orderDate)) > 90 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(COALESCE(SUM(GREATEST(po.total - po.paidAmount, 0)), 0) AS CHAR) AS unpaidTotal,
+      DATE_FORMAT(MIN(CASE WHEN po.poStatus IN ('CONFIRMED','RECEIVED') AND po.total > po.paidAmount THEN po.orderDate END), '%Y-%m-%d') AS oldestPoDate
+    FROM suppliers s
+    LEFT JOIN purchaseOrders po
+      ON po.supplierId = s.id
+      AND po.poStatus IN ('CONFIRMED', 'RECEIVED')
+      ${branchFilter}
+    WHERE s.isActive = TRUE
+    GROUP BY s.id, s.name, s.phone, s.currentBalance
+    HAVING unpaidTotal > 0 OR s.currentBalance > 0
+    ORDER BY unpaidTotal DESC, s.currentBalance DESC
+  `);
+  const data = (rows as any)[0] ?? rows;
+  return Array.isArray(data) ? (data as APAgingRow[]) : [];
+}
+
+export interface SupplierStatementPO {
+  id: number;
+  poNumber: string;
+  orderDate: Date;
+  expectedDeliveryDate: Date | null;
+  total: string;
+  paidAmount: string;
+  status: string;
+}
+
+export interface SupplierStatementPayment {
+  id: number;
+  purchaseOrderId: number | null;
+  receiptId: number | null;
+  amount: string;
+  entryDate: Date;
+  notes: string | null;
+}
+
+export interface SupplierStatementResult {
+  supplier: typeof suppliers.$inferSelect;
+  purchaseOrders: SupplierStatementPO[];
+  payments: SupplierStatementPayment[];
+  summary: {
+    totalPurchases: string;
+    totalPaid: string;
+    unpaid: string;
+    currentBalance: string;
+  };
+}
+
+/** كشف حساب مورد: أوامر شراء + دفعات (من accountingEntries.PAYMENT_OUT) + ملخّص. */
+export async function getSupplierStatement(supplierId: number): Promise<SupplierStatementResult | null> {
+  const db = getDb();
+  if (!db) return null;
+  const s = (await db.select().from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0];
+  if (!s) return null;
+
+  const pos = await db
+    .select({
+      id: purchaseOrders.id,
+      poNumber: purchaseOrders.poNumber,
+      orderDate: purchaseOrders.orderDate,
+      expectedDeliveryDate: purchaseOrders.expectedDeliveryDate,
+      total: purchaseOrders.total,
+      paidAmount: purchaseOrders.paidAmount,
+      status: purchaseOrders.status,
+    })
+    .from(purchaseOrders)
+    .where(eq(purchaseOrders.supplierId, supplierId))
+    .orderBy(desc(purchaseOrders.orderDate));
+
+  // Payments to this supplier are tracked in accountingEntries (entryType=PAYMENT_OUT, supplierId).
+  const payments = await db
+    .select({
+      id: accountingEntries.id,
+      purchaseOrderId: accountingEntries.purchaseOrderId,
+      receiptId: accountingEntries.receiptId,
+      amount: accountingEntries.amount,
+      entryDate: accountingEntries.entryDate,
+      notes: accountingEntries.notes,
+    })
+    .from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.entryType, "PAYMENT_OUT"),
+        eq(accountingEntries.supplierId, supplierId)
+      )
+    )
+    .orderBy(asc(accountingEntries.entryDate), asc(accountingEntries.id));
+
+  const totalPurchases = pos.reduce((acc, p) => acc + Number(p.total ?? 0), 0);
+  const totalPaid = pos.reduce((acc, p) => acc + Number(p.paidAmount ?? 0), 0);
+  const unpaid = pos
+    .filter((p) => p.status === "CONFIRMED" || p.status === "RECEIVED")
+    .reduce((acc, p) => acc + Math.max(Number(p.total ?? 0) - Number(p.paidAmount ?? 0), 0), 0);
+
+  return {
+    supplier: s,
+    purchaseOrders: pos.map((p) => ({
+      id: Number(p.id),
+      poNumber: p.poNumber,
+      orderDate: p.orderDate,
+      expectedDeliveryDate: p.expectedDeliveryDate,
+      total: String(p.total),
+      paidAmount: String(p.paidAmount),
+      status: p.status,
+    })),
+    payments: payments.map((p) => ({
+      id: Number(p.id),
+      purchaseOrderId: p.purchaseOrderId ? Number(p.purchaseOrderId) : null,
+      receiptId: p.receiptId ? Number(p.receiptId) : null,
+      amount: String(p.amount),
+      entryDate: p.entryDate as Date,
+      notes: p.notes,
+    })),
+    summary: {
+      totalPurchases: totalPurchases.toFixed(2),
+      totalPaid: totalPaid.toFixed(2),
+      unpaid: unpaid.toFixed(2),
+      currentBalance: String(s.currentBalance ?? "0"),
     },
   };
 }

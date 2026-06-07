@@ -15,6 +15,8 @@ const NAV: { href: string; label: string }[] = [
   { href: "/expenses", label: "المصروفات اليومية" },
   { href: "/ar-aging", label: "أعمار الذمم" },
   { href: "/customers-statement", label: "كشف حساب عميل" },
+  { href: "/ap-aging", label: "أعمار الذمم الدائنة" },
+  { href: "/suppliers-statement", label: "كشف حساب مورد" },
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
