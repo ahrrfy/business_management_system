@@ -1,4 +1,5 @@
 import CustomerPicker from "@/components/CustomerPicker";
+import { clearCartDraft, loadCartDraft, saveCartDraft } from "@/lib/cartDraft";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -93,7 +94,26 @@ export default function POS() {
   // Customer + tier (tier auto-syncs to customer.defaultPriceTier unless explicitly overridden).
   const [customerId, setCustomerId] = useState<number | null>(null);
   const [tierOverride, setTierOverride] = useState<Tier | null>(null);
+  const [draftRestored, setDraftRestored] = useState(false);
   const customers = trpc.customers.list.useQuery();
+
+  // استرجاع مسوّدة السلّة عند فتح POS (لا فقد بعد تحديث/انقطاع).
+  useEffect(() => {
+    if (draftRestored) return;
+    const d = loadCartDraft<CartItem>(branchId);
+    if (d) {
+      setCart(d.cart);
+      if (d.customerId != null) setCustomerId(d.customerId);
+      if (d.tierOverride) setTierOverride(d.tierOverride);
+    }
+    setDraftRestored(true);
+  }, [branchId, draftRestored]);
+
+  // حفظ المسوّدة تلقائياً عند أي تغيّر (بعد الاسترجاع الأوّل فقط).
+  useEffect(() => {
+    if (!draftRestored) return;
+    saveCartDraft<CartItem>(branchId, { cart, customerId, tierOverride });
+  }, [cart, customerId, tierOverride, branchId, draftRestored]);
   const selectedCustomer = useMemo(
     () => (customers.data ?? []).find((c) => c.id === customerId) ?? null,
     [customers.data, customerId]
@@ -239,6 +259,7 @@ export default function POS() {
       };
       setLastReceipt(rec);
       setLastInvoiceId(r.invoiceId);
+      clearCartDraft(branchId); // بيع ناجح ⇒ امسح المسوّدة
       const tail = finalCredit > 0 ? ` — آجل ${money(finalCredit)} على ${selectedCustomer?.name ?? "العميل"}` : "";
       setMessage({ kind: "ok", text: `تم البيع ✓ فاتورة ${r.invoiceNumber} (${r.status})${tail}` });
       setCart([]);
