@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, like } from "drizzle-orm";
+import { desc, eq, inArray, like } from "drizzle-orm";
 import {
   invoiceItems,
   invoices,
@@ -126,11 +126,19 @@ export async function startWorkOrder(workOrderId: number, actor: Actor) {
     // Deterministic lock order: ascending variantId.
     mats.sort((a, b) => Number(a.variantId) - Number(b.variantId));
 
+    // Batch-load all variant costs in one query instead of N queries inside the loop.
+    const variantIds = mats.map((m) => Number(m.variantId));
+    const costRows = variantIds.length > 0
+      ? await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice })
+          .from(productVariants)
+          .where(inArray(productVariants.id, variantIds))
+      : [];
+    const costMap = new Map(costRows.map((v) => [Number(v.id), v.costPrice]));
+
     let materialsCost = new Decimal(0);
     for (const m of mats) {
       // Snapshot unit cost from variant.costPrice at consumption.
-      const v = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, Number(m.variantId))).limit(1))[0];
-      const unitCost = round2(money(v?.costPrice ?? "0"));
+      const unitCost = round2(money(costMap.get(Number(m.variantId)) ?? "0"));
       const lineCost = round2(unitCost.times(m.baseQuantity));
       materialsCost = materialsCost.plus(lineCost);
       await tx.update(workOrderMaterials).set({ unitCost: unitCost.toFixed(2) }).where(eq(workOrderMaterials.id, Number(m.id)));
