@@ -1,39 +1,64 @@
+import CustomerPicker from "@/components/CustomerPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { isPaired, isWebUsbSupported, pairPrinter, printDoc, type PrintDoc } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
+type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
+type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 type CartItem = { row: PosRow; qty: number };
 type Receipt = {
   invoiceNumber: string;
   date: string;
+  customerName?: string;
   lines: { name: string; unit: string; qty: number; price: number; total: number }[];
   total: number;
   received: number;
   change: number;
+  credit: number;
+  status: string;
+};
+
+const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
+const TIER_CLS: Record<Tier, string> = {
+  RETAIL: "bg-emerald-100 text-emerald-700",
+  WHOLESALE: "bg-blue-100 text-blue-700",
+  GOVERNMENT: "bg-violet-100 text-violet-700",
+};
+const METHOD_LABEL: Record<PaymentMethod, string> = {
+  CASH: "نقد",
+  CARD: "بطاقة",
+  CHECK: "صك",
+  TRANSFER: "تحويل",
+  WALLET: "محفظة",
 };
 
 const money = (n: number) => n.toFixed(2);
 const SHOP = "الرؤية العربية";
 
+const selectCls =
+  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
 function buildReceiptDoc(r: Receipt): PrintDoc {
+  const totals: { label: string; value: string }[] = [
+    { label: "الإجمالي", value: money(r.total) },
+    { label: "المستلم", value: money(r.received) },
+  ];
+  if (r.credit > 0) totals.push({ label: "آجل/ذمة", value: money(r.credit) });
+  else totals.push({ label: "الباقي", value: money(r.change) });
   return {
     kind: "receipt",
     title: SHOP,
-    subtitle: "للتجارة العامة والقرطاسية",
+    subtitle: r.customerName ? `عميل: ${r.customerName}` : "للتجارة العامة والقرطاسية",
     meta: [`فاتورة: ${r.invoiceNumber}`, r.date],
     columns: ["الصنف", "كمية", "سعر", "إجمالي"],
     rows: r.lines.map((l) => [`${l.name} (${l.unit})`, String(l.qty), money(l.price), money(l.total)]),
-    totals: [
-      { label: "الإجمالي", value: money(r.total) },
-      { label: "المستلم", value: money(r.received) },
-      { label: "الباقي", value: money(r.change) },
-    ],
+    totals,
     footer: "شكراً لتعاملكم معنا",
   };
 }
@@ -41,7 +66,6 @@ function buildReceiptDoc(r: Receipt): PrintDoc {
 export default function POS() {
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
-  const tier = "RETAIL" as const;
   const utils = trpc.useUtils();
 
   const shiftQ = trpc.shifts.current.useQuery({ branchId });
@@ -51,23 +75,38 @@ export default function POS() {
   const [barcode, setBarcode] = useState("");
   const [search, setSearch] = useState("");
   const [calc, setCalc] = useState("");
+  const [method, setMethod] = useState<PaymentMethod>("CASH");
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [lastReceipt, setLastReceipt] = useState<Receipt | null>(null);
+  const [lastInvoiceId, setLastInvoiceId] = useState<number | null>(null);
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [opening, setOpening] = useState("0");
+
+  // Customer + tier (tier auto-syncs to customer.defaultPriceTier unless explicitly overridden).
+  const [customerId, setCustomerId] = useState<number | null>(null);
+  const [tierOverride, setTierOverride] = useState<Tier | null>(null);
+  const customers = trpc.customers.list.useQuery();
+  const selectedCustomer = useMemo(
+    () => (customers.data ?? []).find((c) => c.id === customerId) ?? null,
+    [customers.data, customerId]
+  );
+  const effectiveTier: Tier =
+    tierOverride ?? (selectedCustomer?.defaultPriceTier as Tier | undefined) ?? "RETAIL";
 
   const total = cart.reduce((s, c) => s + Number(c.row.price ?? 0) * c.qty, 0);
   const received = Number(calc || 0);
   const change = received - total;
+  const credit = total - received;
+  const isCredit = received < total;
 
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: search, limit: 8 },
+    { branchId, tier: effectiveTier, query: search, limit: 8 },
     { enabled: search.trim().length > 0 }
   );
 
   function addRow(row: PosRow) {
     if (row.price == null) {
-      setMessage({ kind: "err", text: `لا سعر مُعرّف لـ ${row.productName} (${row.unitName})` });
+      setMessage({ kind: "err", text: `لا سعر مُعرّف لـ ${row.productName} (${row.unitName}) في فئة ${TIER_LABEL[effectiveTier]}` });
       return;
     }
     setMessage(null);
@@ -89,7 +128,7 @@ export default function POS() {
     const code = barcode.trim();
     if (!code) return;
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
+      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
       if (!row) setMessage({ kind: "err", text: `باركود غير معروف: ${code}` });
       else addRow(row);
     } catch (e: any) {
@@ -157,33 +196,53 @@ export default function POS() {
 
   const sale = trpc.sales.create.useMutation({
     onSuccess: async (r) => {
+      const finalReceived = isCredit ? received : total;
+      const finalChange = isCredit ? 0 : received - total;
+      const finalCredit = isCredit ? total - received : 0;
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber,
         date: new Date().toLocaleString("ar-IQ"),
+        customerName: selectedCustomer?.name,
         lines: cart.map((c) => ({ name: c.row.productName, unit: c.row.unitName, qty: c.qty, price: Number(c.row.price), total: Number(c.row.price) * c.qty })),
         total,
-        received: received || total,
-        change: (received || total) - total,
+        received: finalReceived,
+        change: finalChange,
+        credit: finalCredit,
+        status: r.status,
       };
       setLastReceipt(rec);
-      setMessage({ kind: "ok", text: `تم البيع ✓ فاتورة ${r.invoiceNumber} — الإجمالي ${r.total}` });
+      setLastInvoiceId(r.invoiceId);
+      const tail = finalCredit > 0 ? ` — آجل ${money(finalCredit)} على ${selectedCustomer?.name ?? "العميل"}` : "";
+      setMessage({ kind: "ok", text: `تم البيع ✓ فاتورة ${r.invoiceNumber} (${r.status})${tail}` });
       setCart([]);
       setCalc("");
       await printDoc(buildReceiptDoc(rec));
-      await Promise.all([utils.catalog.posList.invalidate(), shiftQ.refetch()]);
+      await Promise.all([
+        utils.catalog.posList.invalidate(),
+        utils.customers.list.invalidate(),
+        shiftQ.refetch(),
+      ]);
     },
     onError: (e) => setMessage({ kind: "err", text: e.message }),
   });
 
   function completeSale() {
     if (!shift || !cart.length) return;
+    setMessage(null);
+    // Guard: credit (received < total) requires a customer (server also enforces, but we surface a clear message).
+    if (isCredit && customerId == null) {
+      setMessage({ kind: "err", text: "البيع الآجل (دفع أقل من الإجمالي) يتطلّب اختيار عميل." });
+      return;
+    }
+    const amount = isCredit ? money(received) : money(total);
     sale.mutate({
       branchId,
       shiftId: shift.id,
       sourceType: "POS",
-      priceTier: tier,
+      customerId: customerId ?? undefined,
+      priceTier: effectiveTier,
       lines: cart.map((c) => ({ variantId: c.row.variantId, productUnitId: c.row.productUnitId, quantity: String(c.qty) })),
-      payment: { amount: money(total), method: "CASH" },
+      payment: { amount, method },
     });
   }
 
@@ -210,6 +269,10 @@ export default function POS() {
 
   const keys = ["7", "8", "9", "4", "5", "6", "1", "2", "3", "0", "00", "."];
 
+  const completeBtnLabel = isCredit
+    ? `إتمام بيع آجل (${money(received || 0)} ${METHOD_LABEL[method]} + ${money(credit)} على الذمة)`
+    : `إتمام الدفع ${METHOD_LABEL[method]} (${money(total)})`;
+
   return (
     <div className="min-h-screen bg-background p-4">
       <div className="flex items-center justify-between mb-3">
@@ -224,10 +287,44 @@ export default function POS() {
         </div>
       </div>
 
-      {message && <p className={`mb-3 text-sm ${message.kind === "ok" ? "text-green-600" : "text-destructive"}`}>{message.text}</p>}
+      {message && (
+        <div className={`mb-3 text-sm flex items-center gap-3 ${message.kind === "ok" ? "text-green-600" : "text-destructive"}`}>
+          <span>{message.text}</span>
+          {message.kind === "ok" && lastInvoiceId != null && (
+            <Link href={`/invoices/${lastInvoiceId}`} className="underline">فتح الفاتورة</Link>
+          )}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 space-y-3">
+          <Card>
+            <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+              <CustomerPicker
+                customerId={customerId}
+                onCustomerChange={(id) => { setCustomerId(id); setTierOverride(null); }}
+                balance={selectedCustomer?.currentBalance ?? null}
+              />
+              <div className="space-y-1">
+                <Label>فئة السعر</Label>
+                <div className="flex gap-2 items-center">
+                  <select
+                    className={selectCls + " flex-1"}
+                    value={effectiveTier}
+                    onChange={(e) => setTierOverride(e.target.value as Tier)}
+                  >
+                    <option value="RETAIL">مفرد</option>
+                    <option value="WHOLESALE">جملة</option>
+                    <option value="GOVERNMENT">حكومي</option>
+                  </select>
+                  <span className={`text-xs rounded-full px-2 py-0.5 ${TIER_CLS[effectiveTier]}`}>
+                    {TIER_LABEL[effectiveTier]}
+                  </span>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+
           <div className="flex gap-2 relative">
             <Input autoFocus placeholder="امسح الباركود ثم Enter" dir="ltr" value={barcode}
               onChange={(e) => setBarcode(e.target.value)}
@@ -291,13 +388,33 @@ export default function POS() {
           <CardContent className="space-y-3">
             <div className="flex justify-between text-lg font-bold"><span>الإجمالي</span><span>{money(total)}</span></div>
             <div className="space-y-1">
-              <Label>النقد المستلم</Label>
+              <Label>المبلغ المستلم الآن</Label>
               <div className="border rounded-md p-2 text-left text-xl font-mono tabular-nums">{calc || "0"}</div>
             </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">الباقي</span>
-              <span className={change < 0 ? "text-destructive" : "text-green-600"}>{money(change)}</span>
+            <div className="space-y-1">
+              <Label>طريقة الدفع</Label>
+              <select className={selectCls} value={method} onChange={(e) => setMethod(e.target.value as PaymentMethod)}>
+                <option value="CASH">نقد</option>
+                <option value="CARD">بطاقة</option>
+                <option value="TRANSFER">تحويل</option>
+                <option value="CHECK">صك</option>
+                <option value="WALLET">محفظة</option>
+              </select>
             </div>
+            {isCredit ? (
+              <div className="flex justify-between text-sm">
+                <span className="text-amber-700">آجل على {selectedCustomer?.name ?? "—"}</span>
+                <span className="text-amber-700 font-semibold tabular-nums">{money(credit)}</span>
+              </div>
+            ) : (
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">الباقي للعميل</span>
+                <span className={change < 0 ? "text-destructive" : "text-green-600"}>{money(change)}</span>
+              </div>
+            )}
+            {isCredit && customerId == null && (
+              <p className="text-xs text-destructive">⚠ بيع آجل يتطلّب اختيار عميل.</p>
+            )}
 
             <div className="grid grid-cols-3 gap-2">
               {keys.map((k) => (
@@ -308,8 +425,12 @@ export default function POS() {
               <Button variant="outline" className="h-11" onClick={() => setCalc(money(total))}>= الإجمالي</Button>
             </div>
 
-            <Button className="w-full h-12 text-base" disabled={!cart.length || sale.isPending} onClick={completeSale}>
-              {sale.isPending ? "جارٍ…" : `إتمام الدفع نقداً (${money(total)})`}
+            <Button
+              className="w-full h-12 text-base"
+              disabled={!cart.length || sale.isPending || (isCredit && customerId == null)}
+              onClick={completeSale}
+            >
+              {sale.isPending ? "جارٍ…" : completeBtnLabel}
             </Button>
             <div className="flex gap-2">
               <Button variant="outline" className="flex-1" disabled={!lastReceipt} onClick={() => lastReceipt && printDoc(buildReceiptDoc(lastReceipt))}>
