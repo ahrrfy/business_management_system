@@ -35,6 +35,15 @@ async function findAvailablePort(startPort = 3000): Promise<number> {
 }
 
 async function startServer() {
+  // فشل سريع: سرّ الجلسات مفقود/ضعيف ⇒ توكنات قابلة للتزوير. أوقف الإقلاع بدل العمل بثغرة.
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret || jwtSecret.length < 32) {
+    logger.error(
+      "JWT_SECRET مفقود أو أقصر من ٣٢ حرفاً — أوقفنا الإقلاع. اضبط قيمة عشوائية طويلة في .env (مثال: openssl rand -hex 32)."
+    );
+    process.exit(1);
+  }
+
   const app = express();
   const server = createServer(app);
   app.set("trust proxy", 1); // خلف بروكسي/خدمة Windows ⇒ IP الحقيقي لـrate-limit.
