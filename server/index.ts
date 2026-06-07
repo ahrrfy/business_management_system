@@ -19,6 +19,7 @@ import { getDb } from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
+import { csrfGuard } from "./middleware/csrf";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -63,8 +64,24 @@ async function startServer() {
     })
   );
 
-  // حماية رؤوس HTTP. CSP معطّل لأنّ SPA يحقن أنماطاً/سكربتات inline (Vite/Tailwind).
-  app.use(helmet({ contentSecurityPolicy: false, crossOriginEmbedderPolicy: false }));
+  // حماية رؤوس HTTP. CSP مُفعَّل مع استثناء style-src unsafe-inline لـTailwind/SPA.
+  app.use(
+    helmet({
+      crossOriginEmbedderPolicy: false,
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          scriptSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          imgSrc: ["'self'", "data:", "blob:"],
+          connectSrc: ["'self'"],
+          fontSrc: ["'self'", "data:"],
+          objectSrc: ["'none'"],
+          frameAncestors: ["'none'"],
+        },
+      },
+    })
+  );
 
   // CORS يُفعَّل فقط عند ضبط أصول مسموحة (التشغيل أحادي الأصل لا يحتاجه).
   const origins = (process.env.ALLOWED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
@@ -114,6 +131,9 @@ async function startServer() {
       message: { error: "محاولات دخول كثيرة، انتظر ١٥ دقيقة." },
     })
   );
+
+  // حماية CSRF (طبقة دفاع ثانية فوق sameSite:"strict").
+  app.use("/api/trpc", csrfGuard);
 
   // API routes must be registered before the SPA catch-all (added by Vite/static).
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
