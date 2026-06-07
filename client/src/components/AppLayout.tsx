@@ -23,6 +23,7 @@ const NAV: { href: string; label: string; adminOnly?: boolean }[] = [
   { href: "/ap-aging", label: "أعمار الذمم الدائنة" },
   { href: "/suppliers-statement", label: "كشف حساب مورد" },
   { href: "/users", label: "المستخدمون", adminOnly: true },
+  { href: "/audit", label: "سجلّ التدقيق", adminOnly: true },
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
