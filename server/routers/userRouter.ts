@@ -1,5 +1,6 @@
 import { PASSWORD_MIN_LEN } from "@shared/const";
 import { z } from "zod";
+import { logAudit } from "../services/auditService";
 import {
   createUser,
   getUser,
@@ -15,7 +16,7 @@ const ROLE = z.enum(["user", "admin", "manager", "cashier", "warehouse"]);
 /**
  * إدارة المستخدمين — **للمدير فقط (adminProcedure)**:
  * list/get/create/update/setActive/resetPassword. مع حواجز آخر مدير والحماية الذاتية
- * في الخدمة. لا يُعاد passwordHash في أيّ مخرَج.
+ * في الخدمة. لا يُعاد passwordHash في أيّ مخرَج. كل تغيير يُكتب في سجلّ التدقيق.
  */
 export const userRouter = router({
   list: adminProcedure
@@ -46,9 +47,16 @@ export const userRouter = router({
         branchId: z.number().int().positive().nullish(),
       })
     )
-    .mutation(({ input, ctx }) =>
-      createUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const res = await createUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "user.create",
+        entityType: "user",
+        entityId: res.userId,
+        newValue: { email: input.email, role: input.role, branchId: input.branchId ?? null },
+      });
+      return res;
+    }),
 
   update: adminProcedure
     .input(
@@ -60,18 +68,37 @@ export const userRouter = router({
         branchId: z.number().int().positive().nullish(),
       })
     )
-    .mutation(({ input, ctx }) =>
-      updateUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const res = await updateUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "user.update",
+        entityType: "user",
+        entityId: input.userId,
+        newValue: {
+          name: input.name,
+          email: input.email,
+          role: input.role,
+          branchId: input.branchId,
+        },
+      });
+      return res;
+    }),
 
   setActive: adminProcedure
     .input(z.object({ userId: z.number().int().positive(), isActive: z.boolean() }))
-    .mutation(({ input, ctx }) =>
-      setUserActive(input.userId, input.isActive, {
+    .mutation(async ({ input, ctx }) => {
+      const res = await setUserActive(input.userId, input.isActive, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId ?? 1,
-      })
-    ),
+      });
+      await logAudit(ctx, {
+        action: input.isActive ? "user.activate" : "user.deactivate",
+        entityType: "user",
+        entityId: input.userId,
+        newValue: { isActive: input.isActive },
+      });
+      return res;
+    }),
 
   resetPassword: adminProcedure
     .input(
@@ -80,10 +107,17 @@ export const userRouter = router({
         newPassword: z.string().min(PASSWORD_MIN_LEN).max(128),
       })
     )
-    .mutation(({ input, ctx }) =>
-      resetUserPassword(input.userId, input.newPassword, {
+    .mutation(async ({ input, ctx }) => {
+      const res = await resetUserPassword(input.userId, input.newPassword, {
         userId: ctx.user.id,
         branchId: ctx.user.branchId ?? 1,
-      })
-    ),
+      });
+      // لا نُسجّل كلمة المرور إطلاقاً — الحدث فقط.
+      await logAudit(ctx, {
+        action: "user.resetPassword",
+        entityType: "user",
+        entityId: input.userId,
+      });
+      return res;
+    }),
 });
