@@ -7,7 +7,7 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift, openShift as openShiftSvc } from "../shiftService";
-import { createProduct, getProductForEdit, updateProduct } from "../catalogService";
+import { assignBarcode, createProduct, getProductForEdit, lookupByBarcode, updateProduct } from "../catalogService";
 import {
   cancelWorkOrder,
   createWorkOrder,
@@ -652,5 +652,43 @@ describe("الكتالوج: إنشاء منتج بمخزون افتتاحي", ()
     const baseUnit = units.find((u) => u.isBaseUnit)!;
     const prices = await db().select().from(s.productPrices).where(eq(s.productPrices.productUnitId, Number(baseUnit.id)));
     expect(prices.map((p) => p.priceTier).sort()).toEqual(["RETAIL", "WHOLESALE"]);
+  });
+});
+
+describe("الكتالوج: إسناد الباركود (ملصقات)", () => {
+  it("assignBarcode يحفظ باركوداً داخلياً لوحدة بلا باركود ويصبح قابلاً للمسح", async () => {
+    const r = await createProduct(
+      { name: "صنف بلا باركود", variants: [{ sku: "NOBC-1", costPrice: "10.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, prices: [{ priceTier: "RETAIL", price: "20.00" }] }] }] },
+      actor
+    );
+    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "NOBC-1")))[0];
+    const unit = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v.id))))[0];
+    expect(unit.barcode).toBeNull();
+
+    const code = "ALR0000999";
+    await assignBarcode(Number(unit.id), code);
+
+    const after = (await db().select().from(s.productUnits).where(eq(s.productUnits.id, Number(unit.id))))[0];
+    expect(after.barcode).toBe(code);
+
+    // قابل للمسح عبر lookupByBarcode
+    const row = await lookupByBarcode(code, 1, "RETAIL");
+    expect(row).not.toBeNull();
+    expect(row!.sku).toBe("NOBC-1");
+  });
+
+  it("assignBarcode يرفض باركوداً مُستخدَماً لوحدة أخرى", async () => {
+    const r1 = await createProduct(
+      { name: "أول", variants: [{ sku: "A-1", costPrice: "1.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, barcode: "DUP-100" }] }] },
+      actor
+    );
+    const r2 = await createProduct(
+      { name: "ثانٍ", variants: [{ sku: "B-1", costPrice: "1.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] },
+      actor
+    );
+    void r1;
+    const v2 = (await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "B-1")))[0];
+    const u2 = (await db().select().from(s.productUnits).where(eq(s.productUnits.variantId, Number(v2.id))))[0];
+    await expect(assignBarcode(Number(u2.id), "DUP-100")).rejects.toThrow();
   });
 });

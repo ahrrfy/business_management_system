@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { createProduct, getProductForEdit, listForPos, listForPurchase, lookupByBarcode, updateProduct } from "../services/catalogService";
+import { assignBarcode, createProduct, getProductForEdit, listForPos, listForPurchase, lookupByBarcode, updateProduct } from "../services/catalogService";
 import { protectedProcedure, router } from "../trpc";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
@@ -86,4 +86,8 @@ export const catalogRouter = router({
       })
     )
     .mutation(({ input, ctx }) => updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+
+  assignBarcode: protectedProcedure
+    .input(z.object({ productUnitId: z.number().int().positive(), barcode: z.string().min(1) }))
+    .mutation(({ input }) => assignBarcode(input.productUnitId, input.barcode)),
 });

@@ -2,6 +2,7 @@ import { AppLayout } from "@/components/AppLayout";
 import { trpc } from "@/lib/trpc";
 import APAging from "@/pages/APAging";
 import ARAging from "@/pages/ARAging";
+import BarcodeLabels from "@/pages/BarcodeLabels";
 import CustomerStatement from "@/pages/CustomerStatement";
 import Customers from "@/pages/Customers";
 import CustomerNew from "@/pages/CustomerNew";
@@ -63,6 +64,7 @@ export default function App() {
       <Route path="/products"><Shell><Products /></Shell></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
+      <Route path="/barcode-labels"><Shell><BarcodeLabels /></Shell></Route>
       <Route path="/invoices"><Shell><Invoices /></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
       <Route path="/customers"><Shell><Customers /></Shell></Route>

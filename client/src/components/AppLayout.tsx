@@ -6,6 +6,7 @@ const NAV: { href: string; label: string }[] = [
   { href: "/", label: "لوحة التحكم" },
   { href: "/pos", label: "نقطة البيع" },
   { href: "/products", label: "المنتجات" },
+  { href: "/barcode-labels", label: "ملصقات الباركود" },
   { href: "/invoices", label: "المبيعات" },
   { href: "/customers", label: "العملاء" },
   { href: "/returns", label: "المرتجعات" },
