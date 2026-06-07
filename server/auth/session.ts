@@ -1,4 +1,4 @@
-import { COOKIE_NAME, ONE_YEAR_MS } from "@shared/const";
+import { COOKIE_NAME, SESSION_DEFAULT_MS } from "@shared/const";
 import { parse as parseCookie } from "cookie";
 import { eq } from "drizzle-orm";
 import type { Request } from "express";
@@ -14,16 +14,20 @@ function getSecret(): Uint8Array {
   return new TextEncoder().encode(secret);
 }
 
-export type SessionPayload = { uid: number; role: string };
+/**
+ * حمولة الجلسة = المعرّف فقط. **الدور لا يُحفظ في الـJWT** ويُقرأ دائماً من
+ * قاعدة البيانات (المصدر الموثوق) — فلا يستطيع توكنٌ مسروق/قديم تثبيت دور مرتفع.
+ * `iat` (وقت الإصدار، بالثواني) يُستعمل لإبطال الجلسات عبر `users.sessionsValidFrom`.
+ */
+export type SessionPayload = { uid: number; iat: number };
 
 /** Sign a session JWT for a local user. */
 export async function signSession(
   uid: number,
-  role: string,
-  expiresInMs: number = ONE_YEAR_MS
+  expiresInMs: number = SESSION_DEFAULT_MS
 ): Promise<string> {
   const expirationSeconds = Math.floor((Date.now() + expiresInMs) / 1000);
-  return new SignJWT({ uid, role })
+  return new SignJWT({ uid })
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setIssuedAt()
     .setExpirationTime(expirationSeconds)
@@ -40,8 +44,10 @@ export async function verifySession(
       algorithms: ["HS256"],
     });
     const uid = Number(payload.uid);
+    const iat = Number(payload.iat);
     if (!Number.isInteger(uid) || uid <= 0) return null;
-    return { uid, role: String(payload.role ?? "user") };
+    if (!Number.isInteger(iat) || iat <= 0) return null;
+    return { uid, iat };
   } catch {
     return null;
   }
@@ -64,5 +70,12 @@ export async function getUserFromRequest(req: Request): Promise<User | null> {
 
   const user = rows[0];
   if (!user || !user.isActive) return null;
+
+  // إبطال الجلسات: أي توكن أُصدر قبل sessionsValidFrom (بالثواني) يُرفض.
+  const validFromSec = user.sessionsValidFrom
+    ? Math.floor(new Date(user.sessionsValidFrom).getTime() / 1000)
+    : 0;
+  if (session.iat < validFromSec) return null;
+
   return user;
 }

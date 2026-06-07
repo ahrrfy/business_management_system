@@ -13,6 +13,7 @@ import { customerRouter } from "./routers/customerRouter";
 import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
+import { userRouter } from "./routers/userRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -25,6 +26,7 @@ export const appRouter = router({
     })),
   }),
   auth: authRouter,
+  users: userRouter,
   sales: saleRouter,
   purchases: purchaseRouter,
   inventory: inventoryRouter,

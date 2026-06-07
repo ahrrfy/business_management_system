@@ -30,6 +30,10 @@ import Transfers from "@/pages/Transfers";
 import WorkOrderDetail from "@/pages/WorkOrderDetail";
 import WorkOrderNew from "@/pages/WorkOrderNew";
 import WorkOrders from "@/pages/WorkOrders";
+import Users from "@/pages/Users";
+import UserNew from "@/pages/UserNew";
+import UserEdit from "@/pages/UserEdit";
+import Account from "@/pages/Account";
 import { Redirect, Route, Switch } from "wouter";
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -91,6 +95,10 @@ export default function App() {
       <Route path="/customers-statement"><Shell><CustomerStatement /></Shell></Route>
       <Route path="/ap-aging"><Shell><APAging /></Shell></Route>
       <Route path="/suppliers-statement"><Shell><SupplierStatement /></Shell></Route>
+      <Route path="/users"><Shell><Users /></Shell></Route>
+      <Route path="/users/new"><Shell><UserNew /></Shell></Route>
+      <Route path="/users/:id/edit"><Shell><UserEdit /></Shell></Route>
+      <Route path="/account"><Shell><Account /></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
   );

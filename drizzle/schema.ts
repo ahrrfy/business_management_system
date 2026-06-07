@@ -36,19 +36,26 @@ export const users = mysqlTable(
     id: int("id").autoincrement().primaryKey(),
     openId: varchar("openId", { length: 64 }).notNull().unique(),
     name: text("name"),
-    email: varchar("email", { length: 320 }),
+    // فريد (UNIQUE) لمنع سباق register المكرّر؛ يبقى nullable على مستوى DB (لمستخدمي
+    // النظام/الاختبارات بلا بريد)، ووجوده مفروض في طبقة الخدمة (createUser/updateUser).
+    email: varchar("email", { length: 320 }).unique(),
     passwordHash: varchar("passwordHash", { length: 255 }),
     phone: varchar("phone", { length: 20 }),
     loginMethod: varchar("loginMethod", { length: 64 }).default("local"),
     role: mysqlEnum("role", ["user", "admin", "manager", "cashier", "warehouse"]).default("user").notNull(),
     branchId: bigint("branchId", { mode: "number" }),
     isActive: boolean("isActive").default(true),
+    // إبطال الجلسات: أي JWT أُصدر قبل هذا الوقت يُرفض (تغيير كلمة مرور/طرد/تغيير دور).
+    sessionsValidFrom: timestamp("sessionsValidFrom").defaultNow().notNull(),
+    // قفل الحساب ضدّ التخمين (brute-force) — عدّاد الإخفاقات وزمن القفل المؤقّت.
+    failedLoginAttempts: int("failedLoginAttempts").default(0).notNull(),
+    lockedUntil: timestamp("lockedUntil"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
   },
   (table) => ({
-    emailIdx: index("idx_user_email").on(table.email),
+    // البريد فريد (UNIQUE) ⇒ يُغني عن idx_user_email ويمنع سباق register المكرّر.
     roleIdx: index("idx_user_role").on(table.role),
   })
 );

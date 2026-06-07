@@ -16,5 +16,13 @@ export function verifyPassword(plain: string, stored: string | null | undefined)
   if (!salt || !hash) return false;
   const hashBuf = Buffer.from(hash, "hex");
   const testBuf = scryptSync(plain, salt, 64);
+  // كل تجزّئات الإنتاج 64 بايت ثابتة؛ فحص الطول حارس ضدّ رمي timingSafeEqual فقط.
   return hashBuf.length === testBuf.length && timingSafeEqual(hashBuf, testBuf);
 }
+
+/**
+ * تجزّئة وهمية صالحة تُحسب مرّة عند تحميل الوحدة. يستعملها مسار تسجيل الدخول
+ * عند غياب المستخدم كي يمرّ بكامل تكلفة scrypt — فيتساوى زمن الردّ بين «بريد
+ * موجود بكلمة خاطئة» و«بريد غير موجود»، ويُغلق قناة تعداد المستخدمين الزمنية.
+ */
+export const DUMMY_STORED = hashPassword("__alroya_timing_dummy__");

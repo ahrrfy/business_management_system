@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button";
 import { trpc } from "@/lib/trpc";
 import { Link, useLocation } from "wouter";
 
-const NAV: { href: string; label: string }[] = [
+const NAV: { href: string; label: string; adminOnly?: boolean }[] = [
   { href: "/", label: "لوحة التحكم" },
   { href: "/pos", label: "نقطة البيع" },
   { href: "/products", label: "المنتجات" },
@@ -20,6 +20,7 @@ const NAV: { href: string; label: string }[] = [
   { href: "/customers-statement", label: "كشف حساب عميل" },
   { href: "/ap-aging", label: "أعمار الذمم الدائنة" },
   { href: "/suppliers-statement", label: "كشف حساب مورد" },
+  { href: "/users", label: "المستخدمون", adminOnly: true },
 ];
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
@@ -38,7 +39,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
       <aside className="w-56 shrink-0 border-l bg-card flex flex-col">
         <div className="px-4 py-4 font-semibold text-lg border-b">الرؤية العربية</div>
         <nav className="flex-1 p-2 space-y-1">
-          {NAV.map((n) => {
+          {NAV.filter((n) => !n.adminOnly || me.data?.role === "admin").map((n) => {
             const active = loc === n.href;
             return (
               <Link
@@ -52,9 +53,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
         <div className="border-t p-3 text-xs text-muted-foreground">
-          <div className="mb-1">
+          <Link href="/account" className={`mb-1 block rounded px-1 hover:underline ${loc === "/account" ? "text-primary" : ""}`}>
             {me.data?.name ?? me.data?.email} <span className="opacity-70">({me.data?.role})</span>
-          </div>
+          </Link>
           <Button variant="ghost" size="sm" className="w-full justify-start" onClick={() => logout.mutate()} disabled={logout.isPending}>
             تسجيل الخروج
           </Button>
