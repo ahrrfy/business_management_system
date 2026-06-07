@@ -1,23 +1,67 @@
+import { createContext, useContext, useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { Link } from "wouter";
 
-/* ═══════════ THEME ═══════════ */
+/* ═══════════ DARK-MODE HOOK ═══════════ */
 
-const T = {
-  bg:         "oklch(0.963 0.012 75)",
-  cardBg:     "oklch(1 0 0)",
-  cardBord:   "oklch(0 0 0 / 0.09)",
-  secLine:    "oklch(0 0 0 / 0.10)",
-  secLabel:   "oklch(0.40 0.08 262)",
-  text:       "oklch(0.18 0.014 65)",
-  sub:        "oklch(0.48 0.012 65)",
-  muted:      "oklch(0.62 0.010 65)",
-  statBg:     "oklch(1 0 0)",
-  statBord:   "oklch(0 0 0 / 0.08)",
-  alertBg:    "oklch(0.62 0.24 22 / 0.08)",
-  featuredBg: "oklch(0.62 0.24 22 / 0.07)",
-  featuredBd: "oklch(0.62 0.24 22 / 0.35)",
+function useDarkMode() {
+  const [dark, setDark] = useState(() =>
+    document.documentElement.classList.contains("dark")
+  );
+  useEffect(() => {
+    const obs = new MutationObserver(() =>
+      setDark(document.documentElement.classList.contains("dark"))
+    );
+    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => obs.disconnect();
+  }, []);
+  return dark;
+}
+
+/* ═══════════ THEME PALETTES ═══════════ */
+
+const LIGHT = {
+  bg:          "oklch(0.963 0.012 75)",
+  cardBg:      "oklch(1 0 0)",
+  cardBord:    "oklch(0 0 0 / 0.09)",
+  secLine:     "oklch(0 0 0 / 0.10)",
+  secLabel:    "oklch(0.40 0.08 262)",
+  text:        "oklch(0.18 0.014 65)",
+  sub:         "oklch(0.48 0.012 65)",
+  muted:       "oklch(0.62 0.010 65)",
+  statBg:      "oklch(1 0 0)",
+  statBord:    "oklch(0 0 0 / 0.08)",
+  alertBg:     "oklch(0.62 0.24 22 / 0.08)",
+  featuredBg:  "oklch(0.62 0.24 22 / 0.07)",
+  featuredBd:  "oklch(0.62 0.24 22 / 0.35)",
+  metricsBg:   "oklch(0.985 0.007 75)",
+  metricsBord: "oklch(0 0 0 / 0.08)",
 };
+
+const DARK = {
+  bg:          "oklch(0.14 0.010 65)",
+  cardBg:      "oklch(0.20 0.012 65)",
+  cardBord:    "oklch(1 0 0 / 0.10)",
+  secLine:     "oklch(1 0 0 / 0.22)",
+  secLabel:    "oklch(0.88 0.10 262)",
+  text:        "oklch(1 0 0)",
+  sub:         "oklch(0.90 0.005 75)",
+  muted:       "oklch(0.80 0.005 75)",
+  statBg:      "oklch(0.20 0.012 65)",
+  statBord:    "oklch(1 0 0 / 0.10)",
+  alertBg:     "oklch(0.62 0.24 22 / 0.14)",
+  featuredBg:  "oklch(0.62 0.24 22 / 0.14)",
+  featuredBd:  "oklch(0.62 0.24 22 / 0.50)",
+  metricsBg:   "oklch(0.17 0.010 65)",
+  metricsBord: "oklch(1 0 0 / 0.10)",
+};
+
+type Theme = typeof LIGHT;
+
+/* ═══════════ THEME CONTEXT ═══════════ */
+
+const ThemeCtx = createContext<Theme>(LIGHT);
+const useT = () => useContext(ThemeCtx);
 
 /* ═══════════ SECTIONS & MODULES ═══════════ */
 
@@ -245,6 +289,7 @@ const ShiftIco = ({ color }: { color: string }) => (
 );
 
 function MetricsBar() {
+  const T = useT();
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
   const sales = trpc.sales.list.useQuery({ limit: 500 });
@@ -257,7 +302,9 @@ function MetricsBar() {
   const fmt = (n: number) => n.toLocaleString("ar-IQ", { maximumFractionDigits: 0 });
 
   const shiftLabel = shift.data ? "مفتوحة" : "لا وردية";
-  const shiftSince = shift.data ? `منذ ${new Date(shift.data.openedAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}` : "";
+  const shiftSince = shift.data
+    ? `منذ ${new Date(shift.data.openedAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}`
+    : "";
 
   const stats = [
     {
@@ -304,8 +351,8 @@ function MetricsBar() {
   return (
     <div
       style={{
-        background: "oklch(0.985 0.007 75)",
-        borderBottom: "1px solid oklch(0 0 0 / 0.08)",
+        background: T.metricsBg,
+        borderBottom: `1px solid ${T.metricsBord}`,
         padding: "10px 0",
         display: "flex",
         gap: 12,
@@ -366,6 +413,7 @@ function MetricsBar() {
 /* ═══════════ MODULE CARD ═══════════ */
 
 function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
+  const T = useT();
   const cShadow = m.color.replace(")", " / 0.35)");
   return (
     <Link href={m.href}>
@@ -432,6 +480,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
 /* ═══════════ PLACEHOLDER CARD ═══════════ */
 
 function PlaceholderCard() {
+  const T = useT();
   return (
     <div
       style={{
@@ -456,9 +505,10 @@ function PlaceholderCard() {
   );
 }
 
-/* ═══════════ SECTION ═══════════ */
+/* ═══════════ SECTION ROW ═══════════ */
 
 function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
+  const T = useT();
   const mods = MODULES.filter((m) => m.sec === sec.id);
   const placeholders = Math.max(0, 6 - mods.length);
 
@@ -486,29 +536,34 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
 /* ═══════════ DASHBOARD ═══════════ */
 
 export default function Dashboard() {
+  const dark = useDarkMode();
+  const T = dark ? DARK : LIGHT;
+
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: T.bg,
-        direction: "rtl",
-        fontFamily: "'Cairo', sans-serif",
-        margin: "-24px",
-      }}
-    >
-      <MetricsBar />
+    <ThemeCtx.Provider value={T}>
       <div
         style={{
-          padding: "18px 24px 32px",
-          display: "flex",
-          flexDirection: "column",
-          gap: 20,
+          minHeight: "100vh",
+          background: T.bg,
+          direction: "rtl",
+          fontFamily: "'Cairo', sans-serif",
+          margin: "-24px",
         }}
       >
-        {SECTIONS.map((sec) => (
-          <SectionRow key={sec.id} sec={sec} />
-        ))}
+        <MetricsBar />
+        <div
+          style={{
+            padding: "18px 24px 32px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 20,
+          }}
+        >
+          {SECTIONS.map((sec) => (
+            <SectionRow key={sec.id} sec={sec} />
+          ))}
+        </div>
       </div>
-    </div>
+    </ThemeCtx.Provider>
   );
 }
