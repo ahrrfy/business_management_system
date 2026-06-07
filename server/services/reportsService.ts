@@ -8,6 +8,13 @@ import {
   suppliers,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { money, sumMoney, toDbMoney } from "./money";
+
+/** فرق موجب بين قيمتين ماليتين (لا يقلّ عن صفر) بدقّة decimal. */
+function positiveDiff(total: unknown, paid: unknown) {
+  const d = money((total as string) ?? 0).sub(money((paid as string) ?? 0));
+  return d.isNegative() ? money(0) : d;
+}
 
 /**
  * تقارير مالية للقراءة فقط:
@@ -134,11 +141,14 @@ export async function getCustomerStatement(customerId: number): Promise<Customer
           .where(inArray(receipts.invoiceId, invIds))
           .orderBy(asc(receipts.createdAt));
 
-  const totalSales = invs.reduce((acc, i) => acc + Number(i.total ?? 0), 0);
-  const totalPaid = invs.reduce((acc, i) => acc + Number(i.paidAmount ?? 0), 0);
-  const unpaid = invs
-    .filter((i) => i.status === "PENDING" || i.status === "PARTIALLY_PAID")
-    .reduce((acc, i) => acc + Math.max(Number(i.total ?? 0) - Number(i.paidAmount ?? 0), 0), 0);
+  // أموال بدقّة decimal.js (§٥) — لا Number/toFixed على الأموال.
+  const totalSales = sumMoney(invs.map((i) => i.total ?? 0));
+  const totalPaid = sumMoney(invs.map((i) => i.paidAmount ?? 0));
+  const unpaid = sumMoney(
+    invs
+      .filter((i) => i.status === "PENDING" || i.status === "PARTIALLY_PAID")
+      .map((i) => positiveDiff(i.total, i.paidAmount))
+  );
 
   return {
     customer: c,
@@ -162,9 +172,9 @@ export async function getCustomerStatement(customerId: number): Promise<Customer
       createdAt: p.createdAt,
     })),
     summary: {
-      totalSales: totalSales.toFixed(2),
-      totalPaid: totalPaid.toFixed(2),
-      unpaid: unpaid.toFixed(2),
+      totalSales: toDbMoney(totalSales),
+      totalPaid: toDbMoney(totalPaid),
+      unpaid: toDbMoney(unpaid),
       currentBalance: String(c.currentBalance ?? "0"),
     },
   };
@@ -291,11 +301,14 @@ export async function getSupplierStatement(supplierId: number): Promise<Supplier
     )
     .orderBy(asc(accountingEntries.entryDate), asc(accountingEntries.id));
 
-  const totalPurchases = pos.reduce((acc, p) => acc + Number(p.total ?? 0), 0);
-  const totalPaid = pos.reduce((acc, p) => acc + Number(p.paidAmount ?? 0), 0);
-  const unpaid = pos
-    .filter((p) => p.status === "CONFIRMED" || p.status === "RECEIVED")
-    .reduce((acc, p) => acc + Math.max(Number(p.total ?? 0) - Number(p.paidAmount ?? 0), 0), 0);
+  // أموال بدقّة decimal.js (§٥).
+  const totalPurchases = sumMoney(pos.map((p) => p.total ?? 0));
+  const totalPaid = sumMoney(pos.map((p) => p.paidAmount ?? 0));
+  const unpaid = sumMoney(
+    pos
+      .filter((p) => p.status === "CONFIRMED" || p.status === "RECEIVED")
+      .map((p) => positiveDiff(p.total, p.paidAmount))
+  );
 
   return {
     supplier: s,
@@ -317,9 +330,9 @@ export async function getSupplierStatement(supplierId: number): Promise<Supplier
       notes: p.notes,
     })),
     summary: {
-      totalPurchases: totalPurchases.toFixed(2),
-      totalPaid: totalPaid.toFixed(2),
-      unpaid: unpaid.toFixed(2),
+      totalPurchases: toDbMoney(totalPurchases),
+      totalPaid: toDbMoney(totalPaid),
+      unpaid: toDbMoney(unpaid),
       currentBalance: String(s.currentBalance ?? "0"),
     },
   };
