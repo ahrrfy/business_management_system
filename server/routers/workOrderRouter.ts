@@ -15,7 +15,8 @@ import {
   markWorkOrderReady,
   startWorkOrder,
 } from "../services/workOrderService";
-import { protectedProcedure, router } from "../trpc";
+import { logAudit } from "../services/auditService";
+import { cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
@@ -88,10 +89,12 @@ export const workOrderRouter = router({
       .leftJoin(productVariants, eq(workOrderMaterials.variantId, productVariants.id))
       .leftJoin(products, eq(productVariants.productId, products.id))
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
+    // ملاحظة: تكلفة أمر الشغل تبقى ظاهرة — عامل المطبعة يحتاجها لتسعير الأعمال.
+    // حجب التكلفة الحرج مُطبَّق على البيع (sale.get) والمشتريات (catalog.forPurchase).
     return { ...wo, materials };
   }),
 
-  create: protectedProcedure
+  create: cashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -109,26 +112,39 @@ export const workOrderRouter = router({
         notes: z.string().nullish(),
       })
     )
-    .mutation(({ input, ctx }) => createWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await createWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+      await logAudit(ctx, { action: "workOrder.create", entityType: "workOrder", entityId: (res as { workOrderId?: number })?.workOrderId, newValue: { title: input.title, qty: input.quantity } });
+      return res;
+    }),
 
-  start: protectedProcedure
+  start: cashierProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(({ input, ctx }) => startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
 
-  markReady: protectedProcedure
+  markReady: cashierProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(({ input }) => markWorkOrderReady(input.workOrderId)),
 
-  deliver: protectedProcedure
+  deliver: cashierProcedure
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
         payment: z.object({ amount: z.string(), method }).optional(),
       })
     )
-    .mutation(({ input, ctx }) => deliverWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await deliverWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "workOrder.deliver", entityType: "workOrder", entityId: input.workOrderId });
+      return res;
+    }),
 
-  cancel: protectedProcedure
+  // الإلغاء يعكس مخزوناً/قيوداً ⇒ مدير فأعلى.
+  cancel: managerProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
-    .mutation(({ input, ctx }) => cancelWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await cancelWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "workOrder.cancel", entityType: "workOrder", entityId: input.workOrderId });
+      return res;
+    }),
 });

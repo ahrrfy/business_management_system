@@ -2,12 +2,13 @@ import { and, desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { branchStock, inventoryMovements } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { logAudit } from "../services/auditService";
 import { setStock, transferBetweenBranches } from "../services/inventoryService";
 import { withTx } from "../services/tx";
-import { protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router, warehouseProcedure } from "../trpc";
 
 export const inventoryRouter = router({
-  transfer: protectedProcedure
+  transfer: warehouseProcedure
     .input(
       z.object({
         variantId: z.number().int().positive(),
@@ -17,11 +18,13 @@ export const inventoryRouter = router({
         notes: z.string().optional(),
       })
     )
-    .mutation(({ input, ctx }) =>
-      withTx((tx) => transferBetweenBranches(tx, { ...input, createdBy: ctx.user.id }))
-    ),
+    .mutation(async ({ input, ctx }) => {
+      const res = await withTx((tx) => transferBetweenBranches(tx, { ...input, createdBy: ctx.user.id }));
+      await logAudit(ctx, { action: "inventory.transfer", entityType: "stock", entityId: input.variantId, newValue: { from: input.fromBranchId, to: input.toBranchId, qty: input.baseQuantity } });
+      return res;
+    }),
 
-  adjust: protectedProcedure
+  adjust: warehouseProcedure
     .input(
       z.object({
         variantId: z.number().int().positive(),
@@ -30,7 +33,11 @@ export const inventoryRouter = router({
         notes: z.string().optional(),
       })
     )
-    .mutation(({ input, ctx }) => withTx((tx) => setStock(tx, { ...input, createdBy: ctx.user.id }))),
+    .mutation(async ({ input, ctx }) => {
+      const res = await withTx((tx) => setStock(tx, { ...input, createdBy: ctx.user.id }));
+      await logAudit(ctx, { action: "inventory.adjust", entityType: "stock", entityId: input.variantId, newValue: { branchId: input.branchId, target: input.targetQuantity } });
+      return res;
+    }),
 
   stockByBranch: protectedProcedure
     .input(z.object({ branchId: z.number().int().positive() }))
