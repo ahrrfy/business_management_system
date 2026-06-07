@@ -165,9 +165,15 @@ describe("customerService.deactivateCustomer", () => {
     expect(c?.isActive).toBe(false);
   });
 
-  it("يرفض تعطيل عميل عليه رصيد مفتوح", async () => {
+  it("يرفض تعطيل عميل عليه رصيد مدين مفتوح", async () => {
     const { customerId } = await createCustomer({ name: "هـ" }, actor);
     await db().update(s.customers).set({ currentBalance: "1000" }).where(eq(s.customers.id, customerId));
+    await expect(deactivateCustomer(customerId, actor)).rejects.toThrow(/رصيد/);
+  });
+
+  it("يرفض تعطيل عميل عليه رصيد دائن (سالب) — لا فقط المدين", async () => {
+    const { customerId } = await createCustomer({ name: "هـ٢" }, actor);
+    await db().update(s.customers).set({ currentBalance: "-250.50" }).where(eq(s.customers.id, customerId));
     await expect(deactivateCustomer(customerId, actor)).rejects.toThrow(/رصيد/);
   });
 
@@ -184,6 +190,39 @@ describe("customerService.deactivateCustomer", () => {
       status: "PENDING",
     });
     await expect(deactivateCustomer(customerId, actor)).rejects.toThrow(/فواتير/);
+  });
+
+  it("يرفض تعطيل عميل له فاتورة مدفوعة جزئياً (PARTIALLY_PAID)", async () => {
+    const { customerId } = await createCustomer({ name: "و٢" }, actor);
+    await db().insert(s.invoices).values({
+      invoiceNumber: "TEST-PARTIAL-001",
+      sourceType: "POS",
+      branchId: 1,
+      customerId,
+      priceTier: "RETAIL",
+      subtotal: "100.00",
+      total: "100.00",
+      paidAmount: "40.00",
+      status: "PARTIALLY_PAID",
+    });
+    await expect(deactivateCustomer(customerId, actor)).rejects.toThrow(/غير مسوّاة/);
+  });
+
+  it("يسمح بتعطيل عميل له فاتورة مدفوعة بالكامل فقط (PAID لا تمنع)", async () => {
+    const { customerId } = await createCustomer({ name: "ي" }, actor);
+    await db().insert(s.invoices).values({
+      invoiceNumber: "TEST-PAID-001",
+      sourceType: "POS",
+      branchId: 1,
+      customerId,
+      priceTier: "RETAIL",
+      subtotal: "100.00",
+      total: "100.00",
+      paidAmount: "100.00",
+      status: "PAID",
+    });
+    const r = await deactivateCustomer(customerId, actor);
+    expect(r.isActive).toBe(false);
   });
 
   it("يرفض تعطيل عميل معطّل بالفعل", async () => {

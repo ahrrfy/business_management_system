@@ -12,7 +12,7 @@ const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function fmt(s: string | number | null | undefined): string {
-  if (s === null || s === undefined || s === "") return "0";
+  if (s === null || s === undefined || s === "") return "—";
   return Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
 }
 

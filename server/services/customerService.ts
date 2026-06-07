@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
 import { customers, invoices } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
@@ -135,24 +136,31 @@ export async function deactivateCustomer(customerId: number, _actor: Actor) {
     if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
     if (!c.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "العميل معطّل بالفعل" });
 
-    const balance = Number(c.currentBalance ?? "0");
-    if (balance !== 0)
+    // الأموال عبر decimal.js (§٥) — أي رصيد غير صفري (مدين أو دائن) يمنع التعطيل.
+    const balance = money(c.currentBalance ?? "0");
+    if (!balance.isZero())
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `لا يمكن تعطيل عميل عليه رصيد مفتوح (${balance.toLocaleString("ar-IQ")}) — سدّد الذمم أولاً`,
+        message: `لا يمكن تعطيل عميل عليه رصيد مفتوح (${balance.toFixed(2)}) — سدّد الذمم أولاً`,
       });
 
-    const pending = (
+    // الفواتير غير المسوّاة (لا PAID/CANCELLED/RETURNED) = التزام قائم ⇒ تمنع التعطيل.
+    const open = (
       await tx
         .select({ id: invoices.id })
         .from(invoices)
-        .where(and(eq(invoices.customerId, customerId), eq(invoices.status, "PENDING")))
+        .where(
+          and(
+            eq(invoices.customerId, customerId),
+            inArray(invoices.status, ["PENDING", "CONFIRMED", "PARTIALLY_PAID"]),
+          ),
+        )
         .limit(1)
     )[0];
-    if (pending)
+    if (open)
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: "لا يمكن تعطيل عميل له فواتير معلّقة",
+        message: "لا يمكن تعطيل عميل له فواتير غير مسوّاة (معلّقة/مؤكّدة/مدفوعة جزئياً)",
       });
 
     await tx.update(customers).set({ isActive: false }).where(eq(customers.id, customerId));
