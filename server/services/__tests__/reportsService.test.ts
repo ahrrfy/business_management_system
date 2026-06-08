@@ -8,7 +8,10 @@ import {
   getAPAging,
   getARAging,
   getCustomerStatement,
+  getProfitByCategory,
+  getSlowMovers,
   getSupplierStatement,
+  getTopProducts,
 } from "../reportsService";
 
 const actor = { userId: 1, branchId: 1 };
@@ -24,6 +27,7 @@ const TABLES = [
   "productUnits",
   "productVariants",
   "products",
+  "categories",
   "purchaseOrderItems",
   "purchaseOrders",
   "shifts",
@@ -200,5 +204,119 @@ describe("تقارير الذمم الدائنة (AP)", () => {
     void r;
     const aging = await getAPAging();
     expect(aging).toHaveLength(0);
+  });
+});
+
+/* ============================ التقارير التحليلية (top/slow/category) ============================ */
+
+/** يضيف منتجاً ثانياً + متغيراً + وحدات + سعراً، في فئة مختلفة لاختبار التجميع بالفئة. */
+async function seedSecondProduct(opts: { categoryId?: number } = {}) {
+  const d = db();
+  await d.insert(s.products).values({ id: 2, name: "كرّاسة", categoryId: opts.categoryId ?? null });
+  await d.insert(s.productVariants).values({ id: 2, productId: 2, sku: "NB-1", costPrice: "2.00" });
+  await d.insert(s.productUnits).values({ id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
+  await d.insert(s.productPrices).values({ productUnitId: 3, priceTier: "RETAIL", price: "5.00" });
+}
+
+describe("تقارير المبيعات التحليلية", () => {
+  it("getTopProducts: يرتّب بالإيراد افتراضياً ويحسب الربح والهامش بدقّة", async () => {
+    await setStock(1, 1, 100);
+    await seedSecondProduct();
+    await setStock(2, 1, 100);
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+
+    // قلم: درزن × 2 = 240 إيراد، تكلفة 4×12×2=96، ربح 144
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }] }, actor);
+    // كرّاسة: 10 قطع = 50 إيراد، تكلفة 2×10=20، ربح 30
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 2, productUnitId: 3, quantity: "10" }] }, actor);
+
+    const top = await getTopProducts({ by: "revenue" });
+    expect(top.length).toBe(2);
+    expect(top[0].productId).toBe(1);
+    expect(top[0].revenue).toBe("240.00");
+    expect(top[0].cost).toBe("96.00");
+    expect(top[0].profit).toBe("144.00");
+    expect(top[0].marginPct).toBe("60.00");
+    expect(top[0].invoicesCount).toBe(1);
+    expect(top[1].productId).toBe(2);
+    expect(top[1].revenue).toBe("50.00");
+  });
+
+  it("getTopProducts بترتيب الكمية: المنتج بكمية أعلى يأتي أولاً حتى لو إيراده أقل", async () => {
+    await setStock(1, 1, 100);
+    await seedSecondProduct();
+    await setStock(2, 1, 100);
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+
+    // قلم: درزن واحد = 12 قطعة، 120 إيراد
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
+    // كرّاسة: 30 قطعة = 150 إيراد لكن كمية أعلى
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 2, productUnitId: 3, quantity: "30" }] }, actor);
+
+    const top = await getTopProducts({ by: "qty" });
+    expect(top[0].productId).toBe(2); // الكرّاسة أعلى كمية
+    expect(top[0].qtySold).toBe("30");
+    expect(top[1].productId).toBe(1);
+    expect(top[1].qtySold).toBe("12");
+  });
+
+  it("getTopProducts يستبعد الفواتير الملغاة", async () => {
+    await setStock(1, 1, 100);
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+
+    const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] }, actor);
+    await db().update(s.invoices).set({ status: "CANCELLED" }).where(sql`id = ${sale.invoiceId}`);
+
+    const top = await getTopProducts();
+    expect(top).toHaveLength(0);
+  });
+
+  it("getProfitByCategory: يجمّع على الفئة و«بلا فئة» للمنتجات بلا تصنيف", async () => {
+    await setStock(1, 1, 100);
+    await db().insert(s.categories).values({ id: 1, name: "قرطاسية" });
+    await seedSecondProduct({ categoryId: 1 });
+    await setStock(2, 1, 100);
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+
+    // القلم بلا فئة: 5 قطع × 10 = 50 إيراد، تكلفة 5×4=20
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "5" }] }, actor);
+    // الكرّاسة في «قرطاسية»: 20 قطعة × 5 = 100 إيراد، تكلفة 20×2=40
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 2, productUnitId: 3, quantity: "20" }] }, actor);
+
+    const cats = await getProfitByCategory();
+    expect(cats).toHaveLength(2);
+    // الترتيب بالإيراد تنازلياً ⇒ قرطاسية أولاً
+    expect(cats[0].categoryName).toBe("قرطاسية");
+    expect(cats[0].revenue).toBe("100.00");
+    expect(cats[0].cost).toBe("40.00");
+    expect(cats[0].profit).toBe("60.00");
+    expect(cats[0].marginPct).toBe("60.00");
+    expect(cats[1].categoryName).toBe("بلا فئة");
+    expect(cats[1].categoryId).toBeNull();
+    expect(cats[1].revenue).toBe("50.00");
+  });
+
+  it("getSlowMovers: يظهر المنتج بمخزون موجب بلا بيع منذ النافذة، ويختفي بعد بيع حديث", async () => {
+    await setStock(1, 1, 100);
+    // بلا مبيعات إطلاقاً ⇒ يجب أن يظهر
+    let slow = await getSlowMovers({ sinceDays: 30 });
+    expect(slow).toHaveLength(1);
+    expect(slow[0].productId).toBe(1);
+    expect(slow[0].qtyInStock).toBe("100");
+    expect(slow[0].lastSaleDate).toBeNull();
+    expect(slow[0].daysSinceLastSale).toBeNull();
+
+    // بعد بيع حديث ⇒ لا يجب أن يظهر
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] }, actor);
+    slow = await getSlowMovers({ sinceDays: 30 });
+    expect(slow).toHaveLength(0);
+  });
+
+  it("getSlowMovers يستثني منتجاً بمخزون صفر حتى لو لم يُبَع", async () => {
+    // مخزون صفر ⇒ لا اهتمام بالحركة (لا شيء للتخلّص منه)
+    await setStock(1, 1, 0);
+    const slow = await getSlowMovers({ sinceDays: 30 });
+    expect(slow).toHaveLength(0);
   });
 });

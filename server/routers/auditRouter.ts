@@ -57,15 +57,24 @@ export const auditRouter = router({
       return { rows, total: Number(totalRow?.n ?? 0) };
     }),
 
-  /** قيم مميّزة للفلاتر (أنواع الكيانات + الأفعال) لملء القوائم المنسدلة. */
+  /** قيم مميّزة للفلاتر (أنواع الكيانات + الأفعال + المستخدمون الذين نفّذوا فعلاً ما). */
   facets: adminProcedure.query(async () => {
     const db = getDb();
-    if (!db) return { entityTypes: [], actions: [] };
+    if (!db) return { entityTypes: [], actions: [], users: [] };
     const ets = await db.selectDistinct({ v: auditLogs.entityType }).from(auditLogs);
     const acts = await db.selectDistinct({ v: auditLogs.action }).from(auditLogs);
+    // المستخدمون الذين ظهر اسمهم في السجلّ — قائمة قصيرة لقائمة منسدلة (لا كل المستخدمين).
+    const usersRows = await db
+      .selectDistinct({ id: auditLogs.userId, name: users.name })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.userId, users.id));
     return {
       entityTypes: ets.map((r) => r.v).filter(Boolean).sort(),
       actions: acts.map((r) => r.v).filter(Boolean).sort(),
+      users: usersRows
+        .filter((r) => r.id != null)
+        .map((r) => ({ id: Number(r.id), name: r.name ?? `#${r.id}` }))
+        .sort((a, b) => a.name.localeCompare(b.name, "ar")),
     };
   }),
 });
