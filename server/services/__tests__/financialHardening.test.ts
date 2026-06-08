@@ -2,9 +2,11 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { applyMovement } from "../inventoryService";
 import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift } from "../shiftService";
+import { withTx } from "../tx";
 import { createWorkOrder, deliverWorkOrder, markWorkOrderReady, startWorkOrder } from "../workOrderService";
 
 const actor = { userId: 1, branchId: 1 };
@@ -129,5 +131,47 @@ describe("عزل الفروع (IDOR) — منع الدفع على فاتورة �
     // ونجاح عند الفرع الصحيح.
     const ok = await processPayment({ invoiceId: sale.invoiceId, amount: "5.00", method: "CASH", enforceBranchId: 1 }, actor);
     expect(ok.paidAmount).toBe("5.00");
+  });
+});
+
+describe("أقفال المخزون — إنشاء الصفّ قبل القفل + زيادة نسبية", () => {
+  it("applyMovement يُنشئ صفّ الرصيد عند غيابه ويزيد/ينقص نسبياً", async () => {
+    // لا صفّ branchStock مسبقاً للمتغيّر 1 في الفرع 1.
+    await withTx(async (tx) => {
+      await applyMovement(tx, { variantId: 1, branchId: 1, baseQuantity: 5, movementType: "IN", referenceType: "TEST" });
+      await applyMovement(tx, { variantId: 1, branchId: 1, baseQuantity: 3, movementType: "IN", referenceType: "TEST" });
+      await applyMovement(tx, { variantId: 1, branchId: 1, baseQuantity: 2, movementType: "OUT", referenceType: "TEST" });
+    });
+    const row = (await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0];
+    expect(row.quantity).toBe(6); // 0 → +5 → +3 → −2
+  });
+});
+
+describe("المرتجعات — سقف الاسترداد بالطريقة نفسها (لا يُفرّغ الصندوق ببيع بطاقة)", () => {
+  it("يرفض استرداداً نقدياً لبيعٍ دُفع بالبطاقة", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      { branchId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CARD" } },
+      actor,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    // الدفع كان بطاقةً ⇒ المتاح نقداً = 0 ⇒ يُرفض الاسترداد النقدي.
+    await expect(
+      returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } }, actor),
+    ).rejects.toThrow();
+  });
+
+  it("يسمح باسترداد نقدي لبيعٍ دُفع نقداً", async () => {
+    await setStock(1, 1, 10);
+    const sale = await createSale(
+      { branchId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
+      actor,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    const r = await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } }, actor);
+    expect(r.returnedTotal).toBe("10.00");
+    const out = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    expect(out).toHaveLength(1);
+    expect(out[0].amount).toBe("10.00");
   });
 });
