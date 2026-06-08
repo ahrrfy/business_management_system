@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { applyMovement } from "../inventoryService";
+import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift } from "../shiftService";
@@ -13,8 +14,9 @@ const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
+  "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "shifts", "workOrderMaterials", "workOrders", "customers", "branches", "users",
+  "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
 ];
 
 function db() {
@@ -173,5 +175,32 @@ describe("المرتجعات — سقف الاسترداد بالطريقة نف
     const out = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
     expect(out).toHaveLength(1);
     expect(out[0].amount).toBe("10.00");
+  });
+});
+
+describe("WAVG — متوسّط مرجّح صحيح لسطرين لنفس المتغيّر في أمر شراء واحد", () => {
+  it("يحسب المتوسّط تسلسلياً (لا يطمس السطر الأول)", async () => {
+    await db().update(s.productVariants).set({ costPrice: "0.00" }).where(eq(s.productVariants.id, 1));
+    await db().insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "0" });
+    const po = await createPurchaseOrder(
+      {
+        supplierId: 1,
+        branchId: 1,
+        items: [
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "2.00" },
+          { variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "4.00" },
+        ],
+      },
+      actor,
+    );
+    const its = await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId));
+    await receivePurchase(
+      { purchaseOrderId: po.purchaseOrderId, lines: its.map((i) => ({ purchaseOrderItemId: Number(i.id), receivedBaseQuantity: 10 })) },
+      actor,
+    );
+    const v = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
+    expect(v.costPrice).toBe("3.00"); // (10×2 + 10×4)/20 — وليس 4.00 (طمس السطر الأول)
+    const row = (await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0];
+    expect(row.quantity).toBe(20);
   });
 });

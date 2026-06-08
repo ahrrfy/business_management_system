@@ -189,6 +189,11 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
         .set({ costPrice: newCost.toFixed(2) })
         .where(eq(productVariants.id, Number(item.variantId)));
 
+      // حدّث الخريطتين بعد كل سطر ليُحسب المتوسّط المرجّح تسلسلياً لو تكرّر الصنف نفسه في أمر الشراء
+      // (سطران لنفس المتغيّر) — وإلّا فالسطر الثاني يتجاهل كمية/تكلفة الأول ويطمس نتيجته.
+      stockMap.set(Number(item.variantId), denom.toString());
+      costMap.set(Number(item.variantId), newCost.toFixed(2));
+
       // Ledger/AP value derives from the stored line total (proportional to received),
       // not from the rounded per-base cost — so a full receive matches the PO exactly.
       const portion = new Decimal(line.receivedBaseQuantity).dividedBy(item.baseQuantity);
