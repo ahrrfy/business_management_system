@@ -10,6 +10,7 @@ import {
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, toDbMoney } from "./money";
+import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { nextInvoiceNumber } from "./numbering";
 import { openShiftIdTx } from "./shiftService";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
@@ -266,11 +267,27 @@ export interface ProcessPaymentInput {
   shiftId?: number | null;
   /** إن حُدِّد، يُرفض الدفع على فاتورة فرعٍ مغاير (عزل الفروع لغير المدير). */
   enforceBranchId?: number | null;
+  /** Idempotency: نفس الـmagic key يُعاد تشغيله بنتيجة العملية الأولى (لا تكرّر دفعة عند النقر المزدوج). */
+  clientRequestId?: string | null;
 }
 
 /** Record a later payment against a credit invoice; updates status + AR. */
 export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
   return withTx(async (tx) => {
+    // Idempotency: استعلم قبل الكتابة — تكرار الطلب نفسه يُعيد تشغيل النتيجة الأولى بلا دفعة مكرّرة.
+    if (input.clientRequestId) {
+      const existingRefId = await findIdempotentRefId(tx, "sale.pay", input.clientRequestId);
+      if (existingRefId != null) {
+        const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
+        return {
+          invoiceId: input.invoiceId,
+          paidAmount: inv?.paidAmount ?? "0.00",
+          status: inv?.status ?? "PENDING",
+          idempotentReplay: true as const,
+        };
+      }
+    }
+
     const rows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = rows[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
@@ -297,6 +314,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       createdBy: actor.userId,
     });
     const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "sale.pay", input.clientRequestId, receiptId);
 
     const newPaid = money(inv.paidAmount).plus(amount);
     const status = computeInvoiceStatus(inv.total, toDbMoney(newPaid));

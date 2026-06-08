@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
 import { accountingEntries, invoiceItems, invoices, receipts } from "../../drizzle/schema";
+import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
@@ -19,10 +20,20 @@ export interface ReturnSaleInput {
   lines: ReturnLineInput[];
   refund?: { amount: string; method: PaymentMethod } | null;
   restock?: boolean;
+  /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة المرتجع الأول (لا استرداد/إرجاع مزدوج). */
+  clientRequestId?: string | null;
 }
 
 export async function returnSale(input: ReturnSaleInput, actor: Actor) {
   return withTx(async (tx) => {
+    // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة المرتجع الأول بلا استرداد مكرّر.
+    if (input.clientRequestId) {
+      const existingRefId = await findIdempotentRefId(tx, "sale.return", input.clientRequestId);
+      if (existingRefId != null) {
+        return { invoiceId: input.invoiceId, returnedTotal: "0.00", fullyReturned: false, idempotentReplay: true as const };
+      }
+    }
+
     const restock = input.restock !== false;
     const invRows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = invRows[0];
@@ -200,6 +211,11 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     // AR: the portion not refunded in cash is dropped from the customer's balance.
     if (inv.customerId) {
       await adjustCustomerBalance(tx, Number(inv.customerId), returnedTotal.minus(cashRefund).neg());
+    }
+
+    // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = الفاتورة).
+    if (input.clientRequestId) {
+      await recordIdempotencyKey(tx, "sale.return", input.clientRequestId, input.invoiceId);
     }
 
     return {

@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like, sql } from "drizzle-orm";
 import { branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts } from "../../drizzle/schema";
+import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
@@ -87,10 +88,20 @@ export interface ReceivePurchaseInput {
   purchaseOrderId: number;
   lines: ReceiveLineInput[];
   payment?: { amount: string; method: PaymentMethod } | null;
+  /** Idempotency: نفس المفتاح يُعاد تشغيله بنتيجة الاستلام الأول (لا تكرار للمخزون/AP). */
+  clientRequestId?: string | null;
 }
 
 export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor) {
   return withTx(async (tx) => {
+    // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة الاستلام الأول بلا تكرار للمخزون أو AP.
+    if (input.clientRequestId) {
+      const existingRefId = await findIdempotentRefId(tx, "purchase.receive", input.clientRequestId);
+      if (existingRefId != null) {
+        return { purchaseOrderId: input.purchaseOrderId, receivedTotal: "0.00", idempotentReplay: true as const };
+      }
+    }
+
     const poRows = await tx
       .select()
       .from(purchaseOrders)
@@ -255,6 +266,11 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
         .update(purchaseOrders)
         .set({ paidAmount: toDbMoney(money(po.paidAmount).plus(paidNow)) })
         .where(eq(purchaseOrders.id, input.purchaseOrderId));
+    }
+
+    // Idempotency: سجّل المفتاح بعد نجاح الكتابة (refId = أمر الشراء).
+    if (input.clientRequestId) {
+      await recordIdempotencyKey(tx, "purchase.receive", input.clientRequestId, input.purchaseOrderId);
     }
 
     return { purchaseOrderId: input.purchaseOrderId, fullyReceived, receivedTotal: receivedTotal.toFixed(2) };
