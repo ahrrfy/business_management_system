@@ -1,4 +1,5 @@
 import { CommandPalette } from "@/components/CommandPalette";
+import { ConfirmHost } from "@/components/ConfirmHost";
 import { Toaster } from "@/components/ui/sonner";
 import { trpc } from "@/lib/trpc";
 import { UNAUTHED_ERR_MSG } from "@shared/const";
@@ -52,6 +53,7 @@ createRoot(document.getElementById("root")!).render(
       <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
         <App />
         <CommandPalette />
+        <ConfirmHost />
         <Toaster richColors position="top-center" dir="rtl" />
       </ThemeProvider>
     </QueryClientProvider>
