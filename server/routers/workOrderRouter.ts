@@ -126,11 +126,19 @@ export const workOrderRouter = router({
 
   start: cashierProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
-    .mutation(({ input, ctx }) => startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 })),
+    .mutation(async ({ input, ctx }) => {
+      const res = await startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "workOrder.start", entityType: "workOrder", entityId: input.workOrderId });
+      return res;
+    }),
 
   markReady: cashierProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
-    .mutation(({ input }) => markWorkOrderReady(input.workOrderId)),
+    .mutation(async ({ input, ctx }) => {
+      const res = await markWorkOrderReady(input.workOrderId);
+      await logAudit(ctx, { action: "workOrder.markReady", entityType: "workOrder", entityId: input.workOrderId });
+      return res;
+    }),
 
   deliver: cashierProcedure
     .input(

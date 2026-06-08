@@ -8,6 +8,9 @@ import { useState } from "react";
 import { Link } from "wouter";
 
 type ReportRow = RouterOutputs["reports"]["salesReport"]["rows"][number];
+type TopRow = RouterOutputs["reports"]["topProducts"][number];
+type SlowRow = RouterOutputs["reports"]["slowMovers"][number];
+type CatRow = RouterOutputs["reports"]["profitByCategory"][number];
 
 const STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -36,7 +39,7 @@ const fmt = (s: string | number) =>
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const columns: ColumnDef<ReportRow, unknown>[] = [
+const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
   {
     accessorKey: "invoiceNumber",
     header: "رقم الفاتورة",
@@ -118,54 +121,116 @@ function firstOfMonth() {
   return d.toISOString().slice(0, 10);
 }
 
+type Tab = "invoices" | "top" | "slow" | "category";
+
 export default function SalesReport() {
+  const [tab, setTab] = useState<Tab>("invoices");
   const [from, setFrom] = useState(firstOfMonth());
   const [to, setTo] = useState(today());
   const [branchId, setBranchId] = useState<number | "">("");
   const [sourceType, setSourceType] = useState("");
+  const [topBy, setTopBy] = useState<"revenue" | "qty">("revenue");
+  const [sinceDays, setSinceDays] = useState(90);
 
   const branches = trpc.branches.list.useQuery();
-  const report = trpc.reports.salesReport.useQuery({
-    from: from || undefined,
-    to: to || undefined,
-    branchId: branchId ? Number(branchId) : undefined,
-    sourceTypes: sourceType
-      ? [sourceType as "POS" | "ONLINE" | "ORDER" | "WORKORDER"]
-      : undefined,
-  });
+  const invoiceQ = trpc.reports.salesReport.useQuery(
+    {
+      from: from || undefined,
+      to: to || undefined,
+      branchId: branchId ? Number(branchId) : undefined,
+      sourceTypes: sourceType
+        ? [sourceType as "POS" | "ONLINE" | "ORDER" | "WORKORDER"]
+        : undefined,
+    },
+    { enabled: tab === "invoices" }
+  );
+  const topQ = trpc.reports.topProducts.useQuery(
+    {
+      from: from || undefined,
+      to: to || undefined,
+      branchId: branchId ? Number(branchId) : undefined,
+      limit: 20,
+      by: topBy,
+    },
+    { enabled: tab === "top" }
+  );
+  const slowQ = trpc.reports.slowMovers.useQuery(
+    {
+      sinceDays,
+      branchId: branchId ? Number(branchId) : undefined,
+      limit: 50,
+    },
+    { enabled: tab === "slow" }
+  );
+  const catQ = trpc.reports.profitByCategory.useQuery(
+    {
+      from: from || undefined,
+      to: to || undefined,
+      branchId: branchId ? Number(branchId) : undefined,
+    },
+    { enabled: tab === "category" }
+  );
 
-  const rows = report.data?.rows ?? [];
-  const totals = report.data?.totals;
+  const invRows = invoiceQ.data?.rows ?? [];
+  const totals = invoiceQ.data?.totals;
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">تقرير المبيعات</h1>
+      <h1 className="text-2xl font-bold">تقارير المبيعات</h1>
       <p className="text-sm text-muted-foreground">
-        اختر نطاقاً زمنياً لعرض الفواتير مع ملخّص الإجماليات وتصدير Excel.
+        فواتير + أكثر مبيعاً + بطيئات الحركة + ربح حسب الفئة. كل تبويبة بفلاترها وتصدير Excel.
       </p>
 
-      {/* فلاتر */}
+      {/* تبويبات */}
+      <div className="flex gap-1 border-b" role="tablist">
+        {([
+          ["invoices", "الفواتير"],
+          ["top", "أكثر مبيعاً"],
+          ["slow", "بطيئات الحركة"],
+          ["category", "ربح حسب الفئة"],
+        ] as const).map(([id, label]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={tab === id}
+            className={`px-4 py-2 text-sm border-b-2 transition-colors ${
+              tab === id
+                ? "border-primary text-foreground font-medium"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {/* فلاتر مشتركة */}
       <Card>
         <CardContent className="pt-4 pb-3">
           <div className="flex flex-wrap gap-3 items-end">
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted-foreground">من تاريخ</label>
-              <input
-                type="date"
-                value={from}
-                onChange={(e) => setFrom(e.target.value)}
-                className={selectCls}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted-foreground">إلى تاريخ</label>
-              <input
-                type="date"
-                value={to}
-                onChange={(e) => setTo(e.target.value)}
-                className={selectCls}
-              />
-            </div>
+            {tab !== "slow" && (
+              <>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-muted-foreground">من تاريخ</label>
+                  <input
+                    type="date"
+                    value={from}
+                    onChange={(e) => setFrom(e.target.value)}
+                    className={selectCls}
+                  />
+                </div>
+                <div className="flex flex-col gap-1">
+                  <label className="text-xs text-muted-foreground">إلى تاريخ</label>
+                  <input
+                    type="date"
+                    value={to}
+                    onChange={(e) => setTo(e.target.value)}
+                    className={selectCls}
+                  />
+                </div>
+              </>
+            )}
             <div className="flex flex-col gap-1">
               <label className="text-xs text-muted-foreground">الفرع</label>
               <select
@@ -179,24 +244,106 @@ export default function SalesReport() {
                 ))}
               </select>
             </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted-foreground">نوع الفاتورة</label>
-              <select
-                className={selectCls}
-                value={sourceType}
-                onChange={(e) => setSourceType(e.target.value)}
-              >
-                <option value="">الكل</option>
-                <option value="POS">نقطة بيع</option>
-                <option value="WORKORDER">أمر شغل</option>
-                <option value="ORDER">طلب</option>
-              </select>
-            </div>
+            {tab === "invoices" && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">نوع الفاتورة</label>
+                <select
+                  className={selectCls}
+                  value={sourceType}
+                  onChange={(e) => setSourceType(e.target.value)}
+                >
+                  <option value="">الكل</option>
+                  <option value="POS">نقطة بيع</option>
+                  <option value="WORKORDER">أمر شغل</option>
+                  <option value="ORDER">طلب</option>
+                </select>
+              </div>
+            )}
+            {tab === "top" && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">الترتيب</label>
+                <select
+                  className={selectCls}
+                  value={topBy}
+                  onChange={(e) => setTopBy(e.target.value as "revenue" | "qty")}
+                >
+                  <option value="revenue">بالإيراد</option>
+                  <option value="qty">بالكمية</option>
+                </select>
+              </div>
+            )}
+            {tab === "slow" && (
+              <div className="flex flex-col gap-1">
+                <label className="text-xs text-muted-foreground">منذ (يوم)</label>
+                <input
+                  type="number"
+                  min={7}
+                  max={365}
+                  value={sinceDays}
+                  onChange={(e) => setSinceDays(Math.max(1, Math.min(365, Number(e.target.value) || 90)))}
+                  className={`${selectCls} w-24 tabular-nums`}
+                  dir="ltr"
+                />
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
 
-      {/* إجماليات */}
+      {tab === "invoices" && (
+        <InvoicesTab
+          rows={invRows}
+          totals={totals}
+          isLoading={invoiceQ.isLoading}
+          from={from}
+          to={to}
+        />
+      )}
+      {tab === "top" && (
+        <TopProductsTab
+          rows={topQ.data ?? []}
+          isLoading={topQ.isLoading}
+          by={topBy}
+          from={from}
+          to={to}
+        />
+      )}
+      {tab === "slow" && (
+        <SlowMoversTab
+          rows={slowQ.data ?? []}
+          isLoading={slowQ.isLoading}
+          sinceDays={sinceDays}
+        />
+      )}
+      {tab === "category" && (
+        <CategoryProfitTab
+          rows={catQ.data ?? []}
+          isLoading={catQ.isLoading}
+          from={from}
+          to={to}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================ تبويبة الفواتير ============================ */
+
+function InvoicesTab({
+  rows,
+  totals,
+  isLoading,
+  from,
+  to,
+}: {
+  rows: ReportRow[];
+  totals: RouterOutputs["reports"]["salesReport"]["totals"] | undefined;
+  isLoading: boolean;
+  from: string;
+  to: string;
+}) {
+  return (
+    <>
       {totals && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Card>
@@ -227,13 +374,11 @@ export default function SalesReport() {
           </Card>
         </div>
       )}
-
-      {/* الجدول */}
       <DataTable
-        columns={columns}
+        columns={invoiceColumns}
         data={rows}
         searchPlaceholder="بحث في التقرير…"
-        emptyText={report.isLoading ? "جارٍ التحميل…" : "لا فواتير في هذا النطاق."}
+        emptyText={isLoading ? "جارٍ التحميل…" : "لا فواتير في هذا النطاق."}
         toolbar={
           <Button
             variant="outline"
@@ -267,6 +412,246 @@ export default function SalesReport() {
           </Button>
         }
       />
-    </div>
+    </>
+  );
+}
+
+/* ============================ أكثر المنتجات مبيعاً ============================ */
+
+const topColumns: ColumnDef<TopRow, unknown>[] = [
+  { accessorKey: "productName", header: "المنتج" },
+  { accessorKey: "categoryName", header: "الفئة", cell: (c) => (c.getValue() as string) ?? "—" },
+  {
+    accessorKey: "qtySold",
+    header: "الكمية المباعة",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "revenue",
+    header: "الإيراد",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "cost",
+    header: "التكلفة",
+    cell: (c) => <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "profit",
+    header: "الربح",
+    cell: (c) => {
+      const v = c.getValue() as string;
+      const cls = Number(v) >= 0 ? "text-emerald-600" : "text-rose-600";
+      return <span className={`tabular-nums font-medium ${cls}`} dir="ltr">{fmt(v)}</span>;
+    },
+  },
+  {
+    accessorKey: "marginPct",
+    header: "هامش %",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}%</span>,
+  },
+  {
+    accessorKey: "invoicesCount",
+    header: "عدد الفواتير",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{c.getValue() as number}</span>,
+  },
+];
+
+function TopProductsTab({
+  rows,
+  isLoading,
+  by,
+  from,
+  to,
+}: {
+  rows: TopRow[];
+  isLoading: boolean;
+  by: "revenue" | "qty";
+  from: string;
+  to: string;
+}) {
+  return (
+    <DataTable
+      columns={topColumns}
+      data={rows}
+      searchPlaceholder="بحث في المنتجات…"
+      emptyText={isLoading ? "جارٍ التحميل…" : "لا مبيعات في هذا النطاق."}
+      toolbar={
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!rows.length}
+          onClick={() =>
+            exportRows(rows, {
+              filename: `أكثر-مبيعاً-${by === "qty" ? "بالكمية" : "بالإيراد"}-${from}-${to}`,
+              columns: [
+                { key: "productName", header: "المنتج" },
+                { key: "categoryName", header: "الفئة", map: (r) => r.categoryName ?? "" },
+                { key: "qtySold", header: "الكمية المباعة", map: (r) => Number(r.qtySold) },
+                { key: "revenue", header: "الإيراد", map: (r) => Number(r.revenue) },
+                { key: "cost", header: "التكلفة", map: (r) => Number(r.cost) },
+                { key: "profit", header: "الربح", map: (r) => Number(r.profit) },
+                { key: "marginPct", header: "هامش %", map: (r) => Number(r.marginPct) },
+                { key: "invoicesCount", header: "عدد الفواتير" },
+              ],
+            })
+          }
+        >
+          تصدير Excel
+        </Button>
+      }
+    />
+  );
+}
+
+/* ============================ بطيئات الحركة ============================ */
+
+const slowColumns: ColumnDef<SlowRow, unknown>[] = [
+  { accessorKey: "productName", header: "المنتج" },
+  { accessorKey: "categoryName", header: "الفئة", cell: (c) => (c.getValue() as string) ?? "—" },
+  {
+    accessorKey: "qtyInStock",
+    header: "المخزون الحالي",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "lastSaleDate",
+    header: "آخر بيع",
+    cell: (c) => {
+      const v = c.getValue() as string | null;
+      return v ? new Date(v).toLocaleDateString("ar-IQ") : <span className="text-rose-600 font-medium">لم يُبَع قط</span>;
+    },
+  },
+  {
+    accessorKey: "daysSinceLastSale",
+    header: "أيام منذ آخر بيع",
+    cell: (c) => {
+      const v = c.getValue() as number | null;
+      if (v == null) return <span className="text-muted-foreground">—</span>;
+      const cls = v > 180 ? "text-rose-600 font-medium" : v > 90 ? "text-amber-600" : "";
+      return <span className={`tabular-nums ${cls}`} dir="ltr">{v}</span>;
+    },
+  },
+];
+
+function SlowMoversTab({
+  rows,
+  isLoading,
+  sinceDays,
+}: {
+  rows: SlowRow[];
+  isLoading: boolean;
+  sinceDays: number;
+}) {
+  return (
+    <DataTable
+      columns={slowColumns}
+      data={rows}
+      searchPlaceholder="بحث…"
+      emptyText={isLoading ? "جارٍ التحميل…" : "لا منتجات بطيئة الحركة في هذا النطاق."}
+      toolbar={
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!rows.length}
+          onClick={() =>
+            exportRows(rows, {
+              filename: `بطيئات-الحركة-${sinceDays}يوم`,
+              columns: [
+                { key: "productName", header: "المنتج" },
+                { key: "categoryName", header: "الفئة", map: (r) => r.categoryName ?? "" },
+                { key: "qtyInStock", header: "المخزون الحالي", map: (r) => Number(r.qtyInStock) },
+                {
+                  key: "lastSaleDate",
+                  header: "آخر بيع",
+                  map: (r) => (r.lastSaleDate ? new Date(r.lastSaleDate).toLocaleDateString("ar-IQ") : "لم يُبَع قط"),
+                },
+                { key: "daysSinceLastSale", header: "أيام منذ آخر بيع", map: (r) => r.daysSinceLastSale ?? "" },
+              ],
+            })
+          }
+        >
+          تصدير Excel
+        </Button>
+      }
+    />
+  );
+}
+
+/* ============================ ربح حسب الفئة ============================ */
+
+const catColumns: ColumnDef<CatRow, unknown>[] = [
+  { accessorKey: "categoryName", header: "الفئة" },
+  {
+    accessorKey: "revenue",
+    header: "الإيراد",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "cost",
+    header: "التكلفة",
+    cell: (c) => <span className="tabular-nums text-muted-foreground" dir="ltr">{fmt(c.getValue() as string)}</span>,
+  },
+  {
+    accessorKey: "profit",
+    header: "الربح",
+    cell: (c) => {
+      const v = c.getValue() as string;
+      const cls = Number(v) >= 0 ? "text-emerald-600" : "text-rose-600";
+      return <span className={`tabular-nums font-medium ${cls}`} dir="ltr">{fmt(v)}</span>;
+    },
+  },
+  {
+    accessorKey: "marginPct",
+    header: "هامش %",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}%</span>,
+  },
+  {
+    accessorKey: "itemsCount",
+    header: "عدد البنود",
+    cell: (c) => <span className="tabular-nums" dir="ltr">{c.getValue() as number}</span>,
+  },
+];
+
+function CategoryProfitTab({
+  rows,
+  isLoading,
+  from,
+  to,
+}: {
+  rows: CatRow[];
+  isLoading: boolean;
+  from: string;
+  to: string;
+}) {
+  return (
+    <DataTable
+      columns={catColumns}
+      data={rows}
+      searchPlaceholder="بحث في الفئات…"
+      emptyText={isLoading ? "جارٍ التحميل…" : "لا بيانات في هذا النطاق."}
+      toolbar={
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={!rows.length}
+          onClick={() =>
+            exportRows(rows, {
+              filename: `ربح-حسب-الفئة-${from}-${to}`,
+              columns: [
+                { key: "categoryName", header: "الفئة" },
+                { key: "revenue", header: "الإيراد", map: (r) => Number(r.revenue) },
+                { key: "cost", header: "التكلفة", map: (r) => Number(r.cost) },
+                { key: "profit", header: "الربح", map: (r) => Number(r.profit) },
+                { key: "marginPct", header: "هامش %", map: (r) => Number(r.marginPct) },
+                { key: "itemsCount", header: "عدد البنود" },
+              ],
+            })
+          }
+        >
+          تصدير Excel
+        </Button>
+      }
+    />
   );
 }
