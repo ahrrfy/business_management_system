@@ -1,11 +1,9 @@
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ListToolbar, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
-import { Link } from "wouter";
 
 export const ROLE_OPTIONS = [
   { value: "admin", label: "مدير النظام" },
@@ -19,7 +17,7 @@ export const ROLE_LABEL: Record<string, string> = Object.fromEntries(
 );
 
 const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+  "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function fmtDate(d: string | Date | null | undefined): string {
   if (!d) return "—";
@@ -80,43 +78,43 @@ export default function Users() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">المستخدمون</h1>
-        <Link href="/users/new"><Button>+ مستخدم جديد</Button></Link>
-      </div>
+      <h1 className="text-2xl font-bold">المستخدمون</h1>
       <p className="text-sm text-muted-foreground">
         إدارة مستخدمي النظام وأدوارهم وفروعهم: إضافة، تعديل، تعطيل/تفعيل، وإعادة تعيين كلمة المرور.
       </p>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">الفلاتر والبحث</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-          <div className="space-y-1">
-            <Label>بحث (اسم/بريد/هاتف)</Label>
-            <Input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="مثال: أحمد أو admin@…" />
-          </div>
-          <div className="space-y-1">
-            <Label>الدور</Label>
-            <select className={selectCls} value={role} onChange={(e) => { setRole(e.target.value as any); setPage(0); }}>
-              <option value="">الكل</option>
-              {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-            </select>
-          </div>
-          <label className="flex items-center gap-2 h-9 text-sm">
-            <input type="checkbox" className="size-4" checked={includeInactive} onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }} />
-            <span className="text-muted-foreground">عرض المعطّلين</span>
-          </label>
-        </CardContent>
-      </Card>
-
       {err && <p className="text-sm text-destructive">{err}</p>}
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="text-base">القائمة</CardTitle>
-          <div className="text-xs text-muted-foreground">
-            {list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ")} مستخدم`}
-          </div>
+        <CardHeader>
+          <ListToolbar
+            title="القائمة"
+            count={total}
+            loading={list.isLoading}
+            search={{
+              value: q,
+              onChange: (v) => { setQ(v); setPage(0); },
+              placeholder: "بحث (اسم/بريد/هاتف)",
+            }}
+            filters={
+              <>
+                <select
+                  className={selectCls}
+                  value={role}
+                  onChange={(e) => { setRole(e.target.value as any); setPage(0); }}
+                  aria-label="الدور"
+                >
+                  <option value="">كل الأدوار</option>
+                  {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                </select>
+                <label className="flex items-center gap-2 h-8 text-sm">
+                  <input type="checkbox" className="size-4" checked={includeInactive} onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }} />
+                  <span className="text-muted-foreground">عرض المعطّلين</span>
+                </label>
+              </>
+            }
+            add={{ href: "/users/new", label: "مستخدم جديد" }}
+          />
         </CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
@@ -148,19 +146,19 @@ export default function Users() {
                       </span>
                     </td>
                     <td className="p-2 text-center">
-                      <div className="flex gap-1 justify-center">
-                        <Link href={`/users/${id}/edit`}>
-                          <Button variant="outline" size="sm">تعديل</Button>
-                        </Link>
-                        <Button
-                          variant={isActive ? "ghost" : "outline"}
-                          size="sm"
-                          onClick={() => void toggle(id, isActive, u.name ?? "", u.email ?? "")}
-                          disabled={setActive.isPending}
-                        >
-                          {isActive ? "تعطيل" : "تفعيل"}
-                        </Button>
-                      </div>
+                      <RowActions
+                        mode="inline"
+                        actions={[
+                          { key: "edit", label: "تعديل", href: `/users/${id}/edit` },
+                          {
+                            key: "toggle",
+                            label: isActive ? "تعطيل" : "تفعيل",
+                            variant: isActive ? "destructive" : "default",
+                            disabled: setActive.isPending,
+                            onSelect: () => void toggle(id, isActive, u.name ?? "", u.email ?? ""),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 );
