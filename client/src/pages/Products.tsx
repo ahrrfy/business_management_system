@@ -1,8 +1,13 @@
 import { DataTable } from "@/components/data-table/DataTable";
+import { ImportDialog } from "@/components/import/ImportDialog";
 import { Button } from "@/components/ui/button";
 import { exportRows } from "@/lib/export";
+import { PRODUCT_FIELDS } from "@/lib/importFields";
+import type { ProductImportRow } from "@/lib/importTypes";
+import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
+import { useState } from "react";
 import { Link } from "wouter";
 
 type Row = RouterOutputs["catalog"]["posList"][number];
@@ -47,17 +52,44 @@ const columns: ColumnDef<Row, unknown>[] = [
 ];
 
 export default function Products() {
+  const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
   const rows = trpc.catalog.posList.useQuery({ branchId, tier: "RETAIL", limit: 500 });
   const data = rows.data ?? [];
+  const [importOpen, setImportOpen] = useState(false);
+  const importMut = trpc.imports.products.useMutation();
 
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">المنتجات</h1>
-        <Link href="/products/new"><Button>+ إضافة منتج</Button></Link>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)}>استيراد Excel</Button>
+          <Link href="/products/new"><Button>+ إضافة منتج</Button></Link>
+        </div>
       </div>
+
+      <ImportDialog<ProductImportRow>
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="استيراد منتجات من Excel/CSV"
+        entityName="منتج"
+        fields={PRODUCT_FIELDS}
+        onImport={async (importRows) => {
+          const res = await importMut.mutateAsync({
+            rows: importRows.map((r) => ({ ...r, rowNumber: r.rowNumber })),
+            options: { onExisting: "skip" },
+          });
+          return res;
+        }}
+        onDone={(s) => {
+          if (s.committed && s.created > 0) {
+            notify.ok(`تم: ${s.created} منتج جديد، ${s.skipped} متخطّى`);
+            utils.catalog.posList.invalidate();
+          }
+        }}
+      />
       <p className="text-sm text-muted-foreground">عرض الأصناف بوحداتها وأسعارها ومخزونها — مع فرز بنقرة وبحث فوري وتصدير.</p>
       <DataTable
         columns={columns}

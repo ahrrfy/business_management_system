@@ -1,7 +1,10 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ImportDialog } from "@/components/import/ImportDialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { SUPPLIER_FIELDS } from "@/lib/importFields";
+import type { SupplierImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -17,6 +20,8 @@ export default function Suppliers() {
   const [q, setQ] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
   const [page, setPage] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
+  const importMut = trpc.imports.suppliers.useMutation();
   const limit = 50;
 
   const input = useMemo(
@@ -55,8 +60,32 @@ export default function Suppliers() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">الموردون</h1>
-        <Link href="/suppliers/new"><Button>+ مورّد جديد</Button></Link>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)}>استيراد Excel</Button>
+          <Link href="/suppliers/new"><Button>+ مورّد جديد</Button></Link>
+        </div>
       </div>
+
+      <ImportDialog<SupplierImportRow>
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="استيراد موردين من Excel/CSV"
+        entityName="مورّد"
+        fields={SUPPLIER_FIELDS}
+        onImport={async (rows) => {
+          const res = await importMut.mutateAsync({
+            rows: rows.map((r) => ({ ...r, rowNumber: r.rowNumber })),
+            options: { onExisting: "skip" },
+          });
+          return res;
+        }}
+        onDone={(s) => {
+          if (s.committed && (s.created > 0 || s.updated > 0)) {
+            notify.ok(`تم: ${s.created} مُنشأ، ${s.updated} مُحدَّث، ${s.skipped} متخطّى`);
+            invalidate();
+          }
+        }}
+      />
       <p className="text-sm text-muted-foreground">
         إدارة الموردين: إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد الدائن المفتوح.
       </p>
