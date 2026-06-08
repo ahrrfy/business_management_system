@@ -1,0 +1,684 @@
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { exportRows } from "@/lib/export";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useMemo, useState } from "react";
+
+/* ============================ Constants & helpers ============================ */
+
+type MovementType = "IN" | "OUT" | "ADJUST" | "RETURN" | "TRANSFER_IN" | "TRANSFER_OUT";
+type ManualType = "IN" | "OUT" | "RETURN";
+type Reason =
+  | "STOCK_TAKE"
+  | "DAMAGE"
+  | "SAMPLE"
+  | "INTERNAL_USE"
+  | "GIFT"
+  | "CORRECTION"
+  | "OTHER";
+
+const MTYPE_LABEL: Record<MovementType, string> = {
+  IN: "وارد",
+  OUT: "صادر",
+  ADJUST: "تسوية",
+  RETURN: "مرتجع",
+  TRANSFER_IN: "تحويل وارد",
+  TRANSFER_OUT: "تحويل صادر",
+};
+
+const REASON_LABEL: Record<Reason, string> = {
+  STOCK_TAKE: "جرد",
+  DAMAGE: "تالف",
+  SAMPLE: "عيّنة",
+  INTERNAL_USE: "استخدام داخلي",
+  GIFT: "إهداء",
+  CORRECTION: "تصحيح",
+  OTHER: "أخرى",
+};
+
+const POSITIVE_TYPES = new Set<MovementType>(["IN", "RETURN", "TRANSFER_IN"]);
+const NEGATIVE_TYPES = new Set<MovementType>(["OUT", "TRANSFER_OUT"]);
+const ADJUST_TYPES = new Set<MovementType>(["ADJUST"]);
+
+const selectCls =
+  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+const fmtNum = (n: number | string) =>
+  Number(n).toLocaleString("ar-IQ", { maximumFractionDigits: 0 });
+
+function fmtDateTime(d: Date | string) {
+  try {
+    return new Date(d).toLocaleString("ar-IQ", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return String(d);
+  }
+}
+
+function variantLine(r: {
+  productName: string;
+  variantName: string | null;
+  color: string | null;
+  size: string | null;
+  sku: string;
+}): { primary: string; secondary: string } {
+  const detail = [r.variantName, r.color, r.size].filter(Boolean).join(" / ");
+  const primary = detail ? `${r.productName} — ${detail}` : r.productName;
+  return { primary, secondary: r.sku };
+}
+
+function TypeBadge({ type }: { type: MovementType }) {
+  const label = MTYPE_LABEL[type] ?? type;
+  const cls = POSITIVE_TYPES.has(type)
+    ? "bg-emerald-100 text-emerald-700"
+    : NEGATIVE_TYPES.has(type)
+    ? "bg-rose-100 text-rose-700"
+    : ADJUST_TYPES.has(type)
+    ? "bg-amber-100 text-amber-700"
+    : "bg-muted text-foreground";
+  return (
+    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${cls}`}>{label}</span>
+  );
+}
+
+function signedQty(type: MovementType, qty: number): string {
+  const abs = Math.abs(qty);
+  if (POSITIVE_TYPES.has(type)) return `+${fmtNum(abs)}`;
+  if (NEGATIVE_TYPES.has(type)) return `−${fmtNum(abs)}`;
+  // ADJUST: الخادم يخزّن abs(delta) بلا إشارة (انظر setStock في inventoryService) —
+  // لا نتظاهر بإشارة لا نعرفها؛ الاتجاه يُستنبط من notes ("من X إلى Y").
+  return fmtNum(abs);
+}
+
+/* ============================ Page ============================ */
+
+type RichRow = RouterOutputs["inventory"]["movementsRich"]["rows"][number];
+type PosRow = RouterOutputs["catalog"]["posList"][number];
+
+const PAGE_SIZE = 50;
+
+export default function InventoryMovements() {
+  const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const role = me.data?.role ?? "";
+  const canPickBranch = role === "admin" || role === "manager";
+  const canCreateManual = role === "admin" || role === "manager" || role === "warehouse";
+  const myBranch = me.data?.branchId ?? 1;
+
+  /* ----- filters ----- */
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
+  const [pickedBranch, setPickedBranch] = useState<number | "">("");
+  const branchId = canPickBranch
+    ? pickedBranch === ""
+      ? undefined
+      : Number(pickedBranch)
+    : myBranch;
+
+  const [movementType, setMovementType] = useState<"" | MovementType>("");
+  const [q, setQ] = useState("");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [page, setPage] = useState(0);
+
+  const offset = page * PAGE_SIZE;
+
+  const queryInput = useMemo(
+    () => ({
+      branchId: branchId ?? undefined,
+      movementType: movementType || undefined,
+      q: q.trim() || undefined,
+      fromDate: fromDate ? new Date(fromDate + "T00:00:00").toISOString() : undefined,
+      toDate: toDate ? new Date(toDate + "T00:00:00").toISOString() : undefined,
+      limit: PAGE_SIZE,
+      offset,
+    }),
+    [branchId, movementType, q, fromDate, toDate, offset]
+  );
+
+  const movements = trpc.inventory.movementsRich.useQuery(queryInput, {
+    enabled: me.data != null,
+  });
+
+  const rows: RichRow[] = movements.data?.rows ?? [];
+  const total = movements.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const currentPage = page + 1;
+
+  /* ----- manual movement dialog ----- */
+  const [open, setOpen] = useState(false);
+  const [mSearch, setMSearch] = useState("");
+  const [mPicked, setMPicked] = useState<PosRow | null>(null);
+  const [mType, setMType] = useState<ManualType>("IN");
+  const [mProductUnitId, setMProductUnitId] = useState<number | "">("");
+  const [mQty, setMQty] = useState("");
+  const [mReason, setMReason] = useState<Reason>("STOCK_TAKE");
+  const [mNotes, setMNotes] = useState("");
+  const [mError, setMError] = useState("");
+  const [pageMsg, setPageMsg] = useState("");
+
+  // For manual movement: warehouse user is locked to own branch; admin/manager use picked branch (or own if none picked).
+  const manualBranchId = canPickBranch ? (branchId ?? myBranch) : myBranch;
+  const manualBranchName =
+    (branches.data ?? []).find((b) => Number(b.id) === Number(manualBranchId))?.name ??
+    (me.data?.branchId === manualBranchId ? "فرعي" : `فرع #${manualBranchId}`);
+
+  const searchResults = trpc.catalog.posList.useQuery(
+    { branchId: Number(manualBranchId), tier: "RETAIL", query: mSearch, limit: 12 },
+    { enabled: open && mSearch.trim().length > 0 }
+  );
+
+  // Unique variants from search (one row per variant; pick base unit when available).
+  const searchVariants = useMemo(() => {
+    const byVariant = new Map<number, PosRow>();
+    for (const r of searchResults.data ?? []) {
+      const cur = byVariant.get(r.variantId);
+      if (!cur || (r.isBaseUnit && !cur.isBaseUnit)) {
+        byVariant.set(r.variantId, r);
+      }
+    }
+    return Array.from(byVariant.values());
+  }, [searchResults.data]);
+
+  // For the picked variant, list its units (so user can pick the unit for quantity entry).
+  const pickedVariantUnits = useMemo(() => {
+    if (!mPicked) return [];
+    const all = searchResults.data ?? [];
+    const sameVariant = all.filter((r) => r.variantId === mPicked.variantId);
+    if (sameVariant.length > 0) return sameVariant;
+    // fallback: just the picked row itself
+    return [mPicked];
+  }, [mPicked, searchResults.data]);
+
+  function resetDialog() {
+    setMSearch("");
+    setMPicked(null);
+    setMType("IN");
+    setMProductUnitId("");
+    setMQty("");
+    setMReason("STOCK_TAKE");
+    setMNotes("");
+    setMError("");
+  }
+
+  const createManual = trpc.inventory.createManualMovement.useMutation({
+    onSuccess: async () => {
+      setPageMsg("تمت إضافة الحركة بنجاح.");
+      setOpen(false);
+      resetDialog();
+      await Promise.all([
+        utils.inventory.movementsRich.invalidate(),
+        utils.inventory.onHand.invalidate(),
+        utils.inventory.movements.invalidate(),
+      ]);
+      // auto-clear toast after 4s
+      setTimeout(() => setPageMsg(""), 4000);
+    },
+    onError: (e) => setMError(e.message),
+  });
+
+  function submitManual() {
+    setMError("");
+    if (!mPicked) return setMError("اختر متغيّراً أولاً.");
+    if (!mProductUnitId) return setMError("اختر الوحدة.");
+    const n = Number(mQty);
+    if (!Number.isFinite(n) || n <= 0) return setMError("الكمية يجب أن تكون رقماً موجباً.");
+    createManual.mutate({
+      variantId: mPicked.variantId,
+      branchId: Number(manualBranchId),
+      movementType: mType,
+      productUnitId: Number(mProductUnitId),
+      quantity: String(n),
+      reason: mReason,
+      notes: mNotes.trim() || undefined,
+    });
+  }
+
+  /* ----- export ----- */
+  function exportAll() {
+    if (rows.length === 0) return;
+    exportRows(rows, {
+      filename: "حركات المخزون",
+      columns: [
+        { key: "createdAt", header: "التاريخ والوقت", map: (r) => fmtDateTime(r.createdAt) },
+        { key: "productName", header: "المنتج", map: (r) => variantLine(r).primary },
+        { key: "sku", header: "SKU" },
+        { key: "movementType", header: "النوع", map: (r) => MTYPE_LABEL[r.movementType as MovementType] ?? r.movementType },
+        // Excel: كمية مطلقة كرقم خام (للفرز/الجمع)؛ الاتجاه عبر عمود النوع.
+        { key: "quantity", header: "الكمية", map: (r) => Math.abs(r.quantity) },
+        { key: "branchName", header: "الفرع" },
+        { key: "relatedBranchName", header: "فرع مرتبط", map: (r) => r.relatedBranchName ?? "" },
+        {
+          key: "referenceType",
+          header: "المرجع",
+          map: (r) =>
+            r.referenceType ? `${r.referenceType}${r.referenceId ? ` #${r.referenceId}` : ""}` : "",
+        },
+        { key: "createdByName", header: "المستخدم", map: (r) => r.createdByName ?? "" },
+        { key: "notes", header: "الملاحظة", map: (r) => r.notes ?? "" },
+      ],
+    });
+  }
+
+  /* ----- render ----- */
+  return (
+    <div className="space-y-4" dir="rtl">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">حركات المخزون</h1>
+        {canCreateManual && (
+          <Button
+            onClick={() => {
+              resetDialog();
+              setOpen(true);
+            }}
+          >
+            + حركة يدوية
+          </Button>
+        )}
+      </div>
+      <p className="text-sm text-muted-foreground">
+        السجلّ الكامل للوارد والصادر، التحويلات، التسويات، والمرتجعات. أنشئ حركات يدوية للجرد والتالف.
+      </p>
+
+      {pageMsg && (
+        <div className="rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm p-2">
+          {pageMsg}
+        </div>
+      )}
+
+      {/* Filters */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">الفلاتر</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
+          {canPickBranch && (
+            <div className="space-y-1">
+              <Label>الفرع</Label>
+              <select
+                className={selectCls}
+                value={pickedBranch === "" ? "" : String(pickedBranch)}
+                onChange={(e) => {
+                  setPickedBranch(e.target.value ? Number(e.target.value) : "");
+                  setPage(0);
+                }}
+              >
+                <option value="">— كل الفروع —</option>
+                {(branches.data ?? []).map((b) => (
+                  <option key={Number(b.id)} value={Number(b.id)}>
+                    {b.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div className="space-y-1">
+            <Label>نوع الحركة</Label>
+            <select
+              className={selectCls}
+              value={movementType}
+              onChange={(e) => {
+                setMovementType(e.target.value as MovementType | "");
+                setPage(0);
+              }}
+            >
+              <option value="">— كل الأنواع —</option>
+              <option value="IN">وارد (IN)</option>
+              <option value="OUT">صادر (OUT)</option>
+              <option value="RETURN">مرتجع (RETURN)</option>
+              <option value="ADJUST">تسوية (ADJUST)</option>
+              <option value="TRANSFER_IN">تحويل وارد</option>
+              <option value="TRANSFER_OUT">تحويل صادر</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label>بحث (اسم/SKU)</Label>
+            <Input
+              value={q}
+              onChange={(e) => {
+                setQ(e.target.value);
+                setPage(0);
+              }}
+              placeholder="مثال: ورق A4"
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>من تاريخ</Label>
+            <Input
+              type="date"
+              dir="ltr"
+              value={fromDate}
+              onChange={(e) => {
+                setFromDate(e.target.value);
+                setPage(0);
+              }}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label>إلى تاريخ</Label>
+            <Input
+              type="date"
+              dir="ltr"
+              value={toDate}
+              onChange={(e) => {
+                setToDate(e.target.value);
+                setPage(0);
+              }}
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Table */}
+      <Card>
+        <CardHeader className="flex-row items-center justify-between">
+          <CardTitle className="text-base">
+            السجلّ{" "}
+            <span className="text-xs text-muted-foreground font-normal">
+              ({fmtNum(total)} حركة)
+            </span>
+          </CardTitle>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">
+              {movements.isLoading
+                ? "جارٍ التحميل…"
+                : `صفحة ${fmtNum(currentPage)} من ${fmtNum(totalPages)}`}
+            </span>
+            <Button variant="outline" size="sm" disabled={rows.length === 0} onClick={exportAll}>
+              تصدير Excel
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent className="p-0">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr className="text-right">
+                <th className="p-2">التاريخ والوقت</th>
+                <th className="p-2">المنتج / المتغيّر</th>
+                <th className="p-2 text-center">النوع</th>
+                <th className="p-2 text-center">الكمية</th>
+                <th className="p-2">الفرع</th>
+                <th className="p-2">المرجع</th>
+                <th className="p-2">المستخدم</th>
+                <th className="p-2">الملاحظة</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const { primary, secondary } = variantLine(r);
+                const t = r.movementType as MovementType;
+                return (
+                  <tr key={r.id} className="border-t align-top">
+                    <td className="p-2 text-xs whitespace-nowrap">{fmtDateTime(r.createdAt)}</td>
+                    <td className="p-2">
+                      <div className="font-medium">{primary}</div>
+                      <div className="text-xs text-muted-foreground font-mono" dir="ltr">
+                        {secondary}
+                      </div>
+                    </td>
+                    <td className="p-2 text-center">
+                      <TypeBadge type={t} />
+                    </td>
+                    <td
+                      className={`p-2 text-center tabular-nums font-semibold ${
+                        POSITIVE_TYPES.has(t)
+                          ? "text-emerald-700"
+                          : NEGATIVE_TYPES.has(t)
+                          ? "text-rose-700"
+                          : "text-amber-700"
+                      }`}
+                      dir="ltr"
+                    >
+                      {signedQty(t, r.quantity)}
+                    </td>
+                    <td className="p-2 text-xs">
+                      {r.branchName}
+                      {r.relatedBranchName && (
+                        <span className="text-muted-foreground">
+                          {" "}
+                          ← {r.relatedBranchName}
+                        </span>
+                      )}
+                    </td>
+                    <td className="p-2 text-xs text-muted-foreground">
+                      {r.referenceType ? (
+                        <span dir="ltr">
+                          {r.referenceType}
+                          {r.referenceId ? ` #${r.referenceId}` : ""}
+                        </span>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td className="p-2 text-xs">{r.createdByName ?? "—"}</td>
+                    <td className="p-2 text-xs text-muted-foreground max-w-xs truncate" title={r.notes ?? undefined}>
+                      {r.notes ?? "—"}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!movements.isLoading && rows.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="p-6 text-center text-muted-foreground">
+                    لا توجد حركات مطابقة للفلاتر.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </CardContent>
+        <div className="flex items-center justify-between p-3 border-t">
+          <span className="text-xs text-muted-foreground">
+            عرض {rows.length > 0 ? fmtNum(offset + 1) : 0}–
+            {fmtNum(offset + rows.length)} من {fmtNum(total)}
+          </span>
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={page === 0 || movements.isLoading}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+            >
+              السابق →
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={currentPage >= totalPages || movements.isLoading}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              ← التالي
+            </Button>
+          </div>
+        </div>
+      </Card>
+
+      {/* Manual movement dialog */}
+      <Dialog
+        open={open}
+        onOpenChange={(v) => {
+          setOpen(v);
+          if (!v) resetDialog();
+        }}
+      >
+        <DialogContent className="sm:max-w-2xl" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>حركة مخزون يدوية</DialogTitle>
+            <DialogDescription>
+              للجرد، التالف، العيّنات، الإهداء، أو التصحيح. تُسجَّل كحركة تدقيق على الفرع{" "}
+              <span className="font-semibold">{manualBranchName}</span>.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-3">
+            {/* Variant search */}
+            <div className="space-y-1">
+              <Label>ابحث عن متغيّر (اسم/SKU/باركود)</Label>
+              <div className="relative">
+                <Input
+                  value={mSearch}
+                  onChange={(e) => setMSearch(e.target.value)}
+                  placeholder="اكتب للبحث…"
+                />
+                {mSearch.trim() && (searchVariants.length > 0 || searchResults.isFetching) && (
+                  <div className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-60 overflow-auto">
+                    {searchResults.isFetching && (
+                      <div className="p-2 text-xs text-muted-foreground text-center">
+                        جارٍ البحث…
+                      </div>
+                    )}
+                    {searchVariants.map((v) => (
+                      <button
+                        key={v.variantId}
+                        type="button"
+                        className="block w-full text-right px-3 py-2 text-sm hover:bg-accent"
+                        onClick={() => {
+                          setMPicked(v);
+                          setMProductUnitId(v.productUnitId);
+                          setMSearch("");
+                        }}
+                      >
+                        <div className="font-medium">{variantLine(v).primary}</div>
+                        <div className="text-xs text-muted-foreground font-mono flex justify-between" dir="ltr">
+                          <span>{v.sku}</span>
+                          <span>متاح {fmtNum(v.stockBase)}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Picked variant card */}
+            {mPicked && (
+              <div className="rounded-md bg-muted/40 p-3 text-sm">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-medium">{variantLine(mPicked).primary}</div>
+                    <div className="text-xs text-muted-foreground font-mono" dir="ltr">
+                      {mPicked.sku}
+                    </div>
+                  </div>
+                  <div className="text-left">
+                    <div className="text-xs text-muted-foreground">المتاح</div>
+                    <div className="font-semibold tabular-nums" dir="ltr">
+                      {fmtNum(mPicked.stockBase)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Form grid */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="space-y-1">
+                <Label>النوع *</Label>
+                <select
+                  className={selectCls}
+                  value={mType}
+                  onChange={(e) => setMType(e.target.value as ManualType)}
+                >
+                  <option value="IN">وارد (IN)</option>
+                  <option value="OUT">صادر (OUT)</option>
+                  <option value="RETURN">مرتجع (RETURN)</option>
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <Label>الوحدة *</Label>
+                <select
+                  className={selectCls}
+                  value={mProductUnitId === "" ? "" : String(mProductUnitId)}
+                  onChange={(e) =>
+                    setMProductUnitId(e.target.value ? Number(e.target.value) : "")
+                  }
+                  disabled={!mPicked}
+                >
+                  <option value="">— اختر —</option>
+                  {pickedVariantUnits.map((u) => (
+                    <option key={u.productUnitId} value={u.productUnitId}>
+                      {u.unitName}
+                      {u.isBaseUnit ? " (أساس)" : ` × ${u.conversionFactor}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1">
+                <Label>الكمية *</Label>
+                <Input
+                  dir="ltr"
+                  value={mQty}
+                  onChange={(e) => setMQty(e.target.value)}
+                  placeholder="0"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <Label>السبب *</Label>
+                <select
+                  className={selectCls}
+                  value={mReason}
+                  onChange={(e) => setMReason(e.target.value as Reason)}
+                >
+                  {(Object.keys(REASON_LABEL) as Reason[]).map((r) => (
+                    <option key={r} value={r}>
+                      {REASON_LABEL[r]}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1 md:col-span-2">
+                <Label>ملاحظات (اختياري — حتى 500 حرف)</Label>
+                <Textarea
+                  rows={2}
+                  value={mNotes}
+                  onChange={(e) => setMNotes(e.target.value.slice(0, 500))}
+                  placeholder="تفاصيل إضافية…"
+                />
+              </div>
+            </div>
+
+            {mError && <p className="text-sm text-destructive">{mError}</p>}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setOpen(false);
+                resetDialog();
+              }}
+              disabled={createManual.isPending}
+            >
+              إلغاء
+            </Button>
+            <Button
+              onClick={submitManual}
+              disabled={createManual.isPending || !mPicked || !mProductUnitId || !mQty}
+            >
+              {createManual.isPending ? "جارٍ الحفظ…" : "حفظ الحركة"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

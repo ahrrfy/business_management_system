@@ -39,6 +39,7 @@ import UserNew from "@/pages/UserNew";
 import UserEdit from "@/pages/UserEdit";
 import Account from "@/pages/Account";
 import AuditLogs from "@/pages/AuditLogs";
+import InventoryMovements from "@/pages/InventoryMovements";
 import SalesReport from "@/pages/SalesReport";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { Redirect, Route, Switch } from "wouter";
@@ -96,6 +97,7 @@ export default function App() {
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>
       <Route path="/purchases/:id/receive"><Shell><PurchaseReceive /></Shell></Route>
       <Route path="/inventory"><Shell><Inventory /></Shell></Route>
+      <Route path="/inventory-movements"><Shell><InventoryMovements /></Shell></Route>
       <Route path="/transfers"><Shell><Transfers /></Shell></Route>
       <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>
       <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
