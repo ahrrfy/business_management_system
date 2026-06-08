@@ -94,7 +94,7 @@ export function ConfirmHost() {
       }}
     >
       <AlertDialogContent dir="rtl">
-        <AlertDialogHeader>
+        <AlertDialogHeader className="sm:text-right">
           <AlertDialogTitle className="flex items-center gap-2">
             <Icon className={cn("size-5 shrink-0", meta.iconClass)} />
             {opts?.title ?? meta.defaultTitle}

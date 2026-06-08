@@ -64,6 +64,7 @@ export function ImportDialog<TRow>({
   maxBytes = DEFAULT_MAX_BYTES,
 }: ImportDialogProps<TRow>) {
   const [step, setStep] = React.useState<Step>("file");
+  const [reading, setReading] = React.useState(false);
   const [fileName, setFileName] = React.useState("");
   const [parse, setParse] = React.useState<ImportParseResult | null>(null);
   const [mapping, setMapping] = React.useState<ColumnMapping<TRow>>({});
@@ -80,6 +81,7 @@ export function ImportDialog<TRow>({
     setSummary(null);
     setProgress(null);
     setBusy(false);
+    setReading(false);
   }
 
   function close() {
@@ -111,6 +113,8 @@ export function ImportDialog<TRow>({
       notify.err(new Error(`الملف كبير جداً (الحدّ ${Math.round(maxBytes / 1024 / 1024)}MB).`));
       return;
     }
+    setReading(true);
+    await new Promise((r) => setTimeout(r, 0)); // أتِح للواجهة رسم «جارٍ القراءة» قبل التحليل المتزامن (XLSX.read يحجب الخيط)
     try {
       const result = await parseSheet(file);
       if (result.totalRows === 0) {
@@ -123,6 +127,8 @@ export function ImportDialog<TRow>({
       setStep("map");
     } catch {
       notify.err(new Error("تعذّرت قراءة الملف — تأكّد أنه Excel/CSV سليم."));
+    } finally {
+      setReading(false);
     }
   }
 
@@ -185,7 +191,7 @@ export function ImportDialog<TRow>({
         showCloseButton={!busy}
         className="max-h-[88vh] w-[min(95vw,900px)] max-w-[min(95vw,900px)] overflow-hidden sm:max-w-[min(95vw,900px)]"
       >
-        <DialogHeader>
+        <DialogHeader className="sm:text-right">
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             ارفع ملف Excel/CSV. لن يُكتب شيء حتى تَخلو كل الصفوف من الأخطاء (الكل أو لا شيء).
@@ -197,17 +203,27 @@ export function ImportDialog<TRow>({
           <div className="space-y-3">
             <button
               type="button"
+              disabled={reading}
               onClick={() => fileRef.current?.click()}
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
-                void onFile(e.dataTransfer.files?.[0]);
+                if (!reading) void onFile(e.dataTransfer.files?.[0]);
               }}
-              className="flex w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-10 text-center text-muted-foreground transition-colors hover:border-primary/50 hover:bg-accent/40"
+              className="flex w-full flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed p-10 text-center text-muted-foreground transition-colors hover:border-primary/50 hover:bg-accent/40 disabled:opacity-70"
             >
-              <Upload className="size-7" />
-              <span className="text-sm font-medium text-foreground">اختر ملفاً أو أفلِته هنا</span>
-              <span className="text-xs">صيغ مدعومة: .xlsx · .csv</span>
+              {reading ? (
+                <>
+                  <Loader2 className="size-7 animate-spin" aria-hidden="true" />
+                  <span className="text-sm font-medium text-foreground">جارٍ قراءة الملف…</span>
+                </>
+              ) : (
+                <>
+                  <Upload className="size-7" />
+                  <span className="text-sm font-medium text-foreground">اختر ملفاً أو أفلِته هنا</span>
+                  <span className="text-xs">صيغ مدعومة: .xlsx · .csv</span>
+                </>
+              )}
             </button>
             <input
               ref={fileRef}
@@ -343,12 +359,12 @@ export function ImportDialog<TRow>({
 
         {/* الخطوة ٣: التنفيذ */}
         {step === "running" && (
-          <div className="flex flex-col items-center gap-3 py-8">
-            <Loader2 className="size-8 animate-spin text-primary" />
-            <div className="text-sm">جارٍ الاستيراد…</div>
-            {progress && (
+          <div className="flex flex-col items-center gap-3 py-8" role="status" aria-live="polite" aria-busy="true">
+            <Loader2 className="size-8 animate-spin text-primary" aria-hidden="true" />
+            <div className="text-sm">جارٍ الاستيراد… لا تُغلق النافذة</div>
+            {progress && progress.done > 0 && (
               <div className="w-64 space-y-1">
-                <Progress value={progress.total ? (progress.done / progress.total) * 100 : 0} />
+                <Progress value={progress.total ? (progress.done / progress.total) * 100 : 0} aria-label="تقدّم الاستيراد" />
                 <div className="text-center text-xs text-muted-foreground">
                   {progress.done.toLocaleString("ar-IQ")} / {progress.total.toLocaleString("ar-IQ")}
                 </div>

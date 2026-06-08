@@ -114,6 +114,14 @@ describe("importCustomers", () => {
     const c = (await db().select().from(s.customers).where(eq(s.customers.phone, "0770111")).limit(1))[0];
     expect(c.city).toBe("بغداد");
   });
+
+  it("يتخطّى الموجود بلا هاتف بمطابقة اسم غير حسّاسة للحالة (لا تكرار)", async () => {
+    await db().insert(s.customers).values({ name: "ahmed co", phone: null });
+    const r = await importCustomers([{ rowNumber: 1, name: "AHMED CO" }], { onExisting: "skip" }, actor);
+    expect(r.skipped).toBe(1);
+    expect(r.created).toBe(0);
+    expect(await db().select().from(s.customers)).toHaveLength(1);
+  });
 });
 
 // ───────────────────────── الموردون ─────────────────────────
@@ -223,5 +231,68 @@ describe("importProducts", () => {
       actor,
     );
     expect(r.committed).toBe(false);
+  });
+
+  it("يرفض تكلفة متعارضة لنفس الـ SKU (لا دمج صامت)", async () => {
+    const r = await importProducts(
+      [
+        baseRow({ rowNumber: 1, costPrice: "1.00" }),
+        baseRow({ rowNumber: 2, costPrice: "9.00" }),
+      ],
+      {},
+      actor,
+    );
+    expect(r.committed).toBe(false);
+    expect(await db().select().from(s.products)).toHaveLength(0);
+  });
+
+  it("يرفض معامل تحويل متعارضاً لنفس الوحدة", async () => {
+    const r = await importProducts(
+      [
+        baseRow({ rowNumber: 1, conversionFactor: "1" }),
+        baseRow({ rowNumber: 2, conversionFactor: "2" }),
+      ],
+      {},
+      actor,
+    );
+    expect(r.committed).toBe(false);
+  });
+
+  it("يرفض سعراً متعارضاً لنفس (الوحدة، الفئة)", async () => {
+    const r = await importProducts(
+      [
+        baseRow({ rowNumber: 1, price: "2.00" }),
+        baseRow({ rowNumber: 2, price: "5.00" }),
+      ],
+      {},
+      actor,
+    );
+    expect(r.committed).toBe(false);
+  });
+
+  it("يرفض SKU مرتبطاً بأكثر من منتج (يَفشل الطرفان)", async () => {
+    const r = await importProducts(
+      [
+        baseRow({ rowNumber: 1, productName: "منتج أ" }),
+        baseRow({ rowNumber: 2, productName: "منتج ب" }),
+      ],
+      {},
+      actor,
+    );
+    expect(r.committed).toBe(false);
+    expect(r.failed).toBe(2);
+  });
+
+  it("ينشئ تصنيفاً واحداً لاسمين يختلفان بالحالة فقط", async () => {
+    const r = await importProducts(
+      [
+        baseRow({ rowNumber: 1, sku: "A", productName: "منتج أ", categoryName: "Stationery" }),
+        baseRow({ rowNumber: 2, sku: "B", productName: "منتج ب", categoryName: "stationery" }),
+      ],
+      {},
+      actor,
+    );
+    expect(r.committed).toBe(true);
+    expect(await db().select().from(s.categories)).toHaveLength(1);
   });
 });

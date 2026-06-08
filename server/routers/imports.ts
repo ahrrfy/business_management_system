@@ -21,6 +21,15 @@ const optionsSchema = z
   })
   .optional();
 
+// المنتجات: إنشاء فقط — لا «update» (تحديث شجرة المنتج عبر شاشة المنتج لا الاستيراد).
+const productOptionsSchema = z
+  .object({
+    dryRun: z.boolean().default(false),
+    onExisting: z.enum(["skip", "error"]).default("skip"),
+    fileName: z.string().max(255).optional(),
+  })
+  .optional();
+
 const auditCounts = (s: ImportSummary) => ({
   total: s.total,
   created: s.created,
@@ -51,7 +60,7 @@ export const importRouter = router({
     }),
 
   products: managerProcedure
-    .input(z.object({ rows: z.array(productImportRow).min(1).max(5000), options: optionsSchema }))
+    .input(z.object({ rows: z.array(productImportRow).min(1).max(5000), options: productOptionsSchema }))
     .mutation(async ({ input, ctx }) => {
       const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 };
       const summary = await importProducts(input.rows, input.options ?? {}, actor);

@@ -113,6 +113,7 @@ describe("buildRows", () => {
       { "اسم العميل": "أحمد", الهاتف: "٠٧٧٠١٢٣٤٥٦٧", "سقف الائتمان": "٥٠٠" },
       { "اسم العميل": "", الهاتف: "0780", "سقف الائتمان": "abc" },
     ],
+    rowNumbers: [2, 3], // صفّا الإكسل الفعليان (الترويسة = صفّ ١)
     totalRows: 2,
   };
   const mapping = autoMapColumns(parse.headers, FIELDS);
@@ -123,7 +124,7 @@ describe("buildRows", () => {
     expect(built[0].values.name).toBe("أحمد");
     expect(built[0].values.phone).toBe("07701234567");
     expect(built[0].values.creditLimit).toBe("500");
-    expect(built[0].rowNumber).toBe(1);
+    expect(built[0].rowNumber).toBe(2); // يطابق صفّ الإكسل الفعلي من parse.rowNumbers
   });
 
   it("يجمع أخطاء الصفّ (اسم مطلوب + مال غير صالح)", () => {

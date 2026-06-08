@@ -1,7 +1,7 @@
 // خدمة الاستيراد بالجملة (بيانات أساسية فقط: عملاء/موردون/منتجات).
 // النمط: تحقّق كامل أولاً ⇒ إن وُجد أي فشل لا تُكتب أي بيانات (الكل أو لا شيء) ⇒ وإلا فالكتابة داخل withTx واحد.
 // الأموال نصاً عبر toDbMoney (قاعدة §٥). لا استيراد لمستندات مالية (خطِر — انظر CLAUDE.md/الخطة).
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import {
   categories,
@@ -145,7 +145,8 @@ async function finalize(
         importType,
         fileName: options.fileName?.slice(0, 255) ?? null,
         totalRows: total,
-        successfulRows: counts.created + counts.updated,
+        // عند عدم الالتزام (rollback) لم يُكتب شيء ⇒ صفّر الناجح كي لا يناقض الحالة FAILED.
+        successfulRows: committed ? counts.created + counts.updated : 0,
         failedRows: counts.failed,
         status: committed ? "COMPLETED" : "FAILED",
         errorLog: summary.rows.filter((r) => r.status === "failed" || r.status === "skipped"),
@@ -191,6 +192,9 @@ export async function importCustomers(
   }
 
   // البحث عن الموجود (دفعة واحدة).
+  // حدّ معروف (RISK-1، قرار المالك): customers.phone غير فريد على مستوى DB ⇒ التكرار فحصٌ تطبيقي فقط؛
+  // فثمّة سباق نظري بين استيرادين متزامنين، وأرقام مخزّنة قديماً بأرقام عربية قد لا تُطابِق المُطبَّعة لـASCII.
+  // مقبول لبيانات أساسية يديرها المدير تسلسلياً؛ يُحسم نهائياً بقيد UNIQUE + عمود مُطبَّع عند الحاجة.
   const phones = uniq(rows.map((r) => norm(r.phone)));
   const namesNoPhone = uniq(rows.filter((r) => !norm(r.phone)).map((r) => r.name.trim()));
   const byPhone = new Map<string, number>();
@@ -200,8 +204,12 @@ export async function importCustomers(
       if (e.phone) byPhone.set(e.phone, Number(e.id));
   }
   if (namesNoPhone.length) {
-    for (const e of await db.select({ id: customers.id, name: customers.name }).from(customers).where(inArray(customers.name, namesNoPhone)))
-      byName.set(e.name, Number(e.id));
+    // طابق فقط الموجودين بلا هاتف (تفادي مطابقة شخص آخر بنفس الاسم وله هاتف)، ومفتاح غير حسّاس للحالة.
+    for (const e of await db
+      .select({ id: customers.id, name: customers.name })
+      .from(customers)
+      .where(and(inArray(customers.name, namesNoPhone), isNull(customers.phone))))
+      byName.set(e.name.trim().toLowerCase(), Number(e.id));
   }
 
   for (const r of rows) {
@@ -210,7 +218,7 @@ export async function importCustomers(
       continue;
     }
     const phone = norm(r.phone);
-    const existingId = phone ? byPhone.get(phone) : byName.get(r.name.trim());
+    const existingId = phone ? byPhone.get(phone) : byName.get(r.name.trim().toLowerCase());
     if (existingId) {
       if (onExisting === "skip") results.push({ rowNumber: r.rowNumber, status: "skipped", message: "موجود مسبقاً" });
       else if (onExisting === "error") results.push({ rowNumber: r.rowNumber, status: "failed", message: "موجود مسبقاً" });
@@ -299,8 +307,11 @@ export async function importSuppliers(
       if (e.phone) byPhone.set(e.phone, Number(e.id));
   }
   if (namesNoPhone.length) {
-    for (const e of await db.select({ id: suppliers.id, name: suppliers.name }).from(suppliers).where(inArray(suppliers.name, namesNoPhone)))
-      byName.set(e.name, Number(e.id));
+    for (const e of await db
+      .select({ id: suppliers.id, name: suppliers.name })
+      .from(suppliers)
+      .where(and(inArray(suppliers.name, namesNoPhone), isNull(suppliers.phone))))
+      byName.set(e.name.trim().toLowerCase(), Number(e.id));
   }
 
   for (const r of rows) {
@@ -309,7 +320,7 @@ export async function importSuppliers(
       continue;
     }
     const phone = norm(r.phone);
-    const existingId = phone ? byPhone.get(phone) : byName.get(r.name.trim());
+    const existingId = phone ? byPhone.get(phone) : byName.get(r.name.trim().toLowerCase());
     if (existingId) {
       if (onExisting === "skip") results.push({ rowNumber: r.rowNumber, status: "skipped", message: "موجود مسبقاً" });
       else if (onExisting === "error") results.push({ rowNumber: r.rowNumber, status: "failed", message: "موجود مسبقاً" });
@@ -403,9 +414,9 @@ export async function importProducts(
   const db = requireDb();
   const failures = new Map<number, string>(); // rowNumber → سبب الفشل
 
-  // ١) التجميع: productName → variants(sku) → units(name) → prices(tier).
+  // ١) التجميع: productName → variants(sku) → units(name) → prices(tier) — مع كشف تعارض الصفوف المكرّرة.
   const groups = new Map<string, ProductAgg>();
-  const skuOwner = new Map<string, string>(); // sku → productName (لكشف تضارب الملكية)
+  const skuOwner = new Map<string, { productName: string; rows: number[] }>(); // sku → المالك الأول + صفوفه
   for (const r of rows) {
     const pName = r.productName.trim();
     let p = groups.get(pName);
@@ -415,30 +426,51 @@ export async function importProducts(
     }
     p.rowNumbers.push(r.rowNumber);
 
+    // تضارب ملكية الـ SKU عبر منتجَين ⇒ أفشِل الصفّ الحالي وكل صفوف المالك الأول (لا تتركها «created»).
     const owner = skuOwner.get(r.sku);
-    if (owner && owner !== pName) failures.set(r.rowNumber, `الـ SKU «${r.sku}» مرتبط بمنتج آخر (${owner})`);
-    else skuOwner.set(r.sku, pName);
+    if (owner && owner.productName !== pName) {
+      failures.set(r.rowNumber, `الـ SKU «${r.sku}» مرتبط بأكثر من منتج`);
+      for (const rn of owner.rows) failures.set(rn, `الـ SKU «${r.sku}» مرتبط بأكثر من منتج`);
+    } else if (owner) {
+      owner.rows.push(r.rowNumber);
+    } else {
+      skuOwner.set(r.sku, { productName: pName, rows: [r.rowNumber] });
+    }
 
+    const vName = norm(r.variantName) ?? undefined;
+    const vColor = norm(r.color) ?? undefined;
+    const vSize = norm(r.size) ?? undefined;
     let v = p.variants.get(r.sku);
     if (!v) {
-      v = { sku: r.sku, variantName: norm(r.variantName) ?? undefined, color: norm(r.color) ?? undefined, size: norm(r.size) ?? undefined, costPrice: r.costPrice, rowNumbers: [], units: new Map() };
+      v = { sku: r.sku, variantName: vName, color: vColor, size: vSize, costPrice: r.costPrice, rowNumbers: [], units: new Map() };
       p.variants.set(r.sku, v);
+    } else if (v.variantName !== vName || v.color !== vColor || v.size !== vSize || v.costPrice !== r.costPrice) {
+      // صفّ آخر لنفس الـ SKU بقيم متغيّر متعارضة ⇒ لا تَدمج بصمت (قد يكون خطأ إدخال في التكلفة).
+      failures.set(r.rowNumber, `قيم متعارضة لنفس الـ SKU «${r.sku}» (التكلفة/الاسم/اللون/المقاس)`);
     }
     v.rowNumbers.push(r.rowNumber);
 
+    const uBarcode = norm(r.barcode) ?? undefined;
     let u = v.units.get(r.unitName);
     if (!u) {
-      u = { unitName: r.unitName, conversionFactor: r.conversionFactor, barcode: norm(r.barcode) ?? undefined, isBaseUnit: !!r.isBaseUnit, prices: new Map() };
+      u = { unitName: r.unitName, conversionFactor: r.conversionFactor, barcode: uBarcode, isBaseUnit: !!r.isBaseUnit, prices: new Map() };
       v.units.set(r.unitName, u);
+    } else if (u.conversionFactor !== r.conversionFactor || u.isBaseUnit !== !!r.isBaseUnit || u.barcode !== uBarcode) {
+      // وحدة مكرّرة بقيم متعارضة (معامل/أساس/باركود) ⇒ أفشِل بدل الدمج الصامت (المعامل يحكم حساب المخزون).
+      failures.set(r.rowNumber, `قيم متعارضة للوحدة «${r.unitName}» داخل الـ SKU «${r.sku}»`);
     }
     if (r.priceTier) {
       if (!r.price) failures.set(r.rowNumber, "السعر مطلوب مع وجود فئة السعر");
-      else u.prices.set(r.priceTier, r.price);
+      else {
+        const prev = u.prices.get(r.priceTier);
+        if (prev != null && prev !== r.price) failures.set(r.rowNumber, `سعر متعارض للفئة ${r.priceTier} في الوحدة «${r.unitName}»`);
+        else u.prices.set(r.priceTier, r.price);
+      }
     }
   }
 
   // ٢) التحقّق على مستوى المتغيّر/الوحدة + تكرار الباركود داخل الملف.
-  const batchBarcodes = new Map<string, number>(); // barcode → rowNumber
+  const batchBarcodes = new Map<string, number[]>(); // barcode → صفوف المتغيّر المالك
   for (const p of Array.from(groups.values())) {
     for (const v of Array.from(p.variants.values())) {
       const baseUnits = Array.from(v.units.values()).filter((u) => u.isBaseUnit);
@@ -454,9 +486,13 @@ export async function importProducts(
           for (const rn of v.rowNumbers) failures.set(rn, `معامل تحويل «${u.unitName}» يجب أن يكون عدداً صحيحاً ≥ ١`);
         }
         if (u.barcode) {
-          const prev = batchBarcodes.get(u.barcode);
-          if (prev != null) for (const rn of v.rowNumbers) failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
-          else batchBarcodes.set(u.barcode, v.rowNumbers[0]);
+          const prevRows = batchBarcodes.get(u.barcode);
+          if (prevRows) {
+            for (const rn of v.rowNumbers) failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
+            for (const rn of prevRows) failures.set(rn, `الباركود «${u.barcode}» مكرّر داخل الملف`);
+          } else {
+            batchBarcodes.set(u.barcode, v.rowNumbers);
+          }
         }
       }
     }
@@ -513,14 +549,15 @@ export async function importProducts(
   try {
     await withTx(async (tx) => {
       const catNames = uniq(toCreate.map((p) => p.categoryName));
-      const catMap = new Map<string, number>();
+      const catMap = new Map<string, number>(); // المفتاح: الاسم بحالة موحّدة (تفادي تصادم «X»/«x» على القيد الفريد)
       if (catNames.length) {
         for (const c of await tx.select({ id: categories.id, name: categories.name }).from(categories).where(inArray(categories.name, catNames)))
-          catMap.set(c.name, Number(c.id));
+          catMap.set(c.name.trim().toLowerCase(), Number(c.id));
         for (const name of catNames) {
-          if (!catMap.has(name)) {
+          const key = name.trim().toLowerCase();
+          if (!catMap.has(key)) {
             const res = await tx.insert(categories).values({ name });
-            catMap.set(name, insertId(res));
+            catMap.set(key, insertId(res));
           }
         }
       }
@@ -528,7 +565,7 @@ export async function importProducts(
       for (const p of toCreate) {
         const pRes = await tx.insert(products).values({
           name: p.productName,
-          categoryId: p.categoryName ? catMap.get(p.categoryName) ?? null : null,
+          categoryId: p.categoryName ? catMap.get(p.categoryName.trim().toLowerCase()) ?? null : null,
           isCustomizable: p.isCustomizable,
         });
         const productId = insertId(pRes);

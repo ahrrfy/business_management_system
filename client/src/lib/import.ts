@@ -26,7 +26,7 @@ export type ImportField<TRow> = {
 export type CellError = { field: string; message: string };
 
 export type ParsedRow<TRow> = {
-  rowNumber: number; // 1-based: يطابق صفّ الإكسل بعد الترويسة
+  rowNumber: number; // رقم صفّ الإكسل الفعلي (الترويسة = صفّ ١، أوّل بيانات = صفّ ٢)
   raw: Record<string, unknown>;
   values: Partial<TRow>;
   errors: CellError[];
@@ -35,6 +35,7 @@ export type ParsedRow<TRow> = {
 export type ImportParseResult = {
   headers: string[];
   rows: Record<string, unknown>[];
+  rowNumbers: number[]; // رقم صفّ الإكسل الأصلي لكل صفّ بيانات (موازٍ لـ rows، يتجاوز الصفوف الفارغة)
   totalRows: number;
 };
 
@@ -196,13 +197,14 @@ export async function parseSheet(file: File): Promise<ImportParseResult> {
   const buf = await file.arrayBuffer();
   const wb = XLSX.read(buf, { type: "array" });
   const sheetName = wb.SheetNames[0];
-  if (!sheetName) return { headers: [], rows: [], totalRows: 0 };
+  if (!sheetName) return { headers: [], rows: [], rowNumbers: [], totalRows: 0 };
   const ws = wb.Sheets[sheetName];
   const matrix = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false, defval: "" });
-  if (matrix.length === 0) return { headers: [], rows: [], totalRows: 0 };
+  if (matrix.length === 0) return { headers: [], rows: [], rowNumbers: [], totalRows: 0 };
 
   const headers = (matrix[0] as unknown[]).map((h) => String(h ?? "").trim());
   const rows: Record<string, unknown>[] = [];
+  const rowNumbers: number[] = [];
   for (let i = 1; i < matrix.length; i++) {
     const arr = (matrix[i] as unknown[]) ?? [];
     if (arr.every((c) => c == null || String(c).trim() === "")) continue; // صف فارغ
@@ -211,8 +213,9 @@ export async function parseSheet(file: File): Promise<ImportParseResult> {
       obj[h] = arr[idx];
     });
     rows.push(obj);
+    rowNumbers.push(i + 1); // matrix[0] = الترويسة (صفّ ١) ⇒ صفّ البيانات الفعلي = i + 1
   }
-  return { headers, rows, totalRows: rows.length };
+  return { headers, rows, rowNumbers, totalRows: rows.length };
 }
 
 /** يبني الصفوف المُقسَرة + أخطاء كل خلية حسب المطابقة وتعريف الحقول. */
@@ -245,7 +248,7 @@ export function buildRows<TRow>(
       if (msg) errors.push({ field: f.key, message: `${f.label}: ${msg}` });
     }
 
-    return { rowNumber: i + 1, raw, values: values as Partial<TRow>, errors };
+    return { rowNumber: parse.rowNumbers[i] ?? i + 1, raw, values: values as Partial<TRow>, errors };
   });
 }
 
