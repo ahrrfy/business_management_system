@@ -24,3 +24,25 @@ export const toBase = (quantity: string | number, conversionFactor: string | num
 
 /** Format a money value for display (2 dp). */
 export const fmt = (v: string | number | null | undefined) => round2(D(v)).toFixed(2);
+
+/** فرق موجب بدقّة Decimal — مكافئ خادمي `positiveDiff` لحساب «المتبقّي» بلا انجراف float.
+ *  Math.max(0, Number(total) - Number(paid)) → positiveDiff(total, paid).toFixed(2) */
+export const positiveDiff = (a: string | number | null | undefined, b: string | number | null | undefined) => {
+  const d = D(a).minus(D(b));
+  return d.isNegative() ? new Decimal(0) : d;
+};
+
+/** تقريب نقدي للدينار العراقي على الواجهة (مكافئ خادمي `roundCashIQD`). يُستعمل في الكاشير قبل
+ *  إرسال طلب البيع النقدي ⇒ يلغي الفكّة الوهمية (لا توجد فئات أصغر من ٢٥٠ د.ع).
+ *  HALF_UP إلى أقرب مضاعف لـ`denom`. سالب/صفر ⇒ صفر. */
+export const roundCashIQD = (amount: string | number | null | undefined, denom: number = 250) => {
+  const a = D(amount);
+  if (a.isNegative() || a.isZero()) return new Decimal(0);
+  const halfDenom = D(denom).div(2);
+  const q = a.plus(halfDenom).div(denom).floor();
+  return q.times(denom);
+};
+
+/** Format integer money (IQD whole-number) with locale separators. Decimal-safe sum first if needed. */
+export const fmtInt = (v: string | number | null | undefined) =>
+  D(v).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ");

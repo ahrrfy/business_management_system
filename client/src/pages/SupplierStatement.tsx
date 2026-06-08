@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { printSupplierStmt } from "@/lib/printing/printTemplates";
+import { positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -140,7 +141,8 @@ export default function SupplierStatement() {
                 </thead>
                 <tbody>
                   {stmt.data.purchaseOrders.map((p) => {
-                    const remaining = Math.max(Number(p.total) - Number(p.paidAmount), 0);
+                    // §٥: نستعمل Decimal للطرح (positiveDiff) لا Number() float.
+                    const remaining = positiveDiff(p.total, p.paidAmount).toFixed(2);
                     return (
                       <tr key={p.id} className="border-t">
                         <td className="p-2"><CopyInline value={p.poNumber} /></td>
@@ -148,7 +150,7 @@ export default function SupplierStatement() {
                         <td className="p-2 text-xs" dir="ltr">{p.expectedDeliveryDate ? String(p.expectedDeliveryDate).slice(0, 10) : "—"}</td>
                         <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.total)}</td>
                         <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
-                        <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(remaining.toFixed(2))}</td>
+                        <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
                         <td className="p-2">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLS[p.status] ?? "bg-muted"}`}>
                             {PO_STATUS_LABEL[p.status] ?? p.status}

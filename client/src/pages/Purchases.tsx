@@ -1,6 +1,7 @@
 import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
 import { Link } from "wouter";
 
@@ -18,7 +19,24 @@ export default function Purchases() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">المشتريات</h1>
-        <Link href="/purchases/new"><Button>+ أمر شراء جديد</Button></Link>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            disabled={!rows.data?.length}
+            onClick={() => exportRows(rows.data ?? [], {
+              filename: "المشتريات",
+              columns: [
+                { key: "poNumber", header: "رقم الأمر" },
+                { key: "supplierName", header: "المورد", map: (r) => r.supplierName ?? "" },
+                { key: "orderDate", header: "التاريخ", map: (r) => new Date(r.orderDate).toLocaleDateString("ar-IQ") },
+                { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+                { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+                { key: "status", header: "الحالة", map: (r) => PO_STATUS[r.status] ?? r.status },
+              ],
+            })}
+          >تصدير Excel</Button>
+          <Link href="/purchases/new"><Button>+ أمر شراء جديد</Button></Link>
+        </div>
       </div>
       <p className="text-sm text-muted-foreground">أوامر الشراء وحالتها. أنشئ أمراً ثم استلمه ليُضاف للمخزون وتُسجَّل الذمم.</p>
       <Card>

@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -114,8 +115,26 @@ export default function Users() {
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle className="text-base">القائمة</CardTitle>
-          <div className="text-xs text-muted-foreground">
-            {list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ")} مستخدم`}
+          <div className="flex items-center gap-3">
+            <div className="text-xs text-muted-foreground">
+              {list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ")} مستخدم`}
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!list.data?.rows?.length}
+              onClick={() => exportRows(list.data?.rows ?? [], {
+                filename: "المستخدمون",
+                columns: [
+                  { key: "name", header: "الاسم" },
+                  { key: "email", header: "البريد" },
+                  { key: "role", header: "الدور", map: (r) => ROLE_LABEL[r.role] ?? r.role },
+                  { key: "branchId", header: "الفرع", map: (r) => (r as { branchName?: string }).branchName ?? (r.branchId ?? "") },
+                  { key: "lastSignedIn", header: "آخر دخول", map: (r) => r.lastSignedIn ? new Date(r.lastSignedIn as unknown as string).toLocaleString("ar-IQ") : "" },
+                  { key: "isActive", header: "الحالة", map: (r) => r.isActive ? "نشط" : "معطّل" },
+                ],
+              })}
+            >تصدير Excel</Button>
           </div>
         </CardHeader>
         <CardContent className="p-0">

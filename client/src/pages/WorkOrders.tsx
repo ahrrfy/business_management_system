@@ -1,6 +1,7 @@
 import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
 import { Link } from "wouter";
 
@@ -28,7 +29,25 @@ export default function WorkOrders() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">أوامر الشغل/المطبعة</h1>
-        <Link href="/work-orders/new"><Button>+ أمر شغل جديد</Button></Link>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            disabled={!rows.data?.length}
+            onClick={() => exportRows(rows.data ?? [], {
+              filename: "أوامر-الشغل",
+              columns: [
+                { key: "orderNumber", header: "رقم الأمر" },
+                { key: "title", header: "العنوان" },
+                { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
+                { key: "quantity", header: "الكمية" },
+                { key: "salePrice", header: "السعر", map: (r) => Number(r.salePrice) },
+                { key: "dueDate", header: "الاستحقاق", map: (r) => r.dueDate ? String(r.dueDate).slice(0, 10) : "" },
+                { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+              ],
+            })}
+          >تصدير Excel</Button>
+          <Link href="/work-orders/new"><Button>+ أمر شغل جديد</Button></Link>
+        </div>
       </div>
       <p className="text-sm text-muted-foreground">أوامر الطباعة والتخصيص: من الاستلام إلى التنفيذ والتسليم — فاتورة تلقائية عند التسليم.</p>
       <Card>

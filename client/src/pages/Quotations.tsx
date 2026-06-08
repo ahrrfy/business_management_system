@@ -1,6 +1,7 @@
 import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
 import { Link } from "wouter";
 
@@ -28,7 +29,24 @@ export default function Quotations() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">عروض الأسعار</h1>
-        <Link href="/quotations/new"><Button>+ عرض سعر جديد</Button></Link>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            disabled={!rows.data?.length}
+            onClick={() => exportRows(rows.data ?? [], {
+              filename: "عروض-الأسعار",
+              columns: [
+                { key: "quoteNumber", header: "رقم العرض" },
+                { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
+                { key: "quoteDate", header: "التاريخ", map: (r) => new Date(r.quoteDate).toLocaleDateString("ar-IQ") },
+                { key: "validUntil", header: "الصلاحية", map: (r) => r.validUntil ? String(r.validUntil).slice(0, 10) : "" },
+                { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+                { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
+              ],
+            })}
+          >تصدير Excel</Button>
+          <Link href="/quotations/new"><Button>+ عرض سعر جديد</Button></Link>
+        </div>
       </div>
       <p className="text-sm text-muted-foreground">عروض الأسعار مستندات تفاوضية بلا أثر على المخزون حتى تُحوَّل إلى فاتورة.</p>
       <Card>

@@ -5,6 +5,7 @@
 import CustomerPicker from "@/components/CustomerPicker";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { confirm } from "@/lib/confirm";
+import { D, roundCashIQD, round2 } from "@/lib/money";
 import { isPaired, isWebUsbSupported, pairPrinter, printDoc, type PrintDoc } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { parseScan } from "@/lib/scanRouter";
@@ -137,10 +138,14 @@ const SCAN_MS = 80;
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US");
 const money = (n: number) => n.toFixed(2);
 
-const effectivePrice = (item: CartItem) =>
-  item.disc != null
-    ? Math.round(Number(item.row.price ?? 0) * (1 - item.disc / 100))
-    : Number(item.row.price ?? 0);
+// §٥: سعر فعّال يحسب الخصم بدقّة Decimal (لا Number×float×Math.round) — يصون الفلوس
+// عبر مضاعفات الخصم ١٠.٥٪، ٣٣.٣٣٪، إلخ. يُقرَّب 2dp ثم يعاد رقماً للعرض.
+const effectivePrice = (item: CartItem) => {
+  const price = D(item.row.price ?? 0);
+  if (item.disc == null) return price.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
+  const discounted = round2(price.times(D(100).minus(D(item.disc))).div(100));
+  return discounted.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
+};
 
 const itemTotal = (item: CartItem) => effectivePrice(item) * item.qty;
 
@@ -370,6 +375,15 @@ export default function POS() {
   const isCredit = paid > 0 && paid < total;
   const isChange = paid > 0 && paid >= total;
 
+  // §٩ IQD denomination rounding: مبلغ نقدي يُرسل إلى الخادم بعد التقريب لأقرب ٢٥٠ د.ع.
+  // الكاشير يرى المبلغ الفعلي الذي سيُسجَّل (شارة أسفل لوحة المفاتيح).
+  // غير النقدي (CARD/TRANSFER/CHECK/WALLET) لا يُقرَّب — التحويلات قد تكون كسرية.
+  const cashRoundedPaidD = activeTab.method === "CASH" ? roundCashIQD(paid) : D(paid);
+  const cashRoundedTotalD = activeTab.method === "CASH" ? roundCashIQD(total) : D(total);
+  const cashRoundedPaid = cashRoundedPaidD.toNumber();
+  const cashRoundedTotal = cashRoundedTotalD.toNumber();
+  const cashRoundingDelta = activeTab.method === "CASH" ? cashRoundedTotalD.minus(D(total)).toNumber() : 0;
+
   // ── Search ────────────────────────────────────────────────────────────────
   const searchResults = trpc.catalog.posList.useQuery(
     { branchId, tier: effectiveTier, query: search, limit: 10 },
@@ -531,6 +545,11 @@ export default function POS() {
       setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل." });
       return;
     }
+    // §٩: تقريب نقدي إلى ٢٥٠ د.ع لمبلغ الدفع الكامل فقط (لا الجزئي/الآجل).
+    // الدفع الجزئي يبقى مرناً (٢٥٠ مضاعفات على الكاشير لا الخوارزمية).
+    const payAmount = activeTab.method === "CASH" && !isCredit
+      ? cashRoundedTotalD.toFixed(2)
+      : (isCredit ? money(paid) : money(total));
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS",
       customerId: activeTab.customerId ?? undefined,
@@ -541,7 +560,7 @@ export default function POS() {
         quantity: String(c.qty),
         ...(c.disc != null ? { discountPercent: String(c.disc) } : {}),
       })),
-      payment: { amount: isCredit ? money(paid) : money(total), method: activeTab.method },
+      payment: { amount: payAmount, method: activeTab.method },
       ...(approval ? { managerApproval: approval } : {}),
     });
   }
@@ -549,6 +568,8 @@ export default function POS() {
   function quickPay() {
     if (!shift || !cart.length) return;
     setMessage(null);
+    // §٩: quickPay دائماً CASH كامل ⇒ نقرّب إلى ٢٥٠ د.ع.
+    const payAmount = roundCashIQD(total).toFixed(2);
     sale.mutate({
       branchId, shiftId: shift.id, sourceType: "POS",
       customerId: activeTab.customerId ?? undefined,
@@ -559,7 +580,7 @@ export default function POS() {
         quantity: String(c.qty),
         ...(c.disc != null ? { discountPercent: String(c.disc) } : {}),
       })),
-      payment: { amount: money(total), method: "CASH" },
+      payment: { amount: payAmount, method: "CASH" },
     });
   }
 
@@ -1495,13 +1516,21 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed }: ShiftCloseD
     },
   });
 
-  // النقد المتوقع = رصيد افتتاحي + كل CASH وارد (مبيعات) - كل CASH صادر (مصروفات)
-  const cashIn      = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "IN" ).reduce((s, p) => s + Number(p.total), 0);
-  const cashOut     = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s + Number(p.total), 0);
-  const openingBal  = Number(shift?.openingBalance ?? 0);
-  const expectedNum = report != null ? openingBal + cashIn - cashOut : null;
-  const countedNum  = counted ? Number(counted) : null;
-  const diff        = expectedNum != null && countedNum != null ? countedNum - expectedNum : null;
+  // النقد المتوقع = رصيد افتتاحي + كل CASH وارد (مبيعات) - كل CASH صادر (مصروفات).
+  // §٥: نجمع ونطرح بدقّة Decimal (Number + reduce + sub يتراكم عليه الانجراف على مئات الدفعات).
+  const cashInD     = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "IN" ).reduce((s, p) => s.plus(D(p.total)), D(0));
+  const cashOutD    = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s.plus(D(p.total)), D(0));
+  const openingD    = D(shift?.openingBalance ?? 0);
+  const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD) : null;
+  const countedD    = counted ? D(counted) : null;
+  const diffD       = expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
+  // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
+  const cashIn      = cashInD.toNumber();
+  const cashOut     = cashOutD.toNumber();
+  const openingBal  = openingD.toNumber();
+  const expectedNum = expectedD?.toNumber() ?? null;
+  const countedNum  = countedD?.toNumber() ?? null;
+  const diff        = diffD?.toNumber() ?? null;
 
   return (
     <div onClick={onClose}

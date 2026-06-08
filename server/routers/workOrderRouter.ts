@@ -16,17 +16,23 @@ import {
   startWorkOrder,
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
-import { cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
+import { branchScopedProcedure, canSeeCost, cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
 export const workOrderRouter = router({
-  list: protectedProcedure
+  // §٧ IDOR: الكاشير لا يجب أن يرى أوامر فروع أخرى. branchScopedProcedure يحقن
+  // scopedBranchId=null للمدير/admin، ورقم الفرع لغيرهما.
+  list: branchScopedProcedure
     .input(z.object({ limit: z.number().default(100), branchId: z.number().int().positive().optional() }).optional())
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
+      const conds = [];
+      // إن كان للمستخدم نطاق فرع ⇒ نُجبره ولا نسمح بالمرور حوله. للمرتفعين يطبَّق الفلتر إن أُعطي.
+      const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
+      if (effectiveBranchId != null) conds.push(eq(workOrders.branchId, effectiveBranchId));
       const q = db
         .select({
           id: workOrders.id,
@@ -41,12 +47,13 @@ export const workOrderRouter = router({
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
+        .where(conds.length ? conds[0] : undefined)
         .orderBy(desc(workOrders.id))
         .limit(input?.limit ?? 100);
       return q;
     }),
 
-  get: protectedProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input }) => {
+  get: protectedProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const wo = (
@@ -90,13 +97,23 @@ export const workOrderRouter = router({
       .leftJoin(productVariants, eq(workOrderMaterials.variantId, productVariants.id))
       .leftJoin(products, eq(productVariants.productId, products.id))
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
-    // ملاحظة: تكلفة أمر الشغل تبقى ظاهرة — عامل المطبعة يحتاجها لتسعير الأعمال.
-    // حجب التكلفة الحرج مُطبَّق على البيع (sale.get) والمشتريات (catalog.forPurchase).
     const qrPayload = workOrderBarcodeSet({
       orderNumber: wo.orderNumber,
       createdAt: wo.createdAt instanceof Date ? wo.createdAt : new Date(wo.createdAt),
       branchId: wo.branchId,
     }).qrPayload;
+    // §٧ تكلفة: نُخفي materialsCost/laborCost/unitCost عن غير المرتفعين (defense-in-depth).
+    // نُبقي شكل الـtype ثابتاً (null بدلاً من حذف الحقول) لئلا تنكسر شاشة التفاصيل.
+    if (!canSeeCost(ctx.user.role)) {
+      const safeMaterials = materials.map((m) => ({ ...m, unitCost: null as unknown as string }));
+      return {
+        ...wo,
+        materialsCost: null as unknown as string,
+        laborCost: null as unknown as string,
+        materials: safeMaterials,
+        qrPayload,
+      };
+    }
     return { ...wo, materials, qrPayload };
   }),
 

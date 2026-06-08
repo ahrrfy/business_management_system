@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
+import { positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -152,7 +153,8 @@ export default function CustomerStatement() {
                 </thead>
                 <tbody>
                   {stmt.data.invoices.map((i) => {
-                    const remaining = Math.max(Number(i.total) - Number(i.paidAmount), 0);
+                    // §٥: نستعمل Decimal للطرح (positiveDiff) لا Number() float.
+                    const remaining = positiveDiff(i.total, i.paidAmount).toFixed(2);
                     return (
                       <tr key={i.id} className="border-t">
                         <td className="p-2"><CopyInline value={i.invoiceNumber} /></td>
@@ -161,7 +163,7 @@ export default function CustomerStatement() {
                         <td className="p-2 text-xs">{i.sourceType}</td>
                         <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(i.total)}</td>
                         <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(i.paidAmount)}</td>
-                        <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(remaining.toFixed(2))}</td>
+                        <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
                         <td className="p-2">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[i.status] ?? "bg-muted"}`}>
                             {STATUS_LABEL[i.status] ?? i.status}

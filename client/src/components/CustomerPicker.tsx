@@ -1,7 +1,9 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import Decimal from "decimal.js";
 import { useState } from "react";
 
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
@@ -48,11 +50,12 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
         {customerId != null && balance != null && (
           <span
             className={`text-xs rounded-full px-2 py-0.5 ${
-              Number(balance) > 0 ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
+              // §٥: مقارنة Decimal لا Number (يتفادى دقّة float على 0.1+0.2 ≠ 0.3).
+              D(balance).gt(0) ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"
             }`}
             title="رصيد ذمة العميل"
           >
-            ذمة: <span dir="ltr">{Number(balance).toLocaleString("ar-IQ", { maximumFractionDigits: 2 })}</span>
+            ذمة: <span dir="ltr">{D(balance).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ", { maximumFractionDigits: 2 })}</span>
           </span>
         )}
       </div>
