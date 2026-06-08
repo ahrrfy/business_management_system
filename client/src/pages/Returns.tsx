@@ -1,11 +1,12 @@
 import { CopyInline } from "@/components/CopyButton";
+import { ListToolbar, RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { D, fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
 const INVOICE_STATUS: Record<string, string> = {
@@ -38,8 +39,23 @@ export default function Returns() {
   const [refundMethod, setRefundMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  const [q, setQ] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("");
 
   const invoicesQuery = trpc.sales.list.useQuery({ limit: 50 });
+
+  const filteredInvoices = useMemo(() => {
+    const all = invoicesQuery.data ?? [];
+    const needle = q.trim().toLowerCase();
+    return all.filter((inv) => {
+      if (statusFilter && inv.status !== statusFilter) return false;
+      if (!needle) return true;
+      return (
+        String(inv.invoiceNumber ?? "").toLowerCase().includes(needle) ||
+        String(inv.total ?? "").toLowerCase().includes(needle)
+      );
+    });
+  }, [invoicesQuery.data, q, statusFilter]);
   const detail = trpc.returns.getInvoice.useQuery(
     { invoiceId: selectedId ?? 0 },
     { enabled: !!selectedId },
@@ -122,7 +138,39 @@ export default function Returns() {
       <p className="text-sm text-muted-foreground">اختر فاتورة، حدّد كميات الإرجاع (بالوحدة الأساس)، ثم أكّد. يُعاد للمخزون اختيارياً ويُسجَّل الاسترداد.</p>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">اختيار الفاتورة</CardTitle></CardHeader>
+        <CardHeader>
+          <ListToolbar
+            title="اختيار الفاتورة"
+            count={filteredInvoices.length}
+            loading={invoicesQuery.isLoading}
+            search={{
+              value: q,
+              onChange: setQ,
+              placeholder: "بحث (رقم الفاتورة/الإجمالي)",
+            }}
+            filters={
+              <select
+                className={selectCls + " h-8 w-44"}
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+              >
+                <option value="">كل الحالات</option>
+                {Object.entries(INVOICE_STATUS).map(([v, label]) => (
+                  <option key={v} value={v}>{label}</option>
+                ))}
+              </select>
+            }
+            exportSpec={{
+              filename: "فواتير-للمرتجعات",
+              rows: filteredInvoices,
+              columns: [
+                { key: "invoiceNumber", header: "رقم الفاتورة" },
+                { key: "total", header: "الإجمالي", map: (r) => Number(r.total ?? 0) },
+                { key: "status", header: "الحالة", map: (r) => INVOICE_STATUS[r.status] ?? r.status },
+              ],
+            }}
+          />
+        </CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
@@ -134,24 +182,34 @@ export default function Returns() {
               </tr>
             </thead>
             <tbody>
-              {(invoicesQuery.data ?? []).map((inv) => (
-                <tr key={inv.id} className={`border-t ${selectedId === Number(inv.id) ? "bg-muted/40" : ""}`}>
-                  <td className="p-2"><CopyInline value={inv.invoiceNumber} /></td>
-                  <td className="p-2 text-left" dir="ltr">{fmt(inv.total)}</td>
-                  <td className="p-2">{INVOICE_STATUS[inv.status] ?? inv.status}</td>
-                  <td className="p-2 text-center">
-                    <Button
-                      variant={selectedId === Number(inv.id) ? "default" : "outline"}
-                      size="sm"
-                      onClick={() => pick(Number(inv.id))}
-                    >
-                      {selectedId === Number(inv.id) ? "محدّدة" : "اختيار"}
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-              {invoicesQuery.data && invoicesQuery.data.length === 0 && (
-                <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">لا فواتير بعد.</td></tr>
+              {filteredInvoices.map((inv) => {
+                const id = Number(inv.id);
+                const isPicked = selectedId === id;
+                return (
+                  <tr key={inv.id} className={`border-t ${isPicked ? "bg-muted/40" : ""}`}>
+                    <td className="p-2"><CopyInline value={inv.invoiceNumber} /></td>
+                    <td className="p-2 text-left" dir="ltr">{fmt(inv.total)}</td>
+                    <td className="p-2">{INVOICE_STATUS[inv.status] ?? inv.status}</td>
+                    <td className="p-2 text-center">
+                      <RowActions
+                        mode="inline"
+                        actions={[
+                          {
+                            key: "pick",
+                            label: isPicked ? "محدّدة" : "اختيار",
+                            disabled: isPicked, // منع مسح الكميات المُدخَلة بنقرة سهو
+                            onSelect: () => pick(id),
+                          },
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+              {!invoicesQuery.isLoading && filteredInvoices.length === 0 && (
+                <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">
+                  {(invoicesQuery.data ?? []).length === 0 ? "لا فواتير بعد." : "لا فواتير مطابقة. غيّر البحث أو الفلتر."}
+                </td></tr>
               )}
               {invoicesQuery.isLoading && (
                 <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td></tr>

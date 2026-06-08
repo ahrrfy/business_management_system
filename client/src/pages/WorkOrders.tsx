@@ -1,8 +1,8 @@
 import { CopyInline } from "@/components/CopyButton";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ListToolbar, RowActions } from "@/components/list";
 import { trpc } from "@/lib/trpc";
-import { Link } from "wouter";
+import { useMemo, useState } from "react";
 
 const STATUS_LABEL: Record<string, string> = {
   RECEIVED: "مُستلَم",
@@ -22,16 +22,66 @@ const STATUS_CLS: Record<string, string> = {
 
 export default function WorkOrders() {
   const rows = trpc.workOrders.list.useQuery({ limit: 200 });
+  const [q, setQ] = useState("");
+  const [status, setStatus] = useState<string>("");
   const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+
+  const filtered = useMemo(() => {
+    const all = rows.data ?? [];
+    const needle = q.trim().toLowerCase();
+    return all.filter((w) => {
+      if (status && w.status !== status) return false;
+      if (!needle) return true;
+      const hay = [w.orderNumber, w.title, w.customerName ?? ""].join(" ").toLowerCase();
+      return hay.includes(needle);
+    });
+  }, [rows.data, q, status]);
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">أوامر الشغل/المطبعة</h1>
-        <Link href="/work-orders/new"><Button>+ أمر شغل جديد</Button></Link>
-      </div>
+      <h1 className="text-2xl font-bold">أوامر الشغل/المطبعة</h1>
       <p className="text-sm text-muted-foreground">أوامر الطباعة والتخصيص: من الاستلام إلى التنفيذ والتسليم — فاتورة تلقائية عند التسليم.</p>
       <Card>
+        <CardHeader>
+          <ListToolbar
+            title="القائمة"
+            count={filtered.length}
+            loading={rows.isLoading}
+            search={{
+              value: q,
+              onChange: setQ,
+              placeholder: "بحث (رقم/عنوان/عميل)",
+            }}
+            filters={
+              <select
+                value={status}
+                onChange={(e) => setStatus(e.target.value)}
+                className="h-8 rounded-md border bg-background px-2 text-sm"
+              >
+                <option value="">كل الحالات</option>
+                <option value="RECEIVED">مُستلَم</option>
+                <option value="IN_PROGRESS">قيد التنفيذ</option>
+                <option value="READY">جاهز للتسليم</option>
+                <option value="DELIVERED">مُسلَّم</option>
+                <option value="CANCELLED">ملغى</option>
+              </select>
+            }
+            exportSpec={{
+              filename: "أوامر-الشغل",
+              rows: filtered,
+              columns: [
+                { key: "orderNumber", header: "رقم الأمر" },
+                { key: "title", header: "العنوان" },
+                { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
+                { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity ?? 0) },
+                { key: "salePrice", header: "السعر", map: (r) => Number(r.salePrice ?? 0) },
+                { key: "dueDate", header: "الاستحقاق", map: (r) => (r.dueDate ? String(r.dueDate).slice(0, 10) : "") },
+                { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+              ],
+            }}
+            add={{ href: "/work-orders/new", label: "أمر شغل جديد" }}
+          />
+        </CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
@@ -47,7 +97,7 @@ export default function WorkOrders() {
               </tr>
             </thead>
             <tbody>
-              {(rows.data ?? []).map((w) => (
+              {filtered.map((w) => (
                 <tr key={w.id} className="border-t">
                   <td className="p-2"><CopyInline value={w.orderNumber} /></td>
                   <td className="p-2">{w.title}</td>
@@ -61,14 +111,17 @@ export default function WorkOrders() {
                     </span>
                   </td>
                   <td className="p-2 text-center">
-                    <Link href={`/work-orders/${w.id}`}>
-                      <Button variant="outline" size="sm">فتح</Button>
-                    </Link>
+                    <RowActions
+                      mode="inline"
+                      actions={[
+                        { key: "open", label: "فتح", href: `/work-orders/${w.id}` },
+                      ]}
+                    />
                   </td>
                 </tr>
               ))}
-              {rows.data && rows.data.length === 0 && (
-                <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا أوامر شغل بعد. ابدأ بـ«أمر شغل جديد».</td></tr>
+              {!rows.isLoading && filtered.length === 0 && (
+                <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا أوامر شغل مطابقة. ابدأ بـ«أمر شغل جديد».</td></tr>
               )}
             </tbody>
           </table>
