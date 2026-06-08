@@ -11,6 +11,7 @@ import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, toDbMoney } from "./money";
 import { nextInvoiceNumber } from "./numbering";
+import { openShiftIdTx } from "./shiftService";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 
@@ -85,7 +86,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     let customerTier: PriceTier | null = null;
     let customerCredit: { limit: ReturnType<typeof money>; balance: ReturnType<typeof money> } | null = null;
     if (input.customerId) {
-      const c = await tx.select().from(customers).where(eq(customers.id, input.customerId)).limit(1);
+      // قفل صفّ العميل: يُسلسِل البيوع الآجلة المتزامنة فلا يتجاوز اثنان حدّ الائتمان معاً.
+      const c = await tx.select().from(customers).where(eq(customers.id, input.customerId)).for("update").limit(1);
       if (!c[0]) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
       customerTier = c[0].defaultPriceTier as PriceTier;
       customerCredit = { limit: money(c[0].creditLimit ?? "0"), balance: money(c[0].currentBalance ?? "0") };
@@ -262,6 +264,8 @@ export interface ProcessPaymentInput {
   amount: string;
   method: PaymentMethod;
   shiftId?: number | null;
+  /** إن حُدِّد، يُرفض الدفع على فاتورة فرعٍ مغاير (عزل الفروع لغير المدير). */
+  enforceBranchId?: number | null;
 }
 
 /** Record a later payment against a credit invoice; updates status + AR. */
@@ -270,16 +274,22 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     const rows = await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1);
     const inv = rows[0];
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+    // عزل الفرع: غير المدير لا يدفع على فاتورة فرع آخر (منع IDOR).
+    if (input.enforceBranchId != null && Number(inv.branchId) !== input.enforceBranchId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا تملك صلاحية على فاتورة فرع آخر" });
+    }
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الدفع على فاتورة ملغاة أو مرتجعة" });
     }
     const amount = money(input.amount);
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
 
+    // انسب الدفع النقدي لوردية الموظّف المفتوحة إن لم يُمرَّر صراحةً (تسوية الصندوق).
+    const shiftId = input.shiftId ?? (await openShiftIdTx(tx, actor.userId, Number(inv.branchId)));
     const rRes = await tx.insert(receipts).values({
       invoiceId: input.invoiceId,
       branchId: Number(inv.branchId),
-      shiftId: input.shiftId ?? null,
+      shiftId,
       direction: "IN",
       amount: toDbMoney(amount),
       paymentMethod: input.method,

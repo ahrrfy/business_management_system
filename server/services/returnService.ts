@@ -5,6 +5,7 @@ import { accountingEntries, invoiceItems, invoices, receipts } from "../../drizz
 import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
+import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -135,19 +136,42 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     if (requestedRefund.lt(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الاسترداد لا يصحّ أن يكون سالباً" });
     }
-    const refundCap = Decimal.min(returnedTotal, money(inv.paidAmount));
+    // سقف الاسترداد بالطريقة نفسها: المتاح = Σ(IN بهذه الطريقة) − Σ(OUT بهذه الطريقة)،
+    // فلا يُسترَدّ نقداً ما دُفع بطاقةً (يُفرّغ الصندوق) ولا يتجاوز المقبوض فعلاً بتلك الطريقة.
+    const refundMethod = input.refund?.method;
+    let methodAvailable = new Decimal(0);
+    if (refundMethod) {
+      const mr = await tx
+        .select({
+          inSum: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN ${receipts.amount} ELSE 0 END), 0)`,
+          outSum: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' THEN ${receipts.amount} ELSE 0 END), 0)`,
+        })
+        .from(receipts)
+        .where(
+          and(
+            eq(receipts.invoiceId, input.invoiceId),
+            eq(receipts.paymentMethod, refundMethod),
+            eq(receipts.status, "COMPLETED"),
+          ),
+        );
+      methodAvailable = money(mr[0]?.inSum ?? "0").minus(money(mr[0]?.outSum ?? "0"));
+    }
+    const refundCap = Decimal.min(returnedTotal, methodAvailable);
     if (requestedRefund.gt(refundCap)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الاسترداد النقدي (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمدفوع)`,
+        message: `الاسترداد بـ${refundMethod ?? "—"} (${requestedRefund.toFixed(2)}) يتجاوز المسموح (${refundCap.toFixed(2)} = الأقل من قيمة المرتجع والمقبوض بهذه الطريقة)`,
       });
     }
     const cashRefund = requestedRefund;
 
     if (cashRefund.gt(0)) {
+      // انسب الاسترداد النقدي لوردية الموظّف المفتوحة (وإلا فالـZ-report يُظهر عجزاً وهمياً).
+      const shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,
         branchId: Number(inv.branchId),
+        shiftId,
         direction: "OUT",
         amount: toDbMoney(cashRefund),
         paymentMethod: input.refund!.method,

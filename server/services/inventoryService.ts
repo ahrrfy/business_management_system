@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { branchStock, inventoryMovements, productUnits } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import type { DecimalInput } from "./money";
@@ -39,6 +39,12 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً" });
   }
 
+  // اضمن وجود صفّ الرصيد قبل القفل — FOR UPDATE لا يقفل شيئاً على صفّ غير موجود (يتسرّب بيعٌ زائد/فقدُ تحديث).
+  await tx
+    .insert(branchStock)
+    .values({ variantId: a.variantId, branchId: a.branchId, quantity: 0 })
+    .onDuplicateKeyUpdate({ set: { variantId: sql`${branchStock.variantId}` } });
+
   const rows = await tx
     .select({ quantity: branchStock.quantity })
     .from(branchStock)
@@ -54,7 +60,8 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
       message: `المخزون غير كافٍ: المتاح ${currentQty}، المطلوب ${a.baseQuantity}`,
     });
   }
-  const newQuantity = currentQty + sign * a.baseQuantity;
+  const signedDelta = sign * a.baseQuantity;
+  const newQuantity = currentQty + signedDelta;
 
   const res = await tx.insert(inventoryMovements).values({
     variantId: a.variantId,
@@ -69,10 +76,11 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   });
   const movementId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
 
+  // كتابة نسبية تحت القفل: تشفى ذاتياً ولا تطمس تحديثاً متزامناً (بخلاف الكتابة المطلقة السابقة).
   await tx
-    .insert(branchStock)
-    .values({ variantId: a.variantId, branchId: a.branchId, quantity: newQuantity })
-    .onDuplicateKeyUpdate({ set: { quantity: newQuantity } }); // safe: row read under FOR UPDATE
+    .update(branchStock)
+    .set({ quantity: sql`${branchStock.quantity} + ${signedDelta}` })
+    .where(and(eq(branchStock.variantId, a.variantId), eq(branchStock.branchId, a.branchId)));
 
   return { movementId, newQuantity };
 }
@@ -137,6 +145,11 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
   if (!Number.isInteger(a.targetQuantity) || a.targetQuantity < 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
   }
+  // اضمن وجود الصفّ قبل القفل (نفس علّة FOR UPDATE على صفّ غير موجود).
+  await tx
+    .insert(branchStock)
+    .values({ variantId: a.variantId, branchId: a.branchId, quantity: 0 })
+    .onDuplicateKeyUpdate({ set: { variantId: sql`${branchStock.variantId}` } });
   const rows = await tx
     .select({ quantity: branchStock.quantity })
     .from(branchStock)
