@@ -5,6 +5,7 @@ import { accountingEntries, invoiceItems, invoices, receipts } from "../../drizz
 import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
+import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -145,9 +146,12 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     const cashRefund = requestedRefund;
 
     if (cashRefund.gt(0)) {
+      // انسب الاسترداد النقدي لوردية الموظّف المفتوحة (وإلا فالـZ-report يُظهر عجزاً وهمياً).
+      const shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,
         branchId: Number(inv.branchId),
+        shiftId,
         direction: "OUT",
         amount: toDbMoney(cashRefund),
         paymentMethod: input.refund!.method,

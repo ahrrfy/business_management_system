@@ -119,3 +119,16 @@ export async function getOpenShift(userId: number, branchId: number) {
     .limit(1);
   return rows[0] ?? null;
 }
+
+/**
+ * معرّف وردية الموظّف المفتوحة في فرعٍ ما، مرتبط بالمعاملة — لنسب إيصالات الصندوق (نقد داخل/خارج)
+ * إلى الوردية فيتوازن الـZ-report. يُرجع null إن لم تكن للموظّف وردية مفتوحة (لا شيء يُنسَب).
+ */
+export async function openShiftIdTx(tx: Tx, userId: number, branchId: number): Promise<number | null> {
+  const rows = await tx
+    .select({ id: shifts.id })
+    .from(shifts)
+    .where(and(eq(shifts.userId, userId), eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")))
+    .limit(1);
+  return rows[0] ? Number(rows[0].id) : null;
+}

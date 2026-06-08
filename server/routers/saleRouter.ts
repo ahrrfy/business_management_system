@@ -59,12 +59,14 @@ export const saleRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId };
-      // تجاوز حدّ الائتمان: لا يُوثَق clientـ creditApproved؛ يُشتقّ من تحقّق هوية المدير هنا فقط.
+      // عزل الفرع: غير المدير يُجبَر على فرعه (لا يُصدَّق branchId القادم من العميل — منع IDOR).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const effectiveBranchId = elevated ? input.branchId : (ctx.user.branchId ?? input.branchId);
+      const actor = { userId: ctx.user.id, branchId: effectiveBranchId };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval);
-      const effectiveInput = { ...saleInput, creditApproved: approvedBy != null };
+      const effectiveInput = { ...saleInput, branchId: effectiveBranchId, creditApproved: approvedBy != null };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await createSale(effectiveInput, actor);
@@ -83,7 +85,10 @@ export const saleRouter = router({
   pay: cashierProcedure
     .input(z.object({ invoiceId: z.number().int().positive(), amount: z.string(), method, shiftId: z.number().int().positive().optional() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await processPayment(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // عزل الفرع: غير المدير يُرفض دفعه على فاتورة فرع آخر (منع IDOR).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const enforceBranchId = elevated ? null : (ctx.user.branchId ?? -1);
+      const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
       return res;
     }),

@@ -17,6 +17,7 @@ import {
   postEntry,
 } from "./ledgerService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
+import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -265,8 +266,11 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
 
     // Optional payment receipt + PAYMENT_IN entry.
     if (paidNow.gt(0)) {
+      // انسب الدفع النقدي لوردية الموظّف المفتوحة (تسوية الصندوق/Z-report).
+      const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId));
       const rRes = await tx.insert(receipts).values({
         branchId: Number(wo.branchId),
+        shiftId,
         direction: "IN",
         amount: toDbMoney(paidNow),
         paymentMethod: input.payment!.method,
