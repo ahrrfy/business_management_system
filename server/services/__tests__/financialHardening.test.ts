@@ -204,3 +204,61 @@ describe("WAVG — متوسّط مرجّح صحيح لسطرين لنفس الم
     expect(row.quantity).toBe(20);
   });
 });
+
+describe("ميزان المراجعة / التسوية المستقلّة — يوم كامل يتوازن (درج/ذمم/دفتر)", () => {
+  it("درج النقد يتوازن عبر كل التدفّقات + الذمم صحيحة + ربح الدفتر = إيراد − تكلفة", async () => {
+    await setStock(1, 1, 100);
+    await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    const shRes = await db().insert(s.shifts).values({ branchId: 1, userId: 1, openingBalance: "100", status: "OPEN" });
+    const shiftId = Number((shRes as any)[0]?.insertId ?? (shRes as any).insertId);
+
+    // ١) بيع نقدي 20.
+    const cashSale = await createSale(
+      { branchId: 1, shiftId, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
+      actor,
+    );
+    // ٢) بيع آجل 30، مدفوع نقداً 10 (ذمة 20).
+    await createSale(
+      { branchId: 1, shiftId, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }], payment: { amount: "10.00", method: "CASH" } },
+      actor,
+    );
+    // ٣) دفعة لاحقة نقداً 5 (بلا shiftId ⇒ تُشتقّ تلقائياً — إصلاح الدفعة ١).
+    const creditInv = (await db().select().from(s.invoices).where(eq(s.invoices.customerId, 1)))[0];
+    await processPayment({ invoiceId: Number(creditInv.id), amount: "5.00", method: "CASH" }, actor);
+    // ٤) مرتجع على البيع النقدي: قطعة باسترداد نقدي 10 (OUT يُنسب للوردية — إصلاح الدفعة ١).
+    const cashItem = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, cashSale.invoiceId)))[0];
+    await returnSale({ invoiceId: cashSale.invoiceId, lines: [{ invoiceItemId: Number(cashItem.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" } }, actor);
+    // ٥) أمر شغل يُسلَّم نقداً 50 (IN يُنسب للوردية — إصلاح الدفعة ١).
+    const wo = await createWorkOrder({ branchId: 1, baseVariantId: 1, title: "درع", salePrice: "50.00" }, actor);
+    await startWorkOrder(wo.workOrderId, actor);
+    await markWorkOrderReady(wo.workOrderId);
+    await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "50.00", method: "CASH" } }, actor);
+
+    // تسوية مستقلّة للدرج: اشتقاق النقد من receipts مباشرةً.
+    const cashRows = await db()
+      .select({
+        cin: sql<string>`COALESCE(SUM(CASE WHEN ${s.receipts.direction}='IN' AND ${s.receipts.paymentMethod}='CASH' THEN ${s.receipts.amount} ELSE 0 END),0)`,
+        cout: sql<string>`COALESCE(SUM(CASE WHEN ${s.receipts.direction}='OUT' AND ${s.receipts.paymentMethod}='CASH' THEN ${s.receipts.amount} ELSE 0 END),0)`,
+      })
+      .from(s.receipts)
+      .where(eq(s.receipts.shiftId, shiftId));
+    expect(Number(cashRows[0].cin)).toBe(85); // 20 + 10 + 5 + 50 — كلها منسوبة للوردية
+    expect(Number(cashRows[0].cout)).toBe(10); // الاسترداد
+
+    // الدرج يتوازن: المتوقّع = 100 + 85 − 10 = 175 (لا عجز/فائض وهمي).
+    const close = await closeShift({ shiftId, countedCash: "175.00" }, actor);
+    expect(close.expectedCash).toBe("175.00");
+    expect(close.variance).toBe("0.00");
+
+    // الذمم: AR للعميل = 30 − 10 − 5 = 15.
+    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    expect(cust.currentBalance).toBe("15.00");
+
+    // ربح الدفتر متّسق: profit == revenue − cost لكل قيد (ميزان البُعد الربحي).
+    const ents = await db().select().from(s.accountingEntries);
+    expect(ents.length).toBeGreaterThan(0);
+    for (const e of ents) {
+      expect(Number(e.profit)).toBeCloseTo(Number(e.revenue) - Number(e.cost), 2);
+    }
+  });
+});
