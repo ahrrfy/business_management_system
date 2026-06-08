@@ -4,6 +4,7 @@ import { saleRouter } from "./routers/saleRouter";
 import { purchaseRouter } from "./routers/purchaseRouter";
 import { inventoryRouter } from "./routers/inventoryRouter";
 import { returnRouter } from "./routers/returnRouter";
+import { purchaseReturnsRouter } from "./routers/purchaseReturns";
 import { shiftRouter } from "./routers/shiftRouter";
 import { catalogRouter } from "./routers/catalogRouter";
 import { supplierRouter } from "./routers/supplierRouter";
@@ -34,6 +35,7 @@ export const appRouter = router({
   purchases: purchaseRouter,
   inventory: inventoryRouter,
   returns: returnRouter,
+  purchaseReturns: purchaseReturnsRouter,
   shifts: shiftRouter,
   catalog: catalogRouter,
   suppliers: supplierRouter,

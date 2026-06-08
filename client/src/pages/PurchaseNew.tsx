@@ -1,271 +1,272 @@
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { D, fmt, lineTotal, round2, toBase } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+/**
+ * PurchaseNew — صفحة إنشاء أمر شراء جديد بواجهة محرّر الفواتير الموحّدة.
+ *
+ * تعتمد على مكتبة `@/components/invoice` المشتركة (نفس عناصر فاتورة البيع/عرض السعر)
+ * مع `invoiceType="PURCHASE"`:
+ *   • المورد بدل العميل (EntityPicker يتبدّل تلقائياً عبر InvoiceHeader).
+ *   • السعر القابل للتعديل في الجدول هو **سعر الشراء/التكلفة**؛ `costBase × convFactor` كبادئ
+ *     (يفعّله ProductTable عند `isPurchase=true`).
+ *   • `showCost = true` (مدير — له رؤية التكلفة والهامش).
+ *   • «رقم أمر شراء مرجعي» اختياري (InvoiceHeader يظهره عند PURCHASE).
+ *   • بنجاح الإنشاء ⇒ تنقّل لشاشة الاستلام `/purchases/:id/receive`.
+ *
+ * الذرّية والأموال يتولاها الخادم (createPurchaseOrder ⇒ withTx + decimal.js). الواجهة هنا
+ * لا تستخدم parseFloat/Number في الأموال (الجمعات داخل calcTotals + decimal.js).
+ */
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { D, round2, toBase } from "@/lib/money";
+import { notify } from "@/lib/notify";
+import { trpc } from "@/lib/trpc";
+import {
+  ActionButtons,
+  BulkPicker,
+  INVOICE_TYPES,
+  InvoiceHeader,
+  ProductTable,
+  ShortcutsBar,
+  TermsAndNotes,
+  TotalsPanel,
+  calcTotals,
+  createInitialState,
+  invoiceReducer,
+  type InvoiceActionKind,
+} from "@/components/invoice";
 
-type Line = {
-  key: number;
-  variantId: number;
-  productUnitId: number;
-  label: string;
-  unitName: string;
-  conversionFactor: string;
-  quantity: string;
-  unitPrice: string;
-};
-
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+const INVOICE_TYPE = "PURCHASE" as const;
 
 export default function PurchaseNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+
+  /* ─── server data ──────────────────────────────────────────────── */
   const me = trpc.auth.me.useQuery();
-
-  const suppliers = trpc.suppliers.list.useQuery();
   const branches = trpc.branches.list.useQuery();
+  // suppliers مُحمَّل داخل EntityPicker — لا نكرّر هنا، لكن نُدفئ الكاش للتجاوب.
+  trpc.suppliers.list.useQuery();
 
-  const [supplierId, setSupplierId] = useState<number | "">("");
-  const [branchId, setBranchId] = useState<number | "">("");
-  const [taxRate, setTaxRate] = useState("0");
-  const [notes, setNotes] = useState("");
-  const [lines, setLines] = useState<Line[]>([]);
-  const [seq, setSeq] = useState(1);
-  const [query, setQuery] = useState("");
-  const [error, setError] = useState("");
+  /* ─── editor state (reducer) ───────────────────────────────────── */
+  const [state, dispatch] = useReducer(invoiceReducer, undefined, () => ({
+    ...createInitialState(INVOICE_TYPE, me.data?.branchId ?? 1),
+  }));
 
-  // inline new-supplier
-  const [showNewSupplier, setShowNewSupplier] = useState(false);
-  const [newSupName, setNewSupName] = useState("");
-  const [newSupPhone, setNewSupPhone] = useState("");
+  // مزامنة الفرع مرة واحدة عند توفّر هويّة المستخدم (إن لم يكن المستخدم قد بدّل الفرع يدوياً).
+  const branchInitRef = useRef(false);
+  useEffect(() => {
+    if (!branchInitRef.current && me.data?.branchId && state.branchId !== me.data.branchId) {
+      dispatch({ type: "SET_FIELD", field: "branchId", value: me.data.branchId });
+      branchInitRef.current = true;
+    } else if (me.data) {
+      branchInitRef.current = true;
+    }
+  }, [me.data, state.branchId]);
 
-  const effectiveBranch = branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1);
-  const catalog = trpc.catalog.forPurchase.useQuery(
-    { branchId: Number(effectiveBranch), query: query.trim() || undefined, limit: 50 },
-    { enabled: !!effectiveBranch }
-  );
+  /* ─── client-side idempotency token ────────────────────────────── */
+  // معرّف العميل للطلب — جاهز للمستقبل (الراوتر الحالي لا يستهلكه؛ يُحفظ في memory للجلسة).
+  const [clientRequestId] = useState(() => crypto.randomUUID());
 
-  const createSupplier = trpc.suppliers.create.useMutation({
-    onSuccess: async (r) => {
-      await utils.suppliers.list.invalidate();
-      setSupplierId(r.id);
-      setShowNewSupplier(false);
-      setNewSupName("");
-      setNewSupPhone("");
-    },
-    onError: (e) => setError(e.message),
-  });
+  /* ─── bulk picker overlay ──────────────────────────────────────── */
+  const [bulkOpen, setBulkOpen] = useState(false);
 
+  /* ─── mutation ─────────────────────────────────────────────────── */
   const create = trpc.purchases.createOrder.useMutation({
     onSuccess: async (r) => {
       await utils.purchases.list.invalidate();
+      notify.ok("تم إنشاء أمر الشراء — انتقال للاستلام");
       navigate(`/purchases/${r.purchaseOrderId}/receive`);
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => notify.err(e),
   });
 
-  function addLine(row: NonNullable<typeof catalog.data>[number]) {
-    setLines((prev) => {
-      if (prev.some((l) => l.productUnitId === row.productUnitId)) return prev;
-      const label = `${row.productName}${row.variantName ? " — " + row.variantName : row.color ? " — " + row.color : ""} (${row.sku})`;
-      // Prefill purchase-unit price = base-unit cost × conversion factor (keeps last-cost stable on receipt).
-      const prefill = round2(D(row.costPriceBase).times(D(row.conversionFactor))).toFixed(2);
-      return [
-        ...prev,
-        {
-          key: seq,
-          variantId: row.variantId,
-          productUnitId: row.productUnitId,
-          label,
-          unitName: row.unitName,
-          conversionFactor: String(row.conversionFactor),
-          quantity: "1",
-          unitPrice: prefill,
-        },
-      ];
-    });
-    setSeq((s) => s + 1);
+  /* ─── validation + submit ──────────────────────────────────────── */
+  const totals = useMemo(() => calcTotals(state.items, state), [state]);
+
+  function validate(): string | null {
+    if (!state.entityId) return "اختر المورد قبل الحفظ.";
+    if (!state.branchId) return "اختر الفرع.";
+    if (state.items.length === 0) return "أضف صنفاً واحداً على الأقل.";
+    for (const l of state.items) {
+      const qty = D(l.qty);
+      if (!qty.gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
+      const price = D(l.price);
+      if (price.lt(0)) return `سعر الشراء في «${l.name}» غير صالح.`;
+      const base = toBase(l.qty, l.conversionFactor);
+      if (!base.isInteger())
+        return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
+    }
+    return null;
   }
-  const patchLine = (key: number, patch: Partial<Line>) =>
-    setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)));
-  const removeLine = (key: number) => setLines((prev) => prev.filter((l) => l.key !== key));
 
-  const totals = useMemo(() => {
-    const subtotal = lines.reduce(
-      (acc, l) => acc.plus(D(lineTotal(l.unitPrice, l.quantity))),
-      D(0)
-    );
-    const tax = round2(subtotal.times(D(taxRate).dividedBy(100)));
-    const total = round2(subtotal.plus(tax));
-    return { subtotal: round2(subtotal).toFixed(2), tax: tax.toFixed(2), total: total.toFixed(2) };
-  }, [lines, taxRate]);
-
-  function submit() {
-    setError("");
-    if (!supplierId) return setError("اختر المورد.");
-    if (!effectiveBranch) return setError("اختر الفرع.");
-    if (!lines.length) return setError("أضف صنفاً واحداً على الأقل.");
-    for (const l of lines) {
-      if (!D(l.quantity).gt(0)) return setError(`الكمية في «${l.label}» يجب أن تكون موجبة.`);
-      if (l.unitPrice.trim() === "" || D(l.unitPrice).lt(0)) return setError(`سعر الشراء في «${l.label}» غير صالح.`);
-      const base = toBase(l.quantity, l.conversionFactor);
-      if (!base.isInteger()) return setError(`الكمية في «${l.label}» تنتج كسراً بالوحدة الأساس.`);
+  function handleSubmit() {
+    const err = validate();
+    if (err) {
+      notify.warn(err);
+      return;
     }
     create.mutate({
-      supplierId: Number(supplierId),
-      branchId: Number(effectiveBranch),
-      taxRatePercent: taxRate.trim() || "0",
+      supplierId: state.entityId!,
+      branchId: state.branchId,
+      // الضريبة في العراق 0% افتراضياً — لا حقل ضريبة في الواجهة الجديدة، نعتمد الافتراضي.
+      taxRatePercent: "0",
       status: "CONFIRMED",
-      notes: notes.trim() || undefined,
-      items: lines.map((l) => ({
+      notes: state.notes.trim() || undefined,
+      items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
-        quantity: D(l.quantity).toString(),
-        unitPrice: D(l.unitPrice).toFixed(2),
+        // الكمية بنفس الوحدة المختارة (الخادم يضرب × conversionFactor للحصول على base).
+        quantity: D(l.qty).toString(),
+        // سعر الشراء بالوحدة (price = costBase × convFactor عند الإضافة، قابل للتعديل).
+        unitPrice: round2(D(l.price)).toFixed(2),
       })),
     });
   }
 
+  function handleSaveDraft() {
+    // الراوتر يدعم status=DRAFT لكنّ المتطلب الأساسي «CONFIRMED». نوحّد التحذير الآن.
+    notify.info("حفظ المسودات سيُفعَّل لاحقاً — استخدم «حفظ واعتماد».");
+  }
+
+  function handleAction(kind: InvoiceActionKind) {
+    switch (kind) {
+      case "save":
+        handleSubmit();
+        return;
+      case "draft":
+        handleSaveDraft();
+        return;
+      case "print":
+        // اطبع المسوّدة الحالية (المتصفّح) — الطباعة المعتمدة من شاشة الاستلام.
+        window.print();
+        return;
+      case "send":
+      case "pdf":
+      case "duplicate":
+      case "return":
+        notify.info("هذا الإجراء سيُفعَّل لاحقاً.");
+        return;
+      default:
+        return;
+    }
+  }
+
+  /* ─── keyboard shortcuts (F2/F4/F9/F12/Esc) ────────────────────── */
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      // F2 ⇒ تركيز شريط البحث داخل ProductTable
+      if (e.key === "F2") {
+        e.preventDefault();
+        const input = containerRef.current?.querySelector<HTMLInputElement>(
+          'input[aria-label="بحث المنتجات"]'
+        );
+        input?.focus();
+        return;
+      }
+      // F4 ⇒ حفظ واعتماد
+      if (e.key === "F4") {
+        e.preventDefault();
+        if (!create.isPending) handleSubmit();
+        return;
+      }
+      // F9 ⇒ طباعة
+      if (e.key === "F9") {
+        e.preventDefault();
+        window.print();
+        return;
+      }
+      // F12 ⇒ تفريغ السلة وإعادة تهيئة (يحفظ الفرع)
+      if (e.key === "F12") {
+        e.preventDefault();
+        dispatch({ type: "RESET", invoiceType: INVOICE_TYPE });
+        return;
+      }
+      // Esc ⇒ إغلاق Bulk Picker إن كان مفتوحاً
+      if (e.key === "Escape") {
+        if (bulkOpen) setBulkOpen(false);
+        return;
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkOpen, create.isPending, state]);
+
+  /* ─── render ───────────────────────────────────────────────────── */
+  const meta = INVOICE_TYPES[INVOICE_TYPE];
+
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div ref={containerRef} dir="rtl" className="flex h-full flex-col gap-3">
+      {/* Title bar */}
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">أمر شراء جديد</h1>
-        <Link href="/purchases" className="text-sm text-muted-foreground">← رجوع للمشتريات</Link>
+        <h1 className="flex items-center gap-2 text-xl font-extrabold">
+          <span className="text-2xl">{meta.icon}</span>
+          {meta.label} جديد
+        </h1>
+        <div className="flex items-center gap-3 text-xs">
+          <span className="hidden font-semibold text-muted-foreground sm:inline">
+            الإجمالي:{" "}
+            <span className="font-extrabold text-foreground" dir="ltr">
+              {totals.grandTotal}
+            </span>{" "}
+            د.ع
+          </span>
+          <Link
+            href="/purchases"
+            className="text-sm font-semibold text-muted-foreground hover:text-foreground"
+          >
+            ← رجوع للمشتريات
+          </Link>
+        </div>
       </div>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">المورد والفرع</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <div className="space-y-1">
-            <Label>المورد *</Label>
-            <select className={selectCls} value={supplierId} onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : "")}>
-              <option value="">— اختر مورداً —</option>
-              {(suppliers.data ?? []).map((s) => (
-                <option key={s.id} value={s.id}>{s.name}</option>
-              ))}
-            </select>
-            <button type="button" className="text-xs text-primary hover:underline" onClick={() => setShowNewSupplier((v) => !v)}>
-              {showNewSupplier ? "إلغاء" : "+ مورد جديد"}
-            </button>
-          </div>
-          <div className="space-y-1">
-            <Label>الفرع *</Label>
-            <select className={selectCls} value={effectiveBranch} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-              {(branches.data ?? []).map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label>نسبة الضريبة %</Label>
-            <Input dir="ltr" value={taxRate} onChange={(e) => setTaxRate(e.target.value)} placeholder="0" />
-          </div>
-        </CardContent>
-        {showNewSupplier && (
-          <CardContent className="border-t pt-4 grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-            <div className="space-y-1">
-              <Label className="text-xs">اسم المورد</Label>
-              <Input value={newSupName} onChange={(e) => setNewSupName(e.target.value)} placeholder="مثال: مكتبة الجملة" />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">الهاتف</Label>
-              <Input dir="ltr" value={newSupPhone} onChange={(e) => setNewSupPhone(e.target.value)} />
-            </div>
-            <Button
-              variant="outline"
-              disabled={!newSupName.trim() || createSupplier.isPending}
-              onClick={() => createSupplier.mutate({ name: newSupName.trim(), phone: newSupPhone.trim() || undefined })}
-            >
-              {createSupplier.isPending ? "جارٍ…" : "حفظ المورد"}
-            </Button>
-          </CardContent>
-        )}
-      </Card>
+      {/* Header card (document metadata + supplier + terms + PO reference) */}
+      <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">إضافة أصناف</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ابحث عن منتج بالاسم أو SKU أو الباركود…" />
-          {query.trim() && (
-            <div className="border rounded-md divide-y max-h-60 overflow-auto">
-              {(catalog.data ?? []).map((row) => (
-                <button
-                  key={row.productUnitId}
-                  type="button"
-                  className="w-full text-right p-2 text-sm hover:bg-accent flex items-center justify-between gap-2"
-                  onClick={() => addLine(row)}
-                >
-                  <span>{row.productName}{row.variantName ? ` — ${row.variantName}` : row.color ? ` — ${row.color}` : ""} · {row.unitName}</span>
-                  <span className="text-xs text-muted-foreground font-mono" dir="ltr">{row.sku} · كلفة {row.costPriceBase}</span>
-                </button>
-              ))}
-              {catalog.data && catalog.data.length === 0 && (
-                <div className="p-3 text-center text-xs text-muted-foreground">لا نتائج.</div>
-              )}
-            </div>
-          )}
+      {/* Body: products on the right, totals/actions/terms on the left (RTL → aside on left) */}
+      <div className="flex min-h-0 flex-1 gap-3">
+        <div className="flex min-w-0 flex-1 flex-col gap-2">
+          <ProductTable
+            items={state.items}
+            dispatch={dispatch}
+            branchId={state.branchId}
+            tier={state.tier}
+            invoiceType={INVOICE_TYPE}
+            showCost={true}
+            onOpenBulkPicker={() => setBulkOpen(true)}
+            onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
+          />
+          <BulkPicker
+            open={bulkOpen}
+            onClose={() => setBulkOpen(false)}
+            onAddItems={(items) => dispatch({ type: "ADD_ITEMS", items })}
+            invoiceType={INVOICE_TYPE}
+            branchId={state.branchId}
+            tier={state.tier}
+          />
+        </div>
 
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr className="text-right">
-                <th className="p-2">الصنف</th>
-                <th className="p-2">الوحدة</th>
-                <th className="p-2 w-24">الكمية</th>
-                <th className="p-2 w-32">سعر الشراء</th>
-                <th className="p-2 text-left w-28">الإجمالي</th>
-                <th className="p-2 w-8"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {lines.map((l) => (
-                <tr key={l.key} className="border-t">
-                  <td className="p-2">{l.label}</td>
-                  <td className="p-2 text-muted-foreground">{l.unitName}</td>
-                  <td className="p-2">
-                    <Input dir="ltr" className="h-8" value={l.quantity} onChange={(e) => patchLine(l.key, { quantity: e.target.value })} />
-                  </td>
-                  <td className="p-2">
-                    <Input dir="ltr" className="h-8" value={l.unitPrice} onChange={(e) => patchLine(l.key, { unitPrice: e.target.value })} />
-                  </td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{lineTotal(l.unitPrice, l.quantity)}</td>
-                  <td className="p-2">
-                    <Button variant="ghost" size="sm" onClick={() => removeLine(l.key)}>✕</Button>
-                  </td>
-                </tr>
-              ))}
-              {lines.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">ابحث أعلاه لإضافة أصناف.</td></tr>
-              )}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="pt-6 space-y-3">
-          <div className="space-y-1">
-            <Label htmlFor="notes">ملاحظات</Label>
-            <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          </div>
-          <div className="flex justify-end">
-            <div className="w-64 space-y-1 text-sm">
-              <div className="flex justify-between"><span className="text-muted-foreground">المجموع</span><span dir="ltr">{fmt(totals.subtotal)}</span></div>
-              <div className="flex justify-between"><span className="text-muted-foreground">الضريبة</span><span dir="ltr">{fmt(totals.tax)}</span></div>
-              <div className="flex justify-between font-semibold border-t pt-1"><span>الإجمالي</span><span dir="ltr">{fmt(totals.total)} د.ع</span></div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex gap-2">
-        <Button onClick={submit} disabled={create.isPending}>{create.isPending ? "جارٍ الإنشاء…" : "إنشاء وأمر بالاستلام"}</Button>
-        <Link href="/purchases"><Button variant="outline">إلغاء</Button></Link>
+        <aside className="flex w-80 shrink-0 flex-col gap-2">
+          <TotalsPanel items={state.items} state={state} dispatch={dispatch} />
+          <ActionButtons
+            invoiceType={INVOICE_TYPE}
+            items={state.items}
+            onAction={handleAction}
+            saving={create.isPending}
+          />
+          <TermsAndNotes state={state} dispatch={dispatch} />
+        </aside>
       </div>
+
+      <ShortcutsBar />
+
+      {/* idempotency token — مرئي للمطوّر فقط عبر data-attribute (يساعد التتبّع) */}
+      <span data-client-request-id={clientRequestId} hidden aria-hidden />
+
+      {/* Hint for branches still loading (rare) */}
+      {!branches.data && (
+        <p className="text-xs text-muted-foreground">جارٍ تحميل الفروع…</p>
+      )}
     </div>
   );
 }

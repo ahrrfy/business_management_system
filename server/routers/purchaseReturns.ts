@@ -1,0 +1,71 @@
+import { z } from "zod";
+import { logAudit } from "../services/auditService";
+import { createPurchaseReturn, listPurchaseReturns } from "../services/purchaseReturnsService";
+import { managerProcedure, router } from "../trpc";
+
+const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+
+/**
+ * مرتجع المشتريات (إرجاع بضاعة للمورد):
+ *  - يخصم المخزون (OUT) بقفل ذرّي.
+ *  - يُسجّل قيد RETURN في الدفتر بقيم سالبة.
+ *  - يخفّض ذمم المورد (AP) أو يُسجّل receipt IN إن سدّد المورد نقداً.
+ *  - مدير فأعلى (تكلفة + ذمم + نقد).
+ */
+export const purchaseReturnsRouter = router({
+  create: managerProcedure
+    .input(
+      z.object({
+        clientRequestId: z.string().min(1).max(80).optional(),
+        supplierId: z.number().int().positive(),
+        branchId: z.number().int().positive(),
+        purchaseOrderRefId: z.number().int().positive().optional(),
+        items: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive(),
+              quantity: z.string(),
+              unitPrice: z.string(),
+            })
+          )
+          .min(1),
+        reason: z.string().max(500).optional().nullable(),
+        paymentMethod: method.optional(),
+        settlement: z.enum(["CASH", "CREDIT"]).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await createPurchaseReturn(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? input.branchId,
+      });
+      await logAudit(ctx, {
+        action: "purchaseReturn.create",
+        entityType: "purchaseReturn",
+        entityId: res.purchaseReturnEntryId,
+        newValue: {
+          supplierId: input.supplierId,
+          items: input.items.length,
+          returnedTotal: res.returnedTotal,
+          idempotent: res.idempotent,
+        },
+      });
+      return res;
+    }),
+
+  list: managerProcedure
+    .input(
+      z
+        .object({
+          supplierId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
+          limit: z.number().int().positive().max(200).optional(),
+          offset: z.number().int().nonnegative().optional(),
+        })
+        .optional()
+    )
+    .query(async ({ input }) => {
+      return listPurchaseReturns(input ?? {});
+    }),
+});
