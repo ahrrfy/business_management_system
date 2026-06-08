@@ -90,8 +90,26 @@ export const customerRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // §٧ audit oldValue: نلتقط لقطة قبل التحديث لمسار تدقيق فروقات حقيقي.
+      const before = await getCustomer(input.customerId);
       const res = await updateCustomer(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "customer.update", entityType: "customer", entityId: input.customerId });
+      await logAudit(ctx, {
+        action: "customer.update",
+        entityType: "customer",
+        entityId: input.customerId,
+        oldValue: before ? {
+          name: before.name, phone: before.phone, whatsapp: before.whatsapp,
+          address: before.address, city: before.city, district: before.district,
+          customerType: before.customerType, defaultPriceTier: before.defaultPriceTier,
+          creditLimit: before.creditLimit, notes: before.notes,
+        } : null,
+        newValue: {
+          name: input.name, phone: input.phone, whatsapp: input.whatsapp,
+          address: input.address, city: input.city, district: input.district,
+          customerType: input.customerType, defaultPriceTier: input.defaultPriceTier,
+          creditLimit: input.creditLimit, notes: input.notes,
+        },
+      });
       return res;
     }),
 

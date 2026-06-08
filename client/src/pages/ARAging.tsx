@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
 import { Label } from "@/components/ui/label";
 import { printARAging } from "@/lib/printing/printTemplates";
+import { D, fmt as fmtMoney } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -19,26 +20,35 @@ const CUST_TYPE_LABEL: Record<string, string> = {
   "حكومي": "حكومي",
 };
 
-const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+const fmt = (s: string | number) => fmtMoney(s);
 
 export default function ARAging() {
   const branches = trpc.branches.list.useQuery();
   const [branchId, setBranchId] = useState<number | "">("");
   const aging = trpc.reports.arAging.useQuery({ branchId: branchId ? Number(branchId) : undefined });
 
+  // §٥: نجمع بدقّة Decimal (لا Number()) ⇒ لا انجراف float عبر مئات الصفوف.
   const totals = useMemo(() => {
     const rows = aging.data ?? [];
-    return rows.reduce(
+    const acc = rows.reduce(
       (a, r) => ({
-        d0_30: a.d0_30 + Number(r.d0_30 || 0),
-        d31_60: a.d31_60 + Number(r.d31_60 || 0),
-        d61_90: a.d61_90 + Number(r.d61_90 || 0),
-        d91p: a.d91p + Number(r.d91p || 0),
-        unpaidTotal: a.unpaidTotal + Number(r.unpaidTotal || 0),
-        currentBalance: a.currentBalance + Number(r.currentBalance || 0),
+        d0_30: a.d0_30.plus(D(r.d0_30 || 0)),
+        d31_60: a.d31_60.plus(D(r.d31_60 || 0)),
+        d61_90: a.d61_90.plus(D(r.d61_90 || 0)),
+        d91p: a.d91p.plus(D(r.d91p || 0)),
+        unpaidTotal: a.unpaidTotal.plus(D(r.unpaidTotal || 0)),
+        currentBalance: a.currentBalance.plus(D(r.currentBalance || 0)),
       }),
-      { d0_30: 0, d31_60: 0, d61_90: 0, d91p: 0, unpaidTotal: 0, currentBalance: 0 }
+      { d0_30: D(0), d31_60: D(0), d61_90: D(0), d91p: D(0), unpaidTotal: D(0), currentBalance: D(0) }
     );
+    return {
+      d0_30: acc.d0_30.toFixed(2),
+      d31_60: acc.d31_60.toFixed(2),
+      d61_90: acc.d61_90.toFixed(2),
+      d91p: acc.d91p.toFixed(2),
+      unpaidTotal: acc.unpaidTotal.toFixed(2),
+      currentBalance: acc.currentBalance.toFixed(2),
+    };
   }, [aging.data]);
 
   return (
@@ -73,11 +83,16 @@ export default function ARAging() {
           <Button variant="outline" size="sm" disabled={!aging.data?.length} onClick={() => printARAging({
             date: new Date().toLocaleDateString('en-GB'),
             rows: (aging.data ?? []).map(r => ({
-              name: r.customerName, d0_30: Number(r.d0_30||0), d31_60: Number(r.d31_60||0),
-              d61_90: Number(r.d61_90||0), d91p: Number(r.d91p||0),
-              unpaidTotal: Number(r.unpaidTotal||0), currentBalance: Number(r.currentBalance||0),
+              name: r.customerName,
+              d0_30: D(r.d0_30||0).toNumber(), d31_60: D(r.d31_60||0).toNumber(),
+              d61_90: D(r.d61_90||0).toNumber(), d91p: D(r.d91p||0).toNumber(),
+              unpaidTotal: D(r.unpaidTotal||0).toNumber(), currentBalance: D(r.currentBalance||0).toNumber(),
             })),
-            totals,
+            totals: {
+              d0_30: D(totals.d0_30).toNumber(), d31_60: D(totals.d31_60).toNumber(),
+              d61_90: D(totals.d61_90).toNumber(), d91p: D(totals.d91p).toNumber(),
+              unpaidTotal: D(totals.unpaidTotal).toNumber(), currentBalance: D(totals.currentBalance).toNumber(),
+            },
           })}>طباعة PDF</Button>
           <Link href="/customers-statement"><Button variant="outline">كشف حساب عميل</Button></Link>
         </div>
@@ -159,11 +174,11 @@ export default function ARAging() {
   );
 }
 
-function Bucket({ label, value, color, emphasis }: { label: string; value: number; color: string; emphasis?: boolean }) {
+function Bucket({ label, value, color, emphasis }: { label: string; value: string; color: string; emphasis?: boolean }) {
   return (
     <div className={`rounded-md p-3 ${color}`}>
       <div className="text-xs opacity-80">{label}</div>
-      <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-lg font-semibold"}`} dir="ltr">{fmt(value.toFixed(2))}</div>
+      <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-lg font-semibold"}`} dir="ltr">{fmt(value)}</div>
     </div>
   );
 }

@@ -1,7 +1,8 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
-import { cashierProcedure, protectedProcedure, router } from "../trpc";
+import { branchScopedProcedure, cashierProcedure, router } from "../trpc";
 
 export const shiftRouter = router({
   open: cashierProcedure
@@ -20,11 +21,28 @@ export const shiftRouter = router({
       return res;
     }),
 
-  report: protectedProcedure
+  // §٧ IDOR: كان كاشير من فرع A يستطيع `report` لوردية فرع B بمعرفة shiftId.
+  // الآن نفرض ctx.scopedBranchId: إن كانت الوردية في فرع آخر ⇒ FORBIDDEN لغير المرتفعين.
+  report: branchScopedProcedure
     .input(z.object({ shiftId: z.number().int().positive() }))
-    .query(({ input }) => getShiftReport(input.shiftId)),
+    .query(async ({ input, ctx }) => {
+      const report = await getShiftReport(input.shiftId);
+      if (!report) return null;
+      // ctx.scopedBranchId == null للمرتفعين (admin/manager): مرور حر.
+      // ctx.scopedBranchId == number لغيرهم: فرض المطابقة.
+      const sBranchId = (report as { branchId?: number | null })?.branchId;
+      if (ctx.scopedBranchId != null && sBranchId != null && Number(sBranchId) !== ctx.scopedBranchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "ليس لك صلاحية على ورديات هذا الفرع" });
+      }
+      return report;
+    }),
 
-  current: protectedProcedure
+  // §٧: الكاشير يبقى في فرعه؛ المرتفعون يجوز لهم تمرير branchId لأي فرع. ctx.scopedBranchId
+  // أقوى من ctx.user.branchId (يغلق ثغرة إن كان branchId الخام null).
+  current: branchScopedProcedure
     .input(z.object({ branchId: z.number().int().positive() }))
-    .query(({ input, ctx }) => getOpenShift(ctx.user.id, ctx.user.branchId ?? input.branchId)),
+    .query(({ input, ctx }) => {
+      const effective = ctx.scopedBranchId ?? input.branchId;
+      return getOpenShift(ctx.user.id, effective);
+    }),
 });

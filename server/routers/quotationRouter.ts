@@ -7,7 +7,7 @@ import {
   setQuotationStatus,
 } from "../services/quotationService";
 import { logAudit } from "../services/auditService";
-import { protectedProcedure, router } from "../trpc";
+import { managerProcedure, protectedProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -21,7 +21,9 @@ export const quotationRouter = router({
     .input(z.object({ quotationId: z.number().int().positive() }))
     .query(({ input }) => getQuotation(input.quotationId)),
 
-  create: protectedProcedure
+  // §٧ RBAC: عرض السعر التزام تسعيري يربط الشركة بمبلغ مستقبلاً ⇒ مدير فأعلى (كان protected
+  // وسمح للكاشير بإصدار عروض، مغيّراً المسؤولية التسعيرية بلا حسيب).
+  create: managerProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -46,12 +48,14 @@ export const quotationRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // §٧: نُغلق ثغرة `ctx.user.branchId ?? input.branchId` (لو كان branchId خام null لقبل
+      // أيّ فرع). الآن المرتفعون فقط يصلون هنا ⇒ يمكن الاعتماد على input.branchId مع fallback صلب.
       const res = await createQuotation(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
       await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId } });
       return res;
     }),
 
-  setStatus: protectedProcedure
+  setStatus: managerProcedure
     .input(z.object({ quotationId: z.number().int().positive(), status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "EXPIRED"]) }))
     .mutation(async ({ input, ctx }) => {
       const res = await setQuotationStatus(input.quotationId, input.status);
@@ -59,7 +63,7 @@ export const quotationRouter = router({
       return res;
     }),
 
-  convert: protectedProcedure
+  convert: managerProcedure
     .input(
       z.object({
         quotationId: z.number().int().positive(),

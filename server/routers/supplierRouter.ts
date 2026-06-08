@@ -77,8 +77,24 @@ export const supplierRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // §٧ audit oldValue: لقطة قبل التحديث لمسار تدقيق فروقات حقيقي.
+      const before = await getSupplier(input.supplierId);
       const res = await updateSupplier(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "supplier.update", entityType: "supplier", entityId: input.supplierId });
+      await logAudit(ctx, {
+        action: "supplier.update",
+        entityType: "supplier",
+        entityId: input.supplierId,
+        oldValue: before ? {
+          name: before.name, phone: before.phone, email: before.email, whatsapp: before.whatsapp,
+          address: before.address, city: before.city, taxId: before.taxId,
+          productTypes: before.productTypes, paymentTerms: before.paymentTerms, notes: before.notes,
+        } : null,
+        newValue: {
+          name: input.name, phone: input.phone, email: input.email, whatsapp: input.whatsapp,
+          address: input.address, city: input.city, taxId: input.taxId,
+          productTypes: input.productTypes, paymentTerms: input.paymentTerms, notes: input.notes,
+        },
+      });
       return res;
     }),
 

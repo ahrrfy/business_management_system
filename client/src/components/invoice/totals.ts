@@ -103,12 +103,17 @@ export function calcMargin(item: InvoiceLine): string {
   return round2(price.minus(cost).dividedBy(cost).times(100)).toFixed(2);
 }
 
-/** Pretty-format a decimal-string amount for Arabic UI (en-US digits, currency suffix). */
+/** Pretty-format a decimal-string amount for Arabic UI (en-US digits, currency suffix).
+ *  §٥: نحوّل إلى Decimal أولاً ثم نقرّب HALF_UP ⇒ لا انجراف float قبل التقريب. */
 export function fmtMoney(amount: string | number, currency: "IQD" | "USD" = "IQD"): string {
   const sym = currency === "USD" ? "$" : "د.ع";
-  const n = Number(amount);
-  if (!isFinite(n)) return `0 ${sym}`;
-  return `${Math.round(n).toLocaleString("en-US")} ${sym}`;
+  try {
+    const d = D(amount);
+    if (!d.isFinite()) return `0 ${sym}`;
+    return `${d.toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("en-US")} ${sym}`;
+  } catch {
+    return `0 ${sym}`;
+  }
 }
 
 export function fmtNum(n: string | number | null | undefined): string {

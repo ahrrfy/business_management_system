@@ -2,6 +2,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
+import { D, positiveDiff } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
@@ -88,12 +89,12 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
     id: "unpaid",
     header: "المتبقّي",
     cell: (c) => {
-      const total = parseFloat(String(c.row.original.total ?? 0));
-      const paid = parseFloat(String(c.row.original.paidAmount ?? 0));
-      const unpaid = Math.max(0, total - paid);
+      // §٥: نستعمل positiveDiff (Decimal) بدلاً من parseFloat+Math.max ⇒ لا انجراف float.
+      const unpaidD = positiveDiff(c.row.original.total, c.row.original.paidAmount);
+      const isOwing = unpaidD.gt(0);
       return (
-        <span className={`tabular-nums ${unpaid > 0 ? "text-rose-600 font-medium" : ""}`} dir="ltr">
-          {fmt(unpaid)}
+        <span className={`tabular-nums ${isOwing ? "text-rose-600 font-medium" : ""}`} dir="ltr">
+          {fmt(unpaidD.toString())}
         </span>
       );
     },
@@ -367,7 +368,7 @@ function InvoicesTab({
           <Card>
             <CardContent className="pt-4 pb-3 text-center">
               <p className="text-xs text-muted-foreground">المتبقّي</p>
-              <p className={`text-xl font-bold tabular-nums ${Number(totals.unpaid) > 0 ? "text-rose-600" : "text-foreground"}`} dir="ltr">
+              <p className={`text-xl font-bold tabular-nums ${D(totals.unpaid).gt(0) ? "text-rose-600" : "text-foreground"}`} dir="ltr">
                 {fmt(totals.unpaid)}
               </p>
             </CardContent>

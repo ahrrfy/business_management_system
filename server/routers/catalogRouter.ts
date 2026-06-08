@@ -57,7 +57,9 @@ export const catalogRouter = router({
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => getProductForEdit(input.productId)),
 
-  updateProduct: protectedProcedure
+  // §٧ (RBAC): updateProduct يكشف costPrice ويعدّل أسعاراً ⇒ مدير فأعلى (كان protectedProcedure
+  // وسمح للكاشير بتعديل التكاليف).
+  updateProduct: managerProcedure
     .input(
       z.object({
         productId: z.number().int().positive(),
@@ -92,8 +94,25 @@ export const catalogRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // §٧ audit oldValue: لقطة سريعة قبل التحديث (للتدقيق الفروقات).
+      const before = await getProductForEdit(input.productId);
+      const oldVariantsSummary = before?.variants.map((v) => ({
+        id: v.id,
+        sku: v.sku,
+        costPrice: v.costPrice,
+      })) ?? [];
       const res = await updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "product.update", entityType: "product", entityId: input.productId, newValue: { name: input.name, isActive: input.isActive } });
+      await logAudit(ctx, {
+        action: "product.update",
+        entityType: "product",
+        entityId: input.productId,
+        oldValue: { name: before?.name, isActive: before?.isActive, variants: oldVariantsSummary },
+        newValue: {
+          name: input.name,
+          isActive: input.isActive,
+          variants: input.variants.map((v) => ({ id: v.id, sku: v.sku, costPrice: v.costPrice })),
+        },
+      });
       return res;
     }),
 

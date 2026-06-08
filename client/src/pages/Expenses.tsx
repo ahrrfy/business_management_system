@@ -3,6 +3,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { Link } from "wouter";
@@ -65,7 +66,25 @@ export default function Expenses() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">المصروفات اليومية</h1>
-        <Link href="/expenses/new"><Button>+ مصروف جديد</Button></Link>
+        <div className="flex gap-2">
+          <Button
+            variant="outline"
+            disabled={!list.data?.rows?.length}
+            onClick={() => exportRows(list.data?.rows ?? [], {
+              filename: "المصروفات",
+              columns: [
+                { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ") : "" },
+                { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
+                { key: "category", header: "الفئة", map: (r) => CATEGORY_LABEL[r.category] ?? r.category },
+                { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
+                { key: "paymentMethod", header: "طريقة الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
+                { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
+                { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+              ],
+            })}
+          >تصدير Excel</Button>
+          <Link href="/expenses/new"><Button>+ مصروف جديد</Button></Link>
+        </div>
       </div>
       <p className="text-sm text-muted-foreground">
         كل مصروف يولّد قبضاً صادراً (يُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر.

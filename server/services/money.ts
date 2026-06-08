@@ -45,5 +45,28 @@ export function clampMoney(x: DecimalInput, max: DecimalInput): Decimal {
   return d.gt(m) ? m : d;
 }
 
+/** فرق موجب بين قيمتين ماليتين، مقصّ عند الصفر. مفيد لحساب «المتبقّي» من total و paidAmount
+ *  بدقّة Decimal، عوضاً عن `Math.max(0, total - paid)` على floats (§٥ violation). */
+export function positiveDiff(a: DecimalInput, b: DecimalInput): Decimal {
+  const d = money(a).sub(money(b));
+  return d.isNegative() ? new Decimal(0) : d;
+}
+
+/** تقريب نقدي للدينار العراقي: يرفع/يخفض إلى أقرب مضاعف لـ`denom` (افتراضياً ٢٥٠ د.ع).
+ *  المنطق: في العراق لا فئات أصغر من ٢٥٠/٥٠٠، فقبول مبلغ ٥٤٥ نقداً يخلق فكّةً وهمية.
+ *  السياسة: HALF_UP — ٥٤٥ → ٥٠٠ (الأقرب)، ١٢٥ → صفر (الأقرب)، ١٢٦ → ٢٥٠.
+ *  لا يتعامل مع السالب (يُعامل كصفر). للحالات غير النقدية لا تستعمله — احتفظ بدقّة 2dp. */
+export function roundCashIQD(amount: DecimalInput, denom: number = 250): Decimal {
+  if (!Number.isInteger(denom) || denom <= 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: `وحدة تقريب غير صالحة: ${denom}` });
+  }
+  const a = money(amount);
+  if (a.isNegative() || a.isZero()) return new Decimal(0);
+  // round = floor((a + denom/2) / denom) × denom
+  const halfDenom = new Decimal(denom).div(2);
+  const quotient = a.plus(halfDenom).div(denom).floor();
+  return quotient.times(denom);
+}
+
 /** Today's date as YYYY-MM-DD for a `date` column. */
 export const toDateStr = (d: Date = new Date()): string => d.toISOString().slice(0, 10);

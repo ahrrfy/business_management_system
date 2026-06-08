@@ -11,6 +11,8 @@
  */
 
 import { createHmac } from "crypto";
+import Decimal from "decimal.js";
+import { money, round2 } from "./money";
 import type {
   BarcodeSet,
   InvoicePayloadFields,
@@ -81,19 +83,26 @@ function toDisplayDate(isoDate: string): string {
   return `${day}/${m}/${y}`;
 }
 
-/** تنسيق المبلغ للعرض (يُضيف فواصل الآلاف) */
+/** تنسيق المبلغ للعرض (يُضيف فواصل الآلاف).
+ *  §٥: ممنوع parseFloat على الأموال ⇒ نعبر عبر Decimal لحفظ الدقّة قبل التقريب للعرض. */
 function formatAmount(amount: string): string {
-  const num = parseFloat(amount);
-  if (isNaN(num)) return amount;
-  return num.toLocaleString("ar-IQ") + " د.ع";
+  try {
+    const d = money(amount);
+    // نقرّب إلى ٢ خانة عشرية ثم نعرض بصيغة محلية. الدينار العراقي عملياً صحيح،
+    // لكن الكسور (لو وُجدت) لا يجب أن تُلغى بـ parseFloat الذي يفقد الدقّة.
+    return round2(d).toNumber().toLocaleString("ar-IQ") + " د.ع";
+  } catch {
+    return amount; // قيمة غير صالحة ⇒ نعرض كما هي بلا كسر
+  }
 }
 
 // ---
 
 export function invoiceBarcodeSet(inv: InvoicePayloadFields): BarcodeSet {
   const isoDate = toIsoDate(inv.invoiceDate);
-  // المبلغ يُخزَّن كعدد صحيح (دينار) للإيجاز في QR
-  const amountInt = Math.round(parseFloat(inv.total));
+  // المبلغ يُخزَّن كعدد صحيح (دينار) للإيجاز في QR.
+  // §٥: نقرّب بـ Decimal HALF_UP (لا parseFloat الذي يفقد الدقّة قبل التقريب).
+  const amountInt = money(inv.total).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber();
   const dataFields = ["INV", inv.invoiceNumber, isoDate, String(amountInt), String(inv.branchId)];
   const sig = sign(dataFields);
 

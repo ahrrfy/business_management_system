@@ -17,7 +17,9 @@ export const barcodeRouter = router({
    * publicProcedure: لا تسجيل دخول مطلوب (العميل يمسح بهاتفه بدون حساب).
    */
   verify: publicProcedure
-    .input(z.object({ payload: z.string().min(1) }))
+    // §٧ Input bounds: payload QR عمليّاً <١٠٠ خانة (TYPE|number|date|amount|branchId|hmac).
+    // الحدّ الأقصى ١٠٠٠ يحمي من DoS بحمولة عملاقة على إجراء عام بلا مصادقة.
+    .input(z.object({ payload: z.string().min(1).max(1000) }))
     .query(({ input }) => {
       return verifyPayload(input.payload);
     }),
