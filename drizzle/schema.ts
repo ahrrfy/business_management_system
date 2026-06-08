@@ -807,6 +807,27 @@ export const importBatches = mysqlTable(
 export type ImportBatch = typeof importBatches.$inferSelect;
 export type InsertImportBatch = typeof importBatches.$inferInsert;
 
+/**
+ * مفاتيح الـ Idempotency للعمليات المالية الحسّاسة (دفعات، مرتجعات، استلام شراء).
+ * النقر المزدوج/إعادة الإرسال بنفس clientRequestId يُعاد تشغيله بنتيجة العملية الأولى
+ * بدل أن يكتب دفعة/استرداداً/استلاماً مكرّراً. مفتاح فريد على (operation, clientRequestId).
+ */
+export const idempotencyKeys = mysqlTable(
+  "idempotencyKeys",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    operation: varchar("operation", { length: 40 }).notNull(), // مثل "sale.pay" / "sale.return" / "purchase.receive"
+    clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
+    refId: bigint("refId", { mode: "number" }).notNull(), // المعرّف الناتج (إيصال/استرداد/استلام)
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    opKeyUq: unique("uq_idempotency_op_key").on(table.operation, table.clientRequestId),
+  })
+);
+
+export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
+
 export const printJobs = mysqlTable(
   "printJobs",
   {
