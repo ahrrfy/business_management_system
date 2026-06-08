@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
@@ -132,7 +133,7 @@ export default function ARAging() {
                 <tr key={r.customerId} className="border-t">
                   <td className="p-2 font-medium">{r.customerName}</td>
                   <td className="p-2 text-xs">{CUST_TYPE_LABEL[r.customerType ?? ""] ?? r.customerType ?? "—"}</td>
-                  <td className="p-2 text-xs font-mono" dir="ltr">{r.phone ?? "—"}</td>
+                  <td className="p-2"><CopyInline value={r.phone} /></td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d0_30)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d31_60)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d61_90)}</td>

@@ -39,6 +39,9 @@ coverage/
 # Archived legacy (Manus) — reference only, not part of the clean repo
 _legacy/
 
+# Design assets bundle — reference only, not part of the app build
+_design-bundle/
+
 # Local Claude settings (workflows + launch.json are shared/committed)
 .claude/settings.local.json
 .claude/worktrees/

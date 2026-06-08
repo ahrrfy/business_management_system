@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
@@ -37,7 +38,7 @@ export default function Purchases() {
             <tbody>
               {(rows.data ?? []).map((p) => (
                 <tr key={p.id} className="border-t">
-                  <td className="p-2 font-mono text-xs" dir="ltr">{p.poNumber}</td>
+                  <td className="p-2"><CopyInline value={p.poNumber} /></td>
                   <td className="p-2">{p.supplierName ?? "—"}</td>
                   <td className="p-2">{new Date(p.orderDate).toLocaleString("ar-IQ")}</td>
                   <td className="p-2 text-left">{p.total}</td>

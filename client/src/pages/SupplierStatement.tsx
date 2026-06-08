@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -105,7 +106,7 @@ export default function SupplierStatement() {
               <div className="flex items-start justify-between flex-wrap gap-3">
                 <div>
                   <div className="text-lg font-semibold">{stmt.data.supplier.name}</div>
-                  <div className="text-xs text-muted-foreground" dir="ltr">{stmt.data.supplier.phone ?? "—"}</div>
+                  <div className="text-xs"><CopyInline value={stmt.data.supplier.phone} /></div>
                   <div className="text-xs text-muted-foreground">
                     {stmt.data.supplier.city ?? "—"}
                     {stmt.data.supplier.paymentTerms ? ` · شروط الدفع: ${stmt.data.supplier.paymentTerms}` : ""}
@@ -142,7 +143,7 @@ export default function SupplierStatement() {
                     const remaining = Math.max(Number(p.total) - Number(p.paidAmount), 0);
                     return (
                       <tr key={p.id} className="border-t">
-                        <td className="p-2 font-mono text-xs" dir="ltr">{p.poNumber}</td>
+                        <td className="p-2"><CopyInline value={p.poNumber} /></td>
                         <td className="p-2 text-xs" dir="ltr">{new Date(p.orderDate).toLocaleDateString("ar-IQ")}</td>
                         <td className="p-2 text-xs" dir="ltr">{p.expectedDeliveryDate ? String(p.expectedDeliveryDate).slice(0, 10) : "—"}</td>
                         <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.total)}</td>
@@ -185,7 +186,7 @@ export default function SupplierStatement() {
                   {stmt.data.payments.map((p) => (
                     <tr key={p.id} className="border-t">
                       <td className="p-2 text-xs" dir="ltr">{new Date(p.entryDate).toLocaleDateString("ar-IQ")}</td>
-                      <td className="p-2 font-mono text-xs" dir="ltr">{p.purchaseOrderId ?? "—"}</td>
+                      <td className="p-2"><CopyInline value={p.purchaseOrderId} /></td>
                       <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.amount)}</td>
                       <td className="p-2 text-xs">{p.notes ?? "—"}</td>
                     </tr>

@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -114,7 +115,7 @@ export default function CustomerStatement() {
               <div className="flex items-start justify-between flex-wrap gap-3">
                 <div>
                   <div className="text-lg font-semibold">{stmt.data.customer.name}</div>
-                  <div className="text-xs text-muted-foreground" dir="ltr">{stmt.data.customer.phone ?? "—"}</div>
+                  <div className="text-xs"><CopyInline value={stmt.data.customer.phone} /></div>
                   <div className="text-xs text-muted-foreground">
                     {stmt.data.customer.customerType} · فئة سعرية {stmt.data.customer.defaultPriceTier}
                     {stmt.data.customer.creditLimit && Number(stmt.data.customer.creditLimit) > 0
@@ -154,7 +155,7 @@ export default function CustomerStatement() {
                     const remaining = Math.max(Number(i.total) - Number(i.paidAmount), 0);
                     return (
                       <tr key={i.id} className="border-t">
-                        <td className="p-2 font-mono text-xs" dir="ltr">{i.invoiceNumber}</td>
+                        <td className="p-2"><CopyInline value={i.invoiceNumber} /></td>
                         <td className="p-2 text-xs" dir="ltr">{new Date(i.invoiceDate).toLocaleDateString("ar-IQ")}</td>
                         <td className="p-2 text-xs" dir="ltr">{i.dueDate ? String(i.dueDate).slice(0, 10) : "—"}</td>
                         <td className="p-2 text-xs">{i.sourceType}</td>
@@ -200,7 +201,7 @@ export default function CustomerStatement() {
                   {stmt.data.payments.map((p) => (
                     <tr key={p.id} className="border-t">
                       <td className="p-2 text-xs" dir="ltr">{new Date(p.createdAt).toLocaleString("ar-IQ")}</td>
-                      <td className="p-2 font-mono text-xs" dir="ltr">{p.invoiceId ?? "—"}</td>
+                      <td className="p-2"><CopyInline value={p.invoiceId} /></td>
                       <td className="p-2">
                         <span className={`inline-block rounded px-2 py-0.5 text-xs ${p.direction === "IN" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
                           {p.direction === "IN" ? "وارد" : "صادر/استرداد"}

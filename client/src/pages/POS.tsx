@@ -4,6 +4,7 @@
  */
 import CustomerPicker from "@/components/CustomerPicker";
 import { clearCartDraft } from "@/lib/cartDraft";
+import { confirm } from "@/lib/confirm";
 import { isPaired, isWebUsbSupported, pairPrinter, printDoc, type PrintDoc } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { parseScan } from "@/lib/scanRouter";
@@ -588,7 +589,17 @@ export default function POS() {
         case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSale(); break;
         case "F9":  e.preventDefault(); if (receipt) printDoc(buildReceiptDoc(receipt)); break;
         case "F12": e.preventDefault();
-          if (cart.length && window.confirm("تفريغ السلّة؟")) { setCart([]); setPayInput(""); setSelId(null); }
+          if (cart.length) {
+            void (async () => {
+              if (!(await confirm({
+                variant: "warning",
+                title: "تفريغ السلّة",
+                description: "ستُفقد كل الأصناف المُضافة في هذه السلّة. هل تتابع؟",
+                confirmText: "تفريغ",
+              }))) return;
+              setCart([]); setPayInput(""); setSelId(null);
+            })();
+          }
           break;
         case "Escape": setShowDrop(false); setMessage(null); break;
       }
@@ -714,9 +725,15 @@ export default function POS() {
           showCustPicker={showCustPicker}
           setShowCustPicker={setShowCustPicker}
           setCustId={setCustId}
-          onClear={() => {
-            if (window.confirm("تفريغ السلّة؟")) { setCart([]); setSelId(null); setPayInput(""); }
-          }}
+          onClear={() => void (async () => {
+            if (!(await confirm({
+              variant: "warning",
+              title: "تفريغ السلّة",
+              description: "ستُفقد كل الأصناف المُضافة في هذه السلّة. هل تتابع؟",
+              confirmText: "تفريغ",
+            }))) return;
+            setCart([]); setSelId(null); setPayInput("");
+          })()}
         />
       </div>
 

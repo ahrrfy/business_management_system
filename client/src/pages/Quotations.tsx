@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
@@ -47,7 +48,7 @@ export default function Quotations() {
             <tbody>
               {(rows.data ?? []).map((q) => (
                 <tr key={q.id} className="border-t">
-                  <td className="p-2 font-mono text-xs" dir="ltr">{q.quoteNumber}</td>
+                  <td className="p-2"><CopyInline value={q.quoteNumber} /></td>
                   <td className="p-2">{q.customerName ?? "—"}</td>
                   <td className="p-2">{new Date(q.quoteDate).toLocaleDateString("ar-IQ")}</td>
                   <td className="p-2 text-xs">{q.validUntil ? String(q.validUntil).slice(0, 10) : "—"}</td>

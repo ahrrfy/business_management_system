@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
@@ -238,9 +239,15 @@ export default function CustomerEdit() {
         {isActive ? (
           <Button
             variant="outline"
-            onClick={() => {
-              if (confirm("تأكيد تعطيل العميل؟ سيُستثنى من قوائم البيع.")) deactivate.mutate({ customerId });
-            }}
+            onClick={() => void (async () => {
+              if (!(await confirm({
+                variant: "danger",
+                title: "تعطيل العميل",
+                description: `سيُستثنى «${name || c.name}» من قوائم البيع. الفواتير المسوّاة تبقى. هل تتابع؟`,
+                confirmText: "تعطيل",
+              }))) return;
+              deactivate.mutate({ customerId });
+            })()}
             disabled={deactivate.isPending}
           >
             {deactivate.isPending ? "…" : "تعطيل العميل"}

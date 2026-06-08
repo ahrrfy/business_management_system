@@ -1,8 +1,13 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ImportDialog } from "@/components/import/ImportDialog";
 import { exportRows } from "@/lib/export";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { confirm } from "@/lib/confirm";
+import { CUSTOMER_FIELDS } from "@/lib/importFields";
+import type { CustomerImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -30,6 +35,8 @@ export default function Customers() {
   const [priceTier, setPriceTier] = useState<"" | "RETAIL" | "WHOLESALE" | "GOVERNMENT">("");
   const [includeInactive, setIncludeInactive] = useState(false);
   const [page, setPage] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
+  const importMut = trpc.imports.customers.useMutation();
   const limit = 50;
 
   const input = useMemo(
@@ -66,9 +73,14 @@ export default function Customers() {
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
 
-  function toggle(id: number, isActive: boolean) {
+  async function toggle(id: number, isActive: boolean, name: string) {
     if (isActive) {
-      if (!confirm("تأكيد تعطيل العميل؟ لن يظهر في قوائم البيع.")) return;
+      if (!(await confirm({
+        variant: "danger",
+        title: "تعطيل العميل",
+        description: `سيُستثنى «${name}» من قوائم البيع. الفواتير المسوّاة تبقى. هل تتابع؟`,
+        confirmText: "تعطيل",
+      }))) return;
       deactivate.mutate({ customerId: id });
     } else {
       activate.mutate({ customerId: id });
@@ -79,8 +91,32 @@ export default function Customers() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">العملاء</h1>
-        <Link href="/customers/new"><Button>+ عميل جديد</Button></Link>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)}>استيراد Excel</Button>
+          <Link href="/customers/new"><Button>+ عميل جديد</Button></Link>
+        </div>
       </div>
+
+      <ImportDialog<CustomerImportRow>
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="استيراد عملاء من Excel/CSV"
+        entityName="عميل"
+        fields={CUSTOMER_FIELDS}
+        onImport={async (rows) => {
+          const res = await importMut.mutateAsync({
+            rows: rows.map((r) => ({ ...r, rowNumber: r.rowNumber })),
+            options: { onExisting: "skip" },
+          });
+          return res;
+        }}
+        onDone={(s) => {
+          if (s.committed && (s.created > 0 || s.updated > 0)) {
+            notify.ok(`تم: ${s.created} مُنشأ، ${s.updated} مُحدَّث، ${s.skipped} متخطّى`);
+            utils.customers.list.invalidate();
+          }
+        }}
+      />
       <p className="text-sm text-muted-foreground">
         إدارة العملاء (أفراد/تجّار/شركات/حكومي): إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد المفتوح.
       </p>
@@ -171,7 +207,7 @@ export default function Customers() {
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{c.name}</td>
                     <td className="p-2 text-xs">{c.customerType ?? "—"}</td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{c.phone ?? "—"}</td>
+                    <td className="p-2"><CopyInline value={c.phone} /></td>
                     <td className="p-2 text-xs">{[c.city, c.district].filter(Boolean).join(" / ") || "—"}</td>
                     <td className="p-2 text-xs">{TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(c.creditLimit)}</td>
@@ -189,7 +225,7 @@ export default function Customers() {
                         <Button
                           variant={isActive ? "ghost" : "outline"}
                           size="sm"
-                          onClick={() => toggle(id, isActive)}
+                          onClick={() => void toggle(id, isActive, c.name ?? "")}
                           disabled={deactivate.isPending || activate.isPending}
                         >
                           {isActive ? "تعطيل" : "تفعيل"}

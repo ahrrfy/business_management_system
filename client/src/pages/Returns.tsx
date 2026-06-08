@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -135,7 +136,7 @@ export default function Returns() {
             <tbody>
               {(invoicesQuery.data ?? []).map((inv) => (
                 <tr key={inv.id} className={`border-t ${selectedId === Number(inv.id) ? "bg-muted/40" : ""}`}>
-                  <td className="p-2 font-mono text-xs" dir="ltr">{inv.invoiceNumber}</td>
+                  <td className="p-2"><CopyInline value={inv.invoiceNumber} /></td>
                   <td className="p-2 text-left" dir="ltr">{fmt(inv.total)}</td>
                   <td className="p-2">{INVOICE_STATUS[inv.status] ?? inv.status}</td>
                   <td className="p-2 text-center">

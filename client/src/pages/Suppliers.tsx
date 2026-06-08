@@ -1,7 +1,12 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ImportDialog } from "@/components/import/ImportDialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { confirm } from "@/lib/confirm";
+import { SUPPLIER_FIELDS } from "@/lib/importFields";
+import type { SupplierImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -17,6 +22,8 @@ export default function Suppliers() {
   const [q, setQ] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
   const [page, setPage] = useState(0);
+  const [importOpen, setImportOpen] = useState(false);
+  const importMut = trpc.imports.suppliers.useMutation();
   const limit = 50;
 
   const input = useMemo(
@@ -42,9 +49,14 @@ export default function Suppliers() {
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
 
-  function toggle(id: number, isActive: boolean) {
+  async function toggle(id: number, isActive: boolean, name: string) {
     if (isActive) {
-      if (!confirm("تأكيد تعطيل المورّد؟ لن يظهر في قوائم الشراء.")) return;
+      if (!(await confirm({
+        variant: "danger",
+        title: "تعطيل المورّد",
+        description: `سيُستثنى «${name}» من قوائم الشراء. أوامر الشراء المسوّاة تبقى. هل تتابع؟`,
+        confirmText: "تعطيل",
+      }))) return;
       deactivate.mutate({ supplierId: id });
     } else {
       activate.mutate({ supplierId: id });
@@ -55,8 +67,32 @@ export default function Suppliers() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">الموردون</h1>
-        <Link href="/suppliers/new"><Button>+ مورّد جديد</Button></Link>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" onClick={() => setImportOpen(true)}>استيراد Excel</Button>
+          <Link href="/suppliers/new"><Button>+ مورّد جديد</Button></Link>
+        </div>
       </div>
+
+      <ImportDialog<SupplierImportRow>
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        title="استيراد موردين من Excel/CSV"
+        entityName="مورّد"
+        fields={SUPPLIER_FIELDS}
+        onImport={async (rows) => {
+          const res = await importMut.mutateAsync({
+            rows: rows.map((r) => ({ ...r, rowNumber: r.rowNumber })),
+            options: { onExisting: "skip" },
+          });
+          return res;
+        }}
+        onDone={(s) => {
+          if (s.committed && (s.created > 0 || s.updated > 0)) {
+            notify.ok(`تم: ${s.created} مُنشأ، ${s.updated} مُحدَّث، ${s.skipped} متخطّى`);
+            invalidate();
+          }
+        }}
+      />
       <p className="text-sm text-muted-foreground">
         إدارة الموردين: إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد الدائن المفتوح.
       </p>
@@ -104,7 +140,7 @@ export default function Suppliers() {
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{s.name}</td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{s.phone ?? "—"}</td>
+                    <td className="p-2"><CopyInline value={s.phone} /></td>
                     <td className="p-2 text-xs">{s.city ?? "—"}</td>
                     <td className="p-2 text-xs">{s.paymentTerms ?? "—"}</td>
                     <td className={`p-2 text-left tabular-nums ${balanceClass}`} dir="ltr">{fmt(s.currentBalance)}</td>
@@ -118,7 +154,7 @@ export default function Suppliers() {
                         <Link href={`/suppliers/${id}/edit`}>
                           <Button variant="outline" size="sm">تعديل</Button>
                         </Link>
-                        <Button variant={isActive ? "ghost" : "outline"} size="sm" onClick={() => toggle(id, isActive)} disabled={deactivate.isPending || activate.isPending}>
+                        <Button variant={isActive ? "ghost" : "outline"} size="sm" onClick={() => void toggle(id, isActive, s.name ?? "")} disabled={deactivate.isPending || activate.isPending}>
                           {isActive ? "تعطيل" : "تفعيل"}
                         </Button>
                       </div>

@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { exportRows } from "@/lib/export";
@@ -19,7 +20,7 @@ const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أون
 const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
 
 const columns: ColumnDef<Row, unknown>[] = [
-  { accessorKey: "invoiceNumber", header: "رقم الفاتورة", cell: (c) => <span className="font-mono text-xs" dir="ltr">{c.getValue() as string}</span> },
+  { accessorKey: "invoiceNumber", header: "رقم الفاتورة", cell: (c) => <CopyInline value={c.getValue() as string} /> },
   { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => new Date(c.getValue() as string).toLocaleString("ar-IQ") },
   { accessorKey: "customerName", header: "العميل", cell: (c) => (c.getValue() as string) ?? "—" },
   { accessorKey: "sourceType", header: "المصدر", cell: (c) => SOURCE[c.getValue() as string] ?? (c.getValue() as string) },

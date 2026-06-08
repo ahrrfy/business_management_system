@@ -6,7 +6,10 @@ import {
   getAPAging,
   getARAging,
   getCustomerStatement,
+  getProfitByCategory,
+  getSlowMovers,
   getSupplierStatement,
+  getTopProducts,
 } from "../services/reportsService";
 import {
   reconcileCustomerBalances,
@@ -163,4 +166,45 @@ export const reportsRouter = router({
     ledger: await reconcileLedgerProfit(),
     runAt: new Date().toISOString(),
   })),
+
+  /** أكثر المنتجات مبيعاً — ترتيب بالإيراد أو الكمية، فلاتر زمن+فرع. */
+  topProducts: managerProcedure
+    .input(
+      z
+        .object({
+          from: z.string().optional(),
+          to: z.string().optional(),
+          branchId: z.number().int().positive().optional(),
+          limit: z.number().int().positive().max(100).default(20),
+          by: z.enum(["revenue", "qty"]).default("revenue"),
+        })
+        .optional()
+    )
+    .query(async ({ input }) => getTopProducts(input ?? {})),
+
+  /** بطيئات الحركة — منتجات بمخزون موجب بلا بيع في النافذة. */
+  slowMovers: managerProcedure
+    .input(
+      z
+        .object({
+          sinceDays: z.number().int().positive().max(365).default(90),
+          branchId: z.number().int().positive().optional(),
+          limit: z.number().int().positive().max(200).default(50),
+        })
+        .optional()
+    )
+    .query(async ({ input }) => getSlowMovers(input ?? {})),
+
+  /** ربح حسب الفئة — تجميع revenue/cost/profit/margin على categoryId. */
+  profitByCategory: managerProcedure
+    .input(
+      z
+        .object({
+          from: z.string().optional(),
+          to: z.string().optional(),
+          branchId: z.number().int().positive().optional(),
+        })
+        .optional()
+    )
+    .query(async ({ input }) => getProfitByCategory(input ?? {})),
 });
