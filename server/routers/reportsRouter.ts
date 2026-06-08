@@ -6,6 +6,7 @@ import {
   getAPAging,
   getARAging,
   getCustomerStatement,
+  getDashboardMetrics,
   getProfitByCategory,
   getSlowMovers,
   getSupplierStatement,
@@ -16,7 +17,7 @@ import {
   reconcileInventory,
   reconcileLedgerProfit,
 } from "../services/reconcileService";
-import { adminProcedure, managerProcedure, router } from "../trpc";
+import { adminProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 
 export const reportsRouter = router({
   arAging: managerProcedure
@@ -157,6 +158,25 @@ export const reportsRouter = router({
           unpaid: totals.unpaid.toFixed(2),
         },
       };
+    }),
+
+  /**
+   * مقاييس لوحة التحكم — عدّاد المخزون المنخفض + الذمم المتأخّرة (> ٣٠ يوماً).
+   * مرئيٌّ لكل مستخدم مصادَق (Dashboard متاحة للجميع). عزل الفرع:
+   *   - admin/manager يمرّران branchId اختيارياً (أو يحصلان على كامل النظام إن لم يُحدَّد).
+   *   - الكاشير/المخزن مقيَّدان دائماً بفرعهما (يتجاهل branchId المُمرَّر).
+   * lowStockCount: متغيّرات تحت minStock (minStock > 0).
+   * overdueAR: فواتير PENDING/PARTIALLY_PAID أعمارها > ٣٠ يوماً مع مجموع المتبقّي.
+   */
+  dashboardMetrics: protectedProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      // عزل الفرع: غير المرتفعين (cashier/warehouse) يُجبَرون على فرعهم.
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const effectiveBranchId: number | null = elevated
+        ? input?.branchId ?? null
+        : Number(ctx.user.branchId ?? -1);
+      return getDashboardMetrics({ branchId: effectiveBranchId });
     }),
 
   /** تدقيق التوافق المالي — للمشرف فقط. يكشف الانجراف الصامت في الأرصدة/المخزون/الدفتر. */

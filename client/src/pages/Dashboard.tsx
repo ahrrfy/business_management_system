@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
+import { D } from "@/lib/money";
 import { Link } from "wouter";
 
 /* ═══════════ DARK-MODE HOOK ═══════════ */
@@ -292,20 +293,45 @@ const ShiftIco = ({ color }: { color: string }) => (
 function MetricsBar() {
   const T = useT();
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId ?? 1;
+  const role = me.data?.role ?? "";
+  // المدير/الأدمن يريان الإجمالي عبر الفروع (branchId=undefined) — الموظفون الميدانيون مقيَّدون.
+  const elevated = role === "admin" || role === "manager";
+  const myBranch = me.data?.branchId ?? 1;
+  const branchScope = elevated ? undefined : myBranch;
   const sales = trpc.sales.list.useQuery({ limit: 500 });
-  const shift = trpc.shifts.current.useQuery({ branchId });
+  const shift = trpc.shifts.current.useQuery({ branchId: myBranch });
+  // مقاييس لوحة التحكم: مخزون منخفض + ذمم متأخّرة (الخلفية تُطبّق عزل الفرع).
+  const metrics = trpc.reports.dashboardMetrics.useQuery({ branchId: branchScope });
 
   const list = sales.data ?? [];
-  const today = new Date().toISOString().slice(0, 10);
-  const todays = list.filter((i) => new Date(i.invoiceDate).toISOString().slice(0, 10) === today);
-  const todaysTotal = todays.reduce((s, i) => s + Number(i.total), 0);
+  // التوقيت المحلّي (en-CA = YYYY-MM-DD محلّياً) — لا UTC حتى لا تنتقل فواتير المساء لليوم التالي.
+  const today = new Date().toLocaleDateString("en-CA");
+  const todays = list.filter((i) => new Date(i.invoiceDate).toLocaleDateString("en-CA") === today);
+  // جمع الأموال عبر decimal.js (قاعدة §٥: ممنوع parseFloat/Number على الأموال).
+  const todaysTotalD = todays.reduce((acc, i) => acc.add(String(i.total)), D(0));
+  const todaysTotal = todaysTotalD.toNumber();
   const fmt = (n: number) => n.toLocaleString("ar-IQ", { maximumFractionDigits: 0 });
 
   const shiftLabel = shift.data ? "مفتوحة" : "لا وردية";
   const shiftSince = shift.data
     ? `منذ ${new Date(shift.data.openedAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}`
     : "";
+
+  // قيم بطاقتَي التنبيه — "..." أثناء التحميل، الأرقام بعد النجاح.
+  const lowStockValue = metrics.isLoading
+    ? "..."
+    : fmt(metrics.data?.lowStockCount ?? 0);
+  const overdueCount = metrics.data?.overdueAR.count ?? 0;
+  const overdueValue = metrics.isLoading ? "..." : fmt(overdueCount);
+  // إجمالٌ مختصر بالدينار (بلا كسور — IQD).
+  const overdueTotalShort = metrics.data
+    ? fmt(Number(metrics.data.overdueAR.total))
+    : "";
+  const overdueUnit = metrics.isLoading
+    ? "> 30 يوم"
+    : overdueCount > 0
+      ? `${overdueTotalShort} د.ع`
+      : "> 30 يوم";
 
   const stats = [
     {
@@ -331,21 +357,23 @@ function MetricsBar() {
     },
     {
       label: "مخزون منخفض",
-      value: "—",
-      unit: "تعبئة",
+      value: lowStockValue,
+      unit: "صنف",
       ico: <WarnIco color="oklch(0.72 0.18 75)" />,
       iBg: "oklch(0.72 0.18 75 / 0.15)",
       isAlert: true,
       alertC: "oklch(0.60 0.18 75)",
+      href: "/inventory",
     },
     {
       label: "ذمم متأخّرة",
-      value: "—",
-      unit: "> 30 يوم",
+      value: overdueValue,
+      unit: overdueUnit,
       ico: <WarnIco color="oklch(0.62 0.24 22)" />,
       iBg: "oklch(0.62 0.24 22 / 0.12)",
       isAlert: true,
       alertC: "oklch(0.52 0.22 25)",
+      href: "/ar-aging",
     },
   ];
 
@@ -359,54 +387,65 @@ function MetricsBar() {
         gap: 12,
       }}
     >
-      {stats.map((s, i) => (
-        <div
-          key={i}
-          style={{
-            flex: 1,
-            height: 50,
-            borderRadius: 11,
-            padding: "0 14px",
-            display: "flex",
-            alignItems: "center",
-            gap: 10,
-            background: s.isAlert ? T.alertBg : T.statBg,
-            border: `1px solid ${s.isAlert ? (s.alertC + "40") : T.statBord}`,
-            boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)",
-          }}
-        >
+      {stats.map((s, i) => {
+        const card = (
           <div
+            key={i}
             style={{
-              width: 28,
-              height: 28,
-              borderRadius: 8,
-              flexShrink: 0,
-              background: s.iBg,
+              flex: 1,
+              height: 50,
+              borderRadius: 11,
+              padding: "0 14px",
               display: "flex",
               alignItems: "center",
-              justifyContent: "center",
+              gap: 10,
+              background: s.isAlert ? T.alertBg : T.statBg,
+              border: `1px solid ${s.isAlert ? (s.alertC + "40") : T.statBord}`,
+              boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)",
+              cursor: s.href ? "pointer" : "default",
+              textDecoration: "none",
             }}
           >
-            {s.ico}
-          </div>
-          <div>
             <div
               style={{
-                fontSize: 14.5,
-                fontWeight: 800,
-                lineHeight: 1.25,
-                color: s.isAlert ? s.alertC : T.text,
+                width: 28,
+                height: 28,
+                borderRadius: 8,
+                flexShrink: 0,
+                background: s.iBg,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
               }}
             >
-              {s.value}
+              {s.ico}
             </div>
-            <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.2 }}>{s.label}</div>
+            <div>
+              <div
+                style={{
+                  fontSize: 14.5,
+                  fontWeight: 800,
+                  lineHeight: 1.25,
+                  color: s.isAlert ? s.alertC : T.text,
+                }}
+              >
+                {s.value}
+              </div>
+              <div style={{ fontSize: 9.5, color: T.muted, lineHeight: 1.2 }}>{s.label}</div>
+            </div>
+            {s.unit && (
+              <div style={{ marginRight: "auto", fontSize: 9.5, color: T.muted }}>{s.unit}</div>
+            )}
           </div>
-          {s.unit && (
-            <div style={{ marginRight: "auto", fontSize: 9.5, color: T.muted }}>{s.unit}</div>
-          )}
-        </div>
-      ))}
+        );
+        return s.href ? (
+          <Link key={i} href={s.href} style={{ flex: 1, display: "flex", textDecoration: "none" }}>
+            {card}
+          </Link>
+        ) : (
+          card
+        );
+      })}
     </div>
   );
 }

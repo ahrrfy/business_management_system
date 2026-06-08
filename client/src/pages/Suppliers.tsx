@@ -2,15 +2,13 @@ import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ImportDialog } from "@/components/import/ImportDialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { ListToolbar, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { SUPPLIER_FIELDS } from "@/lib/importFields";
 import type { SupplierImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
-import { Link } from "wouter";
 
 function fmt(s: string | number | null | undefined): string {
   if (s === null || s === undefined || s === "") return "—";
@@ -65,13 +63,7 @@ export default function Suppliers() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">الموردون</h1>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setImportOpen(true)}>استيراد Excel</Button>
-          <Link href="/suppliers/new"><Button>+ مورّد جديد</Button></Link>
-        </div>
-      </div>
+      <h1 className="text-2xl font-bold">الموردون</h1>
 
       <ImportDialog<SupplierImportRow>
         open={importOpen}
@@ -98,25 +90,43 @@ export default function Suppliers() {
       </p>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">الفلاتر والبحث</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
-          <div className="space-y-1 md:col-span-2">
-            <Label>بحث (اسم/هاتف/مدينة)</Label>
-            <Input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }} placeholder="مثال: مكتبة الرشيد أو 0770..." />
-          </div>
-          <label className="flex items-center gap-2 h-9 text-sm">
-            <input type="checkbox" className="size-4" checked={includeInactive} onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }} />
-            <span className="text-muted-foreground">عرض المعطّلين</span>
-          </label>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="text-base">القائمة</CardTitle>
-          <div className="text-xs text-muted-foreground">
-            {list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ")} مورّد`}
-          </div>
+        <CardHeader>
+          <ListToolbar
+            title="القائمة"
+            count={total}
+            loading={list.isLoading}
+            search={{
+              value: q,
+              onChange: (v) => { setQ(v); setPage(0); },
+              placeholder: "بحث (اسم/هاتف/مدينة)",
+            }}
+            filters={
+              <label className="flex items-center gap-2 h-8 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4"
+                  checked={includeInactive}
+                  onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
+                />
+                <span className="text-muted-foreground">عرض المعطّلين</span>
+              </label>
+            }
+            exportSpec={{
+              filename: "الموردون",
+              rows,
+              columns: [
+                { key: "name", header: "الاسم" },
+                { key: "phone", header: "الهاتف" },
+                { key: "city", header: "المدينة" },
+                { key: "paymentTerms", header: "شروط الدفع" },
+                { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance ?? 0) },
+                { key: "isActive", header: "نشط", map: (r) => (r.isActive ? "نعم" : "لا") },
+              ],
+            }}
+            onImport={() => setImportOpen(true)}
+            importLabel="استيراد Excel"
+            add={{ href: "/suppliers/new", label: "مورّد جديد" }}
+          />
         </CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
@@ -150,14 +160,19 @@ export default function Suppliers() {
                       </span>
                     </td>
                     <td className="p-2 text-center">
-                      <div className="flex gap-1 justify-center">
-                        <Link href={`/suppliers/${id}/edit`}>
-                          <Button variant="outline" size="sm">تعديل</Button>
-                        </Link>
-                        <Button variant={isActive ? "ghost" : "outline"} size="sm" onClick={() => void toggle(id, isActive, s.name ?? "")} disabled={deactivate.isPending || activate.isPending}>
-                          {isActive ? "تعطيل" : "تفعيل"}
-                        </Button>
-                      </div>
+                      <RowActions
+                        mode="inline"
+                        actions={[
+                          { key: "edit", label: "تعديل", href: `/suppliers/${id}/edit` },
+                          {
+                            key: "toggle",
+                            label: isActive ? "تعطيل" : "تفعيل",
+                            variant: isActive ? "destructive" : "default",
+                            disabled: deactivate.isPending || activate.isPending,
+                            onSelect: () => void toggle(id, isActive, s.name ?? ""),
+                          },
+                        ]}
+                      />
                     </td>
                   </tr>
                 );
