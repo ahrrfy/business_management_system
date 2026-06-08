@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
@@ -48,7 +49,7 @@ export default function WorkOrders() {
             <tbody>
               {(rows.data ?? []).map((w) => (
                 <tr key={w.id} className="border-t">
-                  <td className="p-2 font-mono text-xs" dir="ltr">{w.orderNumber}</td>
+                  <td className="p-2"><CopyInline value={w.orderNumber} /></td>
                   <td className="p-2">{w.title}</td>
                   <td className="p-2">{w.customerName ?? "—"}</td>
                   <td className="p-2 text-center">{w.quantity}</td>

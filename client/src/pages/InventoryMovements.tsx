@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -427,9 +428,7 @@ export default function InventoryMovements() {
                     <td className="p-2 text-xs whitespace-nowrap">{fmtDateTime(r.createdAt)}</td>
                     <td className="p-2">
                       <div className="font-medium">{primary}</div>
-                      <div className="text-xs text-muted-foreground font-mono" dir="ltr">
-                        {secondary}
-                      </div>
+                      <CopyInline value={secondary} className="text-muted-foreground" />
                     </td>
                     <td className="p-2 text-center">
                       <TypeBadge type={t} />
@@ -455,14 +454,13 @@ export default function InventoryMovements() {
                         </span>
                       )}
                     </td>
-                    <td className="p-2 text-xs text-muted-foreground">
+                    <td className="p-2 text-xs">
                       {r.referenceType ? (
-                        <span dir="ltr">
-                          {r.referenceType}
-                          {r.referenceId ? ` #${r.referenceId}` : ""}
-                        </span>
+                        <CopyInline
+                          value={r.referenceId ? `${r.referenceType} #${r.referenceId}` : r.referenceType}
+                        />
                       ) : (
-                        "—"
+                        <span className="text-muted-foreground">—</span>
                       )}
                     </td>
                     <td className="p-2 text-xs">{r.createdByName ?? "—"}</td>

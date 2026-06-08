@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PASSWORD_MIN_LEN, isStrongPassword } from "@shared/const";
+import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
@@ -144,7 +145,15 @@ export default function UserEdit() {
         {isActive ? (
           <Button
             variant="outline"
-            onClick={() => { if (confirm("تأكيد تعطيل المستخدم؟ تُبطَل جلساته فوراً.")) setActive.mutate({ userId, isActive: false }); }}
+            onClick={() => void (async () => {
+              if (!(await confirm({
+                variant: "danger",
+                title: "تعطيل المستخدم",
+                description: `لن يستطيع «${name || u.email}» الدخول وتُبطَل جلساته فوراً. هل تتابع؟`,
+                confirmText: "تعطيل",
+              }))) return;
+              setActive.mutate({ userId, isActive: false });
+            })()}
             disabled={setActive.isPending}
           >
             {setActive.isPending ? "…" : "تعطيل المستخدم"}

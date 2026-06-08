@@ -1,8 +1,10 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { confirm } from "@/lib/confirm";
 import { SUPPLIER_FIELDS } from "@/lib/importFields";
 import type { SupplierImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
@@ -47,9 +49,14 @@ export default function Suppliers() {
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
 
-  function toggle(id: number, isActive: boolean) {
+  async function toggle(id: number, isActive: boolean, name: string) {
     if (isActive) {
-      if (!confirm("تأكيد تعطيل المورّد؟ لن يظهر في قوائم الشراء.")) return;
+      if (!(await confirm({
+        variant: "danger",
+        title: "تعطيل المورّد",
+        description: `سيُستثنى «${name}» من قوائم الشراء. أوامر الشراء المسوّاة تبقى. هل تتابع؟`,
+        confirmText: "تعطيل",
+      }))) return;
       deactivate.mutate({ supplierId: id });
     } else {
       activate.mutate({ supplierId: id });
@@ -133,7 +140,7 @@ export default function Suppliers() {
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{s.name}</td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{s.phone ?? "—"}</td>
+                    <td className="p-2"><CopyInline value={s.phone} /></td>
                     <td className="p-2 text-xs">{s.city ?? "—"}</td>
                     <td className="p-2 text-xs">{s.paymentTerms ?? "—"}</td>
                     <td className={`p-2 text-left tabular-nums ${balanceClass}`} dir="ltr">{fmt(s.currentBalance)}</td>
@@ -147,7 +154,7 @@ export default function Suppliers() {
                         <Link href={`/suppliers/${id}/edit`}>
                           <Button variant="outline" size="sm">تعديل</Button>
                         </Link>
-                        <Button variant={isActive ? "ghost" : "outline"} size="sm" onClick={() => toggle(id, isActive)} disabled={deactivate.isPending || activate.isPending}>
+                        <Button variant={isActive ? "ghost" : "outline"} size="sm" onClick={() => void toggle(id, isActive, s.name ?? "")} disabled={deactivate.isPending || activate.isPending}>
                           {isActive ? "تعطيل" : "تفعيل"}
                         </Button>
                       </div>

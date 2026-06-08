@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { Link } from "wouter";
@@ -157,9 +158,16 @@ export default function Expenses() {
                         variant="outline"
                         size="sm"
                         disabled={cancel.isPending}
-                        onClick={() => {
-                          if (confirm(`إلغاء المصروف بمبلغ ${r.amount}؟`)) cancel.mutate({ expenseId: Number(r.id) });
-                        }}
+                        onClick={() => void (async () => {
+                          if (!(await confirm({
+                            variant: "warning",
+                            title: "إلغاء المصروف",
+                            description: `سيُعكس مبلغ ${r.amount} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
+                            confirmText: "إلغاء المصروف",
+                            cancelText: "تراجع",
+                          }))) return;
+                          cancel.mutate({ expenseId: Number(r.id) });
+                        })()}
                       >
                         إلغاء
                       </Button>

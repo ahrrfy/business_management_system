@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -64,10 +65,15 @@ export default function Users() {
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
 
-  function toggle(id: number, isActive: boolean) {
+  async function toggle(id: number, isActive: boolean, name: string, email: string) {
     setErr("");
     if (isActive) {
-      if (!confirm("تأكيد تعطيل المستخدم؟ لن يستطيع الدخول وتُبطَل جلساته فوراً.")) return;
+      if (!(await confirm({
+        variant: "danger",
+        title: "تعطيل المستخدم",
+        description: `لن يستطيع «${name || email}» الدخول وتُبطَل جلساته فوراً. هل تتابع؟`,
+        confirmText: "تعطيل",
+      }))) return;
     }
     setActive.mutate({ userId: id, isActive: !isActive });
   }
@@ -149,7 +155,7 @@ export default function Users() {
                         <Button
                           variant={isActive ? "ghost" : "outline"}
                           size="sm"
-                          onClick={() => toggle(id, isActive)}
+                          onClick={() => void toggle(id, isActive, u.name ?? "", u.email ?? "")}
                           disabled={setActive.isPending}
                         >
                           {isActive ? "تعطيل" : "تفعيل"}

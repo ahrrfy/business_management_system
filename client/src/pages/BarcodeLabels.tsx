@@ -1,3 +1,4 @@
+import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -164,7 +165,7 @@ export default function BarcodeLabels() {
                     <td className="p-2">{q.productName}<span className="text-muted-foreground"> — {q.unitName}</span></td>
                     <td className="p-2">
                       <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs" dir="ltr">{q.barcode}</span>
+                        <CopyInline value={q.barcode} />
                         {!q.saved && (
                           <Button variant="outline" size="sm" disabled={assign.isPending} onClick={() => saveBarcode(q)}>
                             حفظ الباركود
