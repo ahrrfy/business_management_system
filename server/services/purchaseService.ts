@@ -216,13 +216,25 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
       stockMap.set(Number(item.variantId), denom.toString());
       costMap.set(Number(item.variantId), newCost.toFixed(2));
 
-      // Ledger/AP value derives from the stored line total (proportional to received),
-      // not from the rounded per-base cost — so a full receive matches the PO exactly.
-      // ملاحظة: انجراف 0.01 IQD ممكن عبر استلامات جزئية متعدّدة (low في تدقيق ٨/٦).
-      // الإصلاح الصحيح يحتاج عموداً receivedNet على purchaseOrderItems لتتبّع التراكم
-      // الفعلي للأقساط — مُؤجَّل لشريحة schema.
-      const portion = new Decimal(line.receivedBaseQuantity).dividedBy(item.baseQuantity);
-      receivedNet = receivedNet.plus(round2(money(item.total).times(portion)));
+      // Ledger/AP value derives from the stored line total (proportional to received).
+      // مع عمود receivedNet المخزّن لتتبّع التراكم: عند الاستلام المُكمِل للكمية
+      // (priorQty + thisQty === baseQuantity) نستعمل remainder = (total − receivedNet المخزّن سابقاً)
+      // بدل round على portion ⇒ مجموع AP/PURCHASE يطابق إجمالي الـPO بالضبط (لا انجراف 0.01 IQD).
+      const priorReceivedNet = money(item.receivedNet ?? "0");
+      const priorQty = item.receivedBaseQuantity ?? 0;
+      const isLastReceive = priorQty + line.receivedBaseQuantity === item.baseQuantity;
+      let lineNet: Decimal;
+      if (isLastReceive) {
+        lineNet = round2(money(item.total).minus(priorReceivedNet));
+      } else {
+        const portion = new Decimal(line.receivedBaseQuantity).dividedBy(item.baseQuantity);
+        lineNet = round2(money(item.total).times(portion));
+      }
+      await tx
+        .update(purchaseOrderItems)
+        .set({ receivedNet: toDbMoney(priorReceivedNet.plus(lineNet)) })
+        .where(eq(purchaseOrderItems.id, Number(item.id)));
+      receivedNet = receivedNet.plus(lineNet);
     }
     receivedNet = round2(receivedNet);
 

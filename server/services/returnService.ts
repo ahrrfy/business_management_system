@@ -203,11 +203,17 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     }
 
     // paidAmount tracks Σ(IN) − Σ(OUT); recompute status.
+    // returnedTotal تراكمي عبر مرتجعات جزئية ⇒ يمنع انحراف AR في reconcile/aging.
     const newPaid = money(inv.paidAmount).minus(cashRefund);
+    const newReturnedTotal = money(inv.returnedTotal ?? "0").plus(returnedTotal);
     const status = fullyReturned ? "RETURNED" : computeInvoiceStatus(inv.total, toDbMoney(newPaid));
     await tx
       .update(invoices)
-      .set({ paidAmount: toDbMoney(newPaid), status })
+      .set({
+        paidAmount: toDbMoney(newPaid),
+        returnedTotal: toDbMoney(newReturnedTotal),
+        status,
+      })
       .where(eq(invoices.id, input.invoiceId));
 
     // AR: the portion not refunded in cash is dropped from the customer's balance.
