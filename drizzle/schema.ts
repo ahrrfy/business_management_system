@@ -371,6 +371,11 @@ export const invoices = mysqlTable(
     costTotal: decimal("costTotal", { precision: 15, scale: 2 }).default("0").notNull(),
     status: mysqlEnum("invoiceStatus", ["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).default("PENDING").notNull(),
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    // returnedTotal: مجموع ما أُرجِع من إجمالي الفاتورة (تراكميّ عبر مرتجعات جزئية).
+    // يُحدَّث في returnService مع كل مرتجع. يُستخدَم في reconcile و AR-aging لمنع
+    // انحراف وهمي حين المرتجع الجزئي يخفّض currentBalance دون total/paidAmount.
+    // AR الحقيقي للفاتورة = max(total − paidAmount − returnedTotal, 0).
+    returnedTotal: decimal("returnedTotal", { precision: 15, scale: 2 }).default("0").notNull(),
     paymentMethod: varchar("paymentMethod", { length: 20 }),
     paymentDate: timestamp("paymentDate"),
     notes: text("notes"),
@@ -778,6 +783,10 @@ export const purchaseOrderItems = mysqlTable(
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
     receivedBaseQuantity: int("receivedBaseQuantity").default(0),
+    // receivedNet: مجموع ما قُيِّد فعلياً للبند عبر استلامات متعدّدة. عند الـreceive
+    // الذي يُكمل الكمية، يُستعمل (total − receivedNet) كقيمة remainder بالضبط ⇒
+    // مجموع AP/PURCHASE يطابق إجمالي الـPO تماماً (لا انجراف 0.01 IQD).
+    receivedNet: decimal("receivedNet", { precision: 15, scale: 2 }).default("0").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({

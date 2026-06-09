@@ -41,13 +41,18 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   const db = getDb();
   if (!db) return [];
 
+  // مع عمود returnedTotal، الصيغة تبسّطت كثيراً:
+  //   AR_per_invoice = total - paidAmount - returnedTotal (موقَّع، لا GREATEST(.,0))
+  // الفاتورة CANCELLED تستثنى (التزامها أُلغي).
   const invSum = await db
     .select({
       customerId: invoices.customerId,
       arGross: sql<string>`
         COALESCE(SUM(CASE
           WHEN ${invoices.status} != 'CANCELLED'
-          THEN CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2))
+          THEN CAST(${invoices.total} AS DECIMAL(15,2))
+             - CAST(${invoices.paidAmount} AS DECIMAL(15,2))
+             - CAST(${invoices.returnedTotal} AS DECIMAL(15,2))
           ELSE 0
         END), 0)
       `,
@@ -55,24 +60,6 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
     .from(invoices)
     .where(sql`${invoices.customerId} IS NOT NULL`)
     .groupBy(invoices.customerId);
-
-  // RETURN.amount مخزَّن سالباً؛ PAYMENT_OUT.amount موجب يُضاف فيُلغي زيادة (total−paid) الناتجة عن نقصان paidAmount.
-  const retSum = await db
-    .select({
-      customerId: accountingEntries.customerId,
-      effect: sql<string>`
-        COALESCE(SUM(CASE
-          WHEN ${accountingEntries.entryType} IN ('RETURN','PAYMENT_OUT')
-            AND ${accountingEntries.invoiceId} IS NOT NULL
-          THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-          ELSE 0
-        END), 0)
-      `,
-    })
-    .from(accountingEntries)
-    .where(sql`${accountingEntries.customerId} IS NOT NULL`)
-    .groupBy(accountingEntries.customerId);
-  const retMap = new Map(retSum.map((r) => [Number(r.customerId), String(r.effect ?? "0")]));
 
   const actuals = await db
     .select({ id: customers.id, balance: customers.currentBalance })
@@ -87,7 +74,7 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
 
   const issues: ReconcileResult[] = [];
   for (const customerId of Array.from(seen)) {
-    const expected = money(invMap.get(customerId) ?? "0").plus(money(retMap.get(customerId) ?? "0"));
+    const expected = money(invMap.get(customerId) ?? "0");
     const actual = money(actualMap.get(customerId) ?? "0");
     const drift = expected.minus(actual).abs();
     if (drift.greaterThan("0.01")) {

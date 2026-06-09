@@ -48,11 +48,11 @@ export async function getARAging(opts: { branchId?: number } = {}): Promise<ARAg
       c.phone,
       c.customerType,
       CAST(c.currentBalance AS CHAR) AS currentBalance,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) <= 30 THEN GREATEST(i.total - i.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) > 90 THEN GREATEST(i.total - i.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
-      CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount, 0)), 0) AS CHAR) AS unpaidTotal,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) <= 30 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) > 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaidTotal,
       DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN i.invoiceDate END), '%Y-%m-%d') AS oldestInvoiceDate
     FROM customers c
     LEFT JOIN invoices i
@@ -379,7 +379,7 @@ export async function getDashboardMetrics(
   const arRows = await db.execute(sql`
     SELECT
       COUNT(*) AS c,
-      CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount, 0)), 0) AS CHAR) AS t
+      CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS t
     FROM invoices i
     WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
       AND DATEDIFF(NOW(), i.invoiceDate) > 30
