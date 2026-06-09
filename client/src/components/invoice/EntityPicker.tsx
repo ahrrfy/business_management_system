@@ -1,8 +1,7 @@
 /**
  * EntityPicker — customer (for SALE/QUOTATION/SALE_RETURN) or supplier (for PURCHASE/*_RETURN).
  *
- * Pulls real data from tRPC (`customers.list` / `suppliers.list`). The selected row's
- * balance is shown as a colored badge: positive (مدين) → danger, negative (دائن) → success.
+ * الرصيد: "لنا عليه" (أخضر) أو "له علينا" (أحمر) حسب اتجاه الدين.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -10,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { fmtNum } from "./totals";
+import { BalanceBadge, getBalanceDirection } from "@/components/BalanceBadge";
 import { TIER_OPTIONS, type EntityRow, type InvoiceType } from "./types";
 
 export interface EntityPickerProps {
@@ -77,24 +77,14 @@ export function EntityPicker({ type, selectedId, onSelect }: EntityPickerProps) 
         <span aria-hidden className="shrink-0 text-[10px]">▼</span>
       </button>
 
-      {selected && balance !== 0 && (
-        <div
-          className={cn(
-            "mt-1 flex items-center justify-between rounded-md border px-2 py-1 text-xs",
-            balance > 0
-              ? "border-rose-300/40 bg-rose-50 text-rose-700"
-              : "border-emerald-300/40 bg-emerald-50 text-emerald-700"
-          )}
-        >
-          <span className="font-semibold">{balance > 0 ? "رصيد مدين" : "رصيد دائن"}</span>
-          <span dir="ltr" className="font-extrabold">
-            {fmtNum(Math.abs(balance))} <span className="text-[10px]">د.ع</span>
-          </span>
-        </div>
-      )}
-      {selected && balance === 0 && (
-        <div className="mt-1 rounded-md bg-muted px-2 py-1 text-center text-xs font-semibold text-muted-foreground">
-          الرصيد: 0 — لا ذمم
+      {selected && (
+        <div className="mt-1 flex items-center justify-between px-1">
+          <BalanceBadge
+            amount={balance}
+            entityType={isSale ? "customer" : "supplier"}
+            showZero
+            className="text-xs"
+          />
         </div>
       )}
 
@@ -145,14 +135,20 @@ export function EntityPicker({ type, selectedId, onSelect }: EntityPickerProps) 
                       )}
                     </div>
                   </div>
-                  {bal !== 0 && (
-                    <span
-                      dir="ltr"
-                      className={cn("shrink-0 text-xs font-bold", bal > 0 ? "text-rose-600" : "text-emerald-600")}
-                    >
-                      {fmtNum(Math.abs(bal))}
-                    </span>
-                  )}
+                  {bal !== 0 && (() => {
+                    const dir = getBalanceDirection(bal, isSale ? "customer" : "supplier");
+                    return (
+                      <span
+                        dir="ltr"
+                        className={cn(
+                          "shrink-0 text-xs font-bold",
+                          dir?.colorCls === "emerald" ? "text-emerald-700" : "text-rose-700"
+                        )}
+                      >
+                        {fmtNum(Math.abs(bal))}
+                      </span>
+                    );
+                  })()}
                 </div>
               );
             })}

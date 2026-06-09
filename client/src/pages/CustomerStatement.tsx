@@ -2,6 +2,8 @@ import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildStatementMessage } from "@/lib/whatsapp";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -12,9 +14,9 @@ const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STATUS_LABEL: Record<string, string> = {
-  PENDING: "غير مسدّدة",
-  PARTIALLY_PAID: "مسدّدة جزئياً",
-  PAID: "مسدّدة",
+  PENDING: "غير مدفوعة",
+  PARTIALLY_PAID: "مدفوعة جزئياً",
+  PAID: "مدفوعة",
   CANCELLED: "ملغاة",
   RETURNED: "مرتجعة",
   CONFIRMED: "مؤكّدة",
@@ -82,6 +84,20 @@ export default function CustomerStatement() {
               });
             }}>طباعة الكشف</Button>
           )}
+          {stmt.data && (
+            <WhatsAppShare
+              phone={stmt.data.customer.phone}
+              message={buildStatementMessage({
+                entityName: stmt.data.customer.name,
+                entityType: "customer",
+                currentBalance: stmt.data.summary.currentBalance,
+                totalSales: stmt.data.summary.totalSales,
+                totalPaid: stmt.data.summary.totalPaid,
+                unpaid: stmt.data.summary.unpaid,
+              })}
+              label="إرسال كشف الحساب"
+            />
+          )}
           <Link href="/ar-aging"><Button variant="outline">أعمار الذمم</Button></Link>
         </div>
       </div>
@@ -95,7 +111,7 @@ export default function CustomerStatement() {
               <option value={0}>— اختر عميلاً —</option>
               {(index.data ?? []).map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name} {c.phone ? `· ${c.phone}` : ""} {Number(c.currentBalance) > 0 ? `· يدين بـ ${fmt(c.currentBalance)}` : ""}
+                  {c.name} {c.phone ? `· ${c.phone}` : ""} {Number(c.currentBalance) > 0 ? `· لنا عليه ${fmt(c.currentBalance)}` : Number(c.currentBalance) < 0 ? `· له علينا ${fmt(Math.abs(Number(c.currentBalance)))}` : ""}
                 </option>
               ))}
             </select>
@@ -127,8 +143,8 @@ export default function CustomerStatement() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                   <Stat label="إجمالي المبيعات" value={stmt.data.summary.totalSales} />
                   <Stat label="إجمالي المدفوع" value={stmt.data.summary.totalPaid} />
-                  <Stat label="غير مسدّد" value={stmt.data.summary.unpaid} emphasis />
-                  <Stat label="رصيد جارٍ" value={stmt.data.summary.currentBalance} emphasis />
+                  <Stat label="غير مدفوع" value={stmt.data.summary.unpaid} emphasis />
+                  <StatBalance label="الرصيد الجاري" value={stmt.data.summary.currentBalance} />
                 </div>
               </div>
             </CardContent>
@@ -232,6 +248,21 @@ function Stat({ label, value, emphasis }: { label: string; value: string | numbe
     <div className={`rounded-md p-2 ${emphasis ? "bg-primary/5" : "bg-muted/40"}`}>
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-base font-semibold"}`} dir="ltr">{fmt(value)}</div>
+    </div>
+  );
+}
+
+function StatBalance({ label, value }: { label: string; value: string | number }) {
+  const num = Number(value);
+  return (
+    <div className={`rounded-md p-2 ${num > 0 ? "bg-emerald-50" : num < 0 ? "bg-rose-50" : "bg-muted/40"}`}>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className={`tabular-nums text-xl font-bold ${num > 0 ? "text-emerald-700" : num < 0 ? "text-rose-700" : ""}`} dir="ltr">
+        {fmt(Math.abs(num))}
+      </div>
+      <div className={`text-xs font-semibold mt-0.5 ${num > 0 ? "text-emerald-600" : num < 0 ? "text-rose-600" : "text-muted-foreground"}`}>
+        {num > 0 ? "لنا عليه" : num < 0 ? "له علينا" : "لا ذمم"}
+      </div>
     </div>
   );
 }

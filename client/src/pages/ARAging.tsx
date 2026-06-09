@@ -54,7 +54,7 @@ export default function ARAging() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">أعمار الذمم (AR Aging)</h1>
+        <h1 className="text-2xl font-bold">أعمار الذمم المدينة — لنا على العملاء</h1>
         <div className="flex gap-2">
           <Button
             variant="outline"
@@ -71,7 +71,7 @@ export default function ARAging() {
                   { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
                   { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
                   { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
-                  { key: "unpaidTotal", header: "إجمالي غير المسدّد", map: (r) => Number(r.unpaidTotal) },
+                  { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
                   { key: "currentBalance", header: "رصيد جارٍ", map: (r) => Number(r.currentBalance) },
                   { key: "oldestInvoiceDate", header: "أقدم فاتورة" },
                 ],
@@ -98,8 +98,8 @@ export default function ARAging() {
         </div>
       </div>
       <p className="text-sm text-muted-foreground">
-        المتأخّر من العملاء مُجمَّعاً في أربع شرائح عمرية حسب تاريخ الفاتورة.
-        المُسدَّد كلياً مستثنى؛ يظهر العميل عند وجود مديونيّة أو رصيد قائم.
+        المبالغ المستحقّة <strong>لنا</strong> على العملاء، مُجمَّعة في أربع شرائح عمرية.
+        الأخضر = حديث، الأحمر = متأخّر. المُسدَّد كلياً مستثنى.
       </p>
 
       <Card>
@@ -120,8 +120,8 @@ export default function ARAging() {
           <Bucket label="31–60 يوم" value={totals.d31_60} color="bg-amber-50 text-amber-700" />
           <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-orange-50 text-orange-700" />
           <Bucket label="أكثر من 90" value={totals.d91p} color="bg-rose-50 text-rose-700" />
-          <Bucket label="إجمالي غير المسدّد" value={totals.unpaidTotal} color="bg-muted" emphasis />
-          <Bucket label="مجموع الذمم الجارية" value={totals.currentBalance} color="bg-muted" emphasis />
+          <Bucket label="إجمالي غير المدفوع" value={totals.unpaidTotal} color="bg-muted" emphasis />
+          <Bucket label="إجمالي ما لنا عليهم" value={totals.currentBalance} color="bg-emerald-50 text-emerald-800" emphasis />
         </CardContent>
       </Card>
 
@@ -137,8 +137,8 @@ export default function ARAging() {
                 <th className="p-2 text-left">31–60</th>
                 <th className="p-2 text-left">61–90</th>
                 <th className="p-2 text-left">+90</th>
-                <th className="p-2 text-left">إجمالي غير المسدّد</th>
-                <th className="p-2 text-left">رصيد جارٍ</th>
+                <th className="p-2 text-left">إجمالي غير المدفوع</th>
+                <th className="p-2 text-left">الرصيد (لنا عليه)</th>
                 <th className="p-2">أقدم فاتورة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>

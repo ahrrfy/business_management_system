@@ -1,34 +1,117 @@
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { Link, useLocation } from "wouter";
+import { useEffect, useMemo, useState } from "react";
 
-const NAV: { href: string; label: string; adminOnly?: boolean }[] = [
-  { href: "/", label: "لوحة التحكم" },
-  { href: "/pos", label: "نقطة البيع" },
-  { href: "/products", label: "المنتجات" },
-  { href: "/barcode-labels", label: "ملصقات الباركود" },
-  { href: "/invoices", label: "المبيعات" },
-  { href: "/quotations", label: "عروض الأسعار" },
-  { href: "/customers", label: "العملاء" },
-  { href: "/suppliers", label: "الموردون" },
-  { href: "/returns", label: "المرتجعات" },
-  { href: "/sales-returns/new", label: "مرتجع بيع جديد" },
-  { href: "/purchases", label: "المشتريات" },
-  { href: "/purchase-returns/new", label: "مرتجع شراء جديد" },
-  { href: "/work-orders", label: "أوامر الشغل/المطبعة" },
-  { href: "/transfers", label: "تحويل بين الفروع" },
-  { href: "/inventory", label: "المخزون والأرصدة" },
-  { href: "/inventory-movements", label: "حركات المخزون" },
-  { href: "/expenses", label: "المصروفات اليومية" },
-  { href: "/sales-report", label: "تقرير المبيعات" },
-  { href: "/ar-aging", label: "أعمار الذمم" },
-  { href: "/customers-statement", label: "كشف حساب عميل" },
-  { href: "/ap-aging", label: "أعمار الذمم الدائنة" },
-  { href: "/suppliers-statement", label: "كشف حساب مورد" },
-  { href: "/users", label: "المستخدمون", adminOnly: true },
-  { href: "/audit", label: "سجلّ التدقيق", adminOnly: true },
+type NavItem = { href: string; label: string; adminOnly?: boolean };
+type NavGroup = {
+  key: string;
+  label: string;
+  icon: string;
+  items: NavItem[];
+  adminOnly?: boolean;
+};
+
+const NAV_GROUPS: NavGroup[] = [
+  {
+    key: "sales",
+    label: "البيع والكاشير",
+    icon: "🛒",
+    items: [
+      { href: "/pos", label: "نقطة البيع" },
+      { href: "/invoices", label: "الفواتير" },
+      { href: "/quotations", label: "عروض الأسعار" },
+      { href: "/returns", label: "المرتجعات" },
+      { href: "/sales-returns/new", label: "مرتجع بيع جديد" },
+    ],
+  },
+  {
+    key: "purchases",
+    label: "المشتريات والموردون",
+    icon: "📦",
+    items: [
+      { href: "/purchases", label: "أوامر الشراء" },
+      { href: "/purchase-returns/new", label: "مرتجع شراء جديد" },
+      { href: "/suppliers", label: "الموردون" },
+    ],
+  },
+  {
+    key: "print",
+    label: "المطبعة والإنتاج",
+    icon: "🖨️",
+    items: [
+      { href: "/work-orders", label: "أوامر الشغل" },
+    ],
+  },
+  {
+    key: "inventory",
+    label: "المخزون والبضاعة",
+    icon: "🗃️",
+    items: [
+      { href: "/products", label: "المنتجات" },
+      { href: "/inventory", label: "أرصدة المخزون" },
+      { href: "/inventory-movements", label: "حركات المخزون" },
+      { href: "/transfers", label: "تحويلات بين الفروع" },
+      { href: "/barcode-labels", label: "ملصقات الباركود" },
+    ],
+  },
+  {
+    key: "treasury",
+    label: "الخزينة والمدفوعات",
+    icon: "💰",
+    items: [
+      { href: "/expenses", label: "المصروفات اليومية" },
+    ],
+  },
+  {
+    key: "customers",
+    label: "العملاء والذمم",
+    icon: "👥",
+    items: [
+      { href: "/customers", label: "العملاء" },
+      { href: "/customers-statement", label: "كشف حساب عميل" },
+      { href: "/ar-aging", label: "أعمار الذمم المدينة" },
+    ],
+  },
+  {
+    key: "reports",
+    label: "التقارير والكشوفات",
+    icon: "📊",
+    items: [
+      { href: "/sales-report", label: "تقرير المبيعات" },
+      { href: "/suppliers-statement", label: "كشف حساب مورد" },
+      { href: "/ap-aging", label: "أعمار الذمم الدائنة" },
+    ],
+  },
+  {
+    key: "admin",
+    label: "الإدارة",
+    icon: "⚙️",
+    adminOnly: true,
+    items: [
+      { href: "/users", label: "المستخدمون", adminOnly: true },
+      { href: "/audit", label: "سجلّ التدقيق", adminOnly: true },
+    ],
+  },
 ];
+
+const STORAGE_KEY = "nav_open_groups";
+
+function loadOpenGroups(): Set<string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return new Set(JSON.parse(raw) as string[]);
+  } catch {/* ignore */}
+  return new Set();
+}
+
+function saveOpenGroups(keys: Set<string>) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(keys)));
+  } catch {/* ignore */}
+}
 
 export function AppLayout({ children }: { children: React.ReactNode }) {
   const [loc, navigate] = useLocation();
@@ -41,32 +124,142 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     },
   });
 
+  const [openGroups, setOpenGroups] = useState<Set<string>>(() => loadOpenGroups());
+
+  // تفتح المجموعة التي تحتوي الصفحة النشطة تلقائياً
+  const activeGroupKey = useMemo(() => {
+    for (const g of NAV_GROUPS) {
+      if (g.items.some((item) => item.href === loc)) return g.key;
+    }
+    return null;
+  }, [loc]);
+
+  useEffect(() => {
+    if (activeGroupKey && !openGroups.has(activeGroupKey)) {
+      setOpenGroups((prev) => {
+        const next = new Set(prev);
+        next.add(activeGroupKey);
+        saveOpenGroups(next);
+        return next;
+      });
+    }
+  }, [activeGroupKey]); // eslint-disable-line
+
+  function toggleGroup(key: string) {
+    setOpenGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      saveOpenGroups(next);
+      return next;
+    });
+  }
+
+  const isAdmin = me.data?.role === "admin";
+
   return (
     <div className="min-h-screen flex bg-muted/30" dir="rtl">
-      <aside className="w-56 shrink-0 border-l bg-card flex flex-col">
+      <aside className="w-60 shrink-0 border-l bg-card flex flex-col">
+        {/* الرأس */}
         <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
-          <span className="font-semibold text-lg">الرؤية العربية</span>
+          <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <ThemeToggle />
         </div>
-        <nav className="flex-1 p-2 space-y-1">
-          {NAV.filter((n) => !n.adminOnly || me.data?.role === "admin").map((n) => {
-            const active = loc === n.href;
+
+        <nav className="flex-1 overflow-y-auto py-2">
+          {/* لوحة التحكم — مستقلة */}
+          <Link
+            href="/"
+            className={cn(
+              "flex items-center gap-2 rounded-md mx-2 px-3 py-2 text-sm transition",
+              loc === "/" ? "bg-primary text-primary-foreground font-semibold" : "hover:bg-accent"
+            )}
+          >
+            <span>🏠</span>
+            <span>لوحة التحكم</span>
+          </Link>
+
+          <div className="my-1 mx-2 border-b border-border/50" />
+
+          {/* المجموعات */}
+          {NAV_GROUPS.filter((g) => !g.adminOnly || isAdmin).map((group) => {
+            const isOpen = openGroups.has(group.key);
+            const hasActive = group.items.some((item) => item.href === loc);
+            const visibleItems = group.items.filter((item) => !item.adminOnly || isAdmin);
+            if (visibleItems.length === 0) return null;
+
             return (
-              <Link
-                key={n.href}
-                href={n.href}
-                className={`block rounded-md px-3 py-2 text-sm transition ${active ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}
-              >
-                {n.label}
-              </Link>
+              <div key={group.key} className="mx-2 mb-0.5">
+                {/* رأس المجموعة */}
+                <button
+                  type="button"
+                  onClick={() => toggleGroup(group.key)}
+                  className={cn(
+                    "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-semibold transition",
+                    "text-muted-foreground hover:text-foreground hover:bg-accent/60",
+                    hasActive && "text-primary"
+                  )}
+                >
+                  <span className="flex items-center gap-1.5">
+                    <span>{group.icon}</span>
+                    <span>{group.label}</span>
+                  </span>
+                  <span
+                    className={cn(
+                      "text-[10px] transition-transform duration-150",
+                      isOpen ? "rotate-90" : ""
+                    )}
+                  >
+                    ▶
+                  </span>
+                </button>
+
+                {/* عناصر المجموعة */}
+                {isOpen && (
+                  <div className="mt-0.5 space-y-0.5 ps-2 border-s-2 border-border/40 ms-3">
+                    {visibleItems.map((item) => {
+                      const active = loc === item.href;
+                      return (
+                        <Link
+                          key={item.href}
+                          href={item.href}
+                          className={cn(
+                            "block rounded-md px-3 py-1.5 text-sm transition",
+                            active
+                              ? "bg-primary text-primary-foreground font-semibold"
+                              : "hover:bg-accent text-foreground/80"
+                          )}
+                        >
+                          {item.label}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             );
           })}
         </nav>
+
+        {/* معلومات المستخدم والخروج */}
         <div className="border-t p-3 text-xs text-muted-foreground">
-          <Link href="/account" className={`mb-1 block rounded px-1 hover:underline ${loc === "/account" ? "text-primary" : ""}`}>
-            {me.data?.name ?? me.data?.email} <span className="opacity-70">({me.data?.role})</span>
+          <Link
+            href="/account"
+            className={cn(
+              "mb-1 block rounded px-1 py-0.5 hover:underline truncate",
+              loc === "/account" ? "text-primary" : ""
+            )}
+          >
+            {me.data?.name ?? me.data?.email}
+            <span className="opacity-60 me-1"> ({me.data?.role})</span>
           </Link>
-          <Button variant="ghost" size="sm" className="w-full justify-start" onClick={() => logout.mutate()} disabled={logout.isPending}>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="w-full justify-start"
+            onClick={() => logout.mutate()}
+            disabled={logout.isPending}
+          >
             تسجيل الخروج
           </Button>
         </div>
