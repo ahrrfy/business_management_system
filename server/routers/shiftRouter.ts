@@ -16,7 +16,12 @@ export const shiftRouter = router({
   close: cashierProcedure
     .input(z.object({ shiftId: z.number().int().positive(), countedCash: z.string() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await closeShift(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // سياسة #14: نمرّر دور الفاعل + فرعه ليفرض closeShift فحص الملكية/الفرع.
+      const res = await closeShift(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? -1,
+        role: ctx.user.role,
+      });
       await logAudit(ctx, { action: "shift.close", entityType: "shift", entityId: input.shiftId, newValue: { countedCash: input.countedCash } });
       return res;
     }),
