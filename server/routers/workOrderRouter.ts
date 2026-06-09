@@ -1,10 +1,13 @@
 import { TRPCError } from "@trpc/server";
-import { desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { z } from "zod";
 import {
+  auditLogs,
   customers,
   productVariants,
   products,
+  users,
+  workOrderImages,
   workOrderMaterials,
   workOrders,
 } from "../../drizzle/schema";
@@ -30,28 +33,50 @@ export const workOrderRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      const conds = [];
       // إن كان للمستخدم نطاق فرع ⇒ نُجبره ولا نسمح بالمرور حوله. للمرتفعين يطبَّق الفلتر إن أُعطي.
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
-      if (effectiveBranchId != null) conds.push(eq(workOrders.branchId, effectiveBranchId));
-      const q = db
+      const whereCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
+      // لوحة الكانبان: نُرجع كل ما تحتاجه البطاقة (أولوية/قناة/مسؤول/هاتف العميل/عربون).
+      const rows = await db
         .select({
           id: workOrders.id,
           orderNumber: workOrders.orderNumber,
           title: workOrders.title,
           quantity: workOrders.quantity,
           status: workOrders.status,
+          priority: workOrders.priority,
+          receptionChannel: workOrders.receptionChannel,
           salePrice: workOrders.salePrice,
+          deposit: workOrders.deposit,
           dueDate: workOrders.dueDate,
           createdAt: workOrders.createdAt,
+          assignedTo: workOrders.assignedTo,
+          assigneeName: users.name,
           customerName: customers.name,
+          customerPhone: customers.phone,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
-        .where(conds.length ? conds[0] : undefined)
+        .leftJoin(users, eq(workOrders.assignedTo, users.id))
+        .where(whereCond)
         .orderBy(desc(workOrders.id))
         .limit(input?.limit ?? 100);
-      return q;
+
+      // صورة مصغّرة لكل أمر = أوّل صورة (حسب sortOrder) — استعلام واحد لكل الصفحة.
+      const ids = rows.map((r) => Number(r.id));
+      const thumbs = new Map<number, string>();
+      if (ids.length) {
+        const imgs = await db
+          .select({ workOrderId: workOrderImages.workOrderId, url: workOrderImages.url })
+          .from(workOrderImages)
+          .where(inArray(workOrderImages.workOrderId, ids))
+          .orderBy(asc(workOrderImages.workOrderId), asc(workOrderImages.sortOrder), asc(workOrderImages.id));
+        for (const im of imgs) {
+          const k = Number(im.workOrderId);
+          if (!thumbs.has(k)) thumbs.set(k, im.url);
+        }
+      }
+      return rows.map((r) => ({ ...r, thumbnailUrl: thumbs.get(Number(r.id)) ?? null }));
     }),
 
   get: branchScopedProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
@@ -66,20 +91,29 @@ export const workOrderRouter = router({
           customizationText: workOrders.customizationText,
           quantity: workOrders.quantity,
           status: workOrders.status,
+          priority: workOrders.priority,
+          receptionChannel: workOrders.receptionChannel,
+          channelHandle: workOrders.channelHandle,
           branchId: workOrders.branchId,
           customerId: workOrders.customerId,
           customerName: customers.name,
+          customerPhone: customers.phone,
           baseVariantId: workOrders.baseVariantId,
           materialsCost: workOrders.materialsCost,
           laborCost: workOrders.laborCost,
           salePrice: workOrders.salePrice,
+          deposit: workOrders.deposit,
           dueDate: workOrders.dueDate,
           invoiceId: workOrders.invoiceId,
+          assignedTo: workOrders.assignedTo,
+          assigneeName: users.name,
           deliveredAt: workOrders.deliveredAt,
           createdAt: workOrders.createdAt,
+          updatedAt: workOrders.updatedAt,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
+        .leftJoin(users, eq(workOrders.assignedTo, users.id))
         .where(eq(workOrders.id, input.workOrderId))
         .limit(1)
     )[0];
@@ -100,6 +134,12 @@ export const workOrderRouter = router({
       .leftJoin(productVariants, eq(workOrderMaterials.variantId, productVariants.id))
       .leftJoin(products, eq(productVariants.productId, products.id))
       .where(eq(workOrderMaterials.workOrderId, input.workOrderId));
+    // صور نموذج العمل (مرفقات) — للوحة التفاصيل.
+    const images = await db
+      .select({ id: workOrderImages.id, url: workOrderImages.url, caption: workOrderImages.caption })
+      .from(workOrderImages)
+      .where(eq(workOrderImages.workOrderId, input.workOrderId))
+      .orderBy(asc(workOrderImages.sortOrder), asc(workOrderImages.id));
     const qrPayload = workOrderBarcodeSet({
       orderNumber: wo.orderNumber,
       createdAt: wo.createdAt instanceof Date ? wo.createdAt : new Date(wo.createdAt),
@@ -114,10 +154,78 @@ export const workOrderRouter = router({
         materialsCost: null as unknown as string,
         laborCost: null as unknown as string,
         materials: safeMaterials,
+        images,
         qrPayload,
       };
     }
-    return { ...wo, materials, qrPayload };
+    return { ...wo, materials, images, qrPayload };
+  }),
+
+  /**
+   * الموظفون المتاحون للإسناد (للوحة التفاصيل: إعادة إسناد المنفّذ).
+   * مدير فأعلى — لأن الإسناد قرار إشرافي وقائمة المستخدمين غير مكشوفة للكاشير.
+   */
+  assignableStaff: managerProcedure.query(async () => {
+    const db = getDb();
+    if (!db) return [];
+    return db
+      .select({ id: users.id, name: users.name, role: users.role })
+      .from(users)
+      .where(eq(users.isActive, true))
+      .orderBy(asc(users.name));
+  }),
+
+  /** إسناد/إعادة إسناد المنفّذ المسؤول عن أمر الشغل (null = إلغاء الإسناد). مدير فأعلى + تدقيق. */
+  assign: managerProcedure
+    .input(z.object({ workOrderId: z.number().int().positive(), assignedTo: z.number().int().positive().nullable() }))
+    .mutation(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+      const wo = (
+        await db.select({ id: workOrders.id }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
+      )[0];
+      if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشغل غير موجود" });
+      if (input.assignedTo != null) {
+        const u = (
+          await db.select({ id: users.id, isActive: users.isActive }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
+        )[0];
+        if (!u || !u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
+      }
+      await db.update(workOrders).set({ assignedTo: input.assignedTo }).where(eq(workOrders.id, input.workOrderId));
+      await logAudit(ctx, {
+        action: "workOrder.assign",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { assignedTo: input.assignedTo },
+      });
+      return { ok: true };
+    }),
+
+  /**
+   * الخط الزمني للأمر — أحداث حقيقية من سجلّ التدقيق (استلام/بدء/جاهز/تسليم/إلغاء/إسناد).
+   * شفافية: من فعل ماذا ومتى. branch-scoped (IDOR) كـget.
+   */
+  timeline: branchScopedProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+    const db = getDb();
+    if (!db) return [];
+    const wo = (
+      await db.select({ branchId: workOrders.branchId }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
+    )[0];
+    if (!wo) return [];
+    if (ctx.scopedBranchId != null && Number(wo.branchId) !== ctx.scopedBranchId) return [];
+    const rows = await db
+      .select({
+        id: auditLogs.id,
+        action: auditLogs.action,
+        createdAt: auditLogs.createdAt,
+        userName: users.name,
+        newValue: auditLogs.newValue,
+      })
+      .from(auditLogs)
+      .leftJoin(users, eq(auditLogs.userId, users.id))
+      .where(and(eq(auditLogs.entityType, "workOrder"), eq(auditLogs.entityId, String(input.workOrderId))))
+      .orderBy(asc(auditLogs.id));
+    return rows;
   }),
 
   create: cashierProcedure
