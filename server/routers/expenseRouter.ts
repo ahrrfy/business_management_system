@@ -19,6 +19,7 @@ const category = z.enum([
 ]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const status = z.enum(["ACTIVE", "CANCELLED"]);
+const recurringFreq = z.enum(["DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"]);
 
 export const expenseRouter = router({
   list: branchScopedProcedure
@@ -50,11 +51,16 @@ export const expenseRouter = router({
         paymentMethod: method,
         description: z.string().nullish(),
         referenceNumber: z.string().nullish(),
+        // v3-add-screens.
+        payee: z.string().max(200).nullish(),
+        costCenter: z.string().max(80).nullish(),
+        isRecurring: z.boolean().nullish(),
+        recurringFrequency: recurringFreq.nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       const res = await createExpense(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
-      await logAudit(ctx, { action: "expense.create", entityType: "expense", entityId: (res as { expenseId?: number })?.expenseId, newValue: { category: input.category, amount: input.amount } });
+      await logAudit(ctx, { action: "expense.create", entityType: "expense", entityId: (res as { expenseId?: number })?.expenseId, newValue: { category: input.category, amount: input.amount, payee: input.payee ?? null } });
       return res;
     }),
 

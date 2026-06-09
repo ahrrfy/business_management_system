@@ -15,6 +15,11 @@ export interface CreateUserInput {
   name: string;
   role?: Role;
   branchId?: number | null;
+  // v3-add-screens: حقول HR + هاتف اتّصال + override صلاحيات.
+  phone?: string | null;
+  jobTitle?: string | null;
+  hiredAt?: string | null; // YYYY-MM-DD
+  permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
 }
 
 export interface UpdateUserInput {
@@ -23,6 +28,10 @@ export interface UpdateUserInput {
   email?: string;
   role?: Role;
   branchId?: number | null;
+  phone?: string | null;
+  jobTitle?: string | null;
+  hiredAt?: string | null;
+  permissionsOverride?: Record<string, "FULL" | "READ" | "NONE"> | null;
 }
 
 export interface ListUsersInput {
@@ -42,6 +51,9 @@ const SAFE_COLUMNS = {
   role: users.role,
   branchId: users.branchId,
   isActive: users.isActive,
+  jobTitle: users.jobTitle,
+  hiredAt: users.hiredAt,
+  permissionsOverride: users.permissionsOverride,
   lastSignedIn: users.lastSignedIn,
   createdAt: users.createdAt,
 } as const;
@@ -104,6 +116,11 @@ export async function createUser(input: CreateUserInput, _actor: Actor) {
         loginMethod: "local",
         branchId: input.branchId ?? null,
         isActive: true,
+        // v3-add-screens.
+        phone: input.phone?.trim() || null,
+        jobTitle: input.jobTitle?.trim() || null,
+        hiredAt: input.hiredAt ? new Date(input.hiredAt) : null,
+        permissionsOverride: input.permissionsOverride ?? null,
       });
       const userId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
       return { userId };
@@ -138,6 +155,10 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
     }
 
     if (input.branchId !== undefined) patch.branchId = input.branchId ?? null;
+    if (input.phone !== undefined) patch.phone = input.phone?.trim() || null;
+    if (input.jobTitle !== undefined) patch.jobTitle = input.jobTitle?.trim() || null;
+    if (input.hiredAt !== undefined) patch.hiredAt = input.hiredAt ? new Date(input.hiredAt) : null;
+    if (input.permissionsOverride !== undefined) patch.permissionsOverride = input.permissionsOverride ?? null;
 
     if (input.role !== undefined && input.role !== existing.role) {
       // منع تخفيض الذات: المدير لا يسحب صلاحيّته من نفسه (يقفل نفسه خارج النظام).

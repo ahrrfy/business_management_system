@@ -17,6 +17,8 @@ export type ExpenseCategory =
   | "MARKETING"
   | "OTHER";
 
+export type RecurringFrequency = "DAILY" | "WEEKLY" | "MONTHLY" | "QUARTERLY" | "YEARLY";
+
 export interface CreateExpenseInput {
   branchId: number;
   shiftId?: number | null;
@@ -26,6 +28,11 @@ export interface CreateExpenseInput {
   paymentMethod: ExpensePaymentMethod;
   description?: string | null;
   referenceNumber?: string | null;
+  // v3-add-screens: حقول وصفيّة جديدة — لا تؤثّر في الدفتر/الصندوق.
+  payee?: string | null;
+  costCenter?: string | null;
+  isRecurring?: boolean | null;
+  recurringFrequency?: RecurringFrequency | null;
 }
 
 /** Record a daily expense: receipt (OUT) + PAYMENT_OUT ledger entry + expense row. */
@@ -61,6 +68,9 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
     const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
 
     const expDate = input.expenseDate?.trim() || toDateStr();
+    const isRecurring = !!input.isRecurring;
+    if (isRecurring && !input.recurringFrequency)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد دورية التكرار" });
     const eRes = await tx.insert(expenses).values({
       branchId: input.branchId,
       shiftId: input.shiftId ?? null,
@@ -70,6 +80,10 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       paymentMethod: input.paymentMethod,
       description: input.description?.trim() || null,
       referenceNumber: input.referenceNumber?.trim() || null,
+      payee: input.payee?.trim() || null,
+      costCenter: input.costCenter?.trim() || null,
+      isRecurring,
+      recurringFrequency: isRecurring ? input.recurringFrequency! : null,
       receiptId,
       status: "ACTIVE",
       createdBy: actor.userId,

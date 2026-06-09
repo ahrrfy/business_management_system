@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { assignBarcode, createProduct, getProductForEdit, listForPos, listForPurchase, lookupByBarcode, updateProduct } from "../services/catalogService";
+import { assignBarcode, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, lookupByBarcode, updateProduct } from "../services/catalogService";
 import { logAudit } from "../services/auditService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
 
@@ -19,8 +19,17 @@ const variantSchema = z.object({
   color: z.string().optional(),
   size: z.string().optional(),
   costPrice: z.string(),
+  // v3-add-screens.
+  minStock: z.number().int().min(0).max(1_000_000).optional(),
   openingStock: z.number().int().min(0).optional(),
   units: z.array(unitSchema).min(1),
+});
+
+// v3-add-screens: صور المنتج.
+const imageSchema = z.object({
+  url: z.string().min(1).max(500),
+  isPrimary: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).optional(),
 });
 
 export const catalogRouter = router({
@@ -40,17 +49,28 @@ export const catalogRouter = router({
   createProduct: managerProcedure
     .input(
       z.object({
-        name: z.string().min(1),
+        // v3-add-screens: نسمح بـname قديم أو أجزاء جديدة. الخدمة تركّب الاسم النهائي.
+        name: z.string().max(255).optional(),
+        productType: z.string().max(80).nullish(),
+        brand: z.string().max(80).nullish(),
+        modelName: z.string().max(80).nullish(),
+        description: z.string().nullish(),
         categoryId: z.number().int().positive().optional(),
         isCustomizable: z.boolean().optional(),
         variants: z.array(variantSchema).min(1),
+        images: z.array(imageSchema).max(10).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name } });
+      const res = await createProduct({ ...input, name: input.name ?? "" } as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
       return res;
     }),
+
+  /** v3-add-screens: صور منتج للعرض. */
+  productImages: protectedProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => listProductImages(input.productId)),
 
   // شاشة التعديل تكشف costPrice ⇒ مدير فأعلى.
   getForEdit: managerProcedure

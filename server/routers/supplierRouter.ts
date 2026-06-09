@@ -11,17 +11,17 @@ import {
 import { managerProcedure, protectedProcedure, router } from "../trpc";
 
 /**
- * الموردون — شريحة كاملة: list/search/get (قراءة) + create/update/deactivate/activate (مدير).
- * `list` تبقى قائمة بسيطة (المفعّلون) لشاشة المشتريات والقوائم المنسدلة.
+ * الموردون — شريحة كاملة.
+ * v3-add-screens: phone2/phone3 + supplierCategory + leadTimeDays + minOrderAmount + rating + iban + bankName.
+ * البريد محتفظ به للتوافق فقط (لا يُعرض في النموذج). الواجهة لا ترسله ⇒ يبقى ما هو مخزّن.
  */
 export const supplierRouter = router({
-  /** قائمة بسيطة سريعة — تحتاجها شاشة المشتريات. */
+  /** قائمة بسيطة سريعة — لشاشة المشتريات والقوائم. */
   list: protectedProcedure.query(async () => {
     const { rows } = await listSuppliers({ includeInactive: false, limit: 500 });
     return rows;
   }),
 
-  /** قائمة كاملة مع بحث وتقسيم صفحات — لشاشة الإدارة. */
   search: protectedProcedure
     .input(
       z
@@ -44,6 +44,8 @@ export const supplierRouter = router({
       z.object({
         name: z.string().min(1).max(255),
         phone: z.string().max(20).nullish(),
+        phone2: z.string().max(20).nullish(),
+        phone3: z.string().max(20).nullish(),
         email: z.string().max(320).nullish(),
         whatsapp: z.string().max(20).nullish(),
         address: z.string().nullish(),
@@ -51,6 +53,12 @@ export const supplierRouter = router({
         taxId: z.string().max(50).nullish(),
         productTypes: z.string().nullish(),
         paymentTerms: z.string().max(100).nullish(),
+        supplierCategory: z.string().max(40).nullish(),
+        leadTimeDays: z.number().int().min(0).max(365).nullish(),
+        minOrderAmount: z.string().nullish(),
+        rating: z.number().int().min(0).max(5).nullish(),
+        iban: z.string().max(64).nullish(),
+        bankName: z.string().max(120).nullish(),
         notes: z.string().nullish(),
       })
     )
@@ -66,6 +74,8 @@ export const supplierRouter = router({
         supplierId: z.number().int().positive(),
         name: z.string().min(1).max(255).optional(),
         phone: z.string().max(20).nullish(),
+        phone2: z.string().max(20).nullish(),
+        phone3: z.string().max(20).nullish(),
         email: z.string().max(320).nullish(),
         whatsapp: z.string().max(20).nullish(),
         address: z.string().nullish(),
@@ -73,11 +83,16 @@ export const supplierRouter = router({
         taxId: z.string().max(50).nullish(),
         productTypes: z.string().nullish(),
         paymentTerms: z.string().max(100).nullish(),
+        supplierCategory: z.string().max(40).nullish(),
+        leadTimeDays: z.number().int().min(0).max(365).nullish(),
+        minOrderAmount: z.string().nullish(),
+        rating: z.number().int().min(0).max(5).nullish(),
+        iban: z.string().max(64).nullish(),
+        bankName: z.string().max(120).nullish(),
         notes: z.string().nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // §٧ audit oldValue: لقطة قبل التحديث لمسار تدقيق فروقات حقيقي.
       const before = await getSupplier(input.supplierId);
       const res = await updateSupplier(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
@@ -85,15 +100,14 @@ export const supplierRouter = router({
         entityType: "supplier",
         entityId: input.supplierId,
         oldValue: before ? {
-          name: before.name, phone: before.phone, email: before.email, whatsapp: before.whatsapp,
-          address: before.address, city: before.city, taxId: before.taxId,
-          productTypes: before.productTypes, paymentTerms: before.paymentTerms, notes: before.notes,
+          name: before.name, phone: before.phone, phone2: before.phone2, phone3: before.phone3,
+          email: before.email, whatsapp: before.whatsapp, address: before.address, city: before.city,
+          taxId: before.taxId, productTypes: before.productTypes, paymentTerms: before.paymentTerms,
+          supplierCategory: before.supplierCategory, leadTimeDays: before.leadTimeDays,
+          minOrderAmount: before.minOrderAmount, rating: before.rating,
+          iban: before.iban, bankName: before.bankName, notes: before.notes,
         } : null,
-        newValue: {
-          name: input.name, phone: input.phone, email: input.email, whatsapp: input.whatsapp,
-          address: input.address, city: input.city, taxId: input.taxId,
-          productTypes: input.productTypes, paymentTerms: input.paymentTerms, notes: input.notes,
-        },
+        newValue: input,
       });
       return res;
     }),

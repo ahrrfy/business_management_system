@@ -2,11 +2,32 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { trpc } from "@/lib/trpc";
+import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 
+/**
+ * إضافة عميل — v3 add-screens.
+ *
+ * تصميم:
+ *  - بطاقات بيضاء، grid عمودان، RTL، الخط Cairo (موروث).
+ *  - ٣ أرقام هاتف دولية (E.164). لا بريد إلكتروني.
+ *  - شارات حيّة: «الرئيسي» على أول رقم، تنويه واتساب.
+ *  - تسعير وائتمان (سقف الائتمان، رصيد افتتاحي اختياري).
+ *
+ * العقد: ينادي `customers.create` بالحقول الجديدة (phone/phone2/phone3) + الموجودة.
+ * الواتساب = الهاتف الرئيسي تلقائياً (كله بصيغة دولية موحّدة).
+ */
+
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
+const PRICE_OPTIONS = [
+  { v: "RETAIL", l: "مفرد" },
+  { v: "WHOLESALE", l: "جملة" },
+  { v: "GOVERNMENT", l: "حكومي" },
+] as const;
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -17,9 +38,11 @@ export default function CustomerNew() {
 
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
-  const [whatsapp, setWhatsapp] = useState("");
+  const [phone2, setPhone2] = useState("");
+  const [phone3, setPhone3] = useState("");
   const [customerType, setCustomerType] = useState<(typeof TYPE_OPTIONS)[number]>("فرد");
-  const [defaultPriceTier, setDefaultPriceTier] = useState<"RETAIL" | "WHOLESALE" | "GOVERNMENT">("RETAIL");
+  const [defaultPriceTier, setDefaultPriceTier] =
+    useState<"RETAIL" | "WHOLESALE" | "GOVERNMENT">("RETAIL");
   const [city, setCity] = useState("");
   const [district, setDistrict] = useState("");
   const [address, setAddress] = useState("");
@@ -32,6 +55,7 @@ export default function CustomerNew() {
       await Promise.all([
         utils.customers.search.invalidate(),
         utils.customers.list.invalidate(),
+        utils.customers.smartSearch.invalidate(),
       ]);
       navigate("/customers");
     },
@@ -51,7 +75,9 @@ export default function CustomerNew() {
     create.mutate({
       name: name.trim(),
       phone: phone.trim() || null,
-      whatsapp: whatsapp.trim() || null,
+      phone2: phone2.trim() || null,
+      phone3: phone3.trim() || null,
+      whatsapp: phone.trim() || null,
       address: address.trim() || null,
       city: city.trim() || null,
       district: district.trim() || null,
@@ -62,6 +88,8 @@ export default function CustomerNew() {
     });
   }
 
+  const wa = whatsappLink(phone);
+
   return (
     <div className="space-y-4 max-w-3xl">
       <div className="flex items-center justify-between">
@@ -70,7 +98,9 @@ export default function CustomerNew() {
       </div>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-base">البيانات الأساسية</CardTitle>
+        </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="name">اسم العميل *</Label>
@@ -78,23 +108,59 @@ export default function CustomerNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="type">النوع</Label>
-            <select id="type" className={selectCls} value={customerType} onChange={(e) => setCustomerType(e.target.value as any)}>
-              {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+            <select
+              id="type"
+              className={selectCls}
+              value={customerType}
+              onChange={(e) => setCustomerType(e.target.value as any)}
+            >
+              {TYPE_OPTIONS.map((t) => (
+                <option key={t} value={t}>{t}</option>
+              ))}
             </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="phone">الهاتف</Label>
-            <Input id="phone" dir="ltr" value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="07701234567" />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="whatsapp">واتساب</Label>
-            <Input id="whatsapp" dir="ltr" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} placeholder="07701234567" />
           </div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">العنوان</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-base">أرقام الهاتف</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            ٣ أرقام بصيغة دولية لدعم واتساب. الرقم الأول هو الرئيسي ويُستعمل للواتساب افتراضياً.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="ph1">
+                Phone 1 <span className="text-[10px] text-primary mr-1">رئيسي</span>
+              </Label>
+              <IntlPhoneInput id="ph1" value={phone} onChange={setPhone} />
+              {wa && (
+                <p className="text-[11px] text-muted-foreground">
+                  واتساب:{" "}
+                  <a href={wa} target="_blank" rel="noreferrer" className="text-primary underline" dir="ltr">
+                    {displayE164(phone)}
+                  </a>
+                </p>
+              )}
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ph2">Phone 2</Label>
+              <IntlPhoneInput id="ph2" value={phone2} onChange={setPhone2} />
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label htmlFor="ph3">Phone 3</Label>
+              <IntlPhoneInput id="ph3" value={phone3} onChange={setPhone3} />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">العنوان</CardTitle>
+        </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="city">المدينة</Label>
@@ -106,29 +172,42 @@ export default function CustomerNew() {
           </div>
           <div className="space-y-1 md:col-span-2">
             <Label htmlFor="address">العنوان التفصيلي</Label>
-            <Input id="address" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="شارع/بناية/علامة مميّزة" />
+            <Textarea
+              id="address"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="شارع/بناية/علامة مميّزة"
+              rows={2}
+            />
           </div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">التسعير والائتمان</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-base">التسعير والائتمان</CardTitle>
+        </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="tier">فئة السعر الافتراضية</Label>
-            <select id="tier" className={selectCls} value={defaultPriceTier} onChange={(e) => setDefaultPriceTier(e.target.value as any)}>
-              <option value="RETAIL">مفرد</option>
-              <option value="WHOLESALE">جملة</option>
-              <option value="GOVERNMENT">حكومي</option>
+            <select
+              id="tier"
+              className={selectCls}
+              value={defaultPriceTier}
+              onChange={(e) => setDefaultPriceTier(e.target.value as any)}
+            >
+              {PRICE_OPTIONS.map((o) => (
+                <option key={o.v} value={o.v}>{o.l}</option>
+              ))}
             </select>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="credit">سقف الائتمان (دينار)</Label>
+            <Label htmlFor="credit">سقف الائتمان (د.ع)</Label>
             <Input id="credit" dir="ltr" value={creditLimit} onChange={(e) => setCreditLimit(e.target.value)} placeholder="500000" />
           </div>
           <div className="space-y-1 md:col-span-2">
             <Label htmlFor="notes">ملاحظات</Label>
-            <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="شروط دفع، تفضيلات…" />
+            <Textarea id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="شروط دفع، تفضيلات…" rows={2} />
           </div>
         </CardContent>
       </Card>
@@ -138,7 +217,9 @@ export default function CustomerNew() {
         <Button onClick={submit} disabled={create.isPending}>
           {create.isPending ? "جارٍ الحفظ…" : "حفظ العميل"}
         </Button>
-        <Link href="/customers"><Button variant="outline">إلغاء</Button></Link>
+        <Link href="/customers">
+          <Button variant="outline">إلغاء</Button>
+        </Link>
       </div>
     </div>
   );

@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
-import { customers, invoices } from "../../drizzle/schema";
+import { customers, invoices, workOrders } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
@@ -11,6 +11,9 @@ export type CustomerType = "فرد" | "تاجر" | "مؤسسة" | "شركة" | "
 export interface CreateCustomerInput {
   name: string;
   phone?: string | null;
+  // v3-add-screens: هاتفان إضافيّان بصيغة E.164.
+  phone2?: string | null;
+  phone3?: string | null;
   whatsapp?: string | null;
   address?: string | null;
   city?: string | null;
@@ -70,6 +73,8 @@ export async function createCustomer(input: CreateCustomerInput, _actor: Actor) 
     const res = await tx.insert(customers).values({
       name,
       phone,
+      phone2: normPhone(input.phone2),
+      phone3: normPhone(input.phone3),
       whatsapp: normPhone(input.whatsapp),
       address: input.address?.trim() || null,
       city: input.city?.trim() || null,
@@ -106,6 +111,8 @@ export async function updateCustomer(input: UpdateCustomerInput, _actor: Actor) 
       await assertUniquePhone(tx, phone, input.customerId);
       patch.phone = phone;
     }
+    if (input.phone2 !== undefined) patch.phone2 = normPhone(input.phone2);
+    if (input.phone3 !== undefined) patch.phone3 = normPhone(input.phone3);
     if (input.whatsapp !== undefined) patch.whatsapp = normPhone(input.whatsapp);
     if (input.address !== undefined) patch.address = input.address?.trim() || null;
     if (input.city !== undefined) patch.city = input.city?.trim() || null;
@@ -203,7 +210,14 @@ export async function listCustomers(input: ListCustomersInput = {}) {
   if (input.priceTier) conds.push(eq(customers.defaultPriceTier, input.priceTier));
   if (input.q?.trim()) {
     const q = `%${input.q.trim()}%`;
-    conds.push(or(like(customers.name, q), like(customers.phone, q), like(customers.whatsapp, q)));
+    // v3-add-screens: البحث يطال هواتف العميل الثلاثة + الواتساب.
+    conds.push(or(
+      like(customers.name, q),
+      like(customers.phone, q),
+      like(customers.phone2, q),
+      like(customers.phone3, q),
+      like(customers.whatsapp, q),
+    ));
   }
   const where = conds.length ? and(...conds) : undefined;
 
@@ -234,3 +248,100 @@ export async function listCustomers(input: ListCustomersInput = {}) {
 
   return { rows, total: Number(totalRow?.n ?? 0) };
 }
+
+/**
+ * v3-add-screens: بحث ذكي عن العملاء لإدخال أمر شغل بسرعة.
+ *
+ * - يعيد المعرّف + الاسم + الهاتف + إحصاءات مختصرة (عدد فواتير + عدد أوامر شغل + آخر طلب + إجمالي إنفاق).
+ * - يحدّ النتائج لتجنّب الإغراق (افتراضي ٦).
+ * - تصنيف بسيط: VIP = ≥ ١٠ طلبات، متكرّر = ≥ ٣، وإلا عادي.
+ *
+ * تعليل: حسبنا الإحصاءات بدّفعتين (فواتير + أوامر شغل) ثم دمجنا بمفتاح العميل،
+ * لأن إجراء جوينَين في استعلام واحد يضاعف الصفوف ⇒ عدّ غير دقيق.
+ */
+export async function smartSearchCustomers(input: { q: string; limit?: number }) {
+  const db = getDb();
+  if (!db) return [];
+  const q = input.q?.trim();
+  if (!q || q.length < 2) return [];
+  const limit = Math.min(Math.max(input.limit ?? 6, 1), 20);
+
+  const like_ = `%${q}%`;
+  const matched = await db
+    .select({
+      id: customers.id,
+      name: customers.name,
+      phone: customers.phone,
+    })
+    .from(customers)
+    .where(and(
+      eq(customers.isActive, true),
+      or(
+        like(customers.name, like_),
+        like(customers.phone, like_),
+        like(customers.phone2, like_),
+        like(customers.phone3, like_),
+        like(customers.whatsapp, like_),
+      ),
+    ))
+    .orderBy(asc(customers.name))
+    .limit(limit);
+
+  if (matched.length === 0) return [];
+
+  const ids = matched.map((m) => m.id);
+
+  const invStats = await db
+    .select({
+      customerId: invoices.customerId,
+      count: sql<number>`COUNT(*)`,
+      lastAt: sql<string>`MAX(${invoices.invoiceDate})`,
+      total: sql<string>`COALESCE(SUM(${invoices.total}), 0)`,
+    })
+    .from(invoices)
+    .where(and(inArray(invoices.customerId, ids), ne(invoices.status, "CANCELLED")))
+    .groupBy(invoices.customerId);
+
+  const woStats = await db
+    .select({
+      customerId: workOrders.customerId,
+      count: sql<number>`COUNT(*)`,
+      lastAt: sql<string>`MAX(${workOrders.createdAt})`,
+    })
+    .from(workOrders)
+    .where(and(inArray(workOrders.customerId, ids), ne(workOrders.status, "CANCELLED")))
+    .groupBy(workOrders.customerId);
+
+  const invMap = new Map<number, { count: number; lastAt: string | null; total: string }>();
+  for (const r of invStats) {
+    if (r.customerId == null) continue;
+    invMap.set(Number(r.customerId), { count: Number(r.count), lastAt: r.lastAt ?? null, total: String(r.total ?? "0") });
+  }
+  const woMap = new Map<number, { count: number; lastAt: string | null }>();
+  for (const r of woStats) {
+    if (r.customerId == null) continue;
+    woMap.set(Number(r.customerId), { count: Number(r.count), lastAt: r.lastAt ?? null });
+  }
+
+  return matched.map((m) => {
+    const inv = invMap.get(m.id);
+    const wo = woMap.get(m.id);
+    const orderCount = (inv?.count ?? 0) + (wo?.count ?? 0);
+    // آخر طلب = أحدث الاثنين (نقارن سلاسل ISO/Date كنصوص بأمان إن كانت بنفس الشكل).
+    const lastCandidates = [inv?.lastAt, wo?.lastAt].filter(Boolean) as string[];
+    const lastOrderAt = lastCandidates.length
+      ? lastCandidates.sort().slice(-1)[0]
+      : null;
+    return {
+      id: m.id,
+      name: m.name,
+      phone: m.phone,
+      orderCount,
+      lastOrderAt,
+      totalSpent: inv?.total ?? "0",
+      isVip: orderCount >= 10,
+      isFrequent: orderCount >= 3 && orderCount < 10,
+    };
+  });
+}
+

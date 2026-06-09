@@ -3,11 +3,22 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
+
+/**
+ * مصروف جديد — v3 add-screens.
+ *
+ * تصميم:
+ *  - الحقول الأساسية (الفرع/الفئة/المبلغ/الدفع/التاريخ) — كما كانت.
+ *  - حقول جديدة: جهة الصرف (payee)، مركز التكلفة (costCenter)، مصروف متكرّر (toggle + دورية).
+ *  - المتكرّر للوصف فقط — لا يُولّد قيوداً مستقبليّة هنا (ميزة لاحقة).
+ */
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -31,6 +42,15 @@ const METHODS: { value: string; label: string }[] = [
   { value: "WALLET", label: "محفظة" },
 ];
 
+const COST_CENTERS = ["المبيعات", "الإدارة والتشغيل", "التسويق", "الصيانة", "عام"];
+const FREQS: { value: string; label: string }[] = [
+  { value: "DAILY", label: "يومي" },
+  { value: "WEEKLY", label: "أسبوعي" },
+  { value: "MONTHLY", label: "شهري" },
+  { value: "QUARTERLY", label: "ربع سنوي" },
+  { value: "YEARLY", label: "سنوي" },
+];
+
 export default function ExpenseNew() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
@@ -44,6 +64,10 @@ export default function ExpenseNew() {
   const [expenseDate, setExpenseDate] = useState(new Date().toISOString().slice(0, 10));
   const [description, setDescription] = useState("");
   const [referenceNumber, setReferenceNumber] = useState("");
+  const [payee, setPayee] = useState("");
+  const [costCenter, setCostCenter] = useState("الإدارة والتشغيل");
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurringFrequency, setRecurringFrequency] = useState("MONTHLY");
   const [error, setError] = useState("");
 
   const effectiveBranch = branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1);
@@ -75,6 +99,10 @@ export default function ExpenseNew() {
       paymentMethod: paymentMethod as any,
       description: description.trim() || null,
       referenceNumber: referenceNumber.trim() || null,
+      payee: payee.trim() || null,
+      costCenter: costCenter || null,
+      isRecurring,
+      recurringFrequency: isRecurring ? (recurringFrequency as any) : null,
     });
   }
 
@@ -90,11 +118,7 @@ export default function ExpenseNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label>الفرع *</Label>
-            <select
-              className={selectCls}
-              value={effectiveBranch}
-              onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}
-            >
+            <select className={selectCls} value={effectiveBranch} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
               {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
             {openShift.data ? (
@@ -130,6 +154,45 @@ export default function ExpenseNew() {
           <div className="space-y-1 md:col-span-2">
             <Label>الوصف{category === "OTHER" ? " *" : " (اختياري)"}</Label>
             <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="تفصيل المصروف…" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">جهة الصرف ومركز التكلفة</CardTitle></CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="payee">جهة الصرف</Label>
+            <Input id="payee" value={payee} onChange={(e) => setPayee(e.target.value)} placeholder="مثال: شركة الكهرباء، صاحب العقار" />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="cc">مركز التكلفة</Label>
+            <select id="cc" className={selectCls} value={costCenter} onChange={(e) => setCostCenter(e.target.value)}>
+              {COST_CENTERS.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">مصروف متكرّر</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex items-center gap-3">
+            <Switch checked={isRecurring} onCheckedChange={setIsRecurring} id="recurring" />
+            <Label htmlFor="recurring" className="cursor-pointer">
+              {isRecurring ? "نعم — مصروف متكرّر" : "لا — مرة واحدة"}
+            </Label>
+          </div>
+          <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4 transition-opacity", isRecurring ? "opacity-100" : "opacity-50 pointer-events-none")}>
+            <div className="space-y-1">
+              <Label htmlFor="freq">الدورية</Label>
+              <select id="freq" className={selectCls} value={recurringFrequency} onChange={(e) => setRecurringFrequency(e.target.value)}>
+                {FREQS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+              </select>
+              <p className="text-[11px] text-muted-foreground">
+                للتوثيق الآن — الإصدارات المستقبلية ستولّد قيوداً تلقائياً.
+              </p>
+            </div>
           </div>
         </CardContent>
       </Card>

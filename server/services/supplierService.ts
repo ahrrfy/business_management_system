@@ -8,6 +8,9 @@ import { withTx, type Actor } from "./tx";
 export interface CreateSupplierInput {
   name: string;
   phone?: string | null;
+  // v3-add-screens: هاتفان إضافيّان دوليّان (E.164).
+  phone2?: string | null;
+  phone3?: string | null;
   email?: string | null;
   whatsapp?: string | null;
   address?: string | null;
@@ -16,6 +19,13 @@ export interface CreateSupplierInput {
   productTypes?: string | null;
   paymentTerms?: string | null;
   notes?: string | null;
+  // v3-add-screens: حقول تجاريّة جديدة.
+  supplierCategory?: string | null;
+  leadTimeDays?: number | null;
+  minOrderAmount?: string | null;
+  rating?: number | null;
+  iban?: string | null;
+  bankName?: string | null;
 }
 export interface UpdateSupplierInput extends Partial<CreateSupplierInput> {
   supplierId: number;
@@ -48,9 +58,16 @@ export async function createSupplier(input: CreateSupplierInput, _actor: Actor) 
     if (name.length > 255) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المورّد طويل جداً (٢٥٥ حرفاً)" });
     const phone = norm(input.phone);
     await assertUniquePhone(tx, phone);
+    const rating = input.rating != null ? Math.min(5, Math.max(0, Math.trunc(input.rating))) : null;
+    const leadTime = input.leadTimeDays != null ? Math.max(0, Math.trunc(input.leadTimeDays)) : null;
+    const minOrder = input.minOrderAmount?.trim();
+    if (minOrder && !/^\d+(\.\d{1,2})?$/.test(minOrder))
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الحد الأدنى للطلب غير صالح" });
     const res = await tx.insert(suppliers).values({
       name,
       phone,
+      phone2: norm(input.phone2),
+      phone3: norm(input.phone3),
       email: norm(input.email),
       whatsapp: norm(input.whatsapp),
       address: norm(input.address),
@@ -58,6 +75,12 @@ export async function createSupplier(input: CreateSupplierInput, _actor: Actor) 
       taxId: norm(input.taxId),
       productTypes: norm(input.productTypes),
       paymentTerms: norm(input.paymentTerms),
+      supplierCategory: norm(input.supplierCategory),
+      leadTimeDays: leadTime,
+      minOrderAmount: minOrder || null,
+      rating,
+      iban: norm(input.iban),
+      bankName: norm(input.bankName),
       notes: norm(input.notes),
       isActive: true,
     });
@@ -82,6 +105,8 @@ export async function updateSupplier(input: UpdateSupplierInput, _actor: Actor) 
       await assertUniquePhone(tx, phone, input.supplierId);
       patch.phone = phone;
     }
+    if (input.phone2 !== undefined) patch.phone2 = norm(input.phone2);
+    if (input.phone3 !== undefined) patch.phone3 = norm(input.phone3);
     if (input.email !== undefined) patch.email = norm(input.email);
     if (input.whatsapp !== undefined) patch.whatsapp = norm(input.whatsapp);
     if (input.address !== undefined) patch.address = norm(input.address);
@@ -89,6 +114,19 @@ export async function updateSupplier(input: UpdateSupplierInput, _actor: Actor) 
     if (input.taxId !== undefined) patch.taxId = norm(input.taxId);
     if (input.productTypes !== undefined) patch.productTypes = norm(input.productTypes);
     if (input.paymentTerms !== undefined) patch.paymentTerms = norm(input.paymentTerms);
+    if (input.supplierCategory !== undefined) patch.supplierCategory = norm(input.supplierCategory);
+    if (input.leadTimeDays !== undefined)
+      patch.leadTimeDays = input.leadTimeDays != null ? Math.max(0, Math.trunc(input.leadTimeDays)) : null;
+    if (input.minOrderAmount !== undefined) {
+      const m = input.minOrderAmount?.trim();
+      if (m && !/^\d+(\.\d{1,2})?$/.test(m))
+        throw new TRPCError({ code: "BAD_REQUEST", message: "الحد الأدنى للطلب غير صالح" });
+      patch.minOrderAmount = m || null;
+    }
+    if (input.rating !== undefined)
+      patch.rating = input.rating != null ? Math.min(5, Math.max(0, Math.trunc(input.rating))) : null;
+    if (input.iban !== undefined) patch.iban = norm(input.iban);
+    if (input.bankName !== undefined) patch.bankName = norm(input.bankName);
     if (input.notes !== undefined) patch.notes = norm(input.notes);
     if (Object.keys(patch).length === 0) return { supplierId: input.supplierId, changed: false };
     await tx.update(suppliers).set(patch).where(eq(suppliers.id, input.supplierId));
@@ -147,7 +185,15 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
   if (!input.includeInactive) conds.push(eq(suppliers.isActive, true));
   if (input.q?.trim()) {
     const q = `%${input.q.trim()}%`;
-    conds.push(or(like(suppliers.name, q), like(suppliers.phone, q), like(suppliers.city, q)));
+    // v3-add-screens: البحث يشمل هواتف المورّد الثلاثة + المدينة + التصنيف.
+    conds.push(or(
+      like(suppliers.name, q),
+      like(suppliers.phone, q),
+      like(suppliers.phone2, q),
+      like(suppliers.phone3, q),
+      like(suppliers.city, q),
+      like(suppliers.supplierCategory, q),
+    ));
   }
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db

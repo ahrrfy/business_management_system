@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, like, ne, or, type SQL } from "drizzle-orm";
-import { branchStock, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
+import { and, asc, desc, eq, like, ne, or, type SQL } from "drizzle-orm";
+import { branchStock, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
@@ -166,6 +166,11 @@ export async function listForPurchase(branchId: number, query?: string, limit = 
 
 export interface CreateProductInput {
   name: string;
+  // v3-add-screens: الاسم المركّب — يُجمَع في `name` تلقائياً إن لم يُمرّر مباشرةً.
+  productType?: string | null;
+  brand?: string | null;
+  modelName?: string | null;
+  description?: string | null;
   categoryId?: number | null;
   isCustomizable?: boolean;
   variants: Array<{
@@ -174,6 +179,7 @@ export interface CreateProductInput {
     color?: string | null;
     size?: string | null;
     costPrice: string;
+    minStock?: number;
     openingStock?: number;
     units: Array<{
       unitName: string;
@@ -183,6 +189,15 @@ export interface CreateProductInput {
       prices?: Array<{ priceTier: PriceTier; price: string }>;
     }>;
   }>;
+  // v3-add-screens: صور المنتج. أوّل isPrimary=true يُعتمد، وإلا أوّل صورة.
+  images?: Array<{ url: string; isPrimary?: boolean; sortOrder?: number }>;
+}
+
+/** v3-add-screens: يبني اسماً نهائياً من القطع الثلاث + يحذف الفراغات الزائدة. */
+function composeProductName(input: { name?: string | null; productType?: string | null; brand?: string | null; modelName?: string | null }) {
+  const composed = [input.productType, input.brand, input.modelName].map((s) => (s ?? "").trim()).filter(Boolean).join(" ");
+  const fallback = (input.name ?? "").trim();
+  return composed || fallback;
 }
 
 /* ============================ Product read (for edit) ============================ */
@@ -383,8 +398,14 @@ export async function updateProduct(input: UpdateProductInput, _actor: Actor) {
 export async function createProduct(input: CreateProductInput, actor: Actor) {
   if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
   return withTx(async (tx) => {
+    const composedName = composeProductName(input);
+    if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (نوع/ماركة/موديل)" });
     const pRes = await tx.insert(products).values({
-      name: input.name,
+      name: composedName,
+      productType: input.productType?.trim() || null,
+      brand: input.brand?.trim() || null,
+      modelName: input.modelName?.trim() || null,
+      description: input.description?.trim() || null,
       categoryId: input.categoryId ?? null,
       isCustomizable: input.isCustomizable ?? false,
     });
@@ -401,6 +422,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         color: v.color ?? null,
         size: v.size ?? null,
         costPrice: toDbMoney(v.costPrice),
+        minStock: v.minStock != null ? Math.max(0, Math.trunc(v.minStock)) : 0,
       });
       const variantId = Number((vRes as any)[0]?.insertId ?? (vRes as any).insertId);
 
@@ -430,8 +452,31 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         });
       }
     }
+
+    // v3-add-screens: صور المنتج. الأولى = الرئيسية إن لم يحدّد أيٌّ منها ذلك.
+    if (input.images && input.images.length) {
+      const imgs = input.images.filter((i) => i.url?.trim()).slice(0, 10);
+      const anyPrimary = imgs.some((i) => i.isPrimary);
+      for (let i = 0; i < imgs.length; i++) {
+        const img = imgs[i];
+        await tx.insert(productImages).values({
+          productId,
+          url: img.url.trim(),
+          isPrimary: anyPrimary ? !!img.isPrimary : i === 0,
+          sortOrder: img.sortOrder ?? i,
+        });
+      }
+    }
+
     return { productId };
   });
+}
+
+/** v3-add-screens: قراءة صور منتج مرتّبة (الرئيسية أولاً). */
+export async function listProductImages(productId: number) {
+  const db = getDb();
+  if (!db) return [];
+  return db.select().from(productImages).where(eq(productImages.productId, productId)).orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder));
 }
 
 /* ============================ Barcode assignment ============================ */
