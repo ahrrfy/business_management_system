@@ -162,10 +162,11 @@ export const workOrderRouter = router({
   }),
 
   /**
-   * الموظفون المتاحون للإسناد (للوحة التفاصيل: إعادة إسناد المنفّذ).
-   * مدير فأعلى — لأن الإسناد قرار إشرافي وقائمة المستخدمين غير مكشوفة للكاشير.
+   * الموظفون المتاحون للإسناد (أسماء+أدوار فقط) — لاختيار المنفّذ عند إنشاء الأمر وللوحة التفاصيل.
+   * cashierProcedure: الكاشير ينشئ أوامر الشغل ويحتاج اختيار المنفّذ؛ القائمة أسماء فقط (لا بيانات حسّاسة).
+   * إعادة الإسناد نفسها (mutation `assign`) تبقى managerProcedure — قرار إشرافي.
    */
-  assignableStaff: managerProcedure.query(async () => {
+  assignableStaff: cashierProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
     return db
@@ -245,6 +246,8 @@ export const workOrderRouter = router({
         salePrice: z.string(),
         dueDate: z.string().nullish(), // YYYY-MM-DD
         notes: z.string().nullish(),
+        // المنفّذ المسؤول عند الإنشاء (workOrders.assignedTo).
+        assignedTo: z.number().int().positive().nullish(),
         // v3-add-screens(100%): قنوات استلام.
         receptionChannel: z.enum(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE", "OTHER"]).nullish(),
         channelHandle: z.string().max(120).nullish(),
