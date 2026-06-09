@@ -37,6 +37,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/purchases", label: "أوامر الشراء" },
       { href: "/purchases/new", label: "فاتورة شراء جديدة" },
       { href: "/purchase-returns/new", label: "مرتجع شراء جديد" },
+      { href: "/purchase-returns", label: "سجلّ مرتجعات الشراء" },
       { href: "/suppliers", label: "الموردون" },
     ],
   },
