@@ -66,6 +66,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "💰",
     items: [
       { href: "/expenses", label: "المصروفات اليومية" },
+      { href: "/vouchers", label: "سندات قبض وصرف" },
     ],
   },
   {
