@@ -16,6 +16,8 @@
     "db:push": "drizzle-kit push",
     "seed": "cross-env NODE_ENV=development tsx server/seed.ts",
     "db:backup": "node scripts/backup.mjs",
+    "db:reset": "node scripts/reset.mjs",
+    "db:restore": "node scripts/restore.mjs",
     "session:new": "node scripts/session.mjs new",
     "session:list": "node scripts/session.mjs list",
     "session:remove": "node scripts/session.mjs remove",
