@@ -117,10 +117,20 @@ async function loadWorkOrder(tx: any, workOrderId: number) {
   return rows[0];
 }
 
+/** عزل الفرع: أي عملية مال على أمر الشغل تُجبر فرع الموظّف (غير المدير). يُمرَّر actor.role من الراوتر. */
+function assertWorkOrderBranch(wo: { branchId: number | string }, actor: Actor & { role?: string }) {
+  const elevated = actor.role === "admin" || actor.role === "manager";
+  if (elevated) return;
+  if (Number(wo.branchId) !== actor.branchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "أمر الشغل لا يخصّ فرعك" });
+  }
+}
+
 /** Move RECEIVED → IN_PROGRESS: consume materials from stock (OUT movements) + snapshot unitCost. */
-export async function startWorkOrder(workOrderId: number, actor: Actor) {
+export async function startWorkOrder(workOrderId: number, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
+    assertWorkOrderBranch(wo, actor);
     if (wo.status !== "RECEIVED") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن بدء أمر ليس في حالة الاستلام" });
 
     const mats = await tx.select().from(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, workOrderId));
@@ -164,9 +174,10 @@ export async function startWorkOrder(workOrderId: number, actor: Actor) {
 }
 
 /** IN_PROGRESS → READY (no stock change). */
-export async function markWorkOrderReady(workOrderId: number) {
+export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
+    if (actor) assertWorkOrderBranch(wo, actor);
     if (wo.status !== "IN_PROGRESS") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس قيد التنفيذ" });
     await tx.update(workOrders).set({ status: "READY" }).where(eq(workOrders.id, workOrderId));
     return { workOrderId, status: "READY" };
@@ -179,9 +190,10 @@ export interface DeliverWorkOrderInput {
 }
 
 /** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
-export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor) {
+export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, input.workOrderId);
+    assertWorkOrderBranch(wo, actor);
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
 
     // Look up the base unit of the base variant for the invoice line.
@@ -299,9 +311,10 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
 }
 
 /** Cancel: restocks consumed materials if status was IN_PROGRESS/READY. */
-export async function cancelWorkOrder(workOrderId: number, actor: Actor) {
+export async function cancelWorkOrder(workOrderId: number, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
+    assertWorkOrderBranch(wo, actor);
     if (wo.status === "DELIVERED" || wo.status === "CANCELLED")
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء أمر مُسلَّم أو مُلغى" });
     if (wo.status === "IN_PROGRESS" || wo.status === "READY") {

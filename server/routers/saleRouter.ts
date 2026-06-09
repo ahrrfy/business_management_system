@@ -30,13 +30,17 @@ async function verifyManagerApproval(approval: { email: string; password: string
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
+// قيمة مالية موجبة (٢ منزلتان): تمنع override/خصم سالباً يمرّر بضاعة مجاناً مع تشويش الأرقام.
+const nonNegMoney = z
+  .string()
+  .regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة (موجبة، منزلتان عشريتان كحدّ أقصى)");
 const lineSchema = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
-  quantity: z.string(),
-  unitPriceOverride: z.string().optional(),
-  discountPercent: z.string().optional(),
-  discountAmount: z.string().optional(),
+  quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)"),
+  unitPriceOverride: nonNegMoney.optional(),
+  discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
+  discountAmount: nonNegMoney.optional(),
 });
 
 export const saleRouter = router({

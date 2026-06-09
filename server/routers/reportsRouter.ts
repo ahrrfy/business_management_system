@@ -17,6 +17,8 @@ import {
   reconcileInventory,
   reconcileLedgerProfit,
 } from "../services/reconcileService";
+import Decimal from "decimal.js";
+import { money, toDbMoney } from "../services/money";
 import { adminProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 
 export const reportsRouter = router({
@@ -136,26 +138,28 @@ export const reportsRouter = router({
         .where(where)
         .orderBy(desc(invoices.invoiceDate));
 
+      // قاعدة §٥: لا parseFloat على المال — كله عبر decimal.js لتفادي انجراف 0.01 على آلاف الفواتير.
       const totals = rows.reduce(
         (acc, r) => {
-          const total = parseFloat(String(r.total ?? 0));
-          const paid = parseFloat(String(r.paidAmount ?? 0));
-          acc.total += total;
-          acc.paid += paid;
-          acc.unpaid += Math.max(0, total - paid);
+          const total = money(r.total ?? "0");
+          const paid = money(r.paidAmount ?? "0");
+          const unpaid = Decimal.max(total.minus(paid), 0);
+          acc.total = acc.total.plus(total);
+          acc.paid = acc.paid.plus(paid);
+          acc.unpaid = acc.unpaid.plus(unpaid);
           acc.count += 1;
           return acc;
         },
-        { count: 0, total: 0, paid: 0, unpaid: 0 }
+        { count: 0, total: new Decimal(0), paid: new Decimal(0), unpaid: new Decimal(0) },
       );
 
       return {
         rows,
         totals: {
           count: totals.count,
-          total: totals.total.toFixed(2),
-          paid: totals.paid.toFixed(2),
-          unpaid: totals.unpaid.toFixed(2),
+          total: toDbMoney(totals.total),
+          paid: toDbMoney(totals.paid),
+          unpaid: toDbMoney(totals.unpaid),
         },
       };
     }),

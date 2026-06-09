@@ -54,6 +54,7 @@ export interface InvoiceTotals {
 export function computeInvoiceTotals(i: InvoiceTotalsInput): InvoiceTotals {
   // سياسة #14: لا خصم/ضريبة سالبة على رأس الفاتورة (تُنشئ خصماً خفياً أو ضريبةً عكسية).
   const subtotal = round2(sumMoney(i.lineTotals));
+  // قرّب الخصم مرة واحدة عند الإدخال (يمنع انجراف 0.01 بين total و subtotal−discount+tax).
   const rawDiscount = round2(money(i.invoiceDiscount ?? "0"));
   if (rawDiscount.lt(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "خصم الفاتورة لا يصحّ أن يكون سالباً" });
