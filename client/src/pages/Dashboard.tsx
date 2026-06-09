@@ -113,31 +113,39 @@ const MODULES: ModuleDef[] = [
 ];
 
 /* ═══════════ QUICK ACTIONS ═══════════
-   شريط الإجراءات السريعة أسفل البطاقة — اختصار إنشاءٍ فقط (لا تكرار وصول).
-   مبدأ مانع التكرار (تدقيق ٩/٦): الإجراء يشير حصراً إلى وجهة **ليست بطاقة**
-   (نموذج إنشاء …/new) ويظهر في **بطاقة واحدة فقط** (بيته الطبيعي). أيّ زرّ
-   وجهته بطاقةٌ مستقلّة محذوف (البطاقة نفسها توفّر الوصول). وبطاقةٌ بلا اختصار
-   إنشاء فريد ⇒ بلا شريط (النقر على جسمها = وصولها).
+   شريط الإجراءات السريعة أسفل كل بطاقة — اختصار النقرات.
+   كل إجراء يشير إلى مسار حقيقي موجود في App.tsx فقط.
    adminOnly: يظهر للمدير/الأدمن فقط.
+   لإضافة/تعديل إجراء: أضف سطراً هنا بمعرّف الوحدة (id) ومسار صحيح.
 ═══════════════════════════════════════ */
 
 type Action = { ic: string; label: string; href: string; adminOnly?: boolean };
 
 const ACTIONS: Record<string, Action[]> = {
-  // كل وجهة نموذج إنشاء (…/new) فريدة، في بطاقة واحدة فقط، وليست وجهة بطاقة أخرى.
-  sales:           [{ ic: "plus",   label: "بيع",    href: "/sales/new" }],           // الفاتورة المتقدّمة (لا /pos — تلك بطاقتها)
-  quotations:      [{ ic: "plus",   label: "عرض",    href: "/quotations/new" }],
-  customers:       [{ ic: "plus",   label: "عميل",   href: "/customers/new" }],
-  returns:         [{ ic: "return", label: "مرتجع",  href: "/sales-returns/new" }],   // مرتجع بيع
-  products:        [{ ic: "plus",   label: "صنف",    href: "/products/new" }],
-  purchases:       [{ ic: "plus",   label: "أمر",    href: "/purchases/new" }],
-  suppliers:       [{ ic: "plus",   label: "مورد",   href: "/suppliers/new" }],
-  purchaseReturns: [{ ic: "return", label: "إرجاع",  href: "/purchase-returns/new" }],// مرتجع شراء
-  expenses:        [{ ic: "plus",   label: "مصروف",  href: "/expenses/new" }],
-  vouchers:        [{ ic: "coin",   label: "قبض",    href: "/vouchers/receipt/new" }, { ic: "export", label: "صرف", href: "/vouchers/payment/new" }],
-  workOrders:      [{ ic: "plus",   label: "أمر",    href: "/work-orders/new" }],
-  users:           [{ ic: "plus",   label: "مستخدم", href: "/users/new", adminOnly: true }],
-  // بقية البطاقات بلا شريط إجراءات: وصولها بالنقر على جسم البطاقة (لا اختصار إنشاء فريد لها).
+  pos:           [{ ic: "plus",    label: "فاتورة", href: "/sales/new" }],
+  sales:         [{ ic: "plus",    label: "بيع",    href: "/sales/new" },             { ic: "return",  label: "مرتجع",   href: "/sales-returns/new" },    { ic: "doc",  label: "تقرير", href: "/sales-report" }],
+  quotations:    [{ ic: "plus",    label: "عرض",    href: "/quotations/new" },       { ic: "doc",     label: "فواتير",  href: "/invoices" }],
+  customers:     [{ ic: "plus",    label: "عميل",   href: "/customers/new" },        { ic: "doc",     label: "كشف",     href: "/customers-statement" },  { ic: "coin", label: "ذمم",   href: "/ar-aging" }],
+  returns:       [{ ic: "return",  label: "بيع",    href: "/sales-returns/new" },    { ic: "return",  label: "شراء",    href: "/purchase-returns/new" }, { ic: "doc",  label: "فواتير", href: "/invoices" }],
+  products:      [{ ic: "plus",    label: "صنف",    href: "/products/new" },         { ic: "barcode", label: "باركود",  href: "/barcode-labels" },       { ic: "rows", label: "أرصدة", href: "/inventory" }],
+  purchases:     [{ ic: "plus",    label: "أمر",    href: "/purchases/new" },        { ic: "return",  label: "إرجاع",   href: "/purchase-returns/new" }, { ic: "coin", label: "ذمم",   href: "/ap-aging" }],
+  inventory:     [{ ic: "rows",    label: "حركة",   href: "/inventory-movements" },  { ic: "return",  label: "تحويل",   href: "/transfers" },            { ic: "plus", label: "صنف",   href: "/products/new" }],
+  movements:     [{ ic: "rows",    label: "أرصدة",  href: "/inventory" },            { ic: "return",  label: "تحويل",   href: "/transfers" },            { ic: "barcode", label: "باركود", href: "/barcode-labels" }],
+  transfers:     [{ ic: "rows",    label: "أرصدة",  href: "/inventory" },            { ic: "rows",    label: "حركة",    href: "/inventory-movements" }],
+  barcode:       [{ ic: "plus",    label: "صنف",    href: "/products/new" },         { ic: "rows",    label: "أصناف",   href: "/products" }],
+  suppliers:     [{ ic: "plus",    label: "مورد",   href: "/suppliers/new" },        { ic: "doc",     label: "كشف",     href: "/suppliers-statement" },  { ic: "coin", label: "ذمم",   href: "/ap-aging" }],
+  purchaseReturns: [{ ic: "return", label: "إرجاع",  href: "/purchase-returns/new" }, { ic: "rows",    label: "موردون",  href: "/suppliers" }],
+  expenses:      [{ ic: "plus",    label: "مصروف",  href: "/expenses/new" },         { ic: "coin",    label: "ذمم",     href: "/ap-aging" }],
+  vouchers:      [{ ic: "coin",    label: "قبض",    href: "/vouchers/receipt/new" }, { ic: "export",  label: "صرف",     href: "/vouchers/payment/new" }],
+  arAging:       [{ ic: "doc",     label: "كشف",    href: "/customers-statement" },  { ic: "rows",    label: "عملاء",   href: "/customers" },            { ic: "doc",  label: "تقرير", href: "/sales-report" }],
+  apAging:       [{ ic: "doc",     label: "كشف",    href: "/suppliers-statement" },  { ic: "rows",    label: "موردون",  href: "/suppliers" },            { ic: "plus", label: "مصروف", href: "/expenses/new" }],
+  custStatement: [{ ic: "coin",    label: "ذمم",    href: "/ar-aging" },             { ic: "rows",    label: "عملاء",   href: "/customers" }],
+  suppStatement: [{ ic: "coin",    label: "ذمم",    href: "/ap-aging" },             { ic: "rows",    label: "موردون",  href: "/suppliers" }],
+  salesReport:   [{ ic: "rows",    label: "فواتير", href: "/invoices" },             { ic: "coin",    label: "ذمم",     href: "/ar-aging" }],
+  workOrders:    [{ ic: "plus",    label: "أمر",    href: "/work-orders/new" },      { ic: "plus",    label: "عرض",     href: "/quotations/new" },       { ic: "rows", label: "خامات", href: "/inventory" }],
+  users:         [{ ic: "plus",    label: "مستخدم", href: "/users/new", adminOnly: true }, { ic: "eye", label: "تدقيق", href: "/audit", adminOnly: true }],
+  audit:         [{ ic: "shield",  label: "مستخدمون", href: "/users", adminOnly: true }],
+  reconcile:     [{ ic: "eye",     label: "تدقيق",   href: "/audit", adminOnly: true },   { ic: "coin", label: "ذمم", href: "/ar-aging", adminOnly: true }],
 };
 
 /* أيقونات الإجراءات — تستخدم currentColor لتتبع لون الزر (16×16). */
