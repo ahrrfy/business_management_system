@@ -76,8 +76,15 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     }
 
     // 2. Shift must be OPEN and belong to the branch (when provided — POS).
+    //    .for("update") يُسَلْسِل البيع مع closeShift على نفس الصفّ ⇒ إمّا يقفل البيع قبل
+    //    الإغلاق ويُحتسَب، أو يُرفض إن سبق الإغلاق فلا يدخل receipt بعد قطع الـZ-report.
     if (input.shiftId) {
-      const s = await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).limit(1);
+      const s = await tx
+        .select()
+        .from(shifts)
+        .where(eq(shifts.id, input.shiftId))
+        .for("update")
+        .limit(1);
       if (!s[0] || s[0].status !== "OPEN" || Number(s[0].branchId) !== input.branchId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
       }

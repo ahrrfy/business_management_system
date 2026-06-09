@@ -145,7 +145,18 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
       .where(inArray(productUnits.id, unitIds));
     const unitFactorMap = new Map(unitRows.map((u) => [Number(u.id), u.factor]));
 
-    // Read existing stock per variant (sum across all branches) BEFORE any movement is applied.
+    // قفل صفوف branchStock للمتغيّرات المعنية قبل قراءة الـSUM:
+    // يَسَلْسِل receive مع أي sale متزامن على نفس المتغيّرات (تلك تأخذ قفلاً على نفس الصفوف
+    // عبر applyMovement). بدون هذا القفل، يمكن لـsale متزامن أن يُغيّر الكميات بين قراءة
+    // الـSUM وكتابة costPrice ⇒ WAVG محسوب على رصيد قديم. القفل لا يمنع INSERT جديد، لكن
+    // branchStock للـvariant موجود إذ بدونه لا يوجد sale (يعمل applyMovement على ضمان الصفّ).
+    await tx
+      .select({ id: branchStock.id })
+      .from(branchStock)
+      .where(inArray(branchStock.variantId, variantIds))
+      .for("update");
+
+    // Read existing stock per variant (sum across all branches) AFTER the row lock.
     const stockRows = await tx
       .select({
         variantId: branchStock.variantId,
@@ -207,6 +218,9 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
 
       // Ledger/AP value derives from the stored line total (proportional to received),
       // not from the rounded per-base cost — so a full receive matches the PO exactly.
+      // ملاحظة: انجراف 0.01 IQD ممكن عبر استلامات جزئية متعدّدة (low في تدقيق ٨/٦).
+      // الإصلاح الصحيح يحتاج عموداً receivedNet على purchaseOrderItems لتتبّع التراكم
+      // الفعلي للأقساط — مُؤجَّل لشريحة schema.
       const portion = new Decimal(line.receivedBaseQuantity).dividedBy(item.baseQuantity);
       receivedNet = receivedNet.plus(round2(money(item.total).times(portion)));
     }
