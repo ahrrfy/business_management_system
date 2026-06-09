@@ -45,6 +45,10 @@ export const users = mysqlTable(
     role: mysqlEnum("role", ["user", "admin", "manager", "cashier", "warehouse"]).default("user").notNull(),
     branchId: bigint("branchId", { mode: "number" }),
     isActive: boolean("isActive").default(true),
+    // v3-add-screens: HR + جدول صلاحيات مخصّص. permissionsOverride: JSON ⇒ NULL=اتّبع قالب الدور.
+    jobTitle: varchar("jobTitle", { length: 120 }),
+    hiredAt: date("hiredAt"),
+    permissionsOverride: json("permissionsOverride"),
     // إبطال الجلسات: أي JWT أُصدر قبل هذا الوقت يُرفض (تغيير كلمة مرور/طرد/تغيير دور).
     sessionsValidFrom: timestamp("sessionsValidFrom").defaultNow().notNull(),
     // قفل الحساب ضدّ التخمين (brute-force) — عدّاد الإخفاقات وزمن القفل المؤقّت.
@@ -93,7 +97,10 @@ export const customers = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 255 }).notNull(),
+    // v3-add-screens: نخزّن الهاتف بصيغة E.164 الدولية (مثل +9647701234567). 22 محرفاً = ‎+‎ + ١٥ رقماً + هامش.
     phone: varchar("phone", { length: 20 }),
+    phone2: varchar("phone2", { length: 20 }),
+    phone3: varchar("phone3", { length: 20 }),
     whatsapp: varchar("whatsapp", { length: 20 }),
     address: text("address"),
     city: varchar("city", { length: 100 }),
@@ -121,7 +128,10 @@ export const suppliers = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 255 }).notNull(),
+    // v3-add-screens: ٣ أرقام دولية، البريد محتفظ به للبيانات التاريخية فقط (لن يُعرض في النموذج).
     phone: varchar("phone", { length: 20 }),
+    phone2: varchar("phone2", { length: 20 }),
+    phone3: varchar("phone3", { length: 20 }),
     email: varchar("email", { length: 320 }),
     whatsapp: varchar("whatsapp", { length: 20 }),
     address: text("address"),
@@ -129,6 +139,13 @@ export const suppliers = mysqlTable(
     taxId: varchar("taxId", { length: 50 }),
     productTypes: text("productTypes"),
     paymentTerms: varchar("paymentTerms", { length: 100 }),
+    // v3-add-screens: تصنيف المورّد + مدة التوريد + حد أدنى للطلب + تقييم نجوم 0..5 + IBAN/اسم البنك.
+    supplierCategory: varchar("supplierCategory", { length: 40 }),
+    leadTimeDays: int("leadTimeDays"),
+    minOrderAmount: decimal("minOrderAmount", { precision: 15, scale: 2 }),
+    rating: int("rating"),
+    iban: varchar("iban", { length: 64 }),
+    bankName: varchar("bankName", { length: 120 }),
     notes: text("notes"),
     currentBalance: decimal("currentBalance", { precision: 15, scale: 2 }).default("0").notNull(),
     isActive: boolean("isActive").default(true),
@@ -163,6 +180,10 @@ export const products = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 255 }).notNull(),
+    // v3-add-screens: اسم مركّب (نوع · ماركة · موديل) — يُجمَع في `name` كي تبقى الجداول/التقارير القديمة تعمل.
+    productType: varchar("productType", { length: 80 }),
+    brand: varchar("brand", { length: 80 }),
+    modelName: varchar("modelName", { length: 80 }),
     description: text("description"),
     categoryId: bigint("categoryId", { mode: "number" }).references(() => categories.id),
     // النَّسَب: لدعم دمج المنتجات بحفظ التاريخ (أب/ابن) — مرحلة لاحقة.
@@ -550,6 +571,11 @@ export const expenses = mysqlTable(
     paymentMethod: mysqlEnum("expensePaymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).default("CASH").notNull(),
     description: text("description"),
     referenceNumber: varchar("referenceNumber", { length: 100 }),
+    // v3-add-screens: جهة الصرف + مركز التكلفة + علم متكرّر + دورية التكرار.
+    payee: varchar("payee", { length: 200 }),
+    costCenter: varchar("costCenter", { length: 80 }),
+    isRecurring: boolean("isRecurring").default(false),
+    recurringFrequency: mysqlEnum("recurringFrequency", ["DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"]),
     receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
     status: mysqlEnum("expenseStatus", ["ACTIVE", "CANCELLED"]).default("ACTIVE").notNull(),
     createdBy: int("createdBy").references(() => users.id),
@@ -584,6 +610,19 @@ export const workOrders = mysqlTable(
     materialsCost: decimal("materialsCost", { precision: 15, scale: 2 }).default("0").notNull(),
     laborCost: decimal("laborCost", { precision: 15, scale: 2 }).default("0").notNull(),
     salePrice: decimal("salePrice", { precision: 15, scale: 2 }).default("0").notNull(),
+    // v3-add-screens: قناة الاستلام + معرّفها (handle).
+    receptionChannel: mysqlEnum("receptionChannel", ["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE", "OTHER"]).default("WALK_IN"),
+    channelHandle: varchar("channelHandle", { length: 120 }),
+    // v3-add-screens: أولوية، عربون، الدفع (نقدي/بطاقة) + المرجع + إيصال.
+    priority: mysqlEnum("woPriority", ["LOW", "NORMAL", "URGENT"]).default("NORMAL"),
+    deposit: decimal("deposit", { precision: 15, scale: 2 }).default("0"),
+    paymentMethod: mysqlEnum("woPaymentMethod", ["CASH", "CARD"]).default("CASH"),
+    paymentReference: varchar("paymentReference", { length: 100 }),
+    paymentReceiptUrl: varchar("paymentReceiptUrl", { length: 500 }),
+    // v3-add-screens: التوصيل.
+    hasDelivery: boolean("hasDelivery").default(false),
+    deliveryAddress: text("deliveryAddress"),
+    deliveryCost: decimal("deliveryCost", { precision: 15, scale: 2 }).default("0"),
     status: mysqlEnum("workOrderStatus", ["RECEIVED", "IN_PROGRESS", "READY", "DELIVERED", "CANCELLED"]).default("RECEIVED").notNull(),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     assignedTo: int("assignedTo").references(() => users.id),
@@ -623,6 +662,74 @@ export const workOrderMaterials = mysqlTable(
 
 export type WorkOrderMaterial = typeof workOrderMaterials.$inferSelect;
 export type InsertWorkOrderMaterial = typeof workOrderMaterials.$inferInsert;
+
+/* ============================ أصناف نقطة البيع المصغّرة + مرفقات أمر الشغل (v3) ============================ */
+
+/**
+ * v3-add-screens: أصناف نقطة البيع المصغّرة داخل أمر الشغل
+ * (منتجات جاهزة تُباع جنباً إلى جنب مع خدمات التخصيص). تكون لها أسعار البيع لا التكلفة.
+ * المخزون لا يُخصم تلقائياً هنا — يُحوَّل لفاتورة عند التسليم وفق منطق billing الموجود.
+ */
+export const workOrderItems = mysqlTable(
+  "workOrderItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    workOrderId: bigint("workOrderId", { mode: "number" }).notNull().references(() => workOrders.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0"),
+    total: decimal("total", { precision: 15, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    woIdx: index("idx_woi_wo").on(table.workOrderId),
+    variantIdx: index("idx_woi_variant").on(table.variantId),
+  })
+);
+
+export type WorkOrderItem = typeof workOrderItems.$inferSelect;
+export type InsertWorkOrderItem = typeof workOrderItems.$inferInsert;
+
+/** v3-add-screens: صور نموذج العمل المطلوب (مرفقات سحب-وإفلات على أمر الشغل). */
+export const workOrderImages = mysqlTable(
+  "workOrderImages",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    workOrderId: bigint("workOrderId", { mode: "number" }).notNull().references(() => workOrders.id, { onDelete: "cascade" }),
+    url: varchar("url", { length: 500 }).notNull(),
+    caption: varchar("caption", { length: 255 }),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    woIdx: index("idx_woimg_wo").on(table.workOrderId),
+  })
+);
+
+export type WorkOrderImage = typeof workOrderImages.$inferSelect;
+export type InsertWorkOrderImage = typeof workOrderImages.$inferInsert;
+
+/** v3-add-screens: صور المنتج، أوّلها الرئيسية افتراضياً. */
+export const productImages = mysqlTable(
+  "productImages",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id, { onDelete: "cascade" }),
+    url: varchar("url", { length: 500 }).notNull(),
+    isPrimary: boolean("isPrimary").default(false).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    prodIdx: index("idx_pimg_product").on(table.productId),
+  })
+);
+
+export type ProductImage = typeof productImages.$inferSelect;
+export type InsertProductImage = typeof productImages.$inferInsert;
 
 /* ============================ المشتريات ============================ */
 

@@ -12,6 +12,8 @@ import {
 import { adminProcedure, router } from "../trpc";
 
 const ROLE = z.enum(["user", "admin", "manager", "cashier", "warehouse"]);
+const ACCESS = z.enum(["FULL", "READ", "NONE"]);
+const PERM_OVERRIDE = z.record(z.string(), ACCESS).nullish();
 
 /**
  * إدارة المستخدمين — **للمدير فقط (adminProcedure)**:
@@ -45,15 +47,19 @@ export const userRouter = router({
         name: z.string().min(1).max(255),
         role: ROLE.default("cashier"),
         branchId: z.number().int().positive().nullish(),
+        phone: z.string().max(20).nullish(),
+        jobTitle: z.string().max(120).nullish(),
+        hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+        permissionsOverride: PERM_OVERRIDE,
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await createUser(input as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
         action: "user.create",
         entityType: "user",
         entityId: res.userId,
-        newValue: { email: input.email, role: input.role, branchId: input.branchId ?? null },
+        newValue: { email: input.email, role: input.role, branchId: input.branchId ?? null, jobTitle: input.jobTitle ?? null },
       });
       return res;
     }),
@@ -66,10 +72,14 @@ export const userRouter = router({
         email: z.string().email().max(320).optional(),
         role: ROLE.optional(),
         branchId: z.number().int().positive().nullish(),
+        phone: z.string().max(20).nullish(),
+        jobTitle: z.string().max(120).nullish(),
+        hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
+        permissionsOverride: PERM_OVERRIDE,
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await updateUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await updateUser(input as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
         action: "user.update",
         entityType: "user",
@@ -79,6 +89,7 @@ export const userRouter = router({
           email: input.email,
           role: input.role,
           branchId: input.branchId,
+          jobTitle: input.jobTitle,
         },
       });
       return res;

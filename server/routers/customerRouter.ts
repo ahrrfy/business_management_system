@@ -5,19 +5,25 @@ import {
   deactivateCustomer,
   getCustomer,
   listCustomers,
+  smartSearchCustomers,
   updateCustomer,
 } from "../services/customerService";
 import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
-import { managerProcedure, protectedProcedure, router } from "../trpc";
+import { cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
 
 /**
  * العملاء — شريحة كاملة:
- * list (بحث+فلاتر+تقسيم صفحات) / get / create / update / deactivate / activate.
+ * list (بحث+فلاتر+تقسيم صفحات) / get / create / update / deactivate / activate / smartSearch.
  * `list` تبقى متوافقة مع شاشات الكاشير والقوائم المنسدلة (تعرض المفعّلين فقط بحدّ 500).
+ *
+ * v3-add-screens:
+ *  - create: نقلناها لـ cashierProcedure لأن الكاشير قد يُنشئ زبوناً جديداً أثناء أمر شغل/بيع.
+ *  - phone2/phone3 مضافان في input.
+ *  - smartSearch: بحث مع إحصاءات (عدد طلبات/آخر طلب) لمكوّن `SmartCustomerInput`.
  */
 export const customerRouter = router({
   /** قائمة بسيطة سريعة — يحتاجها الكاشير وأوامر الشغل والبيع الآجل. */
@@ -42,6 +48,14 @@ export const customerRouter = router({
     )
     .query(({ input }) => listCustomers(input ?? {})),
 
+  /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع. */
+  smartSearch: protectedProcedure
+    .input(z.object({
+      q: z.string().min(1).max(120),
+      limit: z.number().int().min(1).max(20).optional(),
+    }))
+    .query(({ input }) => smartSearchCustomers(input)),
+
   get: protectedProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .query(async ({ input }) => {
@@ -51,11 +65,13 @@ export const customerRouter = router({
       return { ...c, qrPayload };
     }),
 
-  create: managerProcedure
+  create: cashierProcedure
     .input(
       z.object({
         name: z.string().min(1).max(255),
         phone: z.string().max(20).nullish(),
+        phone2: z.string().max(20).nullish(),
+        phone3: z.string().max(20).nullish(),
         whatsapp: z.string().max(20).nullish(),
         address: z.string().nullish(),
         city: z.string().max(100).nullish(),
@@ -79,6 +95,8 @@ export const customerRouter = router({
         customerId: z.number().int().positive(),
         name: z.string().min(1).max(255).optional(),
         phone: z.string().max(20).nullish(),
+        phone2: z.string().max(20).nullish(),
+        phone3: z.string().max(20).nullish(),
         whatsapp: z.string().max(20).nullish(),
         address: z.string().nullish(),
         city: z.string().max(100).nullish(),
@@ -98,13 +116,13 @@ export const customerRouter = router({
         entityType: "customer",
         entityId: input.customerId,
         oldValue: before ? {
-          name: before.name, phone: before.phone, whatsapp: before.whatsapp,
+          name: before.name, phone: before.phone, phone2: before.phone2, phone3: before.phone3, whatsapp: before.whatsapp,
           address: before.address, city: before.city, district: before.district,
           customerType: before.customerType, defaultPriceTier: before.defaultPriceTier,
           creditLimit: before.creditLimit, notes: before.notes,
         } : null,
         newValue: {
-          name: input.name, phone: input.phone, whatsapp: input.whatsapp,
+          name: input.name, phone: input.phone, phone2: input.phone2, phone3: input.phone3, whatsapp: input.whatsapp,
           address: input.address, city: input.city, district: input.district,
           customerType: input.customerType, defaultPriceTier: input.defaultPriceTier,
           creditLimit: input.creditLimit, notes: input.notes,
