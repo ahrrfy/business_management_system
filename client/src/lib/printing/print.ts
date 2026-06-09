@@ -1,24 +1,53 @@
 import { EscPos } from "./escpos";
 import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
 import { isPaired, sendBytes } from "./thermal";
+import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
 
 export type { PrintDoc };
 export { isPaired, isWebUsbSupported, pairPrinter } from "./thermal";
+export {
+  isServerBridgeEnabled, getServerBridgeStatus, serverPrintTest, sendRawToServer,
+} from "./serverBridge";
+
+/** بناء بايتات ESC/POS من المستند (نقطية Canvas + قطع). يعيد null إن تعذّر الرسم (بلا DOM). */
+async function buildReceiptBytes(doc: PrintDoc): Promise<Uint8Array | null> {
+  const raster = await docToRaster(doc); // async: توليد QR وCode128 على Canvas
+  if (!raster) return null;
+  return new EscPos().init().raster(raster).feed(3).cut().bytes();
+}
 
 /**
- * Print a document: if a thermal printer is paired, rasterize and send via
- * ESC/POS over WebUSB; otherwise fall back to the browser print dialog (80mm).
- * Both paths are now async to support QR/barcode generation.
+ * طباعة مستند بترتيب أولوية متدرّج:
+ *  ١) **جسر الخادم** — طباعة صامتة لأي طابعة شبكية/مشتركة (إن ضُبط PRINT_TARGET على الخادم).
+ *  ٢) **WebUSB** — طابعة USB حرارية مربوطة في المتصفّح (صامت، Chrome/Edge).
+ *  ٣) **حوار المتصفّح** — بديل أخير بعرض 80مم.
+ * أي فشل في مستوى أعلى يتدهّور بسلاسة للمستوى التالي ⇒ لا تُسقَط الطباعة أبداً.
  */
-export async function printDoc(doc: PrintDoc): Promise<{ via: "thermal" | "browser" }> {
+export async function printDoc(doc: PrintDoc): Promise<{ via: "server" | "thermal" | "browser" }> {
+  // ١) جسر الخادم (الأولوية حين يكون مفعّلاً).
+  if (await isServerBridgeEnabled()) {
+    const bytes = await buildReceiptBytes(doc);
+    if (bytes) {
+      try {
+        await sendRawToServer(bytes);
+        return { via: "server" };
+      } catch (e) {
+        // فشل الجسر ⇒ تدهور سلس للبدائل (لا نُسقط الطباعة).
+        console.warn("[print] فشل جسر الخادم، نتراجع للبديل:", e);
+      }
+    }
+  }
+
+  // ٢) WebUSB (طابعة USB حرارية مربوطة).
   if (isPaired()) {
-    const raster = await docToRaster(doc); // async: توليد QR وCode128 على Canvas
-    if (raster) {
-      const bytes = new EscPos().init().raster(raster).feed(3).cut().bytes();
+    const bytes = await buildReceiptBytes(doc);
+    if (bytes) {
       await sendBytes(bytes);
       return { via: "thermal" };
     }
   }
+
+  // ٣) حوار طباعة المتصفّح (بديل أخير).
   const html = await docToHtml(doc); // async: توليد QR SVG
   printHtml(html);
   return { via: "browser" };

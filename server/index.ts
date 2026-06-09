@@ -20,6 +20,7 @@ import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
 import { csrfGuard } from "./middleware/csrf";
+import { printRouter } from "./printRoute";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -144,6 +145,10 @@ async function startServer() {
 
   // API routes must be registered before the SPA catch-all (added by Vite/static).
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
+
+  // جسر الطباعة الصامتة (خارج tRPC): يستقبل بايتات ESC/POS من العميل ويرسلها للطابعة محلياً.
+  // محمي بكوكي الجلسة (sameSite:"strict") ⇒ لا يحتاج CSRF guard المنفصل.
+  app.use("/api/print", printRouter());
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
   const port = await findAvailablePort(preferredPort);

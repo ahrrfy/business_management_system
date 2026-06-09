@@ -6,7 +6,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { confirm } from "@/lib/confirm";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, printDoc, type PrintDoc } from "@/lib/printing/print";
+import { isPaired, isWebUsbSupported, pairPrinter, printDoc, getServerBridgeStatus, serverPrintTest, type PrintDoc } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -283,6 +283,7 @@ export default function POS() {
   const [mgrEmail,       setMgrEmail]       = useState("");
   const [mgrPwd,         setMgrPwd]         = useState("");
   const [printerReady,   setPrinterReady]   = useState(isPaired());
+  const [bridge,         setBridge]         = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
   const [showCustPicker, setShowCustPicker] = useState(false);
   const [draftRestored,  setDraftRestored]  = useState(false);
   const [message,        setMessage]        = useState<{ kind: "ok" | "err"; text: string } | null>(null);
@@ -635,6 +636,18 @@ export default function POS() {
     catch (e: unknown) { setMessage({ kind: "err", text: (e as Error)?.message ?? "تعذّر ربط الطابعة" }); }
   };
 
+  // حالة جسر الطباعة على الخادم (إن ضُبط PRINT_TARGET ⇒ طباعة صامتة لأي طابعة، بلا WebUSB).
+  useEffect(() => {
+    getServerBridgeStatus().then(setBridge).catch(() => { /* تجاهل */ });
+  }, []);
+
+  const testServerPrint = async () => {
+    const r = await serverPrintTest();
+    setMessage(r.ok
+      ? { kind: "ok", text: "أُرسلت تذكرة اختبار للطابعة عبر الخادم" }
+      : { kind: "err", text: r.error ?? "فشل اختبار الطباعة" });
+  };
+
   // ── Shift open screen ─────────────────────────────────────────────────────
   if (shiftQ.isLoading) {
     return (
@@ -695,6 +708,9 @@ export default function POS() {
         onCloseShift={() => setShifting(true)}
         printerReady={printerReady}
         onConnectPrinter={connectPrinter}
+        bridgeEnabled={bridge.enabled}
+        bridgeDesc={bridge.description}
+        onTestPrint={testServerPrint}
       />
 
       {/* Tab Bar */}
@@ -807,9 +823,12 @@ interface POSHeaderProps {
   onCloseShift: () => void;
   printerReady: boolean;
   onConnectPrinter: () => void;
+  bridgeEnabled: boolean;
+  bridgeDesc: string;
+  onTestPrint: () => void;
 }
 
-function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter }: POSHeaderProps) {
+function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -927,7 +946,15 @@ function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results,
         </div>
       )}
 
-      {/* Printer */}
+      {/* جسر الطباعة على الخادم (طباعة صامتة) — يظهر حين يكون مفعّلاً؛ نقرة = تذكرة اختبار. */}
+      {bridgeEnabled && (
+        <button onClick={onTestPrint} title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
+          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12, color: C.success, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>
+          🖨️🌐
+        </button>
+      )}
+
+      {/* Printer (WebUSB) */}
       {isWebUsbSupported() && (
         <button onClick={onConnectPrinter} title={printerReady ? "طابعة حرارية مربوطة" : "اربط طابعة حرارية"}
           style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12, color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>
