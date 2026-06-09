@@ -20,6 +20,9 @@ export interface ProductTableProps {
   invoiceType: InvoiceType;
   /** false = hide cost & margin columns (cashier role). */
   showCost: boolean;
+  /** false = hide the per-line tax column (e.g. SALE in a 0%-VAT market where the backend
+   *  stores no per-line tax). Default true to preserve existing screens. */
+  showTax?: boolean;
   onOpenBulkPicker: () => void;
   /** Toast hook. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
@@ -106,11 +109,15 @@ export function ProductTable({
   tier,
   invoiceType,
   showCost,
+  showTax = true,
   onOpenBulkPicker,
   onNotify,
 }: ProductTableProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const showCostCol = showCost && !isPurchase;
+  const showTaxCol = showTax;
+  // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (ضريبة).
+  const colCount = 10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0);
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
 
@@ -175,7 +182,7 @@ export function ProductTable({
               <th className={cn(th, "w-24")}>{isPurchase ? "سعر الشراء" : "السعر"}</th>
               <th className={cn(th, "w-32")}>الكمية</th>
               <th className={cn(th, "w-20")}>خصم %</th>
-              <th className={cn(th, "w-16")}>ضريبة %</th>
+              {showTaxCol && <th className={cn(th, "w-16")}>ضريبة %</th>}
               {showCostCol && <th className={cn(th, "w-16")}>هامش%</th>}
               <th className={cn(th, "w-28")}>الإجمالي</th>
               <th className={cn(th, "w-10")} aria-label="حذف" />
@@ -184,7 +191,7 @@ export function ProductTable({
           <tbody>
             {items.length === 0 && (
               <tr>
-                <td colSpan={showCostCol ? 13 : 11} className="py-12 text-center text-muted-foreground">
+                <td colSpan={colCount} className="py-12 text-center text-muted-foreground">
                   <div className="text-4xl opacity-50">📦</div>
                   <div className="mt-2 text-sm font-semibold">لا توجد منتجات في السلة</div>
                   <div className="mx-auto mt-1 max-w-xs text-xs">ابحث بالاسم أو رمز SKU أو امسح الباركود لإضافة منتجات</div>
@@ -251,15 +258,17 @@ export function ProductTable({
                       onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "discount", value: v })}
                     />
                   </td>
-                  <td className={td}>
-                    <InlineNumberInput
-                      value={item.tax}
-                      width="w-12"
-                      max={100}
-                      suffix="%"
-                      onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "tax", value: v })}
-                    />
-                  </td>
+                  {showTaxCol && (
+                    <td className={td}>
+                      <InlineNumberInput
+                        value={item.tax}
+                        width="w-12"
+                        max={100}
+                        suffix="%"
+                        onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "tax", value: v })}
+                      />
+                    </td>
+                  )}
                   {showCostCol && (
                     <td
                       className={cn(

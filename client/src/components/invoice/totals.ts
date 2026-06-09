@@ -28,18 +28,31 @@ export interface InvoiceTotals {
 
 Decimal.set({ rounding: Decimal.ROUND_HALF_UP });
 
+/**
+ * decimal.js يرمي خطأً على نصّ غير صالح (مثل «12a» أو «1.2.3») وهو ما يحدث طبيعياً
+ * أثناء كتابة المستخدم في حقول المبالغ (المدفوع/الخصم/الشحن/ضريبة السطر). هذا الغلاف
+ * يُرجع 0 بدل الرمي حتى لا ينهار محرّر الفاتورة أثناء الرسم — التحقّق الصارم يبقى عند الحفظ.
+ */
+function safeD(v: string | number): Decimal {
+  try {
+    return D(v);
+  } catch {
+    return new Decimal(0);
+  }
+}
+
 export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTotals {
   let subtotal = new Decimal(0);
   let totalDiscount = new Decimal(0);
   let totalTax = new Decimal(0);
 
   for (const item of items) {
-    const price = D(item.price);
-    const qty = D(item.qty);
+    const price = safeD(item.price);
+    const qty = safeD(item.qty);
     const lineBase = price.times(qty);
     subtotal = subtotal.plus(lineBase);
 
-    const discRaw = D(item.discount);
+    const discRaw = safeD(item.discount);
     const disc =
       item.discountType === "percent"
         ? lineBase.times(discRaw).dividedBy(100)
@@ -47,23 +60,23 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
     totalDiscount = totalDiscount.plus(disc);
 
     const afterDisc = lineBase.minus(disc);
-    const taxPct = D(item.tax);
+    const taxPct = safeD(item.tax);
     const tax = afterDisc.times(taxPct).dividedBy(100);
     totalTax = totalTax.plus(tax);
   }
 
   const afterItemDisc = subtotal.minus(totalDiscount);
-  const gdRaw = D(state.globalDiscount);
+  const gdRaw = safeD(state.globalDiscount);
   const globalDiscAmt =
     state.globalDiscountType === "percent"
       ? afterItemDisc.times(gdRaw).dividedBy(100)
       : gdRaw;
   const afterGlobalDisc = afterItemDisc.minus(globalDiscAmt);
 
-  const shipping = D(state.shipping);
-  const otherExpenses = D(state.otherExpenses);
+  const shipping = safeD(state.shipping);
+  const otherExpenses = safeD(state.otherExpenses);
   const grandTotal = afterGlobalDisc.plus(totalTax).plus(shipping).plus(otherExpenses);
-  const paid = D(state.paidAmount);
+  const paid = safeD(state.paidAmount);
   const remaining = grandTotal.minus(paid);
 
   return {
@@ -81,24 +94,24 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
 
 /** Per-line total (after discount + tax) — 2dp string. */
 export function calcLineTotal(item: InvoiceLine): string {
-  const price = D(item.price);
-  const qty = D(item.qty);
+  const price = safeD(item.price);
+  const qty = safeD(item.qty);
   const lineBase = price.times(qty);
-  const discRaw = D(item.discount);
+  const discRaw = safeD(item.discount);
   const disc =
     item.discountType === "percent"
       ? lineBase.times(discRaw).dividedBy(100)
       : discRaw;
   const afterDisc = lineBase.minus(disc);
-  const taxPct = D(item.tax);
+  const taxPct = safeD(item.tax);
   const tax = afterDisc.times(taxPct).dividedBy(100);
   return round2(afterDisc.plus(tax)).toFixed(2);
 }
 
 /** Per-line margin percent (price-vs-costBase). Returns 2dp string (e.g. "23.45"), or "0" when no cost. */
 export function calcMargin(item: InvoiceLine): string {
-  const cost = D(item.costBase);
-  const price = D(item.price);
+  const cost = safeD(item.costBase);
+  const price = safeD(item.price);
   if (cost.lessThanOrEqualTo(0) || price.lessThanOrEqualTo(0)) return "0";
   return round2(price.minus(cost).dividedBy(cost).times(100)).toFixed(2);
 }

@@ -118,7 +118,9 @@ export default function SalesInvoiceNew() {
     },
     onError: (e) => {
       // تجاوز حدّ الائتمان ⇒ افتح حوار موافقة المدير بدل إظهار خطأ فقط.
-      if (e.message && e.message.includes("الائتمان")) {
+      // نطابق العبارة المميِّزة الكاملة «حدّ الائتمان» (لا «الائتمان» وحدها) لتفادي
+      // الإيجابيات الكاذبة من رسائل أعمال أخرى تذكر «سقف الائتمان» مثلاً.
+      if (e.message && e.message.includes("حدّ الائتمان")) {
         setCreditPrompt(e.message);
         return;
       }
@@ -126,16 +128,25 @@ export default function SalesInvoiceNew() {
     },
   });
 
+  /**
+   * المبلغ المدفوع نقداً وفق شروط الدفع:
+   *  • نقداً (CASH): القيمة المُدخَلة، أو الإجمالي الكامل إن تُركت فارغة.
+   *  • آجل (CREDIT): صفر — كامل المبلغ يُسجَّل ذمة.
+   *  • أقساط (INSTALLMENT): الدفعة المقدّمة المُدخَلة فقط، وصفر إن تُركت فارغة (الباقي ذمة) —
+   *    لا يُفترَض الدفع الكامل ضمناً (الخادم لا يدعم جدول أقساط؛ نعامله كآجل بدفعة مقدّمة اختيارية).
+   */
+  function computePaidStr(): string {
+    if (state.paymentTerms === "CREDIT") return "0";
+    const entered = state.paidAmount.trim();
+    if (entered) return round2(D(entered)).toFixed(2);
+    return state.paymentTerms === "INSTALLMENT" ? "0" : totals.grandTotal;
+  }
+
   /** يبني payload البيع بأموال نصّية (decimal.js) — لا parseFloat. */
   function buildPayload(approval?: Approval) {
-    const isCredit = state.paymentTerms === "CREDIT";
-    const grand = totals.grandTotal;
-    // المدفوع: في الآجل = 0 (كله ذمة)؛ غير ذلك = القيمة المُدخَلة أو الإجمالي الكامل إن تُركت فارغة.
-    const paidStr = isCredit
-      ? "0"
-      : state.paidAmount.trim()
-        ? round2(D(state.paidAmount)).toFixed(2)
-        : grand;
+    const paidStr = computePaidStr();
+    // إيصال دفع يُرسَل فقط إن كان هناك مبلغ مدفوع فعلاً (>0)؛ غير ذلك = ذمة كاملة.
+    const hasPayment = D(paidStr).gt(0);
 
     return {
       branchId: state.branchId,
@@ -152,9 +163,9 @@ export default function SalesInvoiceNew() {
       })),
       // خصم إجمالي كمبلغ (calcTotals يحوّل النسبة إلى مبلغ). يُرسَل فقط إن كان موجباً.
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
-      // العراق VAT=0% افتراضياً — لا ضريبة على مستوى الفاتورة.
+      // العراق VAT=0% افتراضياً — لا ضريبة على مستوى الفاتورة (وعمود ضريبة السطر مخفيّ في شاشة البيع).
       taxRatePercent: "0",
-      payment: isCredit ? undefined : { amount: paidStr, method: state.paymentMethod },
+      payment: hasPayment ? { amount: paidStr, method: state.paymentMethod } : undefined,
       clientRequestId,
       notes: state.notes.trim() || undefined,
       ...(approval ? { managerApproval: approval } : {}),
@@ -171,9 +182,8 @@ export default function SalesInvoiceNew() {
       if (!base.isInteger())
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
     }
-    // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً.
-    const isCredit = state.paymentTerms === "CREDIT";
-    const paid = isCredit ? D(0) : state.paidAmount.trim() ? D(state.paidAmount) : D(totals.grandTotal);
+    // مبلغ آجل (ذمة) يتطلّب عميلاً مُحدَّداً — يشمل «أقساط» بدون دفعة مقدّمة كاملة.
+    const paid = D(computePaidStr());
     const remaining = D(totals.grandTotal).minus(paid);
     if (remaining.gt(0) && !state.entityId)
       return "هناك مبلغ آجل (ذمة) — اختر عميلاً لتسجيل الذمة عليه.";
@@ -182,12 +192,23 @@ export default function SalesInvoiceNew() {
   }
 
   function handleSubmit(approval?: Approval) {
-    const err = validate();
+    // قيمة مالية غير رقمية (في المدفوع/الخصم) تجعل decimal.js يرمي — نلتقطها برسالة واضحة بدل تعطّل صامت.
+    let err: string | null;
+    try {
+      err = validate();
+    } catch {
+      notify.warn("قيمة مالية غير صالحة — صحّح حقول المبالغ قبل الحفظ.");
+      return;
+    }
     if (err) {
       notify.warn(err);
       return;
     }
-    create.mutate(buildPayload(approval));
+    try {
+      create.mutate(buildPayload(approval));
+    } catch {
+      notify.warn("قيمة مالية غير صالحة — صحّح حقول المبالغ قبل الحفظ.");
+    }
   }
 
   function handleReset() {
@@ -324,6 +345,8 @@ export default function SalesInvoiceNew() {
             tier={state.tier}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
+            /* العراق VAT=0% والخادم لا يحفظ ضريبة السطر ⇒ نُخفي العمود لتفادي تفاوت معروض/محفوظ. */
+            showTax={false}
             onOpenBulkPicker={() => setBulkOpen(true)}
             onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
           />
@@ -339,7 +362,15 @@ export default function SalesInvoiceNew() {
         </div>
 
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          <TotalsPanel items={state.items} state={state} dispatch={dispatch} />
+          {/* الشحن/المصاريف الأخرى غير مدعومة في sales.create ⇒ نُخفيها لئلّا تُضخّم
+              الإجمالي المعروض و«ادفع الكل» بمبلغ لا يُحفظ (خسارة مالية صامتة). */}
+          <TotalsPanel
+            items={state.items}
+            state={state}
+            dispatch={dispatch}
+            showShipping={false}
+            showOtherExpenses={false}
+          />
           <ActionButtons
             invoiceType={INVOICE_TYPE}
             items={state.items}
