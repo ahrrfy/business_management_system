@@ -74,7 +74,18 @@ const SECTIONS = [
   { id: 5, name: "الإدارة والنظام",    accent: "oklch(0.58 0.18 262)" },
 ];
 
-const MODULES = [
+type ModuleDef = {
+  id: string;
+  href: string;
+  name: string;
+  desc: string;
+  sec: number;
+  color: string;
+  featured?: boolean;
+  adminOnly?: boolean;
+};
+
+const MODULES: ModuleDef[] = [
   { id: "pos",           href: "/pos",                 name: "نقطة البيع",       desc: "مبيعات وورديات",    sec: 1, color: "oklch(0.62 0.24 22)",  featured: true },
   { id: "sales",         href: "/invoices",            name: "المبيعات",          desc: "فواتير ومدفوعات",   sec: 1, color: "oklch(0.68 0.20 52)" },
   { id: "quotations",    href: "/quotations",          name: "عروض الأسعار",      desc: "تسعير وعروض",       sec: 1, color: "oklch(0.60 0.22 288)" },
@@ -94,8 +105,9 @@ const MODULES = [
   { id: "suppStatement", href: "/suppliers-statement", name: "كشف حساب مورد",     desc: "حسابات الموردين",   sec: 3, color: "oklch(0.62 0.18 262)" },
   { id: "salesReport",   href: "/sales-report",        name: "تقرير المبيعات",    desc: "ملخّص وأرباح",      sec: 3, color: "oklch(0.60 0.20 215)" },
   { id: "workOrders",    href: "/work-orders",         name: "أوامر الشغل",       desc: "المطبعة والإنتاج",  sec: 4, color: "oklch(0.65 0.20 128)" },
-  { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "oklch(0.58 0.18 262)" },
-  { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "oklch(0.56 0.16 300)" },
+  { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "oklch(0.58 0.18 262)", adminOnly: true },
+  { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "oklch(0.56 0.16 300)", adminOnly: true },
+  { id: "reconcile",     href: "/reconcile",           name: "تدقيق التوافق",     desc: "كشف الانحراف",      sec: 5, color: "oklch(0.55 0.20 25)",  adminOnly: true },
 ];
 
 /* ═══════════ QUICK ACTIONS ═══════════
@@ -129,6 +141,7 @@ const ACTIONS: Record<string, Action[]> = {
   workOrders:    [{ ic: "plus",    label: "أمر",    href: "/work-orders/new" },      { ic: "plus",    label: "عرض",     href: "/quotations/new" },       { ic: "rows", label: "خامات", href: "/inventory" }],
   users:         [{ ic: "plus",    label: "مستخدم", href: "/users/new", adminOnly: true }, { ic: "eye", label: "تدقيق", href: "/audit", adminOnly: true }],
   audit:         [{ ic: "shield",  label: "مستخدمون", href: "/users", adminOnly: true }],
+  reconcile:     [{ ic: "eye",     label: "تدقيق",   href: "/audit", adminOnly: true },   { ic: "coin", label: "ذمم", href: "/ar-aging", adminOnly: true }],
 };
 
 /* أيقونات الإجراءات — تستخدم currentColor لتتبع لون الزر (16×16). */
@@ -313,6 +326,16 @@ function Shape({ id, color: c, size = 106 }: { id: string; color: string; size?:
       <>
         <path d="M12,3 L20,7 V13 C20,17.5 16.4,21 12,22 C7.6,21 4,17.5 4,13 V7 Z" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
         <path d="M8.5,12.5 L11,15 L15.5,9.5" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    reconcile: (
+      <>
+        <line x1="12" y1="4.5" x2="12" y2="20" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+        <line x1="8" y1="20" x2="16" y2="20" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+        <line x1="4.5" y1="7.5" x2="19.5" y2="7.5" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+        <circle cx="12" cy="5" r="1.4" stroke={w} strokeWidth={sw} />
+        <path d="M4.5,7.5 L2.5,12.5 H6.5 Z" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M19.5,7.5 L17.5,12.5 H21.5 Z" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
       </>
     ),
   };
@@ -693,7 +716,12 @@ function PlaceholderCard() {
 
 function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
   const T = useT();
-  const mods = MODULES.filter((m) => m.sec === sec.id);
+  const me = trpc.auth.me.useQuery(); // مُخزَّن مؤقتاً (deduped) — لا طلب إضافي.
+  const isAdmin = me.data?.role === "admin";
+  // البطاقات adminOnly تظهر للأدمن فقط (اتّساقاً مع مجموعة «الإدارة» المحجوبة في الشريط الجانبي).
+  const mods = MODULES.filter((m) => m.sec === sec.id && (!m.adminOnly || isAdmin));
+  // قسم بلا بطاقات مرئية للدور الحالي ⇒ يُخفى كاملاً (لا رأس ولا فراغات).
+  if (mods.length === 0) return null;
   // يملأ بقية الصف الأخير فقط (يدعم 7+ وحدات في القسم الواحد).
   const placeholders = (6 - (mods.length % 6)) % 6;
 

@@ -44,6 +44,7 @@ import Account from "@/pages/Account";
 import AuditLogs from "@/pages/AuditLogs";
 import InventoryMovements from "@/pages/InventoryMovements";
 import SalesReport from "@/pages/SalesReport";
+import Reconcile from "@/pages/Reconcile";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { Redirect, Route, Switch } from "wouter";
 
@@ -123,6 +124,7 @@ export default function App() {
       <Route path="/users/:id/edit"><Shell><UserEdit /></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
       <Route path="/audit"><Shell><AuditLogs /></Shell></Route>
+      <Route path="/reconcile"><Shell><Reconcile /></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
     </ErrorBoundary>
