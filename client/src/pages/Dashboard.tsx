@@ -92,6 +92,7 @@ const MODULES = [
   { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "oklch(0.58 0.22 148)" },
   { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "oklch(0.60 0.18 322)" },
   { id: "suppStatement", href: "/suppliers-statement", name: "كشف حساب مورد",     desc: "حسابات الموردين",   sec: 3, color: "oklch(0.62 0.18 262)" },
+  { id: "salesReport",   href: "/sales-report",        name: "تقرير المبيعات",    desc: "ملخّص وأرباح",      sec: 3, color: "oklch(0.60 0.20 215)" },
   { id: "workOrders",    href: "/work-orders",         name: "أوامر الشغل",       desc: "المطبعة والإنتاج",  sec: 4, color: "oklch(0.65 0.20 128)" },
   { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "oklch(0.58 0.18 262)" },
   { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "oklch(0.56 0.16 300)" },
@@ -124,6 +125,7 @@ const ACTIONS: Record<string, Action[]> = {
   apAging:       [{ ic: "doc",     label: "كشف",    href: "/suppliers-statement" },  { ic: "rows",    label: "موردون",  href: "/suppliers" },            { ic: "plus", label: "مصروف", href: "/expenses/new" }],
   custStatement: [{ ic: "coin",    label: "ذمم",    href: "/ar-aging" },             { ic: "rows",    label: "عملاء",   href: "/customers" }],
   suppStatement: [{ ic: "coin",    label: "ذمم",    href: "/ap-aging" },             { ic: "rows",    label: "موردون",  href: "/suppliers" }],
+  salesReport:   [{ ic: "rows",    label: "فواتير", href: "/invoices" },             { ic: "coin",    label: "ذمم",     href: "/ar-aging" }],
   workOrders:    [{ ic: "plus",    label: "أمر",    href: "/work-orders/new" },      { ic: "plus",    label: "عرض",     href: "/quotations/new" },       { ic: "rows", label: "خامات", href: "/inventory" }],
   users:         [{ ic: "plus",    label: "مستخدم", href: "/users/new", adminOnly: true }, { ic: "eye", label: "تدقيق", href: "/audit", adminOnly: true }],
   audit:         [{ ic: "shield",  label: "مستخدمون", href: "/users", adminOnly: true }],
@@ -280,6 +282,14 @@ function Shape({ id, color: c, size = 106 }: { id: string; color: string; size?:
         <rect x="4" y="3" width="16" height="18" rx="2" stroke={w} strokeWidth={sw} />
         <path d="M8,18 V12 L12,8 L16,12 V18" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
         <rect x="10.5" y="13" width="3" height="5" rx="0.5" stroke={w} strokeWidth="1.3" />
+      </>
+    ),
+    salesReport: (
+      <>
+        <path d="M3,3 V21 H21" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <rect x="6.5" y="13" width="3" height="5" rx="0.6" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <rect x="11.5" y="9" width="3" height="9" rx="0.6" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <rect x="16.5" y="5.5" width="3" height="12.5" rx="0.6" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
       </>
     ),
     workOrders: (
