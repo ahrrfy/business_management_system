@@ -46,7 +46,7 @@ export default function APAging() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">أعمار الذمم الدائنة (AP Aging)</h1>
+        <h1 className="text-2xl font-bold">أعمار الذمم الدائنة — لهم علينا</h1>
         <div className="flex gap-2">
           <Button
             variant="outline"
@@ -62,7 +62,7 @@ export default function APAging() {
                   { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
                   { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
                   { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
-                  { key: "unpaidTotal", header: "إجمالي غير المسدّد", map: (r) => Number(r.unpaidTotal) },
+                  { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
                   { key: "currentBalance", header: "رصيد جارٍ", map: (r) => Number(r.currentBalance) },
                   { key: "oldestPoDate", header: "أقدم أمر شراء" },
                 ],
@@ -89,8 +89,8 @@ export default function APAging() {
         </div>
       </div>
       <p className="text-sm text-muted-foreground">
-        المستحقّ للموردين مُجمَّعاً في أربع شرائح عمرية حسب تاريخ أمر الشراء.
-        تُستبعد أوامر المسوّدات والملغاة؛ يظهر المورد عند وجود رصيد قائم أو مستحق.
+        المبالغ المستحقّة <strong>لهم</strong> علينا (للموردين)، مُجمَّعة في أربع شرائح عمرية.
+        كلما طال العمر كلما استوجب الأولويّة. المسوّدات والملغاة مستثناة.
       </p>
 
       <Card>
@@ -111,8 +111,8 @@ export default function APAging() {
           <Bucket label="31–60 يوم" value={totals.d31_60} color="bg-amber-50 text-amber-700" />
           <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-orange-50 text-orange-700" />
           <Bucket label="أكثر من 90" value={totals.d91p} color="bg-rose-50 text-rose-700" />
-          <Bucket label="إجمالي غير المسدّد" value={totals.unpaidTotal} color="bg-muted" emphasis />
-          <Bucket label="مجموع الذمم الجارية" value={totals.currentBalance} color="bg-muted" emphasis />
+          <Bucket label="إجمالي غير المدفوع" value={totals.unpaidTotal} color="bg-muted" emphasis />
+          <Bucket label="إجمالي ما لهم علينا" value={totals.currentBalance} color="bg-rose-50 text-rose-800" emphasis />
         </CardContent>
       </Card>
 
@@ -127,8 +127,8 @@ export default function APAging() {
                 <th className="p-2 text-left">31–60</th>
                 <th className="p-2 text-left">61–90</th>
                 <th className="p-2 text-left">+90</th>
-                <th className="p-2 text-left">إجمالي غير المسدّد</th>
-                <th className="p-2 text-left">رصيد جارٍ</th>
+                <th className="p-2 text-left">إجمالي غير المدفوع</th>
+                <th className="p-2 text-left">الرصيد (له علينا)</th>
                 <th className="p-2">أقدم أمر شراء</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>

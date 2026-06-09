@@ -2,6 +2,8 @@ import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildStatementMessage } from "@/lib/whatsapp";
 import { printSupplierStmt } from "@/lib/printing/printTemplates";
 import { positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -73,6 +75,20 @@ export default function SupplierStatement() {
               });
             }}>طباعة الكشف</Button>
           )}
+          {stmt.data && (
+            <WhatsAppShare
+              phone={stmt.data.supplier.phone}
+              message={buildStatementMessage({
+                entityName: stmt.data.supplier.name,
+                entityType: "supplier",
+                currentBalance: stmt.data.summary.currentBalance,
+                totalSales: stmt.data.summary.totalPurchases,
+                totalPaid: stmt.data.summary.totalPaid,
+                unpaid: stmt.data.summary.unpaid,
+              })}
+              label="إرسال كشف الحساب"
+            />
+          )}
           <Link href="/ap-aging"><Button variant="outline">أعمار الذمم الدائنة</Button></Link>
         </div>
       </div>
@@ -86,7 +102,7 @@ export default function SupplierStatement() {
               <option value={0}>— اختر مورداً —</option>
               {(index.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name} {s.phone ? `· ${s.phone}` : ""} {Number(s.currentBalance) > 0 ? `· مستحق ${fmt(s.currentBalance)}` : ""}
+                  {s.name} {s.phone ? `· ${s.phone}` : ""} {Number(s.currentBalance) > 0 ? `· له علينا ${fmt(s.currentBalance)}` : Number(s.currentBalance) < 0 ? `· لنا عليه ${fmt(Math.abs(Number(s.currentBalance)))}` : ""}
                 </option>
               ))}
             </select>
@@ -116,8 +132,8 @@ export default function SupplierStatement() {
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                   <Stat label="إجمالي المشتريات" value={stmt.data.summary.totalPurchases} />
                   <Stat label="إجمالي المدفوع" value={stmt.data.summary.totalPaid} />
-                  <Stat label="غير مسدّد" value={stmt.data.summary.unpaid} emphasis />
-                  <Stat label="رصيد جارٍ" value={stmt.data.summary.currentBalance} emphasis />
+                  <Stat label="غير مدفوع" value={stmt.data.summary.unpaid} emphasis />
+                  <StatBalance label="الرصيد الجاري" value={stmt.data.summary.currentBalance} entityType="supplier" />
                 </div>
               </div>
             </CardContent>
@@ -211,6 +227,24 @@ function Stat({ label, value, emphasis }: { label: string; value: string | numbe
     <div className={`rounded-md p-2 ${emphasis ? "bg-primary/5" : "bg-muted/40"}`}>
       <div className="text-xs text-muted-foreground">{label}</div>
       <div className={`tabular-nums ${emphasis ? "text-xl font-bold" : "text-base font-semibold"}`} dir="ltr">{fmt(value)}</div>
+    </div>
+  );
+}
+
+function StatBalance({ label, value, entityType }: { label: string; value: string | number; entityType: "customer" | "supplier" }) {
+  const num = Number(value);
+  // للمورد: الموجب = "له علينا" (أحمر)؛ للعميل: الموجب = "لنا عليه" (أخضر)
+  const weHaveClaim = entityType === "customer" ? num > 0 : num < 0;
+  const hasBalance = num !== 0;
+  return (
+    <div className={`rounded-md p-2 ${hasBalance ? (weHaveClaim ? "bg-emerald-50" : "bg-rose-50") : "bg-muted/40"}`}>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className={`tabular-nums text-xl font-bold ${hasBalance ? (weHaveClaim ? "text-emerald-700" : "text-rose-700") : ""}`} dir="ltr">
+        {fmt(Math.abs(num))}
+      </div>
+      <div className={`text-xs font-semibold mt-0.5 ${hasBalance ? (weHaveClaim ? "text-emerald-600" : "text-rose-600") : "text-muted-foreground"}`}>
+        {!hasBalance ? "لا ذمم" : weHaveClaim ? "لنا عليه" : "له علينا"}
+      </div>
     </div>
   );
 }

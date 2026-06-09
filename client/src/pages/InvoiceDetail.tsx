@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -86,6 +88,23 @@ export default function InvoiceDetail() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">تفاصيل الفاتورة</h1>
         <div className="flex items-center gap-3">
+          <WhatsAppShare
+            phone={data.customerPhone}
+            message={buildInvoiceMessage({
+              invoiceNumber: data.invoiceNumber,
+              invoiceDate: String(data.invoiceDate),
+              customerName: data.customerName,
+              items: data.items.map((it) => ({
+                productName: it.productName ?? "",
+                quantity: it.quantity,
+                unitName: it.unitName,
+                total: it.total,
+              })),
+              total: data.total,
+              paidAmount: data.paidAmount,
+              remaining: remaining.toFixed(2),
+            })}
+          />
           <Button variant="outline" size="sm" onClick={async () => printInvoiceA4({
             invoiceNumber: data.invoiceNumber,
             invoiceDate: data.invoiceDate,

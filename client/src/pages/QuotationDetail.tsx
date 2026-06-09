@@ -2,6 +2,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildQuotationMessage } from "@/lib/whatsapp";
 import { fmt } from "@/lib/money";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
@@ -175,6 +177,22 @@ export default function QuotationDetail() {
           <Button variant="outline" onClick={() => setStatus.mutate({ quotationId, status: "REJECTED" })} disabled={setStatus.isPending}>رفض</Button>
         )}
         <Button variant="outline" onClick={printQuote}>طباعة العرض</Button>
+        <WhatsAppShare
+          message={buildQuotationMessage({
+            quoteNumber: data.quoteNumber,
+            quoteDate: data.quoteDate ? String(data.quoteDate) : undefined,
+            validUntil: data.validUntil ? String(data.validUntil) : undefined,
+            customerName: data.customerName,
+            items: data.items.map((it) => ({
+              productName: it.productName ?? "",
+              quantity: it.quantity,
+              unitName: it.unitName,
+              total: it.total,
+            })),
+            total: data.total,
+            notes: data.notes,
+          })}
+        />
       </div>
     </div>
   );

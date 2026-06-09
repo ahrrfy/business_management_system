@@ -130,6 +130,7 @@ export const saleRouter = router({
           branchId: invoices.branchId,
           customerId: invoices.customerId,
           customerName: customers.name,
+          customerPhone: customers.phone,
           customerBalance: customers.currentBalance,
           priceTier: invoices.priceTier,
           invoiceDate: invoices.invoiceDate,

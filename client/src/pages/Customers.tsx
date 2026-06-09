@@ -1,6 +1,7 @@
 import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
@@ -185,7 +186,7 @@ export default function Customers() {
                 <th className="p-2">المدينة/المنطقة</th>
                 <th className="p-2">فئة السعر</th>
                 <th className="p-2 text-left">سقف الائتمان</th>
-                <th className="p-2 text-left">الرصيد الحالي</th>
+                <th className="p-2 text-left">الرصيد</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -194,8 +195,6 @@ export default function Customers() {
               {rows.map((c) => {
                 const id = Number(c.id);
                 const isActive = !!c.isActive;
-                const balance = Number(c.currentBalance ?? "0");
-                const balanceClass = balance > 0 ? "text-amber-700" : balance < 0 ? "text-emerald-700" : "text-muted-foreground";
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{c.name}</td>
@@ -204,7 +203,9 @@ export default function Customers() {
                     <td className="p-2 text-xs">{[c.city, c.district].filter(Boolean).join(" / ") || "—"}</td>
                     <td className="p-2 text-xs">{TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(c.creditLimit)}</td>
-                    <td className={`p-2 text-left tabular-nums ${balanceClass}`} dir="ltr">{fmt(c.currentBalance)}</td>
+                    <td className="p-2 text-left">
+                      <BalanceCell amount={c.currentBalance} entityType="customer" />
+                    </td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
                         {isActive ? "مفعّل" : "معطّل"}
