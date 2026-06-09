@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import {
@@ -53,7 +54,7 @@ export const workOrderRouter = router({
       return q;
     }),
 
-  get: protectedProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  get: branchScopedProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const wo = (
@@ -83,6 +84,8 @@ export const workOrderRouter = router({
         .limit(1)
     )[0];
     if (!wo) return null;
+    // §٧ IDOR: لا تكشف وجود أمر فرع آخر لغير المدير.
+    if (ctx.scopedBranchId != null && Number(wo.branchId) !== ctx.scopedBranchId) return null;
     const materials = await db
       .select({
         id: workOrderMaterials.id,
@@ -144,7 +147,7 @@ export const workOrderRouter = router({
   start: cashierProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
       await logAudit(ctx, { action: "workOrder.start", entityType: "workOrder", entityId: input.workOrderId });
       return res;
     }),
@@ -152,7 +155,7 @@ export const workOrderRouter = router({
   markReady: cashierProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await markWorkOrderReady(input.workOrderId);
+      const res = await markWorkOrderReady(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
       await logAudit(ctx, { action: "workOrder.markReady", entityType: "workOrder", entityId: input.workOrderId });
       return res;
     }),
@@ -165,16 +168,26 @@ export const workOrderRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await deliverWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "workOrder.deliver", entityType: "workOrder", entityId: input.workOrderId });
-      return res;
+      // ER_DUP_ENTRY على invoiceNumber ممكن تحت تزامن POS+WO ⇒ أعد المحاولة ٣ مرات كـsaleRouter.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await deliverWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+          await logAudit(ctx, { action: "workOrder.deliver", entityType: "workOrder", entityId: input.workOrderId });
+          return res;
+        } catch (e: any) {
+          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (e instanceof TRPCError) throw e;
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تسليم أمر الشغل" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
     }),
 
   // الإلغاء يعكس مخزوناً/قيوداً ⇒ مدير فأعلى.
   cancel: managerProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await cancelWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await cancelWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
       await logAudit(ctx, { action: "workOrder.cancel", entityType: "workOrder", entityId: input.workOrderId });
       return res;
     }),
