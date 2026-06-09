@@ -100,6 +100,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/users", label: "المستخدمون", adminOnly: true },
       { href: "/audit", label: "سجلّ التدقيق", adminOnly: true },
       { href: "/reconcile", label: "تدقيق التوافق المالي", adminOnly: true },
+      { href: "/settings", label: "النسخ الاحتياطي والإعدادات", adminOnly: true },
     ],
   },
 ];

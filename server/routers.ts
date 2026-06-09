@@ -1,4 +1,5 @@
-import { publicProcedure, router } from "./trpc";
+import { router } from "./trpc";
+import { systemRouter } from "./routers/systemRouter";
 import { authRouter } from "./routers/authRouter";
 import { saleRouter } from "./routers/saleRouter";
 import { purchaseRouter } from "./routers/purchaseRouter";
@@ -24,12 +25,7 @@ import { voucherRouter } from "./routers/voucherRouter";
  * Root API router. Business module routers are mounted here as they are built.
  */
 export const appRouter = router({
-  system: router({
-    health: publicProcedure.query(() => ({
-      ok: true,
-      time: new Date().toISOString(),
-    })),
-  }),
+  system: systemRouter,
   auth: authRouter,
   users: userRouter,
   sales: saleRouter,
