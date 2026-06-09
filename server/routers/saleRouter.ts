@@ -18,13 +18,68 @@ import { createSale, processPayment } from "../services/saleService";
 import { branchScopedProcedure, canSeeCost, cashierProcedure, router } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 
-/** يتحقّق من هوية مدير (بريد + كلمة مرور) لاعتماد تجاوز حدّ الائتمان. يعيد معرّف المدير. */
-async function verifyManagerApproval(approval: { email: string; password: string }): Promise<number> {
+// تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
+// (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
+// (٢) توقيت ثابت: نُجبر الاستجابة على ≥٣٠٠ms (ولو فشلت سريعاً) لتفادي timing attacks
+//     التي تكشف هل البريد موجود (verifyPassword لا يُستدعى لو غاب الحساب).
+// (٣) كل محاولة فاشلة تُسجَّل في auditLogs (auth.creditOverride.fail).
+// (٤) الـlogger يَلتقطها لاحقاً للتنبيه.
+const MGR_APPROVAL_MAX = 5;
+const MGR_APPROVAL_WINDOW_MS = 60_000;
+const MGR_APPROVAL_MIN_RESPONSE_MS = 300;
+const mgrApprovalAttempts = new Map<string, number[]>();
+
+function _trackMgrAttempt(email: string): boolean {
+  const now = Date.now();
+  const key = email.trim().toLowerCase();
+  const arr = (mgrApprovalAttempts.get(key) ?? []).filter((t) => now - t < MGR_APPROVAL_WINDOW_MS);
+  arr.push(now);
+  mgrApprovalAttempts.set(key, arr);
+  return arr.length <= MGR_APPROVAL_MAX;
+}
+
+/** يتحقّق من هوية مدير (بريد + كلمة مرور) لاعتماد تجاوز حدّ الائتمان. يعيد معرّف المدير.
+ *  مُحصَّن: rate limit بالبريد، توقيت ثابت ≥٣٠٠ms، وكل فشل يُسجَّل في auditLogs. */
+async function verifyManagerApproval(
+  approval: { email: string; password: string },
+  ctx: { user: { id: number; branchId?: number | null } },
+): Promise<number> {
+  const start = Date.now();
+  const email = approval.email.trim().toLowerCase();
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
-  const u = (await db.select().from(users).where(eq(users.email, approval.email.trim().toLowerCase())).limit(1))[0];
+
+  // rate limit (لا يُلَتقَط في الـcatch — يُرمى مباشرة لإفهام المستخدم بحدّ المعدّل).
+  if (!_trackMgrAttempt(email)) {
+    await logAudit(ctx as any, {
+      action: "sale.creditOverride.rateLimited",
+      entityType: "user",
+      newValue: { email, attempts: mgrApprovalAttempts.get(email)?.length ?? 0 },
+    });
+    throw new TRPCError({
+      code: "TOO_MANY_REQUESTS",
+      message: "محاولات كثيرة جداً لاعتماد المدير — جرّب بعد دقيقة.",
+    });
+  }
+
+  const u = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
   const ok = u && u.isActive !== false && verifyPassword(approval.password, u.passwordHash) && (u.role === "manager" || u.role === "admin");
-  if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير)." });
+
+  // ثبّت الحدّ الأدنى للوقت قبل الإرجاع (يَمنع timing attack).
+  const elapsed = Date.now() - start;
+  if (elapsed < MGR_APPROVAL_MIN_RESPONSE_MS) {
+    await new Promise((r) => setTimeout(r, MGR_APPROVAL_MIN_RESPONSE_MS - elapsed));
+  }
+
+  if (!ok) {
+    await logAudit(ctx as any, {
+      action: "sale.creditOverride.fail",
+      entityType: "user",
+      entityId: u?.id ?? null,
+      newValue: { email, reason: !u ? "no_user" : (u.isActive === false ? "inactive" : "wrong_password_or_role") },
+    });
+    throw new TRPCError({ code: "FORBIDDEN", message: "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير)." });
+  }
   return Number(u.id);
 }
 
@@ -56,6 +111,9 @@ export const saleRouter = router({
         invoiceDiscount: z.string().optional(),
         taxRatePercent: z.string().optional(),
         payment: z.object({ amount: z.string(), method }).optional(),
+        // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
+        // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
+        dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
         clientRequestId: z.string().optional(),
         notes: z.string().optional(),
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
@@ -69,7 +127,7 @@ export const saleRouter = router({
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
-      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval);
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx);
       const effectiveInput = { ...saleInput, branchId: effectiveBranchId, creditApproved: approvedBy != null };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {

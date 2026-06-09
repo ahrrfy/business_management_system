@@ -41,6 +41,8 @@ export interface CreateSaleInput {
   notes?: string | null;
   /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق من هوية المدير). */
   creditApproved?: boolean;
+  /** تاريخ استحقاق الفاتورة (YYYY-MM-DD) — للبيع الآجل. يظهر في AR aging والتنبيهات. */
+  dueDate?: string | null;
 }
 
 export interface CreateSaleResult {
@@ -180,6 +182,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       shiftId: input.shiftId ?? null,
       customerId: input.customerId ?? null,
       priceTier: tier,
+      // dueDate يُحفظ كـDate إن وُرد، وإلا null. يستعمله AR aging والتنبيهات.
+      dueDate: input.dueDate ? new Date(input.dueDate) : null,
       subtotal: totals.subtotal,
       taxAmount: totals.taxAmount,
       discountAmount: totals.discountAmount,
