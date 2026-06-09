@@ -27,7 +27,8 @@ const variantSchema = z.object({
 
 // v3-add-screens: صور المنتج.
 const imageSchema = z.object({
-  url: z.string().min(1).max(500),
+  // v3-add-screens(100%): TEXT في DB ⇒ نسمح بـdata URLs الكبيرة (5MB كحد عملي).
+  url: z.string().min(1).max(5_000_000),
   isPrimary: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
 });
