@@ -166,6 +166,12 @@ export default function SalesInvoiceNew() {
       // العراق VAT=0% افتراضياً — لا ضريبة على مستوى الفاتورة (وعمود ضريبة السطر مخفيّ في شاشة البيع).
       taxRatePercent: "0",
       payment: hasPayment ? { amount: paidStr, method: state.paymentMethod } : undefined,
+      // تاريخ الاستحقاق للبيع الآجل/الأقساط فقط (يُحفظ على invoices.dueDate ⇒ أعمار الذمم
+      // تُعمِّر من موعد الاستحقاق لا تاريخ الفاتورة). الحقل يظهر في الترويسة لهذين النوعين فقط.
+      dueDate:
+        (state.paymentTerms === "CREDIT" || state.paymentTerms === "INSTALLMENT") && state.dueDate
+          ? state.dueDate
+          : undefined,
       clientRequestId,
       notes: state.notes.trim() || undefined,
       ...(approval ? { managerApproval: approval } : {}),

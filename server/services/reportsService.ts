@@ -36,7 +36,10 @@ export interface ARAgingRow {
   oldestInvoiceDate: string | null;
 }
 
-/** AR aging — buckets per customer. Filters: optional branchId. */
+/** AR aging — buckets per customer. Filters: optional branchId.
+ *  تُعمَّر الدلاء من **تاريخ الاستحقاق إن وُجد** (`COALESCE(dueDate, invoiceDate)`): فالبيع الآجل
+ *  للشركات/الدوائر يُعمَّر من موعد استحقاقه الحقيقي، والفواتير بلا استحقاق تبقى على تاريخ الفاتورة
+ *  (متوافق رجعياً). */
 export async function getARAging(opts: { branchId?: number } = {}): Promise<ARAgingRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -48,10 +51,10 @@ export async function getARAging(opts: { branchId?: number } = {}): Promise<ARAg
       c.phone,
       c.customerType,
       CAST(c.currentBalance AS CHAR) AS currentBalance,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) <= 30 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(i.invoiceDate)) > 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) <= 30 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) > 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
       CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaidTotal,
       DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN i.invoiceDate END), '%Y-%m-%d') AS oldestInvoiceDate
     FROM customers c

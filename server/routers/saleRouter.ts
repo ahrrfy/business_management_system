@@ -40,7 +40,7 @@ function _trackMgrAttempt(email: string): boolean {
 
 /** يتحقّق من هوية مدير (بريد + كلمة مرور) لاعتماد تجاوز حدّ الائتمان. يعيد معرّف المدير.
  *  مُحصَّن: rate limit بالبريد، توقيت ثابت ≥٣٠٠ms، وكل فشل يُسجَّل في auditLogs. */
-async function verifyManagerApproval(
+export async function verifyManagerApproval(
   approval: { email: string; password: string },
   ctx: { user: { id: number; branchId?: number | null } },
 ): Promise<number> {
