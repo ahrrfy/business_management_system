@@ -20,6 +20,7 @@ import InvoiceDetail from "@/pages/InvoiceDetail";
 import Invoices from "@/pages/Invoices";
 import Login from "@/pages/Login";
 import POS from "@/pages/POS";
+import SalesInvoiceNew from "@/pages/SalesInvoiceNew";
 import ProductEdit from "@/pages/ProductEdit";
 import ProductNew from "@/pages/ProductNew";
 import Products from "@/pages/Products";
@@ -87,6 +88,7 @@ export default function App() {
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
       <Route path="/barcode-labels"><Shell><BarcodeLabels /></Shell></Route>
       <Route path="/invoices"><Shell><Invoices /></Shell></Route>
+      <Route path="/sales/new"><Shell><SalesInvoiceNew /></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
       <Route path="/quotations"><Shell><Quotations /></Shell></Route>
       <Route path="/quotations/new"><Shell><QuotationNew /></Shell></Route>

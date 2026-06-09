@@ -21,8 +21,10 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "🛒",
     items: [
       { href: "/pos", label: "نقطة البيع" },
+      { href: "/sales/new", label: "فاتورة بيع متقدّمة" },
       { href: "/invoices", label: "الفواتير" },
       { href: "/quotations", label: "عروض الأسعار" },
+      { href: "/quotations/new", label: "عرض سعر جديد" },
       { href: "/returns", label: "المرتجعات" },
       { href: "/sales-returns/new", label: "مرتجع بيع جديد" },
     ],
@@ -33,6 +35,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "📦",
     items: [
       { href: "/purchases", label: "أوامر الشراء" },
+      { href: "/purchases/new", label: "فاتورة شراء جديدة" },
       { href: "/purchase-returns/new", label: "مرتجع شراء جديد" },
       { href: "/suppliers", label: "الموردون" },
     ],
