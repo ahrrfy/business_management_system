@@ -125,7 +125,8 @@ export const workOrderRouter = router({
       z.object({
         branchId: z.number().int().positive(),
         customerId: z.number().int().positive().nullish(),
-        baseVariantId: z.number().int().positive(),
+        // v3-add-screens(100%): اختياري لخدمة تخصيص خالصة بلا منتج خام.
+        baseVariantId: z.number().int().positive().nullish(),
         title: z.string().min(1),
         customizationText: z.string().nullish(),
         quantity: z.number().int().positive().default(1),
@@ -136,11 +137,52 @@ export const workOrderRouter = router({
         salePrice: z.string(),
         dueDate: z.string().nullish(), // YYYY-MM-DD
         notes: z.string().nullish(),
+        // v3-add-screens(100%): قنوات استلام.
+        receptionChannel: z.enum(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE", "OTHER"]).nullish(),
+        channelHandle: z.string().max(120).nullish(),
+        // v3-add-screens(100%): أولوية + دفع + توصيل.
+        priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
+        deposit: z.string().nullish(),
+        paymentMethod: z.enum(["CASH", "CARD"]).nullish(),
+        paymentReference: z.string().max(100).nullish(),
+        paymentReceiptUrl: z.string().nullish(),
+        hasDelivery: z.boolean().nullish(),
+        deliveryAddress: z.string().nullish(),
+        deliveryCost: z.string().nullish(),
+        // v3-add-screens(100%): أصناف نقطة البيع المصغّرة.
+        items: z.array(z.object({
+          variantId: z.number().int().positive(),
+          productUnitId: z.number().int().positive().nullish(),
+          quantity: z.string(),
+          baseQuantity: z.number().int().positive(),
+          unitPrice: z.string(),
+          discountAmount: z.string().nullish(),
+          total: z.string(),
+        })).default([]),
+        // v3-add-screens(100%): صور نموذج العمل.
+        designImages: z.array(z.object({
+          url: z.string().min(1),
+          caption: z.string().max(255).nullish(),
+          sortOrder: z.number().int().min(0).nullish(),
+        })).max(10).default([]),
       })
     )
     .mutation(async ({ input, ctx }) => {
       const res = await createWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
-      await logAudit(ctx, { action: "workOrder.create", entityType: "workOrder", entityId: (res as { workOrderId?: number })?.workOrderId, newValue: { title: input.title, qty: input.quantity } });
+      await logAudit(ctx, {
+        action: "workOrder.create",
+        entityType: "workOrder",
+        entityId: (res as { workOrderId?: number })?.workOrderId,
+        newValue: {
+          title: input.title, qty: input.quantity,
+          channel: input.receptionChannel ?? null,
+          priority: input.priority ?? null,
+          paymentMethod: input.paymentMethod ?? null,
+          hasDelivery: !!input.hasDelivery,
+          itemsCount: input.items?.length ?? 0,
+          imagesCount: input.designImages?.length ?? 0,
+        },
+      });
       return res;
     }),
 
