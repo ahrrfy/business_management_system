@@ -100,6 +100,7 @@ const MODULES: ModuleDef[] = [
   { id: "suppliers",     href: "/suppliers",           name: "الموردون",          desc: "إدارة الموردين",    sec: 2, color: "oklch(0.62 0.18 46)" },
   { id: "purchaseReturns", href: "/purchase-returns",  name: "مرتجعات الشراء",    desc: "سجلّ الإرجاعات",    sec: 2, color: "oklch(0.55 0.20 14)" },
   { id: "expenses",      href: "/expenses",            name: "المصروفات",         desc: "مصروفات يومية",     sec: 3, color: "oklch(0.65 0.18 72)" },
+  { id: "vouchers",      href: "/vouchers",            name: "السندات",           desc: "قبض وصرف",          sec: 3, color: "oklch(0.62 0.18 160)" },
   { id: "arAging",       href: "/ar-aging",            name: "الذمم المدينة",     desc: "أعمار ومتابعة",     sec: 3, color: "oklch(0.58 0.20 178)" },
   { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "oklch(0.58 0.22 148)" },
   { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "oklch(0.60 0.18 322)" },
@@ -135,6 +136,7 @@ const ACTIONS: Record<string, Action[]> = {
   suppliers:     [{ ic: "plus",    label: "مورد",   href: "/suppliers/new" },        { ic: "doc",     label: "كشف",     href: "/suppliers-statement" },  { ic: "coin", label: "ذمم",   href: "/ap-aging" }],
   purchaseReturns: [{ ic: "return", label: "إرجاع",  href: "/purchase-returns/new" }, { ic: "rows",    label: "موردون",  href: "/suppliers" }],
   expenses:      [{ ic: "plus",    label: "مصروف",  href: "/expenses/new" },         { ic: "coin",    label: "ذمم",     href: "/ap-aging" }],
+  vouchers:      [{ ic: "coin",    label: "قبض",    href: "/vouchers/receipt/new" }, { ic: "export",  label: "صرف",     href: "/vouchers/payment/new" }],
   arAging:       [{ ic: "doc",     label: "كشف",    href: "/customers-statement" },  { ic: "rows",    label: "عملاء",   href: "/customers" },            { ic: "doc",  label: "تقرير", href: "/sales-report" }],
   apAging:       [{ ic: "doc",     label: "كشف",    href: "/suppliers-statement" },  { ic: "rows",    label: "موردون",  href: "/suppliers" },            { ic: "plus", label: "مصروف", href: "/expenses/new" }],
   custStatement: [{ ic: "coin",    label: "ذمم",    href: "/ar-aging" },             { ic: "rows",    label: "عملاء",   href: "/customers" }],
@@ -274,6 +276,14 @@ function Shape({ id, color: c, size = 106 }: { id: string; color: string; size?:
         <rect x="2" y="7" width="20" height="13" rx="2" stroke={w} strokeWidth={sw} />
         <path d="M7,7 L9,4 H15 L17,7" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
         <circle cx="16.5" cy="13.5" r="2.2" stroke={w} strokeWidth={sw} fill={w} fillOpacity="0.22" />
+      </>
+    ),
+    vouchers: (
+      <>
+        <rect x="5" y="3" width="14" height="18" rx="2" stroke={w} strokeWidth={sw} />
+        <line x1="8.5" y1="7" x2="15.5" y2="7" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+        <path d="M9,17 V11 M6.8,14.2 L9,17 L11.2,14.2" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M15,11 V17 M12.8,13.8 L15,11 L17.2,13.8" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
       </>
     ),
     arAging: (
