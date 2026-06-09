@@ -15,7 +15,7 @@ import { nanoid } from "nanoid";
 import { createServer } from "http";
 import net from "net";
 import { createContext } from "./context";
-import { getDb } from "./db";
+import { getDb, closeDb } from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
@@ -83,7 +83,7 @@ async function startServer() {
           connectSrc: isDev
             ? ["'self'", "ws://localhost:*", "wss://localhost:*"]
             : ["'self'"],
-          fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
+          fontSrc: ["'self'", "data:"], // خط Cairo مستضاف محلياً (@fontsource) ⇒ لا حاجة لـgstatic.
           objectSrc: ["'none'"],
           frameAncestors: ["'none'"],
         },
@@ -160,6 +160,31 @@ async function startServer() {
   // startup never blocks the server from accepting requests.
   await new Promise<void>((resolve) => server.listen(port, () => resolve()));
   logger.info(`Server running on http://localhost:${port}/ ${sentryEnabled ? "(Sentry on)" : ""}`);
+
+  // إيقاف رشيق: SIGTERM (من PM2/خدمة Windows عند إعادة التشغيل) وSIGINT (Ctrl+C) ⇒ أغلق
+  // الخادم والقاعدة برفق فلا تُبتر طلبات ولا تبقى اتصالات معلّقة عند انقطاع الكهرباء/الإقلاع.
+  let shuttingDown = false;
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    logger.info(`received ${signal} — بدء الإغلاق الرشيق…`);
+    const force = setTimeout(() => {
+      logger.warn("تجاوز مهلة الإغلاق (10ث) — خروج قسري.");
+      process.exit(1);
+    }, 10_000);
+    try {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeDb();
+      clearTimeout(force);
+      logger.info("أُغلق الخادم والقاعدة بسلام.");
+      process.exit(0);
+    } catch (e) {
+      logger.error({ err: e }, "خطأ أثناء الإغلاق الرشيق");
+      process.exit(1);
+    }
+  };
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
 
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);

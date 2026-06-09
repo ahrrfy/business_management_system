@@ -1,5 +1,6 @@
 // فاتورة A4 رسمية (للحكومة/الشركات) — تُطبع عبر المتصفّح (تشكيل عربي مثالي + «حفظ كـPDF»).
 // نُفضّلها على @react-pdf/renderer لأنّ الأخير لا يصل/يشكّل الحروف العربية صحيحاً.
+import { CAIRO_FONT } from "./brand";
 
 export type A4InvoiceItem = {
   productName: string;
@@ -41,8 +42,7 @@ function buildHtml(inv: A4Invoice): string {
     .join("");
   return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8">
 <title>فاتورة ${esc(inv.invoiceNumber)}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&display=swap" rel="stylesheet">
+${CAIRO_FONT}
 <style>
   *{box-sizing:border-box}
   body{font-family:'Cairo',system-ui,sans-serif;color:#111;margin:0;padding:0}

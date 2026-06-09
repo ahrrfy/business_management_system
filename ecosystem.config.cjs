@@ -28,6 +28,8 @@ module.exports = {
       restart_delay: 3000,
       max_restarts: 10,
       min_uptime: "10s",
+      // إيقاف رشيق: امنح الخادم 10ث لإغلاق الاتصالات بعد SIGINT قبل القتل القسري (SIGKILL).
+      kill_timeout: 11000,
       env: {
         NODE_ENV: "production",
         PORT: process.env.PORT || 3000,

@@ -62,7 +62,18 @@ export function openPrintWindow(html: string, opts = 'width=900,height=1100'): v
   if (w) { w.document.write(html); w.document.close(); }
 }
 
-/** Google Fonts link tag for Cairo */
-export const CAIRO_FONT = `<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">`;
+/**
+ * خط Cairo مستضاف محلياً لقوالب الطباعة (بلا Google Fonts CDN) ⇒ تطبع المستندات بالخط الصحيح **بلا إنترنت**.
+ * الملفات في client/public/fonts/ تُخدَم من خادم التطبيق؛ نستعمل أصلاً مطلقاً (origin) لأن نافذة الطباعة
+ * تُفتح كـabout:blank فلا تُحلّ المسارات النسبية. لكل وزن: وجهٌ لاتيني (افتراضي) + وجهٌ عربي (بنطاق يونيكود).
+ */
+const FONT_ORIGIN = typeof window !== "undefined" ? window.location.origin : "";
+const CAIRO_ARABIC_RANGE =
+  "U+0600-06FF,U+0750-077F,U+0870-088E,U+0890-0891,U+0898-08E1,U+08E3-08FF,U+200C-200E,U+2010-2011,U+204F,U+2E41,U+FB50-FDFF,U+FE70-FE74,U+FE76-FEFC";
+export const CAIRO_FONT = `<style>${[400, 500, 600, 700, 800, 900]
+  .map(
+    (w) =>
+      `@font-face{font-family:'Cairo';font-style:normal;font-weight:${w};font-display:swap;src:url('${FONT_ORIGIN}/fonts/cairo-latin-${w}-normal.woff2') format('woff2')}` +
+      `@font-face{font-family:'Cairo';font-style:normal;font-weight:${w};font-display:swap;src:url('${FONT_ORIGIN}/fonts/cairo-arabic-${w}-normal.woff2') format('woff2');unicode-range:${CAIRO_ARABIC_RANGE}}`,
+  )
+  .join("")}</style>`;

@@ -9,6 +9,11 @@ import { ThemeProvider } from "next-themes";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import App from "./App";
+// خط Cairo مستضاف محلياً (بلا اعتماد على Google Fonts CDN) ⇒ يعمل النظام كاملاً بلا إنترنت.
+import "@fontsource/cairo/400.css";
+import "@fontsource/cairo/500.css";
+import "@fontsource/cairo/600.css";
+import "@fontsource/cairo/700.css";
 import "./index.css";
 import "./lib/theme/tokens.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)

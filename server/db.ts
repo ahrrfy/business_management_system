@@ -11,6 +11,8 @@ import * as schema from "../drizzle/schema";
  * - connectTimeout: يفشل بسرعة بدل التعليق عند تعذّر الوصول للقاعدة.
  * - queueLimit/connectionLimit: يحدّان الضغط على القاعدة في الذروة.
  */
+let _pool: mysql.Pool | null = null;
+
 function createDb(url: string) {
   const pool = mysql.createPool({
     uri: url,
@@ -21,10 +23,20 @@ function createDb(url: string) {
     waitForConnections: true,
     queueLimit: 50,
   });
+  _pool = pool;
   return drizzle(pool, { schema, mode: "default" });
 }
 
 let _db: ReturnType<typeof createDb> | null = null;
+
+/** إغلاق رشيق لتجمّع الاتصالات (يُستدعى عند SIGTERM/SIGINT) ⇒ لا اتصالات معلّقة عند الإطفاء. */
+export async function closeDb(): Promise<void> {
+  if (_pool) {
+    await _pool.end();
+    _pool = null;
+    _db = null;
+  }
+}
 
 /** Lazily create the DB. Returns null when DATABASE_URL is unset. */
 export function getDb() {
