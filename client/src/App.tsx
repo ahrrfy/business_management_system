@@ -16,6 +16,9 @@ import Dashboard from "@/pages/Dashboard";
 import ExpenseNew from "@/pages/ExpenseNew";
 import Expenses from "@/pages/Expenses";
 import Inventory from "@/pages/Inventory";
+import VoucherPaymentNew from "@/pages/VoucherPaymentNew";
+import VoucherReceiptNew from "@/pages/VoucherReceiptNew";
+import Vouchers from "@/pages/Vouchers";
 import InvoiceDetail from "@/pages/InvoiceDetail";
 import Invoices from "@/pages/Invoices";
 import Login from "@/pages/Login";
@@ -111,6 +114,9 @@ export default function App() {
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
       <Route path="/expenses"><Shell><Expenses /></Shell></Route>
       <Route path="/expenses/new"><Shell><ExpenseNew /></Shell></Route>
+      <Route path="/vouchers"><Shell><Vouchers /></Shell></Route>
+      <Route path="/vouchers/receipt/new"><Shell><VoucherReceiptNew /></Shell></Route>
+      <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
       <Route path="/sales-report"><Shell><SalesReport /></Shell></Route>
       <Route path="/ar-aging"><Shell><ARAging /></Shell></Route>
       <Route path="/customers-statement"><Shell><CustomerStatement /></Shell></Route>
