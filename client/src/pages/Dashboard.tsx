@@ -98,6 +98,7 @@ const MODULES: ModuleDef[] = [
   { id: "transfers",     href: "/transfers",           name: "التحويلات",         desc: "نقل بين الفروع",    sec: 2, color: "oklch(0.60 0.18 218)" },
   { id: "barcode",       href: "/barcode-labels",      name: "الباركود",          desc: "طباعة الملصقات",    sec: 2, color: "oklch(0.55 0.14 278)" },
   { id: "suppliers",     href: "/suppliers",           name: "الموردون",          desc: "إدارة الموردين",    sec: 2, color: "oklch(0.62 0.18 46)" },
+  { id: "purchaseReturns", href: "/purchase-returns",  name: "مرتجعات الشراء",    desc: "سجلّ الإرجاعات",    sec: 2, color: "oklch(0.55 0.20 14)" },
   { id: "expenses",      href: "/expenses",            name: "المصروفات",         desc: "مصروفات يومية",     sec: 3, color: "oklch(0.65 0.18 72)" },
   { id: "arAging",       href: "/ar-aging",            name: "الذمم المدينة",     desc: "أعمار ومتابعة",     sec: 3, color: "oklch(0.58 0.20 178)" },
   { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "oklch(0.58 0.22 148)" },
@@ -132,6 +133,7 @@ const ACTIONS: Record<string, Action[]> = {
   transfers:     [{ ic: "rows",    label: "أرصدة",  href: "/inventory" },            { ic: "rows",    label: "حركة",    href: "/inventory-movements" }],
   barcode:       [{ ic: "plus",    label: "صنف",    href: "/products/new" },         { ic: "rows",    label: "أصناف",   href: "/products" }],
   suppliers:     [{ ic: "plus",    label: "مورد",   href: "/suppliers/new" },        { ic: "doc",     label: "كشف",     href: "/suppliers-statement" },  { ic: "coin", label: "ذمم",   href: "/ap-aging" }],
+  purchaseReturns: [{ ic: "return", label: "إرجاع",  href: "/purchase-returns/new" }, { ic: "rows",    label: "موردون",  href: "/suppliers" }],
   expenses:      [{ ic: "plus",    label: "مصروف",  href: "/expenses/new" },         { ic: "coin",    label: "ذمم",     href: "/ap-aging" }],
   arAging:       [{ ic: "doc",     label: "كشف",    href: "/customers-statement" },  { ic: "rows",    label: "عملاء",   href: "/customers" },            { ic: "doc",  label: "تقرير", href: "/sales-report" }],
   apAging:       [{ ic: "doc",     label: "كشف",    href: "/suppliers-statement" },  { ic: "rows",    label: "موردون",  href: "/suppliers" },            { ic: "plus", label: "مصروف", href: "/expenses/new" }],
@@ -258,6 +260,13 @@ function Shape({ id, color: c, size = 106 }: { id: string; color: string; size?:
         <circle cx="5" cy="20" r="1.8" stroke={w} strokeWidth={sw} />
         <circle cx="17" cy="20" r="1.8" stroke={w} strokeWidth={sw} />
         <path d="M5,9 V5 H11 V9" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    purchaseReturns: (
+      <>
+        <path d="M3,9 H21 L19,20 H5 Z" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M3,9 L5,5 H19 L21,9" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M14,14 H9 M11,12 L9,14 L11,16" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
       </>
     ),
     expenses: (
