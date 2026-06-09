@@ -42,13 +42,36 @@ async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: stri
   return money(openingBalance).plus(cashIn).minus(cashOut);
 }
 
-/** Close a shift: compute expected cash, record counted cash + variance. */
-export async function closeShift(input: { shiftId: number; countedCash: string }, _actor: Actor) {
+/**
+ * Close a shift: compute expected cash, record counted cash + variance.
+ * سياسة #14 — ملكية/فرع: الكاشير يُغلق ورديته نفسها فقط؛ المدير يُغلق أي وردية في فرعه
+ * (لمعالجة الوردية المنسيّة)؛ admin مرور حر.
+ */
+export async function closeShift(
+  input: { shiftId: number; countedCash: string },
+  actor: Actor & { role?: string },
+) {
   return withTx(async (tx) => {
     const rows = await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1);
     const sh = rows[0];
     if (!sh) throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
     if (sh.status !== "OPEN") throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية مغلقة بالفعل" });
+
+    const role = actor.role ?? "cashier";
+    if (role === "admin") {
+      // مرور حر — للمعالجة العابرة للفروع.
+    } else if (role === "manager") {
+      if (Number(sh.branchId) !== actor.branchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إغلاق وردية فرع آخر" });
+      }
+    } else {
+      if (Number(sh.userId) !== actor.userId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إغلاق وردية موظّف آخر" });
+      }
+      if (Number(sh.branchId) !== actor.branchId) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إغلاق وردية فرع آخر" });
+      }
+    }
 
     const expected = await computeExpectedCash(tx, input.shiftId, sh.openingBalance);
     const counted = money(input.countedCash);

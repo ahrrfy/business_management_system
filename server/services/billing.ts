@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { clampMoney, money, round2, sumMoney } from "./money";
 
@@ -16,12 +17,18 @@ export interface LineResult {
 
 /** Line total = unitPrice × quantity − discount (amount overrides percent), clamped to gross. */
 export function computeLineTotal(l: LineInput): LineResult {
+  // سياسة #14: لا أسعار/كميات/خصومات سالبة. السعر/الكمية صفر مسموح للهدايا الترويجية (total=0).
+  if (l.unitPrice.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "السعر لا يصحّ أن يكون سالباً" });
+  if (l.quantity.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية يجب أن تكون موجبة" });
   const gross = l.unitPrice.times(l.quantity);
   let disc: Decimal;
   if (l.discountAmount != null && l.discountAmount !== "") disc = money(l.discountAmount);
-  else if (l.discountPercent != null && l.discountPercent !== "")
-    disc = gross.times(money(l.discountPercent)).dividedBy(100);
-  else disc = new Decimal(0);
+  else if (l.discountPercent != null && l.discountPercent !== "") {
+    const pct = money(l.discountPercent);
+    if (pct.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الخصم لا يصحّ أن تكون سالبة" });
+    disc = gross.times(pct).dividedBy(100);
+  } else disc = new Decimal(0);
+  if (disc.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الخصم لا يصحّ أن يكون سالباً" });
   disc = clampMoney(round2(disc), round2(gross));
   return {
     unitPrice: l.unitPrice.toDecimalPlaces(2).toFixed(2),
@@ -45,10 +52,19 @@ export interface InvoiceTotals {
 
 /** subtotal = Σ line totals; tax on (subtotal − invoiceDiscount), rounded once; total = taxable + tax. */
 export function computeInvoiceTotals(i: InvoiceTotalsInput): InvoiceTotals {
+  // سياسة #14: لا خصم/ضريبة سالبة على رأس الفاتورة (تُنشئ خصماً خفياً أو ضريبةً عكسية).
   const subtotal = round2(sumMoney(i.lineTotals));
-  const discount = clampMoney(money(i.invoiceDiscount ?? "0"), subtotal);
+  const rawDiscount = round2(money(i.invoiceDiscount ?? "0"));
+  if (rawDiscount.lt(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "خصم الفاتورة لا يصحّ أن يكون سالباً" });
+  }
+  const rawTax = money(i.taxRatePercent ?? "0");
+  if (rawTax.lt(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة لا يصحّ أن تكون سالبة" });
+  }
+  const discount = clampMoney(rawDiscount, subtotal);
   const taxable = subtotal.minus(discount);
-  const tax = round2(taxable.times(money(i.taxRatePercent ?? "0")).dividedBy(100));
+  const tax = round2(taxable.times(rawTax).dividedBy(100));
   return {
     subtotal: subtotal.toFixed(2),
     discountAmount: discount.toFixed(2),
