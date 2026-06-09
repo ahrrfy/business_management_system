@@ -42,6 +42,8 @@ export interface CreateWorkOrderInput {
   salePrice: string;
   dueDate?: string | null; // YYYY-MM-DD
   notes?: string | null;
+  // المنفّذ المسؤول عند الإنشاء (يذهب لعمود workOrders.assignedTo؛ null = غير مُسنَد).
+  assignedTo?: number | null;
   // v3-add-screens(100%): الحقول الجديدة التي تذهب لأعمدة workOrders الحقيقية.
   receptionChannel?: "WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE" | "OTHER" | null;
   channelHandle?: string | null;
@@ -136,6 +138,7 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
       status: "RECEIVED",
       dueDate: input.dueDate ? new Date(input.dueDate) : null,
       createdBy: actor.userId,
+      assignedTo: input.assignedTo ?? null,
       // v3-add-screens(100%): الأعمدة الجديدة تذهب مباشرة لجدول workOrders.
       receptionChannel: input.receptionChannel ?? "WALK_IN",
       channelHandle: input.channelHandle?.trim() || null,

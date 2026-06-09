@@ -79,6 +79,7 @@ export default function WorkOrderNew() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
+  const staff = trpc.workOrders.assignableStaff.useQuery();
   const utils = trpc.useUtils();
 
   const [branchId, setBranchId] = useState<number | "">("");
@@ -171,6 +172,7 @@ export default function WorkOrderNew() {
   const [salePrice, setSalePrice] = useState("");
   const [laborCost, setLaborCost] = useState("0");
   const [priority, setPriority] = useState<"LOW" | "NORMAL" | "URGENT">("NORMAL");
+  const [assignedTo, setAssignedTo] = useState<number | "">("");
   const [deliveryMethod, setDeliveryMethod] = useState(DELIVERY_METHODS[0]);
   const [dueDate, setDueDate] = useState("");
 
@@ -271,6 +273,7 @@ export default function WorkOrderNew() {
       receptionChannel: channel as any,
       channelHandle: channelHandle.trim() || null,
       priority,
+      assignedTo: assignedTo ? Number(assignedTo) : undefined,
       deposit: depositD.toFixed(2),
       paymentMethod,
       paymentReference: paymentReference.trim() || null,
@@ -556,6 +559,20 @@ export default function WorkOrderNew() {
                 </button>
               ))}
             </div>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="assignee">المنفّذ المسؤول</Label>
+            <select
+              id="assignee"
+              className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:ring-1 focus-visible:ring-ring"
+              value={assignedTo}
+              onChange={(e) => setAssignedTo(e.target.value ? Number(e.target.value) : "")}
+            >
+              <option value="">— غير مُسنَد —</option>
+              {(staff.data ?? []).map((s) => (
+                <option key={s.id} value={s.id}>{s.name ?? `#${s.id}`}{s.role ? ` — ${s.role}` : ""}</option>
+              ))}
+            </select>
           </div>
           <div className="space-y-1">
             <Label htmlFor="dm">طريقة التسليم</Label>
