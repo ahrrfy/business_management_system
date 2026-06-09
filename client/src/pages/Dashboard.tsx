@@ -97,6 +97,46 @@ const MODULES = [
   { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "oklch(0.56 0.16 300)" },
 ];
 
+/* ═══════════ QUICK ACTIONS ═══════════
+   شريط الإجراءات السريعة أسفل كل بطاقة — اختصار النقرات.
+   كل إجراء يشير إلى مسار حقيقي موجود في App.tsx فقط.
+   adminOnly: يظهر للمدير/الأدمن فقط.
+   لإضافة/تعديل إجراء: أضف سطراً هنا بمعرّف الوحدة (id) ومسار صحيح.
+═══════════════════════════════════════ */
+
+type Action = { ic: string; label: string; href: string; adminOnly?: boolean };
+
+const ACTIONS: Record<string, Action[]> = {
+  sales:      [{ ic: "plus", label: "بيع",   href: "/pos" },                { ic: "return", label: "مرتجع", href: "/sales-returns/new" }],
+  quotations: [{ ic: "plus", label: "عرض",   href: "/quotations/new" }],
+  customers:  [{ ic: "plus", label: "عميل",  href: "/customers/new" },      { ic: "doc",    label: "كشف",   href: "/customers-statement" }],
+  returns:    [{ ic: "plus", label: "بيع",   href: "/sales-returns/new" },  { ic: "return", label: "شراء",  href: "/purchase-returns/new" }],
+  products:   [{ ic: "plus", label: "صنف",   href: "/products/new" },       { ic: "barcode", label: "باركود", href: "/barcode-labels" }],
+  purchases:  [{ ic: "plus", label: "أمر",   href: "/purchases/new" },      { ic: "return", label: "إرجاع", href: "/purchase-returns/new" }],
+  inventory:  [{ ic: "rows", label: "حركة",  href: "/inventory-movements" }],
+  suppliers:  [{ ic: "plus", label: "مورد",  href: "/suppliers/new" },      { ic: "doc",    label: "كشف",   href: "/suppliers-statement" }],
+  expenses:   [{ ic: "plus", label: "مصروف", href: "/expenses/new" }],
+  arAging:    [{ ic: "doc",  label: "كشف",   href: "/customers-statement" }],
+  apAging:    [{ ic: "doc",  label: "كشف",   href: "/suppliers-statement" }],
+  workOrders: [{ ic: "plus", label: "أمر",   href: "/work-orders/new" }],
+  users:      [{ ic: "plus", label: "مستخدم", href: "/users/new", adminOnly: true }],
+};
+
+/* أيقونات الإجراءات — تستخدم currentColor لتتبع لون الزر (16×16). */
+const ActIco: Record<string, (sz?: number) => React.JSX.Element> = {
+  plus:   (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><line x1="8" y1="3" x2="8" y2="13" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /><line x1="3" y1="8" x2="13" y2="8" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" /></svg>),
+  search: (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="4.3" stroke="currentColor" strokeWidth="1.7" /><line x1="10.4" y1="10.4" x2="14" y2="14" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>),
+  doc:    (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M3.5,2 H9 L12.5,5.5 V14 H3.5 Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M9,2 V5.5 H12.5" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><line x1="5.5" y1="8.5" x2="10.5" y2="8.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /><line x1="5.5" y1="11" x2="10.5" y2="11" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" /></svg>),
+  print:  (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M5,6 V2.5 H11 V6" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><rect x="2.5" y="6" width="11" height="5.5" rx="1.2" stroke="currentColor" strokeWidth="1.5" /><rect x="5" y="10" width="6" height="3.5" rx="0.6" stroke="currentColor" strokeWidth="1.5" fill="none" /></svg>),
+  return: (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M6.5,4 L3,7.5 L6.5,11" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" /><path d="M3,7.5 H10 C12.2,7.5 13.2,8.8 13.2,10.6 V12.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>),
+  barcode:(sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><line x1="4" y1="3.5" x2="4" y2="12.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><line x1="6.5" y1="3.5" x2="6.5" y2="12.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" /><line x1="8.5" y1="3.5" x2="8.5" y2="12.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /><line x1="11" y1="3.5" x2="11" y2="12.5" stroke="currentColor" strokeWidth="1" strokeLinecap="round" /><line x1="12.8" y1="3.5" x2="12.8" y2="12.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>),
+  rows:   (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><line x1="3.5" y1="4.5" x2="12.5" y2="4.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><line x1="3.5" y1="8" x2="12.5" y2="8" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /><line x1="3.5" y1="11.5" x2="12.5" y2="11.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" /></svg>),
+  shield: (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M8,2 L13,4 V8 C13,11 10.8,13 8,14 C5.2,13 3,11 3,8 V4 Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><path d="M5.8,8.2 L7.3,9.7 L10.2,6.6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" /></svg>),
+  eye:    (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M1.6,8 C3.6,4.4 12.4,4.4 14.4,8 C12.4,11.6 3.6,11.6 1.6,8 Z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" /><circle cx="8" cy="8" r="2.1" stroke="currentColor" strokeWidth="1.5" /></svg>),
+  coin:   (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="5.6" stroke="currentColor" strokeWidth="1.6" /><path d="M8,4.6 V11.4 M6.3,6.2 H9 C9.9,6.2 9.9,8 9,8 H7 C6.1,8 6.1,9.8 7,9.8 H9.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>),
+  export: (sz = 13) => (<svg width={sz} height={sz} viewBox="0 0 16 16" fill="none"><path d="M3,9.5 V12.5 H13 V9.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /><path d="M8,3 V10 M5.4,5.6 L8,3 L10.6,5.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" /></svg>),
+};
+
 /* ═══════════ SVG SHAPES ═══════════ */
 
 function Shape({ id, color: c, size = 106 }: { id: string; color: string; size?: number }) {
@@ -165,6 +205,12 @@ function Shape({ id, color: c, size = 106 }: { id: string; color: string; size?:
         <line x1="2" y1="20.5" x2="22" y2="20.5" stroke={w} strokeWidth={sw} strokeLinecap="round" />
         <line x1="5" y1="17.5" x2="5" y2="21" stroke={w} strokeWidth={sw} strokeLinecap="round" />
         <line x1="19" y1="17.5" x2="19" y2="21" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+      </>
+    ),
+    movements: (
+      <>
+        <path d="M7,21 V5 M3.5,8.5 L7,5 L10.5,8.5" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M17,3 V19 M13.5,15.5 L17,19 L20.5,15.5" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
       </>
     ),
     transfers: (
@@ -450,53 +496,116 @@ function MetricsBar() {
   );
 }
 
+/* ═══════════ ACTION BUTTON (footer) ═══════════ */
+
+function ActionButton({ a, primary, color }: { a: Action; primary: boolean; color: string }) {
+  const T = useT();
+  const tint = (op: number) => color.replace(")", ` / ${op})`);
+  const base = primary ? color : T.sub;
+  return (
+    <Link
+      href={a.href}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        display: "flex",
+        textDecoration: "none",
+        borderInlineStart: primary ? undefined : `1px solid ${T.cardBord}`,
+      }}
+    >
+      <div
+        style={{
+          flex: 1,
+          minWidth: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 4,
+          fontSize: 10,
+          fontWeight: primary ? 700 : 600,
+          color: base,
+          padding: "0 4px",
+          transition: "background 0.15s, color 0.15s",
+        }}
+        onMouseEnter={(e) => {
+          const el = e.currentTarget as HTMLDivElement;
+          el.style.background = tint(primary ? 0.15 : 0.11);
+          el.style.color = color;
+        }}
+        onMouseLeave={(e) => {
+          const el = e.currentTarget as HTMLDivElement;
+          el.style.background = "transparent";
+          el.style.color = base;
+        }}
+      >
+        {ActIco[a.ic]?.(13)}
+        <span style={{ whiteSpace: "nowrap" }}>{a.label}</span>
+      </div>
+    </Link>
+  );
+}
+
 /* ═══════════ MODULE CARD ═══════════ */
 
 function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
   const T = useT();
+  const me = trpc.auth.me.useQuery(); // مُخزَّن مؤقتاً (deduped) — لا طلب شبكة إضافي.
+  const elevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const acts = (ACTIONS[m.id] ?? []).filter((a) => !a.adminOnly || elevated);
   const cShadow = m.color.replace(")", " / 0.35)");
+  const bord = m.featured ? T.featuredBd : T.cardBord;
+
   return (
-    <Link href={m.href}>
-      <div
+    <div
+      style={{
+        aspectRatio: "1",
+        borderRadius: 16,
+        overflow: "hidden",
+        display: "flex",
+        flexDirection: "column",
+        cursor: "pointer",
+        background: m.featured ? T.featuredBg : T.cardBg,
+        border: `1px solid ${bord}`,
+        boxShadow: "0 2px 12px oklch(0 0 0 / 0.05)",
+        transition: "box-shadow 0.18s, transform 0.18s",
+      }}
+      onMouseEnter={(e) => {
+        const el = e.currentTarget as HTMLDivElement;
+        el.style.boxShadow = `0 6px 24px ${cShadow}`;
+        el.style.transform = "translateY(-2px)";
+      }}
+      onMouseLeave={(e) => {
+        const el = e.currentTarget as HTMLDivElement;
+        el.style.boxShadow = "0 2px 12px oklch(0 0 0 / 0.05)";
+        el.style.transform = "none";
+      }}
+    >
+      {/* المنطقة الرئيسية — رابط الوحدة */}
+      <Link
+        href={m.href}
         style={{
-          aspectRatio: "1",
-          borderRadius: 16,
-          padding: "16px 12px 14px",
+          flex: 1,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          gap: 10,
-          cursor: "pointer",
+          gap: 9,
+          padding: "15px 12px 9px",
           textAlign: "center",
-          background: m.featured ? T.featuredBg : T.cardBg,
-          border: `1px solid ${m.featured ? T.featuredBd : T.cardBord}`,
-          boxShadow: "0 2px 12px oklch(0 0 0 / 0.05)",
-          transition: "box-shadow 0.18s, transform 0.18s",
           textDecoration: "none",
-        }}
-        onMouseEnter={(e) => {
-          const el = e.currentTarget as HTMLDivElement;
-          el.style.boxShadow = `0 6px 24px ${cShadow}`;
-          el.style.transform = "translateY(-2px)";
-        }}
-        onMouseLeave={(e) => {
-          const el = e.currentTarget as HTMLDivElement;
-          el.style.boxShadow = "0 2px 12px oklch(0 0 0 / 0.05)";
-          el.style.transform = "none";
         }}
       >
         <div
           style={{
-            width: 106,
-            height: 106,
+            width: 94,
+            height: 94,
             flexShrink: 0,
             filter: `drop-shadow(0 6px 14px ${cShadow})`,
           }}
         >
-          <Shape id={m.id} color={m.color} size={106} />
+          <Shape id={m.id} color={m.color} size={94} />
         </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <div
             style={{
               fontSize: 13,
@@ -512,8 +621,26 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
             {m.desc}
           </div>
         </div>
-      </div>
-    </Link>
+      </Link>
+
+      {/* شريط الإجراءات السريعة — حد أقصى 3 أزرار */}
+      {acts.length > 0 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "stretch",
+            height: 40,
+            flexShrink: 0,
+            borderTop: `1px solid ${bord}`,
+            background: m.color.replace(")", " / 0.04)"),
+          }}
+        >
+          {acts.slice(0, 3).map((a, i) => (
+            <ActionButton key={a.href + i} a={a} primary={i === 0} color={m.color} />
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -550,7 +677,8 @@ function PlaceholderCard() {
 function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
   const T = useT();
   const mods = MODULES.filter((m) => m.sec === sec.id);
-  const placeholders = Math.max(0, 6 - mods.length);
+  // يملأ بقية الصف الأخير فقط (يدعم 7+ وحدات في القسم الواحد).
+  const placeholders = (6 - (mods.length % 6)) % 6;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
