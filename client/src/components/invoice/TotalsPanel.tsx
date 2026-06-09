@@ -13,9 +13,19 @@ export interface TotalsPanelProps {
   items: InvoiceLine[];
   state: InvoiceState;
   dispatch: Dispatch<InvoiceAction>;
+  /** false = hide the shipping input (backend doesn't persist it). Default true to preserve existing screens. */
+  showShipping?: boolean;
+  /** false = hide the other-expenses input (backend doesn't persist it). Default true. */
+  showOtherExpenses?: boolean;
 }
 
-export function TotalsPanel({ items, state, dispatch }: TotalsPanelProps) {
+export function TotalsPanel({
+  items,
+  state,
+  dispatch,
+  showShipping = true,
+  showOtherExpenses = true,
+}: TotalsPanelProps) {
   const t = calcTotals(items, state);
   const currSym = state.currency === "USD" ? "$" : "د.ع";
   const grandTotalNum = Number(t.grandTotal);
@@ -92,28 +102,32 @@ export function TotalsPanel({ items, state, dispatch }: TotalsPanelProps) {
         )}
 
         {/* Shipping */}
-        <div className={rowCls}>
-          <span className={labelCls}>🚛 مصاريف شحن</span>
-          <Input
-            dir="ltr"
-            value={state.shipping || ""}
-            onChange={(e) => dispatch({ type: "SET_FIELD", field: "shipping", value: e.target.value })}
-            placeholder="0"
-            className="h-7 w-24 text-center text-xs font-bold"
-          />
-        </div>
+        {showShipping && (
+          <div className={rowCls}>
+            <span className={labelCls}>🚛 مصاريف شحن</span>
+            <Input
+              dir="ltr"
+              value={state.shipping || ""}
+              onChange={(e) => dispatch({ type: "SET_FIELD", field: "shipping", value: e.target.value })}
+              placeholder="0"
+              className="h-7 w-24 text-center text-xs font-bold"
+            />
+          </div>
+        )}
 
         {/* Other expenses */}
-        <div className={cn(rowCls, "border-b pb-2.5")}>
-          <span className={labelCls}>📦 مصاريف أخرى</span>
-          <Input
-            dir="ltr"
-            value={state.otherExpenses || ""}
-            onChange={(e) => dispatch({ type: "SET_FIELD", field: "otherExpenses", value: e.target.value })}
-            placeholder="0"
-            className="h-7 w-24 text-center text-xs font-bold"
-          />
-        </div>
+        {showOtherExpenses && (
+          <div className={cn(rowCls, "border-b pb-2.5")}>
+            <span className={labelCls}>📦 مصاريف أخرى</span>
+            <Input
+              dir="ltr"
+              value={state.otherExpenses || ""}
+              onChange={(e) => dispatch({ type: "SET_FIELD", field: "otherExpenses", value: e.target.value })}
+              placeholder="0"
+              className="h-7 w-24 text-center text-xs font-bold"
+            />
+          </div>
+        )}
 
         {/* Grand total */}
         <div className="mt-1 flex items-center justify-between py-3">
