@@ -499,6 +499,11 @@ export const receipts = mysqlTable(
     checkNumber: varchar("checkNumber", { length: 50 }),
     cardLastFour: varchar("cardLastFour", { length: 4 }),
     status: mysqlEnum("receiptStatus", ["PENDING", "COMPLETED", "FAILED", "REVERSED"]).default("COMPLETED").notNull(),
+    // ── سندات قبض/صرف مستقلّة (B1): receipts بلا فاتورة بل بطرف خارجي (راتب، إيجار، …) ──
+    voucherNumber: varchar("voucherNumber", { length: 50 }).unique(), // RV/PV-branchId-YYYYMMDD-NNNNN
+    partyType: mysqlEnum("voucherPartyType", ["CUSTOMER", "SUPPLIER", "OTHER"]),
+    partyId: bigint("partyId", { mode: "number" }), // CUSTOMER ⇒ customers.id، SUPPLIER ⇒ suppliers.id، OTHER ⇒ null
+    description: text("description"), // وصف الغرض من السند
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -506,6 +511,8 @@ export const receipts = mysqlTable(
     invoiceIdx: index("idx_receipt_invoice").on(table.invoiceId),
     branchIdx: index("idx_receipt_branch").on(table.branchId),
     dateIdx: index("idx_receipt_date").on(table.createdAt),
+    voucherIdx: index("idx_receipt_voucher").on(table.voucherNumber),
+    partyIdx: index("idx_receipt_party").on(table.partyType, table.partyId),
   })
 );
 
