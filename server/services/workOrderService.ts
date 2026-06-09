@@ -7,6 +7,8 @@ import {
   productUnits,
   productVariants,
   receipts,
+  workOrderImages,
+  workOrderItems,
   workOrderMaterials,
   workOrders,
 } from "../../drizzle/schema";
@@ -30,7 +32,8 @@ export interface WorkOrderMaterialInput {
 export interface CreateWorkOrderInput {
   branchId: number;
   customerId?: number | null;
-  baseVariantId: number; // required: the product being customized (شيلد، درع، …)
+  // v3-add-screens(100%): اختياري لأمر شغل خدمة تخصيص خالصة بلا منتج خام.
+  baseVariantId?: number | null;
   title: string;
   customizationText?: string | null;
   quantity?: number; // default 1
@@ -39,6 +42,29 @@ export interface CreateWorkOrderInput {
   salePrice: string;
   dueDate?: string | null; // YYYY-MM-DD
   notes?: string | null;
+  // v3-add-screens(100%): الحقول الجديدة التي تذهب لأعمدة workOrders الحقيقية.
+  receptionChannel?: "WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE" | "OTHER" | null;
+  channelHandle?: string | null;
+  priority?: "LOW" | "NORMAL" | "URGENT" | null;
+  deposit?: string | null;
+  paymentMethod?: "CASH" | "CARD" | null;
+  paymentReference?: string | null;
+  paymentReceiptUrl?: string | null;
+  hasDelivery?: boolean | null;
+  deliveryAddress?: string | null;
+  deliveryCost?: string | null;
+  // v3-add-screens(100%): أصناف نقطة البيع المصغّرة (تذهب لجدول workOrderItems).
+  items?: Array<{
+    variantId: number;
+    productUnitId?: number | null;
+    quantity: string;          // كمية بالوحدة المختارة
+    baseQuantity: number;      // كمية بالوحدة الأساس
+    unitPrice: string;
+    discountAmount?: string | null;
+    total: string;
+  }>;
+  // v3-add-screens(100%): صور نموذج العمل (تذهب لجدول workOrderImages).
+  designImages?: Array<{ url: string; caption?: string | null; sortOrder?: number | null }>;
 }
 
 async function nextWorkOrderNumber(tx: any, branchId: number): Promise<string> {
@@ -66,11 +92,13 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
     if (!Number.isInteger(qty) || qty <= 0)
       throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية يجب أن تكون عدداً صحيحاً موجباً" });
 
-    // Validate the base variant exists (required so we can issue an invoice on delivery).
-    const base = (
-      await tx.select().from(productVariants).where(eq(productVariants.id, input.baseVariantId)).limit(1)
-    )[0];
-    if (!base) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج الأساس لأمر الشغل غير موجود" });
+    // v3-add-screens(100%): baseVariantId اختياري — أمر شغل قد يكون خدمة تخصيص بلا منتج خام.
+    if (input.baseVariantId != null) {
+      const base = (
+        await tx.select().from(productVariants).where(eq(productVariants.id, input.baseVariantId)).limit(1)
+      )[0];
+      if (!base) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج الأساس لأمر الشغل غير موجود" });
+    }
 
     // Validate materials list — allow zero materials (printing-only WO).
     for (const m of input.materials ?? []) {
@@ -80,12 +108,25 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
       if (!v[0]) throw new TRPCError({ code: "NOT_FOUND", message: `مادة #${m.variantId} غير موجودة` });
     }
 
+    // v3-add-screens(100%): تحقّق أصناف نقطة البيع المصغّرة قبل الكتابة.
+    for (const it of input.items ?? []) {
+      const v = await tx.select({ id: productVariants.id }).from(productVariants).where(eq(productVariants.id, it.variantId)).limit(1);
+      if (!v[0]) throw new TRPCError({ code: "NOT_FOUND", message: `صنف #${it.variantId} غير موجود` });
+      if (!Number.isInteger(it.baseQuantity) || it.baseQuantity <= 0)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الصنف يجب أن تكون عدداً صحيحاً موجباً" });
+    }
+
+    // v3-add-screens(100%): الدفع بالبطاقة يستلزم مرجع.
+    if (input.paymentMethod === "CARD" && !(input.paymentReference?.trim())) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "رقم العملية المرجعي مطلوب لدفع البطاقة" });
+    }
+
     const orderNumber = await nextWorkOrderNumber(tx, input.branchId);
     const insRes = await tx.insert(workOrders).values({
       orderNumber,
       branchId: input.branchId,
       customerId: input.customerId ?? null,
-      baseVariantId: input.baseVariantId,
+      baseVariantId: input.baseVariantId ?? null,
       title: input.title.trim(),
       customizationText: input.customizationText?.trim() || null,
       quantity: qty,
@@ -95,6 +136,17 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
       status: "RECEIVED",
       dueDate: input.dueDate ? new Date(input.dueDate) : null,
       createdBy: actor.userId,
+      // v3-add-screens(100%): الأعمدة الجديدة تذهب مباشرة لجدول workOrders.
+      receptionChannel: input.receptionChannel ?? "WALK_IN",
+      channelHandle: input.channelHandle?.trim() || null,
+      priority: input.priority ?? "NORMAL",
+      deposit: input.deposit ? round2(money(input.deposit)).toFixed(2) : "0.00",
+      paymentMethod: input.paymentMethod ?? "CASH",
+      paymentReference: input.paymentReference?.trim() || null,
+      paymentReceiptUrl: input.paymentReceiptUrl?.trim() || null,
+      hasDelivery: !!input.hasDelivery,
+      deliveryAddress: input.deliveryAddress?.trim() || null,
+      deliveryCost: input.deliveryCost ? round2(money(input.deliveryCost)).toFixed(2) : "0.00",
     });
     const workOrderId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
 
@@ -105,6 +157,31 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
         baseQuantity: m.baseQuantity,
         unitCost: "0", // snapshot on consumption
       });
+    }
+
+    // v3-add-screens(100%): أصناف نقطة البيع المصغّرة في جدولها الصحيح.
+    for (const it of input.items ?? []) {
+      await tx.insert(workOrderItems).values({
+        workOrderId,
+        variantId: it.variantId,
+        productUnitId: it.productUnitId ?? null,
+        quantity: it.quantity,
+        baseQuantity: it.baseQuantity,
+        unitPrice: round2(money(it.unitPrice)).toFixed(2),
+        discountAmount: it.discountAmount ? round2(money(it.discountAmount)).toFixed(2) : "0.00",
+        total: round2(money(it.total)).toFixed(2),
+      });
+    }
+
+    // v3-add-screens(100%): صور نموذج العمل في جدولها الصحيح.
+    const imgs = (input.designImages ?? []).filter((i) => i.url?.trim()).slice(0, 10);
+    for (let i = 0; i < imgs.length; i++) {
+      await tx.insert(workOrderImages).values({
+        workOrderId,
+        url: imgs[i].url.trim(),
+        caption: imgs[i].caption?.trim() || null,
+        sortOrder: imgs[i].sortOrder ?? i,
+      } as any);
     }
 
     return { workOrderId, orderNumber };

@@ -618,7 +618,8 @@ export const workOrders = mysqlTable(
     deposit: decimal("deposit", { precision: 15, scale: 2 }).default("0"),
     paymentMethod: mysqlEnum("woPaymentMethod", ["CASH", "CARD"]).default("CASH"),
     paymentReference: varchar("paymentReference", { length: 100 }),
-    paymentReceiptUrl: varchar("paymentReceiptUrl", { length: 500 }),
+    // v3-add-screens(100%): TEXT لاستيعاب data URLs (≥100KB) عند الترميز المضمَّن.
+    paymentReceiptUrl: text("paymentReceiptUrl"),
     // v3-add-screens: التوصيل.
     hasDelivery: boolean("hasDelivery").default(false),
     deliveryAddress: text("deliveryAddress"),
@@ -699,7 +700,8 @@ export const workOrderImages = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     workOrderId: bigint("workOrderId", { mode: "number" }).notNull().references(() => workOrders.id, { onDelete: "cascade" }),
-    url: varchar("url", { length: 500 }).notNull(),
+    // v3-add-screens(100%): TEXT لاستيعاب data URLs الكبيرة.
+    url: text("url").notNull(),
     caption: varchar("caption", { length: 255 }),
     sortOrder: int("sortOrder").default(0).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -718,7 +720,8 @@ export const productImages = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id, { onDelete: "cascade" }),
-    url: varchar("url", { length: 500 }).notNull(),
+    // v3-add-screens(100%): TEXT لاستيعاب data URLs الكبيرة.
+    url: text("url").notNull(),
     isPrimary: boolean("isPrimary").default(false).notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

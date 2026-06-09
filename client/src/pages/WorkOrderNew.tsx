@@ -240,6 +240,7 @@ export default function WorkOrderNew() {
     if (!title.trim() && cart.length === 0) return setError("أدخل عنواناً لخدمة التخصيص أو أضف منتجاً واحداً للسلة على الأقل.");
     if (!cart.length && !salePrice.trim()) return setError("سعر بيع خدمة التخصيص مطلوب.");
     if (paymentMethod === "CARD" && !paymentReference.trim()) return setError("رقم العملية المرجعي مطلوب للبطاقة.");
+    if (grandTotal.lte(0)) return setError("الإجمالي يجب أن يكون موجباً (أضف صنفاً أو سعر تخصيص).");
 
     let customerId: number | null = null;
     try {
@@ -249,69 +250,52 @@ export default function WorkOrderNew() {
       return;
     }
 
-    // مواد = أصناف السلّة (مؤقّتاً) — كل صنف يُمرَّر بكمية الأساس.
-    const materials = cart.map((c) => ({
-      variantId: c.variantId,
-      baseQuantity: c.quantity * c.baseQuantityPerUnit,
-    }));
+    // v3-add-screens(100%): baseVariantId اختياري الآن — للأمر بلا منتج جاهز نمرّر null.
+    const baseVariantId = cart.length ? cart[0].variantId : null;
 
-    // المعرف الأساس (baseVariantId): إن وجدت سلّة، نستخدم أول صنف؛ وإلا نتوقّع منتجاً قابلاً للتخصيص لاحقاً.
-    // بما أن API يتطلّب baseVariantId، نأخذ أول صنف من السلّة. إن لم تكن سلّة، نمنع الحفظ.
-    if (!cart.length) {
-      setError("أضف منتجاً واحداً للسلّة كأساس أمر الشغل (نقطة البيع المصغّرة).");
-      return;
-    }
-    const baseVariantId = cart[0].variantId;
-
-    // الميتاداتا v3 ⇒ JSON ضمن customizationText.
-    const metaV3 = {
-      _v3: true,
-      channel,
-      channelHandle: channelHandle.trim() || null,
-      priority,
-      deliveryMethod,
-      newCustomerSavedAuto: customerSel.isNew,
-      designImages: designImages.map((i) => ({ url: i.dataUrl, isPrimary: i.isPrimary })).slice(0, 10),
-      delivery: hasDelivery ? {
-        address: deliveryAddress.trim(),
-        cost: D(deliveryCost || "0").toFixed(2),
-      } : null,
-      payment: {
-        method: paymentMethod,
-        reference: paymentReference.trim() || null,
-        deposit: depositD.toFixed(2),
-        receipts: paymentReceipts.map((i) => ({ url: i.dataUrl })).slice(0, 5),
-      },
-      cart: cart.map((c) => ({
-        productUnitId: c.productUnitId,
-        productName: c.productName,
-        unitPrice: c.unitPrice,
-        quantity: c.quantity,
-        unitName: c.unitName,
-      })),
-      discount: discount.toFixed(2),
-      grandTotal: grandTotal.toFixed(2),
-      remaining: remaining.toFixed(2),
-    };
-    const customText = JSON.stringify({
-      text: customizationText.trim() || null,
-      meta: metaV3,
-    });
-
+    // v3-add-screens(100%): البيانات الإضافية تذهب لأعمدة DB مباشرة (لا ترميز JSON).
     createWO.mutate({
       branchId: Number(effectiveBranch),
       customerId: customerId ?? null,
       baseVariantId,
       title: title.trim() || cart[0]?.productName || "أمر شغل",
-      customizationText: customText,
+      customizationText: customizationText.trim() || null,
       quantity: Math.max(1, parseInt(quantity || "1", 10) || 1),
-      materials,
+      // المواد للاستهلاك من المخزون (إن وُجدت).
+      materials: [],
       laborCost: D(laborCost || "0").toFixed(2),
-      // سعر البيع النهائي = إجمالي السلّة + التخصيص − الخصم (التوصيل يُدخل لاحقاً عند تسليم/فوترة).
       salePrice: grandTotal.toFixed(2),
       dueDate: dueDate || null,
       notes: null,
-    }, { context: { shouldPrint: opts.print } } as any);
+      // الحقول v3 الجديدة — تذهب لأعمدة workOrders الحقيقية.
+      receptionChannel: channel as any,
+      channelHandle: channelHandle.trim() || null,
+      priority,
+      deposit: depositD.toFixed(2),
+      paymentMethod,
+      paymentReference: paymentReference.trim() || null,
+      // إن وُجد إيصال دفع، نخزّن الـdataURL للأول (TEXT يستوعب).
+      paymentReceiptUrl: paymentReceipts[0]?.dataUrl || null,
+      hasDelivery,
+      deliveryAddress: hasDelivery ? deliveryAddress.trim() || null : null,
+      deliveryCost: hasDelivery ? D(deliveryCost || "0").toFixed(2) : "0",
+      // أصناف نقطة البيع المصغّرة — جدولها الصحيح workOrderItems.
+      items: cart.map((c) => ({
+        variantId: c.variantId,
+        productUnitId: c.productUnitId,
+        quantity: String(c.quantity),
+        baseQuantity: c.quantity * c.baseQuantityPerUnit,
+        unitPrice: c.unitPrice,
+        discountAmount: "0",
+        total: D(c.unitPrice).times(c.quantity).toFixed(2),
+      })),
+      // صور نموذج العمل — جدولها الصحيح workOrderImages.
+      designImages: designImages.map((i, idx) => ({
+        url: i.dataUrl,
+        caption: i.name || null,
+        sortOrder: idx,
+      })),
+    } as any, { context: { shouldPrint: opts.print } } as any);
   }
 
   function exportImage() {
