@@ -41,6 +41,7 @@ import Transfers from "@/pages/Transfers";
 import WorkOrderDetail from "@/pages/WorkOrderDetail";
 import WorkOrderNew from "@/pages/WorkOrderNew";
 import WorkOrders from "@/pages/WorkOrders";
+import Shifts from "@/pages/Shifts";
 import Users from "@/pages/Users";
 import UserNew from "@/pages/UserNew";
 import UserEdit from "@/pages/UserEdit";
@@ -119,6 +120,7 @@ export default function App() {
       <Route path="/vouchers"><Shell><Vouchers /></Shell></Route>
       <Route path="/vouchers/receipt/new"><Shell><VoucherReceiptNew /></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
+      <Route path="/shifts"><Shell><Shifts /></Shell></Route>
       <Route path="/sales-report"><Shell><SalesReport /></Shell></Route>
       <Route path="/ar-aging"><Shell><ARAging /></Shell></Route>
       <Route path="/customers-statement"><Shell><CustomerStatement /></Shell></Route>

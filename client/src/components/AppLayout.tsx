@@ -68,6 +68,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/expenses", label: "المصروفات اليومية" },
       { href: "/vouchers", label: "سندات قبض وصرف" },
+      { href: "/shifts", label: "سجلّ الورديات" },
     ],
   },
   {

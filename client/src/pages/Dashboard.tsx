@@ -101,6 +101,7 @@ const MODULES: ModuleDef[] = [
   { id: "purchaseReturns", href: "/purchase-returns",  name: "مرتجعات الشراء",    desc: "سجلّ الإرجاعات",    sec: 2, color: "oklch(0.55 0.20 14)" },
   { id: "expenses",      href: "/expenses",            name: "المصروفات",         desc: "مصروفات يومية",     sec: 3, color: "oklch(0.65 0.18 72)" },
   { id: "vouchers",      href: "/vouchers",            name: "السندات",           desc: "قبض وصرف",          sec: 3, color: "oklch(0.62 0.18 160)" },
+  { id: "shifts",        href: "/shifts",              name: "سجلّ الورديات",     desc: "إغلاقات وZ-report", sec: 3, color: "oklch(0.60 0.16 250)" },
   { id: "arAging",       href: "/ar-aging",            name: "الذمم المدينة",     desc: "أعمار ومتابعة",     sec: 3, color: "oklch(0.58 0.20 178)" },
   { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "oklch(0.58 0.22 148)" },
   { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "oklch(0.60 0.18 322)" },

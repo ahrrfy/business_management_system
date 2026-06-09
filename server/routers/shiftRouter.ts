@@ -1,10 +1,61 @@
 import { TRPCError } from "@trpc/server";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { branches, shifts, users } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { branchScopedProcedure, cashierProcedure, router } from "../trpc";
 
 export const shiftRouter = router({
+  // سجلّ الورديات — قائمة مُصفّحة branch-scoped (IDOR كـreport): الكاشير يرى ورديات فرعه فقط،
+  // المرتفعون يرون الكل أو يفلترون بفرع. تُغذّي شاشة /shifts وإعادة طباعة Z-report.
+  list: branchScopedProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().int().positive().optional(),
+          status: z.enum(["OPEN", "CLOSED"]).optional(),
+          limit: z.number().int().positive().max(200).default(50),
+          offset: z.number().int().min(0).default(0),
+        })
+        .optional()
+    )
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return { rows: [], total: 0 };
+      const i = input ?? ({} as NonNullable<typeof input>);
+      const conds = [];
+      const effectiveBranchId = ctx.scopedBranchId ?? i.branchId;
+      if (effectiveBranchId != null) conds.push(eq(shifts.branchId, effectiveBranchId));
+      if (i.status) conds.push(eq(shifts.status, i.status));
+      const where = conds.length ? and(...conds) : undefined;
+      const rows = await db
+        .select({
+          id: shifts.id,
+          branchId: shifts.branchId,
+          branchName: branches.name,
+          userId: shifts.userId,
+          userName: users.name,
+          openingBalance: shifts.openingBalance,
+          expectedCash: shifts.expectedCash,
+          countedCash: shifts.countedCash,
+          variance: shifts.variance,
+          status: shifts.status,
+          openedAt: shifts.openedAt,
+          closedAt: shifts.closedAt,
+        })
+        .from(shifts)
+        .leftJoin(users, eq(shifts.userId, users.id))
+        .leftJoin(branches, eq(shifts.branchId, branches.id))
+        .where(where)
+        .orderBy(desc(shifts.id))
+        .limit(i.limit ?? 50)
+        .offset(i.offset ?? 0);
+      const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(shifts).where(where))[0];
+      return { rows, total: Number(totalRow?.n ?? 0) };
+    }),
+
   open: cashierProcedure
     .input(z.object({ branchId: z.number().int().positive(), openingBalance: z.string().default("0") }))
     .mutation(async ({ input, ctx }) => {
