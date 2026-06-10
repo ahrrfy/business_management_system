@@ -6,7 +6,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { confirm } from "@/lib/confirm";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, printDoc, getServerBridgeStatus, serverPrintTest, type PrintDoc } from "@/lib/printing/print";
+import { isPaired, isWebUsbSupported, pairPrinter, printDoc, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -43,6 +43,10 @@ type Receipt = {
   invoiceNumber: string;
   invoiceId: number;
   date: string;
+  /** تاريخ/وقت/كاشير للإيصال المطبوع المُعلَّم (date يبقى للعرض على الشاشة) */
+  printDate?: string;
+  printTime?: string;
+  cashierName?: string;
   customerName?: string;
   lines: { name: string; unit: string; qty: number; price: number; disc?: number; total: number }[];
   total: number;
@@ -225,28 +229,25 @@ function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
 
 // ─── Receipt builder ──────────────────────────────────────────────────────────
 
-function buildReceiptDoc(r: Receipt): PrintDoc {
-  const totals: { label: string; value: string }[] = [
-    { label: "الإجمالي", value: money(r.total) },
-    { label: "المستلم",  value: money(r.received) },
-  ];
-  if (r.isCredit) totals.push({ label: "آجل/ذمة", value: money(r.credit) });
-  else            totals.push({ label: "الباقي",   value: money(r.change) });
-
+/** تحويل إيصال الكاشير لبيانات الإيصال المُعلَّم — يُطبع بالتصميم المعتمد نفسه على كل النواقل. */
+function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
   return {
-    kind: "receipt",
-    title: SHOP,
-    subtitle: r.customerName ? `عميل: ${r.customerName}` : "للتجارة العامة والقرطاسية",
-    meta: [`فاتورة: ${r.invoiceNumber}`, r.date],
-    columns: ["الصنف", "كمية", "سعر", "إجمالي"],
-    rows: r.lines.map((l) => [
-      `${l.name} (${l.unit})${l.disc ? ` −${l.disc}%` : ""}`,
-      String(l.qty),
-      money(l.price),
-      money(l.total),
-    ]),
-    totals,
-    footer: "شكراً لتعاملكم معنا",
+    receiptNumber: r.invoiceNumber,
+    date: r.printDate ?? r.date,
+    time: r.printTime ?? null,
+    cashierName: r.cashierName ?? null,
+    customerName: r.customerName ?? null,
+    items: r.lines.map((l) => ({
+      name: `${l.name} (${l.unit})${l.disc ? ` −${l.disc}%` : ""}`,
+      quantity: l.qty,
+      price: l.price,
+      total: l.total,
+    })),
+    subtotal: r.total,
+    total: r.total,
+    paid: r.received,
+    change: r.isCredit ? null : r.change,
+    credit: r.isCredit ? r.credit : null,
   };
 }
 
@@ -506,10 +507,14 @@ export default function POS() {
       const finalReceived = isCredit ? paid  : total;
       const finalChange   = isCredit ? 0     : paid - total;
       const finalCredit   = isCredit ? total - paid : 0;
+      const now = new Date();
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber,
         invoiceId:     r.invoiceId,
-        date: new Date().toLocaleString("ar-IQ"),
+        date: now.toLocaleString("ar-IQ"),
+        printDate: now.toLocaleDateString("en-GB"),
+        printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+        cashierName: me.data?.name ?? undefined,
         customerName: selectedCustomer?.name,
         lines: cart.map((c) => ({
           name: c.row.productName, unit: c.row.unitName,
@@ -528,7 +533,7 @@ export default function POS() {
       setCart([]); setPayInput(""); setSelId(null);
       setClientRequestId(crypto.randomUUID()); // مفتاح جديد للبيع التالي
 
-      await printDoc(buildReceiptDoc(rec));
+      await printReceipt(buildBrandedReceipt(rec));
       await Promise.all([
         utils.catalog.posList.invalidate(),
         utils.customers.list.invalidate(),
@@ -613,7 +618,7 @@ export default function POS() {
       switch (e.key) {
         case "F2":  e.preventDefault(); searchRef.current?.focus(); break;
         case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSale(); break;
-        case "F9":  e.preventDefault(); if (receipt) printDoc(buildReceiptDoc(receipt)); break;
+        case "F9":  e.preventDefault(); if (receipt) printReceipt(buildBrandedReceipt(receipt)); break;
         case "F12": e.preventDefault();
           if (cart.length) {
             void (async () => {
@@ -783,7 +788,7 @@ export default function POS() {
         <ReceiptOverlay
           C={C} receipt={receipt}
           onDismiss={() => setReceipt(null)}
-          onPrint={() => printDoc(buildReceiptDoc(receipt!))}
+          onPrint={() => printReceipt(buildBrandedReceipt(receipt!))}
         />
       )}
       {shifting && (

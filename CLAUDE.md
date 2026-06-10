@@ -51,7 +51,7 @@ pnpm test                         # اختبارات (vitest) ضد قاعدة er
 - **الدفتر (مبسّط، تلقائي):** قيد عند كل بيع/شراء/دفع/مرتجع. revenue=صافي قبل الضريبة، amount=الإجمالي، RETURN بقيم سالبة. الذمم: `customers.currentBalance` (AR موجب=مدين)، `suppliers.currentBalance` (AP).
 - **المنتج:** `products` → `productVariants`(لون/قياس/تكلفة) → `productUnits`(قطعة/درزن/كرتون + معامل + باركود مستقل) → `productPrices`(سعر صريح لكل وحدة×فئة RETAIL/WHOLESALE/GOVERNMENT).
 - **idempotency البيع:** `clientRequestId` → `invoices.sourceId` + قيد فريد `(sourceType,sourceId)` + إعادة محاولة الراوتر على `ER_DUP_ENTRY`.
-- **الطباعة:** `client/src/lib/printing/` — ESC/POS **raster** (للعربية) عبر WebUSB، وبديل حوار المتصفّح 80مم. قوالب: فاتورة / Z-report / رصيد افتتاحي.
+- **الطباعة:** `client/src/lib/printing/` — إيصال POS **بالتصميم المُعلَّم** عبر `printReceipt` (راسم نقطي `receiptRaster.ts` + قالب `printBrowserReceipt` كبديل متصفح — تصميم واحد على كل النواقل) بأولوية: جسر الخادم ← WebUSB ← المتصفح. Z-report/رصيد افتتاحي عبر `printDoc` العام. **⚠️ WebUSB على Windows يتطلب استبدال تعريف الطابعة بـWinUSB (أداة Zadig) وإلا `open(): Access denied`** — طُبّق على Epson TM-T20III بجهاز الكاشير (١٠/٦) وتحقّقت الطباعة العربية فعلياً.
 
 ## ٦. الحالة الحالية (يونيو ٢٠٢٦)
 **🚀 منشور إنتاجياً (١٠/٦):** `https://srv1548487.hstgr.cloud` على Hostinger VPS **مشترك** (⛔ سراج وأودو خط أحمر — لا يُلمسان؛ لا reboot/ufw/توقيت بلا موافقة المالك). البنية: MySQL حاوية على `127.0.0.1:3307` (محجوبة عن الإنترنت) + PM2 تحت مستخدم `deploy` بوحدة `pm2-deploy.service` + درع انتظار صحّة القاعدة + nginx/TLS/HSTS + نسخ ليلي 23:00 UTC مشفّر gpg + سحب يومي مجدول لجهاز المتجر (`backup:pull-vps`). الأسرار في escrow المالك. التفاصيل: `docs/deployment-vps.md` + ذاكرة `deploy-vps-plan`. **التحديثات اللاحقة على الخادم:** `git pull` ثم `pnpm db:backup && pnpm db:migrate:safe` (لا `db:push` عارياً — محظور بحارس) ثم `pnpm build && pm2 reload erp-server`.
@@ -108,7 +108,7 @@ pnpm test                         # اختبارات (vitest) ضد قاعدة er
 **🔵 جودة هندسية:**
 - **CI**: hook قبل الالتزام أو GitHub Actions يشغّل `pnpm check` + `pnpm test` تلقائياً (أتمتة البوابة). تسجيل أخطاء الخادم للتشخيص في المتجر.
 - **UX الكاشير**: تشغيل بلوحة المفاتيح/الماسح (اختصارات)، و**تقريب نقدي IQD** (لا فئات أصغر من ٢٥٠/٥٠٠).
-- **التحقق من الطباعة الحرارية العربية على جهاز حقيقي** (الاختبار الوحيد المعلّق).
+- ~~التحقق من الطباعة الحرارية العربية على جهاز حقيقي~~ ✅ تحقّق (١٠/٦) على Epson TM-T20III عبر WebUSB بعد تبديل التعريف لـWinUSB (Zadig)، والإيصال بالتصميم المُعلَّم.
 
 ## ٨. مراجع
 - **دليل النظام التشغيلي العميق** (تمتين الذاكرة/التعارض/الوكلاء): **`docs/playbook.md`** (يُقرأ عند الحاجة — أبقِ هذا الملف رشيقاً).
