@@ -5,7 +5,7 @@ import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
-import { SUPPLIER_FIELDS } from "@/lib/importFields";
+import { SUPPLIER_FIELDS, SUPPLIER_IMPORT_META } from "@/lib/importFields";
 import type { SupplierImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -14,6 +14,13 @@ import { useMemo, useState } from "react";
 function fmt(s: string | number | null | undefined): string {
   if (s === null || s === undefined || s === "") return "—";
   return Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+}
+
+/** الرقم القديم (legacyCode) من صف القائمة — null إن فارغاً (العمود يظهر فقط حين توجد قيم).
+ *  select القائمة في supplierService يعيده ويُدخله البحث (شريحة تكامل الاستيراد). */
+function legacyCodeOf(r: { legacyCode?: string | null }): string | null {
+  const v = r.legacyCode;
+  return typeof v === "string" && v.trim() !== "" ? v : null;
 }
 
 export default function Suppliers() {
@@ -47,6 +54,8 @@ export default function Suppliers() {
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
+  // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ).
+  const hasLegacy = rows.some((r) => legacyCodeOf(r) !== null);
 
   async function toggle(id: number, isActive: boolean, name: string) {
     if (isActive) {
@@ -72,16 +81,22 @@ export default function Suppliers() {
         title="استيراد موردين من Excel/CSV"
         entityName="مورّد"
         fields={SUPPLIER_FIELDS}
-        onImport={async (rows) => {
+        meta={SUPPLIER_IMPORT_META}
+        onImport={async (rows, ctx) => {
+          // خيارات الحوار (dryRun/usdRate/skipFailed/balanceSign) تُمرَّر للخادم فعلياً —
+          // كائن مبنيّ لا literal كي تبقى الأنواع سليمة قبل توسعة مخطط الراوتر (W3) وبعدها.
+          const options = { onExisting: "skip" as const, ...(ctx.options ?? {}) };
           const res = await importMut.mutateAsync({
             rows: rows.map((r) => ({ ...r, rowNumber: r.rowNumber })),
-            options: { onExisting: "skip" },
+            options,
           });
           return res;
         }}
         onDone={(s) => {
-          if (s.committed && (s.created > 0 || s.updated > 0)) {
-            notify.ok(`تم: ${s.created} مُنشأ، ${s.updated} مُحدَّث، ${s.skipped} متخطّى`);
+          // الإبطال متى كُتب شيء فعلاً: ملف متعدد الدفعات قد يتوقّف عند دفعة فاشلة بعد دفعات
+          // التزمت (committed المُدمَج = false) بينما القائمة تغيّرت في القاعدة فعلاً.
+          if (s.created > 0 || s.updated > 0) {
+            if (s.committed) notify.ok(`تم: ${s.created} مُنشأ، ${s.updated} مُحدَّث، ${s.skipped} متخطّى`);
             invalidate();
           }
         }}
@@ -99,7 +114,7 @@ export default function Suppliers() {
             search={{
               value: q,
               onChange: (v) => { setQ(v); setPage(0); },
-              placeholder: "بحث (اسم/هاتف/مدينة)",
+              placeholder: "بحث (اسم/هاتف/مدينة/رقم قديم)",
             }}
             filters={
               <label className="flex items-center gap-2 h-8 text-sm">
@@ -117,6 +132,7 @@ export default function Suppliers() {
               rows,
               columns: [
                 { key: "name", header: "الاسم" },
+                { key: "legacyCode", header: "الرقم القديم", map: (r) => legacyCodeOf(r) ?? "" },
                 { key: "phone", header: "الهاتف" },
                 { key: "city", header: "المدينة" },
                 { key: "paymentTerms", header: "شروط الدفع" },
@@ -134,6 +150,7 @@ export default function Suppliers() {
             <thead className="bg-muted/50">
               <tr className="text-right">
                 <th className="p-2">الاسم</th>
+                {hasLegacy && <th className="p-2">الرقم القديم</th>}
                 <th className="p-2">الهاتف</th>
                 <th className="p-2">المدينة</th>
                 <th className="p-2">شروط الدفع</th>
@@ -149,6 +166,11 @@ export default function Suppliers() {
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{s.name}</td>
+                    {hasLegacy && (
+                      <td className="p-2 text-xs tabular-nums text-muted-foreground" dir="ltr">
+                        {legacyCodeOf(s) ?? "—"}
+                      </td>
+                    )}
                     <td className="p-2"><CopyInline value={s.phone} /></td>
                     <td className="p-2 text-xs">{s.city ?? "—"}</td>
                     <td className="p-2 text-xs">{s.paymentTerms ?? "—"}</td>
@@ -179,7 +201,7 @@ export default function Suppliers() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا موردين مطابقين. أضف مورّداً جديداً أو غيّر البحث.</td></tr>
+                <tr><td colSpan={hasLegacy ? 8 : 7} className="p-6 text-center text-muted-foreground">لا موردين مطابقين. أضف مورّداً جديداً أو غيّر البحث.</td></tr>
               )}
             </tbody>
           </table>

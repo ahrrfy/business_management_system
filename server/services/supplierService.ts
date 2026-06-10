@@ -186,6 +186,7 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
   if (input.q?.trim()) {
     const q = `%${input.q.trim()}%`;
     // v3-add-screens: البحث يشمل هواتف المورّد الثلاثة + المدينة + التصنيف.
+    // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
     conds.push(or(
       like(suppliers.name, q),
       like(suppliers.phone, q),
@@ -193,6 +194,7 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
       like(suppliers.phone3, q),
       like(suppliers.city, q),
       like(suppliers.supplierCategory, q),
+      like(suppliers.legacyCode, q),
     ));
   }
   const where = conds.length ? and(...conds) : undefined;
@@ -204,6 +206,8 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
       city: suppliers.city,
       paymentTerms: suppliers.paymentTerms,
       currentBalance: suppliers.currentBalance,
+      // import-integration: «الرقم القديم» يظهر عموداً في الشاشة ويُصدَّر في Excel.
+      legacyCode: suppliers.legacyCode,
       isActive: suppliers.isActive,
       createdAt: suppliers.createdAt,
     })

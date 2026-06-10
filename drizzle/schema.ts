@@ -4,6 +4,7 @@ import {
   decimal,
   varchar,
   text,
+  mediumtext,
   timestamp,
   mysqlEnum,
   mysqlTable,
@@ -110,6 +111,9 @@ export const customers = mysqlTable(
     notes: text("notes"),
     creditLimit: decimal("creditLimit", { precision: 15, scale: 2 }).default("0"),
     currentBalance: decimal("currentBalance", { precision: 15, scale: 2 }).default("0").notNull(),
+    // import-integration: المعرّف القديم («الرقم» في ملفات النظام السابق) — مفتاح مطابقة الاستيراد.
+    // UNIQUE يسمح بتعدّد NULL ⇒ حارس بنيوي ضدّ ازدواج الطرف برصيد عند استيراد متزامن.
+    legacyCode: varchar("legacyCode", { length: 40 }),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -117,6 +121,7 @@ export const customers = mysqlTable(
   (table) => ({
     nameIdx: index("idx_customer_name").on(table.name),
     phoneIdx: index("idx_customer_phone").on(table.phone),
+    legacyUq: unique("uq_customer_legacy").on(table.legacyCode),
   })
 );
 
@@ -148,6 +153,9 @@ export const suppliers = mysqlTable(
     bankName: varchar("bankName", { length: 120 }),
     notes: text("notes"),
     currentBalance: decimal("currentBalance", { precision: 15, scale: 2 }).default("0").notNull(),
+    // import-integration: المعرّف القديم («الرقم» في ملفات النظام السابق) — مفتاح مطابقة الاستيراد.
+    // UNIQUE يسمح بتعدّد NULL ⇒ حارس بنيوي ضدّ ازدواج الطرف برصيد عند استيراد متزامن.
+    legacyCode: varchar("legacyCode", { length: 40 }),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -155,6 +163,7 @@ export const suppliers = mysqlTable(
   (table) => ({
     nameIdx: index("idx_supplier_name").on(table.name),
     phoneIdx: index("idx_supplier_phone").on(table.phone),
+    legacyUq: unique("uq_supplier_legacy").on(table.legacyCode),
   })
 );
 
@@ -534,7 +543,8 @@ export const accountingEntries = mysqlTable(
   "accountingEntries",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST"]).notNull(),
+    // import-integration: OPENING = قيد ترسيخ الرصيد الافتتاحي المستورد من النظام القديم.
+    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }),
@@ -723,8 +733,8 @@ export const workOrderImages = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     workOrderId: bigint("workOrderId", { mode: "number" }).notNull().references(() => workOrders.id, { onDelete: "cascade" }),
-    // v3-add-screens(100%): TEXT لاستيعاب data URLs الكبيرة.
-    url: text("url").notNull(),
+    // import-integration: MEDIUMTEXT (~16MB) — TEXT (64KB) كان يكسر data URLs للصور بـ«قيمة أطول من المسموح».
+    url: mediumtext("url").notNull(),
     caption: varchar("caption", { length: 255 }),
     sortOrder: int("sortOrder").default(0).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -743,8 +753,8 @@ export const productImages = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id, { onDelete: "cascade" }),
-    // v3-add-screens(100%): TEXT لاستيعاب data URLs الكبيرة.
-    url: text("url").notNull(),
+    // import-integration: MEDIUMTEXT (~16MB) — TEXT (64KB) كان يكسر data URLs للصور بـ«قيمة أطول من المسموح».
+    url: mediumtext("url").notNull(),
     isPrimary: boolean("isPrimary").default(false).notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

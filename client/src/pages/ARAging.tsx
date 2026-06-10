@@ -27,6 +27,11 @@ export default function ARAging() {
   const [branchId, setBranchId] = useState<number | "">("");
   const aging = trpc.reports.arAging.useQuery({ branchId: branchId ? Number(branchId) : undefined });
 
+  // عقد import-integration §٦: «رصيد غير مفوتر/افتتاحي» = الرصيد الجاري − غير المدفوع،
+  // يُحسب في العميل بـDecimal (لا parseFloat) — يفسّر فجوة المستورَد برصيد افتتاحي بلا فواتير.
+  const unbilledOf = (r: { currentBalance: string | null; unpaidTotal: string | null }) =>
+    D(r.currentBalance || 0).minus(D(r.unpaidTotal || 0));
+
   // §٥: نجمع بدقّة Decimal (لا Number()) ⇒ لا انجراف float عبر مئات الصفوف.
   const totals = useMemo(() => {
     const rows = aging.data ?? [];
@@ -48,6 +53,7 @@ export default function ARAging() {
       d91p: acc.d91p.toFixed(2),
       unpaidTotal: acc.unpaidTotal.toFixed(2),
       currentBalance: acc.currentBalance.toFixed(2),
+      unbilled: acc.currentBalance.minus(acc.unpaidTotal).toFixed(2),
     };
   }, [aging.data]);
 
@@ -72,6 +78,7 @@ export default function ARAging() {
                   { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
                   { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
                   { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
+                  { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
                   { key: "currentBalance", header: "رصيد جارٍ", map: (r) => Number(r.currentBalance) },
                   { key: "oldestInvoiceDate", header: "أقدم فاتورة" },
                 ],
@@ -121,6 +128,7 @@ export default function ARAging() {
           <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-orange-50 text-orange-700" />
           <Bucket label="أكثر من 90" value={totals.d91p} color="bg-rose-50 text-rose-700" />
           <Bucket label="إجمالي غير المدفوع" value={totals.unpaidTotal} color="bg-muted" emphasis />
+          <Bucket label="غير مفوتر/افتتاحي" value={totals.unbilled} color="bg-sky-50 text-sky-800" />
           <Bucket label="إجمالي ما لنا عليهم" value={totals.currentBalance} color="bg-emerald-50 text-emerald-800" emphasis />
         </CardContent>
       </Card>
@@ -138,6 +146,7 @@ export default function ARAging() {
                 <th className="p-2 text-left">61–90</th>
                 <th className="p-2 text-left">+90</th>
                 <th className="p-2 text-left">إجمالي غير المدفوع</th>
+                <th className="p-2 text-left" title="الرصيد الجاري ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
                 <th className="p-2 text-left">الرصيد (لنا عليه)</th>
                 <th className="p-2">أقدم فاتورة</th>
                 <th className="p-2 text-center">إجراء</th>
@@ -154,6 +163,7 @@ export default function ARAging() {
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d61_90)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d91p)}</td>
                   <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(r.unpaidTotal)}</td>
+                  <td className="p-2 text-left tabular-nums text-sky-800" dir="ltr">{fmt(unbilledOf(r).toFixed(2))}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.currentBalance)}</td>
                   <td className="p-2 text-xs" dir="ltr">{r.oldestInvoiceDate ?? "—"}</td>
                   <td className="p-2 text-center">
@@ -164,7 +174,7 @@ export default function ARAging() {
                 </tr>
               ))}
               {aging.data && aging.data.length === 0 && (
-                <tr><td colSpan={11} className="p-6 text-center text-muted-foreground">لا ذمم مستحقّة. ممتاز.</td></tr>
+                <tr><td colSpan={12} className="p-6 text-center text-muted-foreground">لا ذمم مستحقّة. ممتاز.</td></tr>
               )}
             </tbody>
           </table>

@@ -5,7 +5,7 @@ import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
-import { CUSTOMER_FIELDS } from "@/lib/importFields";
+import { CUSTOMER_FIELDS, CUSTOMER_IMPORT_META } from "@/lib/importFields";
 import type { CustomerImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -24,6 +24,13 @@ const selectCls =
 function fmt(s: string | number | null | undefined): string {
   if (s === null || s === undefined || s === "") return "—";
   return Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+}
+
+/** الرقم القديم (legacyCode) من صف القائمة — null إن فارغاً (العمود يظهر فقط حين توجد قيم).
+ *  select القائمة في customerService يعيده ويُدخله البحث (شريحة تكامل الاستيراد). */
+function legacyCodeOf(r: { legacyCode?: string | null }): string | null {
+  const v = r.legacyCode;
+  return typeof v === "string" && v.trim() !== "" ? v : null;
 }
 
 export default function Customers() {
@@ -70,6 +77,8 @@ export default function Customers() {
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
   const pages = Math.max(1, Math.ceil(total / limit));
+  // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ).
+  const hasLegacy = rows.some((r) => legacyCodeOf(r) !== null);
 
   async function toggle(id: number, isActive: boolean, name: string) {
     if (isActive) {
@@ -95,17 +104,24 @@ export default function Customers() {
         title="استيراد عملاء من Excel/CSV"
         entityName="عميل"
         fields={CUSTOMER_FIELDS}
-        onImport={async (rows) => {
+        meta={CUSTOMER_IMPORT_META}
+        onImport={async (rows, ctx) => {
+          // خيارات الحوار (dryRun/usdRate/skipFailed/balanceSign) تُمرَّر للخادم فعلياً —
+          // كائن مبنيّ لا literal كي تبقى الأنواع سليمة قبل توسعة مخطط الراوتر (W3) وبعدها.
+          const options = { onExisting: "skip" as const, ...(ctx.options ?? {}) };
           const res = await importMut.mutateAsync({
             rows: rows.map((r) => ({ ...r, rowNumber: r.rowNumber })),
-            options: { onExisting: "skip" },
+            options,
           });
           return res;
         }}
         onDone={(s) => {
-          if (s.committed && (s.created > 0 || s.updated > 0)) {
-            notify.ok(`تم: ${s.created} مُنشأ، ${s.updated} مُحدَّث، ${s.skipped} متخطّى`);
+          // الإبطال متى كُتب شيء فعلاً: ملف متعدد الدفعات قد يتوقّف عند دفعة فاشلة بعد دفعات
+          // التزمت (committed المُدمَج = false) بينما القائمة تغيّرت في القاعدة فعلاً.
+          if (s.created > 0 || s.updated > 0) {
+            if (s.committed) notify.ok(`تم: ${s.created} مُنشأ، ${s.updated} مُحدَّث، ${s.skipped} متخطّى`);
             utils.customers.list.invalidate();
+            utils.customers.search.invalidate();
           }
         }}
       />
@@ -122,7 +138,7 @@ export default function Customers() {
             search={{
               value: q,
               onChange: (v) => { setQ(v); setPage(0); },
-              placeholder: "بحث (اسم/هاتف)",
+              placeholder: "بحث (اسم/هاتف/رقم قديم)",
             }}
             filters={
               <>
@@ -162,6 +178,7 @@ export default function Customers() {
               rows,
               columns: [
                 { key: "name", header: "الاسم" },
+                { key: "legacyCode", header: "الرقم القديم", map: (r) => legacyCodeOf(r) ?? "" },
                 { key: "customerType", header: "النوع" },
                 { key: "phone", header: "الهاتف" },
                 { key: "city", header: "المدينة", map: (r) => [r.city, r.district].filter(Boolean).join(" / ") || "" },
@@ -181,6 +198,7 @@ export default function Customers() {
             <thead className="bg-muted/50">
               <tr className="text-right">
                 <th className="p-2">الاسم</th>
+                {hasLegacy && <th className="p-2">الرقم القديم</th>}
                 <th className="p-2">النوع</th>
                 <th className="p-2">الهاتف</th>
                 <th className="p-2">المدينة/المنطقة</th>
@@ -198,6 +216,11 @@ export default function Customers() {
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">{c.name}</td>
+                    {hasLegacy && (
+                      <td className="p-2 text-xs tabular-nums text-muted-foreground" dir="ltr">
+                        {legacyCodeOf(c) ?? "—"}
+                      </td>
+                    )}
                     <td className="p-2 text-xs">{c.customerType ?? "—"}</td>
                     <td className="p-2"><CopyInline value={c.phone} /></td>
                     <td className="p-2 text-xs">{[c.city, c.district].filter(Boolean).join(" / ") || "—"}</td>
@@ -230,7 +253,7 @@ export default function Customers() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر.</td></tr>
+                <tr><td colSpan={hasLegacy ? 10 : 9} className="p-6 text-center text-muted-foreground">لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر.</td></tr>
               )}
             </tbody>
           </table>

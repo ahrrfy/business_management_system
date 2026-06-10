@@ -15,6 +15,45 @@ const MYSQL_AR: Record<string, string> = {
   ETIMEDOUT: "انتهت مهلة الاتصال بقاعدة البيانات.",
 };
 
+/** أسماء عربية للأعمدة الشائعة — تُعرض في رسالة «قيمة أطول من المسموح في الحقل …». */
+const COLUMN_AR: Record<string, string> = {
+  url: "الصورة",
+  sku: "SKU",
+  name: "الاسم",
+  barcode: "الباركود",
+  phone: "الهاتف",
+  phone2: "الهاتف ٢",
+  phone3: "الهاتف ٣",
+  whatsapp: "واتساب",
+  email: "البريد الإلكتروني",
+  address: "العنوان",
+  city: "المدينة",
+  district: "المنطقة",
+  notes: "الملاحظات",
+  description: "الوصف",
+  caption: "وصف الصورة",
+  legacyCode: "الرقم القديم",
+  variantName: "اسم المتغيّر",
+  unitName: "اسم الوحدة",
+  title: "العنوان",
+  customizationText: "نصّ التخصيص",
+  payee: "جهة الصرف",
+  referenceNumber: "الرقم المرجعي",
+};
+
+/** يستخرج اسم العمود من sqlMessage لخطأ ER_DATA_TOO_LONG (مثل: Data too long for column 'url' at row 1). */
+function dataTooLongColumnFrom(err: unknown): string | null {
+  let e: any = err;
+  for (let i = 0; i < 5 && e; i++) {
+    if (typeof e?.sqlMessage === "string") {
+      const m = /Data too long for column '([^']+)'/.exec(e.sqlMessage);
+      if (m) return m[1];
+    }
+    e = e?.cause;
+  }
+  return null;
+}
+
 /** رسائل عامة بحسب كود tRPC حين لا تتوفّر رسالة عربية أدقّ. */
 const TRPC_CODE_AR: Record<string, string> = {
   BAD_REQUEST: "طلب غير صالح — تحقّق من المدخلات.",
@@ -46,9 +85,19 @@ export function toArabicMessage(opts: {
   const { trpcCode, originalMessage, cause } = opts;
 
   // رسالة أعمال عربية صريحة من الخدمات (تحتوي حرفاً عربياً) ⇒ نستعملها كما هي.
-  if (originalMessage && /[؀-ۿ]/.test(originalMessage)) return originalMessage;
+  // استثناء: «Failed query: …» غلاف Drizzle الخام — قد يحمل معاملات عربية (مثل «قطعة»)
+  // فيخدع الكشف ويُسرّب نصّ SQL والقيم للمستخدم؛ نحيله لخريطة رموز MySQL أدناه.
+  const isRawQueryError = !!originalMessage && /^Failed query:/i.test(originalMessage);
+  if (originalMessage && !isRawQueryError && /[؀-ۿ]/.test(originalMessage)) return originalMessage;
 
   const code = mysqlCodeFrom(cause);
+
+  // ER_DATA_TOO_LONG: نسمّي الحقل المقصود بالعربية بدل رسالة عامة لا تدلّ المستخدم على شيء.
+  if (code === "ER_DATA_TOO_LONG") {
+    const col = dataTooLongColumnFrom(cause);
+    if (col) return `قيمة أطول من المسموح في الحقل «${COLUMN_AR[col] ?? col}».`;
+  }
+
   if (code && MYSQL_AR[code]) return MYSQL_AR[code];
 
   if (trpcCode && TRPC_CODE_AR[trpcCode]) return TRPC_CODE_AR[trpcCode];

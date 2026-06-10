@@ -65,9 +65,9 @@ describe("coerceValue", () => {
   it("money: يطبّع الأرقام العربية والفواصل", () => {
     expect(coerceValue(FIELDS[2], "١٬٥٠٠٫٥٠")).toEqual({ value: "1500.50", error: null });
   });
-  it("money: يرفض أكثر من منزلتين", () => {
-    expect(coerceValue(FIELDS[2], "1.555").value).toBeUndefined();
-    expect(coerceValue(FIELDS[2], "1.555").error).toBeTruthy();
+  it("money: يقرّب أكثر من منزلتين نصّياً HALF_UP (شريحة import-integration)", () => {
+    expect(coerceValue(FIELDS[2], "1.555").value).toBe("1.56");
+    expect(coerceValue(FIELDS[2], "1.555").error).toBeNull();
   });
   it("money: يرفض النصّ", () => {
     expect(coerceValue(FIELDS[2], "abc").error).toBeTruthy();
@@ -122,7 +122,7 @@ describe("buildRows", () => {
     const built = buildRows(parse, mapping, FIELDS);
     expect(built[0].errors).toHaveLength(0);
     expect(built[0].values.name).toBe("أحمد");
-    expect(built[0].values.phone).toBe("07701234567");
+    expect(built[0].values.phone).toBe("+9647701234567"); // تطبيع E.164 (شريحة import-integration)
     expect(built[0].values.creditLimit).toBe("500");
     expect(built[0].rowNumber).toBe(2); // يطابق صفّ الإكسل الفعلي من parse.rowNumbers
   });

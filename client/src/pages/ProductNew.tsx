@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { AlertCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -203,12 +204,12 @@ export default function ProductNew() {
       <Card>
         <CardHeader><CardTitle className="text-base">صور المنتج</CardTitle></CardHeader>
         <CardContent>
+          {/* بلا maxSizeMB صريح — افتراض المكوّن ٨ ميغا قبل الضغط التلقائي (علاج «قيمة أطول من المسموح»). */}
           <ImageUploader
             value={images}
             onChange={setImages}
             maxItems={10}
-            maxSizeMB={2}
-            hint="حتى 10 صور — الأولى تكون رئيسيّة افتراضياً، ويمكن تغييرها بالنقر على «اجعلها رئيسية» عند التمرير فوق الصورة."
+            hint="حتى 10 صور (تُضغط تلقائياً قبل الحفظ) — الأولى تكون رئيسيّة افتراضياً، ويمكن تغييرها بالنقر على «اجعلها رئيسية» عند التمرير فوق الصورة."
           />
         </CardContent>
       </Card>
@@ -312,7 +313,17 @@ export default function ProductNew() {
          وأيّ تعطيل يلي عبر شاشة التعديل (يحترم منطق RBAC). */}
       <span className="hidden">{String(isActive)}</span>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
+      {/* خطأ الخادم يُعرض كاملاً قرب زر الحفظ (رسائل errorMap العربية تذكر اسم الحقل —
+          مثلاً «قيمة أطول من المسموح في الحقل «الصورة»» — فلا تُقصّ ولا تُبتلع). */}
+      {error && (
+        <div
+          role="alert"
+          className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+        >
+          <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span className="whitespace-pre-wrap break-words">{error}</span>
+        </div>
+      )}
       <div className="flex gap-2">
         <Button onClick={submit} disabled={create.isPending}>{create.isPending ? "جارٍ الحفظ…" : "حفظ المنتج"}</Button>
         <Link href="/products"><Button variant="outline">إلغاء</Button></Link>

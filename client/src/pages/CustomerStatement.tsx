@@ -5,7 +5,7 @@ import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
-import { positiveDiff } from "@/lib/money";
+import { D, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -140,10 +140,15 @@ export default function CustomerStatement() {
                       : ""}
                   </div>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
                   <Stat label="إجمالي المبيعات" value={stmt.data.summary.totalSales} />
                   <Stat label="إجمالي المدفوع" value={stmt.data.summary.totalPaid} />
                   <Stat label="غير مدفوع" value={stmt.data.summary.unpaid} emphasis />
+                  {/* عقد import-integration §٦: رصيد غير مفوتر = الرصيد الجاري − غير المدفوع (Decimal لا parseFloat) — يشمل الافتتاحي المستورد. */}
+                  <Stat
+                    label="رصيد غير مفوتر — يشمل الافتتاحي المستورد"
+                    value={D(stmt.data.summary.currentBalance).minus(D(stmt.data.summary.unpaid)).toFixed(2)}
+                  />
                   <StatBalance label="الرصيد الجاري" value={stmt.data.summary.currentBalance} />
                 </div>
               </div>

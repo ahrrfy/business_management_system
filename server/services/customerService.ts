@@ -211,12 +211,14 @@ export async function listCustomers(input: ListCustomersInput = {}) {
   if (input.q?.trim()) {
     const q = `%${input.q.trim()}%`;
     // v3-add-screens: البحث يطال هواتف العميل الثلاثة + الواتساب.
+    // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
     conds.push(or(
       like(customers.name, q),
       like(customers.phone, q),
       like(customers.phone2, q),
       like(customers.phone3, q),
       like(customers.whatsapp, q),
+      like(customers.legacyCode, q),
     ));
   }
   const where = conds.length ? and(...conds) : undefined;
@@ -233,6 +235,8 @@ export async function listCustomers(input: ListCustomersInput = {}) {
       defaultPriceTier: customers.defaultPriceTier,
       creditLimit: customers.creditLimit,
       currentBalance: customers.currentBalance,
+      // import-integration: «الرقم القديم» يظهر عموداً في الشاشة ويُصدَّر في Excel.
+      legacyCode: customers.legacyCode,
       isActive: customers.isActive,
       createdAt: customers.createdAt,
     })
