@@ -55,7 +55,8 @@ export async function backupsStats() {
  * أو غير موجود (دفاع ضد path traversal: لا فواصل، لا «..»، وامتداد .sql، والمجلّد الأب مطابق).
  */
 export async function resolveBackupFile(name: string): Promise<string | null> {
-  if (!name || name.includes("/") || name.includes("\\") || name.includes("..") || !name.endsWith(".sql")) {
+  // قائمة بيضاء صارمة: أحرف/أرقام و . _ - فقط ثم .sql ⇒ ترفض صراحةً الفواصل و«..» وأحرف التحكّم والاقتباس و«:».
+  if (!name || name.includes("..") || !/^[A-Za-z0-9._-]+\.sql$/.test(name)) {
     return null;
   }
   const abs = path.join(backupsDir(), path.basename(name));
@@ -109,12 +110,7 @@ const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // سقف أمان للملف الم
 
 /** يحفظ ملف .sql مرفوعاً (base64) في حجر مؤقّت بعد التحقّق من التوقيع والحجم؛ يعيد المسار المؤقّت. */
 export async function quarantineUpload(fileB64: string): Promise<string> {
-  let buf: Buffer;
-  try {
-    buf = Buffer.from(fileB64, "base64");
-  } catch {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "تعذّر فكّ ترميز الملف." });
-  }
+  const buf = Buffer.from(fileB64, "base64"); // فكّ base64 متساهل (لا يرمي)؛ الحُرّاس الفعليون: الحجم + التوقيع.
   if (buf.length < 512) throw new TRPCError({ code: "BAD_REQUEST", message: "الملف صغير/تالف." });
   if (buf.length > MAX_UPLOAD_BYTES) throw new TRPCError({ code: "BAD_REQUEST", message: "الملف أكبر من الحدّ المسموح." });
   const head = buf.subarray(0, 4096).toString("utf8");

@@ -117,6 +117,13 @@ export default function Settings() {
     <div className="space-y-4 max-w-4xl">
       <h1 className="text-2xl font-bold">الإعدادات والنسخ الاحتياطي</h1>
 
+      {(info.isError || backups.isError) && (
+        <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          <span>تعذّر تحميل بيانات النظام/النسخ. تحقّق من الاتصال بالخادم.</span>
+          <Button size="sm" variant="outline" onClick={() => { info.refetch(); backups.refetch(); }}>إعادة المحاولة</Button>
+        </div>
+      )}
+
       {/* معلومات النظام */}
       <Card>
         <CardHeader><CardTitle className="text-base">معلومات النظام</CardTitle></CardHeader>
