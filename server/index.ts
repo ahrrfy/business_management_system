@@ -23,17 +23,20 @@ import { csrfGuard } from "./middleware/csrf";
 import { printRouter } from "./printRoute";
 import { backupRouter } from "./backupRoutes";
 
-function isPortAvailable(port: number): Promise<boolean> {
+function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
-    const server = net.createServer();
-    server.listen(port, () => server.close(() => resolve(true)));
-    server.on("error", () => resolve(false));
+    const probe = net.createServer();
+    const onListening = () => probe.close(() => resolve(true));
+    probe.on("error", () => resolve(false));
+    // المجسّ يفحص نفس واجهة الاستماع الفعلية — فحص wildcard بينما الربط على 127.0.0.1 يكذب في الاتجاهين.
+    if (host) probe.listen(port, host, onListening);
+    else probe.listen(port, onListening);
   });
 }
 
-async function findAvailablePort(startPort = 3000): Promise<number> {
+async function findAvailablePort(startPort = 3000, host?: string): Promise<number> {
   for (let port = startPort; port < startPort + 20; port++) {
-    if (await isPortAvailable(port)) return port;
+    if (await isPortAvailable(port, host)) return port;
   }
   throw new Error(`No available port found starting from ${startPort}`);
 }
@@ -156,15 +159,28 @@ async function startServer() {
   app.use("/api/backups", csrfGuard, backupRouter());
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
-  const port = await findAvailablePort(preferredPort);
+  // HOST يضيّق واجهة الاستماع: على VPS خلف nginx اضبط HOST=127.0.0.1 فلا يُكشف المنفذ للإنترنت
+  // ولا يُلتفّ على ترويسات nginx الأمنية (G6). غير مضبوط ⇒ كل الواجهات (سلوك المتجر/التطوير كما كان).
+  const host = process.env.HOST || undefined;
+  const port = await findAvailablePort(preferredPort, host);
   if (port !== preferredPort) {
+    if (!isDev) {
+      // nginx/العملاء مثبّتون على PORT — الانزياح الصامت يعني 502 صامتاً والتطبيق «online»؛ فشل صريح أوضح.
+      logger.error(`المنفذ ${preferredPort} مشغول — أوقفنا الإقلاع بدل الانزياح الصامت (nginx مثبّت عليه).`);
+      process.exit(1);
+    }
     logger.warn(`Port ${preferredPort} busy, using ${port} instead`);
+  }
+  if (!isDev && !host) {
+    logger.warn("إنتاج بلا HOST — الاستماع على كل الواجهات؛ خلف nginx اضبط HOST=127.0.0.1.");
   }
 
   // Listen BEFORE attaching Vite: the API binds immediately and a slow Vite
   // startup never blocks the server from accepting requests.
-  await new Promise<void>((resolve) => server.listen(port, () => resolve()));
-  logger.info(`Server running on http://localhost:${port}/ ${sentryEnabled ? "(Sentry on)" : ""}`);
+  await new Promise<void>((resolve) =>
+    host ? server.listen(port, host, () => resolve()) : server.listen(port, () => resolve())
+  );
+  logger.info(`Server running on http://${host ?? "localhost"}:${port}/ ${sentryEnabled ? "(Sentry on)" : ""}`);
 
   // إيقاف رشيق: SIGTERM (من PM2/خدمة Windows عند إعادة التشغيل) وSIGINT (Ctrl+C) ⇒ أغلق
   // الخادم والقاعدة برفق فلا تُبتر طلبات ولا تبقى اتصالات معلّقة عند انقطاع الكهرباء/الإقلاع.
