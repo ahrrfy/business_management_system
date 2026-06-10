@@ -2,6 +2,7 @@ import "dotenv/config";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { branches, categories, productVariants, products, suppliers, users } from "../drizzle/schema";
+import { isStrongPassword } from "../shared/const";
 import { hashPassword } from "./auth/password";
 import { getDb } from "./db";
 import { createProduct } from "./services/catalogService";
@@ -11,6 +12,21 @@ import { withTx } from "./services/tx";
 async function seed() {
   const db = getDb();
   if (!db) throw new Error("DATABASE_URL is required to seed");
+
+  // SEED_MODE=prod (عبر pnpm seed:prod): بذرة إنتاج نظيفة — مدير + فرعان + فئات أساس فقط،
+  // بلا منتجات/مورد عيّنة. سلوك مستقلّ عن NODE_ENV (G17) كي لا تتسرّب عيّنات لقاعدة حقيقية.
+  const isProd = process.env.SEED_MODE === "prod";
+  if (isProd) {
+    const pw = process.env.ADMIN_PASSWORD ?? "";
+    // نرفض القيم المنشورة في المستودع (الافتراضية + قيمة القالب) — من ينسخ القالب بلا تحرير
+    // سيُنشئ admin بكلمة معروفة علناً على نظام مكشوف للإنترنت.
+    const published = new Set(["Admin@12345", "ضع-كلمة-قوية-هنا"]);
+    if (pw.length < 10 || published.has(pw) || !isStrongPassword(pw)) {
+      throw new Error(
+        "بذرة الإنتاج تتطلّب ADMIN_PASSWORD قوية في .env: ≥١٠ أحرف تحوي حرفاً ورقماً، وليست القيمة الافتراضية ولا قيمة القالب."
+      );
+    }
+  }
 
   // Branches — idempotent per-code so older DBs that only have MAIN backfill SALES.
   const targetBranches = [
@@ -26,13 +42,15 @@ async function seed() {
   }
   const mainBranch = (await db.select().from(branches).where(eq(branches.code, "MAIN")).limit(1))[0];
 
-  // Sample supplier (so the purchase-order screen isn't empty on first run)
-  const existingSuppliers = await db.select().from(suppliers).limit(1);
-  if (!existingSuppliers.length) {
-    await db.insert(suppliers).values({ name: "مورد القرطاسية العام", phone: "07700000000", city: "بغداد", paymentTerms: "آجل ٣٠ يوم" });
-    console.log("✓ seeded sample supplier");
-  } else {
-    console.log("• suppliers already exist, skipping");
+  if (!isProd) {
+    // Sample supplier (so the purchase-order screen isn't empty on first run)
+    const existingSuppliers = await db.select().from(suppliers).limit(1);
+    if (!existingSuppliers.length) {
+      await db.insert(suppliers).values({ name: "مورد القرطاسية العام", phone: "07700000000", city: "بغداد", paymentTerms: "آجل ٣٠ يوم" });
+      console.log("✓ seeded sample supplier");
+    } else {
+      console.log("• suppliers already exist, skipping");
+    }
   }
 
   // Admin user
@@ -53,6 +71,19 @@ async function seed() {
     console.log(`✓ seeded admin user: ${email}`);
   } else {
     console.log(`• admin ${email} already exists, skipping`);
+  }
+
+  if (isProd) {
+    // فئات الأساس فقط (idempotent بالاسم) — شاشات المنتج تحتاج فئة واحدة على الأقل، ولا عيّنات.
+    for (const name of ["قرطاسية", "طباعة", "هدايا وتخرج", "تجهيزات مكتبية"]) {
+      const exists = (await db.select().from(categories).where(eq(categories.name, name)).limit(1))[0];
+      if (!exists) {
+        await db.insert(categories).values({ name });
+        console.log(`✓ seeded category ${name}`);
+      }
+    }
+    console.log("✓ بذرة الإنتاج اكتملت: مدير + فرعان + فئات أساس (بلا عيّنات).");
+    return;
   }
 
   // Sample catalog (only if empty)

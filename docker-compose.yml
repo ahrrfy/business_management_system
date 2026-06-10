@@ -20,17 +20,35 @@ services:
       MYSQL_ROOT_PASSWORD: ${DB_ROOT_PW:-erp_root_pw}
       MYSQL_DATABASE: ${DB_NAME:-erp}
     ports:
-      - "${DB_PORT:-3306}:3306"
+      # G1 (أخطر إصلاح): الربط على الحلقة المحلية فقط — Docker يثقب جدار النار (ufw) ويكشف
+      # المنفذ للإنترنت العلني إن رُبط على كل الواجهات. التطبيق على نفس المضيف فلا يحتاج أكثر.
+      - "127.0.0.1:${DB_PORT:-3306}:3306"
     volumes:
       - erp_data:/var/lib/mysql
+    # تدوير سجلّ الحاوية — بلا حدّ يلتهم القرص مع الزمن (G13).
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
     command:
       - --default-authentication-plugin=mysql_native_password
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
-      - --innodb-buffer-pool-size=512M
+      # 512M للتطوير المحلي؛ الإنتاج يضبط DB_BUFFER_POOL=2G في .env (خادم مشترك — لا نلتهم ذاكرة الغير).
+      - --innodb-buffer-pool-size=${DB_BUFFER_POOL:-512M}
+      # binlog صريح (لا اعتماداً على افتراضيٍ قابلٍ للتعطيل الصامت) لاستعادة نقطة-زمنية (G3).
+      - --log-bin=mysql-bin
+      # احتفاظ binlog: افتراضي MySQL (٣٠ يوماً) محلياً؛ الإنتاج يضبط DB_BINLOG_EXPIRE=259200 (٣ أيام).
+      - --binlog-expire-logs-seconds=${DB_BINLOG_EXPIRE:-2592000}
+      # مهلة انتظار قفل الصفوف: افتراضي MySQL (50ث) محلياً؛ الإنتاج يضبط DB_LOCK_WAIT=10 كي لا
+      # يتعلّق الكاشير خلف قفل .for("update") طويل (G12).
+      - --innodb-lock-wait-timeout=${DB_LOCK_WAIT:-50}
     healthcheck:
       # يتأكّد أنّ القاعدة تستجيب فعلاً قبل أن يعتمد عليها التطبيق.
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_ROOT_PW:-erp_root_pw}"]
+      # كلمة المرور عبر MYSQL_PWD داخل الشِل لا عبر argv — ps على المضيف يكشف عمليات الحاويات،
+      # وعلى خادم مشترك كانت تظهر لكل مستخدم كل ١٠ ثوانٍ ($$ تهريب compose ⇒ يتوسّع داخل الحاوية فقط).
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h localhost -uroot --silent"]
       interval: 10s
       timeout: 5s
       retries: 10

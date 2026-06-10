@@ -88,11 +88,18 @@ try {
 
 // ── إعادة البذرة اختيارياً ──
 if (flag("--seed")) {
-  console.log("• إعادة البذرة (admin + فروع + منتجات عيّنة)…");
+  // في الإنتاج بذرة نظيفة (بلا عيّنات) — تصفير قاعدة حقيقية يجب ألا يحقن منتجات وهمية (G17).
+  const prodSeed = process.env.SEED_MODE === "prod" || process.env.NODE_ENV === "production";
+  const seedScript = prodSeed ? "seed:prod" : "seed";
+  console.log(
+    prodSeed
+      ? "• إعادة البذرة الإنتاجية (admin + فروع + فئات — بلا عيّنات)…"
+      : "• إعادة البذرة (admin + فروع + منتجات عيّنة)…"
+  );
   try {
-    execFileSync("pnpm", ["seed"], { stdio: "inherit", shell: process.platform === "win32" });
+    execFileSync("pnpm", [seedScript], { stdio: "inherit", shell: process.platform === "win32" });
   } catch {
-    console.warn("⚠ تعذّرت إعادة البذرة — نفّذ pnpm seed يدوياً.");
+    console.warn(`⚠ تعذّرت إعادة البذرة — نفّذ pnpm ${seedScript} يدوياً.`);
   }
 }
 

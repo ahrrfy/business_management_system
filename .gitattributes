@@ -1,0 +1,4 @@
+# ملفات موجّهة لخوادم لينكس يجب أن تبقى LF دائماً — CRLF يكسر شيبانغ bash وملفات conf
+# (المستودع يُطوَّر على Windows بـcore.autocrlf=true؛ بدون هذا الملف سلامة LF مصادفة قابلة للانتكاس).
+*.sh text eol=lf
+deploy/** text eol=lf
