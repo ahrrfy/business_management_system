@@ -21,6 +21,7 @@ import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
 import { csrfGuard } from "./middleware/csrf";
 import { printRouter } from "./printRoute";
+import { backupRouter } from "./backupRoutes";
 
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise((resolve) => {
@@ -150,6 +151,9 @@ async function startServer() {
   // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"
   // لأن /raw و /test يغيّران الحالة (طباعة فعلية + قد يُشغّلان copy للمشاركة).
   app.use("/api/print", csrfGuard, printRouter());
+
+  // تنزيل النسخ الاحتياطية لجهاز المدير (GET stream، محمي بالمدير + مسار آمن).
+  app.use("/api/backups", csrfGuard, backupRouter());
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
   const port = await findAvailablePort(preferredPort);
