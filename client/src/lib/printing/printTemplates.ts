@@ -2,7 +2,7 @@
  * قوالب طباعة مكتبة العربية — 10 قوالب كاملة
  * كل وظيفة تُولّد HTML وتفتح نافذة طباعة.
  */
-import { BRAND as B, CO, esc, fmt, fmtC, openPrintWindow, CAIRO_FONT, logoUrl } from './brand';
+import { BRAND as B, CO, RECEIPT_PHONES, esc, fmt, fmtC, openPrintWindow, CAIRO_FONT, logoUrl } from './brand';
 import {
   wrapA4Doc, wrapReceiptDoc,
   docHeader, docMeta, docTable, docSummary, docFooter, agingSummaryBars,
@@ -736,6 +736,7 @@ export interface ReceiptBrowserData {
   date: string;
   time?: string | null;
   cashierName?: string | null;
+  customerName?: string | null;
   items: {
     name: string;
     quantity: number;
@@ -747,6 +748,8 @@ export interface ReceiptBrowserData {
   total: string | number;
   paid?: string | number | null;
   change?: string | number | null;
+  /** مبلغ الآجل/الذمة في البيع الآجل (يظهر صفّاً بارزاً بعد المدفوع) */
+  credit?: string | number | null;
 }
 
 export function printBrowserReceipt(d: ReceiptBrowserData): void {
@@ -765,15 +768,9 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     <td style="text-align:left;font-weight:600;">${fmt(it.total)}</td>
   </tr>`).join('');
 
-  const rctPhones = [
-    { dept: 'الحسابات', num: '07883000017' },
-    { dept: 'المبيعات / واتساب', num: '07838666999' },
-    { dept: 'المبيعات', num: '07833484932' },
-    { dept: 'الطباعة', num: '07838484932' },
-  ];
-  const contactRows = rctPhones.map(p => `<tr style="border-bottom:1px dashed #ccc;">
-    <td style="padding:1mm 0;font-weight:600;">${esc(p.dept)}</td>
-    <td style="padding:1mm 0;text-align:left;direction:ltr;font-weight:700;letter-spacing:0.3px;">${esc(p.num)}</td>
+  const contactRows = RECEIPT_PHONES.map(p => `<tr style="border-bottom:1px dashed #ccc;">
+    <td style="padding:1mm 0;font-weight:600;">${esc(p.l)}</td>
+    <td style="padding:1mm 0;text-align:left;direction:ltr;font-weight:700;letter-spacing:0.3px;">${esc(p.n)}</td>
   </tr>`).join('');
 
   const body = `
@@ -792,6 +789,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     ${d.cashierName ? `<span>الكاشير: ${esc(d.cashierName)}</span>` : '<span></span>'}
     ${d.time ? `<span>الوقت: ${esc(d.time)}</span>` : '<span></span>'}
   </div>
+  ${d.customerName ? `<div style="font-size:10px;margin-bottom:1mm;">العميل: <strong>${esc(d.customerName)}</strong></div>` : ''}
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <table style="width:100%;font-size:10px;border-collapse:collapse;">
     <thead><tr style="border-bottom:1px solid #000;">
@@ -812,6 +810,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
     </div>
     ${d.paid != null ? `<div style="display:flex;justify-content:space-between;"><span>المدفوع:</span><span>${fmt(d.paid)}</span></div>` : ''}
     ${d.change != null ? `<div style="display:flex;justify-content:space-between;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
+    ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>آجل/ذمة:</span><span>${fmt(d.credit)}</span></div>` : ''}
   </div>
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <div style="text-align:center;margin:3mm 0 1mm;">

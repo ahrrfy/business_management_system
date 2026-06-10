@@ -38,6 +38,9 @@ export const CO = {
   ],
 };
 
+/** أرقام التواصل المعروضة في إيصال نقطة البيع (الأقسام الأربعة الأولى) — مصدر واحد للقالب HTML والراسم الحراري */
+export const RECEIPT_PHONES = CO.phones.slice(0, 4);
+
 /** HTML-escape helper */
 export const esc = (s: unknown): string =>
   String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));

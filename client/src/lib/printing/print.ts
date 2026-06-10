@@ -2,8 +2,10 @@ import { EscPos } from "./escpos";
 import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
 import { isPaired, sendBytes } from "./thermal";
 import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
+import { receiptToRaster } from "./receiptRaster";
+import { printBrowserReceipt, type ReceiptBrowserData } from "./printTemplates";
 
-export type { PrintDoc };
+export type { PrintDoc, ReceiptBrowserData };
 export { isPaired, isWebUsbSupported, pairPrinter } from "./thermal";
 export {
   isServerBridgeEnabled, getServerBridgeStatus, serverPrintTest, sendRawToServer,
@@ -50,5 +52,40 @@ export async function printDoc(doc: PrintDoc): Promise<{ via: "server" | "therma
   // ٣) حوار طباعة المتصفّح (بديل أخير).
   const html = await docToHtml(doc); // async: توليد QR SVG
   printHtml(html);
+  return { via: "browser" };
+}
+
+/**
+ * طباعة إيصال نقطة البيع **بالتصميم المُعلَّم** (شعار + باركود + جدول الأصناف +
+ * أرقام التواصل + سياسة الاستبدال) بنفس ترتيب الأولوية المتدرّج لـprintDoc:
+ *  ١) جسر الخادم  ٢) WebUSB  ٣) نافذة المتصفّح (قالب الإيصال المُعلَّم نفسه).
+ * التصميم واحد في المسارات الثلاثة ⇒ لا يتفاوت شكل الإيصال بتفاوت الناقل.
+ */
+export async function printReceipt(d: ReceiptBrowserData): Promise<{ via: "server" | "thermal" | "browser" }> {
+  // النقطية تُبنى مرة واحدة لمساري الطباعة الصامتة (الجسر/WebUSB).
+  if ((await isServerBridgeEnabled()) || isPaired()) {
+    const raster = await receiptToRaster(d);
+    if (raster) {
+      const bytes = new EscPos().init().raster(raster).feed(3).cut().bytes();
+      if (await isServerBridgeEnabled()) {
+        try {
+          await sendRawToServer(bytes);
+          return { via: "server" };
+        } catch (e) {
+          console.warn("[print] فشل جسر الخادم، نتراجع للبديل:", e);
+        }
+      }
+      if (isPaired()) {
+        try {
+          await sendBytes(bytes);
+          return { via: "thermal" };
+        } catch (e) {
+          // طابعة مفصولة/خطأ نقل ⇒ تدهور سلس لنافذة المتصفّح (لا تُسقَط الطباعة).
+          console.warn("[print] فشل WebUSB، نتراجع لنافذة المتصفّح:", e);
+        }
+      }
+    }
+  }
+  printBrowserReceipt(d);
   return { via: "browser" };
 }
