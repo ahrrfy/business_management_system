@@ -77,4 +77,11 @@ describe("sendWindowsShare", () => {
     if (process.platform === "win32") return; // على Windows لا نطبع فعلاً داخل الاختبار
     await expect(sendWindowsShare("POS", Buffer.from([1]))).rejects.toThrow();
   });
+
+  it("يرفض اسم مشاركة يحوي أحرف cmd خطرة (تحصين الحقن)", async () => {
+    // على Windows يرمي «غير صالح» قبل أي copy؛ على غيره يرمي «Windows فقط» — كلاهما رفض.
+    const bad = sendWindowsShare("POS & calc", Buffer.from([1]));
+    if (process.platform === "win32") await expect(bad).rejects.toThrow(/غير صالح/);
+    else await expect(bad).rejects.toThrow();
+  });
 });

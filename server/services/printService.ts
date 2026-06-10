@@ -116,11 +116,15 @@ export async function sendWindowsShare(shareName: string, bytes: Buffer): Promis
   if (process.platform !== "win32") {
     throw new Error("الطباعة عبر مشاركة Windows متاحة على نظام Windows فقط — استعمل tcp:// لطابعة شبكية.");
   }
-  const safeName = shareName.replace(/["\\]/g, "");
+  // اسم المشاركة يُمرَّر إلى cmd الذي يعيد تحليل سطر الأوامر؛ نرفض أي اسم خارج القائمة البيضاء
+  // (أحرف/أرقام ومسافة و _ . - $) لإغلاق أي حقن أوامر — حتى وإن أتى من PRINT_TARGET الموثوق (دفاع عميق).
+  if (!/^[A-Za-z0-9 _.$-]+$/.test(shareName)) {
+    throw new Error(`اسم مشاركة غير صالح: «${shareName}». يُسمح بالأحرف والأرقام والمسافة و _ . - $ فقط.`);
+  }
   const tmp = path.join(tmpdir(), `escpos-${process.pid}-${Date.now()}-${tmpCounter++}.bin`);
   await writeFile(tmp, bytes);
   try {
-    const unc = `\\\\localhost\\${safeName}`;
+    const unc = `\\\\localhost\\${shareName}`;
     // copy /b <file> <printerShare> ⇒ يرسل البايتات خاماً للطابعة المشتركة (datatype RAW).
     await execFileP("cmd", ["/c", "copy", "/b", tmp, unc], { windowsHide: true });
   } finally {

@@ -53,7 +53,7 @@ if (!flag("--no-backup")) {
   try {
     execFileSync(process.execPath, [join("scripts", "backup.mjs"), "--no-rotate"], {
       stdio: "inherit",
-      env: { ...process.env, DB_NAME: dbName },
+      env: { ...process.env, BACKUP_TARGET_URL: url },
     });
   } catch {
     fail("فشلت نسخة الأمان ⇒ أوقفتُ الاستعادة. أصلح النسخ أو مرّر --no-backup صراحةً.");

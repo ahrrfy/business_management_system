@@ -4,14 +4,54 @@
 //   node scripts/backup.mjs --no-rotate   # نسخة فقط بلا تدوير
 //
 // المتغيّرات (‎.env): DB_CONTAINER, DB_NAME, DB_ROOT_PW, BACKUP_DIR, BACKUP_OFFSITE_DIR
+// BACKUP_TARGET_URL (يضبطه reset/restore/systemRouter): انسخ بالضبط قاعدة DATABASE_URL على مضيفها
+//   ⇒ هدف النسخة = هدف الحذف/الاستعادة دائماً (يمنع نسخ خادم خاطئ ثم تصفير الخادم الحقيقي).
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const container = process.env.DB_CONTAINER ?? "erp-mysql";
-const db = process.env.DB_NAME ?? "erp";
 const pw = process.env.DB_ROOT_PW ?? "erp_root_pw";
 const backupDir = process.env.BACKUP_DIR ?? "backups";
+
+const COMMON_DUMP = ["--single-transaction", "--routines", "--events"];
+const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
+
+function parseMysqlUrl(u) {
+  const m = String(u).match(/^mysql:\/\/([^:]+):([^@]*)@([^:/]+):(\d+)\/([^/?]+)/);
+  return m ? { user: m[1], pass: m[2], host: m[3], port: m[4], db: m[5] } : null;
+}
+function hasLocalMysqldump() {
+  try { execFileSync("mysqldump", ["--version"], { stdio: "ignore" }); return true; }
+  catch { return false; }
+}
+
+// تحديد القاعدة الهدف + أمر النسخ.
+let db, dumpCmd, dumpArgs;
+const targetUrl = process.env.BACKUP_TARGET_URL;
+if (targetUrl) {
+  const t = parseMysqlUrl(targetUrl);
+  if (!t) { console.error("✗ BACKUP_TARGET_URL غير صالح (متوقّع mysql://user:pass@host:port/db)."); process.exit(1); }
+  db = t.db;
+  if (hasLocalMysqldump()) {
+    // mysqldump محلي ⇒ نضرب القاعدة الهدف مباشرةً (يعمل لأي مضيف: Docker مربوط، خدمة أصلية، أو بعيد).
+    dumpCmd = "mysqldump";
+    dumpArgs = ["-h", t.host, "-P", t.port, `-u${t.user}`, ...(t.pass ? [`-p${t.pass}`] : []), "--databases", t.db, ...COMMON_DUMP];
+  } else if (LOCAL_HOSTS.has(t.host)) {
+    // لا mysqldump محلي لكن المضيف محلي = نفس نسخة Docker المربوطة على المنفذ ⇒ docker exec يصيب الخادم نفسه.
+    dumpCmd = "docker";
+    dumpArgs = ["exec", container, "mysqldump", "-uroot", `-p${t.pass || pw}`, "--databases", t.db, ...COMMON_DUMP];
+  } else {
+    console.error(`✗ تعذّر ضمان نسخة آمنة للقاعدة «${t.db}» على المضيف «${t.host}»: لا mysqldump محلي والمضيف ليس Docker محلياً.`);
+    console.error("  ثبّت أدوات mysql client (mysqldump) أو نفّذ من مضيف القاعدة. (أُوقفت العملية لمنع نسخ خادم خاطئ.)");
+    process.exit(1);
+  }
+} else {
+  // السلوك الافتراضي (db:backup المستقل / المهمة المجدولة) عبر Docker بمتغيّرات .env.
+  db = process.env.DB_NAME ?? "erp";
+  dumpCmd = "docker";
+  dumpArgs = ["exec", container, "mysqldump", "-uroot", `-p${pw}`, "--databases", db, ...COMMON_DUMP];
+}
 
 const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
 mkdirSync(backupDir, { recursive: true });
@@ -19,11 +59,7 @@ const out = join(backupDir, `${db}-${ts}.sql`);
 
 try {
   // --single-transaction: لقطة متّسقة بلا قفل الجداول (آمن أثناء التشغيل).
-  const dump = execFileSync(
-    "docker",
-    ["exec", container, "mysqldump", `-uroot`, `-p${pw}`, "--databases", db, "--single-transaction", "--routines", "--events"],
-    { maxBuffer: 1024 * 1024 * 512 }
-  );
+  const dump = execFileSync(dumpCmd, dumpArgs, { maxBuffer: 1024 * 1024 * 512 });
   if (dump.length < 512) {
     throw new Error(`الناتج صغير بشكل مريب (${dump.length} bytes) — قد يكون فشلاً صامتاً`);
   }

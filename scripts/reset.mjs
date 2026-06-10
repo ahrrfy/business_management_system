@@ -48,10 +48,10 @@ if (valueOf("--confirm") !== "RESET") {
 if (!flag("--no-backup")) {
   console.log(`• أخذ نسخة احتياطية لـ«${dbName}» قبل التصفير…`);
   try {
-    // نمرّر DB_NAME=dbName كي تُدمَج القاعدة الصحيحة (تعمل أيضاً في جلسة معزولة قاعدتها ≠ erp).
+    // نمرّر BACKUP_TARGET_URL كي تطابق النسخة قاعدة DATABASE_URL على مضيفها بالضبط (هدف النسخة = هدف الحذف).
     execFileSync(process.execPath, [join("scripts", "backup.mjs"), "--no-rotate"], {
       stdio: "inherit",
-      env: { ...process.env, DB_NAME: dbName },
+      env: { ...process.env, BACKUP_TARGET_URL: url },
     });
   } catch {
     fail("فشلت النسخة الاحتياطية ⇒ أوقفتُ التصفير حفاظاً على البيانات. أصلح النسخ أو مرّر --no-backup صراحةً.");

@@ -147,8 +147,9 @@ async function startServer() {
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
 
   // جسر الطباعة الصامتة (خارج tRPC): يستقبل بايتات ESC/POS من العميل ويرسلها للطابعة محلياً.
-  // محمي بكوكي الجلسة (sameSite:"strict") ⇒ لا يحتاج CSRF guard المنفصل.
-  app.use("/api/print", printRouter());
+  // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"
+  // لأن /raw و /test يغيّران الحالة (طباعة فعلية + قد يُشغّلان copy للمشاركة).
+  app.use("/api/print", csrfGuard, printRouter());
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
   const port = await findAvailablePort(preferredPort);

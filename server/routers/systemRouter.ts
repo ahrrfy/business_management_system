@@ -11,11 +11,6 @@ const execFileP = promisify(execFile);
 
 const backupDir = () => path.resolve(process.cwd(), process.env.BACKUP_DIR ?? "backups");
 
-function dbNameFromUrl(u?: string): string | undefined {
-  const m = String(u ?? "").match(/\/([^/?]+)(\?.*)?$/);
-  return m ? decodeURIComponent(m[1]) : undefined;
-}
-
 type BackupFile = { name: string; sizeKb: number; createdAt: string };
 
 async function listBackupFiles(): Promise<BackupFile[]> {
@@ -50,10 +45,9 @@ export const systemRouter = router({
   /** تشغيل نسخة احتياطية الآن (للمدير) ⇒ يعيد الملف المُنشأ. */
   backupNow: adminProcedure.mutation(async () => {
     const before = new Set((await listBackupFiles()).map((b) => b.name));
-    const dbName = dbNameFromUrl(process.env.DATABASE_URL);
     await execFileP(process.execPath, [path.resolve(process.cwd(), "scripts", "backup.mjs")], {
-      // نمرّر DB_NAME مطابقاً لـDATABASE_URL كي تُدمَج القاعدة الصحيحة دائماً.
-      env: dbName ? { ...process.env, DB_NAME: dbName } : process.env,
+      // BACKUP_TARGET_URL يضمن نسخ قاعدة DATABASE_URL بالضبط على مضيفها (يطابق reset/restore).
+      env: { ...process.env, BACKUP_TARGET_URL: process.env.DATABASE_URL },
       maxBuffer: 1024 * 1024 * 64,
     });
     const after = await listBackupFiles();

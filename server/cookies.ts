@@ -10,8 +10,10 @@ function isSecureRequest(req: Request): boolean {
 
 /**
  * Session cookie options. Client and API are same-origin (Vite middleware on
- * the Express server), so `sameSite: "lax"` works over plain http on localhost
- * — unlike `none`, which browsers reject without `secure`.
+ * the Express server), so `sameSite: "strict"` works without breaking the app
+ * while blocking the cookie on cross-site requests — strong CSRF protection
+ * (with `csrfGuard` as a second Origin-check layer). `secure` is derived
+ * dynamically from the request protocol (https / x-forwarded-proto behind a proxy).
  */
 export function getSessionCookieOptions(
   req: Request
