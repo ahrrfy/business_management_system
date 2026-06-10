@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { customers, invoiceItems, invoices, productUnits, productVariants, products } from "../../drizzle/schema";
@@ -17,12 +18,23 @@ export const returnRouter = router({
         lines: z.array(z.object({ invoiceItemId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).min(1),
         refund: z.object({ amount: z.string(), method }).optional(),
         restock: z.boolean().optional(),
+        // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
+        clientRequestId: z.string().min(1).max(80).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await returnSale(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "return.create", entityType: "invoice", entityId: input.invoiceId, newValue: { lines: input.lines.length, refund: input.refund?.amount } });
-      return res;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await returnSale(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+          await logAudit(ctx, { action: "return.create", entityType: "invoice", entityId: input.invoiceId, newValue: { lines: input.lines.length, refund: input.refund?.amount } });
+          return res;
+        } catch (e: any) {
+          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue; // سباق نفس المفتاح ⇒ أعد المحاولة فيُرى المرتجع الأول replay
+          if (e instanceof TRPCError) throw e;
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام المرتجع" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام المرتجع (تكرار)" });
     }),
 
   getInvoice: managerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input }) => {

@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { branches, expenses, receipts, shifts } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money, toDateStr, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
@@ -33,11 +34,21 @@ export interface CreateExpenseInput {
   costCenter?: string | null;
   isRecurring?: boolean | null;
   recurringFrequency?: RecurringFrequency | null;
+  /** idempotency: نقرة مزدوجة/إعادة شبكة بنفس المفتاح ⇒ مصروف واحد (لا صرف نقدي مزدوج). */
+  clientRequestId?: string | null;
 }
 
 /** Record a daily expense: receipt (OUT) + PAYMENT_OUT ledger entry + expense row. */
 export async function createExpense(input: CreateExpenseInput, actor: Actor) {
   return withTx(async (tx) => {
+    // idempotency: إعادة طلب بنفس المفتاح ⇒ نُعيد المصروف الأول دون صرف نقدي ثانٍ.
+    const replayId = await findIdempotentRefId(tx, "expense.create", input.clientRequestId);
+    if (replayId) {
+      const ex = (
+        await tx.select({ receiptId: expenses.receiptId }).from(expenses).where(eq(expenses.id, replayId)).limit(1)
+      )[0];
+      return { expenseId: replayId, receiptId: ex?.receiptId ? Number(ex.receiptId) : null, idempotent: true };
+    }
     const amt = money(input.amount);
     if (amt.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ المصروف يجب أن يكون موجباً" });
     if (input.category === "OTHER" && !input.description?.trim())
@@ -89,6 +100,8 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       createdBy: actor.userId,
     });
     const expenseId = Number((eRes as any)[0]?.insertId ?? (eRes as any).insertId);
+    // سجّل مفتاح الـidempotency — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قيد الصرف.
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "expense.create", input.clientRequestId, expenseId);
 
     await postEntry(tx, {
       entryType: "PAYMENT_OUT",

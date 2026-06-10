@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, inArray, like } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like } from "drizzle-orm";
 import {
+  accountingEntries,
   invoiceItems,
   invoices,
   productUnits,
@@ -19,6 +20,7 @@ import {
   postEntry,
 } from "./ledgerService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
+import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 
@@ -67,6 +69,8 @@ export interface CreateWorkOrderInput {
   }>;
   // v3-add-screens(100%): صور نموذج العمل (تذهب لجدول workOrderImages).
   designImages?: Array<{ url: string; caption?: string | null; sortOrder?: number | null }>;
+  /** idempotency: نقرة مزدوجة/إعادة شبكة بنفس المفتاح ⇒ أمر شغل واحد (لا عربون نقدي مزدوج). */
+  clientRequestId?: string | null;
 }
 
 async function nextWorkOrderNumber(tx: any, branchId: number): Promise<string> {
@@ -87,6 +91,14 @@ async function nextWorkOrderNumber(tx: any, branchId: number): Promise<string> {
 /** Create a work order in RECEIVED status — stock is NOT consumed yet. */
 export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor) {
   return withTx(async (tx) => {
+    // idempotency: إعادة طلب بنفس المفتاح ⇒ نُعيد الأمر الأول دون إنشاء/قبض عربون ثانٍ.
+    const replayId = await findIdempotentRefId(tx, "workOrder.create", input.clientRequestId);
+    if (replayId) {
+      const ex = (
+        await tx.select({ orderNumber: workOrders.orderNumber }).from(workOrders).where(eq(workOrders.id, replayId)).limit(1)
+      )[0];
+      return { workOrderId: replayId, orderNumber: ex?.orderNumber ?? "", idempotent: true };
+    }
     if (!input.title.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "عنوان الأمر مطلوب" });
     if (!input.salePrice || money(input.salePrice).lte(0))
       throw new TRPCError({ code: "BAD_REQUEST", message: "سعر البيع يجب أن يكون موجباً" });
@@ -152,6 +164,37 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
       deliveryCost: input.deliveryCost ? round2(money(input.deliveryCost)).toFixed(2) : "0.00",
     });
     const workOrderId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+    // سجّل مفتاح الـidempotency فوراً بعد إدراج الأمر — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قبض العربون.
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "workOrder.create", input.clientRequestId, workOrderId);
+
+    // عربون مقبوض عند الإنشاء: نقدٌ حقيقي يدخل الصندوق ⇒ سجّله receipt(IN) بـshiftId + قيد PAYMENT_IN
+    // (وإلا فهو نقد غير محتسَب في تسوية الوردية/الدفتر). يُربَط بالفاتورة عند التسليم.
+    const depositD = round2(money(input.deposit ?? "0"));
+    if (depositD.gt(0)) {
+      const depositMethod = input.paymentMethod ?? "CASH";
+      const shiftId = await openShiftIdTx(tx, actor.userId, input.branchId);
+      // عربون نقدي يدخل الدُرج ⇒ يلزم وردية مفتوحة لينعكس في تسوية الصندوق/Z-report (لا نقد «معلّق» بلا وردية).
+      if (depositMethod === "CASH" && shiftId == null)
+        throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض عربون نقدي" });
+      const dRes = await tx.insert(receipts).values({
+        branchId: input.branchId,
+        shiftId,
+        workOrderId,
+        direction: "IN",
+        amount: toDbMoney(depositD),
+        paymentMethod: depositMethod,
+        status: "COMPLETED",
+        createdBy: actor.userId,
+      });
+      const depositReceiptId = Number((dRes as any)[0]?.insertId ?? (dRes as any).insertId);
+      await postEntry(tx, {
+        entryType: "PAYMENT_IN",
+        branchId: input.branchId,
+        receiptId: depositReceiptId,
+        customerId: input.customerId ?? null,
+        amount: depositD,
+      });
+    }
 
     for (const m of input.materials ?? []) {
       await tx.insert(workOrderMaterials).values({
@@ -292,17 +335,19 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const laborCost = money(wo.laborCost);
     const costTotal = round2(materialsCost.plus(laborCost));
 
-    // Credit-sale guard.
+    // Credit-sale guard. العربون المقبوض سابقاً (receipt+PAYMENT_IN عند الإنشاء) يُضمّ لمدفوع الفاتورة.
     const paidNow = money(input.payment?.amount ?? "0");
-    if (paidNow.lt(salePrice) && !wo.customerId)
-      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشغل الآجل يتطلب عميلاً محدداً" });
+    const depositPaid = round2(money(wo.deposit ?? "0"));
+    const totalPaid = round2(depositPaid.plus(paidNow));
     if (paidNow.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المدفوع لا يمكن أن يكون سالباً" });
-    if (paidNow.gt(salePrice)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المدفوع يتجاوز إجمالي الأمر" });
+    if (totalPaid.gt(salePrice)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المدفوع (مع العربون) يتجاوز إجمالي الأمر" });
+    if (totalPaid.lt(salePrice) && !wo.customerId)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشغل الآجل يتطلب عميلاً محدداً" });
 
     // Invoice number — reuse the invoice numbering (per-branch daily seq).
     const { nextInvoiceNumber } = await import("./numbering");
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
-    const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(paidNow));
+    const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
     const sourceId = `WO-${wo.id}`;
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
@@ -317,9 +362,9 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       total: salePrice.toFixed(2),
       costTotal: costTotal.toFixed(2),
       status,
-      paidAmount: toDbMoney(paidNow),
+      paidAmount: toDbMoney(totalPaid),
       paymentMethod: input.payment?.method ?? null,
-      paymentDate: paidNow.gt(0) ? new Date() : null,
+      paymentDate: totalPaid.gt(0) ? new Date() : null,
       notes: `أمر شغل ${wo.orderNumber}: ${wo.title}`,
       createdBy: actor.userId,
     });
@@ -341,6 +386,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     // Ledger: SALE entry (no stock movement here — already consumed at start).
     await postEntry(tx, {
       entryType: "SALE",
+      dedupeKey: `SALE:${invoiceId}`, // حارس بنيوي: قيد SALE واحد لكل فاتورة
       branchId: Number(wo.branchId),
       invoiceId,
       customerId: wo.customerId ?? null,
@@ -350,10 +396,20 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       amount: salePrice,
     });
 
-    // AR if credit portion.
+    // AR if credit portion (المتبقّي بعد العربون + دفعة التسليم).
     if (wo.customerId) {
-      const unpaid = round2(salePrice.minus(paidNow));
+      const unpaid = round2(salePrice.minus(totalPaid));
       if (unpaid.gt(0)) await adjustCustomerBalance(tx, Number(wo.customerId), unpaid);
+    }
+
+    // اربط إيصال العربون (المُسجَّل عند الإنشاء، بلا فاتورة) + قيد PAYMENT_IN الخاص به بالفاتورة الآن.
+    if (depositPaid.gt(0)) {
+      const depRcpt = (await tx.select({ id: receipts.id }).from(receipts)
+        .where(and(eq(receipts.workOrderId, Number(wo.id)), isNull(receipts.invoiceId))).limit(1))[0];
+      if (depRcpt) {
+        await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcpt.id)));
+        await tx.update(accountingEntries).set({ invoiceId }).where(eq(accountingEntries.receiptId, Number(depRcpt.id)));
+      }
     }
 
     // Optional payment receipt + PAYMENT_IN entry.
@@ -412,6 +468,47 @@ export async function cancelWorkOrder(workOrderId: number, actor: Actor & { role
         });
       }
     }
+    // استرداد العربون المقبوض (إن وُجد ولم يُربَط بفاتورة): نقدٌ يخرج من الدُرج الآن ⇒ receipt(OUT)+PAYMENT_OUT
+    // يعكس قيد PAYMENT_IN المُسجَّل عند الإنشاء (صافي الدفتر = صفر)، ويظهر خروجاً في Z-report يوم الإلغاء.
+    // نعكس فقط ما قُبِض فعلاً (إيصال موجود) — لا نختلق استرداداً لأوامر قديمة لم تُسجِّل العربون كقيد.
+    const refundD = round2(money(wo.deposit ?? "0"));
+    if (refundD.gt(0)) {
+      const depRcpt = (
+        await tx
+          .select({ amount: receipts.amount, paymentMethod: receipts.paymentMethod })
+          .from(receipts)
+          .where(and(eq(receipts.workOrderId, workOrderId), eq(receipts.direction, "IN"), isNull(receipts.invoiceId)))
+          .limit(1)
+      )[0];
+      if (depRcpt) {
+        const refundAmt = round2(money(depRcpt.amount));
+        const refundMethod = depRcpt.paymentMethod ?? "CASH";
+        const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId));
+        if (refundMethod === "CASH" && shiftId == null)
+          throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لاسترداد العربون النقدي" });
+        const rRes = await tx.insert(receipts).values({
+          branchId: Number(wo.branchId),
+          shiftId,
+          workOrderId,
+          direction: "OUT",
+          amount: toDbMoney(refundAmt),
+          paymentMethod: refundMethod,
+          status: "COMPLETED",
+          referenceNumber: `WO-CANCEL-REFUND-${workOrderId}`,
+          createdBy: actor.userId,
+        });
+        const refundReceiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: Number(wo.branchId),
+          receiptId: refundReceiptId,
+          customerId: wo.customerId ?? null,
+          amount: refundAmt,
+          notes: `استرداد عربون أمر شغل ملغى #${workOrderId}`,
+        });
+      }
+    }
+
     await tx.update(workOrders).set({ status: "CANCELLED" }).where(eq(workOrders.id, workOrderId));
     return { workOrderId, status: "CANCELLED" };
   });

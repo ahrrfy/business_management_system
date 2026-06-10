@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
@@ -42,12 +43,23 @@ export const purchaseRouter = router({
         purchaseOrderId: z.number().int().positive(),
         lines: z.array(z.object({ purchaseOrderItemId: z.number().int().positive(), receivedBaseQuantity: z.number().int().positive() })).min(1),
         payment: z.object({ amount: z.string(), method }).optional(),
+        // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
+        clientRequestId: z.string().min(1).max(80).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await receivePurchase(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "purchase.receive", entityType: "purchaseOrder", entityId: input.purchaseOrderId, newValue: { lines: input.lines.length } });
-      return res;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await receivePurchase(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+          await logAudit(ctx, { action: "purchase.receive", entityType: "purchaseOrder", entityId: input.purchaseOrderId, newValue: { lines: input.lines.length } });
+          return res;
+        } catch (e: any) {
+          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (e instanceof TRPCError) throw e;
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام الاستلام" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الاستلام (تكرار)" });
     }),
 
   list: managerProcedure

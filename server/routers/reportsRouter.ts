@@ -14,6 +14,7 @@ import {
 } from "../services/reportsService";
 import {
   reconcileCustomerBalances,
+  reconcileSupplierBalances,
   reconcileInventory,
   reconcileLedgerProfit,
 } from "../services/reconcileService";
@@ -186,6 +187,7 @@ export const reportsRouter = router({
   /** تدقيق التوافق المالي — للمشرف فقط. يكشف الانجراف الصامت في الأرصدة/المخزون/الدفتر. */
   reconcile: adminProcedure.query(async () => ({
     customers: await reconcileCustomerBalances(),
+    suppliers: await reconcileSupplierBalances(),
     inventory: await reconcileInventory(),
     ledger: await reconcileLedgerProfit(),
     runAt: new Date().toISOString(),

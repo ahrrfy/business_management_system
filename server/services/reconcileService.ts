@@ -5,6 +5,7 @@ import {
   customers,
   inventoryMovements,
   invoices,
+  suppliers,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money } from "./money";
@@ -85,6 +86,51 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
         actual: actual.toFixed(2),
         drift: drift.toFixed(2),
       });
+    }
+  }
+  return issues;
+}
+
+/**
+ * التحقّق من اتساق ذمم الموردين (AP). النموذج: suppliers.currentBalance (موجب = ندين للمورد)
+ * يُحدَّث بزيادة نسبية ذرّية في كل عملية. المُتوقَّع المُشتقّ من قيود الدفتر للمورد:
+ *   AP = Σ PURCHASE.amount − Σ PAYMENT_OUT.amount + Σ PAYMENT_IN.amount + Σ RETURN.amount
+ *   (RETURN.amount مخزَّن سالباً ⇒ يَطرح المرتجع؛ PAYMENT_IN = استرداد نقدي من المورد يَزيد AP العاكس).
+ * يكشف أي انحراف صامت في AP (الذي لم يكن مُتحقَّقاً منه آلياً قبل هذا).
+ */
+export async function reconcileSupplierBalances(): Promise<ReconcileResult[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const entrySum = await db
+    .select({
+      supplierId: accountingEntries.supplierId,
+      ap: sql<string>`COALESCE(SUM(CASE
+        WHEN ${accountingEntries.entryType} = 'PURCHASE'    THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'RETURN'      THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        ELSE 0 END), 0)`,
+    })
+    .from(accountingEntries)
+    .where(sql`${accountingEntries.supplierId} IS NOT NULL`)
+    .groupBy(accountingEntries.supplierId);
+
+  const actuals = await db.select({ id: suppliers.id, balance: suppliers.currentBalance }).from(suppliers);
+  const apMap = new Map(entrySum.map((r) => [Number(r.supplierId), String(r.ap ?? "0")]));
+  const actualMap = new Map(actuals.map((s) => [Number(s.id), String(s.balance ?? "0")]));
+
+  const seen = new Set<number>();
+  for (const r of entrySum) seen.add(Number(r.supplierId));
+  for (const s of actuals) if (money(s.balance ?? "0").abs().gt(0)) seen.add(Number(s.id));
+
+  const issues: ReconcileResult[] = [];
+  for (const supplierId of Array.from(seen)) {
+    const expected = money(apMap.get(supplierId) ?? "0");
+    const actual = money(actualMap.get(supplierId) ?? "0");
+    const drift = expected.minus(actual).abs();
+    if (drift.greaterThan("0.01")) {
+      issues.push({ entity: "supplier", id: supplierId, expected: expected.toFixed(2), actual: actual.toFixed(2), drift: drift.toFixed(2) });
     }
   }
   return issues;

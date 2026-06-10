@@ -249,7 +249,7 @@ export default function SalesReturnNew() {
     }
 
     createMutation.mutate(
-      { invoiceId: sourceInvoiceId, lines, refund, restock },
+      { invoiceId: sourceInvoiceId, lines, refund, restock, clientRequestId },
       {
         onSuccess: () => {
           if (opts.print) {

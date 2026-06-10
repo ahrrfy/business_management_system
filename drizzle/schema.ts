@@ -335,6 +335,9 @@ export const shifts = mysqlTable(
     countedCash: decimal("countedCash", { precision: 15, scale: 2 }),
     variance: decimal("variance", { precision: 15, scale: 2 }),
     status: mysqlEnum("shiftStatus", ["OPEN", "CLOSED"]).default("OPEN").notNull(),
+    // حارس ذرّي: «userId:branchId» عند الفتح، NULL عند الإغلاق. UNIQUE يسمح بـNULL متعدّد
+    // ⇒ وردية مفتوحة واحدة لكل (موظّف×فرع)؛ فتحٌ متزامن ثانٍ يفشل بـER_DUP_ENTRY.
+    openGuard: varchar("openGuard", { length: 64 }).unique("uq_shift_open_guard"),
     openedAt: timestamp("openedAt").defaultNow().notNull(),
     closedAt: timestamp("closedAt"),
     notes: text("notes"),
@@ -369,6 +372,8 @@ export const invoices = mysqlTable(
     discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
     costTotal: decimal("costTotal", { precision: 15, scale: 2 }).default("0").notNull(),
+    // فرق تقريب النقد العراقي (±) للبيع النقدي الكامل؛ يُسجَّل أيضاً كقيد ADJUST ليتّسق الدفتر مع النقد المستلم.
+    cashRoundingAdjustment: decimal("cashRoundingAdjustment", { precision: 15, scale: 2 }).default("0").notNull(),
     status: mysqlEnum("invoiceStatus", ["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).default("PENDING").notNull(),
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     // returnedTotal: مجموع ما أُرجِع من إجمالي الفاتورة (تراكميّ عبر مرتجعات جزئية).
@@ -490,6 +495,8 @@ export const receipts = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
+    // ربط إيصال العربون بأمر الشغل قبل وجود فاتورة؛ يُربَط بالفاتورة عند التسليم.
+    workOrderId: bigint("workOrderId", { mode: "number" }),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     shiftId: bigint("shiftId", { mode: "number" }).references(() => shifts.id),
     direction: mysqlEnum("direction", ["IN", "OUT"]).default("IN").notNull(),
@@ -509,6 +516,7 @@ export const receipts = mysqlTable(
   },
   (table) => ({
     invoiceIdx: index("idx_receipt_invoice").on(table.invoiceId),
+    workOrderIdx: index("idx_receipt_wo").on(table.workOrderId),
     branchIdx: index("idx_receipt_branch").on(table.branchId),
     dateIdx: index("idx_receipt_date").on(table.createdAt),
     voucherIdx: index("idx_receipt_voucher").on(table.voucherNumber),
@@ -540,6 +548,9 @@ export const accountingEntries = mysqlTable(
     amount: decimal("amount", { precision: 15, scale: 2 }).default("0").notNull(),
     entryDate: date("entryDate").notNull(),
     notes: text("notes"),
+    // حارس بنيوي ضدّ التكرار: مثل «SALE:<invoiceId>» ⇒ قيد SALE واحد لكل فاتورة على مستوى القاعدة.
+    // UNIQUE يسمح بـNULL متعدّد، فالقيود التي تتكرّر مشروعاً (دفعات/مرتجعات) تتركه NULL.
+    dedupeKey: varchar("dedupeKey", { length: 80 }).unique("uq_entry_dedupe"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({

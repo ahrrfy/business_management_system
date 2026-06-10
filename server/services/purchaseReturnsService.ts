@@ -4,10 +4,12 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   accountingEntries,
   inventoryMovements,
+  productVariants,
   purchaseOrderItems,
   purchaseOrders,
   receipts,
 } from "../../drizzle/schema";
+import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDbMoney } from "./money";
@@ -49,24 +51,20 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
   }
 
   return withTx(async (tx) => {
-    // idempotency: ابحث عن قيد RETURN سابق بنفس clientRequestId.
-    const idemKey = input.clientRequestId ? `purchaseReturn:${input.clientRequestId}` : null;
-    if (idemKey) {
-      const prior = await tx
-        .select({ id: accountingEntries.id, amount: accountingEntries.amount })
-        .from(accountingEntries)
-        .where(
-          and(
-            eq(accountingEntries.entryType, "RETURN"),
-            eq(accountingEntries.notes, idemKey)
-          )
-        )
-        .limit(1);
-      if (prior[0]) {
+    // idempotency: جدول idempotencyKeys ذو القيد الفريد (operation,clientRequestId) — ذرّي بلا سباق TOCTOU
+    // (بخلاف البحث القديم في notes غير المفهرس). نفس المفتاح ⇒ يُعاد بنتيجة المرتجع الأول.
+    if (input.clientRequestId) {
+      const existingRefId = await findIdempotentRefId(tx, "purchase.return", input.clientRequestId);
+      if (existingRefId != null) {
+        const prior = (await tx
+          .select({ amount: accountingEntries.amount })
+          .from(accountingEntries)
+          .where(eq(accountingEntries.id, existingRefId))
+          .limit(1))[0];
         return {
-          purchaseReturnEntryId: Number(prior[0].id),
-          returnedTotal: money(prior[0].amount).neg().toFixed(2),
-          idempotent: true,
+          purchaseReturnEntryId: existingRefId,
+          returnedTotal: money(prior?.amount ?? "0").neg().toFixed(2),
+          idempotent: true as const,
         };
       }
     }
@@ -99,7 +97,21 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     const work: Work[] = [];
     for (const it of input.items) {
       const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
-      const lineTotal = round2(money(it.unitPrice).times(money(it.quantity)));
+      // سقف القيمة: سعر إرجاع الوحدة لا يتجاوز التكلفة المسجّلة للصنف (book cost) ⇒ يمنع تضخيم تخفيض AP/الاسترداد
+      //  بقيمة عشوائية (الثغرة الحرجة للمرتجع بلا أمر مرجعي). الكمية مُقيّدة بالمخزون المتاح في applyMovement.
+      const v = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, it.variantId)).limit(1))[0];
+      if (!v) throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${it.variantId} غير موجود` });
+      const bookCostPerBase = money(v.costPrice ?? "0");
+      const factor = money(baseQuantity).dividedBy(money(it.quantity)); // وحدات الأساس لكل وحدة شراء
+      const bookUnitCost = round2(bookCostPerBase.times(factor)); // تكلفة وحدة الشراء بالكتب
+      const reqUnit = money(it.unitPrice);
+      if (reqUnit.gt(bookUnitCost)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `سعر إرجاع المتغيّر ${it.variantId} (${reqUnit.toFixed(2)}) يتجاوز تكلفته المسجّلة (${bookUnitCost.toFixed(2)}) — لا يُسمح بتضخيم قيمة المرتجع.`,
+        });
+      }
+      const lineTotal = round2(reqUnit.times(money(it.quantity)));
       work.push({ input: it, baseQuantity, lineTotal });
     }
 
@@ -182,7 +194,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       supplierId: input.supplierId,
       cost: returnedTotal.neg(),
       amount: returnedTotal.neg(),
-      notes: idemKey ?? input.reason ?? undefined,
+      notes: input.reason ?? undefined,
     });
 
     // التقط معرف قيد المرتجع للإرجاع للعميل (للتتبّع/idempotency).
@@ -199,6 +211,11 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       .orderBy(sql`id DESC`)
       .limit(1);
     const purchaseReturnEntryId = Number(last[0]?.id ?? 0);
+
+    // Idempotency: سجّل المفتاح (refId = قيد المرتجع). سباق نفس المفتاح ⇒ ER_DUP_ENTRY فيُعاد المحاولة replay.
+    if (input.clientRequestId) {
+      await recordIdempotencyKey(tx, "purchase.return", input.clientRequestId, purchaseReturnEntryId);
+    }
 
     // AP: المورد يدين لنا الآن بقيمة المرتجع ⇒ ننقص رصيده الدائن لدينا (suppliers.currentBalance) بالسالب.
     await adjustSupplierBalance(tx, input.supplierId, returnedTotal.neg());
@@ -225,7 +242,6 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         supplierId: input.supplierId,
         receiptId,
         amount: returnedTotal,
-        notes: idemKey ? `${idemKey}:cash` : undefined,
       });
       // العاكس: لأنّ النقد دخل صندوقنا، نُلغي خصم الذمم بمقدار النقد المُسترد.
       await adjustSupplierBalance(tx, input.supplierId, returnedTotal);

@@ -114,6 +114,8 @@ export const saleRouter = router({
         // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
         // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
+        // تقريب نقدي IQD للبيع النقدي الكامل (يُحسب على الخادم، يُسجَّل ADJUST لفرق التقريب).
+        cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),
         notes: z.string().optional(),
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
@@ -145,14 +147,27 @@ export const saleRouter = router({
     }),
 
   pay: cashierProcedure
-    .input(z.object({ invoiceId: z.number().int().positive(), amount: z.string(), method, shiftId: z.number().int().positive().optional() }))
+    .input(z.object({
+      invoiceId: z.number().int().positive(), amount: z.string(), method, shiftId: z.number().int().positive().optional(),
+      // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
+      clientRequestId: z.string().min(1).max(80).optional(),
+    }))
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُرفض دفعه على فاتورة فرع آخر (منع IDOR).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       const enforceBranchId = elevated ? null : (ctx.user.branchId ?? -1);
-      const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
-      return res;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+          await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
+          return res;
+        } catch (e: any) {
+          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (e instanceof TRPCError) throw e;
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام الدفعة" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الدفعة (تكرار)" });
     }),
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).

@@ -276,25 +276,39 @@ export const workOrderRouter = router({
           caption: z.string().max(255).nullish(),
           sortOrder: z.number().int().min(0).nullish(),
         })).max(10).default([]),
+        // idempotency: نقرة مزدوجة عند الإنشاء (عربون نقدي) ⇒ أمر شغل واحد.
+        clientRequestId: z.string().min(1).max(80).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
-      await logAudit(ctx, {
-        action: "workOrder.create",
-        entityType: "workOrder",
-        entityId: (res as { workOrderId?: number })?.workOrderId,
-        newValue: {
-          title: input.title, qty: input.quantity,
-          channel: input.receptionChannel ?? null,
-          priority: input.priority ?? null,
-          paymentMethod: input.paymentMethod ?? null,
-          hasDelivery: !!input.hasDelivery,
-          itemsCount: input.items?.length ?? 0,
-          imagesCount: input.designImages?.length ?? 0,
-        },
-      });
-      return res;
+      // أعد المحاولة على سباق idempotency (طلبان متزامنان بنفس المفتاح ⇒ الثاني يُعيد الأول).
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await createWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+          if (!(res as { idempotent?: boolean }).idempotent) {
+            await logAudit(ctx, {
+              action: "workOrder.create",
+              entityType: "workOrder",
+              entityId: (res as { workOrderId?: number })?.workOrderId,
+              newValue: {
+                title: input.title, qty: input.quantity,
+                channel: input.receptionChannel ?? null,
+                priority: input.priority ?? null,
+                paymentMethod: input.paymentMethod ?? null,
+                hasDelivery: !!input.hasDelivery,
+                itemsCount: input.items?.length ?? 0,
+                imagesCount: input.designImages?.length ?? 0,
+              },
+            });
+          }
+          return res;
+        } catch (e: any) {
+          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (e instanceof TRPCError) throw e;
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء أمر الشغل" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء أمر الشغل" });
     }),
 
   start: cashierProcedure

@@ -17,14 +17,22 @@ export async function openShift(input: { branchId: number; openingBalance: strin
     if (existing[0]) {
       throw new TRPCError({ code: "CONFLICT", message: "لديك وردية مفتوحة بالفعل في هذا الفرع" });
     }
-    const res = await tx.insert(shifts).values({
-      branchId: input.branchId,
-      userId: actor.userId,
-      openingBalance: toDbMoney(input.openingBalance),
-      status: "OPEN",
-    });
-    const shiftId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
-    return { shiftId };
+    try {
+      const res = await tx.insert(shifts).values({
+        branchId: input.branchId,
+        userId: actor.userId,
+        openingBalance: toDbMoney(input.openingBalance),
+        status: "OPEN",
+        openGuard: `${actor.userId}:${input.branchId}`, // حارس ذرّي ضدّ الفتح المزدوج المتزامن
+      });
+      const shiftId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+      return { shiftId };
+    } catch (e: any) {
+      if (e?.code === "ER_DUP_ENTRY") {
+        throw new TRPCError({ code: "CONFLICT", message: "لديك وردية مفتوحة بالفعل في هذا الفرع" });
+      }
+      throw e;
+    }
   });
 }
 
@@ -82,6 +90,7 @@ export async function closeShift(
       .set({
         status: "CLOSED",
         closedAt: new Date(),
+        openGuard: null, // يحرّر الحارس ⇒ يسمح بفتح وردية جديدة لنفس الموظّف/الفرع
         expectedCash: toDbMoney(expected),
         countedCash: toDbMoney(counted),
         variance: toDbMoney(variance),

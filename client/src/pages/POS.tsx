@@ -499,6 +499,8 @@ export default function POS() {
   }
 
   // ── Sale ──────────────────────────────────────────────────────────────────
+  // idempotency: مفتاح ثابت لكل عملية بيع (يتجدّد بعد النجاح) ⇒ النقر المزدوج/إعادة الشبكة لا يكرّر الفاتورة.
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const sale = trpc.sales.create.useMutation({
     onSuccess: async (r) => {
       const finalReceived = isCredit ? paid  : total;
@@ -524,6 +526,8 @@ export default function POS() {
       clearCartDraft(branchId);
       setMessage({ kind: "ok", text: `تم البيع ✓ فاتورة ${r.invoiceNumber}` });
       setCart([]); setPayInput(""); setSelId(null);
+      setClientRequestId(crypto.randomUUID()); // مفتاح جديد للبيع التالي
+
       await printDoc(buildReceiptDoc(rec));
       await Promise.all([
         utils.catalog.posList.invalidate(),
@@ -546,13 +550,12 @@ export default function POS() {
       setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل." });
       return;
     }
-    // §٩: تقريب نقدي إلى ٢٥٠ د.ع لمبلغ الدفع الكامل فقط (لا الجزئي/الآجل).
-    // الدفع الجزئي يبقى مرناً (٢٥٠ مضاعفات على الكاشير لا الخوارزمية).
-    const payAmount = activeTab.method === "CASH" && !isCredit
-      ? cashRoundedTotalD.toFixed(2)
-      : (isCredit ? money(paid) : money(total));
+    // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
+    // نرسل المبلغ غير المقرّب؛ الخادم يقرّبه ويُسجّل النقد المستلم = الإجمالي المقرّب.
+    const cashFull = activeTab.method === "CASH" && !isCredit;
+    const payAmount = isCredit ? money(paid) : money(total);
     sale.mutate({
-      branchId, shiftId: shift.id, sourceType: "POS",
+      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map((c) => ({
@@ -562,6 +565,7 @@ export default function POS() {
         ...(c.disc != null ? { discountPercent: String(c.disc) } : {}),
       })),
       payment: { amount: payAmount, method: activeTab.method },
+      ...(cashFull ? { cashRoundIQD: true } : {}),
       ...(approval ? { managerApproval: approval } : {}),
     });
   }
@@ -569,10 +573,10 @@ export default function POS() {
   function quickPay() {
     if (!shift || !cart.length) return;
     setMessage(null);
-    // §٩: quickPay دائماً CASH كامل ⇒ نقرّب إلى ٢٥٠ د.ع.
-    const payAmount = roundCashIQD(total).toFixed(2);
+    // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
+    const payAmount = money(total);
     sale.mutate({
-      branchId, shiftId: shift.id, sourceType: "POS",
+      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId, cashRoundIQD: true,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map((c) => ({

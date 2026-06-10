@@ -21,12 +21,15 @@ export interface EntryInput {
   amount?: Decimal;
   entryDate?: Date;
   notes?: string;
+  /** حارس بنيوي ضدّ التكرار (مثل «SALE:<invoiceId>») ⇒ ER_DUP_ENTRY عند قيد مزدوج. فارغ للقيود المتكرّرة مشروعاً. */
+  dedupeKey?: string | null;
 }
 
 /** Insert one ledger entry. RETURN entries carry negative values by convention. */
 export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
   await tx.insert(accountingEntries).values({
     entryType: e.entryType,
+    dedupeKey: e.dedupeKey ?? null,
     branchId: e.branchId ?? null,
     invoiceId: e.invoiceId ?? null,
     purchaseOrderId: e.purchaseOrderId ?? null,

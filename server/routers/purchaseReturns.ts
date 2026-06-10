@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import { createPurchaseReturn, listPurchaseReturns } from "../services/purchaseReturnsService";
@@ -36,22 +37,31 @@ export const purchaseReturnsRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createPurchaseReturn(input, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? input.branchId,
-      });
-      await logAudit(ctx, {
-        action: "purchaseReturn.create",
-        entityType: "purchaseReturn",
-        entityId: res.purchaseReturnEntryId,
-        newValue: {
-          supplierId: input.supplierId,
-          items: input.items.length,
-          returnedTotal: res.returnedTotal,
-          idempotent: res.idempotent,
-        },
-      });
-      return res;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const res = await createPurchaseReturn(input, {
+            userId: ctx.user.id,
+            branchId: ctx.user.branchId ?? input.branchId,
+          });
+          await logAudit(ctx, {
+            action: "purchaseReturn.create",
+            entityType: "purchaseReturn",
+            entityId: res.purchaseReturnEntryId,
+            newValue: {
+              supplierId: input.supplierId,
+              items: input.items.length,
+              returnedTotal: res.returnedTotal,
+              idempotent: (res as { idempotent?: boolean }).idempotent,
+            },
+          });
+          return res;
+        } catch (e: any) {
+          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (e instanceof TRPCError) throw e;
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام مرتجع الشراء" });
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام مرتجع الشراء (تكرار)" });
     }),
 
   list: managerProcedure

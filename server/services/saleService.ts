@@ -9,7 +9,7 @@ import {
 } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
-import { money, toDbMoney } from "./money";
+import { money, roundCashIQD, toDbMoney } from "./money";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { nextInvoiceNumber } from "./numbering";
 import { openShiftIdTx } from "./shiftService";
@@ -43,6 +43,8 @@ export interface CreateSaleInput {
   creditApproved?: boolean;
   /** تاريخ استحقاق الفاتورة (YYYY-MM-DD) — للبيع الآجل. يظهر في AR aging والتنبيهات. */
   dueDate?: string | null;
+  /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS): الخادم يقرّب الإجمالي ويُسجّل الفرق ADJUST. */
+  cashRoundIQD?: boolean;
 }
 
 export interface CreateSaleResult {
@@ -154,9 +156,14 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       computed.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
     );
 
-    // 7. Credit-sale guard.
-    const paidNow = money(input.payment?.amount ?? "0");
-    const unpaid = money(totals.total).minus(paidNow);
+    // 7. تقريب نقدي IQD للبيع النقدي الكامل: يُقرَّب الإجمالي لفئة 250، فالنقد المستلم = الإجمالي المقرّب
+    //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
+    const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
+    const grandTotalD = money(totals.total);
+    const effectiveTotalD = roundCash ? roundCashIQD(grandTotalD) : grandTotalD;
+    const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)
+    const paidNow = roundCash ? effectiveTotalD : money(input.payment?.amount ?? "0");
+    const unpaid = effectiveTotalD.minus(paidNow);
     if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
@@ -173,7 +180,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 
     // 8. Invoice header.
     const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
-    const status = computeInvoiceStatus(totals.total, toDbMoney(paidNow));
+    const status = computeInvoiceStatus(toDbMoney(effectiveTotalD), toDbMoney(paidNow));
     const insRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: input.sourceType,
@@ -187,8 +194,9 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       subtotal: totals.subtotal,
       taxAmount: totals.taxAmount,
       discountAmount: totals.discountAmount,
-      total: totals.total,
+      total: toDbMoney(effectiveTotalD),
       costTotal,
+      cashRoundingAdjustment: toDbMoney(cashRoundingAdj),
       status,
       paidAmount: toDbMoney(paidNow),
       paymentMethod: input.payment?.method ?? null,
@@ -231,6 +239,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     const cost = money(costTotal);
     await postEntry(tx, {
       entryType: "SALE",
+      dedupeKey: `SALE:${invoiceId}`, // حارس بنيوي: قيد SALE واحد لكل فاتورة
       branchId: input.branchId,
       invoiceId,
       customerId: input.customerId ?? null,
@@ -240,6 +249,20 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
     });
+
+    // 11.b تسوية التقريب النقدي: قيد ADJUST بفرق التقريب ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
+    if (!cashRoundingAdj.isZero()) {
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId: input.branchId,
+        invoiceId,
+        customerId: input.customerId ?? null,
+        revenue: cashRoundingAdj,
+        profit: cashRoundingAdj,
+        amount: cashRoundingAdj,
+        notes: "تقريب نقدي IQD",
+      });
+    }
 
     // 12. Payment + AR.
     if (paidNow.gt(0)) {
@@ -264,10 +287,10 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       });
     }
     if (input.customerId) {
-      await adjustCustomerBalance(tx, input.customerId, money(totals.total).minus(paidNow));
+      await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
     }
 
-    return { invoiceId, invoiceNumber, total: totals.total, status };
+    return { invoiceId, invoiceNumber, total: toDbMoney(effectiveTotalD), status };
   });
 }
 

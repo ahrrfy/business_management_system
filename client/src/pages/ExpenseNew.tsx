@@ -69,6 +69,8 @@ export default function ExpenseNew() {
   const [isRecurring, setIsRecurring] = useState(false);
   const [recurringFrequency, setRecurringFrequency] = useState("MONTHLY");
   const [error, setError] = useState("");
+  // idempotency: مفتاح ثابت للنموذج — يمنع ازدواج الصرف عند النقر المزدوج/إعادة الشبكة. يتجدّد بعد نجاح كل تسجيل.
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
 
   const effectiveBranch = branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1);
   const openShift = trpc.shifts.current.useQuery(
@@ -78,6 +80,7 @@ export default function ExpenseNew() {
 
   const create = trpc.expenses.create.useMutation({
     onSuccess: async () => {
+      setClientRequestId(crypto.randomUUID());
       await utils.expenses.list.invalidate();
       notify.ok("تم تسجيل المصروف");
       navigate("/expenses");
@@ -103,6 +106,7 @@ export default function ExpenseNew() {
       costCenter: costCenter || null,
       isRecurring,
       recurringFrequency: isRecurring ? (recurringFrequency as any) : null,
+      clientRequestId,
     });
   }
 

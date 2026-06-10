@@ -48,6 +48,8 @@ export default function InvoiceDetail() {
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  // idempotency: مفتاح ثابت لكل دفعة (يتجدّد بعد النجاح) ⇒ نقرة مزدوجة لا تُسجّل دفعتين.
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
 
   // Default the payment amount to remaining balance once data loads.
   useEffect(() => {
@@ -64,6 +66,7 @@ export default function InvoiceDetail() {
         utils.sales.get.invalidate({ invoiceId }),
         utils.sales.list.invalidate(),
       ]);
+      setClientRequestId(crypto.randomUUID()); // مفتاح جديد للدفعة التالية
     },
     onError: (e) => { setError(e.message); setDone(""); },
   });
@@ -80,7 +83,7 @@ export default function InvoiceDetail() {
     const amt = D(payAmount || "0");
     if (amt.lte(0)) return setError("أدخل مبلغاً موجباً.");
     if (amt.gt(remaining)) return setError(`المبلغ يتجاوز المتبقّي (${fmt(remaining.toFixed(2))}).`);
-    pay.mutate({ invoiceId, amount: amt.toFixed(2), method: payMethod });
+    pay.mutate({ invoiceId, amount: amt.toFixed(2), method: payMethod, clientRequestId });
   }
 
   return (

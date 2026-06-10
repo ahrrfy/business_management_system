@@ -48,6 +48,8 @@ export default function PurchaseReceive() {
     setRecv(init);
   }, [po.data]);
 
+  // idempotency: مفتاح ثابت لكل استلام (يتجدّد بعد النجاح) ⇒ نقرة مزدوجة لا تُكرّر المخزون/AP.
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const receive = trpc.purchases.receive.useMutation({
     onSuccess: async (r) => {
       setDone(r.fullyReceived ? "تم الاستلام الكامل." : "تم استلام جزئي.");
@@ -55,6 +57,7 @@ export default function PurchaseReceive() {
         utils.purchases.get.invalidate({ purchaseOrderId }),
         utils.purchases.list.invalidate(),
       ]);
+      setClientRequestId(crypto.randomUUID()); // مفتاح جديد للاستلام التالي (جزئي)
     },
     onError: (e) => setError(e.message),
   });
@@ -78,7 +81,7 @@ export default function PurchaseReceive() {
       if (want > remaining) return setError(`الكمية المستلمة للصنف «${it.productName}» تتجاوز المتبقّي (${remaining}).`);
     }
     const payment = Number(payAmount) > 0 ? { amount: String(Number(payAmount)), method: payMethod } : undefined;
-    receive.mutate({ purchaseOrderId, lines, payment });
+    receive.mutate({ purchaseOrderId, lines, payment, clientRequestId });
   }
 
   const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });

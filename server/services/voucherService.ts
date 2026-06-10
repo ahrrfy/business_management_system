@@ -23,6 +23,7 @@ import {
   adjustSupplierBalance,
   postEntry,
 } from "./ledgerService";
+import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { money, toDateStr, toDbMoney } from "./money";
 import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
@@ -42,6 +43,8 @@ export interface VoucherInput {
   referenceNumber?: string | null;
   checkNumber?: string | null;
   cardLastFour?: string | null;
+  /** Idempotency: نفس المفتاح ⇒ سند واحد (لا صرف/قبض نقدي مزدوج عند النقر المزدوج/إعادة الشبكة). */
+  clientRequestId?: string | null;
 }
 
 export interface VoucherResult {
@@ -72,6 +75,14 @@ async function nextVoucherNumber(
 /** يُنشئ سند قبض (IN) أو صرف (OUT) ذريّاً. */
 export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
   return withTx(async (tx) => {
+    // Idempotency: تكرار نفس المفتاح يُعاد بنتيجة السند الأول (لا قيد/نقد مزدوج).
+    if (input.clientRequestId) {
+      const existingRefId = await findIdempotentRefId(tx, "voucher.create", input.clientRequestId);
+      if (existingRefId != null) {
+        const r = (await tx.select({ voucherNumber: receipts.voucherNumber, direction: receipts.direction }).from(receipts).where(eq(receipts.id, existingRefId)).limit(1))[0];
+        return { receiptId: existingRefId, voucherNumber: r?.voucherNumber ?? "", direction: (r?.direction as "IN" | "OUT") ?? "IN" };
+      }
+    }
     const amount = money(input.amount);
     if (amount.lte(0)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ السند يجب أن يكون موجباً" });
@@ -133,6 +144,11 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     } else if (input.partyType === "SUPPLIER" && input.partyId) {
       // صرف لمورّد ⇒ AP -= amount. قبض من مورّد (مثل استرداد) ⇒ AP += amount.
       await adjustSupplierBalance(tx, input.partyId, direction === "OUT" ? amount.neg() : amount);
+    }
+
+    // Idempotency: سجّل المفتاح بعد الكتابة (refId = الإيصال). سباق نفس المفتاح ⇒ ER_DUP_ENTRY.
+    if (input.clientRequestId) {
+      await recordIdempotencyKey(tx, "voucher.create", input.clientRequestId, receiptId);
     }
 
     return { receiptId, voucherNumber, direction };

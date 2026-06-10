@@ -44,6 +44,8 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const customers = trpc.customers.list.useQuery(undefined, { enabled: partyType === "CUSTOMER" });
   const suppliers = trpc.suppliers.list.useQuery(undefined, { enabled: partyType === "SUPPLIER" });
 
+  // idempotency: مفتاح ثابت لكل سند (الصفحة تنتقل بعد النجاح فيتجدّد) ⇒ نقرة مزدوجة لا تُنشئ سندين.
+  const [clientRequestId] = useState(() => crypto.randomUUID());
   const create = trpc.vouchers.create.useMutation({
     onSuccess: async (res) => {
       notify.ok(`تمّ إنشاء ${isReceipt ? "سند القبض" : "سند الصرف"} ${res.voucherNumber}`);
@@ -87,6 +89,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       referenceNumber: referenceNumber.trim() || null,
       checkNumber: method === "CHECK" ? checkNumber.trim() || null : null,
       cardLastFour: method === "CARD" ? cardLastFour.trim() || null : null,
+      clientRequestId,
     });
   }
 

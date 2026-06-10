@@ -208,10 +208,13 @@ export default function WorkOrderNew() {
 
   // ── الحفظ ──────────────────────────────────────────────────
   const [error, setError] = useState("");
+  // idempotency: مفتاح ثابت للنموذج — يمنع إنشاء أمرين وقبض عربون مزدوج عند النقر المزدوج/إعادة الشبكة.
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
 
   const createCustomer = trpc.customers.create.useMutation();
   const createWO = trpc.workOrders.create.useMutation({
     onSuccess: async (res, _vars, ctx) => {
+      setClientRequestId(crypto.randomUUID());
       await utils.workOrders.list.invalidate();
       const id = (res as any)?.workOrderId ?? (res as any)?.id;
       // معالجة الطباعة بعد الحفظ.
@@ -258,6 +261,7 @@ export default function WorkOrderNew() {
     // v3-add-screens(100%): البيانات الإضافية تذهب لأعمدة DB مباشرة (لا ترميز JSON).
     createWO.mutate({
       branchId: Number(effectiveBranch),
+      clientRequestId,
       customerId: customerId ?? null,
       baseVariantId,
       title: title.trim() || cart[0]?.productName || "أمر شغل",
