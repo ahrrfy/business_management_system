@@ -1,6 +1,8 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, like, ne, or, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, ne, or, sql, type SQL } from "drizzle-orm";
+import type { MySqlColumn } from "drizzle-orm/mysql-core";
 import { branchStock, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
+import { ARABIC_FOLD_PAIRS, escapeLikePattern, tokenizeSearchQuery } from "../../shared/searchNormalize";
 import { getDb } from "../db";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
@@ -73,12 +75,69 @@ const activeOnly = and(
   eq(productUnits.isActive, true)
 );
 
+/* ============================ البحث الذكي (مشترك بين البيع والشراء) ============================ */
+
+/**
+ * تعبير SQL يطبّع عموداً نصياً بنفس جدول التطبيع المشترك (ARABIC_FOLD_PAIRS) —
+ * الجهتان (العمود + الاستعلام) تُطبَّعان بنفس القواعد فتتم المطابقة في فضاء موحَّد:
+ * «ازرق» يجد «أزرق»، و«مكتبه» تجد «مكتبة».
+ */
+function foldedCol(col: MySqlColumn): SQL {
+  let expr = sql`lower(coalesce(${col}, ''))`;
+  for (const [from, to] of ARABIC_FOLD_PAIRS) {
+    expr = sql`replace(${expr}, ${from}, ${to})`;
+  }
+  return expr;
+}
+
+/** الأعمدة القابلة للبحث في الكتالوج — مصدر واحد لبُنية الشرط والترتيب. */
+function searchableCols(): SQL[] {
+  return [foldedCol(products.name), foldedCol(productVariants.sku), foldedCol(productVariants.variantName), foldedCol(productUnits.barcode)];
+}
+
+/**
+ * شرط البحث الذكي: الاستعلام يُقطَّع كلماتٍ مُطبَّعة، وكل كلمة يجب أن تَرِد في
+ * **أيّ** عمود (اسم/SKU/متغيّر/باركود) — والكلمات تُجمَع بـAND ⇒
+ * «قلم ازرق» يجد «قلم جاف أزرق» مهما تباعدت الكلمات. يعيد null لاستعلام فارغ.
+ */
+function buildCatalogSearchWhere(query: string | undefined): SQL | null {
+  const tokens = tokenizeSearchQuery(query ?? "");
+  if (!tokens.length) return null;
+  const cols = searchableCols();
+  // محرف هروب LIKE الافتراضي في MySQL هو \ — escapeLikePattern يهرّب به، والأنماط
+  // معاملات مربوطة (لا تمرّ بمحلّل النصوص) ⇒ لا حاجة لعبارة ESCAPE صريحة.
+  const perToken = tokens.map((t) => {
+    const pat = `%${escapeLikePattern(t)}%`;
+    return or(...cols.map((c) => sql`${c} like ${pat}`));
+  });
+  return and(...perToken) ?? null;
+}
+
+/**
+ * ترتيب بالملاءمة: تطابق تام (باركود/SKU) أولاً، ثم اسم يبدأ بالاستعلام،
+ * ثم الأقرب لبداية الاسم، ثم أبجدياً — بدل «الأحدث أولاً» الذي يدفن المطلوب.
+ */
+function buildCatalogSearchOrder(query: string | undefined): SQL[] {
+  const tokens = tokenizeSearchQuery(query ?? "");
+  if (!tokens.length) return [];
+  const whole = tokens.join(" ");
+  const wholePrefix = `${escapeLikePattern(whole)}%`;
+  const name = foldedCol(products.name);
+  const rank = sql`case
+    when ${foldedCol(productUnits.barcode)} = ${whole} then 0
+    when ${foldedCol(productVariants.sku)} = ${whole} then 1
+    when ${name} like ${wholePrefix} then 2
+    else 3
+  end`;
+  return [rank, sql`instr(${name}, ${tokens[0]})`, asc(products.name)];
+}
+
 /** Resolve a scanned barcode to a single POS row. */
 export async function lookupByBarcode(barcode: string, branchId: number, tier: PriceTier): Promise<PosRow | null> {
   const db = getDb();
   if (!db) return null;
   const rows = await baseSelect(db, branchId, tier)
-    .where(and(activeOnly, eq(productUnits.barcode, barcode)))
+    .where(and(activeOnly, eq(productUnits.barcode, barcode.trim())))
     .limit(1);
   return normalize(rows)[0] ?? null;
 }
@@ -87,15 +146,10 @@ export async function lookupByBarcode(barcode: string, branchId: number, tier: P
 export async function listForPos(branchId: number, tier: PriceTier, query?: string, limit = 200): Promise<PosRow[]> {
   const db = getDb();
   if (!db) return [];
-  let where: SQL | undefined = activeOnly;
-  if (query && query.trim()) {
-    const q = `%${query.trim()}%`;
-    where = and(
-      activeOnly,
-      or(like(products.name, q), like(productVariants.sku, q), like(productVariants.variantName, q), like(productUnits.barcode, q))
-    );
-  }
-  const rows = await baseSelect(db, branchId, tier).where(where).orderBy(desc(products.id)).limit(limit);
+  const search = buildCatalogSearchWhere(query);
+  const where = search ? and(activeOnly, search) : activeOnly;
+  const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
+  const rows = await baseSelect(db, branchId, tier).where(where).orderBy(...order).limit(limit);
   return normalize(rows);
 }
 
@@ -121,14 +175,9 @@ export interface PurchaseRow {
 export async function listForPurchase(branchId: number, query?: string, limit = 50): Promise<PurchaseRow[]> {
   const db = getDb();
   if (!db) return [];
-  let where: SQL | undefined = activeOnly;
-  if (query && query.trim()) {
-    const q = `%${query.trim()}%`;
-    where = and(
-      activeOnly,
-      or(like(products.name, q), like(productVariants.sku, q), like(productVariants.variantName, q), like(productUnits.barcode, q))
-    );
-  }
+  const search = buildCatalogSearchWhere(query);
+  const where = search ? and(activeOnly, search) : activeOnly;
+  const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await db
     .select({
       productId: products.id,
@@ -150,7 +199,7 @@ export async function listForPurchase(branchId: number, query?: string, limit = 
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     .where(where)
-    .orderBy(desc(products.id))
+    .orderBy(...order)
     .limit(limit);
   return rows.map((r) => ({
     ...r,

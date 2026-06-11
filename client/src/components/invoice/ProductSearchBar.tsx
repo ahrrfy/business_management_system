@@ -7,7 +7,9 @@
  *   (sale-side only). On purchase side, we fall back to substring match.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { fmtNum } from "./totals";
@@ -54,20 +56,31 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   const inputRef = useRef<HTMLInputElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
 
+  // بحث ذكي: تأجيل ١٨٠ms (طلب واحد بعد استقرار الكتابة لا مع كل حرف) + إبقاء النتائج
+  // السابقة أثناء الجلب (لا وميض) + التفعيل من حرفين. التطبيع العربي والترتيب على الخادم.
+  const debounced = useDebouncedValue(query, 180);
+  const term = debounced.trim();
+  const canSearch = term.length >= 2;
   // Sale-side query
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: query.trim(), limit: 50 },
-    { enabled: !isPurchase && query.trim().length > 0 }
+    { branchId, tier, query: term, limit: 50 },
+    { enabled: !isPurchase && canSearch, placeholderData: keepPreviousData, staleTime: 15_000 }
   );
   // Purchase-side query
   const purQ = trpc.catalog.forPurchase.useQuery(
-    { branchId, query: query.trim(), limit: 50 },
-    { enabled: isPurchase && query.trim().length > 0 }
+    { branchId, query: term, limit: 50 },
+    { enabled: isPurchase && canSearch, placeholderData: keepPreviousData, staleTime: 15_000 }
   );
+  /** النتائج مطابقة للنص الحالي (لا تأجيل ولا جلب معلّق وطوله صالح) ⇒ Enter يضيف بأمان */
+  const settled =
+    term === query.trim() && query.trim().length >= 2 && !(isPurchase ? purQ.isFetching : posQ.isFetching);
 
   const utils = trpc.useUtils();
 
+  // ما يُعرض/يُبحر فيه: عند النزول تحت حرفين تُخفى النتائج القديمة العالقة (keepPreviousData)
+  // كي لا تُعرض مضلِّلةً ولا يضيفها Enter/الأسهم خطأً.
   const results: NormalizedRow[] = useMemo(() => {
+    if (query.trim().length < 2) return [];
     if (isPurchase) {
       return (purQ.data ?? []).map((r) => ({
         productId: r.productId,
@@ -96,7 +109,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       price: r.price ?? "0",
       costBase: "0", // cashier should not see cost; pages may pass showCost=false in the table
     }));
-  }, [isPurchase, posQ.data, purQ.data]);
+  }, [isPurchase, posQ.data, purQ.data, query]);
 
   useEffect(() => {
     const h = (e: MouseEvent) => {
@@ -107,7 +120,8 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
   }, []);
 
   useEffect(() => {
-    setShowDrop(results.length > 0 && query.trim().length > 0);
+    // تظهر القائمة دائماً مع نصّ بحث (نتائج أو حالة واضحة: قصير/جارٍ/لا نتائج) — لا صمت
+    setShowDrop(query.trim().length > 0);
     setSelectedIdx(-1);
   }, [results, query]);
 
@@ -149,13 +163,17 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
         addRow(results[selectedIdx]);
         return;
       }
-      if (results.length === 1) {
+      // أثناء التأجيل/الجلب النتائج قد تعود لاستعلام أقدم ⇒ لا نضيف خطأً (انتظر ~٢٠٠ms واضغط من جديد)
+      if (settled && results.length >= 1) {
         addRow(results[0]);
         return;
       }
       // Try exact barcode resolution (sale side only — has byBarcode endpoint).
+      // فقط لما يشبه باركوداً (أرقام/لاتيني متصل ≥4) — نصّ بحث عربي عادي لا يُرمى عليه
+      // «باركود غير معروف»؛ رسالة «لا نتائج» تظهر في القائمة نفسها.
       const code = query.trim();
-      if (code && !isPurchase) {
+      const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
+      if (code && !isPurchase && looksLikeBarcode) {
         try {
           const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier });
           if (row) {
@@ -228,9 +246,17 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
 
       {showDrop && (
         <div className="absolute inset-x-0 top-[calc(100%+4px)] z-40 overflow-hidden rounded-xl border bg-card shadow-xl">
-          {loading && <div className="px-4 py-3 text-center text-xs text-muted-foreground">جارٍ البحث…</div>}
-          {!loading &&
-            results.map((p, i) => (
+          {query.trim().length < 2 && (
+            <div className="px-4 py-3 text-center text-xs text-muted-foreground">اكتب حرفين فأكثر للبحث…</div>
+          )}
+          {query.trim().length >= 2 && results.length === 0 && (
+            <div className="px-4 py-3 text-center text-xs text-muted-foreground">
+              {loading ? "جارٍ البحث…" : <>لا نتائج لـ «{query.trim()}» — جرّب كلمة أقصر أو امسح الباركود</>}
+            </div>
+          )}
+          {/* النتائج السابقة تبقى ظاهرة أثناء الجلب (باهتة قليلاً) — لا وميض اختفاء */}
+          <div className={cn("max-h-80 overflow-auto", loading && "opacity-60")}>
+          {results.map((p, i) => (
               <div
                 key={p.productUnitId}
                 onClick={() => addRow(p)}
@@ -257,6 +283,7 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
                 </div>
               </div>
             ))}
+          </div>
         </div>
       )}
     </div>

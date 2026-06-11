@@ -8,8 +8,10 @@ import { confirm } from "@/lib/confirm";
 import { D, roundCashIQD, round2 } from "@/lib/money";
 import { isPaired, isWebUsbSupported, pairPrinter, printDoc, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 
@@ -387,9 +389,16 @@ export default function POS() {
   const cashRoundingDelta = activeTab.method === "CASH" ? cashRoundedTotalD.minus(D(total)).toNumber() : 0;
 
   // ── Search ────────────────────────────────────────────────────────────────
+  // بحث ذكي: تأجيل ١٨٠ms (طلب واحد بعد استقرار الكتابة لا مع كل حرف) + إبقاء النتائج
+  // السابقة أثناء الجلب (لا وميض) + التفعيل من حرفين (التطبيع/الترتيب على الخادم).
+  const debouncedSearch = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId, tier: effectiveTier, query: search, limit: 10 },
-    { enabled: search.trim().length > 0 }
+    { branchId, tier: effectiveTier, query: debouncedSearch, limit: 20 },
+    {
+      enabled: debouncedSearch.trim().length >= 2,
+      placeholderData: keepPreviousData,
+      staleTime: 15_000,
+    }
   );
 
   // ── Cart ops ──────────────────────────────────────────────────────────────
@@ -707,7 +716,9 @@ export default function POS() {
         C={C} dark={dark}
         search={search} setSearch={setSearch}
         showDrop={showDrop} setShowDrop={setShowDrop}
-        results={searchResults.data ?? []}
+        results={search.trim().length >= 2 ? (searchResults.data ?? []) : []}
+        searching={searchResults.isFetching}
+        searchSettled={!searchResults.isFetching && debouncedSearch.trim() === search.trim() && search.trim().length >= 2}
         addToCart={addRow}
         searchRef={searchRef}
         handleScanKeyDown={handleScanKeyDown}
@@ -823,6 +834,9 @@ interface POSHeaderProps {
   search: string; setSearch: (s: string) => void;
   showDrop: boolean; setShowDrop: (v: boolean) => void;
   results: RouterOutputs["catalog"]["posList"];
+  searching: boolean;
+  /** النتائج مطابقة لنص البحث الحالي (لا طلب معلّقاً ولا تأجيلاً) ⇒ Enter آمن */
+  searchSettled: boolean;
   addToCart: (row: RouterOutputs["catalog"]["posList"][number]) => void;
   searchRef: React.RefObject<HTMLInputElement | null>;
   handleScanKeyDown: (e: React.KeyboardEvent<HTMLInputElement>, curVal: string, setValue: (s: string) => void) => void;
@@ -837,7 +851,7 @@ interface POSHeaderProps {
   onTestPrint: () => void;
 }
 
-function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
+function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -878,7 +892,9 @@ function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results,
             onKeyDown={(e) => {
               handleScanKeyDown(e, search, setSearch);
               if (e.defaultPrevented) return;
-              if (e.key === "Enter" && results.length > 0) addToCart(results[0]);
+              // Enter يضيف أول نتيجة — فقط حين تطابق النتائج نصَّ البحث الحالي
+              // (أثناء التأجيل/الجلب قد تكون النتائج لاستعلام أقدم ⇒ إضافة خاطئة).
+              if (e.key === "Enter" && searchSettled && results.length > 0) addToCart(results[0]);
               if (e.key === "Escape") { setSearch(""); setShowDrop(false); }
             }}
             style={{ width: "100%", height: 50, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14.5, outline: "none", paddingRight: 44, paddingLeft: search ? 44 : 14 }}
@@ -889,9 +905,18 @@ function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results,
           )}
         </div>
 
-        {/* Dropdown */}
-        {showDrop && results.length > 0 && (
+        {/* Dropdown — نتائج، أو حالة واضحة (قصير/جارٍ البحث/لا نتائج) بدل الصمت */}
+        {showDrop && search.trim().length > 0 && (
           <div style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, left: 0, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 10px 36px rgb(0 0 0/.18)", zIndex: 60, overflow: "hidden" }}>
+            {results.length === 0 && (
+              <div style={{ padding: "14px 16px", fontSize: 12.5, color: C.mutedFg, textAlign: "center" }}>
+                {search.trim().length < 2
+                  ? "اكتب حرفين فأكثر للبحث…"
+                  : searching
+                    ? "جارٍ البحث…"
+                    : `لا نتائج لـ «${search.trim()}» — جرّب كلمة أقصر أو امسح الباركود`}
+              </div>
+            )}
             {results.map((p) => (
               <div key={p.productUnitId} onClick={() => addToCart(p)}
                 style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 16px", cursor: "pointer", borderBottom: `1px solid ${C.border}`, minHeight: 60 }}
