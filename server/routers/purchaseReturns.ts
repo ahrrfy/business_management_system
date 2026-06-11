@@ -5,6 +5,8 @@ import { createPurchaseReturn, listPurchaseReturns } from "../services/purchaseR
 import { managerProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+// تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 /**
  * مرتجع المشتريات (إرجاع بضاعة للمورد):
@@ -70,6 +72,8 @@ export const purchaseReturnsRouter = router({
         .object({
           supplierId: z.number().int().positive().optional(),
           branchId: z.number().int().positive().optional(),
+          from: ymd.optional(),
+          to: ymd.optional(),
           limit: z.number().int().positive().max(200).optional(),
           offset: z.number().int().nonnegative().optional(),
         })

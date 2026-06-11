@@ -183,10 +183,13 @@ export default function Suppliers() {
                       </span>
                     </td>
                     <td className="p-2 text-center">
+                      {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
-                        mode="inline"
                         actions={[
                           { key: "edit", label: "تعديل", href: `/suppliers/${id}/edit` },
+                          // كشف الحساب يقرأ ?id= من URL (نمط SupplierStatement)
+                          { key: "stmt", label: "كشف حساب", href: `/suppliers-statement?id=${id}` },
+                          { key: "pay", label: "سند صرف له", href: "/vouchers/payment/new" },
                           {
                             key: "toggle",
                             label: isActive ? "تعطيل" : "تفعيل",

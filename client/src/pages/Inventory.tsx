@@ -1,3 +1,4 @@
+import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
@@ -163,7 +164,8 @@ export default function Inventory() {
                 <th className="p-2 text-center">الرصيد</th>
                 <th className="p-2 text-center">الحد الأدنى</th>
                 <th className="p-2 text-center">الحالة</th>
-                {canAdjust && <th className="p-2 text-center">تسوية</th>}
+                {/* العمود لكل الأدوار الآن (تحويل/حركات روابط قراءة)، والتسوية تبقى لمن يملكها */}
+                <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>
             <tbody>
@@ -194,35 +196,51 @@ export default function Inventory() {
                         {r.isLow ? "منخفض" : "متوفّر"}
                       </span>
                     </td>
-                    {canAdjust && (
-                      <td className="p-2 text-center">
-                        {isEditing ? (
-                          <div className="flex flex-col gap-1 items-stretch min-w-[180px]">
-                            <Input
-                              value={notes}
-                              onChange={(e) => setNotes(e.target.value)}
-                              placeholder="سبب التسوية (جرد/تلف…)"
-                              className="h-8 text-xs"
-                            />
-                            <div className="flex gap-1 justify-center">
-                              <Button size="sm" onClick={() => saveAdjust(r.variantId)} disabled={adjust.isPending}>
-                                {adjust.isPending ? "…" : "حفظ"}
-                              </Button>
-                              <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={adjust.isPending}>
-                                إلغاء
-                              </Button>
-                            </div>
+                    <td className="p-2 text-center">
+                      {canAdjust && isEditing ? (
+                        <div className="flex flex-col gap-1 items-stretch min-w-[180px]">
+                          <Input
+                            value={notes}
+                            onChange={(e) => setNotes(e.target.value)}
+                            placeholder="سبب التسوية (جرد/تلف…)"
+                            className="h-8 text-xs"
+                          />
+                          <div className="flex gap-1 justify-center">
+                            <Button size="sm" onClick={() => saveAdjust(r.variantId)} disabled={adjust.isPending}>
+                              {adjust.isPending ? "…" : "حفظ"}
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={adjust.isPending}>
+                              إلغاء
+                            </Button>
                           </div>
-                        ) : (
-                          <Button size="sm" variant="outline" onClick={() => startAdjust(r)}>تسوية</Button>
-                        )}
-                      </td>
-                    )}
+                        </div>
+                      ) : (
+                        // menu صريح: عدد الإجراءات الظاهرة يتفاوت بالدور — نثبّت ⋯ لاتساق الصفوف
+                        <RowActions
+                          mode="menu"
+                          actions={[
+                            {
+                              key: "adjust",
+                              label: "تسوية",
+                              hidden: !canAdjust,
+                              onSelect: () => startAdjust(r),
+                            },
+                            { key: "transfer", label: "تحويل بين الفروع", href: "/transfers" },
+                            {
+                              key: "moves",
+                              label: "حركات الصنف",
+                              // شاشة الحركات تقرأ ?q= من URL فتفتح مفلترة على SKU
+                              href: `/inventory-movements?q=${encodeURIComponent(r.sku)}`,
+                            },
+                          ]}
+                        />
+                      )}
+                    </td>
                   </tr>
                 );
               })}
               {!onHand.isLoading && rows.length === 0 && (
-                <tr><td colSpan={canAdjust ? 6 : 5} className="p-6 text-center text-muted-foreground">لا أصناف برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء.</td></tr>
+                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">لا أصناف برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء.</td></tr>
               )}
             </tbody>
           </table>

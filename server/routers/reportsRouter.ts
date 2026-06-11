@@ -22,14 +22,25 @@ import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
 import { adminProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 
+/** تاريخ فترة كشف الحساب YYYY-MM-DD — نصّ صريح لا Date (يُمرَّر كما هو لمقارنات SQL). */
+const ymdStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD");
+
 export const reportsRouter = router({
   arAging: managerProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input }) => getARAging({ branchId: input?.branchId })),
 
   customerStatement: managerProcedure
-    .input(z.object({ customerId: z.number().int().positive() }))
-    .query(async ({ input }) => getCustomerStatement(input.customerId)),
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        from: ymdStr.optional(),
+        to: ymdStr.optional(),
+      })
+    )
+    .query(async ({ input }) =>
+      getCustomerStatement(input.customerId, { from: input.from, to: input.to })
+    ),
 
   /** Lightweight customer index for the statement picker. */
   customersIndex: managerProcedure.query(async () => {
@@ -51,8 +62,16 @@ export const reportsRouter = router({
     .query(async ({ input }) => getAPAging({ branchId: input?.branchId })),
 
   supplierStatement: managerProcedure
-    .input(z.object({ supplierId: z.number().int().positive() }))
-    .query(async ({ input }) => getSupplierStatement(input.supplierId)),
+    .input(
+      z.object({
+        supplierId: z.number().int().positive(),
+        from: ymdStr.optional(),
+        to: ymdStr.optional(),
+      })
+    )
+    .query(async ({ input }) =>
+      getSupplierStatement(input.supplierId, { from: input.from, to: input.to })
+    ),
 
   /** Lightweight supplier index for the statement picker. */
   suppliersIndex: managerProcedure.query(async () => {

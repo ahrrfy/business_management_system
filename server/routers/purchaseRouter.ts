@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -8,6 +8,14 @@ import { createPurchaseOrder, receivePurchase } from "../services/purchaseServic
 import { managerProcedure, router, warehouseProcedure } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+// تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+/** orderDate عمود timestamp ⇒ «إلى تاريخ» شاملاً = أقل من اليوم التالي (لا تسقط أوامر بقية اليوم). */
+function nextDay(d: string): Date {
+  const x = new Date(d);
+  x.setDate(x.getDate() + 1);
+  return x;
+}
 
 // المشتريات تحمل التكلفة (unitPrice = سعر الشراء) ⇒ مدير فأعلى للإنشاء والعرض، والمخزن للاستلام.
 export const purchaseRouter = router({
@@ -63,15 +71,34 @@ export const purchaseRouter = router({
     }),
 
   list: managerProcedure
-    .input(z.object({ limit: z.number().default(50), offset: z.number().default(0) }).optional())
+    .input(
+      z
+        .object({
+          limit: z.number().default(50),
+          offset: z.number().default(0),
+          // فلترة خادمية بالفترة (orderDate) والمورد والحالة.
+          from: ymd.optional(),
+          to: ymd.optional(),
+          supplierId: z.number().int().positive().optional(),
+          status: z.enum(["DRAFT", "SENT", "CONFIRMED", "RECEIVED", "CANCELLED"]).optional(),
+        })
+        .optional()
+    )
     .query(async ({ input }) => {
       const db = getDb();
       if (!db) return [];
+      const conds = [];
+      if (input?.from) conds.push(gte(purchaseOrders.orderDate, new Date(input.from)));
+      if (input?.to) conds.push(lt(purchaseOrders.orderDate, nextDay(input.to)));
+      if (input?.supplierId) conds.push(eq(purchaseOrders.supplierId, input.supplierId));
+      if (input?.status) conds.push(eq(purchaseOrders.status, input.status));
       return db
         .select({
           id: purchaseOrders.id,
           poNumber: purchaseOrders.poNumber,
           orderDate: purchaseOrders.orderDate,
+          // supplierId مطلوب لإجراءات الصف (كشف حساب المورد) في شاشة المشتريات.
+          supplierId: purchaseOrders.supplierId,
           total: purchaseOrders.total,
           paidAmount: purchaseOrders.paidAmount,
           status: purchaseOrders.status,
@@ -79,6 +106,7 @@ export const purchaseRouter = router({
         })
         .from(purchaseOrders)
         .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+        .where(conds.length ? and(...conds) : undefined)
         .orderBy(desc(purchaseOrders.id))
         .limit(input?.limit ?? 50)
         .offset(input?.offset ?? 0);

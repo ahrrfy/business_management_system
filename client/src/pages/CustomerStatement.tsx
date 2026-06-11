@@ -1,17 +1,44 @@
 import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
-import { D, positiveDiff } from "@/lib/money";
+import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
+const ymd = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** اختصارات الفترة: اليوم / هذا الشهر / الشهر الماضي / الكل (فارغة). */
+const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string } }[] = [
+  { label: "اليوم", range: () => ({ from: ymd(new Date()), to: ymd(new Date()) }) },
+  {
+    label: "هذا الشهر",
+    range: () => {
+      const n = new Date();
+      return { from: ymd(new Date(n.getFullYear(), n.getMonth(), 1)), to: ymd(n) };
+    },
+  },
+  {
+    label: "الشهر الماضي",
+    range: () => {
+      const n = new Date();
+      return {
+        from: ymd(new Date(n.getFullYear(), n.getMonth() - 1, 1)),
+        to: ymd(new Date(n.getFullYear(), n.getMonth(), 0)),
+      };
+    },
+  },
+  { label: "الكل", range: () => ({ from: "", to: "" }) },
+];
 
 const STATUS_LABEL: Record<string, string> = {
   PENDING: "غير مدفوعة",
@@ -33,8 +60,6 @@ const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "شيك", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 
-const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-
 export default function CustomerStatement() {
   // wouter's useLocation() strips the query string, so read it from window.location directly.
   const initial = useMemo(() => {
@@ -44,10 +69,12 @@ export default function CustomerStatement() {
 
   const [customerId, setCustomerId] = useState<number>(initial);
   useEffect(() => { if (initial && initial !== customerId) setCustomerId(initial); }, [initial]); // eslint-disable-line
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
 
   const index = trpc.reports.customersIndex.useQuery();
   const stmt = trpc.reports.customerStatement.useQuery(
-    { customerId: customerId || 0 },
+    { customerId: customerId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!customerId }
   );
 
@@ -60,27 +87,43 @@ export default function CustomerStatement() {
             <Button variant="outline" size="sm" onClick={() => {
               const d = stmt.data!;
               const invTxs = d.invoices.map(i => ({
+                t: new Date(i.invoiceDate).getTime(),
                 date: new Date(i.invoiceDate).toLocaleDateString('en-GB'),
                 ref: i.invoiceNumber, description: 'فاتورة مبيعات',
-                debit: Number(i.total), credit: null, balance: 0,
+                debit: i.total as string | null, credit: null as string | null,
               }));
               const payTxs = d.payments.map(p => ({
+                t: new Date(p.createdAt).getTime(),
                 date: new Date(p.createdAt).toLocaleDateString('en-GB'),
-                ref: `دفعة`, description: p.direction === 'IN' ? 'دفعة وارد' : 'استرداد',
-                debit: null,
-                credit: Number(p.amount), balance: 0,
+                ref: p.voucherNumber ?? 'دفعة',
+                description: p.isStandalone
+                  ? (p.direction === 'IN' ? 'سند قبض مستقل' : 'سند صرف مستقل')
+                  : (p.direction === 'IN' ? 'دفعة وارد' : 'استرداد'),
+                // الاتجاه المحاسبي: IN ينقص ذمة العميل (دائن)، OUT (استرداد/صرف له) يزيدها (مدين).
+                debit: p.direction === 'OUT' ? (p.amount as string | null) : null,
+                credit: p.direction === 'IN' ? (p.amount as string | null) : null,
               }));
-              const merged = [...invTxs, ...payTxs].sort((a, b) => a.date.localeCompare(b.date));
-              let bal = 0;
-              const txs = merged.map(t => {
-                bal += (t.debit ?? 0) - (t.credit ?? 0);
-                return { ...t, balance: bal };
+              // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
+              const merged = [...invTxs, ...payTxs].sort((a, b) => a.t - b.t);
+              // §٥: الرصيد الجاري بـDecimal، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
+              let bal = from ? D(stmt.data!.summary.openingBalance) : D(0);
+              let totDebit = D(0), totCredit = D(0);
+              const txs = merged.map(({ t: _t, ...x }) => {
+                bal = bal.plus(D(x.debit)).minus(D(x.credit));
+                totDebit = totDebit.plus(D(x.debit));
+                totCredit = totCredit.plus(D(x.credit));
+                return { ...x, balance: bal.toFixed(2) };
               });
               printCustomerStmt({
                 customerName: d.customer.name, customerPhone: d.customer.phone ?? undefined,
-                toDate: new Date().toLocaleDateString('en-GB'), transactions: txs,
-                totalDebit: d.summary.totalSales, totalCredit: d.summary.totalPaid,
-                closingBalance: d.summary.currentBalance,
+                fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString('en-GB') : undefined,
+                toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString('en-GB'),
+                transactions: txs,
+                // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
+                totalDebit: totDebit.toFixed(2), totalCredit: totCredit.toFixed(2),
+                openingBalance: from ? d.summary.openingBalance : undefined,
+                // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
+                closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
               });
             }}>طباعة الكشف</Button>
           )}
@@ -104,8 +147,8 @@ export default function CustomerStatement() {
       <p className="text-sm text-muted-foreground">كل الفواتير والدفعات لعميل واحد، مع ملخّص الرصيد الجارٍ.</p>
 
       <Card>
-        <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
+        <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="space-y-1 md:col-span-2">
             <Label className="text-xs">العميل</Label>
             <select className={selectCls} value={customerId} onChange={(e) => setCustomerId(Number(e.target.value))}>
               <option value={0}>— اختر عميلاً —</option>
@@ -115,6 +158,21 @@ export default function CustomerStatement() {
                 </option>
               ))}
             </select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">من تاريخ</Label>
+            <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">إلى تاريخ</Label>
+            <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+          </div>
+          <div className="md:col-span-4 flex flex-wrap gap-2">
+            {PERIOD_PRESETS.map((p) => (
+              <Button key={p.label} variant="secondary" size="sm" onClick={() => { const r = p.range(); setFrom(r.from); setTo(r.to); }}>
+                {p.label}
+              </Button>
+            ))}
           </div>
         </CardContent>
       </Card>
@@ -173,6 +231,16 @@ export default function CustomerStatement() {
                   </tr>
                 </thead>
                 <tbody>
+                  {/* الرصيد المُرحَّل = افتتاحي مستورد + كل النشاط قبل from — صف أول يجعل رصيد نهاية الفترة قابلاً للتتبّع. */}
+                  {from && (
+                    <tr className="border-t bg-amber-50/60 font-medium">
+                      <td className="p-2 text-xs">رصيد مُرحَّل</td>
+                      <td className="p-2 text-xs" dir="ltr">{from}</td>
+                      <td className="p-2 text-xs text-muted-foreground" colSpan={4}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
+                      <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
+                      <td className="p-2" colSpan={2} />
+                    </tr>
+                  )}
                   {stmt.data.invoices.map((i) => {
                     // §٥: نستعمل Decimal للطرح (positiveDiff) لا Number() float.
                     const remaining = positiveDiff(i.total, i.paidAmount).toFixed(2);
@@ -224,7 +292,17 @@ export default function CustomerStatement() {
                   {stmt.data.payments.map((p) => (
                     <tr key={p.id} className="border-t">
                       <td className="p-2 text-xs" dir="ltr">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
-                      <td className="p-2"><CopyInline value={p.invoiceId} /></td>
+                      <td className="p-2">
+                        {p.isStandalone ? (
+                          // سند مستقل (بلا فاتورة): كان غائباً عن الكشف فيبدو الرصيد منحرفاً بلا تفسير.
+                          <span className="inline-flex items-center gap-1" title={p.description ?? undefined}>
+                            <span className="inline-block rounded bg-violet-100 text-violet-700 px-2 py-0.5 text-xs">سند مستقل</span>
+                            {p.voucherNumber && <CopyInline value={p.voucherNumber} />}
+                          </span>
+                        ) : (
+                          <CopyInline value={p.invoiceId} />
+                        )}
+                      </td>
                       <td className="p-2">
                         <span className={`inline-block rounded px-2 py-0.5 text-xs ${p.direction === "IN" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
                           {p.direction === "IN" ? "وارد" : "صادر/استرداد"}

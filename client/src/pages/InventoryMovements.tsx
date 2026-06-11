@@ -1,4 +1,5 @@
 import { CopyInline } from "@/components/CopyButton";
+import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -132,7 +133,9 @@ export default function InventoryMovements() {
     : myBranch;
 
   const [movementType, setMovementType] = useState<"" | MovementType>("");
-  const [q, setQ] = useState("");
+  // ‎?q= من URL (نمط CustomerStatement): wouter يقصّ الاستعلام، فنقرأ window.location مباشرة —
+  // يتيح روابط «حركات الصنف» العميقة من شاشتي المنتجات/المخزون.
+  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get("q") ?? "");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [page, setPage] = useState(0);
@@ -417,6 +420,7 @@ export default function InventoryMovements() {
                 <th className="p-2">المرجع</th>
                 <th className="p-2">المستخدم</th>
                 <th className="p-2">الملاحظة</th>
+                <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>
             <tbody>
@@ -467,12 +471,31 @@ export default function InventoryMovements() {
                     <td className="p-2 text-xs text-muted-foreground max-w-xs truncate" title={r.notes ?? undefined}>
                       {r.notes ?? "—"}
                     </td>
+                    <td className="p-2 text-center">
+                      {/* «فتح المرجع» الشرطي: قيم referenceType الفعلية من الخدمات —
+                          البيع INVOICE (saleService) والشراء PURCHASE_ORDER (purchaseService).
+                          غير ذلك ⇒ hidden فيُخفي RowActions نفسه (يعيد null). */}
+                      <RowActions
+                        actions={[
+                          {
+                            key: "ref",
+                            label: "فتح المرجع",
+                            hidden: !r.referenceId ||
+                              (r.referenceType !== "INVOICE" && r.referenceType !== "PURCHASE_ORDER"),
+                            href:
+                              r.referenceType === "INVOICE"
+                                ? `/invoices/${r.referenceId}`
+                                : `/purchases/${r.referenceId}/receive`,
+                          },
+                        ]}
+                      />
+                    </td>
                   </tr>
                 );
               })}
               {!movements.isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={9} className="p-6 text-center text-muted-foreground">
                     لا توجد حركات مطابقة للفلاتر.
                   </td>
                 </tr>

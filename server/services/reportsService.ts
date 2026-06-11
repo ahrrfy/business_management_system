@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   customers,
@@ -9,6 +9,18 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money, sumMoney, toDbMoney } from "./money";
+
+/** فترة كشف الحساب — نصوص YYYY-MM-DD اختيارية. النطاق على المستندات [from، to+يوم). */
+export interface StatementPeriod {
+  from?: string;
+  to?: string;
+}
+
+/** اليوم التالي YYYY-MM-DD — حدّ أعلى **حصري** على أعمدة timestamp يشمل كامل يوم `to`
+ *  بلا حِيَل 23:59:59.999. الحساب بـUTC ⇒ لا انزياح منطقة زمنية. */
+function nextDayStr(ymd: string): string {
+  return new Date(new Date(`${ymd}T00:00:00Z`).getTime() + 86_400_000).toISOString().slice(0, 10);
+}
 
 /** فرق موجب بين قيمتين ماليتين (لا يقلّ عن صفر) بدقّة decimal. */
 function positiveDiff(total: unknown, paid: unknown) {
@@ -90,6 +102,10 @@ export interface CustomerStatementPayment {
   paymentMethod: string;
   status: string;
   createdAt: Date;
+  /** سند مستقل (B1): receipt بلا فاتورة بل بطرف partyType=CUSTOMER — دفعة على الحساب/استرداد. */
+  isStandalone: boolean;
+  voucherNumber: string | null;
+  description: string | null;
 }
 
 export interface CustomerStatementResult {
@@ -101,16 +117,80 @@ export interface CustomerStatementResult {
     totalPaid: string;
     unpaid: string;
     currentBalance: string;
+    /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) كل النشاط السابق للفترة. */
+    openingBalance: string;
   };
 }
 
-/** Customer account statement: invoices + payments + running summary. */
-export async function getCustomerStatement(customerId: number): Promise<CustomerStatementResult | null> {
+/** شرط «دفعات هذا العميل»: receipts مرتبطة بفواتيره (عبر join) **أو** سندات مستقلّة
+ *  (بلا invoiceId، partyType=CUSTOMER) — إصلاح علّة: السندات المستقلّة كانت غائبة عن الكشف
+ *  فيظهر الرصيد الجاري «منحرفاً» بلا تفسير في الحركة المعروضة. */
+function customerPaymentLink(customerId: number) {
+  return or(
+    eq(invoices.customerId, customerId),
+    and(isNull(receipts.invoiceId), eq(receipts.partyType, "CUSTOMER"), eq(receipts.partyId, customerId))
+  );
+}
+
+/**
+ * الرصيد المُرحَّل لعميل:
+ *  - دائماً: مجموع قيود OPENING (ترسيخ الرصيد الافتتاحي المستورد — import-integration).
+ *  - مع from: + مجموع فواتيره الملتزمة قبل from (CANCELLED مُستثناة — التزامها أُلغي، كما في reconcile)
+ *             − صافي دفعاته قبل from (IN ينقص ذمته، OUT يزيدها؛ COMPLETED فقط — REVERSED أثره معكوس).
+ * كل الجمع بدقّة decimal (§٥).
+ */
+async function customerOpeningBalance(customerId: number, from?: string) {
+  const db = getDb()!;
+  const openRow = await db
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+    .from(accountingEntries)
+    .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.customerId, customerId)));
+  let opening = money(openRow[0]?.v ?? 0);
+  if (!from) return opening;
+
+  const fromTs = `${from} 00:00:00`;
+  const invRow = await db
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${invoices.total} AS DECIMAL(15,2))), 0)` })
+    .from(invoices)
+    .where(
+      and(
+        eq(invoices.customerId, customerId),
+        ne(invoices.status, "CANCELLED"),
+        sql`${invoices.invoiceDate} < ${fromTs}`
+      )
+    );
+  const payRow = await db
+    .select({
+      v: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' THEN CAST(${receipts.amount} AS DECIMAL(15,2)) ELSE -CAST(${receipts.amount} AS DECIMAL(15,2)) END), 0)`,
+    })
+    .from(receipts)
+    .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+    .where(
+      and(
+        customerPaymentLink(customerId),
+        eq(receipts.status, "COMPLETED"),
+        sql`${receipts.createdAt} < ${fromTs}`
+      )
+    );
+  return opening.plus(money(invRow[0]?.v ?? 0)).minus(money(payRow[0]?.v ?? 0));
+}
+
+/** Customer account statement: invoices + payments + running summary.
+ *  مع فترة اختيارية: الفواتير على invoiceDate والدفعات على createdAt ضمن [from، to+يوم)،
+ *  والملخّص يعكس مستندات الفترة المعروضة. بلا فترة = السلوك القديم نفسه. */
+export async function getCustomerStatement(
+  customerId: number,
+  period: StatementPeriod = {}
+): Promise<CustomerStatementResult | null> {
   const db = getDb();
   if (!db) return null;
   const c = (await db.select().from(customers).where(eq(customers.id, customerId)).limit(1))[0];
   if (!c) return null;
+  const { from, to } = period;
 
+  const invConds = [eq(invoices.customerId, customerId)];
+  if (from) invConds.push(sql`${invoices.invoiceDate} >= ${`${from} 00:00:00`}`);
+  if (to) invConds.push(sql`${invoices.invoiceDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   const invs = await db
     .select({
       id: invoices.id,
@@ -123,26 +203,32 @@ export async function getCustomerStatement(customerId: number): Promise<Customer
       sourceType: invoices.sourceType,
     })
     .from(invoices)
-    .where(eq(invoices.customerId, customerId))
+    .where(and(...invConds))
     .orderBy(desc(invoices.invoiceDate));
 
-  const invIds = invs.map((i) => Number(i.id));
-  const payments =
-    invIds.length === 0
-      ? []
-      : await db
-          .select({
-            id: receipts.id,
-            invoiceId: receipts.invoiceId,
-            direction: receipts.direction,
-            amount: receipts.amount,
-            paymentMethod: receipts.paymentMethod,
-            status: receipts.status,
-            createdAt: receipts.createdAt,
-          })
-          .from(receipts)
-          .where(inArray(receipts.invoiceId, invIds))
-          .orderBy(asc(receipts.createdAt));
+  // الدفعات تُفلتَر على تاريخها هي (createdAt) لا على فواتيرها: دفعةٌ داخل الفترة على
+  // فاتورة أقدم منها يجب أن تظهر — هذا جوهر الدلالة المحاسبية للكشف بفترة.
+  const payConds = [customerPaymentLink(customerId)];
+  if (from) payConds.push(sql`${receipts.createdAt} >= ${`${from} 00:00:00`}`);
+  if (to) payConds.push(sql`${receipts.createdAt} < ${`${nextDayStr(to)} 00:00:00`}`);
+  const payments = await db
+    .select({
+      id: receipts.id,
+      invoiceId: receipts.invoiceId,
+      direction: receipts.direction,
+      amount: receipts.amount,
+      paymentMethod: receipts.paymentMethod,
+      status: receipts.status,
+      createdAt: receipts.createdAt,
+      voucherNumber: receipts.voucherNumber,
+      description: receipts.description,
+    })
+    .from(receipts)
+    .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
+    .where(and(...payConds))
+    .orderBy(asc(receipts.createdAt), asc(receipts.id));
+
+  const openingBalance = await customerOpeningBalance(customerId, from);
 
   // أموال بدقّة decimal.js (§٥) — لا Number/toFixed على الأموال.
   const totalSales = sumMoney(invs.map((i) => i.total ?? 0));
@@ -173,12 +259,16 @@ export async function getCustomerStatement(customerId: number): Promise<Customer
       paymentMethod: String(p.paymentMethod),
       status: String(p.status),
       createdAt: p.createdAt,
+      isStandalone: p.invoiceId == null,
+      voucherNumber: p.voucherNumber ? String(p.voucherNumber) : null,
+      description: p.description ? String(p.description) : null,
     })),
     summary: {
       totalSales: toDbMoney(totalSales),
       totalPaid: toDbMoney(totalPaid),
       unpaid: toDbMoney(unpaid),
       currentBalance: String(c.currentBalance ?? "0"),
+      openingBalance: toDbMoney(openingBalance),
     },
   };
 }
@@ -261,16 +351,65 @@ export interface SupplierStatementResult {
     totalPaid: string;
     unpaid: string;
     currentBalance: string;
+    /** الرصيد المُرحَّل: قيد OPENING المستورد + (مع from) مشتريات ملتزمة − دفعات قبل from. */
+    openingBalance: string;
   };
 }
 
-/** كشف حساب مورد: أوامر شراء + دفعات (من accountingEntries.PAYMENT_OUT) + ملخّص. */
-export async function getSupplierStatement(supplierId: number): Promise<SupplierStatementResult | null> {
+/**
+ * الرصيد المُرحَّل لمورد (AP، موجب = ندين له):
+ *  - دائماً: مجموع قيود OPENING للمورد (الرصيد الافتتاحي المستورد).
+ *  - مع from: + مشترياته الملتزمة قبل from (CONFIRMED/RECEIVED فقط — DRAFT/SENT/CANCELLED
+ *    غير ملتزمة مالياً، كما في getAPAging/reconcile) − دفعات PAYMENT_OUT قبل from على entryDate.
+ */
+async function supplierOpeningBalance(supplierId: number, from?: string) {
+  const db = getDb()!;
+  const openRow = await db
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+    .from(accountingEntries)
+    .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.supplierId, supplierId)));
+  let opening = money(openRow[0]?.v ?? 0);
+  if (!from) return opening;
+
+  const poRow = await db
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${purchaseOrders.total} AS DECIMAL(15,2))), 0)` })
+    .from(purchaseOrders)
+    .where(
+      and(
+        eq(purchaseOrders.supplierId, supplierId),
+        inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+        sql`${purchaseOrders.orderDate} < ${`${from} 00:00:00`}`
+      )
+    );
+  const payRow = await db
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+    .from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.entryType, "PAYMENT_OUT"),
+        eq(accountingEntries.supplierId, supplierId),
+        sql`${accountingEntries.entryDate} < ${from}`
+      )
+    );
+  return opening.plus(money(poRow[0]?.v ?? 0)).minus(money(payRow[0]?.v ?? 0));
+}
+
+/** كشف حساب مورد: أوامر شراء + دفعات (من accountingEntries.PAYMENT_OUT) + ملخّص.
+ *  مع فترة اختيارية: الأوامر على orderDate ضمن [from، to+يوم) والدفعات على entryDate
+ *  (عمود date ⇒ ‎≤ to يكافئ < to+يوم). بلا فترة = السلوك القديم نفسه. */
+export async function getSupplierStatement(
+  supplierId: number,
+  period: StatementPeriod = {}
+): Promise<SupplierStatementResult | null> {
   const db = getDb();
   if (!db) return null;
   const s = (await db.select().from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0];
   if (!s) return null;
+  const { from, to } = period;
 
+  const poConds = [eq(purchaseOrders.supplierId, supplierId)];
+  if (from) poConds.push(sql`${purchaseOrders.orderDate} >= ${`${from} 00:00:00`}`);
+  if (to) poConds.push(sql`${purchaseOrders.orderDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   const pos = await db
     .select({
       id: purchaseOrders.id,
@@ -282,10 +421,17 @@ export async function getSupplierStatement(supplierId: number): Promise<Supplier
       status: purchaseOrders.status,
     })
     .from(purchaseOrders)
-    .where(eq(purchaseOrders.supplierId, supplierId))
+    .where(and(...poConds))
     .orderBy(desc(purchaseOrders.orderDate));
 
   // Payments to this supplier are tracked in accountingEntries (entryType=PAYMENT_OUT, supplierId).
+  // الفلترة على تاريخ القيد نفسه: دفعة داخل الفترة على أمر أقدم تظهر (الدلالة المحاسبية).
+  const payConds = [
+    eq(accountingEntries.entryType, "PAYMENT_OUT"),
+    eq(accountingEntries.supplierId, supplierId),
+  ];
+  if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
+  if (to) payConds.push(sql`${accountingEntries.entryDate} <= ${to}`);
   const payments = await db
     .select({
       id: accountingEntries.id,
@@ -296,13 +442,10 @@ export async function getSupplierStatement(supplierId: number): Promise<Supplier
       notes: accountingEntries.notes,
     })
     .from(accountingEntries)
-    .where(
-      and(
-        eq(accountingEntries.entryType, "PAYMENT_OUT"),
-        eq(accountingEntries.supplierId, supplierId)
-      )
-    )
+    .where(and(...payConds))
     .orderBy(asc(accountingEntries.entryDate), asc(accountingEntries.id));
+
+  const openingBalance = await supplierOpeningBalance(supplierId, from);
 
   // أموال بدقّة decimal.js (§٥).
   const totalPurchases = sumMoney(pos.map((p) => p.total ?? 0));
@@ -337,6 +480,7 @@ export async function getSupplierStatement(supplierId: number): Promise<Supplier
       totalPaid: toDbMoney(totalPaid),
       unpaid: toDbMoney(unpaid),
       currentBalance: String(s.currentBalance ?? "0"),
+      openingBalance: toDbMoney(openingBalance),
     },
   };
 }

@@ -3,10 +3,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CopyInline } from "@/components/CopyButton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RowActions } from "@/components/list";
 import { exportRows } from "@/lib/export";
-import { trpc } from "@/lib/trpc";
+import { fmt } from "@/lib/money";
+import { notify } from "@/lib/notify";
+import { printDoc } from "@/lib/printing/print";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+
+type VoucherRow = RouterOutputs["vouchers"]["list"][number];
 
 /** سجلّ السندات المستقلّة (قبض + صرف) مع فلاتر وتصدير. */
 const selectCls =
@@ -18,11 +24,6 @@ const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "شيك", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 
-function fmt(s: string | number | null | undefined): string {
-  if (s == null || s === "") return "—";
-  return Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-}
-
 function fmtDate(d: Date | string | null | undefined): string {
   if (!d) return "—";
   const dt = typeof d === "string" ? new Date(d) : d;
@@ -32,6 +33,9 @@ function fmtDate(d: Date | string | null | undefined): string {
 export default function Vouchers() {
   const [voucherType, setVoucherType] = useState<"" | "RECEIPT" | "PAYMENT">("");
   const [partyType, setPartyType] = useState<"" | "CUSTOMER" | "SUPPLIER" | "OTHER">("");
+  // فلتر الفترة خادمي (createdAt) — لا فلترة محلية تُخفي صفحات الخادم.
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const limit = 100;
@@ -40,10 +44,12 @@ export default function Vouchers() {
     () => ({
       voucherType: voucherType || undefined,
       partyType: partyType || undefined,
+      from: from || undefined,
+      to: to || undefined,
       limit,
       offset: page * limit,
     }),
-    [voucherType, partyType, page],
+    [voucherType, partyType, from, to, page],
   );
   const list = trpc.vouchers.list.useQuery(input);
   const all = list.data ?? [];
@@ -69,6 +75,32 @@ export default function Vouchers() {
     return { inn, out, net: inn - out };
   }, [rows]);
 
+  // طباعة السند عبر printDoc العام (جسر الخادم ← WebUSB ← المتصفح) — عنوان حسب النوع.
+  async function printVoucher(r: VoucherRow) {
+    try {
+      await printDoc({
+        kind: "receipt",
+        title: r.direction === "IN" ? "سند قبض" : "سند صرف",
+        subtitle: "الرؤية العربية — المكتبة العربية",
+        meta: [
+          `رقم السند: ${r.voucherNumber ?? "—"}`,
+          `التاريخ: ${fmtDate(r.createdAt)}`,
+          `الوصف: ${r.description ?? "—"}`,
+        ],
+        totals: [
+          { label: "المبلغ", value: fmt(r.amount) },
+          { label: "طريقة الدفع", value: METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
+        ],
+      });
+    } catch (e) {
+      notify.err(e);
+    }
+  }
+
+  // كشف حساب الطرف: عميل ⇒ كشف العملاء، مورّد ⇒ كشف الموردين (مخفي لـOTHER/بلا طرف).
+  const statementHref = (r: VoucherRow) =>
+    r.partyType === "CUSTOMER" ? `/customers-statement?id=${r.partyId}` : `/suppliers-statement?id=${r.partyId}`;
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -90,7 +122,7 @@ export default function Vouchers() {
 
       <Card>
         <CardHeader><CardTitle className="text-base">فلاتر</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 items-end">
+        <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3 items-end">
           <div className="space-y-1">
             <Label>النوع</Label>
             <select className={selectCls} value={voucherType} onChange={(e) => { setVoucherType(e.target.value as any); setPage(0); }}>
@@ -107,6 +139,14 @@ export default function Vouchers() {
               <option value="SUPPLIER">مورّد</option>
               <option value="OTHER">أخرى</option>
             </select>
+          </div>
+          <div className="space-y-1">
+            <Label>من تاريخ</Label>
+            <Input type="date" dir="ltr" value={from} onChange={(e) => { setFrom(e.target.value); setPage(0); }} />
+          </div>
+          <div className="space-y-1">
+            <Label>إلى تاريخ</Label>
+            <Input type="date" dir="ltr" value={to} onChange={(e) => { setTo(e.target.value); setPage(0); }} />
           </div>
           <div className="space-y-1">
             <Label>بحث (رقم/وصف)</Label>
@@ -179,6 +219,7 @@ export default function Vouchers() {
                 <th className="p-2">الوصف</th>
                 <th className="p-2 text-left">المبلغ</th>
                 <th className="p-2 text-center">الدفع</th>
+                <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>
             <tbody>
@@ -195,10 +236,24 @@ export default function Vouchers() {
                   <td className="p-2">{r.description ?? "—"}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.amount)}</td>
                   <td className="p-2 text-center text-xs">{METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}</td>
+                  <td className="p-2 text-center">
+                    <RowActions
+                      mode="auto"
+                      actions={[
+                        { key: "print", label: "طباعة السند", onSelect: () => void printVoucher(r) },
+                        {
+                          key: "stmt",
+                          label: "كشف حساب الطرف",
+                          href: statementHref(r),
+                          hidden: r.partyType === "OTHER" || r.partyType == null || r.partyId == null,
+                        },
+                      ]}
+                    />
+                  </td>
                 </tr>
               ))}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا سندات مطابقة. أضِف سند قبض أو صرف جديداً.</td></tr>
+                <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا سندات مطابقة. أضِف سند قبض أو صرف جديداً.</td></tr>
               )}
             </tbody>
           </table>

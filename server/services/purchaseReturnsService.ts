@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import {
   accountingEntries,
   inventoryMovements,
@@ -258,6 +258,9 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
 export interface ListPurchaseReturnsInput {
   supplierId?: number;
   branchId?: number;
+  /** فترة على entryDate (YYYY-MM-DD) — عمود DATE بلا وقت ⇒ gte/lte شاملان مباشرة. */
+  from?: string;
+  to?: string;
   limit?: number;
   offset?: number;
 }
@@ -272,6 +275,9 @@ export async function listPurchaseReturns(input: ListPurchaseReturnsInput = {}) 
   const where = [eq(accountingEntries.entryType, "RETURN")];
   if (input.supplierId) where.push(eq(accountingEntries.supplierId, input.supplierId));
   if (input.branchId) where.push(eq(accountingEntries.branchId, input.branchId));
+  // entryDate عمود DATE (بلا وقت) ⇒ gte/lte شاملان للطرفين مباشرة (نمط expenseService).
+  if (input.from) where.push(gte(accountingEntries.entryDate, new Date(input.from)));
+  if (input.to) where.push(lte(accountingEntries.entryDate, new Date(input.to)));
   // فقط قيود الشراء (لها supplierId غير null) — تمييزها عن مرتجعات البيع.
   where.push(sql`${accountingEntries.supplierId} IS NOT NULL` as any);
 

@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { desc, eq, like } from "drizzle-orm";
+import { and, desc, eq, gte, like, lt } from "drizzle-orm";
 import {
   customers,
   productUnits,
@@ -216,9 +216,28 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
 
 /* ============================ قراءة ============================ */
 
-export async function listQuotations(limit = 100) {
+export interface ListQuotationsInput {
+  limit?: number;
+  /** فترة على createdAt (YYYY-MM-DD) — «إلى» شاملاً عبر نصف مفتوح [from, to+يوم). */
+  from?: string;
+  to?: string;
+  status?: "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
+}
+
+/** createdAt عمود timestamp ⇒ «إلى تاريخ» شاملاً = أقل من اليوم التالي (لا تسقط عروض بقية اليوم). */
+function nextDay(d: string): Date {
+  const x = new Date(d);
+  x.setDate(x.getDate() + 1);
+  return x;
+}
+
+export async function listQuotations(input: ListQuotationsInput = {}) {
   const db = getDb();
   if (!db) return [];
+  const conds = [];
+  if (input.from) conds.push(gte(quotations.createdAt, new Date(input.from)));
+  if (input.to) conds.push(lt(quotations.createdAt, nextDay(input.to)));
+  if (input.status) conds.push(eq(quotations.status, input.status));
   return db
     .select({
       id: quotations.id,
@@ -232,8 +251,9 @@ export async function listQuotations(limit = 100) {
     })
     .from(quotations)
     .leftJoin(customers, eq(quotations.customerId, customers.id))
+    .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(quotations.id))
-    .limit(limit);
+    .limit(input.limit ?? 100);
 }
 
 export async function getQuotation(quotationId: number) {

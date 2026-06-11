@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -123,7 +123,8 @@ export default function Returns() {
       if (!/^\d+(\.\d+)?$/.test(refundStr)) {
         return setError("مبلغ الاسترداد غير صالح — أدخل رقماً.");
       }
-      if (D(refundStr).gt(0)) refund = { amount: fmt(refundStr), method: refundMethod };
+      // حمولة API لا عرض — أرقام صرفة بلا فواصل آلاف (zod moneyStr يرفض الفواصل).
+      if (D(refundStr).gt(0)) refund = { amount: round2(D(refundStr)).toFixed(2), method: refundMethod };
     }
 
     create.mutate({ invoiceId: data.id, lines, refund, restock });
@@ -200,6 +201,7 @@ export default function Returns() {
                             disabled: isPicked, // منع مسح الكميات المُدخَلة بنقرة سهو
                             onSelect: () => pick(id),
                           },
+                          { key: "view", label: "عرض الفاتورة", href: `/invoices/${id}` },
                         ]}
                       />
                     </td>

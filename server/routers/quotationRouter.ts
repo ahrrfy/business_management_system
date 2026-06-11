@@ -11,11 +11,23 @@ import { managerProcedure, protectedProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
+// تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على createdAt).
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 export const quotationRouter = router({
   list: protectedProcedure
-    .input(z.object({ limit: z.number().default(100) }).optional())
-    .query(({ input }) => listQuotations(input?.limit ?? 100)),
+    .input(
+      z
+        .object({
+          limit: z.number().default(100),
+          // فلترة خادمية بالفترة (createdAt) والحالة.
+          from: ymd.optional(),
+          to: ymd.optional(),
+          status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "CONVERTED", "EXPIRED"]).optional(),
+        })
+        .optional()
+    )
+    .query(({ input }) => listQuotations(input ?? {})),
 
   get: protectedProcedure
     .input(z.object({ quotationId: z.number().int().positive() }))

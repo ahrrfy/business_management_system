@@ -6,6 +6,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
+import { RowActions } from "@/components/list";
 import {
   Dialog,
   DialogContent,
@@ -109,6 +110,23 @@ const WaIcon = ({ size = 13 }: { size?: number }) => (
 );
 
 // ─────────────── البطاقة ───────────────
+/** طباعة أمر الشغل من بيانات البطاقة — نفس قالب printWorkOrder المستعمل في الـDrawer
+ *  (صف القائمة بلا customizationText فتُطبع التذكرة بلا حقل التخصيص فقط). */
+function printWoFromCard(o: WO) {
+  printWorkOrder({
+    woNumber: o.orderNumber,
+    woDate: o.createdAt ? String(o.createdAt).slice(0, 10) : undefined,
+    dueDate: o.dueDate ? String(o.dueDate).slice(0, 10) : undefined,
+    status: o.status,
+    customerName: o.customerName,
+    customerPhone: o.customerPhone,
+    jobType: o.title,
+    items: [{ name: `${o.title} (${o.quantity} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: o.salePrice, total: o.salePrice }],
+    subtotal: o.salePrice,
+    total: o.salePrice,
+  });
+}
+
 function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e: React.PointerEvent) => void; dragging?: boolean; ghost?: boolean }) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
@@ -122,6 +140,19 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
       <div className="wob-card-top">
         <span className="wob-num">{o.orderNumber}</span>
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
+        {!ghost && (
+          // إيقاف انتشار pointer/click كي لا يلتقطها محرّك السحب أو فتح الـDrawer
+          <span onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+            <RowActions
+              mode="menu"
+              label={`إجراءات ${o.orderNumber}`}
+              actions={[
+                { key: "print", label: "طباعة", onSelect: () => printWoFromCard(o) },
+                { key: "open", label: "فتح التفاصيل", href: `/work-orders/${o.id}` },
+              ]}
+            />
+          </span>
+        )}
       </div>
       <div className="wob-card-body">
         <div className="wob-thumb" style={{ background: `oklch(0.6 0.15 ${hue})` }}>
@@ -383,7 +414,8 @@ function Drawer({
                 <button className="wob-btn wob-btn-danger" disabled={busy} onClick={() => onCancel(d)}>إلغاء الأمر</button>
               )}
               {d.status === "DELIVERED" && d.invoiceId && (
-                <Link href="/invoices" className="wob-btn wob-btn-ghost">الفاتورة #{d.invoiceId}</Link>
+                // رابط مباشر لتفاصيل الفاتورة الصادرة عن التسليم (كان يهبط على القائمة العامة)
+                <Link href={`/invoices/${d.invoiceId}`} className="wob-btn wob-btn-ghost">الفاتورة #{d.invoiceId}</Link>
               )}
             </div>
           </>

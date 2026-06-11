@@ -11,6 +11,8 @@ const voucherType = z.enum(["RECEIPT", "PAYMENT"]);
 const moneyStr = z
   .string()
   .regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان عشريتان كحدّ أقصى)");
+// تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على createdAt).
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 export const voucherRouter = router({
   create: managerProcedure
@@ -58,6 +60,8 @@ export const voucherRouter = router({
           voucherType: voucherType.optional(),
           partyType: partyType.optional(),
           partyId: z.number().int().positive().optional(),
+          from: ymd.optional(),
+          to: ymd.optional(),
           limit: z.number().int().positive().max(500).default(100),
           offset: z.number().int().min(0).default(0),
         })

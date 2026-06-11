@@ -146,10 +146,12 @@ export default function Users() {
                       </span>
                     </td>
                     <td className="p-2 text-center">
+                      {/* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
-                        mode="inline"
                         actions={[
                           { key: "edit", label: "تعديل", href: `/users/${id}/edit` },
+                          // إعادة التعيين تتم من شاشة التعديل نفسها (قسم كلمة المرور فيها)
+                          { key: "reset", label: "إعادة تعيين كلمة المرور", href: `/users/${id}/edit` },
                           {
                             key: "toggle",
                             label: isActive ? "تعطيل" : "تفعيل",

@@ -1,11 +1,20 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { branches, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { branchScopedProcedure, cashierProcedure, router } from "../trpc";
+
+// تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+/** openedAt عمود timestamp ⇒ «إلى تاريخ» شاملاً = أقل من اليوم التالي (لا تسقط ورديات بقية اليوم). */
+function nextDay(d: string): Date {
+  const x = new Date(d);
+  x.setDate(x.getDate() + 1);
+  return x;
+}
 
 export const shiftRouter = router({
   // سجلّ الورديات — قائمة مُصفّحة branch-scoped (IDOR كـreport): الكاشير يرى ورديات فرعه فقط،
@@ -16,6 +25,8 @@ export const shiftRouter = router({
         .object({
           branchId: z.number().int().positive().optional(),
           status: z.enum(["OPEN", "CLOSED"]).optional(),
+          from: ymd.optional(),
+          to: ymd.optional(),
           limit: z.number().int().positive().max(200).default(50),
           offset: z.number().int().min(0).default(0),
         })
@@ -29,6 +40,9 @@ export const shiftRouter = router({
       const effectiveBranchId = ctx.scopedBranchId ?? i.branchId;
       if (effectiveBranchId != null) conds.push(eq(shifts.branchId, effectiveBranchId));
       if (i.status) conds.push(eq(shifts.status, i.status));
+      // فلتر الفترة على openedAt (وقت فتح الوردية).
+      if (i.from) conds.push(gte(shifts.openedAt, new Date(i.from)));
+      if (i.to) conds.push(lt(shifts.openedAt, nextDay(i.to)));
       const where = conds.length ? and(...conds) : undefined;
       const rows = await db
         .select({

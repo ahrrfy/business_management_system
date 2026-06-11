@@ -1,11 +1,13 @@
+import { balanceOptionText } from "@/components/BalanceBadge";
 import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
+import { fmt } from "@/lib/money";
+import { notify } from "@/lib/notify";
+import { printPO } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
-
-const fmt = (s: string | number | null | undefined) =>
-  s == null || s === "" ? "—" : Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسودّة",
@@ -15,9 +17,26 @@ const PO_STATUS: Record<string, string> = {
   CANCELLED: "ملغى",
 };
 
+const selectCls =
+  "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
 export default function Purchases() {
+  const utils = trpc.useUtils();
   const [q, setQ] = useState("");
-  const query = trpc.purchases.list.useQuery({ limit: 200 });
+  // فلاتر خادمية: فترة orderDate + المورد + الحالة (لا فلترة محلية تُخفي صفحات الخادم).
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [supplierId, setSupplierId] = useState<number | "">("");
+  const [status, setStatus] = useState("");
+
+  const suppliers = trpc.suppliers.list.useQuery();
+  const query = trpc.purchases.list.useQuery({
+    limit: 200,
+    from: from || undefined,
+    to: to || undefined,
+    supplierId: supplierId ? Number(supplierId) : undefined,
+    status: (status || undefined) as "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED" | undefined,
+  });
   const all = query.data ?? [];
 
   const rows = useMemo(() => {
@@ -28,6 +47,32 @@ export default function Purchases() {
       return hay.includes(term);
     });
   }, [all, q]);
+
+  // طباعة أمر الشراء من القائمة: نجلب التفاصيل (purchases.get) ثم نطبع بقالب printPO المُعلَّم.
+  async function printOrder(purchaseOrderId: number) {
+    try {
+      const d = await utils.purchases.get.fetch({ purchaseOrderId });
+      if (!d) { notify.err("تعذّر جلب أمر الشراء"); return; }
+      printPO({
+        poNumber: d.poNumber,
+        poDate: d.orderDate ? new Date(d.orderDate as unknown as string).toLocaleDateString("en-GB") : undefined,
+        supplierName: d.supplierName,
+        notes: d.notes,
+        items: d.items.map((it) => ({
+          productName: it.productName ?? "",
+          unitName: it.unitName,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          total: it.total,
+        })),
+        subtotal: d.subtotal,
+        taxAmount: d.taxAmount,
+        total: d.total,
+      });
+    } catch (e) {
+      notify.err(e);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -44,6 +89,31 @@ export default function Purchases() {
               onChange: setQ,
               placeholder: "بحث (رقم الأمر/المورد/الحالة)",
             }}
+            filters={
+              <>
+                <Input type="date" dir="ltr" className="h-8 w-36" value={from} onChange={(e) => setFrom(e.target.value)} title="من تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={to} onChange={(e) => setTo(e.target.value)} title="إلى تاريخ" />
+                <select
+                  className={selectCls}
+                  value={supplierId}
+                  onChange={(e) => setSupplierId(e.target.value ? Number(e.target.value) : "")}
+                >
+                  <option value="">— كل الموردين —</option>
+                  {(suppliers.data ?? []).map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                      {balanceOptionText((s as { currentBalance?: string | null }).currentBalance, "supplier")}
+                    </option>
+                  ))}
+                </select>
+                <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)}>
+                  <option value="">— كل الحالات —</option>
+                  {Object.entries(PO_STATUS).map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+              </>
+            }
             exportSpec={{
               filename: "المشتريات",
               rows,
@@ -85,12 +155,26 @@ export default function Purchases() {
                     <td className="p-2">{PO_STATUS[p.status] ?? p.status}</td>
                     <td className="p-2 text-center">
                       <RowActions
-                        mode="inline"
+                        mode="auto"
                         actions={[
                           {
                             key: "receive",
                             label: terminal ? "عرض" : "استلام",
                             href: `/purchases/${p.id}/receive`,
+                          },
+                          { key: "print", label: "طباعة أمر الشراء", onSelect: () => void printOrder(p.id) },
+                          {
+                            key: "stmt",
+                            label: "كشف حساب المورد",
+                            href: `/suppliers-statement?id=${p.supplierId}`,
+                            hidden: p.supplierId == null,
+                          },
+                          {
+                            key: "preturn",
+                            label: "مرتجع شراء",
+                            href: "/purchase-returns/new",
+                            // الإرجاع للمورد ممكن فقط بعد استلام البضاعة فعلياً.
+                            hidden: p.status !== "RECEIVED",
                           },
                         ]}
                       />
@@ -99,7 +183,7 @@ export default function Purchases() {
                 );
               })}
               {!query.isLoading && rows.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أوامر شراء بعد.</td></tr>
+                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أوامر شراء مطابقة.</td></tr>
               )}
             </tbody>
           </table>

@@ -1,6 +1,10 @@
 import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
+import { fmt } from "@/lib/money";
+import { notify } from "@/lib/notify";
+import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 
@@ -21,10 +25,23 @@ const STATUS_CLS: Record<string, string> = {
   EXPIRED: "bg-amber-100 text-amber-700",
 };
 
+const selectCls =
+  "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
 export default function Quotations() {
-  const rows = trpc.quotations.list.useQuery({ limit: 200 });
+  const utils = trpc.useUtils();
   const [q, setQ] = useState("");
-  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+  // فلاتر خادمية: فترة createdAt + الحالة (لا فلترة محلية تُخفي صفحات الخادم).
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const [status, setStatus] = useState("");
+
+  const rows = trpc.quotations.list.useQuery({
+    limit: 200,
+    from: from || undefined,
+    to: to || undefined,
+    status: (status || undefined) as "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED" | undefined,
+  });
 
   const filtered = useMemo(() => {
     const all = rows.data ?? [];
@@ -36,6 +53,43 @@ export default function Quotations() {
         .some((v) => String(v).toLowerCase().includes(needle)),
     );
   }, [rows.data, q]);
+
+  // «وضع مُرسَل» من القائمة مباشرة (DRAFT → SENT فقط؛ بقية الانتقالات من شاشة العرض).
+  const setStatusMut = trpc.quotations.setStatus.useMutation({
+    onSuccess: async () => {
+      notify.ok("عُلِّم العرض «مُرسَلاً».");
+      await utils.quotations.list.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  // طباعة العرض من القائمة: نجلب التفاصيل (quotations.get) ثم نطبع بنفس قالب شاشة العرض.
+  async function printQuote(quotationId: number) {
+    try {
+      const d = await utils.quotations.get.fetch({ quotationId });
+      if (!d) { notify.err("تعذّر جلب عرض السعر"); return; }
+      printQuotation({
+        quoteNumber: d.quoteNumber,
+        quoteDate: d.quoteDate ? String(d.quoteDate).slice(0, 10) : undefined,
+        validUntil: d.validUntil ? String(d.validUntil).slice(0, 10) : undefined,
+        customerName: d.customerName,
+        notes: d.notes,
+        items: d.items.map((it) => ({
+          productName: it.productName ?? "",
+          variantName: it.variantName,
+          unitName: it.unitName,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          total: it.total,
+        })),
+        subtotal: d.subtotal,
+        taxAmount: d.taxAmount,
+        total: d.total,
+      });
+    } catch (e) {
+      notify.err(e);
+    }
+  }
 
   return (
     <div className="space-y-4">
@@ -52,6 +106,18 @@ export default function Quotations() {
               onChange: setQ,
               placeholder: "بحث (رقم العرض/العميل/الحالة)",
             }}
+            filters={
+              <>
+                <Input type="date" dir="ltr" className="h-8 w-36" value={from} onChange={(e) => setFrom(e.target.value)} title="من تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={to} onChange={(e) => setTo(e.target.value)} title="إلى تاريخ" />
+                <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)}>
+                  <option value="">— كل الحالات —</option>
+                  {Object.entries(STATUS).map(([k, v]) => (
+                    <option key={k} value={k}>{v}</option>
+                  ))}
+                </select>
+              </>
+            }
             exportSpec={{
               filename: "عروض الأسعار",
               rows: filtered,
@@ -95,9 +161,17 @@ export default function Quotations() {
                   </td>
                   <td className="p-2 text-center">
                     <RowActions
-                      mode="inline"
+                      mode="auto"
                       actions={[
                         { key: "open", label: "فتح", href: `/quotations/${qr.id}` },
+                        { key: "print", label: "طباعة", onSelect: () => void printQuote(qr.id) },
+                        {
+                          key: "send",
+                          label: "وضع مُرسَل",
+                          onSelect: () => setStatusMut.mutate({ quotationId: qr.id, status: "SENT" }),
+                          hidden: qr.status !== "DRAFT",
+                          disabled: setStatusMut.isPending,
+                        },
                       ]}
                     />
                   </td>

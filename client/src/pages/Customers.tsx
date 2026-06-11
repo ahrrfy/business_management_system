@@ -235,10 +235,12 @@ export default function Customers() {
                       </span>
                     </td>
                     <td className="p-2 text-center">
+                      {/* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
-                        mode="inline"
                         actions={[
                           { key: "edit", label: "تعديل", href: `/customers/${id}/edit` },
+                          // كشف الحساب يقرأ ?id= من URL (نمط CustomerStatement)
+                          { key: "stmt", label: "كشف حساب", href: `/customers-statement?id=${id}` },
                           {
                             key: "toggle",
                             label: isActive ? "تعطيل" : "تفعيل",

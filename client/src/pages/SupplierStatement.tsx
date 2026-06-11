@@ -1,17 +1,44 @@
 import { CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { printSupplierStmt } from "@/lib/printing/printTemplates";
-import { D, positiveDiff } from "@/lib/money";
+import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
+const ymd = (d: Date) =>
+  `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+/** اختصارات الفترة: اليوم / هذا الشهر / الشهر الماضي / الكل (فارغة). */
+const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string } }[] = [
+  { label: "اليوم", range: () => ({ from: ymd(new Date()), to: ymd(new Date()) }) },
+  {
+    label: "هذا الشهر",
+    range: () => {
+      const n = new Date();
+      return { from: ymd(new Date(n.getFullYear(), n.getMonth(), 1)), to: ymd(n) };
+    },
+  },
+  {
+    label: "الشهر الماضي",
+    range: () => {
+      const n = new Date();
+      return {
+        from: ymd(new Date(n.getFullYear(), n.getMonth() - 1, 1)),
+        to: ymd(new Date(n.getFullYear(), n.getMonth(), 0)),
+      };
+    },
+  },
+  { label: "الكل", range: () => ({ from: "", to: "" }) },
+];
 
 const PO_STATUS_LABEL: Record<string, string> = {
   DRAFT: "مسودّة",
@@ -28,8 +55,6 @@ const PO_STATUS_CLS: Record<string, string> = {
   CANCELLED: "bg-rose-100 text-rose-700",
 };
 
-const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-
 export default function SupplierStatement() {
   // wouter's useLocation() strips the query string, so read it from window.location directly.
   const initial = useMemo(() => {
@@ -39,10 +64,12 @@ export default function SupplierStatement() {
 
   const [supplierId, setSupplierId] = useState<number>(initial);
   useEffect(() => { if (initial && initial !== supplierId) setSupplierId(initial); }, [initial]); // eslint-disable-line
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
 
   const index = trpc.reports.suppliersIndex.useQuery();
   const stmt = trpc.reports.supplierStatement.useQuery(
-    { supplierId: supplierId || 0 },
+    { supplierId: supplierId || 0, from: from || undefined, to: to || undefined },
     { enabled: !!supplierId }
   );
 
@@ -55,23 +82,39 @@ export default function SupplierStatement() {
             <Button variant="outline" size="sm" onClick={() => {
               const d = stmt.data!;
               const poTxs = d.purchaseOrders.map(p => ({
+                t: new Date(p.orderDate).getTime(),
                 date: new Date(p.orderDate).toLocaleDateString('en-GB'),
                 ref: p.poNumber, description: 'أمر شراء',
-                debit: null, credit: Number(p.total), balance: 0,
+                debit: null as string | null, credit: p.total as string | null,
               }));
               const payTxs = d.payments.map(p => ({
+                t: new Date(p.entryDate).getTime(),
                 date: new Date(p.entryDate).toLocaleDateString('en-GB'),
-                ref: 'دفعة', description: 'دفعة للمورد',
-                debit: Number(p.amount), credit: null, balance: 0,
+                ref: 'دفعة',
+                description: p.purchaseOrderId ? 'دفعة للمورد' : 'دفعة مستقلة للمورد',
+                debit: p.amount as string | null, credit: null as string | null,
               }));
-              const merged = [...poTxs, ...payTxs].sort((a, b) => a.date.localeCompare(b.date));
-              let bal = 0;
-              const txs = merged.map(t => { bal += (t.credit ?? 0) - (t.debit ?? 0); return { ...t, balance: bal }; });
+              // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
+              const merged = [...poTxs, ...payTxs].sort((a, b) => a.t - b.t);
+              // §٥: AP بـDecimal (دائن − مدين)، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
+              let bal = from ? D(stmt.data!.summary.openingBalance) : D(0);
+              let totDebit = D(0), totCredit = D(0);
+              const txs = merged.map(({ t: _t, ...x }) => {
+                bal = bal.plus(D(x.credit)).minus(D(x.debit));
+                totDebit = totDebit.plus(D(x.debit));
+                totCredit = totCredit.plus(D(x.credit));
+                return { ...x, balance: bal.toFixed(2) };
+              });
               printSupplierStmt({
                 supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
-                toDate: new Date().toLocaleDateString('en-GB'), transactions: txs,
-                totalDebit: d.summary.totalPaid, totalCredit: d.summary.totalPurchases,
-                closingBalance: d.summary.currentBalance,
+                fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString('en-GB') : undefined,
+                toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString('en-GB'),
+                transactions: txs,
+                // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
+                totalDebit: totDebit.toFixed(2), totalCredit: totCredit.toFixed(2),
+                openingBalance: from ? d.summary.openingBalance : undefined,
+                // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
+                closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
               });
             }}>طباعة الكشف</Button>
           )}
@@ -95,8 +138,8 @@ export default function SupplierStatement() {
       <p className="text-sm text-muted-foreground">كل أوامر الشراء والدفعات لمورد واحد، مع ملخّص الرصيد الجارٍ.</p>
 
       <Card>
-        <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
+        <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="space-y-1 md:col-span-2">
             <Label className="text-xs">المورد</Label>
             <select className={selectCls} value={supplierId} onChange={(e) => setSupplierId(Number(e.target.value))}>
               <option value={0}>— اختر مورداً —</option>
@@ -106,6 +149,21 @@ export default function SupplierStatement() {
                 </option>
               ))}
             </select>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">من تاريخ</Label>
+            <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">إلى تاريخ</Label>
+            <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+          </div>
+          <div className="md:col-span-4 flex flex-wrap gap-2">
+            {PERIOD_PRESETS.map((p) => (
+              <Button key={p.label} variant="secondary" size="sm" onClick={() => { const r = p.range(); setFrom(r.from); setTo(r.to); }}>
+                {p.label}
+              </Button>
+            ))}
           </div>
         </CardContent>
       </Card>
@@ -161,6 +219,16 @@ export default function SupplierStatement() {
                   </tr>
                 </thead>
                 <tbody>
+                  {/* الرصيد المُرحَّل = افتتاحي مستورد + مشتريات ملتزمة − دفعات قبل from — صف أول يجعل رصيد الفترة قابلاً للتتبّع. */}
+                  {from && (
+                    <tr className="border-t bg-amber-50/60 font-medium">
+                      <td className="p-2 text-xs">رصيد مُرحَّل</td>
+                      <td className="p-2 text-xs" dir="ltr">{from}</td>
+                      <td className="p-2 text-xs text-muted-foreground" colSpan={3}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
+                      <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
+                      <td className="p-2" colSpan={2} />
+                    </tr>
+                  )}
                   {stmt.data.purchaseOrders.map((p) => {
                     // §٥: نستعمل Decimal للطرح (positiveDiff) لا Number() float.
                     const remaining = positiveDiff(p.total, p.paidAmount).toFixed(2);
@@ -209,7 +277,14 @@ export default function SupplierStatement() {
                   {stmt.data.payments.map((p) => (
                     <tr key={p.id} className="border-t">
                       <td className="p-2 text-xs" dir="ltr">{new Date(p.entryDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
-                      <td className="p-2"><CopyInline value={p.purchaseOrderId} /></td>
+                      <td className="p-2">
+                        {p.purchaseOrderId ? (
+                          <CopyInline value={p.purchaseOrderId} />
+                        ) : (
+                          // دفعة بلا أمر شراء (سند صرف مستقل للمورد) — وسمها يمنع الالتباس.
+                          <span className="inline-block rounded bg-violet-100 text-violet-700 px-2 py-0.5 text-xs">دفعة مستقلة</span>
+                        )}
+                      </td>
                       <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.amount)}</td>
                       <td className="p-2 text-xs">{p.notes ?? "—"}</td>
                     </tr>

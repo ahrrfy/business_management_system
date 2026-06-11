@@ -1,6 +1,7 @@
-import { ListToolbar } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printDoc } from "@/lib/printing/print";
@@ -30,6 +31,9 @@ const fmtDT = (d: string | number | Date | null | undefined) =>
 export default function Shifts() {
   const [branchId, setBranchId] = useState<number | "">("");
   const [status, setStatus] = useState<"" | "OPEN" | "CLOSED">("");
+  // فلتر الفترة خادمي (openedAt) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
   const [printing, setPrinting] = useState<number | null>(null);
 
@@ -38,6 +42,8 @@ export default function Shifts() {
   const list = trpc.shifts.list.useQuery({
     branchId: branchId ? Number(branchId) : undefined,
     status: status || undefined,
+    from: dateFrom || undefined,
+    to: dateTo || undefined,
     limit: PAGE,
     offset: page * PAGE,
   });
@@ -104,7 +110,7 @@ export default function Shifts() {
     }
   }
 
-  const anyFilter = branchId !== "" || status !== "";
+  const anyFilter = branchId !== "" || status !== "" || dateFrom !== "" || dateTo !== "";
   const from = total === 0 ? 0 : page * PAGE + 1;
   const to = Math.min((page + 1) * PAGE, total);
 
@@ -136,6 +142,8 @@ export default function Shifts() {
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </select>
+                <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => setFilter(setDateFrom, e.target.value)} title="من تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => setFilter(setDateTo, e.target.value)} title="إلى تاريخ" />
               </>
             }
             exportSpec={{
@@ -193,9 +201,18 @@ export default function Shifts() {
                     </span>
                   </td>
                   <td className="p-2 text-center">
-                    <Button variant="outline" size="sm" disabled={printing === r.id} onClick={() => reprintZ(r.id)}>
-                      {printing === r.id ? "جارٍ…" : "🖨️ Z-report"}
-                    </Button>
+                    {/* زر Z-report بنمط إجراءات الصف الموحّد (RowActions inline) — نفس onSelect السابق. */}
+                    <RowActions
+                      mode="inline"
+                      actions={[
+                        {
+                          key: "zreport",
+                          label: printing === r.id ? "جارٍ…" : "🖨️ Z-report",
+                          disabled: printing === r.id,
+                          onSelect: () => void reprintZ(r.id),
+                        },
+                      ]}
+                    />
                   </td>
                 </tr>
               ))}

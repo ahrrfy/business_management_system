@@ -1,10 +1,12 @@
 import { DataTable } from "@/components/data-table/DataTable";
 import { ImportDialog } from "@/components/import/ImportDialog";
+import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { exportRows } from "@/lib/export";
 import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
+import { printBarcodeSheet } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
@@ -43,11 +45,37 @@ const columns: ColumnDef<Row, unknown>[] = [
     id: "action",
     header: "إجراء",
     enableSorting: false,
-    cell: (c) => (
-      <Link href={`/products/${c.row.original.productId}/edit`}>
-        <Button variant="outline" size="sm">تعديل</Button>
-      </Link>
-    ),
+    cell: (c) => {
+      const r = c.row.original;
+      return (
+        <RowActions
+          actions={[
+            { key: "edit", label: "تعديل", href: `/products/${r.productId}/edit` },
+            {
+              key: "label",
+              label: "طباعة ملصق باركود",
+              hidden: !r.barcode, // بلا باركود = لا ملصق (Code128 يحتاج قيمة)
+              onSelect: () =>
+                printBarcodeSheet([
+                  {
+                    name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+                    sku: r.sku ?? "",
+                    price: r.price,
+                    barcode: r.barcode ?? "",
+                  },
+                ]),
+            },
+            {
+              key: "moves",
+              label: "حركات الصنف",
+              hidden: !r.sku,
+              // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
+              href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,
+            },
+          ]}
+        />
+      );
+    },
   },
 ];
 

@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
 import { z } from "zod";
 import {
   customers,
@@ -85,6 +85,14 @@ export async function verifyManagerApproval(
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
+// تاريخ فلترة YYYY-MM-DD (فلاتر الفترات الخادمية — لا فلترة محلية تُخفي صفحات الخادم).
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
+/** «إلى تاريخ» شاملاً على عمود timestamp: نصف مفتوح [from, to+يوم) كي لا تسقط حركات بقية اليوم. */
+function nextDay(d: string): Date {
+  const x = new Date(d);
+  x.setDate(x.getDate() + 1);
+  return x;
+}
 // قيمة مالية موجبة (٢ منزلتان): تمنع override/خصم سالباً يمرّر بضاعة مجاناً مع تشويش الأرقام.
 const nonNegMoney = z
   .string()
@@ -172,10 +180,28 @@ export const saleRouter = router({
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
   list: branchScopedProcedure
-    .input(z.object({ limit: z.number().default(50), offset: z.number().default(0) }).optional())
+    .input(
+      z
+        .object({
+          limit: z.number().default(50),
+          offset: z.number().default(0),
+          // فلترة خادمية بالفترة (invoiceDate) والحالة والعميل.
+          from: ymd.optional(),
+          to: ymd.optional(),
+          status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
+          customerId: z.number().int().positive().optional(),
+        })
+        .optional()
+    )
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
+      const conds = [];
+      if (ctx.scopedBranchId) conds.push(eq(invoices.branchId, ctx.scopedBranchId));
+      if (input?.from) conds.push(gte(invoices.invoiceDate, new Date(input.from)));
+      if (input?.to) conds.push(lt(invoices.invoiceDate, nextDay(input.to)));
+      if (input?.status) conds.push(eq(invoices.status, input.status));
+      if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
       return db
         .select({
           id: invoices.id,
@@ -189,7 +215,7 @@ export const saleRouter = router({
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
-        .where(ctx.scopedBranchId ? eq(invoices.branchId, ctx.scopedBranchId) : undefined)
+        .where(conds.length ? and(...conds) : undefined)
         .orderBy(desc(invoices.id))
         .limit(input?.limit ?? 50)
         .offset(input?.offset ?? 0);

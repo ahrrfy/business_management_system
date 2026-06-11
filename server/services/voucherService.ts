@@ -10,7 +10,7 @@
 //
 // الذرّية: كلّها داخل withTx ⇒ rollback كامل عند أي خطأ.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, like } from "drizzle-orm";
+import { and, desc, eq, gte, like, lt } from "drizzle-orm";
 import {
   accountingEntries,
   customers,
@@ -161,8 +161,18 @@ export interface ListVouchersInput {
   voucherType?: "RECEIPT" | "PAYMENT";
   partyType?: PartyType;
   partyId?: number;
+  /** فترة على createdAt (YYYY-MM-DD) — «إلى» شاملاً عبر نصف مفتوح [from, to+يوم). */
+  from?: string;
+  to?: string;
   limit?: number;
   offset?: number;
+}
+
+/** createdAt عمود timestamp ⇒ «إلى تاريخ» شاملاً = أقل من اليوم التالي (لا تسقط سندات بقية اليوم). */
+function nextDay(d: string): Date {
+  const x = new Date(d);
+  x.setDate(x.getDate() + 1);
+  return x;
 }
 
 export async function listVouchers(input: ListVouchersInput = {}) {
@@ -179,6 +189,9 @@ export async function listVouchers(input: ListVouchersInput = {}) {
   if (input.voucherType) wheres.push(eq(receipts.direction, input.voucherType === "RECEIPT" ? "IN" : "OUT"));
   if (input.partyType) wheres.push(eq(receipts.partyType, input.partyType));
   if (input.partyId) wheres.push(eq(receipts.partyId, input.partyId));
+  // فلتر الفترة على createdAt (تاريخ إنشاء السند).
+  if (input.from) wheres.push(gte(receipts.createdAt, new Date(input.from)));
+  if (input.to) wheres.push(lt(receipts.createdAt, nextDay(input.to)));
   // فلتر voucherNumber IS NOT NULL (يجب أن يكون سنداً مستقلّاً، لا receipt فاتورة).
   // drizzle لا يدعم isNotNull بسهولة هنا — نستعمل sql خام:
   // لكن أبسط: filter في JS بعد القراءة.

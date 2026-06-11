@@ -1,10 +1,13 @@
+import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
-import { trpc } from "@/lib/trpc";
+import { fmt } from "@/lib/money";
+import { printDoc } from "@/lib/printing/print";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useState } from "react";
 import { Link } from "wouter";
 
@@ -36,6 +39,29 @@ const STATUS_CLS: Record<string, string> = {
 };
 const STATUS_LABEL: Record<string, string> = { ACTIVE: "نافذ", CANCELLED: "مُلغى" };
 
+type ExpenseRow = RouterOutputs["expenses"]["list"]["rows"][number];
+
+/** إيصال صرف عبر printDoc العام — نفس نواقل الطباعة الثلاثة (جسر الخادم/WebUSB/متصفح). */
+async function printExpenseReceipt(r: ExpenseRow) {
+  await printDoc({
+    kind: "receipt",
+    title: "الرؤية العربية",
+    subtitle: "إيصال صرف — مصروف",
+    meta: [
+      `مصروف #${Number(r.id)}`,
+      `التاريخ: ${r.expenseDate ? new Date(r.expenseDate as unknown as string).toISOString().slice(0, 10) : "—"}`,
+      `الفرع: ${r.branchName ?? "—"}`,
+      `الفئة: ${CATEGORY_LABEL[r.category] ?? r.category}`,
+      `طريقة الدفع: ${METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}`,
+      ...(r.description ? [`البيان: ${r.description}`] : []),
+      // إيصال مصروف مُلغى يحمل حالته صراحةً — لا يُقرأ كصرف نافذ بالخطأ.
+      ...(r.status !== "ACTIVE" ? [`الحالة: ${STATUS_LABEL[r.status] ?? r.status}`] : []),
+    ],
+    totals: [{ label: "المبلغ", value: fmt(r.amount) }],
+    footer: "إيصال صرف داخلي",
+  });
+}
+
 export default function Expenses() {
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
@@ -60,8 +86,7 @@ export default function Expenses() {
     },
   });
 
-  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-
+  // أموال العرض عبر fmt من @/lib/money (فواصل آلاف + منزلتان) — بديل الدالة المحلية السابقة.
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -172,25 +197,32 @@ export default function Expenses() {
                     </span>
                   </td>
                   <td className="p-2 text-center">
-                    {r.status === "ACTIVE" && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={cancel.isPending}
-                        onClick={() => void (async () => {
-                          if (!(await confirm({
-                            variant: "warning",
-                            title: "إلغاء المصروف",
-                            description: `سيُعكس مبلغ ${r.amount} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
-                            confirmText: "إلغاء المصروف",
-                            cancelText: "تراجع",
-                          }))) return;
-                          cancel.mutate({ expenseId: Number(r.id) });
-                        })()}
-                      >
-                        إلغاء
-                      </Button>
-                    )}
+                    <RowActions
+                      actions={[
+                        {
+                          key: "print",
+                          label: "طباعة إيصال صرف",
+                          onSelect: () => void printExpenseReceipt(r),
+                        },
+                        {
+                          key: "cancel",
+                          label: "إلغاء",
+                          variant: "destructive",
+                          hidden: r.status !== "ACTIVE", // لا حذف صلب — الإلغاء يعكس الصندوق
+                          disabled: cancel.isPending,
+                          onSelect: () => void (async () => {
+                            if (!(await confirm({
+                              variant: "warning",
+                              title: "إلغاء المصروف",
+                              description: `سيُعكس مبلغ ${fmt(r.amount)} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
+                              confirmText: "إلغاء المصروف",
+                              cancelText: "تراجع",
+                            }))) return;
+                            cancel.mutate({ expenseId: Number(r.id) });
+                          })(),
+                        },
+                      ]}
+                    />
                   </td>
                 </tr>
               ))}

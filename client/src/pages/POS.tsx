@@ -611,7 +611,7 @@ export default function POS() {
         kind: "opening", title: SHOP,
         subtitle: "بيان الرصيد الافتتاحي",
         meta: [`وردية #${res.shiftId}`, new Date().toLocaleString("ar-IQ-u-nu-latn")],
-        totals: [{ label: "الرصيد الافتتاحي", value: money(Number(opening || 0)) }],
+        totals: [{ label: "الرصيد الافتتاحي", value: fmt(Number(opening || 0)) }],
         footer: "بداية الوردية",
       });
     },

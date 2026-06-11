@@ -1,7 +1,8 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
-import { ListToolbar } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
 import { D, fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -20,6 +21,9 @@ const selectCls =
 export default function PurchaseReturns() {
   const [supplierId, setSupplierId] = useState<number | "">("");
   const [branchId, setBranchId] = useState<number | "">("");
+  // فلتر الفترة خادمي (entryDate) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
 
   const suppliers = trpc.suppliers.list.useQuery();
@@ -27,6 +31,8 @@ export default function PurchaseReturns() {
   const list = trpc.purchaseReturns.list.useQuery({
     supplierId: supplierId ? Number(supplierId) : undefined,
     branchId: branchId ? Number(branchId) : undefined,
+    from: dateFrom || undefined,
+    to: dateTo || undefined,
     limit: PAGE,
     offset: page * PAGE,
   });
@@ -98,6 +104,8 @@ export default function PurchaseReturns() {
                     <option key={b.id} value={b.id}>{b.name}</option>
                   ))}
                 </select>
+                <Input type="date" dir="ltr" className="h-8 w-36" value={dateFrom} onChange={(e) => { setDateFrom(e.target.value); setPage(0); }} title="من تاريخ" />
+                <Input type="date" dir="ltr" className="h-8 w-36" value={dateTo} onChange={(e) => { setDateTo(e.target.value); setPage(0); }} title="إلى تاريخ" />
               </>
             }
             exportSpec={{
@@ -127,6 +135,7 @@ export default function PurchaseReturns() {
                 <th className="p-2 text-center">أمر الشراء</th>
                 <th className="p-2 text-left">القيمة المرتجعة</th>
                 <th className="p-2">ملاحظات</th>
+                <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>
             <tbody>
@@ -142,12 +151,31 @@ export default function PurchaseReturns() {
                   <td className="p-2 text-center tabular-nums" dir="ltr">{r.purchaseOrderId ? `#${r.purchaseOrderId}` : "—"}</td>
                   <td className="p-2 text-left font-semibold tabular-nums" dir="ltr">{fmt(returned(r.amount))}</td>
                   <td className="p-2 text-xs text-muted-foreground">{noteText(r.notes)}</td>
+                  <td className="p-2 text-center">
+                    <RowActions
+                      mode="auto"
+                      actions={[
+                        {
+                          key: "po",
+                          label: "فتح أمر الشراء",
+                          href: `/purchases/${r.purchaseOrderId}/receive`,
+                          hidden: r.purchaseOrderId == null,
+                        },
+                        {
+                          key: "stmt",
+                          label: "كشف حساب المورد",
+                          href: `/suppliers-statement?id=${r.supplierId}`,
+                          hidden: r.supplierId == null,
+                        },
+                      ]}
+                    />
+                  </td>
                 </tr>
               ))}
               {!list.isLoading && rows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-muted-foreground">
-                    {total === 0 && !supplierId && !branchId
+                  <td colSpan={8} className="p-6 text-center text-muted-foreground">
+                    {total === 0 && !supplierId && !branchId && !dateFrom && !dateTo
                       ? "لا مرتجعات مشتريات بعد."
                       : "لا مرتجعات مطابقة. غيّر الفلتر."}
                   </td>
@@ -155,7 +183,7 @@ export default function PurchaseReturns() {
               )}
               {list.isLoading && (
                 <tr>
-                  <td colSpan={7} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td>
+                  <td colSpan={8} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td>
                 </tr>
               )}
             </tbody>
