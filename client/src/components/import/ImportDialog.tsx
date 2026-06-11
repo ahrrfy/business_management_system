@@ -447,7 +447,7 @@ export function ImportDialog<TRow>({
       <DialogContent
         dir="rtl"
         showCloseButton={!busy}
-        className="max-h-[88vh] w-[min(95vw,900px)] max-w-[min(95vw,900px)] overflow-hidden sm:max-w-[min(95vw,900px)]"
+        className="grid-rows-[auto_minmax(0,1fr)_auto] max-h-[88vh] w-[min(95vw,900px)] max-w-[min(95vw,900px)] overflow-hidden sm:max-w-[min(95vw,900px)]"
       >
         <DialogHeader className="sm:text-right">
           <DialogTitle>{title}</DialogTitle>
