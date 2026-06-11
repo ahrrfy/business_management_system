@@ -1,3 +1,4 @@
+import { balanceOptionText } from "@/components/BalanceBadge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -69,6 +70,7 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
           {(customers.data ?? []).map((c) => (
             <option key={c.id} value={c.id}>
               {c.name} ({TIER_LABEL[c.defaultPriceTier as Tier]})
+              {balanceOptionText((c as { currentBalance?: string | null }).currentBalance, "customer")}
             </option>
           ))}
         </select>

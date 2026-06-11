@@ -62,5 +62,5 @@ export type ProductImportRow = {
   retailPrice?: string; // «سعر البيع» — 0 أو فارغ ⇒ لا يُنشأ سعر للفئة
   wholesalePrice?: string; // «سعر الجملة»
   governmentPrice?: string; // «سعر حكومي»
-  openingStock?: number; // عدد صحيح ≥ 0 (السالب قُصّ صفراً في العميل مع تحذير)
+  openingStock?: number; // عدد صحيح ≥ 0 (السالب = خطأ صفّي في العميل ⇒ الصف يُتجاوَز ولا يُستورَد)
 };

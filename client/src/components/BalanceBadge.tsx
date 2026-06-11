@@ -29,6 +29,20 @@ export function getBalanceDirection(
     : { label: "له علينا", colorCls: "rose" };
 }
 
+/**
+ * نصّ رصيد مضغوط لعناصر <option> (لا تقبل عناصر React): « — لنا عليه ١٢٬٥٠٠ د.ع»
+ * أو "" عند الصفر — يوحّد عرض الرصيد في كل قوائم اختيار العملاء/الموردين.
+ */
+export function balanceOptionText(
+  amount: number | string | null | undefined,
+  entityType: BalanceEntity
+): string {
+  const num = amount != null ? Number(amount) : 0;
+  const dir = getBalanceDirection(num, entityType);
+  if (!dir) return "";
+  return ` — ${dir.label} ${fmtNum(Math.abs(num))} د.ع`;
+}
+
 /** Badge مضغوط للاستخدام في الرأس وبطاقات الملخص */
 export function BalanceBadge({
   amount,

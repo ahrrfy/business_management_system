@@ -30,10 +30,12 @@ export type ImportField<TRow> = {
    *  تجاوزه = خطأ صفّي هنا، وإلا رفض zod دفعة tRPC كاملة بـBAD_REQUEST متجاوزاً skipFailed.
    *  للنوع phone الافتراض ٢٠ (phoneStr.max(20) في الخادم) حتى بلا تحديد. */
   maxLen?: number;
-  /** للنوع integer: السالب (شائع في الأنظمة القديمة — بيع على المكشوف) يُقصّ صفراً مع تحذير لا فشل. */
-  clampNegativeToZero?: boolean;
-  /** نصّ تحذير القصّ (يظهر في المعاينة ولا يمنع الاستيراد). */
-  clampWarning?: string;
+  /** للنوع integer: السالب (شائع في الأنظمة القديمة — بيع على المكشوف) يُرفض كخطأ صفّي ⇒
+   *  الصف لا يُستورَد ويُتجاوَز مع skipFailed ويبقى في سجلّ الأخطاء (قرار المالك ١١/٦ —
+   *  كان سابقاً يُقصّ صفراً ويُستورَد). */
+  rejectNegative?: boolean;
+  /** نصّ خطأ السالب (يظهر في المعاينة وسجلّ الأخطاء). */
+  negativeError?: string;
   validate?: (value: unknown, row: Record<string, unknown>) => string | null;
   example?: string | number;
 };
@@ -236,7 +238,7 @@ export function coerceValue<TRow>(
 
     case "integer": {
       // المخزون السالب يأتي بالأقواس المربعة أيضاً («[1.]» = ‎-1، كأرصدة الموردين) — تُفصل الإشارة
-      // قبل التنظيف كي يسري قصّ السالب صفراً على الصيغتين، وإلا ضاع الصف كاملاً «قيمة رقمية غير صالحة».
+      // قبل التنظيف كي يسري رفض السالب على الصيغتين برسالة واضحة لا «قيمة رقمية غير صالحة».
       const { negative, inner } = extractAccountingSign(raw);
       const t = cleanNumericText(inner);
       const mag = Number(t);
@@ -244,13 +246,10 @@ export function coerceValue<TRow>(
         return { value: undefined, error: "قيمة رقمية غير صالحة" };
       }
       const n = negative && mag !== 0 ? -mag : mag;
-      // السالب يُقصّ صفراً مع تحذير (سياسة منصوصة لا اجتهادية) — قبل فحص الصحيح كي لا يفشل «-4.5» بدل قصّه.
-      if (n < 0 && field.clampNegativeToZero) {
-        return {
-          value: 0,
-          error: null,
-          warning: field.clampWarning ?? "قيمة سالبة — استُوردت صفراً",
-        };
+      // السالب = خطأ صفّي (قرار المالك ١١/٦: لا يُستورَد ويُتجاوَز الصف) — قبل فحص الصحيح
+      // كي يأخذ «-4.5» رسالة السالب الواضحة لا رسالة الكسر.
+      if (n < 0 && field.rejectNegative) {
+        return { value: undefined, error: field.negativeError ?? "قيمة سالبة غير مسموحة" };
       }
       if (!Number.isInteger(n)) return { value: undefined, error: "يجب أن يكون عدداً صحيحاً" };
       return { value: n, error: null };

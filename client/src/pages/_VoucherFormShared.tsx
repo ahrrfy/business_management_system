@@ -1,4 +1,5 @@
 // نموذج موحَّد لإنشاء سند قبض/صرف. الاختلاف الوحيد بينهما هو voucherType والـlabels والألوان.
+import { BalanceBadge, balanceOptionText } from "@/components/BalanceBadge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -170,12 +171,29 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           {(partyType === "CUSTOMER" || partyType === "SUPPLIER") && (
             <div className="space-y-1">
               <Label>{partyType === "CUSTOMER" ? "العميل" : "المورّد"} *</Label>
+              {/* الرصيد يظهر مع كل اسم في القائمة، وبشارة ملوّنة بعد الاختيار — قرار سند بعلم كامل بالذمة */}
               <select className={selectCls} value={partyId} onChange={(e) => setPartyId(e.target.value ? Number(e.target.value) : "")}>
                 <option value="">— اختر —</option>
                 {partyList.map((p: any) => (
-                  <option key={Number(p.id)} value={Number(p.id)}>{p.name}</option>
+                  <option key={Number(p.id)} value={Number(p.id)}>
+                    {p.name}
+                    {balanceOptionText(p.currentBalance, partyType === "CUSTOMER" ? "customer" : "supplier")}
+                  </option>
                 ))}
               </select>
+              {partyId !== "" && (() => {
+                const sel: any = partyList.find((p: any) => Number(p.id) === Number(partyId));
+                return sel ? (
+                  <div className="flex items-center gap-2 pt-1 text-xs text-muted-foreground">
+                    <span>الرصيد الحالي قبل هذا السند:</span>
+                    <BalanceBadge
+                      amount={sel.currentBalance}
+                      entityType={partyType === "CUSTOMER" ? "customer" : "supplier"}
+                      showZero
+                    />
+                  </div>
+                ) : null;
+              })()}
             </div>
           )}
         </CardContent>

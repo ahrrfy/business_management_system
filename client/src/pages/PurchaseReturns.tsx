@@ -1,3 +1,4 @@
+import { balanceOptionText } from "@/components/BalanceBadge";
 import { ListToolbar } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -81,7 +82,10 @@ export default function PurchaseReturns() {
                 >
                   <option value="">— كل الموردين —</option>
                   {(suppliers.data ?? []).map((s) => (
-                    <option key={s.id} value={s.id}>{s.name}</option>
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                      {balanceOptionText((s as { currentBalance?: string | null }).currentBalance, "supplier")}
+                    </option>
                   ))}
                 </select>
                 <select

@@ -96,7 +96,9 @@ export function ImportDialog<TRow>({
   const [busy, setBusy] = React.useState(false);
   // خيارات التشغيل (تظهر في خطوة «map» حسب الـmeta والربط الفعلي)
   const [usdRate, setUsdRate] = React.useState("");
-  const [skipFailed, setSkipFailed] = React.useState(false);
+  // افتراضياً مفعَّل (قرار المالك ١١/٦): الصفوف الفاشلة تُتجاوَز ويكتمل الصحيح مع تنبيه + سجلّ أخطاء —
+  // إطفاؤه يعيد سلوك «الكل أو لا شيء».
+  const [skipFailed, setSkipFailed] = React.useState(true);
   const [balanceSign, setBalanceSign] = React.useState<"asIs" | "invert">("asIs");
   const [phase, setPhase] = React.useState<"dry" | "write" | null>(null);
   const [batchNote, setBatchNote] = React.useState<string | null>(null);
@@ -295,7 +297,9 @@ export function ImportDialog<TRow>({
     validRows.length > 0 &&
     unmappedRequired.length === 0 &&
     !currencyGuard &&
-    (invalidCount === 0 || (skipFailed && supportsOptions)) &&
+    // أخطاء العميل لا تُرسَل للخادم أصلاً (validRows فقط) ⇒ التجاوز يعمل لكل الكيانات
+    // حتى بلا خيارات خادمية (كان مشروطاً بـsupportsOptions فحُبس استيراد المنتجات على أي خطأ).
+    (invalidCount === 0 || skipFailed) &&
     (!usdRateRequired || usdRateValid);
 
   async function runImport() {
@@ -562,8 +566,8 @@ export function ImportDialog<TRow>({
               </div>
             )}
 
-            {/* خيارات الاستيراد */}
-            {(usdRateRequired || (supportsOptions && balanceMapped) || supportsOptions || plannedBatchCount > 1) && (
+            {/* خيارات الاستيراد — تظهر دائماً: مفتاح «تجاوز الفاشلة» يعمل لكل الكيانات (تصفية في العميل) */}
+            {(
               <div className="space-y-2 rounded-md border p-2 text-xs">
                 <div className="font-medium">خيارات الاستيراد</div>
 
@@ -622,19 +626,17 @@ export function ImportDialog<TRow>({
                   </div>
                 )}
 
-                {supportsOptions && (
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Switch checked={skipFailed} onCheckedChange={setSkipFailed} id="import-skip-failed" />
-                    <label htmlFor="import-skip-failed" className="cursor-pointer font-medium">
-                      تجاوز الصفوف الفاشلة
-                    </label>
-                    <span className="text-muted-foreground">
-                      {skipFailed
-                        ? "تُرسَل الصفوف الصالحة فقط وتبقى الفاشلة في الملخّص."
-                        : "مطفأ: أي صف خاطئ يمنع الاستيراد كله (الكل أو لا شيء)."}
-                    </span>
-                  </div>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  <Switch checked={skipFailed} onCheckedChange={setSkipFailed} id="import-skip-failed" />
+                  <label htmlFor="import-skip-failed" className="cursor-pointer font-medium">
+                    تجاوز الصفوف الفاشلة
+                  </label>
+                  <span className="text-muted-foreground">
+                    {skipFailed
+                      ? "يُستورَد الصحيح وتُتجاوَز الفاشلة (كرصيد سالب) مع تنبيه وسجلّ أخطاء قابل للتصدير."
+                      : "مطفأ: أي صف خاطئ يمنع الاستيراد كله (الكل أو لا شيء)."}
+                  </span>
+                </div>
 
                 {plannedBatchCount > 1 && (
                   <div className="text-muted-foreground">
@@ -792,7 +794,7 @@ export function ImportDialog<TRow>({
         <DialogFooter>
           {step === "map" && (
             <Button onClick={() => void runImport()} disabled={!canRun}>
-              {invalidCount > 0 && !(skipFailed && supportsOptions)
+              {invalidCount > 0 && !skipFailed
                 ? `صحّح ${invalidCount.toLocaleString("ar-IQ")} صفّاً أولاً`
                 : invalidCount > 0
                   ? `استيراد ${validRows.length.toLocaleString("ar-IQ")} وتجاوز ${invalidCount.toLocaleString("ar-IQ")} فاشلاً`
