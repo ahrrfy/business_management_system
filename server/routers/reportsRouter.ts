@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { customers, invoices, suppliers } from "../../drizzle/schema";
+import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { getDb } from "../db";
 import {
   getAPAging,
@@ -120,14 +121,12 @@ export const reportsRouter = router({
       if (!db) return { rows: [], totals: { count: 0, total: "0", paid: "0", unpaid: "0" } };
 
       const conditions = [];
+      // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
       if (input.from) {
-        conditions.push(sql`${invoices.invoiceDate} >= ${new Date(input.from)}`);
+        conditions.push(sql`${invoices.invoiceDate} >= ${localDayStart(input.from)}`);
       }
       if (input.to) {
-        // نهاية اليوم
-        const to = new Date(input.to);
-        to.setHours(23, 59, 59, 999);
-        conditions.push(sql`${invoices.invoiceDate} <= ${to}`);
+        conditions.push(sql`${invoices.invoiceDate} < ${localNextDayStart(input.to)}`);
       }
       if (input.branchId) {
         conditions.push(eq(invoices.branchId, input.branchId));

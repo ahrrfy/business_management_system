@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import type { MySqlColumn } from "drizzle-orm/mysql-core";
 import { branchStock, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { ARABIC_FOLD_PAIRS, escapeLikePattern, tokenizeSearchQuery } from "../../shared/searchNormalize";
@@ -209,6 +209,152 @@ export async function listForPurchase(branchId: number, query?: string, limit = 
     isBaseUnit: !!r.isBaseUnit,
     stockBase: r.stockBase ?? 0,
   }));
+}
+
+/* ============================ Admin product list (إدارة المنتجات) ============================ */
+
+/**
+ * صفّ شاشة إدارة المنتجات: حبيبة (متغيّر × وحدة) لكن عبر LEFT JOIN —
+ * المنتج بلا متغيّرات/وحدات يظهر صفاً واحداً بأعمدة NULL (بخلاف POS الذي يخفيه).
+ * لا يكشف التكلفة أبداً (الشاشة متاحة لكل الأدوار).
+ */
+export interface AdminProductRow {
+  productId: number;
+  productName: string;
+  productIsActive: boolean;
+  variantId: number | null;
+  variantName: string | null;
+  color: string | null;
+  size: string | null;
+  sku: string | null;
+  variantIsActive: boolean | null;
+  productUnitId: number | null;
+  unitName: string | null;
+  conversionFactor: string | null;
+  barcode: string | null;
+  isBaseUnit: boolean | null;
+  unitIsActive: boolean | null;
+  price: string | null; // RETAIL — للعرض فقط
+  stockBase: number;
+}
+
+export interface ListProductsAdminInput {
+  branchId: number;
+  q?: string;
+  includeInactive?: boolean;
+  limit?: number;
+  offset?: number;
+}
+
+/**
+ * قائمة إدارة المنتجات: كل المنتجات (حتى الناقصة بلا وحدات/متغيّرات) مع بحث ذكي
+ * وتقسيم صفحات خادمي + عدّ إجمالي — بديل عن posList (INNER JOIN + حدّ 500) في شاشة الإدارة.
+ */
+export async function listProductsAdmin(input: ListProductsAdminInput): Promise<{ rows: AdminProductRow[]; total: number }> {
+  const db = getDb();
+  if (!db) return { rows: [], total: 0 };
+  const limit = Math.min(Math.max(Math.trunc(input.limit ?? 50), 1), 500);
+  const offset = Math.max(Math.trunc(input.offset ?? 0), 0);
+
+  const conds: SQL[] = [];
+  if (!input.includeInactive) {
+    // المعطّل يُخفى، لكن المنتج بلا متغيّرات/وحدات (NULL في LEFT JOIN) يبقى ظاهراً.
+    conds.push(eq(products.isActive, true));
+    const vActive = or(isNull(productVariants.id), eq(productVariants.isActive, true));
+    if (vActive) conds.push(vActive);
+    const uActive = or(isNull(productUnits.id), eq(productUnits.isActive, true));
+    if (uActive) conds.push(uActive);
+  }
+  const search = buildCatalogSearchWhere(input.q);
+  if (search) conds.push(search);
+  const where = conds.length ? and(...conds) : undefined;
+
+  // ترتيب حتمي للتقسيم: مفاتيح الحبيبة (variant ثم unit) تذيّل الترتيب دائماً.
+  const order = search
+    ? [...buildCatalogSearchOrder(input.q), asc(productVariants.id), asc(productUnits.id)]
+    : [desc(products.id), asc(productVariants.id), asc(productUnits.id)];
+
+  const rows = await db
+    .select({
+      productId: products.id,
+      productName: products.name,
+      productIsActive: products.isActive,
+      variantId: productVariants.id,
+      variantName: productVariants.variantName,
+      color: productVariants.color,
+      size: productVariants.size,
+      sku: productVariants.sku,
+      variantIsActive: productVariants.isActive,
+      productUnitId: productUnits.id,
+      unitName: productUnits.unitName,
+      conversionFactor: productUnits.conversionFactor,
+      barcode: productUnits.barcode,
+      isBaseUnit: productUnits.isBaseUnit,
+      unitIsActive: productUnits.isActive,
+      price: productPrices.price,
+      stockBase: branchStock.quantity,
+    })
+    .from(products)
+    .leftJoin(productVariants, eq(productVariants.productId, products.id))
+    .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
+    .leftJoin(
+      productPrices,
+      and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL"))
+    )
+    .leftJoin(
+      branchStock,
+      and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId))
+    )
+    .where(where)
+    .orderBy(...order)
+    .limit(limit)
+    .offset(offset);
+
+  // العدّ الإجمالي بنفس FROM/WHERE لكن بلا جوينات الأسعار/المخزون (كلاهما 1:0..1 لا يغيّر عدد الصفوف).
+  const totalRow = (
+    await db
+      .select({ n: sql<number>`COUNT(*)` })
+      .from(products)
+      .leftJoin(productVariants, eq(productVariants.productId, products.id))
+      .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
+      .where(where)
+  )[0];
+
+  return {
+    rows: rows.map((r) => ({
+      productId: Number(r.productId),
+      productName: r.productName,
+      productIsActive: !!r.productIsActive,
+      variantId: r.variantId != null ? Number(r.variantId) : null,
+      variantName: r.variantName ?? null,
+      color: r.color ?? null,
+      size: r.size ?? null,
+      sku: r.sku ?? null,
+      variantIsActive: r.variantIsActive != null ? !!r.variantIsActive : null,
+      productUnitId: r.productUnitId != null ? Number(r.productUnitId) : null,
+      unitName: r.unitName ?? null,
+      conversionFactor: r.conversionFactor ?? null,
+      barcode: r.barcode ?? null,
+      isBaseUnit: r.isBaseUnit != null ? !!r.isBaseUnit : null,
+      unitIsActive: r.unitIsActive != null ? !!r.unitIsActive : null,
+      price: r.price ?? null,
+      stockBase: r.stockBase ?? 0,
+    })),
+    total: Number(totalRow?.n ?? 0),
+  };
+}
+
+/**
+ * تفعيل/تعطيل منتج كاملاً. التعطيل يخفيه من الكاشير تلقائياً عبر شرط activeOnly
+ * في listForPos/lookupByBarcode (مقصود) — ويبقى ظاهراً في قائمة الإدارة مع includeInactive.
+ */
+export async function setProductActive(productId: number, isActive: boolean, _actor: Actor) {
+  return withTx(async (tx) => {
+    const p = (await tx.select().from(products).where(eq(products.id, productId)).for("update").limit(1))[0];
+    if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+    await tx.update(products).set({ isActive }).where(eq(products.id, productId));
+    return { productId, isActive };
+  });
 }
 
 /* ============================ Product setup (catalog write) ============================ */

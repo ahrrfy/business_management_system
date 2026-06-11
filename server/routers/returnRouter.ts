@@ -4,10 +4,12 @@ import { z } from "zod";
 import { customers, invoiceItems, invoices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { returnSale } from "../services/returnService";
+import { listSalesReturns, returnSale } from "../services/returnService";
 import { managerProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
+// تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على entryDate).
+const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 // المرتجعات تعكس مخزوناً ونقداً ⇒ مدير فأعلى.
 export const returnRouter = router({
@@ -36,6 +38,22 @@ export const returnRouter = router({
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام المرتجع (تكرار)" });
     }),
+
+  /** سجلّ مرتجعات البيع (قيود RETURN ذات فاتورة بلا مورد) — فلاتر عميل/فرع/فترة + ترقيم خادمي. */
+  list: managerProcedure
+    .input(
+      z
+        .object({
+          customerId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
+          from: ymd.optional(),
+          to: ymd.optional(),
+          limit: z.number().int().positive().max(200).optional(),
+          offset: z.number().int().nonnegative().optional(),
+        })
+        .optional()
+    )
+    .query(({ input }) => listSalesReturns(input ?? {})),
 
   getInvoice: managerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input }) => {
     const db = getDb();

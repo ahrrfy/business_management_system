@@ -1,7 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, sql } from "drizzle-orm";
-import { accountingEntries, invoiceItems, invoices, receipts } from "../../drizzle/schema";
+import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { accountingEntries, customers, invoiceItems, invoices, receipts } from "../../drizzle/schema";
+import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
@@ -232,4 +233,65 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       fullyReturned,
     };
   });
+}
+
+export interface ListSalesReturnsInput {
+  customerId?: number;
+  branchId?: number;
+  invoiceId?: number;
+  /** فترة على entryDate (YYYY-MM-DD) — عمود DATE بلا وقت ⇒ gte/lte شاملان مباشرة. */
+  from?: string;
+  to?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** قائمة مرتجعات البيع: قيود RETURN ذات invoiceId بلا supplierId (تمييزها عن مرتجعات الشراء). */
+export async function listSalesReturns(input: ListSalesReturnsInput = {}) {
+  const { getDb } = await import("../db");
+  const db = getDb();
+  if (!db) return { rows: [], total: 0 };
+  const limit = Math.min(Math.max(input.limit ?? 50, 1), 200);
+  const offset = input.offset ?? 0;
+  const where = [
+    eq(accountingEntries.entryType, "RETURN"),
+    // مرتجع البيع: مرتبط بفاتورة ولا مورد له — عكس مرتجع الشراء (supplierId NOT NULL).
+    isNull(accountingEntries.supplierId),
+    isNotNull(accountingEntries.invoiceId),
+  ];
+  if (input.customerId) where.push(eq(accountingEntries.customerId, input.customerId));
+  if (input.branchId) where.push(eq(accountingEntries.branchId, input.branchId));
+  if (input.invoiceId) where.push(eq(accountingEntries.invoiceId, input.invoiceId));
+  // entryDate عمود DATE (بلا وقت) ⇒ gte/lte شاملان للطرفين — بمنتصف ليلٍ محلي
+  // (new Date("YYYY-MM-DD") = منتصف ليل UTC يُسلسَل +03:00 فيستثني يوم from كاملاً).
+  if (input.from) where.push(gte(accountingEntries.entryDate, localDayStart(input.from)));
+  if (input.to) where.push(lte(accountingEntries.entryDate, localDayStart(input.to)));
+
+  const rows = await db
+    .select({
+      id: accountingEntries.id,
+      entryDate: accountingEntries.entryDate,
+      branchId: accountingEntries.branchId,
+      invoiceId: accountingEntries.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
+      customerId: accountingEntries.customerId,
+      customerName: customers.name,
+      amount: accountingEntries.amount,
+      notes: accountingEntries.notes,
+      createdAt: accountingEntries.createdAt,
+    })
+    .from(accountingEntries)
+    .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))
+    .leftJoin(customers, eq(accountingEntries.customerId, customers.id))
+    .where(and(...where))
+    .orderBy(sql`${accountingEntries.id} DESC`)
+    .limit(limit)
+    .offset(offset);
+
+  const totalRow = await db
+    .select({ c: sql<number>`COUNT(*)` })
+    .from(accountingEntries)
+    .where(and(...where));
+
+  return { rows, total: Number(totalRow[0]?.c ?? 0) };
 }

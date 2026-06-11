@@ -4,17 +4,12 @@ import { z } from "zod";
 import { branches, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
+import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { branchScopedProcedure, cashierProcedure, router } from "../trpc";
 
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
-/** openedAt عمود timestamp ⇒ «إلى تاريخ» شاملاً = أقل من اليوم التالي (لا تسقط ورديات بقية اليوم). */
-function nextDay(d: string): Date {
-  const x = new Date(d);
-  x.setDate(x.getDate() + 1);
-  return x;
-}
 
 export const shiftRouter = router({
   // سجلّ الورديات — قائمة مُصفّحة branch-scoped (IDOR كـreport): الكاشير يرى ورديات فرعه فقط،
@@ -41,8 +36,9 @@ export const shiftRouter = router({
       if (effectiveBranchId != null) conds.push(eq(shifts.branchId, effectiveBranchId));
       if (i.status) conds.push(eq(shifts.status, i.status));
       // فلتر الفترة على openedAt (وقت فتح الوردية).
-      if (i.from) conds.push(gte(shifts.openedAt, new Date(i.from)));
-      if (i.to) conds.push(lt(shifts.openedAt, nextDay(i.to)));
+      // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
+      if (i.from) conds.push(gte(shifts.openedAt, localDayStart(i.from)));
+      if (i.to) conds.push(lt(shifts.openedAt, localNextDayStart(i.to)));
       const where = conds.length ? and(...conds) : undefined;
       const rows = await db
         .select({

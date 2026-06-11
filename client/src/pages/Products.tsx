@@ -1,102 +1,72 @@
-import { DataTable } from "@/components/data-table/DataTable";
+// شاشة إدارة المنتجات — قائمة خادمية كاملة (بحث ذكي + تقسيم صفحات + إظهار المعطّل)
+// على نمط Customers.tsx. تستبدل posList (INNER JOIN يخفي الناقص + حدّ 500) بـadminList
+// التي تعرض كل أصناف المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
 import { ImportDialog } from "@/components/import/ImportDialog";
-import { RowActions } from "@/components/list";
+import { ListToolbar, RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
-import { exportRows } from "@/lib/export";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { confirm } from "@/lib/confirm";
 import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { printBarcodeSheet } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
-import { Link } from "wouter";
 
-type Row = RouterOutputs["catalog"]["posList"][number];
+type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
 
-const columns: ColumnDef<Row, unknown>[] = [
-  { accessorKey: "productName", header: "المنتج" },
-  {
-    id: "variant",
-    header: "المتغيّر",
-    accessorFn: (r) => r.variantName ?? r.color ?? r.sku ?? "",
-    cell: (c) => <span className="text-muted-foreground">{String(c.getValue() ?? "—")}</span>,
-  },
-  { accessorKey: "unitName", header: "الوحدة" },
-  {
-    accessorKey: "barcode",
-    header: "الباركود",
-    cell: (c) => <span className="font-mono text-xs" dir="ltr">{(c.getValue() as string) ?? "—"}</span>,
-  },
-  {
-    accessorKey: "price",
-    header: "السعر (مفرد)",
-    cell: (c) => {
-      const v = c.getValue() as number | null;
-      return <span className="tabular-nums" dir="ltr">{v != null ? Number(v).toLocaleString("ar-IQ-u-nu-latn") : "—"}</span>;
-    },
-  },
-  {
-    accessorKey: "stockBase",
-    header: "المخزون",
-    cell: (c) => <span className="tabular-nums" dir="ltr">{Number(c.getValue() ?? 0)}</span>,
-  },
-  {
-    id: "action",
-    header: "إجراء",
-    enableSorting: false,
-    cell: (c) => {
-      const r = c.row.original;
-      return (
-        <RowActions
-          actions={[
-            { key: "edit", label: "تعديل", href: `/products/${r.productId}/edit` },
-            {
-              key: "label",
-              label: "طباعة ملصق باركود",
-              hidden: !r.barcode, // بلا باركود = لا ملصق (Code128 يحتاج قيمة)
-              onSelect: () =>
-                printBarcodeSheet([
-                  {
-                    name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
-                    sku: r.sku ?? "",
-                    price: r.price,
-                    barcode: r.barcode ?? "",
-                  },
-                ]),
-            },
-            {
-              key: "moves",
-              label: "حركات الصنف",
-              hidden: !r.sku,
-              // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
-              href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,
-            },
-          ]}
-        />
-      );
-    },
-  },
-];
+const limit = 50;
 
 export default function Products() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
-  const rows = trpc.catalog.posList.useQuery({ branchId, tier: "RETAIL", limit: 500 });
-  const data = rows.data ?? [];
+
+  const [q, setQ] = useState("");
+  const [includeInactive, setIncludeInactive] = useState(false);
+  const [page, setPage] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
   const importMut = trpc.imports.products.useMutation();
+  const dq = useDebouncedValue(q, 200);
+
+  const list = trpc.catalog.adminList.useQuery({
+    branchId,
+    q: dq.trim() || undefined,
+    includeInactive,
+    limit,
+    offset: page * limit,
+  });
+  const rows = list.data?.rows ?? [];
+  const total = list.data?.total ?? 0;
+  const pages = Math.max(1, Math.ceil(total / limit));
+
+  const setActive = trpc.catalog.setProductActive.useMutation({
+    onSuccess: (res) => {
+      utils.catalog.adminList.invalidate();
+      utils.catalog.posList.invalidate();
+      notify.ok(res.isActive ? "تم تفعيل المنتج" : "تم تعطيل المنتج");
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  async function toggle(productId: number, isActive: boolean, name: string) {
+    if (isActive) {
+      if (!(await confirm({
+        variant: "danger",
+        title: "تعطيل المنتج",
+        description: `سيختفي «${name}» من شاشة البيع والبحث. تستطيع تفعيله لاحقاً. هل تتابع؟`,
+        confirmText: "تعطيل",
+      }))) return;
+      setActive.mutate({ productId, isActive: false });
+    } else {
+      setActive.mutate({ productId, isActive: true });
+    }
+  }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">المنتجات</h1>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={() => setImportOpen(true)}>استيراد Excel</Button>
-          <Link href="/products/new"><Button>+ إضافة منتج</Button></Link>
-        </div>
-      </div>
+      <h1 className="text-2xl font-bold">المنتجات</h1>
 
       <ImportDialog<ProductImportRow>
         open={importOpen}
@@ -114,35 +84,146 @@ export default function Products() {
         onDone={(s) => {
           if (s.committed && s.created > 0) {
             notify.ok(`تم: ${s.created} منتج جديد، ${s.skipped} متخطّى`);
-            utils.catalog.posList.invalidate();
           }
+          utils.catalog.adminList.invalidate();
+          utils.catalog.posList.invalidate();
         }}
       />
-      <p className="text-sm text-muted-foreground">عرض الأصناف بوحداتها وأسعارها ومخزونها — مع فرز بنقرة وبحث فوري وتصدير.</p>
-      <DataTable
-        columns={columns}
-        data={data}
-        searchPlaceholder="بحث في المنتجات…"
-        emptyText={rows.isLoading ? "جارٍ التحميل…" : "لا منتجات."}
-        toolbar={
-          <Button variant="outline" size="sm" disabled={!data.length}
-            onClick={() =>
-              exportRows(data, {
-                filename: "المنتجات",
-                columns: [
-                  { key: "productName", header: "المنتج" },
-                  { key: "variantName", header: "المتغيّر", map: (r) => r.variantName ?? r.color ?? r.sku },
-                  { key: "unitName", header: "الوحدة" },
-                  { key: "barcode", header: "الباركود" },
-                  { key: "price", header: "السعر (مفرد)", map: (r) => (r.price != null ? Number(r.price) : "") },
-                  { key: "stockBase", header: "المخزون", map: (r) => Number(r.stockBase ?? 0) },
-                ],
-              })
-            }>
-            تصدير Excel
+      <p className="text-sm text-muted-foreground">عرض الأصناف بوحداتها وأسعارها ومخزونها — مع بحث فوري وتصدير.</p>
+
+      <Card>
+        <CardHeader>
+          <ListToolbar
+            title="القائمة"
+            count={total}
+            loading={list.isLoading}
+            search={{
+              value: q,
+              onChange: (v) => { setQ(v); setPage(0); },
+              placeholder: "بحث (اسم/SKU/باركود)",
+            }}
+            filters={
+              <label className="flex items-center gap-2 h-8 text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4"
+                  checked={includeInactive}
+                  onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
+                />
+                <span className="text-muted-foreground">إظهار المعطّل</span>
+              </label>
+            }
+            exportSpec={{
+              filename: "المنتجات",
+              rows,
+              columns: [
+                { key: "productName", header: "المنتج" },
+                { key: "variantName", header: "المتغيّر", map: (r) => r.variantName ?? r.color ?? r.sku ?? "" },
+                { key: "unitName", header: "الوحدة" },
+                { key: "barcode", header: "الباركود" },
+                { key: "price", header: "السعر مفرد", map: (r) => (r.price != null ? Number(r.price) : "") },
+                { key: "stockBase", header: "المخزون", map: (r) => Number(r.stockBase ?? 0) },
+                { key: "productIsActive", header: "نشط", map: (r) => (r.productIsActive ? "نعم" : "لا") },
+              ],
+            }}
+            onImport={() => setImportOpen(true)}
+            importLabel="استيراد Excel"
+            add={{ href: "/products/new", label: "إضافة منتج" }}
+          />
+        </CardHeader>
+        <CardContent className="p-0">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr className="text-right">
+                <th className="p-2">المنتج</th>
+                <th className="p-2">المتغيّر</th>
+                <th className="p-2">الوحدة</th>
+                <th className="p-2">الباركود</th>
+                <th className="p-2 text-left">السعر (مفرد)</th>
+                <th className="p-2 text-left">المخزون</th>
+                <th className="p-2 text-center">الحالة</th>
+                <th className="p-2 text-center">إجراء</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r: Row) => {
+                const dimmed = !r.productIsActive || r.variantIsActive === false || r.unitIsActive === false;
+                return (
+                  <tr
+                    key={`${r.productId}-${r.variantId ?? 0}-${r.productUnitId ?? 0}`}
+                    className={`border-t ${dimmed ? "opacity-60" : ""}`}
+                  >
+                    <td className="p-2 font-medium">{r.productName}</td>
+                    <td className="p-2 text-muted-foreground">{r.variantName ?? r.color ?? r.sku ?? "—"}</td>
+                    <td className="p-2">{r.unitName ?? "—"}</td>
+                    <td className="p-2 font-mono text-xs" dir="ltr">{r.barcode ?? "—"}</td>
+                    <td className="p-2 text-left tabular-nums" dir="ltr">
+                      {r.price != null ? Number(r.price).toLocaleString("ar-IQ-u-nu-latn") : "—"}
+                    </td>
+                    <td className="p-2 text-left tabular-nums" dir="ltr">{r.stockBase}</td>
+                    <td className="p-2 text-center">
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                        {r.productIsActive ? "مفعّل" : "معطّل"}
+                      </span>
+                    </td>
+                    <td className="p-2 text-center">
+                      {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً */}
+                      <RowActions
+                        actions={[
+                          { key: "edit", label: "تعديل", href: `/products/${r.productId}/edit` },
+                          {
+                            key: "label",
+                            label: "طباعة ملصق باركود",
+                            hidden: !r.barcode, // بلا باركود = لا ملصق (Code128 يحتاج قيمة)
+                            onSelect: () =>
+                              printBarcodeSheet([
+                                {
+                                  name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+                                  sku: r.sku ?? "",
+                                  price: r.price,
+                                  barcode: r.barcode ?? "",
+                                },
+                              ]),
+                          },
+                          {
+                            key: "moves",
+                            label: "حركات الصنف",
+                            hidden: !r.sku,
+                            // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
+                            href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,
+                          },
+                          {
+                            key: "toggle",
+                            label: r.productIsActive ? "تعطيل" : "تفعيل",
+                            variant: r.productIsActive ? "destructive" : "default",
+                            disabled: setActive.isPending,
+                            onSelect: () => void toggle(r.productId, r.productIsActive, r.productName),
+                          },
+                        ]}
+                      />
+                    </td>
+                  </tr>
+                );
+              })}
+              {!list.isLoading && rows.length === 0 && (
+                <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا منتجات مطابقة. غيّر البحث أو أضف منتجاً.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </CardContent>
+      </Card>
+
+      {pages > 1 && (
+        <div className="flex items-center justify-between text-sm">
+          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
+            ← السابق
           </Button>
-        }
-      />
+          <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
+          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>
+            التالي →
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

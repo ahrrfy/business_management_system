@@ -11,6 +11,7 @@ import {
 import type { Tx } from "../db";
 import { getDb } from "../db";
 import { computeInvoiceTotals, computeLineTotal } from "./billing";
+import { localDayStart, localNextDayStart } from "./dateRange";
 import { convertToBaseQuantity } from "./inventoryService";
 import { money, toDateStr } from "./money";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
@@ -224,19 +225,14 @@ export interface ListQuotationsInput {
   status?: "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
 }
 
-/** createdAt عمود timestamp ⇒ «إلى تاريخ» شاملاً = أقل من اليوم التالي (لا تسقط عروض بقية اليوم). */
-function nextDay(d: string): Date {
-  const x = new Date(d);
-  x.setDate(x.getDate() + 1);
-  return x;
-}
 
 export async function listQuotations(input: ListQuotationsInput = {}) {
   const db = getDb();
   if (!db) return [];
   const conds = [];
-  if (input.from) conds.push(gte(quotations.createdAt, new Date(input.from)));
-  if (input.to) conds.push(lt(quotations.createdAt, nextDay(input.to)));
+  // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
+  if (input.from) conds.push(gte(quotations.createdAt, localDayStart(input.from)));
+  if (input.to) conds.push(lt(quotations.createdAt, localNextDayStart(input.to)));
   if (input.status) conds.push(eq(quotations.status, input.status));
   return db
     .select({

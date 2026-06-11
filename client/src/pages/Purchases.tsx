@@ -3,6 +3,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
+import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printPO } from "@/lib/printing/printTemplates";
@@ -38,6 +39,27 @@ export default function Purchases() {
     status: (status || undefined) as "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED" | undefined,
   });
   const all = query.data ?? [];
+
+  const cancelMut = trpc.purchases.cancel.useMutation({
+    onSuccess: async () => {
+      await utils.purchases.list.invalidate();
+      notify.ok("أُلغي أمر الشراء");
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  // إلغاء أمر شراء لم يُستلم منه شيء — الحارس النهائي في الخادم (يرفض أي أمر استُلمت منه بضاعة).
+  async function cancelOrder(p: { id: number; poNumber: string; total: string }) {
+    const ok = await confirm({
+      variant: "danger",
+      title: "إلغاء أمر الشراء",
+      description: `سيُعلَّم الأمر ${p.poNumber} (بإجمالي ${fmt(p.total)} د.ع) «ملغى». لا يُلغى أمرٌ استُلمت منه بضاعة — لذلك استعمل مرتجع شراء. هل تتابع؟`,
+      confirmText: "إلغاء الأمر",
+      cancelText: "تراجع",
+    });
+    if (!ok) return;
+    cancelMut.mutate({ purchaseOrderId: p.id });
+  }
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
@@ -175,6 +197,15 @@ export default function Purchases() {
                             href: "/purchase-returns/new",
                             // الإرجاع للمورد ممكن فقط بعد استلام البضاعة فعلياً.
                             hidden: p.status !== "RECEIVED",
+                          },
+                          {
+                            key: "cancel",
+                            label: "إلغاء الأمر",
+                            variant: "destructive",
+                            // الحارس النهائي خادمي (يرفض المستلَم جزئياً) — رسالته العربية تظهر عبر notify.err.
+                            hidden: p.status === "RECEIVED" || p.status === "CANCELLED",
+                            disabled: cancelMut.isPending,
+                            onSelect: () => void cancelOrder({ id: p.id, poNumber: p.poNumber, total: String(p.total ?? "0") }),
                           },
                         ]}
                       />

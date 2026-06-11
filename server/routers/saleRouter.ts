@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, lt } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   customers,
@@ -12,6 +12,7 @@ import {
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { users } from "../../drizzle/schema";
+import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
@@ -87,12 +88,6 @@ const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 // تاريخ فلترة YYYY-MM-DD (فلاتر الفترات الخادمية — لا فلترة محلية تُخفي صفحات الخادم).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
-/** «إلى تاريخ» شاملاً على عمود timestamp: نصف مفتوح [from, to+يوم) كي لا تسقط حركات بقية اليوم. */
-function nextDay(d: string): Date {
-  const x = new Date(d);
-  x.setDate(x.getDate() + 1);
-  return x;
-}
 // قيمة مالية موجبة (٢ منزلتان): تمنع override/خصم سالباً يمرّر بضاعة مجاناً مع تشويش الأرقام.
 const nonNegMoney = z
   .string()
@@ -105,6 +100,34 @@ const lineSchema = z.object({
   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
   discountAmount: nonNegMoney.optional(),
 });
+
+// مخطط فلترة قائمة المبيعات — مشترك بين list و listSummary (نفس الفلاتر حتماً).
+const salesListInput = z
+  .object({
+    limit: z.number().default(50),
+    offset: z.number().default(0),
+    // فلترة خادمية بالفترة (invoiceDate) والحالة والعميل.
+    from: ymd.optional(),
+    to: ymd.optional(),
+    status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
+    customerId: z.number().int().positive().optional(),
+  })
+  .optional();
+
+type SalesListInput = z.infer<typeof salesListInput>;
+
+/** يبني شروط WHERE لقائمة المبيعات — مستخدم في list و listSummary معاً
+ *  ⇒ يضمن تطابق الفلترة بينهما للأبد (نفس عزل الفرع ونفس الحدّ نصف المفتوح [from, to+يوم)). */
+export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null) {
+  const conds = [];
+  if (scopedBranchId) conds.push(eq(invoices.branchId, scopedBranchId));
+  // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
+  if (input?.from) conds.push(gte(invoices.invoiceDate, localDayStart(input.from)));
+  if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
+  if (input?.status) conds.push(eq(invoices.status, input.status));
+  if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+  return conds;
+}
 
 export const saleRouter = router({
   create: cashierProcedure
@@ -180,28 +203,11 @@ export const saleRouter = router({
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
   list: branchScopedProcedure
-    .input(
-      z
-        .object({
-          limit: z.number().default(50),
-          offset: z.number().default(0),
-          // فلترة خادمية بالفترة (invoiceDate) والحالة والعميل.
-          from: ymd.optional(),
-          to: ymd.optional(),
-          status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
-          customerId: z.number().int().positive().optional(),
-        })
-        .optional()
-    )
+    .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      const conds = [];
-      if (ctx.scopedBranchId) conds.push(eq(invoices.branchId, ctx.scopedBranchId));
-      if (input?.from) conds.push(gte(invoices.invoiceDate, new Date(input.from)));
-      if (input?.to) conds.push(lt(invoices.invoiceDate, nextDay(input.to)));
-      if (input?.status) conds.push(eq(invoices.status, input.status));
-      if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+      const conds = buildSalesListConds(input, ctx.scopedBranchId);
       return db
         .select({
           id: invoices.id,
@@ -219,6 +225,36 @@ export const saleRouter = router({
         .orderBy(desc(invoices.id))
         .limit(input?.limit ?? 50)
         .offset(input?.offset ?? 0);
+    }),
+
+  // مجاميع كل النتائج المطابقة للفلتر (لا الصفحة المعروضة فقط) — نفس شروط list حتماً
+  // عبر buildSalesListConds. الأموال نصّية كما تعيدها mysql2 (SUM على decimal) — لا parseFloat.
+  listSummary: branchScopedProcedure
+    .input(salesListInput)
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return { count: 0, totalAmount: "0", paidAmount: "0", dueAmount: "0" };
+      const conds = buildSalesListConds(input, ctx.scopedBranchId);
+      const row = (
+        await db
+          .select({
+            count: sql<number>`COUNT(*)`,
+            totalAmount: sql<string>`COALESCE(SUM(${invoices.total}), 0)`,
+            paidAmount: sql<string>`COALESCE(SUM(${invoices.paidAmount}), 0)`,
+            // المتبقي (AR الحقيقي): total − paidAmount − returnedTotal لغير الملغاة
+            // (الملغاة لا ذمة عليها؛ المرتجع جزئياً يُخصم منه ما أُرجع).
+            dueAmount: sql<string>`COALESCE(SUM(CASE WHEN ${invoices.status} != 'CANCELLED'
+              THEN CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
+          })
+          .from(invoices)
+          .where(conds.length ? and(...conds) : undefined)
+      )[0];
+      return {
+        count: Number(row?.count ?? 0),
+        totalAmount: String(row?.totalAmount ?? "0"),
+        paidAmount: String(row?.paidAmount ?? "0"),
+        dueAmount: String(row?.dueAmount ?? "0"),
+      };
     }),
 
   get: branchScopedProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
@@ -268,6 +304,7 @@ export const saleRouter = router({
         unitCost: invoiceItems.unitCost,
         discountAmount: invoiceItems.discountAmount,
         total: invoiceItems.total,
+        productId: products.id,
         productName: products.name,
         sku: productVariants.sku,
         variantName: productVariants.variantName,

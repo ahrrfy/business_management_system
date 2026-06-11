@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, lte, sql } from "drizzle-orm";
 import { branches, expenses, receipts, shifts } from "../../drizzle/schema";
+import { localDayStart } from "./dateRange";
 import { getDb } from "../db";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
@@ -184,8 +185,9 @@ export async function listExpenses(input: ListExpensesInput = {}) {
   if (input.branchId) conds.push(eq(expenses.branchId, input.branchId));
   if (input.category) conds.push(eq(expenses.category, input.category));
   if (input.status) conds.push(eq(expenses.status, input.status));
-  if (input.from) conds.push(gte(expenses.expenseDate, new Date(input.from)));
-  if (input.to) conds.push(lte(expenses.expenseDate, new Date(input.to)));
+  // expenseDate عمود DATE ⇒ منتصف ليل محلي (UTC يستثني يوم from كاملاً على +03:00).
+  if (input.from) conds.push(gte(expenses.expenseDate, localDayStart(input.from)));
+  if (input.to) conds.push(lte(expenses.expenseDate, localDayStart(input.to)));
   const where = conds.length ? and(...conds) : undefined;
 
   const rows = await db

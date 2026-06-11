@@ -80,6 +80,39 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
   });
 }
 
+/**
+ * إلغاء أمر شراء لم يُستلم منه شيء — قلب حالة خالص (createPurchaseOrder لا يكتب
+ * أي قيد دفتر/AP/مخزون/إيصال؛ كل التأثيرات المالية والمخزنية تحدث في receivePurchase فقط).
+ * أمرٌ استُلمت منه بضاعة يُعالَج بمرتجع شراء لا بالإلغاء.
+ */
+export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor) {
+  void actor; // لا كتابة باسم المنفّذ هنا — التدقيق (audit) يسجَّل في الراوتر.
+  return withTx(async (tx) => {
+    const po = (
+      await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, purchaseOrderId)).for("update").limit(1)
+    )[0];
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    if (po.status === "RECEIVED" || po.status === "CANCELLED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء مستلَم أو ملغى" });
+    }
+
+    const items = await tx
+      .select({ receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity })
+      .from(purchaseOrderItems)
+      .where(eq(purchaseOrderItems.purchaseOrderId, purchaseOrderId));
+    if (items.some((i) => (i.receivedBaseQuantity ?? 0) > 0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء أمر استُلمت منه بضاعة — استعمل مرتجع شراء" });
+    }
+    // دفاع متعمّق: الدفع للمورد يحدث فقط عند الاستلام ⇒ أمرٌ بلا استلام لا يحمل دفعة.
+    if (money(po.paidAmount).gt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء عليه دفعة مسجَّلة — لا يمكن إلغاؤه" });
+    }
+
+    await tx.update(purchaseOrders).set({ status: "CANCELLED" }).where(eq(purchaseOrders.id, purchaseOrderId));
+    return { purchaseOrderId, status: "CANCELLED" as const };
+  });
+}
+
 export interface ReceiveLineInput {
   purchaseOrderItemId: number;
   receivedBaseQuantity: number;

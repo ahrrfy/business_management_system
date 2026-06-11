@@ -2,7 +2,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
-import { createVoucher, getVoucher, listVouchers } from "../services/voucherService";
+import { cancelVoucher, createVoucher, getVoucher, listVouchers } from "../services/voucherService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
@@ -52,6 +52,23 @@ export const voucherRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء السند (تكرار)" });
     }),
 
+  // إلغاء سند مستقلّ: الأصل REVERSED + إيصال تعويضي معاكس + قيد معاكس + عكس رصيد الطرف.
+  cancel: managerProcedure
+    .input(z.object({ receiptId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await cancelVoucher(input.receiptId, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+      });
+      await logAudit(ctx, {
+        action: "voucher.cancel",
+        entityType: "receipt",
+        entityId: input.receiptId,
+        newValue: { voucherNumber: res.voucherNumber, status: res.status },
+      });
+      return res;
+    }),
+
   list: protectedProcedure
     .input(
       z
@@ -60,6 +77,7 @@ export const voucherRouter = router({
           voucherType: voucherType.optional(),
           partyType: partyType.optional(),
           partyId: z.number().int().positive().optional(),
+          status: z.enum(["COMPLETED", "REVERSED"]).optional(),
           from: ymd.optional(),
           to: ymd.optional(),
           limit: z.number().int().positive().max(500).default(100),

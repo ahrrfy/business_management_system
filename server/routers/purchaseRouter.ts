@@ -4,18 +4,13 @@ import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { createPurchaseOrder, receivePurchase } from "../services/purchaseService";
+import { localDayStart, localNextDayStart } from "../services/dateRange";
+import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../services/purchaseService";
 import { managerProcedure, router, warehouseProcedure } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
-/** orderDate عمود timestamp ⇒ «إلى تاريخ» شاملاً = أقل من اليوم التالي (لا تسقط أوامر بقية اليوم). */
-function nextDay(d: string): Date {
-  const x = new Date(d);
-  x.setDate(x.getDate() + 1);
-  return x;
-}
 
 // المشتريات تحمل التكلفة (unitPrice = سعر الشراء) ⇒ مدير فأعلى للإنشاء والعرض، والمخزن للاستلام.
 export const purchaseRouter = router({
@@ -70,6 +65,20 @@ export const purchaseRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام الاستلام (تكرار)" });
     }),
 
+  // إلغاء أمر شراء لم يُستلم منه شيء (قلب حالة خالص — الحارس المالي/المخزني في الخدمة).
+  cancel: managerProcedure
+    .input(z.object({ purchaseOrderId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await cancelPurchaseOrder(input.purchaseOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "purchase.cancelOrder",
+        entityType: "purchaseOrder",
+        entityId: input.purchaseOrderId,
+        newValue: { status: "CANCELLED" },
+      });
+      return res;
+    }),
+
   list: managerProcedure
     .input(
       z
@@ -88,8 +97,9 @@ export const purchaseRouter = router({
       const db = getDb();
       if (!db) return [];
       const conds = [];
-      if (input?.from) conds.push(gte(purchaseOrders.orderDate, new Date(input.from)));
-      if (input?.to) conds.push(lt(purchaseOrders.orderDate, nextDay(input.to)));
+      // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
+      if (input?.from) conds.push(gte(purchaseOrders.orderDate, localDayStart(input.from)));
+      if (input?.to) conds.push(lt(purchaseOrders.orderDate, localNextDayStart(input.to)));
       if (input?.supplierId) conds.push(eq(purchaseOrders.supplierId, input.supplierId));
       if (input?.status) conds.push(eq(purchaseOrders.status, input.status));
       return db

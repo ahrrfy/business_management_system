@@ -10,14 +10,15 @@
 //
 // الذرّية: كلّها داخل withTx ⇒ rollback كامل عند أي خطأ.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, like, lt } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, like, lt } from "drizzle-orm";
 import {
-  accountingEntries,
   customers,
   receipts,
+  shifts,
   suppliers,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { localDayStart, localNextDayStart } from "./dateRange";
 import {
   adjustCustomerBalance,
   adjustSupplierBalance,
@@ -155,12 +156,108 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
   });
 }
 
+export interface CancelVoucherResult {
+  receiptId: number;
+  voucherNumber: string;
+  status: "REVERSED";
+}
+
+/**
+ * إلغاء سند قبض/صرف مستقلّ — المرآة الدقيقة لـcreateVoucher:
+ *   - الأصل يُعلَّم REVERSED (يبقى في السجلّ للتدقيق).
+ *   - إيصال تعويضي بالاتجاه المعاكس على نفس الوردية/الطريقة/المبلغ
+ *     (تسوية الصندوق تجمع كل receipts بغضّ النظر عن status ⇒ قلب الحالة وحده يُفسد الصندوق).
+ *   - قيد دفتر معاكس (PAYMENT_OUT لإلغاء قبض، PAYMENT_IN لإلغاء صرف) بمبلغ موجب —
+ *     ⚠️ ليس ADJUST: صيَغ reconcile تتجاهل ADJUST ⇒ انحراف وهمي دائم.
+ *   - عكس رصيد الطرف بإشارة معاكسة تماماً لما كتبه createVoucher.
+ * يُمنع الإلغاء على وردية مغلقة (Z-report صدر بالأرقام القديمة).
+ */
+export async function cancelVoucher(receiptId: number, actor: Actor): Promise<CancelVoucherResult> {
+  return withTx(async (tx) => {
+    const r = (
+      await tx.select().from(receipts).where(eq(receipts.id, receiptId)).for("update").limit(1)
+    )[0];
+    // ليس سنداً مستقلّاً (voucherNumber=null) ⇒ غير موجود من منظور السندات.
+    if (!r || r.voucherNumber == null) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+    }
+    // دفاع متعمّق: السندات المستقلّة لا تحمل invoiceId/workOrderId أبداً (دفعات الفواتير تمرّ
+    // عبر sales.pay بلا voucherNumber) — لكن نحرس بنيوياً كي لا يُفسد إلغاءٌ حالةَ سداد فاتورة.
+    if (r.invoiceId != null || r.workOrderId != null) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء إيصال مرتبط بفاتورة/أمر شغل من هنا" });
+    }
+    if (r.status === "REVERSED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "السند ملغى بالفعل" });
+    }
+    if (r.status !== "COMPLETED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء سند غير مكتمل" });
+    }
+    if (r.shiftId != null) {
+      const sh = (
+        await tx.select({ status: shifts.status }).from(shifts).where(eq(shifts.id, Number(r.shiftId))).limit(1)
+      )[0];
+      if (sh && sh.status === "CLOSED") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء سند على وردية مغلقة" });
+      }
+    }
+
+    const voucherNumber = String(r.voucherNumber);
+    const amount = money(r.amount);
+    const direction = r.direction as "IN" | "OUT";
+
+    await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, receiptId));
+
+    // إيصال تعويضي معاكس على نفس الوردية ⇒ نقد الصندوق يتصافر بنظافة.
+    // voucherNumber=null: يبقى خارج قائمة السندات ولا يصطدم بالقيد الفريد.
+    const compRes = await tx.insert(receipts).values({
+      invoiceId: null,
+      branchId: r.branchId != null ? Number(r.branchId) : null,
+      shiftId: r.shiftId != null ? Number(r.shiftId) : null,
+      direction: direction === "IN" ? "OUT" : "IN",
+      amount: toDbMoney(amount),
+      paymentMethod: r.paymentMethod,
+      status: "COMPLETED",
+      referenceNumber: `CANCEL-VCH-${receiptId}`,
+      voucherNumber: null,
+      partyType: r.partyType ?? null,
+      partyId: r.partyId != null ? Number(r.partyId) : null,
+      description: `إلغاء سند ${voucherNumber}`,
+      createdBy: actor.userId,
+    });
+    const compReceiptId = Number((compRes as any)[0]?.insertId ?? (compRes as any).insertId);
+
+    // قيد معاكس بمبلغ موجب (لا ADJUST — تتجاهله صيَغ reconcile فيتولّد انحراف وهمي دائم).
+    await postEntry(tx, {
+      entryType: direction === "IN" ? "PAYMENT_OUT" : "PAYMENT_IN",
+      branchId: r.branchId != null ? Number(r.branchId) : null,
+      receiptId: compReceiptId,
+      customerId: r.partyType === "CUSTOMER" && r.partyId != null ? Number(r.partyId) : null,
+      supplierId: r.partyType === "SUPPLIER" && r.partyId != null ? Number(r.partyId) : null,
+      amount,
+      notes: `إلغاء سند ${voucherNumber}`,
+    });
+
+    // عكس رصيد الطرف — المعكوس الدقيق لاستدعاءات createVoucher:
+    //   create CUSTOMER: IN ⇒ −amount، OUT ⇒ +amount  ⟹  cancel: IN ⇒ +amount، OUT ⇒ −amount.
+    //   create SUPPLIER: OUT ⇒ −amount، IN ⇒ +amount  ⟹  cancel: OUT ⇒ +amount، IN ⇒ −amount.
+    if (r.partyType === "CUSTOMER" && r.partyId != null) {
+      await adjustCustomerBalance(tx, Number(r.partyId), direction === "IN" ? amount : amount.neg());
+    } else if (r.partyType === "SUPPLIER" && r.partyId != null) {
+      await adjustSupplierBalance(tx, Number(r.partyId), direction === "OUT" ? amount : amount.neg());
+    }
+
+    return { receiptId, voucherNumber, status: "REVERSED" as const };
+  });
+}
+
 /** قائمة السندات مع فلاتر (للسجلّ والتقارير). */
 export interface ListVouchersInput {
   branchId?: number;
   voucherType?: "RECEIPT" | "PAYMENT";
   partyType?: PartyType;
   partyId?: number;
+  /** فلتر حالة اختياري — افتراضياً تُعرض كل السندات (المكتملة والملغاة معاً). */
+  status?: "COMPLETED" | "REVERSED";
   /** فترة على createdAt (YYYY-MM-DD) — «إلى» شاملاً عبر نصف مفتوح [from, to+يوم). */
   from?: string;
   to?: string;
@@ -168,35 +265,24 @@ export interface ListVouchersInput {
   offset?: number;
 }
 
-/** createdAt عمود timestamp ⇒ «إلى تاريخ» شاملاً = أقل من اليوم التالي (لا تسقط سندات بقية اليوم). */
-function nextDay(d: string): Date {
-  const x = new Date(d);
-  x.setDate(x.getDate() + 1);
-  return x;
-}
 
 export async function listVouchers(input: ListVouchersInput = {}) {
   const db = getDb();
   if (!db) return [];
-  const conds = [
-    // فقط السندات المستقلّة (voucherNumber غير null) ⇒ نُستثني receipts المرتبطة بفاتورة.
-    eq(receipts.voucherNumber, receipts.voucherNumber), // placeholder سيُستبدل أدناه
-  ];
-  const wheres: any[] = [];
-  // voucherNumber IS NOT NULL
-  wheres.push(and(eq(receipts.status, "COMPLETED")));
+  // فقط السندات المستقلّة (voucherNumber IS NOT NULL) ⇒ تُستثنى receipts الفواتير
+  // والإيصالات التعويضية للإلغاء. الملغاة (REVERSED) تبقى ظاهرة — السجلّ لا يُخفي شيئاً.
+  const wheres: any[] = [isNotNull(receipts.voucherNumber)];
+  if (input.status) wheres.push(eq(receipts.status, input.status));
   if (input.branchId) wheres.push(eq(receipts.branchId, input.branchId));
   if (input.voucherType) wheres.push(eq(receipts.direction, input.voucherType === "RECEIPT" ? "IN" : "OUT"));
   if (input.partyType) wheres.push(eq(receipts.partyType, input.partyType));
   if (input.partyId) wheres.push(eq(receipts.partyId, input.partyId));
   // فلتر الفترة على createdAt (تاريخ إنشاء السند).
-  if (input.from) wheres.push(gte(receipts.createdAt, new Date(input.from)));
-  if (input.to) wheres.push(lt(receipts.createdAt, nextDay(input.to)));
-  // فلتر voucherNumber IS NOT NULL (يجب أن يكون سنداً مستقلّاً، لا receipt فاتورة).
-  // drizzle لا يدعم isNotNull بسهولة هنا — نستعمل sql خام:
-  // لكن أبسط: filter في JS بعد القراءة.
+  // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
+  if (input.from) wheres.push(gte(receipts.createdAt, localDayStart(input.from)));
+  if (input.to) wheres.push(lt(receipts.createdAt, localNextDayStart(input.to)));
 
-  const rows = await db
+  return db
     .select({
       id: receipts.id,
       voucherNumber: receipts.voucherNumber,
@@ -209,6 +295,7 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       partyId: receipts.partyId,
       description: receipts.description,
       referenceNumber: receipts.referenceNumber,
+      status: receipts.status,
       createdAt: receipts.createdAt,
       createdBy: receipts.createdBy,
     })
@@ -217,9 +304,6 @@ export async function listVouchers(input: ListVouchersInput = {}) {
     .orderBy(desc(receipts.id))
     .limit(input.limit ?? 100)
     .offset(input.offset ?? 0);
-
-  // استبعِد ما ليس سنداً مستقلّاً (voucherNumber=null).
-  return rows.filter((r) => r.voucherNumber != null);
 }
 
 /** قراءة سند منفرد. */
@@ -230,6 +314,3 @@ export async function getVoucher(receiptId: number) {
   if (!r || !r.voucherNumber) return null;
   return r;
 }
-
-// إعادة تصدير لمنع وحدة الـimport من أن تَكون unused عند تعديلات لاحقة.
-void accountingEntries;

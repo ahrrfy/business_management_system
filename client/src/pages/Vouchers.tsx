@@ -4,6 +4,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { RowActions } from "@/components/list";
+import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -31,6 +32,7 @@ function fmtDate(d: Date | string | null | undefined): string {
 }
 
 export default function Vouchers() {
+  const utils = trpc.useUtils();
   const [voucherType, setVoucherType] = useState<"" | "RECEIPT" | "PAYMENT">("");
   const [partyType, setPartyType] = useState<"" | "CUSTOMER" | "SUPPLIER" | "OTHER">("");
   // فلتر الفترة خادمي (createdAt) — لا فلترة محلية تُخفي صفحات الخادم.
@@ -54,6 +56,28 @@ export default function Vouchers() {
   const list = trpc.vouchers.list.useQuery(input);
   const all = list.data ?? [];
 
+  const cancelMut = trpc.vouchers.cancel.useMutation({
+    onSuccess: async (res) => {
+      await utils.vouchers.list.invalidate();
+      notify.ok(`أُلغي السند ${res.voucherNumber} وعُكست آثاره المالية`);
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  // إلغاء سند بعد تأكيد خطِر — يَعكس المبلغ والقيد ورصيد الطرف.
+  async function cancelVoucher(r: VoucherRow) {
+    const partyLabel = PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—";
+    const ok = await confirm({
+      variant: "danger",
+      title: "إلغاء السند",
+      description: `سيُعلَّم السند ${r.voucherNumber ?? ""} «مُلغى» ويُعكس مبلغ ${fmt(r.amount)} د.ع (الطرف: ${partyLabel}) في الصندوق والدفتر ورصيد الطرف. هل تتابع؟`,
+      confirmText: "إلغاء السند",
+      cancelText: "تراجع",
+    });
+    if (!ok) return;
+    cancelMut.mutate({ receiptId: Number(r.id) });
+  }
+
   // فلتر بحث محلّي (وصف/رقم السند).
   const rows = useMemo(() => {
     if (!q.trim()) return all;
@@ -64,10 +88,12 @@ export default function Vouchers() {
     );
   }, [all, q]);
 
+  // المجاميع تستثني الملغاة (REVERSED) — أثرها المالي معكوس فلا تُحسب.
   const totals = useMemo(() => {
     let inn = 0;
     let out = 0;
     for (const r of rows) {
+      if (r.status === "REVERSED") continue;
       const amt = Number(r.amount ?? 0);
       if (r.direction === "IN") inn += amt;
       else out += amt;
@@ -200,6 +226,7 @@ export default function Vouchers() {
                     { key: "description", header: "الوصف" },
                     { key: "amount", header: "المبلغ", map: (r) => Number(r.amount ?? 0) },
                     { key: "paymentMethod", header: "الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
+                    { key: "status", header: "الحالة", map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل") },
                   ],
                 })
               }
@@ -219,12 +246,13 @@ export default function Vouchers() {
                 <th className="p-2">الوصف</th>
                 <th className="p-2 text-left">المبلغ</th>
                 <th className="p-2 text-center">الدفع</th>
+                <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((r) => (
-                <tr key={Number(r.id)} className="border-t">
+                <tr key={Number(r.id)} className={`border-t ${r.status === "REVERSED" ? "opacity-60" : ""}`}>
                   <td className="p-2 font-mono text-xs"><CopyInline value={String(r.voucherNumber ?? "—")} /></td>
                   <td className="p-2 text-xs">{fmtDate(r.createdAt as any)}</td>
                   <td className="p-2 text-center">
@@ -237,6 +265,11 @@ export default function Vouchers() {
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.amount)}</td>
                   <td className="p-2 text-center text-xs">{METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}</td>
                   <td className="p-2 text-center">
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "REVERSED" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                      {r.status === "REVERSED" ? "مُلغى" : "مكتمل"}
+                    </span>
+                  </td>
+                  <td className="p-2 text-center">
                     <RowActions
                       mode="auto"
                       actions={[
@@ -247,13 +280,21 @@ export default function Vouchers() {
                           href: statementHref(r),
                           hidden: r.partyType === "OTHER" || r.partyType == null || r.partyId == null,
                         },
+                        {
+                          key: "cancel",
+                          label: "إلغاء السند",
+                          variant: "destructive",
+                          hidden: r.status === "REVERSED",
+                          disabled: cancelMut.isPending,
+                          onSelect: () => void cancelVoucher(r),
+                        },
                       ]}
                     />
                   </td>
                 </tr>
               ))}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا سندات مطابقة. أضِف سند قبض أو صرف جديداً.</td></tr>
+                <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا سندات مطابقة. أضِف سند قبض أو صرف جديداً.</td></tr>
               )}
             </tbody>
           </table>

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { assignBarcode, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, lookupByBarcode, updateProduct } from "../services/catalogService";
+import { assignBarcode, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { logAudit } from "../services/auditService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
 
@@ -37,6 +37,34 @@ export const catalogRouter = router({
   posList: protectedProcedure
     .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200) }))
     .query(({ input }) => listForPos(input.branchId, input.tier, input.query, input.limit)),
+
+  // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
+  // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
+  adminList: protectedProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        q: z.string().optional(),
+        includeInactive: z.boolean().default(false),
+        limit: z.number().int().positive().max(500).default(50),
+        offset: z.number().int().min(0).default(0),
+      })
+    )
+    .query(({ input }) => listProductsAdmin(input)),
+
+  // تفعيل/تعطيل منتج — مدير فأعلى (يغيّر ما يراه الكاشير في البيع).
+  setProductActive: managerProcedure
+    .input(z.object({ productId: z.number().int().positive(), isActive: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await setProductActive(input.productId, input.isActive, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: input.isActive ? "product.activate" : "product.deactivate",
+        entityType: "product",
+        entityId: input.productId,
+        newValue: { isActive: input.isActive },
+      });
+      return res;
+    }),
 
   byBarcode: protectedProcedure
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier }))

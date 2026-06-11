@@ -49,6 +49,8 @@ import {
   calcTotals,
   INVOICE_TYPES,
   type InvoiceActionKind,
+  type InvoiceLine,
+  type PriceTier,
 } from "@/components/invoice";
 
 const INVOICE_TYPE = "SALE" as const;
@@ -68,6 +70,28 @@ export default function SalesInvoiceNew() {
     undefined,
     () => createInitialState(INVOICE_TYPE, defaultBranchId)
   );
+
+  // بذرة «نسخ لفاتورة جديدة» (من قائمة الفواتير): sessionStorage تُقرأ مرة واحدة عند التركيب
+  // ثم تُحذف فوراً (read-once) كي لا تُزرع مجدداً عند العودة للصفحة. الأسطر بشكل InvoiceLine حرفياً.
+  useEffect(() => {
+    const raw = sessionStorage.getItem("invoice-seed");
+    if (!raw) return;
+    sessionStorage.removeItem("invoice-seed");
+    try {
+      const seed = JSON.parse(raw) as {
+        customerId?: number | null;
+        tier?: PriceTier;
+        items?: InvoiceLine[];
+      };
+      if (seed.customerId) dispatch({ type: "SET_ENTITY", id: seed.customerId });
+      if (seed.tier) dispatch({ type: "SET_FIELD", field: "tier", value: seed.tier });
+      if (Array.isArray(seed.items) && seed.items.length) dispatch({ type: "ADD_ITEMS", items: seed.items });
+      notify.info("تم نسخ الفاتورة — راجِع الأسعار فهي منسوخة من الفاتورة الأصلية وقد تختلف عن الأسعار الحالية.");
+    } catch {
+      /* بذرة معطوبة — تجاهل */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // مزامنة فرع المستخدم مرة واحدة (إن وصل لاحقاً)؛ لا نطمس اختياره اليدوي بعدها.
   const syncedBranch = useRef(false);

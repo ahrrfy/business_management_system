@@ -6,12 +6,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportRows } from "@/lib/export";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
+import { useLocation } from "wouter";
 
 type Row = RouterOutputs["sales"]["list"][number];
 
@@ -30,6 +31,7 @@ const selectCls =
 
 export default function Invoices() {
   const utils = trpc.useUtils();
+  const [, navigate] = useLocation();
   // فلاتر خادمية (لا فلترة محلية تُخفي صفحات الخادم): فترة invoiceDate + الحالة.
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -42,6 +44,13 @@ export default function Invoices() {
     status: (status || undefined) as Row["status"] | undefined,
   });
   const data = rows.data ?? [];
+
+  // مجاميع كل النتائج المطابقة للفلتر (خادمياً، لا الصفحة المعروضة فقط) — نفس قيم فلتر list حتماً.
+  const summary = trpc.sales.listSummary.useQuery({
+    from: from || undefined,
+    to: to || undefined,
+    status: (status || undefined) as Row["status"] | undefined,
+  });
 
   // طباعة A4 من القائمة: نجلب التفاصيل (sales.get) ثم نطبع بنفس قالب شاشة الفاتورة.
   async function printA4(invoiceId: number) {
@@ -59,6 +68,47 @@ export default function Invoices() {
         paidAmount: d.paidAmount,
         items: d.items.map((it) => ({ productName: it.productName ?? "", unitName: it.unitName, quantity: it.quantity, unitPrice: it.unitPrice, total: it.total })),
       });
+    } catch (e) {
+      notify.err(e);
+    }
+  }
+
+  // نسخ لفاتورة جديدة: نجلب التفاصيل ونزرعها في sessionStorage (تُقرأ مرة واحدة في /sales/new).
+  // ننسخ الكمية الأصلية كاملة (الفاتورة الجديدة تعيد بيع السلّة — المرتجعات لا تنقصها)،
+  // وشكل كل سطر يطابق InvoiceLine في محرّر الفواتير حرفياً.
+  async function duplicateInvoice(invoiceId: number) {
+    try {
+      const d = await utils.sales.get.fetch({ invoiceId });
+      if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
+      sessionStorage.setItem(
+        "invoice-seed",
+        JSON.stringify({
+          customerId: d.customerId,
+          tier: d.priceTier,
+          items: d.items.map((it) => ({
+            productId: it.productId ?? 0,
+            variantId: it.variantId,
+            productUnitId: it.productUnitId,
+            name: it.productName ?? "",
+            sku: it.sku ?? "",
+            barcode: null,
+            unit: it.unitName ?? "",
+            // qty رقم في InvoiceLine (كمية لا مال) — التحويل عبر Decimal ثم toNumber.
+            qty: D(it.quantity).toNumber(),
+            // استرجاع معامل التحويل من baseQuantity ÷ quantity (مخزون النظام بالوحدة الأساس).
+            conversionFactor: D(it.quantity).gt(0) ? D(it.baseQuantity).div(D(it.quantity)).toString() : "1",
+            stockBase: 0,
+            price: it.unitPrice,
+            costBase: "0",
+            // خصم السطر المحفوظ مبلغٌ مطلق ⇒ يُنسخ كنوع "amount".
+            discount: D(it.discountAmount ?? 0).gt(0) ? String(it.discountAmount) : "0",
+            discountType: "amount",
+            tax: "0",
+            note: "",
+          })),
+        })
+      );
+      navigate("/sales/new");
     } catch (e) {
       notify.err(e);
     }
@@ -91,6 +141,7 @@ export default function Invoices() {
             actions={[
               { key: "view", label: "عرض", href: `/invoices/${r.id}` },
               { key: "print", label: "طباعة A4", onSelect: () => void printA4(r.id) },
+              { key: "duplicate", label: "نسخ لفاتورة جديدة", onSelect: () => void duplicateInvoice(r.id) },
               { key: "pay", label: "تسديد دفعة", href: `/invoices/${r.id}`, hidden: settled },
               { key: "return", label: "إرجاع", href: "/returns", hidden: !returnable },
             ]}
@@ -153,6 +204,31 @@ export default function Invoices() {
           </Button>
         }
       />
+
+      {/* شريط المجاميع — لكل النتائج المطابقة للفلتر خادمياً (لا الصفحة المعروضة فقط). */}
+      {summary.data && (
+        <Card>
+          <CardContent className="flex flex-wrap items-center gap-x-6 gap-y-2 pt-6 text-sm">
+            <span>
+              عدد الفواتير:{" "}
+              <b className="tabular-nums" dir="ltr">{summary.data.count.toLocaleString("ar-IQ-u-nu-latn")}</b>
+            </span>
+            <span>
+              الإجمالي:{" "}
+              <b className="tabular-nums" dir="ltr">{fmt(summary.data.totalAmount)}</b>
+            </span>
+            <span>
+              المسدَّد:{" "}
+              <b className="tabular-nums text-emerald-700" dir="ltr">{fmt(summary.data.paidAmount)}</b>
+            </span>
+            <span>
+              المتبقي:{" "}
+              <b className="tabular-nums text-amber-700" dir="ltr">{fmt(summary.data.dueAmount)}</b>
+            </span>
+            <span className="text-xs text-muted-foreground">المجاميع لكل النتائج المطابقة للفلتر</span>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

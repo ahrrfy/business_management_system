@@ -9,6 +9,7 @@ import {
   purchaseOrders,
   receipts,
 } from "../../drizzle/schema";
+import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
@@ -275,9 +276,10 @@ export async function listPurchaseReturns(input: ListPurchaseReturnsInput = {}) 
   const where = [eq(accountingEntries.entryType, "RETURN")];
   if (input.supplierId) where.push(eq(accountingEntries.supplierId, input.supplierId));
   if (input.branchId) where.push(eq(accountingEntries.branchId, input.branchId));
-  // entryDate عمود DATE (بلا وقت) ⇒ gte/lte شاملان للطرفين مباشرة (نمط expenseService).
-  if (input.from) where.push(gte(accountingEntries.entryDate, new Date(input.from)));
-  if (input.to) where.push(lte(accountingEntries.entryDate, new Date(input.to)));
+  // entryDate عمود DATE (بلا وقت) ⇒ gte/lte شاملان للطرفين — بمنتصف ليلٍ محلي
+  // (new Date("YYYY-MM-DD") = منتصف ليل UTC يُسلسَل +03:00 فيستثني يوم from كاملاً).
+  if (input.from) where.push(gte(accountingEntries.entryDate, localDayStart(input.from)));
+  if (input.to) where.push(lte(accountingEntries.entryDate, localDayStart(input.to)));
   // فقط قيود الشراء (لها supplierId غير null) — تمييزها عن مرتجعات البيع.
   where.push(sql`${accountingEntries.supplierId} IS NOT NULL` as any);
 
