@@ -416,11 +416,11 @@ function MetricsBar() {
   // جمع الأموال عبر decimal.js (قاعدة §٥: ممنوع parseFloat/Number على الأموال).
   const todaysTotalD = todays.reduce((acc, i) => acc.add(String(i.total)), D(0));
   const todaysTotal = todaysTotalD.toNumber();
-  const fmt = (n: number) => n.toLocaleString("ar-IQ", { maximumFractionDigits: 0 });
+  const fmt = (n: number) => n.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 0 });
 
   const shiftLabel = shift.data ? "مفتوحة" : "لا وردية";
   const shiftSince = shift.data
-    ? `منذ ${new Date(shift.data.openedAt).toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" })}`
+    ? `منذ ${new Date(shift.data.openedAt).toLocaleTimeString("ar-IQ-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}`
     : "";
 
   // قيم بطاقتَي التنبيه — "..." أثناء التحميل، الأرقام بعد النجاح.

@@ -100,7 +100,7 @@ export default function QuotationDetail() {
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">فئة السعر</div><div>{TIER[data.priceTier] ?? data.priceTier}</div></div>
-          <div><div className="text-muted-foreground text-xs">التاريخ</div><div>{new Date(data.quoteDate).toLocaleDateString("ar-IQ")}</div></div>
+          <div><div className="text-muted-foreground text-xs">التاريخ</div><div>{new Date(data.quoteDate).toLocaleDateString("ar-IQ-u-nu-latn")}</div></div>
           <div><div className="text-muted-foreground text-xs">صالح حتى</div><div>{data.validUntil ? String(data.validUntil).slice(0, 10) : "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">المجموع</div><div dir="ltr" className="tabular-nums">{fmt(data.subtotal)}</div></div>
           <div><div className="text-muted-foreground text-xs">الضريبة</div><div dir="ltr" className="tabular-nums">{fmt(data.taxAmount)}</div></div>

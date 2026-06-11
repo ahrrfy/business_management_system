@@ -5,7 +5,7 @@ import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 
 const fmt = (s: string | number | null | undefined) =>
-  s == null || s === "" ? "—" : Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  s == null || s === "" ? "—" : Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسودّة",
@@ -50,7 +50,7 @@ export default function Purchases() {
               columns: [
                 { key: "poNumber", header: "رقم الأمر" },
                 { key: "supplierName", header: "المورد" },
-                { key: "orderDate", header: "التاريخ", map: (r) => new Date(r.orderDate).toLocaleString("ar-IQ") },
+                { key: "orderDate", header: "التاريخ", map: (r) => new Date(r.orderDate).toLocaleString("ar-IQ-u-nu-latn") },
                 { key: "total", header: "الإجمالي", map: (r) => Number(r.total ?? 0) },
                 { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount ?? 0) },
                 { key: "status", header: "الحالة", map: (r) => PO_STATUS[r.status] ?? r.status },
@@ -79,7 +79,7 @@ export default function Purchases() {
                   <tr key={p.id} className="border-t">
                     <td className="p-2"><CopyInline value={p.poNumber} /></td>
                     <td className="p-2">{p.supplierName ?? "—"}</td>
-                    <td className="p-2">{new Date(p.orderDate).toLocaleString("ar-IQ")}</td>
+                    <td className="p-2">{new Date(p.orderDate).toLocaleString("ar-IQ-u-nu-latn")}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.total)}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
                     <td className="p-2">{PO_STATUS[p.status] ?? p.status}</td>

@@ -277,7 +277,7 @@ export function ImportDialog<TRow>({
       out.push({
         rowNumber: r.rowNumber,
         rawText,
-        text: `${hint} ${stored.abs().toNumber().toLocaleString("ar-IQ")} ${curr}`,
+        text: `${hint} ${stored.abs().toNumber().toLocaleString("ar-IQ-u-nu-latn")} ${curr}`,
       });
       if (out.length >= 3) break;
     }
@@ -359,7 +359,7 @@ export function ImportDialog<TRow>({
           setWrittenCount(0);
           setSummary({ ...dry, committed: false });
           setBatchNote(
-            `جولة الفحص التمهيدية (بلا كتابة) وجدت ${dry.failed.toLocaleString("ar-IQ")} صفّاً فاشلاً — لم يُكتب أي شيء. صحّح الأخطاء ثم أعد المحاولة.`,
+            `جولة الفحص التمهيدية (بلا كتابة) وجدت ${dry.failed.toLocaleString("ar-IQ-u-nu-latn")} صفّاً فاشلاً — لم يُكتب أي شيء. صحّح الأخطاء ثم أعد المحاولة.`,
           );
           setStep("done");
           notify.err(new Error("الفحص التمهيدي وجد أخطاء — لم يُكتب شيء."));
@@ -397,9 +397,9 @@ export function ImportDialog<TRow>({
         const writtenRows = batches.slice(0, stoppedAt).reduce((a, b) => a + b.length, 0);
         const unsent = total - writtenRows - batches[stoppedAt].length;
         setBatchNote(
-          `توقّف التنفيذ عند الدفعة ${(stoppedAt + 1).toLocaleString("ar-IQ")} من ${batches.length.toLocaleString("ar-IQ")}: ` +
-            `كُتبت ${writtenRows.toLocaleString("ar-IQ")} صفّاً في الدفعات السابقة، وفشلت هذه الدفعة (لم يُكتب منها شيء)` +
-            (unsent > 0 ? `، و${unsent.toLocaleString("ar-IQ")} صفّاً لم تُرسَل.` : ".") +
+          `توقّف التنفيذ عند الدفعة ${(stoppedAt + 1).toLocaleString("ar-IQ-u-nu-latn")} من ${batches.length.toLocaleString("ar-IQ-u-nu-latn")}: ` +
+            `كُتبت ${writtenRows.toLocaleString("ar-IQ-u-nu-latn")} صفّاً في الدفعات السابقة، وفشلت هذه الدفعة (لم يُكتب منها شيء)` +
+            (unsent > 0 ? `، و${unsent.toLocaleString("ar-IQ-u-nu-latn")} صفّاً لم تُرسَل.` : ".") +
             " إعادة التشغيل آمنة — الموجود يُتخطّى ولا تتكرّر الأرصدة.",
         );
       }
@@ -513,7 +513,7 @@ export function ImportDialog<TRow>({
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <span className="flex items-center gap-1 text-muted-foreground">
                 <FileSpreadsheet className="size-4" />
-                {fileName} — {parse.totalRows.toLocaleString("ar-IQ")} صفّ
+                {fileName} — {parse.totalRows.toLocaleString("ar-IQ-u-nu-latn")} صفّ
               </span>
               <Button variant="ghost" size="sm" onClick={() => setStep("file")}>
                 تغيير الملف
@@ -618,7 +618,7 @@ export function ImportDialog<TRow>({
                       <ul className="space-y-0.5 rounded bg-muted/50 p-2">
                         {balancePreview.map((p) => (
                           <li key={p.rowNumber} dir="auto" className="tabular-nums">
-                            صف {p.rowNumber.toLocaleString("ar-IQ")}: «{p.rawText}» ⇐ {p.text}
+                            صف {p.rowNumber.toLocaleString("ar-IQ-u-nu-latn")}: «{p.rawText}» ⇐ {p.text}
                           </li>
                         ))}
                       </ul>
@@ -640,8 +640,8 @@ export function ImportDialog<TRow>({
 
                 {plannedBatchCount > 1 && (
                   <div className="text-muted-foreground">
-                    سيُرسَل الملف على {plannedBatchCount.toLocaleString("ar-IQ")} دفعات (≤
-                    {BATCH_SIZE.toLocaleString("ar-IQ")} صفّ) — ضمانة «كل-أو-لا-شيء» لكل دفعة على حدة،
+                    سيُرسَل الملف على {plannedBatchCount.toLocaleString("ar-IQ-u-nu-latn")} دفعات (≤
+                    {BATCH_SIZE.toLocaleString("ar-IQ-u-nu-latn")} صفّ) — ضمانة «كل-أو-لا-شيء» لكل دفعة على حدة،
                     وإعادة التشغيل آمنة: الموجود يُتخطّى ولا تتكرّر الأرصدة.
                   </div>
                 )}
@@ -694,18 +694,18 @@ export function ImportDialog<TRow>({
               </table>
               {checked.length > PREVIEW_LIMIT && (
                 <div className="p-2 text-center text-xs text-muted-foreground">
-                  عرض أوّل {PREVIEW_LIMIT} من {checked.length.toLocaleString("ar-IQ")} صفّ (يُتحقَّق من الكل)
+                  عرض أوّل {PREVIEW_LIMIT} من {checked.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ (يُتحقَّق من الكل)
                 </div>
               )}
             </div>
 
             <div className="flex flex-wrap items-center gap-2 text-xs">
-              <span className="text-emerald-700">صحيح: {validRows.length.toLocaleString("ar-IQ")}</span>
+              <span className="text-emerald-700">صحيح: {validRows.length.toLocaleString("ar-IQ-u-nu-latn")}</span>
               {warningCount > 0 && (
-                <span className="text-amber-700">بتحذيرات: {warningCount.toLocaleString("ar-IQ")}</span>
+                <span className="text-amber-700">بتحذيرات: {warningCount.toLocaleString("ar-IQ-u-nu-latn")}</span>
               )}
               {invalidCount > 0 && (
-                <span className="text-rose-700">به أخطاء: {invalidCount.toLocaleString("ar-IQ")}</span>
+                <span className="text-rose-700">به أخطاء: {invalidCount.toLocaleString("ar-IQ-u-nu-latn")}</span>
               )}
               {invalidCount > 0 && (
                 <Button variant="ghost" size="sm" onClick={exportErrorLog}>
@@ -728,7 +728,7 @@ export function ImportDialog<TRow>({
               <div className="w-64 space-y-1">
                 <Progress value={progress.total ? (progress.done / progress.total) * 100 : 0} aria-label="تقدّم الاستيراد" />
                 <div className="text-center text-xs text-muted-foreground">
-                  {progress.done.toLocaleString("ar-IQ")} / {progress.total.toLocaleString("ar-IQ")}
+                  {progress.done.toLocaleString("ar-IQ-u-nu-latn")} / {progress.total.toLocaleString("ar-IQ-u-nu-latn")}
                 </div>
               </div>
             )}
@@ -795,10 +795,10 @@ export function ImportDialog<TRow>({
           {step === "map" && (
             <Button onClick={() => void runImport()} disabled={!canRun}>
               {invalidCount > 0 && !skipFailed
-                ? `صحّح ${invalidCount.toLocaleString("ar-IQ")} صفّاً أولاً`
+                ? `صحّح ${invalidCount.toLocaleString("ar-IQ-u-nu-latn")} صفّاً أولاً`
                 : invalidCount > 0
-                  ? `استيراد ${validRows.length.toLocaleString("ar-IQ")} وتجاوز ${invalidCount.toLocaleString("ar-IQ")} فاشلاً`
-                  : `استيراد ${validRows.length.toLocaleString("ar-IQ")} صفّاً`}
+                  ? `استيراد ${validRows.length.toLocaleString("ar-IQ-u-nu-latn")} وتجاوز ${invalidCount.toLocaleString("ar-IQ-u-nu-latn")} فاشلاً`
+                  : `استيراد ${validRows.length.toLocaleString("ar-IQ-u-nu-latn")} صفّاً`}
             </Button>
           )}
           {step === "done" && (
@@ -815,7 +815,7 @@ export function ImportDialog<TRow>({
 function SummaryPill({ label, value, cls }: { label: string; value: number; cls: string }) {
   return (
     <div className={`rounded-md px-3 py-2 text-center ${cls}`}>
-      <div className="text-lg font-bold tabular-nums">{value.toLocaleString("ar-IQ")}</div>
+      <div className="text-lg font-bold tabular-nums">{value.toLocaleString("ar-IQ-u-nu-latn")}</div>
       <div className="text-xs">{label}</div>
     </div>
   );

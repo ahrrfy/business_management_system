@@ -33,11 +33,11 @@ export function openWhatsApp(phone: string | null | undefined, message: string):
 
 function fmtMoney(n: string | number | null | undefined): string {
   const num = Number(n ?? 0);
-  return num.toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  return num.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 }
 
 function today(): string {
-  return new Date().toLocaleDateString("ar-IQ");
+  return new Date().toLocaleDateString("ar-IQ-u-nu-latn");
 }
 
 export interface InvoiceMessageData {
@@ -58,7 +58,7 @@ export function buildInvoiceMessage(data: InvoiceMessageData): string {
 
   const lines: string[] = [
     `🧾 *فاتورة بيع #${data.invoiceNumber}*`,
-    `📅 التاريخ: ${data.invoiceDate ? new Date(data.invoiceDate).toLocaleDateString("ar-IQ") : today()}`,
+    `📅 التاريخ: ${data.invoiceDate ? new Date(data.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn") : today()}`,
     `🏪 ${COMPANY_NAME}`,
     "",
   ];

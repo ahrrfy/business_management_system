@@ -33,7 +33,7 @@ const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "شيك", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 
-const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
 export default function CustomerStatement() {
   // wouter's useLocation() strips the query string, so read it from window.location directly.
@@ -179,7 +179,7 @@ export default function CustomerStatement() {
                     return (
                       <tr key={i.id} className="border-t">
                         <td className="p-2"><CopyInline value={i.invoiceNumber} /></td>
-                        <td className="p-2 text-xs" dir="ltr">{new Date(i.invoiceDate).toLocaleDateString("ar-IQ")}</td>
+                        <td className="p-2 text-xs" dir="ltr">{new Date(i.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
                         <td className="p-2 text-xs" dir="ltr">{i.dueDate ? String(i.dueDate).slice(0, 10) : "—"}</td>
                         <td className="p-2 text-xs">{i.sourceType}</td>
                         <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(i.total)}</td>
@@ -223,7 +223,7 @@ export default function CustomerStatement() {
                 <tbody>
                   {stmt.data.payments.map((p) => (
                     <tr key={p.id} className="border-t">
-                      <td className="p-2 text-xs" dir="ltr">{new Date(p.createdAt).toLocaleString("ar-IQ")}</td>
+                      <td className="p-2 text-xs" dir="ltr">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
                       <td className="p-2"><CopyInline value={p.invoiceId} /></td>
                       <td className="p-2">
                         <span className={`inline-block rounded px-2 py-0.5 text-xs ${p.direction === "IN" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>

@@ -36,7 +36,7 @@ const SOURCE: Record<string, string> = {
 };
 
 const fmt = (s: string | number) =>
-  Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -55,7 +55,7 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
   {
     accessorKey: "invoiceDate",
     header: "التاريخ",
-    cell: (c) => new Date(c.getValue() as string).toLocaleDateString("ar-IQ"),
+    cell: (c) => new Date(c.getValue() as string).toLocaleDateString("ar-IQ-u-nu-latn"),
   },
   {
     accessorKey: "customerName",
@@ -393,7 +393,7 @@ function InvoicesTab({
                   {
                     key: "invoiceDate",
                     header: "التاريخ",
-                    map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ"),
+                    map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
                   },
                   { key: "customerName", header: "العميل" },
                   { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
@@ -520,7 +520,7 @@ const slowColumns: ColumnDef<SlowRow, unknown>[] = [
     header: "آخر بيع",
     cell: (c) => {
       const v = c.getValue() as string | null;
-      return v ? new Date(v).toLocaleDateString("ar-IQ") : <span className="text-rose-600 font-medium">لم يُبَع قط</span>;
+      return v ? new Date(v).toLocaleDateString("ar-IQ-u-nu-latn") : <span className="text-rose-600 font-medium">لم يُبَع قط</span>;
     },
   },
   {
@@ -565,7 +565,7 @@ function SlowMoversTab({
                 {
                   key: "lastSaleDate",
                   header: "آخر بيع",
-                  map: (r) => (r.lastSaleDate ? new Date(r.lastSaleDate).toLocaleDateString("ar-IQ") : "لم يُبَع قط"),
+                  map: (r) => (r.lastSaleDate ? new Date(r.lastSaleDate).toLocaleDateString("ar-IQ-u-nu-latn") : "لم يُبَع قط"),
                 },
                 { key: "daysSinceLastSale", header: "أيام منذ آخر بيع", map: (r) => r.daysSinceLastSale ?? "" },
               ],

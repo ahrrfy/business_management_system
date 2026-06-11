@@ -17,11 +17,11 @@ const STATUS_CLS: Record<string, string> = {
   PENDING: "bg-muted text-foreground/70", RETURNED: "bg-rose-100 text-rose-700", CANCELLED: "bg-rose-100 text-rose-700",
 };
 const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "أمر شغل" };
-const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
 const columns: ColumnDef<Row, unknown>[] = [
   { accessorKey: "invoiceNumber", header: "رقم الفاتورة", cell: (c) => <CopyInline value={c.getValue() as string} /> },
-  { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => new Date(c.getValue() as string).toLocaleString("ar-IQ") },
+  { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => new Date(c.getValue() as string).toLocaleString("ar-IQ-u-nu-latn") },
   { accessorKey: "customerName", header: "العميل", cell: (c) => (c.getValue() as string) ?? "—" },
   { accessorKey: "sourceType", header: "المصدر", cell: (c) => SOURCE[c.getValue() as string] ?? (c.getValue() as string) },
   { accessorKey: "total", header: "الإجمالي", cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span> },
@@ -58,7 +58,7 @@ export default function Invoices() {
                 filename: "المبيعات",
                 columns: [
                   { key: "invoiceNumber", header: "رقم الفاتورة" },
-                  { key: "invoiceDate", header: "التاريخ", map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ") },
+                  { key: "invoiceDate", header: "التاريخ", map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn") },
                   { key: "customerName", header: "العميل" },
                   { key: "sourceType", header: "المصدر" },
                   { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },

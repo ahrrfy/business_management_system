@@ -67,7 +67,7 @@ export default function WorkOrderDetail() {
   if (!wo.data) return <div className="p-10 text-center text-muted-foreground">أمر الشغل غير موجود.</div>;
   const data = wo.data;
 
-  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
   return (
     <div className="space-y-4 max-w-4xl">

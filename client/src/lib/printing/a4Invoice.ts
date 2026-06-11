@@ -23,12 +23,12 @@ export type A4Invoice = {
 
 const SHOP = "الرؤية العربية للتجارة العامة — المكتبة العربية للطباعة والقرطاسية";
 const money = (v: string | number | null | undefined) =>
-  Number(v ?? 0).toLocaleString("ar-IQ", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  Number(v ?? 0).toLocaleString("ar-IQ-u-nu-latn", { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]!));
 
 function buildHtml(inv: A4Invoice): string {
   const remaining = Number(inv.total ?? 0) - Number(inv.paidAmount ?? 0);
-  const date = inv.invoiceDate ? new Date(inv.invoiceDate).toLocaleString("ar-IQ") : new Date().toLocaleString("ar-IQ");
+  const date = inv.invoiceDate ? new Date(inv.invoiceDate).toLocaleString("ar-IQ-u-nu-latn") : new Date().toLocaleString("ar-IQ-u-nu-latn");
   const rows = inv.items
     .map(
       (it, i) => `<tr>

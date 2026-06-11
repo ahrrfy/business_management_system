@@ -175,7 +175,7 @@ export default function UserEdit() {
           <div className="flex flex-wrap gap-2 items-end">
             <div className="space-y-1 flex-1 min-w-[220px]">
               <Label htmlFor="newpw">كلمة المرور الجديدة</Label>
-              <Input id="newpw" type="password" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="٨ أحرف على الأقل، حرف ورقم" />
+              <Input id="newpw" type="password" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="8 أحرف على الأقل، حرف ورقم" />
             </div>
             <Button variant="outline" onClick={doReset} disabled={resetPassword.isPending}>
               {resetPassword.isPending ? "…" : "إعادة التعيين"}

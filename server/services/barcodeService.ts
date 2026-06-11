@@ -90,7 +90,7 @@ function formatAmount(amount: string): string {
     const d = money(amount);
     // نقرّب إلى ٢ خانة عشرية ثم نعرض بصيغة محلية. الدينار العراقي عملياً صحيح،
     // لكن الكسور (لو وُجدت) لا يجب أن تُلغى بـ parseFloat الذي يفقد الدقّة.
-    return round2(d).toNumber().toLocaleString("ar-IQ") + " د.ع";
+    return round2(d).toNumber().toLocaleString("ar-IQ-u-nu-latn") + " د.ع";
   } catch {
     return amount; // قيمة غير صالحة ⇒ نعرض كما هي بلا كسر
   }

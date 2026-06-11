@@ -60,7 +60,7 @@ export default function Expenses() {
     },
   });
 
-  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
   return (
     <div className="space-y-4">
@@ -73,7 +73,7 @@ export default function Expenses() {
             onClick={() => exportRows(list.data?.rows ?? [], {
               filename: "المصروفات",
               columns: [
-                { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ") : "" },
+                { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ-u-nu-latn") : "" },
                 { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
                 { key: "category", header: "الفئة", map: (r) => CATEGORY_LABEL[r.category] ?? r.category },
                 { key: "description", header: "الوصف", map: (r) => r.description ?? "" },

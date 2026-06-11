@@ -34,13 +34,13 @@ export const CUSTOMER_FIELDS: ImportField<CustomerImportRow>[] = [
   },
   {
     key: "phone2",
-    label: "هاتف ٢",
+    label: "هاتف 2",
     type: "phone",
     aliases: ["تليفون 2", "phone2", "phone 2"],
   },
   {
     key: "phone3",
-    label: "هاتف ٣",
+    label: "هاتف 3",
     type: "phone",
     aliases: ["تليفون 3", "phone3", "phone 3"],
   },
@@ -185,13 +185,13 @@ export const SUPPLIER_FIELDS: ImportField<SupplierImportRow>[] = [
   },
   {
     key: "phone2",
-    label: "هاتف ٢",
+    label: "هاتف 2",
     type: "phone",
     aliases: ["تليفون 2", "phone2", "phone 2"],
   },
   {
     key: "phone3",
-    label: "هاتف ٣",
+    label: "هاتف 3",
     type: "phone",
     aliases: ["تليفون 3", "phone3", "phone 3"],
   },
@@ -389,7 +389,7 @@ export const PRODUCT_FIELDS: ImportField<ProductImportRow>[] = [
     example: "1",
     validate: (v) => {
       if (v == null || v === "") return null;
-      return /^\d+(\.\d{1,4})?$/.test(String(v)) ? null : "معامل تحويل غير صالح (رقم موجب، حتى ٤ أرقام عشرية)";
+      return /^\d+(\.\d{1,4})?$/.test(String(v)) ? null : "معامل تحويل غير صالح (رقم موجب، حتى 4 أرقام عشرية)";
     },
   },
   {

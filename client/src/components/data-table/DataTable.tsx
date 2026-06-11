@@ -100,7 +100,7 @@ export function DataTable<T>({
       </div>
       {data.length > 0 && (
         <p className="text-xs text-muted-foreground">
-          {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ")} من {data.length.toLocaleString("ar-IQ")} صفّ
+          {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} من {data.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ
         </p>
       )}
     </div>

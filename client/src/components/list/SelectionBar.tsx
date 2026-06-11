@@ -65,7 +65,7 @@ export function SelectionBar({
       )}
     >
       <span className="text-sm font-medium">
-        المحدَّد: {count.toLocaleString("ar-IQ")}
+        المحدَّد: {count.toLocaleString("ar-IQ-u-nu-latn")}
       </span>
       <div className="h-4 w-px bg-border" />
       {onExport && (

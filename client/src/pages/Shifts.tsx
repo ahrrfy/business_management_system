@@ -25,7 +25,7 @@ const STATUS_CLS: Record<string, string> = {
 const METHOD_AR: Record<string, string> = { CASH: "نقد", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة" };
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
-  d ? new Date(d).toLocaleString("ar-IQ", { dateStyle: "short", timeStyle: "short" }) : "—";
+  d ? new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" }) : "—";
 
 export default function Shifts() {
   const [branchId, setBranchId] = useState<number | "">("");
@@ -83,7 +83,7 @@ export default function Shifts() {
         meta: [
           `وردية #${shiftId}`,
           open ? `فُتحت: ${fmtDT(sh.openedAt)}` : `أُغلقت: ${fmtDT(sh.closedAt)}`,
-          `طُبعت: ${new Date().toLocaleString("ar-IQ")}`,
+          `طُبعت: ${new Date().toLocaleString("ar-IQ-u-nu-latn")}`,
         ],
         columns: ["الحركة", "عدد", "مبلغ"],
         rows: payRows.length ? payRows : [["لا حركات", "0", "0.00"]],
@@ -216,7 +216,7 @@ export default function Shifts() {
 
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted-foreground" dir="ltr">
-          {total === 0 ? "لا صفوف" : `${from}–${to} / ${total.toLocaleString("ar-IQ")}`}
+          {total === 0 ? "لا صفوف" : `${from}–${to} / ${total.toLocaleString("ar-IQ-u-nu-latn")}`}
         </span>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>السابق</Button>

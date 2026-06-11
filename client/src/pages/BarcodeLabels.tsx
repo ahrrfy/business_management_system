@@ -22,7 +22,7 @@ type QueueItem = {
   count: number;
 };
 
-const money = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+const money = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
 export default function BarcodeLabels() {
   const me = trpc.auth.me.useQuery();

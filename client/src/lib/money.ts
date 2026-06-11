@@ -45,4 +45,4 @@ export const roundCashIQD = (amount: string | number | null | undefined, denom: 
 
 /** Format integer money (IQD whole-number) with locale separators. Decimal-safe sum first if needed. */
 export const fmtInt = (v: string | number | null | undefined) =>
-  D(v).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ");
+  D(v).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ-u-nu-latn");

@@ -24,7 +24,7 @@ const STATUS_CLS: Record<string, string> = {
 export default function Quotations() {
   const rows = trpc.quotations.list.useQuery({ limit: 200 });
   const [q, setQ] = useState("");
-  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
   const filtered = useMemo(() => {
     const all = rows.data ?? [];
@@ -58,7 +58,7 @@ export default function Quotations() {
               columns: [
                 { key: "quoteNumber", header: "رقم العرض" },
                 { key: "customerName", header: "العميل" },
-                { key: "quoteDate", header: "التاريخ", map: (r) => new Date(r.quoteDate).toLocaleDateString("ar-IQ") },
+                { key: "quoteDate", header: "التاريخ", map: (r) => new Date(r.quoteDate).toLocaleDateString("ar-IQ-u-nu-latn") },
                 { key: "validUntil", header: "الصلاحية", map: (r) => (r.validUntil ? String(r.validUntil).slice(0, 10) : "") },
                 { key: "total", header: "الإجمالي", map: (r) => Number(r.total ?? 0) },
                 { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
@@ -85,7 +85,7 @@ export default function Quotations() {
                 <tr key={qr.id} className="border-t">
                   <td className="p-2"><CopyInline value={qr.quoteNumber} /></td>
                   <td className="p-2">{qr.customerName ?? "—"}</td>
-                  <td className="p-2">{new Date(qr.quoteDate).toLocaleDateString("ar-IQ")}</td>
+                  <td className="p-2">{new Date(qr.quoteDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
                   <td className="p-2 text-xs">{qr.validUntil ? String(qr.validUntil).slice(0, 10) : "—"}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(qr.total)}</td>
                   <td className="p-2">

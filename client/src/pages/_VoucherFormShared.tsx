@@ -145,7 +145,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           )}
           {method === "CARD" && (
             <div className="space-y-1">
-              <Label>آخر ٤ من البطاقة (اختياري)</Label>
+              <Label>آخر 4 من البطاقة (اختياري)</Label>
               <Input value={cardLastFour} onChange={(e) => setCardLastFour(e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="1234" maxLength={4} />
             </div>
           )}

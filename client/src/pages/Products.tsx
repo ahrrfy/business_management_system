@@ -31,7 +31,7 @@ const columns: ColumnDef<Row, unknown>[] = [
     header: "السعر (مفرد)",
     cell: (c) => {
       const v = c.getValue() as number | null;
-      return <span className="tabular-nums" dir="ltr">{v != null ? Number(v).toLocaleString("ar-IQ") : "—"}</span>;
+      return <span className="tabular-nums" dir="ltr">{v != null ? Number(v).toLocaleString("ar-IQ-u-nu-latn") : "—"}</span>;
     },
   },
   {

@@ -56,11 +56,11 @@ const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const fmtNum = (n: number | string) =>
-  Number(n).toLocaleString("ar-IQ", { maximumFractionDigits: 0 });
+  Number(n).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 0 });
 
 function fmtDateTime(d: Date | string) {
   try {
-    return new Date(d).toLocaleString("ar-IQ", {
+    return new Date(d).toLocaleString("ar-IQ-u-nu-latn", {
       year: "numeric",
       month: "2-digit",
       day: "2-digit",

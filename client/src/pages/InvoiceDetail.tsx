@@ -135,7 +135,7 @@ export default function InvoiceDetail() {
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">المصدر</div><div>{SOURCE[data.sourceType] ?? data.sourceType}</div></div>
           <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "عميل عابر"}</div></div>
-          <div><div className="text-muted-foreground text-xs">التاريخ</div><div>{new Date(data.invoiceDate).toLocaleString("ar-IQ")}</div></div>
+          <div><div className="text-muted-foreground text-xs">التاريخ</div><div>{new Date(data.invoiceDate).toLocaleString("ar-IQ-u-nu-latn")}</div></div>
           <div><div className="text-muted-foreground text-xs">الاستحقاق</div><div>{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">قبل الضريبة</div><div dir="ltr" className="tabular-nums">{fmt(data.subtotal)}</div></div>
           <div><div className="text-muted-foreground text-xs">الضريبة</div><div dir="ltr" className="tabular-nums">{fmt(data.taxAmount)}</div></div>
@@ -196,7 +196,7 @@ export default function InvoiceDetail() {
             <tbody>
               {(data.payments ?? []).map((p) => (
                 <tr key={p.id} className="border-t">
-                  <td className="p-2">{new Date(p.createdAt).toLocaleString("ar-IQ")}</td>
+                  <td className="p-2">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
                   <td className="p-2">{p.direction === "IN" ? "وارد" : "صادر"}</td>
                   <td className="p-2">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.amount)}</td>
@@ -239,7 +239,7 @@ export default function InvoiceDetail() {
               barcodeSet={{
                 barcode128: data.invoiceNumber,
                 qrPayload: data.qrPayload,
-                displayLabel: `فاتورة: ${data.invoiceNumber}\n${new Date(data.invoiceDate).toLocaleDateString("ar-IQ")} — ${fmt(data.total)} د.ع`,
+                displayLabel: `فاتورة: ${data.invoiceNumber}\n${new Date(data.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn")} — ${fmt(data.total)} د.ع`,
               }}
               size="md"
             />

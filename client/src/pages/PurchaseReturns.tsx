@@ -135,7 +135,7 @@ export default function PurchaseReturns() {
                   <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
                   <td className="p-2 text-xs" dir="ltr">
                     {/* entryDate حقل تاريخ بلا وقت ⇒ نعرض التاريخ فقط (لا timeStyle مُختلَق). */}
-                    {r.entryDate ? new Date(r.entryDate).toLocaleDateString("ar-IQ") : "—"}
+                    {r.entryDate ? new Date(r.entryDate).toLocaleDateString("ar-IQ-u-nu-latn") : "—"}
                   </td>
                   <td className="p-2 font-medium">{supplierName(r.supplierId)}</td>
                   <td className="p-2">{branchName(r.branchId)}</td>
@@ -165,7 +165,7 @@ export default function PurchaseReturns() {
 
       <div className="flex items-center justify-between text-sm">
         <span className="text-muted-foreground" dir="ltr">
-          {total === 0 ? "لا صفوف" : `${from}–${to} / ${total.toLocaleString("ar-IQ")}`}
+          {total === 0 ? "لا صفوف" : `${from}–${to} / ${total.toLocaleString("ar-IQ-u-nu-latn")}`}
         </span>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>

@@ -115,7 +115,7 @@ export function CommandPalette() {
               {invMatches.map((i) => (
                 <CommandItem key={`i${i.id}`} value={`inv-${i.id}`} onSelect={() => go(`/invoices/${i.id}`)}>
                   <FileText className="size-4" /> فاتورة #{i.invoiceNumber}
-                  <span className="ms-auto text-xs text-muted-foreground" dir="ltr">{Number(i.total).toLocaleString("ar-IQ")}</span>
+                  <span className="ms-auto text-xs text-muted-foreground" dir="ltr">{Number(i.total).toLocaleString("ar-IQ-u-nu-latn")}</span>
                 </CommandItem>
               ))}
             </CommandGroup>

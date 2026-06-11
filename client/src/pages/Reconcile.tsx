@@ -42,7 +42,7 @@ export default function Reconcile() {
         <div className="flex items-center gap-3">
           {data && (
             <span className="text-xs text-muted-foreground" dir="ltr">
-              آخر فحص: {new Date(data.runAt).toLocaleString("ar-IQ")}
+              آخر فحص: {new Date(data.runAt).toLocaleString("ar-IQ-u-nu-latn")}
             </span>
           )}
           <Button

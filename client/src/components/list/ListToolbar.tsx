@@ -76,7 +76,7 @@ export function ListToolbar<T>({
         {title != null && <span className="text-base font-semibold">{title}</span>}
         {(count != null || loading) && (
           <span className="text-xs text-muted-foreground">
-            {loading ? "جارٍ التحميل…" : `${(count ?? 0).toLocaleString("ar-IQ")} صفّ`}
+            {loading ? "جارٍ التحميل…" : `${(count ?? 0).toLocaleString("ar-IQ-u-nu-latn")} صفّ`}
           </span>
         )}
       </div>

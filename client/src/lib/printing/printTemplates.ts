@@ -683,7 +683,7 @@ export interface BarcodeLabelItem {
 
 export function printBarcodeSheet(items: BarcodeLabelItem[]): void {
   const logo = logoUrl();
-  const today = new Date().toLocaleDateString('ar-IQ');
+  const today = new Date().toLocaleDateString('ar-IQ-u-nu-latn');
 
   const labels = items.map(item => {
     let barSvg = '';

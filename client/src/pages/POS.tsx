@@ -520,7 +520,7 @@ export default function POS() {
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber,
         invoiceId:     r.invoiceId,
-        date: now.toLocaleString("ar-IQ"),
+        date: now.toLocaleString("ar-IQ-u-nu-latn"),
         printDate: now.toLocaleDateString("en-GB"),
         printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
         cashierName: me.data?.name ?? undefined,
@@ -610,7 +610,7 @@ export default function POS() {
       await printDoc({
         kind: "opening", title: SHOP,
         subtitle: "بيان الرصيد الافتتاحي",
-        meta: [`وردية #${res.shiftId}`, new Date().toLocaleString("ar-IQ")],
+        meta: [`وردية #${res.shiftId}`, new Date().toLocaleString("ar-IQ-u-nu-latn")],
         totals: [{ label: "الرصيد الافتتاحي", value: money(Number(opening || 0)) }],
         footer: "بداية الوردية",
       });
@@ -1559,7 +1559,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed }: ShiftCloseD
       await printDoc({
         kind: "zreport", title: SHOP,
         subtitle: "تقرير نهاية الوردية (Z)",
-        meta: [`وردية #${r.shiftId}`, new Date().toLocaleString("ar-IQ")],
+        meta: [`وردية #${r.shiftId}`, new Date().toLocaleString("ar-IQ-u-nu-latn")],
         columns: ["الحركة", "عدد", "مبلغ"],
         rows: payRows.length ? payRows : [["لا حركات", "0", "0.00"]],
         totals: [
@@ -1601,7 +1601,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed }: ShiftCloseD
 
         <div style={{ fontWeight: 900, fontSize: 19, marginBottom: 4, color: C.fg }}>إغلاق الوردية #{shift?.id}</div>
         <div style={{ fontSize: 12.5, color: C.mutedFg, marginBottom: 18 }}>
-          {new Date().toLocaleDateString("ar-IQ", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+          {new Date().toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
         </div>
 
         {reportQ.isLoading ? (

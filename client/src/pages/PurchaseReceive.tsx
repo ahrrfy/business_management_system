@@ -84,7 +84,7 @@ export default function PurchaseReceive() {
     receive.mutate({ purchaseOrderId, lines, payment, clientRequestId });
   }
 
-  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
   return (
     <div className="space-y-4 max-w-4xl">

@@ -75,7 +75,7 @@ function Shell({ children }: { children: React.ReactNode }) {
 }
 
 function NotFound() {
-  return <div className="p-10 text-center text-muted-foreground">٤٠٤ — الصفحة غير موجودة</div>;
+  return <div className="p-10 text-center text-muted-foreground">404 — الصفحة غير موجودة</div>;
 }
 
 export default function App() {

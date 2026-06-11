@@ -36,7 +36,7 @@ import { ROLE_OPTIONS } from "./Users";
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const STRONG_HINT = "٨ خانات على الأقل، يحتوي حرفاً ورقماً ورمزاً.";
+const STRONG_HINT = "8 خانات على الأقل، يحتوي حرفاً ورقماً ورمزاً.";
 
 export default function UserNew() {
   const [, navigate] = useLocation();

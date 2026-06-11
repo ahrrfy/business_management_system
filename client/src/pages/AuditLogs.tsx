@@ -76,7 +76,7 @@ function actionLabel(a: string): string {
 
 function dt(d: string | Date | null | undefined): string {
   if (!d) return "—";
-  return new Date(d).toLocaleString("ar-IQ", { dateStyle: "short", timeStyle: "short" });
+  return new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" });
 }
 
 function jsonStr(v: unknown): string {
@@ -176,7 +176,7 @@ export default function AuditLogs() {
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle className="text-base">السجلّات</CardTitle>
           <div className="flex items-center gap-3">
-            <div className="text-xs text-muted-foreground">{list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ")}`}</div>
+            <div className="text-xs text-muted-foreground">{list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ-u-nu-latn")}`}</div>
             <Button
               variant="outline"
               size="sm"

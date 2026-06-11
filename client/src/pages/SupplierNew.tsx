@@ -134,7 +134,7 @@ export default function SupplierNew() {
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            ٣ أرقام بصيغة دولية لدعم واتساب. الأول هو الرئيسي.
+            3 أرقام بصيغة دولية لدعم واتساب. الأول هو الرئيسي.
           </p>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">

@@ -13,7 +13,7 @@ import { useMemo, useState } from "react";
 
 function fmt(s: string | number | null | undefined): string {
   if (s === null || s === undefined || s === "") return "—";
-  return Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  return Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 }
 
 /** الرقم القديم (legacyCode) من صف القائمة — null إن فارغاً (العمود يظهر فقط حين توجد قيم).

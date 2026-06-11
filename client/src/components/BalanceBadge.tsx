@@ -8,7 +8,7 @@
 import { cn } from "@/lib/utils";
 
 const fmtNum = (n: number) =>
-  n.toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  n.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
 export type BalanceEntity = "customer" | "supplier";
 

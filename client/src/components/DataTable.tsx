@@ -136,7 +136,7 @@ export function DataTable<T extends object>({
         <div className="flex items-center justify-between text-sm text-muted-foreground">
           <span>
             {table.getState().pagination.pageIndex + 1} / {table.getPageCount()} ·{" "}
-            {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ")} سطر
+            {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} سطر
           </span>
           <div className="flex gap-1">
             <Button

@@ -88,7 +88,7 @@ export default function Inventory() {
         <h1 className="text-2xl font-bold">المخزون</h1>
         {lowCount > 0 && (
           <span className="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs">
-            {lowCount.toLocaleString("ar-IQ")} صنف تحت الحد الأدنى
+            {lowCount.toLocaleString("ar-IQ-u-nu-latn")} صنف تحت الحد الأدنى
           </span>
         )}
       </div>
@@ -131,7 +131,7 @@ export default function Inventory() {
           <CardTitle className="text-base">الأرصدة الحالية</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {onHand.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ")} صنف`}
+              {onHand.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} صنف`}
             </span>
             <Button
               variant="outline"
@@ -185,7 +185,7 @@ export default function Inventory() {
                           autoFocus
                         />
                       ) : (
-                        r.quantity.toLocaleString("ar-IQ")
+                        r.quantity.toLocaleString("ar-IQ-u-nu-latn")
                       )}
                     </td>
                     <td className="p-2 text-center tabular-nums text-muted-foreground">{r.minStock ?? 0}</td>
@@ -245,7 +245,7 @@ export default function Inventory() {
             <tbody>
               {(movements.data ?? []).map((m) => (
                 <tr key={m.id} className="border-t">
-                  <td className="p-2 text-xs">{new Date(m.createdAt).toLocaleString("ar-IQ")}</td>
+                  <td className="p-2 text-xs">{new Date(m.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
                   <td className="p-2 font-mono text-xs" dir="ltr">#{m.variantId}</td>
                   <td className="p-2 text-xs">{MTYPE[m.movementType] ?? m.movementType}</td>
                   <td className="p-2 text-center tabular-nums">{m.quantity}</td>

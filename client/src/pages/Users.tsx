@@ -23,7 +23,7 @@ function fmtDate(d: string | Date | null | undefined): string {
   if (!d) return "—";
   const t = new Date(d);
   if (Number.isNaN(t.getTime())) return "—";
-  return t.toLocaleDateString("ar-IQ", { year: "numeric", month: "2-digit", day: "2-digit" });
+  return t.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
 export default function Users() {

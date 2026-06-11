@@ -56,7 +56,7 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
             }`}
             title="رصيد ذمة العميل"
           >
-            ذمة: <span dir="ltr">{D(balance).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ", { maximumFractionDigits: 2 })}</span>
+            ذمة: <span dir="ltr">{D(balance).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 })}</span>
           </span>
         )}
       </div>

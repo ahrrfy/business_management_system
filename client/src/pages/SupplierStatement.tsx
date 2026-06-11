@@ -28,7 +28,7 @@ const PO_STATUS_CLS: Record<string, string> = {
   CANCELLED: "bg-rose-100 text-rose-700",
 };
 
-const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+const fmt = (s: string | number) => Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 
 export default function SupplierStatement() {
   // wouter's useLocation() strips the query string, so read it from window.location directly.
@@ -167,7 +167,7 @@ export default function SupplierStatement() {
                     return (
                       <tr key={p.id} className="border-t">
                         <td className="p-2"><CopyInline value={p.poNumber} /></td>
-                        <td className="p-2 text-xs" dir="ltr">{new Date(p.orderDate).toLocaleDateString("ar-IQ")}</td>
+                        <td className="p-2 text-xs" dir="ltr">{new Date(p.orderDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
                         <td className="p-2 text-xs" dir="ltr">{p.expectedDeliveryDate ? String(p.expectedDeliveryDate).slice(0, 10) : "—"}</td>
                         <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.total)}</td>
                         <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
@@ -208,7 +208,7 @@ export default function SupplierStatement() {
                 <tbody>
                   {stmt.data.payments.map((p) => (
                     <tr key={p.id} className="border-t">
-                      <td className="p-2 text-xs" dir="ltr">{new Date(p.entryDate).toLocaleDateString("ar-IQ")}</td>
+                      <td className="p-2 text-xs" dir="ltr">{new Date(p.entryDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
                       <td className="p-2"><CopyInline value={p.purchaseOrderId} /></td>
                       <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.amount)}</td>
                       <td className="p-2 text-xs">{p.notes ?? "—"}</td>

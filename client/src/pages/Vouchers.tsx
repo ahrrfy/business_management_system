@@ -20,13 +20,13 @@ const METHOD_LABEL: Record<string, string> = {
 
 function fmt(s: string | number | null | undefined): string {
   if (s == null || s === "") return "—";
-  return Number(s).toLocaleString("ar-IQ", { maximumFractionDigits: 2 });
+  return Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 }
 
 function fmtDate(d: Date | string | null | undefined): string {
   if (!d) return "—";
   const dt = typeof d === "string" ? new Date(d) : d;
-  return dt.toLocaleDateString("ar-IQ");
+  return dt.toLocaleDateString("ar-IQ-u-nu-latn");
 }
 
 export default function Vouchers() {
@@ -143,7 +143,7 @@ export default function Vouchers() {
           <CardTitle className="text-base">القائمة</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {list.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ")} سند`}
+              {list.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} سند`}
             </span>
             <Button
               variant="outline"
