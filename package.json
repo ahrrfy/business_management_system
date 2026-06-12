@@ -18,6 +18,8 @@
     "seed:prod": "cross-env NODE_ENV=production SEED_MODE=prod tsx server/seed.ts",
     "db:backup": "node scripts/backup.mjs",
     "db:migrate:safe": "node scripts/db-migrate-safe.mjs",
+    "db:migrate:apply": "node scripts/db-migrate-apply.mjs",
+    "deploy": "node scripts/deploy.mjs",
     "db:reset": "node scripts/reset.mjs",
     "db:restore": "node scripts/restore.mjs",
     "backup:pull-vps": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pull-vps-backup.ps1",

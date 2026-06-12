@@ -38,9 +38,9 @@ if (!newest || ageMin > MAX_AGE_MIN || newest.size < MIN_SIZE) {
 }
 
 console.log(`✓ بوّابة الهجرة: نسخة طازجة موجودة (${newest.name}، عمرها ${ageMin.toFixed(1)} دقيقة).`);
-console.log("→ تطبيق ملفات الهجرة (drizzle-kit migrate — لا تفاعلي)…");
+console.log("→ تطبيق ملفات الهجرة (drizzle-orm migrator — لا تفاعلي مع أخطاء واضحة)…");
 try {
-  execFileSync("pnpm", ["exec", "drizzle-kit", "migrate"], {
+  execFileSync("node", ["scripts/db-migrate-apply.mjs"], {
     stdio: "inherit",
     shell: process.platform === "win32",
   });
