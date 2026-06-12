@@ -5,8 +5,10 @@ import { Label } from "@/components/ui/label";
 import { PasswordInput } from "@/components/form/PasswordInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { PermissionMatrix } from "@/components/form/PermissionMatrix";
-import { PASSWORD_MIN_LEN, isStrongPassword } from "@shared/const";
+import { CredentialsShare } from "@/components/form/CredentialsShare";
+import { isStrongPassword } from "@shared/const";
 import {
+  ROLES,
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
   diffFromTemplate,
@@ -16,33 +18,65 @@ import {
   type RoleKey,
 } from "@/lib/permissionsModel";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { ROLE_OPTIONS } from "./Users";
-
-/**
- * إضافة مستخدم — v3 add-screens.
- *
- * تصميم:
- *  - بيانات الدخول (بريد + كلمة مرور بإظهار/إخفاء + تأكيد).
- *  - بيانات HR: اسم + هاتف اتّصال + مسمى وظيفي + تاريخ توظيف.
- *  - الدور والفرع.
- *  - **محرّر صلاحيات تفاعلي**: يبدأ من قالب الدور، أيّ تخصيص يدوي يُوسم بـ«مخصّص».
- *
- * ملاحظة: مصادقة الدخول لا تزال بالبريد + كلمة مرور (لا تغيير في الـauth في هذه الشريحة).
- * الهاتف هنا اتّصال HR، ليس معرّف دخول.
- */
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const STRONG_HINT = "8 خانات على الأقل، يحتوي حرفاً ورقماً ورمزاً.";
+/** أدوار تشغيلية تستوجب تحديد فرع (تحذير عند «كل الفروع»). */
+const BRANCH_WARN_ROLES: RoleKey[] = ["cashier", "warehouse", "print_operator", "purchasing", "sales_rep"];
+
+/** تحويل الاسم العربي إلى بريد مقترح @alroya.local */
+function suggestEmail(name: string): string {
+  if (!name.trim()) return "";
+  // تبسيط: أخذ أول كلمتين، تحويل إلى ASCII بسيط
+  const map: Record<string, string> = {
+    ا:"a",أ:"a",إ:"a",آ:"a",ب:"b",ت:"t",ث:"th",ج:"j",ح:"h",خ:"kh",
+    د:"d",ذ:"z",ر:"r",ز:"z",س:"s",ش:"sh",ص:"s",ض:"d",ط:"t",ظ:"z",
+    ع:"a",غ:"g",ف:"f",ق:"q",ك:"k",ل:"l",م:"m",ن:"n",ه:"h",و:"w",
+    ي:"y",ى:"a",ة:"a",ء:"",ئ:"y",ؤ:"w",لا:"la",
+  };
+  const words = name.trim().split(/\s+/).slice(0, 2);
+  const slug = words
+    .map((w) =>
+      w.split("").map((c) => map[c] ?? (c.match(/[a-z0-9]/i) ? c.toLowerCase() : "")).join("")
+    )
+    .filter(Boolean)
+    .join(".");
+  return slug ? `${slug}@alroya.local` : "";
+}
+
+/** فروق الصلاحيات عن القالب — يُعرض في رأس المصفوفة */
+function PermDiffSummary({ role, override }: { role: RoleKey; override: PermissionMap }) {
+  const entries = Object.entries(override);
+  if (!entries.length) return null;
+  const base = ROLE_TEMPLATES[role];
+  return (
+    <div className="flex flex-wrap gap-1 mb-2">
+      {entries.map(([k, v]) => {
+        const mod = PERMISSION_MODULES.find((m) => m.key === k);
+        const prev = base[k] ?? "NONE";
+        const label = v === "FULL" ? "كامل" : v === "READ" ? "قراءة" : "لا وصول";
+        const prevLabel = prev === "FULL" ? "كامل" : prev === "READ" ? "قراءة" : "لا وصول";
+        return (
+          <span key={k} className="text-[10px] rounded bg-primary/10 text-primary px-1.5 py-0.5">
+            {mod?.label ?? k}: {prevLabel} ← {label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
 
 export default function UserNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
 
   const [email, setEmail] = useState("");
+  const [emailError, setEmailError] = useState("");
+  const [emailChecked, setEmailChecked] = useState(false);
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [name, setName] = useState("");
@@ -52,52 +86,99 @@ export default function UserNew() {
   const [role, setRole] = useState<RoleKey>("cashier");
   const [branchId, setBranchId] = useState<number | "">("");
   const [permsOverride, setPermsOverride] = useState<PermissionMap>({});
+  const [mustChangePassword, setMustChangePassword] = useState(true);
   const [error, setError] = useState("");
+  const [createdInfo, setCreatedInfo] = useState<{
+    name: string; email: string; password: string; phone?: string;
+  } | null>(null);
 
   const branches = trpc.branches.list.useQuery();
+  const checkEmailQ = trpc.users.checkEmail.useQuery(
+    { email: email.trim().toLowerCase() },
+    { enabled: false }
+  );
+  const generatePwQ = trpc.users.generatePassword.useQuery(undefined, { enabled: false });
 
-  // الصلاحيات الفعلية = قالب الدور + الـoverride الحالي.
+  // افتراضي: فرع المستخدم الحالي (يُقرأ من السياق حين يتوفر)
+  const me = trpc.auth.me?.useQuery?.();
+  useEffect(() => {
+    if (me?.data?.branchId && branchId === "") {
+      setBranchId(me.data.branchId as number);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me?.data]);
+
   const resolvedPerms = useMemo(
     () => resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
     [role, permsOverride]
   );
 
-  const create = trpc.users.create.useMutation({
-    onSuccess: () => {
-      utils.users.list.invalidate();
-      navigate("/users");
-    },
-    onError: (e) => setError(e.message),
-  });
+  const roleInfo = ROLES.find((r) => r.key === role);
+  const branchWarn = BRANCH_WARN_ROLES.includes(role) && branchId === "";
+
+  // فحص البريد onBlur
+  const checkEmailFn = useCallback(async () => {
+    const v = email.trim().toLowerCase();
+    if (!v || !/^\S+@\S+\.\S+$/.test(v)) return;
+    try {
+      const ok = await utils.users.checkEmail.fetch({ email: v });
+      setEmailError(ok ? "" : "هذا البريد مستخدم مسبقاً.");
+      setEmailChecked(true);
+    } catch {
+      setEmailChecked(false);
+    }
+  }, [email, utils.users.checkEmail]);
+
+  function handleNameBlur() {
+    if (!email && name.trim()) {
+      const suggested = suggestEmail(name);
+      if (suggested) setEmail(suggested);
+    }
+  }
+
+  function handleRoleChange(next: RoleKey) {
+    setRole(next);
+    setPermsOverride({});
+  }
 
   function handlePermChange(moduleKey: string, level: AccessLevel) {
-    // الحالة المخزّنة هي الـoverride (الانحراف عن القالب). نُحدّثها بحيث تعكس الفعليّ.
     const newResolved = { ...resolvedPerms, [moduleKey]: level };
     const newOverride = diffFromTemplate(role, newResolved) ?? {};
     setPermsOverride(newOverride);
   }
 
-  function handlePermReset() {
-    setPermsOverride({});
+  async function handleGeneratePassword() {
+    try {
+      const res = await utils.users.generatePassword.fetch();
+      setPassword(res.password);
+      setPasswordConfirm(res.password);
+    } catch {
+      // fallback client-side
+      const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#$%!";
+      const pw = Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+      setPassword(pw);
+      setPasswordConfirm(pw);
+    }
   }
 
-  function handleRoleChange(next: RoleKey) {
-    setRole(next);
-    // مسح الـoverride عند تغيير الدور — حتى لا يحمل قيوداً غير قاصدة من قالب سابق.
-    setPermsOverride({});
-  }
+  const create = trpc.users.create.useMutation({
+    onSuccess: (_, vars) => {
+      utils.users.list.invalidate();
+      setCreatedInfo({ name: vars.name, email: vars.email, password: vars.password, phone: vars.phone ?? undefined });
+    },
+    onError: (e) => setError(e.message),
+  });
 
-  function submit() {
+  function buildAndSubmit(addAnother: boolean) {
     setError("");
+    if (emailError) { setError(emailError); return; }
     if (!email.trim()) { setError("البريد الإلكتروني مطلوب."); return; }
     if (!/^\S+@\S+\.\S+$/.test(email.trim())) { setError("بريد إلكتروني غير صالح."); return; }
     if (!name.trim()) { setError("الاسم مطلوب."); return; }
-    if (!isStrongPassword(password)) { setError(`كلمة المرور ضعيفة. ${STRONG_HINT}`); return; }
+    if (!isStrongPassword(password)) { setError("كلمة المرور ضعيفة — استخدم زر التوليد أو أدخل 8 أحرف تحتوي حرفاً ورقماً ورمزاً."); return; }
     if (password !== passwordConfirm) { setError("تأكيد كلمة المرور لا يطابق."); return; }
     if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) { setError("تاريخ التوظيف غير صالح."); return; }
-
     const override = diffFromTemplate(role, resolvedPerms);
-
     create.mutate({
       email: email.trim().toLowerCase(),
       password,
@@ -108,11 +189,45 @@ export default function UserNew() {
       jobTitle: jobTitle.trim() || null,
       hiredAt: hiredAt || null,
       permissionsOverride: override,
+      mustChangePassword,
+    }, {
+      onSuccess: () => {
+        if (addAnother) {
+          setEmail(""); setPassword(""); setPasswordConfirm(""); setName("");
+          setPhone(""); setJobTitle(""); setHiredAt(""); setPermsOverride({});
+          setEmailError(""); setEmailChecked(false);
+        } else {
+          navigate("/users");
+        }
+      },
     });
   }
 
   const pwMismatch = passwordConfirm.length > 0 && password !== passwordConfirm;
   const customCount = Object.keys(permsOverride).length;
+
+  // عرض بطاقة المشاركة بعد الإنشاء
+  if (createdInfo) {
+    return (
+      <div className="space-y-4 max-w-2xl">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">إضافة مستخدم</h1>
+          <Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
+        </div>
+        <CredentialsShare
+          name={createdInfo.name}
+          email={createdInfo.email}
+          password={createdInfo.password}
+          phone={createdInfo.phone}
+          onClose={() => navigate("/users")}
+        />
+        <div className="flex gap-2">
+          <Button variant="outline" onClick={() => { setCreatedInfo(null); }}>إضافة مستخدم آخر</Button>
+          <Link href="/users"><Button>العودة للقائمة</Button></Link>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-4 max-w-4xl">
@@ -121,45 +236,71 @@ export default function UserNew() {
         <Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
       </div>
 
+      {/* بيانات الدخول */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">بيانات الدخول</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-base">بيانات الدخول</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <Label htmlFor="email">البريد الإلكتروني *</Label>
-            <Input id="email" type="email" dir="ltr" autoComplete="username"
-              value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@alroya.local" />
+          <div className="space-y-1 md:col-span-2">
+            <Label htmlFor="name">الاسم الكامل *</Label>
+            <Input
+              id="name" value={name}
+              onChange={(e) => setName(e.target.value)}
+              onBlur={handleNameBlur}
+              placeholder="مثال: علي محمد حسين"
+            />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="pw">كلمة المرور *</Label>
+            <Label htmlFor="email">البريد الإلكتروني *</Label>
+            <Input
+              id="email" type="email" dir="ltr" autoComplete="username"
+              value={email}
+              onChange={(e) => { setEmail(e.target.value); setEmailChecked(false); setEmailError(""); }}
+              onBlur={checkEmailFn}
+              placeholder="user@alroya.local"
+              className={emailError ? "border-destructive" : emailChecked && !emailError ? "border-emerald-500" : ""}
+            />
+            {emailError && <p className="text-[11px] text-destructive">{emailError}</p>}
+            {emailChecked && !emailError && <p className="text-[11px] text-emerald-600">✓ البريد متاح</p>}
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="pw">كلمة المرور *</Label>
+              <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleGeneratePassword}>
+                ⚡ توليد تلقائي
+              </Button>
+            </div>
             <PasswordInput id="pw" value={password} onChange={setPassword} autoComplete="new-password" />
-            <p className="text-[11px] text-muted-foreground">{STRONG_HINT}</p>
+            <p className="text-[11px] text-muted-foreground">8 خانات على الأقل، حرف ورقم ورمز.</p>
           </div>
           <div className="space-y-1">
             <Label htmlFor="pw2">تأكيد كلمة المرور *</Label>
             <PasswordInput id="pw2" value={passwordConfirm} onChange={setPasswordConfirm} invalid={pwMismatch} autoComplete="new-password" />
             {pwMismatch && <p className="text-[11px] text-destructive">لا يطابق كلمة المرور.</p>}
           </div>
+          <div className="flex items-center gap-2 md:col-span-2">
+            <input
+              type="checkbox" id="mustChange" className="size-4"
+              checked={mustChangePassword}
+              onChange={(e) => setMustChangePassword(e.target.checked)}
+            />
+            <Label htmlFor="mustChange" className="font-normal cursor-pointer">
+              إلزام تغيير كلمة المرور عند أول دخول (صالحة 72 ساعة)
+            </Label>
+          </div>
         </CardContent>
       </Card>
 
+      {/* البيانات الشخصية */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">البيانات الشخصية والوظيفية</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-base">البيانات الوظيفية</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <Label htmlFor="name">الاسم الكامل *</Label>
-            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="مثال: علي محمد حسين" />
-          </div>
           <div className="space-y-1">
             <Label htmlFor="phone">رقم هاتف الاتصال</Label>
             <IntlPhoneInput id="phone" value={phone} onChange={setPhone} />
           </div>
           <div className="space-y-1">
             <Label htmlFor="job">المسمى الوظيفي</Label>
-            <Input id="job" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: مسؤول نقطة بيع" />
+            <Input id="job" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: كاشير / محاسب" />
           </div>
           <div className="space-y-1">
             <Label htmlFor="hired">تاريخ التوظيف</Label>
@@ -168,10 +309,9 @@ export default function UserNew() {
         </CardContent>
       </Card>
 
+      {/* الدور والفرع */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">الدور والفرع</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="text-base">الدور والفرع</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
@@ -180,22 +320,30 @@ export default function UserNew() {
                 <option key={r.value} value={r.value}>{r.label}</option>
               ))}
             </select>
-            <p className="text-[11px] text-muted-foreground">
-              قالب الدور يحدّد الصلاحيات الافتراضية أدناه — يمكنك تخصيص أيّ وحدة.
-            </p>
+            {roleInfo && (
+              <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p>
+            )}
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>
-            <select id="branch" className={selectCls} value={String(branchId)} onChange={(e) => setBranchId(e.target.value === "" ? "" : Number(e.target.value))}>
+            <select
+              id="branch" className={`${selectCls} ${branchWarn ? "border-amber-400" : ""}`}
+              value={String(branchId)}
+              onChange={(e) => setBranchId(e.target.value === "" ? "" : Number(e.target.value))}
+            >
               <option value="">— كل الفروع —</option>
               {(branches.data ?? []).map((b: any) => (
                 <option key={b.id} value={b.id}>{b.name}</option>
               ))}
             </select>
+            {branchWarn && (
+              <p className="text-[11px] text-amber-600">⚠️ هذا الدور يُنصح بتحديد فرع محدد لتجنّب الوصول لكل الفروع.</p>
+            )}
           </div>
         </CardContent>
       </Card>
 
+      {/* الصلاحيات */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">
@@ -208,26 +356,29 @@ export default function UserNew() {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          <PermDiffSummary role={role} override={permsOverride} />
           <PermissionMatrix
             role={role}
             permissions={resolvedPerms}
             onChange={handlePermChange}
-            onReset={handlePermReset}
+            onReset={() => setPermsOverride({})}
           />
         </CardContent>
       </Card>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex gap-2">
-        <Button onClick={submit} disabled={create.isPending}>
+
+      <div className="flex flex-wrap gap-2">
+        <Button onClick={() => buildAndSubmit(false)} disabled={create.isPending}>
           {create.isPending ? "جارٍ الحفظ…" : "حفظ المستخدم"}
         </Button>
-        <Link href="/users"><Button variant="outline">إلغاء</Button></Link>
+        <Button variant="outline" onClick={() => buildAndSubmit(true)} disabled={create.isPending}>
+          حفظ وإضافة آخر
+        </Button>
+        <Link href="/users"><Button variant="ghost">إلغاء</Button></Link>
       </div>
     </div>
   );
 }
 
-// تنبيه: المتغيرات المُستوردة (PERMISSION_MODULES, ROLE_TEMPLATES, PASSWORD_MIN_LEN)
-// متروكة للتوافق ولاستخدامات لاحقة في حال أضفنا «معاينة» تظهر الفروق بين القالب والمخصّص.
-void PERMISSION_MODULES; void ROLE_TEMPLATES; void PASSWORD_MIN_LEN;
+void PERMISSION_MODULES; void ROLE_TEMPLATES;

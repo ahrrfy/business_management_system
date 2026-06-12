@@ -9,9 +9,12 @@ import { useLocation } from "wouter";
 import { ROLE_LABEL } from "./Users";
 
 export default function Account() {
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
+  // هل أُحيل المستخدم لهنا بسبب كلمة مرور مؤقتة تستوجب التغيير؟
+  const mustChange = new URLSearchParams(location.split("?")[1] ?? "").get("mustChange") === "1"
+    || !!(me.data as any)?.mustChangePassword;
 
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -20,9 +23,12 @@ export default function Account() {
   const [done, setDone] = useState("");
 
   const change = trpc.auth.changePassword.useMutation({
-    onSuccess: () => {
+    onSuccess: async () => {
       setDone("تمّ تغيير كلمة المرور بنجاح.");
       setOldPassword(""); setNewPassword(""); setConfirm("");
+      await utils.auth.me.refetch();
+      // بعد تغيير كلمة المرور المؤقتة نوجّه للوحة الرئيسية
+      if (mustChange) navigate("/");
     },
     onError: (e) => setError(e.message),
   });
@@ -44,6 +50,16 @@ export default function Account() {
   return (
     <div className="space-y-4 max-w-xl">
       <h1 className="text-2xl font-bold">حسابي</h1>
+
+      {mustChange && (
+        <div className="rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-950/30 p-4 text-sm text-amber-800 dark:text-amber-300 flex gap-3 items-start">
+          <span className="text-xl leading-none mt-0.5">⚠️</span>
+          <div>
+            <p className="font-semibold mb-1">كلمة المرور مؤقتة — يجب تغييرها الآن</p>
+            <p className="text-xs opacity-80">أُنشئ حسابك بكلمة مرور مؤقتة. غيّرها أدناه قبل استخدام النظام.</p>
+          </div>
+        </div>
+      )}
 
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات الحساب</CardTitle></CardHeader>

@@ -2,12 +2,14 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { PASSWORD_MIN_LEN, isStrongPassword } from "@shared/const";
+import { CredentialsShare } from "@/components/form/CredentialsShare";
+import { isStrongPassword } from "@shared/const";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useRoute } from "wouter";
-import { ROLE_LABEL, ROLE_OPTIONS } from "./Users";
+import { ROLE_OPTIONS, ROLE_LABEL } from "./Users";
+import { ROLES, type RoleKey } from "@/lib/permissionsModel";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -22,7 +24,7 @@ export default function UserEdit() {
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<(typeof ROLE_OPTIONS)[number]["value"]>("cashier");
+  const [role, setRole] = useState<RoleKey>("cashier");
   const [branchId, setBranchId] = useState<string>("");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -30,13 +32,15 @@ export default function UserEdit() {
 
   const [newPassword, setNewPassword] = useState("");
   const [pwMsg, setPwMsg] = useState("");
+  const [mustChangeOnReset, setMustChangeOnReset] = useState(true);
+  const [resetShare, setResetShare] = useState<{ password: string; email: string; name: string; phone?: string } | null>(null);
 
   useEffect(() => {
     if (detail.data && !loaded) {
       const u = detail.data;
       setName(u.name ?? "");
       setEmail(u.email ?? "");
-      setRole((u.role as (typeof ROLE_OPTIONS)[number]["value"]) ?? "cashier");
+      setRole((u.role as RoleKey) ?? "cashier");
       setBranchId(u.branchId ? String(u.branchId) : "");
       setLoaded(true);
     }
@@ -55,30 +59,45 @@ export default function UserEdit() {
     onError: (e) => setError(e.message),
   });
   const resetPassword = trpc.users.resetPassword.useMutation({
-    onSuccess: () => { setPwMsg("تمّت إعادة تعيين كلمة المرور؛ أُبطِلت جلسات المستخدم."); setNewPassword(""); },
+    onSuccess: (_, vars) => {
+      setPwMsg("تمّت إعادة تعيين كلمة المرور؛ أُبطِلت جلسات المستخدم.");
+      setResetShare({
+        password: vars.newPassword,
+        email: detail.data?.email ?? "",
+        name: detail.data?.name ?? "",
+        phone: (detail.data as any)?.phone ?? undefined,
+      });
+      setNewPassword("");
+    },
     onError: (e) => setPwMsg(e.message),
   });
+  const generatePw = trpc.users.generatePassword.useQuery(undefined, { enabled: false });
+
+  async function handleGeneratePassword() {
+    try {
+      const res = await utils.users.generatePassword.fetch();
+      setNewPassword(res.password);
+    } catch {
+      const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#$%!";
+      setNewPassword(Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join(""));
+    }
+  }
 
   function submit() {
-    setError("");
-    setDone("");
+    setError(""); setDone("");
     if (!name.trim()) return setError("اسم المستخدم مطلوب.");
     if (!email.trim()) return setError("البريد الإلكتروني مطلوب.");
-    update.mutate({
-      userId,
-      name: name.trim(),
-      email: email.trim(),
-      role,
-      branchId: branchId ? Number(branchId) : null,
-    });
+    update.mutate({ userId, name: name.trim(), email: email.trim(), role, branchId: branchId ? Number(branchId) : null });
   }
 
   function doReset() {
-    setPwMsg("");
+    setPwMsg(""); setResetShare(null);
     if (!isStrongPassword(newPassword))
-      return setPwMsg(`كلمة المرور يجب أن تكون ${PASSWORD_MIN_LEN} أحرف على الأقل وتحتوي حرفاً ورقماً.`);
-    resetPassword.mutate({ userId, newPassword });
+      return setPwMsg("كلمة المرور يجب أن تكون 8 أحرف على الأقل وتحتوي حرفاً ورقماً ورمزاً.");
+    resetPassword.mutate({ userId, newPassword, mustChangePassword: mustChangeOnReset });
   }
+
+  const roleInfo = ROLES.find((r) => r.key === role);
 
   if (!userId) return <div className="p-6 text-center text-muted-foreground">معرّف مستخدم غير صالح.</div>;
   if (detail.isLoading) return <div className="p-6 text-center text-muted-foreground">جارٍ تحميل بيانات المستخدم…</div>;
@@ -105,6 +124,12 @@ export default function UserEdit() {
               {isActive ? "مفعّل" : "معطّل"}
             </span>
           </div>
+          {(u as any).mustChangePassword && (
+            <div>
+              <div className="text-muted-foreground text-xs">كلمة المرور</div>
+              <span className="text-xs text-amber-600 font-medium">⚠️ تغيير إلزامي</span>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -121,9 +146,10 @@ export default function UserEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
-            <select id="role" className={selectCls} value={role} onChange={(e) => setRole(e.target.value as any)}>
+            <select id="role" className={selectCls} value={role} onChange={(e) => setRole(e.target.value as RoleKey)}>
               {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
             </select>
+            {roleInfo && <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p>}
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>
@@ -146,12 +172,7 @@ export default function UserEdit() {
           <Button
             variant="outline"
             onClick={() => void (async () => {
-              if (!(await confirm({
-                variant: "danger",
-                title: "تعطيل المستخدم",
-                description: `لن يستطيع «${name || u.email}» الدخول وتُبطَل جلساته فوراً. هل تتابع؟`,
-                confirmText: "تعطيل",
-              }))) return;
+              if (!(await confirm({ variant: "danger", title: "تعطيل المستخدم", description: `لن يستطيع «${name || u.email}» الدخول وتُبطَل جلساته فوراً. هل تتابع؟`, confirmText: "تعطيل" }))) return;
               setActive.mutate({ userId, isActive: false });
             })()}
             disabled={setActive.isPending}
@@ -166,24 +187,45 @@ export default function UserEdit() {
         <Link href="/users"><Button variant="ghost">رجوع</Button></Link>
       </div>
 
+      {/* إعادة تعيين كلمة المرور */}
       <Card>
         <CardHeader><CardTitle className="text-base">إعادة تعيين كلمة المرور</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <p className="text-xs text-muted-foreground">
-            يضع كلمة مرور جديدة للمستخدم ويُبطل كل جلساته الحالية (يجبره على دخول جديد).
+            يضبط كلمة مرور جديدة ويُبطل كل جلسات المستخدم الحالية.
           </p>
           <div className="flex flex-wrap gap-2 items-end">
-            <div className="space-y-1 flex-1 min-w-[220px]">
-              <Label htmlFor="newpw">كلمة المرور الجديدة</Label>
-              <Input id="newpw" type="password" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="8 أحرف على الأقل، حرف ورقم" />
+            <div className="space-y-1 flex-1 min-w-[200px]">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="newpw">كلمة المرور الجديدة</Label>
+                <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleGeneratePassword}>
+                  ⚡ توليد
+                </Button>
+              </div>
+              <Input id="newpw" type="text" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="8 أحرف على الأقل" className="font-mono" />
             </div>
             <Button variant="outline" onClick={doReset} disabled={resetPassword.isPending}>
               {resetPassword.isPending ? "…" : "إعادة التعيين"}
             </Button>
           </div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="mustChangeReset" className="size-4" checked={mustChangeOnReset} onChange={(e) => setMustChangeOnReset(e.target.checked)} />
+            <Label htmlFor="mustChangeReset" className="font-normal cursor-pointer text-sm">إلزام تغيير الكلمة عند أول دخول (72 ساعة)</Label>
+          </div>
           {pwMsg && <p className={`text-sm ${resetPassword.isSuccess ? "text-emerald-600" : "text-destructive"}`}>{pwMsg}</p>}
+          {resetShare && (
+            <CredentialsShare
+              name={resetShare.name}
+              email={resetShare.email}
+              password={resetShare.password}
+              phone={resetShare.phone}
+              onClose={() => setResetShare(null)}
+            />
+          )}
         </CardContent>
       </Card>
+
+      void generatePw;
     </div>
   );
 }
