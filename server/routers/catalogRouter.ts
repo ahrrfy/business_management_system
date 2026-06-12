@@ -1,4 +1,7 @@
 import { z } from "zod";
+import { asc } from "drizzle-orm";
+import { categories } from "../../drizzle/schema";
+import { getDb } from "../db";
 import { assignBarcode, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, lookupByBarcode, updateProduct } from "../services/catalogService";
 import { logAudit } from "../services/auditService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
@@ -144,4 +147,14 @@ export const catalogRouter = router({
       await logAudit(ctx, { action: "product.assignBarcode", entityType: "productUnit", entityId: input.productUnitId, newValue: { barcode: input.barcode } });
       return res;
     }),
+
+  /** قائمة الفئات (لنطاق الجرد «حسب الفئة» وأي منتقي فئات لاحق). */
+  categories: protectedProcedure.query(async () => {
+    const db = getDb();
+    if (!db) return [];
+    return db
+      .select({ id: categories.id, name: categories.name })
+      .from(categories)
+      .orderBy(asc(categories.name));
+  }),
 });

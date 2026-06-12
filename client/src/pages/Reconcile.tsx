@@ -107,6 +107,15 @@ export default function Reconcile() {
             rows={data.inventory}
             link={() => `/inventory`}
             linkLabel="المخزون"
+            action={
+              data.inventory.length > 0 ? (
+                <Link
+                  href={`/stocktakes/new?variants=${Array.from(new Set(data.inventory.map((r) => r.id))).join(",")}&name=${encodeURIComponent("جرد تحقّق — انحرافات التدقيق المالي")}`}
+                >
+                  <Button size="sm">📋 أنشئ جلسة جرد لهذه الأصناف</Button>
+                </Link>
+              ) : null
+            }
           />
 
           <DriftSection
@@ -130,6 +139,7 @@ function DriftSection({
   money,
   link,
   linkLabel,
+  action,
 }: {
   title: string;
   desc: string;
@@ -138,6 +148,7 @@ function DriftSection({
   money?: boolean;
   link?: (id: number) => string;
   linkLabel?: string;
+  action?: React.ReactNode;
 }) {
   const val = (s: string) => (money ? fmt(s) : s);
   return (
@@ -148,15 +159,18 @@ function DriftSection({
             <h2 className="font-semibold">{title}</h2>
             <p className="text-xs text-muted-foreground">{desc}</p>
           </div>
-          <span
-            className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
-              rows.length === 0
-                ? "bg-emerald-50 text-emerald-700"
-                : "bg-rose-50 text-rose-700"
-            }`}
-          >
-            {rows.length === 0 ? "✓ لا انحراف" : `${rows.length} انحراف`}
-          </span>
+          <div className="flex shrink-0 items-center gap-2">
+            {action}
+            <span
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
+                rows.length === 0
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-rose-50 text-rose-700"
+              }`}
+            >
+              {rows.length === 0 ? "✓ لا انحراف" : `${rows.length} انحراف`}
+            </span>
+          </div>
         </div>
         {rows.length > 0 && (
           <table className="w-full text-sm">

@@ -56,6 +56,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/products", label: "المنتجات" },
       { href: "/inventory", label: "أرصدة المخزون" },
+      { href: "/stocktakes", label: "الجرد والتسوية" },
       { href: "/inventory-movements", label: "حركات المخزون" },
       { href: "/transfers", label: "تحويلات بين الفروع" },
       { href: "/barcode-labels", label: "ملصقات الباركود" },

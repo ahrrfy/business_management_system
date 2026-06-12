@@ -51,6 +51,13 @@ import InventoryMovements from "@/pages/InventoryMovements";
 import SalesReport from "@/pages/SalesReport";
 import Reconcile from "@/pages/Reconcile";
 import Settings from "@/pages/Settings";
+import Stocktakes from "@/pages/Stocktakes";
+import StocktakeNew from "@/pages/StocktakeNew";
+import StocktakeMonitor from "@/pages/StocktakeMonitor";
+import StocktakeReview from "@/pages/StocktakeReview";
+import StocktakeReport from "@/pages/StocktakeReport";
+import StocktakeCountSheets from "@/pages/StocktakeCountSheets";
+import CountPortal from "@/pages/CountPortal";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { Redirect, Route, Switch } from "wouter";
 
@@ -89,6 +96,8 @@ export default function App() {
           <POS />
         </Protected>
       </Route>
+      {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
+      <Route path="/count/:code" component={CountPortal} />
       <Route path="/"><Shell><Dashboard /></Shell></Route>
       <Route path="/products"><Shell><Products /></Shell></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
@@ -111,6 +120,12 @@ export default function App() {
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>
       <Route path="/purchases/:id/receive"><Shell><PurchaseReceive /></Shell></Route>
       <Route path="/inventory"><Shell><Inventory /></Shell></Route>
+      <Route path="/stocktakes"><Shell><Stocktakes /></Shell></Route>
+      <Route path="/stocktakes/new"><Shell><StocktakeNew /></Shell></Route>
+      <Route path="/stocktakes/:id/review"><Shell><StocktakeReview /></Shell></Route>
+      <Route path="/stocktakes/:id/report"><Shell><StocktakeReport /></Shell></Route>
+      <Route path="/stocktakes/:id/sheets"><Shell><StocktakeCountSheets /></Shell></Route>
+      <Route path="/stocktakes/:id"><Shell><StocktakeMonitor /></Shell></Route>
       <Route path="/inventory-movements"><Shell><InventoryMovements /></Shell></Route>
       <Route path="/transfers"><Shell><Transfers /></Shell></Route>
       <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>

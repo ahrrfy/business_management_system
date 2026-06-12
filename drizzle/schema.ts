@@ -290,6 +290,8 @@ export const branchStock = mysqlTable(
     variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "cascade" }),
     branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
     quantity: int("quantity").default(0).notNull(),
+    // آخر جرد معتمد شمل هذا الصنف في هذا الفرع — يغذّي «آخر جرد» والجرد الدوري ABC.
+    lastCountedAt: timestamp("lastCountedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -1023,3 +1025,170 @@ export const auditLogs = mysqlTable(
 
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type InsertAuditLog = typeof auditLogs.$inferInsert;
+
+/* ============================ الجرد والتسوية (Stocktake) ============================ */
+
+/** جلسة جرد دورية: إنشاء (لقطة دفترية) → عدّ أعمى → مراجعة → اعتماد وتسوية ذرّية. */
+export const stocktakeSessions = mysqlTable(
+  "stocktakeSessions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    code: varchar("code", { length: 30 }).notNull().unique(),
+    name: varchar("name", { length: 255 }).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    scopeType: mysqlEnum("scopeType", ["FULL", "MOVING", "CATEGORY", "MANUAL"]).notNull(),
+    // وصف النطاق (JSON): { days?, categoryIds?, variantIds?, label }
+    scopeDetail: text("scopeDetail"),
+    status: mysqlEnum("stocktakeStatus", ["COUNTING", "REVIEW", "APPROVED", "CANCELLED"]).default("COUNTING").notNull(),
+    // جرد أعمى: بوابة العدّ لا تستلم الرصيد الدفتري إطلاقاً.
+    blind: boolean("blind").default(true).notNull(),
+    // «ضمن الحد» = pct ≤ thresholdPct و |القيمة| ≤ thresholdValue.
+    thresholdPct: decimal("thresholdPct", { precision: 5, scale: 2 }).default("5.00").notNull(),
+    thresholdValue: decimal("thresholdValue", { precision: 15, scale: 2 }).default("25000.00").notNull(),
+    // فرق واحد |قيمته| > dualThreshold ⇒ توقيعان من مستخدمَين مختلفَين.
+    dualThreshold: decimal("dualThreshold", { precision: 15, scale: 2 }).default("150000.00").notNull(),
+    directUnderThreshold: boolean("directUnderThreshold").default(true).notNull(),
+    waNotify: boolean("waNotify").default(true).notNull(),
+    dupPolicy: mysqlEnum("dupPolicy", ["VERIFY", "BLOCK"]).default("VERIFY").notNull(),
+    notes: text("notes"),
+    createdBy: int("createdBy").references(() => users.id),
+    submittedAt: timestamp("submittedAt"),
+    firstSignBy: int("firstSignBy").references(() => users.id),
+    firstSignAt: timestamp("firstSignAt"),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    cancelledBy: int("cancelledBy").references(() => users.id),
+    cancelledAt: timestamp("cancelledAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    statusIdx: index("idx_stocktake_status").on(table.status),
+    branchIdx: index("idx_stocktake_branch").on(table.branchId),
+  })
+);
+
+export type StocktakeSession = typeof stocktakeSessions.$inferSelect;
+export type InsertStocktakeSession = typeof stocktakeSessions.$inferInsert;
+
+/** تكليف عامل جرد (منطقة): رابط خارجي بـ PIN (hash) أو حساب داخلي. */
+export const stocktakeAssignments = mysqlTable(
+  "stocktakeAssignments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sessionId: bigint("sessionId", { mode: "number" }).notNull().references(() => stocktakeSessions.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 120 }).notNull(),
+    method: mysqlEnum("method", ["PIN", "USER"]).notNull(),
+    userId: int("userId").references(() => users.id),
+    pinHash: varchar("pinHash", { length: 255 }),
+    zone: varchar("zone", { length: 120 }),
+    status: mysqlEnum("assignmentStatus", ["ACTIVE", "SUBMITTED"]).default("ACTIVE").notNull(),
+    // قفل محاولات PIN الفاشلة (نمط قفل الحساب 5/15د).
+    failedPinAttempts: int("failedPinAttempts").default(0).notNull(),
+    lockedUntil: timestamp("lockedUntil"),
+    lastActivityAt: timestamp("lastActivityAt"),
+    submittedAt: timestamp("submittedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    sessionIdx: index("idx_stkassign_session").on(table.sessionId),
+  })
+);
+
+export type StocktakeAssignment = typeof stocktakeAssignments.$inferSelect;
+export type InsertStocktakeAssignment = typeof stocktakeAssignments.$inferInsert;
+
+/** أصناف الجلسة: لقطة الرصيد الدفتري والتكلفة لحظة الإنشاء (جوهر الجرد الأعمى). */
+export const stocktakeItems = mysqlTable(
+  "stocktakeItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sessionId: bigint("sessionId", { mode: "number" }).notNull().references(() => stocktakeSessions.id, { onDelete: "cascade" }),
+    assignmentId: bigint("assignmentId", { mode: "number" }).notNull().references(() => stocktakeAssignments.id),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    // الرصيد الدفتري بالوحدة الأساس لحظة بدء الجلسة — لا يصل لبوابة العدّ أبداً.
+    expectedQty: int("expectedQty").notNull(),
+    // تكلفة المتغيّر لحظة الإنشاء — تقييم الفرق يثبت عليها.
+    unitCost: decimal("unitCost", { precision: 15, scale: 2 }).notNull(),
+    // طلب إعادة العدّ: PENDING يحجب الاعتماد حتى يصل عدّ RECOUNT.
+    recountStatus: mysqlEnum("recountStatus", ["PENDING", "DONE"]),
+    recountRequestedBy: int("recountRequestedBy").references(() => users.id),
+    recountReason: varchar("recountReason", { length: 255 }),
+    recountRequestedAt: timestamp("recountRequestedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    sessionVariantUq: unique("uq_stkitem_session_variant").on(table.sessionId, table.variantId),
+    sessionIdx: index("idx_stkitem_session").on(table.sessionId),
+    assignmentIdx: index("idx_stkitem_assignment").on(table.assignmentId),
+  })
+);
+
+export type StocktakeItem = typeof stocktakeItems.$inferSelect;
+export type InsertStocktakeItem = typeof stocktakeItems.$inferInsert;
+
+/** سجل العدّات: الأول + إعادة العدّ + التحقّقي (عدّ زميل بسياسة VERIFY) — كلها تبقى موثّقة. */
+export const stocktakeCounts = mysqlTable(
+  "stocktakeCounts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sessionId: bigint("sessionId", { mode: "number" }).notNull().references(() => stocktakeSessions.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    assignmentId: bigint("assignmentId", { mode: "number" }).notNull().references(() => stocktakeAssignments.id),
+    kind: mysqlEnum("kind", ["FIRST", "RECOUNT", "VERIFY"]).notNull(),
+    // بالوحدة الأساس (التحويل من وحدات الإدخال يتم قبل الحفظ).
+    qty: int("qty").notNull(),
+    // تفصيل الإدخال متعدد الوحدات (JSON): {"كرتون":2,"قطعة":5} — للتدقيق.
+    unitBreakdown: text("unitBreakdown"),
+    countedByName: varchar("countedByName", { length: 120 }).notNull(),
+    countedByUserId: int("countedByUserId").references(() => users.id),
+    countedAt: timestamp("countedAt").defaultNow().notNull(),
+    // VERIFY مخالف للعدّ الأول ⇒ تعارض يحجب الاعتماد حتى الفصل.
+    isConflict: boolean("isConflict").default(false).notNull(),
+    resolvedBy: int("resolvedBy").references(() => users.id),
+    resolvedPick: mysqlEnum("resolvedPick", ["FIRST", "VERIFY"]),
+    resolvedAt: timestamp("resolvedAt"),
+    // idempotency لمزامنة طابور الأوفلاين — تكرار نفس الطلب لا يكرّر العدّ.
+    clientRequestId: varchar("clientRequestId", { length: 64 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    sessionVariantIdx: index("idx_stkcount_session_variant").on(table.sessionId, table.variantId),
+    assignmentIdx: index("idx_stkcount_assignment").on(table.assignmentId),
+    requestUq: unique("uq_stkcount_request").on(table.sessionId, table.clientRequestId),
+  })
+);
+
+export type StocktakeCount = typeof stocktakeCounts.$inferSelect;
+export type InsertStocktakeCount = typeof stocktakeCounts.$inferInsert;
+
+/** قرارات المراجعة: تسوية/إبقاء + سبب الفرق (تحليل الانكماش) — تُثبَّت قيمها النهائية عند الاعتماد. */
+export const stocktakeDecisions = mysqlTable(
+  "stocktakeDecisions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    sessionId: bigint("sessionId", { mode: "number" }).notNull().references(() => stocktakeSessions.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    action: mysqlEnum("action", ["ADJUST", "KEEP"]).notNull(),
+    // العدّ المصحَّح النهائي بالوحدة الأساس (يُعاد حسابه داخل معاملة الاعتماد).
+    finalQty: int("finalQty"),
+    // الفرق المُسوّى فعلياً وقيمته بتكلفة اللقطة — تُكتب عند الاعتماد.
+    diffQty: int("diffQty"),
+    value: decimal("value", { precision: 15, scale: 2 }),
+    reason: mysqlEnum("reason", ["UNSPECIFIED", "DAMAGE", "LOSS_THEFT", "ENTRY_ERROR", "PRINT_WASTE"]).default("UNSPECIFIED").notNull(),
+    note: text("note"),
+    // NULL + autoApplied=true ⇒ تسوية تلقائية ضمن الحد.
+    decidedBy: int("decidedBy").references(() => users.id),
+    autoApplied: boolean("autoApplied").default(false).notNull(),
+    decidedAt: timestamp("decidedAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    sessionVariantUq: unique("uq_stkdecision_session_variant").on(table.sessionId, table.variantId),
+    sessionIdx: index("idx_stkdecision_session").on(table.sessionId),
+  })
+);
+
+export type StocktakeDecision = typeof stocktakeDecisions.$inferSelect;
+export type InsertStocktakeDecision = typeof stocktakeDecisions.$inferInsert;
