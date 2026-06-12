@@ -11,6 +11,7 @@ import {
   receipts,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { logger } from "../logger";
 import { users } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
@@ -171,6 +172,18 @@ export const saleRouter = router({
         } catch (e: any) {
           if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
+          // لا نبتلع السبب الجذري: نُسجّله كاملاً (رسالة + كود SQL + الاستعلام) قبل
+          // إرجاع رسالة عامة للواجهة — وإلا صار تشخيص أعطال الإنتاج تخميناً (درس ١٢/٦:
+          // عمود مخطط ناقص ظهر للمستخدم كـ«تعذّر إتمام البيع» بلا أثرٍ يكشف العمود).
+          logger.error(
+            {
+              err: { message: e?.message, code: e?.code, sqlMessage: e?.sqlMessage, sql: e?.sql },
+              userId: actor.userId,
+              branchId: actor.branchId,
+              lines: input.lines.length,
+            },
+            "sale.create فشل بخطأ غير متوقّع (السبب الجذري أدناه)"
+          );
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام البيع" });
         }
       }

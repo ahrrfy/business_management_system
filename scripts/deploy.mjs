@@ -11,12 +11,13 @@
 import { execFileSync } from "node:child_process";
 
 const STEPS = [
-  { name: "1/6 جلب آخر تغييرات (git pull)", cmd: "git", args: ["pull", "--ff-only", "origin", "main"] },
-  { name: "2/6 تركيب الاعتماديات", cmd: "pnpm", args: ["install", "--frozen-lockfile"] },
-  { name: "3/6 نسخة احتياطية", cmd: "pnpm", args: ["db:backup"] },
-  { name: "4/6 تطبيق الهجرات الجديدة", cmd: "pnpm", args: ["db:migrate:safe"] },
-  { name: "5/6 بناء الإنتاج", cmd: "pnpm", args: ["build"] },
-  { name: "6/6 إعادة تشغيل الخادم (PM2)", cmd: "pm2", args: ["reload", "erp-server"] },
+  { name: "1/7 جلب آخر تغييرات (git pull)", cmd: "git", args: ["pull", "--ff-only", "origin", "main"] },
+  { name: "2/7 تركيب الاعتماديات", cmd: "pnpm", args: ["install", "--frozen-lockfile"] },
+  { name: "3/7 نسخة احتياطية", cmd: "pnpm", args: ["db:backup"] },
+  { name: "4/7 تطبيق الهجرات الجديدة", cmd: "pnpm", args: ["db:migrate:safe"] },
+  { name: "5/7 تحقّق مطابقة المخطط", cmd: "pnpm", args: ["db:verify"] },
+  { name: "6/7 بناء الإنتاج", cmd: "pnpm", args: ["build"] },
+  { name: "7/7 إعادة تشغيل الخادم (PM2)", cmd: "pm2", args: ["reload", "erp-server"] },
 ];
 
 console.log("🚀 نشر إنتاجي — بداية");
