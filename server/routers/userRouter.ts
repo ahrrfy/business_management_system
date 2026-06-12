@@ -1,43 +1,48 @@
 import { PASSWORD_MIN_LEN } from "@shared/const";
+import { ALL_ROLES } from "@shared/permissions";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
+  checkEmailAvailable,
   createUser,
+  generateStrongPassword,
   getUser,
   listUsers,
   resetUserPassword,
   setUserActive,
   updateUser,
 } from "../services/userService";
-import { adminProcedure, router } from "../trpc";
+import { adminProcedure, protectedProcedure, router } from "../trpc";
 
-const ROLE = z.enum(["user", "admin", "manager", "cashier", "warehouse"]);
+const ROLE = z.enum(ALL_ROLES as [string, ...string[]]);
 const ACCESS = z.enum(["FULL", "READ", "NONE"]);
 const PERM_OVERRIDE = z.record(z.string(), ACCESS).nullish();
 
-/**
- * إدارة المستخدمين — **للمدير فقط (adminProcedure)**:
- * list/get/create/update/setActive/resetPassword. مع حواجز آخر مدير والحماية الذاتية
- * في الخدمة. لا يُعاد passwordHash في أيّ مخرَج. كل تغيير يُكتب في سجلّ التدقيق.
- */
 export const userRouter = router({
   list: adminProcedure
     .input(
-      z
-        .object({
-          q: z.string().optional(),
-          role: ROLE.optional(),
-          includeInactive: z.boolean().default(false),
-          limit: z.number().int().positive().max(500).default(50),
-          offset: z.number().int().min(0).default(0),
-        })
-        .optional()
+      z.object({
+        q: z.string().optional(),
+        role: z.string().optional(),
+        includeInactive: z.boolean().default(false),
+        limit: z.number().int().positive().max(500).default(50),
+        offset: z.number().int().min(0).default(0),
+      }).optional()
     )
     .query(({ input }) => listUsers(input ?? {})),
 
   get: adminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
     .query(({ input }) => getUser(input.userId)),
+
+  /** فحص توفّر البريد لحظياً (onBlur في الواجهة). */
+  checkEmail: adminProcedure
+    .input(z.object({ email: z.string().email(), excludeUserId: z.number().int().positive().optional() }))
+    .query(({ input }) => checkEmailAvailable(input.email, input.excludeUserId)),
+
+  /** توليد كلمة مرور قوية من الخادم (أكثر أماناً من العميل). */
+  generatePassword: adminProcedure
+    .query(() => ({ password: generateStrongPassword() })),
 
   create: adminProcedure
     .input(
@@ -51,6 +56,7 @@ export const userRouter = router({
         jobTitle: z.string().max(120).nullish(),
         hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
         permissionsOverride: PERM_OVERRIDE,
+        mustChangePassword: z.boolean().default(true),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -59,7 +65,7 @@ export const userRouter = router({
         action: "user.create",
         entityType: "user",
         entityId: res.userId,
-        newValue: { email: input.email, role: input.role, branchId: input.branchId ?? null, jobTitle: input.jobTitle ?? null },
+        newValue: { email: input.email, role: input.role, branchId: input.branchId ?? null, mustChangePassword: input.mustChangePassword },
       });
       return res;
     }),
@@ -84,13 +90,7 @@ export const userRouter = router({
         action: "user.update",
         entityType: "user",
         entityId: input.userId,
-        newValue: {
-          name: input.name,
-          email: input.email,
-          role: input.role,
-          branchId: input.branchId,
-          jobTitle: input.jobTitle,
-        },
+        newValue: { name: input.name, email: input.email, role: input.role, branchId: input.branchId },
       });
       return res;
     }),
@@ -99,8 +99,7 @@ export const userRouter = router({
     .input(z.object({ userId: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const res = await setUserActive(input.userId, input.isActive, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
+        userId: ctx.user.id, branchId: ctx.user.branchId ?? 1,
       });
       await logAudit(ctx, {
         action: input.isActive ? "user.activate" : "user.deactivate",
@@ -116,19 +115,37 @@ export const userRouter = router({
       z.object({
         userId: z.number().int().positive(),
         newPassword: z.string().min(PASSWORD_MIN_LEN).max(128),
+        mustChangePassword: z.boolean().default(true),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await resetUserPassword(input.userId, input.newPassword, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
-      });
-      // لا نُسجّل كلمة المرور إطلاقاً — الحدث فقط.
+      const res = await resetUserPassword(
+        input.userId,
+        input.newPassword,
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 },
+        { mustChange: input.mustChangePassword }
+      );
       await logAudit(ctx, {
         action: "user.resetPassword",
         entityType: "user",
         entityId: input.userId,
+        newValue: { mustChangePassword: input.mustChangePassword },
       });
+      return res;
+    }),
+
+  /** تغيير كلمة المرور بواسطة المستخدم نفسه (من شاشة «حسابي»). */
+  changePassword: protectedProcedure
+    .input(
+      z.object({
+        oldPassword: z.string().min(1),
+        newPassword: z.string().min(PASSWORD_MIN_LEN).max(128),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { changePassword } = await import("../services/userService");
+      const res = await changePassword(ctx.user.id, input.oldPassword, input.newPassword);
+      await logAudit(ctx, { action: "user.changePassword", entityType: "user", entityId: ctx.user.id });
       return res;
     }),
 });

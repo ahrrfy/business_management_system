@@ -43,13 +43,21 @@ export const users = mysqlTable(
     passwordHash: varchar("passwordHash", { length: 255 }),
     phone: varchar("phone", { length: 20 }),
     loginMethod: varchar("loginMethod", { length: 64 }).default("local"),
-    role: mysqlEnum("role", ["user", "admin", "manager", "cashier", "warehouse"]).default("user").notNull(),
+    // الأدوار العشرة — إضافة قيم enum آمنة بلا فقد بيانات (MySQL INSTANT).
+    role: mysqlEnum("role", [
+      "user", "admin", "manager", "cashier", "warehouse",
+      "accountant", "print_operator", "sales_rep", "purchasing", "auditor",
+    ]).default("user").notNull(),
     branchId: bigint("branchId", { mode: "number" }),
     isActive: boolean("isActive").default(true),
     // v3-add-screens: HR + جدول صلاحيات مخصّص. permissionsOverride: JSON ⇒ NULL=اتّبع قالب الدور.
     jobTitle: varchar("jobTitle", { length: 120 }),
     hiredAt: date("hiredAt"),
     permissionsOverride: json("permissionsOverride"),
+    // إلزام تغيير كلمة المرور عند أول دخول (مؤقتة صادرة من مدير).
+    mustChangePassword: boolean("mustChangePassword").default(false).notNull(),
+    // صلاحية الكلمة المؤقتة — null يعني لا انتهاء (كلمة مرور عادية).
+    tempPasswordExpiresAt: timestamp("tempPasswordExpiresAt"),
     // إبطال الجلسات: أي JWT أُصدر قبل هذا الوقت يُرفض (تغيير كلمة مرور/طرد/تغيير دور).
     sessionsValidFrom: timestamp("sessionsValidFrom").defaultNow().notNull(),
     // قفل الحساب ضدّ التخمين (brute-force) — عدّاد الإخفاقات وزمن القفل المؤقّت.

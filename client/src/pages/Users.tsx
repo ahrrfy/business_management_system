@@ -6,12 +6,18 @@ import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 
 export const ROLE_OPTIONS = [
-  { value: "admin", label: "مدير النظام" },
-  { value: "manager", label: "مدير" },
-  { value: "cashier", label: "كاشير" },
-  { value: "warehouse", label: "مخزن" },
-  { value: "user", label: "مستخدم" },
+  { value: "admin",          label: "مدير النظام" },
+  { value: "manager",        label: "مدير فرع" },
+  { value: "accountant",     label: "محاسب" },
+  { value: "cashier",        label: "كاشير" },
+  { value: "warehouse",      label: "أمين مخزن" },
+  { value: "purchasing",     label: "مسؤول مشتريات" },
+  { value: "print_operator", label: "فني مطبعة" },
+  { value: "sales_rep",      label: "مندوب مبيعات" },
+  { value: "auditor",        label: "مدقّق" },
+  { value: "user",           label: "مستخدم عام" },
 ] as const;
+
 export const ROLE_LABEL: Record<string, string> = Object.fromEntries(
   ROLE_OPTIONS.map((o) => [o.value, o.label]),
 );
@@ -26,10 +32,31 @@ function fmtDate(d: string | Date | null | undefined): string {
   return t.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit" });
 }
 
+/** ملصق لوني للدور */
+function RoleBadge({ role }: { role: string }) {
+  const colors: Record<string, string> = {
+    admin:          "bg-red-100 text-red-700",
+    manager:        "bg-purple-100 text-purple-700",
+    accountant:     "bg-blue-100 text-blue-700",
+    cashier:        "bg-emerald-100 text-emerald-700",
+    warehouse:      "bg-amber-100 text-amber-700",
+    purchasing:     "bg-orange-100 text-orange-700",
+    print_operator: "bg-cyan-100 text-cyan-700",
+    sales_rep:      "bg-teal-100 text-teal-700",
+    auditor:        "bg-slate-100 text-slate-700",
+    user:           "bg-gray-100 text-gray-600",
+  };
+  return (
+    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${colors[role] ?? "bg-gray-100 text-gray-600"}`}>
+      {ROLE_LABEL[role] ?? role}
+    </span>
+  );
+}
+
 export default function Users() {
   const utils = trpc.useUtils();
   const [q, setQ] = useState("");
-  const [role, setRole] = useState<"" | (typeof ROLE_OPTIONS)[number]["value"]>("");
+  const [role, setRole] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
   const [page, setPage] = useState(0);
   const limit = 50;
@@ -101,14 +128,15 @@ export default function Users() {
                 <select
                   className={selectCls}
                   value={role}
-                  onChange={(e) => { setRole(e.target.value as any); setPage(0); }}
+                  onChange={(e) => { setRole(e.target.value); setPage(0); }}
                   aria-label="الدور"
                 >
                   <option value="">كل الأدوار</option>
                   {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                 </select>
                 <label className="flex items-center gap-2 h-8 text-sm">
-                  <input type="checkbox" className="size-4" checked={includeInactive} onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }} />
+                  <input type="checkbox" className="size-4" checked={includeInactive}
+                    onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }} />
                   <span className="text-muted-foreground">عرض المعطّلين</span>
                 </label>
               </>
@@ -133,11 +161,15 @@ export default function Users() {
               {rows.map((u) => {
                 const id = Number(u.id);
                 const isActive = !!u.isActive;
+                const mustChange = !!(u as any).mustChangePassword;
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">{u.name ?? "—"}</td>
+                    <td className="p-2 font-medium">
+                      {u.name ?? "—"}
+                      {mustChange && <span className="mr-1 text-[10px] text-amber-600" title="إلزام تغيير كلمة المرور">⚠️</span>}
+                    </td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{u.email ?? "—"}</td>
-                    <td className="p-2 text-xs">{ROLE_LABEL[u.role] ?? u.role}</td>
+                    <td className="p-2"><RoleBadge role={u.role} /></td>
                     <td className="p-2 text-xs">{u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{fmtDate(u.lastSignedIn)}</td>
                     <td className="p-2 text-center">
@@ -146,11 +178,9 @@ export default function Users() {
                       </span>
                     </td>
                     <td className="p-2 text-center">
-                      {/* ٣ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
                         actions={[
                           { key: "edit", label: "تعديل", href: `/users/${id}/edit` },
-                          // إعادة التعيين تتم من شاشة التعديل نفسها (قسم كلمة المرور فيها)
                           { key: "reset", label: "إعادة تعيين كلمة المرور", href: `/users/${id}/edit` },
                           {
                             key: "toggle",
@@ -166,7 +196,7 @@ export default function Users() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا مستخدمين مطابقين. أضف مستخدماً جديداً أو غيّر الفلاتر.</td></tr>
+                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا مستخدمين مطابقين.</td></tr>
               )}
             </tbody>
           </table>
@@ -175,13 +205,9 @@ export default function Users() {
 
       {pages > 1 && (
         <div className="flex items-center justify-between text-sm">
-          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
-            ← السابق
-          </Button>
+          <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>← السابق</Button>
           <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
-          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>
-            التالي →
-          </Button>
+          <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
         </div>
       )}
     </div>

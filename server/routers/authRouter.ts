@@ -17,7 +17,8 @@ import { changePassword as changePasswordSvc, createUser } from "../services/use
 import { withTx } from "../services/tx";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "../trpc";
 
-const ROLES = ["user", "admin", "manager", "cashier", "warehouse"] as const;
+// للتوافق الخلفي — لم يعد مستخدماً بعد أن أصبح ALL_ROLES مصدر الحقيقة
+const ROLES = ["user", "admin", "manager", "cashier", "warehouse"] as const; // kept for reference only
 
 /** قفل الحساب ضدّ التخمين: ٥ محاولات فاشلة ⇒ قفل ١٥ دقيقة. */
 const LOCK_THRESHOLD = 5;
@@ -90,6 +91,21 @@ export const authRouter = router({
         throw new TRPCError({ code: "UNAUTHORIZED", message: "البريد أو كلمة المرور غير صحيحة" });
       }
 
+      // إذا انتهت صلاحية كلمة المرور المؤقتة → ارفض الدخول برسالة صريحة
+      if (user.mustChangePassword && user.tempPasswordExpiresAt) {
+        const expired = new Date(user.tempPasswordExpiresAt).getTime() < Date.now();
+        if (expired) {
+          await logAudit(
+            { user, req: ctx.req },
+            { action: "auth.login.expired_temp", entityType: "user", entityId: user.id }
+          );
+          throw new TRPCError({
+            code: "UNAUTHORIZED",
+            message: "انتهت صلاحية كلمة المرور المؤقتة — اطلب من المدير إعادة تعيينها.",
+          });
+        }
+      }
+
       const expiry = input.remember ? SESSION_REMEMBER_MAX_MS : SESSION_DEFAULT_MS;
       const token = await signSession(user.id, expiry);
       ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: expiry });
@@ -106,7 +122,13 @@ export const authRouter = router({
         { action: "auth.login", entityType: "user", entityId: user.id }
       );
 
-      return { id: user.id, name: user.name, email: user.email, role: user.role };
+      return {
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        mustChangePassword: user.mustChangePassword ?? false,
+      };
     }),
 
   logout: publicProcedure.mutation(async ({ ctx }) => {

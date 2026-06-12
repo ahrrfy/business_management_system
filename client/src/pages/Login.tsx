@@ -14,11 +14,16 @@ export default function Login() {
   const [error, setError] = useState("");
 
   const login = trpc.auth.login.useMutation({
-    onSuccess: async () => {
+    onSuccess: async (data) => {
       // refetch (not invalidate): force-await the fresh session so the route
       // guard sees the authenticated user immediately, avoiding a redirect race.
       await utils.auth.me.refetch();
-      navigate("/");
+      // كلمة مرور مؤقتة تستوجب التغيير الفوري → وجّه لصفحة الحساب
+      if (data.mustChangePassword) {
+        navigate("/account?mustChange=1");
+      } else {
+        navigate("/");
+      }
     },
     onError: (e) => setError(e.message),
   });
