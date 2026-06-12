@@ -1,10 +1,9 @@
 // بوّابة هجرة آمنة للإنتاج: ترفض تطبيق تغييرات المخطّط ما لم توجد نسخة احتياطية «طازجة».
-// تحلّ محلّ `pnpm db:push` العاري في الإنتاج — push على قاعدة حيّة بلا نسخة = مقامرة بالبيانات.
+// تستخدم `drizzle-kit migrate` (لا تفاعلية) بدلاً من `push` (تفاعلية تتوقف عند enum/destrucive).
 //
 // الاستخدام:  pnpm db:migrate:safe
 // الشروط:    نسخة في BACKUP_DIR عمرها < ١٠ دقائق وحجمها > 2KB (وإلا تتوقّف بتعليمات واضحة).
-// ملاحظة:    عند تغييرات هدّامة يعرض drizzle-kit سؤال تأكيد تفاعلياً ⇒ نفّذها من جلسة SSH
-//            تفاعلية لا من cron/CI (بلا TTY يفشل السؤال بأمان — البوّابة لا تُطبّق شيئاً).
+// سير العمل: pnpm db:generate (محلّي) → commit → git pull (VPS) → pnpm db:backup && pnpm db:migrate:safe
 import "dotenv/config";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -39,17 +38,14 @@ if (!newest || ageMin > MAX_AGE_MIN || newest.size < MIN_SIZE) {
 }
 
 console.log(`✓ بوّابة الهجرة: نسخة طازجة موجودة (${newest.name}، عمرها ${ageMin.toFixed(1)} دقيقة).`);
-if (!process.stdin.isTTY) {
-  console.log("⚠ لا جلسة تفاعلية (TTY): إن احتاج drizzle-kit تأكيداً لتغيير هدّام فسيفشل بأمان — أعد التنفيذ من SSH تفاعلي.");
-}
-console.log("→ تطبيق المخطّط (drizzle-kit push)…");
+console.log("→ تطبيق ملفات الهجرة (drizzle-kit migrate — لا تفاعلي)…");
 try {
-  execFileSync("pnpm", ["exec", "drizzle-kit", "push"], {
+  execFileSync("pnpm", ["exec", "drizzle-kit", "migrate"], {
     stdio: "inherit",
     shell: process.platform === "win32",
   });
-  console.log("✓ طُبّق المخطّط بنجاح.");
+  console.log("✓ طُبّقت الهجرات بنجاح.");
 } catch {
-  console.error("✗ فشل تطبيق المخطّط — القاعدة لم تُمسّ أو فشلت جزئياً؛ راجع الناتج أعلاه. النسخة الاحتياطية متوفّرة للاستعادة.");
+  console.error("✗ فشل تطبيق الهجرات — القاعدة لم تُمسّ أو فشلت جزئياً؛ راجع الناتج أعلاه. النسخة الاحتياطية متوفّرة للاستعادة.");
   process.exit(1);
 }
