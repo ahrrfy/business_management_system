@@ -144,6 +144,19 @@ async function startServer() {
     })
   );
 
+  // حدّ صارم على دخول بوابة العدّ الخارجية (تخمين PIN) — فوق قفل المحاولات في القاعدة.
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.COUNT_RATE_LIMIT_MAX ?? 10),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("count.auth"),
+      message: { error: "محاولات دخول كثيرة لبوابة العدّ، انتظر ١٥ دقيقة." },
+    })
+  );
+
   // حماية CSRF (طبقة دفاع ثانية فوق sameSite:"strict").
   app.use("/api/trpc", csrfGuard);
 

@@ -408,6 +408,9 @@ function MetricsBar() {
   const shift = trpc.shifts.current.useQuery({ branchId: myBranch });
   // مقاييس لوحة التحكم: مخزون منخفض + ذمم متأخّرة (الخلفية تُطبّق عزل الفرع).
   const metrics = trpc.reports.dashboardMetrics.useQuery({ branchId: branchScope });
+  // جلسات جرد بانتظار المراجعة — للأدوار المخوّلة فقط (الخادم warehouseProcedure).
+  const canSeeStocktakes = role === "admin" || role === "manager" || role === "warehouse";
+  const stk = trpc.stocktakes.stats.useQuery(undefined, { enabled: canSeeStocktakes });
 
   const list = sales.data ?? [];
   // التوقيت المحلّي (en-CA = YYYY-MM-DD محلّياً) — لا UTC حتى لا تنتقل فواتير المساء لليوم التالي.
@@ -481,6 +484,21 @@ function MetricsBar() {
       alertC: "oklch(0.52 0.22 25)",
       href: "/ar-aging",
     },
+    // بطاقة الجرد: تظهر للأدوار المخوّلة فقط، وتتحوّل تنبيهاً عند وجود جلسات بانتظار المراجعة.
+    ...(canSeeStocktakes
+      ? [
+          {
+            label: "جرد بانتظار المراجعة",
+            value: stk.isLoading ? "..." : fmt(stk.data?.review ?? 0),
+            unit: stk.data?.counting ? `${fmt(stk.data.counting)} قيد العدّ` : "جلسة",
+            ico: <WarnIco color="oklch(0.55 0.2 264)" />,
+            iBg: "oklch(0.55 0.2 264 / 0.12)",
+            isAlert: (stk.data?.review ?? 0) > 0,
+            alertC: "oklch(0.5 0.2 264)",
+            href: "/stocktakes",
+          },
+        ]
+      : []),
   ];
 
   return (

@@ -101,6 +101,8 @@ export const inventoryRouter = router({
           minStock: productVariants.minStock,
           reorderPoint: productVariants.reorderPoint,
           productName: products.name,
+          // آخر جرد معتمد شمل الصنف — يبني الثقة بالأرقام ويغذّي الجرد الدوري ABC.
+          lastCountedAt: branchStock.lastCountedAt,
         })
         .from(branchStock)
         .innerJoin(productVariants, eq(productVariants.id, branchStock.variantId))

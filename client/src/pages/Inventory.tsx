@@ -30,6 +30,8 @@ export default function Inventory() {
   const role = me.data?.role ?? "";
   const canPickBranch = role === "admin" || role === "manager";
   const canAdjust = role === "admin" || role === "manager" || role === "warehouse";
+  // التسوية المضمّنة سطر-بسطر للمدير فقط — المسار المعتمد للجميع صار جلسة جرد موثّقة.
+  const canInlineAdjust = role === "admin" || role === "manager";
   const myBranch = me.data?.branchId ?? 1;
 
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
@@ -164,6 +166,7 @@ export default function Inventory() {
                 <th className="p-2 text-center">الرصيد</th>
                 <th className="p-2 text-center">الحد الأدنى</th>
                 <th className="p-2 text-center">الحالة</th>
+                <th className="p-2 text-center">آخر جرد</th>
                 {/* العمود لكل الأدوار الآن (تحويل/حركات روابط قراءة)، والتسوية تبقى لمن يملكها */}
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -196,8 +199,11 @@ export default function Inventory() {
                         {r.isLow ? "منخفض" : "متوفّر"}
                       </span>
                     </td>
+                    <td className="p-2 text-center text-xs text-muted-foreground" title="آخر جرد معتمد شمل هذا الصنف">
+                      {r.lastCountedAt ? new Date(r.lastCountedAt).toLocaleDateString("ar-IQ-u-nu-latn") : "لم يُجرَد"}
+                    </td>
                     <td className="p-2 text-center">
-                      {canAdjust && isEditing ? (
+                      {canInlineAdjust && isEditing ? (
                         <div className="flex flex-col gap-1 items-stretch min-w-[180px]">
                           <Input
                             value={notes}
@@ -220,9 +226,15 @@ export default function Inventory() {
                           mode="menu"
                           actions={[
                             {
-                              key: "adjust",
-                              label: "تسوية",
+                              key: "stocktake",
+                              label: "جلسة جرد للصنف",
                               hidden: !canAdjust,
+                              href: `/stocktakes/new?variants=${r.variantId}&name=${encodeURIComponent(`جرد تحقّق — ${r.productName}`)}`,
+                            },
+                            {
+                              key: "adjust",
+                              label: "تسوية مباشرة (مدير)",
+                              hidden: !canInlineAdjust,
                               onSelect: () => startAdjust(r),
                             },
                             { key: "transfer", label: "تحويل بين الفروع", href: "/transfers" },
@@ -240,7 +252,7 @@ export default function Inventory() {
                 );
               })}
               {!onHand.isLoading && rows.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">لا أصناف برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء.</td></tr>
+                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أصناف برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء.</td></tr>
               )}
             </tbody>
           </table>

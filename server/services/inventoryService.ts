@@ -159,6 +159,9 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
   const currentQty = rows[0]?.quantity ?? 0;
   const delta = a.targetQuantity - currentQty;
 
+  // علامة الإشارة «(فرق ±D)» تُلحق دائماً — حتى مع ملاحظات مخصّصة — لأن quantity تُخزَّن
+  // مطلقة والاتجاه يُسترجَع منها (مثلاً تصحيح netAfter في خدمة الجرد). لا تحذفها.
+  const signMarker = `(فرق ${delta >= 0 ? "+" : ""}${delta})`;
   const res = await tx.insert(inventoryMovements).values({
     variantId: a.variantId,
     branchId: a.branchId,
@@ -166,7 +169,9 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
     quantity: Math.abs(delta),
     referenceType: a.referenceType ?? "ADJUST",
     referenceId: a.referenceId,
-    notes: a.notes ?? `تسوية: من ${currentQty} إلى ${a.targetQuantity} (فرق ${delta >= 0 ? "+" : ""}${delta})`,
+    notes: a.notes
+      ? `${a.notes} — ${signMarker}`
+      : `تسوية: من ${currentQty} إلى ${a.targetQuantity} ${signMarker}`,
     createdBy: a.createdBy,
   });
   await tx
