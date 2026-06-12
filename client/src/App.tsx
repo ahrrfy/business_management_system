@@ -35,6 +35,7 @@ import QuotationNew from "@/pages/QuotationNew";
 import QuotationDetail from "@/pages/QuotationDetail";
 import Returns from "@/pages/Returns";
 import SalesReturnNew from "@/pages/SalesReturnNew";
+import SalesReturns from "@/pages/SalesReturns";
 import PurchaseReturnNew from "@/pages/PurchaseReturnNew";
 import PurchaseReturns from "@/pages/PurchaseReturns";
 import Transfers from "@/pages/Transfers";
@@ -105,6 +106,7 @@ export default function App() {
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
       <Route path="/sales-returns/new"><Shell><SalesReturnNew /></Shell></Route>
+      <Route path="/sales-returns"><Shell><SalesReturns /></Shell></Route>
       <Route path="/purchase-returns/new"><Shell><PurchaseReturnNew /></Shell></Route>
       <Route path="/purchase-returns"><Shell><PurchaseReturns /></Shell></Route>
       <Route path="/purchases"><Shell><Purchases /></Shell></Route>

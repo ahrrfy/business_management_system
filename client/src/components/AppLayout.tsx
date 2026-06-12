@@ -27,6 +27,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/quotations/new", label: "عرض سعر جديد" },
       { href: "/returns", label: "المرتجعات" },
       { href: "/sales-returns/new", label: "مرتجع بيع جديد" },
+      { href: "/sales-returns", label: "سجلّ مرتجعات البيع" },
     ],
   },
   {
