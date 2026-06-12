@@ -6,7 +6,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { confirm } from "@/lib/confirm";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, printDoc, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
+import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printDoc, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { parseScan } from "@/lib/scanRouter";
@@ -659,6 +659,20 @@ export default function POS() {
     getServerBridgeStatus().then(setBridge).catch(() => { /* تجاهل */ });
   }, []);
 
+  // ربط تلقائي صامت بالطابعة الافتراضية: إن سبق ربطها (إذن WebUSB محفوظ للأصل) يُعاد
+  // الربط بلا نافذة اختيار عند فتح الكاشير، وكذلك عند توصيلها لاحقاً (حدث connect).
+  useEffect(() => {
+    if (!isWebUsbSupported()) return;
+    tryReconnectPrinter().then((ok) => { if (ok) setPrinterReady(true); }).catch(() => { /* تجاهل */ });
+    const usb = (navigator as unknown as { usb?: EventTarget }).usb;
+    if (!usb) return;
+    const onConnect = () => {
+      tryReconnectPrinter().then((ok) => { if (ok) setPrinterReady(true); }).catch(() => { /* تجاهل */ });
+    };
+    usb.addEventListener("connect", onConnect);
+    return () => usb.removeEventListener("connect", onConnect);
+  }, []);
+
   const testServerPrint = async () => {
     const r = await serverPrintTest();
     setMessage(r.ok
@@ -990,7 +1004,7 @@ function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results,
 
       {/* Printer (WebUSB) */}
       {isWebUsbSupported() && (
-        <button onClick={onConnectPrinter} title={printerReady ? "طابعة حرارية مربوطة" : "اربط طابعة حرارية"}
+        <button onClick={onConnectPrinter} title={printerReady ? "الطابعة الافتراضية مربوطة (تلقائياً) — اضغط لتبديلها" : "اربط طابعة حرارية (تُربط تلقائياً بعدها)"}
           style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12, color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>
           {printerReady ? "🖨️✓" : "🖨️"}
         </button>

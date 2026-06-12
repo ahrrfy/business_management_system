@@ -6,7 +6,7 @@ import { receiptToRaster } from "./receiptRaster";
 import { printBrowserReceipt, type ReceiptBrowserData } from "./printTemplates";
 
 export type { PrintDoc, ReceiptBrowserData };
-export { isPaired, isWebUsbSupported, pairPrinter } from "./thermal";
+export { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter } from "./thermal";
 export {
   isServerBridgeEnabled, getServerBridgeStatus, serverPrintTest, sendRawToServer,
 } from "./serverBridge";
