@@ -273,7 +273,7 @@ export async function createStocktakeSession(
       return await withTx(async (tx) => createSessionInTx(tx, input, actor));
     } catch (e: unknown) {
       const code = (e as { code?: string })?.code;
-      if (code === "ER_DUP_ENTRY" && attempt === 0) continue; // سباق على رمز الجلسة ⇒ محاولة ثانية
+      if ((code === "ER_DUP_ENTRY" || code === "ER_LOCK_DEADLOCK") && attempt === 0) continue; // سباق على رمز الجلسة أو deadlock ⇒ محاولة ثانية
       throw e;
     }
   }
