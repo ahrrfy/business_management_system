@@ -1,0 +1,296 @@
+/* ===================================================================
+   شاشة قارئ الأسعار (الكشك) — تنسيقات معزولة بالكامل تحت .kioskpc-root.
+   متغيّرات الرموز موضوعة على الجذر (لا :root) فلا تتسرّب لبقية التطبيق،
+   وكل المُحدِّدات متداخلة تحت .kioskpc-root فلا تصطدم بأسماء أصناف عامة.
+   منقولة بأمانة عن نموذج Claude Design (1920×1080، RTL، Cairo، أزرق النظام).
+   =================================================================== */
+
+@keyframes kpc-fadein { from { opacity: 0; } to { opacity: 1; } }
+@keyframes kpc-pop {
+  from { opacity: 0; transform: scale(0.9) translateY(14px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes kpc-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+
+.kioskpc-root {
+  /* ===== رموز النظام (فاتح) ===== */
+  --bg: oklch(0.985 0.002 247.858);
+  --fg: oklch(0.235 0.015 65);
+  --card: #ffffff;
+  --muted: oklch(0.962 0.004 247.858);
+  --muted-fg: oklch(0.552 0.016 285.938);
+  --border: oklch(0.922 0.004 247.858);
+  --success: oklch(0.50 0.13 155);
+  --brand: #3f46d6;
+  --brand-weak: color-mix(in srgb, var(--brand) 12%, transparent);
+  --brand-soft: color-mix(in srgb, var(--brand) 16%, transparent);
+  --success-soft: color-mix(in srgb, var(--success) 16%, transparent);
+  --qr-fg: oklch(0.235 0.015 65);
+  --shadow-lg: 0 40px 90px -38px rgba(20, 24, 50, 0.42);
+  --shadow-md: 0 24px 50px -28px rgba(20, 24, 50, 0.30);
+
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: #07090f;
+  font-family: "Cairo", system-ui, sans-serif;
+  direction: rtl;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  /* ===== مسرح التحجيم ===== */
+  .kpc-canvas {
+    position: absolute; top: 50%; left: 50%;
+    width: 1920px; height: 1080px;
+    transform: translate(-50%, -50%);
+    transform-origin: center center;
+  }
+
+  .kiosk {
+    width: 1920px; height: 1080px;
+    background: var(--bg); color: var(--fg);
+    display: flex; flex-direction: column;
+    position: relative; overflow: hidden;
+  }
+
+  /* ===== الترويسة ===== */
+  .kiosk-header {
+    height: 132px; flex: 0 0 132px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 64px; border-bottom: 1px solid var(--border);
+  }
+  .logo { display: flex; align-items: center; gap: 20px; }
+  .logo-mark {
+    width: 74px; height: 74px; border-radius: 18px;
+    background: linear-gradient(150deg, var(--brand), color-mix(in srgb, var(--brand) 60%, #000 22%));
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; box-shadow: var(--shadow-md);
+  }
+  .logo-mark span { font-weight: 900; font-size: 30px; letter-spacing: -1px; }
+  .logo-text { display: flex; flex-direction: column; line-height: 1.18; }
+  .logo-text strong { font-size: 34px; font-weight: 800; }
+  .logo-text span { font-size: 22px; color: var(--muted-fg); font-weight: 500; }
+  .header-right { display: flex; align-items: center; gap: 18px; }
+  .kiosk-tag {
+    font-size: 22px; font-weight: 700; color: var(--muted-fg);
+    background: var(--muted); padding: 10px 22px; border-radius: 999px; letter-spacing: 1px;
+  }
+  .branch-chip {
+    display: inline-flex; align-items: center; gap: 12px;
+    font-size: 24px; font-weight: 700; color: var(--fg);
+    border: 1px solid var(--border); background: var(--card);
+    padding: 10px 22px; border-radius: 999px;
+  }
+  .branch-chip .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--brand); }
+
+  /* ===== البنر ===== */
+  .banner { flex: 1; position: relative; padding: 52px 64px 70px; }
+  .slides { position: absolute; inset: 52px 64px 70px; }
+  .slide {
+    position: absolute; inset: 0;
+    display: flex; gap: 64px; align-items: center;
+    opacity: 0; transform: scale(0.985); pointer-events: none;
+    transition: opacity 0.85s ease, transform 0.85s ease;
+  }
+  .slide.is-active { opacity: 1; transform: scale(1); }
+  .slide-info { order: 1; flex: 1 1 0; display: flex; flex-direction: column; gap: 26px; min-width: 0; }
+  .slide-media {
+    order: 2; flex: 1.08 1 0; height: 100%;
+    border-radius: 30px; overflow: hidden;
+    background: var(--muted);
+    border: 1px solid var(--border); box-shadow: var(--shadow-lg);
+  }
+
+  .brand-chip {
+    align-self: flex-start;
+    font-size: 24px; font-weight: 700; color: var(--brand);
+    background: var(--brand-weak); padding: 10px 22px; border-radius: 999px;
+  }
+  .prod-name {
+    font-size: 70px; font-weight: 800; line-height: 1.12; letter-spacing: -1px;
+    text-wrap: balance;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .price-wrap { margin-top: 14px; }
+  .price-label { font-size: 28px; font-weight: 600; color: var(--muted-fg); margin-bottom: 4px; }
+  .price-row { display: flex; align-items: baseline; gap: 16px; }
+  .price-num {
+    font-size: calc(152px * var(--ps, 1)); font-weight: 800; line-height: 0.95;
+    letter-spacing: -3px; font-variant-numeric: tabular-nums;
+  }
+  .price-cur { font-size: calc(58px * var(--ps, 1)); font-weight: 800; color: var(--brand); }
+  .price-unit { font-size: 26px; color: var(--muted-fg); margin-top: 8px; }
+  .price-none { font-size: 40px; font-weight: 700; color: var(--muted-fg); }
+
+  .banner-progress {
+    position: absolute; left: 64px; right: 64px; bottom: 18px;
+    display: flex; align-items: center; gap: 22px;
+  }
+  .banner-progress .counter { font-size: 24px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+  .banner-progress .counter b { color: var(--fg); font-weight: 800; }
+  .banner-progress .track { flex: 1; height: 6px; background: var(--muted); border-radius: 999px; overflow: hidden; }
+  .banner-progress .fill {
+    display: block; height: 100%; width: 100%; background: var(--brand); transform-origin: right center;
+    animation: kpc-grow linear forwards;
+  }
+
+  /* صورة المنتج / خانة بديلة */
+  .kpc-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .kpc-ph {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    color: var(--brand); background: var(--brand-weak);
+  }
+  .kpc-ph .kpc-ph-cat { font-size: 34px; font-weight: 800; }
+  .kpc-ph .kpc-ph-sub { font-size: 22px; color: var(--muted-fg); }
+
+  /* ===== التذييل ===== */
+  .kiosk-footer {
+    height: 168px; flex: 0 0 168px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 64px; border-top: 1px solid var(--border);
+    background: color-mix(in srgb, var(--muted) 55%, var(--bg));
+  }
+  .instruction { display: flex; align-items: center; gap: 26px; }
+  .scan-badge {
+    width: 96px; height: 96px; border-radius: 24px;
+    background: var(--brand-soft); color: var(--brand);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .instruction-text { display: flex; flex-direction: column; line-height: 1.25; }
+  .instruction-text strong { font-size: 40px; font-weight: 800; }
+  .instruction-text span { font-size: 27px; color: var(--muted-fg); font-weight: 500; }
+  .qr-box { display: flex; align-items: center; gap: 22px; }
+  .qr-frame { background: #fff; padding: 12px; border-radius: 16px; border: 1px solid var(--border); line-height: 0; }
+  .qr-frame img { display: block; width: 104px; height: 104px; }
+  .qr-text { display: flex; flex-direction: column; line-height: 1.25; text-align: left; }
+  .qr-text strong { font-size: 28px; font-weight: 800; }
+  .qr-text span { font-size: 22px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+
+  /* ===== طبقة نتيجة المسح ===== */
+  .overlay {
+    position: absolute; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    background: color-mix(in srgb, #070910 64%, transparent);
+    backdrop-filter: blur(10px);
+    animation: kpc-fadein 0.25s ease;
+  }
+  .result-card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 34px; box-shadow: var(--shadow-lg);
+    animation: kpc-pop 0.42s cubic-bezier(0.2, 0.9, 0.25, 1.05) both;
+  }
+  .result-card.found { width: 1340px; padding: 52px 56px 40px; }
+  .result-found-tag {
+    display: inline-flex; align-items: center; gap: 12px;
+    font-size: 30px; font-weight: 800; color: var(--success);
+    background: var(--success-soft); padding: 10px 24px; border-radius: 999px; margin-bottom: 36px;
+  }
+  .result-body { display: flex; gap: 56px; align-items: center; }
+  .result-media {
+    flex: 0 0 520px; width: 520px; height: 520px;
+    border-radius: 26px; overflow: hidden; background: var(--muted);
+    border: 1px solid var(--border); box-shadow: var(--shadow-md);
+  }
+  .result-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 22px; }
+  .result-name { font-size: 58px; font-weight: 800; line-height: 1.12; letter-spacing: -1px; }
+  .result-price .price-label { font-size: 30px; }
+  .result-price .price-num { font-size: calc(204px * var(--ps, 1)); }
+  .result-price .price-cur { font-size: calc(74px * var(--ps, 1)); }
+  .result-price .price-unit { font-size: 28px; }
+  .result-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-top: 38px; padding-top: 28px; border-top: 1px solid var(--border);
+  }
+  .barcode-mono { font-family: monospace; font-size: 26px; color: var(--muted-fg); letter-spacing: 1px; }
+  .countdown { font-size: 26px; color: var(--brand); font-weight: 600; }
+
+  .result-card.notfound { width: 780px; padding: 60px 60px 52px; text-align: center; }
+  .result-card.notfound .nf-icon {
+    width: 110px; height: 110px; border-radius: 50%; margin: 0 auto 28px;
+    background: var(--muted); color: var(--muted-fg);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .result-card.notfound h2 { font-size: 46px; font-weight: 800; margin-bottom: 20px; }
+  .result-card.notfound .nf-code {
+    display: inline-block; font-family: monospace; font-size: 30px; letter-spacing: 2px;
+    background: var(--muted); color: var(--fg); padding: 10px 26px; border-radius: 12px; margin-bottom: 24px;
+  }
+  .result-card.notfound p { font-size: 28px; color: var(--muted-fg); margin-bottom: 36px; }
+  .dismiss-btn {
+    border: none; background: var(--brand); color: #fff;
+    font-family: inherit; font-size: 28px; font-weight: 700;
+    padding: 16px 44px; border-radius: 14px; cursor: pointer;
+  }
+
+  /* حالة فراغ البنر */
+  .kpc-empty {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 22px;
+    color: var(--muted-fg); text-align: center;
+  }
+  .kpc-empty .kpc-empty-title { font-size: 46px; font-weight: 800; color: var(--fg); }
+  .kpc-empty .kpc-empty-sub { font-size: 26px; }
+
+  /* ===== أدوات التشغيل (إعدادات + محاكاة) — للموظّف فقط ===== */
+  .kpc-tools { position: fixed; bottom: 20px; left: 20px; z-index: 70; display: flex; gap: 10px; }
+  .kpc-fab {
+    display: inline-flex; align-items: center; gap: 8px;
+    background: #11131c; color: #fff; border: 1px solid rgba(255,255,255,.16);
+    font-family: "Cairo", sans-serif; font-size: 15px; font-weight: 700;
+    padding: 10px 16px; border-radius: 999px; cursor: pointer; box-shadow: 0 10px 30px -10px rgba(0,0,0,.5);
+  }
+  .kpc-panel {
+    position: fixed; bottom: 70px; left: 20px; z-index: 71;
+    width: 340px; max-height: 70vh; display: flex; flex-direction: column;
+    background: #fff; color: #11131c; border-radius: 16px; overflow: hidden;
+    box-shadow: 0 30px 70px -20px rgba(0,0,0,.55); border: 1px solid rgba(0,0,0,.08);
+    font-family: "Cairo", sans-serif; direction: rtl;
+  }
+  .kpc-panel-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid rgba(0,0,0,.08); }
+  .kpc-panel-head strong { font-size: 16px; }
+  .kpc-panel-head button { border: none; background: transparent; font-size: 18px; cursor: pointer; color: inherit; }
+  .kpc-panel-body { overflow: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 14px; }
+  .kpc-field { display: flex; flex-direction: column; gap: 6px; }
+  .kpc-field > label { font-size: 13px; font-weight: 700; opacity: .75; }
+  .kpc-field select, .kpc-field input[type="text"] {
+    width: 100%; font-family: inherit; font-size: 14px; padding: 8px 10px;
+    border: 1px solid rgba(0,0,0,.14); border-radius: 8px; background: #fff; color: #11131c;
+  }
+  .kpc-seg { display: flex; gap: 6px; }
+  .kpc-seg button {
+    flex: 1; font-family: inherit; font-size: 13px; font-weight: 700; padding: 7px 8px;
+    border: 1px solid rgba(0,0,0,.14); border-radius: 8px; background: #fff; color: #11131c; cursor: pointer;
+  }
+  .kpc-seg button.on { background: var(--brand); color: #fff; border-color: var(--brand); }
+  .kpc-toggle { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 600; }
+  .kpc-row { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .kpc-row input[type="range"] { flex: 1; }
+  .kpc-demo-list { display: flex; flex-direction: column; gap: 6px; max-height: 200px; overflow: auto; }
+  .kpc-demo-item {
+    text-align: right; border: 1px solid rgba(0,0,0,.08); background: transparent; color: inherit;
+    border-radius: 10px; padding: 8px 10px; cursor: pointer; display: flex; flex-direction: column; gap: 2px; font-family: inherit;
+  }
+  .kpc-demo-item:hover { background: rgba(63,70,214,.08); border-color: var(--brand); }
+  .kpc-demo-item .di-name { font-size: 13px; font-weight: 700; }
+  .kpc-demo-item .di-bc { font-family: monospace; font-size: 11px; opacity: .6; }
+  .kpc-demo-item.bad:hover { background: rgba(220,60,60,.08); border-color: #d33; }
+  .kpc-note { font-size: 12px; opacity: .6; }
+  .kpc-link-btn { border: none; background: transparent; color: var(--brand); font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; padding: 0; text-align: right; }
+}
+
+/* الوضع الداكن — متغيّرات على نفس الجذر فقط */
+.kioskpc-root.kpc-dark {
+  --bg: oklch(0.141 0.005 285.823);
+  --fg: oklch(0.92 0.005 65);
+  --card: oklch(0.21 0.006 285.885);
+  --muted: oklch(0.274 0.006 286.033);
+  --muted-fg: oklch(0.705 0.015 286.067);
+  --border: oklch(1 0 0 / 12%);
+  --success: oklch(0.62 0.14 155);
+  --qr-fg: oklch(0.95 0.005 65);
+  --shadow-lg: 0 40px 90px -34px rgba(0, 0, 0, 0.7);
+  --shadow-md: 0 24px 50px -26px rgba(0, 0, 0, 0.6);
+}
+.kioskpc-root.kpc-dark .qr-frame { background: var(--card); }

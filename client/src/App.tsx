@@ -23,6 +23,7 @@ import InvoiceDetail from "@/pages/InvoiceDetail";
 import Invoices from "@/pages/Invoices";
 import Login from "@/pages/Login";
 import POS from "@/pages/POS";
+import PriceChecker from "@/pages/PriceChecker";
 import SalesInvoiceNew from "@/pages/SalesInvoiceNew";
 import ProductEdit from "@/pages/ProductEdit";
 import ProductNew from "@/pages/ProductNew";
@@ -95,6 +96,12 @@ export default function App() {
       <Route path="/pos">
         <Protected>
           <POS />
+        </Protected>
+      </Route>
+      {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — جهاز المتجر مسجَّل الدخول */}
+      <Route path="/price-checker">
+        <Protected>
+          <PriceChecker />
         </Protected>
       </Route>
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
