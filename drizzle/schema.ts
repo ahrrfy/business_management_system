@@ -1200,3 +1200,42 @@ export const stocktakeDecisions = mysqlTable(
 
 export type StocktakeDecision = typeof stocktakeDecisions.$inferSelect;
 export type InsertStocktakeDecision = typeof stocktakeDecisions.$inferInsert;
+
+/* ============================ أجهزة الكشك الخارجية (قارئ الأسعار) ============================ */
+
+/**
+ * جهاز كشك خارجي = شاشة قارئ أسعار مستقلّة تتصل بالنظام بـ**رمز جهاز للقراءة فقط**
+ * (لا دخول مستخدم، لا بيانات اعتماد مدير على الجهاز). مبادئ الأمان:
+ *  - **لا يُخزَّن الرمز الخام إطلاقاً**؛ فقط تجزئته `tokenHash` (sha256 hex) — تسريب القاعدة لا يكشف رمزاً صالحاً.
+ *  - **مربوط بفرع واحد** (`branchId`): مصادقة الجهاز تفرض الفرع خادمياً ⇒ لا IDOR عبر فروع أخرى.
+ *  - **قابل للإلغاء فوراً** (`isActive=false`): تعطيل الجهاز يُبطل رمزه على الخادم بلا لمس الجهاز.
+ *  - نطاق الرمز = قراءة بنر الأسعار + بحث الباركود فقط (بيانات يراها أي زبون واقف في المتجر) — لا تكلفة ولا مخزون ولا أي إجراء مالي.
+ */
+export const kioskDevices = mysqlTable(
+  "kioskDevices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    // اسم وصفي يضعه المدير («شاشة المدخل»، «كاونتر القرطاسية»…).
+    label: varchar("label", { length: 120 }).notNull(),
+    // sha256(token) بالست عشري — البحث يكون بالتجزئة لا بالرمز الخام.
+    tokenHash: varchar("tokenHash", { length: 64 }).notNull().unique("uq_kiosk_token_hash"),
+    // بادئة الرمز (مثل kde_ab12cd) للعرض/التمييز في لوحة الإدارة — ليست سرّاً.
+    tokenPrefix: varchar("tokenPrefix", { length: 16 }).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    // آخر ظهور/مصادقة ناجحة + الـIP — مراقبة بسيطة لاكتشاف سوء الاستخدام.
+    lastSeenAt: timestamp("lastSeenAt"),
+    lastSeenIp: varchar("lastSeenIp", { length: 64 }),
+    revokedAt: timestamp("revokedAt"),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchIdx: index("idx_kiosk_branch").on(table.branchId),
+    activeIdx: index("idx_kiosk_active").on(table.isActive),
+  })
+);
+
+export type KioskDevice = typeof kioskDevices.$inferSelect;
+export type InsertKioskDevice = typeof kioskDevices.$inferInsert;

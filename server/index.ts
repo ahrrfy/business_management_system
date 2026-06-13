@@ -157,11 +157,26 @@ async function startServer() {
     })
   );
 
+  // حدّ صارم على تفعيل جهاز الكشك الخارجي (تخمين رمز الجهاز) — رغم أنّ الرمز عشوائي 24 بايت.
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.KIOSK_RATE_LIMIT_MAX ?? 30),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("kiosk.deviceLogin"),
+      message: { error: "محاولات كثيرة لتفعيل جهاز الكشك، انتظر قليلاً." },
+    })
+  );
+
   // حماية CSRF (طبقة دفاع ثانية فوق sameSite:"strict").
   app.use("/api/trpc", csrfGuard);
 
   // API routes must be registered before the SPA catch-all (added by Vite/static).
-  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext }));
+  // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ يمنع تمييع حدود المعدّل (auth.login/count.auth/kiosk.deviceLogin)
+  // عبر حشو محاولات كثيرة في طلب HTTP واحد، ويحدّ تضخّم الكتابة/الإغراق. 50 أعلى بكثير من أي دفعة شرعية في الواجهة.
+  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext, maxBatchSize: 50 }));
 
   // جسر الطباعة الصامتة (خارج tRPC): يستقبل بايتات ESC/POS من العميل ويرسلها للطابعة محلياً.
   // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"

@@ -24,6 +24,8 @@ import Invoices from "@/pages/Invoices";
 import Login from "@/pages/Login";
 import POS from "@/pages/POS";
 import PriceChecker from "@/pages/PriceChecker";
+import Kiosk from "@/pages/Kiosk";
+import KioskDevices from "@/pages/KioskDevices";
 import SalesInvoiceNew from "@/pages/SalesInvoiceNew";
 import ProductEdit from "@/pages/ProductEdit";
 import ProductNew from "@/pages/ProductNew";
@@ -104,6 +106,8 @@ export default function App() {
           <PriceChecker />
         </Protected>
       </Route>
+      {/* جهاز الكشك الخارجي — بملء الشاشة بمصادقة جهاز (كوكي رمز للقراءة فقط)، بلا جلسة دخول وبلا AppLayout */}
+      <Route path="/kiosk" component={Kiosk} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       <Route path="/"><Shell><Dashboard /></Shell></Route>
@@ -154,6 +158,7 @@ export default function App() {
       <Route path="/suppliers/:id/edit"><Shell><SupplierEdit /></Shell></Route>
       <Route path="/ap-aging"><Shell><APAging /></Shell></Route>
       <Route path="/suppliers-statement"><Shell><SupplierStatement /></Shell></Route>
+      <Route path="/kiosk-devices"><Shell><KioskDevices /></Shell></Route>
       <Route path="/users"><Shell><Users /></Shell></Route>
       <Route path="/users/new"><Shell><UserNew /></Shell></Route>
       <Route path="/users/:id/edit"><Shell><UserEdit /></Shell></Route>

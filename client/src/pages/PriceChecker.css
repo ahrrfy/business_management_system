@@ -241,6 +241,10 @@
     font-family: "Cairo", sans-serif; font-size: 15px; font-weight: 700;
     padding: 10px 16px; border-radius: 999px; cursor: pointer; box-shadow: 0 10px 30px -10px rgba(0,0,0,.5);
   }
+  /* وضع الجهاز: ترسٌ خافت في الزاوية (غير لافت للزبون، يظهر للموظّف عند المرور). */
+  .kpc-tools-device { bottom: auto; top: 12px; left: 12px; opacity: .1; transition: opacity .2s; }
+  .kpc-tools-device:hover { opacity: 1; }
+  .kpc-tools-device .kpc-fab { padding: 9px; font-size: 0; gap: 0; }
   .kpc-panel {
     position: fixed; bottom: 70px; left: 20px; z-index: 71;
     width: 340px; max-height: 70vh; display: flex; flex-direction: column;
@@ -278,6 +282,7 @@
   .kpc-demo-item.bad:hover { background: rgba(220,60,60,.08); border-color: #d33; }
   .kpc-note { font-size: 12px; opacity: .6; }
   .kpc-link-btn { border: none; background: transparent; color: var(--brand); font-family: inherit; font-size: 13px; font-weight: 700; cursor: pointer; padding: 0; text-align: right; }
+  .kpc-link-btn.kpc-danger { color: #dc2626; }
 }
 
 /* الوضع الداكن — متغيّرات على نفس الجذر فقط */
