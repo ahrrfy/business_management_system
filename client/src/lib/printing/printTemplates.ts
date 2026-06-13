@@ -728,6 +728,140 @@ export function printBarcodeSheet(items: BarcodeLabelItem[]): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ١١. أمر تشغيل / مستند إنتاج — A4 (وحدة الإنتاج/تحويل المخزون)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface ProductionDocData {
+  docNumber?: string | null;
+  date?: string | null;
+  branchName?: string | null;
+  workOrder?: string | null;
+  recipeName?: string | null;
+  outputName: string;
+  outputUnit?: string | null;
+  /** العدد المخطّط تشغيله (الدفعة). */
+  planned: number;
+  good?: number | null;
+  scrap?: number | null;
+  /** الهدر المعياري ككسر (0.05). */
+  wasteStdPct: number;
+  normalAllow: number;
+  abnormalUnits?: number | null;
+  /** الإنتاجية المحقّقة ككسر. */
+  yieldPct?: number | null;
+  inputs: { name: string; sku?: string | null; perUnit: number | string; consumed: number | string; short?: boolean }[];
+  materialsCost: string | number;
+  laborCost: string | number;
+  totalCost: string | number;
+  abnormalLoss?: string | number | null;
+  unitCost: string | number;
+  /** كلفة المنتج بعد WAVG (مستند الإنتاج بعد الترحيل). */
+  newCost?: string | number | null;
+}
+
+const pctStr = (frac: number) => `${Math.round(Number(frac) * 100 * 10) / 10}`.replace(/\.0$/, '') + '%';
+
+/** أمر تشغيل (قبل الترحيل: مخطّط + فراغات) أو مستند إنتاج (بعده: أرقام فعلية + WAVG + الهدر). */
+export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'document'): void {
+  const isOrder = mode === 'order';
+  const title = isOrder ? 'أمر تشغيل' : 'مستند إنتاج';
+  const blank = '__________';
+  const date = d.date ?? new Date().toLocaleDateString('en-GB');
+
+  const h2 = (t: string) => `<div style="font-size:11px;font-weight:800;color:${B.green};margin:5mm 0 2.5mm;padding-bottom:1.5mm;border-bottom:1px solid ${B.borderLight};">${esc(t)}</div>`;
+
+  const prodFields = [
+    { label: 'المنتج', value: d.outputName },
+    ...(d.recipeName ? [{ label: 'الوصفة', value: d.recipeName }] : []),
+    { label: isOrder ? 'العدد المطلوب' : 'الناتج السليم', value: `${fmt(isOrder ? d.planned : (d.good ?? d.planned))} ${d.outputUnit ?? ''}` },
+  ];
+  const docFields = [
+    { label: 'نوع المستند', value: title },
+    { label: 'الفرع', value: d.branchName ?? '—' },
+    { label: 'التاريخ', value: date },
+    ...(d.workOrder ? [{ label: 'أمر شغل', value: d.workOrder }] : []),
+  ];
+
+  const cols = [
+    { key: 'name', label: 'الصنف' },
+    { key: 'sku', label: 'الرمز', width: '24mm' },
+    { key: 'per', label: 'لكل وحدة', width: '20mm', align: 'center' as const },
+    { key: 'total', label: 'الإجمالي المطلوب', width: '26mm', align: 'left' as const, bold: true },
+    { key: 'avail', label: 'التوفّر', width: '18mm', align: 'center' as const },
+  ];
+  const rows = d.inputs.map(i => ({
+    name: i.name,
+    sku: i.sku ?? '',
+    per: fmt(i.perUnit),
+    total: fmt(i.consumed),
+    avail: i.short ? '✗ ناقص' : '✓ متوفّر',
+  }));
+  const materialsTotalRow = `<div style="display:flex;justify-content:space-between;background:${B.bg};
+    border:1px solid ${B.border};border-top:none;border-radius:0 0 4px 4px;padding:2.5mm 3mm;
+    font-size:10px;font-weight:700;margin-top:-1mm;margin-bottom:4mm;">
+    <span>إجمالي كلفة المواد</span><span dir="ltr">${fmtC(d.materialsCost)}</span></div>`;
+
+  const kv = (pairs: { l: string; v: string; bad?: boolean }[]) => `<table style="width:100%;border-collapse:collapse;font-size:10px;">
+    ${pairs.map(p => `<tr>
+      <td style="padding:1.8mm 1mm;border-bottom:1px dotted ${B.borderLight};color:${p.bad ? B.orangeDark : B.textMuted};">${esc(p.l)}</td>
+      <td style="padding:1.8mm 1mm;border-bottom:1px dotted ${B.borderLight};text-align:left;font-weight:700;${p.bad ? `color:${B.orangeDark};` : ''}" dir="ltr">${esc(p.v)}</td>
+    </tr>`).join('')}
+  </table>`;
+
+  const yieldKv = kv([
+    { l: 'العدد المخطّط', v: `${fmt(d.planned)} ${d.outputUnit ?? ''}` },
+    { l: 'السليم الفعلي', v: isOrder ? blank : fmt(d.good ?? 0) },
+    { l: 'التالف (هدر)', v: isOrder ? blank : fmt(d.scrap ?? 0) },
+    { l: 'الهدر المعياري المسموح', v: `${pctStr(d.wasteStdPct)} (${fmt(d.normalAllow)} وحدة)` },
+    ...(!isOrder && d.yieldPct != null ? [{ l: 'الإنتاجية المحقّقة', v: pctStr(d.yieldPct) }] : []),
+    ...(!isOrder && Number(d.abnormalUnits ?? 0) > 0 ? [{ l: 'هدر غير طبيعي', v: `${fmt(d.abnormalUnits ?? 0)} وحدة`, bad: true }] : []),
+  ]);
+  const costKv = kv([
+    { l: 'كلفة المواد', v: fmtC(d.materialsCost) },
+    { l: 'العمالة', v: fmtC(d.laborCost) },
+    { l: 'الكلفة الكلية للتشغيل', v: fmtC(d.totalCost) },
+    ...(!isOrder && Number(d.abnormalLoss ?? 0) > 0 ? [{ l: 'خسارة هدر غير طبيعي', v: `− ${fmtC(d.abnormalLoss ?? 0)}`, bad: true }] : []),
+    { l: isOrder ? 'كلفة الوحدة التقديرية' : 'كلفة الوحدة السليمة', v: fmtC(d.unitCost) },
+    ...(!isOrder && d.newCost != null ? [{ l: 'كلفة المنتج بعد WAVG', v: fmtC(d.newCost) }] : []),
+  ]);
+
+  const cols2 = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:7mm;margin-bottom:4mm;">
+    <div>${h2('الإنتاجية')}${yieldKv}</div>
+    <div>${h2('ملخّص الكلفة')}${costKv}</div>
+  </div>`;
+
+  const notesBox = `${h2('ملاحظات التشغيل')}<div style="height:18mm;border:1px solid ${B.border};border-radius:4px;margin-bottom:4mm;"></div>`;
+
+  const signatures = `<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10mm;margin-top:8mm;">
+    ${['المشغّل / المنفّذ', 'المشرف', 'التاريخ والتوقيع'].map(s => `<div style="text-align:center;">
+      <div style="border-top:1px solid ${B.borderDk};height:10mm;margin-bottom:2mm;"></div>
+      <span style="font-size:9px;color:${B.textMuted};">${esc(s)}</span></div>`).join('')}
+  </div>`;
+
+  const note = `<div style="margin-top:6mm;font-size:8.5px;color:${B.textFaint};text-align:center;border-top:1px solid ${B.borderLight};padding-top:2.5mm;">
+    مستند تحويل أصل↔أصل — لا قيد ربح/خسارة على الإنتاج نفسه؛ الهدر غير الطبيعي فقط يُسجَّل خسارة. الورق مصدر حقيقة واحد بوحدة «ورقة» ⇒ لا مخزون سالب.
+  </div>`;
+
+  const body = [
+    docHeader(title, d.docNumber ?? undefined, date),
+    docMeta([
+      { title: 'المنتج المطلوب إنتاجه', fields: prodFields },
+      { title: 'بيانات المستند', fields: docFields },
+    ]),
+    h2('المتطلبات — المواد المُستهلَكة'),
+    docTable(cols, rows, false),
+    materialsTotalRow,
+    cols2,
+    notesBox,
+    signatures,
+    note,
+    docFooter(),
+  ].join('');
+
+  openPrintWindow(wrapA4Doc(`${title} ${d.docNumber ?? ''}`.trim(), body));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ١٠. إيصال نقطة البيع (بديل المتصفح — 80mm)
 // ═══════════════════════════════════════════════════════════════════════════════
 

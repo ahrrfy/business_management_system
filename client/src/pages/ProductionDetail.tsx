@@ -3,12 +3,16 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { Link, useRoute } from "wouter";
 
 function fmtDateTime(d: Date | string) {
   try { return new Date(d).toLocaleString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
   catch { return String(d); }
+}
+function fmtDate(d: Date | string) {
+  try { return new Date(d).toLocaleDateString("en-GB"); } catch { return String(d); }
 }
 
 export default function ProductionDetail() {
@@ -48,12 +52,39 @@ export default function ProductionDetail() {
 
   const inputs = doc.inputs ?? [];
   const outputs = doc.outputs ?? [];
+  const isRecipeRun = doc.batchQty != null;
+  const batchQ = Number(doc.batchQty ?? 0);
+  const abLoss = Number(doc.abnormalLoss ?? 0);
+  // مطابقة spoilageSplit الخادمية بالضبط من اللقطة المخزّنة (لا إعادة اشتقاق تقريبيّ).
+  const wasteStd = Number(doc.wasteStdPct ?? 0);
+  const normalAllow = Math.floor(wasteStd * batchQ);
+  const abnormalUnits = Math.max(0, Number(doc.scrapQty ?? 0) - normalAllow);
+  const yieldPct = batchQ > 0 ? Number(doc.goodQty ?? 0) / batchQ : null;
+
+  function printDocument() {
+    const out0: any = outputs[0] ?? {};
+    printProductionDoc({
+      docNumber: doc.docNumber, date: fmtDate(doc.createdAt), branchName: doc.branchName, recipeName: doc.recipeName,
+      outputName: out0.productName ?? "", outputUnit: out0.unitName,
+      planned: batchQ || Number(out0.baseQuantity ?? 0),
+      good: Number(doc.goodQty ?? out0.baseQuantity ?? 0),
+      scrap: Number(doc.scrapQty ?? 0),
+      wasteStdPct: wasteStd,
+      normalAllow, abnormalUnits, yieldPct,
+      inputs: inputs.map((i: any) => ({ name: i.productName ?? "", sku: i.sku, perUnit: batchQ > 0 ? Number(i.baseQuantity) / batchQ : Number(i.baseQuantity), consumed: Number(i.baseQuantity), short: false })),
+      materialsCost: doc.materialsCost, laborCost: doc.laborCost, totalCost: doc.totalCost,
+      abnormalLoss: doc.abnormalLoss, unitCost: out0.unitCost ?? "0",
+    }, "document");
+  }
 
   return (
     <div className="space-y-4 max-w-4xl" dir="rtl">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">مستند إنتاج <span className="font-mono text-lg" dir="ltr">{doc.docNumber}</span></h1>
-        <Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>
+        <div className="flex items-center gap-3">
+          <Button variant="outline" size="sm" onClick={printDocument}>🖨 طباعة المستند</Button>
+          <Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>
+        </div>
       </div>
 
       <Card>
@@ -69,10 +100,23 @@ export default function ProductionDetail() {
           <div><div className="text-xs text-muted-foreground">العمالة</div><div className="tabular-nums" dir="ltr">{fmt(doc.laborCost)}</div></div>
           <div><div className="text-xs text-muted-foreground">الكلفة الكلية</div><div className="font-bold text-sky-700 tabular-nums" dir="ltr">{fmt(doc.totalCost)}</div></div>
           <div><div className="text-xs text-muted-foreground">التاريخ</div><div className="text-xs">{fmtDateTime(doc.createdAt)}</div></div>
-          {doc.linkedRecipeId && <div><div className="text-xs text-muted-foreground">وصفة</div><div>#{doc.linkedRecipeId}</div></div>}
+          {doc.recipeName && <div><div className="text-xs text-muted-foreground">وصفة</div><div>{doc.recipeName}</div></div>}
           {doc.notes && <div className="col-span-2"><div className="text-xs text-muted-foreground">ملاحظة</div><div>{doc.notes}</div></div>}
         </CardContent>
       </Card>
+
+      {isRecipeRun && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">الإنتاجية والهدر</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+            <div><div className="text-xs text-muted-foreground">الدفعة</div><div className="font-semibold tabular-nums" dir="ltr">{Number(doc.batchQty).toLocaleString("en-US")}</div></div>
+            <div><div className="text-xs text-muted-foreground">السليم</div><div className="font-semibold text-emerald-700 tabular-nums" dir="ltr">{Number(doc.goodQty).toLocaleString("en-US")}</div></div>
+            <div><div className="text-xs text-muted-foreground">التالف</div><div className="font-semibold text-amber-600 tabular-nums" dir="ltr">{Number(doc.scrapQty).toLocaleString("en-US")}</div></div>
+            <div><div className="text-xs text-muted-foreground">الإنتاجية</div><div className="font-semibold tabular-nums" dir="ltr">{yieldPct != null ? `${Math.round(yieldPct * 1000) / 10}%` : "—"}</div></div>
+            <div><div className="text-xs text-muted-foreground">خسارة هدر غير طبيعي</div><div className={`font-semibold tabular-nums ${abLoss > 0 ? "text-rose-600" : "text-muted-foreground"}`} dir="ltr">{abLoss > 0 ? `${fmt(doc.abnormalLoss)} (${abnormalUnits} وحدة)` : "لا يوجد"}</div></div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader><CardTitle className="text-base">المدخلات (المُستهلَكة)</CardTitle></CardHeader>

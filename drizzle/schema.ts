@@ -1260,6 +1260,9 @@ export const productionRecipes = mysqlTable(
     outputProductUnitId: bigint("outputProductUnitId", { mode: "number" }).notNull().references(() => productUnits.id),
     // عمالة/تشغيل لكل وحدة ناتج أساس (اختياري) — تُضاف لكلفة المنتج، بلا قيد محاسبي منفصل.
     laborPerOutputBase: decimal("laborPerOutputBase", { precision: 15, scale: 2 }).default("0").notNull(),
+    // الهدر المعياري المتوقّع في التشغيل (كسر 0–1، مثل 0.05 = 5%): يُمتَص ضمنه في كلفة الوحدة السليمة؛
+    // ما يتجاوزه = هدر غير طبيعي يُسجَّل خسارة منفصلة (قيد WASTAGE) لا يضخّم كلفة السليم.
+    wasteStdPct: decimal("wasteStdPct", { precision: 5, scale: 2 }).default("0").notNull(),
     notes: text("notes"),
     isActive: boolean("isActive").default(true).notNull(),
     createdBy: int("createdBy").references(() => users.id),
@@ -1311,6 +1314,15 @@ export const productionOrders = mysqlTable(
     materialsCost: decimal("materialsCost", { precision: 15, scale: 2 }).default("0").notNull(),
     laborCost: decimal("laborCost", { precision: 15, scale: 2 }).default("0").notNull(),
     totalCost: decimal("totalCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    // إنتاجية التشغيل (تُملأ بمسار «التشغيل بوصفة»؛ NULL للمستندات اليدوية/القديمة):
+    // batchQty = ما بدأ التشغيل (يقود استهلاك المواد)، goodQty = batchQty − scrapQty (السليم الناتج)،
+    // scrapQty = التالف الكلي، abnormalLoss = خسارة الهدر غير الطبيعي (قيد WASTAGE، لا تُمتَص في كلفة السليم).
+    batchQty: int("batchQty"),
+    goodQty: int("goodQty"),
+    scrapQty: int("scrapQty").default(0).notNull(),
+    abnormalLoss: decimal("abnormalLoss", { precision: 15, scale: 2 }).default("0").notNull(),
+    // لقطة الهدر المعياري وقت التشغيل (من الوصفة) — المستند ثابت فلا يتأثّر بتعديل الوصفة لاحقاً.
+    wasteStdPct: decimal("wasteStdPct", { precision: 5, scale: 2 }).default("0").notNull(),
     notes: text("notes"),
     linkedWorkOrderId: bigint("linkedWorkOrderId", { mode: "number" }).references(() => workOrders.id),
     linkedRecipeId: bigint("linkedRecipeId", { mode: "number" }).references(() => productionRecipes.id),

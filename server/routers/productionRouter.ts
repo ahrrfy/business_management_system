@@ -11,6 +11,7 @@ import {
   createProduction,
   getProduction,
   listProductions,
+  runPreview,
 } from "../services/productionService";
 import {
   createRecipe,
@@ -43,8 +44,17 @@ const recipeInput = z.object({
   outputVariantId: z.number().int().positive(),
   outputProductUnitId: z.number().int().positive(),
   laborPerOutputBase: z.string().nullish(),
+  wasteStdPct: z.string().nullish(),
   notes: z.string().nullish(),
   lines: z.array(recipeLineInput).min(1),
+});
+
+/** مسار «التشغيل بوصفة»: الخادم يوسّع الوصفة (نموذج الدفعة تقود الاستهلاك) ⇒ يمنع تلاعب الكلفة. */
+const runInput = z.object({
+  recipeId: z.number().int().positive(),
+  batchQty: z.number().int().positive(),
+  scrapQty: z.number().int().min(0).default(0),
+  laborPerUnit: z.string().nullish(),
 });
 
 export const productionRouter = router({
@@ -66,18 +76,33 @@ export const productionRouter = router({
       getProduction(input.productionOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role })
     ),
 
+  /** معاينة «تشغيل بوصفة» حيّةً (بلا حركة): أشرطة المخزون + تفريق الهدر + أثر WAVG. */
+  runPreview: managerProcedure
+    .input(
+      z.object({
+        recipeId: z.number().int().positive(),
+        batchQty: z.union([z.number(), z.string()]),
+        scrapQty: z.union([z.number(), z.string()]).nullish(),
+        laborPerUnit: z.string().nullish(),
+        branchId: z.number().int().positive().nullish(),
+      })
+    )
+    .query(({ input }) => runPreview(input)),
+
   create: managerProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
-        inputs: z.array(lineInput).min(1),
-        outputs: z.array(outputLineInput).min(1),
+        // المدخلات/المخرجات اليدوية اختيارية عند تمرير run (التشغيل بوصفة).
+        inputs: z.array(lineInput).optional(),
+        outputs: z.array(outputLineInput).optional(),
         laborCost: z.string().nullish(),
         notes: z.string().nullish(),
         linkedWorkOrderId: z.number().int().positive().nullish(),
         linkedRecipeId: z.number().int().positive().nullish(),
         allowSelfConvert: z.boolean().optional(),
         clientRequestId: z.string().min(1).max(80).optional(),
+        run: runInput.nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -91,10 +116,13 @@ export const productionRouter = router({
               entityId: (res as { productionOrderId?: number })?.productionOrderId,
               newValue: {
                 branchId: input.branchId,
-                inputsCount: input.inputs.length,
-                outputsCount: input.outputs.length,
+                mode: input.run ? "recipe" : "manual",
+                inputsCount: input.inputs?.length ?? null,
+                outputsCount: input.outputs?.length ?? null,
+                batchQty: input.run?.batchQty ?? null,
+                scrapQty: input.run?.scrapQty ?? null,
                 totalCost: (res as { totalCost?: string })?.totalCost ?? null,
-                recipeId: input.linkedRecipeId ?? null,
+                recipeId: input.run?.recipeId ?? input.linkedRecipeId ?? null,
               },
             });
           }

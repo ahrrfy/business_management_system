@@ -1,0 +1,1 @@
+ALTER TABLE `productionOrders` ADD `wasteStdPct` decimal(5,2) DEFAULT '0' NOT NULL;

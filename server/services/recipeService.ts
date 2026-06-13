@@ -9,7 +9,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
   productUnits,
@@ -34,6 +34,8 @@ export interface CreateRecipeInput {
   outputVariantId: number;
   outputProductUnitId: number;
   laborPerOutputBase?: string | null;
+  /** الهدر المعياري المتوقّع (كسر 0–1، مثل "0.05"). يُمتَص في كلفة الوحدة السليمة. */
+  wasteStdPct?: string | null;
   notes?: string | null;
   lines: RecipeLineInput[];
 }
@@ -45,6 +47,10 @@ function validateRecipeShape(input: CreateRecipeInput) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد المنتج الناتج ووحدته" });
   }
   if (!input.lines?.length) throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد مكوّناً واحداً على الأقل" });
+  if (input.wasteStdPct != null && String(input.wasteStdPct).trim() !== "") {
+    const w = money(input.wasteStdPct);
+    if (w.isNegative() || w.gte(1)) throw new TRPCError({ code: "BAD_REQUEST", message: "الهدر المعياري يجب أن يكون بين 0% وأقل من 100%" });
+  }
   for (const l of input.lines) {
     if (!l.inputVariantId) throw new TRPCError({ code: "BAD_REQUEST", message: "صنف مكوّن غير صالح" });
     if (l.inputVariantId === input.outputVariantId) {
@@ -70,6 +76,8 @@ export async function listRecipes(opts: { activeOnly?: boolean } = {}) {
         outputSku: productVariants.sku,
         outputUnitName: productUnits.unitName,
         laborPerOutputBase: productionRecipes.laborPerOutputBase,
+        wasteStdPct: productionRecipes.wasteStdPct,
+        outputCostPrice: productVariants.costPrice,
         isActive: productionRecipes.isActive,
         createdAt: productionRecipes.createdAt,
       })
@@ -79,7 +87,16 @@ export async function listRecipes(opts: { activeOnly?: boolean } = {}) {
       .leftJoin(productUnits, eq(productionRecipes.outputProductUnitId, productUnits.id))
       .where(where as any)
       .orderBy(desc(productionRecipes.id));
-    return rows.map((r: any) => ({ ...r, isActive: Boolean(r.isActive) }));
+    if (!rows.length) return [] as any[];
+    // عدّاد المكوّنات لكل وصفة (استعلام مُجمَّع واحد).
+    const ids = rows.map((r: any) => Number(r.id));
+    const cntRows = await tx
+      .select({ recipeId: productionRecipeLines.recipeId, n: sql<string>`COUNT(*)` })
+      .from(productionRecipeLines)
+      .where(inArray(productionRecipeLines.recipeId, ids))
+      .groupBy(productionRecipeLines.recipeId);
+    const cntMap = new Map(cntRows.map((c: any) => [Number(c.recipeId), Number(c.n)]));
+    return rows.map((r: any) => ({ ...r, isActive: Boolean(r.isActive), linesCount: cntMap.get(Number(r.id)) ?? 0 }));
   });
 }
 
@@ -97,6 +114,8 @@ export async function getRecipe(id: number) {
           outputSku: productVariants.sku,
           outputUnitName: productUnits.unitName,
           laborPerOutputBase: productionRecipes.laborPerOutputBase,
+          wasteStdPct: productionRecipes.wasteStdPct,
+          outputCostPrice: productVariants.costPrice,
           notes: productionRecipes.notes,
           isActive: productionRecipes.isActive,
         })
@@ -115,6 +134,7 @@ export async function getRecipe(id: number) {
         inputProductUnitId: productionRecipeLines.inputProductUnitId,
         inputProductName: products.name,
         inputSku: productVariants.sku,
+        inputCostPrice: productVariants.costPrice,
         qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
         notes: productionRecipeLines.notes,
       })
@@ -123,7 +143,23 @@ export async function getRecipe(id: number) {
       .leftJoin(products, eq(productVariants.productId, products.id))
       .where(eq(productionRecipeLines.recipeId, id))
       .orderBy(productionRecipeLines.id);
-    return { ...head, isActive: Boolean(head.isActive), lines };
+
+    // وحدات كل صنف مكوّن (لمنتقي الوحدة في نموذج التعديل) — استعلام مُجمَّع واحد.
+    const varIds = Array.from(new Set(lines.map((l: any) => Number(l.inputVariantId))));
+    const unitsByVariant = new Map<number, Array<{ productUnitId: number; unitName: string; conversionFactor: string; isBaseUnit: boolean }>>();
+    if (varIds.length) {
+      const unitRows = await tx
+        .select({ variantId: productUnits.variantId, id: productUnits.id, unitName: productUnits.unitName, conversionFactor: productUnits.conversionFactor, isBaseUnit: productUnits.isBaseUnit })
+        .from(productUnits)
+        .where(inArray(productUnits.variantId, varIds));
+      for (const u of unitRows) {
+        const vid = Number(u.variantId);
+        if (!unitsByVariant.has(vid)) unitsByVariant.set(vid, []);
+        unitsByVariant.get(vid)!.push({ productUnitId: Number(u.id), unitName: u.unitName, conversionFactor: String(u.conversionFactor), isBaseUnit: Boolean(u.isBaseUnit) });
+      }
+    }
+    const linesOut = lines.map((l: any) => ({ ...l, units: unitsByVariant.get(Number(l.inputVariantId)) ?? [] }));
+    return { ...head, isActive: Boolean(head.isActive), lines: linesOut };
   });
 }
 
@@ -142,6 +178,7 @@ export async function createRecipe(input: CreateRecipeInput, actor: Actor) {
       outputVariantId: input.outputVariantId,
       outputProductUnitId: input.outputProductUnitId,
       laborPerOutputBase: round2(money(input.laborPerOutputBase ?? "0")).toFixed(2),
+      wasteStdPct: round2(money(input.wasteStdPct ?? "0")).toFixed(2),
       notes: input.notes?.trim() || null,
       isActive: true,
       createdBy: actor.userId,
@@ -178,6 +215,7 @@ export async function updateRecipe(id: number, input: CreateRecipeInput) {
         outputVariantId: input.outputVariantId,
         outputProductUnitId: input.outputProductUnitId,
         laborPerOutputBase: round2(money(input.laborPerOutputBase ?? "0")).toFixed(2),
+        wasteStdPct: round2(money(input.wasteStdPct ?? "0")).toFixed(2),
         notes: input.notes?.trim() || null,
       })
       .where(eq(productionRecipes.id, id));
