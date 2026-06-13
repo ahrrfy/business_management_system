@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { printSupplierStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
@@ -73,50 +74,54 @@ export default function SupplierStatement() {
     { enabled: !!supplierId }
   );
 
+  // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) ويفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF»).
+  const printStatement = () => {
+    if (!stmt.data) return;
+    const d = stmt.data;
+    const poTxs = d.purchaseOrders.map((p) => ({
+      t: new Date(p.orderDate).getTime(),
+      date: new Date(p.orderDate).toLocaleDateString("en-GB"),
+      ref: p.poNumber, description: "أمر شراء",
+      debit: null as string | null, credit: p.total as string | null,
+    }));
+    const payTxs = d.payments.map((p) => ({
+      t: new Date(p.entryDate).getTime(),
+      date: new Date(p.entryDate).toLocaleDateString("en-GB"),
+      ref: "دفعة",
+      description: p.purchaseOrderId ? "دفعة للمورد" : "دفعة مستقلة للمورد",
+      debit: p.amount as string | null, credit: null as string | null,
+    }));
+    // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
+    const merged = [...poTxs, ...payTxs].sort((a, b) => a.t - b.t);
+    // §٥: AP بـDecimal (دائن − مدين)، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
+    let bal = from ? D(d.summary.openingBalance) : D(0);
+    let totDebit = D(0), totCredit = D(0);
+    const txs = merged.map(({ t: _t, ...x }) => {
+      bal = bal.plus(D(x.credit)).minus(D(x.debit));
+      totDebit = totDebit.plus(D(x.debit));
+      totCredit = totCredit.plus(D(x.credit));
+      return { ...x, balance: bal.toFixed(2) };
+    });
+    printSupplierStmt({
+      supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
+      fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString("en-GB") : undefined,
+      toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString("en-GB"),
+      transactions: txs,
+      // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
+      totalDebit: totDebit.toFixed(2), totalCredit: totCredit.toFixed(2),
+      openingBalance: from ? d.summary.openingBalance : undefined,
+      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
+      closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
+    });
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">كشف حساب مورد</h1>
         <div className="flex gap-2">
           {stmt.data && (
-            <Button variant="outline" size="sm" onClick={() => {
-              const d = stmt.data!;
-              const poTxs = d.purchaseOrders.map(p => ({
-                t: new Date(p.orderDate).getTime(),
-                date: new Date(p.orderDate).toLocaleDateString('en-GB'),
-                ref: p.poNumber, description: 'أمر شراء',
-                debit: null as string | null, credit: p.total as string | null,
-              }));
-              const payTxs = d.payments.map(p => ({
-                t: new Date(p.entryDate).getTime(),
-                date: new Date(p.entryDate).toLocaleDateString('en-GB'),
-                ref: 'دفعة',
-                description: p.purchaseOrderId ? 'دفعة للمورد' : 'دفعة مستقلة للمورد',
-                debit: p.amount as string | null, credit: null as string | null,
-              }));
-              // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
-              const merged = [...poTxs, ...payTxs].sort((a, b) => a.t - b.t);
-              // §٥: AP بـDecimal (دائن − مدين)، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
-              let bal = from ? D(stmt.data!.summary.openingBalance) : D(0);
-              let totDebit = D(0), totCredit = D(0);
-              const txs = merged.map(({ t: _t, ...x }) => {
-                bal = bal.plus(D(x.credit)).minus(D(x.debit));
-                totDebit = totDebit.plus(D(x.debit));
-                totCredit = totCredit.plus(D(x.credit));
-                return { ...x, balance: bal.toFixed(2) };
-              });
-              printSupplierStmt({
-                supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
-                fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString('en-GB') : undefined,
-                toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString('en-GB'),
-                transactions: txs,
-                // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
-                totalDebit: totDebit.toFixed(2), totalCredit: totCredit.toFixed(2),
-                openingBalance: from ? d.summary.openingBalance : undefined,
-                // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
-                closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
-              });
-            }}>طباعة الكشف</Button>
+            <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
           )}
           {stmt.data && (
             <WhatsAppShare
@@ -201,6 +206,14 @@ export default function SupplierStatement() {
               </div>
             </CardContent>
           </Card>
+
+          <StatementReconcile
+            entityName={stmt.data.supplier.name}
+            entityType="supplier"
+            phone={stmt.data.supplier.phone}
+            currentBalance={stmt.data.summary.currentBalance}
+            onPdf={printStatement}
+          />
 
           <Card>
             <CardContent className="p-0">

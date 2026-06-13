@@ -4,6 +4,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
@@ -78,54 +79,58 @@ export default function CustomerStatement() {
     { enabled: !!customerId }
   );
 
+  // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) ويفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF»).
+  const printStatement = () => {
+    if (!stmt.data) return;
+    const d = stmt.data;
+    const invTxs = d.invoices.map((i) => ({
+      t: new Date(i.invoiceDate).getTime(),
+      date: new Date(i.invoiceDate).toLocaleDateString("en-GB"),
+      ref: i.invoiceNumber, description: "فاتورة مبيعات",
+      debit: i.total as string | null, credit: null as string | null,
+    }));
+    const payTxs = d.payments.map((p) => ({
+      t: new Date(p.createdAt).getTime(),
+      date: new Date(p.createdAt).toLocaleDateString("en-GB"),
+      ref: p.voucherNumber ?? "دفعة",
+      description: p.isStandalone
+        ? (p.direction === "IN" ? "سند قبض مستقل" : "سند صرف مستقل")
+        : (p.direction === "IN" ? "دفعة وارد" : "استرداد"),
+      // الاتجاه المحاسبي: IN ينقص ذمة العميل (دائن)، OUT (استرداد/صرف له) يزيدها (مدين).
+      debit: p.direction === "OUT" ? (p.amount as string | null) : null,
+      credit: p.direction === "IN" ? (p.amount as string | null) : null,
+    }));
+    // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
+    const merged = [...invTxs, ...payTxs].sort((a, b) => a.t - b.t);
+    // §٥: الرصيد الجاري بـDecimal، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
+    let bal = from ? D(d.summary.openingBalance) : D(0);
+    let totDebit = D(0), totCredit = D(0);
+    const txs = merged.map(({ t: _t, ...x }) => {
+      bal = bal.plus(D(x.debit)).minus(D(x.credit));
+      totDebit = totDebit.plus(D(x.debit));
+      totCredit = totCredit.plus(D(x.credit));
+      return { ...x, balance: bal.toFixed(2) };
+    });
+    printCustomerStmt({
+      customerName: d.customer.name, customerPhone: d.customer.phone ?? undefined,
+      fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString("en-GB") : undefined,
+      toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString("en-GB"),
+      transactions: txs,
+      // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
+      totalDebit: totDebit.toFixed(2), totalCredit: totCredit.toFixed(2),
+      openingBalance: from ? d.summary.openingBalance : undefined,
+      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
+      closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
+    });
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">كشف حساب عميل</h1>
         <div className="flex gap-2">
           {stmt.data && (
-            <Button variant="outline" size="sm" onClick={() => {
-              const d = stmt.data!;
-              const invTxs = d.invoices.map(i => ({
-                t: new Date(i.invoiceDate).getTime(),
-                date: new Date(i.invoiceDate).toLocaleDateString('en-GB'),
-                ref: i.invoiceNumber, description: 'فاتورة مبيعات',
-                debit: i.total as string | null, credit: null as string | null,
-              }));
-              const payTxs = d.payments.map(p => ({
-                t: new Date(p.createdAt).getTime(),
-                date: new Date(p.createdAt).toLocaleDateString('en-GB'),
-                ref: p.voucherNumber ?? 'دفعة',
-                description: p.isStandalone
-                  ? (p.direction === 'IN' ? 'سند قبض مستقل' : 'سند صرف مستقل')
-                  : (p.direction === 'IN' ? 'دفعة وارد' : 'استرداد'),
-                // الاتجاه المحاسبي: IN ينقص ذمة العميل (دائن)، OUT (استرداد/صرف له) يزيدها (مدين).
-                debit: p.direction === 'OUT' ? (p.amount as string | null) : null,
-                credit: p.direction === 'IN' ? (p.amount as string | null) : null,
-              }));
-              // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
-              const merged = [...invTxs, ...payTxs].sort((a, b) => a.t - b.t);
-              // §٥: الرصيد الجاري بـDecimal، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
-              let bal = from ? D(stmt.data!.summary.openingBalance) : D(0);
-              let totDebit = D(0), totCredit = D(0);
-              const txs = merged.map(({ t: _t, ...x }) => {
-                bal = bal.plus(D(x.debit)).minus(D(x.credit));
-                totDebit = totDebit.plus(D(x.debit));
-                totCredit = totCredit.plus(D(x.credit));
-                return { ...x, balance: bal.toFixed(2) };
-              });
-              printCustomerStmt({
-                customerName: d.customer.name, customerPhone: d.customer.phone ?? undefined,
-                fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString('en-GB') : undefined,
-                toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString('en-GB'),
-                transactions: txs,
-                // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
-                totalDebit: totDebit.toFixed(2), totalCredit: totCredit.toFixed(2),
-                openingBalance: from ? d.summary.openingBalance : undefined,
-                // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
-                closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
-              });
-            }}>طباعة الكشف</Button>
+            <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
           )}
           {stmt.data && (
             <WhatsAppShare
@@ -212,6 +217,14 @@ export default function CustomerStatement() {
               </div>
             </CardContent>
           </Card>
+
+          <StatementReconcile
+            entityName={stmt.data.customer.name}
+            entityType="customer"
+            phone={stmt.data.customer.phone}
+            currentBalance={stmt.data.summary.currentBalance}
+            onPdf={printStatement}
+          />
 
           <Card>
             <CardContent className="p-0">

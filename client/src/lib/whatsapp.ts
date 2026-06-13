@@ -187,3 +187,52 @@ export function buildStatementMessage(data: StatementMessageData): string {
   lines.push("", "للمراجعة والتسوية تواصلوا معنا.", COMPANY_NAME);
   return lines.join("\n");
 }
+
+export interface ReconcileMessageData {
+  entityName: string;
+  entityType: "customer" | "supplier";
+  currentBalance: string | number;
+  /** تاريخ المطابقة (افتراضي اليوم). */
+  asOfDate?: string;
+  /** هل سيُرفِق المرسِل كشف PDF تفصيلياً؟ يضبط جملة المرفق. */
+  attachedPdf?: boolean;
+}
+
+/**
+ * رسالة «طلب مطابقة» واضحة وبسيطة للعميل/المورد: ترحيب + الرصيد الحالي المستحق (من منظور
+ * المُستلِم: «بذمّتكم لنا» / «لكم بذمّتنا») + طلب صريح بتأكيد المطابقة أو إبلاغ أي فرق،
+ * وجملة إرفاق كشف PDF إن وُجد. بلا إيموجي (تظهر «�» على واتساب) — انظر [[whatsapp]].
+ */
+export function buildReconciliationMessage(d: ReconcileMessageData): string {
+  const bal = Number(d.currentBalance);
+  const abs = fmtMoney(Math.abs(bal));
+  const isCustomer = d.entityType === "customer";
+
+  // السطر من منظور المُستلِم. العميل: موجب = بذمّته لنا. المورد: موجب = مستحق له علينا.
+  let line: string;
+  if (bal === 0) {
+    line = "*لا يوجد رصيد مستحق — الحساب مُطابَق ومُسوّى.*";
+  } else if (isCustomer) {
+    line = bal > 0
+      ? `*المبلغ المستحق بذمّتكم لنا: ${abs} د.ع.*`
+      : `*المبلغ المستحق لكم لدينا: ${abs} د.ع.*`;
+  } else {
+    line = bal > 0
+      ? `*المبلغ المستحق لكم بذمّتنا: ${abs} د.ع.*`
+      : `*المبلغ المستحق بذمّتكم لنا: ${abs} د.ع.*`;
+  }
+
+  const L: string[] = [];
+  L.push(`السلام عليكم ${d.entityName}،`);
+  L.push(`طلب مطابقة حساب من ${COMPANY_NAME}.`);
+  L.push("");
+  L.push(`حسب سجلّاتنا حتى ${d.asOfDate || today()}:`);
+  L.push(line);
+  L.push("");
+  L.push("يرجى مراجعة الرصيد أعلاه وتأكيد المطابقة، أو إبلاغنا بأيّ فرق لتصحيحه.");
+  if (d.attachedPdf) L.push("كشف الحساب التفصيلي مرفق بهذه الرسالة (ملف PDF).");
+  L.push("");
+  L.push("شكراً لتعاونكم.");
+  L.push(COMPANY_NAME);
+  return L.join("\n");
+}
