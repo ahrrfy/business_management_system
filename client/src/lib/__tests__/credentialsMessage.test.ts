@@ -50,6 +50,12 @@ describe("buildCredentialsMessage", () => {
     // يبقى البريد وكلمة المرور حاضرين
     expect(m).toContain(BASE.email);
   });
+
+  it("خالٍ من الإيموجي (تظهر «�» على واتساب) — نصّ عربي + • فقط", () => {
+    const m = buildCredentialsMessage(BASE);
+    expect(/\p{Extended_Pictographic}/u.test(m)).toBe(false);
+    expect(m).toContain("•"); // النقطة (BMP) تظهر سليمة ⇒ مسموحة كتنسيق
+  });
 });
 
 describe("whatsappLink", () => {
