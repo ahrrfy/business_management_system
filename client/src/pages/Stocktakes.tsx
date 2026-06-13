@@ -92,7 +92,8 @@ interface CycleRow {
 }
 
 interface IraData {
-  branches: Array<{ branchId: number; name: string; months: Array<{ ym: string; ira: number }> }>;
+  // ira = null لشهرٍ بلا جلسة معتمدة (الحالة الطبيعية قبل أول جرد) — الخادم يعيدها null صراحةً.
+  branches: Array<{ branchId: number; name: string; months: Array<{ ym: string; ira: number | null }> }>;
   workers: Array<{ name: string; accuracy: number; counts: number }>;
 }
 
@@ -635,14 +636,24 @@ function IraCard({ data, loading }: { data: IraData | null; loading: boolean }) 
                 </span>
               </div>
               <div className="flex h-9 items-end gap-1">
-                {months.map((m, i) => (
-                  <div
-                    key={m.ym}
-                    className={`flex-1 rounded-sm ${i === months.length - 1 ? "bg-primary" : "bg-primary/20"}`}
-                    title={`${m.ym}: ${m.ira.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 })}٪`}
-                    style={{ height: `${Math.max(8, (m.ira - 80) * 5)}%` }}
-                  />
-                ))}
+                {months.map((m, i) => {
+                  // ira قد تكون null (شهر بلا جلسة معتمدة) ⇒ عمود رمادي مُسطّح بلا قراءة، بلا فكّ مرجع null.
+                  const hasData = m.ira != null;
+                  return (
+                    <div
+                      key={m.ym}
+                      className={`flex-1 rounded-sm ${
+                        !hasData ? "bg-muted" : i === months.length - 1 ? "bg-primary" : "bg-primary/20"
+                      }`}
+                      title={
+                        hasData
+                          ? `${m.ym}: ${m.ira!.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 })}٪`
+                          : `${m.ym}: لا بيانات`
+                      }
+                      style={{ height: hasData ? `${Math.max(8, (m.ira! - 80) * 5)}%` : "8%" }}
+                    />
+                  );
+                })}
                 {months.length === 0 && <p className="text-xs text-muted-foreground">لا جلسات معتمدة لهذا الفرع بعد.</p>}
               </div>
             </div>

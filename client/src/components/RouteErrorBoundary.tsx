@@ -3,6 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { nanoid } from "nanoid";
 import { ErrorBoundary, type FallbackProps } from "react-error-boundary";
+import { useLocation } from "wouter";
 
 function Fallback({ error, resetErrorBoundary }: FallbackProps) {
   const ref = (error as { _ref?: string })?._ref ?? "—";
@@ -39,8 +40,12 @@ function onError(error: unknown) {
 }
 
 export function RouteErrorBoundary({ children }: { children: React.ReactNode }) {
+  // wouter يعيد استعمال نفس نسخة حدّ الخطأ عبر مسارات Shell، فتبقى حالة الخطأ عالقة وتُعطّل
+  // كل الصفحات بعد عطل صفحة واحدة. ربط resetKeys بالمسار يُصفّر الحدّ عند كل تنقّل ⇒ يبقى
+  // الخطأ محصوراً في الصفحة المعطوبة وحدها، وتعمل بقية الشاشات فوراً بلا المرور عبر نقطة البيع.
+  const [location] = useLocation();
   return (
-    <ErrorBoundary FallbackComponent={Fallback} onError={onError}>
+    <ErrorBoundary FallbackComponent={Fallback} onError={onError} resetKeys={[location]}>
       {children}
     </ErrorBoundary>
   );
