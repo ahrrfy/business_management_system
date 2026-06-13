@@ -554,7 +554,8 @@ export const accountingEntries = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     // import-integration: OPENING = قيد ترسيخ الرصيد الافتتاحي المستورد من النظام القديم.
-    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING"]).notNull(),
+    // production-slice: INTERNAL_USE = نثرية داخلية (مصروف بالكلفة)، WASTAGE = تلف/هدر (خسارة بالكلفة) — كلاهما بلا نقد.
+    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }),
@@ -612,6 +613,10 @@ export const expenses = mysqlTable(
     ]).default("OTHER").notNull(),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     paymentMethod: mysqlEnum("expensePaymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).default("CASH").notNull(),
+    // production-slice: مصدر الصرف — CASH=نقدي (الموجود، يخصم الصندوق)، STOCK=صرف من المخزون بالكلفة (نثرية/تلف، بلا صندوق).
+    source: mysqlEnum("expenseSource", ["CASH", "STOCK"]).default("CASH").notNull(),
+    // مع source=STOCK فقط: INTERNAL_USE=نثرية داخلية (مصروف)، WASTAGE=تلف (خسارة). NULL لـCASH.
+    stockReason: mysqlEnum("expenseStockReason", ["INTERNAL_USE", "WASTAGE"]),
     description: text("description"),
     referenceNumber: varchar("referenceNumber", { length: 100 }),
     // v3-add-screens: جهة الصرف + مركز التكلفة + علم متكرّر + دورية التكرار.
@@ -1239,3 +1244,138 @@ export const kioskDevices = mysqlTable(
 
 export type KioskDevice = typeof kioskDevices.$inferSelect;
 export type InsertKioskDevice = typeof kioskDevices.$inferInsert;
+
+/* ============================ الإنتاج / التحويل + الوصفات ============================ */
+
+/**
+ * وصفة/معيار إنتاج: تعريف ثابت لمنتج متكرّر (ملزمة/كتاب) ⇒ يملأ نموذج الإنتاج تلقائياً.
+ * المكوّنات تُعرّف **لكل وحدة ناتج أساس واحدة**؛ عند إنتاج كمية Q تُضرب فيها (تحجيم).
+ */
+export const productionRecipes = mysqlTable(
+  "productionRecipes",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 150 }).notNull().unique("uq_recipe_name"),
+    outputVariantId: bigint("outputVariantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    outputProductUnitId: bigint("outputProductUnitId", { mode: "number" }).notNull().references(() => productUnits.id),
+    // عمالة/تشغيل لكل وحدة ناتج أساس (اختياري) — تُضاف لكلفة المنتج، بلا قيد محاسبي منفصل.
+    laborPerOutputBase: decimal("laborPerOutputBase", { precision: 15, scale: 2 }).default("0").notNull(),
+    notes: text("notes"),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    outputIdx: index("idx_recipe_output").on(table.outputVariantId),
+    activeIdx: index("idx_recipe_active").on(table.isActive),
+  })
+);
+
+export type ProductionRecipe = typeof productionRecipes.$inferSelect;
+export type InsertProductionRecipe = typeof productionRecipes.$inferInsert;
+
+/** مكوّنات الوصفة: استهلاك بالوحدة الأساس لكل وحدة ناتج أساس واحدة (مثلاً 30 ورقة/ملزمة). */
+export const productionRecipeLines = mysqlTable(
+  "productionRecipeLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    recipeId: bigint("recipeId", { mode: "number" }).notNull().references(() => productionRecipes.id, { onDelete: "cascade" }),
+    inputVariantId: bigint("inputVariantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    inputProductUnitId: bigint("inputProductUnitId", { mode: "number" }).references(() => productUnits.id),
+    // استهلاك بالوحدة الأساس لكل وحدة ناتج أساس واحدة (يُضرب في كمية الإنتاج Q).
+    qtyPerOutputBase: decimal("qtyPerOutputBase", { precision: 15, scale: 4 }).notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    recipeIdx: index("idx_recipeline_recipe").on(table.recipeId),
+    inputIdx: index("idx_recipeline_input").on(table.inputVariantId),
+  })
+);
+
+export type ProductionRecipeLine = typeof productionRecipeLines.$inferSelect;
+export type InsertProductionRecipeLine = typeof productionRecipeLines.$inferInsert;
+
+/**
+ * مستند إنتاج/تحويل: يستهلك مدخلات (ورق…) ويُنتج مخرجات (دفتر/كتاب/كيس) ذرّياً.
+ * **لا قيد محاسبي** (تحويل أصل↔أصل محايد)؛ القيمة محفوظة بحركتَي المخزون + WAVG على كلفة المخرَج.
+ */
+export const productionOrders = mysqlTable(
+  "productionOrders",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    docNumber: varchar("docNumber", { length: 50 }).notNull().unique("uq_production_docnum"),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    status: mysqlEnum("productionStatus", ["CONFIRMED", "CANCELLED"]).default("CONFIRMED").notNull(),
+    materialsCost: decimal("materialsCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    laborCost: decimal("laborCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalCost: decimal("totalCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    notes: text("notes"),
+    linkedWorkOrderId: bigint("linkedWorkOrderId", { mode: "number" }).references(() => workOrders.id),
+    linkedRecipeId: bigint("linkedRecipeId", { mode: "number" }).references(() => productionRecipes.id),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    numberIdx: index("idx_production_number").on(table.docNumber),
+    branchIdx: index("idx_production_branch").on(table.branchId),
+    statusIdx: index("idx_production_status").on(table.status),
+  })
+);
+
+export type ProductionOrder = typeof productionOrders.$inferSelect;
+export type InsertProductionOrder = typeof productionOrders.$inferInsert;
+
+/** أسطر مستند الإنتاج: INPUT=مُستهلَك (حركة OUT)، OUTPUT=مُنتَج (حركة IN). الكمية الأساس عدد صحيح. */
+export const productionLines = mysqlTable(
+  "productionLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productionOrderId: bigint("productionOrderId", { mode: "number" }).notNull().references(() => productionOrders.id, { onDelete: "cascade" }),
+    direction: mysqlEnum("productionLineDirection", ["INPUT", "OUTPUT"]).notNull(),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    quantity: decimal("quantity", { precision: 15, scale: 4 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    unitCost: decimal("unitCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    lineCost: decimal("lineCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    // OUTPUT فقط: الحصّة المُمتصّة من كلفة الإنتاج الكلية (Σ = totalCost تماماً). NULL للمدخلات.
+    allocatedCost: decimal("allocatedCost", { precision: 15, scale: 2 }),
+    // OUTPUT فقط: نسبة توزيع يدوية اختيارية (NULL ⇒ تناسبي بالكمية الأساس).
+    manualSharePct: decimal("manualSharePct", { precision: 9, scale: 4 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    orderIdx: index("idx_productionline_order").on(table.productionOrderId),
+    variantIdx: index("idx_productionline_variant").on(table.variantId),
+    directionIdx: index("idx_productionline_direction").on(table.direction),
+  })
+);
+
+export type ProductionLine = typeof productionLines.$inferSelect;
+export type InsertProductionLine = typeof productionLines.$inferInsert;
+
+/** أصناف مصروف «صرف من المخزون» (نثرية/تلف): المُستهلَك من المخزون بكلفته (مرتبط بـexpenses.source=STOCK). */
+export const expenseStockItems = mysqlTable(
+  "expenseStockItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    expenseId: bigint("expenseId", { mode: "number" }).notNull().references(() => expenses.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    quantity: decimal("quantity", { precision: 15, scale: 4 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    unitCost: decimal("unitCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    lineCost: decimal("lineCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    expenseIdx: index("idx_expitem_expense").on(table.expenseId),
+    variantIdx: index("idx_expitem_variant").on(table.variantId),
+  })
+);
+
+export type ExpenseStockItem = typeof expenseStockItems.$inferSelect;
+export type InsertExpenseStockItem = typeof expenseStockItems.$inferInsert;

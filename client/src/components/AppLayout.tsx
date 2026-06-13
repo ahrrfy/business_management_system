@@ -5,7 +5,7 @@ import { trpc } from "@/lib/trpc";
 import { Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
-type NavItem = { href: string; label: string; adminOnly?: boolean };
+type NavItem = { href: string; label: string; adminOnly?: boolean; managerOnly?: boolean };
 type NavGroup = {
   key: string;
   label: string;
@@ -49,6 +49,8 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "🖨️",
     items: [
       { href: "/work-orders", label: "أوامر الشغل" },
+      { href: "/production", label: "الإنتاج والتحويل", managerOnly: true },
+      { href: "/production-recipes", label: "وصفات الإنتاج", managerOnly: true },
     ],
   },
   {
@@ -168,6 +170,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   const isAdmin = me.data?.role === "admin";
+  const isManager = isAdmin || me.data?.role === "manager";
 
   return (
     <div className="min-h-screen flex bg-muted/30" dir="rtl">
@@ -197,7 +200,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {NAV_GROUPS.filter((g) => !g.adminOnly || isAdmin).map((group) => {
             const isOpen = openGroups.has(group.key);
             const hasActive = group.items.some((item) => item.href === loc);
-            const visibleItems = group.items.filter((item) => !item.adminOnly || isAdmin);
+            const visibleItems = group.items.filter((item) => (!item.adminOnly || isAdmin) && (!item.managerOnly || isManager));
             if (visibleItems.length === 0) return null;
 
             return (

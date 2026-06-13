@@ -4,11 +4,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
-import { D } from "@/lib/money";
+import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
+import { confirm } from "@/lib/confirm";
+import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 
 /**
@@ -51,6 +53,29 @@ const FREQS: { value: string; label: string }[] = [
   { value: "YEARLY", label: "سنوي" },
 ];
 
+let _itemKey = 1;
+type StockLine = {
+  key: number; variantId: number; productName: string; sku: string;
+  costPriceBase: string; stockBase: number; units: PurchaseRow[];
+  productUnitId: number; conversionFactor: string; qty: string;
+};
+function mkStockLine(v: PurchaseRow, units: PurchaseRow[]): StockLine {
+  return {
+    key: _itemKey++, variantId: v.variantId, productName: v.productName, sku: v.sku,
+    costPriceBase: String(v.costPriceBase ?? "0"), stockBase: Number(v.stockBase ?? 0),
+    units: units.length ? units : [v], productUnitId: v.productUnitId,
+    conversionFactor: String(v.conversionFactor ?? "1"), qty: "1",
+  };
+}
+function baseQtyOf(l: StockLine) { return D(l.qty).times(D(l.conversionFactor)); }
+function stockLineValid(l: StockLine): boolean { const b = baseQtyOf(l); return b.gt(0) && b.isInteger(); }
+
+const SOURCE_TABS: { value: "CASH" | "INTERNAL_USE" | "WASTAGE"; label: string; hint: string }[] = [
+  { value: "CASH", label: "نقدي", hint: "صرف نقد من الصندوق" },
+  { value: "INTERNAL_USE", label: "نثرية (من المخزون)", hint: "استهلاك صنف داخلياً ⇒ مصروف بالكلفة" },
+  { value: "WASTAGE", label: "تلف (من المخزون)", hint: "صنف تالف ⇒ خسارة بالكلفة" },
+];
+
 export default function ExpenseNew() {
   const [, navigate] = useLocation();
   const me = trpc.auth.me.useQuery();
@@ -72,6 +97,15 @@ export default function ExpenseNew() {
   // idempotency: مفتاح ثابت للنموذج — يمنع ازدواج الصرف عند النقر المزدوج/إعادة الشبكة. يتجدّد بعد نجاح كل تسجيل.
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
 
+  // production-slice: مصدر الصرف — نقدي أو صرف من المخزون (نثرية/تلف).
+  const [source, setSource] = useState<"CASH" | "INTERNAL_USE" | "WASTAGE">("CASH");
+  const isStock = source !== "CASH";
+  const [items, setItems] = useState<StockLine[]>([]);
+  const itemsTotal = useMemo(
+    () => items.reduce((acc, l) => acc.plus(round2(D(l.costPriceBase).times(baseQtyOf(l)))), D(0)),
+    [items]
+  );
+
   const effectiveBranch = branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1);
   const openShift = trpc.shifts.current.useQuery(
     { branchId: Number(effectiveBranch) },
@@ -88,9 +122,37 @@ export default function ExpenseNew() {
     onError: (e) => { setError(e.message); notify.err(e); },
   });
 
-  function submit() {
+  async function submit() {
     setError("");
     if (!effectiveBranch) return setError("اختر الفرع.");
+
+    // production-slice: صرف من المخزون (نثرية/تلف) — يُخصَم بالكلفة بلا صندوق.
+    if (isStock) {
+      if (items.length === 0) return setError("أضِف صنفاً واحداً على الأقل.");
+      for (const l of items) if (!stockLineValid(l)) return setError(`كمية «${l.productName}» يجب أن تُنتج عدداً صحيحاً موجباً.`);
+      const ok = await confirm({
+        variant: "danger",
+        title: source === "WASTAGE" ? "تسجيل تلف من المخزون" : "تسجيل نثرية من المخزون",
+        description: `سيُخصَم ${items.length} صنف من المخزون ويُسجَّل ${source === "WASTAGE" ? "خسارةً" : "مصروفاً"} بقيمة ${fmt(itemsTotal.toString())} د.ع (لا يلمس الصندوق النقدي). متابعة؟`,
+        confirmText: source === "WASTAGE" ? "تسجيل التلف" : "تسجيل النثرية",
+      });
+      if (!ok) return;
+      create.mutate({
+        branchId: Number(effectiveBranch),
+        expenseDate: expenseDate || undefined,
+        category: category as any,
+        amount: "0",
+        paymentMethod: "CASH",
+        source: "STOCK",
+        stockReason: source,
+        items: items.map((l) => ({ variantId: l.variantId, productUnitId: l.productUnitId, quantity: D(l.qty).toFixed(4) })),
+        description: description.trim() || null,
+        clientRequestId,
+      });
+      return;
+    }
+
+    // نقدي (CASH).
     if (!amount.trim() || D(amount).lte(0)) return setError("المبلغ مطلوب وموجب.");
     if (category === "OTHER" && !description.trim()) return setError("وصف المصروف مطلوب لفئة «أخرى».");
     create.mutate({
@@ -117,6 +179,25 @@ export default function ExpenseNew() {
         <Link href="/expenses" className="text-sm text-muted-foreground">← رجوع للمصروفات</Link>
       </div>
 
+      {/* مصدر الصرف: نقدي أو صرف من المخزون (نثرية/تلف) */}
+      <Card>
+        <CardContent className="pt-4 space-y-2">
+          <div className="flex flex-wrap gap-2">
+            {SOURCE_TABS.map((t) => (
+              <button
+                key={t.value}
+                type="button"
+                onClick={() => { setSource(t.value); setError(""); if (t.value === "INTERNAL_USE") setCategory("SUPPLIES"); if (t.value === "WASTAGE") setCategory("OTHER"); }}
+                className={cn("rounded-full px-4 py-1.5 text-sm border transition", source === t.value ? "bg-primary text-primary-foreground border-primary" : "bg-transparent hover:bg-accent")}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-xs text-muted-foreground">{SOURCE_TABS.find((t) => t.value === source)?.hint}</p>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات المصروف</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -141,16 +222,20 @@ export default function ExpenseNew() {
               {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
             </select>
           </div>
-          <div className="space-y-1">
-            <Label>طريقة الدفع *</Label>
-            <select className={selectCls} value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
-              {METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label>المبلغ *</Label>
-            <Input dir="ltr" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
-          </div>
+          {!isStock && (
+            <>
+              <div className="space-y-1">
+                <Label>طريقة الدفع *</Label>
+                <select className={selectCls} value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)}>
+                  {METHODS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label>المبلغ *</Label>
+                <Input dir="ltr" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
+              </div>
+            </>
+          )}
           <div className="space-y-1">
             <Label>رقم مرجعي (اختياري)</Label>
             <Input dir="ltr" value={referenceNumber} onChange={(e) => setReferenceNumber(e.target.value)} placeholder="فاتورة/إيصال" />
@@ -162,6 +247,42 @@ export default function ExpenseNew() {
         </CardContent>
       </Card>
 
+      {/* أصناف الصرف من المخزون (نثرية/تلف) */}
+      {isStock && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">الأصناف المُستهلَكة من المخزون</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <ProductSearchPicker branchId={Number(effectiveBranch)} placeholder="ابحث عن صنف…" onPick={(v, u) => setItems((p) => [...p, mkStockLine(v, u)])} />
+            {items.map((l) => {
+              const base = baseQtyOf(l);
+              const valid = stockLineValid(l);
+              const over = base.gt(l.stockBase);
+              return (
+                <div key={l.key} className="grid grid-cols-12 gap-2 items-center border rounded-md p-2">
+                  <div className="col-span-4"><div className="font-medium text-sm">{l.productName}</div><div className="text-xs text-muted-foreground font-mono" dir="ltr">{l.sku}</div></div>
+                  <div className="col-span-3">
+                    <select className={selectCls} value={l.productUnitId} onChange={(e) => { const u = l.units.find((x) => x.productUnitId === Number(e.target.value)); setItems((p) => p.map((x) => x.key === l.key ? { ...x, productUnitId: Number(e.target.value), conversionFactor: String(u?.conversionFactor ?? "1") } : x)); }}>
+                      {l.units.map((u) => <option key={u.productUnitId} value={u.productUnitId}>{u.unitName}{u.isBaseUnit ? " (أساس)" : ` × ${u.conversionFactor}`}</option>)}
+                    </select>
+                  </div>
+                  <div className="col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setItems((p) => p.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} /></div>
+                  <div className="col-span-2 text-left text-sm tabular-nums" dir="ltr">{fmt(round2(D(l.costPriceBase).times(base)).toString())}</div>
+                  <div className="col-span-1 text-left"><button type="button" className="text-rose-600 text-sm" onClick={() => setItems((p) => p.filter((x) => x.key !== l.key))}>حذف</button></div>
+                  {!valid && <div className="col-span-12 text-xs text-rose-600">الكمية يجب أن تُنتج عدداً صحيحاً موجباً.</div>}
+                  {over && <div className="col-span-12 text-xs text-amber-600">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
+                </div>
+              );
+            })}
+            {items.length === 0 && <p className="text-xs text-muted-foreground">لم تُضف أصنافاً بعد.</p>}
+            <div className="flex justify-end text-sm">
+              <span className="text-muted-foreground">سيُسجَّل {source === "WASTAGE" ? "خسارةً" : "مصروفاً"}:&nbsp;</span>
+              <span className="font-bold text-sky-700 tabular-nums" dir="ltr">{fmt(itemsTotal.toString())}</span>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {!isStock && (<>
       <Card>
         <CardHeader><CardTitle className="text-base">جهة الصرف ومركز التكلفة</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -200,6 +321,7 @@ export default function ExpenseNew() {
           </div>
         </CardContent>
       </Card>
+      </>)}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex gap-2">

@@ -48,7 +48,8 @@ export const expenseRouter = router({
         shiftId: z.number().int().positive().nullish(),
         expenseDate: z.string().optional(),
         category,
-        amount: z.string(),
+        // STOCK لا يرسل مبلغاً (يُحتسب من الكلفة) ⇒ افتراضي "0".
+        amount: z.string().default("0"),
         paymentMethod: method,
         description: z.string().nullish(),
         referenceNumber: z.string().nullish(),
@@ -57,7 +58,20 @@ export const expenseRouter = router({
         costCenter: z.string().max(80).nullish(),
         isRecurring: z.boolean().nullish(),
         recurringFrequency: recurringFreq.nullish(),
-        // idempotency: نقرة مزدوجة على «أضف مصروفاً» (نقد OUT) ⇒ مصروف واحد.
+        // production-slice: مصدر الصرف + (مع STOCK) نوعه وأصنافه المُستهلَكة.
+        source: z.enum(["CASH", "STOCK"]).nullish(),
+        stockReason: z.enum(["INTERNAL_USE", "WASTAGE"]).nullish(),
+        items: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              productUnitId: z.number().int().positive().nullish(),
+              quantity: z.string().optional(),
+              baseQuantity: z.number().int().positive().optional(),
+            })
+          )
+          .optional(),
+        // idempotency: نقرة مزدوجة على «أضف مصروفاً» ⇒ مصروف واحد.
         clientRequestId: z.string().min(1).max(80).optional(),
       })
     )

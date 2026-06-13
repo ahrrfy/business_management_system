@@ -4,7 +4,16 @@ import { accountingEntries, customers, suppliers } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { money, toDbMoney } from "./money";
 
-export type EntryType = "SALE" | "PURCHASE" | "PAYMENT_IN" | "PAYMENT_OUT" | "RETURN" | "ADJUST";
+export type EntryType =
+  | "SALE"
+  | "PURCHASE"
+  | "PAYMENT_IN"
+  | "PAYMENT_OUT"
+  | "RETURN"
+  | "ADJUST"
+  | "OPENING"
+  | "INTERNAL_USE" // نثرية داخلية: صرف مخزون كمصروف بالكلفة (بلا نقد)
+  | "WASTAGE"; // تلف/هدر: صرف مخزون كخسارة بالكلفة (بلا نقد)
 
 export interface EntryInput {
   entryType: EntryType;

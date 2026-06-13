@@ -33,6 +33,16 @@ const METHOD_LABEL: Record<string, string> = {
   WALLET: "محفظة",
 };
 
+// production-slice: مصدر الصرف من المخزون (نثرية/تلف) بدل طريقة الدفع.
+const STOCK_REASON_LABEL: Record<string, string> = {
+  INTERNAL_USE: "نثرية (مخزون)",
+  WASTAGE: "تلف (مخزون)",
+};
+function sourceLabel(r: { source?: string | null; stockReason?: string | null; paymentMethod: string }) {
+  if (r.source === "STOCK") return STOCK_REASON_LABEL[r.stockReason ?? ""] ?? "مخزون";
+  return METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod;
+}
+
 const STATUS_CLS: Record<string, string> = {
   ACTIVE: "bg-emerald-100 text-emerald-700",
   CANCELLED: "bg-rose-100 text-rose-700",
@@ -176,7 +186,7 @@ export default function Expenses() {
                 <th className="p-2">الفرع</th>
                 <th className="p-2">الفئة</th>
                 <th className="p-2">الوصف</th>
-                <th className="p-2">طريقة الدفع</th>
+                <th className="p-2">الدفع / المصدر</th>
                 <th className="p-2 text-left">المبلغ</th>
                 <th className="p-2">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
@@ -189,7 +199,7 @@ export default function Expenses() {
                   <td className="p-2">{r.branchName ?? "—"}</td>
                   <td className="p-2">{CATEGORY_LABEL[r.category] ?? r.category}</td>
                   <td className="p-2 max-w-xs truncate" title={r.description ?? ""}>{r.description ?? "—"}</td>
-                  <td className="p-2">{METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}</td>
+                  <td className="p-2">{sourceLabel(r)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.amount)}</td>
                   <td className="p-2">
                     <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
@@ -214,7 +224,9 @@ export default function Expenses() {
                             if (!(await confirm({
                               variant: "warning",
                               title: "إلغاء المصروف",
-                              description: `سيُعكس مبلغ ${fmt(r.amount)} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
+                              description: r.source === "STOCK"
+                                ? `ستُعاد الأصناف (${fmt(r.amount)} د.ع كلفةً) إلى المخزون ويُعكس القيد. هل تتابع؟`
+                                : `سيُعكس مبلغ ${fmt(r.amount)} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
                               confirmText: "إلغاء المصروف",
                               cancelText: "تراجع",
                             }))) return;

@@ -45,6 +45,10 @@ import Transfers from "@/pages/Transfers";
 import WorkOrderDetail from "@/pages/WorkOrderDetail";
 import WorkOrderNew from "@/pages/WorkOrderNew";
 import WorkOrders from "@/pages/WorkOrders";
+import Production from "@/pages/Production";
+import ProductionNew from "@/pages/ProductionNew";
+import ProductionDetail from "@/pages/ProductionDetail";
+import ProductionRecipes from "@/pages/ProductionRecipes";
 import Shifts from "@/pages/Shifts";
 import Users from "@/pages/Users";
 import UserNew from "@/pages/UserNew";
@@ -144,6 +148,10 @@ export default function App() {
       <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>
       <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
+      <Route path="/production"><Shell><Production /></Shell></Route>
+      <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
+      <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
+      <Route path="/production-recipes"><Shell><ProductionRecipes /></Shell></Route>
       <Route path="/expenses"><Shell><Expenses /></Shell></Route>
       <Route path="/expenses/new"><Shell><ExpenseNew /></Shell></Route>
       <Route path="/vouchers"><Shell><Vouchers /></Shell></Route>
