@@ -90,6 +90,7 @@ export default function UserNew() {
   const [error, setError] = useState("");
   const [createdInfo, setCreatedInfo] = useState<{
     name: string; email: string; password: string; phone?: string;
+    roleLabel?: string; branchName?: string | null; jobTitle?: string | null; mustChangePassword?: boolean;
   } | null>(null);
 
   const branches = trpc.branches.list.useQuery();
@@ -164,12 +165,32 @@ export default function UserNew() {
   const create = trpc.users.create.useMutation({
     onSuccess: (_, vars) => {
       utils.users.list.invalidate();
-      setCreatedInfo({ name: vars.name, email: vars.email, password: vars.password, phone: vars.phone ?? undefined });
+      setCreatedInfo({
+        name: vars.name,
+        email: vars.email,
+        password: vars.password,
+        phone: vars.phone ?? undefined,
+        roleLabel: ROLE_OPTIONS.find((r) => r.value === vars.role)?.label ?? vars.role,
+        branchName: vars.branchId ? branches.data?.find((b: any) => b.id === vars.branchId)?.name ?? null : null,
+        jobTitle: vars.jobTitle ?? null,
+        mustChangePassword: vars.mustChangePassword,
+      });
     },
     onError: (e) => setError(e.message),
   });
 
-  function buildAndSubmit(addAnother: boolean) {
+  /** تفريغ النموذج لإضافة مستخدم آخر (من بطاقة المشاركة بعد النجاح). */
+  function resetForm() {
+    setEmail(""); setEmailError(""); setEmailChecked(false);
+    setPassword(""); setPasswordConfirm("");
+    setName(""); setPhone(""); setJobTitle(""); setHiredAt("");
+    setRole("cashier"); setPermsOverride({});
+    setBranchId((me?.data?.branchId as number) ?? "");
+    setMustChangePassword(true);
+    setError("");
+  }
+
+  function buildAndSubmit() {
     setError("");
     if (emailError) { setError(emailError); return; }
     if (!email.trim()) { setError("البريد الإلكتروني مطلوب."); return; }
@@ -179,6 +200,9 @@ export default function UserNew() {
     if (password !== passwordConfirm) { setError("تأكيد كلمة المرور لا يطابق."); return; }
     if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) { setError("تاريخ التوظيف غير صالح."); return; }
     const override = diffFromTemplate(role, resolvedPerms);
+    // النجاح يعرض بطاقة المشاركة (CredentialsShare) عبر onSuccess على مستوى الطفرة. ⛔ لا تنقّل هنا:
+    // navigate("/users") السابق كان يُنفَّذ مع onSuccess فيُخفي البطاقة قبل ظهورها (سبب «الميزة غير مطبّقة»).
+    // التنقّل و«إضافة آخر» من أزرار البطاقة بعد المشاركة.
     create.mutate({
       email: email.trim().toLowerCase(),
       password,
@@ -190,16 +214,6 @@ export default function UserNew() {
       hiredAt: hiredAt || null,
       permissionsOverride: override,
       mustChangePassword,
-    }, {
-      onSuccess: () => {
-        if (addAnother) {
-          setEmail(""); setPassword(""); setPasswordConfirm(""); setName("");
-          setPhone(""); setJobTitle(""); setHiredAt(""); setPermsOverride({});
-          setEmailError(""); setEmailChecked(false);
-        } else {
-          navigate("/users");
-        }
-      },
     });
   }
 
@@ -219,10 +233,14 @@ export default function UserNew() {
           email={createdInfo.email}
           password={createdInfo.password}
           phone={createdInfo.phone}
+          roleLabel={createdInfo.roleLabel}
+          branchName={createdInfo.branchName}
+          jobTitle={createdInfo.jobTitle}
+          mustChangePassword={createdInfo.mustChangePassword}
           onClose={() => navigate("/users")}
         />
         <div className="flex gap-2">
-          <Button variant="outline" onClick={() => { setCreatedInfo(null); }}>إضافة مستخدم آخر</Button>
+          <Button variant="outline" onClick={() => { setCreatedInfo(null); resetForm(); }}>إضافة مستخدم آخر</Button>
           <Link href="/users"><Button>العودة للقائمة</Button></Link>
         </div>
       </div>
@@ -369,14 +387,14 @@ export default function UserNew() {
       {error && <p className="text-sm text-destructive">{error}</p>}
 
       <div className="flex flex-wrap gap-2">
-        <Button onClick={() => buildAndSubmit(false)} disabled={create.isPending}>
+        <Button onClick={() => buildAndSubmit()} disabled={create.isPending}>
           {create.isPending ? "جارٍ الحفظ…" : "حفظ المستخدم"}
-        </Button>
-        <Button variant="outline" onClick={() => buildAndSubmit(true)} disabled={create.isPending}>
-          حفظ وإضافة آخر
         </Button>
         <Link href="/users"><Button variant="ghost">إلغاء</Button></Link>
       </div>
+      <p className="text-xs text-muted-foreground">
+        بعد الحفظ تظهر بطاقة لمشاركة بيانات الدخول عبر واتساب أو نسخها — ومنها يمكنك إضافة مستخدم آخر.
+      </p>
     </div>
   );
 }
