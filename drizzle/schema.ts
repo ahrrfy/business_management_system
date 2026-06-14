@@ -1391,3 +1391,125 @@ export const expenseStockItems = mysqlTable(
 
 export type ExpenseStockItem = typeof expenseStockItems.$inferSelect;
 export type InsertExpenseStockItem = typeof expenseStockItems.$inferInsert;
+
+/* ============================ الأصول الثابتة (Fixed Assets) ============================
+ * سجلّ أصول ثابتة + عهدة على الموظف + إهلاك (قسط ثابت/متناقص يُحسب عند القراءة) + صيانة + مستندات.
+ * كل المبالغ decimal(15,2). الإهلاك لا يُخزَّن (يتغيّر بمرور الزمن) — يُحسب في assetsService. */
+
+export const fixedAssets = mysqlTable(
+  "fixedAssets",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    /** رمز الأصل المعروض (AST-1001). يُولَّد تسلسلياً في الخدمة. */
+    code: varchar("code", { length: 30 }).notNull().unique(),
+    name: varchar("name", { length: 255 }).notNull(),
+    category: mysqlEnum("assetCategory", [
+      "computers", "display", "furniture", "vehicles", "printing", "devices",
+    ]).notNull(),
+    brand: varchar("brand", { length: 120 }),
+    serial: varchar("serial", { length: 120 }),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    location: varchar("location", { length: 255 }),
+
+    /** الموظف صاحب العهدة الحالية (NULL = أصل عام/غير مُسلَّم). */
+    custodianId: bigint("custodianId", { mode: "number" }).references(() => employees.id),
+    supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
+
+    purchaseDate: date("purchaseDate", { mode: "string" }).notNull(),
+    purchaseValue: decimal("purchaseValue", { precision: 15, scale: 2 }).notNull(),
+    salvageValue: decimal("salvageValue", { precision: 15, scale: 2 }).default("0").notNull(),
+    /** العمر الإنتاجي بالسنوات. */
+    usefulLifeYears: int("usefulLifeYears").notNull(),
+    /** sl = القسط الثابت، db = القسط المتناقص المضاعف. */
+    depreciationMethod: mysqlEnum("depreciationMethod", ["sl", "db"]).default("sl").notNull(),
+
+    condition: varchar("condition", { length: 60 }),
+    warrantyEnd: date("warrantyEnd", { mode: "string" }),
+
+    status: mysqlEnum("assetStatus", [
+      "active",       // بالخدمة
+      "maintenance",  // في الصيانة
+      "retired",      // خارج الخدمة (بانتظار قرار)
+      "disposed",     // مُستبعَد (بيع/خردة)
+    ]).default("active").notNull(),
+
+    /** الإخراج/الاستبعاد. */
+    disposalDate: date("disposalDate", { mode: "string" }),
+    disposalValue: decimal("disposalValue", { precision: 15, scale: 2 }),
+    disposalReason: varchar("disposalReason", { length: 255 }),
+
+    /** ربط اختياري بجهاز بصمة (kioskDevices) في وحدة الموارد البشرية. */
+    linkedDeviceId: bigint("linkedDeviceId", { mode: "number" }).references(() => kioskDevices.id),
+
+    isActive: boolean("isActive").default(true),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    codeIdx: index("idx_asset_code").on(t.code),
+    statusIdx: index("idx_asset_status").on(t.status),
+    custodianIdx: index("idx_asset_custodian").on(t.custodianId),
+    branchIdx: index("idx_asset_branch").on(t.branchId),
+    categoryIdx: index("idx_asset_category").on(t.category),
+  })
+);
+export type FixedAsset = typeof fixedAssets.$inferSelect;
+export type InsertFixedAsset = typeof fixedAssets.$inferInsert;
+
+/* سلسلة العهدة — كل صفّ فترة عهدة لموظف (toDate=NULL ⇒ العهدة الجارية). */
+export const assetCustodyLog = mysqlTable(
+  "assetCustodyLog",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    assetId: bigint("assetId", { mode: "number" }).notNull().references(() => fixedAssets.id),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    fromDate: date("fromDate", { mode: "string" }).notNull(),
+    /** NULL = العهدة الحالية (لم تُعَد بعد). */
+    toDate: date("toDate", { mode: "string" }),
+    note: text("note"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    assetIdx: index("idx_custody_asset").on(t.assetId),
+    employeeIdx: index("idx_custody_employee").on(t.employeeId),
+  })
+);
+export type AssetCustody = typeof assetCustodyLog.$inferSelect;
+export type InsertAssetCustody = typeof assetCustodyLog.$inferInsert;
+
+/* سجلّ الصيانة لكل أصل + تكلفتها. */
+export const assetMaintenance = mysqlTable(
+  "assetMaintenance",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    assetId: bigint("assetId", { mode: "number" }).notNull().references(() => fixedAssets.id),
+    maintDate: date("maintDate", { mode: "string" }).notNull(),
+    type: varchar("type", { length: 255 }).notNull(),
+    vendor: varchar("vendor", { length: 255 }),
+    cost: decimal("cost", { precision: 15, scale: 2 }).default("0").notNull(),
+    note: text("note"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    assetIdx: index("idx_maint_asset").on(t.assetId),
+    dateIdx: index("idx_maint_date").on(t.maintDate),
+  })
+);
+export type AssetMaintenance = typeof assetMaintenance.$inferSelect;
+export type InsertAssetMaintenance = typeof assetMaintenance.$inferInsert;
+
+/* مستندات الأصل (فاتورة شراء/كفالة/محضر استبعاد…) — مفتاح S3 اختياري. */
+export const assetDocuments = mysqlTable(
+  "assetDocuments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    assetId: bigint("assetId", { mode: "number" }).notNull().references(() => fixedAssets.id),
+    title: varchar("title", { length: 255 }).notNull(),
+    /** مفتاح S3 (النظام يستعمل @aws-sdk/client-s3 مسبقاً). */
+    fileKey: varchar("fileKey", { length: 512 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({ assetIdx: index("idx_doc_asset").on(t.assetId) })
+);
+export type AssetDocument = typeof assetDocuments.$inferSelect;
+export type InsertAssetDocument = typeof assetDocuments.$inferInsert;

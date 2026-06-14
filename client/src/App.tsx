@@ -49,6 +49,12 @@ import Production from "@/pages/Production";
 import ProductionNew from "@/pages/ProductionNew";
 import ProductionDetail from "@/pages/ProductionDetail";
 import ProductionRecipes from "@/pages/ProductionRecipes";
+import Assets from "@/pages/Assets";
+import AssetRegister from "@/pages/AssetRegister";
+import AssetDetail from "@/pages/AssetDetail";
+import AssetNew from "@/pages/AssetNew";
+import AssetCustodyReport from "@/pages/AssetCustodyReport";
+import AssetDisposalLog from "@/pages/AssetDisposalLog";
 import Shifts from "@/pages/Shifts";
 import Users from "@/pages/Users";
 import UserNew from "@/pages/UserNew";
@@ -152,6 +158,12 @@ export default function App() {
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
       <Route path="/production-recipes"><Shell><ProductionRecipes /></Shell></Route>
+      <Route path="/assets"><Shell><Assets /></Shell></Route>
+      <Route path="/assets/new"><Shell><AssetNew /></Shell></Route>
+      <Route path="/assets/register"><Shell><AssetRegister /></Shell></Route>
+      <Route path="/assets/custody-report"><Shell><AssetCustodyReport /></Shell></Route>
+      <Route path="/assets/disposal-log"><Shell><AssetDisposalLog /></Shell></Route>
+      <Route path="/assets/:id"><Shell><AssetDetail /></Shell></Route>
       <Route path="/expenses"><Shell><Expenses /></Shell></Route>
       <Route path="/expenses/new"><Shell><ExpenseNew /></Shell></Route>
       <Route path="/vouchers"><Shell><Vouchers /></Shell></Route>

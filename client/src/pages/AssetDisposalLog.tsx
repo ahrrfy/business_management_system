@@ -1,0 +1,95 @@
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ListToolbar } from "@/components/list";
+import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
+import { trpc } from "@/lib/trpc";
+import { assetCategoryLabel } from "@shared/assets";
+import { Archive, CircleSlash, TrendingDown, Wallet } from "lucide-react";
+import { Link } from "wouter";
+
+export default function AssetDisposalLog() {
+  const q = trpc.assets.disposalLog.useQuery();
+
+  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (q.error) return <div className="p-10 text-center text-destructive">تعذّر التحميل: {q.error.message}</div>;
+  const rows = q.data ?? [];
+
+  const disposed = rows.filter((r) => r.status === "disposed");
+  const retired = rows.filter((r) => r.status === "retired");
+  const totalProceeds = disposed.reduce((s, r) => s + Number(r.proceeds ?? 0), 0);
+  const netGain = disposed.reduce((s, r) => s + Number(r.gain ?? 0), 0);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <h1 className="text-2xl font-bold">سجلّ الاستبعاد والإخراج</h1>
+        <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <StatCard label="مُستبعَد (بيع/خردة)" value={iqd(disposed.length)} icon={Archive} />
+        <StatCard label="خارج الخدمة" value={iqd(retired.length)} icon={CircleSlash} />
+        <StatCard label="إجمالي العائد" value={iqd(totalProceeds)} icon={Wallet} sub="د.ع" />
+        <StatCard label="صافي الربح/الخسارة" value={iqd(netGain)} icon={TrendingDown} sub="مقابل القيمة الدفترية" tone={netGain >= 0 ? "positive" : "negative"} />
+      </div>
+
+      <Card>
+        <CardHeader>
+          <ListToolbar
+            title="القائمة"
+            count={rows.length}
+            exportSpec={{
+              filename: "سجل_الاستبعاد",
+              rows,
+              columns: [
+                { key: "code", header: "الرمز" },
+                { key: "name", header: "الأصل" },
+                { key: "status", header: "النوع", map: (r) => (r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة") },
+                { key: "disposalDate", header: "التاريخ", map: (r) => String(r.disposalDate ?? "") },
+                { key: "purchaseValue", header: "قيمة الشراء", map: (r) => Number(r.purchaseValue) },
+                { key: "bookValue", header: "الدفترية عند الإخراج", map: (r) => r.bookValue },
+                { key: "proceeds", header: "العائد", map: (r) => (r.proceeds ?? "") },
+                { key: "gain", header: "النتيجة", map: (r) => (r.gain ?? "") },
+              ],
+            }}
+          />
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50"><tr className="text-right">
+                <th className="p-2">الأصل</th>
+                <th className="p-2 text-center">النوع</th>
+                <th className="p-2">التاريخ</th>
+                <th className="p-2 text-left">قيمة الشراء</th>
+                <th className="p-2 text-left">الدفترية عند الإخراج</th>
+                <th className="p-2 text-left">العائد</th>
+                <th className="p-2 text-left">النتيجة</th>
+              </tr></thead>
+              <tbody>
+                {rows.map((r) => (
+                  <tr key={r.id} className="border-t hover:bg-accent/50">
+                    <td className="p-2"><Link href={`/assets/${r.id}`} className="flex items-center gap-1.5 hover:text-primary"><CategoryIcon category={r.category} /><span><span className="font-medium">{r.name}</span> <span className="text-xs text-muted-foreground" dir="ltr">{r.code}</span><div className="text-xs text-muted-foreground">{assetCategoryLabel(r.category)}</div></span></Link></td>
+                    <td className="p-2 text-center">
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${r.status === "disposed" ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300" : "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة"}</span>
+                    </td>
+                    <td className="p-2 text-xs" dir="ltr">{r.disposalDate ?? "—"}</td>
+                    <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.purchaseValue)}</td>
+                    <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.bookValue)}</td>
+                    <td className="p-2 text-left tabular-nums" dir="ltr">{r.proceeds != null ? iqd(r.proceeds) : "—"}</td>
+                    <td className="p-2 text-left tabular-nums" dir="ltr">
+                      {r.gain != null ? (
+                        <span className={r.gain >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>{r.gain >= 0 ? "+" : ""}{iqd(r.gain)}</span>
+                      ) : "—"}
+                    </td>
+                  </tr>
+                ))}
+                {rows.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أصول مُستبعَدة أو خارج الخدمة.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

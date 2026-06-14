@@ -61,6 +61,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "products",     label: "المنتجات",           description: "إدارة المنتجات والأسعار والوحدات" },
   { key: "expenses",     label: "المصروفات",          description: "إدخال وتعديل المصروفات اليومية" },
   { key: "reports",      label: "التقارير",           description: "تقارير المبيعات، الأرباح، أعمار الذمم" },
+  { key: "assets",       label: "الأصول الثابتة",      description: "سجلّ الأصول، العهدة، الإهلاك، الصيانة، الاستبعاد" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
 ];
@@ -69,51 +70,61 @@ export type PermissionMap = Record<string, AccessLevel>;
 
 export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   admin: {
+    assets: "FULL",
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "FULL", settings: "FULL",
   },
   manager: {
+    assets: "FULL",
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "READ", settings: "READ",
   },
   accountant: {
+    assets: "READ",
     pos: "NONE", sales: "READ", purchases: "READ", inventory: "READ", workorders: "NONE",
     customers: "READ", suppliers: "READ", products: "NONE", expenses: "FULL", reports: "FULL",
     users: "NONE", settings: "NONE",
   },
   cashier: {
+    assets: "NONE",
     pos: "FULL", sales: "FULL", purchases: "NONE", inventory: "READ", workorders: "READ",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "FULL", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
   warehouse: {
+    assets: "READ",
     pos: "NONE", sales: "READ", purchases: "FULL", inventory: "FULL", workorders: "READ",
     customers: "READ", suppliers: "FULL", products: "FULL", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
   },
   purchasing: {
+    assets: "NONE",
     pos: "NONE", sales: "NONE", purchases: "FULL", inventory: "READ", workorders: "NONE",
     customers: "NONE", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
   },
   print_operator: {
+    assets: "NONE",
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "FULL",
     customers: "READ", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
   sales_rep: {
+    assets: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "NONE", workorders: "NONE",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
   auditor: {
+    assets: "READ",
     pos: "READ", sales: "READ", purchases: "READ", inventory: "READ", workorders: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "READ", reports: "READ",
     users: "READ", settings: "READ",
   },
   user: {
+    assets: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "READ", workorders: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",

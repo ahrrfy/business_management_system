@@ -67,6 +67,18 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    key: "assets",
+    label: "الأصول الثابتة",
+    icon: "🖥️",
+    items: [
+      { href: "/assets", label: "لوحة الأصول", managerOnly: true },
+      { href: "/assets/register", label: "سجلّ الأصول", managerOnly: true },
+      { href: "/assets/new", label: "أصل جديد", managerOnly: true },
+      { href: "/assets/custody-report", label: "تقرير العهد", managerOnly: true },
+      { href: "/assets/disposal-log", label: "سجلّ الاستبعاد", managerOnly: true },
+    ],
+  },
+  {
     key: "treasury",
     label: "الخزينة والمدفوعات",
     icon: "💰",
