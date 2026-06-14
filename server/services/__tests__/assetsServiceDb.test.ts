@@ -6,7 +6,7 @@ import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createAsset, disposalLog, disposeAsset, getAsset, handoverCustody } from "../assetsService";
+import { createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, updateAsset } from "../assetsService";
 
 const TABLES = [
   "assetMaintenance",
@@ -104,5 +104,37 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
     expect(fresh!.status).toBe("disposed");
     expect(fresh!.custodianId).toBeNull();
     expect(fresh!.custody.filter((c) => c.toDate === null)).toHaveLength(0); // العهدة أُغلقت
+  });
+});
+
+describe("assetsService — updateAsset (DB)", () => {
+  it("يحفظ التعديلات على الحقول القابلة للتعديل (دون لمس العهدة)", async () => {
+    const a = await createAsset({
+      name: "لابتوب", category: "computers", purchaseDate: "2023-01-01",
+      purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5,
+      depreciationMethod: "sl", custodianId: 1, branchId: 1,
+    });
+    const up = await updateAsset(a!.id, {
+      name: "لابتوب مُحدَّث", category: "display", brand: "Dell", serial: "SN-9",
+      branchId: 2, location: "مكتب جديد", purchaseDate: "2023-02-01",
+      purchaseValue: "1200000", salvageValue: "150000", usefulLifeYears: 6,
+      depreciationMethod: "db", condition: "جيد", warrantyEnd: "2026-02-01",
+    });
+    expect(up!.name).toBe("لابتوب مُحدَّث");
+    expect(up!.category).toBe("display");
+    expect(Number(up!.purchaseValue)).toBe(1200000);
+    expect(Number(up!.salvageValue)).toBe(150000);
+    expect(up!.usefulLifeYears).toBe(6);
+    expect(up!.depreciationMethod).toBe("db");
+    expect(up!.branchId).toBe(2);
+    expect(up!.custodianId).toBe(1); // العهدة لها مسارها (handover) ولا تتغيّر بالتعديل
+  });
+
+  it("يرفض تعديل أصل مُستبعَد", async () => {
+    const a = await createAsset({ name: "قديم", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", salvageValue: "50000", usefulLifeYears: 4, depreciationMethod: "sl" });
+    await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "خردة", value: "0" });
+    await expect(
+      updateAsset(a!.id, { name: "محاولة", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", usefulLifeYears: 4 }),
+    ).rejects.toThrow();
   });
 });

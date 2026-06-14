@@ -94,6 +94,7 @@ export default function AssetDetail() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
+            {a.status !== "disposed" && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
             <Button variant="outline" size="sm" onClick={() => setOpenLabel(true)}>بطاقة الأصل</Button>
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenMaint(true)}>تسجيل صيانة</Button>}
             {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={() => returnMaint.mutate({ assetId: id })} disabled={returnMaint.isPending}>إعادة للخدمة</Button>}

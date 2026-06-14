@@ -55,6 +55,7 @@ import AssetDetail from "@/pages/AssetDetail";
 import AssetNew from "@/pages/AssetNew";
 import AssetCustodyReport from "@/pages/AssetCustodyReport";
 import AssetDisposalLog from "@/pages/AssetDisposalLog";
+import AssetEdit from "@/pages/AssetEdit";
 import Employees from "@/pages/Employees";
 import EmployeeNew from "@/pages/EmployeeNew";
 import EmployeeDetail from "@/pages/EmployeeDetail";
@@ -166,6 +167,7 @@ export default function App() {
       <Route path="/assets/register"><Shell><AssetRegister /></Shell></Route>
       <Route path="/assets/custody-report"><Shell><AssetCustodyReport /></Shell></Route>
       <Route path="/assets/disposal-log"><Shell><AssetDisposalLog /></Shell></Route>
+      <Route path="/assets/:id/edit"><Shell><AssetEdit /></Shell></Route>
       <Route path="/assets/:id"><Shell><AssetDetail /></Shell></Route>
       <Route path="/hr/employees"><Shell><Employees /></Shell></Route>
       <Route path="/hr/employees/new"><Shell><EmployeeNew /></Shell></Route>

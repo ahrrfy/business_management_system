@@ -93,6 +93,45 @@ export const assetsRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء الأصل" });
     }),
 
+  update: assetWrite
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        name: z.string().trim().min(1, "اسم الأصل مطلوب"),
+        category: categoryEnum,
+        brand: z.string().trim().optional(),
+        serial: z.string().trim().optional(),
+        branchId: z.number().int().positive().optional(),
+        location: z.string().trim().optional(),
+        supplierId: z.number().int().positive().optional(),
+        purchaseDate: z.string().min(1),
+        purchaseValue: moneyStr,
+        salvageValue: moneyStrOpt,
+        usefulLifeYears: z.number().int().positive().max(100),
+        depreciationMethod: methodEnum.default("sl"),
+        condition: z.string().trim().optional(),
+        warrantyEnd: z.string().optional(),
+      }).refine(
+        (d) => {
+          const re = /^\d+(\.\d{1,2})?$/;
+          if (!re.test(d.purchaseValue) || (d.salvageValue && !re.test(d.salvageValue))) return true;
+          return money(d.salvageValue ?? "0").lte(money(d.purchaseValue));
+        },
+        { message: "القيمة التخريدية يجب ألا تتجاوز قيمة الشراء", path: ["salvageValue"] },
+      ),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { id, ...patch } = input;
+      const a = await svc.updateAsset(id, patch);
+      await logAudit(ctx, {
+        action: "asset.update",
+        entityType: "fixedAsset",
+        entityId: id,
+        newValue: { name: input.name, category: input.category, purchaseValue: input.purchaseValue },
+      });
+      return a;
+    }),
+
   handover: assetWrite
     .input(
       z.object({
