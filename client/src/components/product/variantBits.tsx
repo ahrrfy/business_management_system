@@ -1,0 +1,169 @@
+/**
+ * variantBits.tsx — قطع عرض صغيرة لشاشة «إضافة منتج بمتغيّرات».
+ * كلها رقيقة وتعتمد منطق `lib/variants.ts` النقيّ المُختبَر.
+ */
+import { useState, type ReactNode } from "react";
+import { cn } from "@/lib/utils";
+import { code128Svg } from "@/lib/printing/barcode";
+import { COLOR_HEX, marginPercent, toArabicDigits } from "@/lib/variants";
+
+/* ── ColorDot — نقطة لون من خريطة الألوان ─────────────── */
+export function ColorDot({ name, size = 14 }: { name: string; size?: number }) {
+  const hex = COLOR_HEX[name] || "#cbd5e1";
+  return (
+    <span
+      className="inline-block shrink-0 rounded-full border"
+      style={{ width: size, height: size, background: hex, borderColor: "oklch(0 0 0 / .15)" }}
+      title={name}
+    />
+  );
+}
+
+/* ── MarginBadge — شارة هامش الربح (عرضيّ) ─────────────── */
+export function MarginBadge({ cost, sell, className }: { cost: number | string; sell: number | string; className?: string }) {
+  const m = marginPercent(cost, sell);
+  if (!m) return null;
+  return (
+    <span
+      dir="rtl"
+      className={cn(
+        "inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium tabular-nums",
+        m.loss ? "bg-destructive/10 text-destructive" : "bg-emerald-500/15 text-emerald-700",
+        className
+      )}
+    >
+      {m.loss ? "خسارة" : "ربح"} {toArabicDigits(Math.abs(m.pct))}٪
+    </span>
+  );
+}
+
+/* ── ScanButton — زر محاكاة ماسح الباركود ─────────────── */
+export function ScanButton({ onClick, title = "توليد/مسح باركود" }: { onClick: () => void; title?: string }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md border bg-card hover:bg-accent text-muted-foreground hover:text-primary transition-colors"
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+        <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+        <path d="M7 7v10M10 7v10M13 7v10M17 7v10" strokeWidth="1.5" />
+      </svg>
+    </button>
+  );
+}
+
+/* ── MiniBarcode — معاينة باركود حقيقية (Code128 SVG) ──── */
+export function MiniBarcode({ value, height = 38 }: { value: string; height?: number }) {
+  if (!value) return <span className="text-xs text-muted-foreground">— لا باركود —</span>;
+  let svg: string | null = null;
+  try {
+    svg = code128Svg(value, { moduleWidth: 1, height, showText: true }).svg;
+  } catch {
+    svg = null;
+  }
+  if (!svg) {
+    return (
+      <span className="font-mono text-[11px] tracking-widest text-foreground/80" dir="ltr">{value}</span>
+    );
+  }
+  return <div className="max-w-full overflow-hidden" dir="ltr" dangerouslySetInnerHTML={{ __html: svg }} />;
+}
+
+/* ── Field — تسمية + تلميح حول عنصر تحكّم ──────────────── */
+export function Field({
+  label,
+  hint,
+  required,
+  children,
+  className,
+}: {
+  label: string;
+  hint?: string;
+  required?: boolean;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div className={cn("space-y-1.5", className)}>
+      <label className="text-sm font-medium leading-none text-foreground/90">
+        {label} {required && <span className="text-destructive">*</span>}
+      </label>
+      {children}
+      {hint && <p className="text-[11px] text-muted-foreground leading-snug">{hint}</p>}
+    </div>
+  );
+}
+
+/* ── ChipInput — مُدخل رقائق (ألوان/قياسات) باقتراحات ──── */
+export function ChipInput({
+  items,
+  onChange,
+  placeholder,
+  presets,
+  withDot,
+}: {
+  items: string[];
+  onChange: (next: string[]) => void;
+  placeholder?: string;
+  presets?: string[];
+  withDot?: boolean;
+}) {
+  const [draft, setDraft] = useState("");
+  const add = (raw?: string) => {
+    const v = (raw ?? draft).trim();
+    if (!v) return;
+    if (!items.includes(v)) onChange([...items, v]);
+    setDraft("");
+  };
+  const remove = (v: string) => onChange(items.filter((x) => x !== v));
+  return (
+    <div className="space-y-2">
+      <div
+        className="flex flex-wrap items-center gap-1.5 rounded-md border border-input bg-transparent px-2 py-1.5 min-h-9 shadow-sm focus-within:outline focus-within:outline-2 focus-within:outline-ring"
+        onClick={(e) => (e.currentTarget.querySelector("input") as HTMLInputElement | null)?.focus()}
+      >
+        {items.map((v) => (
+          <span key={v} className="inline-flex items-center gap-1 rounded bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground">
+            {withDot && <ColorDot name={v} size={11} />}
+            {v}
+            <button type="button" onClick={() => remove(v)} className="text-muted-foreground hover:text-destructive leading-none" aria-label={`حذف ${v}`}>
+              ×
+            </button>
+          </span>
+        ))}
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === ",") {
+              e.preventDefault();
+              add();
+            } else if (e.key === "Backspace" && !draft && items.length) {
+              remove(items[items.length - 1]);
+            }
+          }}
+          placeholder={items.length ? "" : placeholder}
+          className="flex-1 min-w-[90px] bg-transparent text-sm outline-none py-0.5"
+        />
+      </div>
+      {presets && presets.some((p) => !items.includes(p)) && (
+        <div className="flex flex-wrap gap-1">
+          {presets
+            .filter((p) => !items.includes(p))
+            .map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => add(p)}
+                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+              >
+                {withDot && <ColorDot name={p} size={10} />}+ {p}
+              </button>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}

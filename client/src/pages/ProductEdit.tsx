@@ -1,128 +1,377 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
+import { Badge } from "@/components/ui/badge";
+import { AlertCircle, CheckCircle2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
-import { useEffect, useState } from "react";
+import { exportRows } from "@/lib/export";
+import {
+  deriveSku,
+  genEan13,
+  incEan13,
+  isValidEan13,
+  marginPercent,
+  onlyDigits,
+  toArabicDigits,
+  variantStockTotal,
+  type ClientUnit,
+  type ClientVariant,
+  type ParsedVariantRow,
+} from "@/lib/variants";
+import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
+import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
+import { VariantsTable } from "@/components/product/VariantsTable";
+import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 
-type UnitRow = {
-  key: number;
-  id?: number; // existing
-  unitName: string;
-  conversionFactor: string;
-  barcode: string;
-  retail: string;
-  wholesale: string;
-  isBase: boolean;
-};
+/**
+ * تعديل منتج بنموذج المتغيّرات المستقلة (product-variants).
+ *
+ * يقرأ المنتج بكامل متغيّراته عبر `catalog.getForVariantEdit`، ويعرضها في نفس محرّر
+ * المتغيّرات (قالب وحدات مشترك + جدول متغيّرات بباركود لكل وحدة). يسمح بتحديث الموجود،
+ * إضافة جديد، وتعطيل لون (لا حذف — حفظاً للمخزون/الحركات). المخزون **قراءة فقط** هنا
+ * (يُدار عبر الجرد/الحركات). الحفظ عبر `catalog.updateProductVariants`.
+ *
+ * معرّف الصفّ: المتغيّر الموجود = "db:<id>"؛ الجديد = مفتاح عشوائيّ ⇒ التمييز عند الحفظ.
+ */
+
+const DB_PREFIX = "db:";
+function clampInt(s: string): number {
+  return Math.max(0, Math.trunc(Number(onlyDigits(s) || "0")));
+}
 
 export default function ProductEdit() {
   const params = useParams();
   const productId = Number(params.id);
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const branchesQ = trpc.branches.list.useQuery();
+  const categoriesQ = trpc.catalog.categories.useQuery();
+  const product = trpc.catalog.getForVariantEdit.useQuery({ productId }, { enabled: Number.isFinite(productId) });
 
-  const product = trpc.catalog.getForEdit.useQuery({ productId }, { enabled: Number.isFinite(productId) });
-
-  const [name, setName] = useState("");
-  const [sku, setSku] = useState("");
-  const [color, setColor] = useState("");
-  const [size, setSize] = useState("");
+  const [hydrated, setHydrated] = useState(false);
+  const [productType, setProductType] = useState("");
+  const [brand, setBrand] = useState("");
+  const [modelName, setModelName] = useState("");
+  const [originalName, setOriginalName] = useState("");
+  const [description, setDescription] = useState("");
+  const [categoryId, setCategoryId] = useState<number | "">("");
+  const [baseSku, setBaseSku] = useState("");
   const [costPrice, setCostPrice] = useState("");
-  const [variantId, setVariantId] = useState<number | null>(null);
-  const [units, setUnits] = useState<UnitRow[]>([]);
-  const [nextKey, setNextKey] = useState(1);
+  const [isCustomizable, setIsCustomizable] = useState(false);
+  const [isActive, setIsActive] = useState(true);
+
+  const [units, setUnits] = useState<ClientUnit[]>([]);
+  const unitSeq = useRef(1);
+  const [variants, setVariants] = useState<ClientVariant[]>([]);
+  const [colors, setColors] = useState<string[]>([]);
+  const [sizes, setSizes] = useState<string[]>([]);
+  const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
+
+  const [pickedBranch, setPickedBranch] = useState<number | null>(null);
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
+  const [importOpen, setImportOpen] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
 
-  // Hydrate form from API once.
+  const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);
+  const myBranch = me.data?.branchId ?? 1;
+  const branchId = pickedBranch ?? branches[0]?.id ?? myBranch;
+
+  // ── تعبئة من الـAPI مرّة واحدة ──
   useEffect(() => {
-    if (!product.data) return;
-    setName(product.data.name);
-    const v = product.data.variants[0];
-    if (!v) return;
-    setVariantId(v.id);
-    setSku(v.sku);
-    setColor(v.color ?? "");
-    setSize(v.size ?? "");
-    setCostPrice(v.costPrice);
-    const rows: UnitRow[] = v.units.map((u, i) => ({
-      key: i + 1,
-      id: u.id,
-      unitName: u.unitName,
-      conversionFactor: u.conversionFactor,
-      barcode: u.barcode ?? "",
-      retail: u.prices.find((p) => p.priceTier === "RETAIL")?.price ?? "",
-      wholesale: u.prices.find((p) => p.priceTier === "WHOLESALE")?.price ?? "",
-      isBase: u.isBaseUnit,
-    }));
-    setUnits(rows);
-    setNextKey(rows.length + 1);
-  }, [product.data]);
+    if (!product.data || hydrated) return;
+    const d = product.data;
+    setProductType(d.productType ?? "");
+    setBrand(d.brand ?? "");
+    setModelName(d.modelName ?? "");
+    setOriginalName(d.name);
+    setDescription(d.description ?? "");
+    setCategoryId(d.categoryId ?? "");
+    setIsCustomizable(d.isCustomizable);
+    setIsActive(d.isActive);
 
-  const update = trpc.catalog.updateProduct.useMutation({
-    onSuccess: async () => {
-      setDone("تم الحفظ بنجاح.");
+    // قالب الوحدات بمعرّفات محلّية.
+    const tmpl: ClientUnit[] = d.unitTemplate.map((u, i) => ({
+      id: i + 1,
+      name: u.unitName,
+      factor: u.conversionFactor,
+      isBase: u.isBaseUnit,
+      retail: u.retail,
+      wholesale: u.wholesale,
+    }));
+    unitSeq.current = tmpl.length + 1;
+    setUnits(tmpl);
+
+    const sharedCost = d.variants[0]?.costPrice ?? "";
+    setCostPrice(sharedCost);
+    const tmplBaseRetail = tmpl.find((u) => u.isBase)?.retail ?? "";
+    // بادئة SKU مُشتقّة من أوّل متغيّر (إسقاط آخر مقطعين: كود اللون/القياس).
+    const firstSku = d.variants[0]?.sku ?? "";
+    setBaseSku(firstSku.split("-").slice(0, Math.max(1, firstSku.split("-").length - (d.variants[0]?.size ? 2 : 1))).join("-"));
+
+    const rows: ClientVariant[] = d.variants.map((v) => {
+      const unitBarcodes: Record<number, string> = {};
+      for (const cu of tmpl) unitBarcodes[cu.id] = v.unitBarcodes[cu.name] ?? "";
+      const stockByBranch: Record<number, string> = {};
+      for (const [bid, q] of Object.entries(v.stockByBranch)) stockByBranch[Number(bid)] = String(q);
+      const override = v.costPrice !== sharedCost || (v.baseRetail !== "" && v.baseRetail !== tmplBaseRetail);
+      return {
+        id: `${DB_PREFIX}${v.id}`,
+        color: v.color ?? "",
+        size: v.size ?? "",
+        sku: v.sku,
+        unitBarcodes,
+        stockByBranch,
+        minStock: String(v.minStock),
+        reorderPoint: String(v.reorderPoint),
+        priceOverride: override,
+        costPrice: override ? v.costPrice : "",
+        retail: override ? v.baseRetail : "",
+        isActive: v.isActive,
+        image: null,
+      };
+    });
+    setVariants(rows);
+    setHydrated(true);
+  }, [product.data, hydrated]);
+
+  const composedName = useMemo(
+    () => [productType, brand, modelName].map((s) => s.trim()).filter(Boolean).join(" "),
+    [productType, brand, modelName]
+  );
+  const baseRetail = units.find((u) => u.isBase)?.retail.trim() ?? "";
+
+  const includedCount = colors.length
+    ? sizes.length
+      ? colors.flatMap((c) => sizes.map((s) => `${c}|${s}`)).filter((k) => !excluded.has(k)).length
+      : colors.length
+    : 0;
+
+  // فحص تكرار الباركود ضدّ القاعدة (live).
+  const allCodes = useMemo(() => {
+    const set = new Set<string>();
+    for (const v of variants) for (const u of units) {
+      const c = (v.unitBarcodes[u.id] || "").trim();
+      if (c) set.add(c);
+    }
+    return Array.from(set);
+  }, [variants, units]);
+  const debouncedKey = useDebouncedValue(allCodes.join("\n"), 450);
+  const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
+  const checkQ = trpc.catalog.checkBarcodes.useQuery(
+    { codes: debouncedCodes },
+    { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
+  );
+  // الباركودات المملوكة لهذا المنتج نفسه ليست تعارضاً (نستثنيها من الكهرماني).
+  const ownCodes = useMemo(() => {
+    const s = new Set<string>();
+    for (const v of variants) for (const u of units) {
+      const c = (v.unitBarcodes[u.id] || "").trim();
+      if (c) s.add(c);
+    }
+    return s;
+  }, [variants, units]);
+  const takenInDb = useMemo(
+    () => new Set((checkQ.data ?? []).map((r) => r.code).filter((c) => !ownCodes.has(c))),
+    [checkQ.data, ownCodes]
+  );
+
+  const update = trpc.catalog.updateProductVariants.useMutation({
+    onSuccess: async (res) => {
       setError("");
+      const added = (res as { added?: number }).added ?? 0;
+      setDone(added ? `تم الحفظ — أُضيف ${toArabicDigits(added)} متغيّر جديد.` : "تم حفظ التعديلات بنجاح.");
       await Promise.all([
-        utils.catalog.getForEdit.invalidate({ productId }),
+        utils.catalog.getForVariantEdit.invalidate({ productId }),
         utils.catalog.posList.invalidate(),
+        utils.catalog.adminList.invalidate(),
         utils.catalog.forPurchase.invalidate(),
       ]);
+      setHydrated(false); // أعد التحميل ليعكس المعرّفات الجديدة
     },
     onError: (e) => { setError(e.message); setDone(""); },
   });
 
-  const addUnit = () => {
-    setUnits((p) => [
-      ...p,
-      { key: nextKey, unitName: "", conversionFactor: "", barcode: "", retail: "", wholesale: "", isBase: false },
-    ]);
-    setNextKey((k) => k + 1);
-  };
-  const removeUnit = (k: number) => {
-    if (units.length <= 1) return;
-    setUnits((prev) => {
-      const next = prev.filter((u) => u.key !== k);
-      if (!next.some((u) => u.isBase)) next[0].isBase = true;
-      return next;
-    });
-  };
-  const setBase = (k: number) =>
-    setUnits((prev) => prev.map((u) => ({ ...u, isBase: u.key === k, conversionFactor: u.key === k ? "1" : u.conversionFactor })));
-  const patchUnit = (k: number, patch: Partial<UnitRow>) =>
-    setUnits((prev) => prev.map((u) => (u.key === k ? { ...u, ...patch } : u)));
+  /* ── الوحدات ── */
+  const addUnit = () => setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, retail: "", wholesale: "" }]);
+  const patchUnit = (id: number, patch: Partial<ClientUnit>) => setUnits((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const removeUnit = (id: number) => setUnits((u) => (u.length <= 1 ? u : u.filter((x) => x.id !== id)));
+  const setBaseUnit = (id: number) => setUnits((u) => u.map((x) => ({ ...x, isBase: x.id === id })));
 
-  function submit() {
+  /* ── المتغيّرات ── */
+  const toggleExclude = (key: string) =>
+    setExcluded((s) => {
+      const n = new Set(s);
+      n.has(key) ? n.delete(key) : n.add(key);
+      return n;
+    });
+
+  function makeVariant(color: string, size: string): ClientVariant {
+    return {
+      id: `new|${color}|${size}|${Math.random().toString(36).slice(2, 8)}`,
+      color, size, sku: deriveSku(baseSku, color, size),
+      unitBarcodes: {}, stockByBranch: {}, minStock: "0", reorderPoint: "0",
+      priceOverride: false, costPrice: "", retail: "", isActive: true, image: null,
+    };
+  }
+  function generate() {
+    const combos: Array<[string, string]> = [];
+    for (const c of colors) {
+      if (sizes.length) { for (const s of sizes) if (!excluded.has(`${c}|${s}`)) combos.push([c, s]); }
+      else combos.push([c, ""]);
+    }
+    setVariants((prev) => {
+      const byKey = new Map(prev.map((v) => [`${v.color}|${v.size}`, v]));
+      const genKeys = new Set(combos.map(([c, s]) => `${c}|${s}`));
+      // دمج غير متلف: المتغيّرات غير المشمولة بالتوليد تبقى كما هي (موجودة أو جديدة)؛
+      // والمشمولة تُحدَّث أو تُنشأ. لا حذف لصفّ موجود في التعديل.
+      const kept = prev.filter((v) => !genKeys.has(`${v.color}|${v.size}`));
+      const generated = combos.map(([c, s]) => {
+        const ex = byKey.get(`${c}|${s}`);
+        return ex ? { ...ex, sku: ex.sku || deriveSku(baseSku, c, s) } : makeVariant(c, s);
+      });
+      return [...kept, ...generated];
+    });
+  }
+  const patchVariant = (id: string, patch: Partial<ClientVariant>) => setVariants((vs) => vs.map((v) => (v.id === id ? { ...v, ...patch } : v)));
+  // الموجود (db:) لا يُحذف — يُعطَّل؛ الجديد يُحذف من النموذج.
+  const removeVariant = (id: string) =>
+    setVariants((vs) =>
+      id.startsWith(DB_PREFIX) ? vs.map((v) => (v.id === id ? { ...v, isActive: false } : v)) : vs.filter((v) => v.id !== id)
+    );
+  const onScan = (vid: string, uid: number) =>
+    setVariants((vs) => vs.map((v) => (v.id === vid ? { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: genEan13("621") } } : v)));
+
+  const bulkMin = (val: string) => setVariants((vs) => vs.map((v) => ({ ...v, minStock: val })));
+  const bulkSeq = (uid: number, start: string) => {
+    let code = isValidEan13(start) ? start : genEan13("621");
+    setVariants((vs) =>
+      vs.map((v) => {
+        if (v.unitBarcodes[uid]) return v;
+        const next = { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: code } };
+        code = incEan13(code);
+        return next;
+      })
+    );
+  };
+  function applyImport(rows: ParsedVariantRow[]) {
+    setVariants((prev) => {
+      const out = [...prev];
+      const idxByKey = new Map(out.map((v, i) => [`${v.color}|${v.size}`, i]));
+      for (const r of rows) {
+        const key = `${r.color}|${r.size}`;
+        const existingIdx = idxByKey.get(key);
+        if (existingIdx != null) {
+          const cur = out[existingIdx];
+          const unitBarcodes = { ...cur.unitBarcodes };
+          r.barcodes.forEach((b, i) => { const u = units[i]; if (u && b) unitBarcodes[u.id] = b; });
+          out[existingIdx] = { ...cur, sku: r.sku || cur.sku, unitBarcodes };
+        } else {
+          const base = makeVariant(r.color, r.size);
+          if (r.sku) base.sku = r.sku;
+          r.barcodes.forEach((b, i) => { const u = units[i]; if (u && b) base.unitBarcodes[u.id] = b; });
+          idxByKey.set(key, out.length);
+          out.push(base);
+        }
+      }
+      return out;
+    });
+  }
+
+  function validateLocal(): string | null {
+    if (!composedName && !originalName.trim()) return "اسم المنتج مطلوب (نوع/ماركة/موديل).";
+    if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
+    if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
+    if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط في قالب الوحدات.";
+    if (!variants.length) return "المنتج يحتاج متغيّراً واحداً على الأقل.";
+    if (variants.some((v) => !v.sku.trim())) return "كل متغيّر يحتاج SKU.";
+    const skus = variants.map((v) => v.sku.trim());
+    const dupSku = skus.find((s, i) => s && skus.indexOf(s) !== i);
+    if (dupSku) return `SKU مكرّر بين المتغيّرات: ${dupSku}.`;
+    const codes: string[] = [];
+    for (const v of variants) for (const u of units) { const c = (v.unitBarcodes[u.id] || "").trim(); if (c) codes.push(c); }
+    const dupBc = codes.find((c, i) => codes.indexOf(c) !== i);
+    if (dupBc) return `باركود مكرّر داخل النموذج: ${dupBc}.`;
+    return null;
+  }
+
+  function buildPayload() {
+    const unitTemplate = units.map((u) => ({
+      unitName: u.name.trim(),
+      conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
+      isBaseUnit: u.isBase,
+      prices: [
+        ...(u.retail.trim() ? [{ priceTier: "RETAIL" as const, price: u.retail.trim() }] : []),
+        ...(u.wholesale.trim() ? [{ priceTier: "WHOLESALE" as const, price: u.wholesale.trim() }] : []),
+      ],
+    }));
+    return {
+      productId,
+      name: composedName || originalName.trim() || null,
+      productType: productType.trim() || null,
+      brand: brand.trim() || null,
+      modelName: modelName.trim() || null,
+      description: description.trim() || null,
+      categoryId: categoryId === "" ? null : Number(categoryId),
+      isCustomizable,
+      isActive,
+      unitTemplate,
+      variants: variants.map((v) => {
+        const unitBarcodes: Record<string, string> = {};
+        for (const u of units) {
+          const b = (v.unitBarcodes[u.id] || "").trim();
+          if (b) unitBarcodes[u.name.trim()] = b;
+        }
+        return {
+          id: v.id.startsWith(DB_PREFIX) ? Number(v.id.slice(DB_PREFIX.length)) : undefined,
+          sku: v.sku.trim(),
+          color: v.color.trim() || null,
+          size: v.size.trim() || null,
+          costPrice: v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim(),
+          baseRetail: v.priceOverride && v.retail.trim() ? v.retail.trim() : undefined,
+          minStock: clampInt(v.minStock),
+          reorderPoint: clampInt(v.reorderPoint),
+          isActive: v.isActive,
+          unitBarcodes,
+        };
+      }),
+    };
+  }
+
+  async function save() {
     setError("");
     setDone("");
-    if (!variantId) return setError("لم يُحمَّل المتغيّر بعد.");
-    if (!name.trim() || !sku.trim() || !costPrice.trim()) return setError("الاسم والSKU والتكلفة مطلوبة.");
-    if (!units.some((u) => u.isBase)) return setError("يلزم وحدة أساس واحدة.");
-    if (units.some((u) => !u.unitName.trim())) return setError("كل وحدة تحتاج اسماً.");
-    update.mutate({
-      productId,
-      name: name.trim(),
-      variants: [
-        {
-          id: variantId,
-          sku: sku.trim(),
-          color: color.trim() || undefined,
-          size: size.trim() || undefined,
-          costPrice: costPrice.trim(),
-          units: units.map((u) => ({
-            id: u.id,
-            unitName: u.unitName.trim(),
-            conversionFactor: u.isBase ? "1" : (u.conversionFactor.trim() || "1"),
-            barcode: u.barcode.trim() || undefined,
-            isBaseUnit: u.isBase,
-            prices: [
-              ...(u.retail.trim() ? [{ priceTier: "RETAIL" as const, price: u.retail.trim() }] : []),
-              ...(u.wholesale.trim() ? [{ priceTier: "WHOLESALE" as const, price: u.wholesale.trim() }] : []),
-            ],
-          })),
-        },
+    const err = validateLocal();
+    if (err) { setError(err); return; }
+    const codes = Array.from(new Set(variants.flatMap((v) => units.map((u) => (v.unitBarcodes[u.id] || "").trim())).filter(Boolean)));
+    if (codes.length) {
+      try {
+        const taken = (await utils.catalog.checkBarcodes.fetch({ codes })).filter((t) => !ownCodes.has(t.code));
+        if (taken.length) { setError(`الباركود ${taken[0].code} مُستخدَم في «${taken[0].takenBy}». غيّره قبل الحفظ.`); return; }
+      } catch { /* القيد UNIQUE هو الحارس الأخير */ }
+    }
+    update.mutate(buildPayload());
+  }
+
+  function exportExcel() {
+    exportRows(variants, {
+      filename: `منتج-${composedName || originalName || "بمتغيرات"}`,
+      sheetName: "المنتجات",
+      columns: [
+        { key: "name", header: "الاسم الكامل", map: (v) => [composedName || originalName, v.color, v.size].filter(Boolean).join(" ") },
+        { key: "color", header: "اللون", map: (v) => v.color },
+        { key: "size", header: "القياس", map: (v) => v.size },
+        { key: "sku", header: "SKU", map: (v) => v.sku },
+        ...units.map((u) => ({ key: `bc_${u.id}`, header: `باركود ${u.name || "وحدة"}`, map: (v: ClientVariant) => v.unitBarcodes[u.id] || "" })),
+        { key: "stock", header: "المخزون (كل الفروع)", map: (v) => variantStockTotal(v.stockByBranch) },
+        { key: "price", header: "سعر البيع", map: (v) => (v.priceOverride && v.retail.trim() ? v.retail.trim() : baseRetail) },
+        { key: "active", header: "الحالة", map: (v) => (v.isActive ? "مفعّل" : "معطّل") },
       ],
     });
   }
@@ -130,53 +379,172 @@ export default function ProductEdit() {
   if (product.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
   if (!product.data) return <div className="p-10 text-center text-muted-foreground">المنتج غير موجود.</div>;
 
+  const activeCount = variants.filter((v) => v.isActive).length;
+
   return (
-    <div className="space-y-4 max-w-3xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">تعديل المنتج</h1>
-        <Link href="/products" className="text-sm text-muted-foreground">← رجوع للمنتجات</Link>
+    <div className="max-w-6xl mx-auto space-y-4 pb-28">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div>
+          <div className="text-xs text-muted-foreground mb-1">المنتجات / <span className="text-foreground">تعديل المنتج</span></div>
+          <h1 className="text-2xl font-bold leading-tight">تعديل منتج بمتغيّرات</h1>
+        </div>
+        <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
       </div>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">بيانات المنتج</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1"><Label>اسم المنتج *</Label><Input value={name} onChange={(e) => setName(e.target.value)} /></div>
-          <div className="space-y-1"><Label>SKU *</Label><Input dir="ltr" value={sku} onChange={(e) => setSku(e.target.value)} /></div>
-          <div className="space-y-1"><Label>اللون</Label><Input value={color} onChange={(e) => setColor(e.target.value)} /></div>
-          <div className="space-y-1"><Label>القياس</Label><Input value={size} onChange={(e) => setSize(e.target.value)} /></div>
-          <div className="space-y-1"><Label>سعر التكلفة (بالوحدة الأساس) *</Label><Input dir="ltr" value={costPrice} onChange={(e) => setCostPrice(e.target.value)} /></div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <CardTitle className="text-base">الوحدات والأسعار</CardTitle>
-          <Button variant="outline" size="sm" onClick={addUnit}>+ إضافة وحدة</Button>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <p className="text-xs text-muted-foreground">حذف الوحدة يُلغّيها (isActive=false) دون مساس بحركات سابقة.</p>
-          {units.map((u) => (
-            <div key={u.key} className="grid grid-cols-2 md:grid-cols-7 gap-2 items-end border-t pt-3">
-              <div className="space-y-1"><Label className="text-xs">الوحدة</Label><Input value={u.unitName} onChange={(e) => patchUnit(u.key, { unitName: e.target.value })} /></div>
-              <div className="space-y-1"><Label className="text-xs">معامل</Label><Input dir="ltr" value={u.isBase ? "1" : u.conversionFactor} disabled={u.isBase} onChange={(e) => patchUnit(u.key, { conversionFactor: e.target.value })} /></div>
-              <div className="space-y-1"><Label className="text-xs">الباركود</Label><Input dir="ltr" value={u.barcode} onChange={(e) => patchUnit(u.key, { barcode: e.target.value })} /></div>
-              <div className="space-y-1"><Label className="text-xs">مفرد</Label><Input dir="ltr" value={u.retail} onChange={(e) => patchUnit(u.key, { retail: e.target.value })} /></div>
-              <div className="space-y-1"><Label className="text-xs">جملة</Label><Input dir="ltr" value={u.wholesale} onChange={(e) => patchUnit(u.key, { wholesale: e.target.value })} /></div>
-              <label className="flex items-center gap-1 text-xs">
-                <input type="radio" name="base-edit" checked={u.isBase} onChange={() => setBase(u.key)} /> أساس
-              </label>
-              <Button variant="ghost" size="sm" onClick={() => removeUnit(u.key)} disabled={units.length <= 1}>✕</Button>
+      {/* اسم مركّب + معاينة */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Card className="lg:col-span-2">
+          <CardHeader><CardTitle className="text-base">اسم المنتج المركّب · مشترك لكل المتغيّرات</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <Field label="النوع"><Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" /></Field>
+            <Field label="الماركة"><Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Pilot" dir="auto" /></Field>
+            <Field label="الموديل"><Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="G-2" dir="auto" /></Field>
+            <Field label="الفئة / التصنيف">
+              <select
+                value={categoryId}
+                onChange={(e) => setCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+              >
+                <option value="">— بلا فئة —</option>
+                {(categoriesQ.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="بادئة SKU (للمتغيّرات الجديدة)" className="md:col-span-2"><Input value={baseSku} onChange={(e) => setBaseSku(e.target.value.toUpperCase())} dir="ltr" placeholder="PG-G2" /></Field>
+            <Field label="الوصف" className="md:col-span-3"><Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="خصائص/ملاحظات…" /></Field>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader><CardTitle className="text-base">معاينة</CardTitle></CardHeader>
+          <CardContent>
+            <div className="rounded-lg border bg-muted/30 overflow-hidden">
+              <div className="aspect-[4/3] flex items-center justify-center text-muted-foreground" style={{ background: "repeating-linear-gradient(135deg, oklch(0.95 0.005 250), oklch(0.95 0.005 250) 10px, oklch(0.93 0.005 250) 10px, oklch(0.93 0.005 250) 20px)" }}>
+                <span className="font-mono text-[11px] bg-card/80 px-2 py-1 rounded">{composedName || originalName || "—"}</span>
+              </div>
+              <div className="p-3 space-y-2">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] text-muted-foreground">{toArabicDigits(variants.length)} متغيّر ({toArabicDigits(activeCount)} مفعّل):</span>
+                  {variants.slice(0, 10).map((v) => <ColorDot key={v.id} name={v.color} />)}
+                </div>
+              </div>
             </div>
-          ))}
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* تسعير مشترك */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">التسعير · مشترك</CardTitle></CardHeader>
+        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Field label="سعر التكلفة (د.ع)" required hint="موحّد لكل الألوان إلا ما له سعر خاص."><Input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} dir="ltr" placeholder="150" /></Field>
+          <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
+          <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span></div></Field>
         </CardContent>
       </Card>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-600">{done}</p>}
-      <div className="flex gap-2">
-        <Button onClick={submit} disabled={update.isPending}>{update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}</Button>
-        <Button variant="outline" onClick={() => navigate("/products")}>إلغاء</Button>
+      {/* قالب الوحدات */}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle className="text-base">قالب الوحدات والأسعار · مشترك</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">يُطبَّق على كل المتغيّرات (مطابقة بالاسم). حذف وحدة من القالب يُعطّلها — لا يمحو تاريخها.</p>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={addUnit}>+ وحدة</Button>
+        </CardHeader>
+        <CardContent className="space-y-2">
+          <div className="hidden md:grid grid-cols-12 gap-2 px-1 text-[11px] font-semibold text-muted-foreground">
+            <span className="col-span-3">الوحدة</span><span className="col-span-2">معامل التحويل</span><span className="col-span-2">سعر المفرد</span><span className="col-span-2">سعر الجملة</span><span className="col-span-2">الهامش</span><span className="col-span-1 text-center">أساس</span>
+          </div>
+          {units.map((u) => {
+            const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
+            const unitCost = (parseFloat(costPrice) || 0) * factor;
+            return (
+              <div key={u.id} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-center border-t pt-2 md:border-0 md:pt-0">
+                <Input className="md:col-span-3 h-8 text-sm" value={u.name} onChange={(e) => patchUnit(u.id, { name: e.target.value })} placeholder="قطعة / درزن / كرتون" />
+                <Input className="md:col-span-2 h-8 text-sm" dir="ltr" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(e) => patchUnit(u.id, { factor: e.target.value })} placeholder="12" />
+                <Input className="md:col-span-2 h-8 text-sm" dir="ltr" value={u.retail} onChange={(e) => patchUnit(u.id, { retail: e.target.value })} placeholder="مفرد" />
+                <Input className="md:col-span-2 h-8 text-sm" dir="ltr" value={u.wholesale} onChange={(e) => patchUnit(u.id, { wholesale: e.target.value })} placeholder="جملة" />
+                <div className="md:col-span-2"><MarginBadge cost={unitCost} sell={u.retail} /></div>
+                <div className="md:col-span-1 flex items-center justify-center gap-2">
+                  <input type="radio" name="baseUnitEdit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} title="الوحدة الأساس" aria-label="الوحدة الأساس" />
+                  <button type="button" onClick={() => removeUnit(u.id)} disabled={units.length <= 1} className="text-muted-foreground hover:text-destructive disabled:opacity-30 text-xs" aria-label="حذف الوحدة">✕</button>
+                </div>
+              </div>
+            );
+          })}
+        </CardContent>
+      </Card>
+
+      {/* المتغيّرات */}
+      <Card>
+        <CardHeader className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
+          <div>
+            <CardTitle className="text-base flex items-center gap-2">المتغيّرات (الألوان والقياسات)<Badge variant="secondary" className="bg-primary/10 text-primary">{toArabicDigits(variants.length)}</Badge></CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">عدّل الموجود أو أضِف جديداً. حذف لون موجود <b>يعطّله</b> (حفظاً للمخزون). المخزون قراءة فقط هنا.</p>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="flex items-center gap-1.5 text-xs text-muted-foreground">الفرع:
+              <select value={branchId} onChange={(e) => setPickedBranch(Number(e.target.value))} className="h-8 rounded-md border border-input bg-transparent px-2 text-xs text-foreground">
+                {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </label>
+            <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>استيراد / لصق</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setPrintOpen(true)} disabled={!variants.length}>طباعة الملصقات</Button>
+            <Button type="button" variant="outline" size="sm" onClick={exportExcel} disabled={!variants.length}>تصدير Excel</Button>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <MatrixGenerator colors={colors} setColors={setColors} sizes={sizes} setSizes={setSizes} excluded={excluded} toggleExclude={toggleExclude} onGenerate={generate} includedCount={includedCount} existingCount={variants.length} />
+          {variants.length > 0 && (
+            <BulkTools
+              units={units}
+              branchName={branches.find((b) => b.id === branchId)?.name ?? "الفرع"}
+              onMinAll={bulkMin}
+              onStockAll={() => { /* المخزون يُدار عبر الجرد/الحركات — لا تعديل بالجملة في التعديل */ }}
+              onSeq={bulkSeq}
+            />
+          )}
+          <VariantsTable
+            variants={variants}
+            units={units}
+            branches={branches}
+            branchId={branchId}
+            costPrice={costPrice}
+            baseName={composedName || originalName}
+            takenInDb={takenInDb}
+            patchVariant={patchVariant}
+            removeVariant={removeVariant}
+            onScan={onScan}
+            stockEditable={false}
+            emptyHint="لا متغيّرات — أضِف عبر المولّد أعلاه."
+          />
+        </CardContent>
+      </Card>
+
+      {error && (
+        <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span className="whitespace-pre-wrap break-words">{error}</span>
+        </div>
+      )}
+      {done && (
+        <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700">
+          <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
+          <span>{done}</span>
+        </div>
+      )}
+
+      <div className="fixed bottom-0 inset-x-0 lg:start-60 border-t bg-card/95 backdrop-blur px-6 py-3 flex items-center justify-between gap-3 z-30">
+        <div className="text-xs text-muted-foreground hidden sm:block">
+          {toArabicDigits(variants.length)} متغيّر ({toArabicDigits(activeCount)} مفعّل) — التعديل يحدّث الموجود، يضيف الجديد، ويعطّل المحذوف.
+        </div>
+        <div className="flex gap-2">
+          <Link href="/products"><Button type="button" variant="outline" size="sm">إلغاء</Button></Link>
+          <Button type="button" size="sm" onClick={save} disabled={update.isPending}>{update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}</Button>
+        </div>
       </div>
+
+      <ImportModal open={importOpen} onOpenChange={setImportOpen} units={units} onImport={applyImport} />
+      <LabelPrintModal open={printOpen} onOpenChange={setPrintOpen} variants={variants} units={units} baseName={composedName || originalName} baseRetail={baseRetail} />
     </div>
   );
 }
