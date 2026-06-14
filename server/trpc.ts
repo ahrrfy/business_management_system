@@ -17,6 +17,14 @@ const t = initTRPC.context<TrpcContext>().create({
     const correlationId = (ctx?.req as { id?: string } | undefined)?.id ?? null;
     if (error.code === "INTERNAL_SERVER_ERROR") {
       logger.error({ err: error.cause ?? error, path, correlationId }, `tRPC error: ${path}`);
+    } else if (error.code === "FORBIDDEN" || error.code === "UNAUTHORIZED") {
+      // F5 (تدقيق ١٤/٦/٢٦): محاولات التجاوز الفاشلة كانت تمرّ صامتة ⇒ لا أثر forensic.
+      // نُسجِّل في pino البنيوي (best-effort، خفيف، بلا i/o إضافي على القاعدة).
+      // إن لزم لاحقاً سجلٌّ دائم: interceptor مستقلّ يكتب في auditLogs (errorFormatter sync).
+      logger.warn(
+        { path, correlationId, userId: ctx?.user?.id ?? null, role: ctx?.user?.role ?? null, code: error.code, message: error.message },
+        `authz denied: ${path}`,
+      );
     }
     return { ...shape, message: arabic, data: { ...shape.data, correlationId } };
   },
@@ -80,8 +88,15 @@ export const warehouseProcedure = t.procedure.use(requireRole("warehouse", "mana
 export const canSeeCost = (role: string) => _canSeeCost(role);
 
 // ─── عزل الفروع (منع IDOR عبر branchId) ─────────────────────────────────
+// F1 (تدقيق ١٤/٦/٢٦): استُبدِل magic value `-1` برميٍ صريح لـFORBIDDEN حين يحاول
+// مستخدم غير-elevated الوصول وهو بلا فرع مُسنَد. كان `-1` يجعل الاستعلامات تُرجع
+// `[]` صامتاً (المستخدم يرى «لا بيانات» بدل «ممنوع») ⇒ لا أثر forensic + سلوك مضلّل.
+// الآن: المسار آمن، والـauthz failure يُسجَّل في pino عبر errorFormatter (F5).
 export const branchScopedProcedure = protectedProcedure.use(({ ctx, next }) => {
   const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-  const scopedBranchId = elevated ? null : (ctx.user.branchId ?? -1);
+  if (!elevated && ctx.user.branchId == null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+  }
+  const scopedBranchId = elevated ? null : Number(ctx.user.branchId);
   return next({ ctx: { ...ctx, scopedBranchId } });
 });

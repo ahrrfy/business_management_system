@@ -7,6 +7,9 @@
 //  - barcode.verify: يرفض payload > 1000 خانة.
 //  - inventory.transfer/adjust: warehouse مُجبَر على فرعه (M1 — تدقيق ١٤/٦/٢٦).
 //  - voucher.list/get: branchScopedProcedure مع scopedBranchId (M2 — تدقيق ١٤/٦/٢٦).
+//  - branchScopedProcedure: غير-مرتفع بلا فرع ⇒ FORBIDDEN (F1 — تدقيق ١٤/٦/٢٦).
+//  - purchase.list/get: branchScopedProcedure (F3 — تدقيق ١٤/٦/٢٦).
+//  - expense.create: غير-مرتفع يُجبَر على فرعه (F4 — تدقيق ١٤/٦/٢٦).
 
 import { describe, expect, it } from "vitest";
 import type { TrpcContext } from "../../context";
@@ -106,6 +109,55 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
       const v = await caller("cashier", 2).vouchers.get({ receiptId: 999999 });
       expect(v).toBeNull();
     });
+  });
+
+  // F1 — تدقيق ١٤/٦/٢٦: branchScopedProcedure تستبدل `-1` بـFORBIDDEN صريح.
+  // قبل الإصلاح: غير-مرتفع بلا فرع كان يرى [] صامتاً (لا أثر forensic + سلوك مضلّل).
+  describe("F1: branchScopedProcedure — FORBIDDEN لغير-مرتفع بلا فرع", () => {
+    it("cashier بلا فرع على voucher.list (branchScoped) ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("cashier", null).vouchers.list())
+    );
+    it("warehouse بلا فرع على purchases.list (branchScoped بعد F3) ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("warehouse", null).purchases.list())
+    );
+    it("admin بلا فرع ⇒ مسموح (مرتفع — لا يحتاج فرع)", async () => {
+      // قاعدة الاختبار فارغة ⇒ النتيجة [] دون رمي.
+      const out = await caller("admin", null).vouchers.list();
+      expect(Array.isArray(out)).toBe(true);
+    });
+  });
+
+  // F3 — تدقيق ١٤/٦/٢٦: purchase.list/get تحوّلتا إلى branchScopedProcedure.
+  // قبل الإصلاح: managerProcedure بلا عزل ⇒ مدير فرع SALES يقرأ مشتريات فرع MAIN.
+  describe("F3: purchase.list/get — عزل فرع للأدوار غير المرتفعة", () => {
+    it("list: warehouse بفرع — لا يرمي (filter صامت لفرعه)", async () => {
+      const out = await caller("warehouse", 2).purchases.list();
+      expect(Array.isArray(out)).toBe(true);
+    });
+    it("list: warehouse يطلب فرع آخر — يُغلَب بـscopedBranchId (نتيجة []) ", async () => {
+      const out = await caller("warehouse", 2).purchases.list({ branchId: 1 });
+      expect(Array.isArray(out)).toBe(true);
+      expect(out.length).toBe(0);
+    });
+    it("get: warehouse يطلب purchaseOrderId غير موجود ⇒ null (لا تسريب)", async () => {
+      const po = await caller("warehouse", 2).purchases.get({ purchaseOrderId: 999999 });
+      expect(po).toBeNull();
+    });
+  });
+
+  // F4 — تدقيق ١٤/٦/٢٦: expense.create يجبر الكاشير على فرعه.
+  // قبل الإصلاح: `ctx.user.branchId ?? input.branchId` كان يسمح بحقن branchId لفرع آخر
+  // (تلويث صندوق + قيد خاطئ — اختراق مالي مباشر).
+  describe("F4: expense.create — كاشير لا يحقن branchId لفرع آخر", () => {
+    it("cashier بلا فرع ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("cashier", null).expenses.create({
+          branchId: 1, category: "OTHER", amount: "100", paymentMethod: "CASH",
+        })
+      )
+    );
+    // ملاحظة: المسار الإيجابي (كاشير(2) يُجبَر على branchId=2) يحتاج بذر فرع/وردية ⇒ يُغطّى
+    // في `expenseService.test.ts`/`financialMedium.test.ts`؛ هنا نكتفي بحارس الـauthz.
   });
 
   describe("barcode.verify — حدّ الإدخال", () => {

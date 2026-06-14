@@ -76,11 +76,23 @@ export const expenseRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // F4 (تدقيق ١٤/٦/٢٦): قبل الإصلاح كان `ctx.user.branchId ?? input.branchId` يسمح
+      // لكاشير بـbranchId=null أن يحقن أي input.branchId (مصروف في فرع آخر = تلويث
+      // الصندوق والقيد). الآن: غير المرتفعين يُجبَرون على فرعهم؛ admin/manager
+      // يحترمان input.branchId. نمط مطابق لـinventoryRouter.adjust (M1).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      let branchId = input.branchId;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        branchId = Number(ctx.user.branchId);
+      }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createExpense(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+          const res = await createExpense({ ...input, branchId }, { userId: ctx.user.id, branchId });
           if (!(res as { idempotent?: boolean }).idempotent) {
-            await logAudit(ctx, { action: "expense.create", entityType: "expense", entityId: (res as { expenseId?: number })?.expenseId, newValue: { category: input.category, amount: input.amount, payee: input.payee ?? null } });
+            await logAudit(ctx, { action: "expense.create", entityType: "expense", entityId: (res as { expenseId?: number })?.expenseId, newValue: { category: input.category, amount: input.amount, payee: input.payee ?? null, branchId } });
           }
           return res;
         } catch (e: any) {

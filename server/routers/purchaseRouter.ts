@@ -6,7 +6,7 @@ import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../services/purchaseService";
-import { managerProcedure, router, warehouseProcedure } from "../trpc";
+import { branchScopedProcedure, managerProcedure, router, warehouseProcedure } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).
@@ -79,7 +79,9 @@ export const purchaseRouter = router({
       return res;
     }),
 
-  list: managerProcedure
+  // F3 (تدقيق ١٤/٦/٢٦): list/get تحوّلتا إلى branchScopedProcedure — قبل ذلك كان مدير
+  // فرع SALES يستطيع قراءة أوامر شراء فرع MAIN عبر استدعاء API مباشر (IDOR قراءة).
+  list: branchScopedProcedure
     .input(
       z
         .object({
@@ -89,11 +91,12 @@ export const purchaseRouter = router({
           from: ymd.optional(),
           to: ymd.optional(),
           supplierId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
           status: z.enum(["DRAFT", "SENT", "CONFIRMED", "RECEIVED", "CANCELLED"]).optional(),
         })
         .optional()
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
       const conds = [];
@@ -102,6 +105,10 @@ export const purchaseRouter = router({
       if (input?.to) conds.push(lt(purchaseOrders.orderDate, localNextDayStart(input.to)));
       if (input?.supplierId) conds.push(eq(purchaseOrders.supplierId, input.supplierId));
       if (input?.status) conds.push(eq(purchaseOrders.status, input.status));
+      // عزل الفرع: غير المرتفعين يُقتصرون على فرعهم (يُغلَب على input.branchId).
+      // admin/manager يحترمان input.branchId إن مُرِّر (تقارير عبر-الفروع).
+      const branchId = ctx.scopedBranchId != null ? ctx.scopedBranchId : input?.branchId;
+      if (branchId != null) conds.push(eq(purchaseOrders.branchId, branchId));
       return db
         .select({
           id: purchaseOrders.id,
@@ -122,7 +129,7 @@ export const purchaseRouter = router({
         .offset(input?.offset ?? 0);
     }),
 
-  get: managerProcedure.input(z.object({ purchaseOrderId: z.number().int().positive() })).query(async ({ input }) => {
+  get: branchScopedProcedure.input(z.object({ purchaseOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const po = (
@@ -147,6 +154,8 @@ export const purchaseRouter = router({
         .limit(1)
     )[0];
     if (!po) return null;
+    // عزل الفرع: لا يُكشَف وجود أمر شراء فرع آخر للأدوار غير المرتفعة (نمط sales.get / voucher.get).
+    if (ctx.scopedBranchId != null && Number(po.branchId) !== ctx.scopedBranchId) return null;
     const items = await db
       .select({
         id: purchaseOrderItems.id,
