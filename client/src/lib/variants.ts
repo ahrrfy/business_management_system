@@ -147,6 +147,11 @@ export function parseVariantPaste(text: string, unitCount: number): ParsedVarian
     .filter((r) => r.color);
 }
 
+/** قيمة موجبة صحيحة من نصّ حقل (مخزون/حدود): يطرح غير الأرقام ويقصّ للصحيح غير السالب. */
+export function clampInt(s: string): number {
+  return Math.max(0, Math.trunc(Number(onlyDigits(s) || "0")));
+}
+
 /* ============================ خرائط الألوان ============================ */
 
 export const COLOR_HEX: Record<string, string> = {

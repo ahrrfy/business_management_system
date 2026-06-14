@@ -9,6 +9,7 @@ import { AlertCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import {
+  clampInt,
   deriveSku,
   genEan13,
   incEan13,
@@ -40,11 +41,6 @@ import { Link, useLocation } from "wouter";
  * المسح: تركيز خلية باركود يجعل ماسح HID يكتب فيها مباشرةً (لا حاجة لربط خاص)؛
  * زر «المسح» بجانب كل خلية يولّد EAN-13 صالحاً لمن يطبع باركوده ذاتياً.
  */
-
-/** قيمة موجبة صحيحة من نصّ حقل. */
-function clampInt(s: string): number {
-  return Math.max(0, Math.trunc(Number(onlyDigits(s) || "0")));
-}
 
 export default function ProductNew() {
   const [, navigate] = useLocation();

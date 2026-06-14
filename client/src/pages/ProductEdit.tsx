@@ -8,6 +8,7 @@ import { AlertCircle, CheckCircle2 } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import {
+  clampInt,
   deriveSku,
   genEan13,
   incEan13,
@@ -40,9 +41,6 @@ import { Link, useLocation, useParams } from "wouter";
  */
 
 const DB_PREFIX = "db:";
-function clampInt(s: string): number {
-  return Math.max(0, Math.trunc(Number(onlyDigits(s) || "0")));
-}
 
 export default function ProductEdit() {
   const params = useParams();
@@ -168,15 +166,8 @@ export default function ProductEdit() {
     { codes: debouncedCodes },
     { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
   );
-  // الباركودات المملوكة لهذا المنتج نفسه ليست تعارضاً (نستثنيها من الكهرماني).
-  const ownCodes = useMemo(() => {
-    const s = new Set<string>();
-    for (const v of variants) for (const u of units) {
-      const c = (v.unitBarcodes[u.id] || "").trim();
-      if (c) s.add(c);
-    }
-    return s;
-  }, [variants, units]);
+  // الباركودات المملوكة لهذا المنتج نفسه ليست تعارضاً (نستثنيها من الكهرماني) — نفس مجموعة allCodes.
+  const ownCodes = useMemo(() => new Set(allCodes), [allCodes]);
   const takenInDb = useMemo(
     () => new Set((checkQ.data ?? []).map((r) => r.code).filter((c) => !ownCodes.has(c))),
     [checkQ.data, ownCodes]
