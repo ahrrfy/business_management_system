@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import { cancelVoucher, createVoucher, getVoucher, listVouchers } from "../services/voucherService";
-import { branchScopedProcedure, managerProcedure, router } from "../trpc";
+import { managerProcedure, router } from "../trpc";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -81,7 +81,13 @@ export const voucherRouter = router({
       return res;
     }),
 
-  list: branchScopedProcedure
+  // قراءة السندات تكشف بيانات نقدية حسّاسة (مبالغ، أرقام شيكات، آخر ٤ من البطاقة).
+  // managerProcedure تتّسق مع كتابة السندات (create/cancel managerProcedure) ومع كل القراءات
+  // المالية الأخرى في reportsRouter (arAging/apAging/customerStatement/salesReport). أكثر صرامةً
+  // من branchScopedProcedure (التي تسمح للكاشير برؤية سندات فرعه)، يطابق توصية التدقيق العدائي.
+  // admin/manager غير مُقيَّدَين بفرع لذمم/سندات الشركة كاملة بطبيعة دورهما — branchId المُرسَل
+  // فلتر اختياري لا قيد أمني.
+  list: managerProcedure
     .input(
       z
         .object({
@@ -97,21 +103,9 @@ export const voucherRouter = router({
         })
         .optional(),
     )
-    .query(async ({ input, ctx }) => {
-      // عزل الفرع: غير المرتفعين (كاشير/مخزن/...) لا يرون إلا سندات فرعهم.
-      // admin/manager يحترمان branchId المُرسَل (أو يرون كل الفروع إن لم يُحدَّد).
-      const branchId = ctx.scopedBranchId != null ? ctx.scopedBranchId : input?.branchId;
-      return listVouchers({ ...(input ?? {}), branchId });
-    }),
+    .query(async ({ input }) => listVouchers(input ?? {})),
 
-  get: branchScopedProcedure
+  get: managerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
-    .query(async ({ input, ctx }) => {
-      const v = await getVoucher(input.receiptId);
-      // لا تكشف وجود سند فرع آخر للأدوار غير المرتفعة — رد NOT_FOUND مماثل (نمط sales.get).
-      if (v && ctx.scopedBranchId != null && Number(v.branchId) !== ctx.scopedBranchId) {
-        return null;
-      }
-      return v;
-    }),
+    .query(({ input }) => getVoucher(input.receiptId)),
 });

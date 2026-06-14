@@ -95,31 +95,34 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
     );
   });
 
-  // M2 — تدقيق ١٤/٦/٢٦: voucher.list/get تحوّلا إلى branchScopedProcedure.
-  // قبل الإصلاح: أي مستخدم مسجَّل (كاشير/مخزن) كان يستطيع قراءة سندات كل الفروع.
-  describe("M2: voucher.list/get — عزل الفرع للأدوار غير المرتفعة", () => {
-    it("list: كاشير بفرع — لا يستثني branchScopedProcedure (لا يرمي FORBIDDEN، يفلتر بصمت لفرعه)", async () => {
-      // قاعدة الاختبار فارغة ⇒ النتيجة دائماً []؛ المهمّ أنّ الإجراء لا يرمي
-      // (أي أنّ branchScopedProcedure يعمل ويُمرّر scopedBranchId بلا خطأ).
-      const out = await caller("cashier", 2).vouchers.list();
+  // M2 — تدقيق ١٤/٦/٢٦ (مُحدَّث ٢٠/٦/٢٦): voucher.list/get رُفعتا إلى managerProcedure
+  // بدل branchScopedProcedure. قراءة السندات تكشف بيانات نقدية حسّاسة (مبالغ، أرقام شيكات،
+  // آخر ٤ من البطاقة) — حجبها كلياً عن الأدوار غير المرتفعة أصرم وأكثر اتّساقاً مع كتابة
+  // السندات (create/cancel managerProcedure) وبقيّة القراءات المالية في reportsRouter.
+  describe("M2: voucher.list/get — حجب كلّي عن الأدوار غير المرتفعة (managerProcedure)", () => {
+    it("list: كاشير ⇒ FORBIDDEN (لا قراءة سندات للكاشير)", () =>
+      expectForbidden(caller("cashier", 2).vouchers.list())
+    );
+    it("list: warehouse ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("warehouse", 2).vouchers.list())
+    );
+    it("get: كاشير ⇒ FORBIDDEN (لا قراءة سند فردي للكاشير)", () =>
+      expectForbidden(caller("cashier", 2).vouchers.get({ receiptId: 1 }))
+    );
+    it("list: manager ⇒ مسموح (يرى كل الفروع — لا قيد فرع على دور إداري مالي)", async () => {
+      const out = await caller("manager", 1).vouchers.list();
       expect(Array.isArray(out)).toBe(true);
     });
-    it("list: كاشير يحاول طلب فرع آخر — يُغلَب على input.branchId بـscopedBranchId", async () => {
-      // حتى مع تمرير branchId مختلف، scopedBranchId يفرض فرع المستخدم — النتيجة [] لقاعدة فارغة.
-      const out = await caller("cashier", 2).vouchers.list({ branchId: 1 });
+    it("list: admin ⇒ مسموح", async () => {
+      const out = await caller("admin", 1).vouchers.list();
       expect(Array.isArray(out)).toBe(true);
-      expect(out.length).toBe(0);
-    });
-    it("get: كاشير يطلب receiptId غير موجود ⇒ null (لا تسريب لخطأ DB)", async () => {
-      const v = await caller("cashier", 2).vouchers.get({ receiptId: 999999 });
-      expect(v).toBeNull();
     });
   });
 
   // F1 — تدقيق ١٤/٦/٢٦: branchScopedProcedure تستبدل `-1` بـFORBIDDEN صريح.
   // قبل الإصلاح: غير-مرتفع بلا فرع كان يرى [] صامتاً (لا أثر forensic + سلوك مضلّل).
   describe("F1: branchScopedProcedure — FORBIDDEN لغير-مرتفع بلا فرع", () => {
-    it("cashier بلا فرع على voucher.list (branchScoped) ⇒ FORBIDDEN", () =>
+    it("cashier بلا فرع على voucher.list (managerProcedure ⇒ FORBIDDEN على الدور قبل فحص الفرع)", () =>
       expectForbidden(caller("cashier", null).vouchers.list())
     );
     it("warehouse بلا فرع على purchases.list (branchScoped بعد F3) ⇒ FORBIDDEN", () =>

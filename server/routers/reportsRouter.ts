@@ -97,8 +97,10 @@ export const reportsRouter = router({
   salesReport: managerProcedure
     .input(
       z.object({
-        from: z.string().optional(),
-        to: z.string().optional(),
+        // ymdStr يرفض صيغاً غير YYYY-MM-DD برسالة عربية بدل localDayStart("abc") = Invalid Date
+        // (الذي كان يبني SQL ينتج تقريراً فارغاً صامتاً ⇒ يُضلّل المحاسب).
+        from: ymdStr.optional(),
+        to: ymdStr.optional(),
         branchId: z.number().int().positive().optional(),
         sourceTypes: z
           .array(z.enum(["POS", "ONLINE", "ORDER", "WORKORDER"]))
@@ -225,8 +227,8 @@ export const reportsRouter = router({
     .input(
       z
         .object({
-          from: z.string().optional(),
-          to: z.string().optional(),
+          from: ymdStr.optional(),
+          to: ymdStr.optional(),
           branchId: z.number().int().positive().optional(),
           limit: z.number().int().positive().max(100).default(20),
           by: z.enum(["revenue", "qty"]).default("revenue"),
@@ -253,8 +255,8 @@ export const reportsRouter = router({
     .input(
       z
         .object({
-          from: z.string().optional(),
-          to: z.string().optional(),
+          from: ymdStr.optional(),
+          to: ymdStr.optional(),
           branchId: z.number().int().positive().optional(),
         })
         .optional()
