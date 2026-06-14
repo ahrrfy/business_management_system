@@ -14,6 +14,7 @@
 //  - voucher.create/cancel: لا فرع مُسنَد ⇒ FORBIDDEN (G2 — تدقيق ١٤/٦/٢٦).
 //  - reports.dashboardMetrics: غير-مرتفع بلا فرع ⇒ FORBIDDEN (G3 — تدقيق ١٤/٦/٢٦).
 //  - shifts.open/close: غير-مرتفع بلا فرع ⇒ FORBIDDEN (G4 — تدقيق ١٤/٦/٢٦).
+//  - quotation.setStatus/convert: admin فقط يعبُر الفروع (Q1 — تدقيق ١٤/٦/٢٦).
 
 import { describe, expect, it } from "vitest";
 import type { TrpcContext } from "../../context";
@@ -219,6 +220,30 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
         caller("cashier", null).shifts.close({ shiftId: 1, countedCash: "0" })
       )
     );
+  });
+
+  // Q1 — تدقيق ١٤/٦/٢٦: عرض السعر التزام تسعيري؛ admin فقط يعدّل/يحوّل عبر الفروع.
+  // مدير فرع SALES لا يستطيع تعديل/تحويل عرض فرع MAIN (يلوّث الأسعار + يُنشئ فاتورة بلا سلطة).
+  describe("Q1: quotation.setStatus/convert — admin فقط يعبُر الفروع", () => {
+    it("manager بلا فرع: setStatus ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("manager", null).quotations.setStatus({ quotationId: 1, status: "ACCEPTED" })
+      )
+    );
+    it("manager بلا فرع: convert ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("manager", null).quotations.convert({ quotationId: 1 }))
+    );
+    it("manager(2) يحاول setStatus لعرض غير موجود ⇒ NOT_FOUND (لا يكشف منع الفرع)", async () => {
+      // قاعدة فارغة ⇒ ينتهي عند NOT_FOUND قبل فحص الفرع (سلوك مقبول: لا يكشف وجود عرض).
+      await expect(
+        caller("manager", 2).quotations.setStatus({ quotationId: 999999, status: "ACCEPTED" })
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+    it("admin بلا فرع: setStatus لعرض غير موجود ⇒ NOT_FOUND (مسموح، لا FORBIDDEN)", async () => {
+      await expect(
+        caller("admin", null).quotations.setStatus({ quotationId: 999999, status: "ACCEPTED" })
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
   });
 
   describe("barcode.verify — حدّ الإدخال", () => {

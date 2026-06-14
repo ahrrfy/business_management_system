@@ -143,11 +143,25 @@ const ALLOWED_TRANSITIONS: Record<QuoteStatus, QuoteStatus[]> = {
   EXPIRED: [],
 };
 
+/**
+ * عزل الفرع للتعديل/التحويل (تدقيق ١٤/٦/٢٦): عرض السعر التزام سعري — إذن التعديل/
+ * التحويل أصرم من سائر الكيانات. **admin فقط** يستطيع عبور الفروع لمنع مدير فرع
+ * من تحويل عرض فرع آخر إلى فاتورة تُلزم الشركة قانونياً. مدير الفرع يبقى محصوراً
+ * بفرعه على هذين الإجراءين (مختلف عن productionService الذي يعدّ manager مرتفعاً).
+ */
+function assertQuotationBranchStrict(q: { branchId: number | string | null }, actor: Actor & { role?: string }) {
+  if (actor.role === "admin") return;
+  if (q.branchId == null || Number(q.branchId) !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "عرض السعر لا يخصّ فرعك" });
+  }
+}
+
 /** يحدّث حالة عرض السعر (عدا CONVERTED الذي يتم عبر convertQuotation). */
-export async function setQuotationStatus(quotationId: number, status: QuoteStatus) {
+export async function setQuotationStatus(quotationId: number, status: QuoteStatus, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const q = (await tx.select().from(quotations).where(eq(quotations.id, quotationId)).for("update").limit(1))[0];
     if (!q) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود" });
+    assertQuotationBranchStrict(q, actor);
     if (status === "CONVERTED") throw new TRPCError({ code: "BAD_REQUEST", message: "التحويل يتم عبر «تحويل لفاتورة»" });
     const allowed = ALLOWED_TRANSITIONS[q.status as QuoteStatus] ?? [];
     if (!allowed.includes(status)) {
@@ -164,12 +178,16 @@ export interface ConvertQuotationInput {
 }
 
 /** يحوّل عرض السعر إلى فاتورة فعلية (بيع كامل: مخزون + دفتر) مرة واحدة فقط. */
-export async function convertQuotation(input: ConvertQuotationInput, actor: Actor) {
+export async function convertQuotation(input: ConvertQuotationInput, actor: Actor & { role?: string }) {
   // اقرأ العرض وبنوده خارج معاملة البيع (createSale يفتح معاملته الخاصة).
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير متاحة" });
   const q = (await db.select().from(quotations).where(eq(quotations.id, input.quotationId)).limit(1))[0];
   if (!q) throw new TRPCError({ code: "NOT_FOUND", message: "عرض السعر غير موجود" });
+
+  // عزل الفرع (تدقيق ١٤/٦/٢٦): التحويل = إنشاء فاتورة تُلزم الشركة قانونياً. admin فقط
+  // يعبُر الفروع — مدير فرع يبقى محصوراً بفرعه (لا يقدر يحوّل عرض فرع آخر).
+  assertQuotationBranchStrict(q, actor);
 
   // idempotency: عرض مُحوَّل مسبقاً يُعيد الفاتورة نفسها.
   if (q.status === "CONVERTED" && q.convertedInvoiceId) {
@@ -223,6 +241,8 @@ export interface ListQuotationsInput {
   from?: string;
   to?: string;
   status?: "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
+  /** عزل الفرع (تدقيق ١٤/٦/٢٦): غير المرتفعين يُجبَرون على فرعهم. */
+  branchId?: number | null;
 }
 
 
@@ -234,6 +254,7 @@ export async function listQuotations(input: ListQuotationsInput = {}) {
   if (input.from) conds.push(gte(quotations.createdAt, localDayStart(input.from)));
   if (input.to) conds.push(lt(quotations.createdAt, localNextDayStart(input.to)));
   if (input.status) conds.push(eq(quotations.status, input.status));
+  if (input.branchId != null) conds.push(eq(quotations.branchId, input.branchId));
   return db
     .select({
       id: quotations.id,

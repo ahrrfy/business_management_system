@@ -722,7 +722,7 @@ describe("عروض الأسعار (Quotations)", () => {
     expect(qRow.status).toBe("DRAFT");
 
     // اقبل ثم حوّل بدفعة كاملة 100.
-    await setQuotationStatus(q.quotationId, "ACCEPTED");
+    await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
     const conv = await convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "CASH" } }, actor);
     expect(conv.alreadyConverted).toBe(false);
 
@@ -745,7 +745,7 @@ describe("عروض الأسعار (Quotations)", () => {
     await setStock(1, 1, 24);
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     const q = await createQuotation({ branchId: 1, customerId: 1, taxRatePercent: "0", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
-    await setQuotationStatus(q.quotationId, "ACCEPTED");
+    await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
     const c1 = await convertQuotation({ quotationId: q.quotationId }, actor);
     const c2 = await convertQuotation({ quotationId: q.quotationId }, actor);
     expect(c2.alreadyConverted).toBe(true);
@@ -757,7 +757,7 @@ describe("عروض الأسعار (Quotations)", () => {
   it("لا يمكن تحويل عرض مرفوض", async () => {
     await setStock(1, 1, 24);
     const q = await createQuotation({ branchId: 1, taxRatePercent: "0", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] }, actor);
-    await setQuotationStatus(q.quotationId, "REJECTED");
+    await setQuotationStatus(q.quotationId, "REJECTED", { ...actor, role: "admin" });
     await expect(convertQuotation({ quotationId: q.quotationId, payment: { amount: "2800.00", method: "CASH" } }, actor)).rejects.toThrow();
   });
 });

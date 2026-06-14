@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
   convertQuotation,
@@ -7,7 +8,7 @@ import {
   setQuotationStatus,
 } from "../services/quotationService";
 import { logAudit } from "../services/auditService";
-import { managerProcedure, protectedProcedure, router } from "../trpc";
+import { branchScopedProcedure, managerProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -15,7 +16,8 @@ const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 export const quotationRouter = router({
-  list: protectedProcedure
+  // عزل الفرع (تدقيق ١٤/٦/٢٦): غير المرتفعين يرون عروض فرعهم فقط (كان protectedProcedure ⇒ IDOR قراءة).
+  list: branchScopedProcedure
     .input(
       z
         .object({
@@ -23,15 +25,25 @@ export const quotationRouter = router({
           // فلترة خادمية بالفترة (createdAt) والحالة.
           from: ymd.optional(),
           to: ymd.optional(),
+          branchId: z.number().int().positive().optional(),
           status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "CONVERTED", "EXPIRED"]).optional(),
         })
         .optional()
     )
-    .query(({ input }) => listQuotations(input ?? {})),
+    .query(({ input, ctx }) => {
+      // admin/manager (scopedBranchId=null) يحترمان input.branchId إن مُرّر، وإلا يرون كل الفروع.
+      const branchId = ctx.scopedBranchId != null ? ctx.scopedBranchId : input?.branchId;
+      return listQuotations({ ...(input ?? {}), branchId });
+    }),
 
-  get: protectedProcedure
+  get: branchScopedProcedure
     .input(z.object({ quotationId: z.number().int().positive() }))
-    .query(({ input }) => getQuotation(input.quotationId)),
+    .query(async ({ input, ctx }) => {
+      const q = await getQuotation(input.quotationId);
+      // لا يُكشَف وجود عرض فرع آخر للأدوار غير المرتفعة (نمط sales.get / voucher.get).
+      if (q && ctx.scopedBranchId != null && Number(q.branchId) !== ctx.scopedBranchId) return null;
+      return q;
+    }),
 
   // §٧ RBAC: عرض السعر التزام تسعيري يربط الشركة بمبلغ مستقبلاً ⇒ مدير فأعلى (كان protected
   // وسمح للكاشير بإصدار عروض، مغيّراً المسؤولية التسعيرية بلا حسيب).
@@ -62,19 +74,33 @@ export const quotationRouter = router({
     .mutation(async ({ input, ctx }) => {
       // §٧: نُغلق ثغرة `ctx.user.branchId ?? input.branchId` (لو كان branchId خام null لقبل
       // أيّ فرع). الآن المرتفعون فقط يصلون هنا ⇒ يمكن الاعتماد على input.branchId مع fallback صلب.
-      const res = await createQuotation(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+      // Q1 (تدقيق ١٤/٦/٢٦): دفاع متعمّق — مدير بـbranchId=null لا يُسمح له بإنشاء عروض على أي فرع.
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء عرض سعر" });
+      }
+      const res = await createQuotation(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) });
       await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId } });
       return res;
     }),
 
+  // Q1 (تدقيق ١٤/٦/٢٦): عزل فرع صارم — admin فقط يعدّل حالة عرض فرع آخر (manager محصور بفرعه).
+  // عرض السعر التزام سعري؛ التعديل في فرع آخر = تجاوز سلطة تسعيرية.
   setStatus: managerProcedure
     .input(z.object({ quotationId: z.number().int().positive(), status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "EXPIRED"]) }))
     .mutation(async ({ input, ctx }) => {
-      const res = await setQuotationStatus(input.quotationId, input.status);
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await setQuotationStatus(input.quotationId, input.status, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+        role: ctx.user.role,
+      });
       await logAudit(ctx, { action: "quotation.setStatus", entityType: "quotation", entityId: input.quotationId, newValue: { status: input.status } });
       return res;
     }),
 
+  // Q1 (تدقيق ١٤/٦/٢٦): التحويل = إنشاء فاتورة تُلزم الشركة. admin فقط يعبُر الفروع.
   convert: managerProcedure
     .input(
       z.object({
@@ -83,7 +109,14 @@ export const quotationRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await convertQuotation(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      if (ctx.user.branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await convertQuotation(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+        role: ctx.user.role,
+      });
       await logAudit(ctx, { action: "quotation.convert", entityType: "quotation", entityId: input.quotationId, newValue: { invoiceId: (res as { invoiceId?: number })?.invoiceId } });
       return res;
     }),
