@@ -12,6 +12,7 @@
 import { TRPCError } from "@trpc/server";
 import type Decimal from "decimal.js";
 import { randomInt } from "node:crypto";
+import { mysqlCodeFrom } from "../../shared/errorMap.ar";
 import { and, asc, desc, eq, gt, gte, inArray, like, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
 import {
@@ -268,12 +269,21 @@ export async function createStocktakeSession(
   input: CreateStocktakeInput,
   actor: StkActor
 ): Promise<CreateStocktakeResult> {
-  for (let attempt = 0; attempt < 2; attempt++) {
+  // سباق على رمز الجلسة (UNIQUE) أو deadlock من قفل FOR UPDATE على نطاق الرمز ⇒ أعد المحاولة.
+  // ⚠️ drizzle يغلّف الخطأ، فرمز MySQL يكون على cause لا على e مباشرةً — لذا نستخرجه بـmysqlCodeFrom
+  // (الفحص القديم `e.code` لم يكن يلتقطه أبداً، فيتسرّب الـdeadlock ويُفشل الإنشاء المتزامن).
+  const RETRYABLE = new Set(["ER_DUP_ENTRY", "ER_LOCK_DEADLOCK", "ER_LOCK_WAIT_TIMEOUT"]);
+  const MAX_ATTEMPTS = 5;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       return await withTx(async (tx) => createSessionInTx(tx, input, actor));
     } catch (e: unknown) {
-      const code = (e as { code?: string })?.code;
-      if ((code === "ER_DUP_ENTRY" || code === "ER_LOCK_DEADLOCK") && attempt === 0) continue; // سباق على رمز الجلسة أو deadlock ⇒ محاولة ثانية
+      const code = mysqlCodeFrom(e);
+      if (code && RETRYABLE.has(code) && attempt < MAX_ATTEMPTS - 1) {
+        // تراجع قصير عشوائيّ يكسر تناظر الـdeadlock بين المعاملتين المتزامنتين.
+        await new Promise((r) => setTimeout(r, 15 + randomInt(60)));
+        continue;
+      }
       throw e;
     }
   }
