@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { confirmDelete } from "@/lib/confirm";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -12,12 +12,6 @@ import { Link } from "wouter";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-/** نسبة كسرية (0.05) ⇒ نصّ "5%". */
-function pct(frac: string | number) {
-  const v = Number(frac) * 100;
-  return `${(Math.round(v * 10) / 10).toString().replace(/\.0$/, "")}%`;
-}
 
 let _k = 1;
 type CompUnit = { productUnitId: number; unitName: string; conversionFactor: string; isBaseUnit?: boolean };

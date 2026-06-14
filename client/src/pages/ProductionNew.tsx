@@ -5,25 +5,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
-import { D, fmt, round2 } from "@/lib/money";
+import { D, fmt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-function useDebounced<T>(value: T, ms: number): T {
-  const [v, setV] = useState(value);
-  useEffect(() => { const t = setTimeout(() => setV(value), ms); return () => clearTimeout(t); }, [value, ms]);
-  return v;
-}
-function pctStr(frac: number | string) {
-  const v = Number(frac) * 100;
-  return `${Math.round(v * 10) / 10}`.replace(/\.0$/, "") + "%";
-}
 
 /** شريط مقياس (مخزون متاح / إنتاجية). */
 function Meter({ value, max, tone, right, label }: { value: number; max: number; tone: "ok" | "warn" | "bad"; right?: string; label?: string }) {
@@ -68,7 +59,7 @@ export default function ProductionNew() {
     return Number.isFinite(id) && id > 0 ? id : null;
   }, [search]);
 
-  const [mode, setMode] = useState<"recipe" | "manual">(preRecipe ? "recipe" : "recipe");
+  const [mode, setMode] = useState<"recipe" | "manual">("recipe");
   const [branchId, setBranchId] = useState<number | "">("");
   const effectiveBranch = Number(branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1));
   const branchName = (branches.data ?? []).find((b) => Number(b.id) === effectiveBranch)?.name ?? "";
@@ -95,9 +86,9 @@ export default function ProductionNew() {
   }, [recipeId, selectedRecipe?.laborPerOutputBase]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // معاينة حيّة (مُهلَّة) — نفس حساب الترحيل خادمياً.
-  const dBatch = useDebounced(batch, 300);
-  const dScrap = useDebounced(scrap, 300);
-  const dLabor = useDebounced(labor, 300);
+  const dBatch = useDebouncedValue(batch, 300);
+  const dScrap = useDebouncedValue(scrap, 300);
+  const dLabor = useDebouncedValue(labor, 300);
   const previewEnabled = mode === "recipe" && !!recipeId && Number(dBatch) > 0;
   const preview = trpc.production.runPreview.useQuery(
     { recipeId: Number(recipeId), batchQty: Math.trunc(Number(dBatch) || 0), scrapQty: Math.trunc(Number(dScrap) || 0), laborPerUnit: D(dLabor || "0").toFixed(2), branchId: effectiveBranch },
@@ -286,7 +277,7 @@ export default function ProductionNew() {
                     </div>
                     {pv && (
                       <div>
-                        <Meter value={pv.good} max={pv.batch || 1} tone={pv.yieldPct >= 1 - Number(pv.wasteStdPct) ? "ok" : "warn"} label="الإنتاجية (Yield)" right={pctStr(pv.yieldPct)} />
+                        <Meter value={pv.good} max={pv.batch || 1} tone={pv.yieldPct >= 1 - Number(pv.wasteStdPct) ? "ok" : "warn"} label="الإنتاجية (Yield)" right={pct(pv.yieldPct)} />
                         <div className="flex gap-4 flex-wrap text-xs text-muted-foreground mt-2">
                           <span>بدأ التشغيل: <b className="text-foreground" dir="ltr">{fmt(pv.batch)}</b></span>
                           <span>مسموح طبيعي: <b className="text-foreground" dir="ltr">{fmt(pv.normalAllow)}</b></span>

@@ -5,7 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { cancelProduction, computeRunCosts, createProduction, runPreview, spoilageSplit } from "../productionService";
+import { cancelProduction, computeRunCosts, createProduction, getProduction, runPreview, spoilageSplit } from "../productionService";
 import { createRecipe, getRecipe, recipePreview } from "../recipeService";
 
 const actor = { userId: 1, branchId: 1 };
@@ -335,6 +335,12 @@ describe("الإنتاج: مسار التشغيل بوصفة (run) + قيد ال
     expect(Number(po.scrapQty)).toBe(12);
     expect(po.abnormalLoss).toBe("210.00");
     expect(po.wasteStdPct).toBe("0.05"); // لقطة الهدر المعياري وقت التشغيل (للمستند الثابت)
+
+    // getProduction يشتقّ الإنتاجية خادمياً (مصدر حقيقة واحد — لا اشتقاق في العميل).
+    const doc: any = await getProduction(r.productionOrderId, { ...actor, role: "admin" });
+    expect(doc.normalAllow).toBe(5);
+    expect(doc.abnormalUnits).toBe(7);
+    expect(doc.yieldPct).toBeCloseTo(0.88, 4);
   });
 
   it("الهدر غير الطبيعي ⇒ قيد WASTAGE بالكلفة بلا إيصال (لا يمسّ الصندوق)", async () => {

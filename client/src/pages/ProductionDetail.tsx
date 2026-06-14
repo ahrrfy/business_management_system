@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
-import { fmt } from "@/lib/money";
+import { fmt, pct } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
@@ -55,11 +55,11 @@ export default function ProductionDetail() {
   const isRecipeRun = doc.batchQty != null;
   const batchQ = Number(doc.batchQty ?? 0);
   const abLoss = Number(doc.abnormalLoss ?? 0);
-  // مطابقة spoilageSplit الخادمية بالضبط من اللقطة المخزّنة (لا إعادة اشتقاق تقريبيّ).
   const wasteStd = Number(doc.wasteStdPct ?? 0);
-  const normalAllow = Math.floor(wasteStd * batchQ);
-  const abnormalUnits = Math.max(0, Number(doc.scrapQty ?? 0) - normalAllow);
-  const yieldPct = batchQ > 0 ? Number(doc.goodQty ?? 0) / batchQ : null;
+  // أرقام الإنتاجية مشتقّة خادمياً بـspoilageSplit (مصدر حقيقة واحد) — العميل يعرضها فقط.
+  const normalAllow = Number(doc.normalAllow ?? 0);
+  const abnormalUnits = Number(doc.abnormalUnits ?? 0);
+  const yieldPct = doc.yieldPct != null ? Number(doc.yieldPct) : null;
 
   function printDocument() {
     const out0: any = outputs[0] ?? {};
@@ -112,7 +112,7 @@ export default function ProductionDetail() {
             <div><div className="text-xs text-muted-foreground">الدفعة</div><div className="font-semibold tabular-nums" dir="ltr">{Number(doc.batchQty).toLocaleString("en-US")}</div></div>
             <div><div className="text-xs text-muted-foreground">السليم</div><div className="font-semibold text-emerald-700 tabular-nums" dir="ltr">{Number(doc.goodQty).toLocaleString("en-US")}</div></div>
             <div><div className="text-xs text-muted-foreground">التالف</div><div className="font-semibold text-amber-600 tabular-nums" dir="ltr">{Number(doc.scrapQty).toLocaleString("en-US")}</div></div>
-            <div><div className="text-xs text-muted-foreground">الإنتاجية</div><div className="font-semibold tabular-nums" dir="ltr">{yieldPct != null ? `${Math.round(yieldPct * 1000) / 10}%` : "—"}</div></div>
+            <div><div className="text-xs text-muted-foreground">الإنتاجية</div><div className="font-semibold tabular-nums" dir="ltr">{yieldPct != null ? pct(yieldPct) : "—"}</div></div>
             <div><div className="text-xs text-muted-foreground">خسارة هدر غير طبيعي</div><div className={`font-semibold tabular-nums ${abLoss > 0 ? "text-rose-600" : "text-muted-foreground"}`} dir="ltr">{abLoss > 0 ? `${fmt(doc.abnormalLoss)} (${abnormalUnits} وحدة)` : "لا يوجد"}</div></div>
           </CardContent>
         </Card>

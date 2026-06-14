@@ -645,8 +645,20 @@ export async function getProduction(productionOrderId: number, actor: Actor & { 
       .where(eq(productionLines.productionOrderId, productionOrderId))
       .orderBy(productionLines.id);
 
+    // أرقام الإنتاجية المشتقّة من اللقطة المخزّنة — تُحسب بـ`spoilageSplit` نفسها (مصدر حقيقة واحد:
+    // لا يعيد العميل اشتقاق الدكترين). NULL للمستندات اليدوية/القديمة (بلا batchQty).
+    const batch = head.batchQty == null ? null : Number(head.batchQty);
+    let derived: { normalAllow: number; abnormalUnits: number; yieldPct: number } | null = null;
+    if (batch != null && batch > 0) {
+      const sp = spoilageSplit(money(head.totalCost), batch, Number(head.scrapQty ?? 0), money(head.wasteStdPct ?? "0"));
+      derived = { normalAllow: sp.normalAllow, abnormalUnits: sp.abnormalUnits, yieldPct: Number(head.goodQty ?? 0) / batch };
+    }
+
     return {
       ...head,
+      normalAllow: derived?.normalAllow ?? null,
+      abnormalUnits: derived?.abnormalUnits ?? null,
+      yieldPct: derived?.yieldPct ?? null,
       inputs: lines.filter((l: any) => l.direction === "INPUT"),
       outputs: lines.filter((l: any) => l.direction === "OUTPUT"),
     };
@@ -738,6 +750,7 @@ export async function runPreview(args: {
         qtyPerOutputBase: productionRecipeLines.qtyPerOutputBase,
         productName: products.name,
         sku: productVariants.sku,
+        costPrice: productVariants.costPrice, // التكلفة من نفس الانضمام (لا استعلام ثانٍ)
       })
       .from(productionRecipeLines)
       .leftJoin(productVariants, eq(productionRecipeLines.inputVariantId, productVariants.id))
@@ -747,11 +760,7 @@ export async function runPreview(args: {
     if (!recLines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة بلا مكوّنات" });
 
     const inVarIds = Array.from(new Set(recLines.map((l: any) => Number(l.inputVariantId))));
-    const costRows = await tx
-      .select({ id: productVariants.id, costPrice: productVariants.costPrice })
-      .from(productVariants)
-      .where(inArray(productVariants.id, inVarIds));
-    const costMap = new Map(costRows.map((v: any) => [Number(v.id), v.costPrice]));
+    const costMap = new Map(recLines.map((l: any) => [Number(l.inputVariantId), l.costPrice]));
 
     // المتاح بالفرع (للأشرطة وحارس النقص اللّيّن في الواجهة).
     const availMap = new Map<number, number>();

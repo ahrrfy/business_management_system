@@ -264,7 +264,10 @@ describe("inventory.movementsRich", () => {
   it("(د4) فلترة بالتاريخ — toDate يشمل اليوم كاملاً", async () => {
     await seedMovements();
     const admin = appRouter.createCaller(makeCtx(await userRow(1)));
-    const today = new Date().toISOString().slice(0, 10);
+    // التاريخ **المحلي** (لا UTC): حدود الفلترة بمنتصف ليلٍ محلي (dateRange.localDayStart)، فلو استعملنا
+    // toISOString (UTC) لانزاحت النافذة في الساعات ٢١–٢٤ UTC حيث يسبق التاريخ المحلي تاريخَ UTC بيوم.
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
     const todayAll = await admin.inventory.movementsRich({ fromDate: today, toDate: today });
     expect(todayAll.total).toBe(4); // toDate شامل ⇒ يلتقط ما حصل اليوم.
 

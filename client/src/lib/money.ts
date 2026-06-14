@@ -49,3 +49,7 @@ export const roundCashIQD = (amount: string | number | null | undefined, denom: 
 /** Format integer money (IQD whole-number) with locale separators. Decimal-safe sum first if needed. */
 export const fmtInt = (v: string | number | null | undefined) =>
   D(v).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ-u-nu-latn");
+
+/** نسبة كسرية (0.05) ⇒ نصّ مئوي "5%" (منزلة واحدة، تُجرَّد ".0"). */
+export const pct = (frac: string | number | null | undefined) =>
+  `${Math.round((Number(frac ?? 0) * 100) * 10) / 10}`.replace(/\.0$/, "") + "%";
