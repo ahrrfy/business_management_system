@@ -21,6 +21,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "🛒",
     items: [
       { href: "/pos", label: "نقطة البيع" },
+      { href: "/print-pos", label: "نقطة بيع الطباعة" },
       { href: "/price-checker", label: "قارئ الأسعار (شاشة الزبون)" },
       { href: "/sales/new", label: "فاتورة بيع متقدّمة" },
       { href: "/invoices", label: "الفواتير" },
