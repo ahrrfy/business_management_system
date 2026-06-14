@@ -156,8 +156,17 @@ export const saleRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُجبَر على فرعه (لا يُصدَّق branchId القادم من العميل — منع IDOR).
+      // G1 (تدقيق ١٤/٦/٢٦): قبل الإصلاح كان `ctx.user.branchId ?? input.branchId` يسمح
+      // لكاشير بـbranchId=null أن يحقن أي input.branchId (بيع في فرع آخر — IDOR مالي).
+      // الآن: throw FORBIDDEN صريح (نمط F4 expense.create).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      const effectiveBranchId = elevated ? input.branchId : (ctx.user.branchId ?? input.branchId);
+      let effectiveBranchId = input.branchId;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        effectiveBranchId = Number(ctx.user.branchId);
+      }
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
@@ -198,11 +207,20 @@ export const saleRouter = router({
     }))
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُرفض دفعه على فاتورة فرع آخر (منع IDOR).
+      // G1 (تدقيق ١٤/٦/٢٦): استبدل `?? -1` برميٍ صريح. كان -1 يجعل enforceBranchId يطابق
+      // عدم وجود فاتورة (silent failure)؛ الآن: FORBIDDEN مباشر لكاشير بلا فرع.
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      const enforceBranchId = elevated ? null : (ctx.user.branchId ?? -1);
+      let enforceBranchId: number | null = null;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        enforceBranchId = Number(ctx.user.branchId);
+      }
+      const actorBranchId = elevated ? (Number(ctx.user.branchId) || enforceBranchId || 1) : enforceBranchId!;
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+          const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: actorBranchId });
           await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
           return res;
         } catch (e: any) {

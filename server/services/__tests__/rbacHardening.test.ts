@@ -10,6 +10,10 @@
 //  - branchScopedProcedure: غير-مرتفع بلا فرع ⇒ FORBIDDEN (F1 — تدقيق ١٤/٦/٢٦).
 //  - purchase.list/get: branchScopedProcedure (F3 — تدقيق ١٤/٦/٢٦).
 //  - expense.create: غير-مرتفع يُجبَر على فرعه (F4 — تدقيق ١٤/٦/٢٦).
+//  - sale.create/pay: غير-مرتفع بلا فرع ⇒ FORBIDDEN (G1 — تدقيق ١٤/٦/٢٦).
+//  - voucher.create/cancel: لا فرع مُسنَد ⇒ FORBIDDEN (G2 — تدقيق ١٤/٦/٢٦).
+//  - reports.dashboardMetrics: غير-مرتفع بلا فرع ⇒ FORBIDDEN (G3 — تدقيق ١٤/٦/٢٦).
+//  - shifts.open/close: غير-مرتفع بلا فرع ⇒ FORBIDDEN (G4 — تدقيق ١٤/٦/٢٦).
 
 import { describe, expect, it } from "vitest";
 import type { TrpcContext } from "../../context";
@@ -158,6 +162,63 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
     );
     // ملاحظة: المسار الإيجابي (كاشير(2) يُجبَر على branchId=2) يحتاج بذر فرع/وردية ⇒ يُغطّى
     // في `expenseService.test.ts`/`financialMedium.test.ts`؛ هنا نكتفي بحارس الـauthz.
+  });
+
+  // G1 — تدقيق ١٤/٦/٢٦: sale.create/pay يطبّقان نمط F4 (FORBIDDEN صريح بدل fallback صامت).
+  describe("G1: sale.create/pay — كاشير بلا فرع ⇒ FORBIDDEN", () => {
+    it("cashier بلا فرع: sale.create ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("cashier", null).sales.create({
+          branchId: 1,
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPrice: "100" }],
+        })
+      )
+    );
+    it("cashier بلا فرع: sale.pay ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("cashier", null).sales.pay({ invoiceId: 1, amount: "100", method: "CASH" })
+      )
+    );
+  });
+
+  // G2 — تدقيق ١٤/٦/٢٦: voucher.create/cancel يرفضان لو لا فرع مُسنَد (حتى للمرتفعين).
+  describe("G2: voucher.create/cancel — لا فرع مُسنَد ⇒ FORBIDDEN", () => {
+    it("manager بلا فرع: voucher.create ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("manager", null).vouchers.create({
+          voucherType: "RECEIPT", branchId: 1, amount: "100", paymentMethod: "CASH",
+          partyType: "CUSTOMER", description: "تجربة",
+        })
+      )
+    );
+    it("manager بلا فرع: voucher.cancel ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("manager", null).vouchers.cancel({ receiptId: 1 }))
+    );
+  });
+
+  // G3 — تدقيق ١٤/٦/٢٦: reports.dashboardMetrics يستبدل magic -1 برميٍ صريح.
+  describe("G3: reports.dashboardMetrics — غير-مرتفع بلا فرع ⇒ FORBIDDEN", () => {
+    it("cashier بلا فرع ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("cashier", null).reports.dashboardMetrics())
+    );
+    it("admin بلا فرع ⇒ مسموح (يرى كل الفروع)", async () => {
+      const out = await caller("admin", null).reports.dashboardMetrics();
+      expect(out).toBeDefined();
+    });
+  });
+
+  // G4 — تدقيق ١٤/٦/٢٦: shifts.open/close يستبدلان `?? input.branchId` و`?? -1`.
+  describe("G4: shifts.open/close — كاشير بلا فرع ⇒ FORBIDDEN", () => {
+    it("cashier بلا فرع: shifts.open ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("cashier", null).shifts.open({ branchId: 1, openingBalance: "0" })
+      )
+    );
+    it("cashier بلا فرع: shifts.close ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("cashier", null).shifts.close({ shiftId: 1, countedCash: "0" })
+      )
+    );
   });
 
   describe("barcode.verify — حدّ الإدخال", () => {

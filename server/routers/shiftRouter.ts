@@ -69,8 +69,19 @@ export const shiftRouter = router({
   open: cashierProcedure
     .input(z.object({ branchId: z.number().int().positive(), openingBalance: z.string().default("0") }))
     .mutation(async ({ input, ctx }) => {
-      const res = await openShift(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
-      await logAudit(ctx, { action: "shift.open", entityType: "shift", entityId: (res as { id?: number })?.id, newValue: { openingBalance: input.openingBalance } });
+      // G4 (تدقيق ١٤/٦/٢٦): قبل: `?? input.branchId` يسمح لكاشير بـbranchId=null بفتح وردية
+      // على أي فرع. الآن: غير-elevated يُجبَر على فرعه (FORBIDDEN لو null)؛ admin/manager
+      // يحترمان input.branchId (لافتتاح ورديات نيابةً عند الحاجة).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      let actorBranchId = input.branchId;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        actorBranchId = Number(ctx.user.branchId);
+      }
+      const res = await openShift({ ...input, branchId: actorBranchId }, { userId: ctx.user.id, branchId: actorBranchId });
+      await logAudit(ctx, { action: "shift.open", entityType: "shift", entityId: (res as { id?: number })?.id, newValue: { openingBalance: input.openingBalance, branchId: actorBranchId } });
       return res;
     }),
 
@@ -78,9 +89,15 @@ export const shiftRouter = router({
     .input(z.object({ shiftId: z.number().int().positive(), countedCash: z.string() }))
     .mutation(async ({ input, ctx }) => {
       // سياسة #14: نمرّر دور الفاعل + فرعه ليفرض closeShift فحص الملكية/الفرع.
+      // G4: استبدال `?? -1` الذي كان يُمرَّر للخدمة فيرفع رسالة مضلّلة (لا تطابُق فرع)
+      // بدل سبب الحقيقي (لا فرع مُسنَد). FORBIDDEN صريح للأدوار غير المرتفعة.
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
       const res = await closeShift(input, {
         userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? -1,
+        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
         role: ctx.user.role,
       });
       await logAudit(ctx, { action: "shift.close", entityType: "shift", entityId: input.shiftId, newValue: { countedCash: input.countedCash } });

@@ -33,9 +33,17 @@ export const voucherRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      // G2 (تدقيق ١٤/٦/٢٦): قبل الإصلاح كان `ctx.user.branchId ?? input.branchId` يسمح
+      // لمدير بـbranchId=null أن يحقن أي input.branchId. الإجراء managerProcedure لكن
+      // دفاع متعمّق: لا نسمح لمستخدم بلا فرع مُسنَد بإصدار سندات (يشمل admin أيضاً —
+      // كل سند يحتاج فرعاً واضحاً للقيد والصندوق).
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إصدار سند" });
+      }
+      const actorBranchId = Number(ctx.user.branchId);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createVoucher(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+          const res = await createVoucher(input, { userId: ctx.user.id, branchId: actorBranchId });
           await logAudit(ctx, {
             action: input.voucherType === "RECEIPT" ? "voucher.receipt.create" : "voucher.payment.create",
             entityType: "receipt",
@@ -56,9 +64,13 @@ export const voucherRouter = router({
   cancel: managerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
+      // G2: استبدال fallback `?? 1` الصامت (كان يصرف على فرع 1 لمدير بلا فرع).
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إلغاء سند" });
+      }
       const res = await cancelVoucher(input.receiptId, {
         userId: ctx.user.id,
-        branchId: ctx.user.branchId ?? 1,
+        branchId: Number(ctx.user.branchId),
       });
       await logAudit(ctx, {
         action: "voucher.cancel",

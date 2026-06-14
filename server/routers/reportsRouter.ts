@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { customers, invoices, suppliers } from "../../drizzle/schema";
@@ -195,10 +196,18 @@ export const reportsRouter = router({
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       // عزل الفرع: غير المرتفعين (cashier/warehouse) يُجبَرون على فرعهم.
+      // G3 (تدقيق ١٤/٦/٢٦): استبدل `?? -1` برميٍ صريح. كان -1 يجعل المؤشّرات تُحسب بـ
+      // WHERE branchId=-1 فترجع أصفاراً صامتاً (المستخدم يرى لوحة فارغة بدل «ممنوع»).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      const effectiveBranchId: number | null = elevated
-        ? input?.branchId ?? null
-        : Number(ctx.user.branchId ?? -1);
+      let effectiveBranchId: number | null;
+      if (elevated) {
+        effectiveBranchId = input?.branchId ?? null;
+      } else {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        effectiveBranchId = Number(ctx.user.branchId);
+      }
       return getDashboardMetrics({ branchId: effectiveBranchId });
     }),
 
