@@ -23,6 +23,7 @@ import InvoiceDetail from "@/pages/InvoiceDetail";
 import Invoices from "@/pages/Invoices";
 import Login from "@/pages/Login";
 import POS from "@/pages/POS";
+import PrintPOS from "@/pages/PrintPOS";
 import PriceChecker from "@/pages/PriceChecker";
 import Kiosk from "@/pages/Kiosk";
 import KioskDevices from "@/pages/KioskDevices";
@@ -119,6 +120,12 @@ export default function App() {
       <Route path="/pos">
         <Protected>
           <POS />
+        </Protected>
+      </Route>
+      {/* نقطة بيع قسم الطباعة والاستنساخ بملء الشاشة (بلا قائمة جانبية) */}
+      <Route path="/print-pos">
+        <Protected>
+          <PrintPOS />
         </Protected>
       </Route>
       {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — جهاز المتجر مسجَّل الدخول */}
