@@ -31,9 +31,9 @@ async function main() {
   if (!dbOrNull) throw new Error("DATABASE_URL is required to seed");
   const db = dbOrNull; // نوع غير قابل لـnull ⇒ صالح داخل الدوال المتداخلة (ensureCategory)
 
-  const main = (await db.select().from(branches).where(eq(branches.code, "MAIN")).limit(1))[0];
-  if (!main) throw new Error("الفرع الرئيسي MAIN غير موجود — شغّل pnpm seed أولاً");
-  const mainId = Number(main.id);
+  const mainBranch = (await db.select().from(branches).where(eq(branches.code, "MAIN")).limit(1))[0];
+  if (!mainBranch) throw new Error("الفرع الرئيسي MAIN غير موجود — شغّل pnpm seed أولاً");
+  const mainId = Number(mainBranch.id);
   const admin = (await db.select().from(users).where(eq(users.role, "admin")).limit(1))[0];
   const adminId = admin ? Number(admin.id) : null;
 
@@ -122,15 +122,15 @@ async function main() {
     const exVar = (await db.select().from(productVariants).where(eq(productVariants.sku, s.sku)).limit(1))[0];
     if (exVar) {
       variantId = Number(exVar.id);
-      let exUnit = (await db.select().from(productUnits).where(eq(productUnits.variantId, variantId)).limit(1))[0];
-      if (!exUnit) {
+      const exUnit = (await db.select().from(productUnits).where(eq(productUnits.variantId, variantId)).limit(1))[0];
+      if (exUnit) {
+        productUnitId = Number(exUnit.id);
+      } else {
         // إصلاح ذاتي لمتغيّر يتيم من تشغيل جزئي سابق: أعد إنشاء وحدة الأساس + سعر RETAIL.
         const ur = await db.insert(productUnits).values({ variantId, unitName: s.unit, conversionFactor: "1", isBaseUnit: true });
-        const newUnitId = insertId(ur);
-        await db.insert(productPrices).values({ productUnitId: newUnitId, priceTier: "RETAIL", price: s.price });
-        exUnit = (await db.select().from(productUnits).where(eq(productUnits.id, newUnitId)).limit(1))[0];
+        productUnitId = insertId(ur);
+        await db.insert(productPrices).values({ productUnitId, priceTier: "RETAIL", price: s.price });
       }
-      productUnitId = Number(exUnit.id);
     } else {
       const pr = await db.insert(products).values({ name: s.name, productType: PRINT_SERVICE_TYPE, categoryId: s.categoryId });
       const productId = insertId(pr);

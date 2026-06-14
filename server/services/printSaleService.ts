@@ -185,8 +185,7 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       unitPrice: string;
       quantity: string;
       total: string;
-      lineCost: Decimal; // كلفة مواد السطر
-      unitCost: string; // كلفة الوحدة (للعرض) = lineCost / baseQuantity
+      unitCost: string; // كلفة الوحدة (للعرض) = كلفة مواد السطر ÷ baseQuantity
     }> = [];
     const materialAgg = new Map<number, { baseQuantity: number; unitCost: Decimal }>();
 
@@ -203,7 +202,8 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       const recipeId = recipeByOutput.get(l.variantId);
       if (recipeId != null) {
         for (const rl of linesByRecipe.get(recipeId) ?? []) {
-          // الاستهلاك = qtyPerOutputBase × كمية الخدمة الأساس؛ يُدوَّر لعدد صحيح (وحدات مخزون صحيحة).
+          // الاستهلاك = qtyPerOutputBase × كمية الخدمة الأساس، يُدوَّر لأقرب عدد صحيح (وحدات مخزون صحيحة).
+          // سياسة نقطة البيع المتعمَّدة: لا تُرفَض خدمةٌ بسبب وصفة كسرية — بخلاف مسار الإنتاج الذي يرفض الكسر.
           const consumed = Math.max(0, Math.round(money(rl.qtyPerOutputBase).times(baseQuantity).toNumber()));
           if (consumed <= 0) continue;
           const unitCost = round2(matCostMap.get(rl.inputVariantId) ?? new Decimal(0));
@@ -222,7 +222,6 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
         unitPrice: lineRes.unitPrice,
         quantity: lineRes.quantity,
         total: lineRes.total,
-        lineCost,
         unitCost: unitCost.toFixed(2),
       });
     }
