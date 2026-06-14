@@ -27,6 +27,13 @@ export interface ApplyMovementArgs {
   relatedBranchId?: number;
   notes?: string;
   createdBy?: number;
+  /**
+   * يسمح للرصيد بالنزول تحت الصفر لحركة الخصم (OUT/TRANSFER_OUT) — **للمواد الاستهلاكية فقط**
+   * (ورق/حبر في نقطة بيع الطباعة): الخدمة لا تُرفض حين يُظهر النظام نفاد المادة، لكن الاستهلاك
+   * يُسجَّل كاملاً (حركة + رصيد سالب = إشارة صادقة لإعادة التزويد/الجرد). لا تستعمله لبضاعة إعادة البيع.
+   * الافتراضي false ⇒ السلوك التاريخي (حظر البيع الزائد) محفوظ تماماً لكل المستدعين الحاليين.
+   */
+  allowNegative?: boolean;
 }
 export interface ApplyMovementResult {
   movementId: number;
@@ -54,7 +61,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   const currentQty = rows[0]?.quantity ?? 0;
 
   const sign = SIGN[a.movementType];
-  if (DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity) {
+  if (DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity && !a.allowNegative) {
     throw new TRPCError({
       code: "CONFLICT",
       message: `المخزون غير كافٍ: المتاح ${currentQty}، المطلوب ${a.baseQuantity}`,
