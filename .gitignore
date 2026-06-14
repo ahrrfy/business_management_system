@@ -6,10 +6,12 @@
 dist/
 build/
 
-# Environment variables
+# Environment variables — استثناء كل ‎.env.* بقوّة (يشمل ‎.env.production الشائع)
+# مع استثناء صريح للقوالب المنشورة فقط. سدّ فخّ التزام أسرار حيّة (تدقيق ١٤/٦/٢٦).
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
+!.env.production.example
 
 # IDE and editor files
 .vscode/

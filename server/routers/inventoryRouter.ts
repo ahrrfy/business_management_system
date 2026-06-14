@@ -36,19 +36,18 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع: warehouse يُجبَر فرع المصدر على فرعه (لا يحوّل من فرع آخر)؛ admin/manager
-      // يحترمان fromBranchId المُرسَل. النمط نفسه المُطبَّق في createManualMovement أدناه.
+      // عزل الفرع: warehouse يُجبَر على أن يكون فرع المصدر فرعَه (لا يُفرغ مخزن فرع ليس له
+      // عبر استدعاء API مباشر). admin/manager يحترمان fromBranchId المُرسَل (نقل بين أي فرعين).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       let fromBranchId = input.fromBranchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
           throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
         }
-        const userBranch = Number(ctx.user.branchId);
-        if (fromBranchId !== userBranch) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع التحويل من فرع غير فرعك" });
+        if (Number(ctx.user.branchId) !== input.fromBranchId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن نقل بضاعة من فرع ليس فرعك" });
         }
-        fromBranchId = userBranch;
+        fromBranchId = Number(ctx.user.branchId);
       }
       const res = await withTx((tx) => transferBetweenBranches(tx, { ...input, fromBranchId, createdBy: ctx.user.id }));
       await logAudit(ctx, { action: "inventory.transfer", entityType: "stock", entityId: input.variantId, newValue: { from: fromBranchId, to: input.toBranchId, qty: input.baseQuantity } });
@@ -65,7 +64,8 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع: warehouse يُجبَر على فرعه (لا يسوّي مخزون فرع آخر).
+      // عزل الفرع: warehouse يُجبَر على فرعه — يمنع تسوية مخزون فرع آخر عبر API مباشر.
+      // admin/manager يحترمان branchId المُرسَل (نفس نمط createManualMovement).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       let branchId = input.branchId;
       if (!elevated) {

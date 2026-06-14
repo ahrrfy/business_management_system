@@ -5,6 +5,8 @@
 //  - workOrders.get: يخفي materialsCost/laborCost/unitCost عن غير المرتفعين.
 //  - shifts.report: branchScopedProcedure + يرفض ورديات فرع آخر للكاشير.
 //  - barcode.verify: يرفض payload > 1000 خانة.
+//  - inventory.transfer/adjust: warehouse مُجبَر على فرعه (M1 — تدقيق ١٤/٦/٢٦).
+//  - voucher.list/get: branchScopedProcedure مع scopedBranchId (M2 — تدقيق ١٤/٦/٢٦).
 
 import { describe, expect, it } from "vitest";
 import type { TrpcContext } from "../../context";
@@ -57,6 +59,53 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
     it("الكاشير ممنوع من تحويل عرض لفاتورة", () =>
       expectForbidden(caller("cashier").quotations.convert({ quotationId: 1 }))
     );
+  });
+
+  // M1 — تدقيق ١٤/٦/٢٦: inventory.transfer/adjust يجب أن يُجبرا warehouse على فرعه.
+  // قبل الإصلاح: warehouse فرع SALES كان يستطيع نقل بضاعة من فرع MAIN عبر API مباشر.
+  describe("M1: inventory.transfer/adjust — عزل الفرع لـwarehouse", () => {
+    it("warehouse: transfer من فرع ليس فرعه ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("warehouse", 2).inventory.transfer({
+          variantId: 1, fromBranchId: 1, toBranchId: 2, baseQuantity: 5,
+        })
+      )
+    );
+    it("warehouse بلا فرع: transfer ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("warehouse", null).inventory.transfer({
+          variantId: 1, fromBranchId: 1, toBranchId: 2, baseQuantity: 5,
+        })
+      )
+    );
+    it("warehouse بلا فرع: adjust ⇒ FORBIDDEN", () =>
+      expectForbidden(
+        caller("warehouse", null).inventory.adjust({
+          variantId: 1, branchId: 1, targetQuantity: 10,
+        })
+      )
+    );
+  });
+
+  // M2 — تدقيق ١٤/٦/٢٦: voucher.list/get تحوّلا إلى branchScopedProcedure.
+  // قبل الإصلاح: أي مستخدم مسجَّل (كاشير/مخزن) كان يستطيع قراءة سندات كل الفروع.
+  describe("M2: voucher.list/get — عزل الفرع للأدوار غير المرتفعة", () => {
+    it("list: كاشير بفرع — لا يستثني branchScopedProcedure (لا يرمي FORBIDDEN، يفلتر بصمت لفرعه)", async () => {
+      // قاعدة الاختبار فارغة ⇒ النتيجة دائماً []؛ المهمّ أنّ الإجراء لا يرمي
+      // (أي أنّ branchScopedProcedure يعمل ويُمرّر scopedBranchId بلا خطأ).
+      const out = await caller("cashier", 2).vouchers.list();
+      expect(Array.isArray(out)).toBe(true);
+    });
+    it("list: كاشير يحاول طلب فرع آخر — يُغلَب على input.branchId بـscopedBranchId", async () => {
+      // حتى مع تمرير branchId مختلف، scopedBranchId يفرض فرع المستخدم — النتيجة [] لقاعدة فارغة.
+      const out = await caller("cashier", 2).vouchers.list({ branchId: 1 });
+      expect(Array.isArray(out)).toBe(true);
+      expect(out.length).toBe(0);
+    });
+    it("get: كاشير يطلب receiptId غير موجود ⇒ null (لا تسريب لخطأ DB)", async () => {
+      const v = await caller("cashier", 2).vouchers.get({ receiptId: 999999 });
+      expect(v).toBeNull();
+    });
   });
 
   describe("barcode.verify — حدّ الإدخال", () => {

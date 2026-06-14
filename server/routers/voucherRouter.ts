@@ -3,7 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import { cancelVoucher, createVoucher, getVoucher, listVouchers } from "../services/voucherService";
-import { managerProcedure, protectedProcedure, router } from "../trpc";
+import { branchScopedProcedure, managerProcedure, router } from "../trpc";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -69,7 +69,7 @@ export const voucherRouter = router({
       return res;
     }),
 
-  list: protectedProcedure
+  list: branchScopedProcedure
     .input(
       z
         .object({
@@ -85,9 +85,21 @@ export const voucherRouter = router({
         })
         .optional(),
     )
-    .query(async ({ input }) => listVouchers(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      // عزل الفرع: غير المرتفعين (كاشير/مخزن/...) لا يرون إلا سندات فرعهم.
+      // admin/manager يحترمان branchId المُرسَل (أو يرون كل الفروع إن لم يُحدَّد).
+      const branchId = ctx.scopedBranchId != null ? ctx.scopedBranchId : input?.branchId;
+      return listVouchers({ ...(input ?? {}), branchId });
+    }),
 
-  get: protectedProcedure
+  get: branchScopedProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
-    .query(({ input }) => getVoucher(input.receiptId)),
+    .query(async ({ input, ctx }) => {
+      const v = await getVoucher(input.receiptId);
+      // لا تكشف وجود سند فرع آخر للأدوار غير المرتفعة — رد NOT_FOUND مماثل (نمط sales.get).
+      if (v && ctx.scopedBranchId != null && Number(v.branchId) !== ctx.scopedBranchId) {
+        return null;
+      }
+      return v;
+    }),
 });
