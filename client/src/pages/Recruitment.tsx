@@ -218,6 +218,12 @@ export default function Recruitment() {
         </CardContent>
       </Card>
 
+      {list.isError && (
+        <Card><CardContent className="py-4 text-center text-rose-600 text-sm">
+          تعذّر تحميل المتقدّمين. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button>
+        </CardContent></Card>
+      )}
+
       {/* مسار المتقدّمين (Kanban) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         {APPLICANT_STAGES.map((st) => {

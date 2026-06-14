@@ -86,6 +86,8 @@ export async function migrateDevice(id: number) {
   return withTx(async (tx) => {
     const [d] = await tx.select().from(hrFingerprintDevices).where(eq(hrFingerprintDevices.id, id)).for("update").limit(1);
     if (!d) throw new Error("الجهاز غير موجود");
+    // حارس idempotency: لا تُعاد هجرة جهاز مُهاجَر (تجنّب إعادة كتابة الوجهة بصمت).
+    if (d.migrated) throw new Error("الجهاز مُهاجَر إلى خادم الرؤية مسبقاً");
     await tx
       .update(hrFingerprintDevices)
       .set({

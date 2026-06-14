@@ -22,8 +22,6 @@ export const payrollRouter = router({
     .input(z.object({ id: z.number().int().positive() }))
     .query(({ input }) => svc.getRun(input.id)),
 
-  latest: hrRead.query(() => svc.latestRun()),
-
   generate: hrWrite
     .input(z.object({ period }))
     .mutation(async ({ input, ctx }) => {

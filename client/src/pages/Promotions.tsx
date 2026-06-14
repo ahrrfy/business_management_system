@@ -173,7 +173,10 @@ export default function Promotions() {
                         </td>
                       </tr>
                     ))}
-                    {!promotions.isLoading && promoRows.length === 0 && (
+                    {promotions.isError && (
+                      <tr><td colSpan={8} className="p-6 text-center text-rose-600">تعذّر تحميل الترقيات. <button className="underline" onClick={() => promotions.refetch()}>إعادة المحاولة</button></td></tr>
+                    )}
+                    {!promotions.isLoading && !promotions.isError && promoRows.length === 0 && (
                       <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا ترقيات مسجّلة بعد.</td></tr>
                     )}
                   </tbody>
@@ -185,7 +188,11 @@ export default function Promotions() {
 
         {/* ===== إنهاء الخدمات ===== */}
         <TabsContent value="terminations">
-          {!terminations.isLoading && termRows.length === 0 ? (
+          {terminations.isError ? (
+            <Card><CardContent className="py-10 text-center text-rose-600">
+              تعذّر تحميل إنهاءات الخدمة. <button className="underline" onClick={() => terminations.refetch()}>إعادة المحاولة</button>
+            </CardContent></Card>
+          ) : !terminations.isLoading && termRows.length === 0 ? (
             <Card><CardContent className="py-10 text-center text-muted-foreground">
               <CheckCircle2 className="size-8 mx-auto mb-2 opacity-50" />
               <div>لا إجراءات إنهاء خدمة.</div>

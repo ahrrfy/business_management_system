@@ -143,29 +143,66 @@ export async function decideLeave(
     if (!lv) throw new Error("طلب الإجازة غير موجود");
     if (lv.status !== "pending") throw new Error("لا يمكن البتّ إلا في طلب قيد الموافقة");
 
-    if (decision === "approved" && lv.paid) {
-      // خصم مع قصّ عند الصفر — لا يهبط الرصيد دون الصفر. الأمومة مدفوعة بلا رصيد محدّد فلا خصم.
-      if (lv.leaveType === "سنوية") {
-        await tx
-          .update(employees)
-          .set({ annualLeaveBalance: sql`GREATEST(${employees.annualLeaveBalance} - ${lv.days}, 0)` })
-          .where(eq(employees.id, lv.employeeId));
-      } else if (lv.leaveType === "مرضية") {
-        await tx
-          .update(employees)
-          .set({ sickLeaveBalance: sql`GREATEST(${employees.sickLeaveBalance} - ${lv.days}, 0)` })
-          .where(eq(employees.id, lv.employeeId));
+    if (decision === "approved" && lv.paid && (lv.leaveType === "سنوية" || lv.leaveType === "مرضية")) {
+      // خصم دقيق بحارس كفاية الرصيد (لا قصّ صامت) ⇒ المخصوم = days بالضبط، فالإلغاء يستردّه بدقّة.
+      // الأمومة مدفوعة بلا رصيد محدّد فلا خصم. القفل على صفّ الموظف يمنع السباق.
+      const [emp] = await tx
+        .select({ annual: employees.annualLeaveBalance, sick: employees.sickLeaveBalance })
+        .from(employees)
+        .where(eq(employees.id, lv.employeeId))
+        .for("update")
+        .limit(1);
+      if (!emp) throw new Error("الموظف غير موجود");
+      const isAnnual = lv.leaveType === "سنوية";
+      const current = (isAnnual ? emp.annual : emp.sick) ?? 0;
+      if (current < lv.days) {
+        throw new Error(`رصيد إجازة ${lv.leaveType} غير كافٍ (المتاح ${current} يوم، المطلوب ${lv.days})`);
       }
+      await tx
+        .update(employees)
+        .set(
+          isAnnual
+            ? { annualLeaveBalance: sql`${employees.annualLeaveBalance} - ${lv.days}` }
+            : { sickLeaveBalance: sql`${employees.sickLeaveBalance} - ${lv.days}` },
+        )
+        .where(eq(employees.id, lv.employeeId));
     }
 
     await tx
       .update(leaveRequests)
       .set({ status: decision, decidedBy: actor.userId, decidedAt: new Date() })
       .where(eq(leaveRequests.id, id));
+  }).then(async () => (await listLeavesByIds(id))[0] ?? null); // القراءة بعد الـcommit (listLeavesByIds عبر الاتصال العام).
+}
 
-    const [updated] = await listLeavesByIds(id);
-    return updated;
-  });
+/**
+ * إلغاء إجازة موافق عليها (ذرّي): تُعاد الحالة إلى rejected وتُستردّ الأيام المخصومة إلى
+ * رصيد الموظف المناسب. لأنّ خصم الموافقة دقيق (بحارس كفاية، بلا قصّ) فالاسترداد = days بالضبط.
+ * الأمومة/بدون راتب لم تُخصَم فلا تُستردّ. القفل على صفّ الإجازة يمنع الإلغاء المزدوج.
+ */
+export async function cancelLeave(id: number, actor: { userId: number }) {
+  return withTx(async (tx) => {
+    const [lv] = await tx.select().from(leaveRequests).where(eq(leaveRequests.id, id)).for("update").limit(1);
+    if (!lv) throw new Error("طلب الإجازة غير موجود");
+    if (lv.status !== "approved") throw new Error("لا يُلغى إلا طلب إجازة موافق عليه");
+
+    if (lv.paid && lv.leaveType === "سنوية") {
+      await tx
+        .update(employees)
+        .set({ annualLeaveBalance: sql`${employees.annualLeaveBalance} + ${lv.days}` })
+        .where(eq(employees.id, lv.employeeId));
+    } else if (lv.paid && lv.leaveType === "مرضية") {
+      await tx
+        .update(employees)
+        .set({ sickLeaveBalance: sql`${employees.sickLeaveBalance} + ${lv.days}` })
+        .where(eq(employees.id, lv.employeeId));
+    }
+
+    await tx
+      .update(leaveRequests)
+      .set({ status: "rejected", decidedBy: actor.userId, decidedAt: new Date() })
+      .where(eq(leaveRequests.id, id));
+  }).then(async () => (await listLeavesByIds(id))[0] ?? null); // القراءة بعد الـcommit.
 }
 
 /** أرصدة الإجازات لكل موظف على رأس العمل: {id, name, annualLeaveBalance, sickLeaveBalance, department}. */

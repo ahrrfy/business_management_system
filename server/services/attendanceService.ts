@@ -105,12 +105,14 @@ export interface RecordAttendanceInput {
   notes?: string | null;
 }
 
-/** يُحوّل وقت "HH:MM" في يوم الحضور إلى Date لعمود timestamp (أو null). */
+/** يُحوّل وقت "HH:MM" في يوم الحضور إلى Date لعمود timestamp (أو null).
+ *  يُفسَّر بـUTC صراحةً (لاحقة Z) ⇒ تُخزَّن ساعة الحائط كما أُدخلت بصرف النظر عن منطقة الخادم،
+ *  وتُعرَض بنفس المنطق في الواجهة (toISOString) فلا تنزلق الساعة عند اختلاف توقيت الخادم/المتصفح. */
 function timeToTimestamp(dateStr: string, time?: string | null): Date | null {
   if (!time) return null;
   const t = time.trim();
   if (!/^\d{1,2}:\d{2}$/.test(t)) return null;
-  const d = new Date(`${dateStr}T${t.padStart(5, "0")}:00`);
+  const d = new Date(`${dateStr}T${t.padStart(5, "0")}:00Z`);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 

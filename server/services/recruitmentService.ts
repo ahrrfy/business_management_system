@@ -7,6 +7,7 @@
 import { and, desc, eq, like, or } from "drizzle-orm";
 import { jobApplicants } from "../../drizzle/schema";
 import { requireDb } from "./tx";
+import { toDateStr } from "./money";
 
 export interface ApplicantFilters {
   stage?: string;
@@ -55,11 +56,6 @@ export interface ApplicantInput {
   cvFileKey?: string | null;
 }
 
-/** اليوم بصيغة YYYY-MM-DD (متّسق مع date(mode:"string")). */
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
 /**
  * إنشاء متقدّم — يستعمله الموظف (source paper/archive) والاستمارة العامّة (source external).
  * يُهمَل أي مرحلة/مصدر غير معروف ويُستعاض عنه بالافتراضي (الحماية في الراوتر بـ zod).
@@ -77,7 +73,7 @@ export async function createApplicant(input: ApplicantInput) {
     email: input.email?.trim() || null,
     experience: input.experience?.trim() || null,
     education: input.education?.trim() || null,
-    appliedDate: input.appliedDate?.trim() || today(),
+    appliedDate: input.appliedDate?.trim() || toDateStr(),
     rating: input.rating != null ? Math.max(0, Math.min(5, Math.trunc(input.rating))) : 0,
     notes: input.notes?.trim() || null,
     cvFileKey: input.cvFileKey?.trim() || null,

@@ -15,9 +15,11 @@ import { postEntry } from "./ledgerService";
 
 /* ===== الترقيات ===== */
 
-export async function listPromotions() {
+/** استعلام الترقيات (مع اسم الموظف) — بمعرّف لصفّ واحد أو بلا معرّف للقائمة كاملةً.
+ *  يلغي نمط «اجلب الكل ثم find» (N+1) في getPromotion. */
+async function promotionRows(id?: number) {
   const db = requireDb();
-  const rows = await db
+  const base = db
     .select({
       id: employeePromotions.id,
       employeeId: employeePromotions.employeeId,
@@ -39,9 +41,13 @@ export async function listPromotions() {
       photoUrl: employees.photoUrl,
     })
     .from(employeePromotions)
-    .leftJoin(employees, eq(employeePromotions.employeeId, employees.id))
-    .orderBy(desc(employeePromotions.id));
+    .leftJoin(employees, eq(employeePromotions.employeeId, employees.id));
+  const rows = id != null ? await base.where(eq(employeePromotions.id, id)).limit(1) : await base.orderBy(desc(employeePromotions.id));
   return rows.map((r) => ({ ...r, employeeName: fullEmployeeName(r) }));
+}
+
+export async function listPromotions() {
+  return promotionRows();
 }
 
 export interface PromotionInput {
@@ -78,8 +84,7 @@ export async function createPromotion(input: PromotionInput) {
 }
 
 async function getPromotion(id: number) {
-  const all = await listPromotions();
-  return all.find((p) => p.id === id) ?? null;
+  return (await promotionRows(id))[0] ?? null;
 }
 
 /**
@@ -117,9 +122,10 @@ export async function approvePromotion(id: number, actor: Actor) {
 
 /* ===== إنهاء الخدمات ===== */
 
-export async function listTerminations() {
+/** استعلام إنهاءات الخدمة (مع اسم الموظف) — بمعرّف لصفّ واحد أو بلا معرّف للقائمة كاملةً. */
+async function terminationRows(id?: number) {
   const db = requireDb();
-  const rows = await db
+  const base = db
     .select({
       id: employeeTerminations.id,
       employeeId: employeeTerminations.employeeId,
@@ -137,9 +143,13 @@ export async function listTerminations() {
       photoUrl: employees.photoUrl,
     })
     .from(employeeTerminations)
-    .leftJoin(employees, eq(employeeTerminations.employeeId, employees.id))
-    .orderBy(desc(employeeTerminations.id));
+    .leftJoin(employees, eq(employeeTerminations.employeeId, employees.id));
+  const rows = id != null ? await base.where(eq(employeeTerminations.id, id)).limit(1) : await base.orderBy(desc(employeeTerminations.id));
   return rows.map((r) => ({ ...r, employeeName: fullEmployeeName(r) }));
+}
+
+export async function listTerminations() {
+  return terminationRows();
 }
 
 export interface TerminationInput {
@@ -166,8 +176,7 @@ export async function createTermination(input: TerminationInput) {
 }
 
 async function getTermination(id: number) {
-  const all = await listTerminations();
-  return all.find((t) => t.id === id) ?? null;
+  return (await terminationRows(id))[0] ?? null;
 }
 
 /**

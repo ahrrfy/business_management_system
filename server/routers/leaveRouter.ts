@@ -68,4 +68,17 @@ export const leaveRouter = router({
       });
       return lv;
     }),
+
+  cancel: hrWrite
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const lv = await svc.cancelLeave(input.id, { userId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "leave.cancel",
+        entityType: "leaveRequest",
+        entityId: input.id,
+        newValue: { status: "rejected", restored: true },
+      });
+      return lv;
+    }),
 });

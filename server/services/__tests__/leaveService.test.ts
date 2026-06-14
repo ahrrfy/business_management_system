@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createEmployee } from "../employeeService";
-import { createLeave, decideLeave } from "../leaveService";
+import { cancelLeave, createLeave, decideLeave } from "../leaveService";
 
 const ACTOR = { userId: 1 };
 
@@ -65,5 +65,26 @@ describe("leaveService", () => {
     await decideLeave(lv.id, "rejected", ACTOR);
     const [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
     expect(Number(e2.annualLeaveBalance)).toBe(30);
+  });
+
+  it("تُرفض الموافقة عند عدم كفاية الرصيد (بلا قصّ صامت)", async () => {
+    const emp = await createEmployee({ firstName: "مها", lastName: "الربيعي", payType: "monthly", salary: "800000", annualLeaveBalance: 2, branchId: 1 });
+    const lv = await createLeave({ employeeId: emp!.id, leaveType: "سنوية", fromDate: "2026-06-01", toDate: "2026-06-05", days: 5 });
+    await expect(decideLeave(lv.id, "approved", ACTOR)).rejects.toThrow();
+    const [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
+    expect(Number(e2.annualLeaveBalance)).toBe(2); // الرصيد لم يُمَسّ
+  });
+
+  it("إلغاء إجازة موافق عليها يستردّ الأيام المخصومة بدقّة", async () => {
+    const emp = await createEmployee({ firstName: "بكر", lastName: "النعيمي", payType: "monthly", salary: "800000", annualLeaveBalance: 30, branchId: 1 });
+    const lv = await createLeave({ employeeId: emp!.id, leaveType: "سنوية", fromDate: "2026-06-01", toDate: "2026-06-04", days: 4 });
+    await decideLeave(lv.id, "approved", ACTOR);
+    let [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
+    expect(Number(e2.annualLeaveBalance)).toBe(26); // 30 - 4
+
+    const cancelled = await cancelLeave(lv.id, ACTOR);
+    expect(cancelled.status).toBe("rejected");
+    [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
+    expect(Number(e2.annualLeaveBalance)).toBe(30); // استُرِدّ بالكامل
   });
 });

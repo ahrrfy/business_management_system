@@ -207,7 +207,10 @@ export default function HrDevices() {
                     </tr>
                   );
                 })}
-                {!list.isLoading && devices.length === 0 && (
+                {list.isError && (
+                  <tr><td colSpan={7} className="p-6 text-center text-rose-600">تعذّر تحميل الأجهزة. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button></td></tr>
+                )}
+                {!list.isLoading && !list.isError && devices.length === 0 && (
                   <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أجهزة بصمة مسجّلة بعد. أضف جهازاً للبدء بالهجرة.</td></tr>
                 )}
                 {list.isLoading && (

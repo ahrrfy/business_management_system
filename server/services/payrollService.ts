@@ -86,14 +86,6 @@ export async function getRun(id: number) {
   };
 }
 
-/** آخر مسيّر (أحدث شهر) — افتراضي الشاشة عند عدم تحديد مسيّر. */
-export async function latestRun() {
-  const db = requireDb();
-  const [run] = await db.select().from(payrollRuns).orderBy(desc(payrollRuns.period), desc(payrollRuns.id)).limit(1);
-  if (!run) return null;
-  return getRun(run.id);
-}
-
 /* ─────────────────────────── حساب المجاميع ─────────────────────────── */
 
 /** يجمع بنود المسيّر (داخل tx) ويحدّث رأس المسيّر بالمجاميع وعدد الموظفين. */
@@ -259,6 +251,8 @@ export async function approveRun(id: number) {
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
     if (run.status !== "draft") throw new TRPCError({ code: "BAD_REQUEST", message: "يُعتمد المسيّر من حالة المسودة فقط" });
     if (Number(run.employeeCount) === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر فارغ" });
+    // حارس المسيّر «الشبح»: صافٍ كلّي صفر/سالب لا يُعتمد (لا شيء يُدفع) ⇒ يُمنع اعتماد/دفع بلا قيد.
+    if (money(run.totalNet).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر صافيه صفر" });
     await tx.update(payrollRuns).set({ status: "approved", approvedAt: new Date() }).where(eq(payrollRuns.id, id));
   }).then(() => getRun(id));
 }

@@ -103,6 +103,14 @@ export default function Leaves() {
     onError: (e) => notify.err(e),
   });
 
+  const cancel = trpc.leaves.cancel.useMutation({
+    onSuccess: async () => {
+      notify.ok("أُلغيت الإجازة واستُرِدّ الرصيد");
+      await refresh();
+    },
+    onError: (e) => notify.err(e),
+  });
+
   const submit = () => {
     if (!employeeId) { notify.warn("اختر الموظف"); return; }
     if (days <= 0) { notify.warn("نطاق التواريخ غير صالح"); return; }
@@ -202,13 +210,22 @@ export default function Leaves() {
                                 onClick={() => decide.mutate({ id: l.id, decision: "rejected" })}
                               >رفض</button>
                             </div>
+                          ) : l.status === "approved" ? (
+                            <button
+                              className="text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
+                              disabled={cancel.isPending}
+                              onClick={() => { if (confirm("إلغاء الإجازة الموافق عليها واسترداد رصيدها؟")) cancel.mutate({ id: l.id }); }}
+                            >إلغاء الإجازة</button>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
                         </td>
                       </tr>
                     ))}
-                    {!list.isLoading && rows.length === 0 && (
+                    {list.isError && (
+                      <tr><td colSpan={8} className="p-6 text-center text-rose-600">تعذّر تحميل الطلبات. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button></td></tr>
+                    )}
+                    {!list.isLoading && !list.isError && rows.length === 0 && (
                       <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا طلبات مطابقة. غيّر الفلاتر أو أضف طلباً جديداً.</td></tr>
                     )}
                   </tbody>
@@ -247,7 +264,10 @@ export default function Leaves() {
                         <td className="p-2 text-center tabular-nums" dir="ltr">{b.sickLeaveBalance}</td>
                       </tr>
                     ))}
-                    {!balances.isLoading && (balances.data?.length ?? 0) === 0 && (
+                    {balances.isError && (
+                      <tr><td colSpan={4} className="p-6 text-center text-rose-600">تعذّر تحميل الأرصدة. <button className="underline" onClick={() => balances.refetch()}>إعادة المحاولة</button></td></tr>
+                    )}
+                    {!balances.isLoading && !balances.isError && (balances.data?.length ?? 0) === 0 && (
                       <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">لا موظفين على رأس العمل.</td></tr>
                     )}
                   </tbody>

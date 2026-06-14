@@ -88,7 +88,7 @@ export default function Attendance() {
       notify.ok("تم تسجيل الحضور");
       setOpen(false);
       setForm(emptyForm());
-      await Promise.all([utils.attendance.list.invalidate(), utils.attendance.monthSummary.invalidate()]);
+      await utils.attendance.list.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -196,8 +196,8 @@ export default function Attendance() {
                       </td>
                       <td className="p-2.5 text-[13px]">{r.dayName}</td>
                       <td className="p-2.5 text-center text-xs tabular-nums" dir="ltr">{r.attendanceDate}</td>
-                      <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkIn ? new Date(r.checkIn).toTimeString().slice(0, 5) : "—"}</td>
-                      <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkOut ? new Date(r.checkOut).toTimeString().slice(0, 5) : "—"}</td>
+                      <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "—"}</td>
+                      <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums">{Number(r.hours ?? 0)}</td>
                       <td className={`p-2.5 text-left tabular-nums ${weekend ? "text-amber-600 font-medium" : ""}`} dir="ltr">{iqd(r.hourlyRate)}</td>
                       <td className="p-2.5 text-left tabular-nums font-semibold" dir="ltr">{iqd(r.amount)}</td>
@@ -211,7 +211,10 @@ export default function Attendance() {
                     </tr>
                   );
                 })}
-                {!list.isLoading && rows.length === 0 && (
+                {list.isError && (
+                  <tr><td colSpan={9} className="p-6 text-center text-rose-600">تعذّر تحميل سجلّات الحضور. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button></td></tr>
+                )}
+                {!list.isLoading && !list.isError && rows.length === 0 && (
                   <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً.</td></tr>
                 )}
                 {rows.length > 0 && (
