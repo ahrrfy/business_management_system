@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createPrintSale } from "../printSaleService";
+import { withTx } from "../tx";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
@@ -18,10 +19,14 @@ const TABLES = [
 ];
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``)).catch(() => {});
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  // تنظيف ذرّي على اتصال واحد (withTx): FOREIGN_KEY_CHECKS=0 سارية فعلاً عبر كل الحذف.
+  // (toggling عبر اتصالات pool متعدّدة + ابتلاع أخطاء TRUNCATE كان يترك جداول نصف-منظّفة
+  //  فتفشل البذرة لاحقاً بـFK/سعر مفقود — فلاكي يظهر مع كثرة دورات beforeEach.)
+  await withTx(async (tx) => {
+    await tx.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
+    for (const t of TABLES) await tx.execute(sql.raw(`DELETE FROM \`${t}\``));
+    await tx.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  });
 }
 
 async function seed() {
@@ -208,5 +213,40 @@ describe("بيع الطباعة: الحراسات", () => {
       lines: [{ variantId: 10, productUnitId: 10, quantity: "5" }],
       // بلا payment ⇒ unpaid > 0 بلا عميل
     }, actor)).rejects.toThrow(/عميل/);
+  });
+});
+
+describe("بيع الطباعة: سلة مختلطة + فئة تسعير", () => {
+  it("سلة فيها خدمة بوصفة وأخرى بلا وصفة ⇒ COGS = كلفة مواد الأولى فقط، والمواد تُخصم لها وحدها", async () => {
+    const r = await createPrintSale({
+      branchId: 1, shiftId: 1,
+      lines: [
+        { variantId: 10, productUnitId: 10, quantity: "5" }, // 1250 + مواد (5 ورق + 5 حبر)
+        { variantId: 11, productUnitId: 11, quantity: "1" }, // 5000 خدمة إلكترونية بلا مواد
+      ],
+      payment: { amount: "6250", method: "CASH" },
+    }, actor);
+    const inv = await invoice(r.invoiceId);
+    expect(inv.total).toBe("6250.00");
+    expect(inv.costTotal).toBe("275.00"); // 5×35 + 5×20 (الخدمة بلا وصفة لا تضيف كلفة)
+    expect(await stock(1)).toBe(95);
+    expect(await stock(2)).toBe(95);
+  });
+
+  it("السعر اليدوي يُستعمل مهما كانت الفئة ⇒ لا يلزم سعر فئة مُعرَّف للخدمة", async () => {
+    const r = await createPrintSale({
+      branchId: 1, shiftId: 1, priceTier: "GOVERNMENT", // لا سعر GOVERNMENT مُعرَّف للخدمة
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "2", unitPriceOverride: "300" }],
+      payment: { amount: "600", method: "CASH" },
+    }, actor);
+    expect((await invoice(r.invoiceId)).total).toBe("600.00");
+  });
+
+  it("بلا سعر يدوي وفئةٌ بلا سعر مُعرَّف ⇒ يُرفض (لا fallback ضمني بين الفئات)", async () => {
+    await expect(createPrintSale({
+      branchId: 1, shiftId: 1, priceTier: "GOVERNMENT",
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
+      payment: { amount: "250", method: "CASH" },
+    }, actor)).rejects.toThrow();
   });
 });

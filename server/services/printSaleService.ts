@@ -15,7 +15,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import {
   customers,
   invoiceItems,
@@ -27,7 +27,7 @@ import {
   receipts,
   shifts,
 } from "../../drizzle/schema";
-import { computeInvoiceTotals, computeLineTotal } from "./billing";
+import { computeInvoiceCost, computeInvoiceTotals, computeLineTotal } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
@@ -149,8 +149,9 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     const recipeHeads = await tx
       .select({ id: productionRecipes.id, outputVariantId: productionRecipes.outputVariantId })
       .from(productionRecipes)
-      .where(and(inArray(productionRecipes.outputVariantId, lineVarIds), eq(productionRecipes.isActive, true)));
-    const recipeByOutput = new Map<number, number>(); // outputVariantId → recipeId (الأحدث/الأول)
+      .where(and(inArray(productionRecipes.outputVariantId, lineVarIds), eq(productionRecipes.isActive, true)))
+      .orderBy(desc(productionRecipes.id)); // اختيار حتمي: الأحدث يفوز (لا اعتماد على ترتيب القاعدة)
+    const recipeByOutput = new Map<number, number>(); // outputVariantId → recipeId (الأحدث = الأول بعد desc)
     for (const r of recipeHeads) if (!recipeByOutput.has(Number(r.outputVariantId))) recipeByOutput.set(Number(r.outputVariantId), Number(r.id));
     const recipeIds = Array.from(new Set(recipeByOutput.values()));
     const recLines = recipeIds.length
@@ -226,9 +227,10 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       });
     }
 
-    // ٧. الإجماليات + COGS (= مجموع كلفة المواد، لا عبر computeInvoiceCost كي يطابق الدفتر تماماً).
+    // ٧. الإجماليات + COGS. costTotal = Σ(unitCost × baseQuantity) (نفس تعريف saleService بالضبط)
+    //    ⇒ تقارير الكلفة/الربح تعيد إنتاج costTotal والدفتر من invoiceItems.unitCost بلا انحراف سنتيّ.
     const totals = computeInvoiceTotals({ lineTotals: computed.map((c) => c.total) });
-    const costTotal = round2(computed.reduce((s, c) => s.plus(c.lineCost), new Decimal(0)));
+    const costTotal = money(computeInvoiceCost(computed.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))));
 
     // ٨. تقريب نقدي IQD للبيع النقدي الكامل (نفس سياسة saleService): يُقرَّب الإجمالي، النقد = المقرّب،
     //    والفرق قيد ADJUST ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
