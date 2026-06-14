@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import type { MySqlColumn } from "drizzle-orm/mysql-core";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { ARABIC_FOLD_PAIRS, escapeLikePattern, tokenizeSearchQuery } from "../../shared/searchNormalize";
@@ -9,6 +9,7 @@ import type { PriceTier } from "./pricing";
 import { PRINT_SERVICE_TYPE } from "./printSaleService";
 import { setStock } from "./inventoryService";
 import { withTx, type Actor } from "./tx";
+import type { Tx } from "../db";
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
 export interface PosRow {
@@ -441,6 +442,10 @@ export interface CreateProductInput {
     costPrice: string;
     minStock?: number;
     openingStock?: number;
+    // product-variants: نقطة إعادة الطلب + ظهور المتغيّر في البيع + رصيد افتتاحي لكل فرع.
+    reorderPoint?: number;
+    isActive?: boolean;
+    openingStockByBranch?: Array<{ branchId: number; qty: number }>;
     units: Array<{
       unitName: string;
       conversionFactor: string;
@@ -654,12 +659,79 @@ export async function updateProduct(input: UpdateProductInput, _actor: Actor) {
   });
 }
 
+/**
+ * product-variants: تحقّق مسبق من تفرّد الباركود والـSKU قبل أي إدراج —
+ * يكشف التكرار داخل الحمولة وضدّ القاعدة فيرمي رسالة عربية تسمّي القيمة المخالفة،
+ * بدل ترك قيد UNIQUE يفشل برسالة «قيمة مكرّرة» عامّة لا تدلّ على الباركود/الرمز.
+ */
+async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
+  // الباركودات (لكل وحدة من كل متغيّر).
+  const codes: string[] = [];
+  for (const v of input.variants) for (const u of v.units) {
+    const b = (u.barcode ?? "").trim();
+    if (b) codes.push(b);
+  }
+  const seenCode = new Set<string>();
+  for (const c of codes) {
+    if (seenCode.has(c)) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون باركود فريد.` });
+    seenCode.add(c);
+  }
+  if (seenCode.size) {
+    const taken = await tx
+      .select({ code: productUnits.barcode, name: products.name })
+      .from(productUnits)
+      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productUnits.barcode, Array.from(seenCode)))
+      .limit(1);
+    if (taken[0]) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${taken[0].code} مُستخدَم في «${taken[0].name}».` });
+  }
+
+  // الرموز (SKU) — واحد لكل متغيّر.
+  const seenSku = new Set<string>();
+  for (const v of input.variants) {
+    const s = v.sku.trim();
+    if (!s) continue;
+    if (seenSku.has(s)) throw new TRPCError({ code: "CONFLICT", message: `الرمز ${s} (SKU) مكرّر بين المتغيّرات — لكل متغيّر رمز فريد.` });
+    seenSku.add(s);
+  }
+  if (seenSku.size) {
+    const takenSku = await tx
+      .select({ sku: productVariants.sku })
+      .from(productVariants)
+      .where(inArray(productVariants.sku, Array.from(seenSku)))
+      .limit(1);
+    if (takenSku[0]) throw new TRPCError({ code: "CONFLICT", message: `الرمز ${takenSku[0].sku} (SKU) مُستخدَم لمتغيّر آخر — اختر رمزاً مختلفاً.` });
+  }
+}
+
+/**
+ * product-variants: أيُّ باركودات من القائمة محجوزة مسبقاً (وفي أي منتج)؟
+ * يغذّي التحقّق اللحظي في شاشة الإضافة قبل الحفظ.
+ */
+export async function checkBarcodesTaken(codes: string[]): Promise<Array<{ code: string; takenBy: string }>> {
+  const db = getDb();
+  if (!db) return [];
+  const clean = Array.from(new Set(codes.map((c) => c.trim()).filter(Boolean)));
+  if (!clean.length) return [];
+  const rows = await db
+    .select({ code: productUnits.barcode, productName: products.name, sku: productVariants.sku })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productUnits.barcode, clean));
+  return rows
+    .filter((r) => r.code)
+    .map((r) => ({ code: r.code as string, takenBy: `${r.productName} (${r.sku})` }));
+}
+
 /** Create a product with its variants, units and prices in one transaction. */
 export async function createProduct(input: CreateProductInput, actor: Actor) {
   if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
   return withTx(async (tx) => {
     const composedName = composeProductName(input);
     if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (نوع/ماركة/موديل)" });
+    await assertCatalogUniqueness(tx, input);
     const pRes = await tx.insert(products).values({
       name: composedName,
       productType: input.productType?.trim() || null,
@@ -683,6 +755,9 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         size: v.size ?? null,
         costPrice: toDbMoney(v.costPrice),
         minStock: v.minStock != null ? Math.max(0, Math.trunc(v.minStock)) : 0,
+        // product-variants: نقطة إعادة الطلب + ظهور مستقل لكل متغيّر.
+        reorderPoint: v.reorderPoint != null ? Math.max(0, Math.trunc(v.reorderPoint)) : 0,
+        isActive: v.isActive ?? true,
       });
       const variantId = Number((vRes as any)[0]?.insertId ?? (vRes as any).insertId);
 
@@ -700,16 +775,26 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         }
       }
 
-      // المخزون الافتتاحي (في فرع الموظف) كحركة ADJUST مُسجَّلة.
-      if (v.openingStock && v.openingStock > 0) {
-        await setStock(tx, {
-          variantId,
-          branchId: actor.branchId,
-          targetQuantity: v.openingStock,
-          referenceType: "OPENING",
-          notes: "رصيد افتتاحي",
-          createdBy: actor.userId,
-        });
+      // المخزون الافتتاحي كحركة OPENING مُسجَّلة. product-variants: رصيد مستقل لكل فرع
+      // (`openingStockByBranch`)؛ وإلا fallback لرقم أحاديّ في فرع الموظف (توافق خلفي).
+      const perBranch =
+        v.openingStockByBranch && v.openingStockByBranch.length
+          ? v.openingStockByBranch
+          : v.openingStock && v.openingStock > 0
+            ? [{ branchId: actor.branchId, qty: v.openingStock }]
+            : [];
+      for (const ob of perBranch) {
+        const qty = Math.max(0, Math.trunc(ob.qty));
+        if (qty > 0) {
+          await setStock(tx, {
+            variantId,
+            branchId: ob.branchId,
+            targetQuantity: qty,
+            referenceType: "OPENING",
+            notes: "رصيد افتتاحي",
+            createdBy: actor.userId,
+          });
+        }
       }
     }
 
