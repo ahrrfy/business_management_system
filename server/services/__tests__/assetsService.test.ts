@@ -40,10 +40,19 @@ describe("computeDepreciation — القسط المتناقص المضاعف (db
 });
 
 describe("computeDepreciation — ثوابت السلامة", () => {
-  it("الأصل المُستبعَد يُعتبر مُهلَكاً بالكامل (الدفترية = التخريدية)", () => {
-    const r = computeDepreciation({ ...base, depreciationMethod: "sl", status: "disposed", disposalDate: "2022-06-01" }, FAR_FUTURE);
-    expect(r.bookValue).toBe(100000);
-    expect(r.accumulated).toBe(900000);
+  it("المُستبعَد قبل نهاية العمر يُحتسب بقيمته الدفترية الحقيقية عند تاريخ الإخراج (تناسبي = نفس الأصل الحيّ عند ذلك التاريخ)", () => {
+    const disposedEarly = computeDepreciation({ ...base, depreciationMethod: "sl", status: "disposed", disposalDate: "2022-06-01" }, FAR_FUTURE);
+    const liveAtDate = computeDepreciation({ ...base, depreciationMethod: "sl", status: "active" }, new Date("2022-06-01"));
+    expect(disposedEarly.bookValue).toBe(liveAtDate.bookValue); // proration متّسقة مع المسار الحيّ (لا إهلاك كامل قسري)
+    expect(disposedEarly.bookValue).toBeGreaterThan(100000); // لم يبلغ التخريدية بعد
+    expect(disposedEarly.bookValue).toBeLessThan(1000000);
+    expect(disposedEarly.accumulated).toBe(1000000 - disposedEarly.bookValue);
+  });
+
+  it("المُستبعَد بعد تجاوز عمره يبلغ التخريدية طبيعياً (دفترية = تخريدية)", () => {
+    const disposedOld = computeDepreciation({ ...base, depreciationMethod: "sl", status: "disposed", disposalDate: "2030-01-01" }, FAR_FUTURE);
+    expect(disposedOld.bookValue).toBe(100000);
+    expect(disposedOld.accumulated).toBe(900000);
   });
 
   it("منتصف العمر: التخريدية ≤ الدفترية ≤ التكلفة، والمتراكم = التكلفة − الدفترية", () => {

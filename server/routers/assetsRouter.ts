@@ -11,6 +11,7 @@ import {
 } from "@shared/assets";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/assetsService";
+import { money } from "../services/money";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const assetRead = protectedProcedure.use(requireModule("assets", "READ"));
@@ -19,7 +20,9 @@ const assetWrite = protectedProcedure.use(requireModule("assets", "FULL"));
 const categoryEnum = z.enum(ASSET_CATEGORY_KEYS);
 const statusEnum = z.enum(ASSET_STATUS_KEYS);
 const methodEnum = z.enum(DEPRECIATION_METHOD_KEYS);
-const moneyStr = z.string().trim().min(1);
+// مبلغ مالي: رقم موجب بمنزلتين عشريتين كحدّ أقصى (يصدّ NaN/السالب/الفواصل قبل بلوغ القاعدة).
+const moneyStr = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة (رقم موجب بمنزلتين كحدّ أقصى)");
+const moneyStrOpt = moneyStr.optional();
 
 export const assetsRouter = router({
   list: assetRead
@@ -55,23 +58,39 @@ export const assetsRouter = router({
         supplierId: z.number().int().positive().optional(),
         purchaseDate: z.string().min(1), // YYYY-MM-DD
         purchaseValue: moneyStr,
-        salvageValue: z.string().trim().optional(),
+        salvageValue: moneyStrOpt,
         usefulLifeYears: z.number().int().positive().max(100),
         depreciationMethod: methodEnum.default("sl"),
         condition: z.string().trim().optional(),
         warrantyEnd: z.string().optional(),
         linkedDeviceId: z.number().int().positive().optional(),
-      }),
+      }).refine(
+        (d) => {
+          const re = /^\d+(\.\d{1,2})?$/;
+          if (!re.test(d.purchaseValue) || (d.salvageValue && !re.test(d.salvageValue))) return true; // الحقول تتكفّل بخطأ الصيغة
+          return money(d.salvageValue ?? "0").lte(money(d.purchaseValue));
+        },
+        { message: "القيمة التخريدية يجب ألا تتجاوز قيمة الشراء", path: ["salvageValue"] },
+      ),
     )
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.createAsset(input);
-      await logAudit(ctx, {
-        action: "asset.create",
-        entityType: "fixedAsset",
-        entityId: a?.id,
-        newValue: { code: a?.code, name: input.name, category: input.category, purchaseValue: input.purchaseValue },
-      });
-      return a;
+      // قيد UNIQUE على code هو الحارس النهائي لترقيم AST تحت FOR UPDATE ⇒ أعد المحاولة على التضارب.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const a = await svc.createAsset(input);
+          await logAudit(ctx, {
+            action: "asset.create",
+            entityType: "fixedAsset",
+            entityId: a?.id,
+            newValue: { code: a?.code, name: input.name, category: input.category, purchaseValue: input.purchaseValue },
+          });
+          return a;
+        } catch (e: any) {
+          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          throw e;
+        }
+      }
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء الأصل" });
     }),
 
   handover: assetWrite
@@ -94,7 +113,7 @@ export const assetsRouter = router({
         assetId: z.number().int().positive(),
         type: z.string().trim().min(1, "نوع الصيانة مطلوب"),
         vendor: z.string().trim().optional(),
-        cost: z.string().trim().optional(),
+        cost: moneyStrOpt,
         note: z.string().trim().optional(),
         maintDate: z.string().optional(),
       }),
@@ -120,7 +139,7 @@ export const assetsRouter = router({
         kind: z.enum(["retired", "disposed"]),
         date: z.string().min(1),
         reason: z.string().trim().optional(),
-        value: z.string().trim().optional(),
+        value: moneyStrOpt,
       }),
     )
     .mutation(async ({ input, ctx }) => {

@@ -7,11 +7,11 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { categoryIcon, iqd } from "@/lib/assets/ui";
+import { AssetStatusBadge, categoryIcon, iqd } from "@/lib/assets/ui";
 import { printAssetLabel } from "@/lib/assets/print";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { assetCategoryLabel, assetStatusLabel, depreciationMethodLabel } from "@shared/assets";
+import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
 
@@ -66,6 +66,7 @@ export default function AssetDetail() {
   const Icon = useMemo(() => (a ? categoryIcon(a.category) : null), [a]);
 
   if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (q.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل الأصل: {q.error.message}</div>;
   if (!a) return <div className="p-10 text-center text-muted-foreground">الأصل غير موجود. <Link href="/assets/register" className="text-primary">رجوع للسجلّ</Link></div>;
 
   const isLive = a.status === "active" || a.status === "maintenance";
@@ -88,7 +89,7 @@ export default function AssetDetail() {
                 <span>·</span>
                 <span>{assetCategoryLabel(a.category)}</span>
                 <span>·</span>
-                <span className="rounded-full bg-muted px-2 py-0.5 text-xs">{assetStatusLabel(a.status)}</span>
+                <AssetStatusBadge status={a.status} />
               </div>
             </div>
           </div>
@@ -217,7 +218,7 @@ export default function AssetDetail() {
                 <div key={c.id} className="flex items-start gap-3 border-s-2 ps-3 border-border">
                   <div className="flex-1">
                     <div className="font-medium text-sm">{c.employeeName ?? "موظف"}</div>
-                    <div className="text-xs text-muted-foreground" dir="ltr">{c.fromDate} ← {c.toDate ?? "حتى الآن"}</div>
+                    <div className="text-xs text-muted-foreground" dir="ltr">{c.fromDate} — {c.toDate ?? "حتى الآن"}</div>
                     {c.note && <div className="text-xs text-muted-foreground mt-0.5">{c.note}</div>}
                   </div>
                   {!c.toDate && <span className="rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 px-2 py-0.5 text-xs h-fit">جارية</span>}
@@ -246,13 +247,13 @@ export default function AssetDetail() {
       </Tabs>
 
       {/* نافذة تسليم العهدة */}
-      <Dialog open={openHandover} onOpenChange={setOpenHandover}>
+      <Dialog open={openHandover} onOpenChange={(o) => { setOpenHandover(o); if (!o) { setHEmp(""); setHNote(""); } }}>
         <DialogContent>
           <DialogHeader><DialogTitle>تسليم عهدة الأصل</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
-              <Label>الموظف المستلِم</Label>
-              <select className={selectCls} value={hEmp} onChange={(e) => setHEmp(e.target.value)}>
+              <Label htmlFor="handoverEmp">الموظف المستلِم</Label>
+              <select id="handoverEmp" className={selectCls} value={hEmp} onChange={(e) => setHEmp(e.target.value)}>
                 <option value="">— اختر موظفاً —</option>
                 {(opts.data?.employees ?? []).map((e) => <option key={e.id} value={String(e.id)}>{e.name}{e.position ? ` — ${e.position}` : ""}</option>)}
               </select>
@@ -267,15 +268,15 @@ export default function AssetDetail() {
       </Dialog>
 
       {/* نافذة تسجيل الصيانة */}
-      <Dialog open={openMaint} onOpenChange={setOpenMaint}>
+      <Dialog open={openMaint} onOpenChange={(o) => { setOpenMaint(o); if (!o) { setMType(""); setMVendor(""); setMCost(""); setMNote(""); setMDate(today()); } }}>
         <DialogContent>
           <DialogHeader><DialogTitle>تسجيل صيانة</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1"><Label>النوع *</Label><Input value={mType} onChange={(e) => setMType(e.target.value)} placeholder="صيانة دورية / استبدال قطعة" /></div>
+              <div className="space-y-1"><Label htmlFor="maintType">النوع *</Label><Input id="maintType" value={mType} onChange={(e) => setMType(e.target.value)} placeholder="صيانة دورية / استبدال قطعة" /></div>
               <div className="space-y-1"><Label>التاريخ</Label><Input type="date" dir="ltr" value={mDate} onChange={(e) => setMDate(e.target.value)} /></div>
               <div className="space-y-1"><Label>المزوّد</Label><Input value={mVendor} onChange={(e) => setMVendor(e.target.value)} /></div>
-              <div className="space-y-1"><Label>التكلفة (د.ع)</Label><Input dir="ltr" value={mCost} onChange={(e) => setMCost(e.target.value)} placeholder="0" /></div>
+              <div className="space-y-1"><Label htmlFor="maintCost">التكلفة (د.ع)</Label><Input id="maintCost" dir="ltr" inputMode="decimal" value={mCost} onChange={(e) => setMCost(e.target.value)} placeholder="0" /></div>
             </div>
             <div className="space-y-1"><Label>ملاحظات</Label><Textarea rows={2} value={mNote} onChange={(e) => setMNote(e.target.value)} /></div>
           </div>
@@ -291,7 +292,7 @@ export default function AssetDetail() {
         <DialogContent>
           <DialogHeader><DialogTitle>بطاقة الأصل</DialogTitle></DialogHeader>
           <div className="flex flex-col items-center gap-3 py-2">
-            <BarcodeDisplay barcodeSet={{ barcode128: a.code, qrPayload: a.code, displayLabel: `${a.name}\n${a.code}` }} size="md" />
+            <BarcodeDisplay barcodeSet={{ barcode128: a.code, qrPayload: a.code, displayLabel: `${a.name}\n${a.code}` }} size="md" showCode128={false} />
             <div className="text-sm text-muted-foreground">{a.serial ? <span dir="ltr">SN: {a.serial}</span> : null}</div>
           </div>
           <DialogFooter>
@@ -302,23 +303,23 @@ export default function AssetDetail() {
       </Dialog>
 
       {/* نافذة الإخراج / الاستبعاد */}
-      <Dialog open={openDispose} onOpenChange={setOpenDispose}>
+      <Dialog open={openDispose} onOpenChange={(o) => { setOpenDispose(o); if (!o) { setDReason(""); setDValue(""); } }}>
         <DialogContent>
           <DialogHeader><DialogTitle>إخراج / استبعاد الأصل</DialogTitle></DialogHeader>
           <div className="space-y-3">
             <div className="space-y-1">
-              <Label>النوع</Label>
-              <select className={selectCls} value={dKind} onChange={(e) => setDKind(e.target.value as "retired" | "disposed")}>
+              <Label htmlFor="disposeKind">النوع</Label>
+              <select id="disposeKind" className={selectCls} value={dKind} onChange={(e) => setDKind(e.target.value as "retired" | "disposed")}>
                 <option value="retired">إخراج من الخدمة (retired)</option>
                 <option value="disposed">استبعاد ببيع/خردة (disposed)</option>
               </select>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1"><Label>التاريخ</Label><Input type="date" dir="ltr" value={dDate} onChange={(e) => setDDate(e.target.value)} /></div>
-              {dKind === "disposed" && <div className="space-y-1"><Label>العائد (د.ع)</Label><Input dir="ltr" value={dValue} onChange={(e) => setDValue(e.target.value)} placeholder="0" /></div>}
+              {dKind === "disposed" && <div className="space-y-1"><Label htmlFor="disposeValue">العائد (د.ع)</Label><Input id="disposeValue" dir="ltr" inputMode="decimal" value={dValue} onChange={(e) => setDValue(e.target.value)} placeholder="0" /></div>}
             </div>
             <div className="space-y-1"><Label>السبب</Label><Textarea rows={2} value={dReason} onChange={(e) => setDReason(e.target.value)} /></div>
-            {dKind === "disposed" && dValue.trim() && (
+            {dKind === "disposed" && dValue.trim() && Number.isFinite(Number(dValue)) && (
               <div className="text-xs text-muted-foreground">النتيجة مقابل القيمة الدفترية ({iqd(a.bookValue)}): <span dir="ltr" className={Number(dValue) - a.bookValue >= 0 ? "text-emerald-600" : "text-rose-600"}>{iqd(Number(dValue) - a.bookValue)}</span></div>
             )}
           </div>

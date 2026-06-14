@@ -30,7 +30,7 @@ export default function AssetDisposalLog() {
         <StatCard label="مُستبعَد (بيع/خردة)" value={iqd(disposed.length)} icon={Archive} />
         <StatCard label="خارج الخدمة" value={iqd(retired.length)} icon={CircleSlash} />
         <StatCard label="إجمالي العائد" value={iqd(totalProceeds)} icon={Wallet} sub="د.ع" />
-        <StatCard label="صافي الربح/الخسارة" value={iqd(netGain)} icon={TrendingDown} sub="مقابل القيمة الدفترية" tone={netGain >= 0 ? "positive" : "negative"} />
+        <StatCard label="صافي الربح/الخسارة" value={iqd(netGain)} icon={TrendingDown} sub="للمُستبعَد (بيع/خردة) مقابل الدفترية" tone={netGain >= 0 ? "positive" : "negative"} />
       </div>
 
       <Card>

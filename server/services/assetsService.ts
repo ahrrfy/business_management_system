@@ -15,7 +15,7 @@ import {
   fixedAssets,
   suppliers,
 } from "../../drizzle/schema";
-import type { DB, Tx } from "../db";
+import type { Tx } from "../db";
 import { requireDb, withTx } from "./tx";
 import { toDateStr, toDbMoney } from "./money";
 
@@ -81,24 +81,23 @@ export function computeDepreciation(
     book -= dep;
   }
 
+  // المتراكم حتى تاريخ الإخراج (للمُخرَج/المُستبعَد) أو حتى asOf — تناسبياً مع جزء السنة الجاري.
+  // ملاحظة محاسبية: المُستبعَد لا يُجبَر على إهلاك كامل؛ يُحتسب بقيمته الدفترية الحقيقية عند تاريخ
+  // الإخراج كي يصحّ ربح/خسارة الاستبعاد (proceeds − NBV). الأصل الذي تجاوز عمره يبلغ التخريدية طبيعياً.
   const stop = a.disposalDate ? new Date(a.disposalDate) : null;
   const age = Math.max(0, yearsBetween(new Date(a.purchaseDate), stop || asOf));
 
   let accumulated = 0;
-  if (a.status === "disposed") {
-    accumulated = Math.max(0, cost - sal);
-  } else {
-    const fy = Math.floor(age);
-    const frac = age - fy;
-    for (let i = 0; i < life; i++) {
-      if (i < fy) accumulated += schedule[i].dep;
-      else if (i === fy) {
-        accumulated += Math.round(schedule[i].dep * frac);
-        break;
-      }
+  const fy = Math.floor(age);
+  const frac = age - fy;
+  for (let i = 0; i < life; i++) {
+    if (i < fy) accumulated += schedule[i].dep;
+    else if (i === fy) {
+      accumulated += Math.round(schedule[i].dep * frac);
+      break;
     }
-    accumulated = Math.min(accumulated, Math.max(0, cost - sal));
   }
+  accumulated = Math.min(accumulated, Math.max(0, cost - sal));
   const bookValue = Math.max(sal, cost - accumulated);
   const curIdx = Math.min(life - 1, Math.floor(age));
   return {
@@ -268,8 +267,9 @@ export async function createAsset(input: CreateAssetInput) {
   return getAsset(id);
 }
 
-async function loadOrThrow(db: DB, assetId: number) {
-  const [a] = await db.select().from(fixedAssets).where(eq(fixedAssets.id, assetId)).limit(1);
+/** يحمّل الأصل داخل المعاملة تحت قفل صفّ (FOR UPDATE) — يمنع سباق TOCTOU بين فحص الحالة والكتابة. */
+async function loadForUpdate(tx: Tx, assetId: number) {
+  const [a] = await tx.select().from(fixedAssets).where(eq(fixedAssets.id, assetId)).for("update").limit(1);
   if (!a) throw new Error("الأصل غير موجود");
   return a;
 }
@@ -278,8 +278,9 @@ async function loadOrThrow(db: DB, assetId: number) {
 export async function handoverCustody(assetId: number, employeeId: number, note?: string) {
   const today = toDateStr();
   await withTx(async (tx) => {
-    const a = await loadOrThrow(tx as unknown as DB, assetId);
+    const a = await loadForUpdate(tx, assetId);
     if (a.status === "disposed") throw new Error("لا يمكن تسليم عهدة أصل مُستبعَد");
+    if (a.custodianId === employeeId) throw new Error("الأصل بعهدة هذا الموظف أصلاً");
     await tx
       .update(assetCustodyLog)
       .set({ toDate: today })
@@ -300,7 +301,7 @@ export interface MaintenanceInput {
 
 export async function addMaintenance(assetId: number, m: MaintenanceInput) {
   await withTx(async (tx) => {
-    const a = await loadOrThrow(tx as unknown as DB, assetId);
+    const a = await loadForUpdate(tx, assetId);
     if (a.status === "disposed") throw new Error("لا يمكن تسجيل صيانة لأصل مُستبعَد");
     await tx.insert(assetMaintenance).values({
       assetId,
@@ -320,8 +321,11 @@ export async function addMaintenance(assetId: number, m: MaintenanceInput) {
 
 /** إعادة أصل من الصيانة إلى الخدمة. */
 export async function returnFromMaintenance(assetId: number) {
-  const db = requireDb();
-  await db.update(fixedAssets).set({ status: "active" }).where(and(eq(fixedAssets.id, assetId), eq(fixedAssets.status, "maintenance")));
+  await withTx(async (tx) => {
+    const a = await loadForUpdate(tx, assetId);
+    if (a.status !== "maintenance") throw new Error("الأصل ليس في حالة صيانة");
+    await tx.update(fixedAssets).set({ status: "active" }).where(eq(fixedAssets.id, assetId));
+  });
   return getAsset(assetId);
 }
 
@@ -335,7 +339,7 @@ export interface DisposeInput {
 /** إخراج من الخدمة (retired) أو استبعاد ببيع/خردة (disposed) مع احتساب الربح/الخسارة. */
 export async function disposeAsset(assetId: number, input: DisposeInput) {
   await withTx(async (tx) => {
-    const a = await loadOrThrow(tx as unknown as DB, assetId);
+    const a = await loadForUpdate(tx, assetId);
     if (a.status === "disposed") throw new Error("الأصل مُستبعَد سلفاً");
     await tx
       .update(assetCustodyLog)
