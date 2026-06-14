@@ -62,6 +62,31 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
     .groupBy(accountingEntries.customerId);
   const openingMap = new Map(openingSum.map((r) => [Number(r.customerId), String(r.opening ?? "0")]));
 
+  // سندات العميل المستقلّة (B1): PAYMENT_IN/PAYMENT_OUT مع customerId وبلا invoiceId.
+  // - voucher RECEIPT (PAYMENT_IN) ⇒ adjustCustomerBalance(-amount) ⇒ AR ينقص ⇒ نطرحها من المُتوقَّع.
+  // - voucher PAYMENT (PAYMENT_OUT) ⇒ adjustCustomerBalance(+amount) ⇒ AR يزيد ⇒ نضيفها.
+  // الفلتر invoiceId IS NULL إلزامي: PAYMENT_IN على فاتورة (sale.pay) محسوبة أصلاً عبر paidAmount،
+  // وضمّها هنا يكرّر الحساب. cancelVoucher يكتب قيداً تعويضياً بلا invoiceId أيضاً فينصافر صافي السندات
+  // المستقلّة المُلغاة إلى صفر. التناظر مع reconcileSupplierBalances الذي يضمّ الاتجاهين أصلاً.
+  const voucherSum = await db
+    .select({
+      customerId: accountingEntries.customerId,
+      net: sql<string>`COALESCE(SUM(CASE
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        ELSE 0 END), 0)`,
+    })
+    .from(accountingEntries)
+    .where(
+      and(
+        sql`${accountingEntries.customerId} IS NOT NULL`,
+        sql`${accountingEntries.invoiceId} IS NULL`,
+        inArray(accountingEntries.entryType, ["PAYMENT_IN", "PAYMENT_OUT"]),
+      )
+    )
+    .groupBy(accountingEntries.customerId);
+  const voucherMap = new Map(voucherSum.map((r) => [Number(r.customerId), String(r.net ?? "0")]));
+
   // مع عمود returnedTotal، الصيغة تبسّطت كثيراً:
   //   AR_per_invoice = total - paidAmount - returnedTotal (موقَّع، لا GREATEST(.,0))
   // الفاتورة CANCELLED تستثنى (التزامها أُلغي).
@@ -88,15 +113,18 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   const actualMap = new Map(actuals.map((c) => [Number(c.id), String(c.balance ?? "0")]));
   const invMap = new Map(invSum.map((r) => [Number(r.customerId), String(r.arGross ?? "0")]));
 
-  // كل عميل له فاتورة أو قيد افتتاحي أو رصيد غير صفري (لتغطية حالة دفع زائد بلا فاتورة معلّقة).
+  // كل عميل له فاتورة أو قيد افتتاحي أو سند مستقلّ أو رصيد غير صفري.
   const seen = new Set<number>();
   for (const row of invSum) seen.add(Number(row.customerId));
   for (const row of openingSum) seen.add(Number(row.customerId));
+  for (const row of voucherSum) seen.add(Number(row.customerId));
   for (const c of actuals) if (money(c.balance ?? "0").abs().gt(0)) seen.add(Number(c.id));
 
   const issues: ReconcileResult[] = [];
   for (const customerId of Array.from(seen)) {
-    const expected = money(invMap.get(customerId) ?? "0").plus(money(openingMap.get(customerId) ?? "0"));
+    const expected = money(invMap.get(customerId) ?? "0")
+      .plus(money(openingMap.get(customerId) ?? "0"))
+      .plus(money(voucherMap.get(customerId) ?? "0"));
     const actual = money(actualMap.get(customerId) ?? "0");
     const drift = expected.minus(actual).abs();
     if (drift.greaterThan("0.01")) {

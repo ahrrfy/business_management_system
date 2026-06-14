@@ -15,5 +15,7 @@ export async function withTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return requireDb().transaction(fn);
 }
 
-/** The acting user + branch context for a business operation. */
-export type Actor = { userId: number; branchId: number };
+/** The acting user + branch context for a business operation. role اختياري — حين يُمرَّر
+ *  من الموجّه يُمكّن فحوصات صلاحية على مستوى الخدمة (نمط productionService.assertProductionBranch)
+ *  حيث لا يكفي حارس procedure (مثلاً: عزل عبر الفرع لمدير غير admin). */
+export type Actor = { userId: number; branchId: number; role?: string };

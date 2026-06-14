@@ -25,8 +25,17 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
     return;
   }
 
+  // مطابقة origin تامّة (لا startsWith) — يمنع نطاقات lookalike مثل example.com.evil.com
+  // التي كانت تمرّ تحت startsWith. نستخرج origin الفعلي من Origin/Referer.
   const host = `${req.protocol}://${req.get("host")}`;
-  if (!source.startsWith(host)) {
+  let sourceOrigin: string;
+  try {
+    sourceOrigin = new URL(source).origin;
+  } catch {
+    res.status(403).json({ error: "CSRF: مصدر الطلب غير صالح" });
+    return;
+  }
+  if (sourceOrigin !== host) {
     res.status(403).json({ error: "CSRF: مصدر الطلب غير مصرَّح" });
     return;
   }

@@ -16,6 +16,7 @@ import {
   receipts,
   shifts,
   suppliers,
+  users,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { localDayStart, localNextDayStart } from "./dateRange";
@@ -73,15 +74,64 @@ async function nextVoucherNumber(
   return prefix + String(seq).padStart(5, "0");
 }
 
+/** يحلّ دور الفاعل: من actor.role إن مرّره الموجّه، وإلا يقرأه من قاعدة البيانات (مرّة واحدة).
+ *  ضروري لأن voucherRouter لا يمرّر role، فالخدمة تقرأه لإنفاذ عزل فرع عند الإلغاء. */
+async function resolveActorRole(tx: Parameters<Parameters<typeof withTx>[0]>[0], actor: Actor): Promise<string> {
+  if (actor.role) return actor.role;
+  const u = (await tx.select({ role: users.role }).from(users).where(eq(users.id, actor.userId)).limit(1))[0];
+  return u?.role ?? "";
+}
+
+/** يفرض ملكية الفرع للفاعل لعمليات التغيير الحرجة: admin يمرّ، وغيره يجب أن يطابق فرع الكيان.
+ *  يسدّ نمطاً جذرياً ٢: managerProcedure معاملة سابقاً كأنها عبر-فرعية، فمدير فرعٍ يعكس سند فرعٍ آخر. */
+async function assertBranchOwnership(
+  tx: Parameters<Parameters<typeof withTx>[0]>[0],
+  actor: Actor,
+  targetBranchId: number | null,
+  entityLabel: string,
+): Promise<void> {
+  const role = await resolveActorRole(tx, actor);
+  if (role === "admin") return;
+  if (targetBranchId == null) return; // كيان بلا فرع مُسنَد ⇒ لا يُمكن فرض الانتماء
+  if (Number(actor.branchId) !== Number(targetBranchId)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `لا تستطيع تعديل ${entityLabel} لفرع آخر`,
+    });
+  }
+}
+
 /** يُنشئ سند قبض (IN) أو صرف (OUT) ذريّاً. */
 export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
   return withTx(async (tx) => {
     // Idempotency: تكرار نفس المفتاح يُعاد بنتيجة السند الأول (لا قيد/نقد مزدوج).
+    // تأكيد الكيان: لا نُرجع refId قديماً إن كان للسند المخزَّن partyId/branchId/amount مختلف
+    // عن الطلب الحالي ⇒ يحمي من «إعادة استعمال المفتاح ضدّ كيان مختلف» (نمط جذري ١).
     if (input.clientRequestId) {
       const existingRefId = await findIdempotentRefId(tx, "voucher.create", input.clientRequestId);
       if (existingRefId != null) {
-        const r = (await tx.select({ voucherNumber: receipts.voucherNumber, direction: receipts.direction }).from(receipts).where(eq(receipts.id, existingRefId)).limit(1))[0];
-        return { receiptId: existingRefId, voucherNumber: r?.voucherNumber ?? "", direction: (r?.direction as "IN" | "OUT") ?? "IN" };
+        const r = (await tx.select().from(receipts).where(eq(receipts.id, existingRefId)).limit(1))[0];
+        if (!r) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "سند idempotency مفقود — تحقّق من الإيصال" });
+        }
+        const storedPartyId = r.partyId != null ? Number(r.partyId) : null;
+        const requestedPartyId = input.partyType === "OTHER" ? null : (input.partyId ?? null);
+        if (
+          Number(r.branchId) !== Number(input.branchId) ||
+          (r.partyType ?? null) !== (input.partyType ?? null) ||
+          storedPartyId !== requestedPartyId ||
+          money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لسند بطرف/فرع/مبلغ مختلف",
+          });
+        }
+        return {
+          receiptId: existingRefId,
+          voucherNumber: r.voucherNumber ?? "",
+          direction: (r.direction as "IN" | "OUT") ?? "IN",
+        };
       }
     }
     const amount = money(input.amount);
@@ -93,15 +143,22 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       throw new TRPCError({ code: "BAD_REQUEST", message: "وصف السند مطلوب" });
     }
 
-    // التحقّق من الطرف:
+    // التحقّق من الطرف: يجب أن يكون نشطاً (isActive). فحص الوجود فقط لا يكفي — كانت تُكتب
+    // سندات نقدية على عميل/مورد مُعطَّل وتتجاوز نيّة «تعطيل العميل/المورد» المُعلنة في الواجهة.
     if (input.partyType === "CUSTOMER") {
       if (!input.partyId) throw new TRPCError({ code: "BAD_REQUEST", message: "العميل مطلوب لسند مرتبط بعميل" });
       const c = (await tx.select().from(customers).where(eq(customers.id, input.partyId)).limit(1))[0];
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+      if (!c.isActive) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إصدار سند لعميل مُعطَّل" });
+      }
     } else if (input.partyType === "SUPPLIER") {
       if (!input.partyId) throw new TRPCError({ code: "BAD_REQUEST", message: "المورد مطلوب لسند مرتبط بمورد" });
       const sup = (await tx.select().from(suppliers).where(eq(suppliers.id, input.partyId)).limit(1))[0];
       if (!sup) throw new TRPCError({ code: "NOT_FOUND", message: "المورد غير موجود" });
+      if (!sup.isActive) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إصدار سند لمورد مُعطَّل" });
+      }
     }
 
     const direction: "IN" | "OUT" = input.voucherType === "RECEIPT" ? "IN" : "OUT";
@@ -192,6 +249,8 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
     if (r.status !== "COMPLETED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء سند غير مكتمل" });
     }
+    // عزل عبر-فرعي: غير admin يجب أن يطابق فرعه فرع السند (نمط جذري ٢).
+    await assertBranchOwnership(tx, actor, r.branchId != null ? Number(r.branchId) : null, "سند");
     if (r.shiftId != null) {
       const sh = (
         await tx.select({ status: shifts.status }).from(shifts).where(eq(shifts.id, Number(r.shiftId))).limit(1)

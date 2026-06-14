@@ -308,11 +308,31 @@ export interface ProcessPaymentInput {
 /** Record a later payment against a credit invoice; updates status + AR. */
 export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
   return withTx(async (tx) => {
-    // Idempotency: استعلم قبل الكتابة — تكرار الطلب نفسه يُعيد تشغيل النتيجة الأولى بلا دفعة مكرّرة.
+    // Idempotency (نمط جذري ١): قبل أيّ replay، نتحقّق أنّ الإيصال المخزَّن يخصّ نفس الفاتورة
+    // وفرع المستخدم الحقيقي. كان الـreplay يَعود قبل enforceBranchId وقبل أيّ ربط بـinput.invoiceId
+    // ⇒ مفتاح يُعاد استعماله على فاتورة مختلفة كان يُرجع نجاحاً صامتاً (no-op) فيتلقّى الكاشير «مدفوع»
+    // ولا تُسجَّل دفعةٌ ثانية فعلياً ⇒ منفذ سرقة نقد. التأكيد يغلق الفئة بأكملها.
     if (input.clientRequestId) {
       const existingRefId = await findIdempotentRefId(tx, "sale.pay", input.clientRequestId);
       if (existingRefId != null) {
+        const r = (await tx.select().from(receipts).where(eq(receipts.id, existingRefId)).limit(1))[0];
+        if (!r || Number(r.invoiceId) !== Number(input.invoiceId)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لدفعة على فاتورة مختلفة",
+          });
+        }
+        if (money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لدفعة بمبلغ مختلف",
+          });
+        }
+        // أعِد قراءة الفاتورة لإرجاع حالتها الحديثة (replay آمن، لا كتابة).
         const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
+        if (input.enforceBranchId != null && inv && Number(inv.branchId) !== input.enforceBranchId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا تملك صلاحية على فاتورة فرع آخر" });
+        }
         return {
           invoiceId: input.invoiceId,
           paidAmount: inv?.paidAmount ?? "0.00",

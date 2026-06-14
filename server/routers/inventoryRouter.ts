@@ -36,8 +36,22 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await withTx((tx) => transferBetweenBranches(tx, { ...input, createdBy: ctx.user.id }));
-      await logAudit(ctx, { action: "inventory.transfer", entityType: "stock", entityId: input.variantId, newValue: { from: input.fromBranchId, to: input.toBranchId, qty: input.baseQuantity } });
+      // عزل الفرع: warehouse يُجبَر فرع المصدر على فرعه (لا يحوّل من فرع آخر)؛ admin/manager
+      // يحترمان fromBranchId المُرسَل. النمط نفسه المُطبَّق في createManualMovement أدناه.
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      let fromBranchId = input.fromBranchId;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        const userBranch = Number(ctx.user.branchId);
+        if (fromBranchId !== userBranch) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع التحويل من فرع غير فرعك" });
+        }
+        fromBranchId = userBranch;
+      }
+      const res = await withTx((tx) => transferBetweenBranches(tx, { ...input, fromBranchId, createdBy: ctx.user.id }));
+      await logAudit(ctx, { action: "inventory.transfer", entityType: "stock", entityId: input.variantId, newValue: { from: fromBranchId, to: input.toBranchId, qty: input.baseQuantity } });
       return res;
     }),
 
@@ -51,8 +65,17 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await withTx((tx) => setStock(tx, { ...input, createdBy: ctx.user.id }));
-      await logAudit(ctx, { action: "inventory.adjust", entityType: "stock", entityId: input.variantId, newValue: { branchId: input.branchId, target: input.targetQuantity } });
+      // عزل الفرع: warehouse يُجبَر على فرعه (لا يسوّي مخزون فرع آخر).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      let branchId = input.branchId;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        branchId = Number(ctx.user.branchId);
+      }
+      const res = await withTx((tx) => setStock(tx, { ...input, branchId, createdBy: ctx.user.id }));
+      await logAudit(ctx, { action: "inventory.adjust", entityType: "stock", entityId: input.variantId, newValue: { branchId, target: input.targetQuantity } });
       return res;
     }),
 

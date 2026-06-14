@@ -186,7 +186,8 @@ describe("الإنشاء واللقطة", () => {
 
     const r = await mkSession();
     expect(r.itemCount).toBe(3);
-    expect(r.code).toBe(`CNT-${new Date().getFullYear()}-0001`);
+    // CNT-YYYY-NNNN-RAND4 (إصلاح أمني: لاحقة عشوائية تمنع تخمين الرمز عبر publicProcedure count.auth).
+    expect(r.code).toMatch(new RegExp(`^CNT-${new Date().getFullYear()}-0001-[0-9A-Z]{4}$`));
 
     const items = await db().select().from(s.stocktakeItems).where(eq(s.stocktakeItems.sessionId, r.sessionId));
     expect(items).toHaveLength(3);
@@ -226,13 +227,14 @@ describe("الإنشاء واللقطة", () => {
     expect(await db().select().from(s.stocktakeItems)).toHaveLength(0);
   });
 
-  it("تفرّد الرمز: تسلسل CNT-<السنة>-NNNN، وإنشاءان متزامنان لا يتصادمان", async () => {
+  it("تفرّد الرمز: تسلسل CNT-<السنة>-NNNN-RAND4، وإنشاءان متزامنان لا يتصادمان", async () => {
     await setStockRow(1, 10);
     const year = new Date().getFullYear();
     const r1 = await mkSession({ variantIds: [1] });
     const r2 = await mkSession({ variantIds: [1] });
-    expect(r1.code).toBe(`CNT-${year}-0001`);
-    expect(r2.code).toBe(`CNT-${year}-0002`);
+    // البادئة التسلسلية تُبقي القراءة البشرية والترتيب، واللاحقة العشوائية تمنع تخمين الرمز.
+    expect(r1.code).toMatch(new RegExp(`^CNT-${year}-0001-[0-9A-Z]{4}$`));
+    expect(r2.code).toMatch(new RegExp(`^CNT-${year}-0002-[0-9A-Z]{4}$`));
 
     const [r3, r4] = await Promise.all([mkSession({ variantIds: [1] }), mkSession({ variantIds: [1] })]);
     const codes = [r1.code, r2.code, r3.code, r4.code];

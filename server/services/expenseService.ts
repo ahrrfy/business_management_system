@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
-import { branches, expenseStockItems, expenses, productVariants, receipts, shifts } from "../../drizzle/schema";
+import { branches, expenseStockItems, expenses, productVariants, receipts, shifts, users } from "../../drizzle/schema";
 import { localDayStart } from "./dateRange";
 import { getDb } from "../db";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
@@ -263,6 +263,17 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     if (!exp) throw new TRPCError({ code: "NOT_FOUND", message: "المصروف غير موجود" });
     if (exp.status !== "ACTIVE")
       throw new TRPCError({ code: "BAD_REQUEST", message: "المصروف ملغى بالفعل" });
+
+    // عزل عبر-فرعي: admin يمرّ؛ غيره يجب أن يكون من فرع المصروف نفسه (نمط جذري ٢).
+    // expenseRouter لا يمرّر role، فنقرأه من قاعدة البيانات.
+    {
+      const role =
+        actor.role ??
+        ((await tx.select({ role: users.role }).from(users).where(eq(users.id, actor.userId)).limit(1))[0]?.role ?? "");
+      if (role !== "admin" && Number(actor.branchId) !== Number(exp.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع إلغاء مصروف لفرع آخر" });
+      }
+    }
 
     if (exp.shiftId) {
       const s = (

@@ -320,13 +320,30 @@ async function loadForUpdate(tx: Tx, assetId: number) {
   return a;
 }
 
-/** تسليم عهدة: يُغلق العهدة الجارية ويفتح أخرى للموظف الجديد، ويحدّث صاحب العهدة. */
+/** تسليم عهدة: يُغلق العهدة الجارية ويفتح أخرى للموظف الجديد، ويحدّث صاحب العهدة.
+ *  يتحقّق من أنّ الموظف نشط (employmentStatus='active') لمنع تسجيل عهدة على موظف منتهي/في إجازة،
+ *  ومن توافق فرع الأصل مع فرع الموظف لمنع ضياع تتبّع المسؤولية عبر الفروع. */
 export async function handoverCustody(assetId: number, employeeId: number, note?: string) {
   const today = toDateStr();
   await withTx(async (tx) => {
     const a = await loadForUpdate(tx, assetId);
     if (a.status === "disposed") throw new Error("لا يمكن تسليم عهدة أصل مُستبعَد");
     if (a.custodianId === employeeId) throw new Error("الأصل بعهدة هذا الموظف أصلاً");
+
+    // فحص حالة الموظف وفرعه ضمن المعاملة (FK يضمن وجود الصفّ فقط، لا حالته).
+    const [emp] = await tx
+      .select({ status: employees.employmentStatus, branchId: employees.branchId })
+      .from(employees)
+      .where(eq(employees.id, employeeId))
+      .limit(1);
+    if (!emp) throw new Error("الموظف غير موجود");
+    if (emp.status !== "active") {
+      throw new Error("لا يمكن تسليم عهدة لموظف ليس على رأس العمل");
+    }
+    if (a.branchId != null && emp.branchId != null && Number(a.branchId) !== Number(emp.branchId)) {
+      throw new Error("لا يمكن تسليم عهدة لموظف من فرع مختلف عن فرع الأصل");
+    }
+
     await tx
       .update(assetCustodyLog)
       .set({ toDate: today })

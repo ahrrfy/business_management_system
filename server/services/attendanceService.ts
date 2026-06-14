@@ -124,23 +124,32 @@ export async function recordAttendance(input: RecordAttendanceInput) {
   return withTx(async (tx) => {
     const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
     if (!emp) throw new Error("الموظف غير موجود");
+    // لا يُسجَّل حضور لموظف منتهي الخدمة (الحضور بعد الإنهاء يولّد أجراً وهمياً عند توليد المسيّر).
+    if (emp.employmentStatus === "terminated") {
+      throw new Error("لا يمكن تسجيل حضور لموظف منتهي الخدمة");
+    }
 
     const hoursDec = money(input.hours);
     if (hoursDec.isNegative()) throw new Error("الساعات لا يمكن أن تكون سالبة");
 
+    const status = input.status ?? "PRESENT";
+    // ABSENT/LEAVE لا يولّدان أجراً مهما كانت الساعات. التصفير المزدوج (هنا + WHERE في تجميع المسيّر)
+    // يحمي حتى عند تعديل صفّ موجود أو إدخال مباشر بـAPI يضع status=ABSENT مع ساعات (سهو/استيراد بصمة).
+    const isPaidStatus = status === "PRESENT" || status === "LATE";
+    const effectiveHours = isPaidStatus ? hoursDec : money(0);
     const rate = rateForDay(emp, input.attendanceDate);
     // الأجر بالدينار الصحيح (لا فئات أصغر من الدينار في المتجر): تقريب الناتج إلى عدد صحيح.
     // toDecimalPlaces(0) يستعمل سياسة التقريب العامّة المثبّتة في money.ts (HALF_UP).
-    const amount = round2(hoursDec.times(rate)).toDecimalPlaces(0);
+    const amount = round2(effectiveHours.times(rate)).toDecimalPlaces(0);
 
     const values = {
       employeeId: input.employeeId,
       attendanceDate: input.attendanceDate,
       checkIn: timeToTimestamp(input.attendanceDate, input.checkIn),
       checkOut: timeToTimestamp(input.attendanceDate, input.checkOut),
-      status: input.status ?? "PRESENT",
+      status,
       notes: input.notes?.trim() || null,
-      hours: toDbMoney(hoursDec),
+      hours: toDbMoney(effectiveHours),
       hourlyRate: toDbMoney(rate),
       amount: toDbMoney(amount),
       source: input.source ?? "manual",
@@ -188,7 +197,8 @@ export async function monthSummary(period: string) {
       totalAmount: sql<string>`COALESCE(SUM(${attendance.amount}), 0)`,
     })
     .from(attendance)
-    .where(like(attendance.attendanceDate, `${period}%`))
+    // أيام PRESENT/LATE فقط تدخل المجموع المدفوع — متّسق مع تجميع المسيّر في payrollService.
+    .where(and(like(attendance.attendanceDate, `${period}%`), sql`${attendance.status} IN ('PRESENT', 'LATE')`))
     .groupBy(attendance.employeeId);
 
   const byEmp = new Map(agg.map((a) => [a.employeeId, a]));

@@ -381,17 +381,27 @@ async function supplierOpeningBalance(supplierId: number, from?: string) {
         sql`${purchaseOrders.orderDate} < ${`${from} 00:00:00`}`
       )
     );
-  const payRow = await db
-    .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+  // صافي تأثير القيود قبل الفترة على AP (مرآة reconcileSupplierBalances):
+  //   PAYMENT_OUT يطرح، PAYMENT_IN يضيف (استرداد من مورد)، RETURN.amount مخزَّن سالباً فيطرح المرتجع.
+  // كان نظير العميل (customerOpeningBalance) يضمّ الاتجاهين بصحّة، بينما المورد كان PAYMENT_OUT فقط
+  // ⇒ كشف حساب لا يتّزن عند استرداد من مورد أو مرتجع شراء.
+  const entriesRow = await db
+    .select({
+      v: sql<string>`COALESCE(SUM(CASE
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'RETURN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        ELSE 0 END), 0)`,
+    })
     .from(accountingEntries)
     .where(
       and(
-        eq(accountingEntries.entryType, "PAYMENT_OUT"),
+        inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN", "RETURN"]),
         eq(accountingEntries.supplierId, supplierId),
         sql`${accountingEntries.entryDate} < ${from}`
       )
     );
-  return opening.plus(money(poRow[0]?.v ?? 0)).minus(money(payRow[0]?.v ?? 0));
+  return opening.plus(money(poRow[0]?.v ?? 0)).plus(money(entriesRow[0]?.v ?? 0));
 }
 
 /** كشف حساب مورد: أوامر شراء + دفعات (من accountingEntries.PAYMENT_OUT) + ملخّص.
@@ -424,10 +434,12 @@ export async function getSupplierStatement(
     .where(and(...poConds))
     .orderBy(desc(purchaseOrders.orderDate));
 
-  // Payments to this supplier are tracked in accountingEntries (entryType=PAYMENT_OUT, supplierId).
-  // الفلترة على تاريخ القيد نفسه: دفعة داخل الفترة على أمر أقدم تظهر (الدلالة المحاسبية).
+  // كل حركات الدفتر المؤثّرة على AP المورد ضمن الفترة (PAYMENT_OUT/PAYMENT_IN/RETURN).
+  // كان السابق PAYMENT_OUT فقط ⇒ استرداد المورد ومرتجع الشراء يغيبان عن الكشف فلا يتّزن
+  // (الرصيد الجاري ≠ المُرحَّل + مشتريات الفترة − دفعات الفترة المعروضة). الفلترة على تاريخ القيد
+  // نفسه: حركة داخل الفترة على أمر أقدم تظهر (الدلالة المحاسبية).
   const payConds = [
-    eq(accountingEntries.entryType, "PAYMENT_OUT"),
+    inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN", "RETURN"]),
     eq(accountingEntries.supplierId, supplierId),
   ];
   if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
@@ -435,6 +447,7 @@ export async function getSupplierStatement(
   const payments = await db
     .select({
       id: accountingEntries.id,
+      entryType: accountingEntries.entryType,
       purchaseOrderId: accountingEntries.purchaseOrderId,
       receiptId: accountingEntries.receiptId,
       amount: accountingEntries.amount,
@@ -469,6 +482,9 @@ export async function getSupplierStatement(
     })),
     payments: payments.map((p) => ({
       id: Number(p.id),
+      // entryType جديد: تميّز الواجهة بين دفعة مورد (PAYMENT_OUT)، استرداد من مورد (PAYMENT_IN)،
+      // ومرتجع شراء (RETURN، مخزَّن بإشارة سالبة) — لكي يقرأ المحاسب الكشف بإشارته الصحيحة.
+      entryType: p.entryType,
       purchaseOrderId: p.purchaseOrderId ? Number(p.purchaseOrderId) : null,
       receiptId: p.receiptId ? Number(p.receiptId) : null,
       amount: String(p.amount),

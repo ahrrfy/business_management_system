@@ -187,10 +187,32 @@ async function startServer() {
   // حماية CSRF (طبقة دفاع ثانية فوق sameSite:"strict").
   app.use("/api/trpc", csrfGuard);
 
-  // API routes must be registered before the SPA catch-all (added by Vite/static).
-  // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ يمنع تمييع حدود المعدّل (auth.login/count.auth/kiosk.deviceLogin)
-  // عبر حشو محاولات كثيرة في طلب HTTP واحد، ويحدّ تضخّم الكتابة/الإغراق. 50 أعلى بكثير من أي دفعة شرعية في الواجهة.
-  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext, maxBatchSize: 50 }));
+  // حدّ صلب فوقي على الدفعات (tRPC batch link): يرفض الطلب إن حوى أكثر من حدّ تصاعدي على
+  // إجراء عام واحد قبل وصوله للراوتر، فيقفل نمط تضخيم تجاوز حدّ المعدّل (نمط جذري ٥):
+  // كان rateLimit يَعدّ HTTP requests لا الإجراءات؛ batch link يحشو عشرات النداءات في طلب واحد
+  // فيسمح بـ٥٠ محاولة auth.login/count.auth/kiosk.deviceLogin/recruitment.submit ضمن طلب واحد
+  // قبل اصطدامه بحدّ المعدّل. الحدّ التالي للنقاط العامة الحرجة لا يسمح بأكثر من نداء واحد لكلّ طلب
+  // HTTP، فحدّ المعدّل القائم يعمل بدقّته الحقيقية بلا تمييع.
+  app.use("/api/trpc", (req, res, next) => {
+    const PUBLIC_SENSITIVE = ["auth.login", "count.auth", "kiosk.deviceLogin", "recruitment.submit"];
+    // مسار البَتش يبدأ بـ"/api/trpc/x," مع فاصلة بين أسماء الإجراءات الموحَّدة.
+    const path = req.path || "";
+    if (path.includes(",")) {
+      const procs = path.split("/").pop()?.split(",") ?? [];
+      let count = 0;
+      for (const p of procs) {
+        if (PUBLIC_SENSITIVE.some((s) => p.includes(s))) count++;
+      }
+      if (count > 1) {
+        res.status(429).json({ error: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة." });
+        return;
+      }
+    }
+    next();
+  });
+  // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
+  // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
+  app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext, maxBatchSize: 20 }));
 
   // جسر الطباعة الصامتة (خارج tRPC): يستقبل بايتات ESC/POS من العميل ويرسلها للطابعة محلياً.
   // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"

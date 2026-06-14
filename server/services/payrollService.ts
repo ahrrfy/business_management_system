@@ -142,6 +142,8 @@ export async function generatePayroll(period: string, actor: Actor) {
     }
 
     // مجاميع حضور الشهر لموظفي الساعة (amount + hours) — مطابقة بادئة YYYY-MM على عمود التاريخ.
+    // تصفية على status IN ('PRESENT','LATE') كحارس عميق: حتى لو دخل أمر مالي صفّ ABSENT/LEAVE
+    // بمبلغ موجب (سهو/استيراد بصمة/تعديل يدوي قديم) لا يدخل في gross — الأجر لا يدفع عن غياب.
     const attRows = await tx
       .select({
         employeeId: attendance.employeeId,
@@ -149,7 +151,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         sumHours: sql<string>`COALESCE(SUM(${attendance.hours}), 0)`,
       })
       .from(attendance)
-      .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p}`)
+      .where(sql`DATE_FORMAT(${attendance.attendanceDate}, '%Y-%m') = ${p} AND ${attendance.status} IN ('PRESENT', 'LATE')`)
       .groupBy(attendance.employeeId);
     const attMap = new Map<number, { amount: string; hours: string }>(
       attRows.map((r) => [Number(r.employeeId), { amount: String(r.sumAmount), hours: String(r.sumHours) }]),

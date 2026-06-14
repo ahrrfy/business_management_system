@@ -208,7 +208,10 @@ describe("مصادقة البوابة", () => {
     await expectTrpc(authenticatePin(user1 as any, { sessionCode: r.code }), "FORBIDDEN", /تكليف/);
   });
 
-  it("قفل PIN: ٥ فشلات ⇒ قفل ١٥ دقيقة يصدّ حتى الرمز الصحيح، وينفكّ بانقضائه", async () => {
+  it("PIN خاطئ متكرّر لا يقفل التكليفات (المنع موكول لحدّ معدّل IP في server/index.ts)", async () => {
+    // إصلاح أمني: كان PIN خاطئ يزيد العدّاد على كل تكليفات PIN في الجلسة ويقفلها جميعها بعد ٥ ⇒
+    // مهاجم على رابط عام يخمّن الرمز (وكان تسلسلياً) ⇒ يشلّ كل عمّال العدّ الميدانيين (DoS تشغيلي).
+    // الآن: لا قفل صفوف عند PIN خاطئ غير منسوب لتكليف؛ الحماية بالحدّ على IP (COUNT_RATE_LIMIT_MAX).
     const r = await mkPortalSession({
       assignments: [{ name: "عامل أ", method: "PIN", variantIds: [1, 2] }],
     });
@@ -216,37 +219,43 @@ describe("مصادقة البوابة", () => {
     const pin = r.assignments[0].pin!;
     const wrong = wrongPinFor(pin);
 
-    // ٤ فشلات: العدّاد يرتفع ولا قفل بعد.
-    for (let i = 1; i <= 4; i++) {
+    // ١٠ فشلات متتالية لا تقفل التكليف ولا تزيد العدّاد على الصفّ (الحماية بحدّ IP).
+    for (let i = 0; i < 10; i++) {
       await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin: wrong }), "UNAUTHORIZED");
-      const a = await assignmentRow(aid);
-      expect(a.failedPinAttempts).toBe(i);
-      expect(a.lockedUntil).toBeNull();
     }
+    const a = await assignmentRow(aid);
+    expect(a.failedPinAttempts).toBe(0);
+    expect(a.lockedUntil).toBeNull();
 
-    // الفشلة الخامسة ⇒ قفل ١٥ دقيقة وتصفير العدّاد.
-    const before = Date.now();
-    await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin: wrong }), "UNAUTHORIZED");
-    const locked = await assignmentRow(aid);
-    expect(locked.failedPinAttempts).toBe(0);
-    expect(locked.lockedUntil).not.toBeNull();
-    const lockMs = new Date(locked.lockedUntil!).getTime() - before;
-    expect(lockMs).toBeGreaterThan(13 * 60 * 1000);
-    expect(lockMs).toBeLessThan(16 * 60 * 1000);
+    // الرمز الصحيح ما زال يدخل بعد محاولات خاطئة كثيرة ⇒ لا حجب تشغيلي للعمّال الشرعيين.
+    const auth = await authenticatePin(null, { sessionCode: r.code, pin });
+    expect(auth.token).toBeTruthy();
+  });
 
-    // أثناء القفل حتى الرمز الصحيح مرفوض برسالة قفل صريحة.
+  it("قفل يدوي إداري على تكليف يظلّ يصدّ الرمز الصحيح ويُلغى بانقضاء lockedUntil", async () => {
+    // القفل اليدوي (lockedUntil يُكتَب صراحةً من إدارة الجرد، لا من PIN خاطئ) يبقى مدعوماً.
+    const r = await mkPortalSession({
+      assignments: [{ name: "عامل أ", method: "PIN", variantIds: [1, 2] }],
+    });
+    const aid = r.assignments[0].assignmentId;
+    const pin = r.assignments[0].pin!;
+
+    // تثبيت قفل إداري ١٥د.
+    await db()
+      .update(s.stocktakeAssignments)
+      .set({ lockedUntil: new Date(Date.now() + 15 * 60 * 1000) })
+      .where(eq(s.stocktakeAssignments.id, aid));
+
+    // كل تكليفات PIN مقفلة ⇒ رسالة قفل صريحة حتى مع الرمز الصحيح.
     await expectTrpc(authenticatePin(null, { sessionCode: r.code, pin }), "TOO_MANY_REQUESTS", /15 دقيقة/);
 
-    // انقضاء القفل (نُرجعه للماضي) ⇒ الرمز الصحيح يدخل ويصفّر الحالة.
+    // انقضاء القفل ⇒ الرمز الصحيح يدخل.
     await db()
       .update(s.stocktakeAssignments)
       .set({ lockedUntil: new Date(Date.now() - 1000) })
       .where(eq(s.stocktakeAssignments.id, aid));
     const auth = await authenticatePin(null, { sessionCode: r.code, pin });
     expect(auth.token).toBeTruthy();
-    const after = await assignmentRow(aid);
-    expect(after.failedPinAttempts).toBe(0);
-    expect(after.lockedUntil).toBeNull();
   });
 });
 

@@ -13,7 +13,7 @@
 import { TRPCError } from "@trpc/server";
 import { mysqlCodeFrom } from "@shared/errorMap.ar";
 import { parse as parseCookie } from "cookie";
-import { and, asc, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { SignJWT, jwtVerify } from "jose";
 import {
   branches,
@@ -40,9 +40,9 @@ export const COUNT_COOKIE_NAME = "count_token";
 /** صلاحية توكن البوابة: 12 ساعة — تكفي يوم جرد كاملاً ولا تبقى مفتوحة للأبد. */
 export const COUNT_TOKEN_TTL_MS = 12 * 60 * 60 * 1000;
 
-/** قفل محاولات PIN: 5 محاولات فاشلة ⇒ قفل 15 دقيقة (نمط قفل حساب الدخول في authRouter). */
-const PIN_LOCK_THRESHOLD = 5;
-const PIN_LOCK_MS = 15 * 60 * 1000;
+// ملاحظة: قفل تكليفات PIN عند الفشل الجماعي أُزيل (كان DoS تشغيلي). الحماية من التخمين
+// عبر حدّ معدّل IP لـcount.auth في server/index.ts (COUNT_RATE_LIMIT_MAX = 10/15د).
+// lockedUntil يبقى مدعوماً للقفل اليدوي الإداري من إدارة الجرد.
 
 // رسالة موحّدة لـ«غير موجودة/انتهت/أُلغيت» — حامل رابط قديم لا يستطيع استكشاف الجلسات.
 const SESSION_UNAVAILABLE_MSG = "جلسة الجرد غير متاحة — انتهت أو أُغلقت. راجع مسؤول الجرد.";
@@ -180,27 +180,11 @@ export async function authenticatePin(
     if (!matched) {
       // غياب أي مرشّح للمقارنة (جلسة بلا تكليفات PIN) ⇒ scrypt وهمي لتوحيد التوقيت.
       if (unlocked.length === 0) verifyPassword(pin, DUMMY_STORED);
-      // فشل ⇒ زيادة ذرّية بالـSQL على كل تكليفات PIN غير المقفلة (لا نعرف أيّها المقصود).
-      // قراءة-ثم-كتابة سابقة كانت تُفقد زيادات عند التوازي فتتأخر عتبة القفل (مراجعة أمنية).
-      const unlockedIds = unlocked.map((a) => Number(a.id));
-      if (unlockedIds.length) {
-        await db
-          .update(stocktakeAssignments)
-          .set({ failedPinAttempts: sql`${stocktakeAssignments.failedPinAttempts} + 1` })
-          .where(inArray(stocktakeAssignments.id, unlockedIds))
-          .catch(() => {});
-        // بلوغ العتبة ⇒ قفل ١٥ دقيقة وتصفير العدّاد.
-        await db
-          .update(stocktakeAssignments)
-          .set({ failedPinAttempts: 0, lockedUntil: new Date(Date.now() + PIN_LOCK_MS) })
-          .where(
-            and(
-              inArray(stocktakeAssignments.id, unlockedIds),
-              gte(stocktakeAssignments.failedPinAttempts, PIN_LOCK_THRESHOLD)
-            )
-          )
-          .catch(() => {});
-      }
+      // ⚠️ كنّا نزيد العدّاد على كل تكليفات PIN غير المقفلة ⇒ ٥ محاولات خاطئة (من أيّ طرف،
+      // داخلي أو خارجي يخمّن رمز الجلسة CNT-YYYY-NNNN) تقفل كل عمّال العدّ الميدانيين ١٥ دقيقة
+      // فتشلّ يوم الجرد كلّه — DoS تشغيلي. الحماية من التخمين موكولة الآن لحدّ المعدّل على IP
+      // (COUNT_RATE_LIMIT_MAX=10/15د في server/index.ts) — لا قفل صفوف جماعي على PIN خاطئ
+      // غير منسوب لتكليف بعينه. القفل اليدوي (lockedUntil) يبقى متاحاً لحالات إدارية صريحة.
       throw new TRPCError({ code: "UNAUTHORIZED", message: "رمز الدخول غير صحيح — حاول مجدداً." });
     }
 

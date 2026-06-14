@@ -62,44 +62,54 @@ export interface LeaveInput {
   reason?: string | null;
 }
 
-/** إنشاء طلب إجازة جديد بحالة pending. paid مشتقّ من نوع الإجازة (مصدر الحقيقة @shared/hr). */
+/** إنشاء طلب إجازة جديد بحالة pending. paid مشتقّ من نوع الإجازة (مصدر الحقيقة @shared/hr).
+ *  ذرّي: قفل صفّ الموظف ضمن withTx يُسلسل الطلبات المتزامنة فيُرفض الثاني عبر فحص التداخل
+ *  ⇒ يسدّ سباق TOCTOU الذي كان يولّد ازدواج طلب وخصم رصيد مرّتين بعد الموافقة على كليهما. */
 export async function createLeave(input: LeaveInput) {
-  const db = requireDb();
-  const [emp] = await db.select({ id: employees.id }).from(employees).where(eq(employees.id, input.employeeId)).limit(1);
-  if (!emp) throw new Error("الموظف غير موجود");
   if (input.toDate < input.fromDate) throw new Error("تاريخ النهاية يجب ألا يسبق تاريخ البداية");
-
-  // عدد الأيام يُحسب في الخادم من نطاق التواريخ (لا يُوثَق بقيمة العميل) لمنع تلاعب الرصيد.
   const days = daysInclusive(input.fromDate, input.toDate);
   if (days <= 0) throw new Error("عدد الأيام يجب أن يكون أكبر من صفر");
 
-  // منع التداخل: لا طلب آخر (قيد الموافقة أو موافق عليه) يتقاطع مع هذه الفترة لنفس الموظف
-  // ⇒ يمنع الخصم المزدوج من رصيد الإجازات وحجزاً مكرّراً لنفس الأيام.
-  const [clash] = await db
-    .select({ id: leaveRequests.id })
-    .from(leaveRequests)
-    .where(
-      and(
-        eq(leaveRequests.employeeId, input.employeeId),
-        ne(leaveRequests.status, "rejected"),
-        lte(leaveRequests.fromDate, input.toDate),
-        gte(leaveRequests.toDate, input.fromDate),
-      ),
-    )
-    .limit(1);
-  if (clash) throw new Error("توجد إجازة أخرى متداخلة مع هذه الفترة لنفس الموظف");
+  const id = await withTx(async (tx) => {
+    // قفل صفّ الموظف يجعل طلبَين متزامنَين على نفس الموظف يتسلسلان: الثاني ينتظر التزام
+    // الأول فيرى تداخله ⇒ يُرفض. (employees.id FK من leaveRequests فهو موجود قطعاً عند
+    // أي طلب صالح؛ نقفله مع تأكيد الوجود.)
+    const [emp] = await tx
+      .select({ id: employees.id })
+      .from(employees)
+      .where(eq(employees.id, input.employeeId))
+      .for("update")
+      .limit(1);
+    if (!emp) throw new Error("الموظف غير موجود");
 
-  const [res] = await db.insert(leaveRequests).values({
-    employeeId: input.employeeId,
-    leaveType: input.leaveType,
-    paid: leaveTypeIsPaid(input.leaveType),
-    fromDate: input.fromDate,
-    toDate: input.toDate,
-    days,
-    status: "pending",
-    reason: input.reason?.trim() || null,
+    // منع التداخل: لا طلب آخر (قيد الموافقة أو موافق عليه) يتقاطع مع هذه الفترة لنفس الموظف
+    // ⇒ يمنع الخصم المزدوج من رصيد الإجازات وحجزاً مكرّراً لنفس الأيام. ضمن نفس tx بعد القفل.
+    const [clash] = await tx
+      .select({ id: leaveRequests.id })
+      .from(leaveRequests)
+      .where(
+        and(
+          eq(leaveRequests.employeeId, input.employeeId),
+          ne(leaveRequests.status, "rejected"),
+          lte(leaveRequests.fromDate, input.toDate),
+          gte(leaveRequests.toDate, input.fromDate),
+        ),
+      )
+      .limit(1);
+    if (clash) throw new Error("توجد إجازة أخرى متداخلة مع هذه الفترة لنفس الموظف");
+
+    const [res] = await tx.insert(leaveRequests).values({
+      employeeId: input.employeeId,
+      leaveType: input.leaveType,
+      paid: leaveTypeIsPaid(input.leaveType),
+      fromDate: input.fromDate,
+      toDate: input.toDate,
+      days,
+      status: "pending",
+      reason: input.reason?.trim() || null,
+    });
+    return Number((res as { insertId: number }).insertId);
   });
-  const id = Number((res as { insertId: number }).insertId);
   const [created] = await listLeavesByIds(id);
   return created;
 }

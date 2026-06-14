@@ -11,7 +11,7 @@
 //   - بوابة العدّ لا تستلم expectedQty/أسعاراً أبداً (الجرد الأعمى).
 import { TRPCError } from "@trpc/server";
 import type Decimal from "decimal.js";
-import { randomInt } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { mysqlCodeFrom } from "../../shared/errorMap.ar";
 import { and, asc, desc, eq, gt, gte, inArray, like, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
@@ -127,9 +127,12 @@ function generateUniquePin(used: Set<string>): string {
 /* ============================ توليد رمز الجلسة ============================ */
 
 /**
- * CNT-<السنة>-<NNNN> تسلسلي: قراءة أعلى رمز للسنة تحت FOR UPDATE تُضيّق السباق،
- * وقيد UNIQUE على code هو الحارس النهائي (createStocktakeSession يعيد المحاولة مرة
- * عند ER_DUP_ENTRY). الترتيب lexicographic = رقمي لأن NNNN مُصفَّر البادئة.
+ * CNT-<السنة>-<NNNN>-<RAND4> — تسلسلي مع لاحقة عشوائية تمنع تخمين الرمز.
+ * كان الرمز تسلسلياً بحتاً (CNT-2026-0001 …) ⇒ يخمّنه مهاجم خارجي بسهولة، وبما أنّ count.auth
+ * publicProcedure والنظام على الإنترنت، كان يكفي تخمين الرمز ليُحاول PINات على رابط جلسة فعلية.
+ * اللاحقة العشوائية (٤ خانات base36 من crypto.randomBytes) تضيف ~٢٠ بت من المفاجأة فيستحيل التخمين.
+ * مع إبقاء البادئة التسلسلية NNNN لسهولة القراءة البشرية والترتيب.
+ * قيد UNIQUE على code هو الحارس النهائي للسباق.
  */
 async function nextSessionCode(tx: Tx): Promise<string> {
   const prefix = `CNT-${new Date().getFullYear()}-`;
@@ -141,8 +144,12 @@ async function nextSessionCode(tx: Tx): Promise<string> {
     .for("update")
     .limit(1);
   const last = rows[0]?.code;
-  const seq = last ? parseInt(last.slice(prefix.length), 10) + 1 : 1;
-  return prefix + String(seq).padStart(4, "0");
+  // البادئة العددية الجارية: نقتطع أول ٤ أرقام بعد البادئة (LIKE قد يلتقط رموزاً قديمة بلا لاحقة).
+  const lastSeq = last ? parseInt(last.slice(prefix.length, prefix.length + 4), 10) : NaN;
+  const seq = Number.isFinite(lastSeq) ? lastSeq + 1 : 1;
+  // ٤ أحرف base36 من ٣ بايتات عشوائية ⇒ ~٢٠ بت من العشوائية، بلا اعتماد على Math.random.
+  const rand4 = randomBytes(3).readUIntBE(0, 3).toString(36).padStart(4, "0").slice(-4).toUpperCase();
+  return prefix + String(seq).padStart(4, "0") + "-" + rand4;
 }
 
 /* ============================ إنشاء جلسة ============================ */
