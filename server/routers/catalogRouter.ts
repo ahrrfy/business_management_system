@@ -33,6 +33,8 @@ const variantSchema = z.object({
   openingStockByBranch: z
     .array(z.object({ branchId: z.number().int().positive(), qty: z.number().int().min(0).max(100_000_000) }))
     .optional(),
+  // product-variants: صورة مستقلّة لهذا اللون (data URL مضغوط) — تُخزَّن في productImages بـvariantId.
+  image: z.string().max(5_000_000).optional(),
   units: z.array(unitSchema).min(1),
 });
 
@@ -53,6 +55,8 @@ const editVariantSchema = z.object({
   minStock: z.number().int().min(0).max(1_000_000).optional(),
   reorderPoint: z.number().int().min(0).max(1_000_000).optional(),
   isActive: z.boolean().optional(),
+  // product-variants: صورة هذا اللون — string ⇒ تُعيَّن، null/"" ⇒ تُزال (يُعاد التوفيق دائماً).
+  image: z.string().max(5_000_000).nullish(),
   unitBarcodes: z.record(z.string(), z.string()),
 });
 

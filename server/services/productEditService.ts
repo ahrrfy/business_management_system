@@ -10,7 +10,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { branchStock, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
+import { branchStock, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { toDbMoney } from "./money";
@@ -38,10 +38,12 @@ export interface VariantEditRow {
   reorderPoint: number;
   minStock: number;
   isActive: boolean;
-  /** باركود مستقل لكل وحدة، مفتاحه اسم الوحدة. */
+  /** باركود مستقل لكل وحدة, مفتاحه اسم الوحدة. */
   unitBarcodes: Record<string, string>;
   /** رصيد الفرع الحالي لكل فرع (قراءة فقط في التعديل). */
   stockByBranch: Record<number, number>;
+  /** صورة هذا اللون (data URL) أو null. */
+  image: string | null;
 }
 
 export interface ProductForVariantEdit {
@@ -89,6 +91,8 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
   const unitIds = units.map((u) => Number(u.id));
   const prices = unitIds.length ? await db.select().from(productPrices).where(inArray(productPrices.productUnitId, unitIds)) : [];
   const stocks = await db.select().from(branchStock).where(inArray(branchStock.variantId, variantIds));
+  // product-variants: صور المتغيّرات (variantId مضبوط) — صور المنتج العامّة (variantId=NULL) تُستثنى.
+  const vImages = await db.select().from(productImages).where(inArray(productImages.variantId, variantIds));
 
   const priceOf = (unitId: number, tier: PriceTier) =>
     prices.find((pr) => Number(pr.productUnitId) === unitId && pr.priceTier === tier)?.price ?? "";
@@ -101,6 +105,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     const baseRetail = baseUnit ? priceOf(Number(baseUnit.id), "RETAIL") : "";
     const stockByBranch: Record<number, number> = {};
     for (const s of stocks.filter((s) => Number(s.variantId) === Number(v.id))) stockByBranch[Number(s.branchId)] = s.quantity;
+    const image = vImages.find((im) => Number(im.variantId) === Number(v.id))?.url ?? null;
     return {
       id: Number(v.id),
       sku: v.sku,
@@ -113,6 +118,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       isActive: !!v.isActive,
       unitBarcodes,
       stockByBranch,
+      image,
     };
   });
 
@@ -163,6 +169,8 @@ export interface UpdateVariantRow {
   minStock?: number;
   reorderPoint?: number;
   isActive?: boolean;
+  /** صورة هذا اللون — string ⇒ تُعيَّن، null/"" ⇒ تُزال (يُعاد التوفيق في كل حفظ). */
+  image?: string | null;
   /** باركود لكل وحدة بمفتاح اسم الوحدة. */
   unitBarcodes: Record<string, string>;
 }
@@ -324,6 +332,13 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         added++;
       }
       await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.baseRetail);
+
+      // product-variants: توفيق صورة اللون. image=undefined ⇒ لا نلمسها؛ string ⇒ تُعيَّن؛ null/"" ⇒ تُزال.
+      if (v.image !== undefined) {
+        await tx.delete(productImages).where(eq(productImages.variantId, variantId));
+        const img = (v.image ?? "").trim();
+        if (img) await tx.insert(productImages).values({ productId: input.productId, variantId, url: img, isPrimary: false, sortOrder: 0 });
+      }
     }
 
     return { productId: input.productId, added };

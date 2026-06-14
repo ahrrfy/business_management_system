@@ -2,9 +2,10 @@
  * variantBits.tsx — قطع عرض صغيرة لشاشة «إضافة منتج بمتغيّرات».
  * كلها رقيقة وتعتمد منطق `lib/variants.ts` النقيّ المُختبَر.
  */
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
 import { code128Svg } from "@/lib/printing/barcode";
+import { compressImageDataUrl } from "@/components/form/ImageUploader";
 import { COLOR_HEX, marginPercent, toArabicDigits } from "@/lib/variants";
 
 /* ── ColorDot — نقطة لون من خريطة الألوان ─────────────── */
@@ -164,6 +165,68 @@ export function ChipInput({
             ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/* ── ImageSlot — صورة مستقلّة لمتغيّر (لون) مع ضغط قبل التخزين ───── */
+export function ImageSlot({
+  value,
+  onChange,
+  label = "صورة هذا اللون",
+  size = 88,
+}: {
+  value: string | null;
+  onChange: (v: string | null) => void;
+  label?: string;
+  size?: number;
+}) {
+  const ref = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function pick(e: ChangeEvent<HTMLInputElement>) {
+    const f = e.target.files?.[0];
+    if (f) {
+      setBusy(true);
+      try {
+        const raw = await new Promise<string>((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(String(r.result || ""));
+          r.onerror = () => rej(r.error);
+          r.readAsDataURL(f);
+        });
+        // ضغط قبل التخزين (نفس مسار صور المنتج) — علاج «قيمة أطول من المسموح».
+        const { dataUrl } = await compressImageDataUrl(raw);
+        onChange(dataUrl);
+      } finally {
+        setBusy(false);
+      }
+    }
+    if (ref.current) ref.current.value = "";
+  }
+  return (
+    <div className="flex items-center gap-3">
+      <div
+        onClick={() => ref.current?.click()}
+        className="relative shrink-0 rounded-lg border overflow-hidden cursor-pointer hover:opacity-90 flex items-center justify-center bg-muted/30"
+        style={{ width: size, height: size }}
+      >
+        {value ? (
+          <img src={value} alt="" className="w-full h-full object-cover" />
+        ) : (
+          <span className="font-mono text-[9px] text-muted-foreground">+ صورة</span>
+        )}
+      </div>
+      <div className="text-xs text-muted-foreground">
+        <div>{label}</div>
+        {busy ? (
+          <span className="text-primary">جارٍ الضغط…</span>
+        ) : value ? (
+          <button type="button" onClick={() => onChange(null)} className="text-destructive hover:underline mt-1">إزالة</button>
+        ) : (
+          <button type="button" onClick={() => ref.current?.click()} className="text-primary hover:underline mt-1">رفع صورة</button>
+        )}
+      </div>
+      <input ref={ref} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pick} />
     </div>
   );
 }

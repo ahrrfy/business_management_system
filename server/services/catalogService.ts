@@ -446,6 +446,8 @@ export interface CreateProductInput {
     reorderPoint?: number;
     isActive?: boolean;
     openingStockByBranch?: Array<{ branchId: number; qty: number }>;
+    // product-variants: صورة مستقلّة لهذا اللون (data URL) — تُخزَّن في productImages بـvariantId.
+    image?: string | null;
     units: Array<{
       unitName: string;
       conversionFactor: string;
@@ -795,6 +797,12 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
             createdBy: actor.userId,
           });
         }
+      }
+
+      // product-variants: صورة هذا اللون — تُخزَّن في productImages موسومة بـvariantId.
+      const vImage = (v.image ?? "").trim();
+      if (vImage) {
+        await tx.insert(productImages).values({ productId, variantId, url: vImage, isPrimary: false, sortOrder: 0 });
       }
     }
 

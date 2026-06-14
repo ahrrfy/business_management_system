@@ -132,7 +132,7 @@ export default function ProductEdit() {
         costPrice: override ? v.costPrice : "",
         retail: override ? v.baseRetail : "",
         isActive: v.isActive,
-        image: null,
+        image: v.image,
       };
     });
     setVariants(rows);
@@ -329,6 +329,7 @@ export default function ProductEdit() {
           minStock: clampInt(v.minStock),
           reorderPoint: clampInt(v.reorderPoint),
           isActive: v.isActive,
+          image: v.image, // string ⇒ تُعيَّن، null ⇒ تُزال (يُعاد التوفيق دائماً)
           unitBarcodes,
         };
       }),

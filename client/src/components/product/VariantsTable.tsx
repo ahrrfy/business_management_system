@@ -17,7 +17,7 @@ import {
   type ClientUnit,
   type ClientVariant,
 } from "@/lib/variants";
-import { ColorDot, Field, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
+import { ColorDot, Field, ImageSlot, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
 
 interface Branch {
   id: number;
@@ -356,6 +356,12 @@ function VariantRow({
                 ) : (
                   <p className="text-xs text-muted-foreground">يتبع التسعير المشترك في قالب الوحدات.</p>
                 )}
+              </div>
+
+              {/* صورة هذا اللون (مستقلّة عن صور المنتج العامّة) */}
+              <div className="border-t pt-3">
+                <p className="text-[11px] font-semibold text-muted-foreground mb-2">صورة هذا اللون</p>
+                <ImageSlot value={v.image} onChange={(img) => patch({ image: img })} />
               </div>
             </div>
           </td>

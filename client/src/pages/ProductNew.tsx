@@ -271,6 +271,7 @@ export default function ProductNew() {
           minStock: clampInt(v.minStock),
           reorderPoint: clampInt(v.reorderPoint),
           isActive: v.isActive,
+          image: v.image || undefined,
           openingStockByBranch: branches
             .map((b) => ({ branchId: b.id, qty: clampInt(v.stockByBranch[b.id] || "0") }))
             .filter((x) => x.qty > 0),

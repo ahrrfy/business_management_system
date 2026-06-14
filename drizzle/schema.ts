@@ -768,6 +768,8 @@ export const productImages = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id, { onDelete: "cascade" }),
+    // product-variants: صورة لكل لون. NULL = صورة على مستوى المنتج (السلوك القديم)؛ قيمة = صورة هذا المتغيّر.
+    variantId: bigint("variantId", { mode: "number" }).references(() => productVariants.id, { onDelete: "cascade" }),
     // import-integration: MEDIUMTEXT (~16MB) — TEXT (64KB) كان يكسر data URLs للصور بـ«قيمة أطول من المسموح».
     url: mediumtext("url").notNull(),
     isPrimary: boolean("isPrimary").default(false).notNull(),
@@ -776,6 +778,7 @@ export const productImages = mysqlTable(
   },
   (table) => ({
     prodIdx: index("idx_pimg_product").on(table.productId),
+    variantIdx: index("idx_pimg_variant").on(table.variantId),
   })
 );
 
