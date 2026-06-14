@@ -85,6 +85,12 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/hr/employees", label: "الموظفون", managerOnly: true },
       { href: "/hr/employees/new", label: "موظف جديد", managerOnly: true },
+      { href: "/hr/attendance", label: "الحضور والدوام", managerOnly: true },
+      { href: "/hr/payroll", label: "الرواتب", managerOnly: true },
+      { href: "/hr/leaves", label: "الإجازات", managerOnly: true },
+      { href: "/hr/promotions", label: "الترقيات وإنهاء الخدمات", managerOnly: true },
+      { href: "/hr/recruitment", label: "التوظيف والتقديم", managerOnly: true },
+      { href: "/hr/devices", label: "أجهزة البصمة", managerOnly: true },
     ],
   },
   {

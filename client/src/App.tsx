@@ -59,6 +59,13 @@ import AssetEdit from "@/pages/AssetEdit";
 import Employees from "@/pages/Employees";
 import EmployeeNew from "@/pages/EmployeeNew";
 import EmployeeDetail from "@/pages/EmployeeDetail";
+import Attendance from "@/pages/Attendance";
+import Payroll from "@/pages/Payroll";
+import Leaves from "@/pages/Leaves";
+import Recruitment from "@/pages/Recruitment";
+import HrDevices from "@/pages/HrDevices";
+import Promotions from "@/pages/Promotions";
+import JobApply from "@/pages/JobApply";
 import Shifts from "@/pages/Shifts";
 import Users from "@/pages/Users";
 import UserNew from "@/pages/UserNew";
@@ -124,6 +131,8 @@ export default function App() {
       <Route path="/kiosk" component={Kiosk} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
+      {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
+      <Route path="/apply" component={JobApply} />
       <Route path="/"><Shell><Dashboard /></Shell></Route>
       <Route path="/products"><Shell><Products /></Shell></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
@@ -173,6 +182,12 @@ export default function App() {
       <Route path="/hr/employees/new"><Shell><EmployeeNew /></Shell></Route>
       <Route path="/hr/employees/:id/edit"><Shell><EmployeeNew /></Shell></Route>
       <Route path="/hr/employees/:id"><Shell><EmployeeDetail /></Shell></Route>
+      <Route path="/hr/attendance"><Shell><Attendance /></Shell></Route>
+      <Route path="/hr/payroll"><Shell><Payroll /></Shell></Route>
+      <Route path="/hr/leaves"><Shell><Leaves /></Shell></Route>
+      <Route path="/hr/recruitment"><Shell><Recruitment /></Shell></Route>
+      <Route path="/hr/devices"><Shell><HrDevices /></Shell></Route>
+      <Route path="/hr/promotions"><Shell><Promotions /></Shell></Route>
       <Route path="/expenses"><Shell><Expenses /></Shell></Route>
       <Route path="/expenses/new"><Shell><ExpenseNew /></Shell></Route>
       <Route path="/vouchers"><Shell><Vouchers /></Shell></Route>

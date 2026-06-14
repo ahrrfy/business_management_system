@@ -1,0 +1,1 @@
+ALTER TABLE `attendance` ADD CONSTRAINT `uq_att_employee_date` UNIQUE(`employeeId`,`attendanceDate`);

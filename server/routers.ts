@@ -26,6 +26,12 @@ import { kioskRouter } from "./routers/kioskRouter";
 import { productionRouter } from "./routers/productionRouter";
 import { assetsRouter } from "./routers/assetsRouter";
 import { employeeRouter } from "./routers/employeeRouter";
+import { attendanceRouter } from "./routers/attendanceRouter";
+import { payrollRouter } from "./routers/payrollRouter";
+import { leaveRouter } from "./routers/leaveRouter";
+import { recruitmentRouter } from "./routers/recruitmentRouter";
+import { hrDeviceRouter } from "./routers/hrDeviceRouter";
+import { promotionRouter } from "./routers/promotionRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -58,6 +64,12 @@ export const appRouter = router({
   production: productionRouter,
   assets: assetsRouter,
   employees: employeeRouter,
+  attendance: attendanceRouter,
+  payroll: payrollRouter,
+  leaves: leaveRouter,
+  recruitment: recruitmentRouter,
+  hrDevices: hrDeviceRouter,
+  promotions: promotionRouter,
 });
 
 export type AppRouter = typeof appRouter;

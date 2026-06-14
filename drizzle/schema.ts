@@ -964,16 +964,24 @@ export const attendance = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
-    attendanceDate: date("attendanceDate").notNull(),
+    attendanceDate: date("attendanceDate", { mode: "string" }).notNull(),
     checkIn: timestamp("checkIn"),
     checkOut: timestamp("checkOut"),
     status: mysqlEnum("attendanceStatus", ["PRESENT", "ABSENT", "LATE", "LEAVE"]).notNull(),
     notes: text("notes"),
+    // HR — نظام الساعات: ساعات اليوم + سعر الساعة (لقطة وقت التسجيل) + الأجر المحسوب + مصدر التسجيل.
+    hours: decimal("hours", { precision: 6, scale: 2 }),
+    hourlyRate: decimal("hourlyRate", { precision: 15, scale: 2 }),
+    amount: decimal("amount", { precision: 15, scale: 2 }),
+    source: varchar("source", { length: 20 }).default("fingerprint"), // fingerprint | manual
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     employeeIdx: index("idx_att_employee").on(table.employeeId),
     dateIdx: index("idx_att_date").on(table.attendanceDate),
+    // مفتاح فريد ليوم/موظف: يضمن سجلّ حضور واحد لكل (موظف، تاريخ) فيمنع ازدواج
+    // الصفوف الذي يضاعف ساعات/مبالغ مسيّر الرواتب (تكامل مالي). يدعم UPSERT الخدمة.
+    employeeDateUq: unique("uq_att_employee_date").on(table.employeeId, table.attendanceDate),
   })
 );
 
@@ -1550,3 +1558,175 @@ export const assetDocuments = mysqlTable(
 );
 export type AssetDocument = typeof assetDocuments.$inferSelect;
 export type InsertAssetDocument = typeof assetDocuments.$inferInsert;
+
+/* ============================ الموارد البشرية — الرواتب/الإجازات/التوظيف/البصمة/الترقيات ============================ */
+
+/* مسيّر الرواتب الشهري (مسودة → معتمد → مدفوع). عند «الدفع» تُرحَّل قيود مصروف رواتب للدفتر (خزينة، لا وردية). */
+export const payrollRuns = mysqlTable(
+  "payrollRuns",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    period: varchar("period", { length: 7 }).notNull(), // YYYY-MM
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    status: mysqlEnum("payrollStatus", ["draft", "approved", "paid"]).default("draft").notNull(),
+    employeeCount: int("employeeCount").default(0).notNull(),
+    totalGross: decimal("totalGross", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalOvertime: decimal("totalOvertime", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalDeductions: decimal("totalDeductions", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalNet: decimal("totalNet", { precision: 15, scale: 2 }).default("0").notNull(),
+    notes: text("notes"),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    approvedAt: timestamp("approvedAt"),
+    paidAt: timestamp("paidAt"),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    periodUq: unique("uq_payroll_period").on(t.period),
+    statusIdx: index("idx_payroll_status").on(t.status),
+  })
+);
+export type PayrollRun = typeof payrollRuns.$inferSelect;
+export type InsertPayrollRun = typeof payrollRuns.$inferInsert;
+
+/* بند مسيّر لكل موظف (لقطة الأجر وقت توليد المسيّر). */
+export const payrollItems = mysqlTable(
+  "payrollItems",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    runId: bigint("runId", { mode: "number" }).notNull().references(() => payrollRuns.id),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    payType: varchar("payType", { length: 10 }).notNull(), // monthly | hourly
+    hours: decimal("hours", { precision: 8, scale: 2 }),
+    gross: decimal("gross", { precision: 15, scale: 2 }).default("0").notNull(),
+    allowances: decimal("allowances", { precision: 15, scale: 2 }).default("0").notNull(),
+    overtime: decimal("overtime", { precision: 15, scale: 2 }).default("0").notNull(),
+    deductions: decimal("deductions", { precision: 15, scale: 2 }).default("0").notNull(),
+    net: decimal("net", { precision: 15, scale: 2 }).default("0").notNull(),
+    note: varchar("note", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    runIdx: index("idx_payitem_run").on(t.runId),
+    empIdx: index("idx_payitem_emp").on(t.employeeId),
+  })
+);
+export type PayrollItem = typeof payrollItems.$inferSelect;
+export type InsertPayrollItem = typeof payrollItems.$inferInsert;
+
+/* طلبات الإجازات (تخصم من رصيد الموظف عند الموافقة على المدفوعة منها). */
+export const leaveRequests = mysqlTable(
+  "leaveRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    leaveType: varchar("leaveType", { length: 30 }).notNull(), // سنوية | مرضية | أمومة | بدون راتب
+    paid: boolean("paid").default(true).notNull(),
+    fromDate: date("fromDate", { mode: "string" }).notNull(),
+    toDate: date("toDate", { mode: "string" }).notNull(),
+    days: int("days").notNull(),
+    status: mysqlEnum("leaveStatus", ["pending", "approved", "rejected"]).default("pending").notNull(),
+    reason: text("reason"),
+    requestedAt: timestamp("requestedAt").defaultNow().notNull(),
+    decidedBy: int("decidedBy").references(() => users.id),
+    decidedAt: timestamp("decidedAt"),
+  },
+  (t) => ({
+    empIdx: index("idx_leave_emp").on(t.employeeId),
+    statusIdx: index("idx_leave_status").on(t.status),
+  })
+);
+export type LeaveRequest = typeof leaveRequests.$inferSelect;
+export type InsertLeaveRequest = typeof leaveRequests.$inferInsert;
+
+/* المتقدّمون للوظائف (رابط خارجي عام + استمارة ورقية تُدخَل يدوياً) + مسار مراحل. */
+export const jobApplicants = mysqlTable(
+  "jobApplicants",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 200 }).notNull(),
+    jobTitle: varchar("jobTitle", { length: 150 }),
+    source: varchar("source", { length: 20 }).default("external").notNull(), // external | paper | archive
+    stage: mysqlEnum("applicantStage", ["new", "review", "interview", "accepted", "rejected", "archived"]).default("new").notNull(),
+    appliedDate: date("appliedDate", { mode: "string" }),
+    phone: varchar("phone", { length: 20 }),
+    email: varchar("email", { length: 120 }),
+    experience: varchar("experience", { length: 120 }),
+    education: varchar("education", { length: 200 }),
+    rating: int("rating").default(0),
+    notes: text("notes"),
+    cvFileKey: varchar("cvFileKey", { length: 512 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({ stageIdx: index("idx_applicant_stage").on(t.stage) })
+);
+export type JobApplicant = typeof jobApplicants.$inferSelect;
+export type InsertJobApplicant = typeof jobApplicants.$inferInsert;
+
+/* أجهزة البصمة (الموارد البشرية) + شاشة الهجرة من المزوّد المدفوع إلى خادم الرؤية. */
+export const hrFingerprintDevices = mysqlTable(
+  "hrFingerprintDevices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 200 }).notNull(),
+    model: varchar("model", { length: 120 }),
+    location: varchar("location", { length: 200 }),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    deviceCode: varchar("deviceCode", { length: 60 }),
+    ip: varchar("ip", { length: 64 }),
+    port: int("port"),
+    /** الخادم الحالي الذي يرفع له الجهاز (المزوّد المدفوع قبل الهجرة، خادم الرؤية بعدها). */
+    serverHost: varchar("serverHost", { length: 120 }),
+    serverPort: int("serverPort"),
+    migrated: boolean("migrated").default(false).notNull(),
+    status: varchar("status", { length: 12 }).default("offline"), // online | offline
+    usersCount: int("usersCount").default(0),
+    recordsCount: int("recordsCount").default(0),
+    firmware: varchar("firmware", { length: 60 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({ migratedIdx: index("idx_fpdev_migrated").on(t.migrated) })
+);
+export type HrFingerprintDevice = typeof hrFingerprintDevices.$inferSelect;
+export type InsertHrFingerprintDevice = typeof hrFingerprintDevices.$inferInsert;
+
+/* الترقيات (اعتمادها يحدّث مسمّى/راتب الموظف). */
+export const employeePromotions = mysqlTable(
+  "employeePromotions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    fromTitle: varchar("fromTitle", { length: 150 }),
+    toTitle: varchar("toTitle", { length: 150 }).notNull(),
+    fromSalary: decimal("fromSalary", { precision: 15, scale: 2 }),
+    toSalary: decimal("toSalary", { precision: 15, scale: 2 }),
+    effectiveDate: date("effectiveDate", { mode: "string" }).notNull(),
+    reason: varchar("reason", { length: 255 }),
+    status: mysqlEnum("promotionStatus", ["pending", "approved"]).default("pending").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    approvedAt: timestamp("approvedAt"),
+    approvedBy: int("approvedBy").references(() => users.id),
+  },
+  (t) => ({ empIdx: index("idx_promo_emp").on(t.employeeId) })
+);
+export type EmployeePromotion = typeof employeePromotions.$inferSelect;
+export type InsertEmployeePromotion = typeof employeePromotions.$inferInsert;
+
+/* إنهاء الخدمات (إكماله يضع الموظف «منتهي الخدمة» + تاريخ + تسوية). */
+export const employeeTerminations = mysqlTable(
+  "employeeTerminations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    terminationType: varchar("terminationType", { length: 30 }).notNull(), // انتهاء عقد | استقالة | فصل
+    lastDay: date("lastDay", { mode: "string" }).notNull(),
+    settlement: decimal("settlement", { precision: 15, scale: 2 }).default("0").notNull(),
+    reason: varchar("reason", { length: 255 }),
+    status: mysqlEnum("terminationStatus", ["pending", "completed"]).default("pending").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({ empIdx: index("idx_term_emp").on(t.employeeId) })
+);
+export type EmployeeTermination = typeof employeeTerminations.$inferSelect;
+export type InsertEmployeeTermination = typeof employeeTerminations.$inferInsert;

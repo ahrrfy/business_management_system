@@ -50,6 +50,20 @@
       "when": 1781434127309,
       "tag": "0006_crazy_paibok",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1781438273274,
+      "tag": "0007_outstanding_stature",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1781439500820,
+      "tag": "0008_damp_stepford_cuckoos",
+      "breakpoints": true
     }
   ]
 }

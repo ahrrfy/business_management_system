@@ -170,6 +170,20 @@ async function startServer() {
     })
   );
 
+  // حدّ صارم على استمارة التقديم العامة (recruitment.submit) — إجراء بلا مصادقة على سطح عام
+  // ⇒ حماية من الإغراق/السبام على جدول المتقدّمين.
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.RECRUIT_RATE_LIMIT_MAX ?? 8),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("recruitment.submit"),
+      message: { error: "طلبات تقديم كثيرة، انتظر قليلاً ثم أعد المحاولة." },
+    })
+  );
+
   // حماية CSRF (طبقة دفاع ثانية فوق sameSite:"strict").
   app.use("/api/trpc", csrfGuard);
 

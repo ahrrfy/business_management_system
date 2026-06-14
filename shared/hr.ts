@@ -65,3 +65,54 @@ export function fullEmployeeName(e: {
     .filter(Boolean)
     .join(" ");
 }
+
+/* ===== الرواتب ===== */
+export const PAYROLL_STATUSES = [
+  { key: "draft", label: "مسودة" },
+  { key: "approved", label: "معتمد" },
+  { key: "paid", label: "مدفوع" },
+] as const;
+export type PayrollStatus = (typeof PAYROLL_STATUSES)[number]["key"];
+export const payrollStatusLabel = (k: string): string => PAYROLL_STATUSES.find((s) => s.key === k)?.label ?? k;
+
+/* ===== الإجازات ===== أنواعها وما إن كانت مدفوعة (السنوية/المرضية/الأمومة مدفوعة؛ بدون راتب غير مدفوعة) */
+export const LEAVE_TYPES = [
+  { key: "سنوية", paid: true },
+  { key: "مرضية", paid: true },
+  { key: "أمومة", paid: true },
+  { key: "بدون راتب", paid: false },
+] as const;
+export const leaveTypeIsPaid = (k: string): boolean => LEAVE_TYPES.find((t) => t.key === k)?.paid ?? true;
+export const LEAVE_STATUSES = [
+  { key: "pending", label: "قيد الموافقة" },
+  { key: "approved", label: "موافق عليها" },
+  { key: "rejected", label: "مرفوضة" },
+] as const;
+export type LeaveStatus = (typeof LEAVE_STATUSES)[number]["key"];
+export const leaveStatusLabel = (k: string): string => LEAVE_STATUSES.find((s) => s.key === k)?.label ?? k;
+
+/* ===== التوظيف ===== */
+export const APPLICANT_SOURCES = [
+  { key: "external", label: "رابط خارجي" },
+  { key: "paper", label: "استمارة ورقية" },
+  { key: "archive", label: "أرشيف" },
+] as const;
+export const APPLICANT_STAGES = [
+  { key: "new", label: "جديد" },
+  { key: "review", label: "قيد المراجعة" },
+  { key: "interview", label: "مقابلة" },
+  { key: "accepted", label: "مقبول" },
+  { key: "rejected", label: "مرفوض" },
+  { key: "archived", label: "أرشيف" },
+] as const;
+export type ApplicantStage = (typeof APPLICANT_STAGES)[number]["key"];
+export const applicantStageLabel = (k: string): string => APPLICANT_STAGES.find((s) => s.key === k)?.label ?? k;
+export const applicantSourceLabel = (k: string): string => APPLICANT_SOURCES.find((s) => s.key === k)?.label ?? k;
+export const APPLICANT_STAGE_KEYS = APPLICANT_STAGES.map((s) => s.key) as [ApplicantStage, ...ApplicantStage[]];
+
+/* ===== أجهزة البصمة — وجهة الهجرة (خادم الرؤية المملوك، بدل المزوّد المدفوع) ===== */
+export const HR_FINGERPRINT_TARGET = { host: "hr.alroya.iq", port: 7788, label: "خادم الرؤية العربية" } as const;
+
+/* ===== الترقيات/إنهاء الخدمات ===== */
+export const TERMINATION_TYPES = ["انتهاء عقد", "استقالة", "فصل", "تقاعد"] as const;
+
