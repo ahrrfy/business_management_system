@@ -19,10 +19,12 @@ import {
   variantStockTotal,
   type ClientUnit,
   type ClientVariant,
+  type ParsedVariantRow,
 } from "@/lib/variants";
 import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
+import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -90,6 +92,10 @@ export default function ProductNew() {
   const branchId = pickedBranch ?? branches[0]?.id ?? myBranch;
 
   const [error, setError] = useState("");
+
+  // نوافذ الاستيراد/الطباعة.
+  const [importOpen, setImportOpen] = useState(false);
+  const [printOpen, setPrintOpen] = useState(false);
 
   const composedName = useMemo(
     () => [productType, brand, modelName].map((s) => s.trim()).filter(Boolean).join(" "),
@@ -179,6 +185,32 @@ export default function ProductNew() {
         const ex = byKey.get(`${c}|${s}`);
         return ex ? { ...ex, sku: ex.sku || deriveSku(baseSku, c, s) } : makeVariant(c, s);
       });
+    });
+  }
+
+  function applyImport(rows: ParsedVariantRow[]) {
+    setVariants((prev) => {
+      const out = [...prev];
+      const idxByKey = new Map(out.map((v, i) => [`${v.color}|${v.size}`, i]));
+      for (const r of rows) {
+        const key = `${r.color}|${r.size}`;
+        const base = makeVariant(r.color, r.size);
+        if (r.sku) base.sku = r.sku;
+        r.barcodes.forEach((b, i) => {
+          const u = units[i];
+          if (u && b) base.unitBarcodes[u.id] = b;
+        });
+        base.stockByBranch = { [branchId]: r.stock || "0" };
+        const existingIdx = idxByKey.get(key);
+        if (existingIdx != null) {
+          // دمج غير متلف: نحفظ معرّف الصفّ الموجود ونحدّث قيمه.
+          out[existingIdx] = { ...out[existingIdx], ...base, id: out[existingIdx].id };
+        } else {
+          idxByKey.set(key, out.length);
+          out.push(base);
+        }
+      }
+      return out;
     });
   }
 
@@ -485,6 +517,8 @@ export default function ProductNew() {
                 ))}
               </select>
             </label>
+            <Button type="button" variant="outline" size="sm" onClick={() => setImportOpen(true)}>استيراد / لصق</Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setPrintOpen(true)} disabled={!variants.length}>طباعة الملصقات</Button>
             <Button type="button" variant="outline" size="sm" onClick={exportExcel} disabled={!variants.length}>تصدير Excel</Button>
           </div>
         </CardHeader>
@@ -563,6 +597,16 @@ export default function ProductNew() {
           </Button>
         </div>
       </div>
+
+      <ImportModal open={importOpen} onOpenChange={setImportOpen} units={units} onImport={applyImport} />
+      <LabelPrintModal
+        open={printOpen}
+        onOpenChange={setPrintOpen}
+        variants={variants}
+        units={units}
+        baseName={composedName}
+        baseRetail={baseRetail}
+      />
     </div>
   );
 }

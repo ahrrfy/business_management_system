@@ -3,6 +3,7 @@ import { asc } from "drizzle-orm";
 import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { assignBarcode, checkBarcodesTaken, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
+import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
 import { logAudit } from "../services/auditService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
 
@@ -33,6 +34,26 @@ const variantSchema = z.object({
     .array(z.object({ branchId: z.number().int().positive(), qty: z.number().int().min(0).max(100_000_000) }))
     .optional(),
   units: z.array(unitSchema).min(1),
+});
+
+// product-variants: تعديل منتج بنموذج المتغيّرات (قالب وحدات مشترك + باركود لكل متغيّر بالاسم).
+const updateUnitTemplateSchema = z.object({
+  unitName: z.string().min(1),
+  conversionFactor: z.string(),
+  isBaseUnit: z.boolean(),
+  prices: z.array(priceSchema),
+});
+const editVariantSchema = z.object({
+  id: z.number().int().positive().optional(),
+  sku: z.string().min(1),
+  color: z.string().nullish(),
+  size: z.string().nullish(),
+  costPrice: z.string(),
+  baseRetail: z.string().optional(),
+  minStock: z.number().int().min(0).max(1_000_000).optional(),
+  reorderPoint: z.number().int().min(0).max(1_000_000).optional(),
+  isActive: z.boolean().optional(),
+  unitBarcodes: z.record(z.string(), z.string()),
 });
 
 // v3-add-screens: صور المنتج.
@@ -177,6 +198,45 @@ export const catalogRouter = router({
           name: input.name,
           isActive: input.isActive,
           variants: input.variants.map((v) => ({ id: v.id, sku: v.sku, costPrice: v.costPrice })),
+        },
+      });
+      return res;
+    }),
+
+  // product-variants: قراءة منتج بكامل متغيّراته للتعديل (يكشف costPrice ⇒ مدير فأعلى).
+  getForVariantEdit: managerProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => getProductForVariantEdit(input.productId)),
+
+  // product-variants: تعديل منتج بنموذج المتغيّرات (تحديث/إضافة/تعطيل) ⇒ مدير فأعلى.
+  updateProductVariants: managerProcedure
+    .input(
+      z.object({
+        productId: z.number().int().positive(),
+        name: z.string().max(255).nullish(),
+        productType: z.string().max(80).nullish(),
+        brand: z.string().max(80).nullish(),
+        modelName: z.string().max(80).nullish(),
+        description: z.string().nullish(),
+        categoryId: z.number().int().positive().nullish(),
+        isCustomizable: z.boolean().optional(),
+        isActive: z.boolean().optional(),
+        unitTemplate: z.array(updateUnitTemplateSchema).min(1),
+        variants: z.array(editVariantSchema).min(1),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const before = await getProductForVariantEdit(input.productId);
+      const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "product.update",
+        entityType: "product",
+        entityId: input.productId,
+        oldValue: { name: before?.name, variants: before?.variants.map((v) => ({ id: v.id, sku: v.sku, isActive: v.isActive })) ?? [] },
+        newValue: {
+          name: input.name,
+          added: (res as { added?: number }).added ?? 0,
+          variants: input.variants.map((v) => ({ id: v.id ?? null, sku: v.sku, isActive: v.isActive })),
         },
       });
       return res;

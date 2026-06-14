@@ -44,6 +44,8 @@ export function VariantsTable({
   patchVariant,
   removeVariant,
   onScan,
+  stockEditable = true,
+  emptyHint = "لا متغيّرات بعد — استخدم المولّد أعلاه (اكتب لوناً ثم «ولّد المتغيّرات»).",
 }: {
   variants: ClientVariant[];
   units: ClientUnit[];
@@ -55,6 +57,9 @@ export function VariantsTable({
   patchVariant: (id: string, patch: Partial<ClientVariant>) => void;
   removeVariant: (id: string) => void;
   onScan: (variantId: string, unitId: number) => void;
+  /** في التعديل: المخزون قراءة فقط (يُدار عبر شاشات الجرد/الحركات). */
+  stockEditable?: boolean;
+  emptyHint?: string;
 }) {
   // عدّادات التكرار داخل النموذج (باركود + SKU) — مرّة لكل تغيّر بدل كل رسم.
   const { bcCount, skuCount } = useMemo(() => {
@@ -77,7 +82,7 @@ export function VariantsTable({
   if (variants.length === 0)
     return (
       <div className="rounded-lg border border-dashed bg-muted/20 py-10 text-center">
-        <p className="text-sm text-muted-foreground">لا متغيّرات بعد — استخدم المولّد أعلاه (اكتب لوناً ثم «ولّد المتغيّرات»).</p>
+        <p className="text-sm text-muted-foreground">{emptyHint}</p>
       </div>
     );
 
@@ -120,6 +125,7 @@ export function VariantsTable({
               patch={(patch) => patchVariant(v.id, patch)}
               remove={() => removeVariant(v.id)}
               onScan={(unitId) => onScan(v.id, unitId)}
+              stockEditable={stockEditable}
             />
           ))}
         </tbody>
@@ -141,6 +147,7 @@ function VariantRow({
   patch,
   remove,
   onScan,
+  stockEditable,
 }: {
   v: ClientVariant;
   idx: number;
@@ -154,6 +161,7 @@ function VariantRow({
   patch: (patch: Partial<ClientVariant>) => void;
   remove: () => void;
   onScan: (unitId: number) => void;
+  stockEditable: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const fullName = [baseName, v.color, v.size].filter(Boolean).join(" ");
@@ -204,11 +212,13 @@ function VariantRow({
         })}
         <td className="px-2 py-2">
           <Input
-            value={v.stockByBranch[branchId] || ""}
-            onChange={(e) => setStock(branchId, e.target.value)}
+            value={v.stockByBranch[branchId] || (stockEditable ? "" : "0")}
+            onChange={(e) => stockEditable && setStock(branchId, e.target.value)}
+            readOnly={!stockEditable}
+            title={stockEditable ? "" : "الرصيد الحالي — يُدار عبر شاشات الجرد/الحركات"}
             dir="ltr"
             inputMode="numeric"
-            className="h-8 text-xs w-16 text-center"
+            className={cn("h-8 text-xs w-16 text-center", !stockEditable && "bg-muted/40 text-muted-foreground cursor-default")}
             placeholder="0"
           />
         </td>
@@ -296,16 +306,19 @@ function VariantRow({
 
               {/* مخزون كل فرع + نقطة إعادة الطلب */}
               <div className="lg:col-span-2 border-t pt-3">
-                <p className="text-[11px] font-semibold text-muted-foreground mb-2">المخزون الافتتاحي لكل فرع</p>
+                <p className="text-[11px] font-semibold text-muted-foreground mb-2">
+                  {stockEditable ? "المخزون الافتتاحي لكل فرع" : "الرصيد الحالي لكل فرع (يُدار عبر الجرد/الحركات)"}
+                </p>
                 <div className="flex flex-wrap gap-3">
                   {branches.map((b) => (
                     <Field key={b.id} label={b.name}>
                       <Input
-                        value={v.stockByBranch[b.id] || ""}
-                        onChange={(e) => setStock(b.id, e.target.value)}
+                        value={v.stockByBranch[b.id] || (stockEditable ? "" : "0")}
+                        onChange={(e) => stockEditable && setStock(b.id, e.target.value)}
+                        readOnly={!stockEditable}
                         dir="ltr"
                         inputMode="numeric"
-                        className="h-8 text-xs w-24 text-center"
+                        className={cn("h-8 text-xs w-24 text-center", !stockEditable && "bg-muted/40 text-muted-foreground cursor-default")}
                         placeholder="0"
                       />
                     </Field>

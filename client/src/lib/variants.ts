@@ -112,6 +112,41 @@ export function variantStockTotal(stockByBranch: Record<number, string>): number
   return Object.values(stockByBranch || {}).reduce((sum, q) => sum + (parseInt(q, 10) || 0), 0);
 }
 
+/* ============================ استيراد/لصق (ذهاب-وإياب مع التصدير) ============================ */
+
+/** صفّ مُحلَّل من لصق Excel — بنفس ترتيب أعمدة التصدير (لون، قياس، SKU، باركود/وحدة…، مخزون). */
+export interface ParsedVariantRow {
+  color: string;
+  size: string;
+  sku: string;
+  /** باركود لكل وحدة، بطول عدد الوحدات في القالب. */
+  barcodes: string[];
+  stock: string;
+}
+
+/**
+ * يحلّل نصّاً ملصوقاً (صفوف بأسطر، أعمدة مفصولة بـTab أو فاصلة) إلى صفوف متغيّرات.
+ * الترتيب = ترتيب التصدير: اللون، القياس، SKU، ثم باركود لكل وحدة، ثم المخزون.
+ * يتجاهل الأسطر الفارغة وما لا لون له (دالة نقية قابلة للاختبار).
+ */
+export function parseVariantPaste(text: string, unitCount: number): ParsedVariantRow[] {
+  return text
+    .split("\n")
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const c = line.split(/\t|,/).map((x) => x.trim());
+      return {
+        color: c[0] || "",
+        size: c[1] || "",
+        sku: c[2] || "",
+        barcodes: Array.from({ length: unitCount }, (_, i) => c[3 + i] || ""),
+        stock: c[3 + unitCount] || "0",
+      };
+    })
+    .filter((r) => r.color);
+}
+
 /* ============================ خرائط الألوان ============================ */
 
 export const COLOR_HEX: Record<string, string> = {

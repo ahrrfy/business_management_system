@@ -10,6 +10,7 @@ import {
   toArabicDigits,
   onlyDigits,
   variantStockTotal,
+  parseVariantPaste,
 } from "./variants";
 
 describe("EAN-13", () => {
@@ -98,6 +99,28 @@ describe("marginPercent", () => {
   });
   it("يقبل سلاسل بفواصل/نصوص ويستخرج الرقم", () => {
     expect(marginPercent("150", "250 د.ع")).toEqual({ pct: 40, loss: false });
+  });
+});
+
+describe("parseVariantPaste", () => {
+  it("يحلّل صفوفاً مفصولة بـTab بترتيب التصدير (لون، قياس، SKU، باركود/وحدة…، مخزون)", () => {
+    // وحدتان ⇒ ٦ أعمدة: لون، قياس، SKU، باركود١، باركود٢، مخزون.
+    const text = "أزرق\tM\t\t6291041500244\t6291041511244\t24\nأخضر\tL\tGR-L\t6291041500268\t\t30";
+    const rows = parseVariantPaste(text, 2);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toEqual({ color: "أزرق", size: "M", sku: "", barcodes: ["6291041500244", "6291041511244"], stock: "24" });
+    expect(rows[1]).toEqual({ color: "أخضر", size: "L", sku: "GR-L", barcodes: ["6291041500268", ""], stock: "30" });
+  });
+
+  it("يتجاهل الأسطر الفارغة وما لا لون له", () => {
+    expect(parseVariantPaste("\n\n  \n", 1)).toEqual([]);
+    // صفّ بعمود لون فارغ (الفاصلة لا تُقتطع بـtrim) ⇒ يُسقَط.
+    expect(parseVariantPaste(",M,123", 1)).toEqual([]);
+  });
+
+  it("يقبل الفاصلة كفاصل أعمدة", () => {
+    const rows = parseVariantPaste("أحمر,S,RED-S,629,50", 1);
+    expect(rows[0]).toEqual({ color: "أحمر", size: "S", sku: "RED-S", barcodes: ["629"], stock: "50" });
   });
 });
 
