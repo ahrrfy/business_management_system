@@ -107,7 +107,7 @@ async function seed() {
       await db.insert(employees).values({
         firstName: e.firstName, lastName: e.lastName, email: e.email, phone: e.phone,
         position: e.position, department: e.department, salary: e.salary,
-        hireDate: new Date(e.hireDate), branchId: br ? Number(br.id) : null, isActive: true,
+        hireDate: e.hireDate, branchId: br ? Number(br.id) : null, isActive: true,
       });
       row = (await db.select().from(employees).where(eq(employees.email, e.email)).limit(1))[0];
     }

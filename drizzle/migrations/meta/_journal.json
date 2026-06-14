@@ -43,6 +43,13 @@
       "when": 1781426042554,
       "tag": "0005_little_eternals",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1781434127309,
+      "tag": "0006_crazy_paibok",
+      "breakpoints": true
     }
   ]
 }

@@ -907,15 +907,52 @@ export const employees = mysqlTable(
     phone: varchar("phone", { length: 20 }),
     position: varchar("position", { length: 100 }),
     department: varchar("department", { length: 100 }),
-    salary: decimal("salary", { precision: 15, scale: 2 }),
-    hireDate: date("hireDate"),
+    salary: decimal("salary", { precision: 15, scale: 2 }), // الراتب الأساس (لذوي الراتب الشهري)
+    hireDate: date("hireDate", { mode: "string" }),
     isActive: boolean("isActive").default(true),
+
+    // —— HR v1: تفاصيل الموظف الكاملة (كلها اختيارية — هجرة إضافية آمنة) ——
+    /** الاسم رباعي: firstName(الأول) + fatherName(الأب) + grandfatherName(الجد) + lastName(اللقب). */
+    fatherName: varchar("fatherName", { length: 100 }),
+    grandfatherName: varchar("grandfatherName", { length: 100 }),
+    /** المدير المباشر (مرجع لموظف آخر — بلا قيد FB لتجنّب دورة تعريف ذاتية؛ يُتحقَّق في الخدمة). */
+    managerId: bigint("managerId", { mode: "number" }),
+    /** طريقة الأجر: شهري (راتب أساس + بدلات) أو بالساعة (سعر ساعة لكل يوم). */
+    payType: mysqlEnum("payType", ["monthly", "hourly"]).default("monthly").notNull(),
+    allowances: decimal("allowances", { precision: 15, scale: 2 }).default("0"),
+    /** سعر الساعة لكل يوم لموظفي الساعة: {"الأحد":5000,...} (أجر اليوم = ساعات × سعر ذلك اليوم). */
+    dayRates: json("dayRates"),
+    /** حالة التوظيف (مستقلة عن isActive للحذف الناعم). */
+    employmentStatus: mysqlEnum("employmentStatus", ["active", "leave", "terminated"]).default("active").notNull(),
+    gender: varchar("gender", { length: 10 }),
+    birthDate: date("birthDate", { mode: "string" }),
+    maritalStatus: varchar("maritalStatus", { length: 20 }),
+    nationality: varchar("nationality", { length: 50 }),
+    governorate: varchar("governorate", { length: 80 }),
+    district: varchar("district", { length: 120 }),
+    addressLandmark: varchar("addressLandmark", { length: 255 }),
+    nationalId: varchar("nationalId", { length: 40 }),
+    emergencyContactName: varchar("emergencyContactName", { length: 150 }),
+    emergencyContactPhone: varchar("emergencyContactPhone", { length: 20 }),
+    /** لون شارة/أفاتار الموظف في الواجهة. */
+    colorTag: varchar("colorTag", { length: 20 }),
+    /** صورة الموظف (base64 مضغوط أو مفتاح — مثل صور المنتجات). */
+    photoUrl: mediumtext("photoUrl"),
+    /** المؤهلات الدراسية: [{degree,major,school,year,gpa}]. */
+    education: json("education"),
+    annualLeaveBalance: int("annualLeaveBalance").default(0),
+    sickLeaveBalance: int("sickLeaveBalance").default(0),
+    terminationDate: date("terminationDate", { mode: "string" }),
+    terminationReason: varchar("terminationReason", { length: 255 }),
+
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (table) => ({
     branchIdx: index("idx_emp_branch").on(table.branchId),
     activeIdx: index("idx_emp_active").on(table.isActive),
+    statusIdx: index("idx_emp_status").on(table.employmentStatus),
+    deptIdx: index("idx_emp_dept").on(table.department),
   })
 );
 

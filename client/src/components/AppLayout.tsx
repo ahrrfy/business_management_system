@@ -79,6 +79,15 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    key: "hr",
+    label: "الموارد البشرية",
+    icon: "💼",
+    items: [
+      { href: "/hr/employees", label: "الموظفون", managerOnly: true },
+      { href: "/hr/employees/new", label: "موظف جديد", managerOnly: true },
+    ],
+  },
+  {
     key: "treasury",
     label: "الخزينة والمدفوعات",
     icon: "💰",
