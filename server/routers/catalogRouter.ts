@@ -2,7 +2,7 @@ import { z } from "zod";
 import { asc } from "drizzle-orm";
 import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { assignBarcode, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
+import { assignBarcode, checkBarcodesTaken, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { logAudit } from "../services/auditService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
 
@@ -25,6 +25,13 @@ const variantSchema = z.object({
   // v3-add-screens.
   minStock: z.number().int().min(0).max(1_000_000).optional(),
   openingStock: z.number().int().min(0).optional(),
+  // product-variants: نقطة إعادة الطلب + الظهور المستقل لكل متغيّر (الأعمدة موجودة في المخطّط).
+  reorderPoint: z.number().int().min(0).max(1_000_000).optional(),
+  isActive: z.boolean().optional(),
+  // product-variants: رصيد افتتاحي مستقل لكل فرع (يحلّ محلّ openingStock أحاديّ الفرع حين يُمرَّر).
+  openingStockByBranch: z
+    .array(z.object({ branchId: z.number().int().positive(), qty: z.number().int().min(0).max(100_000_000) }))
+    .optional(),
   units: z.array(unitSchema).min(1),
 });
 
@@ -72,6 +79,13 @@ export const catalogRouter = router({
   byBarcode: protectedProcedure
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier }))
     .query(({ input }) => lookupByBarcode(input.barcode, input.branchId, input.tier)),
+
+  // product-variants: تحقّق مسبق من تكرار الباركود قبل الحفظ — `productUnits.barcode` فريد (UNIQUE)
+  // فالحفظ يفشل عند التكرار؛ هذا يُظهر تحذيراً لحظياً بأي منتج يحجز الباركود (بدل رحلة حفظ فاشلة).
+  // مدير فأعلى (شاشة الإضافة/التعديل manager) ولا يكشف تكلفة.
+  checkBarcodes: managerProcedure
+    .input(z.object({ codes: z.array(z.string().min(1)).max(2000) }))
+    .query(({ input }) => checkBarcodesTaken(input.codes)),
 
   // Purchase-side product search: carries COST (not a sell price). مدير فأعلى (يكشف التكلفة).
   forPurchase: managerProcedure
