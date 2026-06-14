@@ -6,7 +6,10 @@
  */
 import { confirm } from "@/lib/confirm";
 import { D, roundCashIQD } from "@/lib/money";
-import { printDoc, printReceipt, type ReceiptBrowserData } from "@/lib/printing/print";
+import {
+  printDoc, printReceipt, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
+  getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData,
+} from "@/lib/printing/print";
 import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -140,6 +143,8 @@ export default function PrintPOS() {
   const [mgrPwd, setMgrPwd] = useState("");
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  const [printerReady, setPrinterReady] = useState(isPaired());
+  const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
   const searchRef = useRef<HTMLInputElement>(null);
   // لقطة الإيصال تُلتقط لحظة الإرسال بقيم متّسقة مع ما يسجّله الخادم (نقد مقرّب) ⇒ لا إعادة حساب
   // من حالة لاحقة/سلة مُفرَّغة، ولا «باقي/آجل» وهميّ من فرق التقريب.
@@ -291,6 +296,38 @@ export default function PrintPOS() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cart, sale.isPending, receipt, creditPrompt, shifting, tab.method, tab.payInput, total]);
 
+  // ── الطابعة الحرارية (WebUSB) + جسر الخادم ──
+  const connectPrinter = async () => {
+    try { await pairPrinter(); setPrinterReady(true); }
+    catch (e: unknown) { setMessage({ kind: "err", text: (e as Error)?.message ?? "تعذّر ربط الطابعة" }); }
+  };
+
+  const testServerPrint = async () => {
+    const r = await serverPrintTest();
+    setMessage(r.ok
+      ? { kind: "ok", text: "أُرسلت تذكرة اختبار للطابعة عبر الخادم" }
+      : { kind: "err", text: r.error ?? "فشل اختبار الطباعة" });
+  };
+
+  // حالة جسر الطباعة على الخادم (إن ضُبط PRINT_TARGET ⇒ طباعة صامتة لأي طابعة، بلا WebUSB).
+  useEffect(() => {
+    getServerBridgeStatus().then(setBridge).catch(() => { /* تجاهل */ });
+  }, []);
+
+  // ربط تلقائي صامت بالطابعة الافتراضية: إن سبق ربطها (إذن WebUSB محفوظ للأصل) يُعاد
+  // الربط بلا نافذة اختيار عند فتح الشاشة، وكذلك عند توصيلها لاحقاً (حدث connect).
+  useEffect(() => {
+    if (!isWebUsbSupported()) return;
+    tryReconnectPrinter().then((ok) => { if (ok) setPrinterReady(true); }).catch(() => { /* تجاهل */ });
+    const usb = (navigator as unknown as { usb?: EventTarget }).usb;
+    if (!usb) return;
+    const onConnect = () => {
+      tryReconnectPrinter().then((ok) => { if (ok) setPrinterReady(true); }).catch(() => { /* تجاهل */ });
+    };
+    usb.addEventListener("connect", onConnect);
+    return () => usb.removeEventListener("connect", onConnect);
+  }, []);
+
   const toggleDark = () => document.documentElement.classList.toggle("dark");
 
   // ── شاشة فتح الوردية ──
@@ -321,7 +358,9 @@ export default function PrintPOS() {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
       <Header C={C} dark={dark} toggleDark={toggleDark} search={search} setSearch={setSearch} searchRef={searchRef}
-        me={me.data} shiftId={shift.id} lastInv={lastInv} onCloseShift={() => setShifting(true)} />
+        me={me.data} shiftId={shift.id} lastInv={lastInv} onCloseShift={() => setShifting(true)}
+        printerReady={printerReady} onConnectPrinter={connectPrinter}
+        bridgeEnabled={bridge.enabled} bridgeDesc={bridge.description} onTestPrint={testServerPrint} />
 
       {/* شريط الطلبات */}
       <div style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", background: C.bg, borderBottom: `1px solid ${C.border}`, flexShrink: 0, overflowX: "auto" }}>
@@ -374,10 +413,13 @@ export default function PrintPOS() {
 }
 
 // ─── Header ──────────────────────────────────────────────────────────────────
-function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId, lastInv, onCloseShift }: {
+function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId, lastInv, onCloseShift,
+  printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: {
   C: C; dark: boolean; toggleDark: () => void; search: string; setSearch: (s: string) => void;
   searchRef: React.RefObject<HTMLInputElement | null>; me: RouterOutputs["auth"]["me"] | undefined;
   shiftId: number; lastInv: { num: string; total: number } | null; onCloseShift: () => void;
+  printerReady: boolean; onConnectPrinter: () => void;
+  bridgeEnabled: boolean; bridgeDesc: string; onTestPrint: () => void;
 }) {
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 14px", height: 64, flexShrink: 0, background: C.card, borderBottom: `1px solid ${C.border}`, position: "relative", zIndex: 40 }}>
@@ -416,6 +458,21 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
           </div>
           <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, flexShrink: 0 }}>{me.name?.[0] ?? "?"}</div>
         </div>
+      )}
+      {/* جسر الطباعة على الخادم (طباعة صامتة) — يظهر حين يكون مفعّلاً؛ نقرة = تذكرة اختبار. */}
+      {bridgeEnabled && (
+        <button onClick={onTestPrint} title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
+          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 9, padding: "7px 11px", cursor: "pointer", fontSize: 13, color: C.success, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
+          🖨️🌐
+        </button>
+      )}
+      {/* الطابعة الحرارية (WebUSB) — ربط/تبديل الطابعة الافتراضية للإيصال الحراري. */}
+      {isWebUsbSupported() && (
+        <button onClick={onConnectPrinter} title={printerReady ? "الطابعة الافتراضية مربوطة (تلقائياً) — اضغط لتبديلها" : "اربط طابعة حرارية للفواتير (تُربط تلقائياً بعدها)"}
+          style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 9, padding: "7px 11px", cursor: "pointer", fontSize: 13, color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}
+          aria-label={printerReady ? "الطابعة مربوطة" : "ربط الطابعة الحرارية"}>
+          {printerReady ? "🖨️✓" : "🖨️"}
+        </button>
       )}
       <button onClick={onCloseShift} style={{ height: 42, padding: "0 13px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>⏻ إغلاق الوردية</button>
     </div>
