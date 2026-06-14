@@ -141,6 +141,12 @@ export default function PrintPOS() {
   const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const searchRef = useRef<HTMLInputElement>(null);
+  // لقطة الإيصال تُلتقط لحظة الإرسال بقيم متّسقة مع ما يسجّله الخادم (نقد مقرّب) ⇒ لا إعادة حساب
+  // من حالة لاحقة/سلة مُفرَّغة، ولا «باقي/آجل» وهميّ من فرق التقريب.
+  const pendingRef = useRef<{
+    lines: Receipt["lines"]; customerName?: string; method: PaymentMethod;
+    cashTotal: number; received: number; change: number; credit: number; isCredit: boolean;
+  } | null>(null);
 
   const effectiveCatId = catId ?? cats[0]?.id ?? null;
   const selectedCustomer = useMemo(
@@ -191,26 +197,22 @@ export default function PrintPOS() {
   const numPress = (k: string) => setPayInput((prev) => (k === "⌫" ? prev.slice(0, -1) : prev + k));
 
   const sale = trpc.printPos.createSale.useMutation({
-    onSuccess: async (r, vars) => {
-      const method = (vars.payment?.method ?? "CASH") as PaymentMethod;
-      const cashTotal = method === "CASH" ? riqd(total) : total;
-      const paidNum = Number(vars.payment?.amount ?? cashTotal);
-      const isCredit = paidNum > 0 && paidNum < cashTotal && vars.customerId != null;
-      const received = isCredit ? paidNum : cashTotal;
-      const change = isCredit ? 0 : Math.max(0, paidNum - cashTotal);
-      const credit = isCredit ? cashTotal - paidNum : 0;
+    onSuccess: async (r) => {
+      // الإيصال من اللقطة الملتقطة لحظة الإرسال (متّسقة مع الخادم) لا من إعادة حساب على حالة لاحقة.
+      const p = pendingRef.current;
       const now = new Date();
       const rec: Receipt = {
         num: r.invoiceNumber, invoiceId: r.invoiceId,
         date: now.toLocaleString("ar-IQ-u-nu-latn"),
         printDate: now.toLocaleDateString("en-GB"),
         printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
-        cashier: me.data?.name ?? undefined, customer: selectedCustomer?.name,
-        lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
-        total: cashTotal, received, change, credit, method: METHOD_LABEL[method], isCredit,
+        cashier: me.data?.name ?? undefined, customer: p?.customerName,
+        lines: p?.lines ?? [],
+        total: p?.cashTotal ?? 0, received: p?.received ?? 0, change: p?.change ?? 0,
+        credit: p?.credit ?? 0, method: METHOD_LABEL[p?.method ?? "CASH"], isCredit: p?.isCredit ?? false,
       };
       setReceipt(rec);
-      setLastInv({ num: r.invoiceNumber, total: cashTotal });
+      setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
       setMessage({ kind: "ok", text: `تمّ البيع ✓ فاتورة ${r.invoiceNumber}` });
       setCart([]); setPayInput(""); patch({ selUid: null });
       setClientRequestId(crypto.randomUUID());
@@ -237,6 +239,17 @@ export default function PrintPOS() {
     }
     const cashFull = method === "CASH" && !isCredit;
     const amount = isCredit ? paid.toFixed(2) : total.toFixed(2);
+    // النقد المُسلَّم فعلاً: للدفع الكامل بلا إدخال = الإجمالي المقرّب (لا باقي)؛ ومع إدخالٍ صريح = المُدخَل.
+    const tendered = forceCashFull ? cashTotal : (tab.payInput === "" ? cashTotal : paid);
+    pendingRef.current = {
+      lines: cart.map((c) => ({ name: c.svc.productName, unit: c.svc.unitName, qty: c.qty, price: c.price, total: c.price * c.qty })),
+      customerName: selectedCustomer?.name,
+      method, cashTotal,
+      received: isCredit ? paid : cashTotal, // ما يسجّله الخادم paidAmount (نقد كامل = المقرّب)
+      change: isCredit ? 0 : Math.max(0, tendered - cashTotal),
+      credit: isCredit ? cashTotal - paid : 0,
+      isCredit,
+    };
     sale.mutate({
       branchId, shiftId: shift.id, clientRequestId,
       customerId: tab.customerId ?? undefined, priceTier: "RETAIL",
@@ -576,7 +589,9 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numP
   const credit = cashTotal - paid;
   const isChange = paid > 0 && paid >= cashTotal;
   const isOwing = paid > 0 && paid < cashTotal;
-  const canPay = cartLen > 0 && (payInput === "" || paid >= cashTotal) && (!isOwing || customerId != null);
+  // حارس: لا بيع بسطرٍ بسعر صفر (خدمة سعرها يدوي لم يُدخَل) — يمنع فاتورة مجانية بالخطأ.
+  const hasZeroLine = cart.some((c) => c.price <= 0);
+  const canPay = cartLen > 0 && !hasZeroLine && (payInput === "" || paid >= cashTotal) && (!isOwing || customerId != null);
 
   const Key = ({ k, del }: { k: string; del?: boolean }) => (
     <button onClick={() => numPress(k)} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.95)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")} onMouseLeave={(e) => (e.currentTarget.style.transform = "")}
@@ -618,13 +633,14 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numP
         </div>
         <div style={{ minHeight: 24, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           {!cartLen && <span style={{ fontSize: 12.5, color: C.mutedFg }}>اختر خدمة للبدء</span>}
-          {cartLen > 0 && !payInput && <span style={{ fontSize: 12, color: C.mutedFg }}>{method === "CASH" && cashTotal !== total ? `نقداً يُقرَّب إلى ${fmt(cashTotal)} د.ع` : "أدخل المبلغ أو «إتمام» للدفع الكامل"}</span>}
+          {cartLen > 0 && hasZeroLine && <span style={{ fontSize: 12, color: C.amber, fontWeight: 700 }}>أدخل سعراً للخدمات ذات السعر اليدوي (✎)</span>}
+          {cartLen > 0 && !hasZeroLine && !payInput && <span style={{ fontSize: 12, color: C.mutedFg }}>{method === "CASH" && cashTotal !== total ? `نقداً يُقرَّب إلى ${fmt(cashTotal)} د.ع` : "أدخل المبلغ أو «إتمام» للدفع الكامل"}</span>}
           {cartLen > 0 && !!payInput && isChange && (<><span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span><span style={{ fontSize: 21, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span></>)}
           {cartLen > 0 && !!payInput && isOwing && (<><span style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>المتبقي (آجل)</span><span style={{ fontSize: 21, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12, fontWeight: 500 }}>د.ع</span></span></>)}
         </div>
         <div style={{ display: "flex", gap: 7 }}>
-          <button disabled={!cartLen || isPending} onClick={onQuickPay}
-            style={{ width: 116, height: 52, background: cartLen && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: cartLen && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: cartLen && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
+          <button disabled={!cartLen || hasZeroLine || isPending} onClick={onQuickPay}
+            style={{ width: 116, height: 52, background: cartLen && !hasZeroLine && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: cartLen && !hasZeroLine && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: cartLen && !hasZeroLine && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
             <span style={{ fontSize: 17 }}>⚡</span>دفع سريع
           </button>
           <button disabled={!canPay || isPending} onClick={onPay}

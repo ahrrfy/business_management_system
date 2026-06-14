@@ -122,7 +122,14 @@ async function main() {
     const exVar = (await db.select().from(productVariants).where(eq(productVariants.sku, s.sku)).limit(1))[0];
     if (exVar) {
       variantId = Number(exVar.id);
-      const exUnit = (await db.select().from(productUnits).where(eq(productUnits.variantId, variantId)).limit(1))[0];
+      let exUnit = (await db.select().from(productUnits).where(eq(productUnits.variantId, variantId)).limit(1))[0];
+      if (!exUnit) {
+        // إصلاح ذاتي لمتغيّر يتيم من تشغيل جزئي سابق: أعد إنشاء وحدة الأساس + سعر RETAIL.
+        const ur = await db.insert(productUnits).values({ variantId, unitName: s.unit, conversionFactor: "1", isBaseUnit: true });
+        const newUnitId = insertId(ur);
+        await db.insert(productPrices).values({ productUnitId: newUnitId, priceTier: "RETAIL", price: s.price });
+        exUnit = (await db.select().from(productUnits).where(eq(productUnits.id, newUnitId)).limit(1))[0];
+      }
       productUnitId = Number(exUnit.id);
     } else {
       const pr = await db.insert(products).values({ name: s.name, productType: PRINT_SERVICE_TYPE, categoryId: s.categoryId });
