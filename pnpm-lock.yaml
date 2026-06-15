@@ -312,6 +312,9 @@ importers:
       vitest:
         specifier: ^2.1.4
         version: 2.1.9(@types/node@24.13.1)(lightningcss@1.32.0)(terser@5.48.0)
+      workbox-window:
+        specifier: ^7.4.1
+        version: 7.4.1
 
 packages:
 
