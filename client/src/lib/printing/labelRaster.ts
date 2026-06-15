@@ -110,14 +110,24 @@ export async function labelToCanvas(
   const barH = Math.max(36, H - y - bottomH - barTextH - PAD);
   try {
     const target = W - PAD * 2;
-    // قِس عرض وحدة واحدة ثم اختر أكبر moduleWidth صحيح يلائم العرض ⇒ قضبان حادّة بلا تحجيم.
-    const probe = code128Svg(item.barcode, { moduleWidth: 1, height: barH, showText: false });
-    const mw = Math.max(1, Math.floor(target / probe.widthPx));
+    // اختر أكبر moduleWidth صحيح يلائم العرض **فعلياً**: عرض Code128 ليس خطّياً مع moduleWidth
+    // (منطقة الهدوء ثابتة)، فنزيد mw ما دام العرض الفعلي ≤ المتاح بدل قسمةٍ تقديرية.
+    let mw = 1;
+    while (mw < 6 && code128Svg(item.barcode, { moduleWidth: mw + 1, height: barH, showText: false }).widthPx <= target) {
+      mw++;
+    }
     const bc = code128Svg(item.barcode, { moduleWidth: mw, height: barH, showText: false });
     const img = await loadImage(svgToDataUrl(bc.svg));
     if (img) {
-      const drawW = Math.min(bc.widthPx, target);
+      // **لا نُصغّر القضبان دون 1 بكسل/وحدة** (تصير غير قابلة للمسح): نرسمها بعرضها الطبيعي
+      // ما دام ضمن عرض الملصق (نستعمل العرض الكامل لا target فقط)، ونُطفئ التنعيم لحدّة القضبان.
+      // التصغير القسري ملاذٌ أخير فقط حين يتجاوز الباركود عرض الملصق كلّه.
+      const drawW = Math.min(bc.widthPx, W - 2);
+      const sm = ctx as unknown as { imageSmoothingEnabled: boolean };
+      const prevSmooth = sm.imageSmoothingEnabled;
+      sm.imageSmoothingEnabled = false;
       ctx.drawImage(img, (W - drawW) / 2, y, drawW, barH);
+      sm.imageSmoothingEnabled = prevSmooth;
     }
     y += barH + 2;
     ctx.font = "600 12px Cairo, monospace";
@@ -130,12 +140,22 @@ export async function labelToCanvas(
   }
 
   // ───── الصفّ السفليّ فعلياً ─────
+  // السعر هو الحقل الحرج (يُبقى كاملاً)؛ يُقصّ SKU بـ«…» ليلائم ما تبقّى ⇒ لا تداخل على الملصقات الضيّقة.
   if (hasBottom) {
     const baseY = H - PAD;
+    const gap = 8;
+    ctx.font = `700 ${bottomFs}px Cairo, sans-serif`;
+    const priceW = priceText ? ctx.measureText(priceText).width : 0;
     if (skuText) {
       ctx.font = `600 ${bottomFs}px Cairo, sans-serif`;
+      const skuMaxW = W - PAD * 2 - priceW - (priceText ? gap : 0);
+      let sku = skuText;
+      if (ctx.measureText(sku).width > skuMaxW) {
+        while (sku.length > 1 && ctx.measureText(sku + "…").width > skuMaxW) sku = sku.slice(0, -1);
+        sku = sku + "…";
+      }
       ctx.textAlign = "right";
-      ctx.fillText(skuText, W - PAD, baseY);
+      ctx.fillText(sku, W - PAD, baseY);
     }
     if (priceText) {
       ctx.font = `700 ${bottomFs}px Cairo, sans-serif`;

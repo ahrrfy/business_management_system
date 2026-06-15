@@ -6,10 +6,15 @@
 // الإيصالات لطابعة الإيصالات والملصقات لطابعة الملصقات في آنٍ واحد. كل الدوال تأخذ الدور
 // كوسيط أخير افتراضه "receipt" ⇒ المنادون القدامى (الكاشير) بلا تغيير سلوك.
 //
-// الربط التلقائي: WebUSB يحفظ إذن الجهاز للأصل (origin) بعد أوّل ربط يدوي. لذا
-// `navigator.usb.getDevices()` يُرجِع الطابعة المُصرَّح بها سابقاً **بلا نافذة اختيار** —
-// نستعملها في tryReconnectPrinter() ليُعاد الربط صامتاً. نحفظ vendorId/productId لكل دور
-// في localStorage لاختيار الجهاز الصحيح عند تعدّد الأجهزة المُصرَّح بها.
+// **عزل الدورين (مهمّ للكاشير):** مع وجود طابعتين مُصرَّح بهما على نفس الأصل، إعادة الربط
+// الصامتة **تُلزِم مطابقة الجهاز المحفوظ** متى وُجد محفوظ (لكلا الدورين) لئلا يخطف دورٌ طابعة
+// الآخر (مثلاً إيصالٌ يُطبع على طابعة الملصقات ٥٨مم). بلا محفوظ: الإيصالات تربط أوّل جهاز
+// صالح (سلوك أوّل ربط)، والملصقات لا تربط شيئاً تلقائياً (تتطلّب ربطاً يدوياً). ولا نطمس
+// المعرّف المحفوظ في إعادة الربط (نحفظ فقط عند الربط اليدوي pairPrinter).
+//
+// الربط التلقائي: WebUSB يحفظ إذن الجهاز للأصل بعد أوّل ربط يدوي، فـgetDevices() يُرجِع
+// الطابعة المُصرَّح بها بلا نافذة اختيار. عند فصل الجهاز يُصفَّر دوره (مستمع disconnect)
+// ليعكس isPaired الواقع ويُعاد الربط لاحقاً.
 
 export type PrinterRole = "receipt" | "label";
 
@@ -55,10 +60,42 @@ function readRemembered(role: PrinterRole): { vendorId: number; productId: numbe
   }
 }
 
+/** هل (a) و(b) نفس الجهاز الفيزيائي؟ (مرجعاً، أو بمطابقة vid/pid/الرقم التسلسلي). */
+function sameDevice(a: any, b: any): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  return (
+    a.vendorId === b.vendorId &&
+    a.productId === b.productId &&
+    (a.serialNumber ?? "") === (b.serialNumber ?? "")
+  );
+}
+
 /** هل هذا الجهاز مربوط أصلاً في الدور الآخر؟ (نمنع ادّعاء نفس الطابعة لدورين). */
 function claimedByOtherRole(role: PrinterRole, dev: any): boolean {
   const other = role === "receipt" ? "label" : "receipt";
-  return slots[other].device === dev;
+  return sameDevice(slots[other].device, dev);
+}
+
+/** يصفّر أيّ دور يحمل هذا الجهاز (عند فشل النقل أو فصل الجهاز) ليُعاد ربطه. */
+function resetSlotsForDevice(dev: any): void {
+  (Object.keys(slots) as PrinterRole[]).forEach((r) => {
+    if (sameDevice(slots[r].device, dev)) slots[r] = { device: null, endpointOut: null };
+  });
+}
+
+// مستمع فصل لمرّة واحدة: عند نزع طابعة يُصفَّر دورها فيعود isPaired صادقاً ويُعاد الربط لاحقاً.
+let disconnectHooked = false;
+function ensureDisconnectListener(): void {
+  if (disconnectHooked || !isWebUsbSupported()) return;
+  disconnectHooked = true;
+  try {
+    (navigator as any).usb.addEventListener("disconnect", (e: any) => {
+      if (e && e.device) resetSlotsForDevice(e.device);
+    });
+  } catch {
+    /* تجاهل — البيئة لا تدعم المستمع */
+  }
 }
 
 /** يفتح الجهاز ويُهيّئ منفذ الإخراج (bulk OUT). يضبط slot الدور عند النجاح. */
@@ -90,9 +127,20 @@ export async function pairPrinter(role: PrinterRole = "receipt"): Promise<boolea
   if (!isWebUsbSupported()) {
     throw new Error("المتصفّح لا يدعم WebUSB — استخدم Chrome أو Edge");
   }
+  ensureDisconnectListener();
   const usb = (navigator as any).usb;
   const dev = await usb.requestDevice({ filters: [] });
-  if (!(await claimDevice(role, dev))) {
+  // امنع ربط نفس الجهاز الفيزيائي لدورين (يتشاركان مقبضاً واحداً ⇒ فساد متبادل).
+  if (claimedByOtherRole(role, dev)) {
+    throw new Error("هذا الجهاز مربوط أصلاً بدور الطابعة الأخرى — اختر طابعة مختلفة لكل دور.");
+  }
+  let ok = false;
+  try {
+    ok = await claimDevice(role, dev);
+  } catch {
+    throw new Error("تعذّر فتح الطابعة (قد تكون مستخدَمة من تطبيق آخر أو تحتاج تعريف WinUSB عبر Zadig).");
+  }
+  if (!ok) {
     throw new Error("لم يُعثر على منفذ طباعة USB مناسب على هذا الجهاز");
   }
   rememberDevice(role, dev);
@@ -100,14 +148,16 @@ export async function pairPrinter(role: PrinterRole = "receipt"): Promise<boolea
 }
 
 /**
- * إعادة ربط صامتة بلا نافذة اختيار: يفحص الأجهزة المُصرَّح بها سابقاً ويربط طابعة الدور.
- * - "receipt" (سلوك قديم): يفضّل المحفوظة، وإلا يربط أوّل جهاز ذي منفذ طباعة صالح.
- * - "label": يربط **فقط** الجهاز المطابق للمحفوظ (لئلا يخطف طابعة الإيصالات) ⇒ يلزم ربط يدوي أوّلاً.
+ * إعادة ربط صامتة بلا نافذة اختيار:
+ * - متى وُجد جهاز محفوظ للدور ⇒ **يُلزَم مطابقته** (للدورين) لئلا يخطف دورٌ طابعة الآخر.
+ * - بلا محفوظ: "receipt" يربط أوّل جهاز صالح (سلوك أوّل ربط)؛ "label" لا يربط شيئاً.
+ * لا نطمس المعرّف المحفوظ هنا (الحفظ في pairPrinter فقط) لئلا ينحرف الافتراضي.
  * يُرجِع false بهدوء إن لا جهاز مناسب — لا يرمي.
  */
 export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promise<boolean> {
   if (!isWebUsbSupported()) return false;
   if (isPaired(role)) return true;
+  ensureDisconnectListener();
   let devices: any[] = [];
   try {
     devices = await (navigator as any).usb.getDevices();
@@ -117,7 +167,8 @@ export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promis
   if (!devices.length) return false;
 
   const remembered = readRemembered(role);
-  const requireRemembered = role === "label"; // الملصقات: لا نربط جهازاً عشوائياً
+  // إن وُجد محفوظ نُلزم المطابقة؛ والملصقات لا تربط جهازاً عشوائياً أبداً.
+  const requireRemembered = role === "label" || !!remembered;
 
   // رتّب الأجهزة: المطابق للمحفوظ أولاً.
   if (remembered) {
@@ -129,12 +180,12 @@ export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promis
   }
 
   for (const dev of devices) {
-    const matches = remembered && dev.vendorId === remembered.vendorId && dev.productId === remembered.productId;
+    const matches = !!remembered && dev.vendorId === remembered.vendorId && dev.productId === remembered.productId;
     if (requireRemembered && !matches) continue; // لا تربط إلا المطابق
     if (claimedByOtherRole(role, dev)) continue; // الجهاز مأخوذ للدور الآخر
     try {
       if (await claimDevice(role, dev)) {
-        rememberDevice(role, dev); // ثبّت الافتراضية على أوّل ربط ناجح
+        if (!remembered) rememberDevice(role, dev); // ثبّت فقط عند أوّل ربط — لا نطمس المحفوظ
         return true;
       }
     } catch {
@@ -147,5 +198,11 @@ export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promis
 export async function sendBytes(bytes: Uint8Array, role: PrinterRole = "receipt"): Promise<void> {
   const s = slots[role];
   if (!s.device || s.endpointOut == null) throw new Error("لا توجد طابعة حرارية مربوطة");
-  await s.device.transferOut(s.endpointOut, bytes);
+  try {
+    await s.device.transferOut(s.endpointOut, bytes);
+  } catch (e) {
+    // فشل النقل (غالباً جهاز مفصول) ⇒ صفّر الدور ليعكس isPaired الواقع ويُعاد الربط.
+    resetSlotsForDevice(s.device);
+    throw e;
+  }
 }

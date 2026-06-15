@@ -689,7 +689,7 @@ export function printBarcodeSheet(
   items: LabelRenderItem[],
   size: LabelSize = getLabelSize(),
   opts: LabelRenderOpts = {},
-): void {
+): boolean {
   const { widthMm, heightMm } = size;
   const showName = opts.showName !== false;
   const showPrice = opts.showPrice !== false;
@@ -730,7 +730,7 @@ export function printBarcodeSheet(
   </style></head>
   <body onload="window.print();setTimeout(function(){window.close()},500)">${labels}</body></html>`;
 
-  openPrintWindow(html, `width=${Math.max(320, Math.round(widthMm * 4))},height=${Math.max(360, Math.round(heightMm * 6))}`);
+  return openPrintWindow(html, `width=${Math.max(320, Math.round(widthMm * 4))},height=${Math.max(360, Math.round(heightMm * 6))}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

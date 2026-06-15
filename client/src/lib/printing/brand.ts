@@ -58,11 +58,14 @@ export function logoUrl(): string {
   return typeof window !== 'undefined' ? `${window.location.origin}/logo.png` : '/logo.png';
 }
 
-/** Open a print window with given HTML */
-export function openPrintWindow(html: string, opts = 'width=900,height=1100'): void {
-  if (typeof window === 'undefined') return;
+/** Open a print window with given HTML. يعيد false إن حُجبت النافذة المنبثقة (ليُبلَّغ المستخدم). */
+export function openPrintWindow(html: string, opts = 'width=900,height=1100'): boolean {
+  if (typeof window === 'undefined') return false;
   const w = window.open('', '_blank', opts);
-  if (w) { w.document.write(html); w.document.close(); }
+  if (!w) return false; // نافذة منبثقة محجوبة ⇒ لم تُفتح الطباعة
+  w.document.write(html);
+  w.document.close();
+  return true;
 }
 
 /**

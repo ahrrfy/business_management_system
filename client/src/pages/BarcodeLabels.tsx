@@ -37,6 +37,9 @@ export default function BarcodeLabels() {
   const [showName, setShowName] = useState(true);
   const [showPrice, setShowPrice] = useState(true);
   const [error, setError] = useState("");
+  const [info, setInfo] = useState("");
+  // مسوّدات نصّية لحقول عدد النسخ (تسمح بالإفراغ/التحرير الطبيعي ثم تُحصَر عند الـblur).
+  const [countDraft, setCountDraft] = useState<Record<number, string>>({});
 
   // مقاس الملصق (محفوظ محلياً، مشترك مع باقي شاشات الطباعة).
   const [size, setSize] = useState<LabelSize>(() => getLabelSize());
@@ -49,8 +52,20 @@ export default function BarcodeLabels() {
   const [labelPrinterReady, setLabelPrinterReady] = useState(() => isPaired("label"));
 
   useEffect(() => {
+    const refresh = () => setLabelPrinterReady(isPaired("label"));
     tryReconnectPrinter("label").then((ok) => { if (ok) setLabelPrinterReady(true); }).catch(() => { /* تجاهل */ });
-  }, []);
+    if (!usbSupported) return;
+    const usb = (navigator as { usb?: { addEventListener?: (t: string, h: () => void) => void; removeEventListener?: (t: string, h: () => void) => void } }).usb;
+    if (!usb?.addEventListener) return;
+    const onConnect = () => { tryReconnectPrinter("label").then(refresh).catch(() => { /* تجاهل */ }); };
+    const onDisconnect = () => refresh(); // مستمع thermal يصفّر الدور أولاً ⇒ يعكس isPaired الواقع
+    usb.addEventListener("connect", onConnect);
+    usb.addEventListener("disconnect", onDisconnect);
+    return () => {
+      usb.removeEventListener?.("connect", onConnect);
+      usb.removeEventListener?.("disconnect", onDisconnect);
+    };
+  }, [usbSupported]);
 
   function applySize(next: LabelSize) {
     const saved = setLabelSize(next);
@@ -62,13 +77,25 @@ export default function BarcodeLabels() {
     applySize({ widthMm: Number(wStr) || size.widthMm, heightMm: Number(hStr) || size.heightMm });
   }
   async function pairLabelPrinter() {
-    setError("");
+    setError(""); setInfo("");
     try {
       await pairPrinter("label");
       setLabelPrinterReady(true);
+      setInfo("تم ربط طابعة الملصقات ✓");
     } catch (e) {
       setError(e instanceof Error ? e.message : "تعذّر ربط طابعة الملصقات");
     }
+  }
+  async function testPrint() {
+    setError(""); setInfo("");
+    const r = await printLabel(
+      [{ name: "ملصق تجريبي — الرؤية العربية", sku: "TEST", price: "1000", barcode: "ALR0000001" }],
+      { showName, showPrice },
+      size,
+    );
+    if (r.via === "thermal") setInfo("طُبع ملصق تجريبي عبر الطابعة المربوطة ✓");
+    else if (r.ok) setInfo("فُتحت نافذة طباعة الملصق التجريبي.");
+    else setError("تعذّر فتح نافذة الطباعة — اسمح بالنوافذ المنبثقة لهذا الموقع.");
   }
 
   const results = trpc.catalog.posList.useQuery(
@@ -107,6 +134,11 @@ export default function BarcodeLabels() {
   const patch = (key: number, p: Partial<QueueItem>) =>
     setQueue((prev) => prev.map((q) => (q.key === key ? { ...q, ...p } : q)));
   const remove = (key: number) => setQueue((prev) => prev.filter((q) => q.key !== key));
+  function commitCount(key: number) {
+    const raw = countDraft[key];
+    if (raw !== undefined) patch(key, { count: Math.max(1, Math.trunc(Number(raw) || 1)) });
+    setCountDraft((d) => { const rest = { ...d }; delete rest[key]; return rest; });
+  }
 
   async function saveBarcode(item: QueueItem) {
     setError("");
@@ -119,8 +151,8 @@ export default function BarcodeLabels() {
     }
   }
 
-  function printLabels() {
-    setError("");
+  async function printLabels() {
+    setError(""); setInfo("");
     if (!queue.length) { setError("أضِف صنفاً واحداً على الأقل."); return; }
     const expanded = queue.flatMap(item =>
       Array.from({ length: item.count }, () => ({
@@ -131,7 +163,10 @@ export default function BarcodeLabels() {
       }))
     );
     // نفس تقنية الكاشير: WebUSB(label) إن رُبطت الطابعة، وإلا نافذة المتصفّح بمقاس الملصق.
-    void printLabel(expanded, { showName, showPrice }, size);
+    const r = await printLabel(expanded, { showName, showPrice }, size);
+    if (r.via === "thermal") setInfo(`تم إرسال ${expanded.length} ملصق للطابعة المربوطة ✓`);
+    else if (r.ok) setInfo(`فُتحت نافذة الطباعة (${expanded.length} ملصق).`);
+    else setError("تعذّر فتح نافذة الطباعة — اسمح بالنوافذ المنبثقة لهذا الموقع، أو اربط طابعة الملصقات.");
   }
 
   const totalLabels = queue.reduce((s, q) => s + q.count, 0);
@@ -181,20 +216,26 @@ export default function BarcodeLabels() {
             <p className="text-xs text-muted-foreground">المقاس الحالي: {size.widthMm} × {size.heightMm} مم (يُطبَّق في كل شاشات الطباعة).</p>
           </div>
 
-          <div className="flex items-center gap-3 border-t pt-3">
-            {!usbSupported ? (
-              <span className="text-xs text-muted-foreground">المتصفّح لا يدعم الطباعة المباشرة (WebUSB) — ستُفتح نافذة الطباعة. استخدم Chrome/Edge للطباعة الصامتة.</span>
-            ) : labelPrinterReady ? (
-              <>
-                <span className="text-sm text-emerald-600">طابعة الملصقات مربوطة ✓</span>
-                <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>تغيير الطابعة</Button>
-              </>
-            ) : (
-              <>
-                <span className="text-sm text-muted-foreground">طابعة الملصقات غير مربوطة (ستُفتح نافذة الطباعة).</span>
-                <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>ربط طابعة الملصقات</Button>
-              </>
-            )}
+          <div className="border-t pt-3 space-y-2">
+            <div className="flex items-center gap-3 flex-wrap">
+              {!usbSupported ? (
+                <span className="text-xs text-muted-foreground">المتصفّح لا يدعم الطباعة المباشرة (WebUSB) — ستُفتح نافذة الطباعة. استخدم Chrome/Edge للطباعة الصامتة.</span>
+              ) : labelPrinterReady ? (
+                <>
+                  <span className="text-sm text-emerald-600">طابعة الملصقات مربوطة ✓</span>
+                  <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>تغيير الطابعة</Button>
+                </>
+              ) : (
+                <>
+                  <span className="text-sm text-muted-foreground">طابعة الملصقات غير مربوطة (ستُفتح نافذة الطباعة عبر تعريف Windows).</span>
+                  <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>ربط طابعة الملصقات</Button>
+                </>
+              )}
+              <Button type="button" variant="ghost" size="sm" onClick={testPrint}>طباعة ملصق تجريبي</Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              للملصقات المقصوصة (die-cut): الأفضل تركها <span className="font-medium">غير مربوطة</span> لتُطبع عبر تعريف Windows الذي يحاذي فجوات الملصقات تلقائياً. اربط الطابعة (WebUSB) للورق المتّصل (continuous) أو للطباعة الصامتة السريعة.
+            </p>
           </div>
         </CardContent>
       </Card>
@@ -265,8 +306,11 @@ export default function BarcodeLabels() {
                     </td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{q.price != null ? money(q.price) : "—"}</td>
                     <td className="p-2">
-                      <Input dir="ltr" className="h-8 text-center" value={String(q.count)}
-                        onChange={(e) => patch(q.key, { count: Math.max(1, Math.trunc(Number(e.target.value) || 1)) })} />
+                      <Input dir="ltr" inputMode="numeric" className="h-8 text-center"
+                        value={countDraft[q.key] ?? String(q.count)}
+                        onChange={(e) => setCountDraft((d) => ({ ...d, [q.key]: e.target.value }))}
+                        onBlur={() => commitCount(q.key)}
+                        onKeyDown={(e) => { if (e.key === "Enter") commitCount(q.key); }} />
                     </td>
                     <td className="p-2 text-center" dangerouslySetInnerHTML={{ __html: preview }} />
                     <td className="p-2 text-center"><Button variant="ghost" size="sm" onClick={() => remove(q.key)}>✕</Button></td>
@@ -282,6 +326,7 @@ export default function BarcodeLabels() {
       </Card>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
+      {info && <p className="text-sm text-emerald-600">{info}</p>}
       <div className="flex gap-2">
         <Button onClick={printLabels} disabled={queue.length === 0}>طباعة {totalLabels} ملصق</Button>
         <Button variant="outline" onClick={() => setQueue([])} disabled={queue.length === 0}>تفريغ القائمة</Button>

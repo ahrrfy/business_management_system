@@ -1,6 +1,6 @@
 import { EscPos } from "./escpos";
 import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
-import { isPaired, sendBytes } from "./thermal";
+import { isPaired, sendBytes, tryReconnectPrinter, isWebUsbSupported } from "./thermal";
 import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
 import { receiptToRaster } from "./receiptRaster";
 import { buildLabelBytes, type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
@@ -108,8 +108,14 @@ export async function printLabel(
   items: LabelRenderItem[],
   opts: LabelRenderOpts = {},
   size: LabelSize = getLabelSize(),
-): Promise<{ via: "thermal" | "browser" }> {
-  if (!items.length) return { via: "browser" };
+): Promise<{ via: "thermal" | "browser"; ok: boolean }> {
+  if (!items.length) return { via: "browser", ok: false };
+
+  // إعادة ربط صامتة لطابعة الملصقات إن لم تكن مربوطة في الذاكرة بعد (مثلاً الطباعة من شاشة
+  // المنتجات بعد إعادة تحميل دون فتح شاشة الملصقات) ⇒ يُستعمل WebUSB بدل السقوط للمتصفّح بلا داعٍ.
+  if (!isPaired("label") && isWebUsbSupported()) {
+    try { await tryReconnectPrinter("label"); } catch { /* تجاهل — نتراجع للمتصفّح */ }
+  }
 
   // ١) WebUSB لطابعة الملصقات (الدور "label" — منفصل عن طابعة الإيصالات).
   if (isPaired("label")) {
@@ -117,7 +123,7 @@ export async function printLabel(
     if (bytes) {
       try {
         await sendBytes(bytes, "label");
-        return { via: "thermal" };
+        return { via: "thermal", ok: true };
       } catch (e) {
         // طابعة مفصولة/خطأ نقل ⇒ تدهور سلس لنافذة المتصفّح (لا تُسقَط الطباعة).
         console.warn("[print] فشل WebUSB لطابعة الملصقات، نتراجع لنافذة المتصفّح:", e);
@@ -125,7 +131,7 @@ export async function printLabel(
     }
   }
 
-  // ٢) نافذة المتصفّح (بمقاس الملصق — تُطبع عبر تعريف Windows للطابعة).
-  printBarcodeSheet(items, size, opts);
-  return { via: "browser" };
+  // ٢) نافذة المتصفّح (بمقاس الملصق — تُطبع عبر تعريف Windows للطابعة). ok=false إن حُجبت النافذة.
+  const ok = printBarcodeSheet(items, size, opts);
+  return { via: "browser", ok };
 }

@@ -2,7 +2,7 @@
  * variantModals.tsx — نافذتان لشاشة المتغيّرات:
  *  - ImportModal: لصق صفوف Excel (ذهاب-وإياب مع التصدير) ← دمج بمفتاح color|size.
  *  - LabelPrintModal: طباعة ملصق لكل وحدة من كل لون مفعّل، بالكمية المطلوبة،
- *    عبر قالب النظام المُعلَّم (printBarcodeSheet) — نفس تصميم صفحة «ملصقات الباركود».
+ *    عبر printLabel (WebUSB لطابعة الملصقات ← نافذة المتصفّح بمقاس الملصق) — نفس مسار صفحة «ملصقات الباركود».
  */
 import { useState } from "react";
 import {
