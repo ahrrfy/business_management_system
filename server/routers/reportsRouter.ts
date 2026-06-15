@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { customers, invoices, suppliers } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
@@ -22,17 +22,20 @@ import {
 } from "../services/reconcileService";
 import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
-import { adminProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
+import { adminProcedure, managerBranchScopedProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 
 /** تاريخ فترة كشف الحساب YYYY-MM-DD — نصّ صريح لا Date (يُمرَّر كما هو لمقارنات SQL). */
 const ymdStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD");
 
 export const reportsRouter = router({
-  arAging: managerProcedure
+  arAging: managerBranchScopedProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
-    .query(async ({ input }) => getARAging({ branchId: input?.branchId })),
+    .query(async ({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? input?.branchId : Number(ctx.user.branchId);
+      return getARAging({ branchId });
+    }),
 
-  customerStatement: managerProcedure
+  customerStatement: managerBranchScopedProcedure
     .input(
       z.object({
         customerId: z.number().int().positive(),
@@ -59,11 +62,14 @@ export const reportsRouter = router({
       .orderBy(asc(customers.name));
   }),
 
-  apAging: managerProcedure
+  apAging: managerBranchScopedProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
-    .query(async ({ input }) => getAPAging({ branchId: input?.branchId })),
+    .query(async ({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? input?.branchId : Number(ctx.user.branchId);
+      return getAPAging({ branchId });
+    }),
 
-  supplierStatement: managerProcedure
+  supplierStatement: managerBranchScopedProcedure
     .input(
       z.object({
         supplierId: z.number().int().positive(),
@@ -94,7 +100,7 @@ export const reportsRouter = router({
    * تقرير المبيعات التفصيلي — نطاق زمني اختياري + فلاتر.
    * يُعيد قائمة الفواتير مع ملخّص الإجماليات في النهاية.
    */
-  salesReport: managerProcedure
+  salesReport: managerBranchScopedProcedure
     .input(
       z.object({
         // ymdStr يرفض صيغاً غير YYYY-MM-DD برسالة عربية بدل localDayStart("abc") = Invalid Date
@@ -117,11 +123,23 @@ export const reportsRouter = router({
             ])
           )
           .optional(),
+        // الفجوة ١٦: حدّ صفحة افتراضي ١٠٠٠ بحدٍّ أعلى ٥٠٠٠ ⇒ يمنع DoS صامت
+        // عند طلب مدير لنطاق سنوي يستنفد pool الاتصالات. الكاتب فجواتٍ في الواجهة
+        // يجمع الصفحات عبر nextCursor.
+        limit: z.number().int().min(1).max(5000).default(1000),
+        // cursor: آخر invoice.id من الصفحة السابقة. غيابه = أول صفحة.
+        // الترتيب desc(id) ⇒ الصفحة التالية = id أصغر من المؤشّر.
+        cursor: z.number().int().positive().optional(),
       })
     )
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db) return { rows: [], totals: { count: 0, total: "0", paid: "0", unpaid: "0" } };
+      if (!db)
+        return {
+          rows: [],
+          nextCursor: null as number | null,
+          totals: { count: 0, total: "0", paid: "0", unpaid: "0" },
+        };
 
       const conditions = [];
       // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
@@ -131,14 +149,21 @@ export const reportsRouter = router({
       if (input.to) {
         conditions.push(sql`${invoices.invoiceDate} < ${localNextDayStart(input.to)}`);
       }
-      if (input.branchId) {
-        conditions.push(eq(invoices.branchId, input.branchId));
+      const effectiveBranchId = ctx.user.role === "admin" ? input.branchId : Number(ctx.user.branchId);
+      if (effectiveBranchId) {
+        conditions.push(eq(invoices.branchId, effectiveBranchId));
       }
       if (input.sourceTypes && input.sourceTypes.length > 0) {
         conditions.push(inArray(invoices.sourceType, input.sourceTypes));
       }
       if (input.statuses && input.statuses.length > 0) {
         conditions.push(inArray(invoices.status, input.statuses));
+      }
+      // مؤشّر keyset: id < cursor (الترتيب desc(id) ⇒ الصفحة التالية أقدم).
+      // اخترنا keyset بدل offset لأن offset كبير على جدول الفواتير = مسح كامل ثم رمي،
+      // أما lt(id, cursor) فيستفيد من فهرس المفتاح الأساسي مباشرةً.
+      if (input.cursor !== undefined) {
+        conditions.push(lt(invoices.id, input.cursor));
       }
 
       const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -158,7 +183,10 @@ export const reportsRouter = router({
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
         .where(where)
-        .orderBy(desc(invoices.invoiceDate));
+        // الترتيب الأساسي بالـid (desc) ليكون keyset cursor متّسقاً
+        // (invoiceDate يبقى مرتبطاً بـid لأن الفواتير تُنشأ بالترتيب الزمني).
+        .orderBy(desc(invoices.id))
+        .limit(input.limit);
 
       // قاعدة §٥: لا parseFloat على المال — كله عبر decimal.js لتفادي انجراف 0.01 على آلاف الفواتير.
       const totals = rows.reduce(
@@ -175,8 +203,14 @@ export const reportsRouter = router({
         { count: 0, total: new Decimal(0), paid: new Decimal(0), unpaid: new Decimal(0) },
       );
 
+      // nextCursor = آخر id في الصفحة إن امتلأت ⇒ ربما بعدها المزيد.
+      // أقل من limit ⇒ نهاية النتائج.
+      const lastRow = rows[rows.length - 1];
+      const nextCursor = rows.length === input.limit && lastRow ? lastRow.id : null;
+
       return {
         rows,
+        nextCursor,
         totals: {
           count: totals.count,
           total: toDbMoney(totals.total),

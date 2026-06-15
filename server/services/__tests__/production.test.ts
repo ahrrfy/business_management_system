@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { money, sumMoney } from "../money";
 import { cancelProduction, computeRunCosts, createProduction, getProduction, runPreview, spoilageSplit } from "../productionService";
 import { createRecipe, getRecipe, recipePreview } from "../recipeService";
 
@@ -83,8 +84,8 @@ describe("الإنتاج: امتصاص الكلفة", () => {
     }, actor);
     expect(r.totalCost).toBe("100.00");
     const outs = await outputLines(r.productionOrderId);
-    const sumAlloc = outs.reduce((a: number, l: any) => a + Number(l.allocatedCost), 0);
-    expect(sumAlloc).toBeCloseTo(100, 2);
+    // المجموع على decimal أصيل: المُخصَّص الكلي = ١٠٠.٠٠ بالضبط (مطابقة كاملة لكلفة المُدخَل).
+    expect(sumMoney(outs.map((l: any) => l.allocatedCost)).eq(money("100"))).toBe(true);
     expect(await cost(2)).toBe("10.00");
     expect(await cost(3)).toBe("10.00");
     expect(await cost(4)).toBe("10.00");
@@ -101,8 +102,8 @@ describe("الإنتاج: امتصاص الكلفة", () => {
     const outs = await outputLines(r.productionOrderId);
     const allocs = outs.map((l: any) => l.allocatedCost).sort();
     // 33.33 / 33.33 / 33.34
-    const sum = outs.reduce((a: number, l: any) => a + Number(l.allocatedCost), 0);
-    expect(sum).toBeCloseTo(100, 2);
+    // المجموع على decimal أصيل: 33.33 + 33.33 + 33.34 = 100.00 بالضبط (HALF_UP يضمن الانطباق).
+    expect(sumMoney(outs.map((l: any) => l.allocatedCost)).eq(money("100"))).toBe(true);
     expect(allocs).toContain("33.34");
   });
 
@@ -377,8 +378,8 @@ describe("الإنتاج: مسار التشغيل بوصفة (run) + قيد ال
     expect(await stock(2)).toBe(0);      // السليم سُحب
     const es = await entries();
     expect(es).toHaveLength(2); // قيد + عكسه
-    const net = es.reduce((a: number, e: any) => a + Number(e.amount), 0);
-    expect(net).toBeCloseTo(0, 2);
+    // قيد + عكسه ⇒ صفر بالضبط (مطلب محاسبي صارم لا «قريباً منه»).
+    expect(sumMoney(es.map((e: any) => e.amount)).isZero()).toBe(true);
   });
 
   it("السليم ≤ 0 (التالف = الدفعة) ⇒ يُرفض", async () => {

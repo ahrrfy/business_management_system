@@ -9,6 +9,7 @@ import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { D, fmt } from "@/lib/money";
+import { esc } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -311,18 +312,18 @@ export default function WorkOrderNew() {
     // «حفظ كصورة» عبر طباعة-إلى-PDF ثم تحويل، أو يستخدم الزرّ المستقبلي «تنزيل PNG».
     const w = window.open("", "_blank", "width=720,height=900");
     if (!w) return;
-    const rows = cart.map((c) => `<tr><td>${c.productName}</td><td>${c.unitName}</td><td>${c.quantity}</td><td>${fmt(c.unitPrice)}</td></tr>`).join("");
+    const rows = cart.map((c) => `<tr><td>${esc(c.productName)}</td><td>${esc(c.unitName)}</td><td>${c.quantity}</td><td>${esc(fmt(c.unitPrice))}</td></tr>`).join("");
     w.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>أمر شغل</title>
       <style>body{font-family:Cairo,sans-serif;padding:24px;color:#222}h1{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #ddd;padding:6px 8px;text-align:right}thead{background:#f4f4f5}.muted{color:#666;font-size:13px}.total{font-weight:700;font-size:16px;margin-top:8px}</style>
       </head><body>
       <h1>أمر شغل — معاينة</h1>
-      <p class="muted">العميل: ${customerSel.name || "—"} ${customerSel.isNew ? "(جديد)" : ""}</p>
-      <p class="muted">القناة: ${CHANNELS.find((c) => c.v === channel)?.label || "—"} ${channelHandle ? `· <bdi>${channelHandle}</bdi>` : ""}</p>
-      <p class="muted">الأولوية: ${PRIORITIES.find((p) => p.v === priority)?.label || "عادي"}</p>
+      <p class="muted">العميل: ${esc(customerSel.name || "—")} ${customerSel.isNew ? "(جديد)" : ""}</p>
+      <p class="muted">القناة: ${esc(CHANNELS.find((c) => c.v === channel)?.label || "—")} ${channelHandle ? `· <bdi>${esc(channelHandle)}</bdi>` : ""}</p>
+      <p class="muted">الأولوية: ${esc(PRIORITIES.find((p) => p.v === priority)?.label || "عادي")}</p>
       <table><thead><tr><th>المنتج</th><th>الوحدة</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">لا أصناف</td></tr>`}</tbody></table>
-      ${title ? `<p><b>خدمة التخصيص:</b> ${title}</p>` : ""}
-      <p class="total">الإجمالي: ${fmt(grandTotal.toFixed(2))} د.ع</p>
-      <p>العربون: ${fmt(depositD.toFixed(2))} د.ع · المتبقّي: ${fmt(remaining.toFixed(2))} د.ع</p>
+      ${title ? `<p><b>خدمة التخصيص:</b> ${esc(title)}</p>` : ""}
+      <p class="total">الإجمالي: ${esc(fmt(grandTotal.toFixed(2)))} د.ع</p>
+      <p>العربون: ${esc(fmt(depositD.toFixed(2)))} د.ع · المتبقّي: ${esc(fmt(remaining.toFixed(2)))} د.ع</p>
       <script>setTimeout(()=>window.print(),300)</script>
       </body></html>`);
     w.document.close();

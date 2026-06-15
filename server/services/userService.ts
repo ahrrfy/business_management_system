@@ -6,7 +6,9 @@ import { nanoid } from "nanoid";
 import { users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { hashPassword, verifyPassword } from "../auth/password";
+import { escapeLike } from "../lib/sqlLike";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 export type Role = typeof ALL_ROLES[number];
 
@@ -135,7 +137,7 @@ export async function createUser(input: CreateUserInput, _actor: Actor) {
         mustChangePassword: mustChange,
         tempPasswordExpiresAt: expiresAt,
       });
-      const userId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+      const userId = extractInsertId(res);
       return { userId };
     } catch (e) {
       rethrowDup(e);
@@ -279,7 +281,7 @@ export async function listUsers(input: ListUsersInput = {}) {
   if (!input.includeInactive) conds.push(eq(users.isActive, true));
   if (input.role) conds.push(eq(users.role, input.role as any));
   if (input.q?.trim()) {
-    const q = `%${input.q.trim()}%`;
+    const q = `%${escapeLike(input.q.trim())}%`;
     conds.push(or(like(users.name, q), like(users.email, q), like(users.phone, q)));
   }
   const where = conds.length ? and(...conds) : undefined;

@@ -36,6 +36,7 @@ import { setStock } from "./inventoryService";
 import { postEntry } from "./ledgerService";
 import { money, toDbMoney } from "./money";
 import { requireDb, withTx } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 /** قراءة تعمل على القاعدة أو داخل معاملة (الاعتماد يعيد الحساب داخل tx). */
 type DbLike = DB | Tx;
@@ -376,7 +377,7 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   if (input.waNotify !== undefined) sessionValues.waNotify = input.waNotify;
   if (input.dupPolicy !== undefined) sessionValues.dupPolicy = input.dupPolicy;
   const sRes = await tx.insert(stocktakeSessions).values(sessionValues);
-  const sessionId = Number((sRes as any)[0]?.insertId ?? (sRes as any).insertId);
+  const sessionId = extractInsertId(sRes);
 
   // التكليفات: PIN فريد داخل الجلسة، يُخزَّن hash فقط ويُعاد النص مرة واحدة.
   const usedPins = new Set<string>();
@@ -398,7 +399,7 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
       zone: a.zone ?? null,
       status: "ACTIVE",
     });
-    assignmentIds.push(Number((aRes as any)[0]?.insertId ?? (aRes as any).insertId));
+    assignmentIds.push(extractInsertId(aRes));
     assignmentPins.push(pin);
   }
 

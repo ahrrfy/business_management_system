@@ -5,10 +5,10 @@
  *   customer: balance > 0 → لنا عليه (AR أصل)   balance < 0 → له علينا (دفعنا زيادة)
  *   supplier: balance > 0 → له علينا (AP التزام) balance < 0 → لنا عليه (دفعنا زيادة)
  */
+import { fmtAr } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
-const fmtNum = (n: number) =>
-  n.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+const fmtNum = (n: number) => fmtAr(n);
 
 export type BalanceEntity = "customer" | "supplier";
 

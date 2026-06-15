@@ -108,10 +108,10 @@ describe("auth.register — ذرّي وفريد", () => {
   it("ينشئ مستخدماً ثم يرفض تكرار البريد", async () => {
     const admin = await seedAdmin();
     const caller = appRouter.createCaller(makeCtx(admin).ctx);
-    const r = await caller.auth.register({ email: "new@test.local", password: "Pass1234", name: "جديد" });
+    const r = await caller.auth.register({ email: "new@test.local", password: "Pass1234!Aaa", name: "جديد" });
     expect(r.success).toBe(true);
     await expect(
-      caller.auth.register({ email: "new@test.local", password: "Pass1234", name: "مكرّر" }),
+      caller.auth.register({ email: "new@test.local", password: "Pass1234!Aaa", name: "مكرّر" }),
     ).rejects.toThrow(/مستخدم مسبقاً/);
   });
 });
@@ -148,9 +148,9 @@ describe("session — إبطال وإزالة الدور", () => {
 
   it("createUser يُنشئ مستخدماً يمكنه الدخول فوراً (تكامل verifyPassword)", async () => {
     await seedAdmin();
-    await createUser({ name: "ك", email: "k@test.local", password: "Cashier99" }, { userId: 1, branchId: 1 });
+    await createUser({ name: "ك", email: "k@test.local", password: "Pass1234!Aaa" }, { userId: 1, branchId: 1 });
     const caller = appRouter.createCaller(makeCtx().ctx);
-    const r = await caller.auth.login({ email: "k@test.local", password: "Cashier99" });
+    const r = await caller.auth.login({ email: "k@test.local", password: "Pass1234!Aaa" });
     expect(r.email).toBe("k@test.local");
   });
 });

@@ -46,7 +46,9 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
   it("returns.create: نفس clientRequestId ⇒ مرتجع/استرداد واحد", async () => {
     await setStock(1, 1, 10);
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
-    const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } }, actor);
+    // M8: البيع النقدي يَستوجب وردية مفتوحة.
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    const sale = await createSale({ branchId: 1, shiftId, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } }, actor);
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
     const input = { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "10.00", method: "CASH" as const }, clientRequestId: "ret-key-1" };
     await caller().returns.create(input);
@@ -61,6 +63,8 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
     await setStock(1, 1, 10);
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
     const sale = await createSale({ branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }] }, actor);
+    // M5/M8: الدفع النقدي يَستوجب وردية مفتوحة.
+    await openShift({ branchId: 1, openingBalance: "0" }, actor);
     const input = { invoiceId: sale.invoiceId, amount: "10.00", method: "CASH" as const, clientRequestId: "pay-key-1" };
     await caller().sales.pay(input);
     await caller().sales.pay(input);
@@ -118,7 +122,9 @@ describe("#3 تقريب IQD النقدي على الخادم", () => {
   it("بيع نقدي كامل بإجمالي غير مضاعف لـ250 ⇒ يُقرَّب + قيد ADJUST + النقد=المقرّب", async () => {
     await setStock(1, 1, 10);
     await db().insert(s.productPrices).values([{ productUnitId: 1, priceTier: "WHOLESALE", price: "1240.00" }]);
-    const sale = await createSale({ branchId: 1, sourceType: "POS", priceTier: "WHOLESALE", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }], payment: { amount: "1240.00", method: "CASH" }, cashRoundIQD: true }, actor);
+    // M8: البيع النقدي يَستوجب وردية مفتوحة.
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
+    const sale = await createSale({ branchId: 1, shiftId, sourceType: "POS", priceTier: "WHOLESALE", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }], payment: { amount: "1240.00", method: "CASH" }, cashRoundIQD: true }, actor);
     expect(sale.total).toBe("1250.00"); // 1240 → 1250 (أقرب 250)
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     expect(inv.total).toBe("1250.00");

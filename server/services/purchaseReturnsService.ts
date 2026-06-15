@@ -15,6 +15,7 @@ import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -235,7 +236,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         status: "COMPLETED",
         createdBy: actor.userId,
       });
-      const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,

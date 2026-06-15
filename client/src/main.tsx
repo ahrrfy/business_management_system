@@ -8,6 +8,7 @@ import { httpBatchLink, TRPCClientError } from "@trpc/client";
 import { ThemeProvider } from "next-themes";
 import { createRoot } from "react-dom/client";
 import superjson from "superjson";
+import { toast } from "sonner";
 import App from "./App";
 // خط Cairo مستضاف محلياً (بلا اعتماد على Google Fonts CDN) ⇒ يعمل النظام كاملاً بلا إنترنت.
 import "@fontsource/cairo/400.css";
@@ -64,3 +65,29 @@ createRoot(document.getElementById("root")!).render(
     </QueryClientProvider>
   </trpc.Provider>
 );
+
+// حوكمة تحديث PWA: registerType:'prompt' لا يُطبّق SW الجديد صامتاً.
+// نَعرض شارة «إصدار جديد» للمستخدم، وهو يَختار وقت التحديث ⇒ يَمنع استبدال الحزمة في وسط معاملة حسّاسة.
+if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+  void import("virtual:pwa-register").then(({ registerSW }) => {
+    const updateSW = registerSW({
+      onNeedRefresh() {
+        toast.info("يَتوفّر إصدار جديد من النظام", {
+          description: "اضغط «تحديث» لتطبيق آخر إصدار. عملك الحالي سيُحفظ ثم تُعاد الواجهة.",
+          duration: Infinity,
+          action: {
+            label: "تحديث",
+            onClick: () => {
+              void updateSW(true);
+            },
+          },
+        });
+      },
+      onOfflineReady() {
+        toast.success("النظام جاهز للعمل دون اتصال");
+      },
+    });
+  }).catch(() => {
+    // virtual:pwa-register غير متاح في dev بلا plugin؛ صامت.
+  });
+}

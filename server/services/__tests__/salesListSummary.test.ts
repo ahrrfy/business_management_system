@@ -59,6 +59,12 @@ async function seedBase() {
   await d.insert(s.productPrices).values([{ productUnitId: 1, priceTier: "RETAIL", price: "10.00" }]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0" });
   await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+  // M5/M8: createSale CASH + processPayment CASH ⇒ يَلزم وردية مفتوحة.
+  await d.insert(s.shifts).values({
+    userId: 1, branchId: 1, status: "OPEN",
+    openedAt: new Date(),
+    openGuard: "1:1", openingBalance: "0",
+  });
 }
 
 beforeEach(async () => {
@@ -75,6 +81,8 @@ async function sale(qtyPieces: string, pay?: string) {
       sourceType: "ORDER",
       lines: [{ variantId: 1, productUnitId: 1, quantity: qtyPieces }],
       payment: pay ? { amount: pay, method: "CASH" } : undefined,
+      // M8: createSale CASH يَستلزم shiftId صريحاً. الوردية مفتوحة في seedBase.
+      shiftId: pay ? 1 : undefined,
     },
     actor,
   );

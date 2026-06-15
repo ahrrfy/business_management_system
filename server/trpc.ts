@@ -79,6 +79,14 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
 
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));
+export const managerBranchScopedProcedure = managerProcedure.use(({ ctx, input, next }) => {
+  if (ctx.user.role === "admin") return next({ ctx });
+  const requestedBranch = (input as any)?.branchId;
+  if (requestedBranch !== undefined && Number(requestedBranch) !== Number(ctx.user.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة بيانات فرع آخر" });
+  }
+  return next({ ctx });
+});
 /** عمليات البيع/الصندوق: الكاشير فأعلى (توافق خلفي كامل). */
 export const cashierProcedure = t.procedure.use(requireRole("cashier", "manager"));
 /** عمليات المخزون: أمين المخزن فأعلى (توافق خلفي كامل). */

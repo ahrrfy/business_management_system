@@ -16,6 +16,7 @@ import type { Tx } from "../db";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 /* ============================ القراءة (للتعديل) ============================ */
 
@@ -266,7 +267,7 @@ async function upsertVariantUnits(
         barcode,
         isBaseUnit: t.isBaseUnit,
       });
-      unitId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+      unitId = extractInsertId(res);
     }
     keep.add(unitId);
     for (const pr of t.prices) {
@@ -328,7 +329,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         await tx.update(productVariants).set(vals).where(eq(productVariants.id, variantId));
       } else {
         const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals });
-        variantId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+        variantId = extractInsertId(res);
         added++;
       }
       await upsertVariantUnits(tx, variantId, input.unitTemplate, v.unitBarcodes, v.baseRetail);

@@ -6,16 +6,22 @@ export const SESSION_DEFAULT_MS = 1000 * 60 * 60 * 12;
 /** «تذكّرني»: الحدّ الأقصى لعمر الجلسة = ٣٠ يوماً. */
 export const SESSION_REMEMBER_MAX_MS = 1000 * 60 * 60 * 24 * 30;
 
-/** سياسة كلمة المرور: ٨ أحرف على الأقل، تحوي حرفاً ورقماً. */
-export const PASSWORD_MIN_LEN = 8;
-export const PASSWORD_POLICY_MSG = "كلمة المرور يجب أن تكون ٨ أحرف على الأقل وتحتوي حرفاً ورقماً.";
+/**
+ * سياسة كلمة المرور بمستوى NIST: ١٢ حرفاً على الأقل + حرف صغير + حرف كبير + رقم + رمز خاص.
+ * رُفعت من ٨ إلى ١٢ في موجة ٥ (الفجوة ١٥) لأن ٨ أحرف بمزيج بسيط قابلة للتخمين بـbrute force
+ * حديث في زمن مقبول، خصوصاً مع تسرّب hashes احتمالاً.
+ */
+export const PASSWORD_MIN_LEN = 12;
+/**
+ * نمط فحص قوّة كلمة المرور: حرف صغير + كبير + رقم + رمز خاص + طول ≥ ١٢.
+ * [\s\S] بدل . لقبول السطر الجديد إن وُجد (لا حاجة لراية s متعدّدة الأسطر).
+ */
+export const PASSWORD_REGEX =
+  /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*()_+\-=\[\]{};:'",.<>?\/\\|])[\s\S]{12,}$/;
+export const PASSWORD_POLICY_MSG =
+  "كلمة المرور يجب ١٢ حرفاً على الأقل + حرف صغير + كبير + رقم + رمز خاص.";
 export function isStrongPassword(pw: unknown): pw is string {
-  return (
-    typeof pw === "string" &&
-    pw.length >= PASSWORD_MIN_LEN &&
-    /[A-Za-z]/.test(pw) &&
-    /\d/.test(pw)
-  );
+  return typeof pw === "string" && PASSWORD_REGEX.test(pw);
 }
 
 export const UNAUTHED_ERR_MSG = "Please login (10001)";

@@ -2,7 +2,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
-import { D, positiveDiff } from "@/lib/money";
+import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
@@ -35,8 +35,7 @@ const SOURCE: Record<string, string> = {
   WORKORDER: "أمر شغل",
 };
 
-const fmt = (s: string | number) =>
-  Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+const fmt = fmtAr;
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 

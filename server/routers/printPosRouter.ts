@@ -6,6 +6,7 @@ import { listPrintServices } from "../services/catalogService";
 import { createPrintSale } from "../services/printSaleService";
 import { verifyManagerApproval } from "./saleRouter";
 import { cashierProcedure, router } from "../trpc";
+import { positiveMoneyString } from "../lib/schemas";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -36,7 +37,7 @@ export const printPosRouter = router({
         customerId: z.number().int().positive().optional(),
         priceTier: tier.optional(),
         lines: z.array(lineSchema).min(1),
-        payment: z.object({ amount: z.string(), method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method }).optional(),
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
         cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),

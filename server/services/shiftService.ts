@@ -5,6 +5,7 @@ import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
 import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 /** Open a cashier shift. One open shift per user per branch. */
 export async function openShift(input: { branchId: number; openingBalance: string }, actor: Actor) {
@@ -25,7 +26,7 @@ export async function openShift(input: { branchId: number; openingBalance: strin
         status: "OPEN",
         openGuard: `${actor.userId}:${input.branchId}`, // حارس ذرّي ضدّ الفتح المزدوج المتزامن
       });
-      const shiftId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+      const shiftId = extractInsertId(res);
       return { shiftId };
     } catch (e: any) {
       if (e?.code === "ER_DUP_ENTRY") {

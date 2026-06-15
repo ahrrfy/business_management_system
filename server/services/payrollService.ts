@@ -28,6 +28,7 @@ import type { Tx } from "../db";
 import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -169,7 +170,7 @@ export async function generatePayroll(period: string, actor: Actor) {
       totalNet: "0",
       createdBy: actor.userId,
     });
-    const runId = Number((runRes as any)[0]?.insertId ?? (runRes as any).insertId);
+    const runId = extractInsertId(runRes);
 
     for (const e of emps) {
       const monthly = e.payType === "monthly";

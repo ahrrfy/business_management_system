@@ -66,6 +66,12 @@ async function seedBase() {
     { productUnitId: 2, priceTier: "RETAIL", price: "120.00" },
   ]);
   await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+  // M5/M8: processPayment CASH يَلزم وردية مفتوحة (يُحلّ shiftId من وردية الموظّف).
+  await d.insert(s.shifts).values({
+    userId: 1, branchId: 1, status: 'OPEN',
+    openedAt: new Date(),
+    openGuard: '1:1', openingBalance: '0',
+  });
 }
 
 beforeEach(async () => {

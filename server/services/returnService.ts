@@ -9,6 +9,7 @@ import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledger
 import { money, round2, toDbMoney } from "./money";
 import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -28,10 +29,70 @@ export interface ReturnSaleInput {
 export async function returnSale(input: ReturnSaleInput, actor: Actor) {
   return withTx(async (tx) => {
     // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة المرتجع الأول بلا استرداد مكرّر.
+    // قبل أي replay نتحقّق أنّ المفتاح يخصّ نفس الفاتورة والفرع وبنفس بصمة المرتجع
+    // (لا يصحّ أن يُرجع مفتاحٌ مُستعمَلٌ لفاتورة مغايرة نجاحاً صامتاً بـreturnedTotal=0).
     if (input.clientRequestId) {
       const existingRefId = await findIdempotentRefId(tx, "sale.return", input.clientRequestId);
       if (existingRefId != null) {
-        return { invoiceId: input.invoiceId, returnedTotal: "0.00", fullyReturned: false, idempotentReplay: true as const };
+        if (Number(existingRefId) !== Number(input.invoiceId)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لمرتجع على فاتورة مختلفة",
+          });
+        }
+        const replayInvRows = await tx
+          .select()
+          .from(invoices)
+          .where(eq(invoices.id, input.invoiceId))
+          .limit(1);
+        const replayInv = replayInvRows[0];
+        if (!replayInv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة غير موجودة" });
+        // بصمة الكمية الإجمالية للأسطر المطلوبة — إن جاء المفتاح نفسه بأسطر مختلفة فالعملية مختلفة.
+        const replayItems = await tx
+          .select()
+          .from(invoiceItems)
+          .where(eq(invoiceItems.invoiceId, input.invoiceId));
+        const itemByIdReplay = new Map(replayItems.map((i) => [Number(i.id), i]));
+        let expectedGrossNet = new Decimal(0);
+        for (const l of input.lines) {
+          const it = itemByIdReplay.get(l.invoiceItemId);
+          if (!it) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "تعارض idempotency: المفتاح مستعمَل لمرتجع بأسطر مختلفة",
+            });
+          }
+          if (!Number.isInteger(l.baseQuantity) || l.baseQuantity <= 0) {
+            throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الإرجاع يجب أن تكون صحيحة موجبة" });
+          }
+          const portion = new Decimal(l.baseQuantity).dividedBy(it.baseQuantity);
+          expectedGrossNet = expectedGrossNet.plus(money(it.total).times(portion));
+        }
+        const subtotalR = money(replayInv.subtotal);
+        const discountAmountR = money(replayInv.discountAmount);
+        const taxAmountR = money(replayInv.taxAmount);
+        const discountRatioR = subtotalR.gt(0) ? discountAmountR.dividedBy(subtotalR) : new Decimal(0);
+        const taxableR = subtotalR.minus(discountAmountR);
+        const taxRateR = taxableR.gt(0) ? taxAmountR.dividedBy(taxableR) : new Decimal(0);
+        const expectedNetRevenue = round2(expectedGrossNet.times(new Decimal(1).minus(discountRatioR)));
+        const expectedTotal = round2(expectedNetRevenue.plus(round2(expectedNetRevenue.times(taxRateR))));
+        // يجب أن يكون التراكمي على الفاتورة شاملاً قيمة هذا المرتجع (وإلا فبصمة الكيان مختلفة).
+        const cumulativeReturned = money(replayInv.returnedTotal ?? "0");
+        if (cumulativeReturned.lt(expectedTotal)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لمرتجع بقيمة مختلفة",
+          });
+        }
+        const fullyReturnedReplay =
+          replayInv.status === "RETURNED" ||
+          replayItems.every((r) => (r.returnedBaseQuantity ?? 0) >= r.baseQuantity);
+        return {
+          invoiceId: input.invoiceId,
+          returnedTotal: expectedTotal.toFixed(2),
+          fullyReturned: fullyReturnedReplay,
+          idempotentReplay: true as const,
+        };
       }
     }
 
@@ -192,7 +253,7 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
         status: "COMPLETED",
         createdBy: actor.userId,
       });
-      const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_OUT",
         branchId: Number(inv.branchId),

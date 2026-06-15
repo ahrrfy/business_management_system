@@ -5,6 +5,7 @@
 import CustomerPicker from "@/components/CustomerPicker";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { confirm } from "@/lib/confirm";
+import { notify } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
 import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printDoc, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
@@ -289,8 +290,6 @@ export default function POS() {
   const [bridge,         setBridge]         = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
   const [showCustPicker, setShowCustPicker] = useState(false);
   const [draftRestored,  setDraftRestored]  = useState(false);
-  const [message,        setMessage]        = useState<{ kind: "ok" | "err"; text: string } | null>(null);
-  const [lastInvoiceId,  setLastInvoiceId]  = useState<number | null>(null);
 
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -372,21 +371,27 @@ export default function POS() {
     (selectedCustomer?.defaultPriceTier as Tier | undefined) ??
     "RETAIL";
 
-  const total  = cart.reduce((s, c) => s + itemTotal(c), 0);
-  const paid   = Number(activeTab.payInput || 0);
-  const change = paid - total;
-  const credit = total - paid;
-  const isCredit = paid > 0 && paid < total;
-  const isChange = paid > 0 && paid >= total;
+  // §٥: حساب الإجمالي/المدفوع/الباقي/الفكّة بدقّة Decimal (لا JS Number) — يصون المبالغ
+  // على المطبوعات (إيصال + شاشة) ويلغي انجراف 0.1+0.2=0.30000000000000004.
+  const totalD  = cart.reduce((s, c) => s.plus(D(itemTotal(c))), D(0));
+  const paidD   = D(activeTab.payInput || 0);
+  const changeD = paidD.minus(totalD);
+  const creditD = totalD.minus(paidD);
+  const total   = round2(totalD).toNumber();
+  const paid    = round2(paidD).toNumber();
+  const change  = round2(changeD).toNumber();
+  const credit  = round2(creditD).toNumber();
+  const isCredit = paidD.gt(0) && paidD.lt(totalD);
+  const isChange = paidD.gt(0) && paidD.gte(totalD);
 
   // §٩ IQD denomination rounding: مبلغ نقدي يُرسل إلى الخادم بعد التقريب لأقرب ٢٥٠ د.ع.
   // الكاشير يرى المبلغ الفعلي الذي سيُسجَّل (شارة أسفل لوحة المفاتيح).
   // غير النقدي (CARD/TRANSFER/CHECK/WALLET) لا يُقرَّب — التحويلات قد تكون كسرية.
-  const cashRoundedPaidD = activeTab.method === "CASH" ? roundCashIQD(paid) : D(paid);
-  const cashRoundedTotalD = activeTab.method === "CASH" ? roundCashIQD(total) : D(total);
+  const cashRoundedPaidD = activeTab.method === "CASH" ? roundCashIQD(paidD.toFixed(2)) : paidD;
+  const cashRoundedTotalD = activeTab.method === "CASH" ? roundCashIQD(totalD.toFixed(2)) : totalD;
   const cashRoundedPaid = cashRoundedPaidD.toNumber();
   const cashRoundedTotal = cashRoundedTotalD.toNumber();
-  const cashRoundingDelta = activeTab.method === "CASH" ? cashRoundedTotalD.minus(D(total)).toNumber() : 0;
+  const cashRoundingDelta = activeTab.method === "CASH" ? cashRoundedTotalD.minus(totalD).toNumber() : 0;
 
   // ── Search ────────────────────────────────────────────────────────────────
   // بحث ذكي: تأجيل ١٨٠ms (طلب واحد بعد استقرار الكتابة لا مع كل حرف) + إبقاء النتائج
@@ -404,11 +409,10 @@ export default function POS() {
   // ── Cart ops ──────────────────────────────────────────────────────────────
   function addRow(row: PosRow) {
     if (row.price == null) {
-      setMessage({ kind: "err", text: `لا سعر لـ ${row.productName} (${row.unitName}) في فئة ${TIER_LABEL[effectiveTier]}` });
+      notify.err(`لا سعر لـ ${row.productName} (${row.unitName}) في فئة ${TIER_LABEL[effectiveTier]}`);
       return;
     }
     if (receipt) setReceipt(null);
-    setMessage(null);
     setCart((prev) => {
       const i = prev.findIndex((c) => c.row.productUnitId === row.productUnitId);
       if (i >= 0) {
@@ -442,10 +446,10 @@ export default function POS() {
     if (!code) return;
     try {
       const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
-      if (!row) setMessage({ kind: "err", text: `باركود غير معروف: ${code}` });
+      if (!row) notify.err(`باركود غير معروف: ${code}`);
       else addRow(row);
     } catch (e: unknown) {
-      setMessage({ kind: "err", text: (e as Error)?.message ?? "خطأ في المسح" });
+      notify.err(e, "خطأ في المسح");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [branchId, effectiveTier]);
@@ -459,7 +463,7 @@ export default function POS() {
       setSearch("");
     } else if (result.type === "customer") {
       setCustId(result.id);
-      setMessage({ kind: "ok", text: `تم تحديد العميل #${result.id}` });
+      notify.ok(`تم تحديد العميل #${result.id}`);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lookupBarcode]);
@@ -513,9 +517,13 @@ export default function POS() {
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const sale = trpc.sales.create.useMutation({
     onSuccess: async (r) => {
-      const finalReceived = isCredit ? paid  : total;
-      const finalChange   = isCredit ? 0     : paid - total;
-      const finalCredit   = isCredit ? total - paid : 0;
+      // §٥: مبالغ الإيصال بدقّة Decimal — تُطبع على الإيصال الحراري والشاشة بلا انجراف float.
+      const finalReceivedD = isCredit ? paidD : totalD;
+      const finalChangeD   = isCredit ? D(0)  : paidD.minus(totalD);
+      const finalCreditD   = isCredit ? totalD.minus(paidD) : D(0);
+      const finalReceived  = round2(finalReceivedD).toNumber();
+      const finalChange    = round2(finalChangeD).toNumber();
+      const finalCredit    = round2(finalCreditD).toNumber();
       const now = new Date();
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber,
@@ -536,9 +544,8 @@ export default function POS() {
       };
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total });
-      setLastInvoiceId(r.invoiceId);
       clearCartDraft(branchId);
-      setMessage({ kind: "ok", text: `تم البيع ✓ فاتورة ${r.invoiceNumber}` });
+      notify.ok(`تم البيع ✓ فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       setCart([]); setPayInput(""); setSelId(null);
       setClientRequestId(crypto.randomUUID()); // مفتاح جديد للبيع التالي
 
@@ -553,15 +560,14 @@ export default function POS() {
     onError: (e) => {
       if ((e.data as unknown as { code?: string })?.code === "PRECONDITION_FAILED")
         setCreditPrompt(e.message);
-      else setMessage({ kind: "err", text: e.message });
+      else notify.err(e);
     },
   });
 
   function submitSale(approval?: { email: string; password: string }) {
     if (!shift || !cart.length) return;
-    setMessage(null);
     if (isCredit && activeTab.customerId == null) {
-      setMessage({ kind: "err", text: "البيع الآجل يتطلّب اختيار عميل." });
+      notify.err("البيع الآجل يتطلّب اختيار عميل.");
       return;
     }
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
@@ -586,7 +592,6 @@ export default function POS() {
 
   function quickPay() {
     if (!shift || !cart.length) return;
-    setMessage(null);
     // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
     const payAmount = money(total);
     sale.mutate({
@@ -615,7 +620,7 @@ export default function POS() {
         footer: "بداية الوردية",
       });
     },
-    onError: (e) => setMessage({ kind: "err", text: e.message }),
+    onError: (e) => notify.err(e),
   });
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
@@ -641,7 +646,7 @@ export default function POS() {
             })();
           }
           break;
-        case "Escape": setShowDrop(false); setMessage(null); break;
+        case "Escape": setShowDrop(false); break;
       }
     }
     window.addEventListener("keydown", onKey);
@@ -650,8 +655,8 @@ export default function POS() {
   }, [cart, sale.isPending, receipt, creditPrompt, shifting]);
 
   const connectPrinter = async () => {
-    try { await pairPrinter(); setPrinterReady(true); }
-    catch (e: unknown) { setMessage({ kind: "err", text: (e as Error)?.message ?? "تعذّر ربط الطابعة" }); }
+    try { await pairPrinter(); setPrinterReady(true); notify.ok("تم ربط الطابعة"); }
+    catch (e: unknown) { notify.err(e, "تعذّر ربط الطابعة"); }
   };
 
   // حالة جسر الطباعة على الخادم (إن ضُبط PRINT_TARGET ⇒ طباعة صامتة لأي طابعة، بلا WebUSB).
@@ -675,9 +680,8 @@ export default function POS() {
 
   const testServerPrint = async () => {
     const r = await serverPrintTest();
-    setMessage(r.ok
-      ? { kind: "ok", text: "أُرسلت تذكرة اختبار للطابعة عبر الخادم" }
-      : { kind: "err", text: r.error ?? "فشل اختبار الطباعة" });
+    if (r.ok) notify.ok("أُرسلت تذكرة اختبار للطابعة عبر الخادم");
+    else notify.err(r.error ?? "فشل اختبار الطباعة");
   };
 
   // ── Shift open screen ─────────────────────────────────────────────────────
@@ -703,9 +707,6 @@ export default function POS() {
               style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box" }}
             />
           </div>
-          {message && (
-            <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : C.danger, marginBottom: 12 }}>{message.text}</div>
-          )}
           <button
             disabled={openShift.isPending}
             onClick={() => openShift.mutate({ branchId, openingBalance: opening })}
@@ -749,17 +750,6 @@ export default function POS() {
 
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
-
-      {/* Message bar */}
-      {message && (
-        <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "oklch(0.95 0.05 155)" : "oklch(0.95 0.05 27)", color: message.kind === "ok" ? C.success : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-          <span>{message.text}</span>
-          {message.kind === "ok" && lastInvoiceId != null && (
-            <Link href={`/invoices/${lastInvoiceId}`} style={{ color: C.primary, textDecoration: "underline", fontSize: 12 }}>فتح الفاتورة</Link>
-          )}
-          <button onClick={() => setMessage(null)} style={{ marginRight: "auto", background: "none", border: "none", cursor: "pointer", fontSize: 14, color: C.mutedFg }}>✕</button>
-        </div>
-      )}
 
       {/* Body */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden", padding: "7px 8px 8px", gap: 7, minHeight: 0 }}>

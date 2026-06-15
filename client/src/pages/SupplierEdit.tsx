@@ -2,14 +2,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { fmtAr as fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
-
-function fmt(s: string | number | null | undefined): string {
-  if (s === null || s === undefined || s === "") return "—";
-  return Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-}
 
 export default function SupplierEdit() {
   const [, params] = useRoute<{ id: string }>("/suppliers/:id/edit");

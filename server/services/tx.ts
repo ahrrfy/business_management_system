@@ -15,7 +15,15 @@ export async function withTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return requireDb().transaction(fn);
 }
 
-/** The acting user + branch context for a business operation. role اختياري — حين يُمرَّر
- *  من الموجّه يُمكّن فحوصات صلاحية على مستوى الخدمة (نمط productionService.assertProductionBranch)
- *  حيث لا يكفي حارس procedure (مثلاً: عزل عبر الفرع لمدير غير admin). */
+/**
+ * Actor يُمثّل المستخدم المُنفِّذ للعملية. يُمرَّر إلى كل خدمة كتابة:
+ * - userId: معرّف المستخدم (users.id) — للتدقيق + ملكية الوردية.
+ * - branchId: معرّف الفرع الذي يَنتمي إليه المستخدم (users.branchId) — لعزل الفروع.
+ * - role: دور المستخدم (admin/manager/cashier/warehouse) — للـRBAC على cross-branch وكشف التكلفة.
+ * تأكَّد من تَمرير role من ctx.user.role في كل الراوترات.
+ *
+ * ملاحظة: role اختياري حفاظاً على التوافق الخلفي، لكن الخدمات التي تَفحص الصلاحية
+ * على مستوى الخدمة (مثل productionService.assertProductionBranch، عزل الفروع لغير
+ * admin، حجب التكلفة عن الكاشير) تَعتمد عليه — تَمريره من ctx.user.role إلزامي عملياً.
+ */
 export type Actor = { userId: number; branchId: number; role?: string };

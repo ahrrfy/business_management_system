@@ -23,6 +23,8 @@ import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
+import { assertCreditLimit } from "../lib/credit";
+import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -163,7 +165,7 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
       deliveryAddress: input.deliveryAddress?.trim() || null,
       deliveryCost: input.deliveryCost ? round2(money(input.deliveryCost)).toFixed(2) : "0.00",
     });
-    const workOrderId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+    const workOrderId = extractInsertId(insRes);
     // سجّل مفتاح الـidempotency فوراً بعد إدراج الأمر — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قبض العربون.
     if (input.clientRequestId) await recordIdempotencyKey(tx, "workOrder.create", input.clientRequestId, workOrderId);
 
@@ -186,13 +188,14 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
         status: "COMPLETED",
         createdBy: actor.userId,
       });
-      const depositReceiptId = Number((dRes as any)[0]?.insertId ?? (dRes as any).insertId);
+      const depositReceiptId = extractInsertId(dRes);
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
         receiptId: depositReceiptId,
         customerId: input.customerId ?? null,
         amount: depositD,
+        notes: `[WO_DEPOSIT:${workOrderId}]`,
       });
     }
 
@@ -344,6 +347,12 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     if (totalPaid.lt(salePrice) && !wo.customerId)
       throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشغل الآجل يتطلب عميلاً محدداً" });
 
+    // H5: فحص حدّ الائتمان على الجزء الآجل قبل إنشاء الفاتورة (يَرمي FORBIDDEN عند التجاوز).
+    const unpaidPortion = round2(salePrice.minus(totalPaid));
+    if (wo.customerId && unpaidPortion.gt(0)) {
+      await assertCreditLimit(tx, Number(wo.customerId), unpaidPortion, Number(wo.branchId));
+    }
+
     // Invoice number — reuse the invoice numbering (per-branch daily seq).
     const { nextInvoiceNumber } = await import("./numbering");
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
@@ -368,7 +377,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       notes: `أمر شغل ${wo.orderNumber}: ${wo.title}`,
       createdBy: actor.userId,
     });
-    const invoiceId = Number((invRes as any)[0]?.insertId ?? (invRes as any).insertId);
+    const invoiceId = extractInsertId(invRes);
 
     await tx.insert(invoiceItems).values({
       invoiceId,
@@ -416,6 +425,8 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     if (paidNow.gt(0)) {
       // انسب الدفع النقدي لوردية الموظّف المفتوحة (تسوية الصندوق/Z-report).
       const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId));
+      if (input.payment!.method === "CASH" && shiftId == null)
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يَلزم وردية مفتوحة للدفع النقدي" });
       const rRes = await tx.insert(receipts).values({
         branchId: Number(wo.branchId),
         shiftId,
@@ -426,7 +437,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         invoiceId,
         createdBy: actor.userId,
       });
-      const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: Number(wo.branchId),
@@ -497,7 +508,7 @@ export async function cancelWorkOrder(workOrderId: number, actor: Actor & { role
           referenceNumber: `WO-CANCEL-REFUND-${workOrderId}`,
           createdBy: actor.userId,
         });
-        const refundReceiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+        const refundReceiptId = extractInsertId(rRes);
         await postEntry(tx, {
           entryType: "PAYMENT_OUT",
           branchId: Number(wo.branchId),

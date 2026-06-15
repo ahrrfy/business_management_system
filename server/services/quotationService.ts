@@ -17,6 +17,7 @@ import { money, toDateStr } from "./money";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { createSale } from "./saleService";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -114,7 +115,7 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor)
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });
-    const quotationId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+    const quotationId = extractInsertId(insRes);
 
     for (const c of computed) {
       await tx.insert(quotationItems).values({

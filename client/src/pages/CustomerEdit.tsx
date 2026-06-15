@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
+import { fmtAr as fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
@@ -12,11 +13,6 @@ const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكوم�
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-function fmt(s: string | number | null | undefined): string {
-  if (s === null || s === undefined || s === "") return "—";
-  return Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-}
 
 export default function CustomerEdit() {
   const [, params] = useRoute<{ id: string }>("/customers/:id/edit");

@@ -15,6 +15,8 @@ import { nextInvoiceNumber } from "./numbering";
 import { openShiftIdTx } from "./shiftService";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
+import { assertCreditLimit } from "../lib/credit";
+import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -82,6 +84,13 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     // 2. Shift must be OPEN and belong to the branch (when provided — POS).
     //    .for("update") يُسَلْسِل البيع مع closeShift على نفس الصفّ ⇒ إمّا يقفل البيع قبل
     //    الإغلاق ويُحتسَب، أو يُرفض إن سبق الإغلاق فلا يدخل receipt بعد قطع الـZ-report.
+    const isCashPayment = input.payment?.method === "CASH" && money(input.payment?.amount ?? "0").gt(0);
+    if (isCashPayment && (input.shiftId == null)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "يَلزم وردية مفتوحة للبيع النقدي",
+      });
+    }
     if (input.shiftId) {
       const s = await tx
         .select()
@@ -96,13 +105,11 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 
     // 3. Resolve the effective price tier.
     let customerTier: PriceTier | null = null;
-    let customerCredit: { limit: ReturnType<typeof money>; balance: ReturnType<typeof money> } | null = null;
     if (input.customerId) {
       // قفل صفّ العميل: يُسلسِل البيوع الآجلة المتزامنة فلا يتجاوز اثنان حدّ الائتمان معاً.
       const c = await tx.select().from(customers).where(eq(customers.id, input.customerId)).for("update").limit(1);
       if (!c[0]) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
       customerTier = c[0].defaultPriceTier as PriceTier;
-      customerCredit = { limit: money(c[0].creditLimit ?? "0"), balance: money(c[0].currentBalance ?? "0") };
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
 
@@ -167,15 +174,9 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
-    // 7.b فحص حدّ الائتمان: إن تجاوز الرصيد المتوقّع السقف ⇒ موافقة مدير (creditApproved).
-    if (unpaid.gt(0) && customerCredit && customerCredit.limit.gt(0) && !input.creditApproved) {
-      const projected = customerCredit.balance.plus(unpaid);
-      if (projected.gt(customerCredit.limit)) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: `تجاوز حدّ الائتمان: الرصيد بعد البيع ${projected.toFixed(2)} يتجاوز السقف ${customerCredit.limit.toFixed(2)} — تلزم موافقة مدير.`,
-        });
-      }
+    // 7.b فحص حدّ الائتمان (H4): null=بلا حدّ، 0=حظر آجل، >0=فحص الإسقاط. موافقة المدير تتجاوز.
+    if (unpaid.gt(0) && input.customerId && !input.creditApproved) {
+      await assertCreditLimit(tx, input.customerId, unpaid, input.branchId);
     }
 
     // 8. Invoice header.
@@ -204,7 +205,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });
-    const invoiceId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+    const invoiceId = extractInsertId(insRes);
 
     // 9. Items.
     for (const c of computed) {
@@ -276,7 +277,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         status: "COMPLETED",
         createdBy: actor.userId,
       });
-      const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,
@@ -352,11 +353,46 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الدفع على فاتورة ملغاة أو مرتجعة" });
     }
+    if (inv.status === "PAID") {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة مدفوعة بالكامل" });
+    }
     const amount = money(input.amount);
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
 
+    // إن مُرِّر shiftId: تَحقّق من حالة الوردية وملكيتها (M5 + M9).
+    if (input.shiftId != null) {
+      const sRows = await tx
+        .select()
+        .from(shifts)
+        .where(eq(shifts.id, input.shiftId))
+        .for("update")
+        .limit(1);
+      const s = sRows[0];
+      if (!s) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
+      }
+      if (s.status !== "OPEN") {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الوردية مغلقة" });
+      }
+      const role = actor.role;
+      if (role !== "admin" && role !== "manager") {
+        if (Number(s.userId) !== Number(actor.userId)) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "لا تَستطيع التسجيل على وردية مستخدم آخر",
+          });
+        }
+      }
+    }
     // انسب الدفع النقدي لوردية الموظّف المفتوحة إن لم يُمرَّر صراحةً (تسوية الصندوق).
     const shiftId = input.shiftId ?? (await openShiftIdTx(tx, actor.userId, Number(inv.branchId)));
+    // M5/M8: النقد يَستوجب وردية مفتوحة (سواء مُرِّرت صراحةً أو حُلّت من المستخدم).
+    if (input.method === "CASH" && shiftId == null) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "يَلزم وردية مفتوحة للبيع النقدي",
+      });
+    }
     const rRes = await tx.insert(receipts).values({
       invoiceId: input.invoiceId,
       branchId: Number(inv.branchId),
@@ -367,7 +403,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       status: "COMPLETED",
       createdBy: actor.userId,
     });
-    const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+    const receiptId = extractInsertId(rRes);
     if (input.clientRequestId) await recordIdempotencyKey(tx, "sale.pay", input.clientRequestId, receiptId);
 
     const newPaid = money(inv.paidAmount).plus(amount);

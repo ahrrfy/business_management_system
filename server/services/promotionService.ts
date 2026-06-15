@@ -10,6 +10,7 @@ import { desc, eq } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import { employeePromotions, employees, employeeTerminations } from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
 import { postEntry } from "./ledgerService";
 
@@ -61,26 +62,28 @@ export interface PromotionInput {
 }
 
 export async function createPromotion(input: PromotionInput) {
-  const db = requireDb();
-  const [emp] = await db.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
-  if (!emp) throw new Error("الموظف غير موجود");
-  // لقطة الحالة الحالية افتراضياً إن لم يمررها المستخدم.
-  const fromTitle = input.fromTitle?.trim() || emp.position || null;
-  const fromSalary =
-    input.fromSalary != null && input.fromSalary !== ""
-      ? toDbMoney(input.fromSalary)
-      : emp.salary ?? null;
-  const [res] = await db.insert(employeePromotions).values({
-    employeeId: input.employeeId,
-    fromTitle,
-    toTitle: input.toTitle.trim(),
-    fromSalary,
-    toSalary: input.toSalary != null && input.toSalary !== "" ? toDbMoney(input.toSalary) : null,
-    effectiveDate: input.effectiveDate,
-    reason: input.reason?.trim() || null,
-    status: "pending",
+  const newId = await withTx(async (tx) => {
+    const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).for("update").limit(1);
+    if (!emp) throw new Error("الموظف غير موجود");
+    // لقطة الحالة الحالية افتراضياً إن لم يمررها المستخدم.
+    const fromTitle = input.fromTitle?.trim() || emp.position || null;
+    const fromSalary =
+      input.fromSalary != null && input.fromSalary !== ""
+        ? toDbMoney(input.fromSalary)
+        : emp.salary ?? null;
+    const [res] = await tx.insert(employeePromotions).values({
+      employeeId: input.employeeId,
+      fromTitle,
+      toTitle: input.toTitle.trim(),
+      fromSalary,
+      toSalary: input.toSalary != null && input.toSalary !== "" ? toDbMoney(input.toSalary) : null,
+      effectiveDate: input.effectiveDate,
+      reason: input.reason?.trim() || null,
+      status: "pending",
+    });
+    return extractInsertId(res);
   });
-  return getPromotion(Number((res as { insertId: number }).insertId));
+  return getPromotion(newId);
 }
 
 async function getPromotion(id: number) {
@@ -161,18 +164,20 @@ export interface TerminationInput {
 }
 
 export async function createTermination(input: TerminationInput) {
-  const db = requireDb();
-  const [emp] = await db.select().from(employees).where(eq(employees.id, input.employeeId)).limit(1);
-  if (!emp) throw new Error("الموظف غير موجود");
-  const [res] = await db.insert(employeeTerminations).values({
-    employeeId: input.employeeId,
-    terminationType: input.terminationType.trim(),
-    lastDay: input.lastDay,
-    settlement: toDbMoney(input.settlement ?? "0"),
-    reason: input.reason?.trim() || null,
-    status: "pending",
+  const newId = await withTx(async (tx) => {
+    const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).for("update").limit(1);
+    if (!emp) throw new Error("الموظف غير موجود");
+    const [res] = await tx.insert(employeeTerminations).values({
+      employeeId: input.employeeId,
+      terminationType: input.terminationType.trim(),
+      lastDay: input.lastDay,
+      settlement: toDbMoney(input.settlement ?? "0"),
+      reason: input.reason?.trim() || null,
+      status: "pending",
+    });
+    return extractInsertId(res);
   });
-  return getTermination(Number((res as { insertId: number }).insertId));
+  return getTermination(newId);
 }
 
 async function getTermination(id: number) {

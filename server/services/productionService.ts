@@ -11,7 +11,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray, like, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, sql } from "drizzle-orm";
 import {
   branchStock,
   branches,
@@ -28,6 +28,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr } from "./money";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 export interface ProductionLineInput {
   variantId: number;
@@ -324,7 +325,7 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
       linkedRecipeId,
       createdBy: actor.userId,
     });
-    const productionOrderId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+    const productionOrderId = extractInsertId(insRes);
     // سجّل مفتاح idempotency فوراً ⇒ طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى قبل أي حركة مخزون.
     if (input.clientRequestId) await recordIdempotencyKey(tx, "production.create", input.clientRequestId, productionOrderId);
 
@@ -399,7 +400,7 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
 
     // اقفل صفوف رصيد المخرجات ثم اقرأ SUM العالمي **قبل** أي إدخال (مطابقة purchaseService).
     const outVarList = Array.from(new Set(outLines.map((l) => l.variantId)));
-    await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, outVarList)).for("update");
+    await tx.select({ id: branchStock.id }).from(branchStock).where(inArray(branchStock.variantId, outVarList)).orderBy(asc(branchStock.variantId)).for("update");
     const stockRows = await tx
       .select({ variantId: branchStock.variantId, totalQty: sql<string>`COALESCE(SUM(${branchStock.quantity}), 0)` })
       .from(branchStock)

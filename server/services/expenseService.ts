@@ -8,6 +8,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 export type ExpensePaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 export type ExpenseCategory =
@@ -113,7 +114,7 @@ async function createStockExpenseTx(tx: any, input: CreateExpenseInput, actor: A
     status: "ACTIVE",
     createdBy: actor.userId,
   });
-  const expenseId = Number((eRes as any)[0]?.insertId ?? (eRes as any).insertId);
+  const expenseId = extractInsertId(eRes);
   if (input.clientRequestId) await recordIdempotencyKey(tx, "expense.create", input.clientRequestId, expenseId);
 
   // خصم المخزون (تصاعدياً بـvariantId) + snapshot الكلفة + أسطر الأصناف.
@@ -211,7 +212,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       status: "COMPLETED",
       createdBy: actor.userId,
     });
-    const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+    const receiptId = extractInsertId(rRes);
 
     const expDate = input.expenseDate?.trim() || toDateStr();
     const isRecurring = !!input.isRecurring;
@@ -234,7 +235,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       status: "ACTIVE",
       createdBy: actor.userId,
     });
-    const expenseId = Number((eRes as any)[0]?.insertId ?? (eRes as any).insertId);
+    const expenseId = extractInsertId(eRes);
     // سجّل مفتاح الـidempotency — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قيد الصرف.
     if (input.clientRequestId) await recordIdempotencyKey(tx, "expense.create", input.clientRequestId, expenseId);
 
@@ -330,7 +331,7 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       referenceNumber: `CANCEL-EXP-${expenseId}`,
       createdBy: actor.userId,
     });
-    const compReceiptId = Number((compRes as any)[0]?.insertId ?? (compRes as any).insertId);
+    const compReceiptId = extractInsertId(compRes);
 
     await postEntry(tx, {
       entryType: "ADJUST",

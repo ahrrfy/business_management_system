@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { cancelExpense, createExpense } from "../expenseService";
+import { sumMoney } from "../money";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
@@ -144,8 +145,8 @@ describe("صرف المخزون: الإلغاء", () => {
     // قيدان INTERNAL_USE (تقدّم + عكس) صافي amount = 0.
     const iu = await entries("INTERNAL_USE");
     expect(iu).toHaveLength(2);
-    const net = iu.reduce((a: number, e: any) => a + Number(e.amount), 0);
-    expect(net).toBeCloseTo(0, 2);
+    // المجموع على decimal أصيل (لا floats) — يجب أن يكون صفراً بالضبط لا «قريباً منه».
+    expect(sumMoney(iu.map((e: any) => e.amount)).isZero()).toBe(true);
     // الإلغاء لا ينشئ أي receipt (لا نقد).
     expect(await db().select().from(s.receipts)).toHaveLength(0);
   });

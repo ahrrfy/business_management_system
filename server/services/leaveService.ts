@@ -10,6 +10,7 @@ import { and, desc, eq, getTableColumns, gte, lte, ne, sql } from "drizzle-orm";
 import { fullEmployeeName, leaveTypeIsPaid } from "@shared/hr";
 import { employees, leaveRequests } from "../../drizzle/schema";
 import { requireDb, withTx } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 /** عدد الأيام شاملاً الطرفين من تاريخين "YYYY-MM-DD" — يُحسب بتقويم UTC ثابت (مستقلّ عن منطقة الخادم). */
 function daysInclusive(from: string, to: string): number {
@@ -108,7 +109,7 @@ export async function createLeave(input: LeaveInput) {
       status: "pending",
       reason: input.reason?.trim() || null,
     });
-    return Number((res as { insertId: number }).insertId);
+    return extractInsertId(res);
   });
   const [created] = await listLeavesByIds(id);
   return created;

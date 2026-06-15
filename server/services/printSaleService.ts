@@ -34,6 +34,7 @@ import { money, round2, roundCashIQD, toDbMoney } from "./money";
 import { nextInvoiceNumber } from "./numbering";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 /** علامة نوع المنتج لخدمات الطباعة: لا مخزون ذاتي، والاستهلاك عبر وصفة المواد فقط.
  *  (مخزّنة في products.productType — لا تحتاج تغيير مخطّط.) */
@@ -277,7 +278,7 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });
-    const invoiceId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+    const invoiceId = extractInsertId(insRes);
 
     // ١٠. الأصناف (الخدمات). لا خصم مخزون ذاتي للخدمة (متغيّر الخدمة بلا رصيد).
     for (const c of computed) {
@@ -353,7 +354,7 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
         status: "COMPLETED",
         createdBy: actor.userId,
       });
-      const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_IN",
         branchId: input.branchId,

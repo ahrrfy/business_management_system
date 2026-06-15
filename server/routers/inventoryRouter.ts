@@ -50,7 +50,21 @@ export const inventoryRouter = router({
         fromBranchId = Number(ctx.user.branchId);
       }
       const res = await withTx((tx) => transferBetweenBranches(tx, { ...input, fromBranchId, createdBy: ctx.user.id }));
-      await logAudit(ctx, { action: "inventory.transfer", entityType: "stock", entityId: input.variantId, newValue: { from: fromBranchId, to: input.toBranchId, qty: input.baseQuantity } });
+      // entityType='transfer' لأن العملية تُعدّل صفّي مخزون (out+in) ومرجعها منطقياً «حدث نقل»
+      // لا صفّ stock مفرد؛ المفاتيح بصيغة كاملة (fromBranchId/toBranchId) لاتساق سجلّ التدقيق
+      // مع بقية الراوترات (sale/purchase). الكمية في الوحدة الأساس (baseQuantity).
+      await logAudit(ctx, {
+        action: "inventory.transfer",
+        entityType: "transfer",
+        entityId: input.variantId,
+        newValue: {
+          variantId: input.variantId,
+          fromBranchId,
+          toBranchId: input.toBranchId,
+          baseQuantity: input.baseQuantity,
+          notes: input.notes ?? null,
+        },
+      });
       return res;
     }),
 

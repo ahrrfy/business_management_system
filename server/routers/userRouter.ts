@@ -1,5 +1,5 @@
-import { PASSWORD_MIN_LEN } from "@shared/const";
-import { ALL_ROLES } from "@shared/permissions";
+import { PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG, PASSWORD_REGEX } from "@shared/const";
+import { ALL_ROLES, type RoleKey } from "@shared/permissions";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
@@ -14,7 +14,8 @@ import {
 } from "../services/userService";
 import { adminProcedure, protectedProcedure, router } from "../trpc";
 
-const ROLE = z.enum(ALL_ROLES as [string, ...string[]]);
+// تحفظ tuple الـenum أنواع RoleKey الحرفية ⇒ z.infer ينتج RoleKey لا string ⇒ يُغني عن as any.
+const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
 const ACCESS = z.enum(["FULL", "READ", "NONE"]);
 const PERM_OVERRIDE = z.record(z.string(), ACCESS).nullish();
 
@@ -48,7 +49,11 @@ export const userRouter = router({
     .input(
       z.object({
         email: z.string().email().max(320),
-        password: z.string().min(PASSWORD_MIN_LEN).max(128),
+        password: z
+          .string()
+          .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
+          .max(128)
+          .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
         name: z.string().min(1).max(255),
         role: ROLE.default("cashier"),
         branchId: z.number().int().positive().nullish(),
@@ -60,7 +65,7 @@ export const userRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createUser(input as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await createUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
         action: "user.create",
         entityType: "user",
@@ -85,7 +90,7 @@ export const userRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await updateUser(input as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await updateUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
         action: "user.update",
         entityType: "user",
@@ -114,7 +119,11 @@ export const userRouter = router({
     .input(
       z.object({
         userId: z.number().int().positive(),
-        newPassword: z.string().min(PASSWORD_MIN_LEN).max(128),
+        newPassword: z
+          .string()
+          .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
+          .max(128)
+          .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
         mustChangePassword: z.boolean().default(true),
       })
     )
@@ -139,7 +148,11 @@ export const userRouter = router({
     .input(
       z.object({
         oldPassword: z.string().min(1),
-        newPassword: z.string().min(PASSWORD_MIN_LEN).max(128),
+        newPassword: z
+          .string()
+          .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
+          .max(128)
+          .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
       })
     )
     .mutation(async ({ input, ctx }) => {

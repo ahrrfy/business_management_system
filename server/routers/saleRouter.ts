@@ -19,6 +19,7 @@ import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
 import { branchScopedProcedure, canSeeCost, cashierProcedure, router } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
+import { positiveMoneyString } from "../lib/schemas";
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -41,10 +42,13 @@ function _trackMgrAttempt(email: string): boolean {
 }
 
 /** يتحقّق من هوية مدير (بريد + كلمة مرور) لاعتماد تجاوز حدّ الائتمان. يعيد معرّف المدير.
- *  مُحصَّن: rate limit بالبريد، توقيت ثابت ≥٣٠٠ms، وكل فشل يُسجَّل في auditLogs. */
+ *  مُحصَّن: rate limit بالبريد، توقيت ثابت ≥٣٠٠ms، وكل فشل يُسجَّل في auditLogs.
+ *  عزل الفرع: admin يَعبر دائماً؛ manager يَجب أن يكون مدير نفس الفرع المُمرَّر (branchId).
+ *  (تدقيق ١٥/٦/٢٦): قبل الإصلاح كان أي manager في أي فرع يعتمد بيع فرع آخر — IDOR إداري. */
 export async function verifyManagerApproval(
   approval: { email: string; password: string },
   ctx: { user: { id: number; branchId?: number | null } },
+  branchId?: number,
 ): Promise<number> {
   const start = Date.now();
   const email = approval.email.trim().toLowerCase();
@@ -81,6 +85,16 @@ export async function verifyManagerApproval(
       newValue: { email, reason: !u ? "no_user" : (u.isActive === false ? "inactive" : "wrong_password_or_role") },
     });
     throw new TRPCError({ code: "FORBIDDEN", message: "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير)." });
+  }
+  // عزل الفرع: admin يَعبر؛ manager يَجب أن يَخدم فرع الفاتورة نفسه.
+  if (u.role === "manager" && branchId != null && Number(u.branchId) !== branchId) {
+    await logAudit(ctx as any, {
+      action: "sale.creditOverride.fail",
+      entityType: "user",
+      entityId: u.id,
+      newValue: { email, reason: "cross_branch", approverBranchId: u.branchId, saleBranchId: branchId },
+    });
+    throw new TRPCError({ code: "FORBIDDEN", message: "المعتمد ليس مدير هذا الفرع" });
   }
   return Number(u.id);
 }
@@ -142,7 +156,7 @@ export const saleRouter = router({
         lines: z.array(lineSchema).min(1),
         invoiceDiscount: z.string().optional(),
         taxRatePercent: z.string().optional(),
-        payment: z.object({ amount: z.string(), method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method }).optional(),
         // dueDate للبيع الآجل (YYYY-MM-DD) — يُحفظ على invoices.dueDate ليظهر في AR aging
         // ولينبّه على الفواتير المتأخرة. اختياري؛ إن غاب فلا تاريخ استحقاق محدّد.
         dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)").optional(),
@@ -170,7 +184,7 @@ export const saleRouter = router({
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
-      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx);
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
       const effectiveInput = { ...saleInput, branchId: effectiveBranchId, creditApproved: approvedBy != null };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {

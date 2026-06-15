@@ -50,6 +50,22 @@ export const roundCashIQD = (amount: string | number | null | undefined, denom: 
 export const fmtInt = (v: string | number | null | undefined) =>
   D(v).toDecimalPlaces(0, Decimal.ROUND_HALF_UP).toNumber().toLocaleString("ar-IQ-u-nu-latn");
 
+/** تنسيق مبلغ بـ**ar-IQ** locale (أرقام لاتينية) حتى منزلتين عشريتين — **بلا** لاحقة عملة.
+ *  null/undefined/"" ⇒ "—". مكافئ مركزي لتكرار Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 })
+ *  المنتشر في الصفحات (Customers/Suppliers/PurchaseReceive/WorkOrderDetail/SalesReport/BarcodeLabels…). */
+export const fmtAr = (v: string | number | null | undefined): string => {
+  if (v === null || v === undefined || v === "") return "—";
+  return round2(D(v)).toNumber().toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+};
+
+/** تنسيق مبلغ كاملاً بالدينار العراقي للعرض: ar-IQ locale + لاحقة "د.ع".
+ *  null/undefined/"" ⇒ "—". مثال: 1234.5 ⇒ "1,234.5 د.ع".
+ *  ⛔ ممنوع في حمولات الـAPI — للإرسال استعمل round2(D(v)).toFixed(2). */
+export const formatIqd = (v: string | number | null | undefined): string => {
+  if (v === null || v === undefined || v === "") return "—";
+  return `${fmtAr(v)} د.ع`;
+};
+
 /** نسبة كسرية (0.05) ⇒ نصّ مئوي "5%" (منزلة واحدة، تُجرَّد ".0"). */
 export const pct = (frac: string | number | null | undefined) =>
   `${Math.round((Number(frac ?? 0) * 100) * 10) / 10}`.replace(/\.0$/, "") + "%";

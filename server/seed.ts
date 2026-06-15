@@ -8,6 +8,7 @@ import { getDb } from "./db";
 import { createProduct } from "./services/catalogService";
 import { setStock } from "./services/inventoryService";
 import { withTx } from "./services/tx";
+import { extractInsertId } from "./lib/insertId";
 
 async function seed() {
   const db = getDb();
@@ -192,7 +193,7 @@ async function seed() {
         usefulLifeYears: a.life, depreciationMethod: a.method, condition: a.condition, warrantyEnd: a.warrantyEnd,
         status: a.status, disposalDate: a.disposalDate ?? null, disposalValue: a.disposalValue ?? null, disposalReason: a.disposalReason ?? null,
       });
-      const id = Number((res as { insertId: number }).insertId);
+      const id = extractInsertId(res);
       for (const c of a.custody) {
         const eid = empIdByCode.get(c.code);
         if (eid) await db.insert(assetCustodyLog).values({ assetId: id, employeeId: eid, fromDate: c.from, toDate: c.to, note: c.note ?? null });

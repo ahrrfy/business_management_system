@@ -7,6 +7,7 @@ import { desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { HR_FINGERPRINT_TARGET } from "@shared/hr";
 import { branches, hrFingerprintDevices } from "../../drizzle/schema";
 import { requireDb, withTx } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 /** قائمة الأجهزة مع اسم الفرع. الأحدث أولاً. */
 export async function listDevices() {
@@ -67,7 +68,7 @@ function toValues(input: DeviceInput) {
 export async function createDevice(input: DeviceInput) {
   const db = requireDb();
   const [res] = await db.insert(hrFingerprintDevices).values({ ...toValues(input), migrated: false });
-  return getDevice(Number((res as { insertId: number }).insertId));
+  return getDevice(extractInsertId(res));
 }
 
 export async function updateDevice(id: number, input: DeviceInput) {

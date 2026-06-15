@@ -21,6 +21,7 @@ import {
 import { convertToBaseQuantity } from "./inventoryService";
 import { money, round2 } from "./money";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 export interface RecipeLineInput {
   inputVariantId: number;
@@ -183,7 +184,7 @@ export async function createRecipe(input: CreateRecipeInput, actor: Actor) {
       isActive: true,
       createdBy: actor.userId,
     });
-    const recipeId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+    const recipeId = extractInsertId(insRes);
     for (const l of input.lines) {
       await tx.insert(productionRecipeLines).values({
         recipeId,

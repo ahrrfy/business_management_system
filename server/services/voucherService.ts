@@ -10,7 +10,7 @@
 //
 // الذرّية: كلّها داخل withTx ⇒ rollback كامل عند أي خطأ.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, isNotNull, like, lt } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, like, lt, sql } from "drizzle-orm";
 import {
   customers,
   receipts,
@@ -29,6 +29,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { money, toDateStr, toDbMoney } from "./money";
 import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 type PartyType = "CUSTOMER" | "SUPPLIER" | "OTHER";
@@ -55,23 +56,41 @@ export interface VoucherResult {
   direction: "IN" | "OUT";
 }
 
-/** يولّد رقم سند تسلسلي يومي للفرع: RV-1-20260609-00001 أو PV-1-20260609-00001 */
+/** يولّد رقم سند تسلسلي يومي للفرع: RV-1-20260609-00001 أو PV-1-20260609-00001
+ *
+ * Race protection عبر GET_LOCK المربوط بالاتصال: SELECT...FOR UPDATE بنطاق LIKE
+ * لا يَقفل صفوفاً غير موجودة في InnoDB ⇒ معاملتان متزامنتان قد تَقرآن نفس MAX
+ * وتُولّدان نفس seq. القفل بنطاق (voucher:type:branchId:ymd) يَمنع التضارب على
+ * مستوى الفرع/النوع/اليوم. الفهرس الفريد على voucherNumber يبقى الحارس الأخير
+ * (راوتر يُعيد المحاولة على ER_DUP_ENTRY).
+ */
 async function nextVoucherNumber(
   tx: Parameters<Parameters<typeof withTx>[0]>[0],
   voucherType: "RECEIPT" | "PAYMENT",
   branchId: number,
 ): Promise<string> {
-  const prefix = `${voucherType === "RECEIPT" ? "RV" : "PV"}-${branchId}-${toDateStr().replace(/-/g, "")}-`;
-  const rows = await tx
-    .select({ n: receipts.voucherNumber })
-    .from(receipts)
-    .where(like(receipts.voucherNumber, `${prefix}%`))
-    .orderBy(desc(receipts.id))
-    .for("update")
-    .limit(1);
-  const last = rows[0]?.n;
-  const seq = last ? parseInt(String(last).slice(prefix.length), 10) + 1 : 1;
-  return prefix + String(seq).padStart(5, "0");
+  const ymd = toDateStr().replace(/-/g, "");
+  const prefix = `${voucherType === "RECEIPT" ? "RV" : "PV"}-${branchId}-${ymd}-`;
+  const lockName = `voucher:${voucherType}:${branchId}:${ymd}`;
+  const lockRes: any = await tx.execute(sql`SELECT GET_LOCK(${lockName}, 5) AS locked`);
+  const lockedRow = Array.isArray(lockRes) ? lockRes[0]?.[0] : lockRes?.rows?.[0];
+  if (!lockedRow || Number(lockedRow.locked) !== 1) {
+    throw new Error(`voucher numbering lock timeout for ${lockName}`);
+  }
+  try {
+    const rows = await tx
+      .select({ n: receipts.voucherNumber })
+      .from(receipts)
+      .where(like(receipts.voucherNumber, `${prefix}%`))
+      .orderBy(desc(receipts.id))
+      .for("update")
+      .limit(1);
+    const last = rows[0]?.n;
+    const seq = last ? parseInt(String(last).slice(prefix.length), 10) + 1 : 1;
+    return prefix + String(seq).padStart(5, "0");
+  } finally {
+    await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
+  }
 }
 
 /** يحلّ دور الفاعل: من actor.role إن مرّره الموجّه، وإلا يقرأه من قاعدة البيانات (مرّة واحدة).
@@ -183,7 +202,7 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       description,
       createdBy: actor.userId,
     });
-    const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+    const receiptId = extractInsertId(rRes);
 
     // قيد دفتر: PAYMENT_IN/OUT حسب نوع السند.
     await postEntry(tx, {
@@ -283,7 +302,7 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
       description: `إلغاء سند ${voucherNumber}`,
       createdBy: actor.userId,
     });
-    const compReceiptId = Number((compRes as any)[0]?.insertId ?? (compRes as any).insertId);
+    const compReceiptId = extractInsertId(compRes);
 
     // قيد معاكس بمبلغ موجب (لا ADJUST — تتجاهله صيَغ reconcile فيتولّد انحراف وهمي دائم).
     await postEntry(tx, {

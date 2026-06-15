@@ -53,7 +53,13 @@ async function startServer() {
 
   const app = express();
   const server = createServer(app);
-  app.set("trust proxy", 1); // خلف بروكسي/خدمة Windows ⇒ IP الحقيقي لـrate-limit.
+  // trust proxy مشروط: لا نثق برؤوس X-Forwarded-* إلا عند صحّة الإطار:
+  //   - HOST=127.0.0.1 ⇒ خلف nginx/reverse-proxy موثوق (وضع الإنتاج على VPS).
+  //   - TRUST_PROXY=1 ⇒ فلاج صريح للحالات غير القياسية (مثل تشغيل خلف بروكسي بمنفذ علني).
+  // غير ذلك (واجهات عامة أو localhost للتطوير) ⇒ نُلغيها كي لا يُزوّر مهاجمٌ IP عبر X-Forwarded-For
+  // فيُلتفّ على حدود المعدّل المبنية على IP في authRouter (recordIpFailure).
+  const trustProxy = process.env.TRUST_PROXY === "1" || process.env.HOST === "127.0.0.1";
+  app.set("trust proxy", trustProxy);
 
   // تسجيل بنيوي + معرّف لكل طلب (req.id) يُستعمل للربط في الأخطاء.
   app.use(
@@ -115,8 +121,12 @@ async function startServer() {
   // HTTP compression (gzip/brotli) — مهم على الشبكات البطيئة (العراق).
   app.use(compression());
 
-  app.use(express.json({ limit: "50mb" }));
-  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // حجم الجسم: ١mb افتراضياً لكل المسارات (سطح هجوم DoS أصغر على /auth.login وغيرها).
+  // الاستثناء الوحيد: /api/print/raw يرفع لـ١٠mb لأن العميل يرسل raster ESC/POS كبير
+  // (نقطية الإيصال العربي مُولَّدة على Canvas) — لا حدّ ١mb لأنه يقطع الطباعة الفعلية.
+  app.use("/api/print/raw", express.json({ limit: "10mb" }));
+  app.use(express.json({ limit: "1mb" }));
+  app.use(express.urlencoded({ limit: "1mb", extended: true }));
 
   // فحص صحّة للمراقبة/الحارس: يتأكّد أنّ القاعدة تستجيب.
   app.get("/healthz", async (_req, res) => {

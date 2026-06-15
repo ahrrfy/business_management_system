@@ -1,19 +1,43 @@
 // تحليل بنية ملفات تصدير النظام القديم — أعمدة + عيّنات + إحصاءات
 // يُشغَّل يدوياً: node scripts/analyze-excel-exports.mjs > excel-analysis.json
-import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+// مهاجَر من xlsx (مهجور — CVE-2023-30533) إلى exceljs المُصان.
+import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 
 const dir = "D:\\مراجعات اكسل";
 const files = readdirSync(dir).filter((f) => f.toLowerCase().endsWith(".xlsx"));
 const out = {};
 
+/** تطبيع خلية ExcelJS إلى نصّ (Date → YYYY-MM-DD، hyperlink/richText → نصّ، فارغ → null). */
+function cellToText(v) {
+  if (v == null) return null;
+  if (v instanceof Date) {
+    const y = v.getUTCFullYear();
+    const m = String(v.getUTCMonth() + 1).padStart(2, "0");
+    const d = String(v.getUTCDate()).padStart(2, "0");
+    return `${y}-${m}-${d}`;
+  }
+  if (typeof v === "object") {
+    if (typeof v.text === "string") return v.text;
+    if (Array.isArray(v.richText)) return v.richText.map((p) => p.text ?? "").join("");
+    if ("result" in v) return cellToText(v.result);
+    if (typeof v.error === "string") return null;
+  }
+  return v;
+}
+
 for (const f of files) {
-  const wb = XLSX.read(readFileSync(join(dir, f)), { type: "buffer", cellDates: true });
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(join(dir, f));
   const fileInfo = { sheets: {} };
-  for (const sheetName of wb.SheetNames) {
-    const ws = wb.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: false });
+  for (const ws of wb.worksheets) {
+    const sheetName = ws.name;
+    const rows = [];
+    ws.eachRow({ includeEmpty: true }, (row) => {
+      const raw = row.values ?? [];
+      rows.push(raw.slice(1).map(cellToText));
+    });
     if (!rows.length) {
       fileInfo.sheets[sheetName] = { empty: true };
       continue;

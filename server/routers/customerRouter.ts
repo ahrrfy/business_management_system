@@ -10,6 +10,7 @@ import {
 } from "../services/customerService";
 import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
+import { maskCustomerSensitive } from "../lib/redact";
 import { cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -27,9 +28,9 @@ const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "ح
  */
 export const customerRouter = router({
   /** قائمة بسيطة سريعة — يحتاجها الكاشير وأوامر الشغل والبيع الآجل. */
-  list: protectedProcedure.query(async () => {
+  list: protectedProcedure.query(async ({ ctx }) => {
     const { rows } = await listCustomers({ includeInactive: false, limit: 500 });
-    return rows;
+    return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
   }),
 
   /** قائمة كاملة مع بحث وفلاتر وتقسيم صفحات — لشاشة الإدارة. */
@@ -41,12 +42,16 @@ export const customerRouter = router({
           customerType: customerType.optional(),
           priceTier: priceTier.optional(),
           includeInactive: z.boolean().default(false),
-          limit: z.number().int().positive().max(500).default(50),
+          // الفجوة ١٦: الحد الأعلى ٢٠٠٠ مطابقاً للخدمة (افتراضي ١٠٠).
+          limit: z.number().int().positive().max(2000).default(100),
           offset: z.number().int().min(0).default(0),
         })
         .optional()
     )
-    .query(({ input }) => listCustomers(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      const res = await listCustomers(input ?? {});
+      return { ...res, rows: res.rows.map((r) => maskCustomerSensitive(r, ctx.user.role)) };
+    }),
 
   /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع. */
   smartSearch: protectedProcedure
@@ -58,11 +63,12 @@ export const customerRouter = router({
 
   get: protectedProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const c = await getCustomer(input.customerId);
       if (!c) return null;
       const qrPayload = customerBarcodeSet({ id: c.id, name: c.name }).qrPayload;
-      return { ...c, qrPayload };
+      const masked = maskCustomerSensitive(c, ctx.user.role);
+      return { ...masked, qrPayload };
     }),
 
   create: cashierProcedure

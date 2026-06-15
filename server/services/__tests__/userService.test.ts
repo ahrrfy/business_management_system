@@ -59,7 +59,7 @@ beforeEach(async () => {
 describe("userService.createUser", () => {
   it("ينشئ مستخدماً بالحقول الكاملة (بلا تسريب passwordHash في القراءة)", async () => {
     const r = await createUser(
-      { name: "كاشير ١", email: "Cashier1@Alroya.Local", password: "Pass1234", role: "cashier", branchId: 2 },
+      { name: "كاشير ١", email: "Cashier1@Alroya.Local", password: "Pass1234!Aaa", role: "cashier", branchId: 2 },
       actor,
     );
     expect(r.userId).toBeGreaterThan(0);
@@ -69,17 +69,17 @@ describe("userService.createUser", () => {
     expect(row.role).toBe("cashier");
     expect(row.branchId).toBe(2);
     expect(row.isActive).toBe(true);
-    expect(verifyPassword("Pass1234", row.passwordHash)).toBe(true);
+    expect(verifyPassword("Pass1234!Aaa", row.passwordHash)).toBe(true);
   });
 
   it("يجعل الدور الافتراضي cashier", async () => {
-    const r = await createUser({ name: "م", email: "x@a.local", password: "Pass1234" }, actor);
+    const r = await createUser({ name: "م", email: "x@a.local", password: "Pass1234!Aaa" }, actor);
     const row = await getUser(r.userId);
     expect(row?.role).toBe("cashier");
   });
 
   it("يرفض اسماً فارغاً", async () => {
-    await expect(createUser({ name: "  ", email: "y@a.local", password: "Pass1234" }, actor)).rejects.toThrow();
+    await expect(createUser({ name: "  ", email: "y@a.local", password: "Pass1234!Aaa" }, actor)).rejects.toThrow();
   });
 
   it("يرفض كلمة مرور ضعيفة (قصيرة / بلا رقم / بلا حرف)", async () => {
@@ -89,16 +89,16 @@ describe("userService.createUser", () => {
   });
 
   it("يرفض بريداً مكرّراً (UNIQUE ⇒ CONFLICT)", async () => {
-    await createUser({ name: "أ", email: "dup@a.local", password: "Pass1234" }, actor);
-    await expect(createUser({ name: "ب", email: "dup@a.local", password: "Pass1234" }, actor)).rejects.toThrow();
+    await createUser({ name: "أ", email: "dup@a.local", password: "Pass1234!Aaa" }, actor);
+    await expect(createUser({ name: "ب", email: "dup@a.local", password: "Pass1234!Aaa" }, actor)).rejects.toThrow();
     // التكرار حسّاس للحالة بعد التطبيع.
-    await expect(createUser({ name: "ج", email: "DUP@A.LOCAL", password: "Pass1234" }, actor)).rejects.toThrow();
+    await expect(createUser({ name: "ج", email: "DUP@A.LOCAL", password: "Pass1234!Aaa" }, actor)).rejects.toThrow();
   });
 });
 
 describe("userService.updateUser", () => {
   it("يعدّل الاسم والفرع", async () => {
-    const { userId } = await createUser({ name: "ت", email: "t@a.local", password: "Pass1234", branchId: 1 }, actor);
+    const { userId } = await createUser({ name: "ت", email: "t@a.local", password: "Pass1234!Aaa", branchId: 1 }, actor);
     const r = await updateUser({ userId, name: "تعديل", branchId: 2 }, actor);
     expect(r.changed).toBe(true);
     const row = await getUser(userId);
@@ -107,7 +107,7 @@ describe("userService.updateUser", () => {
   });
 
   it("يغيّر دور مستخدم عادي", async () => {
-    const { userId } = await createUser({ name: "ث", email: "th@a.local", password: "Pass1234", role: "cashier" }, actor);
+    const { userId } = await createUser({ name: "ث", email: "th@a.local", password: "Pass1234!Aaa", role: "cashier" }, actor);
     await updateUser({ userId, role: "manager" }, actor);
     const row = await getUser(userId);
     expect(row?.role).toBe("manager");
@@ -123,21 +123,21 @@ describe("userService.updateUser", () => {
   });
 
   it("يسمح بتخفيض مدير عند وجود مدير آخر نشط", async () => {
-    const { userId } = await createUser({ name: "مدير٢", email: "a2@a.local", password: "Pass1234", role: "admin" }, actor);
+    const { userId } = await createUser({ name: "مدير٢", email: "a2@a.local", password: "Pass1234!Aaa", role: "admin" }, actor);
     const r = await updateUser({ userId, role: "manager" }, actor);
     expect(r.changed).toBe(true);
   });
 
   it("يرفض بريداً متعارضاً مع مستخدم آخر", async () => {
-    await createUser({ name: "ج", email: "j1@a.local", password: "Pass1234" }, actor);
-    const { userId } = await createUser({ name: "ح", email: "j2@a.local", password: "Pass1234" }, actor);
+    await createUser({ name: "ج", email: "j1@a.local", password: "Pass1234!Aaa" }, actor);
+    const { userId } = await createUser({ name: "ح", email: "j2@a.local", password: "Pass1234!Aaa" }, actor);
     await expect(updateUser({ userId, email: "j1@a.local" }, actor)).rejects.toThrow();
   });
 });
 
 describe("userService.setUserActive", () => {
   it("يعطّل مستخدماً عادياً ويُبطل جلساته (sessionsValidFrom يتقدّم)", async () => {
-    const { userId } = await createUser({ name: "خ", email: "x2@a.local", password: "Pass1234" }, actor);
+    const { userId } = await createUser({ name: "خ", email: "x2@a.local", password: "Pass1234!Aaa" }, actor);
     const before = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
     await new Promise((r) => setTimeout(r, 1100)); // ثانية كاملة لضمان فرق محسوس
     const r = await setUserActive(userId, false, actor);
@@ -150,7 +150,7 @@ describe("userService.setUserActive", () => {
   });
 
   it("يعيد تفعيل مستخدم معطّل", async () => {
-    const { userId } = await createUser({ name: "د", email: "d@a.local", password: "Pass1234" }, actor);
+    const { userId } = await createUser({ name: "د", email: "d@a.local", password: "Pass1234!Aaa" }, actor);
     await setUserActive(userId, false, actor);
     const r = await setUserActive(userId, true, actor);
     expect(r.isActive).toBe(true);
@@ -165,7 +165,7 @@ describe("userService.setUserActive", () => {
   });
 
   it("يرفض تعطيل معطّل بالفعل / تفعيل مفعّل بالفعل", async () => {
-    const { userId } = await createUser({ name: "ذ", email: "z@a.local", password: "Pass1234" }, actor);
+    const { userId } = await createUser({ name: "ذ", email: "z@a.local", password: "Pass1234!Aaa" }, actor);
     await expect(setUserActive(userId, true, actor)).rejects.toThrow(/بالفعل/);
     await setUserActive(userId, false, actor);
     await expect(setUserActive(userId, false, actor)).rejects.toThrow(/بالفعل/);
@@ -174,46 +174,46 @@ describe("userService.setUserActive", () => {
 
 describe("userService.resetUserPassword", () => {
   it("يضع كلمة مرور جديدة ويُبطل الجلسات", async () => {
-    const { userId } = await createUser({ name: "ر", email: "r@a.local", password: "Pass1234" }, actor);
-    await resetUserPassword(userId, "NewPass99", actor);
+    const { userId } = await createUser({ name: "ر", email: "r@a.local", password: "Pass1234!Aaa" }, actor);
+    await resetUserPassword(userId, "NewPass99!Aaa", actor);
     const row = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
-    expect(verifyPassword("NewPass99", row.passwordHash)).toBe(true);
-    expect(verifyPassword("Pass1234", row.passwordHash)).toBe(false);
+    expect(verifyPassword("NewPass99!Aaa", row.passwordHash)).toBe(true);
+    expect(verifyPassword("Pass1234!Aaa", row.passwordHash)).toBe(false);
   });
 
   it("يرفض كلمة مرور ضعيفة", async () => {
-    const { userId } = await createUser({ name: "ز", email: "z3@a.local", password: "Pass1234" }, actor);
+    const { userId } = await createUser({ name: "ز", email: "z3@a.local", password: "Pass1234!Aaa" }, actor);
     await expect(resetUserPassword(userId, "weak", actor)).rejects.toThrow();
   });
 });
 
 describe("userService.changePassword", () => {
   it("يغيّر كلمة المرور عند صحّة الحالية", async () => {
-    const { userId } = await createUser({ name: "س", email: "s@a.local", password: "OldPass11" }, actor);
-    await changePassword(userId, "OldPass11", "NewPass22");
+    const { userId } = await createUser({ name: "س", email: "s@a.local", password: "OldPass11!Aaa" }, actor);
+    await changePassword(userId, "OldPass11!Aaa", "NewPass22!Aaa");
     const row = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
-    expect(verifyPassword("NewPass22", row.passwordHash)).toBe(true);
+    expect(verifyPassword("NewPass22!Aaa", row.passwordHash)).toBe(true);
   });
 
   it("يرفض كلمة مرور حالية خاطئة", async () => {
-    const { userId } = await createUser({ name: "ش", email: "sh@a.local", password: "OldPass11" }, actor);
-    await expect(changePassword(userId, "WrongOld1", "NewPass22")).rejects.toThrow(/الحالية/);
+    const { userId } = await createUser({ name: "ش", email: "sh@a.local", password: "OldPass11!Aaa" }, actor);
+    await expect(changePassword(userId, "WrongOld1!Aaa", "NewPass22!Aaa")).rejects.toThrow(/الحالية/);
   });
 
   it("يرفض كلمة مرور جديدة ضعيفة", async () => {
-    const { userId } = await createUser({ name: "ص", email: "sa@a.local", password: "OldPass11" }, actor);
-    await expect(changePassword(userId, "OldPass11", "weak")).rejects.toThrow();
+    const { userId } = await createUser({ name: "ص", email: "sa@a.local", password: "OldPass11!Aaa" }, actor);
+    await expect(changePassword(userId, "OldPass11!Aaa", "weak")).rejects.toThrow();
   });
 
   it("يرفض كلمة مرور جديدة مطابقة للحالية", async () => {
-    const { userId } = await createUser({ name: "ض", email: "da@a.local", password: "OldPass11" }, actor);
-    await expect(changePassword(userId, "OldPass11", "OldPass11")).rejects.toThrow(/تختلف/);
+    const { userId } = await createUser({ name: "ض", email: "da@a.local", password: "OldPass11!Aaa" }, actor);
+    await expect(changePassword(userId, "OldPass11!Aaa", "OldPass11!Aaa")).rejects.toThrow(/تختلف/);
   });
 });
 
 describe("userService.listUsers / getUser", () => {
   it("لا يُسرّب passwordHash في القائمة أو البطاقة", async () => {
-    const { userId } = await createUser({ name: "ط", email: "ta@a.local", password: "Pass1234" }, actor);
+    const { userId } = await createUser({ name: "ط", email: "ta@a.local", password: "Pass1234!Aaa" }, actor);
     const list = await listUsers({ includeInactive: true });
     for (const row of list.rows) expect("passwordHash" in row).toBe(false);
     const one = await getUser(userId);
@@ -221,8 +221,8 @@ describe("userService.listUsers / getUser", () => {
   });
 
   it("يعرض المفعّلين فقط افتراضياً", async () => {
-    const a = await createUser({ name: "ع", email: "aa@a.local", password: "Pass1234" }, actor);
-    await createUser({ name: "غ", email: "gh@a.local", password: "Pass1234" }, actor);
+    const a = await createUser({ name: "ع", email: "aa@a.local", password: "Pass1234!Aaa" }, actor);
+    await createUser({ name: "غ", email: "gh@a.local", password: "Pass1234!Aaa" }, actor);
     await setUserActive(a.userId, false, actor);
     const r = await listUsers({}); // admin + غ = 2 مفعّلان
     const ids = r.rows.map((x) => Number(x.id));
@@ -230,8 +230,8 @@ describe("userService.listUsers / getUser", () => {
   });
 
   it("يبحث بالاسم والبريد ويفلتر بالدور", async () => {
-    await createUser({ name: "أحمد كاشير", email: "ahmed@a.local", password: "Pass1234", role: "cashier" }, actor);
-    await createUser({ name: "علي مخزن", email: "ali@a.local", password: "Pass1234", role: "warehouse" }, actor);
+    await createUser({ name: "أحمد كاشير", email: "ahmed@a.local", password: "Pass1234!Aaa", role: "cashier" }, actor);
+    await createUser({ name: "علي مخزن", email: "ali@a.local", password: "Pass1234!Aaa", role: "warehouse" }, actor);
     expect((await listUsers({ q: "أحمد" })).rows).toHaveLength(1);
     expect((await listUsers({ q: "ali@" })).rows).toHaveLength(1);
     expect((await listUsers({ role: "warehouse" })).rows).toHaveLength(1);

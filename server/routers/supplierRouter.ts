@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { maskBankFields, maskSupplierSensitive } from "../lib/redact";
 import { logAudit } from "../services/auditService";
 import {
   activateSupplier,
@@ -17,9 +18,9 @@ import { managerProcedure, protectedProcedure, router } from "../trpc";
  */
 export const supplierRouter = router({
   /** قائمة بسيطة سريعة — لشاشة المشتريات والقوائم. */
-  list: protectedProcedure.query(async () => {
+  list: protectedProcedure.query(async ({ ctx }) => {
     const { rows } = await listSuppliers({ includeInactive: false, limit: 500 });
-    return rows;
+    return rows.map((r) => maskSupplierSensitive(r, ctx.user.role));
   }),
 
   search: protectedProcedure
@@ -28,16 +29,23 @@ export const supplierRouter = router({
         .object({
           q: z.string().optional(),
           includeInactive: z.boolean().default(false),
-          limit: z.number().int().positive().max(500).default(50),
+          // الفجوة ١٦: الحد الأعلى ٢٠٠٠ مطابقاً للخدمة (افتراضي ١٠٠).
+          limit: z.number().int().positive().max(2000).default(100),
           offset: z.number().int().min(0).default(0),
         })
         .optional()
     )
-    .query(({ input }) => listSuppliers(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      const res = await listSuppliers(input ?? {});
+      return { ...res, rows: res.rows.map((r) => maskSupplierSensitive(r, ctx.user.role)) };
+    }),
 
   get: protectedProcedure
     .input(z.object({ supplierId: z.number().int().positive() }))
-    .query(({ input }) => getSupplier(input.supplierId)),
+    .query(async ({ input, ctx }) => {
+      const row = await getSupplier(input.supplierId);
+      return maskBankFields(maskSupplierSensitive(row, ctx.user.role), ctx.user.role);
+    }),
 
   create: managerProcedure
     .input(

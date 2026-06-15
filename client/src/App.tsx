@@ -84,6 +84,7 @@ import StocktakeReview from "@/pages/StocktakeReview";
 import StocktakeReport from "@/pages/StocktakeReport";
 import StocktakeCountSheets from "@/pages/StocktakeCountSheets";
 import CountPortal from "@/pages/CountPortal";
+import { RequireRole } from "@/components/RequireRole";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { Redirect, Route, Switch } from "wouter";
 
@@ -209,14 +210,14 @@ export default function App() {
       <Route path="/suppliers/:id/edit"><Shell><SupplierEdit /></Shell></Route>
       <Route path="/ap-aging"><Shell><APAging /></Shell></Route>
       <Route path="/suppliers-statement"><Shell><SupplierStatement /></Shell></Route>
-      <Route path="/kiosk-devices"><Shell><KioskDevices /></Shell></Route>
-      <Route path="/users"><Shell><Users /></Shell></Route>
-      <Route path="/users/new"><Shell><UserNew /></Shell></Route>
-      <Route path="/users/:id/edit"><Shell><UserEdit /></Shell></Route>
+      <Route path="/kiosk-devices"><Shell><RequireRole roles={["admin","manager"]}><KioskDevices /></RequireRole></Shell></Route>
+      <Route path="/users"><Shell><RequireRole roles={["admin","manager"]}><Users /></RequireRole></Shell></Route>
+      <Route path="/users/new"><Shell><RequireRole roles={["admin","manager"]}><UserNew /></RequireRole></Shell></Route>
+      <Route path="/users/:id/edit"><Shell><RequireRole roles={["admin","manager"]}><UserEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
-      <Route path="/audit"><Shell><AuditLogs /></Shell></Route>
-      <Route path="/reconcile"><Shell><Reconcile /></Shell></Route>
-      <Route path="/settings"><Shell><Settings /></Shell></Route>
+      <Route path="/audit"><Shell><RequireRole roles={["admin","manager"]}><AuditLogs /></RequireRole></Shell></Route>
+      <Route path="/reconcile"><Shell><RequireRole roles={["admin","manager"]}><Reconcile /></RequireRole></Shell></Route>
+      <Route path="/settings"><Shell><RequireRole roles={["admin","manager"]}><Settings /></RequireRole></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
     </ErrorBoundary>

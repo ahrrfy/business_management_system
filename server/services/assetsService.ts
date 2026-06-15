@@ -5,6 +5,7 @@
  * المحفوظة عبر toDbMoney (نصّ decimal). الإهلاك قيمة تحليلية تُحسب عند القراءة ولا
  * تُخزَّن (تتغيّر بمرور الزمن) — منطقه مطابق ١:١ لنموذج التصميم (assets/data.js → computeDep).
  * ========================================================================== */
+import Decimal from "decimal.js";
 import { and, desc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
 import {
   assetCustodyLog,
@@ -17,7 +18,8 @@ import {
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { requireDb, withTx } from "./tx";
-import { toDateStr, toDbMoney } from "./money";
+import { extractInsertId } from "../lib/insertId";
+import { money, toDateStr, toDbMoney } from "./money";
 
 /* ----------------------------------------------------------- حساب الإهلاك */
 export interface DepRow {
@@ -58,27 +60,31 @@ export function computeDepreciation(
   },
   asOf: Date = new Date(),
 ): DepResult {
-  const cost = Number(a.purchaseValue);
-  const sal = Number(a.salvageValue) || 0;
+  // الحسابات بـDecimal (§٥): الأموال لا تُحسب بـJS Number. الإرجاع كأرقام صحيحة (دينار)
+  // لأن العقد الخارجي مع الواجهة/الاختبارات يستعمل number — نخرج عبر toNumber() بعد التقريب.
+  const cost = money(a.purchaseValue);
+  const sal = a.salvageValue === "" || a.salvageValue == null ? new Decimal(0) : money(a.salvageValue);
   const life = a.usefulLifeYears || 1;
   const method = a.depreciationMethod || "sl";
-  const annualSL = life > 0 ? Math.round(Math.max(0, cost - sal) / life) : 0;
-  const rate = life > 0 ? 2 / life : 0;
+  const depreciable = Decimal.max(0, cost.sub(sal));
+  const annualSL = life > 0 ? depreciable.div(life).toDecimalPlaces(0, Decimal.ROUND_HALF_UP) : new Decimal(0);
+  const rate = life > 0 ? new Decimal(2).div(life) : new Decimal(0);
   const startYear = new Date(a.purchaseDate).getFullYear();
   const curYear = asOf.getFullYear();
 
-  const schedule: DepRow[] = [];
+  const scheduleD: { year: number; opening: Decimal; dep: Decimal; closing: Decimal; isCurrent: boolean }[] = [];
   let book = cost;
   for (let i = 0; i < life; i++) {
-    let dep: number;
+    let dep: Decimal;
+    const headroom = Decimal.max(0, book.sub(sal));
     if (method === "db") {
-      dep = Math.min(Math.max(0, book - sal), Math.round(book * rate));
-      if (i === life - 1) dep = Math.max(0, book - sal); // آخر سنة: أنزل للتخريدية
+      dep = Decimal.min(headroom, book.times(rate).toDecimalPlaces(0, Decimal.ROUND_HALF_UP));
+      if (i === life - 1) dep = headroom; // آخر سنة: أنزل للتخريدية
     } else {
-      dep = Math.min(Math.max(0, book - sal), annualSL);
+      dep = Decimal.min(headroom, annualSL);
     }
-    schedule.push({ year: startYear + i, opening: book, dep, closing: book - dep, isCurrent: startYear + i === curYear });
-    book -= dep;
+    scheduleD.push({ year: startYear + i, opening: book, dep, closing: book.sub(dep), isCurrent: startYear + i === curYear });
+    book = book.sub(dep);
   }
 
   // المتراكم حتى تاريخ الإخراج (للمُخرَج/المُستبعَد) أو حتى asOf — تناسبياً مع جزء السنة الجاري.
@@ -87,27 +93,40 @@ export function computeDepreciation(
   const stop = a.disposalDate ? new Date(a.disposalDate) : null;
   const age = Math.max(0, yearsBetween(new Date(a.purchaseDate), stop || asOf));
 
-  let accumulated = 0;
+  let accumulatedD = new Decimal(0);
   const fy = Math.floor(age);
-  const frac = age - fy;
+  const frac = new Decimal(age - fy);
   for (let i = 0; i < life; i++) {
-    if (i < fy) accumulated += schedule[i].dep;
+    if (i < fy) accumulatedD = accumulatedD.plus(scheduleD[i].dep);
     else if (i === fy) {
-      accumulated += Math.round(schedule[i].dep * frac);
+      accumulatedD = accumulatedD.plus(scheduleD[i].dep.times(frac).toDecimalPlaces(0, Decimal.ROUND_HALF_UP));
       break;
     }
   }
-  accumulated = Math.min(accumulated, Math.max(0, cost - sal));
-  const bookValue = Math.max(sal, cost - accumulated);
+  accumulatedD = Decimal.min(accumulatedD, depreciable);
+  const bookValueD = Decimal.max(sal, cost.sub(accumulatedD));
   const curIdx = Math.min(life - 1, Math.floor(age));
+  const annualDepD = method === "db" ? (scheduleD[curIdx]?.dep ?? annualSL) : annualSL;
+  const depPctD = cost.gt(0)
+    ? Decimal.min(100, accumulatedD.div(cost).times(100).toDecimalPlaces(0, Decimal.ROUND_HALF_UP))
+    : new Decimal(0);
+  const ageYearsD = new Decimal(age).toDecimalPlaces(1, Decimal.ROUND_HALF_UP);
+  const depRateD = method === "db" ? rate : cost.gt(0) ? annualSL.div(cost) : new Decimal(0);
+
   return {
-    annualDep: method === "db" ? (schedule[curIdx]?.dep ?? annualSL) : annualSL,
-    accumulated,
-    bookValue,
-    depPct: cost > 0 ? Math.min(100, Math.round((accumulated / cost) * 100)) : 0,
-    ageYears: Math.round(age * 10) / 10,
-    depRate: method === "db" ? rate : cost > 0 ? annualSL / cost : 0,
-    schedule,
+    annualDep: annualDepD.toNumber(),
+    accumulated: accumulatedD.toNumber(),
+    bookValue: bookValueD.toNumber(),
+    depPct: depPctD.toNumber(),
+    ageYears: ageYearsD.toNumber(),
+    depRate: depRateD.toNumber(),
+    schedule: scheduleD.map((r) => ({
+      year: r.year,
+      opening: r.opening.toNumber(),
+      dep: r.dep.toNumber(),
+      closing: r.closing.toNumber(),
+      isCurrent: r.isCurrent,
+    })),
   };
 }
 
@@ -251,7 +270,7 @@ export async function createAsset(input: CreateAssetInput) {
       warrantyEnd: input.warrantyEnd ?? null,
       linkedDeviceId: input.linkedDeviceId ?? null,
     });
-    const newId = Number((res as { insertId: number }).insertId);
+    const newId = extractInsertId(res);
     // إن سُلّم بعهدة عند الإنشاء، افتح سطر عهدة جارية من تاريخ الشراء.
     if (input.custodianId) {
       await tx.insert(assetCustodyLog).values({

@@ -10,6 +10,7 @@ import { PRINT_SERVICE_TYPE } from "./printSaleService";
 import { setStock } from "./inventoryService";
 import { withTx, type Actor } from "./tx";
 import type { Tx } from "../db";
+import { extractInsertId } from "../lib/insertId";
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
 export interface PosRow {
@@ -639,7 +640,7 @@ export async function updateProduct(input: UpdateProductInput, _actor: Actor) {
             barcode: u.barcode ?? null,
             isBaseUnit: !!u.isBaseUnit,
           });
-          productUnitId = Number((uRes as any)[0]?.insertId ?? (uRes as any).insertId);
+          productUnitId = extractInsertId(uRes);
         }
         keepIds.add(productUnitId);
         for (const pr of u.prices ?? []) {
@@ -743,7 +744,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       categoryId: input.categoryId ?? null,
       isCustomizable: input.isCustomizable ?? false,
     });
-    const productId = Number((pRes as any)[0]?.insertId ?? (pRes as any).insertId);
+    const productId = extractInsertId(pRes);
 
     for (const v of input.variants) {
       if (!v.units.some((u) => u.isBaseUnit)) {
@@ -761,7 +762,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         reorderPoint: v.reorderPoint != null ? Math.max(0, Math.trunc(v.reorderPoint)) : 0,
         isActive: v.isActive ?? true,
       });
-      const variantId = Number((vRes as any)[0]?.insertId ?? (vRes as any).insertId);
+      const variantId = extractInsertId(vRes);
 
       for (const u of v.units) {
         const uRes = await tx.insert(productUnits).values({
@@ -771,7 +772,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
           barcode: u.barcode ?? null,
           isBaseUnit: u.isBaseUnit ?? false,
         });
-        const productUnitId = Number((uRes as any)[0]?.insertId ?? (uRes as any).insertId);
+        const productUnitId = extractInsertId(uRes);
         for (const p of u.prices ?? []) {
           await tx.insert(productPrices).values({ productUnitId, priceTier: p.priceTier, price: toDbMoney(p.price) });
         }

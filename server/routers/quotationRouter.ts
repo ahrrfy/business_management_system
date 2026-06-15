@@ -9,6 +9,7 @@ import {
 } from "../services/quotationService";
 import { logAudit } from "../services/auditService";
 import { branchScopedProcedure, managerProcedure, router } from "../trpc";
+import { positiveMoneyString } from "../lib/schemas";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -105,7 +106,7 @@ export const quotationRouter = router({
     .input(
       z.object({
         quotationId: z.number().int().positive(),
-        payment: z.object({ amount: z.string(), method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method }).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {

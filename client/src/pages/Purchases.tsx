@@ -87,9 +87,9 @@ export default function Purchases() {
           unitPrice: it.unitPrice,
           total: it.total,
         })),
-        subtotal: d.subtotal,
-        taxAmount: d.taxAmount,
-        total: d.total,
+        subtotal: d.subtotal ?? "0",
+        taxAmount: d.taxAmount ?? "0",
+        total: d.total ?? "0",
       });
     } catch (e) {
       notify.err(e);

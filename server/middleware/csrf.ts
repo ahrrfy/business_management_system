@@ -19,9 +19,7 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
   const source = origin ?? referer ?? "";
 
   if (!source) {
-    // في بيئة المطبعة المحلية (شبكة داخلية)، بعض العملاء لا يُرسلون Origin.
-    // نمرّرهم بدلاً من رفضهم لأنّ sameSite:"strict" يوفّر الحماية الأساسية.
-    next();
+    res.status(403).json({ error: "CSRF: مصدر الطلب مفقود" });
     return;
   }
 

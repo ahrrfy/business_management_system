@@ -21,6 +21,7 @@ import { logger } from "../logger";
 import { setStock } from "./inventoryService";
 import { money, round2, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 // ───────────────────────── العقد المشترك ─────────────────────────
 
@@ -157,7 +158,7 @@ const norm = (s?: string | null): string | null => {
 };
 const uniq = <T>(arr: (T | null | undefined)[]): T[] =>
   Array.from(new Set(arr.filter((x): x is T => x != null && x !== "")));
-const insertId = (res: unknown): number => Number((res as any)[0]?.insertId ?? (res as any).insertId);
+const insertId = extractInsertId;
 
 function tally(rows: ImportRowResult[]) {
   return {

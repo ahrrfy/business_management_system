@@ -3,10 +3,12 @@ import { and, desc, eq, gte, lt } from "drizzle-orm";
 import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { maskCostFields } from "../lib/redact";
+import { positiveMoneyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../services/purchaseService";
-import { branchScopedProcedure, managerProcedure, router, warehouseProcedure } from "../trpc";
+import { branchScopedProcedure, canSeeCost, managerProcedure, router, warehouseProcedure } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).
@@ -35,7 +37,7 @@ export const purchaseRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createPurchaseOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+      const res = await createPurchaseOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, { action: "purchase.createOrder", entityType: "purchaseOrder", entityId: (res as { purchaseOrderId?: number })?.purchaseOrderId, newValue: { supplierId: input.supplierId, items: input.items.length } });
       return res;
     }),
@@ -45,7 +47,7 @@ export const purchaseRouter = router({
       z.object({
         purchaseOrderId: z.number().int().positive(),
         lines: z.array(z.object({ purchaseOrderItemId: z.number().int().positive(), receivedBaseQuantity: z.number().int().positive() })).min(1),
-        payment: z.object({ amount: z.string(), method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method }).optional(),
         // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),
       })
@@ -53,7 +55,7 @@ export const purchaseRouter = router({
     .mutation(async ({ input, ctx }) => {
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await receivePurchase(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+          const res = await receivePurchase(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
           await logAudit(ctx, { action: "purchase.receive", entityType: "purchaseOrder", entityId: input.purchaseOrderId, newValue: { lines: input.lines.length } });
           return res;
         } catch (e: any) {
@@ -69,7 +71,7 @@ export const purchaseRouter = router({
   cancel: managerProcedure
     .input(z.object({ purchaseOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await cancelPurchaseOrder(input.purchaseOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const res = await cancelPurchaseOrder(input.purchaseOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
       await logAudit(ctx, {
         action: "purchase.cancelOrder",
         entityType: "purchaseOrder",
@@ -109,7 +111,7 @@ export const purchaseRouter = router({
       // admin/manager يحترمان input.branchId إن مُرِّر (تقارير عبر-الفروع).
       const branchId = ctx.scopedBranchId != null ? ctx.scopedBranchId : input?.branchId;
       if (branchId != null) conds.push(eq(purchaseOrders.branchId, branchId));
-      return db
+      const rows = await db
         .select({
           id: purchaseOrders.id,
           poNumber: purchaseOrders.poNumber,
@@ -127,6 +129,11 @@ export const purchaseRouter = router({
         .orderBy(desc(purchaseOrders.id))
         .limit(input?.limit ?? 50)
         .offset(input?.offset ?? 0);
+      // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
+      if (!canSeeCost(ctx.user.role)) {
+        return rows.map((row) => ({ ...row, total: null, paidAmount: null }));
+      }
+      return rows;
     }),
 
   get: branchScopedProcedure.input(z.object({ purchaseOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
@@ -176,6 +183,12 @@ export const purchaseRouter = router({
       .leftJoin(products, eq(productVariants.productId, products.id))
       .leftJoin(productUnits, eq(purchaseOrderItems.productUnitId, productUnits.id))
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+    // حجب التكلفة عن غير المدير — نمط saleRouter.get:371.
+    if (!canSeeCost(ctx.user.role)) {
+      const poMasked = { ...po, subtotal: null, taxAmount: null, total: null, paidAmount: null };
+      const itemsMasked = items.map((row) => maskCostFields(row, ctx.user.role));
+      return { ...poMasked, items: itemsMasked };
+    }
     return { ...po, items };
   }),
 });

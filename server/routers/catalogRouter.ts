@@ -6,6 +6,7 @@ import { assignBarcode, checkBarcodesTaken, createProduct, getProductForEdit, li
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
 import { logAudit } from "../services/auditService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
+import { assertValidImageDataUrl } from "../lib/imageValidation";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
 
@@ -133,6 +134,8 @@ export const catalogRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      for (const v of input.variants) assertValidImageDataUrl(v.image);
+      for (const img of input.images ?? []) assertValidImageDataUrl(img.url);
       const res = await createProduct({ ...input, name: input.name ?? "" } as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
       return res;
@@ -230,6 +233,7 @@ export const catalogRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      for (const v of input.variants) assertValidImageDataUrl(v.image);
       const before = await getProductForVariantEdit(input.productId);
       const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {

@@ -9,6 +9,7 @@ import { and, desc, eq, getTableColumns, like, sql } from "drizzle-orm";
 import { DAY_RATES_DEFAULT, WEEK_DAYS, fullEmployeeName } from "@shared/hr";
 import { attendance, employees } from "../../drizzle/schema";
 import { requireDb, withTx } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
 
 /** اسم اليوم العربي من تاريخ "YYYY-MM-DD" (الأحد=0). يُحسب بتقويم UTC ثابت من مكوّنات السلسلة
@@ -167,7 +168,7 @@ export async function recordAttendance(input: RecordAttendanceInput) {
       savedId = existing.id;
     } else {
       const [res] = await tx.insert(attendance).values(values);
-      savedId = Number((res as { insertId: number }).insertId);
+      savedId = extractInsertId(res);
     }
 
     const [saved] = await tx.select().from(attendance).where(eq(attendance.id, savedId)).limit(1);

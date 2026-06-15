@@ -8,6 +8,7 @@ import { and, desc, eq, like, or } from "drizzle-orm";
 import { jobApplicants } from "../../drizzle/schema";
 import { requireDb } from "./tx";
 import { toDateStr } from "./money";
+import { extractInsertId } from "../lib/insertId";
 
 export interface ApplicantFilters {
   stage?: string;
@@ -78,7 +79,7 @@ export async function createApplicant(input: ApplicantInput) {
     notes: input.notes?.trim() || null,
     cvFileKey: input.cvFileKey?.trim() || null,
   });
-  return getApplicant(Number((res as { insertId: number }).insertId));
+  return getApplicant(extractInsertId(res));
 }
 
 /** نقل المتقدّم بين مراحل المسار (جديد → مراجعة → مقابلة → مقبول/مرفوض/أرشيف). */

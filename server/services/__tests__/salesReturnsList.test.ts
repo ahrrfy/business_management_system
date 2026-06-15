@@ -59,6 +59,12 @@ async function seedBase() {
     .values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
   await d.insert(s.productPrices).values([{ productUnitId: 1, priceTier: "RETAIL", price: "10.00" }]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0" });
+  // M5/M8/M10: عمليات النقد تَستلزم وردية مفتوحة (هنا: بيع نقدي بلا عميل ⇒ pay CASH).
+  await d.insert(s.shifts).values({
+    userId: 1, branchId: 1, status: "OPEN",
+    openedAt: new Date(),
+    openGuard: "1:1", openingBalance: "0",
+  });
 }
 
 async function setStock(variantId: number, branchId: number, qty: number) {
@@ -74,6 +80,8 @@ async function saleThenReturn(opts: { customerId?: number | null; qty: string; r
       sourceType: "ORDER",
       lines: [{ variantId: 1, productUnitId: 1, quantity: opts.qty }],
       payment: opts.pay ? { amount: opts.pay, method: "CASH" } : null,
+      // M8: createSale CASH يَستلزم shiftId صريحاً. الوردية مفتوحة في seedBase.
+      shiftId: opts.pay ? 1 : undefined,
     },
     actor,
   );

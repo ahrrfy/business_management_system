@@ -2,8 +2,11 @@
 // التحليل يجري في الواجهة؛ الصفوف المُقسَرة تُرسَل JSON للخادم الذي يعيد التحقّق ويكتب ذرّياً.
 // أموال النظام القديم تأتي بصيغ محاسبية («2,988,100.»، «[27,749,996.]») ⇒ قسر moneySigned + تقريب نصّي HALF_UP
 // عبر decimal.js حصراً (ممنوع parseFloat/Number على الأموال — يُسمح Number للمقارنة لا للتخزين).
+// استُبدل xlsx@0.18.5 المهجور (CVE-2023-30533: Prototype Pollution + ReDoS) بـexceljs المُصان +
+// papaparse للـCSV (مسار CSV يحفظ النصّ كما هو بلا تحويلات تاريخية أمريكية تكسر الـISO).
 import Decimal from "decimal.js";
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
+import Papa from "papaparse";
 
 export type ImportFieldType =
   | "string"
@@ -330,16 +333,90 @@ export function autoMapColumns<TRow>(
 
 // ───────────────────────── القراءة والبناء ─────────────────────────
 
-/** يقرأ أوّل ورقة من ملف xlsx/csv ويُرجع الترويسات والصفوف (مع تجاهل الصفوف الفارغة). */
+/** يقرأ أوّل ورقة من ملف xlsx/csv ويُرجع الترويسات والصفوف (مع تجاهل الصفوف الفارغة).
+ *  CSV ⇐ papaparse (نصّ خام، لا تحويلات تاريخية أميركية تكسر الـISO — يثبتُه اختبار «تاريخ CSV يبقى ISO»).
+ *  XLSX ⇐ exceljs (مع تنسيق Date إلى YYYY-MM-DD يدوياً — بديل dateNF في SheetJS). */
 export async function parseSheet(file: File): Promise<ImportParseResult> {
   const buf = await file.arrayBuffer();
-  // dateNF إلزامي: بدونه يعيد SheetJS تواريخ CSV بصيغة أميركية «1/7/26» فيرفضها قسر النوع date،
-  // بينما تمرّ xlsx (نصوصها المنسّقة محفوظة مسبقاً). يثبت سلوكَه اختبار «تاريخ CSV يبقى ISO».
-  const wb = XLSX.read(buf, { type: "array", dateNF: "yyyy-mm-dd" });
-  const sheetName = wb.SheetNames[0];
-  if (!sheetName) return { headers: [], rows: [], rowNumbers: [], totalRows: 0 };
-  const ws = wb.Sheets[sheetName];
-  const matrix = XLSX.utils.sheet_to_json<unknown[]>(ws, { header: 1, raw: false, defval: "" });
+  const isCsv = /\.csv$/i.test(file.name);
+  if (isCsv) return parseCsvBuffer(buf);
+  return parseXlsxBuffer(buf);
+}
+
+/** تنسيق Date إلى نصّ YYYY-MM-DD (مرآة dateNF=yyyy-mm-dd في SheetJS).
+ *  ExcelJS يعيد كائنات Date لخلايا التاريخ بلا تنسيق نصّي مدمج. */
+function formatDateCell(d: Date): string {
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** يطبّع قيمة خلية ExcelJS إلى نصّ/رقم/قيمة منطقية كما كان يعيدها SheetJS مع raw:false.
+ *  ExcelJS يعيد كائنات مركّبة لـhyperlinks/richText/formulas — نستخرج النصّ المعروض منها. */
+function normalizeXlsxCell(v: unknown): unknown {
+  if (v == null) return "";
+  if (v instanceof Date) return formatDateCell(v);
+  if (typeof v === "object") {
+    const obj = v as Record<string, unknown>;
+    // hyperlink: {text, hyperlink} — نأخذ النصّ
+    if (typeof obj.text === "string") return obj.text;
+    // richText: {richText: [{text, font}, ...]}
+    if (Array.isArray(obj.richText)) {
+      return obj.richText.map((p: { text?: string }) => p.text ?? "").join("");
+    }
+    // formula: {formula, result} — نأخذ النتيجة المحسوبة
+    if ("result" in obj) return normalizeXlsxCell(obj.result);
+    // error: {error: "#DIV/0!"} ⇒ نصّ فارغ (كان SheetJS يعيد رمز الخطأ)
+    if (typeof obj.error === "string") return "";
+  }
+  return v;
+}
+
+async function parseXlsxBuffer(buf: ArrayBuffer): Promise<ImportParseResult> {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(buf);
+  const ws = wb.worksheets[0];
+  if (!ws) return { headers: [], rows: [], rowNumbers: [], totalRows: 0 };
+
+  // قراءة كل الصفوف إلى مصفوفة موازية بنفس فهرس الإكسل (الترويسة = صفّ ١).
+  const matrix: unknown[][] = [];
+  ws.eachRow({ includeEmpty: true }, (row, rowNumber) => {
+    // row.values: مصفوفة بفهرس مبنيٍّ على ١ — الفهرس ٠ غير مستخدم. نتجاهله.
+    const raw = (row.values as unknown[]) ?? [];
+    const arr = raw.slice(1).map(normalizeXlsxCell);
+    matrix[rowNumber - 1] = arr;
+  });
+  if (matrix.length === 0) return { headers: [], rows: [], rowNumbers: [], totalRows: 0 };
+
+  const headerRow = matrix[0] ?? [];
+  const headers = headerRow.map((h) => String(h ?? "").trim());
+  const rows: Record<string, unknown>[] = [];
+  const rowNumbers: number[] = [];
+  for (let i = 1; i < matrix.length; i++) {
+    const arr = matrix[i] ?? [];
+    if (arr.every((c) => c == null || String(c).trim() === "")) continue; // صف فارغ
+    const obj: Record<string, unknown> = {};
+    headers.forEach((h, idx) => {
+      obj[h] = arr[idx] ?? "";
+    });
+    rows.push(obj);
+    rowNumbers.push(i + 1); // matrix[0] = الترويسة (صفّ ١) ⇒ صفّ البيانات الفعلي = i + 1
+  }
+  return { headers, rows, rowNumbers, totalRows: rows.length };
+}
+
+function parseCsvBuffer(buf: ArrayBuffer): ImportParseResult {
+  // فكّ ترميز UTF-8 وحذف BOM إن وُجد (Excel «CSV UTF-8» يضع BOM في أول الترويسة الأولى —
+  // بدون حذفه تصبح الترويسة الأولى «﻿الاسم» فتفشل المطابقة الذكية).
+  const decoder = new TextDecoder("utf-8");
+  const text = decoder.decode(buf).replace(/^﻿/, "");
+  const result = Papa.parse<string[]>(text, {
+    header: false,
+    skipEmptyLines: false,
+    // النصوص تبقى نصوصاً حرفية: «2026-01-07» لا يتحوّل تاريخاً ثم نصّاً أميركياً «1/7/26».
+  });
+  const matrix = (result.data as unknown[][]) ?? [];
   if (matrix.length === 0) return { headers: [], rows: [], rowNumbers: [], totalRows: 0 };
 
   const headers = (matrix[0] as unknown[]).map((h) => String(h ?? "").trim());
@@ -350,10 +427,10 @@ export async function parseSheet(file: File): Promise<ImportParseResult> {
     if (arr.every((c) => c == null || String(c).trim() === "")) continue; // صف فارغ
     const obj: Record<string, unknown> = {};
     headers.forEach((h, idx) => {
-      obj[h] = arr[idx];
+      obj[h] = arr[idx] ?? "";
     });
     rows.push(obj);
-    rowNumbers.push(i + 1); // matrix[0] = الترويسة (صفّ ١) ⇒ صفّ البيانات الفعلي = i + 1
+    rowNumbers.push(i + 1);
   }
   return { headers, rows, rowNumbers, totalRows: rows.length };
 }

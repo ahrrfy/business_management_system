@@ -126,6 +126,7 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
   it("بيع آجل ثم دفعتان: PENDING → PARTIALLY_PAID → PAID والذمة تتناقص", async () => {
     await setStock(1, 1, 50);
     await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    const shiftId = await openShift(1);
     const sale = await createSale(
       { branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "2" }] },
       actor
@@ -136,12 +137,12 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     expect(cust.currentBalance).toBe("240.00");
     expect(await entries("PAYMENT_IN")).toHaveLength(0);
 
-    const p1 = await processPayment({ invoiceId: sale.invoiceId, amount: "100.00", method: "CASH" }, actor);
+    const p1 = await processPayment({ invoiceId: sale.invoiceId, amount: "100.00", method: "CASH", shiftId }, actor);
     expect(p1.status).toBe("PARTIALLY_PAID");
     cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(cust.currentBalance).toBe("140.00");
 
-    const p2 = await processPayment({ invoiceId: sale.invoiceId, amount: "140.00", method: "CASH" }, actor);
+    const p2 = await processPayment({ invoiceId: sale.invoiceId, amount: "140.00", method: "CASH", shiftId }, actor);
     expect(p2.status).toBe("PAID");
     cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(cust.currentBalance).toBe("0.00");
@@ -221,10 +222,11 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
     await db().insert(s.productUnits).values({ id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true });
     await db().insert(s.productPrices).values({ productUnitId: 3, priceTier: "RETAIL", price: "10.00" });
     await setStock(2, 1, 0);
+    const shiftId = await openShift(1);
 
     await expect(
       createSale(
-        { branchId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }, { variantId: 2, productUnitId: 3, quantity: "1" }], payment: { amount: "20.00", method: "CASH" } },
+        { branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }, { variantId: 2, productUnitId: 3, quantity: "1" }], payment: { amount: "20.00", method: "CASH" } },
         actor
       )
     ).rejects.toThrow();
@@ -239,9 +241,10 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
 
   it("بيع متزامن (oversell): لا رصيد سالب — واحد ينجح والآخر يُرفض", async () => {
     await setStock(1, 1, 3);
+    const shiftId = await openShift(1);
     const mk = (rid: string) =>
       createSale(
-        { branchId: 1, sourceType: "POS", clientRequestId: rid, lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
+        { branchId: 1, shiftId, sourceType: "POS", clientRequestId: rid, lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
         actor
       );
     const res = await Promise.allSettled([mk("c1"), mk("c2")]);
@@ -254,7 +257,8 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
 
   it("idempotency: نفس clientRequestId لا يُنشئ فاتورة مكررة", async () => {
     await setStock(1, 1, 24);
-    const input = { branchId: 1, sourceType: "POS" as const, clientRequestId: "abc", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" as const } };
+    const shiftId = await openShift(1);
+    const input = { branchId: 1, shiftId, sourceType: "POS" as const, clientRequestId: "abc", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }], payment: { amount: "120.00", method: "CASH" as const } };
     const r1 = await createSale(input, actor);
     const r2 = await createSale(input, actor);
     expect(r2.invoiceId).toBe(r1.invoiceId);
@@ -265,8 +269,9 @@ describe("العمود الفقري ثنائي الاتجاه", () => {
 
   it("كمية تنتج baseQuantity كسرياً تُرفض", async () => {
     await setStock(1, 1, 24);
+    const shiftId = await openShift(1);
     await expect(
-      createSale({ branchId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "0.5" }], payment: { amount: "5.00", method: "CASH" } }, actor)
+      createSale({ branchId: 1, shiftId, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "0.5" }], payment: { amount: "5.00", method: "CASH" } }, actor)
     ).rejects.toThrow();
     expect(await db().select().from(s.invoices)).toHaveLength(0);
   });
@@ -329,8 +334,9 @@ describe("إصلاحات المراجعة العدائية", () => {
 
   it("idempotency متزامن: لا فاتورة مكررة عند نفس clientRequestId", async () => {
     await setStock(1, 1, 24);
+    const shiftId = await openShift(1);
     const input = {
-      branchId: 1, sourceType: "POS" as const, clientRequestId: "dup",
+      branchId: 1, shiftId, sourceType: "POS" as const, clientRequestId: "dup",
       lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }],
       payment: { amount: "120.00", method: "CASH" as const },
     };
@@ -444,6 +450,7 @@ describe("أوامر الشغل/المطبعة", () => {
     expect(wo.status).toBe("READY");
 
     // READY → DELIVERED مع دفعة نقدية كاملة 500
+    await openShift(1);
     const d = await deliverWorkOrder({ workOrderId: r.workOrderId, payment: { amount: "500.00", method: "CASH" } }, actor);
     wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
     expect(wo.status).toBe("DELIVERED");
@@ -503,6 +510,7 @@ describe("أوامر الشغل/المطبعة", () => {
     );
     await startWorkOrder(r.workOrderId, actor);
     await markWorkOrderReady(r.workOrderId);
+    await openShift(1);
     await expect(
       deliverWorkOrder({ workOrderId: r.workOrderId, payment: { amount: "100.00", method: "CASH" } }, actor)
     ).rejects.toThrow();
@@ -721,9 +729,9 @@ describe("عروض الأسعار (Quotations)", () => {
     const qRow = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
     expect(qRow.status).toBe("DRAFT");
 
-    // اقبل ثم حوّل بدفعة كاملة 100.
+    // اقبل ثم حوّل بدفعة كاملة 100 (TRANSFER لأنّ convertQuotation لا يُمرّر shiftId الذي يَلزم CASH بعد M8).
     await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
-    const conv = await convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "CASH" } }, actor);
+    const conv = await convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "TRANSFER" } }, actor);
     expect(conv.alreadyConverted).toBe(false);
 
     // الآن المخزون يُخصم (درزن = 12) والفاتورة بالأسعار المعروضة.

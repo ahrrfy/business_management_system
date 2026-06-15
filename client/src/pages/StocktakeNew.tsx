@@ -24,6 +24,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { openWhatsApp } from "@/lib/whatsapp";
@@ -64,8 +65,7 @@ const nf = (n: number | null | undefined) => Number(n ?? 0).toLocaleString("ar-I
 /** مبلغ صحيح/عشري حتى منزلتين — يُرسَل نصاً (عقد §٣: thresholds strings). */
 const isMoneyStr = (s: string) => /^\d+(\.\d{1,2})?$/.test(s.trim());
 
-const fmtMoneyLabel = (s: string) =>
-  isMoneyStr(s) ? `${Number(s).toLocaleString("ar-IQ-u-nu-latn")} د.ع` : "—";
+const fmtMoneyLabel = (s: string) => (isMoneyStr(s) ? formatIqd(s) : "—");
 
 interface WorkerRow {
   key: string;

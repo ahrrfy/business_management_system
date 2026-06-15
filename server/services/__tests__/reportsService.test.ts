@@ -17,6 +17,7 @@ import {
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
+  "idempotencyKeys",
   "accountingEntries",
   "receipts",
   "inventoryMovements",
@@ -35,6 +36,7 @@ const TABLES = [
   "suppliers",
   "branches",
   "users",
+  "auditLogs",
 ];
 
 function db() {
@@ -58,6 +60,12 @@ async function seedBase() {
     { id: 2, name: "فرع المبيعات", code: "SALES", type: "SALES" },
   ]);
   await d.insert(s.users).values({ id: 1, openId: "local_test", name: "admin", role: "admin", loginMethod: "local" });
+  // M5/M8/M10: عمليات النقد (processPayment CASH هنا) تَستلزم وردية مفتوحة.
+  await d.insert(s.shifts).values({
+    userId: 1, branchId: 1, status: "OPEN",
+    openedAt: new Date(),
+    openGuard: "1:1", openingBalance: "0",
+  });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([

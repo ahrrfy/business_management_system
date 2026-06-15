@@ -169,7 +169,7 @@ export function ImportDialog<TRow>({
       return;
     }
     setReading(true);
-    await new Promise((r) => setTimeout(r, 0)); // أتِح للواجهة رسم «جارٍ القراءة» قبل التحليل المتزامن (XLSX.read يحجب الخيط)
+    await new Promise((r) => setTimeout(r, 0)); // أتِح للواجهة رسم «جارٍ القراءة» قبل التحليل المتزامن (تحميل exceljs يحجب الخيط)
     try {
       const result = await parseSheet(file);
       if (result.totalRows === 0) {

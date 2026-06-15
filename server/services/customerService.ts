@@ -2,8 +2,10 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
 import { customers, invoices, workOrders } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { escapeLike } from "../lib/sqlLike";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type CustomerType = "فرد" | "تاجر" | "مؤسسة" | "شركة" | "حكومي";
@@ -85,7 +87,7 @@ export async function createCustomer(input: CreateCustomerInput, _actor: Actor) 
       notes: input.notes?.trim() || null,
       isActive: true,
     });
-    const customerId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+    const customerId = extractInsertId(res);
     return { customerId };
   });
 }
@@ -197,11 +199,14 @@ export async function getCustomer(customerId: number) {
   )[0] ?? null;
 }
 
-/** قائمة عملاء مع بحث وفلاتر وتقسيم صفحات. */
+/** قائمة عملاء مع بحث وفلاتر وتقسيم صفحات.
+ * الفجوة ١٦: الحد الأعلى ٢٠٠٠ صف لكل طلب (افتراضي ١٠٠) — حماية pool الاتصالات
+ * من طلبٍ مفرد يطلب الجدول كاملاً ويستنفد ذاكرة العملية.
+ */
 export async function listCustomers(input: ListCustomersInput = {}) {
   const db = getDb();
   if (!db) return { rows: [], total: 0 };
-  const limit = Math.min(Math.max(input.limit ?? 50, 1), 500);
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 2000);
   const offset = Math.max(input.offset ?? 0, 0);
 
   const conds: any[] = [];
@@ -209,7 +214,7 @@ export async function listCustomers(input: ListCustomersInput = {}) {
   if (input.customerType) conds.push(eq(customers.customerType, input.customerType));
   if (input.priceTier) conds.push(eq(customers.defaultPriceTier, input.priceTier));
   if (input.q?.trim()) {
-    const q = `%${input.q.trim()}%`;
+    const q = `%${escapeLike(input.q.trim())}%`;
     // v3-add-screens: البحث يطال هواتف العميل الثلاثة + الواتساب.
     // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
     conds.push(or(
@@ -270,7 +275,7 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
   if (!q || q.length < 2) return [];
   const limit = Math.min(Math.max(input.limit ?? 6, 1), 20);
 
-  const like_ = `%${q}%`;
+  const like_ = `%${escapeLike(q)}%`;
   const matched = await db
     .select({
       id: customers.id,

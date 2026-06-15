@@ -7,6 +7,7 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { CUSTOMER_FIELDS, CUSTOMER_IMPORT_META } from "@/lib/importFields";
 import type { CustomerImportRow } from "@/lib/importTypes";
+import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -20,11 +21,6 @@ const TIER_LABEL: Record<string, string> = {
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-function fmt(s: string | number | null | undefined): string {
-  if (s === null || s === undefined || s === "") return "—";
-  return Number(s).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-}
 
 /** الرقم القديم (legacyCode) من صف القائمة — null إن فارغاً (العمود يظهر فقط حين توجد قيم).
  *  select القائمة في customerService يعيده ويُدخله البحث (شريحة تكامل الاستيراد). */

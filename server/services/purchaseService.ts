@@ -7,6 +7,7 @@ import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -71,7 +72,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });
-    const purchaseOrderId = Number((insRes as any)[0]?.insertId ?? (insRes as any).insertId);
+    const purchaseOrderId = extractInsertId(insRes);
 
     for (const r of rows) {
       await tx.insert(purchaseOrderItems).values({ purchaseOrderId, ...r });
@@ -80,18 +81,27 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
   });
 }
 
+/** عزل الفرع: غير المدير/الأدمن يُجبر فرعه على أوامر الشراء (نمط productionService.assertProductionBranch). */
+function assertPurchaseBranch(po: { branchId: number | string }, actor: Actor & { role?: string }) {
+  const elevated = actor.role === "admin" || actor.role === "manager";
+  if (elevated) return;
+  if (Number(po.branchId) !== actor.branchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع التعديل على فرع آخر" });
+  }
+}
+
 /**
  * إلغاء أمر شراء لم يُستلم منه شيء — قلب حالة خالص (createPurchaseOrder لا يكتب
  * أي قيد دفتر/AP/مخزون/إيصال؛ كل التأثيرات المالية والمخزنية تحدث في receivePurchase فقط).
  * أمرٌ استُلمت منه بضاعة يُعالَج بمرتجع شراء لا بالإلغاء.
  */
-export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor) {
-  void actor; // لا كتابة باسم المنفّذ هنا — التدقيق (audit) يسجَّل في الراوتر.
+export async function cancelPurchaseOrder(purchaseOrderId: number, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const po = (
       await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, purchaseOrderId)).for("update").limit(1)
     )[0];
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    assertPurchaseBranch(po, actor);
     if (po.status === "RECEIVED" || po.status === "CANCELLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء مستلَم أو ملغى" });
     }
@@ -125,13 +135,55 @@ export interface ReceivePurchaseInput {
   clientRequestId?: string | null;
 }
 
-export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor) {
+export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
     // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة الاستلام الأول بلا تكرار للمخزون أو AP.
+    // قبل أيّ replay، نتحقّق أنّ المفتاح المخزَّن يخصّ نفس أمر الشراء وفرعه والكميات المطلوبة.
+    // كان الـreplay يَعود بنتيجة مضلِّلة (receivedTotal=0.00) دون أيّ تحقّق ⇒ مفتاح يُعاد استعماله
+    // على PO مختلف أو بكميات مختلفة كان يُرجع نجاحاً صامتاً ⇒ يَخفي تكرار طلب على كيان مختلف.
     if (input.clientRequestId) {
       const existingRefId = await findIdempotentRefId(tx, "purchase.receive", input.clientRequestId);
       if (existingRefId != null) {
-        return { purchaseOrderId: input.purchaseOrderId, receivedTotal: "0.00", idempotentReplay: true as const };
+        if (existingRefId !== input.purchaseOrderId) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لاستلام أمر شراء مختلف",
+          });
+        }
+        const replayPo = (
+          await tx.select().from(purchaseOrders).where(eq(purchaseOrders.id, input.purchaseOrderId)).limit(1)
+        )[0];
+        if (!replayPo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+        assertPurchaseBranch(replayPo, actor);
+        const replayItems = await tx
+          .select()
+          .from(purchaseOrderItems)
+          .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
+        const replayItemById = new Map(replayItems.map((i) => [Number(i.id), i]));
+        const replayInputSum = input.lines.reduce((acc, l) => acc + Number(l.receivedBaseQuantity), 0);
+        const replayActualSum = input.lines.reduce((acc, l) => {
+          const it = replayItemById.get(l.purchaseOrderItemId);
+          if (!it) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "تعارض idempotency: بنود الاستلام لا تخص أمر الشراء المُسجَّل",
+            });
+          }
+          return acc + Number(it.receivedBaseQuantity ?? 0);
+        }, 0);
+        if (replayActualSum < replayInputSum) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: كميات الاستلام المطلوبة لا تطابق المسجَّل",
+          });
+        }
+        const replayFully = replayItems.every((r) => (r.receivedBaseQuantity ?? 0) >= r.baseQuantity);
+        return {
+          purchaseOrderId: input.purchaseOrderId,
+          fullyReceived: replayFully,
+          receivedTotal: money(replayPo.total).toFixed(2),
+          idempotentReplay: true as const,
+        };
       }
     }
 
@@ -143,6 +195,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
       .limit(1);
     const po = poRows[0];
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
+    assertPurchaseBranch(po, actor);
     if (po.status === "RECEIVED" || po.status === "CANCELLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء مستلَم أو ملغى" });
     }
@@ -311,7 +364,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor)
         status: "COMPLETED",
         createdBy: actor.userId,
       });
-      const receiptId = Number((rRes as any)[0]?.insertId ?? (rRes as any).insertId);
+      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_OUT",
         branchId: Number(po.branchId),

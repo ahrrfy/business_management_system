@@ -1,10 +1,13 @@
 import {
   COOKIE_NAME,
   PASSWORD_MIN_LEN,
+  PASSWORD_POLICY_MSG,
+  PASSWORD_REGEX,
   SESSION_DEFAULT_MS,
   SESSION_REMEMBER_MAX_MS,
 } from "@shared/const";
 import { TRPCError } from "@trpc/server";
+import { createHash } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { users } from "../../drizzle/schema";
@@ -12,6 +15,7 @@ import { DUMMY_STORED, verifyPassword } from "../auth/password";
 import { signSession } from "../auth/session";
 import { getSessionCookieOptions } from "../cookies";
 import { getDb } from "../db";
+import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
 import { changePassword as changePasswordSvc, createUser } from "../services/userService";
 import { withTx } from "../services/tx";
@@ -23,6 +27,42 @@ const ROLES = ["user", "admin", "manager", "cashier", "warehouse"] as const; // 
 /** قفل الحساب ضدّ التخمين: ٥ محاولات فاشلة ⇒ قفل ١٥ دقيقة. */
 const LOCK_THRESHOLD = 5;
 const LOCK_MS = 15 * 60 * 1000;
+
+/** عدّاد محاولات الدخول الفاشلة لكل IP — يطال المهاجم الذي يدوّر إيميلات غير موجودة. */
+const IP_ATTEMPT_THRESHOLD = 20;
+const IP_WINDOW_MS = 15 * 60 * 1000;
+const ipAttempts = new Map<string, { count: number; firstAt: number }>();
+setInterval(() => {
+  const now = Date.now();
+  ipAttempts.forEach((rec, ip) => {
+    if (now - rec.firstAt > IP_WINDOW_MS) ipAttempts.delete(ip);
+  });
+}, IP_WINDOW_MS).unref?.();
+
+function getClientIp(req: unknown): string {
+  const r = req as { ip?: string; socket?: { remoteAddress?: string } } | undefined;
+  return r?.ip ?? r?.socket?.remoteAddress ?? "unknown";
+}
+
+/** هاش ٦ بايت (١٢ خانة hex) محايد للهوية — يربط الأحداث بلا كشف القيمة الخام. */
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function recordIpFailure(ip: string): number {
+  const now = Date.now();
+  const rec = ipAttempts.get(ip);
+  if (!rec || now - rec.firstAt > IP_WINDOW_MS) {
+    ipAttempts.set(ip, { count: 1, firstAt: now });
+    return 1;
+  }
+  rec.count += 1;
+  return rec.count;
+}
+
+function clearIpFailures(ip: string): void {
+  ipAttempts.delete(ip);
+}
 
 type DbUser = typeof users.$inferSelect;
 
@@ -59,15 +99,42 @@ export const authRouter = router({
       const rows = await db.select().from(users).where(eq(users.email, input.email)).limit(1);
       const user = rows[0];
 
+      const ip = getClientIp(ctx.req);
+      const ipHash = shortHash(ip);
+      const emailHash = shortHash(input.email);
+
+      // حدّ المحاولات بـIP: يطال المهاجم الذي يدوّر إيميلات غير موجودة.
+      const ipRec = ipAttempts.get(ip);
+      if (ipRec && Date.now() - ipRec.firstAt <= IP_WINDOW_MS && ipRec.count >= IP_ATTEMPT_THRESHOLD) {
+        await logAudit(
+          { user: user ?? null, req: ctx.req },
+          {
+            action: "auth.login.ip_throttled",
+            entityType: "user",
+            entityId: user?.id ?? null,
+            newValue: { reason: "ip_rate_limit", ipHash, emailHash },
+          }
+        );
+        throw new TRPCError({
+          code: "TOO_MANY_REQUESTS",
+          message: "تجاوز عدد المحاولات المسموح به. الرجاء المحاولة لاحقاً.",
+        });
+      }
+
       // قفل مؤقّت بعد محاولات فاشلة متتالية.
       if (user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()) {
         await logAudit(
           { user, req: ctx.req },
-          { action: "auth.login.locked", entityType: "user", entityId: user.id }
+          {
+            action: "auth.login.locked",
+            entityType: "user",
+            entityId: user.id,
+            newValue: { reason: "locked", ipHash, emailHash },
+          }
         );
         throw new TRPCError({
           code: "TOO_MANY_REQUESTS",
-          message: "الحساب مقفل مؤقّتاً بسبب محاولات دخول فاشلة — حاول بعد قليل.",
+          message: "الحساب مقفل مؤقتاً. الرجاء المحاولة لاحقاً.",
         });
       }
 
@@ -79,17 +146,21 @@ export const authRouter = router({
       // رسالة موحّدة لكل من: بريد غير موجود / كلمة خاطئة / حساب معطّل (لا تمييز جانبي).
       if (!user || !ok || !user.isActive) {
         if (user && !ok) await registerFailedLogin(db, user);
+        recordIpFailure(ip);
         await logAudit(
           { user: user ?? null, req: ctx.req },
           {
             action: "auth.login.failed",
             entityType: "user",
             entityId: user?.id ?? null,
-            newValue: { email: input.email, reason: !user ? "no-user" : !ok ? "bad-password" : "inactive" },
+            newValue: { reason: "invalid_credentials", ipHash, emailHash },
           }
         );
         throw new TRPCError({ code: "UNAUTHORIZED", message: "البريد أو كلمة المرور غير صحيحة" });
       }
+
+      // نجاح جزئي للتحقق من الكلمة ⇒ صفّر عدّاد IP لئلا يُعاقَب المستخدم الشرعي.
+      clearIpFailures(ip);
 
       // إذا انتهت صلاحية كلمة المرور المؤقتة → ارفض الدخول برسالة صريحة
       if (user.mustChangePassword && user.tempPasswordExpiresAt) {
@@ -107,7 +178,8 @@ export const authRouter = router({
       }
 
       const expiry = input.remember ? SESSION_REMEMBER_MAX_MS : SESSION_DEFAULT_MS;
-      const token = await signSession(user.id, expiry);
+      // نمرّر ctx.req ⇒ يُضمَّن fp (بصمة الجهاز) في الـJWT ⇒ توكن مسروق من جهاز آخر يُرفض.
+      const token = await signSession(user.id, expiry, ctx.req);
       ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: expiry });
 
       // نجاح: حدّث آخر دخول وصفّر القفل — دون إفشال الدخول إن تعثّر التحديث.
@@ -115,7 +187,9 @@ export const authRouter = router({
         .update(users)
         .set({ lastSignedIn: new Date(), failedLoginAttempts: 0, lockedUntil: null })
         .where(eq(users.id, user.id))
-        .catch((e) => console.warn("[login] post-update failed:", e));
+        .catch((e: unknown) =>
+          logger.warn({ err: e, userId: user.id }, "auth.login.post_update_failed")
+        );
 
       await logAudit(
         { user, req: ctx.req },
@@ -144,13 +218,18 @@ export const authRouter = router({
     .input(
       z.object({
         oldPassword: z.string().min(1).max(128),
-        newPassword: z.string().min(PASSWORD_MIN_LEN).max(128),
+        newPassword: z
+          .string()
+          .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
+          .max(128)
+          .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
       })
     )
     .mutation(async ({ input, ctx }) => {
       await changePasswordSvc(ctx.user.id, input.oldPassword, input.newPassword);
       // أُبطِلت كل الجلسات (sessionsValidFrom=now) ⇒ نُصدر كوكياً جديداً كي لا يُطرَد صاحبها.
-      const token = await signSession(ctx.user.id, SESSION_DEFAULT_MS);
+      // نمرّر ctx.req ⇒ التوكن الجديد يحمل بصمة الجهاز الحالي.
+      const token = await signSession(ctx.user.id, SESSION_DEFAULT_MS, ctx.req);
       ctx.res.cookie(COOKIE_NAME, token, {
         ...getSessionCookieOptions(ctx.req),
         maxAge: SESSION_DEFAULT_MS,
@@ -182,7 +261,11 @@ export const authRouter = router({
     .input(
       z.object({
         email: z.string().email(),
-        password: z.string().min(PASSWORD_MIN_LEN).max(128),
+        password: z
+          .string()
+          .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
+          .max(128)
+          .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
         name: z.string().min(1),
         role: z.enum(ROLES).default("cashier"),
         branchId: z.number().optional(),

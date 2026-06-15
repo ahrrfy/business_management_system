@@ -116,6 +116,8 @@ describe("reconcileCustomerBalances — لا انحراف وهمي بعد مرت
       { branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "3" }] },
       actor,
     );
+    // M5/M8: الدفع النقدي يَستوجب وردية مفتوحة لمستخدم actor (admin=1).
+    await openShift(1, 1);
     // ادفع أكثر من المستحق (30 على 30 ثم 20 إضافية)
     await processPayment({ invoiceId: sale.invoiceId, amount: "50.00", method: "CASH" }, actor);
     const issues = await reconcileCustomerBalances();
@@ -126,6 +128,8 @@ describe("reconcileCustomerBalances — لا انحراف وهمي بعد مرت
 describe("WORKORDER — إرجاع لا يُعيد المتغيّر الأساس إلى المخزون (لا مخزون وهمي)", () => {
   it("returnSale على فاتورة WORKORDER يَفرض restock=false", async () => {
     await setStock(1, 1, 5); // مواد كافية للبدء (نستخدم variantId 1 كمواد + كأساس للتبسيط)
+    // M10: تسليم WO نقداً يَستوجب وردية مفتوحة لمستخدم actor.
+    await openShift(1, 1);
     const wo = await createWorkOrder(
       { branchId: 1, baseVariantId: 1, title: "درع", salePrice: "100.00", materials: [{ variantId: 1, baseQuantity: 1 }] },
       actor,

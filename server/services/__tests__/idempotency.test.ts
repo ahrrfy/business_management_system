@@ -37,6 +37,11 @@ async function seedBase() {
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
   await d.insert(s.productPrices).values([{ productUnitId: 1, priceTier: "RETAIL", price: "10.00" }]);
+  // M5/M8: العمليات النقدية (createSale CASH / processPayment CASH) تَستوجب وردية مفتوحة.
+  await d.insert(s.shifts).values({
+    id: 1, userId: 1, branchId: 1, status: "OPEN",
+    openedAt: new Date(), openGuard: "1:1", openingBalance: "0",
+  });
 }
 
 async function setStock(variantId: number, branchId: number, qty: number) {
@@ -79,7 +84,7 @@ describe("Idempotency — النقر المزدوج لا يُنشئ عمليات
   it("returnSale: نفس clientRequestId لا يُنشئ استرداداً مكرّراً", async () => {
     await setStock(1, 1, 10);
     const sale = await createSale(
-      { branchId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
+      { branchId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "20.00", method: "CASH" } },
       actor,
     );
     const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];

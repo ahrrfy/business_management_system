@@ -5,6 +5,7 @@ import {
   customers,
   inventoryMovements,
   invoices,
+  receipts,
   suppliers,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -68,6 +69,13 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   // الفلتر invoiceId IS NULL إلزامي: PAYMENT_IN على فاتورة (sale.pay) محسوبة أصلاً عبر paidAmount،
   // وضمّها هنا يكرّر الحساب. cancelVoucher يكتب قيداً تعويضياً بلا invoiceId أيضاً فينصافر صافي السندات
   // المستقلّة المُلغاة إلى صفر. التناظر مع reconcileSupplierBalances الذي يضمّ الاتجاهين أصلاً.
+  //
+  // ⛔ استثناء قيود عربون أمر الشغل (WO deposit): receipt.workOrderId IS NOT NULL.
+  // عربون أمر الشغل ليس تسديداً للذمة (لا فاتورة موجودة بعدُ) بل أمانة على عملٍ مستقبلي،
+  // ولا يُحدِّث customers.currentBalance عند القبض. ضمّه في voucherSum يُنتج drift = depositAmount
+  // طوال عمر الأمر قبل التسليم. عند التسليم يُربط القيد بالفاتورة (invoiceId يصير NOT NULL) فيخرج
+  // من الفلتر تلقائياً ويُحتسب عبر invoice.paidAmount. عند الإلغاء يُكتب PAYMENT_OUT تعويضي بنفس
+  // المُحدِّد البنيوي (receipt.workOrderId NOT NULL) فيُستثنى أيضاً ⇒ صافي صفر على AR (صحيح).
   const voucherSum = await db
     .select({
       customerId: accountingEntries.customerId,
@@ -82,6 +90,9 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
         sql`${accountingEntries.customerId} IS NOT NULL`,
         sql`${accountingEntries.invoiceId} IS NULL`,
         inArray(accountingEntries.entryType, ["PAYMENT_IN", "PAYMENT_OUT"]),
+        sql`(${accountingEntries.receiptId} IS NULL OR ${accountingEntries.receiptId} NOT IN (
+          SELECT ${receipts.id} FROM ${receipts} WHERE ${receipts.workOrderId} IS NOT NULL
+        ))`,
       )
     )
     .groupBy(accountingEntries.customerId);

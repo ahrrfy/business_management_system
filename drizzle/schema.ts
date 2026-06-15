@@ -117,7 +117,7 @@ export const customers = mysqlTable(
     customerType: mysqlEnum("customerType", ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]).default("فرد"),
     defaultPriceTier: mysqlEnum("defaultPriceTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL").notNull(),
     notes: text("notes"),
-    creditLimit: decimal("creditLimit", { precision: 15, scale: 2 }).default("0"),
+    creditLimit: decimal("creditLimit", { precision: 15, scale: 2 }),
     currentBalance: decimal("currentBalance", { precision: 15, scale: 2 }).default("0").notNull(),
     // import-integration: المعرّف القديم («الرقم» في ملفات النظام السابق) — مفتاح مطابقة الاستيراد.
     // UNIQUE يسمح بتعدّد NULL ⇒ حارس بنيوي ضدّ ازدواج الطرف برصيد عند استيراد متزامن.

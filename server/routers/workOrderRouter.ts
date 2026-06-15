@@ -22,6 +22,8 @@ import {
 import { logAudit } from "../services/auditService";
 import { branchScopedProcedure, canSeeCost, cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
 import { workOrderBarcodeSet } from "../services/barcodeService";
+import { positiveMoneyString } from "../lib/schemas";
+import { assertValidImageDataUrl } from "../lib/imageValidation";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
@@ -281,6 +283,8 @@ export const workOrderRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      for (const img of input.designImages ?? []) assertValidImageDataUrl(img.url);
+      if (input.paymentReceiptUrl) assertValidImageDataUrl(input.paymentReceiptUrl);
       // أعد المحاولة على سباق idempotency (طلبان متزامنان بنفس المفتاح ⇒ الثاني يُعيد الأول).
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
@@ -331,7 +335,7 @@ export const workOrderRouter = router({
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
-        payment: z.object({ amount: z.string(), method }).optional(),
+        payment: z.object({ amount: positiveMoneyString, method }).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {

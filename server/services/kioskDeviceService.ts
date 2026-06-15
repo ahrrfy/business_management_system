@@ -14,6 +14,7 @@ import type { Request } from "express";
 import { branches, kioskDevices } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { KIOSK_COOKIE_NAME, verifyKioskSession } from "../auth/kioskSession";
+import { extractInsertId } from "../lib/insertId";
 
 const TOKEN_PREFIX = "kde_";
 
@@ -98,7 +99,7 @@ export async function createKioskDevice(input: {
     isActive: true,
     createdBy: input.createdBy ?? null,
   });
-  const id = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+  const id = extractInsertId(res);
   return { id, rawToken, tokenPrefix };
 }
 

@@ -75,7 +75,7 @@ describe("تدقيق أحداث الهوية/المصادقة", () => {
     await expect(caller.auth.login({ email: "admin@test.local", password: "wrongpass1" })).rejects.toThrow();
     const row = await lastAudit("auth.login.failed");
     expect(row).toBeTruthy();
-    expect((row.newValue as any)?.reason).toBe("bad-password");
+    expect((row.newValue as any)?.reason).toBe("invalid_credentials");
     expect(JSON.stringify(row.newValue ?? {})).not.toContain("wrongpass1");
   });
 
@@ -86,38 +86,38 @@ describe("تدقيق أحداث الهوية/المصادقة", () => {
     const row = await lastAudit("auth.login.failed");
     expect(row).toBeTruthy();
     expect(row.entityId).toBeNull();
-    expect((row.newValue as any)?.reason).toBe("no-user");
+    expect((row.newValue as any)?.reason).toBe("invalid_credentials");
   });
 
   it("user.create يُسجَّل عند إنشاء مستخدم من المدير", async () => {
     const admin = await seedAdmin();
     const caller = appRouter.createCaller(makeCtx(admin));
-    const r = await caller.auth.register({ email: "new@test.local", password: "Pass1234", name: "جديد", role: "cashier" });
+    const r = await caller.auth.register({ email: "new@test.local", password: "Pass1234!Aaa", name: "جديد", role: "cashier" });
     const row = await lastAudit("user.create");
     expect(row).toBeTruthy();
     expect(Number(row.entityId)).toBe(r.userId);
     expect(Number(row.userId)).toBe(1); // الفاعل = المدير
-    expect(JSON.stringify(row.newValue ?? {})).not.toContain("Pass1234"); // لا كلمة مرور
+    expect(JSON.stringify(row.newValue ?? {})).not.toContain("Pass1234!Aaa"); // لا كلمة مرور
   });
 
   it("user.deactivate و user.resetPassword يُسجَّلان", async () => {
     const admin = await seedAdmin();
-    const { userId } = await createUser({ name: "ك", email: "k@test.local", password: "Cashier99" }, { userId: 1, branchId: 1 });
+    const { userId } = await createUser({ name: "ك", email: "k@test.local", password: "Pass1234!Aaa" }, { userId: 1, branchId: 1 });
     const caller = appRouter.createCaller(makeCtx(admin));
     await caller.users.setActive({ userId, isActive: false });
     expect(await lastAudit("user.deactivate")).toBeTruthy();
-    await caller.users.resetPassword({ userId, newPassword: "Reset123" });
+    await caller.users.resetPassword({ userId, newPassword: "Reset123!Bbb" });
     const reset = await lastAudit("user.resetPassword");
     expect(reset).toBeTruthy();
-    expect(JSON.stringify(reset)).not.toContain("Reset123");
+    expect(JSON.stringify(reset)).not.toContain("Reset123!Bbb");
   });
 
   it("auth.changePassword يُسجَّل", async () => {
     await seedAdmin();
-    const { userId } = await createUser({ name: "س", email: "s@test.local", password: "OldPass11" }, { userId: 1, branchId: 1 });
+    const { userId } = await createUser({ name: "س", email: "s@test.local", password: "OldPass1!Aaa" }, { userId: 1, branchId: 1 });
     const u = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
     const caller = appRouter.createCaller(makeCtx(u));
-    await caller.auth.changePassword({ oldPassword: "OldPass11", newPassword: "NewPass22" });
+    await caller.auth.changePassword({ oldPassword: "OldPass1!Aaa", newPassword: "NewPass2!Bbb" });
     const row = await lastAudit("auth.changePassword");
     expect(row).toBeTruthy();
     expect(Number(row.entityId)).toBe(userId);

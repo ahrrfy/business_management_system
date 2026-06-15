@@ -11,6 +11,7 @@
     "prepare": "husky",
     "format": "prettier --write .",
     "test": "vitest run",
+    "audit": "pnpm audit --prod --audit-level high",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "node scripts/db-push-guard.mjs",
@@ -83,6 +84,7 @@
     "dotenv": "^17.2.2",
     "drizzle-orm": "^0.44.5",
     "embla-carousel-react": "^8.6.0",
+    "exceljs": "^4.4.0",
     "express": "^4.21.2",
     "express-rate-limit": "^8.5.2",
     "framer-motion": "^12.23.22",
@@ -112,7 +114,6 @@
     "tailwindcss-animate": "^1.0.7",
     "vaul": "^1.1.2",
     "wouter": "^3.3.5",
-    "xlsx": "^0.18.5",
     "zod": "^4.1.12"
   },
   "devDependencies": {

@@ -6,6 +6,7 @@ import {
   listExpenses,
 } from "../services/expenseService";
 import { logAudit } from "../services/auditService";
+import { ymdDate } from "../lib/schemas";
 import { branchScopedProcedure, cashierProcedure, managerProcedure, router } from "../trpc";
 
 const category = z.enum([
@@ -30,8 +31,8 @@ export const expenseRouter = router({
           branchId: z.number().int().positive().optional(),
           category: category.optional(),
           status: status.optional(),
-          from: z.string().optional(),
-          to: z.string().optional(),
+          from: ymdDate.optional(),
+          to: ymdDate.optional(),
           limit: z.number().int().positive().max(1000).default(200),
         })
         .optional()
@@ -108,7 +109,10 @@ export const expenseRouter = router({
   cancel: managerProcedure
     .input(z.object({ expenseId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await cancelExpense(input.expenseId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await cancelExpense(input.expenseId, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) });
       await logAudit(ctx, { action: "expense.cancel", entityType: "expense", entityId: input.expenseId });
       return res;
     }),

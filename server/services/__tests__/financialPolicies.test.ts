@@ -190,6 +190,8 @@ describe("السياسة ٦: الدفع الزائد مسموح ويُسجَّل
       { userId: 1, branchId: 1 },
     );
     expect(sale.status).toBe("PENDING");
+    // M5/M8: الدفع النقدي يَستوجب وردية مفتوحة لمستخدم actor.
+    await openShiftRow(1, 1);
     // دفع ١٥ (زائد ٥): النظام يقبل (قرار مالك "مسموح").
     const pay = await processPayment({ invoiceId: sale.invoiceId, amount: "15.00", method: "CASH" }, { userId: 1, branchId: 1 });
     expect(pay.status).toBe("PAID");

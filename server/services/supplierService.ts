@@ -2,8 +2,10 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
 import { purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { escapeLike } from "../lib/sqlLike";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
+import { extractInsertId } from "../lib/insertId";
 
 export interface CreateSupplierInput {
   name: string;
@@ -84,7 +86,7 @@ export async function createSupplier(input: CreateSupplierInput, _actor: Actor) 
       notes: norm(input.notes),
       isActive: true,
     });
-    const supplierId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+    const supplierId = extractInsertId(res);
     return { supplierId, id: supplierId };
   });
 }
@@ -175,16 +177,19 @@ export async function getSupplier(supplierId: number) {
   return (await db.select().from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0] ?? null;
 }
 
-/** قائمة موردين مع بحث وتقسيم صفحات. */
+/** قائمة موردين مع بحث وتقسيم صفحات.
+ * الفجوة ١٦: الحد الأعلى ٢٠٠٠ (افتراضي ١٠٠) — يمنع طلباً مفرداً من استنفاد
+ * pool الاتصالات أو ذاكرة العملية بتنزيل آلاف الصفوف بلا تجزئة.
+ */
 export async function listSuppliers(input: ListSuppliersInput = {}) {
   const db = getDb();
   if (!db) return { rows: [], total: 0 };
-  const limit = Math.min(Math.max(input.limit ?? 50, 1), 500);
+  const limit = Math.min(Math.max(input.limit ?? 100, 1), 2000);
   const offset = Math.max(input.offset ?? 0, 0);
   const conds: any[] = [];
   if (!input.includeInactive) conds.push(eq(suppliers.isActive, true));
   if (input.q?.trim()) {
-    const q = `%${input.q.trim()}%`;
+    const q = `%${escapeLike(input.q.trim())}%`;
     // v3-add-screens: البحث يشمل هواتف المورّد الثلاثة + المدينة + التصنيف.
     // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
     conds.push(or(

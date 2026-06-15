@@ -23,8 +23,9 @@ import { getDb } from "./db";
 import { setStock } from "./services/inventoryService";
 import { PRINT_SERVICE_TYPE } from "./services/printSaleService";
 import { withTx } from "./services/tx";
+import { extractInsertId } from "./lib/insertId";
 
-const insertId = (r: unknown): number => Number((r as any)[0]?.insertId ?? (r as any).insertId);
+const insertId = extractInsertId;
 
 async function main() {
   const dbOrNull = getDb();

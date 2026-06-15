@@ -4,6 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { branchStock, inventoryMovements, productUnits } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import type { DecimalInput } from "./money";
+import { extractInsertId } from "../lib/insertId";
 
 export type MovementType = "IN" | "OUT" | "ADJUST" | "RETURN" | "TRANSFER_IN" | "TRANSFER_OUT";
 type DirectionalType = Exclude<MovementType, "ADJUST">;
@@ -81,7 +82,7 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     notes: a.notes,
     createdBy: a.createdBy,
   });
-  const movementId = Number((res as any)[0]?.insertId ?? (res as any).insertId);
+  const movementId = extractInsertId(res);
 
   // كتابة نسبية تحت القفل: تشفى ذاتياً ولا تطمس تحديثاً متزامناً (بخلاف الكتابة المطلقة السابقة).
   await tx
@@ -185,7 +186,7 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
     .insert(branchStock)
     .values({ variantId: a.variantId, branchId: a.branchId, quantity: a.targetQuantity })
     .onDuplicateKeyUpdate({ set: { quantity: a.targetQuantity } });
-  return { movementId: Number((res as any)[0]?.insertId ?? (res as any).insertId), newQuantity: a.targetQuantity };
+  return { movementId: extractInsertId(res), newQuantity: a.targetQuantity };
 }
 
 export interface TransferArgs {

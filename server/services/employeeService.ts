@@ -8,6 +8,7 @@ import { fullEmployeeName, type EmployeeEducation } from "@shared/hr";
 import { branches, employees } from "../../drizzle/schema";
 import { requireDb } from "./tx";
 import { toDbMoney } from "./money";
+import { extractInsertId } from "../lib/insertId";
 
 export interface EmployeeFilters {
   q?: string;
@@ -161,7 +162,7 @@ function toValues(input: EmployeeInput) {
 export async function createEmployee(input: EmployeeInput) {
   const db = requireDb();
   const [res] = await db.insert(employees).values({ ...toValues(input), employmentStatus: "active", isActive: true });
-  return getEmployee(Number((res as { insertId: number }).insertId));
+  return getEmployee(extractInsertId(res));
 }
 
 export async function updateEmployee(id: number, input: EmployeeInput) {

@@ -1,10 +1,11 @@
 // تصدير أي صفوف إلى Excel أو CSV — للمالك/المحاسب (§٢ تقليل الجهد).
-// يعتمد xlsx المُثبَّت. الاستعمال:
+// استُبدل xlsx@0.18.5 المهجور (CVE-2023-30533: Prototype Pollution + ReDoS) بـexceljs المُصان.
+// الاستعمال:
 //   exportRows(rows, { filename: "الفواتير", columns: [
 //     { key: "invoiceNumber", header: "رقم الفاتورة" },
 //     { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
 //   ]});
-import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 
 export type ExportColumn<T> = {
   key: keyof T | string;
@@ -32,22 +33,46 @@ function toMatrix<T>(rows: T[], columns: ExportColumn<T>[]): (string | number)[]
   return [header, ...body];
 }
 
+/** قسم خلية CSV واحدة وفق RFC4180: علامتا اقتباس مزدوجتان، والاقتباس المُضاعَف داخل النصّ. */
+function csvCell(v: string | number): string {
+  const s = typeof v === "number" ? String(v) : v;
+  if (/[",\r\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function matrixToCsv(matrix: (string | number)[][]): string {
+  return matrix.map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
+/** يُصدّر صفوفاً إلى ملف Excel/CSV. التوقيع void (لا Promise) للحفاظ على عقد كل المستدعين القائمين
+ *  (~٢٠ نقطة استدعاء بلا await) — writeBuffer غير المتزامن يُدار داخلياً ويُسجَّل خطؤه فقط. */
 export function exportRows<T>(rows: T[], opts: ExportOptions<T>): void {
   const matrix = toMatrix(rows, opts.columns);
-  const ws = XLSX.utils.aoa_to_sheet(matrix);
   const fmt = opts.format ?? "xlsx";
   const stamp = new Date().toISOString().slice(0, 10);
 
   if (fmt === "csv") {
     // BOM لضمان قراءة العربية صحيحة في Excel.
-    const csv = "﻿" + XLSX.utils.sheet_to_csv(ws);
+    const csv = "﻿" + matrixToCsv(matrix);
     downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `${opts.filename}-${stamp}.csv`);
     return;
   }
 
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, opts.sheetName ?? "بيانات");
-  XLSX.writeFile(wb, `${opts.filename}-${stamp}.xlsx`);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(opts.sheetName ?? "بيانات");
+  for (const row of matrix) ws.addRow(row);
+  void (async () => {
+    try {
+      const buf = await wb.xlsx.writeBuffer();
+      downloadBlob(
+        new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+        `${opts.filename}-${stamp}.xlsx`,
+      );
+    } catch (e) {
+      // فشل التصدير لا يُعطّل صفحة المستخدم — يُسجَّل وحسب.
+      console.error("[export.xlsx] failed:", e);
+    }
+  })();
 }
 
 function downloadBlob(blob: Blob, filename: string): void {
