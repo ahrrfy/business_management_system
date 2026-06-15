@@ -16,7 +16,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { printBarcodeSheet, type BarcodeLabelItem } from "@/lib/printing/printTemplates";
+import { printLabel, type LabelRenderItem } from "@/lib/printing/print";
 import {
   isValidEan13,
   onlyDigits,
@@ -195,7 +195,7 @@ export function LabelPrintModal({
       : l.unit.retail.trim() || (l.unit.isBase ? baseRetail : "");
 
   function doPrint() {
-    const items: BarcodeLabelItem[] = labels.flatMap((l) => {
+    const items: LabelRenderItem[] = labels.flatMap((l) => {
       const n = parseInt(l.qty, 10) || 0;
       const fullName = [baseName, l.variant.color, l.variant.size].filter(Boolean).join(" ") + ` — ${l.unit.name || "وحدة"}`;
       return Array.from({ length: n }, () => ({
@@ -205,7 +205,7 @@ export function LabelPrintModal({
         barcode: l.barcode,
       }));
     });
-    if (items.length) printBarcodeSheet(items);
+    if (items.length) void printLabel(items);
   }
 
   return (

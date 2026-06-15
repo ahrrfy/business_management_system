@@ -10,7 +10,7 @@ import { confirm } from "@/lib/confirm";
 import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
-import { printBarcodeSheet } from "@/lib/printing/printTemplates";
+import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useState } from "react";
 
@@ -176,7 +176,7 @@ export default function Products() {
                             label: "طباعة ملصق باركود",
                             hidden: !r.barcode, // بلا باركود = لا ملصق (Code128 يحتاج قيمة)
                             onSelect: () =>
-                              printBarcodeSheet([
+                              void printLabel([
                                 {
                                   name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
                                   sku: r.sku ?? "",

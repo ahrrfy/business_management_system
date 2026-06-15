@@ -9,6 +9,8 @@ import {
 } from './docHtml';
 import { qrCodeSvg } from './qr';
 import { code128Svg } from './barcode';
+import { type LabelRenderItem, type LabelRenderOpts } from './labelRaster';
+import { getLabelSize, type LabelSize } from './labelSize';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ١. فاتورة مبيعات ضريبية — A4 + QR Code
@@ -671,60 +673,64 @@ export function printAPAging(d: APAgingPrintData): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ٩. ملصقات الباركود — A4 شبكي
+// ٩. ملصقات الباركود — ملصق حراري بمقاس الورق (HPRT LPQ58، عرض ≤58مم)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-export interface BarcodeLabelItem {
-  name: string;
-  sku: string;
-  price: string | number | null | undefined;
-  barcode: string;
-}
+/** توافق خلفي: نوع عنصر الملصق هو نفسه LabelRenderItem. */
+export type BarcodeLabelItem = LabelRenderItem;
 
-export function printBarcodeSheet(items: BarcodeLabelItem[]): void {
-  const logo = logoUrl();
-  const today = new Date().toLocaleDateString('ar-IQ-u-nu-latn');
+/**
+ * طباعة ملصقات الباركود عبر نافذة المتصفّح **بمقاس الملصق الفعلي** — ملصق واحد لكل صفحة
+ * `@page` بمقاس الوسائط، فتطبع عبر تعريف Windows لطابعة الملصقات (HPRT LPQ58). بلا زخارف
+ * ولا شعار: اسم اختياري + قضبان Code128 + أرقام الباركود + (SKU/سعر). تطبع تلقائياً عند
+ * التحميل ثم تُغلق. هذا هو **البديل** لمسار WebUSB في printLabel (التصميم نفسه منطقياً).
+ */
+export function printBarcodeSheet(
+  items: LabelRenderItem[],
+  size: LabelSize = getLabelSize(),
+  opts: LabelRenderOpts = {},
+): void {
+  const { widthMm, heightMm } = size;
+  const showName = opts.showName !== false;
+  const showPrice = opts.showPrice !== false;
+  const barHmm = Math.max(8, Math.round(heightMm * 0.42));
 
-  const labels = items.map(item => {
+  const labels = items.map((item) => {
     let barSvg = '';
     try {
-      const result = code128Svg(item.barcode, { moduleWidth: 1.2, height: 40, showText: true });
-      barSvg = result.svg;
-    } catch { /* ignore */ }
+      barSvg = code128Svg(item.barcode, { moduleWidth: 2, height: 60, showText: false }).svg;
+    } catch { /* قيمة غير قابلة للترميز ⇒ بلا قضبان */ }
 
-    return `<div style="border:1px solid ${B.border};border-radius:3px;padding:2.5mm;text-align:center;break-inside:avoid;">
-      <div style="font-size:9px;font-weight:600;color:#000;margin-bottom:1.5mm;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(item.name)}</div>
-      <div style="width:100%;overflow:hidden;">${barSvg}</div>
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:1.5mm;padding:0 1mm;">
-        <span style="font-size:8px;color:${B.textMuted};">${esc(item.sku)}</span>
-        ${item.price !== '' && item.price != null
-          ? `<span style="font-size:10px;font-weight:700;color:${B.green};">${fmtC(item.price)}</span>`
-          : ''}
-      </div>
-    </div>`;
+    const nameHtml = showName && item.name ? `<div class="nm">${esc(item.name)}</div>` : '';
+    const skuHtml = item.sku ? `<span class="sk">${esc(item.sku)}</span>` : '';
+    const priceHtml = showPrice && item.price != null && item.price !== ''
+      ? `<span class="pr">${fmtC(item.price)}</span>` : '';
+    const bottomHtml = skuHtml || priceHtml ? `<div class="bt">${skuHtml}${priceHtml}</div>` : '';
+
+    return `<div class="lbl">${nameHtml}<div class="bc">${barSvg}</div>`
+      + `<div class="bn">${esc(item.barcode)}</div>${bottomHtml}</div>`;
   }).join('');
 
   const html = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ملصقات الباركود</title>
   ${CAIRO_FONT}
-  <style>*,*::before,*::after{margin:0;padding:0;box-sizing:border-box}body{font-family:'Cairo',sans-serif;background:#fff;color:#000;direction:rtl}@page{size:A4;margin:0}</style>
-  </head>
-  <body style="width:210mm;min-height:297mm;background:#fff;position:relative;overflow:hidden;">
-  <div style="position:absolute;top:0;right:0;bottom:0;width:4mm;background:linear-gradient(to bottom,${B.green},${B.greenDark} 40%,${B.orange} 100%);"></div>
-  <div style="position:absolute;top:0;right:4mm;left:0;height:5.5mm;background:linear-gradient(135deg,${B.green},${B.greenDark} 60%,${B.greenDeep} 100%);"></div>
-  <div style="padding:8mm 10mm;">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:5mm;">
-      <div style="display:flex;align-items:center;gap:2mm;">
-        <img src="${logo}" style="width:10mm;height:10mm;object-fit:contain;" alt="" onerror="this.style.display='none'">
-        <span style="font-size:11px;font-weight:700;color:${B.greenDark};">${esc(CO.sub)}</span>
-      </div>
-      <span style="font-size:9px;color:${B.textMuted};">ملصقات الباركود — طباعة ${esc(today)}</span>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:3mm;">${labels}</div>
-  </div>
-  <div style="position:absolute;bottom:0;right:4mm;left:0;height:3.5mm;background:linear-gradient(135deg,${B.greenDark},${B.green} 100%);"></div>
-  </body></html>`;
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    html,body{background:#fff;color:#000}
+    body{font-family:'Cairo',sans-serif;direction:rtl}
+    @page{size:${widthMm}mm ${heightMm}mm;margin:0}
+    .lbl{width:${widthMm}mm;height:${heightMm}mm;padding:1mm 1.5mm;display:flex;flex-direction:column;
+      align-items:center;justify-content:center;page-break-after:always;overflow:hidden}
+    .lbl:last-child{page-break-after:auto}
+    .nm{font-size:8pt;font-weight:700;width:100%;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.15}
+    .bc{width:100%;text-align:center;line-height:0;margin:.4mm 0}
+    .bc svg{height:${barHmm}mm;width:auto;max-width:100%}
+    .bn{font-family:monospace;font-size:7pt;letter-spacing:.4px}
+    .bt{width:100%;display:flex;justify-content:space-between;align-items:center;margin-top:.4mm;padding:0 .5mm}
+    .sk{font-size:7pt} .pr{font-size:9pt;font-weight:800}
+  </style></head>
+  <body onload="window.print();setTimeout(function(){window.close()},500)">${labels}</body></html>`;
 
-  openPrintWindow(html);
+  openPrintWindow(html, `width=${Math.max(320, Math.round(widthMm * 4))},height=${Math.max(360, Math.round(heightMm * 6))}`);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

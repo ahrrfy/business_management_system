@@ -5,9 +5,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { fmtAr as money } from "@/lib/money";
 import { code128Svg, internalBarcode } from "@/lib/printing/barcode";
-import { printBarcodeSheet } from "@/lib/printing/printTemplates";
+import {
+  printLabel, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
+  getLabelSize, setLabelSize, LABEL_PRESETS, presetIdFor, type LabelSize,
+} from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "wouter";
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
@@ -34,6 +37,39 @@ export default function BarcodeLabels() {
   const [showName, setShowName] = useState(true);
   const [showPrice, setShowPrice] = useState(true);
   const [error, setError] = useState("");
+
+  // مقاس الملصق (محفوظ محلياً، مشترك مع باقي شاشات الطباعة).
+  const [size, setSize] = useState<LabelSize>(() => getLabelSize());
+  const [wStr, setWStr] = useState(() => String(size.widthMm));
+  const [hStr, setHStr] = useState(() => String(size.heightMm));
+  const activePreset = presetIdFor(size);
+
+  // طابعة الملصقات (WebUSB، دور "label" منفصل عن طابعة الكاشير).
+  const usbSupported = isWebUsbSupported();
+  const [labelPrinterReady, setLabelPrinterReady] = useState(() => isPaired("label"));
+
+  useEffect(() => {
+    tryReconnectPrinter("label").then((ok) => { if (ok) setLabelPrinterReady(true); }).catch(() => { /* تجاهل */ });
+  }, []);
+
+  function applySize(next: LabelSize) {
+    const saved = setLabelSize(next);
+    setSize(saved);
+    setWStr(String(saved.widthMm));
+    setHStr(String(saved.heightMm));
+  }
+  function commitCustom() {
+    applySize({ widthMm: Number(wStr) || size.widthMm, heightMm: Number(hStr) || size.heightMm });
+  }
+  async function pairLabelPrinter() {
+    setError("");
+    try {
+      await pairPrinter("label");
+      setLabelPrinterReady(true);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "تعذّر ربط طابعة الملصقات");
+    }
+  }
 
   const results = trpc.catalog.posList.useQuery(
     { branchId, tier: "RETAIL", query: search, limit: 12 },
@@ -88,13 +124,14 @@ export default function BarcodeLabels() {
     if (!queue.length) { setError("أضِف صنفاً واحداً على الأقل."); return; }
     const expanded = queue.flatMap(item =>
       Array.from({ length: item.count }, () => ({
-        name: `${item.productName}${showName ? ` — ${item.unitName}` : ""}`,
+        name: `${item.productName} — ${item.unitName}`,
         sku: item.sku,
-        price: showPrice && item.price != null ? item.price : "",
+        price: item.price,
         barcode: item.barcode,
       }))
     );
-    printBarcodeSheet(expanded);
+    // نفس تقنية الكاشير: WebUSB(label) إن رُبطت الطابعة، وإلا نافذة المتصفّح بمقاس الملصق.
+    void printLabel(expanded, { showName, showPrice }, size);
   }
 
   const totalLabels = queue.reduce((s, q) => s + q.count, 0);
@@ -108,6 +145,59 @@ export default function BarcodeLabels() {
       <p className="text-sm text-muted-foreground">
         ابحث عن صنف وأضفه. للأصناف بلا باركود مصنّعي يُولَّد باركود داخلي (ALR…) — احفظه ليصبح قابلاً للمسح في الكاشير، ثم اطبع الملصقات.
       </p>
+
+      {/* مقاس الملصق + طابعة الملصقات */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">مقاس الملصق والطابعة</CardTitle></CardHeader>
+        <CardContent className="space-y-4">
+          <div className="space-y-2">
+            <Label className="text-sm">المقاس (عرض الطابعة الأقصى 58مم)</Label>
+            <div className="flex flex-wrap gap-2">
+              {LABEL_PRESETS.map((p) => (
+                <Button
+                  key={p.id}
+                  type="button"
+                  variant={activePreset === p.id ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => applySize(p.size)}
+                >
+                  {p.label}
+                </Button>
+              ))}
+              <span className={`inline-flex items-center px-2 text-xs rounded-md border ${activePreset === "custom" ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>
+                مخصّص:
+              </span>
+              <div className="flex items-center gap-1" dir="ltr">
+                <Input className="h-8 w-16 text-center" inputMode="numeric" value={wStr}
+                  onChange={(e) => setWStr(e.target.value)} onBlur={commitCustom}
+                  onKeyDown={(e) => { if (e.key === "Enter") commitCustom(); }} aria-label="العرض مم" />
+                <span className="text-muted-foreground text-sm">×</span>
+                <Input className="h-8 w-16 text-center" inputMode="numeric" value={hStr}
+                  onChange={(e) => setHStr(e.target.value)} onBlur={commitCustom}
+                  onKeyDown={(e) => { if (e.key === "Enter") commitCustom(); }} aria-label="الارتفاع مم" />
+                <span className="text-muted-foreground text-sm">مم</span>
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground">المقاس الحالي: {size.widthMm} × {size.heightMm} مم (يُطبَّق في كل شاشات الطباعة).</p>
+          </div>
+
+          <div className="flex items-center gap-3 border-t pt-3">
+            {!usbSupported ? (
+              <span className="text-xs text-muted-foreground">المتصفّح لا يدعم الطباعة المباشرة (WebUSB) — ستُفتح نافذة الطباعة. استخدم Chrome/Edge للطباعة الصامتة.</span>
+            ) : labelPrinterReady ? (
+              <>
+                <span className="text-sm text-emerald-600">طابعة الملصقات مربوطة ✓</span>
+                <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>تغيير الطابعة</Button>
+              </>
+            ) : (
+              <>
+                <span className="text-sm text-muted-foreground">طابعة الملصقات غير مربوطة (ستُفتح نافذة الطباعة).</span>
+                <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>ربط طابعة الملصقات</Button>
+              </>
+            )}
+          </div>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader><CardTitle className="text-base">إضافة أصناف</CardTitle></CardHeader>
@@ -199,4 +289,3 @@ export default function BarcodeLabels() {
     </div>
   );
 }
-

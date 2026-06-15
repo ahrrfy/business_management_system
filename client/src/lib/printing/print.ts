@@ -3,10 +3,16 @@ import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
 import { isPaired, sendBytes } from "./thermal";
 import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
 import { receiptToRaster } from "./receiptRaster";
-import { printBrowserReceipt, type ReceiptBrowserData } from "./printTemplates";
+import { buildLabelBytes, type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
+import { getLabelSize, type LabelSize } from "./labelSize";
+import { printBrowserReceipt, printBarcodeSheet, type ReceiptBrowserData } from "./printTemplates";
 
-export type { PrintDoc, ReceiptBrowserData };
+export type { PrintDoc, ReceiptBrowserData, LabelRenderItem, LabelRenderOpts, LabelSize };
 export { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter } from "./thermal";
+export type { PrinterRole } from "./thermal";
+export {
+  getLabelSize, setLabelSize, LABEL_PRESETS, DEFAULT_LABEL_SIZE, presetIdFor, clampLabelSize,
+} from "./labelSize";
 export {
   isServerBridgeEnabled, getServerBridgeStatus, serverPrintTest, sendRawToServer,
 } from "./serverBridge";
@@ -87,5 +93,39 @@ export async function printReceipt(d: ReceiptBrowserData): Promise<{ via: "serve
     }
   }
   printBrowserReceipt(d);
+  return { via: "browser" };
+}
+
+/**
+ * طباعة ملصقات الباركود **بنفس تقنية إيصال الكاشير**: نقطية ESC/POS عبر WebUSB لطابعة
+ * الملصقات (HPRT LPQ58، صامت)، وإلا نافذة المتصفّح (طباعة عبر تعريف Windows للطابعة نفسها).
+ *
+ * ملاحظة: **لا يمرّ بجسر الخادم** — وجهة الجسر (PRINT_TARGET) هي طابعة الإيصالات لا الملصقات،
+ * والجسر أصلاً لا يصل لطابعة المتجر بعد النشر السحابي. لذا الملصقات: WebUSB(label) ← المتصفّح.
+ * يستعمل المقاس المحفوظ (getLabelSize) ما لم يُمرَّر مقاسٌ صراحةً.
+ */
+export async function printLabel(
+  items: LabelRenderItem[],
+  opts: LabelRenderOpts = {},
+  size: LabelSize = getLabelSize(),
+): Promise<{ via: "thermal" | "browser" }> {
+  if (!items.length) return { via: "browser" };
+
+  // ١) WebUSB لطابعة الملصقات (الدور "label" — منفصل عن طابعة الإيصالات).
+  if (isPaired("label")) {
+    const bytes = await buildLabelBytes(items, size, opts);
+    if (bytes) {
+      try {
+        await sendBytes(bytes, "label");
+        return { via: "thermal" };
+      } catch (e) {
+        // طابعة مفصولة/خطأ نقل ⇒ تدهور سلس لنافذة المتصفّح (لا تُسقَط الطباعة).
+        console.warn("[print] فشل WebUSB لطابعة الملصقات، نتراجع لنافذة المتصفّح:", e);
+      }
+    }
+  }
+
+  // ٢) نافذة المتصفّح (بمقاس الملصق — تُطبع عبر تعريف Windows للطابعة).
+  printBarcodeSheet(items, size, opts);
   return { via: "browser" };
 }

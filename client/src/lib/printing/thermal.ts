@@ -1,43 +1,68 @@
 // ناقل WebUSB للطابعات الحرارية. مُغلّف بحراسة قدرات المتصفّح؛ يعمل في Chrome/Edge
 // فوق HTTPS أو localhost وبإذن المستخدم.
 //
+// **طابعتان بدورين:** "receipt" (إيصالات الكاشير — Epson، الدور الافتراضي) و"label"
+// (ملصقات الباركود — HPRT). كل دور يحفظ جهازه ومنفذه ومعرّفه المحفوظ مستقلاً ⇒ ترسل
+// الإيصالات لطابعة الإيصالات والملصقات لطابعة الملصقات في آنٍ واحد. كل الدوال تأخذ الدور
+// كوسيط أخير افتراضه "receipt" ⇒ المنادون القدامى (الكاشير) بلا تغيير سلوك.
+//
 // الربط التلقائي: WebUSB يحفظ إذن الجهاز للأصل (origin) بعد أوّل ربط يدوي. لذا
 // `navigator.usb.getDevices()` يُرجِع الطابعة المُصرَّح بها سابقاً **بلا نافذة اختيار** —
-// نستعملها في tryReconnectPrinter() عند فتح الكاشير ليُعاد الربط صامتاً. نحفظ
-// vendorId/productId لآخر طابعة في localStorage لاختيار «الافتراضية» عند تعدّد الأجهزة.
+// نستعملها في tryReconnectPrinter() ليُعاد الربط صامتاً. نحفظ vendorId/productId لكل دور
+// في localStorage لاختيار الجهاز الصحيح عند تعدّد الأجهزة المُصرَّح بها.
 
-let device: any = null;
-let endpointOut: number | null = null;
+export type PrinterRole = "receipt" | "label";
 
-const LS_KEY = "thermalPrinter.default"; // { vendorId, productId }
+interface Slot {
+  device: any;
+  endpointOut: number | null;
+}
+
+const slots: Record<PrinterRole, Slot> = {
+  receipt: { device: null, endpointOut: null },
+  label: { device: null, endpointOut: null },
+};
+
+// المفتاح "thermalPrinter.default" مُبقىً للإيصالات للتوافق الخلفي (طابعة مربوطة سابقاً).
+const LS_KEY: Record<PrinterRole, string> = {
+  receipt: "thermalPrinter.default",
+  label: "thermalPrinter.label",
+};
 
 export function isWebUsbSupported(): boolean {
   return typeof navigator !== "undefined" && !!(navigator as any).usb;
 }
 
-export function isPaired(): boolean {
-  return !!device && endpointOut != null;
+export function isPaired(role: PrinterRole = "receipt"): boolean {
+  const s = slots[role];
+  return !!s.device && s.endpointOut != null;
 }
 
-function rememberDevice(dev: any): void {
+function rememberDevice(role: PrinterRole, dev: any): void {
   try {
-    localStorage.setItem(LS_KEY, JSON.stringify({ vendorId: dev.vendorId, productId: dev.productId }));
+    localStorage.setItem(LS_KEY[role], JSON.stringify({ vendorId: dev.vendorId, productId: dev.productId }));
   } catch {
     /* localStorage غير متاح ⇒ نتجاهل (الربط يبقى يعمل لهذه الجلسة) */
   }
 }
 
-function readRemembered(): { vendorId: number; productId: number } | null {
+function readRemembered(role: PrinterRole): { vendorId: number; productId: number } | null {
   try {
-    const raw = localStorage.getItem(LS_KEY);
+    const raw = localStorage.getItem(LS_KEY[role]);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
   }
 }
 
-/** يفتح الجهاز ويُهيّئ منفذ الإخراج (bulk OUT). يضبط device/endpointOut عند النجاح. */
-async function claimDevice(dev: any): Promise<boolean> {
+/** هل هذا الجهاز مربوط أصلاً في الدور الآخر؟ (نمنع ادّعاء نفس الطابعة لدورين). */
+function claimedByOtherRole(role: PrinterRole, dev: any): boolean {
+  const other = role === "receipt" ? "label" : "receipt";
+  return slots[other].device === dev;
+}
+
+/** يفتح الجهاز ويُهيّئ منفذ الإخراج (bulk OUT). يضبط slot الدور عند النجاح. */
+async function claimDevice(role: PrinterRole, dev: any): Promise<boolean> {
   await dev.open();
   if (dev.configuration === null) await dev.selectConfiguration(1);
 
@@ -55,33 +80,34 @@ async function claimDevice(dev: any): Promise<boolean> {
     try { await dev.close(); } catch { /* تجاهل */ }
     return false;
   }
-  device = dev;
-  endpointOut = out;
+  slots[role].device = dev;
+  slots[role].endpointOut = out;
   return true;
 }
 
-/** يطلب من المستخدم اختيار طابعة USB ويُهيّئها. يُستدعى ضمن تفاعل مستخدم. */
-export async function pairPrinter(): Promise<boolean> {
+/** يطلب من المستخدم اختيار طابعة USB للدور المحدّد ويُهيّئها. يُستدعى ضمن تفاعل مستخدم. */
+export async function pairPrinter(role: PrinterRole = "receipt"): Promise<boolean> {
   if (!isWebUsbSupported()) {
     throw new Error("المتصفّح لا يدعم WebUSB — استخدم Chrome أو Edge");
   }
   const usb = (navigator as any).usb;
   const dev = await usb.requestDevice({ filters: [] });
-  if (!(await claimDevice(dev))) {
+  if (!(await claimDevice(role, dev))) {
     throw new Error("لم يُعثر على منفذ طباعة USB مناسب على هذا الجهاز");
   }
-  rememberDevice(dev);
+  rememberDevice(role, dev);
   return true;
 }
 
 /**
- * إعادة ربط صامتة بلا نافذة اختيار: يفحص الأجهزة المُصرَّح بها سابقاً ويربط الطابعة
- * الافتراضية (المحفوظة) أو أوّل جهاز ذي منفذ طباعة صالح. يُرجِع false بهدوء إن لا جهاز
- * (لم يُربط بعد) — لا يرمي. يُستدعى عند فتح الكاشير.
+ * إعادة ربط صامتة بلا نافذة اختيار: يفحص الأجهزة المُصرَّح بها سابقاً ويربط طابعة الدور.
+ * - "receipt" (سلوك قديم): يفضّل المحفوظة، وإلا يربط أوّل جهاز ذي منفذ طباعة صالح.
+ * - "label": يربط **فقط** الجهاز المطابق للمحفوظ (لئلا يخطف طابعة الإيصالات) ⇒ يلزم ربط يدوي أوّلاً.
+ * يُرجِع false بهدوء إن لا جهاز مناسب — لا يرمي.
  */
-export async function tryReconnectPrinter(): Promise<boolean> {
+export async function tryReconnectPrinter(role: PrinterRole = "receipt"): Promise<boolean> {
   if (!isWebUsbSupported()) return false;
-  if (isPaired()) return true;
+  if (isPaired(role)) return true;
   let devices: any[] = [];
   try {
     devices = await (navigator as any).usb.getDevices();
@@ -90,8 +116,10 @@ export async function tryReconnectPrinter(): Promise<boolean> {
   }
   if (!devices.length) return false;
 
-  // رتّب الأجهزة: الافتراضية المحفوظة أولاً.
-  const remembered = readRemembered();
+  const remembered = readRemembered(role);
+  const requireRemembered = role === "label"; // الملصقات: لا نربط جهازاً عشوائياً
+
+  // رتّب الأجهزة: المطابق للمحفوظ أولاً.
   if (remembered) {
     devices.sort((a, b) => {
       const am = a.vendorId === remembered.vendorId && a.productId === remembered.productId ? 0 : 1;
@@ -101,9 +129,12 @@ export async function tryReconnectPrinter(): Promise<boolean> {
   }
 
   for (const dev of devices) {
+    const matches = remembered && dev.vendorId === remembered.vendorId && dev.productId === remembered.productId;
+    if (requireRemembered && !matches) continue; // لا تربط إلا المطابق
+    if (claimedByOtherRole(role, dev)) continue; // الجهاز مأخوذ للدور الآخر
     try {
-      if (await claimDevice(dev)) {
-        rememberDevice(dev); // ثبّت الافتراضية على أوّل ربط ناجح
+      if (await claimDevice(role, dev)) {
+        rememberDevice(role, dev); // ثبّت الافتراضية على أوّل ربط ناجح
         return true;
       }
     } catch {
@@ -113,7 +144,8 @@ export async function tryReconnectPrinter(): Promise<boolean> {
   return false;
 }
 
-export async function sendBytes(bytes: Uint8Array): Promise<void> {
-  if (!device || endpointOut == null) throw new Error("لا توجد طابعة حرارية مربوطة");
-  await device.transferOut(endpointOut, bytes);
+export async function sendBytes(bytes: Uint8Array, role: PrinterRole = "receipt"): Promise<void> {
+  const s = slots[role];
+  if (!s.device || s.endpointOut == null) throw new Error("لا توجد طابعة حرارية مربوطة");
+  await s.device.transferOut(s.endpointOut, bytes);
 }
