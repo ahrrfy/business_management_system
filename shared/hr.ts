@@ -110,6 +110,36 @@ export const applicantStageLabel = (k: string): string => APPLICANT_STAGES.find(
 export const applicantSourceLabel = (k: string): string => APPLICANT_SOURCES.find((s) => s.key === k)?.label ?? k;
 export const APPLICANT_STAGE_KEYS = APPLICANT_STAGES.map((s) => s.key) as [ApplicantStage, ...ApplicantStage[]];
 
+/* ===== الوظائف الشاغرة (معرض التوظيف العام /apply) ===== */
+/** أنواع التعاقد المعروضة في بطاقة الوظيفة. */
+export const EMPLOYMENT_TYPES = [
+  { key: "full_time", label: "دوام كامل" },
+  { key: "part_time", label: "دوام جزئي" },
+  { key: "contract", label: "عقد" },
+  { key: "temporary", label: "مؤقّت" },
+  { key: "internship", label: "تدريب" },
+] as const;
+export type EmploymentType = (typeof EMPLOYMENT_TYPES)[number]["key"];
+export const employmentTypeLabel = (k: string): string => EMPLOYMENT_TYPES.find((t) => t.key === k)?.label ?? k;
+export const EMPLOYMENT_TYPE_KEYS = EMPLOYMENT_TYPES.map((t) => t.key) as [EmploymentType, ...EmploymentType[]];
+
+/**
+ * لوحة ألوان لبطاقات الوظائف على المعرض العام — لكل قسم لون مميّز ثابت،
+ * تُستعمل خلفيةً متدرّجة حين لا تُرفع صورة للوظيفة (مصدر حقيقة واحد بين الخادم والعميل).
+ */
+export const VACANCY_ACCENTS: Record<string, { from: string; to: string }> = {
+  "الطباعة": { from: "#7c3aed", to: "#4f46e5" },
+  "المبيعات والكاشير": { from: "#0ea5e9", to: "#2563eb" },
+  "التصميم الجرافيكي": { from: "#ec4899", to: "#8b5cf6" },
+  "المخزن": { from: "#f59e0b", to: "#d97706" },
+  "المحاسبة": { from: "#10b981", to: "#059669" },
+  "الإدارة": { from: "#64748b", to: "#334155" },
+  "التوصيل": { from: "#ef4444", to: "#b91c1c" },
+};
+export const DEFAULT_VACANCY_ACCENT = { from: "#3f46d6", to: "#6366f1" } as const;
+export const vacancyAccent = (department?: string | null): { from: string; to: string } =>
+  (department && VACANCY_ACCENTS[department]) || DEFAULT_VACANCY_ACCENT;
+
 /* ===== أجهزة البصمة — وجهة الهجرة (خادم الرؤية المملوك، بدل المزوّد المدفوع) ===== */
 export const HR_FINGERPRINT_TARGET = { host: "hr.alroya.iq", port: 7788, label: "خادم الرؤية العربية" } as const;
 

@@ -1642,6 +1642,35 @@ export const leaveRequests = mysqlTable(
 export type LeaveRequest = typeof leaveRequests.$inferSelect;
 export type InsertLeaveRequest = typeof leaveRequests.$inferInsert;
 
+/* الوظائف الشاغرة — معرض التوظيف العام (/apply): يُنشئها فريق HR، يُنشَر منها ما هو مفتوح للتقديم. */
+export const jobVacancies = mysqlTable(
+  "jobVacancies",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    title: varchar("title", { length: 200 }).notNull(),
+    department: varchar("department", { length: 120 }),
+    employmentType: varchar("employmentType", { length: 30 }).default("full_time").notNull(),
+    location: varchar("location", { length: 200 }),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    // سطرٌ تشويقي قصير يظهر على البطاقة قبل التفاصيل.
+    summary: varchar("summary", { length: 400 }),
+    description: text("description"),
+    requirements: text("requirements"),
+    // عدد الشواغر المتاحة لهذه الوظيفة (لأغراض العرض الداخلي فقط).
+    openings: int("openings").default(1).notNull(),
+    // صورة الوظيفة (data URL مضغوط) — MEDIUMTEXT يتّسع لها بهامش واسع كصور المنتجات.
+    imageUrl: mediumtext("imageUrl"),
+    isPublished: boolean("isPublished").default(false).notNull(),
+    // ترتيب يدوي للعرض على المعرض (الأصغر أولاً).
+    sortOrder: int("sortOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({ pubIdx: index("idx_vacancy_published").on(t.isPublished) })
+);
+export type JobVacancy = typeof jobVacancies.$inferSelect;
+export type InsertJobVacancy = typeof jobVacancies.$inferInsert;
+
 /* المتقدّمون للوظائف (رابط خارجي عام + استمارة ورقية تُدخَل يدوياً) + مسار مراحل. */
 export const jobApplicants = mysqlTable(
   "jobApplicants",
@@ -1649,6 +1678,8 @@ export const jobApplicants = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     name: varchar("name", { length: 200 }).notNull(),
     jobTitle: varchar("jobTitle", { length: 150 }),
+    // ربط اختياري بالوظيفة الشاغرة التي قدّم المتقدّم عليها (إن قدّم عبر بطاقة في المعرض).
+    vacancyId: bigint("vacancyId", { mode: "number" }).references(() => jobVacancies.id),
     source: varchar("source", { length: 20 }).default("external").notNull(), // external | paper | archive
     stage: mysqlEnum("applicantStage", ["new", "review", "interview", "accepted", "rejected", "archived"]).default("new").notNull(),
     appliedDate: date("appliedDate", { mode: "string" }),

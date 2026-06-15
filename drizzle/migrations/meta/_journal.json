@@ -71,6 +71,13 @@
       "when": 1781452964889,
       "tag": "0009_lean_gamma_corps",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "5",
+      "when": 1781500000000,
+      "tag": "0011_job_vacancies",
+      "breakpoints": true
     }
   ]
 }
