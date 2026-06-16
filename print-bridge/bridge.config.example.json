@@ -1,6 +1,0 @@
-{
-  "port": 17777,
-  "token": "",
-  "origins": ["https://srv1548487.hstgr.cloud", "http://localhost:3000"],
-  "log": ""
-}
