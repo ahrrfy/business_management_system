@@ -16,6 +16,13 @@ let _pool: mysql.Pool | null = null;
 function createDb(url: string) {
   const pool = mysql.createPool({
     uri: url,
+    // المنطقة الزمنية صراحةً = UTC ('Z') بدل افتراض mysql2 الضمني 'local' (منطقة عملية Node).
+    // يجعل تحويل JS Date ↔ سلسلة SQL حتمياً ومستقلاً عن منطقة المضيف، ويُصلح انزياح فلترة التواريخ
+    // الذي كان يحدث حين تختلف منطقة Node عن جلسة القاعدة قرب حدّ اليوم (علّة inventoryMovements «(د4)»
+    // المتقطّعة). يكتمل الضبط بتشغيل Node بـTZ=UTC (سكربتات dev/start/test + pm2) لتتطابق منطقة العملية
+    // مع جلسة القاعدة (حاوية MySQL تعمل UTC افتراضاً: NOW()=UTC_TIMESTAMP()) ⇒ اتّساق تامّ. تجنّبنا تثبيت
+    // الجلسة عبر معالِج 'connection' لأنه يتسابق مع مُلتقِط الاتصال تحت الحِمل فيُفسد بروتوكول الاتصال.
+    timezone: "Z",
     connectionLimit: Number(process.env.DB_POOL_LIMIT ?? 20),
     enableKeepAlive: true,
     keepAliveInitialDelay: 10_000,

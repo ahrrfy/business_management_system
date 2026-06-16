@@ -32,6 +32,8 @@ module.exports = {
       kill_timeout: 11000,
       env: {
         NODE_ENV: "production",
+        // منطقة العملية UTC لتطابق جلسة القاعدة (UTC) ⇒ فلترة التواريخ حتمية مستقلّة عن منطقة المضيف.
+        TZ: "UTC",
         PORT: process.env.PORT || 3000,
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
