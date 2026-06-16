@@ -14,7 +14,7 @@ public static class RawPrint {
   public struct DOCINFO { public string pDocName; public string pOutputFile; public string pDataType; }
   [DllImport("winspool.drv", CharSet=CharSet.Unicode, SetLastError=true)]
   public static extern bool OpenPrinter(string src, out IntPtr h, IntPtr def);
-  [DllImport("winspool.drv", SetLastError=true)]
+  [DllImport("winspool.drv", CharSet=CharSet.Unicode, SetLastError=true)]
   public static extern bool StartDocPrinter(IntPtr h, int level, ref DOCINFO di);
   [DllImport("winspool.drv", SetLastError=true)] public static extern bool StartPagePrinter(IntPtr h);
   [DllImport("winspool.drv", SetLastError=true)]
