@@ -1,0 +1,4 @@
+# ملفّات تشغيل/إعداد محلية للجسر — لا تُلتزَم
+bridge.log
+bridge.config.json
+node_modules/

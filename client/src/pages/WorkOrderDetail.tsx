@@ -6,6 +6,7 @@ import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
+import { printOrderTicket } from "@/lib/printing/print";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
 
@@ -93,6 +94,31 @@ export default function WorkOrderDetail() {
             subtotal: data.salePrice,
             total: data.salePrice,
           })}>طباعة أمر شغل</Button>
+          <Button variant="outline" size="sm" onClick={async () => {
+            try {
+              const r = await printOrderTicket({
+                kind: "receipt",
+                title: "تذكرة طلب",
+                subtitle: data.title,
+                meta: [
+                  `رقم الأمر: ${data.orderNumber}`,
+                  data.customerName ? `العميل: ${data.customerName}` : "عميل عابر",
+                  `الكمية: ${data.quantity}`,
+                  data.dueDate ? `الاستحقاق: ${String(data.dueDate).slice(0, 10)}` : "",
+                  `الحالة: ${STATUS_LABEL[data.status] ?? data.status}`,
+                ].filter(Boolean),
+                totals: [{ label: "سعر البيع", value: fmt(data.salePrice) }],
+                footer: data.customizationText ? `التخصيص: ${data.customizationText}` : undefined,
+                barcodeSet: data.qrPayload
+                  ? { barcode128: data.orderNumber, qrPayload: data.qrPayload, displayLabel: `أمر شغل: ${data.orderNumber}` }
+                  : undefined,
+              });
+              setError("");
+              setDone(r.via === "browser" ? "فُتحت نافذة طباعة التذكرة." : "أُرسلت التذكرة للطابعة ✓");
+            } catch (e) {
+              setError(e instanceof Error ? e.message : "تعذّرت طباعة التذكرة");
+            }
+          }}>طباعة تذكرة (حراري)</Button>
           <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
         </div>
       </div>
