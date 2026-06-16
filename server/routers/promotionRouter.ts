@@ -7,6 +7,7 @@ import { z } from "zod";
 import { TERMINATION_TYPES } from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/promotionService";
+import { getHrChanges } from "../services/reportsHrService";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -16,6 +17,9 @@ const moneyStrOpt = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "قيمة ما�
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
 
 export const promotionRouter = router({
+  /** تقرير التغييرات الوظيفية — الترقيات وإنهاء الخدمات. hr/READ. */
+  report: hrRead.query(() => getHrChanges()),
+
   /* ===== الترقيات ===== */
   listPromotions: hrRead.query(() => svc.listPromotions()),
 

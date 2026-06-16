@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
+import { exportRows } from "@/lib/export";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -79,9 +80,9 @@ export default function CustomerStatement() {
     { enabled: !!customerId }
   );
 
-  // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) ويفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF»).
-  const printStatement = () => {
-    if (!stmt.data) return;
+  // دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُبنى مرّة ويُشارَك بين الطباعة وتصدير Excel.
+  const ledger = useMemo(() => {
+    if (!stmt.data) return null;
     const d = stmt.data;
     const invTxs = d.invoices.map((i) => ({
       t: new Date(i.invoiceDate).getTime(),
@@ -111,16 +112,24 @@ export default function CustomerStatement() {
       totCredit = totCredit.plus(D(x.credit));
       return { ...x, balance: bal.toFixed(2) };
     });
+    return { txs, totDebit: totDebit.toFixed(2), totCredit: totCredit.toFixed(2), closingBalance: bal.toFixed(2) };
+  }, [stmt.data, from]);
+
+  // يفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF») اعتماداً على دفتر الحركات المُجمَّع.
+  const printStatement = () => {
+    if (!stmt.data || !ledger) return;
+    const d = stmt.data;
+    const { txs, totDebit, totCredit, closingBalance } = ledger;
     printCustomerStmt({
       customerName: d.customer.name, customerPhone: d.customer.phone ?? undefined,
       fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString("en-GB") : undefined,
       toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString("en-GB"),
       transactions: txs,
       // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
-      totalDebit: totDebit.toFixed(2), totalCredit: totCredit.toFixed(2),
+      totalDebit: totDebit, totalCredit: totCredit,
       openingBalance: from ? d.summary.openingBalance : undefined,
       // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
-      closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
+      closingBalance: from ? closingBalance : d.summary.currentBalance,
     });
   };
 
@@ -131,6 +140,28 @@ export default function CustomerStatement() {
         <div className="flex gap-2">
           {stmt.data && (
             <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
+          )}
+          {stmt.data && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!ledger?.txs.length}
+              onClick={() =>
+                exportRows(ledger?.txs ?? [], {
+                  filename: `كشف-حساب-${stmt.data!.customer.name}`,
+                  columns: [
+                    { key: "date", header: "التاريخ" },
+                    { key: "ref", header: "المرجع" },
+                    { key: "description", header: "البيان" },
+                    { key: "debit", header: "مدين", map: (r) => (r.debit == null ? 0 : Number(r.debit)) },
+                    { key: "credit", header: "دائن", map: (r) => (r.credit == null ? 0 : Number(r.credit)) },
+                    { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
+                  ],
+                })
+              }
+            >
+              تصدير Excel
+            </Button>
           )}
           {stmt.data && (
             <WhatsAppShare

@@ -7,6 +7,7 @@ import { z } from "zod";
 import { LEAVE_TYPES } from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/leaveService";
+import { getLeaveBalances } from "../services/reportsHrService";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -28,6 +29,9 @@ export const leaveRouter = router({
     .query(({ input }) => svc.listLeaves(input)),
 
   balances: hrRead.query(() => svc.balances()),
+
+  /** تقرير أرصدة الإجازات — لكل موظف نشط: المستخدَم والمعلّق. hr/READ. */
+  balanceReport: hrRead.query(() => getLeaveBalances()),
 
   create: hrWrite
     .input(

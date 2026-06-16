@@ -2,7 +2,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { printCustodyAck } from "@/lib/assets/print";
+import { exportRows } from "@/lib/export";
 import { trpc } from "@/lib/trpc";
+import { assetCategoryLabel } from "@shared/assets";
 import { ChevronDown, ChevronLeft, Package, ShieldCheck, Users, Wallet } from "lucide-react";
 import { Fragment, useState } from "react";
 import { Link } from "wouter";
@@ -20,11 +22,45 @@ export default function AssetCustodyReport() {
 
   const toggle = (id: number) => setOpen((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
+  // قائمة مسطّحة للتصدير: صفّ لكل (موظف × أصل) + الأصول بلا عهدة.
+  const flat = [
+    ...d.byEmployee.flatMap((e) =>
+      e.items.map((i) => ({
+        employee: e.employeeName ?? "موظف",
+        asset: i.name,
+        code: i.code ?? "",
+        category: assetCategoryLabel(i.category),
+        value: i.bookValue,
+      })),
+    ),
+    ...d.unassigned.map((a) => ({
+      employee: "غير مُسنَد",
+      asset: a.name,
+      code: a.code ?? "",
+      category: assetCategoryLabel(a.category),
+      value: a.bookValue,
+    })),
+  ];
+  const exportExcel = () =>
+    exportRows(flat, {
+      filename: "تقرير-العهد",
+      columns: [
+        { key: "employee", header: "الموظف" },
+        { key: "asset", header: "الأصل" },
+        { key: "code", header: "الرمز" },
+        { key: "category", header: "الفئة" },
+        { key: "value", header: "القيمة الدفترية", map: (r) => Number(r.value) },
+      ],
+    });
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-2xl font-bold">تقرير العهد</h1>
-        <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
+        <div className="flex items-center gap-2">
+          <Button variant="outline" size="sm" disabled={!flat.length} onClick={exportExcel}>تصدير Excel</Button>
+          <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">

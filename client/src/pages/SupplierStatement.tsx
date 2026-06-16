@@ -7,6 +7,7 @@ import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { printSupplierStmt } from "@/lib/printing/printTemplates";
+import { exportRows } from "@/lib/export";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
@@ -74,9 +75,9 @@ export default function SupplierStatement() {
     { enabled: !!supplierId }
   );
 
-  // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) ويفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF»).
-  const printStatement = () => {
-    if (!stmt.data) return;
+  // يبني دفتر الحركات (مدين/دائن/رصيد جارٍ) — يُشارَك بين الطباعة وتصدير Excel.
+  const ledger = useMemo(() => {
+    if (!stmt.data) return null;
     const d = stmt.data;
     const poTxs = d.purchaseOrders.map((p) => ({
       t: new Date(p.orderDate).getTime(),
@@ -96,22 +97,50 @@ export default function SupplierStatement() {
     // §٥: AP بـDecimal (دائن − مدين)، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.
     let bal = from ? D(d.summary.openingBalance) : D(0);
     let totDebit = D(0), totCredit = D(0);
-    const txs = merged.map(({ t: _t, ...x }) => {
+    const rows = merged.map(({ t: _t, ...x }) => {
       bal = bal.plus(D(x.credit)).minus(D(x.debit));
       totDebit = totDebit.plus(D(x.debit));
       totCredit = totCredit.plus(D(x.credit));
       return { ...x, balance: bal.toFixed(2) };
     });
+    return {
+      rows,
+      totalDebit: totDebit.toFixed(2),
+      totalCredit: totCredit.toFixed(2),
+      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
+      closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
+    };
+  }, [stmt.data, from]);
+
+  // يفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF»).
+  const printStatement = () => {
+    if (!stmt.data || !ledger) return;
+    const d = stmt.data;
     printSupplierStmt({
       supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
       fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString("en-GB") : undefined,
       toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString("en-GB"),
-      transactions: txs,
+      transactions: ledger.rows,
       // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
-      totalDebit: totDebit.toFixed(2), totalCredit: totCredit.toFixed(2),
+      totalDebit: ledger.totalDebit, totalCredit: ledger.totalCredit,
       openingBalance: from ? d.summary.openingBalance : undefined,
-      // مع فترة: الختامي = المُرحَّل + حركة الفترة؛ بلا فترة: الرصيد الجاري (السلوك القديم).
-      closingBalance: from ? bal.toFixed(2) : d.summary.currentBalance,
+      closingBalance: ledger.closingBalance,
+    });
+  };
+
+  // يصدّر دفتر الحركات نفسه (تاريخ/مرجع/بيان/مدين/دائن/رصيد) إلى Excel.
+  const exportStatement = () => {
+    if (!stmt.data || !ledger) return;
+    exportRows(ledger.rows, {
+      filename: `كشف-حساب-مورد-${stmt.data.supplier.name}`,
+      columns: [
+        { key: "date", header: "التاريخ" },
+        { key: "ref", header: "المرجع" },
+        { key: "description", header: "البيان" },
+        { key: "debit", header: "مدين", map: (r) => (r.debit == null ? null : Number(r.debit)) },
+        { key: "credit", header: "دائن", map: (r) => (r.credit == null ? null : Number(r.credit)) },
+        { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
+      ],
     });
   };
 
@@ -122,6 +151,16 @@ export default function SupplierStatement() {
         <div className="flex gap-2">
           {stmt.data && (
             <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
+          )}
+          {stmt.data && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!ledger?.rows.length}
+              onClick={exportStatement}
+            >
+              تصدير Excel
+            </Button>
           )}
           {stmt.data && (
             <WhatsAppShare

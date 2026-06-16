@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { exportRows } from "@/lib/export";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 
@@ -403,6 +404,50 @@ export default function InventoryMovements() {
                 ? "جارٍ التحميل…"
                 : `صفحة ${fmtNum(currentPage)} من ${fmtNum(totalPages)}`}
             </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!rows.length}
+              onClick={() =>
+                printReportDoc({
+                  title: "حركات المخزون",
+                  headerExtra: [
+                    { label: "الفترة", value: `${fromDate || "—"} — ${toDate || "—"}` },
+                    {
+                      label: "النوع",
+                      value: movementType ? MTYPE_LABEL[movementType] : "الكل",
+                    },
+                  ],
+                  columns: [
+                    { key: "date", label: "التاريخ" },
+                    { key: "product", label: "الصنف" },
+                    { key: "type", label: "نوع الحركة" },
+                    { key: "qty", label: "الكمية", align: "left" },
+                    { key: "branch", label: "الفرع" },
+                    { key: "ref", label: "المرجع" },
+                    { key: "user", label: "المستخدم" },
+                  ],
+                  rows: rows.map((r) => {
+                    const t = r.movementType as MovementType;
+                    return {
+                      date: new Date(r.createdAt).toLocaleDateString("ar-IQ-u-nu-latn"),
+                      product: variantLine(r).primary,
+                      type: MTYPE_LABEL[t] ?? r.movementType,
+                      qty: signedQty(t, r.quantity),
+                      branch: r.relatedBranchName
+                        ? `${r.branchName} ← ${r.relatedBranchName}`
+                        : r.branchName,
+                      ref: r.referenceType
+                        ? `${r.referenceType}${r.referenceId ? ` #${r.referenceId}` : ""}`
+                        : "—",
+                      user: r.createdByName ?? "—",
+                    };
+                  }),
+                })
+              }
+            >
+              طباعة / PDF
+            </Button>
             <Button variant="outline" size="sm" disabled={rows.length === 0} onClick={exportAll}>
               تصدير Excel
             </Button>

@@ -6,6 +6,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { exportRows } from "@/lib/export";
 import { D, round2, fmt, fmtInt } from "@/lib/money";
 import {
   printStocktakeReport,
@@ -244,6 +245,35 @@ export default function StocktakeReport() {
             <Button variant="outline">قائمة الجلسات</Button>
           </Link>
           <WhatsAppShare message={waMessage} label="مشاركة الملخص" size="default" />
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!calc.adjusted.length}
+            onClick={() =>
+              exportRows(calc.adjusted, {
+                filename: `محضر-جرد-${s.code || ""}`,
+                columns: [
+                  {
+                    key: "name",
+                    header: "الصنف",
+                    map: (r) => `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+                  },
+                  { key: "sku", header: "SKU", map: (r) => r.sku ?? "" },
+                  { key: "book", header: "الرصيد الدفتري", map: (r) => calc.bookOf(r) },
+                  { key: "actual", header: "المعدود المصحَّح", map: (r) => calc.finalOf(r) },
+                  { key: "diff", header: "الفرق", map: (r) => calc.diffOf(r) },
+                  {
+                    key: "reason",
+                    header: "السبب",
+                    map: (r) => STOCKTAKE_REASON_LABEL[r.decision?.reason ?? "UNSPECIFIED"] ?? "غير محدد",
+                  },
+                  { key: "value", header: "قيمة الفرق", map: (r) => Number(calc.valueOf(r)) },
+                ],
+              })
+            }
+          >
+            تصدير Excel
+          </Button>
           <Button onClick={doPrint}>🖨 طباعة المحضر</Button>
         </div>
       </div>

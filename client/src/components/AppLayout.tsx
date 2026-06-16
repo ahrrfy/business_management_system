@@ -106,12 +106,10 @@ const NAV_GROUPS: NavGroup[] = [
   },
   {
     key: "customers",
-    label: "العملاء والذمم",
+    label: "العملاء",
     icon: "👥",
     items: [
       { href: "/customers", label: "العملاء" },
-      { href: "/customers-statement", label: "كشف حساب عميل" },
-      { href: "/ar-aging", label: "أعمار الذمم المدينة" },
     ],
   },
   {
@@ -119,9 +117,12 @@ const NAV_GROUPS: NavGroup[] = [
     label: "التقارير والكشوفات",
     icon: "📊",
     items: [
-      { href: "/sales-report", label: "تقرير المبيعات" },
-      { href: "/suppliers-statement", label: "كشف حساب مورد" },
-      { href: "/ap-aging", label: "أعمار الذمم الدائنة" },
+      { href: "/reports", label: "مركز التقارير" },
+      { href: "/sales-report", label: "تقرير المبيعات", managerOnly: true },
+      { href: "/customers-statement", label: "كشف حساب عميل", managerOnly: true },
+      { href: "/ar-aging", label: "أعمار الذمم المدينة", managerOnly: true },
+      { href: "/suppliers-statement", label: "كشف حساب مورد", managerOnly: true },
+      { href: "/ap-aging", label: "أعمار الذمم الدائنة", managerOnly: true },
     ],
   },
   {

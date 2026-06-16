@@ -7,6 +7,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/payrollService";
+import { getPayrollSummary } from "../services/reportsHrService";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -21,6 +22,11 @@ export const payrollRouter = router({
   get: hrRead
     .input(z.object({ id: z.number().int().positive() }))
     .query(({ input }) => svc.getRun(input.id)),
+
+  /** تقرير ملخّص الرواتب — مسيّرات الرواتب بإجمالياتها (بفلتر شهر اختياري). hr/READ. */
+  summaryReport: hrRead
+    .input(z.object({ period: period.optional() }))
+    .query(({ input }) => getPayrollSummary({ period: input.period })),
 
   generate: hrWrite
     .input(z.object({ period }))

@@ -75,6 +75,30 @@ import Account from "@/pages/Account";
 import AuditLogs from "@/pages/AuditLogs";
 import InventoryMovements from "@/pages/InventoryMovements";
 import SalesReport from "@/pages/SalesReport";
+import ReportsCenter from "@/pages/ReportsCenter";
+import ProfitLoss from "@/pages/ProfitLoss";
+import GeneralLedger from "@/pages/GeneralLedger";
+import TrialBalance from "@/pages/TrialBalance";
+import BalanceSheet from "@/pages/BalanceSheet";
+import CashFlow from "@/pages/CashFlow";
+import SalesRegister from "@/pages/SalesRegister";
+import SalesByDimension from "@/pages/SalesByDimension";
+import PurchasesReport from "@/pages/PurchasesReport";
+import PurchaseRegister from "@/pages/PurchaseRegister";
+import ArApAgingDetail from "@/pages/ArApAgingDetail";
+import InventoryValuation from "@/pages/InventoryValuation";
+import StockStatus from "@/pages/StockStatus";
+import ItemLedger from "@/pages/ItemLedger";
+import AbcAnalysis from "@/pages/AbcAnalysis";
+import TreasuryReport from "@/pages/TreasuryReport";
+import ExpensesReport from "@/pages/ExpensesReport";
+import ProductionReport from "@/pages/ProductionReport";
+import WorkOrdersReport from "@/pages/WorkOrdersReport";
+import PayrollReport from "@/pages/PayrollReport";
+import AttendanceReport from "@/pages/AttendanceReport";
+import LeaveReport from "@/pages/LeaveReport";
+import HrChangesReport from "@/pages/HrChangesReport";
+import ExecutiveDashboard from "@/pages/ExecutiveDashboard";
 import Reconcile from "@/pages/Reconcile";
 import Settings from "@/pages/Settings";
 import Stocktakes from "@/pages/Stocktakes";
@@ -202,6 +226,30 @@ export default function App() {
       <Route path="/vouchers/receipt/new"><Shell><VoucherReceiptNew /></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
       <Route path="/shifts"><Shell><Shifts /></Shell></Route>
+      <Route path="/reports"><Shell><ReportsCenter /></Shell></Route>
+      <Route path="/reports/profit-loss"><Shell><RequireRole roles={["admin","manager"]}><ProfitLoss /></RequireRole></Shell></Route>
+      <Route path="/reports/general-ledger"><Shell><RequireRole roles={["admin","manager"]}><GeneralLedger /></RequireRole></Shell></Route>
+      <Route path="/reports/trial-balance"><Shell><RequireRole roles={["admin","manager"]}><TrialBalance /></RequireRole></Shell></Route>
+      <Route path="/reports/balance-sheet"><Shell><RequireRole roles={["admin","manager"]}><BalanceSheet /></RequireRole></Shell></Route>
+      <Route path="/reports/cash-flow"><Shell><RequireRole roles={["admin","manager"]}><CashFlow /></RequireRole></Shell></Route>
+      <Route path="/reports/sales-register"><Shell><RequireRole roles={["admin","manager"]}><SalesRegister /></RequireRole></Shell></Route>
+      <Route path="/reports/sales-by-dimension"><Shell><RequireRole roles={["admin","manager"]}><SalesByDimension /></RequireRole></Shell></Route>
+      <Route path="/reports/purchases"><Shell><RequireRole roles={["admin","manager"]}><PurchasesReport /></RequireRole></Shell></Route>
+      <Route path="/reports/purchase-register"><Shell><RequireRole roles={["admin","manager"]}><PurchaseRegister /></RequireRole></Shell></Route>
+      <Route path="/reports/aging-detail"><Shell><RequireRole roles={["admin","manager"]}><ArApAgingDetail /></RequireRole></Shell></Route>
+      <Route path="/reports/inventory-valuation"><Shell><RequireRole roles={["admin","manager"]}><InventoryValuation /></RequireRole></Shell></Route>
+      <Route path="/reports/stock-status"><Shell><RequireRole roles={["admin","manager"]}><StockStatus /></RequireRole></Shell></Route>
+      <Route path="/reports/item-ledger"><Shell><RequireRole roles={["admin","manager"]}><ItemLedger /></RequireRole></Shell></Route>
+      <Route path="/reports/abc"><Shell><RequireRole roles={["admin","manager"]}><AbcAnalysis /></RequireRole></Shell></Route>
+      <Route path="/reports/treasury"><Shell><RequireRole roles={["admin","manager"]}><TreasuryReport /></RequireRole></Shell></Route>
+      <Route path="/reports/expenses"><Shell><RequireRole roles={["admin","manager"]}><ExpensesReport /></RequireRole></Shell></Route>
+      <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager"]}><ProductionReport /></RequireRole></Shell></Route>
+      <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager"]}><WorkOrdersReport /></RequireRole></Shell></Route>
+      <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager"]}><PayrollReport /></RequireRole></Shell></Route>
+      <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager"]}><AttendanceReport /></RequireRole></Shell></Route>
+      <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager"]}><LeaveReport /></RequireRole></Shell></Route>
+      <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager"]}><HrChangesReport /></RequireRole></Shell></Route>
+      <Route path="/reports/executive"><Shell><RequireRole roles={["admin","manager"]}><ExecutiveDashboard /></RequireRole></Shell></Route>
       <Route path="/sales-report"><Shell><SalesReport /></Shell></Route>
       <Route path="/ar-aging"><Shell><ARAging /></Shell></Route>
       <Route path="/customers-statement"><Shell><CustomerStatement /></Shell></Route>

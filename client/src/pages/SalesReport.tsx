@@ -2,6 +2,7 @@ import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -380,36 +381,79 @@ function InvoicesTab({
         searchPlaceholder="بحث في التقرير…"
         emptyText={isLoading ? "جارٍ التحميل…" : "لا فواتير في هذا النطاق."}
         toolbar={
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!rows.length}
-            onClick={() =>
-              exportRows(rows, {
-                filename: `تقرير-المبيعات-${from}-${to}`,
-                columns: [
-                  { key: "invoiceNumber", header: "رقم الفاتورة" },
-                  {
-                    key: "invoiceDate",
-                    header: "التاريخ",
-                    map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
-                  },
-                  { key: "customerName", header: "العميل" },
-                  { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
-                  { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
-                  { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-                  {
-                    key: "costTotal",
-                    header: "التكلفة",
-                    map: (r) => Number(r.costTotal),
-                  },
-                  { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
-                ],
-              })
-            }
-          >
-            تصدير Excel
-          </Button>
+          <>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!rows.length}
+              onClick={() =>
+                printReportDoc({
+                  title: "تقرير المبيعات",
+                  headerExtra: [{ label: "الفترة", value: `${from} — ${to}` }],
+                  columns: [
+                    { key: "num", label: "رقم الفاتورة" },
+                    { key: "date", label: "التاريخ" },
+                    { key: "customer", label: "العميل" },
+                    { key: "source", label: "المصدر" },
+                    { key: "total", label: "الإجمالي", align: "left" },
+                    { key: "paid", label: "المدفوع", align: "left" },
+                    { key: "unpaid", label: "المتبقّي", align: "left" },
+                    { key: "status", label: "الحالة" },
+                  ],
+                  rows: rows.map((r) => ({
+                    num: r.invoiceNumber,
+                    date: new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
+                    customer: r.customerName ?? "—",
+                    source: SOURCE[r.sourceType] ?? r.sourceType,
+                    total: fmt(r.total),
+                    paid: fmt(r.paidAmount),
+                    unpaid: fmt(positiveDiff(r.total, r.paidAmount).toString()),
+                    status: STATUS[r.status] ?? r.status,
+                  })),
+                  summary: totals
+                    ? [
+                        { label: "عدد الفواتير", value: String(totals.count) },
+                        { label: "الإجمالي", value: fmt(totals.total) },
+                        { label: "المحصَّل", value: fmt(totals.paid) },
+                        { label: "المتبقّي", value: fmt(totals.unpaid), large: true, bold: true },
+                      ]
+                    : undefined,
+                })
+              }
+            >
+              طباعة / PDF
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!rows.length}
+              onClick={() =>
+                exportRows(rows, {
+                  filename: `تقرير-المبيعات-${from}-${to}`,
+                  columns: [
+                    { key: "invoiceNumber", header: "رقم الفاتورة" },
+                    {
+                      key: "invoiceDate",
+                      header: "التاريخ",
+                      map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
+                    },
+                    { key: "customerName", header: "العميل" },
+                    { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
+                    { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+                    { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+                    {
+                      key: "costTotal",
+                      header: "التكلفة",
+                      map: (r) => Number(r.costTotal),
+                    },
+                    { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
+                  ],
+                })
+              }
+            >
+              تصدير Excel
+            </Button>
+          </>
         }
       />
     </>

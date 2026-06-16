@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ListToolbar } from "@/components/list";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
 import { assetCategoryLabel } from "@shared/assets";
 import { Archive, CircleSlash, TrendingDown, Wallet } from "lucide-react";
@@ -38,6 +39,47 @@ export default function AssetDisposalLog() {
           <ListToolbar
             title="القائمة"
             count={rows.length}
+            onPrint={
+              rows.length
+                ? () =>
+                    printReportDoc({
+                      title: "سجلّ الاستبعاد والإخراج",
+                      headerExtra: [
+                        { label: "تاريخ التقرير", value: new Date().toLocaleDateString("ar-IQ-u-nu-latn") },
+                      ],
+                      columns: [
+                        { key: "asset", label: "الأصل" },
+                        { key: "type", label: "النوع" },
+                        { key: "date", label: "التاريخ" },
+                        { key: "purchase", label: "قيمة الشراء", align: "left" },
+                        { key: "book", label: "القيمة الدفترية", align: "left" },
+                        { key: "proceeds", label: "العوائد", align: "left" },
+                        { key: "gain", label: "ربح/خسارة", align: "left" },
+                      ],
+                      rows: rows.map((r) => ({
+                        asset: r.name,
+                        type: r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة",
+                        date: r.disposalDate ? new Date(r.disposalDate).toLocaleDateString("ar-IQ-u-nu-latn") : "—",
+                        purchase: iqd(r.purchaseValue),
+                        book: iqd(r.bookValue),
+                        proceeds: r.proceeds != null ? iqd(r.proceeds) : "—",
+                        gain: r.gain != null ? `${r.gain >= 0 ? "+" : ""}${iqd(r.gain)}` : "—",
+                      })),
+                      summary: [
+                        { label: "مُستبعَد (بيع/خردة)", value: iqd(disposed.length) },
+                        { label: "خارج الخدمة", value: iqd(retired.length) },
+                        { label: "إجمالي العوائد", value: `${iqd(totalProceeds)} د.ع` },
+                        {
+                          label: "صافي الربح/الخسارة",
+                          value: `${netGain >= 0 ? "+" : ""}${iqd(netGain)} د.ع`,
+                          large: true,
+                          bold: true,
+                        },
+                      ],
+                    })
+                : undefined
+            }
+            printLabel="طباعة / PDF"
             exportSpec={{
               filename: "سجل_الاستبعاد",
               rows,
