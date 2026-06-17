@@ -3,8 +3,9 @@
 // على Canvas ثم يحوّله نقطية ESC/POS. التصميم مطابق لقالب printBrowserReceipt (بديل المتصفح)
 // كي لا يتفاوت شكل الإيصال بتفاوت الناقل (جسر خادم / WebUSB / نافذة متصفح).
 //
-// قيد مهم: عتبة النقطية في imageDataToRaster هي lum<128 ⇒ الرماديات الفاتحة تختفي.
-// لذلك كل العناصر هنا تُرسم بأسود صافٍ (#000) عمداً وإن كانت رمادية في قالب HTML.
+// قيد مهم: كل العناصر تُرسم بأسود صافٍ (#000) عمداً وإن كانت رمادية في قالب HTML.
+// ولِمنع البهتان نرسم الإيصال بخطوط ثقيلة (≥600 للنصّ، ≥700 للأرقام/المبالغ) ثم نُحوّله
+// نقطيةً بعتبة لمعان مرفوعة (RECEIPT_THRESHOLD) تلتقط هالة التنعيم حول الحروف ⇒ خطوط أغمق وأوضح.
 import { imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
@@ -12,6 +13,9 @@ import type { ReceiptBrowserData } from "./printTemplates";
 
 const W = 576; // 80مم @ 203dpi — عرض الطباعة الفعلي للطابعات الحرارية
 const PAD = 12;
+// عتبة تحويل اللمعان إلى أسود/أبيض للإيصال: مرفوعة فوق 128 لتسمين خطوط النصّ المُنعَّمة
+// (تلتقط الرماديات الفاتحة حول الحروف) فيظهر الإيصال غامقاً واضحاً لا باهتاً.
+const RECEIPT_THRESHOLD = 160;
 
 // أعمدة جدول الأصناف (RTL كقالب HTML): الصنف يميناً ← عدد ← السعر ← المبلغ أقصى اليسار
 const COL_AMOUNT_X = PAD; //  «المبلغ» — محاذاة يسار
@@ -151,7 +155,7 @@ export async function receiptToCanvas(
   ctx.font = "800 25px Cairo, sans-serif";
   y += 34;
   ctx.fillText("للطباعة والقرطاسية", W / 2, y);
-  ctx.font = "400 16px Cairo, sans-serif";
+  ctx.font = "600 16px Cairo, sans-serif";
   y += 24;
   ctx.fillText(CO.name, W / 2, y);
 
@@ -168,7 +172,7 @@ export async function receiptToCanvas(
       const bw = Math.min(bc.widthPx, W - PAD * 2);
       ctx.drawImage(img, (W - bw) / 2, y, bw, bc.heightPx);
       y += bc.heightPx + 24;
-      ctx.font = "600 17px Cairo, monospace";
+      ctx.font = "700 18px Cairo, monospace";
       ctx.textAlign = "center";
       ctx.fillText(d.receiptNumber, W / 2, y);
     }
@@ -179,7 +183,7 @@ export async function receiptToCanvas(
   // ───── ٣) صفوف المعلومات ─────
   y += 32;
   const metaRow = (right: string, left: string) => {
-    ctx.font = "400 21px Cairo, sans-serif";
+    ctx.font = "600 21px Cairo, sans-serif";
     if (right) {
       ctx.textAlign = "right";
       ctx.fillText(right, W - PAD, y);
@@ -212,7 +216,7 @@ export async function receiptToCanvas(
   y += 30;
 
   for (const it of d.items) {
-    ctx.font = "400 21px Cairo, sans-serif";
+    ctx.font = "600 21px Cairo, sans-serif";
     const lines = wrapLines(ctx, it.name, COL_NAME_W);
     ctx.textAlign = "right";
     ctx.fillText(lines[0], COL_NAME_R, y);
@@ -220,11 +224,11 @@ export async function receiptToCanvas(
     ctx.fillText(String(it.quantity), COL_QTY_CENTER, y);
     ctx.textAlign = "left";
     ctx.fillText(fmt(it.price), COL_PRICE_X, y);
-    ctx.font = "600 21px Cairo, sans-serif";
+    ctx.font = "700 21px Cairo, sans-serif"; // المبلغ بارز
     ctx.fillText(fmt(it.total), COL_AMOUNT_X, y);
     y += 28;
     if (lines[1]) {
-      ctx.font = "400 21px Cairo, sans-serif";
+      ctx.font = "600 21px Cairo, sans-serif";
       ctx.textAlign = "right";
       ctx.fillText(lines[1], COL_NAME_R, y);
       y += 28;
@@ -236,10 +240,11 @@ export async function receiptToCanvas(
   y += 34;
 
   // ───── ٥) الإجماليات ─────
-  const totRow = (label: string, value: string, bold = false) => {
-    ctx.font = `${bold ? "800" : "400"} 22px Cairo, sans-serif`;
+  const totRow = (label: string, value: string, strong = false) => {
+    ctx.font = `${strong ? "800" : "600"} 22px Cairo, sans-serif`;
     ctx.textAlign = "right";
     ctx.fillText(label, W - PAD, y);
+    ctx.font = `${strong ? "800" : "700"} 22px Cairo, sans-serif`; // القيمة (المبلغ) أبرز من التسمية
     ctx.textAlign = "left";
     ctx.fillText(value, PAD, y);
     y += 30;
@@ -272,7 +277,7 @@ export async function receiptToCanvas(
   ctx.font = "900 25px Cairo, sans-serif";
   ctx.fillText("شكراً لتسوقكم معنا", W / 2, y);
   y += 28;
-  ctx.font = "400 19px Cairo, sans-serif";
+  ctx.font = "600 19px Cairo, sans-serif";
   ctx.fillText("نتمنى لكم تجربة ممتعة", W / 2, y);
   y += 18;
   dashedLine(ctx, y);
@@ -332,5 +337,5 @@ export async function receiptToRaster(d: ReceiptBrowserData): Promise<Raster | n
   const ctx = drawn.canvas.getContext("2d");
   if (!ctx) return null;
   const img = ctx.getImageData(0, 0, W, drawn.height);
-  return imageDataToRaster({ width: W, height: drawn.height, data: img.data });
+  return imageDataToRaster({ width: W, height: drawn.height, data: img.data }, RECEIPT_THRESHOLD);
 }

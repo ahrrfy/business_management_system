@@ -55,8 +55,16 @@ export class EscPos {
   }
 }
 
-/** تحويل ImageData إلى نقطية 1bpp (أسود/أبيض) بعتبة بساطة. */
-export function imageDataToRaster(img: { width: number; height: number; data: Uint8ClampedArray | Uint8Array }): Raster {
+/**
+ * تحويل ImageData إلى نقطية 1bpp (أسود/أبيض) بعتبة لمعان قابلة للضبط.
+ * `threshold`: كل بكسل لمعانه أقلّ منه يُطبع أسود. الافتراض 128 (المنتصف، السلوك القديم).
+ * رفع العتبة يلتقط هالة التنعيم (anti-alias) الرمادية حول الحروف ⇒ خطوط أسمك وأغمق
+ * وأوضح على الطابعة الحرارية (يُعالج بهتان الإيصال). لا يؤثّر على المنادين الذين يتركون الافتراض.
+ */
+export function imageDataToRaster(
+  img: { width: number; height: number; data: Uint8ClampedArray | Uint8Array },
+  threshold = 128,
+): Raster {
   const { width, height, data } = img;
   const widthBytes = Math.ceil(width / 8);
   const out = new Uint8Array(widthBytes * height);
@@ -65,7 +73,7 @@ export function imageDataToRaster(img: { width: number; height: number; data: Ui
       const i = (y * width + x) * 4;
       const lum = (data[i] + data[i + 1] + data[i + 2]) / 3;
       const alpha = data[i + 3];
-      const black = alpha > 128 && lum < 128;
+      const black = alpha > 128 && lum < threshold;
       if (black) out[y * widthBytes + (x >> 3)] |= 0x80 >> (x & 7);
     }
   }
