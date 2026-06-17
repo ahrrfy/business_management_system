@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, sql } from "drizzle-orm";
-import { invoices, receipts, shifts } from "../../drizzle/schema";
+import { invoices, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
 import type { Tx } from "../db";
@@ -190,4 +190,47 @@ export async function requireOpenShiftIdTx(
     });
   }
   return id;
+}
+
+/**
+ * يَحلّ دور الفاعل: من actor.role إن مُرّر، وإلا يَقرأه من DB (مرّة واحدة). نُقِل من
+ * voucherService للاستعمال المُشترَك بين خدمات المعاملات النقدية (مصاريف/سندات/أوامر شغل).
+ */
+export async function resolveActorRoleTx(tx: Tx, userId: number): Promise<string> {
+  const u = (await tx.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1))[0];
+  return u?.role ?? "";
+}
+
+/**
+ * **سياسة الخزينة الإدارية vs درج الكاشير** (تدقيق ١٧/٦ — قرار ٣ خبراء بإجماع):
+ *
+ *  - الكاشير/المخزن (drawer custodians): يَجلسون على درج POS ⇒ كلّ نقد يَجب أن يَنتمي
+ *    لوردية مفتوحة، وإلّا يَختفي من Z-report ⇒ نَرمي PRECONDITION_FAILED.
+ *  - المدير/الـadmin (treasury custodians): لا يَملكون درج POS ⇒ يُسجّلون معاملات
+ *    إدارية ميدانية (إيجار، صرف لمورّد، تَحصيل من تاجر). فَرض الوردية عليهم =
+ *    خَلط عُهَد (segregation of custodianship) + تَلويث Z-report بورديات شَبحية.
+ *    يُسمَح بـshiftId=null + bucket='TREASURY' ⇒ سجلّ مستقلّ لا يَدخل تسوية الدرج.
+ *
+ * **حالة المدير الخاصّة:** إن فَتح وردية (مثلاً لتغطية كاشير غائب) ⇒ معاملاته تَذهب
+ * لتلك الوردية (DRAWER) لا للخزينة. القرار ديناميكي بحَسب وجود وردية لا بحَسب نيّة.
+ *
+ * **العزل:** receipts.cashBucket='TREASURY' لا تَدخل أبداً computeExpectedCash لأي
+ * وردية كاشير ⇒ تَسوية الدرج تَبقى دقيقة، والمعاملات الإدارية تَظهر في تقرير منفصل.
+ */
+export async function shiftIdForCashTx(
+  tx: Tx,
+  actor: { userId: number; branchId?: number; role?: string },
+  branchId: number,
+  label: string = "معاملة نقدية",
+): Promise<{ shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" }> {
+  const role = actor.role ?? (await resolveActorRoleTx(tx, actor.userId));
+  if (role === "admin" || role === "manager") {
+    // الأدوار الإدارية: إن وُجدت وردية مفتوحة (تغطية كاشير) ⇒ استَعملها (DRAWER)؛
+    // وإلّا shiftId=null + bucket=TREASURY (مشروع، يَظهر في تقرير الخزينة الإدارية).
+    const sid = await openShiftIdTx(tx, actor.userId, branchId);
+    return sid ? { shiftId: sid, cashBucket: "DRAWER" } : { shiftId: null, cashBucket: "TREASURY" };
+  }
+  // cashier/warehouse/غيرهم: وردية إلزامية (حماية النقد اليتيم الحقيقي).
+  const sid = await requireOpenShiftIdTx(tx, actor.userId, branchId, label);
+  return { shiftId: sid, cashBucket: "DRAWER" };
 }

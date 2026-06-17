@@ -521,6 +521,14 @@ export const receipts = mysqlTable(
     direction: mysqlEnum("direction", ["IN", "OUT"]).default("IN").notNull(),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     paymentMethod: mysqlEnum("paymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).notNull(),
+    /**
+     * cash-treasury-mode (تدقيق ١٧/٦): فصل النقد إلى دلوَين دلالياً.
+     *  - DRAWER: نقد درج كاشير ⇒ يَخصم/يُضيف إلى Z-report عبر shiftId.
+     *  - TREASURY: نقد خزينة إدارية (admin/manager بلا وردية) ⇒ سجلّ مستقلّ، لا يَدخل
+     *    تسوية الدرج، يَظهر في تقرير «المعاملات الإدارية + النقد اليتيم» مفصولاً.
+     * الحقل اختياري NULL للسجلات غير النقدية (لا دلوَ لها) وللسجلات التاريخية قبل ١٧/٦.
+     */
+    cashBucket: mysqlEnum("cashBucket", ["DRAWER", "TREASURY"]),
     referenceNumber: varchar("referenceNumber", { length: 100 }),
     checkNumber: varchar("checkNumber", { length: 50 }),
     cardLastFour: varchar("cardLastFour", { length: 4 }),
@@ -613,6 +621,8 @@ export const expenses = mysqlTable(
     ]).default("OTHER").notNull(),
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     paymentMethod: mysqlEnum("expensePaymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).default("CASH").notNull(),
+    // cash-treasury-mode: مرآة receipts.cashBucket — DRAWER=درج كاشير، TREASURY=خزينة إدارية.
+    cashBucket: mysqlEnum("expenseCashBucket", ["DRAWER", "TREASURY"]),
     // production-slice: مصدر الصرف — CASH=نقدي (الموجود، يخصم الصندوق)، STOCK=صرف من المخزون بالكلفة (نثرية/تلف، بلا صندوق).
     source: mysqlEnum("expenseSource", ["CASH", "STOCK"]).default("CASH").notNull(),
     // مع source=STOCK فقط: INTERNAL_USE=نثرية داخلية (مصروف)، WASTAGE=تلف (خسارة). NULL لـCASH.

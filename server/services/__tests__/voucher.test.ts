@@ -250,7 +250,9 @@ describe("listVouchers", () => {
  * السندات غير النقدية لا تَلمس الصندوق فتبقى مسموحة بـshiftId=null.
  */
 describe("إنفاذ الوردية النقدية (shift-gate)", () => {
-  it("سند نقدي بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED", async () => {
+  it("سند نقدي للكاشير بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED", async () => {
+    // cash-treasury-mode: admin/manager مُعفَون ⇒ نَختبر cashier صراحةً للحارس الصارم.
+    await db().insert(s.users).values({ id: 2, openId: "csh", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1 });
     await expect(
       createVoucher(
         {
@@ -262,7 +264,7 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
           partyId: null,
           description: "إيرادات نقدية بدون وردية",
         },
-        actor,
+        { userId: 2, branchId: 1, role: "cashier" },
       ),
     ).rejects.toThrow(/افتح وردية/);
 
@@ -340,8 +342,90 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
       },
       actor,
     );
-    const close = await closeShift({ shiftId, countedCash: "100.00" }, actor);
+    const close = await closeShift({ shiftId, countedCash: "100.00" }, { ...actor, role: "admin" });
     expect(close.expectedCash).toBe("100.00");
     expect(close.variance).toBe("0.00");
+  });
+});
+
+/**
+ * cash-treasury-mode (تدقيق ١٧/٦): إعفاء admin/manager من شرط الوردية النقدي.
+ *  - admin بلا وردية ⇒ shiftId=null + cashBucket=TREASURY (مشروع، يَدخل تَسوية الخزينة).
+ *  - cashier/warehouse بلا وردية ⇒ يُرفض (محفوظ).
+ *  - غير النقدي ⇒ cashBucket=NULL.
+ */
+describe("إعفاء الخزينة الإدارية (admin/manager) للسندات", () => {
+  it("admin RECEIPT نقدي بلا وردية ⇒ shiftId=null + cashBucket=TREASURY + قيد PAYMENT_IN", async () => {
+    // actor = admin (افتراض seedBase)
+    const r = await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "75.00",
+        paymentMethod: "CASH",
+        partyType: "OTHER",
+        partyId: null,
+        description: "تَحصيل ميداني من تاجر",
+      },
+      actor,
+    );
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.shiftId).toBeNull();
+    expect(rc.cashBucket).toBe("TREASURY");
+    const ent = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
+    expect(ent).toHaveLength(1); // الدفتر يَكتب
+  });
+
+  it("admin PAYMENT نقدي بلا وردية ⇒ shiftId=null + cashBucket=TREASURY", async () => {
+    const r = await createVoucher(
+      {
+        voucherType: "PAYMENT",
+        branchId: 1,
+        amount: "100.00",
+        paymentMethod: "CASH",
+        partyType: "OTHER",
+        partyId: null,
+        description: "راتب استثنائي",
+      },
+      actor,
+    );
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.shiftId).toBeNull();
+    expect(rc.cashBucket).toBe("TREASURY");
+  });
+
+  it("warehouse نقدي بلا وردية ⇒ يُرفض (لا إعفاء)", async () => {
+    await db().insert(s.users).values({ id: 3, openId: "wh", name: "مستودع", role: "warehouse", loginMethod: "local", branchId: 1 });
+    await expect(
+      createVoucher(
+        {
+          voucherType: "PAYMENT",
+          branchId: 1,
+          amount: "200.00",
+          paymentMethod: "CASH",
+          partyType: "OTHER",
+          partyId: null,
+          description: "شحنة",
+        },
+        { userId: 3, branchId: 1, role: "warehouse" },
+      ),
+    ).rejects.toThrow(/افتح وردية/);
+  });
+
+  it("سند CARD لـadmin يَكتب cashBucket=NULL (غير نقدي ⇒ لا دلوَ)", async () => {
+    const r = await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "1000.00",
+        paymentMethod: "CARD",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "دفعة بطاقة",
+      },
+      actor,
+    );
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.cashBucket).toBeNull();
   });
 });

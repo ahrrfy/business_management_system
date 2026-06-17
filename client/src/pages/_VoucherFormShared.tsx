@@ -42,10 +42,15 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const branches = trpc.branches.list.useQuery();
   const customers = trpc.customers.list.useQuery(undefined, { enabled: partyType === "CUSTOMER" });
   const suppliers = trpc.suppliers.list.useQuery(undefined, { enabled: partyType === "SUPPLIER" });
-  // بوّابة الوردية النقدية: السندات النقدية تَمسّ صندوق الوردية ⇒ لا تُكتَب بدون وردية مفتوحة.
-  // (الخادم يرمي PRECONDITION_FAILED كحارس أخير، لكن نُعطّل في الواجهة لمنع نقرة عرضية.)
+  // cash-treasury-mode (تدقيق ١٧/٦):
+  //  - admin/manager بلا وردية + نقدي ⇒ شارة زرقاء «خزينة إدارية» (مشروع، يُحفَظ).
+  //  - cashier/warehouse بلا وردية + نقدي ⇒ تحذير كهرماني + زر مُعطَّل.
+  const me = trpc.auth.me.useQuery();
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
   const openShift = trpc.shifts.current.useQuery({ branchId }, { enabled: !!branchId });
-  const cashWithoutShift = method === "CASH" && !openShift.data && !openShift.isLoading;
+  const cashNeedsShift = method === "CASH" && !openShift.data && !openShift.isLoading;
+  const hardBlock = cashNeedsShift && !isElevated;
+  const treasuryNotice = cashNeedsShift && isElevated;
 
   // idempotency: مفتاح ثابت لكل سند (الصفحة تنتقل بعد النجاح فيتجدّد) ⇒ نقرة مزدوجة لا تُنشئ سندين.
   const [clientRequestId] = useState(() => crypto.randomUUID());
@@ -211,19 +216,24 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         <div className="rounded-md bg-rose-50 border border-rose-200 text-rose-700 text-sm p-3">{err}</div>
       )}
 
-      {cashWithoutShift && (
+      {hardBlock && (
         <div className="rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm p-3">
-          ⚠️ لا توجد وردية مفتوحة في هذا الفرع. السندات النقدية تَمسّ صندوق الوردية، فلا يمكن حفظها بلا وردية (وإلا تختفي من Z-report).
-          {" "}<Link href="/shifts" className="underline">افتح وردية</Link> أوّلاً، أو غيِّر طريقة الدفع لغير نقدية (بطاقة/تحويل/محفظة).
+          ⚠️ لا توجد وردية مفتوحة في هذا الفرع. السندات النقدية للكاشير تَمسّ صندوق الوردية —
+          {" "}<Link href="/shifts" className="underline">افتح وردية</Link> أوّلاً، أو غيِّر طريقة الدفع لغير نقدية.
+        </div>
+      )}
+      {treasuryNotice && (
+        <div className="rounded-md bg-blue-50 border border-blue-300 text-blue-800 text-sm p-3">
+          🏦 يُسجَّل في <strong>الخزينة الإدارية</strong> (بلا وردية كاشير) — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.
         </div>
       )}
 
       <div className="flex items-center gap-2">
         <Button
           onClick={submit}
-          disabled={create.isPending || cashWithoutShift}
+          disabled={create.isPending || hardBlock}
           className={submitColor}
-          title={cashWithoutShift ? "افتح وردية قبل تسجيل سند نقدي" : undefined}
+          title={hardBlock ? "افتح وردية قبل سند نقدي للكاشير" : undefined}
         >
           {create.isPending ? "جارٍ الحفظ…" : (isReceipt ? "حفظ سند القبض" : "حفظ سند الصرف")}
         </Button>
