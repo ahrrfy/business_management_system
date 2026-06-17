@@ -7,11 +7,16 @@ import { fmtAr as money } from "@/lib/money";
 import { code128Svg, internalBarcode } from "@/lib/printing/barcode";
 import {
   printLabel, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
-  getLabelSize, setLabelSize, LABEL_PRESETS, presetIdFor, type LabelSize,
+  getLabelSize, setLabelSize, LABEL_PRESETS, presetIdFor,
+  type LabelSize, type LabelRenderItem,
 } from "@/lib/printing/print";
+import { labelDocHtml } from "@/lib/printing/labelDesign";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
+
+const PX_PER_MM = 96 / 25.4; // ≈3.78 بكسل/مم @96dpi
+const PREVIEW_ZOOM = 2.4; // تكبير المعاينة بصرياً للوضوح (المقاس الفعليّ صغير)
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 type QueueItem = {
@@ -46,6 +51,18 @@ export default function BarcodeLabels() {
   const [wStr, setWStr] = useState(() => String(size.widthMm));
   const [hStr, setHStr] = useState(() => String(size.heightMm));
   const activePreset = presetIdFor(size);
+
+  // معاينة حيّة بنفس تصميم الطباعة (نفس labelDocHtml ⇒ ما تراه هو ما يُطبع) — أوّل صنف في القائمة
+  // أو عيّنة عند الفراغ، متفاعلةً مع المقاس وخياري الاسم/السعر. تُحسَب مرّةً (useMemo) فلا تُعاد
+  // بناؤها مع كل ضغطة بحث؛ تُعرَض في iframe بمقاس مليمتريّ فعليّ ثمّ تُكبَّر بصرياً للوضوح.
+  const previewHtml = useMemo(() => {
+    const previewItem: LabelRenderItem = queue.length
+      ? { name: `${queue[0].productName} — ${queue[0].unitName}`, sku: queue[0].sku, price: queue[0].price, barcode: queue[0].barcode }
+      : { name: "اسم منتج تجريبي للمعاينة", sku: "PR-BLU", price: "500", barcode: "6212442744532" };
+    return labelDocHtml([previewItem], size, { showName, showPrice }, false);
+  }, [queue, size, showName, showPrice]);
+  const pxW = Math.round(size.widthMm * PX_PER_MM);
+  const pxH = Math.round(size.heightMm * PX_PER_MM);
 
   // طابعة الملصقات (WebUSB، دور "label" منفصل عن طابعة الكاشير).
   const usbSupported = isWebUsbSupported();
@@ -214,6 +231,29 @@ export default function BarcodeLabels() {
               </div>
             </div>
             <p className="text-xs text-muted-foreground">المقاس الحالي: {size.widthMm} × {size.heightMm} مم (يُطبَّق في كل شاشات الطباعة).</p>
+          </div>
+
+          {/* معاينة حيّة بنفس تصميم الطباعة تماماً (HTML/SVG مباشر بلا تحويل لصورة) */}
+          <div className="flex items-start gap-4 flex-wrap border-t pt-3">
+            <div
+              className="shrink-0 rounded bg-white"
+              style={{ width: pxW * PREVIEW_ZOOM, height: pxH * PREVIEW_ZOOM, outline: "1px dashed #94a3b8" }}
+            >
+              <iframe
+                title="معاينة الملصق"
+                srcDoc={previewHtml}
+                scrolling="no"
+                style={{
+                  width: pxW, height: pxH, border: 0, display: "block", background: "#fff",
+                  transform: `scale(${PREVIEW_ZOOM})`, transformOrigin: "top left",
+                }}
+              />
+            </div>
+            <div className="text-xs text-muted-foreground space-y-1 min-w-[12rem] flex-1">
+              <p className="font-medium text-foreground">معاينة فعلية بمقاس الملصق (مكبّرة ×{PREVIEW_ZOOM})</p>
+              <p>التصميم نفسه الذي يُطبع تماماً: اسمٌ يتكيّف مع طوله، قضبان تملأ العرض، وخطوط ثقيلة واضحة بلا خطوط رفيعة.</p>
+              <p>تُطبع مباشرةً (HTML/SVG) بلا تحويلٍ إلى صورة. عدّل المقاس أو خياري الاسم/السعر لتُحدَّث المعاينة فوراً.</p>
+            </div>
           </div>
 
           <div className="border-t pt-3 space-y-2">

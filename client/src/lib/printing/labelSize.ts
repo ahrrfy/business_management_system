@@ -17,8 +17,9 @@ export const PRINT_DPMM = 8;
 /** عرض الطباعة الفعّال لطابعة 58مم بالنقاط (قياسيّ). */
 export const MAX_PRINT_WIDTH_DOTS = 384;
 
-/** مقاسات جاهزة تقع ضمن حدود الطابعة (≤58مم). */
+/** مقاسات جاهزة تقع ضمن حدود الطابعة (≤58مم). الأكثر استعمالاً أولاً: 50×25مم (2×1 إنش). */
 export const LABEL_PRESETS: { id: string; label: string; size: LabelSize }[] = [
+  { id: "50x25", label: "50 × 25 مم (2×1 إنش)", size: { widthMm: 50, heightMm: 25 } },
   { id: "50x30", label: "50 × 30 مم", size: { widthMm: 50, heightMm: 30 } },
   { id: "40x30", label: "40 × 30 مم", size: { widthMm: 40, heightMm: 30 } },
   { id: "40x25", label: "40 × 25 مم", size: { widthMm: 40, heightMm: 25 } },
@@ -26,7 +27,8 @@ export const LABEL_PRESETS: { id: string; label: string; size: LabelSize }[] = [
   { id: "58x30", label: "58 × 30 مم", size: { widthMm: 58, heightMm: 30 } },
 ];
 
-export const DEFAULT_LABEL_SIZE: LabelSize = { widthMm: 50, heightMm: 30 };
+/** الافتراضيّ = المقاس الأكثر استعمالاً (50×25مم = 2×1 إنش، أكبر ملصق مقصوص لديهم). */
+export const DEFAULT_LABEL_SIZE: LabelSize = { widthMm: 50, heightMm: 25 };
 const LS_KEY = "labelSize";
 
 /** يحصُر المقاس ضمن حدود معقولة (وضمن عرض الطابعة). */

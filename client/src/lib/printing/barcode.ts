@@ -106,6 +106,12 @@ export interface Code128Options {
   quietZone?: number;
   /** عرض النص أسفل الباركود. */
   showText?: boolean;
+  /**
+   * يُخرج <svg> بعرض/ارتفاع 100% وpreserveAspectRatio="none" ⇒ يملأ صندوقه (CSS) تماماً.
+   * يُستعمل للملصقات المتّجهة: القضبان تتمدّد لتملأ عرض الملصق وارتفاعه المتاح ⇒ أثخن قضبان
+   * ممكنة (أوضح للماسح) بلا تحويلٍ إلى صورة. التمدّد الأفقي منتظم ⇒ نِسب القضبان محفوظة.
+   */
+  fitToBox?: boolean;
 }
 
 export interface Code128Result {
@@ -151,7 +157,10 @@ export function code128Svg(data: string, opts: Code128Options = {}): Code128Resu
         .replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string))}</text>`
     : "";
 
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${widthPx}" height="${heightPx}" viewBox="0 0 ${widthPx} ${heightPx}"><rect width="${widthPx}" height="${heightPx}" fill="#fff"/>${rects}${text}</svg>`;
+  const sizeAttrs = opts.fitToBox
+    ? `width="100%" height="100%" preserveAspectRatio="none"`
+    : `width="${widthPx}" height="${heightPx}"`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" ${sizeAttrs} viewBox="0 0 ${widthPx} ${heightPx}"><rect width="${widthPx}" height="${heightPx}" fill="#fff"/>${rects}${text}</svg>`;
   return { svg, widthPx, heightPx };
 }
 
