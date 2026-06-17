@@ -4,6 +4,7 @@
  */
 import CustomerPicker from "@/components/CustomerPicker";
 import { clearCartDraft } from "@/lib/cartDraft";
+import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
@@ -40,6 +41,7 @@ type POSTab = {
   numMode: NumMode;
   customerId: number | null;
   tierOverride: Tier | null;
+  clientRequestId: string; // مفتاح idempotency مستقلّ لكل تبويب — عزل مالي بين الفواتير
 };
 
 type Receipt = {
@@ -156,12 +158,12 @@ const effectivePrice = (item: CartItem) => {
 
 const itemTotal = (item: CartItem) => effectivePrice(item) * item.qty;
 
-let tabSeq = 2;
 const createTab = (id: number, label?: string): POSTab => ({
   id, label: label ?? `طلب ${id}`,
   cart: [], payInput: "", method: "CASH",
   selId: null, numMode: "PAY",
   customerId: null, tierOverride: null,
+  clientRequestId: newClientRequestId(),
 });
 
 // ─── useSmartScanInput ────────────────────────────────────────────────────────
@@ -249,7 +251,9 @@ function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     subtotal: r.total,
     total: r.total,
     paid: r.received,
-    change: r.isCredit ? null : r.change,
+    // «الباقي» يُطبع فقط حين يكون موجباً (فكّة فعلية) — كحارس الشاشة. الدفع المطابق/السريع
+    // (بلا إدخال مبلغ) باقيه ٠ ⇒ لا سطر، بدل طباعة «الباقي: ‑الإجمالي» (باقٍ سالب لا معنى له).
+    change: r.isCredit || r.change <= 0 ? null : r.change,
     credit: r.isCredit ? r.credit : null,
   };
 }
@@ -273,6 +277,11 @@ export default function POS() {
   const [tabs,     setTabs]     = useState<POSTab[]>([createTab(1, "طلب 1")]);
   const [activeId, setActiveId] = useState(1);
 
+  // مرجع حيّ للتبويب النشط: تستهدفه كل تعديلات السلّة/الطلب بدل activeId المُغلَق عليه، كي
+  // تصيب التبويب الصحيح حتى حين تُستدعى من إغلاق قديم (مسح الباركود/HID). مُحدَّث في كل رسم.
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+
   const activeTab = tabs.find((t) => t.id === activeId) ?? tabs[0];
   const cart      = activeTab.cart;
 
@@ -294,33 +303,42 @@ export default function POS() {
   const searchRef = useRef<HTMLInputElement>(null);
 
   // ── Tab helpers ───────────────────────────────────────────────────────────
+  // كل التعديلات على التبويب النشط تمرّ عبر activeIdRef.current (لا activeId المُغلَق عليه)
+  // ⇒ تصيب التبويب الصحيح دائماً حتى من إغلاق قديم (مسح باركود/HID) — عزل تبويبات تام.
   function patchTab(id: number, patch: Partial<POSTab>) {
     setTabs((prev) => prev.map((t) => (t.id === id ? { ...t, ...patch } : t)));
   }
+  function patchActive(patch: Partial<POSTab>) {
+    patchTab(activeIdRef.current, patch);
+  }
   function setCart(updater: CartItem[] | ((c: CartItem[]) => CartItem[])) {
+    const id = activeIdRef.current;
     setTabs((prev) =>
       prev.map((t) =>
-        t.id !== activeId ? t :
+        t.id !== id ? t :
         { ...t, cart: typeof updater === "function" ? updater(t.cart) : updater }
       )
     );
   }
   function setPayInput(updater: string | ((s: string) => string)) {
+    const id = activeIdRef.current;
     setTabs((prev) =>
       prev.map((t) =>
-        t.id !== activeId ? t :
+        t.id !== id ? t :
         { ...t, payInput: typeof updater === "function" ? updater(t.payInput) : updater }
       )
     );
   }
-  const setSelId   = (v: number | null) => patchTab(activeId, { selId: v });
-  const setNumMode = (v: NumMode)        => patchTab(activeId, { numMode: v });
-  const setMethod  = (v: PaymentMethod)  => patchTab(activeId, { method: v });
-  const setCustId  = (v: number | null)  => patchTab(activeId, { customerId: v, tierOverride: null });
-  const setTierOvr = (v: Tier | null)    => patchTab(activeId, { tierOverride: v });
+  const setSelId   = (v: number | null) => patchActive({ selId: v });
+  const setNumMode = (v: NumMode)        => patchActive({ numMode: v });
+  const setMethod  = (v: PaymentMethod)  => patchActive({ method: v });
+  const setCustId  = (v: number | null)  => patchActive({ customerId: v, tierOverride: null });
+  const setTierOvr = (v: Tier | null)    => patchActive({ tierOverride: v });
 
   function addTab() {
-    const id = tabSeq++;
+    // معرّف فريد مشتقّ من التبويبات الحالية (لا عدّاد وحدة يُصفَّر عند إعادة التحميل) ⇒ لا تصادم
+    // معرّفات بعد استرجاع المسوّدة (تصادم المعرّف يخلط تبويبين).
+    const id = (tabs.length ? Math.max(...tabs.map((t) => t.id)) : 0) + 1;
     setTabs((prev) => [...prev, createTab(id)]);
     setActiveId(id);
     setSearch(""); setShowDrop(false);
@@ -343,7 +361,11 @@ export default function POS() {
       const raw = localStorage.getItem(DRAFT_KEY);
       if (raw) {
         const d = JSON.parse(raw) as { tabs: POSTab[]; activeId: number };
-        if (Array.isArray(d.tabs) && d.tabs.length) { setTabs(d.tabs); setActiveId(d.activeId); }
+        if (Array.isArray(d.tabs) && d.tabs.length) {
+          // مسوّدة قديمة قد تفتقر clientRequestId ⇒ نملؤه كي يبقى مفتاح idempotency لكل تبويب صالحاً.
+          setTabs(d.tabs.map((t) => ({ ...t, clientRequestId: t.clientRequestId ?? newClientRequestId() })));
+          setActiveId(d.activeId);
+        }
       }
     } catch { /* ignore */ }
     setDraftRestored(true);
@@ -513,17 +535,23 @@ export default function POS() {
   }
 
   // ── Sale ──────────────────────────────────────────────────────────────────
-  // idempotency: مفتاح ثابت لكل عملية بيع (يتجدّد بعد النجاح) ⇒ النقر المزدوج/إعادة الشبكة لا يكرّر الفاتورة.
-  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  // idempotency: لكل تبويب مفتاحه (activeTab.clientRequestId) ⇒ النقر المزدوج/إعادة الشبكة لا
+  // يكرّر الفاتورة، ولا يتصادم بيع تبويب مع آخر. يتجدّد مفتاح التبويب بعد نجاح بيعه فقط.
+  // لقطة البيع (تُلتقط لحظة الإرسال) تجمّد التبويب المُباع وأرقامه ⇒ يُبنى الإيصال ويُفرَّغ
+  // التبويب الصحيح في onSuccess حتى لو بدّل الكاشير التبويب أثناء جريان البيع — عزل مالي تام.
+  const saleCtxRef = useRef<{
+    tabId: number;
+    lines: Receipt["lines"];
+    total: number; received: number; change: number; credit: number;
+    isCredit: boolean; method: string;
+    customerName?: string; cashierName?: string;
+  } | null>(null);
+
   const sale = trpc.sales.create.useMutation({
     onSuccess: async (r) => {
-      // §٥: مبالغ الإيصال بدقّة Decimal — تُطبع على الإيصال الحراري والشاشة بلا انجراف float.
-      const finalReceivedD = isCredit ? paidD : totalD;
-      const finalChangeD   = isCredit ? D(0)  : paidD.minus(totalD);
-      const finalCreditD   = isCredit ? totalD.minus(paidD) : D(0);
-      const finalReceived  = round2(finalReceivedD).toNumber();
-      const finalChange    = round2(finalChangeD).toNumber();
-      const finalCredit    = round2(finalCreditD).toNumber();
+      const ctx = saleCtxRef.current;
+      saleCtxRef.current = null;
+      if (!ctx) return; // أمان — لا لقطة (لا يُفترض حدوثه)
       const now = new Date();
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber,
@@ -531,23 +559,19 @@ export default function POS() {
         date: now.toLocaleString("ar-IQ-u-nu-latn"),
         printDate: now.toLocaleDateString("en-GB"),
         printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
-        cashierName: me.data?.name ?? undefined,
-        customerName: selectedCustomer?.name,
-        lines: cart.map((c) => ({
-          name: c.row.productName, unit: c.row.unitName,
-          qty: c.qty, price: effectivePrice(c),
-          disc: c.disc, total: itemTotal(c),
-        })),
-        total, received: finalReceived, change: finalChange,
-        credit: finalCredit, isCredit,
-        method: METHOD_LABEL[activeTab.method],
+        cashierName: ctx.cashierName,
+        customerName: ctx.customerName,
+        lines: ctx.lines,
+        total: ctx.total, received: ctx.received, change: ctx.change,
+        credit: ctx.credit, isCredit: ctx.isCredit,
+        method: ctx.method,
       };
       setReceipt(rec);
-      setLastInv({ num: r.invoiceNumber, total });
+      setLastInv({ num: r.invoiceNumber, total: ctx.total });
       clearCartDraft(branchId);
       notify.ok(`تم البيع ✓ فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
-      setCart([]); setPayInput(""); setSelId(null);
-      setClientRequestId(crypto.randomUUID()); // مفتاح جديد للبيع التالي
+      // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
+      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, clientRequestId: newClientRequestId() });
 
       await printReceipt(buildBrandedReceipt(rec));
       await Promise.all([
@@ -564,6 +588,30 @@ export default function POS() {
     },
   });
 
+  // §٥: لقطة مبالغ/أصناف البيع بدقّة Decimal لحظة الإرسال (لا وقت النجاح) ⇒ تثبّت على التبويب
+  // المُباع ولا تنجرف لو بدّل الكاشير التبويب. نفس صيغ الحساب القديمة (لا تغيير سلوك).
+  function captureSaleCtx(): NonNullable<typeof saleCtxRef.current> {
+    const finalReceivedD = isCredit ? paidD : totalD;
+    const finalChangeD   = isCredit ? D(0)  : paidD.minus(totalD);
+    const finalCreditD   = isCredit ? totalD.minus(paidD) : D(0);
+    return {
+      tabId: activeTab.id,
+      lines: cart.map((c) => ({
+        name: c.row.productName, unit: c.row.unitName,
+        qty: c.qty, price: effectivePrice(c),
+        disc: c.disc, total: itemTotal(c),
+      })),
+      total,
+      received: round2(finalReceivedD).toNumber(),
+      change:   round2(finalChangeD).toNumber(),
+      credit:   round2(finalCreditD).toNumber(),
+      isCredit,
+      method: METHOD_LABEL[activeTab.method],
+      customerName: selectedCustomer?.name,
+      cashierName: me.data?.name ?? undefined,
+    };
+  }
+
   function submitSale(approval?: { email: string; password: string }) {
     if (!shift || !cart.length) return;
     if (isCredit && activeTab.customerId == null) {
@@ -572,10 +620,11 @@ export default function POS() {
     }
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
     // نرسل المبلغ غير المقرّب؛ الخادم يقرّبه ويُسجّل النقد المستلم = الإجمالي المقرّب.
+    saleCtxRef.current = captureSaleCtx();
     const cashFull = activeTab.method === "CASH" && !isCredit;
     const payAmount = isCredit ? money(paid) : money(total);
     sale.mutate({
-      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId,
+      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map((c) => ({
@@ -593,9 +642,10 @@ export default function POS() {
   function quickPay() {
     if (!shift || !cart.length) return;
     // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
+    saleCtxRef.current = captureSaleCtx();
     const payAmount = money(total);
     sale.mutate({
-      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId, cashRoundIQD: true,
+      branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId, cashRoundIQD: true,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
       lines: cart.map((c) => ({
