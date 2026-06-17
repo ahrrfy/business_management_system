@@ -27,7 +27,7 @@ import {
 } from "./ledgerService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { money, toDateStr, toDbMoney } from "./money";
-import { openShiftIdTx, requireOpenShiftIdTx } from "./shiftService";
+import { openShiftIdTx, resolveActorRoleTx, shiftIdForCashTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -94,11 +94,10 @@ async function nextVoucherNumber(
 }
 
 /** يحلّ دور الفاعل: من actor.role إن مرّره الموجّه، وإلا يقرأه من قاعدة البيانات (مرّة واحدة).
- *  ضروري لأن voucherRouter لا يمرّر role، فالخدمة تقرأه لإنفاذ عزل فرع عند الإلغاء. */
+ *  يَستعمل resolveActorRoleTx المُشترك في shiftService (نُقِل ليُستعمَل أيضاً في expenseService/saleService). */
 async function resolveActorRole(tx: Parameters<Parameters<typeof withTx>[0]>[0], actor: Actor): Promise<string> {
   if (actor.role) return actor.role;
-  const u = (await tx.select({ role: users.role }).from(users).where(eq(users.id, actor.userId)).limit(1))[0];
-  return u?.role ?? "";
+  return resolveActorRoleTx(tx, actor.userId);
 }
 
 /** يفرض ملكية الفرع للفاعل لعمليات التغيير الحرجة: admin يمرّ، وغيره يجب أن يطابق فرع الكيان.
@@ -183,18 +182,25 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     const direction: "IN" | "OUT" = input.voucherType === "RECEIPT" ? "IN" : "OUT";
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
 
-    // shiftId من وردية الموظّف المفتوحة (لتسوية الصندوق Z-report).
-    // إنفاذ نقدي: السندات النقدية تَمسّ صندوق الوردية ⇒ لا بدّ من وردية مفتوحة وإلا
-    // تختفي من Z-report (computeExpectedCash يفلتر بـeq(receipts.shiftId, shiftId)).
-    // السندات غير النقدية (BANK/CARD/CHEQUE/TRANSFER/WALLET) لا تَلمس الصندوق فتبقى مسموحة بـnull.
-    const shiftId =
-      input.paymentMethod === "CASH"
-        ? await requireOpenShiftIdTx(tx, actor.userId, input.branchId, "سند نقدي")
-        : await openShiftIdTx(tx, actor.userId, input.branchId);
+    // shiftId + cashBucket — سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦):
+    //  - النقدي + admin/manager بلا وردية ⇒ shiftId=null + bucket=TREASURY (سجلّ خزينة مستقلّ).
+    //  - النقدي + cashier/warehouse بلا وردية ⇒ PRECONDITION_FAILED (الحماية الأصلية).
+    //  - النقدي + وردية مفتوحة ⇒ shiftId=الوردية + bucket=DRAWER (يَدخل Z-report).
+    //  - غير النقدي ⇒ shiftId اختياري + bucket=NULL (لا يَمسّ صندوقاً).
+    let shiftId: number | null;
+    let cashBucket: "DRAWER" | "TREASURY" | null = null;
+    if (input.paymentMethod === "CASH") {
+      const g = await shiftIdForCashTx(tx, actor, input.branchId, "سند نقدي");
+      shiftId = g.shiftId;
+      cashBucket = g.cashBucket;
+    } else {
+      shiftId = await openShiftIdTx(tx, actor.userId, input.branchId);
+    }
 
     const rRes = await tx.insert(receipts).values({
       branchId: input.branchId,
       shiftId,
+      cashBucket, // DRAWER/TREASURY للنقدي، NULL لغيره
       direction,
       amount: toDbMoney(amount),
       paymentMethod: input.paymentMethod,
@@ -293,10 +299,12 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
 
     // إيصال تعويضي معاكس على نفس الوردية ⇒ نقد الصندوق يتصافر بنظافة.
     // voucherNumber=null: يبقى خارج قائمة السندات ولا يصطدم بالقيد الفريد.
+    // cashBucket مرآة الأصل: لو السند الأصلي TREASURY ⇒ تعويضه TREASURY (يَبقى خارج Z-report).
     const compRes = await tx.insert(receipts).values({
       invoiceId: null,
       branchId: r.branchId != null ? Number(r.branchId) : null,
       shiftId: r.shiftId != null ? Number(r.shiftId) : null,
+      cashBucket: (r as { cashBucket?: "DRAWER" | "TREASURY" | null }).cashBucket ?? null,
       direction: direction === "IN" ? "OUT" : "IN",
       amount: toDbMoney(amount),
       paymentMethod: r.paymentMethod,

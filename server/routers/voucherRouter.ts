@@ -43,7 +43,7 @@ export const voucherRouter = router({
       const actorBranchId = Number(ctx.user.branchId);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createVoucher(input, { userId: ctx.user.id, branchId: actorBranchId });
+          const res = await createVoucher(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
           await logAudit(ctx, {
             action: input.voucherType === "RECEIPT" ? "voucher.receipt.create" : "voucher.payment.create",
             entityType: "receipt",

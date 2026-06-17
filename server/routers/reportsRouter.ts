@@ -519,6 +519,7 @@ export const reportsRouter = router({
           to: ymdStr.optional(),
           branchId: z.number().int().positive().optional(),
           limit: z.number().int().min(1).max(5000).optional(),
+          category: z.enum(["TREASURY", "TRUE_ORPHAN"]).optional(),
         })
         .optional(),
     )
@@ -529,6 +530,7 @@ export const reportsRouter = router({
         to: input?.to,
         branchId,
         limit: input?.limit,
+        category: input?.category,
       });
     }),
 

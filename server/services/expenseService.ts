@@ -7,7 +7,7 @@ import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
-import { requireOpenShiftIdTx } from "./shiftService";
+import { shiftIdForCashTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -194,14 +194,21 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
     if (input.category === "OTHER" && !input.description?.trim())
       throw new TRPCError({ code: "BAD_REQUEST", message: "وصف المصروف مطلوب لفئة «أخرى»" });
 
-    // إنفاذ الوردية للمعاملات النقدية: لو لم يمرّر الكاشير shiftId (وردية مغلقة)
-    // والطريقة نقدية ⇒ نرمي PRECONDITION_FAILED بدل الحفظ بـshiftId=null الذي يختفي
-    // من Z-report (computeExpectedCash يفلتر بـeq(receipts.shiftId, shiftId)) ⇒
-    // تشويه يومي للتسوية + خصومات ظالمة من الكاشير. غير النقدية (TRANSFER/CARD/WALLET)
-    // لا تَلمس الصندوق فتبقى مسموحة بـshiftId=null.
+    // سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦ — تعديل المرحلة-١):
+    //  - admin/manager بلا وردية + نقدي ⇒ shiftId=null + bucket=TREASURY (سجلّ خزينة).
+    //  - cashier/warehouse بلا وردية + نقدي ⇒ PRECONDITION_FAILED (الحماية الأصلية).
+    //  - أيٌّ منهم مع وردية مفتوحة ⇒ shiftId=الوردية + bucket=DRAWER (Z-report).
+    //  - غير النقدي ⇒ shiftId اختياري + bucket=NULL (لا يَمسّ صندوقاً).
     let effectiveShiftId: number | null = input.shiftId ?? null;
-    if (input.paymentMethod === "CASH" && effectiveShiftId == null) {
-      effectiveShiftId = await requireOpenShiftIdTx(tx, actor.userId, input.branchId, "مصروف نقدي");
+    let cashBucket: "DRAWER" | "TREASURY" | null = null;
+    if (input.paymentMethod === "CASH") {
+      if (effectiveShiftId == null) {
+        const g = await shiftIdForCashTx(tx, actor, input.branchId, "مصروف نقدي");
+        effectiveShiftId = g.shiftId;
+        cashBucket = g.cashBucket;
+      } else {
+        cashBucket = "DRAWER"; // shiftId مُمرَّر صراحةً ⇒ نقد درج
+      }
     }
 
     if (effectiveShiftId) {
@@ -217,6 +224,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       invoiceId: null,
       branchId: input.branchId,
       shiftId: effectiveShiftId,
+      cashBucket,
       direction: "OUT",
       amount: toDbMoney(amt),
       paymentMethod: input.paymentMethod,
@@ -232,6 +240,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
     const eRes = await tx.insert(expenses).values({
       branchId: input.branchId,
       shiftId: effectiveShiftId,
+      cashBucket,
       expenseDate: new Date(expDate),
       category: input.category,
       amount: toDbMoney(amt),
@@ -331,10 +340,12 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     }
 
     // Compensating IN-receipt so cash totals nullify cleanly.
+    // cashBucket مرآة الأصل: مصروف TREASURY ⇒ تعويضه TREASURY (يَبقى خارج Z-report).
     const compRes = await tx.insert(receipts).values({
       invoiceId: null,
       branchId: Number(exp.branchId),
       shiftId: exp.shiftId ?? null,
+      cashBucket: (exp as { cashBucket?: "DRAWER" | "TREASURY" | null }).cashBucket ?? null,
       direction: "IN",
       amount: toDbMoney(exp.amount),
       paymentMethod: exp.paymentMethod,

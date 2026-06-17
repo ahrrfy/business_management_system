@@ -212,11 +212,12 @@ describe("المصروفات اليومية", () => {
  * المصاريف غير النقدية (TRANSFER/CARD/WALLET/CHECK) لا تَمسّ الصندوق فتبقى مسموحة.
  */
 describe("إنفاذ الوردية النقدية (shift-gate) للمصاريف", () => {
-  it("مصروف نقدي بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED", async () => {
+  it("مصروف نقدي للكاشير بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED", async () => {
+    // cash-treasury-mode: admin/manager مُعفَون ⇒ نَختبر cashier صراحةً للحارس الصارم.
     await expect(
       createExpense(
         { branchId: 1, category: "TRANSPORT", amount: "20000", paymentMethod: "CASH", description: "أجور نقل" },
-        actor
+        { ...actor, role: "cashier" }
       )
     ).rejects.toThrow(/افتح وردية/);
 
@@ -267,6 +268,72 @@ describe("إنفاذ الوردية النقدية (shift-gate) للمصاريف
 
     const closed = await closeShift({ shiftId, countedCash: "900000" }, actor);
     expect(closed.expectedCash).toBe("900000.00"); // 1,000,000 − (50k+30k+20k)
+    expect(closed.variance).toBe("0.00");
+  });
+});
+
+/**
+ * cash-treasury-mode (تدقيق ١٧/٦):
+ *  - admin/manager بلا وردية + نقدي ⇒ shiftId=null + cashBucket=TREASURY (مشروع).
+ *  - cashier/warehouse بلا وردية + نقدي ⇒ PRECONDITION_FAILED (محفوظ).
+ *  - أيٌّ منهم مع وردية + نقدي ⇒ shiftId=الوردية + cashBucket=DRAWER.
+ *  - TREASURY لا يَدخل أبداً computeExpectedCash لأي وردية كاشير.
+ */
+describe("إعفاء الخزينة الإدارية (admin/manager) من شرط الوردية", () => {
+  it("admin بلا وردية + CASH ⇒ يَنجح، shiftId=null، cashBucket=TREASURY", async () => {
+    const r = await createExpense(
+      { branchId: 1, category: "RENT", amount: "1000000", paymentMethod: "CASH", description: "إيجار طارئ" },
+      { userId: 1, branchId: 1, role: "admin" }
+    );
+    const exp = (await db().select().from(s.expenses).where(eq(s.expenses.id, r.expenseId)))[0];
+    expect(exp.shiftId).toBeNull();
+    expect(exp.cashBucket).toBe("TREASURY");
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId!)))[0];
+    expect(rc.shiftId).toBeNull();
+    expect(rc.cashBucket).toBe("TREASURY");
+    // الدفتر يَكتب — TREASURY سجلّ مالي كامل، لا يَختفي.
+    const out = await entries("PAYMENT_OUT");
+    expect(out).toHaveLength(1);
+    expect(out[0].amount).toBe("1000000.00");
+  });
+
+  it("manager بلا وردية + CASH ⇒ يَنجح بـcashBucket=TREASURY", async () => {
+    await db().insert(s.users).values({ id: 2, openId: "mgr", name: "مدير", role: "manager", loginMethod: "local", branchId: 1 });
+    const r = await createExpense(
+      { branchId: 1, category: "MAINTENANCE", amount: "75000", paymentMethod: "CASH", description: "إصلاح مضخّة" },
+      { userId: 2, branchId: 1, role: "manager" }
+    );
+    const exp = (await db().select().from(s.expenses).where(eq(s.expenses.id, r.expenseId)))[0];
+    expect(exp.shiftId).toBeNull();
+    expect(exp.cashBucket).toBe("TREASURY");
+  });
+
+  it("manager مع وردية مفتوحة (يُغطّي كاشيراً) + CASH ⇒ shiftId=وردية، cashBucket=DRAWER", async () => {
+    await db().insert(s.users).values({ id: 2, openId: "mgr", name: "مدير", role: "manager", loginMethod: "local", branchId: 1 });
+    const mgr = { userId: 2, branchId: 1, role: "manager" };
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "500000" }, mgr);
+    const r = await createExpense(
+      { branchId: 1, category: "SUPPLIES", amount: "50000", paymentMethod: "CASH", description: "حبر" },
+      mgr
+    );
+    const exp = (await db().select().from(s.expenses).where(eq(s.expenses.id, r.expenseId)))[0];
+    expect(Number(exp.shiftId)).toBe(shiftId);
+    expect(exp.cashBucket).toBe("DRAWER");
+  });
+
+  it("admin TREASURY لا يَدخل expectedCash لأي وردية كاشير (عزل كامل)", async () => {
+    // كاشير يَفتح وردية بـ500k
+    await db().insert(s.users).values({ id: 2, openId: "csh", name: "كاشير", role: "cashier", loginMethod: "local", branchId: 1 });
+    const cashier = { userId: 2, branchId: 1, role: "cashier" };
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "500000" }, cashier);
+    // admin يَصرف 100k بلا وردية (TREASURY)
+    await createExpense(
+      { branchId: 1, category: "RENT", amount: "100000", paymentMethod: "CASH", description: "إيجار من خزينة الإدارة" },
+      { userId: 1, branchId: 1, role: "admin" }
+    );
+    // الكاشير يُقفل: المتوقع = 500k (لم يَخصم منه الـ100k الإداري).
+    const closed = await closeShift({ shiftId, countedCash: "500000" }, cashier);
+    expect(closed.expectedCash).toBe("500000.00");
     expect(closed.variance).toBe("0.00");
   });
 });

@@ -91,7 +91,7 @@ export const expenseRouter = router({
       }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createExpense({ ...input, branchId }, { userId: ctx.user.id, branchId });
+          const res = await createExpense({ ...input, branchId }, { userId: ctx.user.id, branchId, role: ctx.user.role });
           if (!(res as { idempotent?: boolean }).idempotent) {
             await logAudit(ctx, { action: "expense.create", entityType: "expense", entityId: (res as { expenseId?: number })?.expenseId, newValue: { category: input.category, amount: input.amount, payee: input.payee ?? null, branchId } });
           }

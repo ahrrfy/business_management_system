@@ -205,15 +205,31 @@ export default function ExpenseNew() {
             <select className={selectCls} value={effectiveBranch} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
               {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
             </select>
-            {openShift.data ? (
-              <p className="text-xs text-emerald-700">سيُربط بوردية #{Number(openShift.data.id)} المفتوحة.</p>
-            ) : !isStock && paymentMethod === "CASH" ? (
-              <p className="text-xs text-rose-700">
-                لا وردية مفتوحة — لا يمكن تسجيل مصروف نقدي. <Link href="/shifts" className="underline">افتح وردية</Link> أوّلاً، أو غيِّر طريقة الدفع لغير نقدية.
-              </p>
-            ) : (
-              <p className="text-xs text-muted-foreground">لا توجد وردية مفتوحة لهذا الفرع — سيُسجَّل بلا ربط (طريقة دفع غير نقدية).</p>
-            )}
+            {(() => {
+              // cash-treasury-mode (تدقيق ١٧/٦):
+              //  - admin/manager بلا وردية + نقدي ⇒ شارة زرقاء «خزينة إدارية» (مشروع، يُحفَظ).
+              //  - cashier/warehouse بلا وردية + نقدي ⇒ تحذير أحمر + زر مُعطَّل.
+              const role = me.data?.role;
+              const isElevated = role === "admin" || role === "manager";
+              if (openShift.data) {
+                return <p className="text-xs text-emerald-700">سيُربط بوردية #{Number(openShift.data.id)} المفتوحة (drawer).</p>;
+              }
+              if (!isStock && paymentMethod === "CASH") {
+                if (isElevated) {
+                  return (
+                    <p className="text-xs text-blue-700">
+                      🏦 يُسجَّل في <strong>الخزينة الإدارية</strong> — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.
+                    </p>
+                  );
+                }
+                return (
+                  <p className="text-xs text-rose-700">
+                    لا وردية مفتوحة — الكاشير يجب أن يَفتح وردية قبل المصروف النقدي. <Link href="/shifts" className="underline">افتح وردية</Link> أو غيِّر طريقة الدفع لغير نقدية.
+                  </p>
+                );
+              }
+              return <p className="text-xs text-muted-foreground">لا توجد وردية مفتوحة لهذا الفرع — سيُسجَّل بلا ربط (طريقة دفع غير نقدية).</p>;
+            })()}
           </div>
           <div className="space-y-1">
             <Label>التاريخ *</Label>
@@ -328,13 +344,15 @@ export default function ExpenseNew() {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {(() => {
-        // بوّابة الوردية النقدية: نقدي بلا وردية مفتوحة ⇒ زر الحفظ مُعطَّل.
-        // الخادم يرمي PRECONDITION_FAILED أيضاً كحارس أخير، لكن التعطيل في الواجهة
-        // يمنع نقرة عرضية ويُظهر السبب الواضح قبل المحاولة.
-        const cashWithoutShift = !isStock && paymentMethod === "CASH" && !openShift.data && !openShift.isLoading;
+        // cash-treasury-mode: التعطيل صارم لـcashier/warehouse فقط؛ admin/manager يَكتبون
+        // معاملاتهم في الخزينة الإدارية (TREASURY) بَدلاً من تَعطيل الزرّ عليهم.
+        const role = me.data?.role;
+        const isElevated = role === "admin" || role === "manager";
+        const cashNeedsShift = !isStock && paymentMethod === "CASH" && !openShift.data && !openShift.isLoading;
+        const hardBlock = cashNeedsShift && !isElevated;
         return (
           <div className="flex gap-2">
-            <Button onClick={submit} disabled={create.isPending || cashWithoutShift} title={cashWithoutShift ? "افتح وردية قبل تسجيل مصروف نقدي" : undefined}>
+            <Button onClick={submit} disabled={create.isPending || hardBlock} title={hardBlock ? "الكاشير يجب أن يَفتح وردية قبل مصروف نقدي" : undefined}>
               {create.isPending ? "جارٍ الحفظ…" : "حفظ المصروف"}
             </Button>
             <Link href="/expenses"><Button variant="outline">إلغاء</Button></Link>

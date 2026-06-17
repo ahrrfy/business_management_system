@@ -217,15 +217,16 @@ export async function getExpensesReport(opts: {
   };
 }
 
-/* ============================ المعاملات النقدية اليتيمة (بلا وردية) ============================
- * تقرير قراءة فقط للسجلات التاريخية التي حُفظت بـreceipts.shiftId IS NULL وpaymentMethod='CASH'
- * قبل تفعيل إنفاذ الوردية. هذه المعاملات تختفي من Z-report (computeExpectedCash يفلتر
- * بـeq(receipts.shiftId, shiftId)) فيظهر فرق صامت في الصندوق. التقرير يَرصدها للمالك
- * ليُسوّيها يدوياً (تخصيصها لوردية مناسبة عبر قيد محاسبي مكافئ). لا تعديل آلي على بيانات الإنتاج.
- *
- * المصدر يُستنبَط: voucherNumber != NULL ⇒ سند مستقلّ؛ EXPENSE ↔ expenses.receiptId الراجع؛
- * غير ذلك ⇒ OTHER (نادر، مثل دفعة فاتورة بدون وردية).
+/* ============================ النقد خارج وردية الكاشير (إداري + يتيم) ============================
+ * تقرير قراءة فقط لـreceipts بـshiftId IS NULL AND paymentMethod='CASH' AND receiptStatus='COMPLETED'.
+ * بعد تَفعيل cash-treasury-mode (تدقيق ١٧/٦) ينقسم إلى فئتَين دلالياً:
+ *  - TREASURY: معاملات admin/manager مشروعة بـcashBucket='TREASURY' (خزينة إدارية، متوقَّعة).
+ *  - TRUE_ORPHAN: سجلات تاريخية قبل cashBucket (NULL) أو خَلل (cashier/warehouse بـshiftId=null).
+ *      هذه يَجب أن تَبقى صفراً للجديد بعد الإنفاذ؛ أيّ زيادة فيها = bug يَستدعي فحصاً.
+ * كلتا الفئتَين خارج Z-report ⇒ تَسوية صندوق الكاشير دقيقة، والتقرير يَخدم تَسوية الخزينة المُنفصِلة.
  */
+
+export type CashOrphanCategory = "TREASURY" | "TRUE_ORPHAN";
 
 export interface CashOrphanRow {
   receiptId: number;
@@ -244,6 +245,9 @@ export interface CashOrphanRow {
   createdAt: Date | string;
   createdByName: string | null;
   createdById: number | null;
+  createdByRole: string | null;
+  cashBucket: "DRAWER" | "TREASURY" | null;
+  category: CashOrphanCategory;
 }
 
 export interface CashOrphansReportResult {
@@ -253,6 +257,15 @@ export interface CashOrphansReportResult {
   totalIn: string;
   totalOut: string;
   net: string;
+  // فصل العدّادات + الإجماليات حسب الفئة (TREASURY مشروعة، TRUE_ORPHAN تَستدعي فحصاً).
+  countTreasury: number;
+  totalInTreasury: string;
+  totalOutTreasury: string;
+  netTreasury: string;
+  countTrueOrphan: number;
+  totalInTrueOrphan: string;
+  totalOutTrueOrphan: string;
+  netTrueOrphan: string;
 }
 
 export async function getCashOrphansReport(opts: {
@@ -260,6 +273,8 @@ export async function getCashOrphansReport(opts: {
   to?: string;
   branchId?: number;
   limit?: number;
+  /** فلتر اختياري يُقصِر النتائج على فئة واحدة (لتبويب الواجهة). */
+  category?: CashOrphanCategory;
 }): Promise<CashOrphansReportResult> {
   const db = getDb();
   const base: CashOrphansReportResult = {
@@ -269,14 +284,19 @@ export async function getCashOrphansReport(opts: {
     totalIn: "0",
     totalOut: "0",
     net: "0",
+    countTreasury: 0,
+    totalInTreasury: "0",
+    totalOutTreasury: "0",
+    netTreasury: "0",
+    countTrueOrphan: 0,
+    totalInTrueOrphan: "0",
+    totalOutTrueOrphan: "0",
+    netTrueOrphan: "0",
   };
   if (!db) return base;
 
   const limit = opts.limit && opts.limit > 0 && opts.limit <= 5000 ? opts.limit : 1000;
 
-  // فلتر الفترة على createdAt — نصف مفتوح [from, to+يوم) باستعمال DATE() لتسهيل المقارنة.
-  // ⚠️ المعيار الجوهري: shiftId IS NULL AND paymentMethod='CASH' AND receiptStatus='COMPLETED'
-  // (لا نُدرج REVERSED لأنها مُعالَجة فعلياً).
   const rows = rowsOf(
     await db.execute(sql`
       SELECT
@@ -286,15 +306,17 @@ export async function getCashOrphansReport(opts: {
         r.direction AS direction,
         CAST(r.amount AS CHAR) AS amount,
         r.paymentMethod AS paymentMethod,
+        r.cashBucket AS cashBucket,
         r.voucherNumber AS voucherNumber,
         r.referenceNumber AS referenceNumber,
         r.description AS description,
-        r.partyType AS partyType,
+        r.voucherPartyType AS partyType,
         r.partyId AS partyId,
         e.id AS expenseId,
         r.createdAt AS createdAt,
         r.createdBy AS createdById,
-        u.name AS createdByName
+        u.name AS createdByName,
+        u.role AS createdByRole
       FROM receipts r
       LEFT JOIN branches b ON b.id = r.branchId
       LEFT JOIN expenses e ON e.receiptId = r.id
@@ -305,6 +327,8 @@ export async function getCashOrphansReport(opts: {
         ${opts.from ? sql`AND DATE(r.createdAt) >= ${opts.from}` : sql``}
         ${opts.to ? sql`AND DATE(r.createdAt) <= ${opts.to}` : sql``}
         ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
+        ${opts.category === "TREASURY" ? sql`AND r.cashBucket = 'TREASURY'` : sql``}
+        ${opts.category === "TRUE_ORPHAN" ? sql`AND (r.cashBucket IS NULL OR r.cashBucket = 'DRAWER')` : sql``}
       ORDER BY r.id DESC
       LIMIT ${limit}
     `),
@@ -312,11 +336,32 @@ export async function getCashOrphansReport(opts: {
 
   let totalIn = money(0);
   let totalOut = money(0);
+  let totalInTreasury = money(0);
+  let totalOutTreasury = money(0);
+  let totalInTrueOrphan = money(0);
+  let totalOutTrueOrphan = money(0);
+  let countTreasury = 0;
+  let countTrueOrphan = 0;
+
   const mapped: CashOrphanRow[] = rows.map((r) => {
     const amt = money(r.amount ?? 0);
     const dir = r.direction === "OUT" ? "OUT" : "IN";
+    const bucket: "DRAWER" | "TREASURY" | null = r.cashBucket === "TREASURY" ? "TREASURY" : r.cashBucket === "DRAWER" ? "DRAWER" : null;
+    const category: CashOrphanCategory = bucket === "TREASURY" ? "TREASURY" : "TRUE_ORPHAN";
+
     if (dir === "IN") totalIn = totalIn.plus(amt);
     else totalOut = totalOut.plus(amt);
+
+    if (category === "TREASURY") {
+      countTreasury++;
+      if (dir === "IN") totalInTreasury = totalInTreasury.plus(amt);
+      else totalOutTreasury = totalOutTreasury.plus(amt);
+    } else {
+      countTrueOrphan++;
+      if (dir === "IN") totalInTrueOrphan = totalInTrueOrphan.plus(amt);
+      else totalOutTrueOrphan = totalOutTrueOrphan.plus(amt);
+    }
+
     let source: CashOrphanRow["source"] = "OTHER";
     let sourceId: number | null = null;
     if (r.expenseId != null) {
@@ -343,6 +388,9 @@ export async function getCashOrphansReport(opts: {
       createdAt: r.createdAt,
       createdByName: r.createdByName ?? null,
       createdById: r.createdById != null ? Number(r.createdById) : null,
+      createdByRole: r.createdByRole ?? null,
+      cashBucket: bucket,
+      category,
     };
   });
 
@@ -353,5 +401,13 @@ export async function getCashOrphansReport(opts: {
     totalIn: toDbMoney(totalIn),
     totalOut: toDbMoney(totalOut),
     net: toDbMoney(totalIn.minus(totalOut)),
+    countTreasury,
+    totalInTreasury: toDbMoney(totalInTreasury),
+    totalOutTreasury: toDbMoney(totalOutTreasury),
+    netTreasury: toDbMoney(totalInTreasury.minus(totalOutTreasury)),
+    countTrueOrphan,
+    totalInTrueOrphan: toDbMoney(totalInTrueOrphan),
+    totalOutTrueOrphan: toDbMoney(totalOutTrueOrphan),
+    netTrueOrphan: toDbMoney(totalInTrueOrphan.minus(totalOutTrueOrphan)),
   };
 }

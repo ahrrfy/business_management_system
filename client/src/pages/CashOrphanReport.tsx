@@ -1,7 +1,7 @@
-// تقرير المعاملات النقدية اليتيمة — receipts بـshiftId IS NULL وpaymentMethod='CASH'.
-// هذه المعاملات تختفي من Z-report (computeExpectedCash يفلتر بـeq(receipts.shiftId, shiftId))
-// فيظهر فرق صامت في تسوية الصندوق. التقرير للقراءة فقط — يَرصد السجلات التاريخية
-// المُكتَبة قبل تفعيل إنفاذ الوردية ليُسوّيها المالك يدوياً. لا يُنشأ سطر جديد بعد التفعيل.
+// تقرير «النقد خارج وردية الكاشير» — يَفصل دلالياً (تدقيق ١٧/٦):
+//  - الخزينة الإدارية (TREASURY): معاملات admin/manager بـcashBucket='TREASURY' (متوقَّعة، مشروعة).
+//  - نقد يتيم حقيقي (TRUE_ORPHAN): سجلات تاريخية قبل cashBucket (NULL) أو خَلل كاشير بـnull-shift.
+// كلاهما خارج Z-report. تَسوية درج الكاشير تَبقى دقيقة، والمعاملات الإدارية تَدخل تَسوية شهرية مستقلّة.
 import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -12,6 +12,7 @@ import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type CO = RouterOutputs["reports"]["cashOrphans"];
+type Tab = "all" | "TREASURY" | "TRUE_ORPHAN";
 
 const SOURCE_LABEL: Record<string, string> = {
   EXPENSE: "مصروف",
@@ -24,10 +25,17 @@ const PARTY_LABEL: Record<string, string> = {
   SUPPLIER: "مورّد",
   OTHER: "متفرّق",
 };
+const ROLE_LABEL: Record<string, { label: string; cls: string }> = {
+  admin: { label: "مدير عام", cls: "bg-purple-100 text-purple-700" },
+  manager: { label: "مدير", cls: "bg-blue-100 text-blue-700" },
+  cashier: { label: "كاشير", cls: "bg-amber-100 text-amber-800" },
+  warehouse: { label: "مخزن", cls: "bg-orange-100 text-orange-700" },
+};
 
 const NOTE =
-  "السجلات هنا حُفظت بـreceipts.shiftId=NULL وطريقة دفع نقدية، فلا يَراها Z-report. " +
-  "اليوم تُحجَب آلياً (الخدمات ترمي خطأً)، لكن سجلات تاريخية قد تبقى — راجعها وسوّها يدوياً.";
+  "تَبويب «الخزينة الإدارية» (admin/manager بـcashBucket=TREASURY) متوقَّع ومشروع — يَدخل تَسوية الخزينة الشهرية المستقلّة، لا تَسوية درج الكاشير. " +
+  "تَبويب «النقد اليتيم الحقيقي» (cashBucket=NULL أو DRAWER+shiftId=null) سجلات تاريخية قبل ١٧/٦/٢٠٢٦ أو خَلل يَستدعي قيد تَسوية يدوي. " +
+  "كلتا الفئتَين خارج Z-report.";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -40,21 +48,23 @@ function ymdOf(d: Date | string): string {
 export default function CashOrphanReport() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
+  const [tab, setTab] = useState<Tab>("all");
   const branches = trpc.branches.list.useQuery();
 
   const q = trpc.reports.cashOrphans.useQuery({
     from: period.from,
     to: period.to,
     branchId: branchId ? Number(branchId) : undefined,
+    category: tab === "all" ? undefined : (tab as "TREASURY" | "TRUE_ORPHAN"),
   });
   const co: CO | undefined = q.data;
 
   const kpis: KpiItem[] = co
     ? [
-        { label: "عدد المعاملات اليتيمة", value: String(co.count), tone: co.count > 0 ? "warning" : "info" },
-        { label: "إجمالي قبض نقدي بلا وردية", value: fmtAr(co.totalIn), tone: "info" },
-        { label: "إجمالي صرف نقدي بلا وردية", value: fmtAr(co.totalOut), tone: "warning" },
-        { label: "الصافي (يتيم)", value: fmtAr(co.net), tone: co.net.startsWith("-") ? "warning" : "info" },
+        { label: "الخزينة الإدارية (مشروع)", value: String(co.countTreasury), tone: "info" },
+        { label: "صافي خزينة إدارية", value: fmtAr(co.netTreasury), tone: "info" },
+        { label: "نقد يتيم حقيقي (فحص)", value: String(co.countTrueOrphan), tone: co.countTrueOrphan > 0 ? "warning" : "info" },
+        { label: "صافي يتيم حقيقي", value: fmtAr(co.netTrueOrphan), tone: co.countTrueOrphan > 0 ? "warning" : "info" },
       ]
     : [];
 
@@ -65,10 +75,12 @@ export default function CashOrphanReport() {
   function onExport() {
     if (!co) return;
     exportRows(co.rows, {
-      filename: `معاملات-نقدية-بلا-وردية-${period.from}-${period.to}`,
+      filename: `نقد-خارج-الوردية-${tab}-${period.from}-${period.to}`,
       columns: [
         { key: "createdAt", header: "التاريخ", map: (r) => ymdOf(r.createdAt) },
         { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
+        { key: "category", header: "الفئة", map: (r) => (r.category === "TREASURY" ? "خزينة إدارية" : "يتيم حقيقي") },
+        { key: "cashBucket", header: "الدلو", map: (r) => r.cashBucket ?? "" },
         { key: "source", header: "النوع", map: (r) => SOURCE_LABEL[r.source] ?? r.source },
         { key: "sourceId", header: "رقم المستند", map: (r) => r.sourceId ?? r.receiptId },
         { key: "voucherNumber", header: "رقم السند", map: (r) => r.voucherNumber ?? "" },
@@ -77,6 +89,7 @@ export default function CashOrphanReport() {
         { key: "partyType", header: "نوع الطرف", map: (r) => (r.partyType ? PARTY_LABEL[r.partyType] ?? r.partyType : "") },
         { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
         { key: "createdByName", header: "أنشأها", map: (r) => r.createdByName ?? "" },
+        { key: "createdByRole", header: "الدور", map: (r) => r.createdByRole ?? "" },
       ],
     });
   }
@@ -84,7 +97,7 @@ export default function CashOrphanReport() {
   function onPrint() {
     if (!co) return;
     printReportDoc({
-      title: "المعاملات النقدية اليتيمة (بلا وردية)",
+      title: tab === "all" ? "النقد خارج الوردية — كامل" : tab === "TREASURY" ? "الخزينة الإدارية" : "نقد يتيم حقيقي (فحص)",
       headerExtra: [
         { label: "الفترة", value: `${period.from} — ${period.to}` },
         { label: "الفرع", value: branchLabel },
@@ -94,6 +107,7 @@ export default function CashOrphanReport() {
       columns: [
         { key: "createdAt", label: "التاريخ" },
         { key: "branch", label: "الفرع" },
+        { key: "category", label: "الفئة" },
         { key: "source", label: "النوع" },
         { key: "doc", label: "المستند" },
         { key: "direction", label: "الاتجاه" },
@@ -104,26 +118,27 @@ export default function CashOrphanReport() {
       rows: co.rows.map((r) => ({
         createdAt: ymdOf(r.createdAt),
         branch: r.branchName ?? "—",
+        category: r.category === "TREASURY" ? "خزينة" : "يتيم",
         source: SOURCE_LABEL[r.source] ?? r.source,
         doc: r.voucherNumber ?? (r.sourceId != null ? `#${r.sourceId}` : `R#${r.receiptId}`),
         direction: DIR_LABEL[r.direction] ?? r.direction,
         amount: fmtAr(r.amount),
         description: r.description ?? "",
-        createdBy: r.createdByName ?? "—",
+        createdBy: r.createdByName ? `${r.createdByName}${r.createdByRole ? ` (${r.createdByRole})` : ""}` : "—",
       })),
       showIndex: true,
       summary: [
-        { label: "إجمالي القبض اليتيم", value: formatIqd(co.totalIn), bold: true },
-        { label: "إجمالي الصرف اليتيم", value: formatIqd(co.totalOut), bold: true },
-        { label: "الصافي اليتيم", value: formatIqd(co.net), large: true, bold: true },
+        { label: "خزينة إدارية", value: formatIqd(co.netTreasury), bold: true },
+        { label: "يتيم حقيقي", value: formatIqd(co.netTrueOrphan), bold: true },
+        { label: "الإجمالي", value: formatIqd(co.net), large: true, bold: true },
       ],
     });
   }
 
   return (
     <ReportShell
-      title="المعاملات النقدية اليتيمة (بلا وردية)"
-      description="receipts بـshiftId=NULL وpaymentMethod='CASH' — لا يَراها Z-report ⇒ خسارة تسوية صامتة."
+      title="النقد خارج وردية الكاشير — سجلّ إداري + يتيم تاريخي"
+      description="معاملات نقدية بـshiftId=NULL مفصولة: خزينة إدارية (admin/manager — متوقَّعة) ومتيتم حقيقي (سجلات قديمة/خَلل)."
       note={NOTE}
       kpis={kpis}
       onExport={onExport}
@@ -151,6 +166,28 @@ export default function CashOrphanReport() {
         </div>
       }
     >
+      {/* تبويبات الفئات */}
+      <div className="flex gap-1">
+        {([
+          { key: "all" as Tab, label: "الكلّ" },
+          { key: "TREASURY" as Tab, label: "🏦 خزينة إدارية" },
+          { key: "TRUE_ORPHAN" as Tab, label: "⚠️ يتيم حقيقي" },
+        ]).map((t) => (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => setTab(t.key)}
+            className={`rounded-md px-3 py-1.5 text-xs transition ${
+              tab === t.key
+                ? "bg-primary text-primary-foreground font-medium"
+                : "bg-muted/60 text-foreground/70 hover:bg-accent"
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
       <Card>
         <CardContent className="p-0">
           {q.isLoading || !co ? (
@@ -159,7 +196,11 @@ export default function CashOrphanReport() {
             </p>
           ) : co.rows.length === 0 ? (
             <p className="p-8 text-center text-sm text-emerald-700">
-              ممتاز — لا معاملات نقدية يتيمة في هذه الفترة. تسوية الصندوق متّسقة.
+              {tab === "TRUE_ORPHAN"
+                ? "ممتاز — لا نقد يتيم حقيقي في هذه الفترة. تَسوية الصندوق متّسقة."
+                : tab === "TREASURY"
+                ? "لا معاملات خزينة إدارية في هذه الفترة."
+                : "لا معاملات خارج وردية الكاشير."}
             </p>
           ) : (
             <table className="w-full text-sm">
@@ -167,62 +208,82 @@ export default function CashOrphanReport() {
                 <tr className="border-b text-xs text-muted-foreground bg-muted/30">
                   <th className="p-3 text-right font-medium">التاريخ</th>
                   <th className="p-3 text-right font-medium">الفرع</th>
+                  <th className="p-3 text-right font-medium">الفئة</th>
                   <th className="p-3 text-right font-medium">النوع</th>
                   <th className="p-3 text-right font-medium">المستند</th>
                   <th className="p-3 text-right font-medium">الاتجاه</th>
                   <th className="p-3 text-left font-medium">المبلغ</th>
                   <th className="p-3 text-right font-medium">الوصف</th>
                   <th className="p-3 text-right font-medium">أنشأها</th>
+                  <th className="p-3 text-right font-medium">الدور</th>
                 </tr>
               </thead>
               <tbody>
-                {co.rows.map((r) => (
-                  <tr key={r.receiptId} className="border-b last:border-0">
-                    <td className="p-3 text-right text-xs" dir="ltr">
-                      {ymdOf(r.createdAt)}
-                    </td>
-                    <td className="p-3 text-right">{r.branchName ?? "—"}</td>
-                    <td className="p-3 text-right">
-                      <span className="inline-block rounded-full px-2 py-0.5 text-xs bg-amber-100 text-amber-700">
-                        {SOURCE_LABEL[r.source] ?? r.source}
-                      </span>
-                    </td>
-                    <td className="p-3 text-right font-mono text-xs" dir="ltr">
-                      {r.voucherNumber ?? (r.sourceId != null ? `#${r.sourceId}` : `R#${r.receiptId}`)}
-                    </td>
-                    <td className="p-3 text-right">
-                      <span
-                        className={`inline-block rounded-full px-2 py-0.5 text-xs ${
-                          r.direction === "IN" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                {co.rows.map((r) => {
+                  const rowBg = r.category === "TREASURY" ? "bg-blue-50/40" : "bg-amber-50/40";
+                  const roleInfo = r.createdByRole ? ROLE_LABEL[r.createdByRole] : null;
+                  return (
+                    <tr key={r.receiptId} className={`border-b last:border-0 ${rowBg}`}>
+                      <td className="p-3 text-right text-xs" dir="ltr">
+                        {ymdOf(r.createdAt)}
+                      </td>
+                      <td className="p-3 text-right">{r.branchName ?? "—"}</td>
+                      <td className="p-3 text-right">
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.category === "TREASURY" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-800"}`}>
+                          {r.category === "TREASURY" ? "🏦 خزينة" : "⚠️ يتيم"}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right">
+                        <span className="inline-block rounded-full px-2 py-0.5 text-xs bg-slate-100 text-slate-700">
+                          {SOURCE_LABEL[r.source] ?? r.source}
+                        </span>
+                      </td>
+                      <td className="p-3 text-right font-mono text-xs" dir="ltr">
+                        {r.voucherNumber ?? (r.sourceId != null ? `#${r.sourceId}` : `R#${r.receiptId}`)}
+                      </td>
+                      <td className="p-3 text-right">
+                        <span
+                          className={`inline-block rounded-full px-2 py-0.5 text-xs ${
+                            r.direction === "IN" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                          }`}
+                        >
+                          {DIR_LABEL[r.direction] ?? r.direction}
+                        </span>
+                      </td>
+                      <td
+                        className={`p-3 text-left tabular-nums ${
+                          r.direction === "IN" ? "text-emerald-700" : "text-rose-700"
                         }`}
+                        dir="ltr"
                       >
-                        {DIR_LABEL[r.direction] ?? r.direction}
-                      </span>
-                    </td>
-                    <td
-                      className={`p-3 text-left tabular-nums ${
-                        r.direction === "IN" ? "text-emerald-700" : "text-rose-700"
-                      }`}
-                      dir="ltr"
-                    >
-                      {fmtAr(r.amount)}
-                    </td>
-                    <td className="p-3 text-right text-xs max-w-xs truncate" title={r.description ?? ""}>
-                      {r.description ?? "—"}
-                    </td>
-                    <td className="p-3 text-right text-xs">{r.createdByName ?? "—"}</td>
-                  </tr>
-                ))}
+                        {fmtAr(r.amount)}
+                      </td>
+                      <td className="p-3 text-right text-xs max-w-xs truncate" title={r.description ?? ""}>
+                        {r.description ?? "—"}
+                      </td>
+                      <td className="p-3 text-right text-xs">{r.createdByName ?? "—"}</td>
+                      <td className="p-3 text-right">
+                        {roleInfo ? (
+                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${roleInfo.cls}`}>
+                            {roleInfo.label}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr className="border-t font-bold bg-muted/30">
-                  <td colSpan={5} className="p-3 text-right">
+                  <td colSpan={6} className="p-3 text-right">
                     الإجمالي ({co.count} معاملة)
                   </td>
                   <td className="p-3 text-left tabular-nums" dir="ltr">
-                    قبض: {fmtAr(co.totalIn)} / صرف: {fmtAr(co.totalOut)} / صافي: {fmtAr(co.net)}
+                    خزينة: {fmtAr(co.netTreasury)} / يتيم: {fmtAr(co.netTrueOrphan)}
                   </td>
-                  <td colSpan={2} />
+                  <td colSpan={3} />
                 </tr>
               </tfoot>
             </table>
