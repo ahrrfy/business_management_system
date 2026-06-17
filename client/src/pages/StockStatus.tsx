@@ -93,7 +93,7 @@ export default function StockStatus() {
   return (
     <ReportShell
       title="حالة المخزون / إعادة الطلب"
-      description="رصيد كل صنف مقابل حدّ إعادة الطلب مع تمييز النواقص."
+      description="رصيد كل منتج مقابل حدّ إعادة الطلب مع تمييز النواقص."
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}

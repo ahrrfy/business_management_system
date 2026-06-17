@@ -1,6 +1,6 @@
 // شاشة إدارة المنتجات — قائمة خادمية كاملة (بحث ذكي + تقسيم صفحات + إظهار المعطّل)
 // على نمط Customers.tsx. تستبدل posList (INNER JOIN يخفي الناقص + حدّ 500) بـadminList
-// التي تعرض كل أصناف المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
+// التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
@@ -89,7 +89,7 @@ export default function Products() {
           utils.catalog.posList.invalidate();
         }}
       />
-      <p className="text-sm text-muted-foreground">عرض الأصناف بوحداتها وأسعارها ومخزونها — مع بحث فوري وتصدير.</p>
+      <p className="text-sm text-muted-foreground">عرض المنتجات بوحداتها وأسعارها ومخزونها — مع بحث فوري وتصدير.</p>
 
       <Card>
         <CardHeader>
@@ -187,7 +187,7 @@ export default function Products() {
                           },
                           {
                             key: "moves",
-                            label: "حركات الصنف",
+                            label: "حركات المنتج",
                             hidden: !r.sku,
                             // شاشة الحركات تقرأ ?q= من URL (نمط CustomerStatement) فتفتح مفلترة على SKU.
                             href: `/inventory-movements?q=${encodeURIComponent(r.sku ?? "")}`,

@@ -225,7 +225,7 @@ export default function Expenses() {
                               variant: "warning",
                               title: "إلغاء المصروف",
                               description: r.source === "STOCK"
-                                ? `ستُعاد الأصناف (${fmt(r.amount)} د.ع كلفةً) إلى المخزون ويُعكس القيد. هل تتابع؟`
+                                ? `ستُعاد المنتجات (${fmt(r.amount)} د.ع كلفةً) إلى المخزون ويُعكس القيد. هل تتابع؟`
                                 : `سيُعكس مبلغ ${fmt(r.amount)} د.ع إلى الصندوق ويُسجَّل قيد ADJUST سالب. هل تتابع؟`,
                               confirmText: "إلغاء المصروف",
                               cancelText: "تراجع",

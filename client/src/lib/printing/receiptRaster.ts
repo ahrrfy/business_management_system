@@ -17,11 +17,11 @@ const PAD = 12;
 // (تلتقط الرماديات الفاتحة حول الحروف) فيظهر الإيصال غامقاً واضحاً لا باهتاً.
 const RECEIPT_THRESHOLD = 160;
 
-// أعمدة جدول الأصناف (RTL كقالب HTML): الصنف يميناً ← عدد ← السعر ← المبلغ أقصى اليسار
+// أعمدة جدول الأصناف (RTL كقالب HTML): المنتج يميناً ← عدد ← السعر ← المبلغ أقصى اليسار
 const COL_AMOUNT_X = PAD; //  «المبلغ» — محاذاة يسار
 const COL_PRICE_X = PAD + 138; //  «السعر» — محاذاة يسار
 const COL_QTY_CENTER = PAD + 280; //  «عدد» — توسيط
-const COL_NAME_R = W - PAD; //  «الصنف» — محاذاة يمين
+const COL_NAME_R = W - PAD; //  «المنتج» — محاذاة يمين
 const COL_NAME_W = COL_NAME_R - (COL_QTY_CENTER + 42);
 
 function loadImage(src: string): Promise<HTMLImageElement | null> {
@@ -205,7 +205,7 @@ export async function receiptToCanvas(
   // ───── ٤) جدول الأصناف ─────
   ctx.font = "700 21px Cairo, sans-serif";
   ctx.textAlign = "right";
-  ctx.fillText("الصنف", COL_NAME_R, y);
+  ctx.fillText("المنتج", COL_NAME_R, y);
   ctx.textAlign = "center";
   ctx.fillText("عدد", COL_QTY_CENTER, y);
   ctx.textAlign = "left";

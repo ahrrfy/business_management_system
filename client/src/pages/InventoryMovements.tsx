@@ -135,7 +135,7 @@ export default function InventoryMovements() {
 
   const [movementType, setMovementType] = useState<"" | MovementType>("");
   // ‎?q= من URL (نمط CustomerStatement): wouter يقصّ الاستعلام، فنقرأ window.location مباشرة —
-  // يتيح روابط «حركات الصنف» العميقة من شاشتي المنتجات/المخزون.
+  // يتيح روابط «حركات المنتج» العميقة من شاشتي المنتجات/المخزون.
   const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get("q") ?? "");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
@@ -420,7 +420,7 @@ export default function InventoryMovements() {
                   ],
                   columns: [
                     { key: "date", label: "التاريخ" },
-                    { key: "product", label: "الصنف" },
+                    { key: "product", label: "المنتج" },
                     { key: "type", label: "نوع الحركة" },
                     { key: "qty", label: "الكمية", align: "left" },
                     { key: "branch", label: "الفرع" },

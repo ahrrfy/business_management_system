@@ -92,7 +92,7 @@ export default function Transfers() {
     setDone("");
     if (!effectiveFrom || !effectiveTo) return setError("اختر فرعَي المصدر والوجهة.");
     if (effectiveFrom === effectiveTo) return setError("لا يمكن التحويل لنفس الفرع.");
-    if (!variantId) return setError("اختر صنفاً.");
+    if (!variantId) return setError("اختر منتجاً.");
     const qty = Math.trunc(Number(baseQuantity || "0"));
     if (!Number.isInteger(qty) || qty <= 0) return setError("الكمية يجب أن تكون عدداً صحيحاً موجباً.");
     if (selected && qty > selected.stockBase)
@@ -155,10 +155,10 @@ export default function Transfers() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">الصنف والكمية</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">المنتج والكمية</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="space-y-1">
-            <Label>بحث عن صنف (اسم/SKU/باركود)</Label>
+            <Label>بحث عن منتج (اسم/SKU/باركود)</Label>
             <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="اكتب للبحث…" />
           </div>
 

@@ -91,12 +91,12 @@ export default function Inventory() {
         <h1 className="text-2xl font-bold">المخزون</h1>
         {lowCount > 0 && (
           <span className="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs">
-            {lowCount.toLocaleString("ar-IQ-u-nu-latn")} صنف تحت الحد الأدنى
+            {lowCount.toLocaleString("ar-IQ-u-nu-latn")} منتج تحت الحد الأدنى
           </span>
         )}
       </div>
       <p className="text-sm text-muted-foreground">
-        الأرصدة الحالية لكل صنف مع تسوية يدوية (جرد/تلف/تصحيح) تُسجَّل كحركة تدقيق، وسجلّ آخر الحركات.
+        الأرصدة الحالية لكل منتج مع تسوية يدوية (جرد/تلف/تصحيح) تُسجَّل كحركة تدقيق، وسجلّ آخر الحركات.
       </p>
 
       <Card>
@@ -134,7 +134,7 @@ export default function Inventory() {
           <CardTitle className="text-base">الأرصدة الحالية</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {onHand.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} صنف`}
+              {onHand.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} منتج`}
             </span>
             <Button
               variant="outline"
@@ -199,7 +199,7 @@ export default function Inventory() {
                         {r.isLow ? "منخفض" : "متوفّر"}
                       </span>
                     </td>
-                    <td className="p-2 text-center text-xs text-muted-foreground" title="آخر جرد معتمد شمل هذا الصنف">
+                    <td className="p-2 text-center text-xs text-muted-foreground" title="آخر جرد معتمد شمل هذا المنتج">
                       {r.lastCountedAt ? new Date(r.lastCountedAt).toLocaleDateString("ar-IQ-u-nu-latn") : "لم يُجرَد"}
                     </td>
                     <td className="p-2 text-center">
@@ -227,7 +227,7 @@ export default function Inventory() {
                           actions={[
                             {
                               key: "stocktake",
-                              label: "جلسة جرد للصنف",
+                              label: "جلسة جرد للمنتج",
                               hidden: !canAdjust,
                               href: `/stocktakes/new?variants=${r.variantId}&name=${encodeURIComponent(`جرد تحقّق — ${r.productName}`)}`,
                             },
@@ -240,7 +240,7 @@ export default function Inventory() {
                             { key: "transfer", label: "تحويل بين الفروع", href: "/transfers" },
                             {
                               key: "moves",
-                              label: "حركات الصنف",
+                              label: "حركات المنتج",
                               // شاشة الحركات تقرأ ?q= من URL فتفتح مفلترة على SKU
                               href: `/inventory-movements?q=${encodeURIComponent(r.sku)}`,
                             },
@@ -252,7 +252,7 @@ export default function Inventory() {
                 );
               })}
               {!onHand.isLoading && rows.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أصناف برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء.</td></tr>
+                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء.</td></tr>
               )}
             </tbody>
           </table>

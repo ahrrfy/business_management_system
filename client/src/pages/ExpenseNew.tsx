@@ -71,8 +71,8 @@ function stockLineValid(l: StockLine): boolean { const b = baseQtyOf(l); return 
 
 const SOURCE_TABS: { value: "CASH" | "INTERNAL_USE" | "WASTAGE"; label: string; hint: string }[] = [
   { value: "CASH", label: "نقدي", hint: "صرف نقد من الصندوق" },
-  { value: "INTERNAL_USE", label: "نثرية (من المخزون)", hint: "استهلاك صنف داخلياً ⇒ مصروف بالكلفة" },
-  { value: "WASTAGE", label: "تلف (من المخزون)", hint: "صنف تالف ⇒ خسارة بالكلفة" },
+  { value: "INTERNAL_USE", label: "نثرية (من المخزون)", hint: "استهلاك منتج داخلياً ⇒ مصروف بالكلفة" },
+  { value: "WASTAGE", label: "تلف (من المخزون)", hint: "منتج تالف ⇒ خسارة بالكلفة" },
 ];
 
 export default function ExpenseNew() {
@@ -127,12 +127,12 @@ export default function ExpenseNew() {
 
     // production-slice: صرف من المخزون (نثرية/تلف) — يُخصَم بالكلفة بلا صندوق.
     if (isStock) {
-      if (items.length === 0) return setError("أضِف صنفاً واحداً على الأقل.");
+      if (items.length === 0) return setError("أضِف منتجاً واحداً على الأقل.");
       for (const l of items) if (!stockLineValid(l)) return setError(`كمية «${l.productName}» يجب أن تُنتج عدداً صحيحاً موجباً.`);
       const ok = await confirm({
         variant: "danger",
         title: source === "WASTAGE" ? "تسجيل تلف من المخزون" : "تسجيل نثرية من المخزون",
-        description: `سيُخصَم ${items.length} صنف من المخزون ويُسجَّل ${source === "WASTAGE" ? "خسارةً" : "مصروفاً"} بقيمة ${fmt(itemsTotal.toString())} د.ع (لا يلمس الصندوق النقدي). متابعة؟`,
+        description: `سيُخصَم ${items.length} منتج من المخزون ويُسجَّل ${source === "WASTAGE" ? "خسارةً" : "مصروفاً"} بقيمة ${fmt(itemsTotal.toString())} د.ع (لا يلمس الصندوق النقدي). متابعة؟`,
         confirmText: source === "WASTAGE" ? "تسجيل التلف" : "تسجيل النثرية",
       });
       if (!ok) return;
@@ -249,9 +249,9 @@ export default function ExpenseNew() {
       {/* أصناف الصرف من المخزون (نثرية/تلف) */}
       {isStock && (
         <Card>
-          <CardHeader><CardTitle className="text-base">الأصناف المُستهلَكة من المخزون</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base">المنتجات المُستهلَكة من المخزون</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            <ProductSearchPicker branchId={Number(effectiveBranch)} placeholder="ابحث عن صنف…" onPick={(v, u) => setItems((p) => [...p, mkStockLine(v, u)])} />
+            <ProductSearchPicker branchId={Number(effectiveBranch)} placeholder="ابحث عن منتج…" onPick={(v, u) => setItems((p) => [...p, mkStockLine(v, u)])} />
             {items.map((l) => {
               const base = baseQtyOf(l);
               const valid = stockLineValid(l);
@@ -272,7 +272,7 @@ export default function ExpenseNew() {
                 </div>
               );
             })}
-            {items.length === 0 && <p className="text-xs text-muted-foreground">لم تُضف أصنافاً بعد.</p>}
+            {items.length === 0 && <p className="text-xs text-muted-foreground">لم تُضف منتجات بعد.</p>}
             <div className="flex justify-end text-sm">
               <span className="text-muted-foreground">سيُسجَّل {source === "WASTAGE" ? "خسارةً" : "مصروفاً"}:&nbsp;</span>
               <span className="font-bold text-sky-700 tabular-nums" dir="ltr">{fmt(itemsTotal.toString())}</span>

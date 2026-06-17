@@ -31,7 +31,7 @@ import { useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 
 /**
- * إضافة منتج بمتغيّرات — كل لون/قياس صنفٌ مخزنيّ مستقل (product-variants).
+ * إضافة منتج بمتغيّرات — كل لون/قياس منتجٌ مخزنيّ مستقل (product-variants).
  *
  * النموذج: منتج أب (اسم مركّب + تكلفة + قالب وحدات مشترك) → متغيّرات (لون/قياس) كلٌّ
  * بـSKU وباركود مستقل لكل وحدة ورصيد افتتاحي لكل فرع وظهور مستقل في البيع.
@@ -498,7 +498,7 @@ export default function ProductNew() {
               <Badge variant="secondary" className="bg-primary/10 text-primary">{toArabicDigits(variants.length)}</Badge>
             </CardTitle>
             <p className="text-xs text-muted-foreground mt-1">
-              كل صفّ صنف مخزنيّ مستقل: SKU ورصيد لكل فرع وظهور منفصل في البيع — <b>وباركود مستقل لكل وحدة</b>.
+              كل صفّ منتج مخزنيّ مستقل: SKU ورصيد لكل فرع وظهور منفصل في البيع — <b>وباركود مستقل لكل وحدة</b>.
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -554,7 +554,7 @@ export default function ProductNew() {
           />
           {variants.length > 0 && (
             <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground px-1">
-              <span>الإجمالي: <b className="text-foreground">{toArabicDigits(variants.length)}</b> صنف ({toArabicDigits(activeCount)} مفعّل)</span>
+              <span>الإجمالي: <b className="text-foreground">{toArabicDigits(variants.length)}</b> منتج ({toArabicDigits(activeCount)} مفعّل)</span>
               <span>مخزون كلّي (كل الفروع): <b className="text-foreground">{toArabicDigits(totalStock)}</b> قطعة</span>
               <span>سعر البيع الأساس: <b className="text-foreground" dir="ltr">{baseRetail || "—"}</b> د.ع</span>
             </div>
@@ -585,7 +585,7 @@ export default function ProductNew() {
       {/* ── شريط الحفظ الثابت ── */}
       <div className="fixed bottom-0 inset-x-0 lg:start-60 border-t bg-card/95 backdrop-blur px-6 py-3 flex items-center justify-between gap-3 z-30">
         <div className="text-xs text-muted-foreground hidden sm:block">
-          سيُحفظ <b className="text-foreground">{toArabicDigits(variants.length)}</b> صنف مخزنيّ مستقل تحت منتج واحد — كلٌّ بباركوداته ورصيده لكل فرع.
+          سيُحفظ <b className="text-foreground">{toArabicDigits(variants.length)}</b> منتج مخزنيّ مستقل تحت منتج واحد — كلٌّ بباركوداته ورصيده لكل فرع.
         </div>
         <div className="flex gap-2">
           <Link href="/products"><Button type="button" variant="outline" size="sm">إلغاء</Button></Link>
