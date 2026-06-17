@@ -25,7 +25,7 @@ export function StatementReconcile({ entityName, entityType, phone, currentBalan
   const num = Number(currentBalance);
   const isCustomer = entityType === "customer";
   const weHaveClaim = isCustomer ? num > 0 : num < 0;
-  const dirLabel = num === 0 ? "لا ذمم مستحقّة" : weHaveClaim ? "مستحقّ لنا" : "مستحقّ عليه";
+  const dirLabel = num === 0 ? "لا توجد ذمم مستحقّة" : weHaveClaim ? "لنا عليه" : "له علينا";
 
   const copy = async () => {
     try {

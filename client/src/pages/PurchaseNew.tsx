@@ -84,7 +84,7 @@ export default function PurchaseNew() {
   function validate(): string | null {
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
     if (!state.branchId) return "اختر الفرع.";
-    if (state.items.length === 0) return "أضف صنفاً واحداً على الأقل.";
+    if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     for (const l of state.items) {
       const qty = D(l.qty);
       if (!qty.gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;

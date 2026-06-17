@@ -243,7 +243,7 @@ export default function CustomerStatement() {
                     label="رصيد غير مفوتر — يشمل الافتتاحي المستورد"
                     value={D(stmt.data.summary.currentBalance).minus(D(stmt.data.summary.unpaid)).toFixed(2)}
                   />
-                  <StatBalance label="الرصيد الجاري" value={stmt.data.summary.currentBalance} />
+                  <StatBalance label="الرصيد الحالي" value={stmt.data.summary.currentBalance} />
                 </div>
               </div>
             </CardContent>

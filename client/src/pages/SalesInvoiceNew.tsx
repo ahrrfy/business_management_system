@@ -204,7 +204,7 @@ export default function SalesInvoiceNew() {
 
   /** تحقّق أعمالي قبل الإرسال. يُرجع رسالة عربية أو null إن صالح. */
   function validate(): string | null {
-    if (state.items.length === 0) return "أضف صنفاً واحداً على الأقل.";
+    if (state.items.length === 0) return "أضف منتجاً واحداً على الأقل.";
     for (const l of state.items) {
       if (!D(l.qty).gt(0)) return `الكمية في «${l.name}» يجب أن تكون موجبة.`;
       if (D(l.price).lt(0)) return `السعر في «${l.name}» غير صالح.`;

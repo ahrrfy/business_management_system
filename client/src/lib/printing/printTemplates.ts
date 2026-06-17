@@ -56,7 +56,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
   const qrSvg = await qrCodeSvg(qrPayload, { size: 88, margin: 1 }).catch(() => '');
 
   const cols = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: '14mm', align: 'center' as const },
     { key: 'qty', label: 'الكمية', width: '14mm', align: 'center' as const },
     { key: 'price', label: 'سعر الوحدة', width: '22mm', align: 'left' as const },
@@ -152,7 +152,7 @@ export interface QuotationPrintData {
 
 export function printQuotation(d: QuotationPrintData): void {
   const cols = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'desc', label: 'الوصف', width: '30mm' },
     { key: 'qty', label: 'الكمية', width: '14mm', align: 'center' as const },
     { key: 'price', label: 'سعر الوحدة', width: '20mm', align: 'left' as const },
@@ -240,7 +240,7 @@ export interface POPrintData {
 
 export function printPO(d: POPrintData): void {
   const cols = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: '14mm', align: 'center' as const },
     { key: 'qty', label: 'الكمية', width: '14mm', align: 'center' as const },
     { key: 'price', label: 'سعر الوحدة', width: '22mm', align: 'left' as const },
@@ -571,7 +571,7 @@ export function printARAging(d: ARAgingPrintData): void {
     { key: 'd61_90', label: '61–90 يوم', width: '18mm', align: 'left' as const },
     { key: 'd91p', label: 'أكثر من 90', width: '18mm', align: 'left' as const },
     { key: 'unpaid', label: 'إجمالي غير المسدّد', width: '22mm', align: 'left' as const, bold: true },
-    { key: 'balance', label: 'الرصيد الجاري', width: '20mm', align: 'left' as const },
+    { key: 'balance', label: 'الرصيد الحالي', width: '20mm', align: 'left' as const },
   ];
   const rows = d.rows.map(r => ({
     name: r.name,
@@ -755,7 +755,7 @@ export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'docume
   ];
 
   const cols = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'sku', label: 'الرمز', width: '24mm' },
     { key: 'per', label: 'لكل وحدة', width: '20mm', align: 'center' as const },
     { key: 'total', label: 'الإجمالي المطلوب', width: '26mm', align: 'left' as const, bold: true },
@@ -899,7 +899,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
   <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
   <table style="width:100%;font-size:10px;border-collapse:collapse;">
     <thead><tr style="border-bottom:1px solid #000;">
-      <th style="text-align:right;padding:1mm 0;font-weight:700;">الصنف</th>
+      <th style="text-align:right;padding:1mm 0;font-weight:700;">المنتج</th>
       <th style="text-align:center;padding:1mm 0;font-weight:700;width:8mm;">عدد</th>
       <th style="text-align:left;padding:1mm 0;font-weight:700;width:14mm;">السعر</th>
       <th style="text-align:left;padding:1mm 0;font-weight:700;width:16mm;">المبلغ</th>

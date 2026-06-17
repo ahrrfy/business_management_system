@@ -1140,7 +1140,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
           <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg }}>🛒 سلة المشتريات</span>
           {cart.length > 0 && (
             <span style={{ background: C.primary, color: C.primaryFg, borderRadius: 12, padding: "2px 9px", fontSize: 12, fontWeight: 700 }}>
-              {cart.length} صنف · {itemCount} قطعة
+              {cart.length} منتج · {itemCount} قطعة
             </span>
           )}
         </div>
@@ -1283,7 +1283,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
       {/* Footer */}
       {cart.length > 0 && (
         <div style={{ borderTop: `2px solid ${C.border}`, padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.muted, flexShrink: 0 }}>
-          <span style={{ fontSize: 13, color: C.mutedFg }}>{cart.length} صنف · {itemCount} قطعة</span>
+          <span style={{ fontSize: 13, color: C.mutedFg }}>{cart.length} منتج · {itemCount} قطعة</span>
           <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
             <span style={{ fontSize: 13.5, color: C.mutedFg }}>المجموع:</span>
             <span style={{ fontSize: 28, fontWeight: 900, direction: "ltr", color: C.fg }}>{fmt(total)}</span>
@@ -1348,8 +1348,8 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
     boxShadow: active ? `0 3px 10px oklch(0.488 0.243 264.376 / .28)` : "none",
   });
 
-  const modeLabel = numMode === "QTY"  ? "الكمية — الصنف المحدد"
-    : numMode === "DISC" ? "خصم % على الصنف"
+  const modeLabel = numMode === "QTY"  ? "الكمية — المنتج المحدد"
+    : numMode === "DISC" ? "خصم % على المنتج"
     : "المبلغ المستلم";
 
   return (
@@ -1556,7 +1556,7 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
 
         <div style={{ marginBottom: 20, fontSize: 13.5, color: C.mutedFg }}>
           طريقة الدفع: <strong style={{ color: C.fg }}>{receipt.method}</strong>
-          &nbsp;·&nbsp; {receipt.lines.length} صنف
+          &nbsp;·&nbsp; {receipt.lines.length} منتج
           {receipt.customerName && <>&nbsp;·&nbsp; <strong style={{ color: C.fg }}>{receipt.customerName}</strong></>}
         </div>
 

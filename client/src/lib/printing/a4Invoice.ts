@@ -76,7 +76,7 @@ ${CAIRO_FONT}
   </div>
   <div class="cust">العميل: <b>${esc(inv.customerName ?? "عميل نقدي")}</b></div>
   <table>
-    <thead><tr><th class="c">#</th><th>الصنف</th><th class="c">الكمية</th><th class="l">السعر</th><th class="l">الإجمالي</th></tr></thead>
+    <thead><tr><th class="c">#</th><th>المنتج</th><th class="c">الكمية</th><th class="l">السعر</th><th class="l">الإجمالي</th></tr></thead>
     <tbody>${rows}</tbody>
   </table>
   <div class="totals">

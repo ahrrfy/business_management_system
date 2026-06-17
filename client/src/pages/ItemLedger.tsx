@@ -1,4 +1,4 @@
-// بطاقة الصنف (Kardex) — حركات متغيّر واحد زمنياً مع رصيد متحرّك.
+// بطاقة المنتج (Kardex) — حركات متغيّر واحد زمنياً مع رصيد متحرّك.
 // منتقي المتغيّر يعيد استعمال trpc.catalog.posList (نفس بحث الكاشير/حركات المخزون) + فلتر فرع + فترة اختيارية.
 // عرض: ترويسة المتغيّر + مؤشّرات (رصيد افتتاحي/ختامي) + جدول (تاريخ/نوع/كمية بإشارة/رصيد/مرجع) + تصدير/طباعة.
 import { useMemo, useState } from "react";
@@ -127,7 +127,7 @@ export default function ItemLedger() {
   function onExport() {
     if (!rows.length) return;
     exportRows(rows, {
-      filename: `بطاقة-الصنف-${variant?.sku ?? picked?.variantId ?? ""}`,
+      filename: `بطاقة-المنتج-${variant?.sku ?? picked?.variantId ?? ""}`,
       columns: [
         { key: "date", header: "التاريخ" },
         { key: "type", header: "النوع", map: (r) => MTYPE_LABEL[r.type] ?? r.type },
@@ -141,9 +141,9 @@ export default function ItemLedger() {
   function onPrint() {
     if (!rows.length) return;
     printReportDoc({
-      title: "بطاقة الصنف (Kardex)",
+      title: "بطاقة المنتج (Kardex)",
       headerExtra: [
-        { label: "الصنف", value: variant?.label ?? "—" },
+        { label: "المنتج", value: variant?.label ?? "—" },
         { label: "SKU", value: variant?.sku ?? "—" },
         { label: "الفرع", value: branchLabel },
         { label: "الفترة", value: periodLabel },
@@ -173,8 +173,8 @@ export default function ItemLedger() {
 
   return (
     <ReportShell
-      title="بطاقة الصنف (Kardex)"
-      description="حركات صنف واحد زمنياً (وارد/صادر/تحويل/تسوية/مرتجع) مع رصيد متحرّك."
+      title="بطاقة المنتج (Kardex)"
+      description="حركات منتج واحد زمنياً (وارد/صادر/تحويل/تسوية/مرتجع) مع رصيد متحرّك."
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
@@ -184,7 +184,7 @@ export default function ItemLedger() {
         <div className="flex flex-wrap items-end gap-3">
           {/* منتقي المتغيّر */}
           <div className="flex flex-col gap-1 min-w-[260px]">
-            <label className="text-[11px] text-muted-foreground">الصنف (اسم/SKU/باركود)</label>
+            <label className="text-[11px] text-muted-foreground">المنتج (اسم/SKU/باركود)</label>
             <div className="relative">
               <Input
                 value={search}
@@ -265,12 +265,12 @@ export default function ItemLedger() {
         <CardContent className="p-0">
           {!picked ? (
             <p className="p-8 text-center text-sm text-muted-foreground">
-              ابحث عن صنف واخترْه لعرض بطاقته.
+              ابحث عن منتج واخترْه لعرض بطاقته.
             </p>
           ) : ledger.isLoading ? (
             <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
           ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا حركات لهذا الصنف في هذا النطاق.</p>
+            <p className="p-8 text-center text-sm text-muted-foreground">لا حركات لهذا المنتج في هذا النطاق.</p>
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">

@@ -104,12 +104,12 @@ export default function Returns() {
       const raw = (qty[it.invoiceItemId] ?? "").trim();
       if (!raw) continue;
       if (!/^\d+$/.test(raw)) {
-        return setError(`كمية إرجاع غير صحيحة للصنف «${it.productName}» — أدخل عدداً صحيحاً موجباً.`);
+        return setError(`كمية إرجاع غير صحيحة للمنتج «${it.productName}» — أدخل عدداً صحيحاً موجباً.`);
       }
       const want = parseInt(raw, 10);
       if (want <= 0) continue;
       if (want > it.remaining) {
-        return setError(`كمية إرجاع الصنف «${it.productName}» تتجاوز المتبقّي (${it.remaining}).`);
+        return setError(`كمية إرجاع المنتج «${it.productName}» تتجاوز المتبقّي (${it.remaining}).`);
       }
       lines.push({ invoiceItemId: it.invoiceItemId, baseQuantity: want });
     }
@@ -246,7 +246,7 @@ export default function Returns() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr className="text-right">
-                    <th className="p-2">الصنف</th>
+                    <th className="p-2">المنتج</th>
                     <th className="p-2">الوحدة</th>
                     <th className="p-2 text-center">المُباع (أساس)</th>
                     <th className="p-2 text-center">المُرتجع</th>

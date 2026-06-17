@@ -141,7 +141,7 @@ export function ProductTable({
           <span className="text-sm font-extrabold">🛒 سلة المنتجات</span>
           {items.length > 0 && (
             <span className="rounded-full bg-primary px-2.5 py-0.5 text-xs font-bold text-primary-foreground">
-              {items.length} صنف · {totalQty} قطعة
+              {items.length} منتج · {totalQty} قطعة
             </span>
           )}
         </div>

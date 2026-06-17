@@ -148,7 +148,7 @@ export default function PurchaseReturnNew() {
             variantId: Number(it.variantId),
             productUnitId: Number(it.productUnitId),
             name:
-              (it.productName ?? "صنف") +
+              (it.productName ?? "منتج") +
               (it.variantName ? ` — ${it.variantName}` : ""),
             sku: it.sku ?? "",
             barcode: null,
@@ -174,7 +174,7 @@ export default function PurchaseReturnNew() {
       dispatch({ type: "CLEAR_ITEMS" });
       dispatch({ type: "ADD_ITEMS", items: lines });
       setRefLastFetchedId(id);
-      toast.success(`تم جلب ${lines.length} صنفاً من أمر الشراء ${po.poNumber ?? id}`);
+      toast.success(`تم جلب ${lines.length} منتجاً من أمر الشراء ${po.poNumber ?? id}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "تعذّر جلب أمر الشراء";
       setRefLookupError(msg);
@@ -189,7 +189,7 @@ export default function PurchaseReturnNew() {
     | { ok: true; payload: Parameters<typeof mutation.mutate>[0] }
     | { ok: false; error: string } {
     if (!state.entityId) return { ok: false, error: "اختر المورد." };
-    if (!state.items.length) return { ok: false, error: "أضف صنفاً واحداً على الأقل." };
+    if (!state.items.length) return { ok: false, error: "أضف منتجاً واحداً على الأقل." };
 
     for (const l of state.items) {
       if (!Number.isFinite(l.qty) || l.qty <= 0) {

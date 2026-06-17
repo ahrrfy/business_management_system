@@ -78,7 +78,7 @@ export default function PurchaseReceive() {
     for (const it of data.items) {
       const want = Math.trunc(Number(recv[Number(it.id)] || 0));
       const remaining = it.baseQuantity - (it.receivedBaseQuantity ?? 0);
-      if (want > remaining) return setError(`الكمية المستلمة للصنف «${it.productName}» تتجاوز المتبقّي (${remaining}).`);
+      if (want > remaining) return setError(`الكمية المستلمة للمنتج «${it.productName}» تتجاوز المتبقّي (${remaining}).`);
     }
     const payment = Number(payAmount) > 0 ? { amount: String(Number(payAmount)), method: payMethod } : undefined;
     receive.mutate({ purchaseOrderId, lines, payment, clientRequestId });
@@ -109,7 +109,7 @@ export default function PurchaseReceive() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr className="text-right">
-                <th className="p-2">الصنف</th>
+                <th className="p-2">المنتج</th>
                 <th className="p-2">الوحدة</th>
                 <th className="p-2 text-center">المطلوب (أساس)</th>
                 <th className="p-2 text-center">مُستلَم سابقاً</th>

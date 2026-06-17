@@ -162,7 +162,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         <DialogHeader className="border-b p-5">
           <DialogTitle className="flex items-center gap-2 text-lg font-extrabold">📦 إضافة متعددة</DialogTitle>
           <DialogDescription className="text-xs">
-            اختر منتجات لإضافتها دفعة واحدة (الكمية تبدأ بـ 1 لكل صنف)
+            اختر منتجات لإضافتها دفعة واحدة (الكمية تبدأ بـ 1 لكل منتج)
           </DialogDescription>
         </DialogHeader>
 
@@ -235,14 +235,14 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                 ? fetching
                   ? "جارٍ تحميل المزيد…"
                   : "مرّر لأسفل لتحميل المزيد…"
-                : `كل النتائج محمّلة — ${fmtNum(rows.length)} صنف`}
+                : `كل النتائج محمّلة — ${fmtNum(rows.length)} منتج`}
             </div>
           )}
         </div>
 
         <DialogFooter className="flex items-center justify-between border-t bg-muted px-5 py-3">
           <div className="text-sm font-bold">
-            تم تحديد <span className="text-base font-extrabold text-primary">{selected.size}</span> صنف
+            تم تحديد <span className="text-base font-extrabold text-primary">{selected.size}</span> منتج
           </div>
           <div className="flex gap-2">
             <Button type="button" variant="outline" onClick={onClose}>

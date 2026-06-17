@@ -55,7 +55,7 @@ export function TotalsPanel({
         {/* Item discounts */}
         {Number(t.totalDiscount) > 0 && (
           <div className={rowCls}>
-            <span className={cn(labelCls, "text-rose-600")}>خصم الأصناف (−)</span>
+            <span className={cn(labelCls, "text-rose-600")}>خصم المنتجات (−)</span>
             <span className={cn(valueCls, "text-rose-600")} dir="ltr">−{fmtNum(t.totalDiscount)}</span>
           </div>
         )}

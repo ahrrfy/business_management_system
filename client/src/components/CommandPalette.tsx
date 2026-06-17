@@ -16,7 +16,7 @@ type PageItem = { label: string; href: string; icon: React.ComponentType<{ class
 const PAGES: PageItem[] = [
   { label: "لوحة التحكّم", href: "/", icon: LayoutDashboard, keywords: "dashboard home رئيسية" },
   { label: "نقطة البيع", href: "/pos", icon: ShoppingCart, keywords: "pos cashier كاشير بيع" },
-  { label: "المنتجات", href: "/products", icon: Package, keywords: "products أصناف" },
+  { label: "المنتجات", href: "/products", icon: Package, keywords: "products منتجات" },
   { label: "المبيعات / الفواتير", href: "/invoices", icon: FileText, keywords: "invoices sales" },
   { label: "المرتجعات", href: "/returns", icon: RotateCcw, keywords: "returns إرجاع" },
   { label: "المشتريات", href: "/purchases", icon: Truck, keywords: "purchases شراء" },

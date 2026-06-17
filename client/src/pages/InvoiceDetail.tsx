@@ -155,7 +155,7 @@ export default function InvoiceDetail() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr className="text-right">
-                <th className="p-2">الصنف</th>
+                <th className="p-2">المنتج</th>
                 <th className="p-2">الوحدة</th>
                 <th className="p-2 text-center">الكمية</th>
                 <th className="p-2 text-left">سعر الوحدة</th>

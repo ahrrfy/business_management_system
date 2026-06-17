@@ -52,7 +52,7 @@ export default function BarcodeLabels() {
   const [hStr, setHStr] = useState(() => String(size.heightMm));
   const activePreset = presetIdFor(size);
 
-  // معاينة حيّة بنفس تصميم الطباعة (نفس labelDocHtml ⇒ ما تراه هو ما يُطبع) — أوّل صنف في القائمة
+  // معاينة حيّة بنفس تصميم الطباعة (نفس labelDocHtml ⇒ ما تراه هو ما يُطبع) — أوّل منتج في القائمة
   // أو عيّنة عند الفراغ، متفاعلةً مع المقاس وخياري الاسم/السعر. تُحسَب مرّةً (useMemo) فلا تُعاد
   // بناؤها مع كل ضغطة بحث؛ تُعرَض في iframe بمقاس مليمتريّ فعليّ ثمّ تُكبَّر بصرياً للوضوح.
   const previewHtml = useMemo(() => {
@@ -170,7 +170,7 @@ export default function BarcodeLabels() {
 
   async function printLabels() {
     setError(""); setInfo("");
-    if (!queue.length) { setError("أضِف صنفاً واحداً على الأقل."); return; }
+    if (!queue.length) { setError("أضِف منتجاً واحداً على الأقل."); return; }
     const expanded = queue.flatMap(item =>
       Array.from({ length: item.count }, () => ({
         name: `${item.productName} — ${item.unitName}`,
@@ -195,7 +195,7 @@ export default function BarcodeLabels() {
         <Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>
       </div>
       <p className="text-sm text-muted-foreground">
-        ابحث عن صنف وأضفه. للأصناف بلا باركود مصنّعي يُولَّد باركود داخلي (ALR…) — احفظه ليصبح قابلاً للمسح في الكاشير، ثم اطبع الملصقات.
+        ابحث عن منتج وأضفه. للمنتجات بلا باركود مصنّعي يُولَّد باركود داخلي (ALR…) — احفظه ليصبح قابلاً للمسح في الكاشير، ثم اطبع الملصقات.
       </p>
 
       {/* مقاس الملصق + طابعة الملصقات */}
@@ -281,7 +281,7 @@ export default function BarcodeLabels() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">إضافة أصناف</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">إضافة منتجات</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="relative">
             <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث بالاسم/SKU/الباركود…" />
@@ -302,7 +302,7 @@ export default function BarcodeLabels() {
           </div>
 
           <div className="flex gap-4 text-sm">
-            <label className="flex items-center gap-1"><input type="checkbox" checked={showName} onChange={(e) => setShowName(e.target.checked)} /> اسم الصنف</label>
+            <label className="flex items-center gap-1"><input type="checkbox" checked={showName} onChange={(e) => setShowName(e.target.checked)} /> اسم المنتج</label>
             <label className="flex items-center gap-1"><input type="checkbox" checked={showPrice} onChange={(e) => setShowPrice(e.target.checked)} /> السعر</label>
           </div>
         </CardContent>
@@ -314,7 +314,7 @@ export default function BarcodeLabels() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr className="text-right">
-                <th className="p-2">الصنف</th>
+                <th className="p-2">المنتج</th>
                 <th className="p-2">الباركود</th>
                 <th className="p-2 text-left">السعر</th>
                 <th className="p-2 w-24 text-center">عدد الملصقات</th>
@@ -358,7 +358,7 @@ export default function BarcodeLabels() {
                 );
               })}
               {queue.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">ابحث أعلاه لإضافة أصناف للطباعة.</td></tr>
+                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">ابحث أعلاه لإضافة منتجات للطباعة.</td></tr>
               )}
             </tbody>
           </table>
