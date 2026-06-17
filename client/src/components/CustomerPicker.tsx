@@ -5,14 +5,25 @@ import { Label } from "@/components/ui/label";
 import { D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import Decimal from "decimal.js";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 
 const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
+const TIER_KEYS = Object.keys(TIER_LABEL) as Tier[];
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** سطرٌ بسيط label-فوق-حقل لنموذج «إضافة عميل» المنبثق — يربط htmlFor تلقائياً. */
+function LabeledField({ id, label, children }: { id: string; label: string; children: ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <Label htmlFor={id} className="text-xs">{label}</Label>
+      {children}
+    </div>
+  );
+}
 
 export interface CustomerPickerProps {
   customerId: number | null;
@@ -79,23 +90,33 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
         </Button>
       </div>
       {showNew && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-2 pt-2">
-          <Input placeholder="اسم العميل *" value={name} onChange={(e) => setName(e.target.value)} />
-          <Input dir="ltr" placeholder="الهاتف" value={phone} onChange={(e) => setPhone(e.target.value)} />
-          <select className={selectCls} value={tier} onChange={(e) => setTier(e.target.value as Tier)}>
-            <option value="RETAIL">مفرد</option>
-            <option value="WHOLESALE">جملة</option>
-            <option value="GOVERNMENT">حكومي</option>
-          </select>
+        // container query (@container/customer-form): التخطيط responsive لعرض الحاوية لا viewport
+        // ⇒ في منبثقة الكاشير الضيّقة (٣٤٠px) عمودٌ واحد، وفي أي حاوية أوسع مستقبلاً ٣ أعمدة
+        // تلقائياً. يُصلح bug الأصل (md:grid-cols-4 كان يُفعَّل بعرض النافذة فتنضغط الحقول).
+        <div className="@container/customer-form space-y-3 pt-3 border-t">
+          <div className="text-xs font-bold text-foreground">عميل جديد</div>
+          <div className="grid grid-cols-1 gap-3 @sm/customer-form:grid-cols-3">
+            <LabeledField id="cp-newName" label="اسم العميل *">
+              <Input id="cp-newName" placeholder="مثلاً: أحمد محمد" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            </LabeledField>
+            <LabeledField id="cp-newPhone" label="الهاتف">
+              <Input id="cp-newPhone" dir="ltr" placeholder="07XXXXXXXXX" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </LabeledField>
+            <LabeledField id="cp-newTier" label="فئة السعر">
+              <select id="cp-newTier" className={selectCls} value={tier} onChange={(e) => setTier(e.target.value as Tier)}>
+                {TIER_KEYS.map((t) => <option key={t} value={t}>{TIER_LABEL[t]}</option>)}
+              </select>
+            </LabeledField>
+          </div>
+          {err && <p className="text-xs text-destructive">{err}</p>}
           <Button
             type="button"
-            size="sm"
+            className="w-full"
             disabled={!name.trim() || create.isPending}
             onClick={() => create.mutate({ name: name.trim(), phone: phone.trim() || undefined, defaultPriceTier: tier })}
           >
-            {create.isPending ? "جارٍ…" : "حفظ العميل"}
+            {create.isPending ? "جارٍ الحفظ…" : "حفظ العميل"}
           </Button>
-          {err && <p className="md:col-span-4 text-xs text-destructive">{err}</p>}
         </div>
       )}
     </div>
