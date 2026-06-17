@@ -45,3 +45,20 @@ export function localNextDayStart(ymd: string): Date {
   const { y, m, d } = parseYmdStrict(ymd);
   return new Date(y, m - 1, d + 1); // Date يطبّع تجاوز نهاية الشهر/السنة تلقائياً
 }
+
+/**
+ * «اليوم» بمنتصف ليل **محلي** — لإدراج عمود `date()` (بلا وقت) دون انزياح يوم.
+ *
+ * ⚠️ `new Date()` خام يُرجع لحظة UTC الراهنة. الـdrizzle adapter يُسلسلها لـMySQL بـtoISOString()
+ * أو ما يشابه ⇒ على عمود DATE تُؤخذ الـY-M-D من UTC، لا من المنطقة المحلية. عند بغداد (+03:00)
+ * أي إدراج بعد ٢١:٠٠ محلياً (=١٨:٠٠ UTC، ما زال نفس اليوم) فالتاريخ صحيح؛ لكن أي إدراج
+ * من منتصف الليل محلياً إلى ٠٣:٠٠ ص (=٢١:٠٠–٠٠:٠٠ UTC من **اليوم السابق**) يُسجَّل
+ * بتاريخ الأمس. خطر يومي على قيود OPENING ومسيّرات بعد منتصف الليل بقليل.
+ *
+ * الحلّ: بناء Date من مكوّنات اليوم المحلية ⇒ منتصف ليل في المنطقة المحلية ⇒ TIMESTAMP
+ * المُسلسَل يحمل نفس الـDATE بغضّ النظر عن المنطقة الزمنية للخادم.
+ */
+export function localTodayDate(): Date {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}

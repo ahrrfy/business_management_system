@@ -19,6 +19,7 @@ import {
 import type { Tx } from "../db";
 import { logger } from "../logger";
 import { setStock } from "./inventoryService";
+import { localTodayDate } from "./dateRange";
 import { money, round2, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -295,7 +296,9 @@ async function postOpeningEntry(
     profit: toDbMoney("0"),
     taxAmount: toDbMoney("0"),
     amount,
-    entryDate: new Date(),
+    // localTodayDate() يَمنع انزياح OPENING ليوم سابق عند الاستيراد بعد منتصف الليل
+    // (new Date() خام تَستخدم UTC؛ على عمود DATE على بغداد +٠٣:٠٠ يَنزاح يوماً واحداً).
+    entryDate: localTodayDate(),
     notes: "رصيد افتتاحي (استيراد من النظام القديم)",
     dedupeKey: `OPENING:${party}:${partyId}`,
   });
