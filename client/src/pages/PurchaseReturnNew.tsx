@@ -252,7 +252,7 @@ export default function PurchaseReturnNew() {
   }
 
   function handleSaveDraft() {
-    toast.info("حفظ المسودة غير مفعّل لمرتجعات الشراء بعد — احفظ مباشرة عند الجاهزية.");
+    toast.info("حفظ المسوّدة غير مفعّل لمرتجعات الشراء بعد — احفظ مباشرة عند الجاهزية.");
   }
 
   function handlePrint() {

@@ -43,7 +43,7 @@ const PERIOD_PRESETS: { label: string; range: () => { from: string; to: string }
 ];
 
 const STATUS_LABEL: Record<string, string> = {
-  PENDING: "غير مدفوعة",
+  PENDING: "معلّقة",
   PARTIALLY_PAID: "مدفوعة جزئياً",
   PAID: "مدفوعة",
   CANCELLED: "ملغاة",
@@ -180,7 +180,7 @@ export default function CustomerStatement() {
           <Link href="/ar-aging"><Button variant="outline">أعمار الذمم</Button></Link>
         </div>
       </div>
-      <p className="text-sm text-muted-foreground">كل الفواتير والدفعات لعميل واحد، مع ملخّص الرصيد الجارٍ.</p>
+      <p className="text-sm text-muted-foreground">كل الفواتير والدفعات لعميل واحد، مع ملخّص الرصيد الحالي.</p>
 
       <Card>
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">

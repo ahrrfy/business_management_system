@@ -480,7 +480,7 @@ export default function CountPortal() {
       ) : (
         <CenterScreen>
           <BrandMark />
-          <p className="text-sm font-semibold text-muted-foreground">جارٍ التحقق…</p>
+          <p className="text-sm font-semibold text-muted-foreground">جارٍ التحقّق…</p>
         </CenterScreen>
       ),
     );

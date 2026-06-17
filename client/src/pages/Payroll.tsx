@@ -95,7 +95,7 @@ export default function Payroll() {
   });
   const cancel = trpc.payroll.cancel.useMutation({
     onSuccess: async (r) => {
-      notify.ok(r.status === "deleted" ? "تم حذف المسودة" : r.status === "draft" ? "أُعيد المسيّر إلى مسودة" : "تم عكس الدفع وإعادة المسيّر إلى معتمد");
+      notify.ok(r.status === "deleted" ? "تم حذف المسوّدة" : r.status === "draft" ? "أُعيد المسيّر إلى مسوّدة" : "تم عكس الدفع وإعادة المسيّر إلى معتمد");
       if (r.status === "deleted") setSelectedId(null);
       await refresh();
     },
@@ -171,8 +171,8 @@ export default function Payroll() {
               <Button variant="outline" size="sm" onClick={() => approve.mutate({ id: Number(run.id) })} disabled={busy}>
                 <Check className="size-4" /> اعتماد المسيّر
               </Button>
-              <Button variant="outline" size="sm" className="text-destructive" onClick={() => { if (confirm("حذف هذه المسودة وكل بنودها؟")) cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
-                <X className="size-4" /> حذف المسودة
+              <Button variant="outline" size="sm" className="text-destructive" onClick={() => { if (confirm("حذف هذه المسوّدة وكل بنودها؟")) cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
+                <X className="size-4" /> حذف المسوّدة
               </Button>
             </>
           )}
@@ -182,7 +182,7 @@ export default function Payroll() {
                 <Wallet className="size-4" /> دفع المسيّر
               </Button>
               <Button variant="outline" size="sm" onClick={() => cancel.mutate({ id: Number(run.id) })} disabled={busy}>
-                إعادة لمسودة
+                إعادة لمسوّدة
               </Button>
             </>
           )}
@@ -291,7 +291,7 @@ export default function Payroll() {
               <Input id="gen-period" type="month" value={genPeriod} onChange={(e) => setGenPeriod(e.target.value)} dir="ltr" className="tabular-nums" />
             </div>
             <p className="text-xs text-muted-foreground">
-              يُولَّد مسيّر مسودة لكل الموظفين غير منتهي الخدمة: الراتب الأساسي + المخصّصات للشهريين، ومجموع أجر الساعات للساعيين.
+              يُولَّد مسيّر مسوّدة لكل الموظفين غير منتهي الخدمة: الراتب الأساسي + المخصّصات للشهريين، ومجموع أجر الساعات للساعيين.
               الإضافي والاستقطاع صفر ابتداءً ويُحرَّران من زر «تعديل» قبل الاعتماد.
             </p>
           </div>

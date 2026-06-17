@@ -261,7 +261,7 @@ export default function SalesInvoiceNew() {
         handleSubmit();
         return;
       case "draft":
-        notify.info("لا مسودة لفاتورة البيع — استخدم «عرض سعر» للمسودات القابلة للتحويل.");
+        notify.info("لا مسوّدة لفاتورة البيع — استخدم «عرض سعر» للمسوّدات القابلة للتحويل.");
         return;
       case "send":
         notify.info("الإرسال عبر واتساب متاح من صفحة الفاتورة بعد الحفظ.");

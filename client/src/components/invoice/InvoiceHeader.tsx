@@ -107,7 +107,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           </div>
           <span className="text-base font-extrabold text-foreground">{typeInfo.label}</span>
           <span className="rounded-md border border-amber-300/40 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
-            مسودة
+            مسوّدة
           </span>
         </div>
         <div className="text-xs font-semibold text-muted-foreground" dir="ltr">

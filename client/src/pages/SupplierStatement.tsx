@@ -179,7 +179,7 @@ export default function SupplierStatement() {
           <Link href="/ap-aging"><Button variant="outline">أعمار الذمم الدائنة</Button></Link>
         </div>
       </div>
-      <p className="text-sm text-muted-foreground">كل أوامر الشراء والدفعات لمورد واحد، مع ملخّص الرصيد الجارٍ.</p>
+      <p className="text-sm text-muted-foreground">كل أوامر الشراء والدفعات لمورد واحد، مع ملخّص الرصيد الحالي.</p>
 
       <Card>
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">

@@ -123,7 +123,7 @@ export default function PurchaseNew() {
 
   function handleSaveDraft() {
     // الراوتر يدعم status=DRAFT لكنّ المتطلب الأساسي «CONFIRMED». نوحّد التحذير الآن.
-    notify.info("حفظ المسودات سيُفعَّل لاحقاً — استخدم «حفظ واعتماد».");
+    notify.info("حفظ المسوّدات سيُفعَّل لاحقاً — استخدم «حفظ واعتماد».");
   }
 
   function handleAction(kind: InvoiceActionKind) {

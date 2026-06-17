@@ -79,7 +79,7 @@ export default function ARAging() {
                   { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
                   { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
                   { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
-                  { key: "currentBalance", header: "رصيد جارٍ", map: (r) => Number(r.currentBalance) },
+                  { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance) },
                   { key: "oldestInvoiceDate", header: "أقدم فاتورة" },
                 ],
               })

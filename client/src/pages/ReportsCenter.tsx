@@ -64,7 +64,7 @@ const SECTIONS: Section[] = [
     label: "ذمم العملاء (مدين)",
     icon: "👥",
     items: [
-      { title: "كشف حساب عميل", desc: "فواتير + دفعات + رصيد جارٍ", href: "/customers-statement", icon: "📄", gate: "manager", status: "ready" },
+      { title: "كشف حساب عميل", desc: "فواتير + دفعات + الرصيد الحالي", href: "/customers-statement", icon: "📄", gate: "manager", status: "ready" },
       { title: "أعمار الذمم المدينة", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ar-aging", icon: "⏳", gate: "manager", status: "ready" },
       { title: "تفصيل أعمار الذمم (AR/AP)", desc: "مستندٌ بمستند مع المتبقّي والتأخّر", href: "/reports/aging-detail", icon: "🔎", gate: "manager", status: "ready" },
       { title: "التعرّض الائتماني للعملاء", desc: "أرصدة ومخاطر التحصيل", href: "/reports/customer-balances", icon: "💳", gate: "manager", status: "soon" },
@@ -75,7 +75,7 @@ const SECTIONS: Section[] = [
     label: "ذمم الموردين (دائن)",
     icon: "🚚",
     items: [
-      { title: "كشف حساب مورد", desc: "أوامر شراء + مدفوعات + رصيد جارٍ", href: "/suppliers-statement", icon: "📄", gate: "manager", status: "ready" },
+      { title: "كشف حساب مورد", desc: "أوامر شراء + مدفوعات + الرصيد الحالي", href: "/suppliers-statement", icon: "📄", gate: "manager", status: "ready" },
       { title: "أعمار الذمم الدائنة", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ap-aging", icon: "⏳", gate: "manager", status: "ready" },
       { title: "تقرير المشتريات", desc: "بالفترة/المورد + أكبر الموردين", href: "/reports/purchases", icon: "📦", gate: "manager", status: "ready" },
       { title: "سجلّ المشتريات المفصّل", desc: "بنود أوامر الشراء سطر-سطر", href: "/reports/purchase-register", icon: "🔍", gate: "manager", status: "ready" },
@@ -90,7 +90,7 @@ const SECTIONS: Section[] = [
       { title: "الجرد والتسوية", desc: "محاضر الجرد ودقّة السجلّ", href: "/stocktakes", icon: "📋", gate: "manager", status: "ready" },
       { title: "تقييم المخزون", desc: "كمية × كلفة بالفرع/الفئة", href: "/reports/inventory-valuation", icon: "💰", gate: "manager", status: "ready" },
       { title: "حالة المخزون وإعادة الطلب", desc: "منخفض/نفد مقابل حدّ الطلب", href: "/reports/stock-status", icon: "⚠️", gate: "manager", status: "ready" },
-      { title: "بطاقة الصنف (Kardex)", desc: "حركة صنف زمنياً برصيد جارٍ", href: "/reports/item-ledger", icon: "🗂️", gate: "manager", status: "ready" },
+      { title: "بطاقة الصنف (Kardex)", desc: "حركة صنف زمنياً بالرصيد الحالي", href: "/reports/item-ledger", icon: "🗂️", gate: "manager", status: "ready" },
       { title: "تحليل ABC", desc: "تصنيف الأصناف بالقيمة (باريتو)", href: "/reports/abc", icon: "🔠", gate: "manager", status: "ready" },
     ],
   },

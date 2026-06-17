@@ -52,7 +52,7 @@ export function ActionButtons({ invoiceType, items, onAction, saving }: ActionBu
           onClick={() => onAction("draft")}
           className="h-11 border-amber-300/40 bg-amber-50 text-amber-700 hover:bg-amber-100"
         >
-          📝 مسودة
+          📝 مسوّدة
         </Button>
         <Button
           type="button"

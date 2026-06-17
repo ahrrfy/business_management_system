@@ -196,7 +196,7 @@ export default function CustomerEdit() {
             </select>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="credit">سقف الائتمان (دينار)</Label>
+            <Label htmlFor="credit">سقف الائتمان (د.ع)</Label>
             <Input id="credit" dir="ltr" value={creditLimit} onChange={(e) => setCreditLimit(e.target.value)} />
           </div>
           <div className="space-y-1 md:col-span-2">
