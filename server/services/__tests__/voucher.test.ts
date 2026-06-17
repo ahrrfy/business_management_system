@@ -49,6 +49,7 @@ beforeEach(async () => {
 
 describe("سند قبض (RECEIPT) — IN", () => {
   it("قبض من عميل يَكتب receipt + قيد PAYMENT_IN + AR ينقص", async () => {
+    await openShift(1, 1); // shift-gate: السندات النقدية تتطلّب وردية مفتوحة (إنفاذ shift-gate-cash).
     const r = await createVoucher(
       {
         voucherType: "RECEIPT",
@@ -78,6 +79,7 @@ describe("سند قبض (RECEIPT) — IN", () => {
   });
 
   it("قبض من OTHER (إيرادات متفرّقة): receipt + قيد، لا تأثير على ذمم", async () => {
+    await openShift(1, 1); // shift-gate
     const r = await createVoucher(
       {
         voucherType: "RECEIPT",
@@ -98,6 +100,7 @@ describe("سند قبض (RECEIPT) — IN", () => {
 
 describe("سند صرف (PAYMENT) — OUT", () => {
   it("صرف لمورّد يَكتب receipt + قيد PAYMENT_OUT + AP ينقص", async () => {
+    await openShift(1, 1); // shift-gate
     const r = await createVoucher(
       {
         voucherType: "PAYMENT",
@@ -122,6 +125,7 @@ describe("سند صرف (PAYMENT) — OUT", () => {
   });
 
   it("صرف لـOTHER (راتب موظف): receipt + قيد، لا تأثير على ذمم", async () => {
+    await openShift(1, 1); // shift-gate
     const r = await createVoucher(
       {
         voucherType: "PAYMENT",
@@ -202,6 +206,7 @@ describe("تكرار/إجبار", () => {
 
 describe("listVouchers", () => {
   it("يُعيد السندات المستقلّة فقط (يَستثني receipts الفواتير)", async () => {
+    await openShift(1, 1); // shift-gate: السندات النقدية تتطلّب وردية مفتوحة.
     await createVoucher(
       { voucherType: "RECEIPT", branchId: 1, amount: "10", paymentMethod: "CASH", partyType: "OTHER", description: "a" },
       actor,
@@ -236,5 +241,107 @@ describe("listVouchers", () => {
     expect(receiptOnly).toHaveLength(1);
     const paymentOnly = await listVouchers({ voucherType: "PAYMENT" });
     expect(paymentOnly).toHaveLength(1);
+  });
+});
+
+/**
+ * shift-gate-cash slice: السندات النقدية تَمسّ صندوق الوردية ⇒ تتطلّب وردية مفتوحة وإلّا
+ * تختفي من Z-report (computeExpectedCash يفلتر بـeq(receipts.shiftId, shiftId)).
+ * السندات غير النقدية لا تَلمس الصندوق فتبقى مسموحة بـshiftId=null.
+ */
+describe("إنفاذ الوردية النقدية (shift-gate)", () => {
+  it("سند نقدي بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED", async () => {
+    await expect(
+      createVoucher(
+        {
+          voucherType: "RECEIPT",
+          branchId: 1,
+          amount: "50.00",
+          paymentMethod: "CASH",
+          partyType: "OTHER",
+          partyId: null,
+          description: "إيرادات نقدية بدون وردية",
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/افتح وردية/);
+
+    // لا receipt ولا قيد كُتب (rollback ذرّي).
+    const recs = await db().select().from(s.receipts);
+    expect(recs).toHaveLength(0);
+    const ents = await db().select().from(s.accountingEntries);
+    expect(ents).toHaveLength(0);
+  });
+
+  it("سند نقدي مع وردية مفتوحة ⇒ يُملأ shiftId تلقائياً", async () => {
+    const shiftId = await openShift(1, 1);
+    const r = await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "100.00",
+        paymentMethod: "CASH",
+        partyType: "OTHER",
+        partyId: null,
+        description: "إيرادات نقدية",
+      },
+      actor,
+    );
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(Number(rc.shiftId)).toBe(shiftId);
+  });
+
+  it("سند غير نقدي (تحويل) بلا وردية ⇒ يَنجح بـshiftId=null (لا يَلمس الصندوق)", async () => {
+    const r = await createVoucher(
+      {
+        voucherType: "PAYMENT",
+        branchId: 1,
+        amount: "300.00",
+        paymentMethod: "TRANSFER",
+        partyType: "SUPPLIER",
+        partyId: 1,
+        description: "حوالة بنكية لمورّد",
+      },
+      actor,
+    );
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(rc.shiftId).toBeNull();
+    expect(rc.paymentMethod).toBe("TRANSFER");
+    // الدفتر سُجِّل: تحويل للمورد ⇒ AP ينقص
+    const ent = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(ent).toHaveLength(1);
+  });
+
+  it("سند بطاقة بلا وردية ⇒ يَنجح بـshiftId=null + Z-report نقدي لا يتأثّر", async () => {
+    // سند بطاقة بلا وردية مفتوحة (مشروع).
+    await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "1000.00",
+        paymentMethod: "CARD",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "دفعة بطاقة",
+      },
+      actor,
+    );
+    // افتح وردية ثم أضف سند نقدي ضمنها ⇒ تسوية الصندوق يجب أن تُظهر النقد فقط (100)، لا الـ1000 بطاقة.
+    const shiftId = await openShift(1, 1);
+    await createVoucher(
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "100.00",
+        paymentMethod: "CASH",
+        partyType: "OTHER",
+        partyId: null,
+        description: "إيرادات نقدية",
+      },
+      actor,
+    );
+    const close = await closeShift({ shiftId, countedCash: "100.00" }, actor);
+    expect(close.expectedCash).toBe("100.00");
+    expect(close.variance).toBe("0.00");
   });
 });

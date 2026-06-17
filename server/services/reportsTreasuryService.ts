@@ -216,3 +216,142 @@ export async function getExpensesReport(opts: {
     total: toDbMoney(total),
   };
 }
+
+/* ============================ المعاملات النقدية اليتيمة (بلا وردية) ============================
+ * تقرير قراءة فقط للسجلات التاريخية التي حُفظت بـreceipts.shiftId IS NULL وpaymentMethod='CASH'
+ * قبل تفعيل إنفاذ الوردية. هذه المعاملات تختفي من Z-report (computeExpectedCash يفلتر
+ * بـeq(receipts.shiftId, shiftId)) فيظهر فرق صامت في الصندوق. التقرير يَرصدها للمالك
+ * ليُسوّيها يدوياً (تخصيصها لوردية مناسبة عبر قيد محاسبي مكافئ). لا تعديل آلي على بيانات الإنتاج.
+ *
+ * المصدر يُستنبَط: voucherNumber != NULL ⇒ سند مستقلّ؛ EXPENSE ↔ expenses.receiptId الراجع؛
+ * غير ذلك ⇒ OTHER (نادر، مثل دفعة فاتورة بدون وردية).
+ */
+
+export interface CashOrphanRow {
+  receiptId: number;
+  branchId: number | null;
+  branchName: string | null;
+  direction: "IN" | "OUT";
+  amount: string;
+  paymentMethod: string;
+  voucherNumber: string | null;
+  referenceNumber: string | null;
+  description: string | null;
+  partyType: string | null;
+  partyId: number | null;
+  source: "EXPENSE" | "VOUCHER" | "OTHER";
+  sourceId: number | null;
+  createdAt: Date | string;
+  createdByName: string | null;
+  createdById: number | null;
+}
+
+export interface CashOrphansReportResult {
+  period: { from: string | null; to: string | null };
+  rows: CashOrphanRow[];
+  count: number;
+  totalIn: string;
+  totalOut: string;
+  net: string;
+}
+
+export async function getCashOrphansReport(opts: {
+  from?: string;
+  to?: string;
+  branchId?: number;
+  limit?: number;
+}): Promise<CashOrphansReportResult> {
+  const db = getDb();
+  const base: CashOrphansReportResult = {
+    period: { from: opts.from ?? null, to: opts.to ?? null },
+    rows: [],
+    count: 0,
+    totalIn: "0",
+    totalOut: "0",
+    net: "0",
+  };
+  if (!db) return base;
+
+  const limit = opts.limit && opts.limit > 0 && opts.limit <= 5000 ? opts.limit : 1000;
+
+  // فلتر الفترة على createdAt — نصف مفتوح [from, to+يوم) باستعمال DATE() لتسهيل المقارنة.
+  // ⚠️ المعيار الجوهري: shiftId IS NULL AND paymentMethod='CASH' AND receiptStatus='COMPLETED'
+  // (لا نُدرج REVERSED لأنها مُعالَجة فعلياً).
+  const rows = rowsOf(
+    await db.execute(sql`
+      SELECT
+        r.id AS receiptId,
+        r.branchId AS branchId,
+        b.name AS branchName,
+        r.direction AS direction,
+        CAST(r.amount AS CHAR) AS amount,
+        r.paymentMethod AS paymentMethod,
+        r.voucherNumber AS voucherNumber,
+        r.referenceNumber AS referenceNumber,
+        r.description AS description,
+        r.partyType AS partyType,
+        r.partyId AS partyId,
+        e.id AS expenseId,
+        r.createdAt AS createdAt,
+        r.createdBy AS createdById,
+        u.name AS createdByName
+      FROM receipts r
+      LEFT JOIN branches b ON b.id = r.branchId
+      LEFT JOIN expenses e ON e.receiptId = r.id
+      LEFT JOIN users u ON u.id = r.createdBy
+      WHERE r.shiftId IS NULL
+        AND r.paymentMethod = 'CASH'
+        AND r.receiptStatus = 'COMPLETED'
+        ${opts.from ? sql`AND DATE(r.createdAt) >= ${opts.from}` : sql``}
+        ${opts.to ? sql`AND DATE(r.createdAt) <= ${opts.to}` : sql``}
+        ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
+      ORDER BY r.id DESC
+      LIMIT ${limit}
+    `),
+  );
+
+  let totalIn = money(0);
+  let totalOut = money(0);
+  const mapped: CashOrphanRow[] = rows.map((r) => {
+    const amt = money(r.amount ?? 0);
+    const dir = r.direction === "OUT" ? "OUT" : "IN";
+    if (dir === "IN") totalIn = totalIn.plus(amt);
+    else totalOut = totalOut.plus(amt);
+    let source: CashOrphanRow["source"] = "OTHER";
+    let sourceId: number | null = null;
+    if (r.expenseId != null) {
+      source = "EXPENSE";
+      sourceId = Number(r.expenseId);
+    } else if (r.voucherNumber != null) {
+      source = "VOUCHER";
+      sourceId = Number(r.receiptId);
+    }
+    return {
+      receiptId: Number(r.receiptId),
+      branchId: r.branchId != null ? Number(r.branchId) : null,
+      branchName: r.branchName ?? null,
+      direction: dir,
+      amount: toDbMoney(amt),
+      paymentMethod: String(r.paymentMethod),
+      voucherNumber: r.voucherNumber ?? null,
+      referenceNumber: r.referenceNumber ?? null,
+      description: r.description ?? null,
+      partyType: r.partyType ?? null,
+      partyId: r.partyId != null ? Number(r.partyId) : null,
+      source,
+      sourceId,
+      createdAt: r.createdAt,
+      createdByName: r.createdByName ?? null,
+      createdById: r.createdById != null ? Number(r.createdById) : null,
+    };
+  });
+
+  return {
+    period: { from: opts.from ?? null, to: opts.to ?? null },
+    rows: mapped,
+    count: mapped.length,
+    totalIn: toDbMoney(totalIn),
+    totalOut: toDbMoney(totalOut),
+    net: toDbMoney(totalIn.minus(totalOut)),
+  };
+}

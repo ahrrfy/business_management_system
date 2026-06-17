@@ -27,7 +27,7 @@ import {
 } from "./ledgerService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { money, toDateStr, toDbMoney } from "./money";
-import { openShiftIdTx } from "./shiftService";
+import { openShiftIdTx, requireOpenShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -184,7 +184,13 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
 
     // shiftId من وردية الموظّف المفتوحة (لتسوية الصندوق Z-report).
-    const shiftId = await openShiftIdTx(tx, actor.userId, input.branchId);
+    // إنفاذ نقدي: السندات النقدية تَمسّ صندوق الوردية ⇒ لا بدّ من وردية مفتوحة وإلا
+    // تختفي من Z-report (computeExpectedCash يفلتر بـeq(receipts.shiftId, shiftId)).
+    // السندات غير النقدية (BANK/CARD/CHEQUE/TRANSFER/WALLET) لا تَلمس الصندوق فتبقى مسموحة بـnull.
+    const shiftId =
+      input.paymentMethod === "CASH"
+        ? await requireOpenShiftIdTx(tx, actor.userId, input.branchId, "سند نقدي")
+        : await openShiftIdTx(tx, actor.userId, input.branchId);
 
     const rRes = await tx.insert(receipts).values({
       branchId: input.branchId,

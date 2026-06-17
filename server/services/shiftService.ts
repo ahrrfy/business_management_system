@@ -165,3 +165,29 @@ export async function openShiftIdTx(tx: Tx, userId: number, branchId: number): P
     .limit(1);
   return rows[0] ? Number(rows[0].id) : null;
 }
+
+/**
+ * مرآة صارمة لـopenShiftIdTx: ترمي PRECONDITION_FAILED بدل الإرجاع null حين تكون الوردية مغلقة.
+ *
+ * تُستعمل قبل كل معاملة نقدية تَلمس صندوق الكاشير (مصاريف/سندات بـpaymentMethod='CASH')
+ * كي لا تُكتب receipts بـshiftId=null تختفي من Z-report (computeExpectedCash يفلتر
+ * بـeq(receipts.shiftId, shiftId)) ⇒ خسارة نقد صامتة + فروقات ظالمة عند الإقفال.
+ *
+ * المعاملات غير النقدية (BANK/CARD/CHEQUE/TRANSFER/WALLET) لا تَستعملها — لأنها لا تَمسّ الصندوق
+ * فيمكن أن تُحفَظ بـshiftId=null مشروعاً (مثل سند بنكي للمورد بلا فتح وردية).
+ */
+export async function requireOpenShiftIdTx(
+  tx: Tx,
+  userId: number,
+  branchId: number,
+  label: string = "معاملة نقدية",
+): Promise<number> {
+  const id = await openShiftIdTx(tx, userId, branchId);
+  if (id == null) {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `افتح وردية في هذا الفرع قبل تسجيل ${label} (وإلا تختفي المعاملة من تسوية الصندوق).`,
+    });
+  }
+  return id;
+}

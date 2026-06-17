@@ -13,7 +13,7 @@ function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set
 const TABLES = [
   "accountingEntries", "expenseStockItems", "expenses", "receipts",
   "inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants",
-  "products", "branches", "users", "idempotencyKeys",
+  "products", "shifts", "branches", "users", "idempotencyKeys",
 ];
 
 async function reset() {
@@ -117,6 +117,8 @@ describe("صرف المخزون: الذرّية و CASH", () => {
   });
 
   it("المصروف النقدي (CASH) يبقى كما هو: receipt OUT + PAYMENT_OUT بلا لمس المخزون", async () => {
+    // shift-gate-cash: المصاريف النقدية تستلزم وردية مفتوحة (تُملأ تلقائياً إن لم تُمرَّر).
+    await db().insert(s.shifts).values({ userId: 1, branchId: 1, openingBalance: "0", status: "OPEN" });
     await createExpense({
       branchId: 1, category: "RENT", amount: "100", paymentMethod: "CASH",
     }, actor);

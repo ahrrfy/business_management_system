@@ -7,6 +7,7 @@ import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
+import { requireOpenShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -193,8 +194,18 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
     if (input.category === "OTHER" && !input.description?.trim())
       throw new TRPCError({ code: "BAD_REQUEST", message: "وصف المصروف مطلوب لفئة «أخرى»" });
 
-    if (input.shiftId) {
-      const s = (await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).limit(1))[0];
+    // إنفاذ الوردية للمعاملات النقدية: لو لم يمرّر الكاشير shiftId (وردية مغلقة)
+    // والطريقة نقدية ⇒ نرمي PRECONDITION_FAILED بدل الحفظ بـshiftId=null الذي يختفي
+    // من Z-report (computeExpectedCash يفلتر بـeq(receipts.shiftId, shiftId)) ⇒
+    // تشويه يومي للتسوية + خصومات ظالمة من الكاشير. غير النقدية (TRANSFER/CARD/WALLET)
+    // لا تَلمس الصندوق فتبقى مسموحة بـshiftId=null.
+    let effectiveShiftId: number | null = input.shiftId ?? null;
+    if (input.paymentMethod === "CASH" && effectiveShiftId == null) {
+      effectiveShiftId = await requireOpenShiftIdTx(tx, actor.userId, input.branchId, "مصروف نقدي");
+    }
+
+    if (effectiveShiftId) {
+      const s = (await tx.select().from(shifts).where(eq(shifts.id, effectiveShiftId)).limit(1))[0];
       if (!s) throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
       if (s.status !== "OPEN")
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تسجيل مصروف على وردية مغلقة" });
@@ -205,7 +216,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
     const rRes = await tx.insert(receipts).values({
       invoiceId: null,
       branchId: input.branchId,
-      shiftId: input.shiftId ?? null,
+      shiftId: effectiveShiftId,
       direction: "OUT",
       amount: toDbMoney(amt),
       paymentMethod: input.paymentMethod,
@@ -220,7 +231,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "حدّد دورية التكرار" });
     const eRes = await tx.insert(expenses).values({
       branchId: input.branchId,
-      shiftId: input.shiftId ?? null,
+      shiftId: effectiveShiftId,
       expenseDate: new Date(expDate),
       category: input.category,
       amount: toDbMoney(amt),

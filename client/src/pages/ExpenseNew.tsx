@@ -207,8 +207,12 @@ export default function ExpenseNew() {
             </select>
             {openShift.data ? (
               <p className="text-xs text-emerald-700">سيُربط بوردية #{Number(openShift.data.id)} المفتوحة.</p>
+            ) : !isStock && paymentMethod === "CASH" ? (
+              <p className="text-xs text-rose-700">
+                لا وردية مفتوحة — لا يمكن تسجيل مصروف نقدي. <Link href="/shifts" className="underline">افتح وردية</Link> أوّلاً، أو غيِّر طريقة الدفع لغير نقدية.
+              </p>
             ) : (
-              <p className="text-xs text-muted-foreground">لا توجد وردية مفتوحة لهذا الفرع — سيُسجَّل بلا ربط.</p>
+              <p className="text-xs text-muted-foreground">لا توجد وردية مفتوحة لهذا الفرع — سيُسجَّل بلا ربط (طريقة دفع غير نقدية).</p>
             )}
           </div>
           <div className="space-y-1">
@@ -323,10 +327,20 @@ export default function ExpenseNew() {
       </>)}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex gap-2">
-        <Button onClick={submit} disabled={create.isPending}>{create.isPending ? "جارٍ الحفظ…" : "حفظ المصروف"}</Button>
-        <Link href="/expenses"><Button variant="outline">إلغاء</Button></Link>
-      </div>
+      {(() => {
+        // بوّابة الوردية النقدية: نقدي بلا وردية مفتوحة ⇒ زر الحفظ مُعطَّل.
+        // الخادم يرمي PRECONDITION_FAILED أيضاً كحارس أخير، لكن التعطيل في الواجهة
+        // يمنع نقرة عرضية ويُظهر السبب الواضح قبل المحاولة.
+        const cashWithoutShift = !isStock && paymentMethod === "CASH" && !openShift.data && !openShift.isLoading;
+        return (
+          <div className="flex gap-2">
+            <Button onClick={submit} disabled={create.isPending || cashWithoutShift} title={cashWithoutShift ? "افتح وردية قبل تسجيل مصروف نقدي" : undefined}>
+              {create.isPending ? "جارٍ الحفظ…" : "حفظ المصروف"}
+            </Button>
+            <Link href="/expenses"><Button variant="outline">إلغاء</Button></Link>
+          </div>
+        );
+      })()}
     </div>
   );
 }

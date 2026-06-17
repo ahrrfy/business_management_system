@@ -60,6 +60,8 @@ beforeEach(async () => {
 
 describe("المصروفات اليومية", () => {
   it("createExpense: يولّد expense + receipt OUT + قيد PAYMENT_OUT", async () => {
+    // shift-gate: المصاريف النقدية تستلزم وردية مفتوحة (تُملأ تلقائياً إن لم تُمرَّر).
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
     const r = await createExpense(
       {
         branchId: 1,
@@ -79,11 +81,14 @@ describe("المصروفات اليومية", () => {
     expect(exp.category).toBe("RENT");
     expect(exp.paymentMethod).toBe("CASH");
     expect(Number(exp.receiptId)).toBe(r.receiptId);
+    // الوردية تُملأ تلقائياً (لم نُمرّرها صراحةً).
+    expect(Number(exp.shiftId)).toBe(shiftId);
 
     const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
     expect(rc.direction).toBe("OUT");
     expect(rc.amount).toBe("150000.00");
     expect(rc.status).toBe("COMPLETED");
+    expect(Number(rc.shiftId)).toBe(shiftId);
 
     const out = await entries("PAYMENT_OUT");
     expect(out).toHaveLength(1);
@@ -180,6 +185,7 @@ describe("المصروفات اليومية", () => {
   });
 
   it("cancelExpense على مصروف ملغى يُرفض", async () => {
+    await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate
     const r = await createExpense(
       { branchId: 1, category: "OTHER", amount: "50", paymentMethod: "CASH", description: "تجربة" },
       actor
@@ -196,6 +202,71 @@ describe("المصروفات اليومية", () => {
     );
     const closed = await closeShift({ shiftId, countedCash: "100000" }, actor);
     expect(closed.expectedCash).toBe("100000.00"); // لم يتأثر النقد
+    expect(closed.variance).toBe("0.00");
+  });
+});
+
+/**
+ * shift-gate-cash slice: المصاريف النقدية تَمسّ صندوق الوردية ⇒ لا تُحفَظ بـshiftId=null
+ * وإلّا تختفي من Z-report (computeExpectedCash يفلتر بـeq(receipts.shiftId, shiftId)).
+ * المصاريف غير النقدية (TRANSFER/CARD/WALLET/CHECK) لا تَمسّ الصندوق فتبقى مسموحة.
+ */
+describe("إنفاذ الوردية النقدية (shift-gate) للمصاريف", () => {
+  it("مصروف نقدي بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED", async () => {
+    await expect(
+      createExpense(
+        { branchId: 1, category: "TRANSPORT", amount: "20000", paymentMethod: "CASH", description: "أجور نقل" },
+        actor
+      )
+    ).rejects.toThrow(/افتح وردية/);
+
+    // لا expense ولا receipt كُتب (rollback ذرّي).
+    const exps = await db().select().from(s.expenses);
+    expect(exps).toHaveLength(0);
+    const recs = await db().select().from(s.receipts);
+    expect(recs).toHaveLength(0);
+  });
+
+  it("مصروف نقدي مع وردية مفتوحة ⇒ يُملأ shiftId تلقائياً ويُخصم من Z-report", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "500000" }, actor);
+    const r = await createExpense(
+      { branchId: 1, category: "SUPPLIES", amount: "75000", paymentMethod: "CASH", description: "حبر" },
+      actor
+    );
+    const exp = (await db().select().from(s.expenses).where(eq(s.expenses.id, r.expenseId)))[0];
+    expect(Number(exp.shiftId)).toBe(shiftId);
+    const rc = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId!)))[0];
+    expect(Number(rc.shiftId)).toBe(shiftId);
+
+    const closed = await closeShift({ shiftId, countedCash: "425000" }, actor);
+    expect(closed.expectedCash).toBe("425000.00"); // 500k − 75k
+    expect(closed.variance).toBe("0.00");
+  });
+
+  it("مصروف غير نقدي (CHECK) بلا وردية ⇒ يَنجح بـshiftId=null", async () => {
+    const r = await createExpense(
+      { branchId: 1, category: "RENT", amount: "1200000", paymentMethod: "CHECK", description: "إيجار سنوي بصكّ" },
+      actor
+    );
+    const exp = (await db().select().from(s.expenses).where(eq(s.expenses.id, r.expenseId)))[0];
+    expect(exp.shiftId).toBeNull();
+    expect(exp.paymentMethod).toBe("CHECK");
+    // الدفتر سُجِّل
+    const out = await entries("PAYMENT_OUT");
+    expect(out).toHaveLength(1);
+    expect(out[0].amount).toBe("1200000.00");
+  });
+
+  it("مصاريف نقدية متعدّدة كلها تَنعكس في Z-report (لا أحدها يَختفي)", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "1000000" }, actor);
+    await createExpense({ branchId: 1, category: "TRANSPORT", amount: "50000", paymentMethod: "CASH", description: "نقل" }, actor);
+    await createExpense({ branchId: 1, category: "UTILITIES", amount: "30000", paymentMethod: "CASH", description: "كهرباء" }, actor);
+    await createExpense({ branchId: 1, category: "MARKETING", amount: "20000", paymentMethod: "CASH", description: "إعلان" }, actor);
+    // مصروف بنكي وسطها — لا يَخصم من النقد.
+    await createExpense({ branchId: 1, category: "RENT", amount: "999999", paymentMethod: "TRANSFER", description: "إيجار" }, actor);
+
+    const closed = await closeShift({ shiftId, countedCash: "900000" }, actor);
+    expect(closed.expectedCash).toBe("900000.00"); // 1,000,000 − (50k+30k+20k)
     expect(closed.variance).toBe("0.00");
   });
 });

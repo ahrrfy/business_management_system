@@ -42,6 +42,10 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const branches = trpc.branches.list.useQuery();
   const customers = trpc.customers.list.useQuery(undefined, { enabled: partyType === "CUSTOMER" });
   const suppliers = trpc.suppliers.list.useQuery(undefined, { enabled: partyType === "SUPPLIER" });
+  // بوّابة الوردية النقدية: السندات النقدية تَمسّ صندوق الوردية ⇒ لا تُكتَب بدون وردية مفتوحة.
+  // (الخادم يرمي PRECONDITION_FAILED كحارس أخير، لكن نُعطّل في الواجهة لمنع نقرة عرضية.)
+  const openShift = trpc.shifts.current.useQuery({ branchId }, { enabled: !!branchId });
+  const cashWithoutShift = method === "CASH" && !openShift.data && !openShift.isLoading;
 
   // idempotency: مفتاح ثابت لكل سند (الصفحة تنتقل بعد النجاح فيتجدّد) ⇒ نقرة مزدوجة لا تُنشئ سندين.
   const [clientRequestId] = useState(() => crypto.randomUUID());
@@ -207,8 +211,20 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         <div className="rounded-md bg-rose-50 border border-rose-200 text-rose-700 text-sm p-3">{err}</div>
       )}
 
+      {cashWithoutShift && (
+        <div className="rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm p-3">
+          ⚠️ لا توجد وردية مفتوحة في هذا الفرع. السندات النقدية تَمسّ صندوق الوردية، فلا يمكن حفظها بلا وردية (وإلا تختفي من Z-report).
+          {" "}<Link href="/shifts" className="underline">افتح وردية</Link> أوّلاً، أو غيِّر طريقة الدفع لغير نقدية (بطاقة/تحويل/محفظة).
+        </div>
+      )}
+
       <div className="flex items-center gap-2">
-        <Button onClick={submit} disabled={create.isPending} className={submitColor}>
+        <Button
+          onClick={submit}
+          disabled={create.isPending || cashWithoutShift}
+          className={submitColor}
+          title={cashWithoutShift ? "افتح وردية قبل تسجيل سند نقدي" : undefined}
+        >
           {create.isPending ? "جارٍ الحفظ…" : (isReceipt ? "حفظ سند القبض" : "حفظ سند الصرف")}
         </Button>
         <Link href="/vouchers"><Button variant="outline" disabled={create.isPending}>إلغاء</Button></Link>
