@@ -37,6 +37,9 @@ export default function BarcodeLabels() {
   const utils = trpc.useUtils();
 
   const [search, setSearch] = useState("");
+  // تحميل كسول غير محدود: نبدأ بصفحة ونزيدها بالتمرير ⇒ لا قصّ صامت لنتائج البحث.
+  const SEARCH_PAGE = 200;
+  const [searchLimit, setSearchLimit] = useState(SEARCH_PAGE);
   const [queue, setQueue] = useState<QueueItem[]>([]);
   const [seq, setSeq] = useState(1);
   const [showName, setShowName] = useState(true);
@@ -116,9 +119,17 @@ export default function BarcodeLabels() {
   }
 
   const results = trpc.catalog.posList.useQuery(
-    { branchId, tier: "RETAIL", query: search, limit: 12 },
+    { branchId, tier: "RETAIL", query: search, limit: searchLimit },
     { enabled: search.trim().length > 0 }
   );
+  const maybeMoreSearch = (results.data?.length ?? 0) >= searchLimit;
+  function handleSearchScroll(e: React.UIEvent<HTMLDivElement>) {
+    if (results.isFetching || !maybeMoreSearch) return;
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 60) {
+      setSearchLimit((l) => l + SEARCH_PAGE);
+    }
+  }
 
   const assign = trpc.catalog.assignBarcode.useMutation({
     onError: (e) => setError(e.message),
@@ -284,9 +295,16 @@ export default function BarcodeLabels() {
         <CardHeader><CardTitle className="text-base">إضافة منتجات</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="relative">
-            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث بالاسم/SKU/الباركود…" />
+            <Input
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setSearchLimit(SEARCH_PAGE); }}
+              placeholder="ابحث بالاسم/SKU/الباركود…"
+            />
             {search.trim() && (results.data?.length ?? 0) > 0 && (
-              <div className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-72 overflow-auto">
+              <div
+                className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-72 overflow-auto"
+                onScroll={handleSearchScroll}
+              >
                 {results.data!.map((row) => (
                   <button
                     key={row.productUnitId}
@@ -297,6 +315,11 @@ export default function BarcodeLabels() {
                     <span className="text-xs text-muted-foreground font-mono" dir="ltr"> — {row.sku}{row.barcode ? ` · ${row.barcode}` : " · بلا باركود"}</span>
                   </button>
                 ))}
+                <div className="px-3 py-2 text-center text-[11px] text-muted-foreground">
+                  {maybeMoreSearch
+                    ? (results.isFetching ? "جارٍ تحميل المزيد…" : "مرّر لأسفل لتحميل المزيد…")
+                    : `كل النتائج (${results.data!.length})`}
+                </div>
               </div>
             )}
           </div>

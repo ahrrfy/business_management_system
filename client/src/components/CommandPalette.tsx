@@ -1,15 +1,32 @@
-// بحث عام بـCtrl+K — وصول فوري لأي صفحة/منتج/عميل/فاتورة بنقرة واحدة (§٢.٣).
-// يُركَّب مرّة في الجذر (main.tsx). يفتح بـCtrl+K أو ⌘K، يُغلق بـEsc.
+// بحث شامل بـCtrl+K — وصول فوري لأي صفحة + بحث ذرّي عبر كل وحدات النظام
+// (منتجات/فواتير/عروض أسعار/مشتريات/أوامر شغل/عملاء/موردين/مصاريف) بنقرة واحدة.
+//
+// النمط مكتشَف تلقائياً على الخادم (`globalSearch.search`):
+//  - أرقام صرفة ٨-١٤ ⇒ باركود (تطابق دقيق على productUnits.barcode + أرقام وثائق)
+//  - بادئة `INV-/QT-/PO-/WO-/SR-/PR-` ⇒ مُعرّف وثيقة
+//  - رقم قصير «9164» ⇒ يطابق رقم وثيقة جزئياً
+//  - هاتف بـ`+` ⇒ يبحث في customers.phone وأخواته
+//  - نص ⇒ بحث جزئي ذكي بتطبيع عربي
+//
+// RBAC وعزل الفرع يجريان في الخادم: الكاشير لا يرى موردين/مشتريات/مصاريف،
+// ولا يرى فواتير الفروع الأخرى. لا تسريب بيانات عبر العميل (بخلاف النسخة السابقة).
+//
+// يُركَّب مرّة في الجذر (main.tsx). يفتح بـCtrl+K أو ⌘K أو `/`، يُغلق بـEsc.
+
+import { keepPreviousData } from "@tanstack/react-query";
 import {
   Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator,
 } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import {
   Boxes, FileText, LayoutDashboard, Package, Receipt, RotateCcw, ShoppingCart, Truck, Users, Wallet, Wrench,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
+
+type SearchResult = RouterOutputs["globalSearch"]["search"][number];
+type EntityType = SearchResult["type"];
 
 type PageItem = { label: string; href: string; icon: React.ComponentType<{ className?: string }>; keywords?: string };
 
@@ -30,15 +47,62 @@ const PAGES: PageItem[] = [
   { label: "كشف حساب مورد", href: "/suppliers-statement", icon: Users, keywords: "supplier statement" },
 ];
 
+const ENTITY_LABELS: Record<EntityType, string> = {
+  PRODUCT: "المنتجات",
+  INVOICE: "الفواتير",
+  QUOTATION: "عروض الأسعار",
+  PURCHASE_ORDER: "أوامر الشراء",
+  WORK_ORDER: "أوامر الشغل",
+  CUSTOMER: "العملاء",
+  SUPPLIER: "الموردون",
+  EXPENSE: "المصاريف",
+};
+
+const ENTITY_ICONS: Record<EntityType, React.ComponentType<{ className?: string }>> = {
+  PRODUCT: Package,
+  INVOICE: FileText,
+  QUOTATION: Receipt,
+  PURCHASE_ORDER: Truck,
+  WORK_ORDER: Wrench,
+  CUSTOMER: Users,
+  SUPPLIER: Truck,
+  EXPENSE: Wallet,
+};
+
+const ENTITY_ORDER: EntityType[] = [
+  "PRODUCT", "INVOICE", "QUOTATION", "WORK_ORDER",
+  "CUSTOMER", "SUPPLIER", "PURCHASE_ORDER", "EXPENSE",
+];
+
+function useDebouncedValue<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(id);
+  }, [value, ms]);
+  return debounced;
+}
+
+function isEditableTarget(t: EventTarget | null): boolean {
+  if (!(t instanceof HTMLElement)) return false;
+  const tag = t.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+  if (t.isContentEditable) return true;
+  return false;
+}
+
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
+  const debouncedQ = useDebouncedValue(q, 200);
   const [, navigate] = useLocation();
+  const inputRef = useRef<HTMLInputElement>(null);
 
-  // فتح/إغلاق بـCtrl+K (أو ⌘K على ماك).
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+      const cmdK = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k";
+      const slashOpener = e.key === "/" && !isEditableTarget(e.target);
+      if (cmdK || slashOpener) {
         e.preventDefault();
         setOpen((v) => !v);
       }
@@ -47,94 +111,119 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId ?? 1;
-  const term = q.trim();
+  useEffect(() => {
+    if (open) setTimeout(() => inputRef.current?.focus(), 10);
+    else setQ("");
+  }, [open]);
 
-  // بحث منتجات حيّ (مفعَّل عند كتابة حرفين+).
-  const products = trpc.catalog.posList.useQuery(
-    { branchId, query: term, limit: 6 },
-    { enabled: open && term.length >= 2 }
+  const term = debouncedQ.trim();
+  const results = trpc.globalSearch.search.useQuery(
+    { query: term, perEntityLimit: 6 },
+    { enabled: open && term.length > 0, placeholderData: keepPreviousData, staleTime: 30_000 },
   );
-  // العملاء والفواتير: نجلب القائمة ونفلتر محلياً (سريع، بلا نداء لكل ضغطة).
-  const customers = trpc.customers.list.useQuery(undefined, { enabled: open });
-  const invoices = trpc.sales.list.useQuery({ limit: 200 }, { enabled: open });
+
+  const grouped = useMemo(() => {
+    const map = new Map<EntityType, SearchResult[]>();
+    for (const r of results.data ?? []) {
+      const arr = map.get(r.type) ?? [];
+      arr.push(r);
+      map.set(r.type, arr);
+    }
+    return ENTITY_ORDER
+      .map((type) => ({ type, items: map.get(type) ?? [] }))
+      .filter((g) => g.items.length);
+  }, [results.data]);
 
   const lc = term.toLowerCase();
-  const custMatches = (customers.data ?? [])
-    .filter((c) => !term || c.name.toLowerCase().includes(lc) || (c.phone ?? "").includes(term))
-    .slice(0, 6);
-  const invMatches = (invoices.data ?? [])
-    .filter((i) => !term || String(i.invoiceNumber).toLowerCase().includes(lc))
-    .slice(0, 6);
+  const matchedPages = PAGES.filter((p) =>
+    !term || p.label.includes(term) || (p.keywords ?? "").toLowerCase().includes(lc),
+  );
 
-  function go(href: string) {
+  const go = useCallback((href: string) => {
     setOpen(false);
     setQ("");
     navigate(href);
-  }
+  }, [navigate]);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <DialogContent className="overflow-hidden p-0" showCloseButton={false}>
         <DialogHeader className="sr-only">
-          <DialogTitle>بحث عام</DialogTitle>
-          <DialogDescription>ابحث عن صفحة أو منتج أو عميل أو فاتورة</DialogDescription>
+          <DialogTitle>البحث الشامل</DialogTitle>
+          <DialogDescription>
+            ابحث في كل النظام: منتجات، فواتير، عملاء، أوامر شغل، باركود، أرقام وثائق…
+          </DialogDescription>
         </DialogHeader>
-        <Command shouldFilter={false} className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-2.5">
-          <CommandInput placeholder="ابحث عن صفحة أو منتج أو عميل أو فاتورة…  (Ctrl+K)" value={q} onValueChange={setQ} />
+        <Command
+          shouldFilter={false}
+          className="[&_[cmdk-group-heading]]:text-muted-foreground [&_[cmdk-group-heading]]:px-2 [&_[cmdk-group-heading]]:py-1.5 [&_[cmdk-group-heading]]:font-medium [&_[cmdk-item]]:px-2 [&_[cmdk-item]]:py-2.5"
+        >
+          <CommandInput
+            ref={inputRef}
+            placeholder="اكتب/امسح باركود/أدخل رقم وثيقة (INV-/QT-/PO-/WO-)…  (Ctrl+K)"
+            value={q}
+            onValueChange={setQ}
+          />
           <CommandList>
-        <CommandEmpty>لا نتائج لـ«{term}».</CommandEmpty>
+            {!term && (
+              <CommandGroup heading="الصفحات">
+                {PAGES.map((p) => (
+                  <CommandItem key={p.href} value={p.href} onSelect={() => go(p.href)}>
+                    <p.icon className="size-4" /> {p.label}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
 
-        <CommandGroup heading="الصفحات">
-          {PAGES.filter((p) => !term || p.label.includes(term) || (p.keywords ?? "").toLowerCase().includes(lc)).map((p) => (
-            <CommandItem key={p.href} value={p.href} onSelect={() => go(p.href)}>
-              <p.icon className="size-4" /> {p.label}
-            </CommandItem>
-          ))}
-        </CommandGroup>
+            {term && results.isLoading && (
+              <div className="px-4 py-6 text-center text-sm text-muted-foreground">جارٍ البحث…</div>
+            )}
 
-        {custMatches.length > 0 && (
-          <>
-            <CommandSeparator />
-            <CommandGroup heading="العملاء">
-              {custMatches.map((c) => (
-                <CommandItem key={`c${c.id}`} value={`cust-${c.id}`} onSelect={() => go(`/customers-statement?customerId=${c.id}`)}>
-                  <Users className="size-4" /> {c.name}
-                  {c.phone && <span className="ms-auto text-xs text-muted-foreground" dir="ltr">{c.phone}</span>}
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </>
-        )}
+            {term && !results.isLoading && grouped.length === 0 && matchedPages.length === 0 && (
+              <CommandEmpty>لا نتائج لـ«{term}» — جرّب رقم فاتورة أو اسم منتج/عميل.</CommandEmpty>
+            )}
 
-        {invMatches.length > 0 && (
-          <>
-            <CommandSeparator />
-            <CommandGroup heading="الفواتير">
-              {invMatches.map((i) => (
-                <CommandItem key={`i${i.id}`} value={`inv-${i.id}`} onSelect={() => go(`/invoices/${i.id}`)}>
-                  <FileText className="size-4" /> فاتورة #{i.invoiceNumber}
-                  <span className="ms-auto text-xs text-muted-foreground" dir="ltr">{Number(i.total).toLocaleString("ar-IQ-u-nu-latn")}</span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </>
-        )}
+            {term && matchedPages.length > 0 && (
+              <CommandGroup heading="الصفحات">
+                {matchedPages.map((p) => (
+                  <CommandItem key={p.href} value={`page:${p.href}`} onSelect={() => go(p.href)}>
+                    <p.icon className="size-4" /> {p.label}
+                  </CommandItem>
+                ))}
+              </CommandGroup>
+            )}
 
-        {term.length >= 2 && (products.data?.length ?? 0) > 0 && (
-          <>
-            <CommandSeparator />
-            <CommandGroup heading="المنتجات">
-              {(products.data ?? []).map((p) => (
-                <CommandItem key={`p${p.productUnitId}`} value={`prod-${p.productUnitId}`} onSelect={() => go(`/products/${p.productId}/edit`)}>
-                  <Package className="size-4" /> {p.productName}
-                  <span className="ms-auto text-xs text-muted-foreground">{p.unitName}</span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
-          </>
-        )}
+            {grouped.map((g, gi) => {
+              const Icon = ENTITY_ICONS[g.type];
+              return (
+                <div key={g.type}>
+                  {(gi > 0 || (term && matchedPages.length > 0)) && <CommandSeparator />}
+                  <CommandGroup heading={`${ENTITY_LABELS[g.type]} (${g.items.length})`}>
+                    {g.items.map((r) => (
+                      <CommandItem
+                        key={`${r.type}:${r.id}`}
+                        value={`${r.type}:${r.id}:${r.title}`}
+                        onSelect={() => go(r.route)}
+                        className="flex items-center gap-2"
+                      >
+                        <Icon className="size-4 shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-semibold">{r.title}</div>
+                          {r.subtitle && (
+                            <div className="truncate text-[11px] text-muted-foreground">{r.subtitle}</div>
+                          )}
+                        </div>
+                        {r.meta && (
+                          <div dir="ltr" className="shrink-0 text-[11px] text-muted-foreground">
+                            {r.meta}
+                          </div>
+                        )}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </div>
+              );
+            })}
           </CommandList>
         </Command>
       </DialogContent>
