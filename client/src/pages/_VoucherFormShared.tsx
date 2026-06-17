@@ -16,7 +16,6 @@ const selectCls =
 const METHODS = [
   { value: "CASH", label: "نقدي" },
   { value: "CARD", label: "بطاقة" },
-  { value: "CHECK", label: "شيك" },
   { value: "TRANSFER", label: "تحويل" },
   { value: "WALLET", label: "محفظة" },
 ] as const;
@@ -37,7 +36,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const [partyId, setPartyId] = useState<number | "">("");
   const [description, setDescription] = useState("");
   const [referenceNumber, setReferenceNumber] = useState("");
-  const [checkNumber, setCheckNumber] = useState("");
   const [cardLastFour, setCardLastFour] = useState("");
   const [err, setErr] = useState("");
 
@@ -88,7 +86,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       partyId: partyType === "OTHER" ? null : Number(partyId),
       description: description.trim(),
       referenceNumber: referenceNumber.trim() || null,
-      checkNumber: method === "CHECK" ? checkNumber.trim() || null : null,
+      checkNumber: null,
       cardLastFour: method === "CARD" ? cardLastFour.trim() || null : null,
       clientRequestId,
     });
@@ -137,12 +135,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             <Input value={referenceNumber} onChange={(e) => setReferenceNumber(e.target.value)} placeholder="مثال: رقم العملية" />
           </div>
 
-          {method === "CHECK" && (
-            <div className="space-y-1">
-              <Label>رقم الشيك</Label>
-              <Input value={checkNumber} onChange={(e) => setCheckNumber(e.target.value)} placeholder="0001234" />
-            </div>
-          )}
           {method === "CARD" && (
             <div className="space-y-1">
               <Label>آخر 4 من البطاقة (اختياري)</Label>

@@ -136,7 +136,7 @@ type C = typeof LIGHT;
 
 const TIER_LABEL: Record<Tier, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const METHOD_LABEL: Record<PaymentMethod, string> = {
-  CASH: "نقد", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 const QUICK_AMTS = [5000, 10000, 25000, 50000, 100000];
 const SHOP = "الرؤية العربية";
@@ -1431,10 +1431,10 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
             <span style={{ fontSize: 22 }}>💳</span>بطاقة
           </button>
           <button
-            style={{ ...payMethodStyle(method === "TRANSFER" || method === "CHECK" || method === "WALLET"), minHeight: 50, fontSize: 12 }}
-            onClick={() => setMethod(method === "TRANSFER" ? "CHECK" : method === "CHECK" ? "WALLET" : "TRANSFER")}>
+            style={{ ...payMethodStyle(method === "TRANSFER" || method === "WALLET"), minHeight: 50, fontSize: 12 }}
+            onClick={() => setMethod(method === "TRANSFER" ? "WALLET" : "TRANSFER")}>
             <span style={{ fontSize: 18 }}>🔄</span>
-            {method === "TRANSFER" ? "تحويل" : method === "CHECK" ? "صك" : method === "WALLET" ? "محفظة" : "أخرى"}
+            {method === "TRANSFER" ? "تحويل" : method === "WALLET" ? "محفظة" : "أخرى"}
           </button>
         </div>
       </div>

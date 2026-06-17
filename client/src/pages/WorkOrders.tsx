@@ -43,7 +43,7 @@ const CHANNELS: Record<string, { label: string; icon: string }> = {
   INSTAGRAM: { label: "انستغرام", icon: "📷" },
   TIKTOK: { label: "تيك توك", icon: "🎵" },
   PHONE: { label: "اتصال", icon: "📞" },
-  WALK_IN: { label: "زبون مباشر", icon: "🏪" },
+  WALK_IN: { label: "عميل نقدي", icon: "🏪" },
   OTHER: { label: "أخرى", icon: "✳️" },
 };
 const PRIORITIES: Record<string, { label: string; cls: string; rank: number }> = {
@@ -160,7 +160,7 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
         </div>
         <div className="wob-info">
           <div className="wob-card-title">{o.title}</div>
-          <div className="wob-cust"><span className="wob-ch" title={ch.label}>{ch.icon}</span>{o.customerName ?? "عميل عابر"}</div>
+          <div className="wob-cust"><span className="wob-ch" title={ch.label}>{ch.icon}</span>{o.customerName ?? "عميل نقدي"}</div>
         </div>
       </div>
       <div className="wob-meta">
@@ -245,10 +245,9 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
           <div className="space-y-1">
             <label className="text-sm font-medium">طريقة الدفع</label>
             <select className={dlgInput} value={methodV} onChange={(e) => setMethodV(e.target.value as typeof methodV)}>
-              <option value="CASH">نقد</option>
+              <option value="CASH">نقدي</option>
               <option value="CARD">بطاقة</option>
               <option value="TRANSFER">تحويل</option>
-              <option value="CHECK">صك</option>
               <option value="WALLET">محفظة</option>
             </select>
           </div>
@@ -329,7 +328,7 @@ function Drawer({
             <div className="wob-dr-body">
               <div>
                 <div className="wob-kv">
-                  <div><div className="wob-k">العميل</div><div className="wob-v">{d.customerName ?? "عميل عابر"}</div></div>
+                  <div><div className="wob-k">العميل</div><div className="wob-v">{d.customerName ?? "عميل نقدي"}</div></div>
                   <div><div className="wob-k">قناة الاستلام</div><div className="wob-v">{ch?.icon} {ch?.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</div></div>
                   <div><div className="wob-k">الكمية</div><div className="wob-v">{fmtN(d.quantity)}</div></div>
                   <div><div className="wob-k">سعر البيع</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtN(d.salePrice)} د.ع</div></div>

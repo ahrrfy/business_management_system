@@ -28,7 +28,7 @@ const CATEGORY_LABEL: Record<string, string> = {
 const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي",
   CARD: "بطاقة",
-  CHECK: "شيك",
+  CHECK: "صك",
   TRANSFER: "تحويل",
   WALLET: "محفظة",
 };

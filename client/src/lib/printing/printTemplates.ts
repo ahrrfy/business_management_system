@@ -71,7 +71,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
   }));
 
   const custFields = [
-    { label: 'الاسم', value: d.customerName ?? 'عميل عابر' },
+    { label: 'الاسم', value: d.customerName ?? 'عميل نقدي' },
     ...(d.customerAddress ? [{ label: 'العنوان', value: d.customerAddress }] : []),
     ...(d.customerPhone ? [{ label: 'الهاتف', value: d.customerPhone }] : []),
   ];

@@ -21,7 +21,7 @@ export interface CustomerPickerProps {
   balance?: string | null;
 }
 
-/** اختيار عميل من القائمة + إضافة سريعة. لا يفرض شيئاً عند غياب العميل (يعني عميل عابر). */
+/** اختيار عميل من القائمة + إضافة سريعة. لا يفرض شيئاً عند غياب العميل (يعني عميل نقدي). */
 export default function CustomerPicker({ customerId, onCustomerChange, balance }: CustomerPickerProps) {
   const utils = trpc.useUtils();
   const customers = trpc.customers.list.useQuery();
@@ -66,7 +66,7 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
           value={customerId ?? ""}
           onChange={(e) => onCustomerChange(e.target.value ? Number(e.target.value) : null)}
         >
-          <option value="">— عميل عابر —</option>
+          <option value="">— عميل نقدي —</option>
           {(customers.data ?? []).map((c) => (
             <option key={c.id} value={c.id}>
               {c.name} ({TIER_LABEL[c.defaultPriceTier as Tier]})

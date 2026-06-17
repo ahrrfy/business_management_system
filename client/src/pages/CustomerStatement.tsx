@@ -59,7 +59,7 @@ const STATUS_CLS: Record<string, string> = {
   CONFIRMED: "bg-slate-100 text-slate-700",
 };
 const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "شيك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 
 export default function CustomerStatement() {

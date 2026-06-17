@@ -22,7 +22,7 @@ const selectCls =
 const TYPE_LABEL: Record<string, string> = { IN: "قبض", OUT: "صرف" };
 const PARTY_LABEL: Record<string, string> = { CUSTOMER: "عميل", SUPPLIER: "مورّد", OTHER: "أخرى" };
 const METHOD_LABEL: Record<string, string> = {
-  CASH: "نقدي", CARD: "بطاقة", CHECK: "شيك", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 
 function fmtDate(d: Date | string | null | undefined): string {

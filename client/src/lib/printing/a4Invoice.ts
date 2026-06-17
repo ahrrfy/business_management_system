@@ -74,7 +74,7 @@ ${CAIRO_FONT}
       <div class="meta">رقم: <b>${esc(inv.invoiceNumber)}</b><br>التاريخ: ${esc(date)}</div>
     </div>
   </div>
-  <div class="cust">العميل: <b>${esc(inv.customerName ?? "عميل عابر")}</b></div>
+  <div class="cust">العميل: <b>${esc(inv.customerName ?? "عميل نقدي")}</b></div>
   <table>
     <thead><tr><th class="c">#</th><th>الصنف</th><th class="c">الكمية</th><th class="l">السعر</th><th class="l">الإجمالي</th></tr></thead>
     <tbody>${rows}</tbody>

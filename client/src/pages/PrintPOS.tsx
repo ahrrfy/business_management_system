@@ -80,7 +80,7 @@ type C = typeof LIGHT;
 
 const SHOP = "الرؤية العربية";
 const DEPT = "قسم الطباعة والاستنساخ";
-const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: "نقداً", CARD: "بطاقة", TRANSFER: "تحويل" };
+const METHOD_LABEL: Record<PaymentMethod, string> = { CASH: "نقدي", CARD: "بطاقة", TRANSFER: "تحويل" };
 const QUICK = [5000, 10000, 25000, 50000];
 const fmt = (n: number) => Number(n || 0).toLocaleString("en-US");
 const riqd = (n: number) => roundCashIQD(n).toNumber();

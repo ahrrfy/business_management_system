@@ -23,7 +23,7 @@ const STATUS_CLS: Record<string, string> = {
   OPEN: "bg-blue-100 text-blue-700",
   CLOSED: "bg-emerald-100 text-emerald-700",
 };
-const METHOD_AR: Record<string, string> = { CASH: "نقد", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة" };
+const METHOD_AR: Record<string, string> = { CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة" };
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
   d ? new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" }) : "—";

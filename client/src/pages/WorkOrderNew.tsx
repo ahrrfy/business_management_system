@@ -20,7 +20,7 @@ import { Link, useLocation } from "wouter";
  *
  * تصميم — ٧ أقسام:
  *  ١) قنوات الاستلام (واتساب/انستغرام/تيك توك/هاتف/مباشر) + معرّف القناة.
- *  ٢) العميل الذكي — يتعرّف تلقائياً ويُنشئ زبوناً جديداً عند الحفظ.
+ *  ٢) العميل الذكي — يتعرّف تلقائياً ويُنشئ عميلاً جديداً عند الحفظ.
  *  ٣) نقطة بيع مصغّرة — بحث بالباركود/الاسم + جدول سلّة + خصم.
  *  ٤) خدمة التخصيص — عنوان الأمر + نصّ التخصيص + التكاليف + تسليم.
  *  ٥) صور نموذج العمل المطلوب.
@@ -37,7 +37,7 @@ const CHANNELS: { v: string; label: string; icon: string; placeholder: string; d
   { v: "INSTAGRAM", label: "انستغرام",     icon: "📷", placeholder: "@username",       dir: "ltr" },
   { v: "TIKTOK",    label: "تيك توك",       icon: "🎵", placeholder: "@username",       dir: "ltr" },
   { v: "PHONE",     label: "اتصال هاتفي",   icon: "📞", placeholder: "+9647701234567", dir: "ltr" },
-  { v: "WALK_IN",   label: "زبون مباشر",    icon: "🏪", placeholder: "—",               dir: "rtl" },
+  { v: "WALK_IN",   label: "عميل نقدي",    icon: "🏪", placeholder: "—",               dir: "rtl" },
   { v: "OTHER",     label: "أخرى",          icon: "📩", placeholder: "—",               dir: "rtl" },
 ];
 
@@ -230,7 +230,7 @@ export default function WorkOrderNew() {
   async function ensureCustomerId(): Promise<number | null> {
     if (customerSel.customerId) return customerSel.customerId;
     if (!customerSel.isNew || !customerSel.name.trim()) return null;
-    // أنشئ زبوناً جديداً تلقائياً.
+    // أنشئ عميلاً جديداً تلقائياً.
     const created = await createCustomer.mutateAsync({
       name: customerSel.name.trim(),
       phone: (newCustomerPhone || customerSel.phone || "") || null,
@@ -385,9 +385,9 @@ export default function WorkOrderNew() {
           <SmartCustomerInput value={customerSel} onChange={setCustomerSel} />
           {customerNeedsPhone && (
             <div className="space-y-1 max-w-md">
-              <Label htmlFor="newPh">رقم الهاتف للزبون الجديد</Label>
+              <Label htmlFor="newPh">رقم الهاتف للعميل الجديد</Label>
               <IntlPhoneInput id="newPh" value={newCustomerPhone} onChange={setNewCustomerPhone} />
-              <p className="text-[11px] text-muted-foreground">سيُحفظ مع الزبون الجديد تلقائياً عند حفظ الأمر.</p>
+              <p className="text-[11px] text-muted-foreground">سيُحفظ مع العميل الجديد تلقائياً عند حفظ الأمر.</p>
             </div>
           )}
         </CardContent>
@@ -541,7 +541,7 @@ export default function WorkOrderNew() {
           <div className="space-y-1">
             <Label htmlFor="lc">تكلفة العمل اليدوي (د.ع)</Label>
             <Input id="lc" dir="ltr" value={laborCost} onChange={(e) => setLaborCost(e.target.value)} placeholder="0" />
-            <p className="text-[11px] text-muted-foreground">للحساب الإداري فقط — لا تظهر للزبون.</p>
+            <p className="text-[11px] text-muted-foreground">للحساب الإداري فقط — لا تظهر للعميل.</p>
           </div>
           <div className="space-y-1">
             <Label htmlFor="due">تاريخ التسليم المتوقّع</Label>

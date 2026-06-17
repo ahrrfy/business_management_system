@@ -18,9 +18,8 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
-  { v: "CASH", label: "نقد" },
+  { v: "CASH", label: "نقدي" },
   { v: "TRANSFER", label: "تحويل" },
-  { v: "CHECK", label: "صك" },
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];
@@ -102,7 +101,7 @@ export default function WorkOrderDetail() {
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">رقم الأمر</div><div className="font-mono" dir="ltr">{data.orderNumber}</div></div>
           <div><div className="text-muted-foreground text-xs">الحالة</div><div>{STATUS_LABEL[data.status] ?? data.status}</div></div>
-          <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "عميل عابر"}</div></div>
+          <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "عميل نقدي"}</div></div>
           <div><div className="text-muted-foreground text-xs">الكمية</div><div>{data.quantity}</div></div>
           <div><div className="text-muted-foreground text-xs">سعر البيع</div><div dir="ltr" className="tabular-nums">{fmt(data.salePrice)}</div></div>
           <div><div className="text-muted-foreground text-xs">كلفة المواد</div><div dir="ltr" className="tabular-nums">{fmt(data.materialsCost)}</div></div>

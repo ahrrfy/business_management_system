@@ -16,7 +16,7 @@ function rowsOf(res: unknown): any[] {
 }
 
 const PAY_METHOD_AR: Record<string, string> = {
-  CASH: "نقد", CARD: "بطاقة", CHECK: "صكّ", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 
 const EXPENSE_CATEGORY_AR: Record<string, string> = {

@@ -16,9 +16,8 @@ const PO_STATUS: Record<string, string> = {
 };
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
-  { v: "CASH", label: "نقد" },
+  { v: "CASH", label: "نقدي" },
   { v: "TRANSFER", label: "تحويل" },
-  { v: "CHECK", label: "صك" },
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];

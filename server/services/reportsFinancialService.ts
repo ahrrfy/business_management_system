@@ -372,7 +372,7 @@ export async function getFinancialPosition(opts: { branchId?: number } = {}): Pr
 /* ============================ التدفّق النقدي (أساس نقدي مباشر) ============================ */
 
 const PAY_METHOD_AR: Record<string, string> = {
-  CASH: "نقد", CARD: "بطاقة", CHECK: "صكّ", TRANSFER: "تحويل", WALLET: "محفظة",
+  CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
 };
 
 export interface CashFlowLine { key: string; label: string; amount: string }

@@ -113,10 +113,9 @@ export const PAYMENT_TERMS: Array<{ value: PaymentTerm; label: string }> = [
 ];
 
 export const PAYMENT_METHODS: Array<{ value: PaymentMethod; label: string; icon: string }> = [
-  { value: "CASH",     label: "نقد",    icon: "💵" },
+  { value: "CASH",     label: "نقدي",   icon: "💵" },
   { value: "CARD",     label: "بطاقة",  icon: "💳" },
   { value: "TRANSFER", label: "تحويل",  icon: "🏦" },
-  { value: "CHECK",    label: "صك",     icon: "📝" },
   { value: "WALLET",   label: "محفظة",  icon: "📱" },
 ];
 

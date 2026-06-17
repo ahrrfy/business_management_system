@@ -27,11 +27,10 @@ const STATUS_CLS: Record<string, string> = {
   CANCELLED: "bg-rose-100 text-rose-700",
 };
 const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "أمر شغل" };
-const METHOD_LABEL: Record<string, string> = { CASH: "نقد", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة" };
+const METHOD_LABEL: Record<string, string> = { CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة" };
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
-  { v: "CASH", label: "نقد" },
+  { v: "CASH", label: "نقدي" },
   { v: "TRANSFER", label: "تحويل" },
-  { v: "CHECK", label: "صك" },
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];
@@ -134,7 +133,7 @@ export default function InvoiceDetail() {
         </CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">المصدر</div><div>{SOURCE[data.sourceType] ?? data.sourceType}</div></div>
-          <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "عميل عابر"}</div></div>
+          <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "عميل نقدي"}</div></div>
           <div><div className="text-muted-foreground text-xs">التاريخ</div><div>{new Date(data.invoiceDate).toLocaleString("ar-IQ-u-nu-latn")}</div></div>
           <div><div className="text-muted-foreground text-xs">الاستحقاق</div><div>{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">قبل الضريبة</div><div dir="ltr" className="tabular-nums">{fmt(data.subtotal)}</div></div>

@@ -39,7 +39,6 @@ const CATEGORIES: { value: string; label: string }[] = [
 const METHODS: { value: string; label: string }[] = [
   { value: "CASH", label: "نقدي" },
   { value: "CARD", label: "بطاقة" },
-  { value: "CHECK", label: "شيك" },
   { value: "TRANSFER", label: "تحويل" },
   { value: "WALLET", label: "محفظة" },
 ];

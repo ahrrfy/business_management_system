@@ -20,9 +20,8 @@ const STATUS: Record<string, string> = {
 };
 const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
-  { v: "CASH", label: "نقد" },
+  { v: "CASH", label: "نقدي" },
   { v: "TRANSFER", label: "تحويل" },
-  { v: "CHECK", label: "صك" },
   { v: "CARD", label: "بطاقة" },
   { v: "WALLET", label: "محفظة" },
 ];
