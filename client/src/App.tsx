@@ -92,6 +92,7 @@ import ItemLedger from "@/pages/ItemLedger";
 import AbcAnalysis from "@/pages/AbcAnalysis";
 import TreasuryReport from "@/pages/TreasuryReport";
 import ExpensesReport from "@/pages/ExpensesReport";
+import CashOrphanReport from "@/pages/CashOrphanReport";
 import ProductionReport from "@/pages/ProductionReport";
 import WorkOrdersReport from "@/pages/WorkOrdersReport";
 import PayrollReport from "@/pages/PayrollReport";
@@ -243,6 +244,7 @@ export default function App() {
       <Route path="/reports/abc"><Shell><RequireRole roles={["admin","manager"]}><AbcAnalysis /></RequireRole></Shell></Route>
       <Route path="/reports/treasury"><Shell><RequireRole roles={["admin","manager"]}><TreasuryReport /></RequireRole></Shell></Route>
       <Route path="/reports/expenses"><Shell><RequireRole roles={["admin","manager"]}><ExpensesReport /></RequireRole></Shell></Route>
+      <Route path="/reports/cash-orphans"><Shell><RequireRole roles={["admin","manager"]}><CashOrphanReport /></RequireRole></Shell></Route>
       <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager"]}><ProductionReport /></RequireRole></Shell></Route>
       <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager"]}><WorkOrdersReport /></RequireRole></Shell></Route>
       <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager"]}><PayrollReport /></RequireRole></Shell></Route>

@@ -123,6 +123,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/ar-aging", label: "أعمار الذمم المدينة", managerOnly: true },
       { href: "/suppliers-statement", label: "كشف حساب مورد", managerOnly: true },
       { href: "/ap-aging", label: "أعمار الذمم الدائنة", managerOnly: true },
+      { href: "/reports/cash-orphans", label: "نقد بلا وردية (يتيم)", managerOnly: true },
     ],
   },
   {

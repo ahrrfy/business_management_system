@@ -26,7 +26,7 @@ import { getPurchasesReport, getPurchaseRegister } from "../services/reportsPurc
 import { getArApAgingDetail } from "../services/reportsAgingDetailService";
 import { getInventoryValuation, getStockStatus } from "../services/reportsInventoryService";
 import { getItemLedger, getAbcAnalysis } from "../services/reportsInventoryAnalyticsService";
-import { getTreasurySummary, getExpensesReport } from "../services/reportsTreasuryService";
+import { getTreasurySummary, getExpensesReport, getCashOrphansReport } from "../services/reportsTreasuryService";
 import { getProductionReport, getWorkOrdersReport } from "../services/reportsProductionService";
 import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
@@ -502,6 +502,34 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getExpensesReport({ from: input.from, to: input.to, branchId });
+    }),
+
+  /**
+   * المعاملات النقدية اليتيمة — receipts بـshiftId IS NULL وpaymentMethod='CASH'.
+   * هذه المعاملات تختفي من Z-report (computeExpectedCash يفلتر بـeq(receipts.shiftId, shiftId))
+   * فيظهر فرق صامت في تسوية الصندوق. التقرير لقراءة فقط ليرصدها المالك تاريخياً
+   * ويسوّيها يدوياً. بعد تفعيل إنفاذ الوردية للمعاملات النقدية، لن تُكتب أي معاملة جديدة في
+   * هذه الحالة (الخدمات ترمي PRECONDITION_FAILED قبل الكتابة). manager + عزل الفرع.
+   */
+  cashOrphans: managerBranchScopedProcedure
+    .input(
+      z
+        .object({
+          from: ymdStr.optional(),
+          to: ymdStr.optional(),
+          branchId: z.number().int().positive().optional(),
+          limit: z.number().int().min(1).max(5000).optional(),
+        })
+        .optional(),
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getCashOrphansReport({
+        from: input?.from,
+        to: input?.to,
+        branchId,
+        limit: input?.limit,
+      });
     }),
 
   /** تقرير الإنتاج — مستندات الإنتاج المؤكَّدة + تفصيل الكلفة. manager + عزل الفرع. */

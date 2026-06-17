@@ -86,6 +86,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
   });
 
   it("vouchers.create: نفس clientRequestId ⇒ سند واحد", async () => {
+    await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate-cash: السند النقدي يَستوجب وردية.
     const input = { voucherType: "PAYMENT" as const, branchId: 1, amount: "30.00", paymentMethod: "CASH" as const, partyType: "OTHER" as const, description: "إيجار", clientRequestId: "vch-key-1" };
     const r1 = await caller().vouchers.create(input);
     const r2 = await caller().vouchers.create(input);
@@ -210,6 +211,7 @@ describe("#2ج حارس وردية لعربون نقدي عند الإنشاء",
 
 describe("#1ب idempotency للمصروف وإنشاء أمر الشغل (النقر المزدوج)", () => {
   it("expenses.create: نفس clientRequestId ⇒ مصروف/صرف واحد", async () => {
+    await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate-cash: المصروف النقدي يَستوجب وردية.
     const input = { branchId: 1, category: "RENT" as const, amount: "30.00", paymentMethod: "CASH" as const, shiftId: null, clientRequestId: "exp-key-1" };
     await caller().expenses.create(input);
     await caller().expenses.create(input);
