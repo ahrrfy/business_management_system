@@ -1160,7 +1160,10 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
 
             {showCustPicker && (
               <div onClick={(e) => e.stopPropagation()}
-                style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, width: 340, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 12px 40px rgb(0 0 0/.2)", zIndex: 50, padding: 12 }}>
+                // الفتح لليمين (داخل اللوحة الواسعة) لا لليسار: الزر في الجزء الأيسر من شريط
+                // السلّة، وleft:0 يمنع تجاوز الحافّة وقصّ المحتوى بـoverflow:hidden للّوحة.
+                // maxHeight + تمرير يصون الارتفاع إن فُتح نموذج إضافة عميل (لا اقتطاع عمودي).
+                style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, width: 340, maxHeight: "calc(100vh - 140px)", overflowY: "auto", background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 12px 40px rgb(0 0 0/.2)", zIndex: 50, padding: 12 }}>
                 <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 10, color: C.fg }}>اختر عميلاً</div>
                 <CustomerPicker
                   customerId={customerId}
