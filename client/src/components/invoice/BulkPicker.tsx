@@ -5,6 +5,7 @@
  * grouping by category is replaced with a simple flat list (no category endpoint yet).
  */
 import { useMemo, useState } from "react";
+import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
 import {
   Dialog,
@@ -34,14 +35,18 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const [searchQ, setSearchQ] = useState("");
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // الشمولية: لا سقف ثابت. نبدأ بصفحة ونزيد الحدّ كلّما مرّر المستخدم للأسفل (تحميل كسول
+  // غير محدود) فتظهر كل المطابقات بالتمرير بدل قصّها عند رقم. PAGE حجم الدفعة.
+  const PAGE = 300;
+  const [limit, setLimit] = useState(PAGE);
 
   const posQ = trpc.catalog.posList.useQuery(
-    { branchId, tier, query: searchQ.trim(), limit: 200 },
-    { enabled: open && !isPurchase }
+    { branchId, tier, query: searchQ.trim(), limit },
+    { enabled: open && !isPurchase, placeholderData: keepPreviousData }
   );
   const purQ = trpc.catalog.forPurchase.useQuery(
-    { branchId, query: searchQ.trim(), limit: 200 },
-    { enabled: open && isPurchase }
+    { branchId, query: searchQ.trim(), limit },
+    { enabled: open && isPurchase, placeholderData: keepPreviousData }
   );
 
   type Row = {
@@ -125,10 +130,21 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     onAddItems(lines);
     setSelected(new Set());
     setSearchQ("");
+    setLimit(PAGE);
     onClose();
   };
 
-  const loading = (isPurchase ? purQ.isFetching : posQ.isFetching) && open;
+  // التحميل الأوّليّ فقط (isLoading = لا بيانات بعد) يُظهر شاشة «جارٍ التحميل»؛ أمّا جلب
+  // الدفعات الإضافية (isFetching مع إبقاء البيانات السابقة) فيُظهر مؤشّراً سفلياً ولا يُخفي القائمة.
+  const fetching = (isPurchase ? purQ.isFetching : posQ.isFetching) && open;
+  const initialLoading = (isPurchase ? purQ.isLoading : posQ.isLoading) && open;
+  // بلغنا الحدّ الحاليّ ⇒ قد توجد نتائج أكثر تُحمَّل بمزيد من التمرير.
+  const maybeMore = rows.length >= limit;
+  function handleScroll(e: React.UIEvent<HTMLDivElement>) {
+    if (fetching || !maybeMore) return;
+    const el = e.currentTarget;
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) setLimit((l) => l + PAGE);
+  }
 
   return (
     <Dialog
@@ -137,6 +153,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         if (!v) {
           setSelected(new Set());
           setSearchQ("");
+          setLimit(PAGE);
           onClose();
         }
       }}
@@ -154,7 +171,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
             <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">🔍</span>
             <Input
               value={searchQ}
-              onChange={(e) => setSearchQ(e.target.value)}
+              onChange={(e) => { setSearchQ(e.target.value); setLimit(PAGE); }}
               placeholder="فلتر بالاسم أو SKU..."
               className="h-9 pe-9"
             />
@@ -167,15 +184,15 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
           </Button>
         </div>
 
-        <div className="flex-1 overflow-y-auto px-3 py-2">
-          {loading && <div className="px-3 py-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>}
-          {!loading && rows.length === 0 && (
+        <div className="flex-1 overflow-y-auto px-3 py-2" onScroll={handleScroll}>
+          {initialLoading && <div className="px-3 py-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>}
+          {!initialLoading && rows.length === 0 && (
             <div className="px-3 py-10 text-center text-muted-foreground">
               <div className="mb-2 text-3xl">🔍</div>
               <div className="text-sm">لا نتائج</div>
             </div>
           )}
-          {!loading &&
+          {!initialLoading &&
             rows.map((p) => {
               const isSelected = selected.has(p.productUnitId);
               return (
@@ -212,6 +229,15 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                 </div>
               );
             })}
+          {!initialLoading && rows.length > 0 && (
+            <div className="px-3 py-3 text-center text-xs text-muted-foreground">
+              {maybeMore
+                ? fetching
+                  ? "جارٍ تحميل المزيد…"
+                  : "مرّر لأسفل لتحميل المزيد…"
+                : `كل النتائج محمّلة — ${fmtNum(rows.length)} صنف`}
+            </div>
+          )}
         </div>
 
         <DialogFooter className="flex items-center justify-between border-t bg-muted px-5 py-3">
