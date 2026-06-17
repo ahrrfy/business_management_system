@@ -255,7 +255,7 @@ export default function StocktakeReport() {
                 columns: [
                   {
                     key: "name",
-                    header: "الصنف",
+                    header: "المنتج",
                     map: (r) => `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
                   },
                   { key: "sku", header: "SKU", map: (r) => r.sku ?? "" },
@@ -324,7 +324,7 @@ export default function StocktakeReport() {
         {/* ملخص */}
         <div className="mt-5 grid grid-cols-2 gap-2 text-center sm:grid-cols-5">
           {[
-            ["أصناف معدودة", fmtInt(calc.counted.length)],
+            ["منتجات معدودة", fmtInt(calc.counted.length)],
             ["مطابقة", fmtInt(calc.matched.length)],
             ["زيادة", fmtInt(calc.over)],
             ["نقص", fmtInt(calc.short)],
@@ -342,7 +342,7 @@ export default function StocktakeReport() {
         <table className="w-full border-collapse text-sm">
           <thead>
             <tr className="border-y-2 border-foreground text-right text-xs">
-              <th className="py-1.5 pl-2 font-bold">الصنف</th>
+              <th className="py-1.5 pl-2 font-bold">المنتج</th>
               <th className="px-2 py-1.5 text-center font-bold">الدفتري</th>
               <th className="px-2 py-1.5 text-center font-bold">المعدود المصحَّح</th>
               <th className="px-2 py-1.5 text-center font-bold">الفرق</th>
@@ -407,9 +407,9 @@ export default function StocktakeReport() {
           </>
         )}
 
-        {/* الأصناف المطابقة */}
+        {/* المنتجات المطابقة */}
         <h3 className="mb-2 mt-5 text-sm font-bold">
-          {calc.kept.length > 0 ? "ثالثاً" : "ثانياً"} — الأصناف المطابقة ({fmtInt(calc.matched.length)})
+          {calc.kept.length > 0 ? "ثالثاً" : "ثانياً"} — المنتجات المطابقة ({fmtInt(calc.matched.length)})
         </h3>
         <p className="text-xs leading-relaxed text-muted-foreground">
           {calc.matched.map((r) => `${r.productName}${r.variantName ? ` ${r.variantName}` : ""}`).join(" · ") || "—"}
@@ -423,7 +423,7 @@ export default function StocktakeReport() {
               <thead>
                 <tr className="border-y-2 border-foreground text-right text-xs">
                   <th className="py-1.5 pl-2 font-bold">السبب</th>
-                  <th className="px-2 py-1.5 text-center font-bold">أصناف</th>
+                  <th className="px-2 py-1.5 text-center font-bold">منتجات</th>
                   <th className="px-2 py-1.5 text-center font-bold">صافي الكمية</th>
                   <th className="px-2 py-1.5 text-center font-bold">صافي القيمة</th>
                 </tr>
@@ -484,7 +484,7 @@ export default function StocktakeReport() {
         <p className="mt-5 rounded-lg bg-muted/50 p-3 text-xs leading-relaxed text-muted-foreground">
           نُفّذت التسوية بحركات ADJUST ذرّية بمرجع <span className="font-mono" dir="ltr">{s.code}</span> في سجلّ
           حركات المخزون، وحُدِّثت الأرصدة لحظة الاعتماد. الحدّ المعتمد للتسوية المباشرة:{" "}
-          {fmtInt(Number(s.thresholdPct ?? 0))}٪ أو {fmt(s.thresholdValue ?? 0)} د.ع. الحركات الواقعة بعد عدّ أي صنف
+          {fmtInt(Number(s.thresholdPct ?? 0))}٪ أو {fmt(s.thresholdValue ?? 0)} د.ع. الحركات الواقعة بعد عدّ أي منتج
           صُحِّحت آلياً قبل احتساب الفرق.
         </p>
 

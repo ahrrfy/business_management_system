@@ -303,8 +303,8 @@ export default function CountPortal() {
       if (!i.isMine && dupBlocked) {
         notify.info(
           i.colleagueCounted
-            ? "🔒 الصنف معدود من زميلك — سياسة الجلسة تمنع العدّ المكرر"
-            : "🔒 الصنف من منطقة زميل — اطلب من المسؤول إسناده إليك",
+            ? "🔒 المنتج معدود من زميلك — سياسة الجلسة تمنع العدّ المكرر"
+            : "🔒 المنتج من منطقة زميل — اطلب من المسؤول إسناده إليك",
         );
         return;
       }
@@ -319,7 +319,7 @@ export default function CountPortal() {
       if (!scanned) return;
       const hit = items.find((i) => i.units.some((u) => u.barcode != null && u.barcode === scanned));
       if (!hit) {
-        notify.warn("الباركود غير موجود ضمن أصناف هذه الجلسة", scanned);
+        notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
         return;
       }
       setFlashId(hit.variantId);
@@ -371,7 +371,7 @@ export default function CountPortal() {
         { sessionCode: code, variantId: item.variantId, qty, unitBreakdown, clientRequestId },
         {
           onSuccess: (res) => {
-            // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس الصنف صارت لاغية.
+            // عدّة مباشرة نجحت ⇒ أي نسخة معلّقة قديمة لنفس المنتج صارت لاغية.
             const stale = peekAll(code).find((qc) => qc.variantId === item.variantId);
             if (stale) removeQueued(code, stale.clientRequestId);
             setQueueCount(queueSize(code));
@@ -552,7 +552,7 @@ export default function CountPortal() {
       ) : (
         <CenterScreen>
           <BrandMark />
-          <p className="text-sm font-semibold text-muted-foreground">جارٍ تحميل أصنافك…</p>
+          <p className="text-sm font-semibold text-muted-foreground">جارٍ تحميل منتجاتك…</p>
         </CenterScreen>
       ),
     );
@@ -602,7 +602,7 @@ export default function CountPortal() {
         <p className="text-sm leading-relaxed text-muted-foreground">
           {movedToReview
             ? "اكتمل العدّ من جميع العمّال — الجلسة الآن قيد مراجعة المسؤول."
-            : `بانتظار بقية الزملاء — تقدّم الجلسة ${fmtInt(sessionProgress.counted)}/${fmtInt(sessionProgress.total)} صنفاً.`}
+            : `بانتظار بقية الزملاء — تقدّم الجلسة ${fmtInt(sessionProgress.counted)}/${fmtInt(sessionProgress.total)} منتجاً.`}
         </p>
         {waNotify && (
           <Button variant="outline" size="lg" className="h-12 w-60 text-base font-bold" onClick={() => openWhatsApp(null, waMsg)}>
@@ -610,7 +610,7 @@ export default function CountPortal() {
           </Button>
         )}
         <button type="button" className="py-2 text-sm font-bold text-primary" onClick={() => setShowListAfterSubmit(true)}>
-          عرض أصنافي (للقراءة فقط)
+          عرض منتجاتي (للقراءة فقط)
         </button>
       </CenterScreen>,
     );
@@ -746,7 +746,7 @@ export default function CountPortal() {
           <p className="py-8 text-center text-sm text-muted-foreground">لا نتائج للبحث «{q.trim()}»</p>
         )}
 
-        {/* أصنافي */}
+        {/* منتجاتي */}
         {myFiltered.map((i) => {
           const queued = queuedByVariant.get(i.variantId);
           const isRecPending = pendingRecountSet.has(i.variantId);
@@ -1016,18 +1016,18 @@ function QtySheet({
 
       {isRecount && (
         <div className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-          ⟳ مطلوب إعادة عدّ ثانية لهذا الصنف{recountReason ? ` — السبب: ${recountReason}` : ""}. عُدّ من جديد بتمعّن.
+          ⟳ مطلوب إعادة عدّ ثانية لهذا المنتج{recountReason ? ` — السبب: ${recountReason}` : ""}. عُدّ من جديد بتمعّن.
         </div>
       )}
       {isVerify && (
         <div className="mb-2 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold leading-relaxed text-violet-800 dark:bg-violet-950/50 dark:text-violet-300">
-          ✓✓ عدّ تحقّقي — الصنف عدّه زميلك سابقاً. عدّك لن يستبدل عدّه: إن تطابقا تأكّد الرقم، وإن اختلفا يُرفع
+          ✓✓ عدّ تحقّقي — المنتج عدّه زميلك سابقاً. عدّك لن يستبدل عدّه: إن تطابقا تأكّد الرقم، وإن اختلفا يُرفع
           تعارض يفصل فيه المسؤول. (كميته لا تُعرض لك — جرد أعمى)
         </div>
       )}
       {!item.isMine && !isVerify && (
         <div className="mb-2 rounded-lg bg-muted px-3 py-2 text-xs font-semibold leading-relaxed text-muted-foreground">
-          الصنف من منطقة زميل ولم يُعدّ بعد — سيُسجَّل العدّ الأول باسمك.
+          المنتج من منطقة زميل ولم يُعدّ بعد — سيُسجَّل العدّ الأول باسمك.
         </div>
       )}
 

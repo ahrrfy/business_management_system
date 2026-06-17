@@ -182,7 +182,7 @@ export interface ClientUnit {
   wholesale: string;
 }
 
-/** متغيّر واحد = صنف مخزنيّ مستقل (لون/قياس) بباركود لكل وحدة ورصيد لكل فرع. */
+/** متغيّر واحد = منتج مخزنيّ مستقل (لون/قياس) بباركود لكل وحدة ورصيد لكل فرع. */
 export interface ClientVariant {
   id: string;
   color: string;

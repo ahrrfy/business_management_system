@@ -246,7 +246,7 @@ export default function WorkOrderNew() {
     if (!title.trim() && cart.length === 0) return setError("أدخل عنواناً لخدمة التخصيص أو أضف منتجاً واحداً للسلة على الأقل.");
     if (!cart.length && !salePrice.trim()) return setError("سعر بيع خدمة التخصيص مطلوب.");
     if (paymentMethod === "CARD" && !paymentReference.trim()) return setError("رقم العملية المرجعي مطلوب للبطاقة.");
-    if (grandTotal.lte(0)) return setError("الإجمالي يجب أن يكون موجباً (أضف صنفاً أو سعر تخصيص).");
+    if (grandTotal.lte(0)) return setError("الإجمالي يجب أن يكون موجباً (أضف منتجاً أو سعر تخصيص).");
 
     let customerId: number | null = null;
     try {
@@ -287,7 +287,7 @@ export default function WorkOrderNew() {
       hasDelivery,
       deliveryAddress: hasDelivery ? deliveryAddress.trim() || null : null,
       deliveryCost: hasDelivery ? D(deliveryCost || "0").toFixed(2) : "0",
-      // أصناف نقطة البيع المصغّرة — جدولها الصحيح workOrderItems.
+      // منتجات نقطة البيع المصغّرة — جدولها الصحيح workOrderItems.
       items: cart.map((c) => ({
         variantId: c.variantId,
         productUnitId: c.productUnitId,
@@ -320,7 +320,7 @@ export default function WorkOrderNew() {
       <p class="muted">العميل: ${esc(customerSel.name || "—")} ${customerSel.isNew ? "(جديد)" : ""}</p>
       <p class="muted">القناة: ${esc(CHANNELS.find((c) => c.v === channel)?.label || "—")} ${channelHandle ? `· <bdi>${esc(channelHandle)}</bdi>` : ""}</p>
       <p class="muted">الأولوية: ${esc(PRIORITIES.find((p) => p.v === priority)?.label || "عادي")}</p>
-      <table><thead><tr><th>المنتج</th><th>الوحدة</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">لا أصناف</td></tr>`}</tbody></table>
+      <table><thead><tr><th>المنتج</th><th>الوحدة</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">لا منتجات</td></tr>`}</tbody></table>
       ${title ? `<p><b>خدمة التخصيص:</b> ${esc(title)}</p>` : ""}
       <p class="total">الإجمالي: ${esc(fmt(grandTotal.toFixed(2)))} د.ع</p>
       <p>العربون: ${esc(fmt(depositD.toFixed(2)))} د.ع · المتبقّي: ${esc(fmt(remaining.toFixed(2)))} د.ع</p>

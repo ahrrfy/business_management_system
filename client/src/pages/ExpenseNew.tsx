@@ -246,7 +246,7 @@ export default function ExpenseNew() {
         </CardContent>
       </Card>
 
-      {/* أصناف الصرف من المخزون (نثرية/تلف) */}
+      {/* منتجات الصرف من المخزون (نثرية/تلف) */}
       {isStock && (
         <Card>
           <CardHeader><CardTitle className="text-base">المنتجات المُستهلَكة من المخزون</CardTitle></CardHeader>

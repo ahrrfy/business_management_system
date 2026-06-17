@@ -109,7 +109,7 @@ export default function ExecutiveDashboard() {
         label: "تنبيهات المخزون",
         value: fmtAr(dm.lowStockCount),
         tone: dm.lowStockCount > 0 ? "warning" : "positive",
-        hint: "أصناف تحت الحدّ الأدنى",
+        hint: "منتجات تحت الحدّ الأدنى",
       });
       items.push({
         label: "الذمم المتأخّرة",

@@ -104,7 +104,7 @@ export default function PurchaseReceive() {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">الأصناف</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">المنتجات</CardTitle></CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">

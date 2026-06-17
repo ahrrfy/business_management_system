@@ -116,7 +116,7 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
   );
 }
 
-const PAGE = 200; // سقف عرض تدريجي — جلسات الجرد الشامل قد تحوي آلاف الأصناف.
+const PAGE = 200; // سقف عرض تدريجي — جلسات الجرد الشامل قد تحوي آلاف المنتجات.
 
 export default function StocktakeReview() {
   const params = useParams();
@@ -138,7 +138,7 @@ export default function StocktakeReview() {
   const [recountReason, setRecountReason] = useState("");
   const [conflictFor, setConflictFor] = useState<number | null>(null);
   const [confirmOpen, setConfirmOpen] = useState(false);
-  /** سبب الفرق المختار محلياً لكل صنف (قبل/مع القرار). */
+  /** سبب الفرق المختار محلياً لكل منتج (قبل/مع القرار). */
   const [reasonSel, setReasonSel] = useState<Record<number, Reason>>({});
 
   function setFilter(f: FilterKey) {
@@ -285,7 +285,7 @@ export default function StocktakeReview() {
     : barriers.openConflicts > 0
       ? `⚠ ${nf(barriers.openConflicts)} تعارض بين عدَّين يحتاج فصلاً`
       : barriers.pendingRecounts > 0
-        ? `⟳ ${nf(barriers.pendingRecounts)} صنف بانتظار إعادة العدّ`
+        ? `⟳ ${nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ`
         : barriers.undecidedOverThreshold > 0
           ? `⚖ ${nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ بلا قرار`
           : approveMode === "wait"
@@ -345,7 +345,7 @@ export default function StocktakeReview() {
     exportRows(exportable, {
       filename: `فروقات الجرد ${s.code}`,
       columns: [
-        { key: "productName", header: "الصنف" },
+        { key: "productName", header: "المنتج" },
         { key: "variantName", header: "المتغيّر", map: (r) => r.variantName ?? "" },
         { key: "sku", header: "SKU" },
         { key: "baseUnit", header: "الوحدة", map: (r) => r.baseUnit ?? "" },
@@ -454,7 +454,7 @@ export default function StocktakeReview() {
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
             <span className="font-bold">قبل الاعتماد:</span>
             {barriers.openConflicts > 0 && <span>⚠ {nf(barriers.openConflicts)} تعارض بين عدَّين يحتاج فصلاً</span>}
-            {barriers.pendingRecounts > 0 && <span>⟳ {nf(barriers.pendingRecounts)} صنف بانتظار إعادة العدّ</span>}
+            {barriers.pendingRecounts > 0 && <span>⟳ {nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ</span>}
             {barriers.undecidedOverThreshold > 0 && (
               <span>⚖ {nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ يحتاج قرارك (تسوية / إبقاء / إعادة عدّ)</span>
             )}
@@ -483,13 +483,13 @@ export default function StocktakeReview() {
       )}
       {barriers.notCounted > 0 && !isApproved && (
         <div className="rounded-lg border bg-muted/50 px-4 py-2.5 text-sm text-muted-foreground">
-          ℹ مراجعة جزئية: {nf(barriers.notCounted)} صنف لم يُعَدّ — سيبقى رصيده الدفتري دون تسوية.
+          ℹ مراجعة جزئية: {nf(barriers.notCounted)} منتج لم يُعَدّ — سيبقى رصيده الدفتري دون تسوية.
         </div>
       )}
 
       {/* مؤشرات الملخّص */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-        <Stat label="أصناف معدودة" value={`${nf(totals.counted)} / ${nf(totals.total)}`} />
+        <Stat label="منتجات معدودة" value={`${nf(totals.counted)} / ${nf(totals.total)}`} />
         <Stat label="مطابقة تماماً" value={nf(totals.matched)} tone="emerald" />
         <Stat label="زيادة" value={nf(totals.over)} sub={`+${money(totals.overValue)}`} tone="blue" />
         <Stat label="نقص (عجز)" value={nf(totals.short)} sub={money(totals.shortValue)} tone="rose" />
@@ -508,10 +508,10 @@ export default function StocktakeReview() {
         </CardHeader>
         <div className="grid gap-x-6 gap-y-2 p-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
           <p className={barriers.notCounted === 0 ? "text-emerald-700" : "text-amber-700"}>
-            {barriers.notCounted === 0 ? "✓ كل أصناف النطاق معدودة" : `⚠ ${nf(barriers.notCounted)} صنف غير معدود (لا يحجب — يبقى دفترياً)`}
+            {barriers.notCounted === 0 ? "✓ كل منتجات النطاق معدودة" : `⚠ ${nf(barriers.notCounted)} منتج غير معدود (لا يحجب — يبقى دفترياً)`}
           </p>
           <p className={barriers.pendingRecounts === 0 ? "text-emerald-700" : "text-rose-700"}>
-            {barriers.pendingRecounts === 0 ? "✓ لا إعادات عدّ معلّقة" : `✗ ${nf(barriers.pendingRecounts)} صنف بانتظار إعادة العدّ`}
+            {barriers.pendingRecounts === 0 ? "✓ لا إعادات عدّ معلّقة" : `✗ ${nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ`}
           </p>
           <p className={barriers.openConflicts === 0 ? "text-emerald-700" : "text-rose-700"}>
             {barriers.openConflicts === 0 ? "✓ لا تعارض بين عدَّين" : `✗ ${nf(barriers.openConflicts)} تعارض مفتوح يحتاج فصلاً`}
@@ -553,7 +553,7 @@ export default function StocktakeReview() {
             <Switch checked={autoAdjust} onCheckedChange={setAutoAdjust} />
             التصحيح الآلي للحركات اللاحقة للعدّ
             <span className="hidden font-normal text-muted-foreground lg:inline">
-              (بيع/شراء وقع بعد عدّ الصنف يُحتسب تلقائياً — يمنع الفروقات الزائفة)
+              (بيع/شراء وقع بعد عدّ المنتج يُحتسب تلقائياً — يمنع الفروقات الزائفة)
             </span>
           </label>
           <input
@@ -566,7 +566,7 @@ export default function StocktakeReview() {
             className="h-8 w-44 rounded-md border bg-card px-2.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           />
           <span className="mr-auto text-xs text-muted-foreground">
-            {nf(filtered.length)} صنفاً{review.isFetching ? " · يُحدَّث…" : ""}
+            {nf(filtered.length)} منتجاً{review.isFetching ? " · يُحدَّث…" : ""}
           </span>
         </div>
 
@@ -574,11 +574,11 @@ export default function StocktakeReview() {
           <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-muted/60">
               <tr className="text-right text-xs text-muted-foreground">
-                <th className="p-2.5 font-semibold">الصنف</th>
+                <th className="p-2.5 font-semibold">المنتج</th>
                 <th className="p-2.5 font-semibold">عدّه</th>
                 <th className="p-2.5 text-center font-semibold" title="لقطة الرصيد الدفتري لحظة إنشاء الجلسة">الدفتري المتوقع</th>
                 <th className="p-2.5 text-center font-semibold">المعدود الخام</th>
-                <th className="p-2.5 text-center font-semibold" title="صافي حركات المخزون بعد وقت عدّ الصنف">حركات لاحقة</th>
+                <th className="p-2.5 text-center font-semibold" title="صافي حركات المخزون بعد وقت عدّ المنتج">حركات لاحقة</th>
                 <th className="p-2.5 text-center font-semibold">المعدود المصحَّح</th>
                 <th className="p-2.5 text-center font-semibold">رصيد الدفتر الآن</th>
                 <th className="p-2.5 text-center font-semibold">الفرق ±</th>
@@ -611,7 +611,7 @@ export default function StocktakeReview() {
                           : ""
                     }`}
                   >
-                    {/* الصنف */}
+                    {/* المنتج */}
                     <td className="p-2.5">
                       <p className="font-bold">
                         {r.productName}{" "}
@@ -894,7 +894,7 @@ export default function StocktakeReview() {
               {shown.length === 0 && (
                 <tr>
                   <td colSpan={11} className="p-8 text-center text-sm text-muted-foreground">
-                    لا أصناف مطابقة لهذا الفلتر.
+                    لا منتجات مطابقة لهذا الفلتر.
                   </td>
                 </tr>
               )}
@@ -904,7 +904,7 @@ export default function StocktakeReview() {
         {filtered.length > shown.length && (
           <div className="border-t p-3 text-center">
             <Button variant="outline" size="sm" onClick={() => setVisible((v) => v + PAGE)}>
-              عرض {nf(Math.min(PAGE, filtered.length - shown.length))} صنفاً إضافياً (المعروض {nf(shown.length)} من{" "}
+              عرض {nf(Math.min(PAGE, filtered.length - shown.length))} منتجاً إضافياً (المعروض {nf(shown.length)} من{" "}
               {nf(filtered.length)})
             </Button>
           </div>
@@ -919,7 +919,7 @@ export default function StocktakeReview() {
             <DialogDescription>
               {conflictRow && (
                 <>
-                  الصنف{" "}
+                  المنتج{" "}
                   <b className="text-foreground">
                     {conflictRow.productName}
                     {conflictRow.variantName ? ` — ${conflictRow.variantName}` : ""}
@@ -984,7 +984,7 @@ export default function StocktakeReview() {
           <DialogHeader>
             <DialogTitle>طلب إعادة عدّ ثانية</DialogTitle>
             <DialogDescription>
-              سيظهر الصنف <b className="text-foreground">{recountFor?.label}</b> كمهمة إعادة عدّ في شاشة العامل،
+              سيظهر المنتج <b className="text-foreground">{recountFor?.label}</b> كمهمة إعادة عدّ في شاشة العامل،
               دون كشف الرصيد الدفتري أو سبب الفرق له. عدّ الإعادة يحلّ محلّ العدّ الأول في الحساب.
             </DialogDescription>
           </DialogHeader>
@@ -1027,7 +1027,7 @@ export default function StocktakeReview() {
                 <span className="font-bold tabular-nums" dir="ltr">{nf(adjustExplicit)}</span>
               </li>
               <li className="flex justify-between rounded-md bg-muted/60 px-3 py-2">
-                <span>أصناف أُبقي رصيدها الدفتري</span>
+                <span>منتجات أُبقي رصيدها الدفتري</span>
                 <span className="font-bold tabular-nums" dir="ltr">{nf(keepCount)}</span>
               </li>
               <li className="flex justify-between rounded-md bg-rose-50 px-3 py-2 font-bold text-rose-700">

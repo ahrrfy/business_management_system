@@ -54,7 +54,7 @@ export default function PurchaseRegister() {
         { key: "orderDate", header: "التاريخ" },
         { key: "poNumber", header: "أمر الشراء", map: (r) => r.poNumber ?? `#${r.poId}` },
         { key: "supplierName", header: "المورّد", map: (r) => r.supplierName ?? "" },
-        { key: "productName", header: "الصنف", map: (r) => r.productName ?? "" },
+        { key: "productName", header: "المنتج", map: (r) => r.productName ?? "" },
         { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity) },
         { key: "unitPrice", header: "سعر الوحدة", map: (r) => Number(r.unitPrice) },
         { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
@@ -73,7 +73,7 @@ export default function PurchaseRegister() {
         { key: "date", label: "التاريخ" },
         { key: "po", label: "أمر الشراء" },
         { key: "supplier", label: "المورّد" },
-        { key: "product", label: "الصنف" },
+        { key: "product", label: "المنتج" },
         { key: "qty", label: "الكمية", align: "left" },
         { key: "unitPrice", label: "سعر الوحدة", align: "left" },
         { key: "total", label: "الإجمالي", align: "left" },
@@ -129,7 +129,7 @@ export default function PurchaseRegister() {
                     <th className="p-2.5 text-right font-medium">التاريخ</th>
                     <th className="p-2.5 text-right font-medium">أمر الشراء</th>
                     <th className="p-2.5 text-right font-medium">المورّد</th>
-                    <th className="p-2.5 text-right font-medium">الصنف</th>
+                    <th className="p-2.5 text-right font-medium">المنتج</th>
                     <th className="p-2.5 text-left font-medium">الكمية</th>
                     <th className="p-2.5 text-left font-medium">سعر الوحدة</th>
                     <th className="p-2.5 text-left font-medium">الإجمالي</th>

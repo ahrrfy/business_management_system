@@ -109,7 +109,7 @@ export default function StocktakeCountSheets() {
       </div>
 
       <p className="text-sm text-muted-foreground">
-        قائمة مستقلة لكل عامل بأصناف منطقته — بلا أرصدة دفترية (جرد أعمى). تُطبع وتُسلَّم ورقياً عند
+        قائمة مستقلة لكل عامل بمنتجات منطقته — بلا أرصدة دفترية (جرد أعمى). تُطبع وتُسلَّم ورقياً عند
         تعذّر استخدام الهاتف، ثم تُدخل الكميات في النظام. رمز الدخول (PIN) لا يُطبع على الورقة.
       </p>
 
@@ -149,12 +149,12 @@ export default function StocktakeCountSheets() {
                   </div>
                 </div>
 
-                {/* جدول الأصناف — أعمى: بلا أرصدة */}
+                {/* جدول المنتجات — أعمى: بلا أرصدة */}
                 <table className="mt-4 w-full border-collapse text-sm">
                   <thead>
                     <tr className="border-y-2 border-foreground text-right text-xs">
                       <th className="w-8 py-1.5 pl-2 font-bold">#</th>
-                      <th className="px-2 py-1.5 font-bold">الصنف</th>
+                      <th className="px-2 py-1.5 font-bold">المنتج</th>
                       <th className="px-2 py-1.5 font-bold">المتغيّر</th>
                       <th className="px-2 py-1.5 font-bold">SKU</th>
                       <th className="px-2 py-1.5 font-bold">الباركود</th>
@@ -179,7 +179,7 @@ export default function StocktakeCountSheets() {
                       </tr>
                     ))}
                     {sh.items.length === 0 && (
-                      <tr><td colSpan={9} className="py-3 text-center text-muted-foreground">لا أصناف في هذا التكليف.</td></tr>
+                      <tr><td colSpan={9} className="py-3 text-center text-muted-foreground">لا منتجات في هذا التكليف.</td></tr>
                     )}
                   </tbody>
                 </table>
@@ -199,7 +199,7 @@ export default function StocktakeCountSheets() {
                 </div>
 
                 <p className="mt-4 text-[11px] text-muted-foreground">
-                  تعليمات: عُدَّ ما على الرف فعلياً فقط · لا تنقل أرقاماً من النظام أو من زميل · أي صنف
+                  تعليمات: عُدَّ ما على الرف فعلياً فقط · لا تنقل أرقاماً من النظام أو من زميل · أي منتج
                   غير موجود اكتب «0» · الكميات بوحدة الأساس المذكورة.
                 </p>
               </div>

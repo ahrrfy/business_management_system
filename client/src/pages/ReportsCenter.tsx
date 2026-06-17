@@ -90,8 +90,8 @@ const SECTIONS: Section[] = [
       { title: "الجرد والتسوية", desc: "محاضر الجرد ودقّة السجلّ", href: "/stocktakes", icon: "📋", gate: "manager", status: "ready" },
       { title: "تقييم المخزون", desc: "كمية × كلفة بالفرع/الفئة", href: "/reports/inventory-valuation", icon: "💰", gate: "manager", status: "ready" },
       { title: "حالة المخزون وإعادة الطلب", desc: "منخفض/نفد مقابل حدّ الطلب", href: "/reports/stock-status", icon: "⚠️", gate: "manager", status: "ready" },
-      { title: "بطاقة الصنف (Kardex)", desc: "حركة صنف زمنياً بالرصيد الحالي", href: "/reports/item-ledger", icon: "🗂️", gate: "manager", status: "ready" },
-      { title: "تحليل ABC", desc: "تصنيف الأصناف بالقيمة (باريتو)", href: "/reports/abc", icon: "🔠", gate: "manager", status: "ready" },
+      { title: "بطاقة المنتج (Kardex)", desc: "حركة منتج زمنياً بالرصيد الحالي", href: "/reports/item-ledger", icon: "🗂️", gate: "manager", status: "ready" },
+      { title: "تحليل ABC", desc: "تصنيف المنتجات بالقيمة (باريتو)", href: "/reports/abc", icon: "🔠", gate: "manager", status: "ready" },
     ],
   },
   {
@@ -224,7 +224,7 @@ export default function ReportsCenter() {
             <p className="text-2xl font-bold tabular-nums text-amber-600" dir="ltr">
               {metrics.isLoading ? "…" : (metrics.data?.lowStockCount ?? 0)}
             </p>
-            <p className="mt-0.5 text-[10px] text-muted-foreground">أصناف تحت حدّ الطلب</p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">منتجات تحت حدّ الطلب</p>
           </CardContent>
         </Card>
         <Card>

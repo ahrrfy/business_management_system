@@ -11,10 +11,10 @@
  * (تعديلها للمدير+ فقط — الخادم يتجاهلها لغيره)؛ العدّ المكرر VERIFY افتراضياً؛ البيع لا يتوقف.
  *
  * مصادر البيانات:
- *  - الأصناف (FULL/MANUAL): trpc.inventory.onHand (يحترم عزل الفرع خادمياً).
+ *  - المنتجات (FULL/MANUAL): trpc.inventory.onHand (يحترم عزل الفرع خادمياً).
  *  - المستخدمون (تكليف USER): trpc.stocktakes.assignableUsers — warehouseProcedure، قائمة منسدلة
  *    لكل الأدوار المخوّلة؛ الإدخال اليدوي لمعرّف الحساب يبقى بديلاً عند فشل التحميل.
- *  - الفئات (CATEGORY): trpc.catalog.categories — النطاق مفعَّل، والخادم يحلّ أصناف الفئات لحظة الإنشاء.
+ *  - الفئات (CATEGORY): trpc.catalog.categories — النطاق مفعَّل، والخادم يحلّ منتجات الفئات لحظة الإنشاء.
  *
  * التوزيع على التكليفات: MANUAL وحده يُرسل variantIds صريحة (كتل متساوية محلياً)؛
  * FULL/MOVING/CATEGORY لا يرسلون variantIds إطلاقاً — الخادم يوزّع غير المُسنَد كتلاً متساوية على كل التكليفات.
@@ -39,9 +39,9 @@ type DupPolicy = "VERIFY" | "BLOCK";
 
 const SCOPE_TYPE_LABEL: Record<StScope, string> = {
   FULL: "جرد شامل للفرع",
-  MOVING: "الأصناف المتحركة",
+  MOVING: "المنتجات المتحركة",
   CATEGORY: "حسب الفئة",
-  MANUAL: "أصناف مختارة",
+  MANUAL: "منتجات مختارة",
 };
 
 /** تسمية دور الحساب في منتقي تكليف USER (مخرج assignableUsers: {id,name,role}). */
@@ -176,7 +176,7 @@ export default function StocktakeNew() {
     (branches[0]?.id ?? 0);
   const branchName = branches.find((b) => b.id === effectiveBranchId)?.name ?? "—";
 
-  /* أصناف الفرع (للنطاق الشامل وعدّاده + منتقي MANUAL) — بحث محلي فوق حمولة واحدة. */
+  /* منتجات الفرع (للنطاق الشامل وعدّاده + منتقي MANUAL) — بحث محلي فوق حمولة واحدة. */
   const onHandQ = trpc.inventory.onHand.useQuery(
     { branchId: effectiveBranchId, limit: 1000 },
     { enabled: effectiveBranchId > 0 && (scopeType === "FULL" || scopeType === "MANUAL") }
@@ -192,7 +192,7 @@ export default function StocktakeNew() {
   const usersQ = trpc.stocktakes.assignableUsers.useQuery(undefined, { enabled: wantsUser });
   const userOptions = usersQ.data ?? [];
 
-  /* عدّاد أصناف النطاق: FULL من onHand، MANUAL من الاختيار، MOVING يُحدَّد عند الإنشاء. */
+  /* عدّاد منتجات النطاق: FULL من onHand، MANUAL من الاختيار، MOVING يُحدَّد عند الإنشاء. */
   const scopeCount: number | null =
     scopeType === "FULL"
       ? onHandQ.isLoading
@@ -216,13 +216,13 @@ export default function StocktakeNew() {
     return rows.slice(0, 200);
   }, [onHand, pickQ]);
 
-  /* أصناف مختارة غير ظاهرة في قائمة الفرع الحالي (prefill من شاشة أخرى مثلاً). */
+  /* منتجات مختارة غير ظاهرة في قائمة الفرع الحالي (prefill من شاشة أخرى مثلاً). */
   const unknownSelected = useMemo(() => {
     const known = new Set(onHand.map((r) => Number(r.variantId)));
     return manualIds.filter((id) => !known.has(id));
   }, [onHand, manualIds]);
 
-  /* توزيع الأصناف على العمّال — لنطاق MANUAL فقط: كتل متتالية بالتساوي (بترتيب الاختيار).
+  /* توزيع المنتجات على العمّال — لنطاق MANUAL فقط: كتل متتالية بالتساوي (بترتيب الاختيار).
      FULL/MOVING/CATEGORY لا تُرسَل لهم variantIds إطلاقاً — الخادم يوزّع غير المُسنَد
      كتلاً متساوية على كل التكليفات لحظة الإنشاء. */
   const validWorkers = workers.filter((w) => w.name.trim() !== "");
@@ -243,9 +243,9 @@ export default function StocktakeNew() {
     if (step === 0) {
       if (!effectiveBranchId) return "اختر الفرع.";
       if (scopeType === "CATEGORY" && categoryIds.length === 0) return "اختر فئة واحدة على الأقل.";
-      if (scopeType === "MANUAL" && manualIds.length === 0) return "اختر صنفاً واحداً على الأقل.";
+      if (scopeType === "MANUAL" && manualIds.length === 0) return "اختر منتجاً واحداً على الأقل.";
       if (scopeType === "FULL" && !onHandQ.isLoading && onHand.length === 0)
-        return "لا أصناف في هذا الفرع — لا يمكن بدء جرد شامل.";
+        return "لا منتجات في هذا الفرع — لا يمكن بدء جرد شامل.";
       return null;
     }
     if (step === 1) {
@@ -402,17 +402,17 @@ export default function StocktakeNew() {
               <div className="grid gap-2 sm:grid-cols-2">
                 {(
                   [
-                    ["FULL", "جرد شامل للفرع", "كل أصناف الفرع — مناسب للجرد الدوري الكبير", false],
-                    ["MOVING", "الأصناف المتحركة فقط", "ما عليه حركة بيع/شراء خلال فترة — أسرع وأعلى أثراً", false],
-                    ["CATEGORY", "حسب الفئة / القسم", "فئات محددة مثل الورق أو الأحبار — يحلّ الخادم أصنافها لحظة الإنشاء", false],
-                    ["MANUAL", "أصناف مختارة يدوياً", "قائمة تُنتقى صنفاً صنفاً", false],
+                    ["FULL", "جرد شامل للفرع", "كل منتجات الفرع — مناسب للجرد الدوري الكبير", false],
+                    ["MOVING", "المنتجات المتحركة فقط", "ما عليه حركة بيع/شراء خلال فترة — أسرع وأعلى أثراً", false],
+                    ["CATEGORY", "حسب الفئة / القسم", "فئات محددة مثل الورق أو الأحبار — يحلّ الخادم منتجاتها لحظة الإنشاء", false],
+                    ["MANUAL", "منتجات مختارة يدوياً", "قائمة تُنتقى منتجاً منتجاً", false],
                   ] as Array<[StScope, string, string, boolean]>
                 ).map(([key, label, desc, disabled]) => (
                   <button
                     key={key}
                     type="button"
                     disabled={disabled}
-                    title={disabled ? "يُفعَّل فور توفّر قائمة الفئات — استعمل «أصناف مختارة يدوياً»" : ""}
+                    title={disabled ? "يُفعَّل فور توفّر قائمة الفئات — استعمل «منتجات مختارة يدوياً»" : ""}
                     onClick={() => setScopeType(key)}
                     className={`rounded-lg border p-3 text-right transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                       scopeType === key
@@ -448,7 +448,7 @@ export default function StocktakeNew() {
                 {categoriesQ.isLoading ? (
                   <p className="text-xs text-muted-foreground">جارٍ تحميل الفئات…</p>
                 ) : categoryOptions.length === 0 ? (
-                  <p className="text-xs text-amber-700">لا فئات معرّفة في النظام — استعمل «أصناف مختارة يدوياً».</p>
+                  <p className="text-xs text-amber-700">لا فئات معرّفة في النظام — استعمل «منتجات مختارة يدوياً».</p>
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     {categoryOptions.map((c) => {
@@ -475,14 +475,14 @@ export default function StocktakeNew() {
                   </div>
                 )}
                 <p className="text-[11px] text-muted-foreground">
-                  أصناف الفئات تُحلّ خادمياً لحظة الإنشاء (اللقطة الدفترية) وتُوزَّع كتلاً متساوية على كل العمّال.
+                  منتجات الفئات تُحلّ خادمياً لحظة الإنشاء (اللقطة الدفترية) وتُوزَّع كتلاً متساوية على كل العمّال.
                 </p>
               </div>
             )}
 
             {scopeType === "MANUAL" && (
               <div className="space-y-1.5">
-                <Label>اختيار الأصناف</Label>
+                <Label>اختيار المنتجات</Label>
                 <div className="flex flex-wrap items-center gap-2">
                   <Input
                     value={pickQ}
@@ -513,7 +513,7 @@ export default function StocktakeNew() {
                 </div>
                 <div className="max-h-56 overflow-auto rounded-lg border">
                   {onHandQ.isLoading && (
-                    <p className="p-4 text-center text-sm text-muted-foreground">جارٍ تحميل أصناف الفرع…</p>
+                    <p className="p-4 text-center text-sm text-muted-foreground">جارٍ تحميل منتجات الفرع…</p>
                   )}
                   {pickList.map((r) => {
                     const vid = Number(r.variantId);
@@ -542,12 +542,12 @@ export default function StocktakeNew() {
                     );
                   })}
                   {!onHandQ.isLoading && pickList.length === 0 && (
-                    <p className="p-4 text-center text-sm text-muted-foreground">لا أصناف مطابقة للبحث.</p>
+                    <p className="p-4 text-center text-sm text-muted-foreground">لا منتجات مطابقة للبحث.</p>
                   )}
                 </div>
                 {unknownSelected.length > 0 && (
                   <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    {nf(unknownSelected.length)} من الأصناف المختارة (إحالة مسبقة) غير ظاهرة في قائمة هذا الفرع —
+                    {nf(unknownSelected.length)} من المنتجات المختارة (إحالة مسبقة) غير ظاهرة في قائمة هذا الفرع —
                     تبقى ضمن النطاق ويتحقق الخادم منها عند الإنشاء.
                   </p>
                 )}
@@ -555,7 +555,7 @@ export default function StocktakeNew() {
             )}
 
             <div className="flex items-center justify-between rounded-lg bg-muted/60 px-4 py-2.5 text-sm">
-              <span className="font-semibold">أصناف ضمن النطاق:</span>
+              <span className="font-semibold">منتجات ضمن النطاق:</span>
               {scopeCount == null ? (
                 <span className="inline-block rounded-full border bg-muted px-2.5 py-0.5 text-xs font-semibold text-muted-foreground">
                   {scopeType === "MOVING" ? "تُحدَّد عند الإنشاء حسب الحركة الفعلية" : "جارٍ الحساب…"}
@@ -568,7 +568,7 @@ export default function StocktakeNew() {
                       : "bg-rose-50 text-rose-700 border-rose-200"
                   }`}
                 >
-                  {nf(scopeCount)} صنفاً
+                  {nf(scopeCount)} منتجاً
                 </span>
               )}
             </div>
@@ -582,7 +582,7 @@ export default function StocktakeNew() {
           <CardContent className="space-y-4 p-5">
             <p className="text-sm text-muted-foreground">
               قسّم النطاق بين العمّال — نطاقات «شامل / متحركة / فئة» يوزّعها الخادم كتلاً متساوية على كل
-              العمّال لحظة الإنشاء، و«أصناف مختارة» تُوزَّع هنا بالتساوي حسب ترتيب الاختيار. عامل «الرابط
+              العمّال لحظة الإنشاء، و«منتجات مختارة» تُوزَّع هنا بالتساوي حسب ترتيب الاختيار. عامل «الرابط
               الخارجي» يدخل برمز PIN دون حساب — مناسب للعمّال الموسميين.
             </p>
             {workers.map((w, idx) => {
@@ -634,7 +634,7 @@ export default function StocktakeNew() {
                         {w.name.trim() === ""
                           ? "—"
                           : dist
-                            ? `${nf(dist.length)} صنفاً`
+                            ? `${nf(dist.length)} منتجاً`
                             : "يُوزَّع بالتساوي عند الإنشاء"}
                       </span>
                       {workers.length > 1 && (
@@ -804,7 +804,7 @@ export default function StocktakeNew() {
 
               {/* سياسة العدّ المكرر */}
               <div className="space-y-1.5">
-                <Label>العدّ المكرر — صنف عدّه زميل سابقاً</Label>
+                <Label>العدّ المكرر — منتج عدّه زميل سابقاً</Label>
                 <p className="text-xs text-muted-foreground">
                   العدّ التحقّقي لا يستبدل عدّ الزميل: إن تطابقا زادت الموثوقية، وإن اختلفا يُرفع تعارض يفصل فيه
                   المسؤول
@@ -817,7 +817,7 @@ export default function StocktakeNew() {
                         "سماح كعدّ تحقّقي (موصى به)",
                         "يُسجّل عدّاً ثانياً مستقلاً ويُقارن آلياً — التعارض يُرفع للمراجعة",
                       ],
-                      ["BLOCK", "منع تام", "الصنف المعدود يُقفل على بقية العمّال نهائياً"],
+                      ["BLOCK", "منع تام", "المنتج المعدود يُقفل على بقية العمّال نهائياً"],
                     ] as Array<[DupPolicy, string, string]>
                   ).map(([key, label, desc]) => (
                     <button
@@ -845,7 +845,7 @@ export default function StocktakeNew() {
               <div className="rounded-lg border bg-muted/40 p-3.5 text-sm">
                 <p className="font-bold">الحركة أثناء الجرد: البيع مستمر، بلا إيقاف.</p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
-                  أيّ بيع/شراء يقع بعد عدّ الصنف يُرصَد ويُصحَّح آلياً في شاشة المراجعة مع تنبيه واضح — لا توقف
+                  أيّ بيع/شراء يقع بعد عدّ المنتج يُرصَد ويُصحَّح آلياً في شاشة المراجعة مع تنبيه واضح — لا توقف
                   للعمل ولا فروقات زائفة.
                 </p>
               </div>
@@ -867,7 +867,7 @@ export default function StocktakeNew() {
                       ? `${SCOPE_TYPE_LABEL.MOVING} — آخر ${nf(Number(movingDays))} يوماً`
                       : scopeCount == null
                         ? SCOPE_TYPE_LABEL[scopeType]
-                        : `${SCOPE_TYPE_LABEL[scopeType]} — ${nf(scopeCount)} صنفاً`
+                        : `${SCOPE_TYPE_LABEL[scopeType]} — ${nf(scopeCount)} منتجاً`
                   }
                 />
                 <SummaryRow k="عمّال الجرد" v={validWorkers.map((w) => w.name.trim()).join("، ") || "—"} />
@@ -939,7 +939,7 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
     const lines = [
       `🧮 *جلسة جرد — ${sessionName}*`,
       `العامل: ${a.name}`,
-      `المنطقة: ${a.zone || "كامل النطاق"} · ${nf(a.itemCount)} صنفاً`,
+      `المنطقة: ${a.zone || "كامل النطاق"} · ${nf(a.itemCount)} منتجاً`,
       "",
       "رابط العدّ:",
       countLink,
@@ -959,8 +959,8 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
             أُنشئت الجلسة <span className="font-mono" dir="ltr">{created.code}</span>
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
-            شارك روابط العدّ مع العمّال — كلٌّ يرى أصناف منطقته فقط، دون الرصيد الدفتري.
-            النطاق: {nf(created.itemCount)} صنفاً.
+            شارك روابط العدّ مع العمّال — كلٌّ يرى منتجات منطقته فقط، دون الرصيد الدفتري.
+            النطاق: {nf(created.itemCount)} منتجاً.
           </p>
         </CardContent>
       </Card>
@@ -979,7 +979,7 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
                 <div>
                   <p className="font-bold">{a.name}</p>
                   <p className="text-xs text-muted-foreground">
-                    {a.zone || "كامل النطاق"} · {nf(a.itemCount)} صنفاً
+                    {a.zone || "كامل النطاق"} · {nf(a.itemCount)} منتجاً
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center gap-2">

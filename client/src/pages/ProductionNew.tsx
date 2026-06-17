@@ -164,7 +164,7 @@ export default function ProductionNew() {
     setError("");
     const ok = await confirm({
       variant: "warning", title: "تأكيد مستند تحويل",
-      description: `سيُستهلك ${inputs.length} صنف مدخل بكلفة ${fmt(mTotalCost.toString())} د.ع ويُنتَج ${outputs.length} صنف. يُعدَّل المخزون فوراً. متابعة؟`,
+      description: `سيُستهلك ${inputs.length} منتج مدخل بكلفة ${fmt(mTotalCost.toString())} د.ع ويُنتَج ${outputs.length} منتج. يُعدَّل المخزون فوراً. متابعة؟`,
       confirmText: "ترحيل المستند",
     });
     if (!ok) return;
@@ -221,7 +221,7 @@ export default function ProductionNew() {
             <div className="mt-2 text-xs text-muted-foreground space-y-1 leading-6">
               <p>• أبيع نفس الورق بوحدة أكبر/أصغر؟ ← <b>ليس إنتاجاً</b>: أضِف وحدة قياس للورق (ورقة/ربطة/كرتون).</p>
               <p>• أحوّل الورق إلى منتج جديد (دفتر/كتاب/كيس)؟ ← <b>هذه الشاشة</b> (بوصفة أو يدوي).</p>
-              <p>• أستهلك صنفاً داخلياً (رول حراري/A4/أقلام) أو تلف؟ ← من <b>«المصاريف»</b> (نثرية/تلف).</p>
+              <p>• أستهلك منتجاً داخلياً (رول حراري/A4/أقلام) أو تلف؟ ← من <b>«المصاريف»</b> (نثرية/تلف).</p>
             </div>
           )}
         </CardContent>
@@ -416,7 +416,7 @@ export default function ProductionNew() {
           <Card>
             <CardHeader><CardTitle className="text-base">المدخلات (المُستهلَكة)</CardTitle></CardHeader>
             <CardContent className="space-y-3">
-              <ProductSearchPicker branchId={effectiveBranch} placeholder="ابحث عن صنف مدخل…" onPick={(v, u) => setInputs((p) => [...p, mkLine(v, u)])} />
+              <ProductSearchPicker branchId={effectiveBranch} placeholder="ابحث عن منتج مدخل…" onPick={(v, u) => setInputs((p) => [...p, mkLine(v, u)])} />
               {inputs.length > 0 ? renderLines(inputs, setInputs, "in") : <p className="text-xs text-muted-foreground">لم تُضف مدخلات بعد.</p>}
             </CardContent>
           </Card>

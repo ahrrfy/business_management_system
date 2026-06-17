@@ -34,9 +34,9 @@ const STATUS_BADGE: Record<StStatus, { label: string; cls: string }> = {
 
 const SCOPE_TYPE_LABEL: Record<StScope, string> = {
   FULL: "جرد شامل للفرع",
-  MOVING: "الأصناف المتحركة",
+  MOVING: "المنتجات المتحركة",
   CATEGORY: "حسب الفئة",
-  MANUAL: "أصناف مختارة",
+  MANUAL: "منتجات مختارة",
 };
 
 const selectCls =
@@ -107,9 +107,9 @@ function asArray<T>(v: unknown): T[] {
 }
 
 /**
- * يبني رابط «/stocktakes/new» مع تمرير قائمة الأصناف المختارة.
+ * يبني رابط «/stocktakes/new» مع تمرير قائمة المنتجات المختارة.
  * لقوائم كبيرة (>200) يُخزَّن المصفوف في sessionStorage بمفتاح فريد ويُمرَّر prefillKey
- * بدل سلسلة معرّفات عملاقة في الـURL (تتجاوز حدود طول العنوان على آلاف الأصناف).
+ * بدل سلسلة معرّفات عملاقة في الـURL (تتجاوز حدود طول العنوان على آلاف المنتجات).
  */
 function buildNewSessionUrl(ids: number[], name: string): string {
   const nameParam = `&name=${encodeURIComponent(name)}`;
@@ -263,7 +263,7 @@ export default function Stocktakes() {
           sub={lastApproved ? lastApproved.name : ""}
         />
         <Stat
-          label="أصناف مستحقة للجرد الدوري"
+          label="منتجات مستحقة للجرد الدوري"
           value={cycleQ.isLoading ? "…" : nf(due.length)}
           sub="حسب تصنيف ABC ودوريّاته"
         />
@@ -321,7 +321,7 @@ export default function Stocktakes() {
                 { key: "scopeType", header: "النطاق", map: (r) => SCOPE_TYPE_LABEL[r.scopeType] ?? r.scopeType },
                 { key: "scopeLabel", header: "تفصيل النطاق" },
                 { key: "status", header: "الحالة", map: (r) => STATUS_BADGE[r.status]?.label ?? r.status },
-                { key: "itemCount", header: "أصناف النطاق" },
+                { key: "itemCount", header: "منتجات النطاق" },
                 { key: "countedCount", header: "المعدود" },
                 { key: "createdByName", header: "أنشأها" },
                 { key: "createdAt", header: "تاريخ الإنشاء", map: (r) => dOnly(r.createdAt) },
@@ -587,11 +587,11 @@ function CyclePlanCard({
           ))}
           {loading && <p className="p-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>}
           {!loading && due.length === 0 && (
-            <p className="p-6 text-center text-sm text-muted-foreground">✓ لا أصناف مستحقة — الخطة الدورية مكتملة.</p>
+            <p className="p-6 text-center text-sm text-muted-foreground">✓ لا منتجات مستحقة — الخطة الدورية مكتملة.</p>
           )}
           {due.length > shown.length && (
             <p className="px-4 py-2 text-xs text-muted-foreground">
-              …و{nf(due.length - shown.length)} أصناف أخرى مستحقة — تُضمّ كلها للجلسة.
+              …و{nf(due.length - shown.length)} منتجات أخرى مستحقة — تُضمّ كلها للجلسة.
             </p>
           )}
         </div>
@@ -610,7 +610,7 @@ function IraCard({ data, loading }: { data: IraData | null; loading: boolean }) 
       <CardHeader>
         <p className="text-base font-semibold">دقة سجلات المخزون (IRA)</p>
         <p className="text-xs text-muted-foreground">
-          نسبة الأصناف المطابقة تماماً في الجرد — تُحدّث مع كل جلسة معتمدة.
+          نسبة المنتجات المطابقة تماماً في الجرد — تُحدّث مع كل جلسة معتمدة.
         </p>
       </CardHeader>
       <CardContent className="space-y-4 pt-0">
@@ -710,7 +710,7 @@ function ReconDriftCard({
           <div>
             <p className="text-base font-semibold">انحرافات من تدقيق التوافق المالي</p>
             <p className="text-xs text-muted-foreground">
-              أصناف رصدها فحص التوافق المالي — حوّلها لجلسة جرد تحقّق بضغطة.
+              منتجات رصدها فحص التوافق المالي — حوّلها لجلسة جرد تحقّق بضغطة.
             </p>
           </div>
           {isAdmin && (

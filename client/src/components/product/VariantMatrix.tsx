@@ -99,7 +99,7 @@ export function MatrixGenerator({
         <p className="text-xs text-muted-foreground">
           {includedCount > 0 ? (
             <>
-              سيُولَّد <b className="text-foreground">{toArabicDigits(includedCount)}</b> متغيّر — كل واحد صنف مخزنيّ مستقل، ولكل وحدة باركود مستقل.
+              سيُولَّد <b className="text-foreground">{toArabicDigits(includedCount)}</b> متغيّر — كل واحد منتج مخزنيّ مستقل، ولكل وحدة باركود مستقل.
             </>
           ) : (
             <>أضِف لوناً واحداً على الأقل.</>

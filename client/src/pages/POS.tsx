@@ -588,7 +588,7 @@ export default function POS() {
     },
   });
 
-  // §٥: لقطة مبالغ/أصناف البيع بدقّة Decimal لحظة الإرسال (لا وقت النجاح) ⇒ تثبّت على التبويب
+  // §٥: لقطة مبالغ/منتجات البيع بدقّة Decimal لحظة الإرسال (لا وقت النجاح) ⇒ تثبّت على التبويب
   // المُباع ولا تنجرف لو بدّل الكاشير التبويب. نفس صيغ الحساب القديمة (لا تغيير سلوك).
   function captureSaleCtx(): NonNullable<typeof saleCtxRef.current> {
     const finalReceivedD = isCredit ? paidD : totalD;
@@ -689,7 +689,7 @@ export default function POS() {
               if (!(await confirm({
                 variant: "warning",
                 title: "تفريغ السلّة",
-                description: "ستُفقد كل الأصناف المُضافة في هذه السلّة. هل تتابع؟",
+                description: "ستُفقد كل المنتجات المُضافة في هذه السلّة. هل تتابع؟",
                 confirmText: "تفريغ",
               }))) return;
               setCart([]); setPayInput(""); setSelId(null);
@@ -840,7 +840,7 @@ export default function POS() {
             if (!(await confirm({
               variant: "warning",
               title: "تفريغ السلّة",
-              description: "ستُفقد كل الأصناف المُضافة في هذه السلّة. هل تتابع؟",
+              description: "ستُفقد كل المنتجات المُضافة في هذه السلّة. هل تتابع؟",
               confirmText: "تفريغ",
             }))) return;
             setCart([]); setSelId(null); setPayInput("");

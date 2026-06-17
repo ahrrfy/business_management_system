@@ -21,9 +21,9 @@ export const STOCKTAKE_REASON_LABEL: Record<string, string> = {
 
 export const STOCKTAKE_SCOPE_LABEL: Record<string, string> = {
   FULL: 'جرد شامل للفرع',
-  MOVING: 'الأصناف المتحركة',
+  MOVING: 'المنتجات المتحركة',
   CATEGORY: 'حسب الفئة',
-  MANUAL: 'أصناف مختارة',
+  MANUAL: 'منتجات مختارة',
 };
 
 export const STOCKTAKE_STATUS_LABEL: Record<string, string> = {
@@ -127,7 +127,7 @@ export interface StocktakeReportPrintData {
   /** صافي قيمة الفروقات المُسوّاة (decimal نصي، محسوب سلفاً). */
   adjustedNetValue: string | number;
   kept: StocktakeKeptRow[];
-  /** أسماء الأصناف المطابقة (diff = 0). */
+  /** أسماء المنتجات المطابقة (diff = 0). */
   matchedNames: string[];
   byReason: StocktakeReasonRow[];
   ledger: {
@@ -178,7 +178,7 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
       <div style="font-size:12px;font-weight:800;color:${color};" dir="ltr">${esc(value)}</div>
     </div>`;
   const statsRow = `<div style="display:flex;gap:2mm;margin-bottom:4mm;">
-    ${statCard('أصناف معدودة', fmt(d.stats.counted))}
+    ${statCard('منتجات معدودة', fmt(d.stats.counted))}
     ${statCard('مطابقة', fmt(d.stats.matched), B.green)}
     ${statCard('زيادة', fmt(d.stats.over), '#3B82F6')}
     ${statCard('نقص', fmt(d.stats.short), '#DC2626')}
@@ -187,7 +187,7 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
 
   // ── أولاً: جدول الفروقات المُسوّاة ──
   const adjCols = [
-    { key: 'name', label: 'الصنف' },
+    { key: 'name', label: 'المنتج' },
     { key: 'book', label: 'الدفتري', width: '14mm', align: 'center' as const },
     { key: 'counted', label: 'المعدود المصحَّح', width: '18mm', align: 'center' as const },
     { key: 'diff', label: 'الفرق ±', width: '13mm', align: 'center' as const, bold: true },
@@ -222,7 +222,7 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
     ? secTitle(`ثانياً — فروقات أُبقي رصيدها الدفتري (${fmt(d.kept.length)})`) +
       docTable(
         [
-          { key: 'name', label: 'الصنف' },
+          { key: 'name', label: 'المنتج' },
           { key: 'diff', label: 'الفرق ±', width: '16mm', align: 'center' as const, bold: true },
           { key: 'decision', label: 'القرار', width: '70mm' },
         ],
@@ -234,9 +234,9 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
       )
     : '';
 
-  // ── ثالثاً: الأصناف المطابقة ──
+  // ── ثالثاً: المنتجات المطابقة ──
   const matchedSection =
-    secTitle(`${d.kept.length ? 'ثالثاً' : 'ثانياً'} — الأصناف المطابقة (${fmt(d.stats.matched)})`) +
+    secTitle(`${d.kept.length ? 'ثالثاً' : 'ثانياً'} — المنتجات المطابقة (${fmt(d.stats.matched)})`) +
     `<p style="font-size:8.5px;line-height:1.9;color:${B.textMuted};margin-bottom:4mm;">
       ${esc(d.matchedNames.length ? d.matchedNames.join(' · ') : '—')}
     </p>`;
@@ -247,7 +247,7 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
       docTable(
         [
           { key: 'reason', label: 'السبب' },
-          { key: 'items', label: 'أصناف', width: '16mm', align: 'center' as const },
+          { key: 'items', label: 'منتجات', width: '16mm', align: 'center' as const },
           { key: 'qty', label: 'صافي الكمية', width: '22mm', align: 'center' as const },
           { key: 'value', label: 'صافي القيمة', width: '28mm', align: 'left' as const, bold: true },
         ],
@@ -296,7 +296,7 @@ export function printStocktakeReport(d: StocktakeReportPrintData): void {
     نُفّذت التسوية بحركات ADJUST ذرّية بمرجع <span dir="ltr" style="font-family:monospace;">${esc(d.code)}</span>
     في سجلّ حركات المخزون، وحُدِّثت الأرصدة لحظة الاعتماد.
     الحدّ المعتمد للتسوية المباشرة: ${esc(fmt(d.thresholdPct))}٪ أو ${esc(fmtC(d.thresholdValue))}.
-    الحركات الواقعة بعد عدّ أي صنف صُحِّحت آلياً قبل احتساب الفرق.
+    الحركات الواقعة بعد عدّ أي منتج صُحِّحت آلياً قبل احتساب الفرق.
   </p>`;
 
   // ── ثلاث خانات توقيع ──
@@ -421,7 +421,7 @@ export function printCountSheets(d: CountSheetsPrintData): void {
       <table style="width:100%;border-collapse:collapse;margin-top:4mm;">
         <thead><tr>
           <th style="${th}text-align:center;width:7mm;">#</th>
-          <th style="${th}">الصنف</th>
+          <th style="${th}">المنتج</th>
           <th style="${th}width:22mm;">المتغيّر</th>
           <th style="${th}width:20mm;">SKU</th>
           <th style="${th}text-align:center;width:36mm;">الباركود</th>
@@ -430,14 +430,14 @@ export function printCountSheets(d: CountSheetsPrintData): void {
           <th style="${th}text-align:center;width:19mm;">العدّ 2</th>
           <th style="${th}width:26mm;">ملاحظات</th>
         </tr></thead>
-        <tbody>${rows || `<tr><td colspan="9" style="${td}text-align:center;color:#555;">لا أصناف في هذا التكليف.</td></tr>`}</tbody>
+        <tbody>${rows || `<tr><td colspan="9" style="${td}text-align:center;color:#555;">لا منتجات في هذا التكليف.</td></tr>`}</tbody>
       </table>
 
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10mm;margin-top:10mm;">${sigBoxes}</div>
 
       <p style="font-size:8px;color:#555;margin-top:4mm;line-height:1.8;">
         تعليمات: عُدَّ ما على الرف فعلياً فقط · لا تنقل أرقاماً من النظام أو من زميل ·
-        أي صنف غير موجود اكتب «0» · الكميات بوحدة الأساس المذكورة.
+        أي منتج غير موجود اكتب «0» · الكميات بوحدة الأساس المذكورة.
       </p>
     </div>`;
   }).join('');

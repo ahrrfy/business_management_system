@@ -112,7 +112,7 @@ export default function Reconcile() {
                 <Link
                   href={`/stocktakes/new?variants=${Array.from(new Set(data.inventory.map((r) => r.id))).join(",")}&name=${encodeURIComponent("جرد تحقّق — انحرافات التدقيق المالي")}`}
                 >
-                  <Button size="sm">📋 أنشئ جلسة جرد لهذه الأصناف</Button>
+                  <Button size="sm">📋 أنشئ جلسة جرد لهذه المنتجات</Button>
                 </Link>
               ) : null
             }

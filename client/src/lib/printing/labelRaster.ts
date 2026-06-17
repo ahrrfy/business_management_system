@@ -88,7 +88,7 @@ export async function labelToCanvas(
 
   let y = PAD;
 
-  // ───── ١) اسم الصنف (اختياري، سطر واحد بقصّ …) ─────
+  // ───── ١) اسم المنتج (اختياري، سطر واحد بقصّ …) ─────
   const nameFs = Math.min(18, Math.max(12, Math.round(H * 0.09)));
   if (showName) {
     ctx.font = `700 ${nameFs}px Cairo, sans-serif`;

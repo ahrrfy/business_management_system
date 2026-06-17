@@ -26,7 +26,7 @@ export default function InventoryValuation() {
 
   const kpis: KpiItem[] = totals
     ? [
-        { label: "عدد الأصناف", value: totals.items, tone: "info" },
+        { label: "عدد المنتجات", value: totals.items, tone: "info" },
         { label: "إجمالي الكمية", value: totals.totalQty.toLocaleString("ar-IQ-u-nu-latn") },
         { label: "إجمالي القيمة (بالتكلفة)", value: fmtAr(totals.totalValue), tone: "positive" },
       ]
@@ -39,7 +39,7 @@ export default function InventoryValuation() {
       filename: `تقييم-المخزون${branchId ? `-${branchLabel}` : ""}`,
       columns: [
         { key: "categoryName", header: "الفئة" },
-        { key: "items", header: "عدد الأصناف", map: (r) => r.items },
+        { key: "items", header: "عدد المنتجات", map: (r) => r.items },
         { key: "totalQty", header: "إجمالي الكمية", map: (r) => r.totalQty },
         { key: "totalValue", header: "القيمة بالتكلفة", map: (r) => Number(r.totalValue) },
       ],
@@ -56,7 +56,7 @@ export default function InventoryValuation() {
       note: NOTE,
       columns: [
         { key: "category", label: "الفئة" },
-        { key: "items", label: "عدد الأصناف", align: "left" },
+        { key: "items", label: "عدد المنتجات", align: "left" },
         { key: "qty", label: "إجمالي الكمية", align: "left" },
         { key: "value", label: "القيمة بالتكلفة", align: "left" },
       ],
@@ -68,7 +68,7 @@ export default function InventoryValuation() {
       })),
       summary: totals
         ? [
-            { label: "عدد الأصناف", value: String(totals.items) },
+            { label: "عدد المنتجات", value: String(totals.items) },
             { label: "إجمالي الكمية", value: totals.totalQty.toLocaleString("ar-IQ-u-nu-latn") },
             { label: "إجمالي القيمة (بالتكلفة)", value: fmtAr(totals.totalValue), large: true, bold: true },
           ]
@@ -108,7 +108,7 @@ export default function InventoryValuation() {
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="p-2.5 text-right font-medium">الفئة</th>
-                    <th className="p-2.5 text-left font-medium">عدد الأصناف</th>
+                    <th className="p-2.5 text-left font-medium">عدد المنتجات</th>
                     <th className="p-2.5 text-left font-medium">إجمالي الكمية</th>
                     <th className="p-2.5 text-left font-medium">القيمة بالتكلفة</th>
                   </tr>

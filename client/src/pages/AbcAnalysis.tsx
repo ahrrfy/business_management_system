@@ -46,9 +46,9 @@ export default function AbcAnalysis() {
   const kpis: KpiItem[] = totals
     ? [
         { label: "إجمالي الإيراد", value: fmtAr(totals.revenue), tone: "info" },
-        { label: "أصناف فئة A", value: totals.aCount, tone: "positive" },
-        { label: "أصناف فئة B", value: totals.bCount, tone: "warning" },
-        { label: "أصناف فئة C", value: totals.cCount },
+        { label: "منتجات فئة A", value: totals.aCount, tone: "positive" },
+        { label: "منتجات فئة B", value: totals.bCount, tone: "warning" },
+        { label: "منتجات فئة C", value: totals.cCount },
       ]
     : [];
 
@@ -93,7 +93,7 @@ export default function AbcAnalysis() {
       summary: totals
         ? [
             { label: "إجمالي الإيراد", value: fmtAr(totals.revenue), large: true, bold: true },
-            { label: "أصناف A / B / C", value: `${totals.aCount} / ${totals.bCount} / ${totals.cCount}` },
+            { label: "منتجات A / B / C", value: `${totals.aCount} / ${totals.bCount} / ${totals.cCount}` },
           ]
         : undefined,
     });

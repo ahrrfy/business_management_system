@@ -40,9 +40,9 @@ const STATUS_META: Record<string, { label: string; cls: string }> = {
 };
 const SCOPE_LABEL: Record<string, string> = {
   FULL: "جرد شامل للفرع",
-  MOVING: "الأصناف المتحركة",
+  MOVING: "المنتجات المتحركة",
   CATEGORY: "حسب الفئة",
-  MANUAL: "أصناف مختارة",
+  MANUAL: "منتجات مختارة",
 };
 const KIND_META: Record<string, { label: string; cls: string }> = {
   FIRST: { label: "عدّ أول", cls: "bg-muted text-muted-foreground border-border" },
@@ -128,7 +128,7 @@ export default function StocktakeMonitor() {
   const isManager = isAdmin || role === "manager";
   const canView = isManager || role === "warehouse";
 
-  // بحث في العدّات — يمرَّر q للخادم ليجد أي صنف معدود (لا آخر ٢٠ فقط)، مع debounce بسيط.
+  // بحث في العدّات — يمرَّر q للخادم ليجد أي منتج معدود (لا آخر ٢٠ فقط)، مع debounce بسيط.
   const [countSearch, setCountSearch] = useState("");
   const [countQ, setCountQ] = useState("");
   useEffect(() => {
@@ -232,7 +232,7 @@ export default function StocktakeMonitor() {
           {counted < total && (
             <>
               {" "}
-              التقدم الحالي <b>{nf(counted)} من {nf(total)}</b> — الأصناف غير المعدودة ستبقى بأرصدتها
+              التقدم الحالي <b>{nf(counted)} من {nf(total)}</b> — المنتجات غير المعدودة ستبقى بأرصدتها
               الدفترية (مراجعة جزئية).
             </>
           )}
@@ -267,7 +267,7 @@ export default function StocktakeMonitor() {
         "تذكير بعدّ الجرد 📋",
         `الجلسة: ${s.name} (${s.code})`,
         a.zone ? `المنطقة: ${a.zone}` : "",
-        `تقدمك: ${nf(a.counted)} من ${nf(a.total)} صنفاً`,
+        `تقدمك: ${nf(a.counted)} من ${nf(a.total)} منتجاً`,
         `رابط شاشة العدّ: ${link}`,
         "يرجى إكمال العدّ ثم تسليمه. شكراً 🌹",
       ]
@@ -373,7 +373,7 @@ export default function StocktakeMonitor() {
       {/* تعارضات وإعادات عدّ معلّقة */}
       {conflicts.length > 0 && (
         <div className="space-y-1 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-800">
-          <p className="font-bold">⚠ تعارض عدَّين على {nf(conflicts.length)} صنف — يحجب الاعتماد حتى يُفصل فيه:</p>
+          <p className="font-bold">⚠ تعارض عدَّين على {nf(conflicts.length)} منتج — يحجب الاعتماد حتى يُفصل فيه:</p>
           {conflicts.map((c: { variantId: number; variantLabel: string; qty1: number; by1: string; qty2: number; by2: string }) => (
             <p key={c.variantId} className="text-xs">
               {c.variantLabel}: {c.by1} عدّ <b dir="ltr">{nf(c.qty1)}</b> — {c.by2} عدّ <b dir="ltr">{nf(c.qty2)}</b>
@@ -399,7 +399,7 @@ export default function StocktakeMonitor() {
 
       {/* مؤشرات */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="تقدم العدّ" value={`${nf(counted)} / ${nf(total)}`} sub="صنف معدود" tone="blue" />
+        <Stat label="تقدم العدّ" value={`${nf(counted)} / ${nf(total)}`} sub="منتج معدود" tone="blue" />
         <Stat label="نسبة الإنجاز" value={`${nf(pct)}٪`} />
         <Stat
           label="عمّال الجرد"
@@ -414,7 +414,7 @@ export default function StocktakeMonitor() {
         <Card className="gap-0 py-0">
           <CardHeader className="border-b px-4 py-4">
             <CardTitle className="text-base">عمّال الجرد وروابط العدّ</CardTitle>
-            <p className="text-xs text-muted-foreground">كل عامل يرى أصناف منطقته فقط، دون الرصيد الدفتري.</p>
+            <p className="text-xs text-muted-foreground">كل عامل يرى منتجات منطقته فقط، دون الرصيد الدفتري.</p>
           </CardHeader>
           <div className="divide-y">
             {assignments.map(
@@ -510,7 +510,7 @@ export default function StocktakeMonitor() {
                   <CardTitle className="text-base">آخر الكميات المُدخلة</CardTitle>
                   <p className="text-xs text-muted-foreground">
                     {countQ
-                      ? "نتائج البحث في كل العدّات — اطلب إعادة عدّ لأي صنف."
+                      ? "نتائج البحث في كل العدّات — اطلب إعادة عدّ لأي منتج."
                       : `بثّ حيّ (آخر ${nf(20)}) — اسم العامل ووقت الإدخال، دون كشف الفروقات قبل المراجعة.`}
                   </p>
                 </div>
@@ -559,7 +559,7 @@ export default function StocktakeMonitor() {
                           size="sm"
                           variant="ghost"
                           className="text-violet-700"
-                          title="طلب إعادة عدّ لهذا الصنف (سبب إلزامي)"
+                          title="طلب إعادة عدّ لهذا المنتج (سبب إلزامي)"
                           onClick={() => {
                             setRecountReason("");
                             setRecountFor({ variantId: c.variantId, label: c.variantLabel });
@@ -618,7 +618,7 @@ export default function StocktakeMonitor() {
           <DialogHeader>
             <DialogTitle>طلب إعادة عدّ ثانية</DialogTitle>
             <DialogDescription>
-              سيظهر الصنف <b className="text-foreground">{recountFor?.label}</b> كمهمة إعادة عدّ في شاشة
+              سيظهر المنتج <b className="text-foreground">{recountFor?.label}</b> كمهمة إعادة عدّ في شاشة
               العامل، دون كشف الرصيد الدفتري أو سبب الفرق له.
             </DialogDescription>
           </DialogHeader>
