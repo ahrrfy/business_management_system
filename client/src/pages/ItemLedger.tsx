@@ -77,7 +77,7 @@ export default function ItemLedger() {
   // منتقي المتغيّر: نفس endpoint بحث الكاشير/حركات المخزون. فرع البحث = المختار أو فرع المستخدم.
   const searchBranchId = Number(branchId ?? myBranch);
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId: searchBranchId, tier: "RETAIL", query: search, limit: 12 },
+    { branchId: searchBranchId, tier: "RETAIL", query: search, limit: 200 },
     { enabled: search.trim().length > 0 },
   );
 

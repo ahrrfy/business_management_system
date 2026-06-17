@@ -184,7 +184,7 @@ export default function InventoryMovements() {
     (me.data?.branchId === manualBranchId ? "فرعي" : `فرع #${manualBranchId}`);
 
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId: Number(manualBranchId), tier: "RETAIL", query: mSearch, limit: 12 },
+    { branchId: Number(manualBranchId), tier: "RETAIL", query: mSearch, limit: 200 },
     { enabled: open && mSearch.trim().length > 0 }
   );
 

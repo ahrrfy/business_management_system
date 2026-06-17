@@ -33,6 +33,7 @@ import { recruitmentRouter } from "./routers/recruitmentRouter";
 import { hrDeviceRouter } from "./routers/hrDeviceRouter";
 import { promotionRouter } from "./routers/promotionRouter";
 import { printPosRouter } from "./routers/printPosRouter";
+import { globalSearchRouter } from "./routers/globalSearchRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -72,6 +73,7 @@ export const appRouter = router({
   hrDevices: hrDeviceRouter,
   promotions: promotionRouter,
   printPos: printPosRouter,
+  globalSearch: globalSearchRouter,
 });
 
 export type AppRouter = typeof appRouter;
