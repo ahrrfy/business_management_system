@@ -25,9 +25,14 @@ export const returnRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // G3 (١٩/٦/٢٦): استبدال fallback `?? 1` — مرتجع يؤثّر على ذمم وصندوق فرع محدّد، لا فرع افتراضي.
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء مرتجع" });
+      }
+      const actorBranchId = Number(ctx.user.branchId);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await returnSale(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+          const res = await returnSale(input, { userId: ctx.user.id, branchId: actorBranchId });
           await logAudit(ctx, { action: "return.create", entityType: "invoice", entityId: input.invoiceId, newValue: { lines: input.lines.length, refund: input.refund?.amount } });
           return res;
         } catch (e: any) {

@@ -116,7 +116,9 @@ async function createStockExpenseTx(tx: any, input: CreateExpenseInput, actor: A
     createdBy: actor.userId,
   });
   const expenseId = extractInsertId(eRes);
-  if (input.clientRequestId) await recordIdempotencyKey(tx, "expense.create", input.clientRequestId, expenseId);
+  // G4 (١٩/٦/٢٦): مفتاح idempotency مفصول CASH/STOCK — كان توحيدهما يسمح بإعادة الـreplay
+  // عبر المسارَين بنفس clientRequestId فيُرجَع كائن لا يطابق المُدخل (تلوّث بيانات بسيط).
+  if (input.clientRequestId) await recordIdempotencyKey(tx, "expense.create.STOCK", input.clientRequestId, expenseId);
 
   // خصم المخزون (تصاعدياً بـvariantId) + snapshot الكلفة + أسطر الأصناف.
   resolved.sort((a, b) => a.variantId - b.variantId);
@@ -172,8 +174,10 @@ async function createStockExpenseTx(tx: any, input: CreateExpenseInput, actor: A
 /** Record a daily expense: CASH ⇒ receipt(OUT)+PAYMENT_OUT ; STOCK ⇒ صرف مخزون بالكلفة (نثرية/تلف، بلا صندوق). */
 export async function createExpense(input: CreateExpenseInput, actor: Actor) {
   return withTx(async (tx) => {
-    // idempotency: إعادة طلب بنفس المفتاح ⇒ نُعيد المصروف الأول دون صرف ثانٍ.
-    const replayId = await findIdempotentRefId(tx, "expense.create", input.clientRequestId);
+    // G4 (١٩/٦/٢٦): مفتاح idempotency مفصول حسب المصدر — كان توحيد المفتاح بين CASH/STOCK
+    // يسمح بـreplay صامت يُرجع نتيجة لا تطابق المُدخل عند تغيّر source بين طلبَين بنفس الـID.
+    const opKey = (input.source ?? "CASH") === "STOCK" ? "expense.create.STOCK" : "expense.create.CASH";
+    const replayId = await findIdempotentRefId(tx, opKey, input.clientRequestId);
     if (replayId) {
       const ex = (
         await tx.select({ receiptId: expenses.receiptId }).from(expenses).where(eq(expenses.id, replayId)).limit(1)
@@ -257,7 +261,8 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
     });
     const expenseId = extractInsertId(eRes);
     // سجّل مفتاح الـidempotency — طلبٌ متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK) قبل قيد الصرف.
-    if (input.clientRequestId) await recordIdempotencyKey(tx, "expense.create", input.clientRequestId, expenseId);
+    // G4: المفتاح مفصول CASH عن STOCK.
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "expense.create.CASH", input.clientRequestId, expenseId);
 
     await postEntry(tx, {
       entryType: "PAYMENT_OUT",
@@ -355,11 +360,13 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     });
     const compReceiptId = extractInsertId(compRes);
 
+    // G5 (١٩/٦/٢٦): قيد PAYMENT_IN بدل ADJUST (موجب) — متّسق مع نمط cancelVoucher
+    // ويُغلق انحرافاً في cashReconcile الذي يتجاهل ADJUST عند حساب الرصيد من القيود.
     await postEntry(tx, {
-      entryType: "ADJUST",
+      entryType: "PAYMENT_IN",
       branchId: Number(exp.branchId),
       receiptId: compReceiptId,
-      amount: money(exp.amount).neg(),
+      amount: money(exp.amount),
       notes: `إلغاء مصروف #${expenseId}`,
     });
 

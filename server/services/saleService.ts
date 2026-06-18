@@ -252,9 +252,12 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     });
 
     // 11.b تسوية التقريب النقدي: قيد ADJUST بفرق التقريب ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
+    // G6 (١٩/٦/٢٦): dedupeKey حارس ضدّ تكرار ADJUST لو حدثت إعادة محاولة بعد ER_DUP_ENTRY
+    // (tx.atomicity تحمي نظرياً، لكن dedupeKey defense-in-depth صريح).
     if (!cashRoundingAdj.isZero()) {
       await postEntry(tx, {
         entryType: "ADJUST",
+        dedupeKey: `ADJUST:IQD:${invoiceId}`,
         branchId: input.branchId,
         invoiceId,
         customerId: input.customerId ?? null,
