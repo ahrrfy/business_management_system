@@ -85,6 +85,13 @@
       "when": 1781731309331,
       "tag": "0011_gigantic_hemingway",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "5",
+      "when": 1781780174501,
+      "tag": "0012_cash_buckets_core",
+      "breakpoints": true
     }
   ]
 }
