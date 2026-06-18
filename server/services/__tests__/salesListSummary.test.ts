@@ -12,11 +12,14 @@ import type { TrpcContext } from "../../context";
 import { appRouter } from "../../routers";
 import { getDb } from "../../db";
 import { createSale, processPayment } from "../saleService";
+import { truncateTables } from "./__testUtils__";
 
 Decimal.set({ rounding: Decimal.ROUND_HALF_UP });
 const round2s = (v: Decimal.Value) => new Decimal(v).toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toFixed(2);
 
 const actor = { userId: 1, branchId: 1 };
+const getInsertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertId);
+let seedShiftId = 0;
 
 // سياق أدمن (branchScopedProcedure ⇒ scopedBranchId = null = كل الفروع) — نمط rbac.test.ts.
 function adminCtx(): TrpcContext {
@@ -44,9 +47,7 @@ function db() {
 
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {
@@ -60,11 +61,12 @@ async function seedBase() {
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0" });
   await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
   // M5/M8: createSale CASH + processPayment CASH ⇒ يَلزم وردية مفتوحة.
-  await d.insert(s.shifts).values({
+  const sr = await d.insert(s.shifts).values({
     userId: 1, branchId: 1, status: "OPEN",
     openedAt: new Date(),
     openGuard: "1:1", openingBalance: "0",
   });
+  seedShiftId = getInsertId(sr);
 }
 
 beforeEach(async () => {
@@ -82,7 +84,7 @@ async function sale(qtyPieces: string, pay?: string) {
       lines: [{ variantId: 1, productUnitId: 1, quantity: qtyPieces }],
       payment: pay ? { amount: pay, method: "CASH" } : undefined,
       // M8: createSale CASH يَستلزم shiftId صريحاً. الوردية مفتوحة في seedBase.
-      shiftId: pay ? 1 : undefined,
+      shiftId: pay ? seedShiftId : undefined,
     },
     actor,
   );

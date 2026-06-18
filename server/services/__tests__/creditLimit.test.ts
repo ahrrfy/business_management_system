@@ -3,17 +3,15 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1 };
+const getInsertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertId);
+let seedShiftId = 0;
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of ["accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits", "productVariants", "products", "shifts", "customers", "branches", "users"]) {
-    await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  }
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(["accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits", "productVariants", "products", "shifts", "customers", "branches", "users"]);
 }
 async function seed(creditLimit: string | null, balance = "0") {
   const d = db();
@@ -26,11 +24,12 @@ async function seed(creditLimit: string | null, balance = "0") {
   await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
   await d.insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", creditLimit: creditLimit as any, currentBalance: balance });
   // M8: createSale نقدي يَلزم وردية مفتوحة.
-  await d.insert(s.shifts).values({
+  const sr = await d.insert(s.shifts).values({
     userId: 1, branchId: 1, status: 'OPEN',
     openedAt: new Date(),
     openGuard: '1:1', openingBalance: '0',
   });
+  seedShiftId = getInsertId(sr);
 }
 beforeEach(reset);
 
@@ -79,7 +78,7 @@ describe("حدّ الائتمان + موافقة المدير (سياسة H4: nu
 
   it("بيع نقدي كامل ⇒ لا فحص ائتمان", async () => {
     await seed("50.00");
-    const r = await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "200.00", method: "CASH" }, shiftId: 1 }, actor);
+    const r = await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }], payment: { amount: "200.00", method: "CASH" }, shiftId: seedShiftId }, actor);
     expect(r.invoiceId).toBeGreaterThan(0);
   });
 });

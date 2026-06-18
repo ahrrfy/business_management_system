@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/command";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { SEARCH_OPEN_EVENT } from "@/lib/searchEvents";
 import {
   Boxes, FileText, LayoutDashboard, Package, Receipt, RotateCcw, ShoppingCart, Truck, Users, Wallet, Wrench,
 } from "lucide-react";
@@ -107,8 +108,13 @@ export function CommandPalette() {
         setOpen((v) => !v);
       }
     }
+    function onOpenEvent() { setOpen(true); }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    window.addEventListener(SEARCH_OPEN_EVENT, onOpenEvent);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      window.removeEventListener(SEARCH_OPEN_EVENT, onOpenEvent);
+    };
   }, []);
 
   useEffect(() => {

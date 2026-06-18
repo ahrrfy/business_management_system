@@ -270,7 +270,7 @@ async function searchCustomers(
     title: r.name,
     subtitle: [r.phone, r.city].filter(Boolean).join(" · ") || null,
     meta: r.legacyCode ? `قديم: ${r.legacyCode}` : null,
-    route: `/customers/${r.id}/edit`,
+    route: `/customers?focus=${r.id}`,
     rank: r.name.toLowerCase().startsWith(query.toLowerCase()) ? 1 : 2,
   }));
 }
@@ -359,12 +359,16 @@ async function searchInvoices(
     .orderBy(desc(invoices.invoiceDate), desc(invoices.id))
     .limit(limit);
 
+  const STATUS_LABEL: Record<string, string> = {
+    CANCELLED: " · ملغاة",
+    RETURNED: " · مُرجَعة",
+  };
   return rows.map((r) => ({
     type: "INVOICE" as const,
     id: r.id,
     title: r.invoiceNumber,
     subtitle: r.customerName ?? "عميل نقدي",
-    meta: `${r.total} د.ع · ${formatDate(r.invoiceDate)}`,
+    meta: `${r.total} د.ع · ${formatDate(r.invoiceDate)}${STATUS_LABEL[r.status ?? ""] ?? ""}`,
     route: `/invoices/${r.id}`,
     rank: r.invoiceNumber === query ? 0 : 1,
   }));

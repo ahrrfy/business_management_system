@@ -323,10 +323,10 @@ export async function listSalesReturns(input: ListSalesReturnsInput = {}) {
   if (input.customerId) where.push(eq(accountingEntries.customerId, input.customerId));
   if (input.branchId) where.push(eq(accountingEntries.branchId, input.branchId));
   if (input.invoiceId) where.push(eq(accountingEntries.invoiceId, input.invoiceId));
-  // entryDate عمود DATE (بلا وقت) ⇒ gte/lte شاملان للطرفين — بمنتصف ليلٍ محلي
-  // (new Date("YYYY-MM-DD") = منتصف ليل UTC يُسلسَل +03:00 فيستثني يوم from كاملاً).
-  if (input.from) where.push(gte(accountingEntries.entryDate, localDayStart(input.from)));
-  if (input.to) where.push(lte(accountingEntries.entryDate, localDayStart(input.to)));
+  // entryDate عمود DATE ⇒ نقارن بمنتصف ليل UTC (timezone:"Z") ليطابق ما يُخزَّن فعلياً.
+  // localDayStart يُعيد منتصف ليل محلي (+03:00) فيستثني يوم to كاملاً في بيئات غير UTC.
+  if (input.from) where.push(gte(accountingEntries.entryDate, new Date(input.from + "T00:00:00.000Z")));
+  if (input.to) where.push(lte(accountingEntries.entryDate, new Date(input.to + "T00:00:00.000Z")));
 
   const rows = await db
     .select({
