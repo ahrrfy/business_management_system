@@ -32,7 +32,8 @@ export const returnRouter = router({
       const actorBranchId = Number(ctx.user.branchId);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await returnSale(input, { userId: ctx.user.id, branchId: actorBranchId });
+          // G8: تمرير role لتمكين فحص ملكية الفرع داخل returnSale (admin يتجاوز).
+          const res = await returnSale(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
           await logAudit(ctx, { action: "return.create", entityType: "invoice", entityId: input.invoiceId, newValue: { lines: input.lines.length, refund: input.refund?.amount } });
           return res;
         } catch (e: any) {
