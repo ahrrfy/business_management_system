@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, getPool } from "../../db";
 import { transferBetweenBranches } from "../inventoryService";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { returnSale } from "../returnService";
@@ -22,11 +22,13 @@ const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
   "accountingEntries", "receipts", "inventoryMovements", "quotationItems", "quotations",
-  "invoiceItems", "invoices",
-  "branchStock", "productPrices", "productUnits", "productVariants", "products",
-  "shifts", "purchaseOrderItems", "purchaseOrders", "workOrderMaterials", "workOrders",
+  "invoiceItems", "invoices", "idempotencyKeys",
+  "branchStock", "productPrices", "productUnits", "productVariants", "productImages", "products",
+  "shifts", "purchaseOrderItems", "purchaseOrders",
+  "workOrderMaterials", "workOrderItems", "workOrderImages", "workOrders",
   "onlineOrderItems", "onlineOrders", "attendance", "employees", "importBatches",
-  "printJobs", "auditLogs", "customers", "suppliers", "categories", "branches", "users",
+  "printJobs", "auditLogs", "customers", "suppliers", "categories",
+  "users", "branches", // users.branchId → branches.id ⇒ users must be truncated before branches
 ];
 
 function db() {
@@ -37,10 +39,14 @@ function db() {
 const insertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertId);
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  const conn = await getPool().getConnection();
+  try {
+    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+    for (const t of TABLES) await conn.query(`TRUNCATE TABLE \`${t}\``);
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+  } finally {
+    conn.release();
+  }
 }
 
 async function seedBase() {

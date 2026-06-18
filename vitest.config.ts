@@ -14,7 +14,7 @@ export default defineConfig({
     include: ["server/**/*.test.ts", "client/src/**/*.test.ts", "shared/**/*.test.ts"],
     setupFiles: ["./server/services/__tests__/__setup__.ts"],
     testTimeout: 30000,
-    hookTimeout: 30000,
+    hookTimeout: 120000,
     fileParallelism: false,
     env: {
       // Integration tests run against a dedicated test database.

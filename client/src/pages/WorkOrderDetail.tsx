@@ -6,6 +6,8 @@ import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
+import { printWorkOrderReceipt } from "@/lib/printing/print";
+import { Printer } from "lucide-react";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
 
@@ -91,7 +93,27 @@ export default function WorkOrderDetail() {
             }],
             subtotal: data.salePrice,
             total: data.salePrice,
-          })}>طباعة أمر شغل</Button>
+          })}>طباعة A4</Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1"
+            onClick={() => printWorkOrderReceipt({
+              orderNumber: data.orderNumber,
+              orderDate: data.createdAt ? String(data.createdAt).slice(0, 10) : undefined,
+              dueDate: data.dueDate ? String(data.dueDate).slice(0, 10) : undefined,
+              status: data.status,
+              customerName: data.customerName ?? undefined,
+              customerPhone: data.customerPhone ?? undefined,
+              jobTitle: data.title,
+              quantity: data.quantity ? `${data.quantity} نسخة` : undefined,
+              specs: data.customizationText ?? undefined,
+              total: data.salePrice,
+            })}
+          >
+            <Printer className="h-3.5 w-3.5" />
+            طباعة حرارية
+          </Button>
           <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
         </div>
       </div>
