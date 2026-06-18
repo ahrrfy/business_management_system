@@ -141,7 +141,7 @@ describe("المصروفات اليومية", () => {
     ).rejects.toThrow();
   });
 
-  it("cancelExpense: يُحوّل expense إلى CANCELLED + يعكس النقد + قيد ADJUST سالب", async () => {
+  it("cancelExpense: يُحوّل expense إلى CANCELLED + يعكس النقد + قيد PAYMENT_IN معاكس", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
     const r = await createExpense(
       { branchId: 1, shiftId, category: "MARKETING", amount: "80000", paymentMethod: "CASH" },
@@ -163,10 +163,13 @@ describe("المصروفات اليومية", () => {
     expect(inn[0].paymentMethod).toBe("CASH");
     expect(Number(inn[0].shiftId)).toBe(shiftId);
 
-    // قيد ADJUST سالب
+    // G5 (١٩/٦/٢٦): قيد إلغاء = PAYMENT_IN موجب (متّسق مع cancelVoucher + يُحفظ تطابقه في cashReconcile).
+    const cancelEntry = await entries("PAYMENT_IN");
+    expect(cancelEntry).toHaveLength(1);
+    expect(cancelEntry[0].amount).toBe("80000.00");
+    // لا قيد ADJUST في cancelExpense بعد G5
     const adj = await entries("ADJUST");
-    expect(adj).toHaveLength(1);
-    expect(adj[0].amount).toBe("-80000.00");
+    expect(adj).toHaveLength(0);
 
     // إغلاق الوردية: المتوقع = 0 (الصرف ألغي بالتعويض)
     const closed = await closeShift({ shiftId, countedCash: "0" }, actor);

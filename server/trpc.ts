@@ -87,10 +87,23 @@ export const managerBranchScopedProcedure = managerProcedure.use(({ ctx, input, 
   }
   return next({ ctx });
 });
-/** عمليات البيع/الصندوق: الكاشير فأعلى (توافق خلفي كامل). */
-export const cashierProcedure = t.procedure.use(requireRole("cashier", "manager"));
-/** عمليات المخزون: أمين المخزن فأعلى (توافق خلفي كامل). */
-export const warehouseProcedure = t.procedure.use(requireRole("warehouse", "manager"));
+// G3 (تدقيق ١٩/٦/٢٦): الكاشير والمخزن **يجب** أن يكون لهما فرع مُسنَد — لا معنى
+// لتشغيل وردية/استلام بضاعة بلا فرع. كان غياب الفحص يتفاعل مع `?? 1` في الراوترات
+// فيصبح المستخدم بلا فرع يكتب صامتاً على الفرع رقم ١ (IDOR). المدير/الأدمن مستثنيان
+// لأن لهما حالات شرعية للعمل عبر الفروع.
+const requireOwnBranch = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  if (ctx.user.role === "admin" || ctx.user.role === "manager") return next({ ctx: { ...ctx, user: ctx.user } });
+  if (ctx.user.branchId == null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+/** عمليات البيع/الصندوق: الكاشير فأعلى (مع فحص branchId إلزامي لغير المدير). */
+export const cashierProcedure = t.procedure.use(requireRole("cashier", "manager")).use(requireOwnBranch);
+/** عمليات المخزون: أمين المخزن فأعلى (مع فحص branchId إلزامي لغير المدير). */
+export const warehouseProcedure = t.procedure.use(requireRole("warehouse", "manager")).use(requireOwnBranch);
 
 /** هل يُسمح لهذا الدور برؤية التكلفة/هامش الربح؟ (يشمل المحاسب الآن). */
 export const canSeeCost = (role: string) => _canSeeCost(role);

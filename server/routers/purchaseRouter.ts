@@ -37,7 +37,11 @@ export const purchaseRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await createPurchaseOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // G3 (١٩/٦/٢٦): استبدال fallback `?? 1` الصامت — لا أمر شراء بلا فرع مُسنَد.
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء أمر شراء" });
+      }
+      const res = await createPurchaseOrder(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) });
       await logAudit(ctx, { action: "purchase.createOrder", entityType: "purchaseOrder", entityId: (res as { purchaseOrderId?: number })?.purchaseOrderId, newValue: { supplierId: input.supplierId, items: input.items.length } });
       return res;
     }),
@@ -53,9 +57,15 @@ export const purchaseRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // G3: warehouseProcedure يضمن branchId لغير-المدير عبر requireOwnBranch.
+      // المدير/الأدمن قد يصل بلا فرع (شرعي)، لكن الاستلام نفسه يحتاج فرعاً.
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن استلام بضاعة" });
+      }
+      const actorBranchId = Number(ctx.user.branchId);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await receivePurchase(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+          const res = await receivePurchase(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
           await logAudit(ctx, { action: "purchase.receive", entityType: "purchaseOrder", entityId: input.purchaseOrderId, newValue: { lines: input.lines.length } });
           return res;
         } catch (e: any) {
@@ -71,7 +81,11 @@ export const purchaseRouter = router({
   cancel: managerProcedure
     .input(z.object({ purchaseOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await cancelPurchaseOrder(input.purchaseOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      // G3: لا إلغاء بلا فرع — assertBranchOwnership داخل الخدمة يحتاج actor.branchId صحيحاً.
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إلغاء أمر شراء" });
+      }
+      const res = await cancelPurchaseOrder(input.purchaseOrderId, { userId: ctx.user.id, branchId: Number(ctx.user.branchId), role: ctx.user.role });
       await logAudit(ctx, {
         action: "purchase.cancelOrder",
         entityType: "purchaseOrder",
