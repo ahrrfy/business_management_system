@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 
@@ -22,9 +23,7 @@ function db() {
 
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {

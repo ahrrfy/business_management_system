@@ -2,6 +2,8 @@ import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
+import { openSearch } from "@/lib/searchEvents";
+import { Search } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
@@ -209,6 +211,19 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <ThemeToggle />
+        </div>
+
+        {/* شريط البحث — يفتح CommandPalette */}
+        <div className="px-2 pt-2 pb-1">
+          <button
+            type="button"
+            onClick={openSearch}
+            className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            <Search className="size-3.5 shrink-0" />
+            <span className="flex-1 text-right">بحث…</span>
+            <kbd className="rounded border border-border/50 bg-background px-1 font-mono text-[10px] opacity-70">Ctrl+K</kbd>
+          </button>
         </div>
 
         <nav className="flex-1 overflow-y-auto py-2">

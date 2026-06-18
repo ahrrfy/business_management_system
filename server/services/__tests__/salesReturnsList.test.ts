@@ -4,6 +4,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { listSalesReturns, returnSale } from "../returnService";
 import { createSale } from "../saleService";
+import { truncateTables } from "./__testUtils__";
 
 /* ═══════════ listSalesReturns — سجلّ مرتجعات البيع ═══════════
    قيود RETURN ذات invoiceId بلا supplierId (عكس مرتجعات الشراء).
@@ -12,6 +13,8 @@ import { createSale } from "../saleService";
 ═══════════════════════════════════════════════════════════════ */
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
+const getInsertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertId);
+let seedShiftId = 0;
 
 const TABLES = [
   "idempotencyKeys",
@@ -40,9 +43,7 @@ function db() {
 
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {
@@ -60,11 +61,12 @@ async function seedBase() {
   await d.insert(s.productPrices).values([{ productUnitId: 1, priceTier: "RETAIL", price: "10.00" }]);
   await d.insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0" });
   // M5/M8/M10: عمليات النقد تَستلزم وردية مفتوحة (هنا: بيع نقدي بلا عميل ⇒ pay CASH).
-  await d.insert(s.shifts).values({
+  const sr = await d.insert(s.shifts).values({
     userId: 1, branchId: 1, status: "OPEN",
     openedAt: new Date(),
     openGuard: "1:1", openingBalance: "0",
   });
+  seedShiftId = getInsertId(sr);
 }
 
 async function setStock(variantId: number, branchId: number, qty: number) {
@@ -81,7 +83,7 @@ async function saleThenReturn(opts: { customerId?: number | null; qty: string; r
       lines: [{ variantId: 1, productUnitId: 1, quantity: opts.qty }],
       payment: opts.pay ? { amount: opts.pay, method: "CASH" } : null,
       // M8: createSale CASH يَستلزم shiftId صريحاً. الوردية مفتوحة في seedBase.
-      shiftId: opts.pay ? 1 : undefined,
+      shiftId: opts.pay ? seedShiftId : undefined,
     },
     actor,
   );
@@ -125,7 +127,7 @@ describe("listSalesReturns — سجلّ مرتجعات البيع", () => {
 
   it("عدم تلوّث: قيد RETURN ذو supplierId (مرتجع شراء) لا يظهر أبداً في مرتجعات البيع", async () => {
     await setStock(1, 1, 20);
-    await saleThenReturn({ customerId: 1, qty: "10", returnBase: 5 });
+    const sale = await saleThenReturn({ customerId: 1, qty: "10", returnBase: 5 });
 
     // قيد مرتجع شراء: supplierId غير فارغ (وبلا فاتورة) — يحاكي ما يكتبه createPurchaseReturn.
     await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
@@ -142,7 +144,7 @@ describe("listSalesReturns — سجلّ مرتجعات البيع", () => {
       entryType: "RETURN",
       branchId: 1,
       supplierId: 1,
-      invoiceId: 1,
+      invoiceId: sale.invoiceId,
       cost: "-7.00",
       amount: "-7.00",
       entryDate: new Date(),

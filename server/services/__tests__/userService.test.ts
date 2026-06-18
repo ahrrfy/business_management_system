@@ -12,6 +12,7 @@ import {
   setUserActive,
   updateUser,
 } from "../userService";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1 };
 /** فاعل بديل (مدير آخر) لاختبار حارس آخر مدير دون أن يصطدم بحارس «الذات». */
@@ -27,9 +28,7 @@ function db() {
 
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {

@@ -8,6 +8,7 @@ import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
 import { closeShift } from "../shiftService";
 import { createWorkOrder, deliverWorkOrder, markWorkOrderReady, startWorkOrder } from "../workOrderService";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 const cashierA = { userId: 2, branchId: 1, role: "cashier" };
@@ -30,9 +31,7 @@ const insertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertI
 
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {

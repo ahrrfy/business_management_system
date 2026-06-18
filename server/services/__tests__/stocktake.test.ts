@@ -29,6 +29,7 @@ import {
   type CreateStocktakeInput,
 } from "../stocktakeService";
 import { withTx } from "../tx";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1 };
 const actor2 = { userId: 2 };
@@ -61,9 +62,7 @@ function db() {
 
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 /** بذرة أساس خاصة بالاختبار: فرعان + مستخدمان (أدمن/مدير) + ٥ متغيّرات بتكاليف متدرّجة. */

@@ -17,6 +17,7 @@ import {
 import { KIOSK_COOKIE_NAME, signKioskSession, verifyKioskSession } from "../../auth/kioskSession";
 import { signSession, verifySession } from "../../auth/session";
 import { kioskBanner, kioskLookup } from "../kioskService";
+import { truncateTables } from "./__testUtils__";
 
 function db() {
   const d = getDb();
@@ -38,9 +39,7 @@ const TABLES = [
 
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seed() {

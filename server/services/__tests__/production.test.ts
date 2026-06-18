@@ -8,6 +8,7 @@ import { getDb } from "../../db";
 import { money, sumMoney } from "../money";
 import { cancelProduction, computeRunCosts, createProduction, getProduction, runPreview, spoilageSplit } from "../productionService";
 import { createRecipe, getRecipe, recipePreview } from "../recipeService";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
@@ -21,9 +22,7 @@ const TABLES = [
 
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seed() {

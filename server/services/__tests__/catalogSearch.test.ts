@@ -5,16 +5,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { listForPos, listForPurchase, lookupByBarcode } from "../catalogService";
+import { truncateTables } from "./__testUtils__";
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of ["branchStock", "productPrices", "productUnits", "productVariants", "products", "branches"]) {
-    await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  }
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(["branchStock", "productPrices", "productUnits", "productVariants", "products", "branches"]);
 }
 
 /** بذرة بأسماء تتعمّد فخاخ الإملاء العربي (همزات/تاء مربوطة/مقصورة). */

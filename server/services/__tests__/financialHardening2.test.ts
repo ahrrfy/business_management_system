@@ -11,6 +11,7 @@ import { openShift } from "../shiftService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
 import { reconcileSupplierBalances } from "../reconcileService";
 import { money } from "../money";
+import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1 };
 const adminCtx = { req: { headers: {}, ip: "127.0.0.1" } as any, res: { cookie() {}, clearCookie() {} } as any, user: { id: 1, role: "admin", branchId: 1 } as any };
@@ -24,9 +25,7 @@ const TABLES = [
 function db() { const d = getDb(); if (!d) throw new Error("no DB"); return d; }
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 async function seedBase() {
   const d = db();

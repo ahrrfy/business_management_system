@@ -10,6 +10,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createEmployee } from "../employeeService";
 import { approvePromotion, completeTermination, createPromotion, createTermination } from "../promotionService";
+import { truncateTables } from "./__testUtils__";
 
 const ACTOR = { userId: 1, branchId: 1 };
 
@@ -30,9 +31,7 @@ function db() {
 }
 async function reset() {
   const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 async function seedBase() {
   const d = db();

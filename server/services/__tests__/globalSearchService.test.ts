@@ -16,22 +16,12 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { classifyQuery, globalSearch } from "../globalSearchService";
+import { truncateAllTables } from "./__testUtils__";
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 async function reset() {
-  const d = db();
-  const rows = await d.execute(
-    sql`SELECT TABLE_NAME AS name FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'`,
-  );
-  const data = ((rows as any)[0] ?? rows) as Array<{ name: string }>;
-  const tables = data.map((r) => r.name).filter((n) => n !== "__drizzle_migrations");
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of tables) {
-    await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  }
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateAllTables();
 }
 
 type SeedRefs = {
