@@ -942,3 +942,111 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
 
   openPrintWindow(wrapReceiptDoc(`إيصال ${d.receiptNumber}`, body), 'width=380,height=700');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ١١. إيصال أمر الشغل الحراري — 80مم (بديل المتصفّح)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+import type { WorkOrderReceiptData } from './workOrderRaster';
+
+const WO_STATUS_HTML: Record<string, string> = {
+  RECEIVED: 'مُستلَم', IN_PROGRESS: 'قيد التنفيذ', READY: 'جاهز للتسليم',
+  DELIVERED: 'مُسلَّم', CANCELLED: 'ملغى',
+};
+
+export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
+  const logo = logoUrl();
+
+  let barSvg = '';
+  try {
+    const bc = code128Svg(d.orderNumber, { moduleWidth: 0.8, height: 35, showText: true });
+    barSvg = bc.svg;
+  } catch { /* بلا باركود */ }
+
+  const statusLabel = WO_STATUS_HTML[d.status ?? ''] ?? (d.status ?? '');
+
+  const infoRows = [
+    ['رقم الأمر', esc(d.orderNumber)],
+    d.orderDate  ? ['تاريخ الاستلام', esc(d.orderDate)]  : null,
+    d.dueDate    ? ['موعد التسليم', esc(d.dueDate)]       : null,
+    d.customerName  ? ['العميل', esc(d.customerName)]     : null,
+    d.customerPhone ? ['الهاتف', esc(d.customerPhone)]    : null,
+    d.status        ? ['الحالة', statusLabel]              : null,
+  ].filter(Boolean) as [string, string][];
+
+  const infoHtml = infoRows.map(([l, v]) =>
+    `<div style="display:flex;justify-content:space-between;font-size:10px;padding:0.7mm 0;border-bottom:1px dashed #ddd;">
+       <span style="font-weight:700;">${l}:</span>
+       <span style="text-align:left;">${v}</span>
+     </div>`
+  ).join('');
+
+  const specsHtml = d.specs
+    ? `<div style="font-size:9.5px;color:#333;margin:1.5mm 0;padding:1.5mm;background:#f5f5f5;border-radius:2px;white-space:pre-wrap;word-break:break-all;">${esc(d.specs)}</div>`
+    : '';
+
+  const notesHtml = d.notes
+    ? `<div style="margin:2mm 0;">
+         <div style="font-size:9.5px;font-weight:700;margin-bottom:1mm;">ملاحظات:</div>
+         <div style="font-size:9.5px;white-space:pre-wrap;word-break:break-all;">${esc(d.notes)}</div>
+       </div>`
+    : '';
+
+  const contactRows = RECEIPT_PHONES.slice(0, 2).map(p =>
+    `<tr><td style="text-align:right;padding:0.8mm 0;">${esc(p.l)}</td>
+         <td style="text-align:left;padding:0.8mm 0;font-weight:700;" dir="ltr">${esc(p.n)}</td></tr>`
+  ).join('');
+
+  const body = `
+  <div style="text-align:center;margin-bottom:3mm;">
+    ${logo ? `<img src="${logo}" style="height:40px;margin-bottom:1.5mm;" onerror="this.style.display='none'">` : ''}
+    <div style="font-size:14px;font-weight:900;">مكتبة العربية</div>
+    <div style="font-size:11px;font-weight:800;">للطباعة والقرطاسية</div>
+  </div>
+
+  ${barSvg ? `<div style="text-align:center;margin:2mm 0;">${barSvg}</div>` : ''}
+
+  <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:2mm 0;text-align:center;margin:2mm 0;">
+    <span style="font-size:13px;font-weight:900;">أمر شغل / المطبعة</span>
+  </div>
+
+  <div style="margin:2mm 0;">${infoHtml}</div>
+
+  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
+
+  ${d.jobTitle ? `
+  <div style="font-size:10px;font-weight:700;margin-bottom:0.5mm;">نوع العمل:</div>
+  <div style="font-size:10px;margin-bottom:1mm;">${esc(d.jobTitle)}</div>` : ''}
+
+  ${d.quantity != null && String(d.quantity).trim() ? `
+  <div style="display:flex;justify-content:space-between;font-size:10px;padding:0.5mm 0;">
+    <span style="font-weight:700;">الكمية:</span><span>${esc(String(d.quantity))}</span>
+  </div>` : ''}
+
+  ${specsHtml}
+
+  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
+
+  <div style="display:flex;justify-content:space-between;align-items:center;padding:2mm 0;border-top:1.5px solid #000;border-bottom:1.5px solid #000;margin:1mm 0;">
+    <span style="font-size:12px;font-weight:900;">الإجمالي:</span>
+    <span style="font-size:13px;font-weight:900;">${fmtC(d.total)}</span>
+  </div>
+
+  ${notesHtml}
+
+  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:6mm;margin:3mm 0 2mm;">
+    <div style="text-align:center;border-top:1px solid #000;padding-top:1mm;font-size:8.5px;color:#555;">توقيع المسؤول</div>
+    <div style="text-align:center;border-top:1px solid #000;padding-top:1mm;font-size:8.5px;color:#555;">توقيع العميل</div>
+  </div>
+
+  <div style="border-bottom:1px dashed #999;margin:2mm 0;"></div>
+  <div style="text-align:center;font-size:10px;font-weight:700;margin:1.5mm 0;">شكراً لتعاملكم مع مكتبة العربية</div>
+  <table style="width:100%;font-size:9px;border-collapse:collapse;margin:1mm 0;">
+    <tbody>${contactRows}</tbody>
+  </table>
+  <div style="text-align:center;font-size:8.5px;color:#555;margin-top:1.5mm;">بغداد — العامرية / شارع العمل الشعبي</div>`;
+
+  openPrintWindow(wrapReceiptDoc(`أمر شغل ${d.orderNumber}`, body), 'width=380,height=750');
+}

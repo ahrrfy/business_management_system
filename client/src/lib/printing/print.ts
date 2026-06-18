@@ -3,11 +3,12 @@ import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
 import { isPaired, sendBytes, tryReconnectPrinter, isWebUsbSupported } from "./thermal";
 import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
 import { receiptToRaster } from "./receiptRaster";
+import { workOrderToRaster, type WorkOrderReceiptData } from "./workOrderRaster";
 import { buildLabelBytes, type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
 import { getLabelSize, type LabelSize } from "./labelSize";
-import { printBrowserReceipt, printBarcodeSheet, type ReceiptBrowserData } from "./printTemplates";
+import { printBrowserReceipt, printBarcodeSheet, printBrowserWorkOrderReceipt, type ReceiptBrowserData } from "./printTemplates";
 
-export type { PrintDoc, ReceiptBrowserData, LabelRenderItem, LabelRenderOpts, LabelSize };
+export type { PrintDoc, ReceiptBrowserData, WorkOrderReceiptData, LabelRenderItem, LabelRenderOpts, LabelSize };
 export { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter } from "./thermal";
 export type { PrinterRole } from "./thermal";
 export {
@@ -134,4 +135,38 @@ export async function printLabel(
   // ٢) نافذة المتصفّح (بمقاس الملصق — تُطبع عبر تعريف Windows للطابعة). ok=false إن حُجبت النافذة.
   const ok = printBarcodeSheet(items, size, opts);
   return { via: "browser", ok };
+}
+
+/**
+ * طباعة إيصال أمر الشغل الحراري (80مم) بترتيب الأولوية المتدرّج نفسه:
+ *  ١) جسر الخادم  ٢) WebUSB  ٣) نافذة متصفّح 80مم (بديل أخير).
+ * التصميم واحد في المسارات الثلاثة (workOrderRaster = نفس القالب على Canvas).
+ */
+export async function printWorkOrderReceipt(
+  d: WorkOrderReceiptData,
+): Promise<{ via: "server" | "thermal" | "browser" }> {
+  if ((await isServerBridgeEnabled()) || isPaired()) {
+    const raster = await workOrderToRaster(d);
+    if (raster) {
+      const bytes = new EscPos().init().raster(raster).feed(3).cut().bytes();
+      if (await isServerBridgeEnabled()) {
+        try {
+          await sendRawToServer(bytes);
+          return { via: "server" };
+        } catch (e) {
+          console.warn("[print] فشل جسر الخادم (WO)، نتراجع للبديل:", e);
+        }
+      }
+      if (isPaired()) {
+        try {
+          await sendBytes(bytes);
+          return { via: "thermal" };
+        } catch (e) {
+          console.warn("[print] فشل WebUSB (WO)، نتراجع لنافذة المتصفّح:", e);
+        }
+      }
+    }
+  }
+  printBrowserWorkOrderReceipt(d);
+  return { via: "browser" };
 }

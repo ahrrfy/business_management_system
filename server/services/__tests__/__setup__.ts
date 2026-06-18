@@ -10,7 +10,7 @@
  */
 import { sql } from "drizzle-orm";
 import { beforeAll } from "vitest";
-import { getDb } from "../../db";
+import { getDb, getPool } from "../../db";
 
 const SKIP = new Set(["__drizzle_migrations"]);
 
@@ -35,14 +35,20 @@ beforeAll(async () => {
   const db = getDb();
   if (!db) return;
   const tables = await discoverTables(db);
-  await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of tables) {
-    // FK_CHECKS=0 مُفعَّل ⇒ فشل TRUNCATE هنا = خطأ بنيوي (صلاحيات/قفل/تعطّل اتصال) لا قيد عادي.
-    // نُسجِّل بدل الصمت السابق .catch(()=>{}) كي لا يختبئ تلوّث حالة وراء «النجاح».
-    await db.execute(sql.raw(`TRUNCATE TABLE \`${t}\``)).catch((e: unknown) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`__setup__: TRUNCATE ${t} failed: ${msg}`);
-    });
+  // استخدام اتصال مخصّص واحد يضمن أن SET FK_CHECKS=0 وكل TRUNCATE تعمل على نفس جلسة MySQL.
+  // الـpool يُعيد اتصالاً مختلفاً لكل execute() ⇒ FK_CHECKS=0 على اتصال A لا يؤثر على اتصال B.
+  const pool = getPool();
+  const conn = await pool.getConnection();
+  try {
+    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
+    for (const t of tables) {
+      await conn.query(`TRUNCATE TABLE \`${t}\``).catch((e: unknown) => {
+        const msg = e instanceof Error ? (e as Error).message : String(e);
+        console.error(`__setup__: TRUNCATE ${t} failed: ${msg}`);
+      });
+    }
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
+  } finally {
+    conn.release();
   }
-  await db.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 });

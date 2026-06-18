@@ -58,3 +58,9 @@ export function getDb() {
 export type DB = ReturnType<typeof createDb>;
 /** Transaction handle as passed to `db.transaction(async (tx) => { ... })`. */
 export type Tx = Parameters<Parameters<DB["transaction"]>[0]>[0];
+
+/** Raw pool for test helpers that need a dedicated connection (e.g. TRUNCATE with FK_CHECKS). */
+export function getPool(): mysql.Pool {
+  if (!_pool) throw new Error("DB pool not initialized — call getDb() first");
+  return _pool;
+}
