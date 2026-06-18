@@ -231,7 +231,17 @@ export const saleRouter = router({
         }
         enforceBranchId = Number(ctx.user.branchId);
       }
-      const actorBranchId = elevated ? (Number(ctx.user.branchId) || enforceBranchId || 1) : enforceBranchId!;
+      // G3 (١٩/٦/٢٦): إزالة fallback `|| 1` الصامت. للأدمن بلا فرع نطلب branchId صريحاً
+      // (إن غاب نرفع FORBIDDEN — لا نسقط بصمت على فرع ١).
+      let actorBranchId: number;
+      if (elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد للمستخدم — حدّد فرعك قبل تسجيل دفعات" });
+        }
+        actorBranchId = Number(ctx.user.branchId);
+      } else {
+        actorBranchId = enforceBranchId!;
+      }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: actorBranchId });

@@ -52,10 +52,14 @@ export interface ARAgingRow {
  *  تُعمَّر الدلاء من **تاريخ الاستحقاق إن وُجد** (`COALESCE(dueDate, invoiceDate)`): فالبيع الآجل
  *  للشركات/الدوائر يُعمَّر من موعد استحقاقه الحقيقي، والفواتير بلا استحقاق تبقى على تاريخ الفاتورة
  *  (متوافق رجعياً). */
-export async function getARAging(opts: { branchId?: number } = {}): Promise<ARAgingRow[]> {
+export async function getARAging(opts: { branchId?: number; limit?: number } = {}): Promise<ARAgingRow[]> {
   const db = getDb();
   if (!db) return [];
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  // G13 (١٩/٦/٢٦): LIMIT حارس ضدّ OOM عند تحميل عشرات الآلاف من العملاء في الذاكرة.
+  // ORDER BY unpaidTotal DESC ⇒ أكبر الذمم أولاً (المطلوبة فعلياً في المتابعة).
+  // ٥٠٠٠ افتراضياً يفوق سقف عملاء أي متجر منفرد، لكن يمنع تسارع الفشل عند نموّ الجدول.
+  const limit = Math.max(1, Math.min(opts.limit ?? 5000, 10000));
   const rows = await db.execute(sql`
     SELECT
       c.id AS customerId,
@@ -78,6 +82,7 @@ export async function getARAging(opts: { branchId?: number } = {}): Promise<ARAg
     GROUP BY c.id, c.name, c.phone, c.customerType, c.currentBalance
     HAVING unpaidTotal > 0 OR c.currentBalance > 0
     ORDER BY unpaidTotal DESC, c.currentBalance DESC
+    LIMIT ${limit}
   `);
   const data = (rows as any)[0] ?? rows;
   return Array.isArray(data) ? (data as ARAgingRow[]) : [];
@@ -293,10 +298,12 @@ export interface APAgingRow {
  * DRAFT/SENT لم تُلتزَم مالياً ⇒ تُستبعد؛ CANCELLED تُستبعد؛
  * CONFIRMED/RECEIVED حيث total > paidAmount = مستحق.
  */
-export async function getAPAging(opts: { branchId?: number } = {}): Promise<APAgingRow[]> {
+export async function getAPAging(opts: { branchId?: number; limit?: number } = {}): Promise<APAgingRow[]> {
   const db = getDb();
   if (!db) return [];
   const branchFilter = opts.branchId ? sql`AND po.branchId = ${opts.branchId}` : sql``;
+  // G13: نفس حارس LIMIT في AR aging — يمنع OOM عند نمو الموردين.
+  const limit = Math.max(1, Math.min(opts.limit ?? 5000, 10000));
   const rows = await db.execute(sql`
     SELECT
       s.id AS supplierId,
@@ -318,6 +325,7 @@ export async function getAPAging(opts: { branchId?: number } = {}): Promise<APAg
     GROUP BY s.id, s.name, s.phone, s.currentBalance
     HAVING unpaidTotal > 0 OR s.currentBalance > 0
     ORDER BY unpaidTotal DESC, s.currentBalance DESC
+    LIMIT ${limit}
   `);
   const data = (rows as any)[0] ?? rows;
   return Array.isArray(data) ? (data as APAgingRow[]) : [];
