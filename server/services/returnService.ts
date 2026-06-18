@@ -102,6 +102,11 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة ملغاة أو مرتجعة بالكامل" });
     }
+    // G8 (١٩/٦/٢٦): فحص ملكية الفرع — managerProcedure يسمح بالمدير والأدمن، لكن مدير فرع لا
+    // يجوز له إصدار مرتجع على فاتورة فرع آخر (يخرج نقد من صندوقه لفاتورة لا تخصّه).
+    if (actor.role !== "admin" && Number(inv.branchId) !== Number(actor.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+    }
     // فاتورة أمر الشغل تبيع متغيّراً أساس لم يُضَف للمخزون فعلاً (المواد استُهلكت عند البدء)،
     // فإعادة التخزين تخلق مخزوناً وهمياً لمنتج مُخصَّص. افرض restock=false لها.
     const restock = inv.sourceType === "WORKORDER" ? false : input.restock !== false;
@@ -206,6 +211,24 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       amount: returnedTotal.neg(),
     });
 
+    // G10 (١٩/٦/٢٦): عكس تقريب النقد العراقي (cashRoundingAdjustment) عند المرتجع الكامل
+    // — المرتجع الجزئي يترك التقريب على الفاتورة ويُصفّى عند المرتجع المُكمِل. كان عدم عكسه
+    // يخلّف بقايا صامتة في الدفتر (دنانير قليلة لكنها تتراكم عبر آلاف الفواتير).
+    const cashRoundOriginal = money(inv.cashRoundingAdjustment ?? "0");
+    if (fullyReturned && !cashRoundOriginal.isZero()) {
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        dedupeKey: `ADJUST:IQD:RETURN:${input.invoiceId}`,
+        branchId: Number(inv.branchId),
+        invoiceId: input.invoiceId,
+        customerId: inv.customerId,
+        revenue: cashRoundOriginal.neg(),
+        profit: cashRoundOriginal.neg(),
+        amount: cashRoundOriginal.neg(),
+        notes: "عكس تقريب نقدي IQD — مرتجع كامل",
+      });
+    }
+
     // Cash refund capped to min(returnedTotal, amount actually paid). Reject overage.
     const requestedRefund = money(input.refund?.amount ?? "0");
     if (requestedRefund.lt(0)) {
@@ -243,6 +266,11 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     if (cashRefund.gt(0)) {
       // انسب الاسترداد النقدي لوردية الموظّف المفتوحة (وإلا فالـZ-report يُظهر عجزاً وهمياً).
       const shiftId = await openShiftIdTx(tx, actor.userId, Number(inv.branchId));
+      // G9 (١٩/٦/٢٦): استرداد نقدي بلا وردية مفتوحة كان يكتب receipt بـshiftId=null
+      // ⇒ يخرج النقد من الدُرج لكن لا يدخل تسوية Z-report ⇒ عجز وهمي عند الإغلاق.
+      if (input.refund!.method === "CASH" && shiftId == null) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "افتح وردية أولاً لاسترداد نقدي" });
+      }
       const rRes = await tx.insert(receipts).values({
         invoiceId: input.invoiceId,
         branchId: Number(inv.branchId),

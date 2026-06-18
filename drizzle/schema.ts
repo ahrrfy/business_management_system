@@ -414,6 +414,9 @@ export const invoices = mysqlTable(
     dateIdx: index("idx_invoice_date").on(table.invoiceDate),
     statusIdx: index("idx_invoice_status").on(table.status),
     sourceIdx: index("idx_invoice_source").on(table.sourceType),
+    // G11 (١٩/٦/٢٦): composite indexes للتقارير الأكثر استعمالاً — AR aging و Daily Sales.
+    statusCustomerIdx: index("idx_invoice_status_customer").on(table.status, table.customerId),
+    branchDateIdx: index("idx_invoice_branch_date").on(table.branchId, table.invoiceDate),
     sourceUq: unique("uq_invoice_source").on(table.sourceType, table.sourceId),
   })
 );
@@ -605,6 +608,10 @@ export const receipts = mysqlTable(
     partyIdx: index("idx_receipt_party").on(table.partyType, table.partyId),
     bucketIdx: index("idx_receipt_bucket").on(table.bucketId),
     pairIdx: index("idx_receipt_pair").on(table.pairToken),
+    // G11 (١٩/٦/٢٦): فهرس shiftId حرج — Z-report لكل إغلاق وردية كان full scan على آلاف الإيصالات يومياً.
+    shiftIdx: index("idx_receipt_shift").on(table.shiftId),
+    // composite (bucketId, status) لـcashReconcile — يفلتر COMPLETED قبل aggregation.
+    bucketStatusIdx: index("idx_receipt_bucket_status").on(table.bucketId, table.status),
   })
 );
 
@@ -645,6 +652,9 @@ export const accountingEntries = mysqlTable(
     dateIdx: index("idx_entry_date").on(table.entryDate),
     supplierIdx: index("idx_entry_supplier").on(table.supplierId),
     customerIdx: index("idx_entry_customer").on(table.customerId),
+    // G11 (١٩/٦/٢٦): فهرس branchId حرج — GL/P&L/الميزانية/كشوف الحساب تستعلم على branchId،
+    // كان full scan على مليون قيد لكل تقرير.
+    branchIdx: index("idx_entry_branch").on(table.branchId),
   })
 );
 
@@ -878,6 +888,8 @@ export const purchaseOrders = mysqlTable(
     supplierIdx: index("idx_po_supplier").on(table.supplierId),
     branchIdx: index("idx_po_branch").on(table.branchId),
     statusIdx: index("idx_po_status").on(table.status),
+    // G11 (١٩/٦/٢٦): composite (supplierId, status) لـAP aging — تجميع المورّدين بفلتر الحالة.
+    supplierStatusIdx: index("idx_po_supplier_status").on(table.supplierId, table.status),
   })
 );
 
@@ -1652,7 +1664,9 @@ export const payrollRuns = mysqlTable(
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (t) => ({
-    periodUq: unique("uq_payroll_period").on(t.period),
+    // G12 (١٩/٦/٢٦): UNIQUE(period, branchId) — كان UNIQUE(period) وحده يمنع فرعَين من
+    // توليد مسيّر رواتب لنفس الشهر (ER_DUP_ENTRY على الفرع الثاني). كل فرع يحتاج مسيّره.
+    periodBranchUq: unique("uq_payroll_period_branch").on(t.period, t.branchId),
     statusIdx: index("idx_payroll_status").on(t.status),
   })
 );
