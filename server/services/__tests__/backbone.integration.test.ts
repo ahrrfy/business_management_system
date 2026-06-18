@@ -1,7 +1,8 @@
 import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
-import { getDb, getPool } from "../../db";
+import { getDb } from "../../db";
+import { truncateTables } from "./__testUtils__";
 import { transferBetweenBranches } from "../inventoryService";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { returnSale } from "../returnService";
@@ -39,14 +40,9 @@ function db() {
 const insertId = (res: any): number => Number(res?.[0]?.insertId ?? res?.insertId);
 
 async function reset() {
-  const conn = await getPool().getConnection();
-  try {
-    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
-    for (const t of TABLES) await conn.query(`TRUNCATE TABLE \`${t}\``);
-    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
-  } finally {
-    conn.release();
-  }
+  // DELETE بَدل TRUNCATE: TRUNCATE هو DDL يُغيّر table_id ⇒ ER_TABLE_DEF_CHANGED على pool connections.
+  // truncateTables يستخدم اتصالاً فردياً + DELETE + closeDb() بعد الانتهاء.
+  await truncateTables(TABLES);
 }
 
 async function seedBase() {

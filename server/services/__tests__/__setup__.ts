@@ -21,7 +21,7 @@
  */
 import { sql } from "drizzle-orm";
 import { afterEach } from "vitest";
-import { getDb } from "../../db";
+import { getDb, getPool } from "../../db";
 
 const SKIP = new Set(["__drizzle_migrations"]);
 
@@ -58,13 +58,22 @@ afterEach(async () => {
   const db = getDb();
   if (!db) return;
   const tables = await discoverTables(db);
-  await db.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of tables) {
-    // DELETE FROM (لا TRUNCATE) — DML تَحترم FK_CHECKS=0 على نَقيض TRUNCATE/DROP.
-    await db.execute(sql.raw(`DELETE FROM \`${t}\``)).catch((e: unknown) => {
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error(`__setup__: DELETE FROM ${t} failed: ${msg}`);
-    });
+  // استعمل اتصالاً مفرداً مُثبَّتاً بدل pool المُجزَّأ:
+  // SET FOREIGN_KEY_CHECKS=0 هي متغيّر جلسة SESSION؛ إذا انتقلنا إلى اتصال آخر من الـpool
+  // بين الـSET والـDELETE فإن الحذف يعمل مع FK_CHECKS=1 ⇒ يفشل على الجداول الأمّ (branches…)
+  // ويُسجَّل صامتاً (catch) ⇒ تتراكم البيانات بين ملفات الاختبار وتسبّب DUPLICATE KEY في الملف التالي.
+  const conn = await getPool().getConnection();
+  try {
+    await conn.execute("SET FOREIGN_KEY_CHECKS = 0");
+    for (const t of tables) {
+      // DELETE FROM (لا TRUNCATE) — DML تَحترم FK_CHECKS=0 على نَقيض TRUNCATE/DROP.
+      await conn.execute(`DELETE FROM \`${t}\``).catch((e: unknown) => {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.error(`__setup__: DELETE FROM ${t} failed: ${msg}`);
+      });
+    }
+    await conn.execute("SET FOREIGN_KEY_CHECKS = 1");
+  } finally {
+    conn.release();
   }
-  await db.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 });
