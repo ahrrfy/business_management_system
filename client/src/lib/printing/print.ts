@@ -145,6 +145,13 @@ export async function printLabel(
 export async function printWorkOrderReceipt(
   d: WorkOrderReceiptData,
 ): Promise<{ via: "server" | "thermal" | "browser" }> {
+  // إعادة ربط صامتة لطابعة الإيصالات إن لم تكن مربوطة في الذاكرة (مثلاً الطباعة من لوحة
+  // أوامر الشغل أو تفاصيلها بلا فتح الكاشير أوّلاً) ⇒ تجربة الكاشير نفسها: WebUSB صامت
+  // بلا نافذة المتصفّح. مطابق لما يفعله printLabel للملصقات.
+  if (!isPaired() && isWebUsbSupported()) {
+    try { await tryReconnectPrinter(); } catch { /* تجاهل — نتراجع للبدائل */ }
+  }
+
   if ((await isServerBridgeEnabled()) || isPaired()) {
     const raster = await workOrderToRaster(d);
     if (raster) {
