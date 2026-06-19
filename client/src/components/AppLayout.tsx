@@ -1,6 +1,4 @@
 import { ThemeToggle } from "@/components/ThemeToggle";
-import { InstallAppButton } from "@/components/InstallAppButton";
-import { BridgeStatusIndicator } from "@/components/BridgeStatusIndicator";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
@@ -214,15 +212,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
     <div className="min-h-screen flex bg-muted/30" dir="rtl">
       <aside className="w-60 shrink-0 border-l bg-card flex flex-col">
         {/* الرأس */}
-        <div className="px-4 py-3 border-b flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <span className="font-semibold text-base leading-tight truncate">الرؤية العربية</span>
-            <BridgeStatusIndicator />
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <InstallAppButton />
-            <ThemeToggle />
-          </div>
+        <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
+          <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
+          <ThemeToggle />
         </div>
 
         {/* شريط البحث — يفتح CommandPalette */}

@@ -10,7 +10,6 @@ import { createRoot } from "react-dom/client";
 import superjson from "superjson";
 import { toast } from "sonner";
 import App from "./App";
-import { ingestBridgeSecretFromUrl } from "./lib/printing/localBridgeTransport";
 // خط Cairo مستضاف محلياً (بلا اعتماد على Google Fonts CDN) ⇒ يعمل النظام كاملاً بلا إنترنت.
 import "@fontsource/cairo/400.css";
 import "@fontsource/cairo/500.css";
@@ -19,16 +18,6 @@ import "@fontsource/cairo/700.css";
 import "./index.css";
 import "./lib/theme/tokens.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
-
-// التقاط `?bridge=<secret>` من URL المُثبِّت (install.ps1 الخطوة الأخيرة).
-// يحفظ السرّ في localStorage ثم ينظّف URL — يحدث مرة واحدة عند أوّل فتح بعد التثبيت.
-ingestBridgeSecretFromUrl();
-
-// إضافة class عند تشغيل التطبيق في وضع PWA المُثبَّت (display-mode: standalone)
-// ⇒ يمكن للـCSS تكييف الواجهة (مثلاً إخفاء روابط «التثبيت») بناءً عليه.
-if (typeof window !== "undefined" && window.matchMedia("(display-mode: standalone)").matches) {
-  document.documentElement.classList.add("pwa-installed");
-}
 
 const queryClient = new QueryClient();
 

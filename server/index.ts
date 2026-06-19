@@ -22,7 +22,6 @@ import { serveStatic, setupVite } from "./vite";
 import { csrfGuard } from "./middleware/csrf";
 import { printRouter } from "./printRoute";
 import { backupRouter } from "./backupRoutes";
-import { readInstallerVersion } from "./routers/installer";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -232,19 +231,6 @@ async function startServer() {
 
   // تنزيل النسخ الاحتياطية لجهاز المدير (GET stream، محمي بالمدير + مسار آمن).
   app.use("/api/backups", csrfGuard, backupRouter());
-
-  // REST endpoint للجسر المحلي على أجهزة المتجر للاستعلام عن آخر إصدار للتحديث الذاتي.
-  // الجسر عملية مستقلة (Node SEA على Windows) لا تحوي عميل tRPC ⇒ REST بسيط.
-  // عام بلا csrfGuard لأنه GET للقراءة فقط ولا يكشف بيانات حساسة (إصدار+sha256+url لأصل عام).
-  // معدّل rate-limit العام يكفي (الجسر ينبض مرة واحدة يومياً).
-  app.get("/api/installer/latest-version", (_req, res) => {
-    const meta = readInstallerVersion();
-    if (!meta) {
-      res.status(503).json({ error: "version metadata unavailable" });
-      return;
-    }
-    res.json(meta);
-  });
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
   // HOST يضيّق واجهة الاستماع: على VPS خلف nginx اضبط HOST=127.0.0.1 فلا يُكشف المنفذ للإنترنت
