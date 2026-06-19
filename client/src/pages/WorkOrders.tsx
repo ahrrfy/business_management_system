@@ -6,6 +6,7 @@ import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
+import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { RowActions } from "@/components/list";
 import {
   Dialog,
@@ -127,6 +128,21 @@ function printWoFromCard(o: WO) {
   });
 }
 
+/** طباعة حرارية 80مم لأمر الشغل من بيانات البطاقة — نفس مسار التذكرة (جسر/WebUSB/متصفّح). */
+function printWoThermalFromCard(o: WO) {
+  void printWorkOrderReceipt({
+    orderNumber: o.orderNumber,
+    orderDate: o.createdAt ? String(o.createdAt).slice(0, 10) : undefined,
+    dueDate: o.dueDate ? String(o.dueDate).slice(0, 10) : undefined,
+    status: o.status,
+    customerName: o.customerName ?? undefined,
+    customerPhone: o.customerPhone ?? undefined,
+    jobTitle: o.title,
+    quantity: o.quantity ? `${o.quantity} نسخة` : undefined,
+    total: o.salePrice,
+  });
+}
+
 function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e: React.PointerEvent) => void; dragging?: boolean; ghost?: boolean }) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
@@ -147,7 +163,8 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
               mode="menu"
               label={`إجراءات ${o.orderNumber}`}
               actions={[
-                { key: "print", label: "طباعة", onSelect: () => printWoFromCard(o) },
+                { key: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o) },
+                { key: "print-thermal", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
                 { key: "open", label: "فتح التفاصيل", href: `/work-orders/${o.id}` },
               ]}
             />
@@ -399,7 +416,23 @@ function Drawer({
                 items: [{ name: `${d.title} (${d.quantity} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: d.salePrice, total: d.salePrice }],
                 subtotal: d.salePrice,
                 total: d.salePrice,
-              })}>🖨️ طباعة</button>
+              })}>🖨️ طباعة A4</button>
+              <button
+                className="wob-btn wob-btn-ghost"
+                title="إيصال أمر شغل حراري 80مم — جسر الخادم/WebUSB/متصفّح"
+                onClick={() => void printWorkOrderReceipt({
+                  orderNumber: d.orderNumber,
+                  orderDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,
+                  dueDate: d.dueDate ? String(d.dueDate).slice(0, 10) : undefined,
+                  status: d.status,
+                  customerName: d.customerName ?? undefined,
+                  customerPhone: d.customerPhone ?? undefined,
+                  jobTitle: d.title,
+                  quantity: d.quantity ? `${d.quantity} نسخة` : undefined,
+                  specs: d.customizationText ?? undefined,
+                  total: d.salePrice,
+                })}
+              >🧾 حراري 80مم</button>
               {d.customerPhone && (
                 <a className="wob-wa-lg" href={waUrl(d.customerPhone, d.customerName, d)} target="_blank" rel="noopener noreferrer"><WaIcon size={18} /> راسل العميل</a>
               )}

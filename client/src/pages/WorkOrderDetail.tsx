@@ -8,8 +8,8 @@ import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { Printer } from "lucide-react";
-import { useState } from "react";
-import { Link, useParams } from "wouter";
+import { useEffect, useRef, useState } from "react";
+import { Link, useParams, useSearch } from "wouter";
 
 const STATUS_LABEL: Record<string, string> = {
   RECEIVED: "مُستلَم",
@@ -34,11 +34,33 @@ export default function WorkOrderDetail() {
   const workOrderId = Number(params.id);
   const utils = trpc.useUtils();
   const wo = trpc.workOrders.get.useQuery({ workOrderId }, { enabled: Number.isFinite(workOrderId) });
+  const qs = useSearch();
 
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+
+  // ?print=1 من شاشة «حفظ وطباعة»: نطبع التذكرة الحرارية تلقائياً مرة واحدة بعد تحميل البيانات.
+  const autoPrintedRef = useRef(false);
+  useEffect(() => {
+    if (autoPrintedRef.current) return;
+    const wantPrint = new URLSearchParams(qs || "").get("print") === "1";
+    if (!wantPrint || !wo.data) return;
+    autoPrintedRef.current = true;
+    void printWorkOrderReceipt({
+      orderNumber: wo.data.orderNumber,
+      orderDate: wo.data.createdAt ? String(wo.data.createdAt).slice(0, 10) : undefined,
+      dueDate: wo.data.dueDate ? String(wo.data.dueDate).slice(0, 10) : undefined,
+      status: wo.data.status,
+      customerName: wo.data.customerName ?? undefined,
+      customerPhone: wo.data.customerPhone ?? undefined,
+      jobTitle: wo.data.title,
+      quantity: wo.data.quantity ? `${wo.data.quantity} نسخة` : undefined,
+      specs: wo.data.customizationText ?? undefined,
+      total: wo.data.salePrice,
+    });
+  }, [qs, wo.data]);
 
   const refresh = async () => {
     await Promise.all([
