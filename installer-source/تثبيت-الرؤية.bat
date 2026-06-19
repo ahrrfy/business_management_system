@@ -1,16 +1,14 @@
 @echo off
-REM ============================================================
-REM   تثبيت نظام الرؤية العربية — Al-Ru'ya ERP Store Installer
-REM   اضغط مرّتين على هذا الملف لبدء التثبيت.
-REM ============================================================
 chcp 65001 > nul
+REM Al-Ruya ERP Store Installer entrypoint
+REM Double-click this file to install the system on this computer.
 setlocal
 set "SCRIPT_DIR=%~dp0"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%install.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%scripts\install.ps1"
 set "RC=%ERRORLEVEL%"
 if not "%RC%"=="0" (
   echo.
-  echo فشل التثبيت (رمز %RC%). راجع %LOCALAPPDATA%\AlruyaERP\install.log
+  echo Install failed (code %RC%). See %LOCALAPPDATA%\AlruyaERP\install.log
   echo.
   pause
 )

@@ -57,6 +57,15 @@ function copyDir(src, dst) {
 
 function copyFile(src, dst) {
   ensure(path.dirname(dst));
+  // .bat files MUST have CRLF line endings — CMD on Windows mis-parses LF-only batch
+  // files (saw `'~dp0' is not recognized` errors in production at first launch attempt).
+  // Normalize encoding here so we never ship a broken installer regardless of how
+  // upstream tools (linters, editors) touch the file.
+  if (src.toLowerCase().endsWith(".bat")) {
+    const txt = fs.readFileSync(src, "utf8").replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
+    fs.writeFileSync(dst, txt, "utf8");
+    return;
+  }
   fs.copyFileSync(src, dst);
 }
 
