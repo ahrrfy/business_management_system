@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   check-update.ps1 — Daily self-update for alroya-bridge.exe.
   - Queries CloudUrl/api/installer/latest-version

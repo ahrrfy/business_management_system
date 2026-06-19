@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   detect-printers.ps1 — Scan the local machine for printers usable by the bridge.
   Outputs JSON to stdout describing:

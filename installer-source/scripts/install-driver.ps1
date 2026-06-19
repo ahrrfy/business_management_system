@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   install-driver.ps1 — Apply WinUSB driver to a USB device by VID/PID (advanced/optional path).
   Requires admin. Used only when the user explicitly chose "escpos-usb" mode for direct

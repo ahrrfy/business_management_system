@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   uninstall.ps1 — Cleanly remove everything install.ps1 created.
   Reads install-manifest.json for the exact paths and tasks to undo.

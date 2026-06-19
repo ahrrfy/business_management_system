@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   test-print.ps1 — Send a signed test-print request to the local bridge.
   Used at the end of install.ps1 to verify the printer is wired correctly.

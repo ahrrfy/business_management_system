@@ -55,15 +55,31 @@ function copyDir(src, dst) {
   }
 }
 
+// UTF-8 BOM marker. PowerShell 5.1 (default on Windows 10/11) reads .ps1 files
+// without a BOM as ANSI/Windows-1252 — Arabic characters become gibberish and the
+// parser blows up with red errors before main() runs (the script flashed and closed
+// during first launch test). Adding the BOM guarantees PS1 parses as UTF-8 on every
+// Windows version we target.
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+
+function normalizeCrlf(text) {
+  return text.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
+}
+
 function copyFile(src, dst) {
   ensure(path.dirname(dst));
-  // .bat files MUST have CRLF line endings — CMD on Windows mis-parses LF-only batch
-  // files (saw `'~dp0' is not recognized` errors in production at first launch attempt).
-  // Normalize encoding here so we never ship a broken installer regardless of how
-  // upstream tools (linters, editors) touch the file.
-  if (src.toLowerCase().endsWith(".bat")) {
-    const txt = fs.readFileSync(src, "utf8").replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
+  const lower = src.toLowerCase();
+  // .bat files: CRLF only (UTF-8 BOM breaks chcp 65001 on some CMD versions).
+  if (lower.endsWith(".bat")) {
+    const txt = normalizeCrlf(fs.readFileSync(src, "utf8").replace(/^﻿/, ""));
     fs.writeFileSync(dst, txt, "utf8");
+    return;
+  }
+  // .ps1 files: UTF-8 BOM + CRLF — required for PowerShell 5.1 to parse non-ASCII.
+  if (lower.endsWith(".ps1")) {
+    const raw = fs.readFileSync(src, "utf8").replace(/^﻿/, "");
+    const body = Buffer.from(normalizeCrlf(raw), "utf8");
+    fs.writeFileSync(dst, Buffer.concat([UTF8_BOM, body]));
     return;
   }
   fs.copyFileSync(src, dst);

@@ -1,4 +1,4 @@
-#requires -Version 5.1
+﻿#requires -Version 5.1
 <#
   install.ps1 — Al-Ru'ya ERP unified store installer.
   - Asks for device role (cashier / admin / branch)
