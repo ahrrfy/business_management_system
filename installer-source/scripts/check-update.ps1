@@ -74,10 +74,24 @@ if ($hash -ne $remote.sha256.ToLower()) {
   exit 0
 }
 
-# Add-Type يحتاج تحميل صنف P/Invoke. نضعه خارج catch لئلا «type not found» يكسر المسار
-# الاحتياطي إن فشل compilation (codepage، أو policy، إلخ).
+# المسار المفضَّل: استبدال فوري عبر Copy/Move. يعمل لو الجسر متوقف أو غير محجوز.
+# لا يحتاج Add-Type. نُجرّبه أولاً.
+$immediateOk = $false
 try {
-  Add-Type -ErrorAction Stop -TypeDefinition @'
+  Copy-Item $BridgeExe "$BridgeExe.bak" -Force
+  Move-Item $newExe $BridgeExe -Force
+  Log "replaced bridge immediately"
+  $immediateOk = $true
+} catch {
+  Log "immediate replace failed (likely bridge running): $($_.Exception.Message)"
+}
+
+# لو فشل المباشر، نجرّب الاحتياطي عبر MoveFileEx (تأجيل إلى الإقلاع التالي). هذا يحتاج
+# P/Invoke (Add-Type). إن فشل compilation أيضاً ⇒ نسجّل ونخرج بهدوء (التحديث القادم
+# سيُعيد المحاولة). لا نُعطّل المسار المباشر بسبب Add-Type — مدوَّن في PR #8 review.
+if (-not $immediateOk) {
+  try {
+    Add-Type -ErrorAction Stop -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public class FileMover {
@@ -87,20 +101,13 @@ public class FileMover {
   public const int MOVEFILE_DELAY_UNTIL_REBOOT = 0x4;
 }
 '@
-} catch {
-  Log "Add-Type FileMover failed: $($_.Exception.Message) — skipping deferred replace"
-  exit 0
-}
-
-# Backup current and try a clean rename. If bridge is running, the rename fails;
-# fall back to MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT.
-try {
-  Copy-Item $BridgeExe "$BridgeExe.bak" -Force
-  Move-Item $newExe $BridgeExe -Force
-  Log "replaced bridge immediately"
-} catch {
-  $ok = [FileMover]::MoveFileEx($newExe, $BridgeExe, [FileMover]::MOVEFILE_REPLACE_EXISTING -bor [FileMover]::MOVEFILE_DELAY_UNTIL_REBOOT)
-  Log "scheduled replace on reboot (ok=$ok)"
+    $ok = [FileMover]::MoveFileEx($newExe, $BridgeExe, [FileMover]::MOVEFILE_REPLACE_EXISTING -bor [FileMover]::MOVEFILE_DELAY_UNTIL_REBOOT)
+    Log "scheduled replace on reboot (ok=$ok)"
+  } catch {
+    Log "Add-Type FileMover failed: $($_.Exception.Message) — deferred replace skipped"
+    # نُبقي $newExe كي يحاول التحديث القادم استبداله مباشرة عند إيقاف الجسر.
+    exit 0
+  }
 }
 
 # Write version.json so we don't re-download

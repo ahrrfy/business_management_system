@@ -293,19 +293,34 @@ if ($selectedRole -eq 'cashier') {
   Save-Json $ConfigPath $cfg
   Write-OK "ملف الإعدادات: $ConfigPath"
 
-  # Register bridge as a logon task (user-level, no UAC)
+  # Register bridge as a logon task with restart-on-failure policy.
+  # ⚠️ لا نستعمل schtasks.exe لأن /sc onlogon لا يدعم إعادة التشغيل التلقائية عند الـcrash
+  # (PR #8 review). Register-ScheduledTask من PSScheduledJob يدعم RestartCount/Interval
+  # ⇒ لو الجسر مات بسبب uncaughtException/EADDRINUSE ⇒ Task Scheduler يعيد تشغيله
+  # خلال دقيقة (حتى ٥ محاولات) بلا حاجة لإعادة تسجيل دخول المستخدم.
   if (-not $NoAutoStart) {
-    Write-Step 6 "تسجيل تشغيل الجسر تلقائياً عند الدخول"
+    Write-Step 6 "تسجيل تشغيل الجسر تلقائياً عند الدخول (مع إعادة تشغيل عند الفشل)"
     $taskName = 'AlroyaBridge'
-    schtasks.exe /delete /tn $taskName /f 2>$null | Out-Null
-    $rc = schtasks.exe /create /tn $taskName /tr "`"$BridgeExeDst`"" /sc onlogon /rl limited /f 2>&1
-    if ($LASTEXITCODE -eq 0) {
-      Write-OK "مهمّة AlroyaBridge مُسجَّلة"
+    try {
+      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+      $action = New-ScheduledTaskAction -Execute $BridgeExeDst
+      $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+      $settings = New-ScheduledTaskSettingsSet `
+        -StartWhenAvailable `
+        -RestartCount 5 `
+        -RestartInterval (New-TimeSpan -Minutes 1) `
+        -ExecutionTimeLimit (New-TimeSpan -Days 0) `
+        -DontStopOnIdleEnd `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries
+      $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
+      Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
+      Write-OK "مهمّة AlroyaBridge مُسجَّلة (إعادة تشغيل ٥× بفاصل دقيقة عند الفشل)"
       # Kick it off now so the user can test print immediately.
       Start-Process -FilePath $BridgeExeDst -WindowStyle Hidden
       Start-Sleep -Seconds 1
-    } else {
-      Write-Warn2 "تعذّر تسجيل المهمة: $rc — سيعمل الجسر فقط حين تشغّله يدوياً"
+    } catch {
+      Write-Warn2 "تعذّر تسجيل المهمة: $($_.Exception.Message) — سيعمل الجسر فقط حين تشغّله يدوياً"
     }
   }
 }
