@@ -12,18 +12,22 @@ const BRIDGE_VERSION = process.env.ALROYA_BRIDGE_VERSION || "1.0.0";
 const MAX_BODY = 2 * 1024 * 1024; // 2 MB ceiling (raster receipts are ~20-50 KB; this is plenty)
 
 let cfg: BridgeConfig;
+let configError: string | null = null;
 try {
   cfg = loadConfig();
 } catch (e) {
-  // Allow startup without config so /health can report the problem to the PWA;
-  // /print will refuse until a valid config is present.
-  log("error", "config load failed", { error: (e as Error).message, path: getConfigPath() });
-  cfg = {
-    cloudUrl: "",
-    hmacSecret: "",
-    port: 9101,
-    deviceRole: "admin",
-  };
+  // الإعدادات مفقودة/تالفة ⇒ الجسر بلا hmacSecret لا يستطيع فحص HMAC، وأي endpoint
+  // محمي يردّ 500 بدل auth failure ⇒ تجربة مرتبكة + أمان مشكوك. fail-fast بدل ذلك ⇒
+  // Task Scheduler يكتشف الإخفاق ويعيد التشغيل، والمالك يرى log واضحاً.
+  configError = (e as Error).message;
+  log("error", "config load failed — refusing to start", {
+    error: configError,
+    path: getConfigPath(),
+  });
+  if (process.env.BRIDGE_STDOUT === "1") {
+    process.stderr.write(`alroya-bridge: config load failed (${configError}). aborting.\n`);
+  }
+  process.exit(1);
 }
 
 const app = express();
@@ -196,7 +200,7 @@ app.post("/test-print", requireHmac, async (req, res) => {
 // ─── start ───────────────────────────────────────────────────────────────
 
 const port = cfg.port || 9101;
-app.listen(port, "127.0.0.1", () => {
+const listener = app.listen(port, "127.0.0.1", () => {
   log("info", "bridge started", {
     version: BRIDGE_VERSION,
     port,
@@ -210,9 +214,22 @@ app.listen(port, "127.0.0.1", () => {
   }
 });
 
+// EADDRINUSE (نسخة أخرى من الجسر تعمل، أو منفذ مشغول من برنامج آخر) أو خطأ آخر ⇒
+// fail-fast فيكتشفه Task Scheduler ويعيد المحاولة (أو ينبه المالك في سجل المهام).
+listener.on("error", (err: NodeJS.ErrnoException) => {
+  log("error", "listen failed", { code: err.code, error: err.message, port });
+  if (process.env.BRIDGE_STDOUT === "1") {
+    process.stderr.write(`alroya-bridge: listen ${err.code || "error"} on :${port}\n`);
+  }
+  process.exit(1);
+});
+
+// uncaught ⇒ العملية في حالة غير محددة، أنهِها وليُعيدها Task Scheduler.
 process.on("uncaughtException", (err) => {
   log("error", "uncaught", { error: err.message, stack: err.stack });
+  process.exit(1);
 });
 process.on("unhandledRejection", (err) => {
   log("error", "unhandled rejection", { error: String(err) });
+  process.exit(1);
 });

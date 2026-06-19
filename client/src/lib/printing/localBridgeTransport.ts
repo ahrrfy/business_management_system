@@ -12,6 +12,9 @@ const STORAGE_KEY = "alroya:bridge-secret";
 const DEFAULT_PORT = 9101;
 const ENDPOINT_BASE = `http://127.0.0.1:${DEFAULT_PORT}`;
 const CACHE_TTL_MS = 30_000;
+// عند فشل /health، نُقصِّر مدة الـcache كثيراً: إن انتعش الجسر بعد ثوانٍ
+// لا نريد طباعة تخرج للمسارات البديلة لمدة 30 ثانية كاملة.
+const FAILURE_CACHE_TTL_MS = 5_000;
 
 export interface BridgeStatus {
   available: boolean;
@@ -100,8 +103,12 @@ async function hmacHex(body: string, secret: string): Promise<string> {
 // ─── health / availability ──────────────────────────────────────────────
 
 export async function fetchBridgeStatus(force = false): Promise<BridgeStatus> {
-  if (statusCache && !force && Date.now() - statusCache.checkedAt < CACHE_TTL_MS) {
-    return statusCache;
+  if (statusCache && !force) {
+    const age = Date.now() - statusCache.checkedAt;
+    // الكاش الناجح ٣٠ث (يقلّل طلبات health المتكررة)؛ الفاشل ٥ث (يسمح للجسر بالتعافي
+    // السريع بعد إعادة تشغيل ⇒ الطباعة لا تتدهور للبدائل لـ٣٠ث كاملة).
+    const ttl = statusCache.available ? CACHE_TTL_MS : FAILURE_CACHE_TTL_MS;
+    if (age < ttl) return statusCache;
   }
   try {
     const r = await fetch(`${ENDPOINT_BASE}/health`, {

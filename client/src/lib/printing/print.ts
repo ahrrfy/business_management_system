@@ -2,7 +2,7 @@ import { EscPos } from "./escpos";
 import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
 import { isPaired, sendBytes, tryReconnectPrinter, isWebUsbSupported } from "./thermal";
 import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
-import { isLocalBridgeEnabled, sendToLocalBridge } from "./localBridgeTransport";
+import { isLocalBridgeEnabled, fetchBridgeStatus, sendToLocalBridge } from "./localBridgeTransport";
 import { receiptToRaster } from "./receiptRaster";
 import { workOrderToRaster, type WorkOrderReceiptData } from "./workOrderRaster";
 import { buildLabelBytes, type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
@@ -144,8 +144,11 @@ export async function printLabel(
 ): Promise<{ via: PrintVia; ok: boolean }> {
   if (!items.length) return { via: "browser", ok: false };
 
-  // ٠) الجسر المحلي — يعرف بنفسه أي طابعة هي طابعة الملصقات (labelPrinter في config.json).
-  if (await isLocalBridgeEnabled()) {
+  // ٠) الجسر المحلي — لكن فقط إن كان فيه طابعة ملصقات مُكوَّنة (labelConfigured).
+  // بدون هذا الفحص، الـPWA يرسل bytes للجسر فيردّ 503 ثم نسقط للبديل ⇒ هدر زمن + سجلات
+  // مضلِّلة. labelConfigured يأتي من /health مع cache فعّال.
+  const bridgeStatus = await fetchBridgeStatus();
+  if (bridgeStatus.available && bridgeStatus.labelConfigured) {
     const bytes = await buildLabelBytes(items, size, opts);
     if (bytes) {
       const r = await sendToLocalBridge(bytes, "label");

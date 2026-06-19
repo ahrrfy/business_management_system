@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -87,7 +88,8 @@ const ERR_CODES: Record<number, string> = {
 export async function printSpooler(spoolerName: string, bytes: Buffer, jobName = "AlroyaERP"): Promise<void> {
   const helper = ensureHelper();
   const root = ensureTmpRoot();
-  const bytesFile = path.join(root, `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.bin`);
+  // crypto.randomBytes ⇒ ضمان عدم التصادم حتى مع طلبات متزامنة في نفس الـmillisecond.
+  const bytesFile = path.join(root, `job-${Date.now()}-${crypto.randomBytes(8).toString("hex")}.bin`);
   fs.writeFileSync(bytesFile, bytes);
   try {
     await new Promise<void>((resolve, reject) => {

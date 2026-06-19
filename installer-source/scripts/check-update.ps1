@@ -42,7 +42,9 @@ Log "checking $CloudUrl/api/installer/latest-version (current=$currentVersion)"
 
 $remote = $null
 try {
-  $remote = Invoke-RestMethod -Uri "$CloudUrl/api/installer/latest-version" -TimeoutSec 15
+  # -UseBasicParsing ضروري لـPowerShell 5.1: بدونه يحاول تهيئة IE COM Object الذي
+  # قد يفشل على Server Core أو إعدادات IE مقيَّدة ⇒ يفشل التحديث صامتاً.
+  $remote = Invoke-RestMethod -Uri "$CloudUrl/api/installer/latest-version" -TimeoutSec 15 -UseBasicParsing
 } catch {
   Log "fetch failed: $($_.Exception.Message)"
   exit 0
@@ -59,7 +61,7 @@ Log "new version available: $($remote.version)"
 
 $newExe = "$BridgeExe.new"
 try {
-  Invoke-WebRequest -Uri $remote.url -OutFile $newExe -TimeoutSec 120
+  Invoke-WebRequest -Uri $remote.url -OutFile $newExe -TimeoutSec 120 -UseBasicParsing
 } catch {
   Log "download failed: $($_.Exception.Message)"
   exit 0
@@ -72,15 +74,10 @@ if ($hash -ne $remote.sha256.ToLower()) {
   exit 0
 }
 
-# Backup current and try a clean rename. If bridge is running, the rename fails;
-# fall back to MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT.
+# Add-Type يحتاج تحميل صنف P/Invoke. نضعه خارج catch لئلا «type not found» يكسر المسار
+# الاحتياطي إن فشل compilation (codepage، أو policy، إلخ).
 try {
-  Copy-Item $BridgeExe "$BridgeExe.bak" -Force
-  Move-Item $newExe $BridgeExe -Force
-  Log "replaced bridge immediately"
-} catch {
-  # Schedule pending replacement at next reboot
-  Add-Type @'
+  Add-Type -ErrorAction Stop -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public class FileMover {
@@ -90,6 +87,18 @@ public class FileMover {
   public const int MOVEFILE_DELAY_UNTIL_REBOOT = 0x4;
 }
 '@
+} catch {
+  Log "Add-Type FileMover failed: $($_.Exception.Message) — skipping deferred replace"
+  exit 0
+}
+
+# Backup current and try a clean rename. If bridge is running, the rename fails;
+# fall back to MoveFileEx with MOVEFILE_DELAY_UNTIL_REBOOT.
+try {
+  Copy-Item $BridgeExe "$BridgeExe.bak" -Force
+  Move-Item $newExe $BridgeExe -Force
+  Log "replaced bridge immediately"
+} catch {
   $ok = [FileMover]::MoveFileEx($newExe, $BridgeExe, [FileMover]::MOVEFILE_REPLACE_EXISTING -bor [FileMover]::MOVEFILE_DELAY_UNTIL_REBOOT)
   Log "scheduled replace on reboot (ok=$ok)"
 }

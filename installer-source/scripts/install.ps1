@@ -338,7 +338,9 @@ if (-not $NoUpdateCheck) {
     Copy-Item $updScript $persistedUpd -Force
     schtasks.exe /delete /tn 'AlroyaUpdate' /f 2>$null | Out-Null
     $cmd = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$persistedUpd`" -CloudUrl `"$CloudUrl`""
-    $rc = schtasks.exe /create /tn 'AlroyaUpdate' /tr $cmd /sc daily /st 03:00 /f 2>&1
+    # `/tr` يجب أن يُمرَّر كحجة واحدة مغلَّفة بـquotes؛ بدونها schtasks يقسم الأمر على المسافات
+    # ويفشل تسجيل المهمة (لا سيما إن $CloudUrl يحوي مسافة أو رمزاً خاصاً).
+    $rc = schtasks.exe /create /tn 'AlroyaUpdate' /tr "$cmd" /sc daily /st 03:00 /f 2>&1
     if ($LASTEXITCODE -eq 0) {
       Write-OK "تحقّق يومي الساعة 03:00"
     } else {
@@ -371,8 +373,10 @@ if ($selectedRole -eq 'cashier' -and $receiptCfg -and -not $NoTestPrint) {
 # ── Open PWA with bridge token (cashier only) ───────────────────────────
 Write-Step 10 "ربط المتصفّح بالنظام"
 $setupUrl = if ($selectedRole -eq 'cashier' -and $secret) {
-  $encoded = [System.Web.HttpUtility]::UrlEncode($secret)
-  if (-not $encoded) { $encoded = [Uri]::EscapeDataString($secret) }
+  # base64 السرّ يحوي '+'، '/'، '=' — System.Web.HttpUtility.UrlEncode يرمّز '+' كـ'+'
+  # (application/x-www-form-urlencoded) لا %2B، فتفشل مصادقة الجسر. [Uri]::EscapeDataString
+  # يطبّق ترميز RFC 3986 الصحيح للـquery parameters.
+  $encoded = [Uri]::EscapeDataString($secret)
   "$CloudUrl/?bridge=$encoded"
 } else {
   "$CloudUrl/"
@@ -413,8 +417,9 @@ Write-Host ""
 Log "install complete: role=$selectedRole"
 
 # Open the PWA so the user sees it right away (and seeds bridge secret if cashier).
+# ArgumentList كـarray لكل حجة منفصلة ⇒ ‎+/=‎ في base64 السرّ لا تُفسَّر كفاصل حجج.
 try {
-  Start-Process -FilePath $browser -ArgumentList "--app=$setupUrl --new-window"
+  Start-Process -FilePath $browser -ArgumentList @("--app=$setupUrl", "--new-window")
   Write-OK "تم فتح النظام في $browserName"
 } catch {
   Write-Warn2 "تعذّر فتح المتصفّح — افتحه يدوياً من اختصار سطح المكتب"

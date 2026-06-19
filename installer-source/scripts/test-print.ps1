@@ -25,7 +25,8 @@ $sigHex = [BitConverter]::ToString($sigBytes).Replace('-','').ToLower()
 $url = "http://127.0.0.1:$Port/test-print"
 
 try {
-  $resp = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Body $body -Headers @{ 'X-Alroya-Sig' = $sigHex } -TimeoutSec 15
+  # -UseBasicParsing لتفادي IE COM initialization على PowerShell 5.1 (يفشل في إعدادات مقيَّدة).
+  $resp = Invoke-RestMethod -Uri $url -Method Post -ContentType 'application/json' -Body $body -Headers @{ 'X-Alroya-Sig' = $sigHex } -TimeoutSec 15 -UseBasicParsing
   if ($resp.ok) {
     Write-Host "✓ اختبار الطباعة نجح" -ForegroundColor Green
     exit 0
