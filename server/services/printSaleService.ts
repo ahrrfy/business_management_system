@@ -329,9 +329,12 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     });
 
     // ١٢.b تسوية التقريب النقدي.
+    // G15 (١٩/٦/٢٦): dedupeKey حارس ضدّ تكرار ADJUST لو حدثت إعادة محاولة بعد ER_DUP_ENTRY
+    // على SALE (نفس معالجة G6 لمسار saleService). UNIQUE على dedupeKey يضمن قيد ADJUST واحد لكل فاتورة.
     if (!cashRoundingAdj.isZero()) {
       await postEntry(tx, {
         entryType: "ADJUST",
+        dedupeKey: `ADJUST:IQD:${invoiceId}`,
         branchId: input.branchId,
         invoiceId,
         customerId: input.customerId ?? null,
