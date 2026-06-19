@@ -1,0 +1,8 @@
+{
+  "bridge": "1.0.0",
+  "installer": "1.0.0",
+  "url": "",
+  "sha256": "",
+  "publishedAt": "2026-06-19T00:00:00Z",
+  "notes": "Initial release of the local print bridge. URL and sha256 are filled in after building the .exe and uploading it to /installer-assets/<version>/."
+}
