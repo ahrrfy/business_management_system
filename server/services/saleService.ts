@@ -16,6 +16,7 @@ import { openShiftIdTx } from "./shiftService";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { assertCreditLimit } from "../lib/credit";
+import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
@@ -41,8 +42,14 @@ export interface CreateSaleInput {
   payment?: { amount: string; method: PaymentMethod } | null;
   clientRequestId?: string | null;
   notes?: string | null;
-  /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق من هوية المدير). */
+  /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق من هوية المدير).
+   *  B5: إن كانت true يجب توفير إمّا creditApprovalId (تدفّق UI جديد) أو managerOverrideByUserId (تدفّق router قديم). */
   creditApproved?: boolean;
+  /** B5: معرّف صفّ creditApprovals موجود (سقف صريح + انتهاء + single-use) — للتدفّق الجديد. */
+  creditApprovalId?: number;
+  /** B5: userId لمدير وُثِّقَت هويته خادمياً (الراوتر يمرّره بعد verifyManagerApproval) —
+   *  الخدمة تُنشئ صفّ creditApproval ذرّياً داخل نفس withTx (مرتبط بالعميل، single-use، 5min TTL). */
+  managerOverrideByUserId?: number;
   /** تاريخ استحقاق الفاتورة (YYYY-MM-DD) — للبيع الآجل. يظهر في AR aging والتنبيهات. */
   dueDate?: string | null;
   /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS): الخادم يقرّب الإجمالي ويُسجّل الفرق ADJUST. */
@@ -174,9 +181,34 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
-    // 7.b فحص حدّ الائتمان (H4): null=بلا حدّ، 0=حظر آجل، >0=فحص الإسقاط. موافقة المدير تتجاوز.
-    if (unpaid.gt(0) && input.customerId && !input.creditApproved) {
-      await assertCreditLimit(tx, input.customerId, unpaid, input.branchId);
+    // 7.b فحص حدّ الائتمان (H4): null=بلا حدّ، 0=حظر آجل، >0=فحص الإسقاط.
+    //     B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج إمّا (أ) creditApprovalId جاهز، أو (ب) managerOverrideByUserId
+    //     يكون الـrouter قد وثّق هويته. الخدمة في حالة (ب) تُنشئ approval ذرّياً داخل نفس withTx.
+    let effectiveApprovalId = input.creditApprovalId;
+    if (unpaid.gt(0) && input.customerId) {
+      if (input.creditApproved) {
+        if (!input.creditApprovalId && !input.managerOverrideByUserId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "تجاوز السقف يحتاج موافقة مُسجَّلة (creditApprovalId) أو هوية مدير مُتحقَّق منها — لا تُقبل موافقة بلا سقف.",
+          });
+        }
+        if (!effectiveApprovalId && input.managerOverrideByUserId) {
+          // تَنشئ Approval تلقائياً، مرتبطة بهذا العميل + سقف=unpaid (تماماً)، single-use.
+          const created = await (await import("./creditApprovalService")).createApproval(tx, {
+            customerId: input.customerId,
+            maxAmount: unpaid.toFixed(2),
+            approvedBy: input.managerOverrideByUserId,
+            ttlMinutes: 5,
+            notes: "manager-verified override via sale router (auto-generated)",
+          });
+          effectiveApprovalId = created.id;
+        }
+        // SELECT FOR UPDATE داخل validateApproval ⇒ لا double-spend عبر سباق.
+        await validateApproval(tx, effectiveApprovalId!, input.customerId, unpaid);
+      } else {
+        await assertCreditLimit(tx, input.customerId, unpaid, input.branchId);
+      }
     }
 
     // 8. Invoice header.
@@ -206,6 +238,11 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       createdBy: actor.userId,
     });
     const invoiceId = extractInsertId(insRes);
+
+    // B5: استهلاك الموافقة (يربطها بالفاتورة الفعلية بعد إنشائها — single-use).
+    if (effectiveApprovalId) {
+      await consumeApproval(tx, effectiveApprovalId, invoiceId);
+    }
 
     // 9. Items.
     for (const c of computed) {

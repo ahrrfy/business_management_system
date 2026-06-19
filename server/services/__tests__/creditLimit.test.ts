@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
+import { createApproval } from "../creditApprovalService";
+import { withTx } from "../tx";
 import { truncateTables } from "./__testUtils__";
 
 const actor = { userId: 1, branchId: 1 };
@@ -11,7 +13,7 @@ let seedShiftId = 0;
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 async function reset() {
-  await truncateTables(["accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits", "productVariants", "products", "shifts", "customers", "branches", "users"]);
+  await truncateTables(["creditApprovals", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices", "branchStock", "productPrices", "productUnits", "productVariants", "products", "shifts", "customers", "branches", "users"]);
 }
 async function seed(creditLimit: string | null, balance = "0") {
   const d = db();
@@ -42,10 +44,18 @@ describe("حدّ الائتمان + موافقة المدير (سياسة H4: nu
     await expect(creditSale()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("تجاوز السقف مع موافقة مدير (creditApproved) ⇒ ينجح", async () => {
+  it("تجاوز السقف مع موافقة مدير (creditApproved بلا approvalId) ⇒ FORBIDDEN (B5)", async () => {
     await seed("100.00");
-    const r = await creditSale({ creditApproved: true });
+    await expect(creditSale({ creditApproved: true })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("تجاوز السقف مع موافقة مُسجَّلة (approvalId) ⇒ ينجح وتُستَهلَك", async () => {
+    await seed("100.00");
+    const app = await withTx(async (tx) => createApproval(tx, { customerId: 1, maxAmount: "300.00", approvedBy: 1 }));
+    const r = await creditSale({ creditApproved: true, creditApprovalId: app.id });
     expect(r.invoiceId).toBeGreaterThan(0);
+    // إعادة استعمال نفس الموافقة ⇒ FORBIDDEN (single-use)
+    await expect(creditSale({ creditApproved: true, creditApprovalId: app.id })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("ضمن السقف ⇒ ينجح بلا موافقة", async () => {
@@ -65,9 +75,10 @@ describe("حدّ الائتمان + موافقة المدير (سياسة H4: nu
     await expect(creditSale()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("creditLimit='0' + موافقة مدير ⇒ ينجح", async () => {
+  it("creditLimit='0' + موافقة مُسجَّلة ⇒ ينجح", async () => {
     await seed("0");
-    const r = await creditSale({ creditApproved: true });
+    const app = await withTx(async (tx) => createApproval(tx, { customerId: 1, maxAmount: "300.00", approvedBy: 1 }));
+    const r = await creditSale({ creditApproved: true, creditApprovalId: app.id });
     expect(r.invoiceId).toBeGreaterThan(0);
   });
 

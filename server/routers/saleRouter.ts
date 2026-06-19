@@ -185,7 +185,14 @@ export const saleRouter = router({
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
-      const effectiveInput = { ...saleInput, branchId: effectiveBranchId, creditApproved: approvedBy != null };
+      // B5 (١٩/٦/٢٦): الراوتر لا يمرّر creditApproved منفرداً — يمرّر معه managerOverrideByUserId
+      // لتُنشئ saleService approval ذرّياً مرتبطاً بـ(customer, unpaid, single-use, 5min).
+      const effectiveInput = {
+        ...saleInput,
+        branchId: effectiveBranchId,
+        creditApproved: approvedBy != null,
+        managerOverrideByUserId: approvedBy ?? undefined,
+      };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await createSale(effectiveInput, actor);
