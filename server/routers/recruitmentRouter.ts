@@ -106,7 +106,11 @@ export const recruitmentRouter = router({
   /** ضبط التقييم المبدئي (٠–٥). */
   setRating: hrWrite
     .input(z.object({ id: z.number().int().positive(), rating: z.number().int().min(0).max(5) }))
-    .mutation(({ input }) => svc.setRating(input.id, input.rating)),
+    .mutation(async ({ input, ctx }) => {
+      const res = await svc.setRating(input.id, input.rating);
+      await logAudit(ctx, { action: "recruitment.setRating", entityType: "applicant", entityId: input.id, newValue: { rating: input.rating } });
+      return res;
+    }),
 
   /**
    * استمارة التقديم الخارجية — إجراء **عام** (بلا مصادقة).

@@ -73,6 +73,10 @@ import UserNew from "@/pages/UserNew";
 import UserEdit from "@/pages/UserEdit";
 import Account from "@/pages/Account";
 import AuditLogs from "@/pages/AuditLogs";
+import PeriodLock from "@/pages/PeriodLock";
+import CreditApprovals from "@/pages/CreditApprovals";
+import YearEnd from "@/pages/YearEnd";
+import WIPReport from "@/pages/WIPReport";
 import InventoryMovements from "@/pages/InventoryMovements";
 import SalesReport from "@/pages/SalesReport";
 import ReportsCenter from "@/pages/ReportsCenter";
@@ -266,6 +270,10 @@ export default function App() {
       <Route path="/users/:id/edit"><Shell><RequireRole roles={["admin","manager"]}><UserEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
       <Route path="/audit"><Shell><RequireRole roles={["admin","manager"]}><AuditLogs /></RequireRole></Shell></Route>
+      <Route path="/period-lock"><Shell><RequireRole roles={["admin"]}><PeriodLock /></RequireRole></Shell></Route>
+      <Route path="/credit-approvals"><Shell><RequireRole roles={["admin","manager"]}><CreditApprovals /></RequireRole></Shell></Route>
+      <Route path="/year-end"><Shell><RequireRole roles={["admin"]}><YearEnd /></RequireRole></Shell></Route>
+      <Route path="/wip-report"><Shell><RequireRole roles={["admin","manager"]}><WIPReport /></RequireRole></Shell></Route>
       <Route path="/reconcile"><Shell><RequireRole roles={["admin","manager"]}><Reconcile /></RequireRole></Shell></Route>
       <Route path="/settings"><Shell><RequireRole roles={["admin","manager"]}><Settings /></RequireRole></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
