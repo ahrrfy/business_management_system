@@ -34,7 +34,6 @@ import { hrDeviceRouter } from "./routers/hrDeviceRouter";
 import { promotionRouter } from "./routers/promotionRouter";
 import { printPosRouter } from "./routers/printPosRouter";
 import { globalSearchRouter } from "./routers/globalSearchRouter";
-import { installerRouter } from "./routers/installer";
 import { periodLockRouter } from "./routers/periodLockRouter";
 import { creditApprovalRouter } from "./routers/creditApprovalRouter";
 import { yearEndRouter } from "./routers/yearEndRouter";
@@ -78,7 +77,6 @@ export const appRouter = router({
   promotions: promotionRouter,
   printPos: printPosRouter,
   globalSearch: globalSearchRouter,
-  installer: installerRouter,
   // المرحلة ٦ (١٩/٦/٢٦): إقفال فترات + موافقات ائتمان + إقفال سنوي.
   periodLock: periodLockRouter,
   creditApproval: creditApprovalRouter,
