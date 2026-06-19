@@ -3,6 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { accountingEntries, customers, suppliers } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { money, toDbMoney } from "./money";
+import { assertPeriodOpen } from "./periodLockService";
 
 export type EntryType =
   | "SALE"
@@ -34,8 +35,11 @@ export interface EntryInput {
   dedupeKey?: string | null;
 }
 
-/** Insert one ledger entry. RETURN entries carry negative values by convention. */
+/** Insert one ledger entry. RETURN entries carry negative values by convention.
+ *  حارس Period-Lock: يرفض القيود بـentryDate ≤ أحدث cutoffDate نشِط (assertPeriodOpen). */
 export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
+  const entryDate = e.entryDate ?? new Date();
+  await assertPeriodOpen(tx, entryDate);
   await tx.insert(accountingEntries).values({
     entryType: e.entryType,
     dedupeKey: e.dedupeKey ?? null,
@@ -50,7 +54,7 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     profit: toDbMoney(e.profit ?? 0),
     taxAmount: toDbMoney(e.taxAmount ?? 0),
     amount: toDbMoney(e.amount ?? 0),
-    entryDate: e.entryDate ?? new Date(),
+    entryDate,
     notes: e.notes,
   });
 }

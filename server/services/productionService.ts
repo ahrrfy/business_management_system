@@ -466,6 +466,24 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
       costMap.set(l.variantId, newCost.toFixed(2));
     }
 
+    // ⑤.5 (المرحلة ٦ — ١٩/٦/٢٦): تأكيد حفظ القيمة (WAVG verification).
+    //     فاصل تفاضلي: مجموع تكاليف المخرجات يجب أن يطابق allocPool (= totalCost - abnormalLoss).
+    //     آخر سطر يمتص بقايا التقريب، فالتساوي مضمون رياضياً. الفحص هنا حارس defensive ضدّ تعديل لاحق.
+    const allocatedSumRes = await tx.execute(sql`
+      SELECT COALESCE(SUM(CAST(allocatedCost AS DECIMAL(15,2))), 0) AS s
+      FROM productionLines WHERE productionOrderId = ${productionOrderId} AND productionLineDirection = 'OUTPUT'
+    `);
+    const allocRows = (((allocatedSumRes as any)[0] ?? allocatedSumRes) as Array<any>) ?? [];
+    const allocSumStr = String(allocRows[0]?.s ?? "0");
+    const allocatedTotal = money(allocSumStr);
+    const drift = allocatedTotal.minus(allocPool).abs();
+    if (drift.gt("0.01")) {
+      throw new TRPCError({
+        code: "INTERNAL_SERVER_ERROR",
+        message: `انتهاك حفظ قيمة الإنتاج: مجموع تكاليف المخرجات ${allocatedTotal.toFixed(2)} ≠ allocPool ${allocPool.toFixed(2)} (فرق ${drift.toFixed(2)})`,
+      });
+    }
+
     // ⑥ القيد المحاسبي: التحويل أصل↔أصل محايد ⇒ لا قيد على القيمة المُمتَصّة (في المنتج).
     //    الهدر غير الطبيعي فقط ⇒ قيد WASTAGE (خسارة بالكلفة، بلا نقد، **بلا خصم مخزون ثانٍ** — المواد خُصمت
     //    بحركة المدخلات؛ هذا قيد إعادة تصنيف للقيمة من «منتج» إلى «خسارة فترة» يطابق نمط نثرية/تلف المصاريف).

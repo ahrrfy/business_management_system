@@ -54,7 +54,13 @@ export const printPosRouter = router({
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx);
-      const effectiveInput = { ...saleInput, branchId: effectiveBranchId, creditApproved: approvedBy != null };
+      // B5: مرّر managerOverrideByUserId مع creditApproved ⇒ printSaleService ينشئ approval ذرّياً.
+      const effectiveInput = {
+        ...saleInput,
+        branchId: effectiveBranchId,
+        creditApproved: approvedBy != null,
+        managerOverrideByUserId: approvedBy ?? undefined,
+      };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await createPrintSale(effectiveInput, actor);

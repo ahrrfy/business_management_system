@@ -13,6 +13,7 @@ import {
   getSlowMovers,
   getSupplierStatement,
   getTopProducts,
+  getWIPReport,
 } from "../services/reportsService";
 import {
   reconcileCustomerBalances,
@@ -57,6 +58,14 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getARAging({ branchId });
+    }),
+
+  /** WIP (Work-in-Progress) — قيمة المواد المُستهلَكة في أوامر شغل IN_PROGRESS/READY (لم تصل بعد إلى SALE.cost). */
+  wipReport: managerBranchScopedProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional(), limit: z.number().int().positive().max(1000).optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getWIPReport({ branchId, limit: input?.limit });
     }),
 
   customerStatement: managerBranchScopedProcedure

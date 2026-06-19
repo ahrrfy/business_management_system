@@ -1845,3 +1845,76 @@ export const employeeTerminations = mysqlTable(
 );
 export type EmployeeTermination = typeof employeeTerminations.$inferSelect;
 export type InsertEmployeeTermination = typeof employeeTerminations.$inferInsert;
+
+/* ============================================================
+ * المرحلة ٦: إقفال مالي + موافقات ائتمان + رولوفر سنوي
+ * ============================================================ */
+
+/** فترات مالية مُقفَلة — يمنع كتابة قيود تاريخية صامتاً.
+ * المنطق: قيد بـentryDate ≤ cutoffDate من أحدث صفّ status=LOCKED ⇒ مرفوض.
+ * مدير العمليات يضع cutoff عند الإقفال الشهري/السنوي. حذف صفّ = فتح الفترة. */
+export const financialPeriods = mysqlTable(
+  "financialPeriods",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    cutoffDate: date("cutoffDate", { mode: "string" }).notNull(),
+    status: mysqlEnum("periodStatus", ["LOCKED", "ARCHIVED"]).default("LOCKED").notNull(),
+    notes: varchar("notes", { length: 255 }),
+    lockedBy: int("lockedBy").notNull().references(() => users.id),
+    lockedAt: timestamp("lockedAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    cutoffIdx: index("idx_period_cutoff").on(t.cutoffDate),
+    statusIdx: index("idx_period_status").on(t.status),
+  })
+);
+export type FinancialPeriod = typeof financialPeriods.$inferSelect;
+export type InsertFinancialPeriod = typeof financialPeriods.$inferInsert;
+
+/** موافقات ائتمان مُسبَقة — يُقيِّد creditApproved بـ(customer, maxAmount, expiresAt).
+ * المنطق: المدير يُنشئ صفّاً بـ(customerId, maxAmount, expiresAt). الكاشير يمرّر approvalId
+ * في sale؛ الخدمة تتحقّق: customer مطابق، unpaid ≤ maxAmount، now ≤ expiresAt، consumedAt IS NULL.
+ * بعد الاستهلاك consumedAt + consumedByInvoiceId مُسجَّلان ⇒ لا تُستعمل ثانية. */
+export const creditApprovals = mysqlTable(
+  "creditApprovals",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
+    maxAmount: decimal("maxAmount", { precision: 15, scale: 2 }).notNull(),
+    approvedBy: int("approvedBy").notNull().references(() => users.id),
+    approvedAt: timestamp("approvedAt").defaultNow().notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    consumedAt: timestamp("consumedAt"),
+    consumedByInvoiceId: bigint("consumedByInvoiceId", { mode: "number" }).references(() => invoices.id),
+    notes: varchar("notes", { length: 255 }),
+  },
+  (t) => ({
+    customerExpiryIdx: index("idx_capp_customer").on(t.customerId, t.expiresAt),
+  })
+);
+export type CreditApproval = typeof creditApprovals.$inferSelect;
+export type InsertCreditApproval = typeof creditApprovals.$inferInsert;
+
+/** لقطات إقفال سنوية — للأرشفة + رولوفر retained earnings.
+ * يُربط بـAccountingEntry من نوع ADJUST يحمل rollover P&L → opening balance للسنة الجديدة. */
+export const yearEndSnapshots = mysqlTable(
+  "yearEndSnapshots",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    year: int("year").notNull(),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    closedAt: timestamp("closedAt").defaultNow().notNull(),
+    closedBy: int("closedBy").notNull().references(() => users.id),
+    totalRevenue: decimal("totalRevenue", { precision: 15, scale: 2 }).notNull(),
+    totalCogs: decimal("totalCogs", { precision: 15, scale: 2 }).notNull(),
+    totalExpenses: decimal("totalExpenses", { precision: 15, scale: 2 }).notNull(),
+    netProfit: decimal("netProfit", { precision: 15, scale: 2 }).notNull(),
+    retainedEarningsEntryId: bigint("retainedEarningsEntryId", { mode: "number" }).references(() => accountingEntries.id),
+    snapshotData: text("snapshotData"),
+  },
+  (t) => ({
+    yearBranchUq: unique("uq_year_branch").on(t.year, t.branchId),
+  })
+);
+export type YearEndSnapshot = typeof yearEndSnapshots.$inferSelect;
+export type InsertYearEndSnapshot = typeof yearEndSnapshots.$inferInsert;

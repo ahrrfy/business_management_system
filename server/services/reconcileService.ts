@@ -72,10 +72,12 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
   //
   // ⛔ استثناء قيود عربون أمر الشغل (WO deposit): receipt.workOrderId IS NOT NULL.
   // عربون أمر الشغل ليس تسديداً للذمة (لا فاتورة موجودة بعدُ) بل أمانة على عملٍ مستقبلي،
-  // ولا يُحدِّث customers.currentBalance عند القبض. ضمّه في voucherSum يُنتج drift = depositAmount
-  // طوال عمر الأمر قبل التسليم. عند التسليم يُربط القيد بالفاتورة (invoiceId يصير NOT NULL) فيخرج
-  // من الفلتر تلقائياً ويُحتسب عبر invoice.paidAmount. عند الإلغاء يُكتب PAYMENT_OUT تعويضي بنفس
-  // المُحدِّد البنيوي (receipt.workOrderId NOT NULL) فيُستثنى أيضاً ⇒ صافي صفر على AR (صحيح).
+  // ولا يُحدِّث customers.currentBalance عند القبض. ضمّه في voucherSum يُنتج drift = depositAmount.
+  // الاستثناء قائم على receipt.workOrderId NOT NULL — حارس بنيوي ثابت لا يعتمد على mutability
+  // (A1، ١٩/٦/٢٦): قيد PAYMENT_IN للعربون يبقى invoiceId=NULL مدى الحياة (append-only صارم على
+  // accountingEntries). عند التسليم يُربط بالفاتورة عبر invoice.paidAmount (yes, totalPaid يشمل العربون)
+  // والاستثناء من voucherSum يبقى عبر receipt.workOrderId. عند الإلغاء PAYMENT_OUT تعويضي بنفس
+  // المحدد البنيوي (receipt.workOrderId NOT NULL) فيُستثنى أيضاً ⇒ صافي صفر على AR (صحيح).
   const voucherSum = await db
     .select({
       customerId: accountingEntries.customerId,
