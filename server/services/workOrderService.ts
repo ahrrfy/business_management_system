@@ -2,7 +2,6 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, desc, eq, inArray, isNull, like } from "drizzle-orm";
 import {
-  accountingEntries,
   invoiceItems,
   invoices,
   productUnits,
@@ -411,13 +410,18 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       if (unpaid.gt(0)) await adjustCustomerBalance(tx, Number(wo.customerId), unpaid);
     }
 
-    // اربط إيصال العربون (المُسجَّل عند الإنشاء، بلا فاتورة) + قيد PAYMENT_IN الخاص به بالفاتورة الآن.
+    // A1 (١٩/٦/٢٦) — append-only:
+    // - receipt.invoiceId يُحدَّث (المقبوضات قابلة للنقل: ليست قيوداً محاسبية).
+    // - accountingEntries.invoiceId يبقى NULL على قيد العربون (الـPAYMENT_IN الأصلي) ⇒ append-only صارم.
+    // الإقفال محاسبياً: deposit مُحتسَب في invoice.paidAmount عند التسليم (totalPaid). reconcileService
+    // يستثني قيد العربون من voucherSum عبر فلتر receipt.workOrderId NOT NULL (لا يعتمد على entry.invoiceId).
     if (depositPaid.gt(0)) {
       const depRcpt = (await tx.select({ id: receipts.id }).from(receipts)
         .where(and(eq(receipts.workOrderId, Number(wo.id)), isNull(receipts.invoiceId))).limit(1))[0];
       if (depRcpt) {
         await tx.update(receipts).set({ invoiceId }).where(eq(receipts.id, Number(depRcpt.id)));
-        await tx.update(accountingEntries).set({ invoiceId }).where(eq(accountingEntries.receiptId, Number(depRcpt.id)));
+        // ⛔ كان هنا UPDATE accountingEntries.invoiceId — أُزيل ضمن A1: انتهاك append-only
+        //     على دفتر الأستاذ. الـUPDATE لم يكن load-bearing لأي حساب.
       }
     }
 

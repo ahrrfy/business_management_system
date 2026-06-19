@@ -99,6 +99,13 @@
       "when": 1782000000000,
       "tag": "0013_indexes_and_payroll_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "5",
+      "when": 1782070000000,
+      "tag": "0014_phase6_period_lock_credit_yearend",
+      "breakpoints": true
     }
   ]
 }

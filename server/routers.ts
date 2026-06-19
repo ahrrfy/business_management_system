@@ -35,6 +35,9 @@ import { promotionRouter } from "./routers/promotionRouter";
 import { printPosRouter } from "./routers/printPosRouter";
 import { globalSearchRouter } from "./routers/globalSearchRouter";
 import { installerRouter } from "./routers/installer";
+import { periodLockRouter } from "./routers/periodLockRouter";
+import { creditApprovalRouter } from "./routers/creditApprovalRouter";
+import { yearEndRouter } from "./routers/yearEndRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -76,6 +79,10 @@ export const appRouter = router({
   printPos: printPosRouter,
   globalSearch: globalSearchRouter,
   installer: installerRouter,
+  // المرحلة ٦ (١٩/٦/٢٦): إقفال فترات + موافقات ائتمان + إقفال سنوي.
+  periodLock: periodLockRouter,
+  creditApproval: creditApprovalRouter,
+  yearEnd: yearEndRouter,
 });
 
 export type AppRouter = typeof appRouter;

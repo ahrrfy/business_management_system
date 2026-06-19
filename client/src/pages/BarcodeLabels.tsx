@@ -12,7 +12,10 @@ import {
 } from "@/lib/printing/print";
 import { labelDocHtml } from "@/lib/printing/labelDesign";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useEffect, useMemo, useState } from "react";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
+import { keepPreviousData } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "wouter";
 
 const PX_PER_MM = 96 / 25.4; // ≈3.78 بكسل/مم @96dpi
@@ -37,6 +40,13 @@ export default function BarcodeLabels() {
   const utils = trpc.useUtils();
 
   const [search, setSearch] = useState("");
+  const searchRef = useRef<HTMLInputElement>(null);
+  // التركيز التلقائي ⇒ الماسح يكتب في الحقل مباشرةً بدل تسريب الضربات للوثيقة (وفتح Ctrl+K/`/`).
+  useEffect(() => { searchRef.current?.focus(); }, []);
+  // بحث ذكي: تأجيل ١٨٠ms لطلب واحد بعد استقرار الكتابة (مطابق POS).
+  const debouncedSearch = useDebouncedValue(search, 180);
+  const term = debouncedSearch.trim();
+  const canSearch = term.length >= 2;
   // تحميل كسول غير محدود: نبدأ بصفحة ونزيدها بالتمرير ⇒ لا قصّ صامت لنتائج البحث.
   const SEARCH_PAGE = 200;
   const [searchLimit, setSearchLimit] = useState(SEARCH_PAGE);
@@ -119,8 +129,8 @@ export default function BarcodeLabels() {
   }
 
   const results = trpc.catalog.posList.useQuery(
-    { branchId, tier: "RETAIL", query: search, limit: searchLimit },
-    { enabled: search.trim().length > 0 }
+    { branchId, tier: "RETAIL", query: term, limit: searchLimit },
+    { enabled: canSearch, placeholderData: keepPreviousData, staleTime: 15_000 }
   );
   const maybeMoreSearch = (results.data?.length ?? 0) >= searchLimit;
   function handleSearchScroll(e: React.UIEvent<HTMLDivElement>) {
@@ -157,7 +167,42 @@ export default function BarcodeLabels() {
     });
     setSeq((s) => s + 1);
     setSearch("");
+    setTimeout(() => searchRef.current?.focus(), 0);
   }
+
+  // Enter في حقل البحث: نتيجة وحيدة ⇒ تُضاف، وإلا نحاول حلّ الباركود حرفياً.
+  async function tryResolveBarcode(code: string) {
+    const looksLikeBarcode = /^[0-9A-Za-z_-]{4,}$/.test(code);
+    if (!looksLikeBarcode) return false;
+    try {
+      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: "RETAIL" });
+      if (row) { addRow(row); return true; }
+      setError(`الباركود غير معروف: ${code}`);
+    } catch {
+      setError("تعذّر الاتصال بالخادم");
+    }
+    return false;
+  }
+  function onSearchKeyDown(e: KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const data = results.data;
+      // النتائج مطابقة للنص المستقر ⇒ نتيجة وحيدة = إضافة مباشرة بأمان.
+      if (term === search.trim() && data && data.length === 1 && !results.isFetching) {
+        addRow(data[0]);
+        return;
+      }
+      const code = search.trim();
+      if (code) void tryResolveBarcode(code);
+    } else if (e.key === "Escape") {
+      setSearch("");
+    }
+  }
+  // الماسح يضرب على document حين لا يكون الحقل مركَّزاً ⇒ نمرّر الكود للحقل ثم نحلّه.
+  useBarcodeScanner((raw) => {
+    setSearch(raw);
+    void tryResolveBarcode(raw);
+  });
 
   const patch = (key: number, p: Partial<QueueItem>) =>
     setQueue((prev) => prev.map((q) => (q.key === key ? { ...q, ...p } : q)));
@@ -246,8 +291,12 @@ export default function BarcodeLabels() {
 
           {/* معاينة حيّة بنفس تصميم الطباعة تماماً (HTML/SVG مباشر بلا تحويل لصورة) */}
           <div className="flex items-start gap-4 flex-wrap border-t pt-3">
+            {/* dir="ltr" + position:relative ⇒ يُثبَّت iframe في الزاوية العليا اليسرى للحاوية حتى داخل
+                مستندٍ RTL؛ بدونه كان iframe (block أضيق) يُحاذى لليمين فيُسرّب التكبير محتواه خارج
+                الحدّ الأيمن وتُقَصّ المعاينة بصرياً. overflow:hidden احترازي على الحوافّ الكسرية. */}
             <div
-              className="shrink-0 rounded bg-white"
+              dir="ltr"
+              className="shrink-0 rounded bg-white relative overflow-hidden"
               style={{ width: pxW * PREVIEW_ZOOM, height: pxH * PREVIEW_ZOOM, outline: "1px dashed #94a3b8" }}
             >
               <iframe
@@ -256,6 +305,7 @@ export default function BarcodeLabels() {
                 scrolling="no"
                 style={{
                   width: pxW, height: pxH, border: 0, display: "block", background: "#fff",
+                  position: "absolute", top: 0, left: 0,
                   transform: `scale(${PREVIEW_ZOOM})`, transformOrigin: "top left",
                 }}
               />
@@ -296,18 +346,30 @@ export default function BarcodeLabels() {
         <CardContent className="space-y-3">
           <div className="relative">
             <Input
+              ref={searchRef}
               value={search}
               onChange={(e) => { setSearch(e.target.value); setSearchLimit(SEARCH_PAGE); }}
-              placeholder="ابحث بالاسم/SKU/الباركود…"
+              onKeyDown={onSearchKeyDown}
+              placeholder="ابحث بالاسم/SKU أو امسح الباركود — Enter يحلّ الباركود حرفياً"
+              autoFocus
             />
-            {search.trim() && (results.data?.length ?? 0) > 0 && (
+            {search.trim() && (
               <div
                 className="absolute z-10 mt-1 w-full bg-popover border rounded-md shadow max-h-72 overflow-auto"
                 onScroll={handleSearchScroll}
               >
-                {results.data!.map((row) => (
+                {!canSearch && (
+                  <div className="px-3 py-2 text-center text-xs text-muted-foreground">اكتب حرفين فأكثر للبحث…</div>
+                )}
+                {canSearch && (results.data?.length ?? 0) === 0 && (
+                  <div className="px-3 py-2 text-center text-xs text-muted-foreground">
+                    {results.isFetching ? "جارٍ البحث…" : <>لا نتائج لـ «{search.trim()}» — جرّب اسماً أقصر أو امسح الباركود</>}
+                  </div>
+                )}
+                {(results.data ?? []).map((row) => (
                   <button
                     key={row.productUnitId}
+                    type="button"
                     className="block w-full text-right px-3 py-2 text-sm hover:bg-accent"
                     onClick={() => addRow(row)}
                   >
@@ -315,11 +377,13 @@ export default function BarcodeLabels() {
                     <span className="text-xs text-muted-foreground font-mono" dir="ltr"> — {row.sku}{row.barcode ? ` · ${row.barcode}` : " · بلا باركود"}</span>
                   </button>
                 ))}
-                <div className="px-3 py-2 text-center text-[11px] text-muted-foreground">
-                  {maybeMoreSearch
-                    ? (results.isFetching ? "جارٍ تحميل المزيد…" : "مرّر لأسفل لتحميل المزيد…")
-                    : `كل النتائج (${results.data!.length})`}
-                </div>
+                {canSearch && (results.data?.length ?? 0) > 0 && (
+                  <div className="px-3 py-2 text-center text-[11px] text-muted-foreground">
+                    {maybeMoreSearch
+                      ? (results.isFetching ? "جارٍ تحميل المزيد…" : "مرّر لأسفل لتحميل المزيد…")
+                      : `كل النتائج (${results.data!.length})`}
+                  </div>
+                )}
               </div>
             )}
           </div>

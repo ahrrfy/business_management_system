@@ -34,6 +34,7 @@ import { money, round2, roundCashIQD, toDbMoney } from "./money";
 import { nextInvoiceNumber } from "./numbering";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
+import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { extractInsertId } from "../lib/insertId";
 
 /** علامة نوع المنتج لخدمات الطباعة: لا مخزون ذاتي، والاستهلاك عبر وصفة المواد فقط.
@@ -59,8 +60,13 @@ export interface CreatePrintSaleInput {
   payment?: { amount: string; method: PaymentMethod } | null;
   clientRequestId?: string | null;
   notes?: string | null;
-  /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق). */
+  /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق).
+   *  B5: إن كانت true يجب توفير creditApprovalId أو managerOverrideByUserId. */
   creditApproved?: boolean;
+  /** B5: معرّف صفّ creditApprovals (سقف صريح + تاريخ انتهاء + single-use). */
+  creditApprovalId?: number;
+  /** B5: userId لمدير وُثِّقَت هويته خادمياً ⇒ تُنشأ Approval ذرّياً داخل withTx. */
+  managerOverrideByUserId?: number;
   dueDate?: string | null;
   /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS). */
   cashRoundIQD?: boolean;
@@ -243,13 +249,35 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
     }
-    if (unpaid.gt(0) && customerCredit && customerCredit.limit.gt(0) && !input.creditApproved) {
-      const projected = customerCredit.balance.plus(unpaid);
-      if (projected.gt(customerCredit.limit)) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message: `تجاوز حدّ الائتمان: الرصيد بعد البيع ${projected.toFixed(2)} يتجاوز السقف ${customerCredit.limit.toFixed(2)} — تلزم موافقة مدير.`,
-        });
+    // B5 (١٩/٦/٢٦): الموافقة لم تعد blanket — تحتاج (أ) creditApprovalId أو (ب) managerOverrideByUserId.
+    let effectivePrintApprovalId = input.creditApprovalId;
+    if (unpaid.gt(0) && input.customerId) {
+      if (input.creditApproved) {
+        if (!input.creditApprovalId && !input.managerOverrideByUserId) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "تجاوز السقف يحتاج موافقة مُسجَّلة (creditApprovalId) أو هوية مدير مُتحقَّق منها.",
+          });
+        }
+        if (!effectivePrintApprovalId && input.managerOverrideByUserId) {
+          const created = await (await import("./creditApprovalService")).createApproval(tx, {
+            customerId: input.customerId,
+            maxAmount: unpaid.toFixed(2),
+            approvedBy: input.managerOverrideByUserId,
+            ttlMinutes: 5,
+            notes: "manager-verified override via print-sale router (auto-generated)",
+          });
+          effectivePrintApprovalId = created.id;
+        }
+        await validateApproval(tx, effectivePrintApprovalId!, input.customerId, unpaid);
+      } else if (customerCredit && customerCredit.limit.gt(0)) {
+        const projected = customerCredit.balance.plus(unpaid);
+        if (projected.gt(customerCredit.limit)) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `تجاوز حدّ الائتمان: الرصيد بعد البيع ${projected.toFixed(2)} يتجاوز السقف ${customerCredit.limit.toFixed(2)} — تلزم موافقة مدير مع سقف صريح.`,
+          });
+        }
       }
     }
 
@@ -279,6 +307,11 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       createdBy: actor.userId,
     });
     const invoiceId = extractInsertId(insRes);
+
+    // B5: استهلاك الموافقة (single-use، يربطها بالفاتورة الفعلية).
+    if (effectivePrintApprovalId) {
+      await consumeApproval(tx, effectivePrintApprovalId, invoiceId);
+    }
 
     // ١٠. الأصناف (الخدمات). لا خصم مخزون ذاتي للخدمة (متغيّر الخدمة بلا رصيد).
     for (const c of computed) {
