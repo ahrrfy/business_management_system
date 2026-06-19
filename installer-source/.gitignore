@@ -1,0 +1,6 @@
+dist/
+icons/الرؤية.ico
+bridge/dist/
+bridge/node_modules/
+resources/drivers/zadig.exe
+resources/drivers/libwdi-cli.exe
