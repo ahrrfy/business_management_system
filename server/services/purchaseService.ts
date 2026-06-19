@@ -6,6 +6,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
+import { shiftIdForCashTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -356,8 +357,27 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     // Optional payment to supplier.
     const paidNow = money(input.payment?.amount ?? "0");
     if (paidNow.gt(0)) {
+      // G14 (١٩/٦/٢٦): دفع نقدي للمورد يَلزم وردية مفتوحة — كان receipts.shiftId=null دائماً
+      // ⇒ نقد يَخرج من الصندوق بلا تسوية Z-report ⇒ عجز وهمي عند الإغلاق.
+      // shiftIdForCashTx: admin/manager ⇒ DRAWER أو TREASURY، cashier/warehouse ⇒ وردية إلزامية.
+      // المعاملات غير النقدية (CARD/CHECK/TRANSFER/WALLET) لا تَمسّ الصندوق ⇒ shiftId=null مَشروع.
+      const isCash = input.payment!.method === "CASH";
+      let shiftId: number | null = null;
+      let cashBucket: "DRAWER" | "TREASURY" | null = null;
+      if (isCash) {
+        const g = await shiftIdForCashTx(
+          tx,
+          { userId: actor.userId, branchId: Number(po.branchId), role: (actor as Actor & { role?: string }).role },
+          Number(po.branchId),
+          "دفع للمورد",
+        );
+        shiftId = g.shiftId;
+        cashBucket = g.cashBucket;
+      }
       const rRes = await tx.insert(receipts).values({
         branchId: Number(po.branchId),
+        shiftId,
+        cashBucket,
         direction: "OUT",
         amount: toDbMoney(paidNow),
         paymentMethod: input.payment!.method,

@@ -14,6 +14,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDbMoney } from "./money";
+import { shiftIdForCashTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -228,8 +229,24 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     const settlement = input.settlement ?? "CREDIT";
     if (settlement === "CASH") {
       const method = input.paymentMethod ?? "CASH";
+      // G14 (١٩/٦/٢٦): استرداد نقدي من المورد يَلزم وردية مفتوحة (متّسق مع receivePurchase).
+      const isCash = method === "CASH";
+      let shiftId: number | null = null;
+      let cashBucket: "DRAWER" | "TREASURY" | null = null;
+      if (isCash) {
+        const g = await shiftIdForCashTx(
+          tx,
+          { userId: actor.userId, branchId: input.branchId, role: (actor as Actor & { role?: string }).role },
+          input.branchId,
+          "استرداد من المورد",
+        );
+        shiftId = g.shiftId;
+        cashBucket = g.cashBucket;
+      }
       const rRes = await tx.insert(receipts).values({
         branchId: input.branchId,
+        shiftId,
+        cashBucket,
         direction: "IN",
         amount: toDbMoney(returnedTotal),
         paymentMethod: method,
