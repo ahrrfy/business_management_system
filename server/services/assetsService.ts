@@ -14,10 +14,12 @@ import {
   branches,
   employees,
   fixedAssets,
+  receipts,
   suppliers,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
-import { requireDb, withTx } from "./tx";
+import { requireDb, withTx, type Actor } from "./tx";
+import { postEntry } from "./ledgerService";
 import { extractInsertId } from "../lib/insertId";
 import { money, sumMoney, toDateStr, toDbMoney } from "./money";
 
@@ -420,7 +422,7 @@ export interface DisposeInput {
 }
 
 /** إخراج من الخدمة (retired) أو استبعاد ببيع/خردة (disposed) مع احتساب الربح/الخسارة. */
-export async function disposeAsset(assetId: number, input: DisposeInput) {
+export async function disposeAsset(assetId: number, input: DisposeInput, actor: Actor) {
   await withTx(async (tx) => {
     const a = await loadForUpdate(tx, assetId);
     if (a.status === "disposed") throw new Error("الأصل مُستبعَد سلفاً");
@@ -428,6 +430,67 @@ export async function disposeAsset(assetId: number, input: DisposeInput) {
       .update(assetCustodyLog)
       .set({ toDate: input.date })
       .where(and(eq(assetCustodyLog.assetId, assetId), isNull(assetCustodyLog.toDate)));
+
+    // FA-02 (تدقيق ٢٠/٦، قرار المالك): التصرّف يُرحَّل للدفتر — نقد + ربح/خسارة (كانا يُهمَلان: نقد غير
+    // مرئيّ والربح/الخسارة يُحسَب للعرض فقط). NBV عند تاريخ التصرّف (computeDepreciation يَتوقّف عند
+    // disposalDate). الربح/الخسارة = المتحصّل − NBV. (الاتساق الكامل مع الميزانية يكتمل مع FI-02 قيد الإهلاك.)
+    const nbv = money(
+      computeDepreciation(
+        {
+          purchaseValue: a.purchaseValue,
+          salvageValue: a.salvageValue ?? "0",
+          usefulLifeYears: a.usefulLifeYears,
+          depreciationMethod: (a.depreciationMethod as "sl" | "db") ?? "sl",
+          purchaseDate: a.purchaseDate as unknown as string,
+          status: a.status,
+          disposalDate: input.date,
+        },
+        new Date(input.date),
+      ).bookValue,
+    );
+    const proceeds = input.kind === "disposed" ? money(input.value ?? "0") : new Decimal(0);
+    const branchId = a.branchId != null ? Number(a.branchId) : (actor.branchId || null);
+    const entryDate = new Date(input.date);
+
+    // (أ) النقد المتحصّل: إيصال IN (خزينة) + قيد PAYMENT_IN ⇒ النقد مرئيّ في الدفتر والخزينة (لا يُجيَّب).
+    if (proceeds.gt(0)) {
+      const rRes = await tx.insert(receipts).values({
+        branchId,
+        cashBucket: "TREASURY",
+        direction: "IN",
+        amount: toDbMoney(proceeds),
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        createdBy: actor.userId,
+      });
+      const receiptId = extractInsertId(rRes);
+      await postEntry(tx, {
+        entryType: "PAYMENT_IN",
+        branchId,
+        receiptId,
+        amount: proceeds,
+        entryDate,
+        dedupeKey: `ASSET_DISP:${assetId}`,
+        notes: `متحصّل تصرّف بأصل ${a.code}`,
+      });
+    }
+
+    // (ب) الربح/الخسارة = المتحصّل − NBV (موجب=ربح إيراد، سالب=خسارة) ⇒ يَظهر في P&L.
+    //     retired (بلا متحصّل) ⇒ خسارة = −NBV (شطب القيمة الدفترية المتبقّية).
+    const gain = proceeds.minus(nbv);
+    if (!gain.isZero()) {
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId,
+        revenue: gain,
+        profit: gain,
+        amount: gain,
+        entryDate,
+        dedupeKey: `ASSET_DISP_PL:${assetId}`,
+        notes: `ربح/خسارة تصرّف بأصل ${a.code} (متحصّل ${proceeds.toFixed(2)} − NBV ${nbv.toFixed(2)})`,
+      });
+    }
+
     await tx
       .update(fixedAssets)
       .set({

@@ -2,11 +2,13 @@
  * اختبارات تكامل (DB) لخدمة الأصول — تغطّي التدفّقات الذرّية: الإنشاء بعهدة، تسليم العهدة،
  * والاستبعاد + سجلّ الاستبعاد. يتضمّن اختبار انحدار لإصلاح «القيمة الدفترية عند الاستبعاد المبكر».
  */
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, updateAsset } from "../assetsService";
+
+const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
   "assetMaintenance",
@@ -92,7 +94,7 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
       purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5,
       depreciationMethod: "sl", custodianId: 1,
     });
-    await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "بيع", value: "700000" });
+    await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "بيع", value: "700000" }, ACTOR);
 
     const row = (await disposalLog()).find((r) => r.id === a!.id);
     expect(row).toBeTruthy();
@@ -104,6 +106,29 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
     expect(fresh!.status).toBe("disposed");
     expect(fresh!.custodianId).toBeNull();
     expect(fresh!.custody.filter((c) => c.toDate === null)).toHaveLength(0); // العهدة أُغلقت
+  });
+
+  it("FA-02: التصرّف يُرحّل النقد (PAYMENT_IN + إيصال) وقيد الربح/الخسارة للدفتر (لا يُهمَلان)", async () => {
+    const a = await createAsset({
+      name: "جهاز", category: "computers", purchaseDate: "2023-01-01",
+      purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5, depreciationMethod: "sl",
+    });
+    await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "بيع", value: "700000" }, ACTOR);
+
+    // (أ) النقد المتحصّل مُرحَّل: قيد PAYMENT_IN + إيصال IN ⇒ النقد لم يَعُد غير مرئيّ.
+    const [cash] = await db().select().from(s.accountingEntries)
+      .where(and(eq(s.accountingEntries.entryType, "PAYMENT_IN"), eq(s.accountingEntries.dedupeKey, `ASSET_DISP:${a!.id}`)));
+    expect(cash).toBeTruthy();
+    expect(Number(cash.amount)).toBe(700000);
+    const [rcpt] = await db().select().from(s.receipts).where(eq(s.receipts.direction, "IN"));
+    expect(rcpt).toBeTruthy();
+    expect(Number(rcpt.amount)).toBe(700000);
+
+    // (ب) الربح/الخسارة مُرحَّل: 700,000 − NBV(~820,000) = خسارة ~(−120,000).
+    const [pl] = await db().select().from(s.accountingEntries)
+      .where(eq(s.accountingEntries.dedupeKey, `ASSET_DISP_PL:${a!.id}`));
+    expect(pl).toBeTruthy();
+    expect(Number(pl.profit)).toBeLessThan(0);
   });
 });
 
@@ -132,7 +157,7 @@ describe("assetsService — updateAsset (DB)", () => {
 
   it("يرفض تعديل أصل مُستبعَد", async () => {
     const a = await createAsset({ name: "قديم", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", salvageValue: "50000", usefulLifeYears: 4, depreciationMethod: "sl" });
-    await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "خردة", value: "0" });
+    await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "خردة", value: "0" }, ACTOR);
     await expect(
       updateAsset(a!.id, { name: "محاولة", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", usefulLifeYears: 4 }),
     ).rejects.toThrow();
