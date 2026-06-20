@@ -24,6 +24,8 @@ function buildRows(p: Pos) {
     { label: "الأصول الثابتة (بالتكلفة)", debit: p.fixedAssets, credit: "0" },
     { label: "الذمم الدائنة (موردون)", debit: "0", credit: p.apCredit },
     { label: "سُلف العملاء", debit: "0", credit: p.arCredit },
+    // FIN-05: عرابين أوامر الشغل غير المُسلَّمة — التزام دائن (الخدمة لم تُنجَز بعد).
+    { label: "سُلف عملاء (عرابين أوامر شغل)", debit: "0", credit: p.customerAdvances },
     { label: "حقوق الملكية (مشتقّة)", debit: "0", credit: p.equity },
   ].filter((r) => D(r.debit).gt(0) || D(r.credit).gt(0));
 }
