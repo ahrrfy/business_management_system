@@ -6,7 +6,7 @@ import { PasswordInput } from "@/components/form/PasswordInput";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { PermissionMatrix } from "@/components/form/PermissionMatrix";
 import { CredentialsShare } from "@/components/form/CredentialsShare";
-import { isStrongPassword } from "@shared/const";
+import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import {
   ROLES,
   PERMISSION_MODULES,
@@ -133,8 +133,8 @@ export default function UserNew() {
   const checkUsernameFn = useCallback(async () => {
     const v = username.trim().toLowerCase();
     if (!v) { setUsernameError(""); setUsernameChecked(false); return; }
-    if (!/^[a-z][a-z0-9._-]{2,31}$/.test(v)) {
-      setUsernameError("٣–٣٢ خانة، يبدأ بحرف إنجليزي، حروف/أرقام/نقطة/شرطة فقط.");
+    if (!USERNAME_REGEX.test(v)) {
+      setUsernameError(USERNAME_POLICY_MSG);
       setUsernameChecked(false);
       return;
     }
@@ -156,8 +156,13 @@ export default function UserNew() {
         setUsername(res.username);
         setUsernameError("");
         setUsernameChecked(true);
+      } else {
+        // الاشتقاق فشل (اسم بلا أحرف لاتينية أو كل البدائل مأخوذة) — أبلغ بدل الصمت.
+        setUsernameError("تعذّر اقتراح اسم مستخدم تلقائياً — أدخله يدوياً أو استخدم البريد الإلكتروني.");
       }
-    } catch { /* تجاهل — يدخله المستخدم يدوياً */ }
+    } catch {
+      setUsernameError("تعذّر الاتصال لاقتراح اسم المستخدم — أدخله يدوياً.");
+    }
   }
 
   // عند مغادرة حقل الاسم: ولّد اسم المستخدم تلقائياً (المعرّف الأساسي) إن كان فارغاً، واقترح بريداً.
@@ -236,7 +241,7 @@ export default function UserNew() {
     // معرّف دخول واحد على الأقل (طلب المالك: «اما بريد او اسم مستخدم»).
     if (!emailV && !usernameV) { setError("أدخل بريداً إلكترونياً أو اسم مستخدم على الأقل."); return; }
     if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) { setError("بريد إلكتروني غير صالح."); return; }
-    if (usernameV && !/^[a-z][a-z0-9._-]{2,31}$/.test(usernameV)) { setError("اسم مستخدم غير صالح — ٣–٣٢ خانة تبدأ بحرف إنجليزي."); return; }
+    if (usernameV && !USERNAME_REGEX.test(usernameV)) { setError(USERNAME_POLICY_MSG); return; }
     if (!isStrongPassword(password)) { setError("كلمة المرور ضعيفة — استخدم زر التوليد أو أدخل 12 خانة تحتوي حرفاً كبيراً وصغيراً ورقماً ورمزاً."); return; }
     if (password !== passwordConfirm) { setError("تأكيد كلمة المرور لا يطابق."); return; }
     if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) { setError("تاريخ التوظيف غير صالح."); return; }
@@ -350,7 +355,7 @@ export default function UserNew() {
               </Button>
             </div>
             <PasswordInput id="pw" value={password} onChange={setPassword} autoComplete="new-password" />
-            <p className="text-[11px] text-muted-foreground">8 خانات على الأقل، حرف ورقم ورمز.</p>
+            <p className="text-[11px] text-muted-foreground">{PASSWORD_POLICY_MSG}</p>
           </div>
           <div className="space-y-1">
             <Label htmlFor="pw2">تأكيد كلمة المرور *</Label>

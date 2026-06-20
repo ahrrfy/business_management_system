@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { CredentialsShare } from "@/components/form/CredentialsShare";
-import { isStrongPassword } from "@shared/const";
+import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
@@ -91,8 +91,8 @@ export default function UserEdit() {
   async function checkUsernameFn() {
     const v = username.trim().toLowerCase();
     if (!v) { setUsernameError(""); setUsernameChecked(false); return; }
-    if (!/^[a-z][a-z0-9._-]{2,31}$/.test(v)) {
-      setUsernameError("٣–٣٢ خانة، يبدأ بحرف إنجليزي، حروف/أرقام/نقطة/شرطة فقط.");
+    if (!USERNAME_REGEX.test(v)) {
+      setUsernameError(USERNAME_POLICY_MSG);
       setUsernameChecked(false);
       return;
     }
@@ -111,15 +111,14 @@ export default function UserEdit() {
     const usernameV = username.trim().toLowerCase();
     if (!emailV && !usernameV) return setError("يجب إبقاء بريد إلكتروني أو اسم مستخدم واحد على الأقل.");
     if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) return setError("بريد إلكتروني غير صالح.");
-    if (usernameV && !/^[a-z][a-z0-9._-]{2,31}$/.test(usernameV)) return setError("اسم مستخدم غير صالح — ٣–٣٢ خانة تبدأ بحرف إنجليزي.");
+    if (usernameV && !USERNAME_REGEX.test(usernameV)) return setError(USERNAME_POLICY_MSG);
     // نرسل القيمتين دائماً: "" ⇒ مسح المعرّف صراحةً (الخادم يضمن بقاء معرّف واحد على الأقل).
     update.mutate({ userId, name: name.trim(), email: emailV, username: usernameV, role, branchId: branchId ? Number(branchId) : null });
   }
 
   function doReset() {
     setPwMsg(""); setResetShare(null);
-    if (!isStrongPassword(newPassword))
-      return setPwMsg("كلمة المرور يجب أن تكون 8 أحرف على الأقل وتحتوي حرفاً ورقماً ورمزاً.");
+    if (!isStrongPassword(newPassword)) return setPwMsg(PASSWORD_POLICY_MSG);
     resetPassword.mutate({ userId, newPassword, mustChangePassword: mustChangeOnReset });
   }
 
@@ -241,7 +240,7 @@ export default function UserEdit() {
                   ⚡ توليد
                 </Button>
               </div>
-              <Input id="newpw" type="text" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="8 أحرف على الأقل" className="font-mono" />
+              <Input id="newpw" type="text" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="12 خانة على الأقل" className="font-mono" />
             </div>
             <Button variant="outline" onClick={doReset} disabled={resetPassword.isPending}>
               {resetPassword.isPending ? "…" : "إعادة التعيين"}
