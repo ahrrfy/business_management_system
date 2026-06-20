@@ -112,7 +112,7 @@ export const expenseRouter = router({
       if (ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
-      const res = await cancelExpense(input.expenseId, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) });
+      const res = await cancelExpense(input.expenseId, { userId: ctx.user.id, branchId: Number(ctx.user.branchId), role: ctx.user.role });
       await logAudit(ctx, { action: "expense.cancel", entityType: "expense", entityId: input.expenseId });
       return res;
     }),

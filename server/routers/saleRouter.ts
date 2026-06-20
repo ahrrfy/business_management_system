@@ -32,6 +32,17 @@ const MGR_APPROVAL_WINDOW_MS = 60_000;
 const MGR_APPROVAL_MIN_RESPONSE_MS = 300;
 const mgrApprovalAttempts = new Map<string, number[]>();
 
+// مكنسة دورية تُجلي المفاتيح التي صارت كل محاولاتها أقدم من النافذة (تمنع تسرّب الذاكرة
+// عند تدفّق إيميلات مختلفة). .unref?.() كي لا يَمنع المؤقّت إغلاق العملية.
+setInterval(() => {
+  const now = Date.now();
+  mgrApprovalAttempts.forEach((times, key) => {
+    const fresh = times.filter((t) => now - t < MGR_APPROVAL_WINDOW_MS);
+    if (fresh.length === 0) mgrApprovalAttempts.delete(key);
+    else if (fresh.length !== times.length) mgrApprovalAttempts.set(key, fresh);
+  });
+}, MGR_APPROVAL_WINDOW_MS).unref?.();
+
 function _trackMgrAttempt(email: string): boolean {
   const now = Date.now();
   const key = email.trim().toLowerCase();
