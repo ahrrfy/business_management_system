@@ -113,3 +113,36 @@ describe("حواجز الإلغاء", () => {
     expect(await countRows(s.accountingEntries)).toBe(0);
   });
 });
+
+describe("SOD-06: اعتماد الشراء بفصل المهام (مُستلِم ≠ مُنشئ)", () => {
+  it("موظّف غير-أدمن يَستلم أمراً أنشأه بنفسه ⇒ FORBIDDEN؛ مُستلِم مختلف ⇒ يُقبَل", async () => {
+    await db().insert(s.users).values({ id: 2, openId: "wh", name: "مخزن", role: "warehouse", loginMethod: "local" });
+    const wh = { userId: 2, branchId: 1, role: "warehouse" };
+    const po = await createPurchaseOrder(
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: "10", unitPrice: "5.00" }] },
+      wh,
+    );
+    const item = (await db().select().from(s.purchaseOrderItems).where(eq(s.purchaseOrderItems.purchaseOrderId, po.purchaseOrderId)))[0];
+
+    // نفس المُنشئ (غير أدمن) يُحاول الاستلام ⇒ مرفوض.
+    await expect(
+      receivePurchase({ purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 }] }, wh),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // مُستلِم مختلف (أدمن user 1) ⇒ يُقبَل.
+    const res = await receivePurchase(
+      { purchaseOrderId: po.purchaseOrderId, lines: [{ purchaseOrderItemId: Number(item.id), receivedBaseQuantity: 10 }] },
+      actor,
+    );
+    expect(res.fullyReceived).toBe(true);
+  });
+
+  it("الأدمن يُنشئ ويَستلم بنفسه ⇒ يُقبَل (استثناء الأدمن)", async () => {
+    const { purchaseOrderId, itemId } = await makeConfirmedPO(10);
+    const res = await receivePurchase(
+      { purchaseOrderId, lines: [{ purchaseOrderItemId: itemId, receivedBaseQuantity: 10 }] },
+      actor,
+    );
+    expect(res.fullyReceived).toBe(true);
+  });
+});
