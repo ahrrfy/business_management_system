@@ -393,18 +393,23 @@ async function supplierOpeningBalance(supplierId: number, from?: string) {
   //   PAYMENT_OUT يطرح، PAYMENT_IN يضيف (استرداد من مورد)، RETURN.amount مخزَّن سالباً فيطرح المرتجع.
   // كان نظير العميل (customerOpeningBalance) يضمّ الاتجاهين بصحّة، بينما المورد كان PAYMENT_OUT فقط
   // ⇒ كشف حساب لا يتّزن عند استرداد من مورد أو مرتجع شراء.
+  // FI-01 (تكامل الأصول↔كشف المورد، تحقيق عدائي ٢٠/٦): اقتناء أصل على ذمّة المورد يُقيَّد PURCHASE
+  // (بلا purchaseOrderId) ويَرفع currentBalance؛ كان الكشف يُعيد بناء AP من أوامر الشراء + الدفعات
+  // فقط ⇒ شراء الأصل يَغيب فلا يتّزن الرصيد. نُدرج PURCHASE اليتيمة (purchaseOrderId IS NULL) موجبةً
+  // على AP (شراء الأصول عبر PO تُحتسَب من purchaseOrders.total ⇒ لا ازدواج).
   const entriesRow = await db
     .select({
       v: sql<string>`COALESCE(SUM(CASE
         WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'RETURN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PURCHASE'    THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         ELSE 0 END), 0)`,
     })
     .from(accountingEntries)
     .where(
       and(
-        inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN", "RETURN"]),
+        sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
         eq(accountingEntries.supplierId, supplierId),
         sql`${accountingEntries.entryDate} < ${from}`
       )
@@ -446,8 +451,10 @@ export async function getSupplierStatement(
   // كان السابق PAYMENT_OUT فقط ⇒ استرداد المورد ومرتجع الشراء يغيبان عن الكشف فلا يتّزن
   // (الرصيد الجاري ≠ المُرحَّل + مشتريات الفترة − دفعات الفترة المعروضة). الفلترة على تاريخ القيد
   // نفسه: حركة داخل الفترة على أمر أقدم تظهر (الدلالة المحاسبية).
+  // FI-01: تشمل الحركة شراء الأصول اليتيم (PURCHASE بلا purchaseOrderId) ليَظهر في الكشف ويتّزن
+  // الرصيد مع currentBalance؛ شراء PO يُعرَض من purchaseOrders أعلاه ⇒ نَستثنيه هنا (لا ازدواج).
   const payConds = [
-    inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN", "RETURN"]),
+    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
     eq(accountingEntries.supplierId, supplierId),
   ];
   if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
