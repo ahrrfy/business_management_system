@@ -34,6 +34,9 @@ async function seedAdmin() {
     role: "admin",
     loginMethod: "local",
     branchId: 1,
+    // AUTH-02: حدّ الإبطال أقدم بثانيتين من الإنشاء (كما في seed/createUser) كي لا يُرفَض توكنٌ
+    // يُصدَر في نفس ثانية البذر تحت مقارنة `iat <= validFromSec` (٢٠٠٠ms لتجاوز تقريب TIMESTAMP).
+    sessionsValidFrom: new Date(Date.now() - 2000),
   });
   return (await d.select().from(s.users).where(eq(s.users.id, 1)).limit(1))[0];
 }
@@ -154,5 +157,96 @@ describe("session — إبطال وإزالة الدور", () => {
     const caller = appRouter.createCaller(makeCtx().ctx);
     const r = await caller.auth.login({ email: "k@test.local", password: "Pass1234!Aaa" });
     expect(r.email).toBe("k@test.local");
+  });
+});
+
+describe("AUTH-02 — نافذة الإبطال العمياء بدقّة الثانية", () => {
+  it("(١) توكن صُكّ قبل sessionsValidFrom يُرفض (السلوك القائم)", async () => {
+    await seedAdmin();
+    // validFrom في المستقبل بثانيتين، والتوكن iat الآن ⇒ iat < validFromSec ⇒ يُرفض.
+    const nowSec = Math.floor(Date.now() / 1000);
+    await db()
+      .update(s.users)
+      .set({ sessionsValidFrom: new Date((nowSec + 2) * 1000) })
+      .where(eq(s.users.id, 1));
+    const token = await signSession(1, undefined, null, nowSec);
+    const req = { headers: { cookie: `app_session_id=${token}` } } as any;
+    expect(await getUserFromRequest(req)).toBeNull();
+  });
+
+  it("(٢) توكن صُكّ في نفس ثانية sessionsValidFrom يُرفض الآن (إصلاح AUTH-02)", async () => {
+    await seedAdmin();
+    // اضبط validFromSec ثمّ صُكّ توكناً بنفس iat بالضبط (iat == validFromSec).
+    const validFromSec = Math.floor(Date.now() / 1000);
+    await db()
+      .update(s.users)
+      .set({ sessionsValidFrom: new Date(validFromSec * 1000) })
+      .where(eq(s.users.id, 1));
+    const sameSecondToken = await signSession(1, undefined, null, validFromSec);
+    const req = { headers: { cookie: `app_session_id=${sameSecondToken}` } } as any;
+    // قبل الإصلاح: كانت المقارنة `<` تقبله (نافذة عمياء). الآن `<=` ⇒ يُرفض.
+    expect(await getUserFromRequest(req)).toBeNull();
+  });
+
+  it("(٣) تغيير كلمة المرور بنفسه: جلسة صاحبها المُعاد إصدارها تبقى صالحة (لا طرد)", async () => {
+    const admin = await seedAdmin();
+    // سياق يلتقط الكوكي المُعاد إصداره؛ req يحمل user-agent ثابتاً ليطابق البصمة.
+    const cookies: Record<string, string> = {};
+    const req = { headers: { "user-agent": "vitest-UA" } as Record<string, string>, protocol: "http" };
+    const res = {
+      cookie(name: string, val: string) {
+        cookies[name] = val;
+      },
+      clearCookie(name: string) {
+        delete cookies[name];
+      },
+    };
+    const caller = appRouter.createCaller({ req, res, user: admin } as any);
+
+    const r = await caller.auth.changePassword({
+      oldPassword: "Admin@12345",
+      newPassword: "NewPass1!Aaa",
+    });
+    expect(r.success).toBe(true);
+
+    // الكوكي المُعاد إصداره يجب أن يجتاز getUserFromRequest رغم تقدّم sessionsValidFrom.
+    const reissued = cookies["app_session_id"];
+    expect(reissued).toBeTruthy();
+    const verifyReq = {
+      headers: { cookie: `app_session_id=${reissued}`, "user-agent": "vitest-UA" },
+    } as any;
+    const stillValid = await getUserFromRequest(verifyReq);
+    expect(stillValid?.id).toBe(1);
+
+    // وفي الوقت نفسه، أيّ توكنٍ أجنبيٍّ صُكّ في نفس ثانية الإبطال (أو قبلها) يُرفض.
+    const after = (await db().select().from(s.users).where(eq(s.users.id, 1)).limit(1))[0];
+    const validFromSec = Math.floor(new Date(after.sessionsValidFrom).getTime() / 1000);
+    const foreignToken = await signSession(1, undefined, null, validFromSec);
+    const foreignReq = { headers: { cookie: `app_session_id=${foreignToken}` } } as any;
+    expect(await getUserFromRequest(foreignReq)).toBeNull();
+  });
+
+  it("(٤) دخولٌ طبيعي ⇒ جلسة صالحة (لا انحدار)", async () => {
+    await seedAdmin();
+    const cookies: Record<string, string> = {};
+    const req = { headers: { "user-agent": "vitest-UA" } as Record<string, string>, protocol: "http" };
+    const res = {
+      cookie(name: string, val: string) {
+        cookies[name] = val;
+      },
+      clearCookie(name: string) {
+        delete cookies[name];
+      },
+    };
+    const caller = appRouter.createCaller({ req, res, user: null } as any);
+    const r = await caller.auth.login({ email: "admin@test.local", password: "Admin@12345" });
+    expect(r.id).toBe(1);
+    const token = cookies["app_session_id"];
+    expect(token).toBeTruthy();
+    const verifyReq = {
+      headers: { cookie: `app_session_id=${token}`, "user-agent": "vitest-UA" },
+    } as any;
+    const u = await getUserFromRequest(verifyReq);
+    expect(u?.id).toBe(1);
   });
 });

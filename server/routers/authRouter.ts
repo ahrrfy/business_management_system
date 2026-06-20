@@ -236,10 +236,17 @@ export const authRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      await changePasswordSvc(ctx.user.id, input.oldPassword, input.newPassword);
+      const { validFrom } = await changePasswordSvc(ctx.user.id, input.oldPassword, input.newPassword);
       // أُبطِلت كل الجلسات (sessionsValidFrom=now) ⇒ نُصدر كوكياً جديداً كي لا يُطرَد صاحبها.
       // نمرّر ctx.req ⇒ التوكن الجديد يحمل بصمة الجهاز الحالي.
-      const token = await signSession(ctx.user.id, SESSION_DEFAULT_MS, ctx.req);
+      // AUTH-02: الإبطال يرفض `iat <= validFromSec`؛ لذا نُثبّت iat الكوكي الجديد أكبر
+      // تماماً من حدّ الإبطال فيبقى صالحاً، بينما يُرفض أيّ توكنٍ أجنبيٍّ صُكّ في نفس الثانية
+      // (يسدّ النافذة العمياء دون السماح القديم).
+      // ⚠️ عمود TIMESTAMP يُقرِّب (يجبر) أجزاء الثانية لأقرب ثانية عند التخزين ⇒ قد يقفز
+      // validFromSec المخزَّن ثانيةً واحدةً للأعلى مقابل floor(validFrom). لذا نضيف +2 (لا +1)
+      // كي يبقى iat أكبر تماماً حتى بعد التقريب لأعلى (أمانٌ حاسمٌ ضدّ طرد صاحب الجلسة).
+      const reissueIatSec = Math.floor(validFrom.getTime() / 1000) + 2;
+      const token = await signSession(ctx.user.id, SESSION_DEFAULT_MS, ctx.req, reissueIatSec);
       ctx.res.cookie(COOKIE_NAME, token, {
         ...getSessionCookieOptions(ctx.req),
         maxAge: SESSION_DEFAULT_MS,

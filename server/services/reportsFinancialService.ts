@@ -334,6 +334,9 @@ export interface FinancialPosition {
   fixedAssets: string;
   apCredit: string; // ذمم دائنة (نحن نَدين للموردين)
   apDebit: string; // سُلف للموردين
+  // FIN-05: سُلف العملاء على أوامر الشغل غير المُسلَّمة (عرابين مقبوضة نقداً لكن الإيراد لم يُعترف به بعد) —
+  // التزامٌ على الشركة (خدمةٌ لم تُنجَز)، يقابل النقدَ الداخل فلا تتضخّم حقوق الملكية.
+  customerAdvances: string;
   totalAssets: string;
   totalLiabilities: string;
   equity: string;
@@ -353,7 +356,8 @@ export async function getFinancialPosition(
   const zero = "0";
   const empty: FinancialPosition = {
     cash: zero, arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
-    apCredit: zero, apDebit: zero, totalAssets: zero, totalLiabilities: zero, equity: zero,
+    apCredit: zero, apDebit: zero, customerAdvances: zero,
+    totalAssets: zero, totalLiabilities: zero, equity: zero,
     branchScoped: !!opts.branchId,
     arReconciled: true, apReconciled: true, arDriftCount: 0, apDriftCount: 0,
   };
@@ -392,6 +396,21 @@ export async function getFinancialPosition(
     FROM fixedAssets WHERE assetStatus <> 'disposed' ${bId ? sql`AND branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 
+  // FIN-05 (تدقيق ٢٠/٦ — نظير FI-01 لأوامر الشغل): العربون المقبوض على أمر شغل غير مُسلَّم يَرفع النقد
+  // (أصل) عند الإنشاء عبر receipt(IN)+PAYMENT_IN، لكنه ليس إيراداً بعد (الخدمة لم تُنجَز) ⇒ بلا التزام
+  // مقابل، كانت حقوق الملكية تتضخّم بمقدار العرابين المعلّقة. نحتسب التزام «سُلف العملاء» = مجموع
+  // deposit على أوامر الشغل المفتوحة فقط: status IN (RECEIVED, IN_PROGRESS, READY) — أي ليست DELIVERED
+  // (عندها يُضمّ العربون لـinvoice.paidAmount ويُعترَف إيراداً عبر قيد SALE) ولا CANCELLED (عندها
+  // يُسترَدّ العربون نقداً receipt(OUT) فيخرج من النقد). شرط invoiceId IS NULL حارسٌ مزدوج ضدّ احتساب
+  // عربون رُبِط بفاتورة مُسلَّمة (لا ازدواج). نطابق عمود workOrders.deposit الحقيقيّ. عزل الفرع كباقي البنود.
+  const wa = rowsOf(await db.execute(sql`
+    SELECT CAST(COALESCE(SUM(deposit), 0) AS CHAR) AS v
+    FROM workOrders
+    WHERE workOrderStatus IN ('RECEIVED', 'IN_PROGRESS', 'READY')
+      AND invoiceId IS NULL
+      ${bId ? sql`AND branchId = ${bId}` : sql``}
+  `))[0] ?? { v: "0" };
+
   const cash = money(cashRow.v ?? 0);
   const arDebit = money(ar.d ?? 0);
   const arCredit = money(ar.c ?? 0);
@@ -399,11 +418,12 @@ export async function getFinancialPosition(
   const fixedAssets = money(fa.v ?? 0);
   const apCredit = money(ap.c ?? 0);
   const apDebit = money(ap.d ?? 0);
+  const customerAdvances = money(wa.v ?? 0); // FIN-05: عرابين أوامر الشغل غير المُسلَّمة (التزام).
 
   // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة.
   const totalAssets = cash.add(arDebit).add(apDebit).add(inventory).add(fixedAssets);
-  // الخصوم = دائنون + سُلف العملاء (ذمة علينا).
-  const totalLiabilities = apCredit.add(arCredit);
+  // الخصوم = دائنون + سُلف العملاء على الذمم (دفعوا زيادة) + سُلف عملاء عرابين أوامر الشغل (FIN-05).
+  const totalLiabilities = apCredit.add(arCredit).add(customerAdvances);
   const equity = totalAssets.sub(totalLiabilities);
 
   // FI-02: حارس انحراف مرئي (قراءة فقط). الأرقام أعلاه تبقى من currentBalance؛ هذه إشارةٌ فقط.
@@ -424,6 +444,7 @@ export async function getFinancialPosition(
     fixedAssets: toDbMoney(fixedAssets),
     apCredit: toDbMoney(apCredit),
     apDebit: toDbMoney(apDebit),
+    customerAdvances: toDbMoney(customerAdvances),
     totalAssets: toDbMoney(totalAssets),
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),
@@ -458,11 +479,21 @@ export async function getCashFlow(opts: { from: string; to: string; branchId?: n
   };
   if (!db) return base;
 
+  // FIN-04 (تدقيق ٢٠/٦): توحيد أساس التاريخ. كانت هذه الدالة تُبوّب وتُرشّح على DATE(r.createdAt)
+  // — وهو timestamp بتوقيت خادم MySQL المحليّ — بينما كل القوائم الأخرى (P&L/الأستاذ/المصروفات)
+  // تُفتاح على entryDate (عمود DATE)، فينشأ أساسٌ مزدوج وانحراف عند حدود UTC. الإصلاح: نشتقّ تاريخ
+  // العمل من قيد الدفتر المرتبط بالإيصال (ae.receiptId → ae.entryDate) — نفس الأساس الذي يفتاح عليه
+  // الباقي — مع COALESCE احتياطيٍّ على DATE(r.createdAt) لأي إيصال نادر بلا قيد دفتر مرتبط (لا يُسقَط
+  // صفّ أبداً، فلا يتغيّر مجموع النقد، بل يتّسق التبويب الزمنيّ فقط). LEFT JOIN يحفظ مجموعة الإيصالات
+  // كما هي تماماً (قائدةً)، والربط على entryType النقديّ (PAYMENT_IN/OUT) يطابق قيد الإيصال الوحيد.
   const rows = rowsOf(await db.execute(sql`
     SELECT r.direction AS direction, r.paymentMethod AS method, CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
     FROM receipts r
+    LEFT JOIN accountingEntries ae
+      ON ae.receiptId = r.id AND ae.entryType IN ('PAYMENT_IN', 'PAYMENT_OUT')
     WHERE r.receiptStatus = 'COMPLETED'
-      AND DATE(r.createdAt) >= ${opts.from} AND DATE(r.createdAt) <= ${opts.to}
+      AND COALESCE(ae.entryDate, DATE(r.createdAt)) >= ${opts.from}
+      AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${opts.to}
       ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
     GROUP BY r.direction, r.paymentMethod
   `));

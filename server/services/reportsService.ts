@@ -63,6 +63,11 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
   // ORDER BY unpaidTotal DESC ⇒ أكبر الذمم أولاً (المطلوبة فعلياً في المتابعة).
   // ٥٠٠٠ افتراضياً يفوق سقف عملاء أي متجر منفرد، لكن يمنع تسارع الفشل عند نموّ الجدول.
   const limit = Math.max(1, Math.min(opts.limit ?? 5000, 10000));
+  // REP-03 (تدقيق ٢٠/٦): مرساة «اليوم» = UTC_DATE() لا CURDATE(). invoiceDate عمود timestamp
+  // مخزَّن بـUTC، وdueDate عمود DATE بلا منطقة زمنية؛ CURDATE() يعطي تاريخ خادم MySQL المحلّي ⇒
+  // عند حدّ اليوم ينزاح فرق الأيام يوماً واحداً فتقع الفاتورة في دلو خاطئ. UTC_DATE() يوحّد
+  // الأساس مع DATE() للطابع الزمني المخزَّن بـUTC (وdueDate الـDATE يُحاذى عليه أيضاً بلا تحويل).
+  // حدود الدلاء (<=30 / 31-60 / 61-90 / >90) تبقى كما هي.
   const rows = await db.execute(sql`
     SELECT
       c.id AS customerId,
@@ -70,10 +75,10 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       c.phone,
       c.customerType,
       CAST(c.currentBalance AS CHAR) AS currentBalance,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) <= 30 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) > 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) <= 30 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) > 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
       CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaidTotal,
       DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN DATE(COALESCE(i.dueDate, i.invoiceDate)) END), '%Y-%m-%d') AS oldestInvoiceDate
     FROM customers c
@@ -327,16 +332,19 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
   const branchFilter = opts.branchId ? sql`AND po.branchId = ${opts.branchId}` : sql``;
   // G13: نفس حارس LIMIT في AR aging — يمنع OOM عند نمو الموردين.
   const limit = Math.max(1, Math.min(opts.limit ?? 5000, 10000));
+  // REP-03: مرساة «اليوم» = UTC_DATE() لا CURDATE() (نفس علّة AR aging أعلاه). orderDate عمود
+  // timestamp مخزَّن بـUTC ⇒ DATEDIFF(UTC_DATE(), DATE(po.orderDate)) يحسب الفرق على أساس UTC
+  // واحد فلا ينزاح الدلو يوماً عند حدّ اليوم. الحدود ثابتة.
   const rows = await db.execute(sql`
     SELECT
       s.id AS supplierId,
       s.name AS supplierName,
       s.phone,
       CAST(s.currentBalance AS CHAR) AS currentBalance,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(po.orderDate)) <= 30 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(po.orderDate)) BETWEEN 31 AND 60 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(po.orderDate)) BETWEEN 61 AND 90 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(po.orderDate)) > 90 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) <= 30 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 31 AND 60 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 61 AND 90 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) > 90 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
       CAST(COALESCE(SUM(GREATEST(po.total - po.paidAmount, 0)), 0) AS CHAR) AS unpaidTotal,
       DATE_FORMAT(MIN(CASE WHEN po.poStatus IN ('CONFIRMED','RECEIVED') AND po.total > po.paidAmount THEN po.orderDate END), '%Y-%m-%d') AS oldestPoDate
     FROM suppliers s
@@ -731,7 +739,7 @@ export async function getSlowMovers(
       c.name AS categoryName,
       CAST(COALESCE(st.qty, 0) AS CHAR) AS qtyInStock,
       DATE_FORMAT(sa.lastSale, '%Y-%m-%d') AS lastSaleDate,
-      CASE WHEN sa.lastSale IS NULL THEN NULL ELSE DATEDIFF(CURDATE(), DATE(sa.lastSale)) END AS daysSinceLastSale
+      CASE WHEN sa.lastSale IS NULL THEN NULL ELSE DATEDIFF(UTC_DATE(), DATE(sa.lastSale)) END AS daysSinceLastSale
     FROM products p
     LEFT JOIN categories c ON c.id = p.categoryId
     LEFT JOIN (
@@ -747,14 +755,14 @@ export async function getSlowMovers(
       JOIN invoiceItems ii ON ii.variantId = v.id
       JOIN invoices i ON i.id = ii.invoiceId
         AND i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
-        AND i.invoiceDate >= DATE_SUB(CURDATE(), INTERVAL ${sinceDays} DAY)
+        AND i.invoiceDate >= DATE_SUB(UTC_DATE(), INTERVAL ${sinceDays} DAY)
         ${branchSalesFilter}
       WHERE v.isActive = TRUE
       GROUP BY v.productId
     ) sa ON sa.pid = p.id
     WHERE p.isActive = TRUE
       AND COALESCE(st.qty, 0) > 0
-      AND (sa.lastSale IS NULL OR DATEDIFF(CURDATE(), DATE(sa.lastSale)) >= ${sinceDays})
+      AND (sa.lastSale IS NULL OR DATEDIFF(UTC_DATE(), DATE(sa.lastSale)) >= ${sinceDays})
     ORDER BY daysSinceLastSale IS NULL DESC, daysSinceLastSale DESC, qtyInStock DESC
     LIMIT ${limit}
   `);
