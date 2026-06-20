@@ -6,7 +6,7 @@
  * تُخزَّن (تتغيّر بمرور الزمن) — منطقه مطابق ١:١ لنموذج التصميم (assets/data.js → computeDep).
  * ========================================================================== */
 import Decimal from "decimal.js";
-import { and, desc, eq, getTableColumns, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, isNull, ne, sql } from "drizzle-orm";
 import {
   assetCustodyLog,
   assetDocuments,
@@ -459,6 +459,39 @@ export async function disposeAsset(assetId: number, input: DisposeInput, actor: 
       .set({ toDate: input.date })
       .where(and(eq(assetCustodyLog.assetId, assetId), isNull(assetCustodyLog.toDate)));
 
+    // FI-02 (سدّ فجوة الاتّساق، تحقّق عدائي ٢٠/٦): رحّل أيّ إهلاك غير مُرحَّل حتى تاريخ التصرّف قبل
+    // الاحتساب ⇒ المتراكم المخزَّن = computeDepreciation(التاريخ).accumulated. بدونه (إن لم يُشغَّل
+    // الترحيل الشهري) يَخرج الأصل من الميزانية بقيمة دفترية منفوخة فتتسرّب القيمة من حقوق الملكية بلا
+    // اعتراف بمصروف الإهلاك في P&L. dedupeKey DEPR:id:DISP فريد (مرّة واحدة عند التصرّف).
+    const accumTarget = money(
+      computeDepreciation(
+        {
+          purchaseValue: a.purchaseValue,
+          salvageValue: a.salvageValue ?? "0",
+          usefulLifeYears: a.usefulLifeYears,
+          depreciationMethod: (a.depreciationMethod as "sl" | "db") ?? "sl",
+          purchaseDate: a.purchaseDate as unknown as string,
+          status: a.status,
+          disposalDate: input.date,
+        },
+        new Date(input.date),
+      ).accumulated,
+    );
+    const catchUp = accumTarget.sub(money(a.accumulatedDepreciation ?? "0"));
+    if (catchUp.gt(0)) {
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId: a.branchId != null ? Number(a.branchId) : (actor.branchId || null),
+        cost: catchUp,
+        profit: catchUp.neg(),
+        amount: catchUp,
+        entryDate: new Date(input.date),
+        dedupeKey: `DEPR:${assetId}:DISP`,
+        notes: `إهلاك حتى التصرّف لأصل ${a.code}`,
+      });
+      await tx.update(fixedAssets).set({ accumulatedDepreciation: toDbMoney(accumTarget) }).where(eq(fixedAssets.id, assetId));
+    }
+
     // FA-02 (تدقيق ٢٠/٦، قرار المالك): التصرّف يُرحَّل للدفتر — نقد + ربح/خسارة (كانا يُهمَلان: نقد غير
     // مرئيّ والربح/الخسارة يُحسَب للعرض فقط). NBV عند تاريخ التصرّف (computeDepreciation يَتوقّف عند
     // disposalDate). الربح/الخسارة = المتحصّل − NBV. (الاتساق الكامل مع الميزانية يكتمل مع FI-02 قيد الإهلاك.)
@@ -531,6 +564,80 @@ export async function disposeAsset(assetId: number, input: DisposeInput, actor: 
       .where(eq(fixedAssets.id, assetId));
   });
   return getAsset(assetId);
+}
+
+/* ----------------------------------------------------- FI-02 الإهلاك الشهري */
+export interface DepreciationRunResult {
+  period: string; // YYYY-MM
+  assetsPosted: number;
+  totalDepreciation: string;
+}
+
+/**
+ * FI-02 (تدقيق ٢٠/٦، قرار المالك «إهلاك شهريّ عبر مهمة دورية»): يُرحّل إهلاك شهرٍ واحد لكل أصل
+ * غير مُستبعَد كقيد مصروف في الدفتر، ويُحدّث الإهلاك المتراكم على الأصل (⇒ الميزانية NBV).
+ * **نهج catch-up:** monthDep = computeDepreciation(نهاية الشهر).accumulated − المتراكم المخزَّن ⇒
+ * المُرحَّل يُطابق التحليليّ تماماً فلا انحراف عند التصرّف (FA-02)، ويُعالج أيّ شهر فائت تلقائياً.
+ * **idempotent:** القفل FOR UPDATE يُسلسِل + الحارس monthDep≤0 يَتخطّى المُكتمِل/المستقبليّ +
+ * dedupeKey DEPR:<id>:<YYYY-MM> فريد ⇒ إعادة التشغيل لا تُكرّر القيد ولا المتراكم.
+ */
+export async function postMonthlyDepreciation(year: number, month: number, actor: Actor): Promise<DepreciationRunResult> {
+  const period = `${year}-${String(month).padStart(2, "0")}`;
+  // asOf = نهاية الشهر (أوّل لحظة من الشهر التالي ⇒ يَشمل كامل إهلاك الشهر) لاحتساب المتراكم.
+  // entryDate = آخر يوم في الشهر (Date.UTC صفر-أساس ⇒ يوم 0 من month١-١٢) ليَقع القيد ضمن شهره في P&L.
+  const asOf = new Date(Date.UTC(year, month, 1));
+  const entryDate = new Date(Date.UTC(year, month, 0));
+  const db = requireDb();
+  const rows = await db.select({ id: fixedAssets.id }).from(fixedAssets).where(ne(fixedAssets.status, "disposed"));
+
+  let posted = 0;
+  let total = new Decimal(0);
+  for (const { id } of rows) {
+    const dep = await withTx(async (tx) => {
+      const a = await loadForUpdate(tx, id);
+      if (a.status === "disposed") return new Decimal(0);
+      const target = money(
+        computeDepreciation(
+          {
+            purchaseValue: a.purchaseValue,
+            salvageValue: a.salvageValue ?? "0",
+            usefulLifeYears: a.usefulLifeYears,
+            depreciationMethod: (a.depreciationMethod as "sl" | "db") ?? "sl",
+            purchaseDate: a.purchaseDate as unknown as string,
+            status: a.status,
+          },
+          asOf,
+        ).accumulated,
+      );
+      const stored = money(a.accumulatedDepreciation ?? "0");
+      const monthDep = target.sub(stored);
+      if (monthDep.lte(0)) return new Decimal(0); // مُكتمِل الإهلاك أو قبل تاريخ الشراء
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId: a.branchId != null ? Number(a.branchId) : actor.branchId || null,
+        cost: monthDep,
+        profit: monthDep.neg(), // مصروف: revenue(0) − cost = ربح سالب ⇒ يَجتاز reconcileLedgerProfit
+        amount: monthDep,
+        entryDate,
+        dedupeKey: `DEPR:${id}:${period}`,
+        notes: `إهلاك ${period} لأصل ${a.code}`,
+      });
+      await tx
+        .update(fixedAssets)
+        .set({ accumulatedDepreciation: toDbMoney(stored.add(monthDep)) })
+        .where(eq(fixedAssets.id, id));
+      return monthDep;
+    }).catch((e: any) => {
+      // idempotency ثانوي: الشهر مُرحَّل سابقاً ⇒ القيد الفريد على dedupeKey يَرفض ⇒ تخطٍّ آمن.
+      if (e?.code === "ER_DUP_ENTRY") return new Decimal(0);
+      throw e;
+    });
+    if (dep.gt(0)) {
+      posted++;
+      total = total.add(dep);
+    }
+  }
+  return { period, assetsPosted: posted, totalDepreciation: toDbMoney(total) };
 }
 
 /* ----------------------------------------------------------- لوحة المؤشّرات */

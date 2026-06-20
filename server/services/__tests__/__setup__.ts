@@ -18,6 +18,7 @@
  */
 import mysql from "mysql2/promise";
 import { afterEach } from "vitest";
+import { closeDb } from "../../db";
 
 const SKIP = new Set(["__drizzle_migrations"]);
 
@@ -64,4 +65,8 @@ afterEach(async () => {
   } finally {
     await conn.end();
   }
+  // أعد ضبط تجمّع Drizzle: الحذف مع FK_CHECKS=0 يَزيد نسخة metadata للجداول ⇒ العبارات المُهيَّأة
+  // المُخبَّأة على اتصالات التجمّع تَبيت ⇒ ER_TABLE_DEF_CHANGED متقطّع في reset/seed الملف التالي.
+  // الإغلاق يُجبر getDb() التالي على تجمّع جديد بعبارات نظيفة (نفس نمط truncateTables) ⇒ عزل موثوق.
+  await closeDb();
 });

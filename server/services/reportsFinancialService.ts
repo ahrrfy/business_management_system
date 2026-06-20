@@ -133,6 +133,17 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
     `),
   )[0] ?? { amount: "0" };
 
+  // FI-02: مصروف الإهلاك المُرحَّل (ADJUST بمفتاح DEPR، cost=الإهلاك الشهريّ) — مصروف غير نقديّ.
+  const dep = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'DEPR:%'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -155,6 +166,13 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
   if (stockLoss.gt(0)) {
     expenseLines.push({ key: "STOCK_LOSS", label: "نثرية وتلف (مخزون)", amount: toDbMoney(stockLoss) });
     totalExpenses = totalExpenses.add(stockLoss);
+  }
+
+  // FI-02: مصروف إهلاك الأصول الثابتة (غير نقديّ) — سطر مستقلّ يَخفض صافي الربح.
+  const depExpense = money(dep.amount ?? 0);
+  if (depExpense.gt(0)) {
+    expenseLines.push({ key: "DEPRECIATION", label: "إهلاك الأصول الثابتة", amount: toDbMoney(depExpense) });
+    totalExpenses = totalExpenses.add(depExpense);
   }
 
   // FA-02: أثر صافٍ على الربح — الخسارة مصروفٌ موجب يَرفع totalExpenses، والربح سالبٌ (دخل) يَخفضه؛
@@ -304,7 +322,8 @@ export async function getGeneralLedger(opts: {
 /* ============================ المركز المالي (ميزان مراجعة + ميزانية) ============================ */
 // لقطة أرصدة مبسّطة/مشتقّة. ⚠️ الأرصدة (مدينون/دائنون) على مستوى الشركة (الحقل company-wide في
 // customers/suppliers)؛ النقد والمخزون حسب الفرع المحدّد. حقوق الملكية مشتقّة (أصول − خصوم) ⇒
-// الميزانية تتوازن بناءً. النقد تقديريّ (صافي المقبوضات COMPLETED). الأصول بالتكلفة (بلا إهلاك متراكم).
+// الميزانية تتوازن بناءً. النقد تقديريّ (صافي المقبوضات COMPLETED). الأصول بصافي القيمة الدفترية
+// NBV (التكلفة − الإهلاك المتراكم المُرحَّل، FI-02).
 
 export interface FinancialPosition {
   cash: string;
@@ -357,8 +376,9 @@ export async function getFinancialPosition(opts: { branchId?: number } = {}): Pr
     FROM receipts WHERE receiptStatus = 'COMPLETED' ${bId ? sql`AND branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 
+  // FI-02: الأصول بصافي القيمة الدفترية NBV = التكلفة − الإهلاك المتراكم المُرحَّل (postMonthlyDepreciation).
   const fa = rowsOf(await db.execute(sql`
-    SELECT CAST(COALESCE(SUM(purchaseValue), 0) AS CHAR) AS v
+    SELECT CAST(COALESCE(SUM(purchaseValue - accumulatedDepreciation), 0) AS CHAR) AS v
     FROM fixedAssets WHERE assetStatus <> 'disposed' ${bId ? sql`AND branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 

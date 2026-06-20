@@ -110,8 +110,15 @@
     {
       "idx": 15,
       "version": "5",
-      "when": 1781944449700,
+      "when": 1782080000000,
       "tag": "0015_early_rattler",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "5",
+      "when": 1782100000000,
+      "tag": "0016_fixed_assets_accum_dep",
       "breakpoints": true
     }
   ]
