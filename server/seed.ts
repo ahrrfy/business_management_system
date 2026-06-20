@@ -62,6 +62,8 @@ async function seed() {
     await db.insert(users).values({
       openId: `local_${nanoid()}`,
       email,
+      // اسم مستخدم افتراضي للمدير ⇒ يمكنه الدخول بـ«admin» أو بالبريد (طلب المالك: «اما بريد او اسم»).
+      username: process.env.ADMIN_USERNAME ?? "admin",
       name: "المدير العام",
       passwordHash: hashPassword(password),
       role: "admin",

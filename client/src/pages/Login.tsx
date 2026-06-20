@@ -9,7 +9,7 @@ import { useLocation } from "wouter";
 export default function Login() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
@@ -39,13 +39,13 @@ export default function Login() {
             onSubmit={(e) => {
               e.preventDefault();
               setError("");
-              login.mutate({ email, password });
+              login.mutate({ identifier: identifier.trim(), password });
             }}
             className="space-y-4"
           >
             <div className="space-y-2">
-              <Label htmlFor="email">البريد الإلكتروني</Label>
-              <Input id="email" type="email" dir="ltr" value={email} onChange={(e) => setEmail(e.target.value)} required />
+              <Label htmlFor="identifier">البريد الإلكتروني أو اسم المستخدم</Label>
+              <Input id="identifier" type="text" dir="ltr" autoComplete="username" value={identifier} onChange={(e) => setIdentifier(e.target.value)} required />
             </div>
             <div className="space-y-2">
               <Label htmlFor="password">كلمة المرور</Label>

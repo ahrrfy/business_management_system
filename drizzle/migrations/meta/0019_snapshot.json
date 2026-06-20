@@ -8941,6 +8941,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "username": {
+          "name": "username",
+          "type": "varchar(64)",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "passwordHash": {
           "name": "passwordHash",
           "type": "varchar(255)",
@@ -9100,6 +9107,12 @@
           "name": "users_email_unique",
           "columns": [
             "email"
+          ]
+        },
+        "users_username_unique": {
+          "name": "users_username_unique",
+          "columns": [
+            "username"
           ]
         }
       },

@@ -1,4 +1,13 @@
-import { PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG, isStrongPassword } from "@shared/const";
+import {
+  PASSWORD_MIN_LEN,
+  PASSWORD_POLICY_MSG,
+  USERNAME_MAX_LEN,
+  USERNAME_MIN_LEN,
+  USERNAME_POLICY_MSG,
+  isStrongPassword,
+  isValidUsername,
+  normalizeUsername,
+} from "@shared/const";
 import { ALL_ROLES } from "@shared/permissions";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
@@ -13,7 +22,9 @@ import { extractInsertId } from "../lib/insertId";
 export type Role = typeof ALL_ROLES[number];
 
 export interface CreateUserInput {
-  email: string;
+  /** البريد أو اسم المستخدم — يجب توفّر أحدهما على الأقل (معرّف الدخول). */
+  email?: string | null;
+  username?: string | null;
   password: string;
   name: string;
   role?: Role;
@@ -28,7 +39,9 @@ export interface CreateUserInput {
 export interface UpdateUserInput {
   userId: number;
   name?: string;
-  email?: string;
+  /** null/"" ⇒ مسح المعرّف (ممنوع إن كان آخر معرّف دخول متبقٍّ). */
+  email?: string | null;
+  username?: string | null;
   role?: Role;
   branchId?: number | null;
   phone?: string | null;
@@ -49,6 +62,7 @@ const SAFE_COLUMNS = {
   id: users.id,
   name: users.name,
   email: users.email,
+  username: users.username,
   phone: users.phone,
   role: users.role,
   branchId: users.branchId,
@@ -63,6 +77,16 @@ const SAFE_COLUMNS = {
 
 function normEmail(s: string | null | undefined): string {
   return (s ?? "").trim().toLowerCase();
+}
+
+/** يطبّع اسم المستخدم ويتحقّق من صحّته. "" ⇒ غير موجود (null). يرمي عند صيغة غير صالحة. */
+function normUsernameOrThrow(s: string | null | undefined): string | null {
+  const v = normalizeUsername(s);
+  if (!v) return null;
+  if (!isValidUsername(v)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: USERNAME_POLICY_MSG });
+  }
+  return v;
 }
 
 function assertPasswordPolicy(pw: string) {
@@ -90,6 +114,11 @@ async function assertNotLastActiveAdmin(tx: any, excludeUserId: number) {
 function rethrowDup(e: any): never {
   const code = e?.code ?? e?.cause?.code ?? e?.cause?.cause?.code;
   if (code === "ER_DUP_ENTRY") {
+    // رسالة MySQL تحمل اسم المفتاح المنتهَك ⇒ نميّز البريد عن اسم المستخدم لرسالة دقيقة.
+    const msg = String(e?.sqlMessage ?? e?.cause?.sqlMessage ?? e?.message ?? "");
+    if (/username/i.test(msg)) {
+      throw new TRPCError({ code: "CONFLICT", message: "اسم المستخدم مستخدم مسبقاً." });
+    }
     throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم مسبقاً." });
   }
   throw e;
@@ -113,17 +142,22 @@ export function generateStrongPassword(): string {
 export async function createUser(input: CreateUserInput, _actor: Actor) {
   return withTx(async (tx) => {
     const name = input.name?.trim();
-    if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المستخدم مطلوب" });
-    if (name.length > 255) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المستخدم طويل جداً" });
+    if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم مطلوب" });
+    if (name.length > 255) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم طويل جداً" });
     const email = normEmail(input.email);
-    if (!email) throw new TRPCError({ code: "BAD_REQUEST", message: "البريد الإلكتروني مطلوب" });
+    const username = normUsernameOrThrow(input.username);
+    // معرّف دخول واحد على الأقل (طلب المالك: «اما بريد او اسم مستخدم»).
+    if (!email && !username) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "أدخل بريداً إلكترونياً أو اسم مستخدم على الأقل." });
+    }
     assertPasswordPolicy(input.password);
     const mustChange = input.mustChangePassword ?? false;
     const expiresAt = mustChange ? new Date(Date.now() + 72 * 60 * 60 * 1000) : null;
     try {
       const res = await tx.insert(users).values({
         openId: `local_${nanoid()}`,
-        email,
+        email: email || null,
+        username,
         name,
         passwordHash: hashPassword(input.password),
         role: input.role ?? "cashier",
@@ -160,10 +194,20 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
       if (name.length > 255) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المستخدم طويل جداً" });
       patch.name = name;
     }
+    // معرّفا الدخول (بريد/اسم مستخدم): يُسمح بمسح أحدهما ما دام الآخر باقياً — لا يجوز ترك المستخدم
+    // بلا أيّ معرّف دخول. نحسب القيمة النهائية لكلٍّ (التعديل إن وُرِد، وإلا القائمة) ثم نتحقّق.
+    let finalEmail = existing.email ?? "";
+    let finalUsername: string | null = existing.username ?? null;
     if (input.email !== undefined) {
-      const email = normEmail(input.email);
-      if (!email) throw new TRPCError({ code: "BAD_REQUEST", message: "البريد الإلكتروني مطلوب" });
-      patch.email = email;
+      finalEmail = normEmail(input.email);
+      patch.email = finalEmail || null;
+    }
+    if (input.username !== undefined) {
+      finalUsername = normUsernameOrThrow(input.username);
+      patch.username = finalUsername;
+    }
+    if (!finalEmail && !finalUsername) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "يجب إبقاء بريد إلكتروني أو اسم مستخدم واحد على الأقل." });
     }
     if (input.branchId !== undefined) patch.branchId = input.branchId ?? null;
     if (input.phone !== undefined) patch.phone = input.phone?.trim() || null;
@@ -266,6 +310,59 @@ export async function checkEmailAvailable(email: string, excludeUserId?: number)
   return found.length === 0;
 }
 
+/** فحص توفّر اسم المستخدم (لحظياً عند الكتابة). يعيد false للصيغة غير الصالحة. */
+export async function checkUsernameAvailable(username: string, excludeUserId?: number): Promise<boolean> {
+  const db = getDb();
+  if (!db) return true;
+  const norm = normalizeUsername(username);
+  if (!norm || !isValidUsername(norm)) return false;
+  const conds = excludeUserId
+    ? and(eq(users.username, norm), ne(users.id, excludeUserId))
+    : eq(users.username, norm);
+  const found = await db.select({ id: users.id }).from(users).where(conds).limit(1);
+  return found.length === 0;
+}
+
+/** خريطة تحويل الأحرف العربية إلى لاتينية لاشتقاق اسم مستخدم/بريد من الاسم. */
+const AR_TO_LATIN: Record<string, string> = {
+  ا: "a", أ: "a", إ: "a", آ: "a", ب: "b", ت: "t", ث: "th", ج: "j", ح: "h", خ: "kh",
+  د: "d", ذ: "z", ر: "r", ز: "z", س: "s", ش: "sh", ص: "s", ض: "d", ط: "t", ظ: "z",
+  ع: "a", غ: "g", ف: "f", ق: "q", ك: "k", ل: "l", م: "m", ن: "n", ه: "h", و: "w",
+  ي: "y", ى: "a", ة: "a", ء: "", ئ: "y", ؤ: "w",
+};
+
+/** يشتقّ جذر اسم مستخدم لاتيني صالح من الاسم (أوّل كلمتين). قد يعيد "" إن تعذّر. */
+function deriveUsernameBase(name: string): string {
+  const words = (name ?? "").trim().split(/\s+/).slice(0, 2);
+  let slug = words
+    .map((w) =>
+      w.split("").map((c) => AR_TO_LATIN[c] ?? (/[a-z0-9]/i.test(c) ? c.toLowerCase() : "")).join(""),
+    )
+    .filter(Boolean)
+    .join(".");
+  // اقتطاع، إزالة فواصل البداية/النهاية، وضمان بداية بحرف (القاعدة: يبدأ بحرف).
+  slug = slug.slice(0, USERNAME_MAX_LEN).replace(/^[._-]+|[._-]+$/g, "");
+  if (slug && !/^[a-z]/.test(slug)) slug = `u${slug}`.slice(0, USERNAME_MAX_LEN);
+  return slug;
+}
+
+/**
+ * يقترح اسم مستخدم متاحاً مشتقّاً من الاسم: يحوّل العربية إلى لاتينية، ثم يضمن التفرّد
+ * بإلحاق رقم (ali.mohammed → ali.mohammed2 …). يعيد "" إن تعذّر الاشتقاق.
+ */
+export async function suggestUsername(name: string): Promise<string> {
+  let base = deriveUsernameBase(name);
+  if (base.length < USERNAME_MIN_LEN) base = base ? `${base}.user`.slice(0, USERNAME_MAX_LEN) : "";
+  if (!base || !isValidUsername(base)) return "";
+  if (await checkUsernameAvailable(base)) return base;
+  for (let i = 2; i <= 99; i++) {
+    const suffix = String(i);
+    const candidate = `${base.slice(0, USERNAME_MAX_LEN - suffix.length)}${suffix}`;
+    if (isValidUsername(candidate) && (await checkUsernameAvailable(candidate))) return candidate;
+  }
+  return "";
+}
+
 export async function getUser(userId: number) {
   const db = getDb();
   if (!db) return null;
@@ -282,7 +379,7 @@ export async function listUsers(input: ListUsersInput = {}) {
   if (input.role) conds.push(eq(users.role, input.role as any));
   if (input.q?.trim()) {
     const q = `%${escapeLike(input.q.trim())}%`;
-    conds.push(or(like(users.name, q), like(users.email, q), like(users.phone, q)));
+    conds.push(or(like(users.name, q), like(users.email, q), like(users.username, q), like(users.phone, q)));
   }
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db

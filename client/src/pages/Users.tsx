@@ -149,7 +149,7 @@ export default function Users() {
             <thead className="bg-muted/50">
               <tr className="text-right">
                 <th className="p-2">الاسم</th>
-                <th className="p-2">البريد</th>
+                <th className="p-2">معرّف الدخول</th>
                 <th className="p-2">الدور</th>
                 <th className="p-2">الفرع</th>
                 <th className="p-2">آخر دخول</th>
@@ -168,7 +168,13 @@ export default function Users() {
                       {u.name ?? "—"}
                       {mustChange && <span className="mr-1 text-[10px] text-amber-600" title="إلزام تغيير كلمة المرور">⚠️</span>}
                     </td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{u.email ?? "—"}</td>
+                    <td className="p-2 font-mono text-xs" dir="ltr">
+                      {(u as { username?: string | null }).username
+                        ? <div>{(u as { username?: string | null }).username}</div>
+                        : null}
+                      {u.email ? <div className="text-muted-foreground">{u.email}</div> : null}
+                      {!(u as { username?: string | null }).username && !u.email ? "—" : null}
+                    </td>
                     <td className="p-2"><RoleBadge role={u.role} /></td>
                     <td className="p-2 text-xs">{u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{fmtDate(u.lastSignedIn)}</td>

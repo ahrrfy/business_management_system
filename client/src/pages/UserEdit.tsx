@@ -24,6 +24,9 @@ export default function UserEdit() {
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
+  const [usernameError, setUsernameError] = useState("");
+  const [usernameChecked, setUsernameChecked] = useState(false);
   const [role, setRole] = useState<RoleKey>("cashier");
   const [branchId, setBranchId] = useState<string>("");
   const [error, setError] = useState("");
@@ -33,13 +36,14 @@ export default function UserEdit() {
   const [newPassword, setNewPassword] = useState("");
   const [pwMsg, setPwMsg] = useState("");
   const [mustChangeOnReset, setMustChangeOnReset] = useState(true);
-  const [resetShare, setResetShare] = useState<{ password: string; email: string; name: string; phone?: string } | null>(null);
+  const [resetShare, setResetShare] = useState<{ password: string; email: string; username?: string; name: string; phone?: string } | null>(null);
 
   useEffect(() => {
     if (detail.data && !loaded) {
       const u = detail.data;
       setName(u.name ?? "");
       setEmail(u.email ?? "");
+      setUsername((u as { username?: string | null }).username ?? "");
       setRole((u.role as RoleKey) ?? "cashier");
       setBranchId(u.branchId ? String(u.branchId) : "");
       setLoaded(true);
@@ -64,6 +68,7 @@ export default function UserEdit() {
       setResetShare({
         password: vars.newPassword,
         email: detail.data?.email ?? "",
+        username: (detail.data as { username?: string | null })?.username ?? undefined,
         name: detail.data?.name ?? "",
         phone: (detail.data as any)?.phone ?? undefined,
       });
@@ -83,11 +88,32 @@ export default function UserEdit() {
     }
   }
 
+  async function checkUsernameFn() {
+    const v = username.trim().toLowerCase();
+    if (!v) { setUsernameError(""); setUsernameChecked(false); return; }
+    if (!/^[a-z][a-z0-9._-]{2,31}$/.test(v)) {
+      setUsernameError("٣–٣٢ خانة، يبدأ بحرف إنجليزي، حروف/أرقام/نقطة/شرطة فقط.");
+      setUsernameChecked(false);
+      return;
+    }
+    try {
+      const ok = await utils.users.checkUsername.fetch({ username: v, excludeUserId: userId });
+      setUsernameError(ok ? "" : "اسم المستخدم مستخدم مسبقاً.");
+      setUsernameChecked(true);
+    } catch { setUsernameChecked(false); }
+  }
+
   function submit() {
     setError(""); setDone("");
-    if (!name.trim()) return setError("اسم المستخدم مطلوب.");
-    if (!email.trim()) return setError("البريد الإلكتروني مطلوب.");
-    update.mutate({ userId, name: name.trim(), email: email.trim(), role, branchId: branchId ? Number(branchId) : null });
+    if (!name.trim()) return setError("الاسم مطلوب.");
+    if (usernameError) return setError(usernameError);
+    const emailV = email.trim().toLowerCase();
+    const usernameV = username.trim().toLowerCase();
+    if (!emailV && !usernameV) return setError("يجب إبقاء بريد إلكتروني أو اسم مستخدم واحد على الأقل.");
+    if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) return setError("بريد إلكتروني غير صالح.");
+    if (usernameV && !/^[a-z][a-z0-9._-]{2,31}$/.test(usernameV)) return setError("اسم مستخدم غير صالح — ٣–٣٢ خانة تبدأ بحرف إنجليزي.");
+    // نرسل القيمتين دائماً: "" ⇒ مسح المعرّف صراحةً (الخادم يضمن بقاء معرّف واحد على الأقل).
+    update.mutate({ userId, name: name.trim(), email: emailV, username: usernameV, role, branchId: branchId ? Number(branchId) : null });
   }
 
   function doReset() {
@@ -117,6 +143,7 @@ export default function UserEdit() {
         <CardHeader><CardTitle className="text-base">بطاقة المستخدم</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">المعرّف</div><div className="font-mono" dir="ltr">#{Number(u.id)}</div></div>
+          <div><div className="text-muted-foreground text-xs">اسم المستخدم</div><div className="font-mono" dir="ltr">{(u as { username?: string | null }).username || "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">الدور الحالي</div><div>{ROLE_LABEL[u.role] ?? u.role}</div></div>
           <div>
             <div className="text-muted-foreground text-xs">الحالة</div>
@@ -141,8 +168,20 @@ export default function UserEdit() {
             <Input id="name" value={name} onChange={(e) => setName(e.target.value)} />
           </div>
           <div className="space-y-1">
-            <Label htmlFor="email">البريد الإلكتروني *</Label>
-            <Input id="email" dir="ltr" value={email} onChange={(e) => setEmail(e.target.value)} />
+            <Label htmlFor="username">اسم المستخدم (للدخول)</Label>
+            <Input
+              id="username" dir="ltr" value={username}
+              onChange={(e) => { setUsername(e.target.value); setUsernameChecked(false); setUsernameError(""); }}
+              onBlur={() => void checkUsernameFn()}
+              placeholder="مثال: marwa.ibrahim"
+              className={usernameError ? "border-destructive" : usernameChecked && !usernameError ? "border-emerald-500" : ""}
+            />
+            {usernameError && <p className="text-[11px] text-destructive">{usernameError}</p>}
+            {usernameChecked && !usernameError && username.trim() && <p className="text-[11px] text-emerald-600">✓ اسم المستخدم متاح</p>}
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
+            <Input id="email" dir="ltr" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@alroya.local" />
           </div>
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
@@ -217,6 +256,7 @@ export default function UserEdit() {
             <CredentialsShare
               name={resetShare.name}
               email={resetShare.email}
+              username={resetShare.username}
               password={resetShare.password}
               phone={resetShare.phone}
               onClose={() => setResetShare(null)}

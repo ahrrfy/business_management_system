@@ -89,23 +89,39 @@ export const authRouter = router({
 
   login: publicProcedure
     .input(
-      z.object({
-        email: z.string().email(),
-        password: z.string().min(1).max(128),
-        remember: z.boolean().optional(),
-      })
+      z
+        .object({
+          // معرّف الدخول: بريد إلكتروني أو اسم مستخدم. `email` اسم بديل قديم (توافق خلفي).
+          identifier: z.string().min(1).max(320).optional(),
+          email: z.string().min(1).max(320).optional(),
+          password: z.string().min(1).max(128),
+          remember: z.boolean().optional(),
+        })
+        .refine((d) => !!(d.identifier ?? d.email), {
+          message: "أدخل البريد الإلكتروني أو اسم المستخدم",
+          path: ["identifier"],
+        })
     )
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
       if (!db)
         throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
 
-      const rows = await db.select().from(users).where(eq(users.email, input.email)).limit(1);
+      // وجود «@» يميّز البريد عن اسم المستخدم بنيوياً (اسم المستخدم لا يحوي @) ⇒ بحث في العمود
+      // الصحيح بلا تقاطع ممكن (لا يلتبس بريد مستخدمٍ باسمِ مستخدمِ آخر).
+      const idRaw = (input.identifier ?? input.email ?? "").trim();
+      const lookup = idRaw.toLowerCase();
+      const isEmail = idRaw.includes("@");
+      const rows = await db
+        .select()
+        .from(users)
+        .where(isEmail ? eq(users.email, lookup) : eq(users.username, lookup))
+        .limit(1);
       const user = rows[0];
 
       const ip = getClientIp(ctx.req);
       const ipHash = shortHash(ip);
-      const emailHash = shortHash(input.email);
+      const emailHash = shortHash(lookup);
 
       // حدّ المحاولات بـIP: يطال المهاجم الذي يدوّر إيميلات غير موجودة.
       const ipRec = ipAttempts.get(ip);
@@ -193,6 +209,7 @@ export const authRouter = router({
         id: user.id,
         name: user.name,
         email: user.email,
+        username: user.username,
         role: user.role,
         mustChangePassword: user.mustChangePassword ?? false,
       };
@@ -252,17 +269,24 @@ export const authRouter = router({
   /** إنشاء مستخدم جديد. للمدير فقط؛ أوّل مدير يُنشئه سكربت seed. */
   register: adminProcedure
     .input(
-      z.object({
-        email: z.string().email(),
-        password: z
-          .string()
-          .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
-          .max(128)
-          .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
-        name: z.string().min(1),
-        role: z.enum(ROLES).default("cashier"),
-        branchId: z.number().optional(),
-      })
+      z
+        .object({
+          // معرّف الدخول: بريد أو اسم مستخدم — أحدهما على الأقل.
+          email: z.string().email().optional(),
+          username: z.string().max(64).optional(),
+          password: z
+            .string()
+            .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
+            .max(128)
+            .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
+          name: z.string().min(1),
+          role: z.enum(ROLES).default("cashier"),
+          branchId: z.number().optional(),
+        })
+        .refine((d) => !!(d.email || d.username), {
+          message: "أدخل بريداً إلكترونياً أو اسم مستخدم على الأقل.",
+          path: ["username"],
+        })
     )
     .mutation(async ({ input, ctx }) => {
       const r = await createUser(input, {
@@ -273,7 +297,7 @@ export const authRouter = router({
         action: "user.create",
         entityType: "user",
         entityId: r.userId,
-        newValue: { email: input.email, role: input.role, branchId: input.branchId ?? null },
+        newValue: { email: input.email ?? null, username: input.username ?? null, role: input.role, branchId: input.branchId ?? null },
       });
       return { success: true, userId: r.userId };
     }),

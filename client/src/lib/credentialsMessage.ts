@@ -14,6 +14,8 @@ import { sanitizeForWhatsApp } from "./whatsapp";
 export interface CredentialsMessageInput {
   name: string;
   email: string;
+  /** اسم المستخدم — معرّف دخول بديل/إضافي للبريد. */
+  username?: string | null;
   password: string;
   appUrl: string;
   /** تسمية الصلاحية بالعربية (من ROLE_OPTIONS) — اختياري. */
@@ -41,16 +43,21 @@ export function buildCredentialsMessage(o: CredentialsMessageInput): string {
   L.push("");
 
   // — بيانات الدخول —
+  const uname = o.username?.trim();
+  const mail = o.email?.trim();
   L.push("بيانات الدخول:");
   L.push(`• الرابط: ${o.appUrl}`);
-  L.push(`• البريد: ${o.email}`);
+  if (uname) L.push(`• اسم المستخدم: ${uname}`);
+  if (mail) L.push(`• البريد: ${mail}`);
   L.push(`• كلمة المرور: ${o.password}`);
   L.push("");
 
   // — تعليمات أوّلية —
+  // معرّف الدخول المعروض في التعليمات = اسم المستخدم إن وُجد، وإلا البريد.
+  const loginWord = uname ? "اسم المستخدم" : "البريد";
   L.push("خطوات الدخول:");
   L.push("1) افتح الرابط من متصفّح الهاتف أو الحاسبة.");
-  L.push("2) أدخل البريد وكلمة المرور أعلاه.");
+  L.push(`2) أدخل ${loginWord} وكلمة المرور أعلاه.`);
   if (o.mustChangePassword !== false) {
     L.push("3) ستُطلب كلمة مرور جديدة عند أول دخول — اخترها واحفظها في مكان آمن.");
   }

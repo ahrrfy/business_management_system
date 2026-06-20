@@ -134,6 +134,13 @@
       "when": 1782140000000,
       "tag": "0018_nonneg_checks_and_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "5",
+      "when": 1782160000000,
+      "tag": "0019_user_username_login",
+      "breakpoints": true
     }
   ]
 }

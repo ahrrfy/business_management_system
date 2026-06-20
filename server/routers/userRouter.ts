@@ -1,15 +1,17 @@
-import { PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG, PASSWORD_REGEX } from "@shared/const";
+import { PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG, PASSWORD_REGEX, USERNAME_MAX_LEN } from "@shared/const";
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
   checkEmailAvailable,
+  checkUsernameAvailable,
   createUser,
   generateStrongPassword,
   getUser,
   listUsers,
   resetUserPassword,
   setUserActive,
+  suggestUsername,
   updateUser,
 } from "../services/userService";
 import { adminProcedure, protectedProcedure, router } from "../trpc";
@@ -18,6 +20,15 @@ import { adminProcedure, protectedProcedure, router } from "../trpc";
 const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
 const ACCESS = z.enum(["FULL", "READ", "NONE"]);
 const PERM_OVERRIDE = z.record(z.string(), ACCESS).nullish();
+
+// معرّفا الدخول. عند الإنشاء: الواجهة ترسل undefined للحقل الفارغ (مع اشتراط أحدهما عبر refine).
+// عند التعديل: "" ⇒ مسح المعرّف صراحةً (الخدمة تضمن بقاء معرّف واحد على الأقل)، وغيابه ⇒ بلا تغيير.
+// صيغة اسم المستخدم تُفحَص في الخدمة (رسالة عربية واضحة) — هنا الطول والاختيارية فقط.
+const emailCreate = z.string().email().max(320).optional();
+const usernameCreate = z.string().max(USERNAME_MAX_LEN).optional();
+const emailUpdate = z.union([z.string().email().max(320), z.literal("")]).optional();
+const usernameUpdate = z.union([z.string().max(USERNAME_MAX_LEN), z.literal("")]).optional();
+const NEED_IDENTIFIER = "أدخل بريداً إلكترونياً أو اسم مستخدم على الأقل.";
 
 export const userRouter = router({
   list: adminProcedure
@@ -41,6 +52,16 @@ export const userRouter = router({
     .input(z.object({ email: z.string().email(), excludeUserId: z.number().int().positive().optional() }))
     .query(({ input }) => checkEmailAvailable(input.email, input.excludeUserId)),
 
+  /** فحص توفّر اسم المستخدم لحظياً (onBlur في الواجهة). */
+  checkUsername: adminProcedure
+    .input(z.object({ username: z.string().max(USERNAME_MAX_LEN), excludeUserId: z.number().int().positive().optional() }))
+    .query(({ input }) => checkUsernameAvailable(input.username, input.excludeUserId)),
+
+  /** يقترح اسم مستخدم متاحاً مشتقّاً من الاسم (يضمن التفرّد خادمياً). */
+  suggestUsername: adminProcedure
+    .input(z.object({ name: z.string().min(1).max(255) }))
+    .query(({ input }) => suggestUsername(input.name).then((username) => ({ username }))),
+
   /** توليد كلمة مرور قوية من الخادم (أكثر أماناً من العميل). */
   generatePassword: adminProcedure
     .query(() => ({ password: generateStrongPassword() })),
@@ -48,7 +69,8 @@ export const userRouter = router({
   create: adminProcedure
     .input(
       z.object({
-        email: z.string().email().max(320),
+        email: emailCreate,
+        username: usernameCreate,
         password: z
           .string()
           .min(PASSWORD_MIN_LEN, PASSWORD_POLICY_MSG)
@@ -62,7 +84,7 @@ export const userRouter = router({
         hiredAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullish(),
         permissionsOverride: PERM_OVERRIDE,
         mustChangePassword: z.boolean().default(true),
-      })
+      }).refine((d) => !!(d.email || d.username), { message: NEED_IDENTIFIER, path: ["username"] })
     )
     .mutation(async ({ input, ctx }) => {
       const res = await createUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -70,7 +92,7 @@ export const userRouter = router({
         action: "user.create",
         entityType: "user",
         entityId: res.userId,
-        newValue: { email: input.email, role: input.role, branchId: input.branchId ?? null, mustChangePassword: input.mustChangePassword },
+        newValue: { email: input.email ?? null, username: input.username ?? null, role: input.role, branchId: input.branchId ?? null, mustChangePassword: input.mustChangePassword },
       });
       return res;
     }),
@@ -80,7 +102,8 @@ export const userRouter = router({
       z.object({
         userId: z.number().int().positive(),
         name: z.string().min(1).max(255).optional(),
-        email: z.string().email().max(320).optional(),
+        email: emailUpdate,
+        username: usernameUpdate,
         role: ROLE.optional(),
         branchId: z.number().int().positive().nullish(),
         phone: z.string().max(20).nullish(),
@@ -95,7 +118,7 @@ export const userRouter = router({
         action: "user.update",
         entityType: "user",
         entityId: input.userId,
-        newValue: { name: input.name, email: input.email, role: input.role, branchId: input.branchId },
+        newValue: { name: input.name, email: input.email, username: input.username, role: input.role, branchId: input.branchId },
       });
       return res;
     }),

@@ -77,6 +77,9 @@ export default function UserNew() {
   const [email, setEmail] = useState("");
   const [emailError, setEmailError] = useState("");
   const [emailChecked, setEmailChecked] = useState(false);
+  const [username, setUsername] = useState("");
+  const [usernameError, setUsernameError] = useState("");
+  const [usernameChecked, setUsernameChecked] = useState(false);
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [name, setName] = useState("");
@@ -89,15 +92,11 @@ export default function UserNew() {
   const [mustChangePassword, setMustChangePassword] = useState(true);
   const [error, setError] = useState("");
   const [createdInfo, setCreatedInfo] = useState<{
-    name: string; email: string; password: string; phone?: string;
+    name: string; email: string; username?: string; password: string; phone?: string;
     roleLabel?: string; branchName?: string | null; jobTitle?: string | null; mustChangePassword?: boolean;
   } | null>(null);
 
   const branches = trpc.branches.list.useQuery();
-  const checkEmailQ = trpc.users.checkEmail.useQuery(
-    { email: email.trim().toLowerCase() },
-    { enabled: false }
-  );
   const generatePwQ = trpc.users.generatePassword.useQuery(undefined, { enabled: false });
 
   // افتراضي: فرع المستخدم الحالي (يُقرأ من السياق حين يتوفر)
@@ -130,7 +129,42 @@ export default function UserNew() {
     }
   }, [email, utils.users.checkEmail]);
 
-  function handleNameBlur() {
+  // فحص اسم المستخدم onBlur — صيغة سريعة محلياً ثم توفّر من الخادم.
+  const checkUsernameFn = useCallback(async () => {
+    const v = username.trim().toLowerCase();
+    if (!v) { setUsernameError(""); setUsernameChecked(false); return; }
+    if (!/^[a-z][a-z0-9._-]{2,31}$/.test(v)) {
+      setUsernameError("٣–٣٢ خانة، يبدأ بحرف إنجليزي، حروف/أرقام/نقطة/شرطة فقط.");
+      setUsernameChecked(false);
+      return;
+    }
+    try {
+      const ok = await utils.users.checkUsername.fetch({ username: v });
+      setUsernameError(ok ? "" : "اسم المستخدم مستخدم مسبقاً.");
+      setUsernameChecked(true);
+    } catch {
+      setUsernameChecked(false);
+    }
+  }, [username, utils.users.checkUsername]);
+
+  // اقتراح اسم مستخدم متاح من الخادم (يضمن التفرّد).
+  async function fillSuggestedUsername() {
+    if (!name.trim()) return;
+    try {
+      const res = await utils.users.suggestUsername.fetch({ name: name.trim() });
+      if (res.username) {
+        setUsername(res.username);
+        setUsernameError("");
+        setUsernameChecked(true);
+      }
+    } catch { /* تجاهل — يدخله المستخدم يدوياً */ }
+  }
+
+  // عند مغادرة حقل الاسم: ولّد اسم المستخدم تلقائياً (المعرّف الأساسي) إن كان فارغاً، واقترح بريداً.
+  async function handleNameBlur() {
+    if (!username.trim() && name.trim()) {
+      await fillSuggestedUsername();
+    }
     if (!email && name.trim()) {
       const suggested = suggestEmail(name);
       if (suggested) setEmail(suggested);
@@ -167,7 +201,8 @@ export default function UserNew() {
       utils.users.list.invalidate();
       setCreatedInfo({
         name: vars.name,
-        email: vars.email,
+        email: vars.email ?? "",
+        username: vars.username ?? undefined,
         password: vars.password,
         phone: vars.phone ?? undefined,
         roleLabel: ROLE_OPTIONS.find((r) => r.value === vars.role)?.label ?? vars.role,
@@ -182,6 +217,7 @@ export default function UserNew() {
   /** تفريغ النموذج لإضافة مستخدم آخر (من بطاقة المشاركة بعد النجاح). */
   function resetForm() {
     setEmail(""); setEmailError(""); setEmailChecked(false);
+    setUsername(""); setUsernameError(""); setUsernameChecked(false);
     setPassword(""); setPasswordConfirm("");
     setName(""); setPhone(""); setJobTitle(""); setHiredAt("");
     setRole("cashier"); setPermsOverride({});
@@ -192,11 +228,16 @@ export default function UserNew() {
 
   function buildAndSubmit() {
     setError("");
-    if (emailError) { setError(emailError); return; }
-    if (!email.trim()) { setError("البريد الإلكتروني مطلوب."); return; }
-    if (!/^\S+@\S+\.\S+$/.test(email.trim())) { setError("بريد إلكتروني غير صالح."); return; }
     if (!name.trim()) { setError("الاسم مطلوب."); return; }
-    if (!isStrongPassword(password)) { setError("كلمة المرور ضعيفة — استخدم زر التوليد أو أدخل 8 أحرف تحتوي حرفاً ورقماً ورمزاً."); return; }
+    if (emailError) { setError(emailError); return; }
+    if (usernameError) { setError(usernameError); return; }
+    const emailV = email.trim().toLowerCase();
+    const usernameV = username.trim().toLowerCase();
+    // معرّف دخول واحد على الأقل (طلب المالك: «اما بريد او اسم مستخدم»).
+    if (!emailV && !usernameV) { setError("أدخل بريداً إلكترونياً أو اسم مستخدم على الأقل."); return; }
+    if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) { setError("بريد إلكتروني غير صالح."); return; }
+    if (usernameV && !/^[a-z][a-z0-9._-]{2,31}$/.test(usernameV)) { setError("اسم مستخدم غير صالح — ٣–٣٢ خانة تبدأ بحرف إنجليزي."); return; }
+    if (!isStrongPassword(password)) { setError("كلمة المرور ضعيفة — استخدم زر التوليد أو أدخل 12 خانة تحتوي حرفاً كبيراً وصغيراً ورقماً ورمزاً."); return; }
     if (password !== passwordConfirm) { setError("تأكيد كلمة المرور لا يطابق."); return; }
     if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) { setError("تاريخ التوظيف غير صالح."); return; }
     const override = diffFromTemplate(role, resolvedPerms);
@@ -204,7 +245,8 @@ export default function UserNew() {
     // navigate("/users") السابق كان يُنفَّذ مع onSuccess فيُخفي البطاقة قبل ظهورها (سبب «الميزة غير مطبّقة»).
     // التنقّل و«إضافة آخر» من أزرار البطاقة بعد المشاركة.
     create.mutate({
-      email: email.trim().toLowerCase(),
+      email: emailV || undefined,
+      username: usernameV || undefined,
       password,
       name: name.trim(),
       role,
@@ -231,6 +273,7 @@ export default function UserNew() {
         <CredentialsShare
           name={createdInfo.name}
           email={createdInfo.email}
+          username={createdInfo.username}
           password={createdInfo.password}
           phone={createdInfo.phone}
           roleLabel={createdInfo.roleLabel}
@@ -263,14 +306,33 @@ export default function UserNew() {
             <Input
               id="name" value={name}
               onChange={(e) => setName(e.target.value)}
-              onBlur={handleNameBlur}
+              onBlur={() => void handleNameBlur()}
               placeholder="مثال: علي محمد حسين"
             />
+            <p className="text-[11px] text-muted-foreground">يكفي معرّف دخول واحد: اسم المستخدم أو البريد الإلكتروني.</p>
           </div>
           <div className="space-y-1">
-            <Label htmlFor="email">البريد الإلكتروني *</Label>
+            <div className="flex items-center justify-between">
+              <Label htmlFor="username">اسم المستخدم (للدخول)</Label>
+              <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={() => void fillSuggestedUsername()}>
+                ⚡ توليد تلقائي
+              </Button>
+            </div>
             <Input
-              id="email" type="email" dir="ltr" autoComplete="username"
+              id="username" type="text" dir="ltr" autoComplete="off"
+              value={username}
+              onChange={(e) => { setUsername(e.target.value); setUsernameChecked(false); setUsernameError(""); }}
+              onBlur={() => void checkUsernameFn()}
+              placeholder="مثال: marwa.ibrahim"
+              className={usernameError ? "border-destructive" : usernameChecked && !usernameError ? "border-emerald-500" : ""}
+            />
+            {usernameError && <p className="text-[11px] text-destructive">{usernameError}</p>}
+            {usernameChecked && !usernameError && username.trim() && <p className="text-[11px] text-emerald-600">✓ اسم المستخدم متاح</p>}
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
+            <Input
+              id="email" type="email" dir="ltr" autoComplete="off"
               value={email}
               onChange={(e) => { setEmail(e.target.value); setEmailChecked(false); setEmailError(""); }}
               onBlur={checkEmailFn}

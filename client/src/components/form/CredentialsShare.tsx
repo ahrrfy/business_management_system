@@ -7,6 +7,8 @@ import { useState } from "react";
 export interface CredentialsShareProps {
   name: string;
   email: string;
+  /** اسم المستخدم — معرّف دخول بديل/إضافي للبريد. */
+  username?: string | null;
   password: string;
   phone?: string | null;
   /** تسمية الصلاحية بالعربية (مثل «كاشير»). */
@@ -30,6 +32,7 @@ const DEFAULT_URL = "https://srv1548487.hstgr.cloud";
 export function CredentialsShare({
   name,
   email,
+  username,
   password,
   phone,
   roleLabel,
@@ -44,6 +47,7 @@ export function CredentialsShare({
   const message = buildCredentialsMessage({
     name,
     email,
+    username,
     password,
     appUrl,
     roleLabel,
@@ -90,7 +94,12 @@ export function CredentialsShare({
             <div><span className="text-muted-foreground text-xs">الصلاحية: </span>{roleLabel}</div>
           ) : null}
           <div><span className="text-muted-foreground text-xs">الفرع: </span>{branchName?.trim() || "كل الفروع"}</div>
-          <div><span className="text-muted-foreground text-xs">البريد: </span><span dir="ltr">{email}</span></div>
+          {username?.trim() ? (
+            <div><span className="text-muted-foreground text-xs">اسم المستخدم: </span><span dir="ltr">{username}</span></div>
+          ) : null}
+          {email?.trim() ? (
+            <div><span className="text-muted-foreground text-xs">البريد: </span><span dir="ltr">{email}</span></div>
+          ) : null}
           <div><span className="text-muted-foreground text-xs">كلمة المرور: </span><span dir="ltr" className="font-bold tracking-wider">{password}</span></div>
           <div><span className="text-muted-foreground text-xs">الرابط: </span><span dir="ltr">{appUrl}</span></div>
           {mustChangePassword && (

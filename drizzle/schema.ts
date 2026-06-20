@@ -40,6 +40,9 @@ export const users = mysqlTable(
     // فريد (UNIQUE) لمنع سباق register المكرّر؛ يبقى nullable على مستوى DB (لمستخدمي
     // النظام/الاختبارات بلا بريد)، ووجوده مفروض في طبقة الخدمة (createUser/updateUser).
     email: varchar("email", { length: 320 }).unique(),
+    // اسم المستخدم — معرّف دخول بديل للبريد (فريد، اختياري). يجب أن يملك المستخدم بريداً أو اسم
+    // مستخدم على الأقل (مفروض في طبقة الخدمة createUser/updateUser). UNIQUE يسمح بتعدّد NULL.
+    username: varchar("username", { length: 64 }).unique(),
     passwordHash: varchar("passwordHash", { length: 255 }),
     phone: varchar("phone", { length: 20 }),
     loginMethod: varchar("loginMethod", { length: 64 }).default("local"),
