@@ -120,6 +120,13 @@
       "when": 1782100000000,
       "tag": "0016_fixed_assets_accum_dep",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "5",
+      "when": 1782120000000,
+      "tag": "0017_drop_dead_cash_buckets",
+      "breakpoints": true
     }
   ]
 }

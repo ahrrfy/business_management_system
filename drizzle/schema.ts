@@ -510,50 +510,6 @@ export const quotationItems = mysqlTable(
 export type QuotationItem = typeof quotationItems.$inferSelect;
 export type InsertQuotationItem = typeof quotationItems.$inferInsert;
 
-/* ============================ صناديق النقد الفيزيائية (CASH-CORE 2026-06-18) ============================
- * كل دينار يَنتمي لـbucket (DRAWER/TREASURY/BANK/SAFE). جَدول هَيكلي يَفصل «الزَمن» (shifts) عن «المَكان» (buckets).
- * - DRAWER: درج كاشير، مَربوط بـshiftId مفتوحة، ownerUserId=الكاشير.
- * - TREASURY: خزينة إدارية للفرع، بلا shiftId، ownerUserId=admin/manager المُتعهّد.
- * - BANK: حساب بنكي، metadata يَحوي رقم الحساب/SWIFT.
- * - SAFE: خزنة فيزيائية (لاحقاً، للنقد الكبير).
- * currentBalance يُحدَّث ذرّياً عَبر cashOps.execute (نُقطة الدخول الوَحيدة). version للتدقيق.
- */
-/**
- * مُلاحظة هَيكلية (٢٠٢٦/٦/١٨): مَراجع cashBuckets ناعمة (column بلا FK constraint) عَن قَصد.
- *  - السبب التَقني: MySQL 8 يَرفض TRUNCATE على parent table لها FK من child حتى لو child فارغ
- *    (ERROR 1701)، فإضافة FK من cashBuckets→branches/users/shifts تَكسر `__setup__.ts` الذي
- *    يَتيقّظ كل الاختبارات. حل تَوزيع المسؤولية في طبَقات: integrity تَحت cashOps.execute (نُقطة
- *    دخول وَحيدة تَفحص bucket.isActive و branchId قبل أيّ كَتابة).
- *  - الـintegrity في الإنتاج: حارس `lint-cash-direct-writes.mjs` + invariant checker
- *    `cashReconcile` + اختبارات T1-T5 يَضمنون عَدم تَلوّث البيانات.
- *  - رَفع لاحقاً (المَرحلة أ بَعد تَحديث `__setup__.ts` بطَريقة fk-aware): استعادة FKs.
- */
-export const cashBuckets = mysqlTable(
-  "cashBuckets",
-  {
-    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    kind: mysqlEnum("kind", ["DRAWER", "TREASURY", "BANK", "SAFE"]).notNull(),
-    branchId: bigint("branchId", { mode: "number" }).notNull(),
-    ownerUserId: int("ownerUserId"),
-    shiftId: bigint("shiftId", { mode: "number" }),
-    name: varchar("name", { length: 120 }).notNull(),
-    currentBalance: decimal("currentBalance", { precision: 15, scale: 2 }).default("0").notNull(),
-    version: int("version").default(1).notNull(),
-    isActive: boolean("isActive").default(true).notNull(),
-    metadata: json("metadata"),
-    createdAt: timestamp("createdAt").defaultNow().notNull(),
-    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-  },
-  (table) => ({
-    branchKindIdx: index("idx_bucket_branch_kind").on(table.branchId, table.kind),
-    shiftIdx: index("idx_bucket_shift").on(table.shiftId),
-    activeIdx: index("idx_bucket_active").on(table.isActive),
-  })
-);
-
-export type CashBucket = typeof cashBuckets.$inferSelect;
-export type InsertCashBucket = typeof cashBuckets.$inferInsert;
-
 /* ============================ المقبوضات والمدفوعات ============================ */
 
 export const receipts = mysqlTable(
@@ -576,17 +532,6 @@ export const receipts = mysqlTable(
      * الحقل اختياري NULL للسجلات غير النقدية (لا دلوَ لها) وللسجلات التاريخية قبل ١٧/٦.
      */
     cashBucket: mysqlEnum("cashBucket", ["DRAWER", "TREASURY"]),
-    /**
-     * CASH-CORE (2026-06-18): ربط مَقصود بـbucket فيزيائي مُحدَّد. مَرجع ناعم بلا FK constraint
-     *  (نَفس سَبب MySQL 8 / TRUNCATE الموثَّق على cashBuckets أعلاه — integrity في cashOps).
-     *  - NULL مَسموح للسجلات التاريخية + غير النقدية + قبل تَرحيل migrate-cash-to-buckets.
-     *  - بَعد التَرحيل: كل receipt نقدي مُلزَم بـbucketId NOT NULL (يُفرَض في cashOps.execute).
-     */
-    bucketId: bigint("bucketId", { mode: "number" }),
-    /** للتَحويلات الداخلية: OUT و IN لهما نفس pairToken ⇒ ضَمان زَوج كامل أو ROLLBACK. */
-    pairToken: varchar("pairToken", { length: 64 }),
-    /** Snapshot رصيد الصندوق بَعد هذا الـreceipt (ذَرّي داخل withTx) — للتَدقيق والاسترجاع. */
-    balanceAfter: decimal("balanceAfter", { precision: 15, scale: 2 }),
     referenceNumber: varchar("referenceNumber", { length: 100 }),
     checkNumber: varchar("checkNumber", { length: 50 }),
     cardLastFour: varchar("cardLastFour", { length: 4 }),
@@ -606,12 +551,8 @@ export const receipts = mysqlTable(
     dateIdx: index("idx_receipt_date").on(table.createdAt),
     voucherIdx: index("idx_receipt_voucher").on(table.voucherNumber),
     partyIdx: index("idx_receipt_party").on(table.partyType, table.partyId),
-    bucketIdx: index("idx_receipt_bucket").on(table.bucketId),
-    pairIdx: index("idx_receipt_pair").on(table.pairToken),
     // G11 (١٩/٦/٢٦): فهرس shiftId حرج — Z-report لكل إغلاق وردية كان full scan على آلاف الإيصالات يومياً.
     shiftIdx: index("idx_receipt_shift").on(table.shiftId),
-    // composite (bucketId, status) لـcashReconcile — يفلتر COMPLETED قبل aggregation.
-    bucketStatusIdx: index("idx_receipt_bucket_status").on(table.bucketId, table.status),
   })
 );
 
