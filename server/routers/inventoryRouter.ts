@@ -24,6 +24,18 @@ const REASON_KEYS = Object.keys(REASON_LABELS) as [Reason, ...Reason[]];
 
 const MOVEMENT_TYPES = ["IN", "OUT", "ADJUST", "RETURN", "TRANSFER_IN", "TRANSFER_OUT"] as const;
 
+/** أسباب التحويل بين الفروع — تُكتب في notes الحركة (سند تحويل، بلا قيد محاسبي). */
+const TRANSFER_REASONS = {
+  REBALANCE: "إعادة توزيع المخزون",
+  STOCKOUT: "نفاد في الفرع المستلم",
+  BRANCH_REQ: "طلب من الفرع",
+  SEASONAL: "تجهيز موسمي",
+  RETURN_HQ: "إرجاع للمخزن الرئيسي",
+  OTHER: "أخرى",
+} as const;
+type TransferReason = keyof typeof TRANSFER_REASONS;
+const TRANSFER_REASON_KEYS = Object.keys(TRANSFER_REASONS) as [TransferReason, ...TransferReason[]];
+
 export const inventoryRouter = router({
   transfer: warehouseProcedure
     .input(
@@ -66,6 +78,89 @@ export const inventoryRouter = router({
         },
       });
       return res;
+    }),
+
+  /**
+   * تحويل سند بأسطر متعددة بين فرعين — ذرّي (كل الأسطر في معاملة واحدة، إمّا تُطبَّق كلها أو
+   * لا شيء). يعيد استخدام transferBetweenBranches (قفل ثنائي تصاعدي لكل متغيّر) بلا قيد محاسبي.
+   * عزل الفرع: warehouse يُجبَر على فرعه مصدراً؛ admin/manager يحوّلان بين أي فرعين.
+   */
+  transferBatch: warehouseProcedure
+    .input(
+      z.object({
+        fromBranchId: z.number().int().positive(),
+        toBranchId: z.number().int().positive(),
+        reason: z.enum(TRANSFER_REASON_KEYS).optional(),
+        notes: z.string().max(500).optional(),
+        items: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              baseQuantity: z.number().int().positive(),
+            })
+          )
+          .min(1, "أضف صنفاً واحداً على الأقل")
+          .max(200, "حدّ الأصناف في السند الواحد 200"),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      let fromBranchId = input.fromBranchId;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        if (Number(ctx.user.branchId) !== input.fromBranchId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن نقل بضاعة من فرع ليس فرعك" });
+        }
+        fromBranchId = Number(ctx.user.branchId);
+      }
+      if (fromBranchId === input.toBranchId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التحويل لنفس الفرع" });
+      }
+      // رفض تكرار المتغيّر في السند الواحد (لبس في الكمية + قفل مزدوج بلا داعٍ).
+      const seen = new Set<number>();
+      for (const it of input.items) {
+        if (seen.has(it.variantId)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "صنف مكرّر في السند — ادمج كميته في سطر واحد." });
+        }
+        seen.add(it.variantId);
+      }
+      const noteLine = [input.reason ? TRANSFER_REASONS[input.reason] : null, input.notes?.trim() || null]
+        .filter(Boolean)
+        .join(" — ") || undefined;
+
+      // معاملة واحدة لكل الأسطر ⇒ ذرّية (فشل أي سطر يُرجِع كل السند).
+      const lines = await withTx(async (tx) => {
+        const out: Array<{ variantId: number }> = [];
+        for (const it of input.items) {
+          await transferBetweenBranches(tx, {
+            variantId: it.variantId,
+            fromBranchId,
+            toBranchId: input.toBranchId,
+            baseQuantity: it.baseQuantity,
+            notes: noteLine,
+            createdBy: ctx.user.id,
+          });
+          out.push({ variantId: it.variantId });
+        }
+        return out;
+      });
+
+      await logAudit(ctx, {
+        action: "inventory.transferBatch",
+        entityType: "transfer",
+        entityId: fromBranchId,
+        newValue: {
+          fromBranchId,
+          toBranchId: input.toBranchId,
+          reason: input.reason ?? null,
+          notes: input.notes ?? null,
+          itemCount: lines.length,
+          items: input.items,
+        },
+      });
+      return { lines: lines.length };
     }),
 
   adjust: warehouseProcedure
