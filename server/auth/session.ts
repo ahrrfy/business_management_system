@@ -75,13 +75,27 @@ export function computeSessionFingerprint(req: Request | { ip?: string; headers?
  */
 export type SessionPayload = { uid: number; iat: number; fp?: string };
 
-/** Sign a session JWT for a local user. */
+/**
+ * Sign a session JWT for a local user.
+ *
+ * **`iatSec` (اختياري):** يثبّت وقت الإصدار (بالثواني) صراحةً بدل ساعة النظام. يُستعمل عند
+ * **إعادة إصدار** كوكي صاحب الجلسة فور تغييرٍ يُبطل الجلسات (تغيير كلمة المرور بنفسه):
+ * نُبطل بـ`sessionsValidFrom = now` ثم نُعيد إصدار التوكن بـ`iat = validFromSec + 1` كي يكون
+ * **أكبر تماماً** من حدّ الإبطال ⇒ يجتاز فحص `iat <= validFromSec` (انظر getUserFromRequest)
+ * فلا يُطرَد صاحبها، بينما يُرفض أي توكنٍ أجنبيٍّ صُكّ في نفس الثانية (iat <= validFromSec).
+ * القيمة محدودة بثانيةٍ واحدةٍ في المستقبل ⇒ تبقى ضمن هامش clock-skew في verifySession.
+ */
 export async function signSession(
   uid: number,
   expiresInMs: number = SESSION_DEFAULT_MS,
-  req?: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null
+  req?: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null,
+  iatSec?: number
 ): Promise<string> {
-  const expirationSeconds = Math.floor((Date.now() + expiresInMs) / 1000);
+  const issuedAtSeconds =
+    typeof iatSec === "number" && Number.isInteger(iatSec) && iatSec > 0
+      ? iatSec
+      : Math.floor(Date.now() / 1000);
+  const expirationSeconds = Math.floor(Date.now() / 1000) + Math.floor(expiresInMs / 1000);
   const claims: Record<string, unknown> = { uid };
   // البصمة تُحسب فقط عند توفّر الطلب. الاستدعاءات بلا req (اختبارات وحدة) تُصدر
   // توكناً بلا fp — ويعامله verifySession كـlegacy (لا مقارنة) لكي لا تنكسر.
@@ -90,7 +104,7 @@ export async function signSession(
   }
   return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
-    .setIssuedAt()
+    .setIssuedAt(issuedAtSeconds)
     .setExpirationTime(expirationSeconds)
     .sign(getSecret());
 }
@@ -162,11 +176,13 @@ export async function getUserFromRequest(req: Request): Promise<User | null> {
   const user = rows[0];
   if (!user || !user.isActive) return null;
 
-  // إبطال الجلسات: أي توكن أُصدر قبل sessionsValidFrom (بالثواني) يُرفض.
+  // إبطال الجلسات (AUTH-02): أيّ توكن iat <= sessionsValidFrom (بالثواني) يُرفض —
+  // بما فيه ما صُكّ في **نفس ثانية** الإبطال (يسدّ النافذة العمياء دون الثانية). صاحب
+  // الجلسة في تغيير كلمة المرور لا يُطرَد لأنّ الراوتر يُعيد إصدار كوكيه بـiat = validFromSec+1.
   const validFromSec = user.sessionsValidFrom
     ? Math.floor(new Date(user.sessionsValidFrom).getTime() / 1000)
     : 0;
-  if (session.iat < validFromSec) return null;
+  if (session.iat <= validFromSec) return null;
 
   return user;
 }

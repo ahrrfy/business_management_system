@@ -67,6 +67,9 @@ async function seed() {
       role: "admin",
       loginMethod: "local",
       branchId: mainBranch ? Number(mainBranch.id) : null,
+      // AUTH-02: حدّ الإبطال أقدم بثانيتين من الإنشاء كي لا يُرفَض دخولٌ في نفس الثانية
+      // (٢٠٠٠ms لتجاوز تقريب عمود TIMESTAMP لأقرب ثانية).
+      sessionsValidFrom: new Date(Date.now() - 2000),
     });
     admin = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
     console.log(`✓ seeded admin user: ${email}`);
