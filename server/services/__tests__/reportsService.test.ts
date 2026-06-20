@@ -327,4 +327,18 @@ describe("تقارير المبيعات التحليلية", () => {
     const slow = await getSlowMovers({ sinceDays: 30 });
     expect(slow).toHaveLength(0);
   });
+
+  it("REP-02: مبيعات تاريخية متعددة لا تُضاعِف المخزون المعروض (لا انفجار انضمام)", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    await setStock(1, 1, 100);
+    // بيعتان لنفس الصنف ⇒ صفّان في invoiceItems على المتغيّر نفسه (مصدر الانفجار في الاستعلام القديم).
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] }, actor);
+    await createSale({ branchId: 1, customerId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] }, actor);
+    // أرجِع تاريخ الفواتير خارج النافذة ⇒ المنتج بطيء الحركة (يظهر) مع بقاء صفّي البيع.
+    await db().execute(sql`UPDATE invoices SET invoiceDate = '2020-01-01'`);
+    const slow = await getSlowMovers({ sinceDays: 30 });
+    expect(slow).toHaveLength(1);
+    // المخزون الحقيقي 98 (١٠٠ − بيعتان) لا 196 (98×صفّين) لو وقع انفجار الانضمام.
+    expect(slow[0].qtyInStock).toBe("98");
+  });
 });

@@ -683,32 +683,40 @@ export async function getSlowMovers(
   const branchStockFilter = opts.branchId ? sql`AND bs.branchId = ${opts.branchId}` : sql``;
   const branchSalesFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
 
+  // REP-02 (تدقيق ٢٠/٦): المخزون وآخر بيع يُجمَّعان في subquery مستقلّ لكلٍّ ⇒ لا تكرار من ضرب
+  // branchStock × invoiceItems على نفس المتغيّر. كان SUM(bs.quantity) يُضرَب بعدد صفوف البيع
+  // (انضمام شجري) ⇒ مخزون منفوخ N مرّة. الآن كل مصدر يُجمَّع مرّةً ثم يُنضَمّ على productId.
   const rows = await db.execute(sql`
     SELECT
       p.id AS productId,
       p.name AS productName,
       c.name AS categoryName,
-      CAST(COALESCE(SUM(bs.quantity), 0) AS CHAR) AS qtyInStock,
-      DATE_FORMAT(MAX(i.invoiceDate), '%Y-%m-%d') AS lastSaleDate,
-      CASE
-        WHEN MAX(i.invoiceDate) IS NULL THEN NULL
-        ELSE DATEDIFF(CURDATE(), DATE(MAX(i.invoiceDate)))
-      END AS daysSinceLastSale
+      CAST(COALESCE(st.qty, 0) AS CHAR) AS qtyInStock,
+      DATE_FORMAT(sa.lastSale, '%Y-%m-%d') AS lastSaleDate,
+      CASE WHEN sa.lastSale IS NULL THEN NULL ELSE DATEDIFF(CURDATE(), DATE(sa.lastSale)) END AS daysSinceLastSale
     FROM products p
     LEFT JOIN categories c ON c.id = p.categoryId
-    INNER JOIN productVariants v ON v.productId = p.id
-    LEFT JOIN branchStock bs ON bs.variantId = v.id ${branchStockFilter}
-    LEFT JOIN invoiceItems ii ON ii.variantId = v.id
-    LEFT JOIN invoices i
-      ON i.id = ii.invoiceId
-      AND i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
-      AND i.invoiceDate >= DATE_SUB(CURDATE(), INTERVAL ${sinceDays} DAY)
-      ${branchSalesFilter}
-    WHERE p.isActive = TRUE AND v.isActive = TRUE
-    GROUP BY p.id, p.name, c.name
-    HAVING qtyInStock > 0
-       AND (MAX(i.invoiceDate) IS NULL
-            OR DATEDIFF(CURDATE(), DATE(MAX(i.invoiceDate))) >= ${sinceDays})
+    LEFT JOIN (
+      SELECT v.productId AS pid, SUM(bs.quantity) AS qty
+      FROM productVariants v
+      JOIN branchStock bs ON bs.variantId = v.id ${branchStockFilter}
+      WHERE v.isActive = TRUE
+      GROUP BY v.productId
+    ) st ON st.pid = p.id
+    LEFT JOIN (
+      SELECT v.productId AS pid, MAX(i.invoiceDate) AS lastSale
+      FROM productVariants v
+      JOIN invoiceItems ii ON ii.variantId = v.id
+      JOIN invoices i ON i.id = ii.invoiceId
+        AND i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
+        AND i.invoiceDate >= DATE_SUB(CURDATE(), INTERVAL ${sinceDays} DAY)
+        ${branchSalesFilter}
+      WHERE v.isActive = TRUE
+      GROUP BY v.productId
+    ) sa ON sa.pid = p.id
+    WHERE p.isActive = TRUE
+      AND COALESCE(st.qty, 0) > 0
+      AND (sa.lastSale IS NULL OR DATEDIFF(CURDATE(), DATE(sa.lastSale)) >= ${sinceDays})
     ORDER BY daysSinceLastSale IS NULL DESC, daysSinceLastSale DESC, qtyInStock DESC
     LIMIT ${limit}
   `);
