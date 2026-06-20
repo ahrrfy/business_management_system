@@ -9,6 +9,8 @@ import { getDb } from "../../db";
 import { createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, updateAsset } from "../assetsService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
+// FI-01: createAsset يأخذ Actor الآن (لترحيل قيد الاقتناء) — مُغلِّف يُمرّره عن كل الاختبارات القائمة.
+const mkAsset = (input: Parameters<typeof createAsset>[0]) => createAsset(input, ACTOR);
 
 const TABLES = [
   "assetMaintenance",
@@ -46,6 +48,7 @@ async function seedBase() {
     { id: 1, firstName: "موظف", lastName: "أول", email: "e1@test.local", branchId: 1, isActive: true },
     { id: 2, firstName: "موظف", lastName: "ثانٍ", email: "e2@test.local", branchId: 1, isActive: true },
   ]);
+  await d.insert(s.suppliers).values({ id: 1, name: "مورّد الأصول" }); // FI-01: اقتناء على ذمّة المورّد
 }
 
 beforeEach(async () => {
@@ -55,7 +58,7 @@ beforeEach(async () => {
 
 describe("assetsService — createAsset (DB)", () => {
   it("ينشئ أصلاً برمز AST ويفتح عهدة جارية واحدة عند تسليمه لموظف", async () => {
-    const a = await createAsset({
+    const a = await mkAsset({
       name: "لابتوب", category: "computers", purchaseDate: "2023-01-01",
       purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5,
       depreciationMethod: "sl", custodianId: 1, branchId: 1,
@@ -71,7 +74,7 @@ describe("assetsService — createAsset (DB)", () => {
 
 describe("assetsService — handoverCustody (DB)", () => {
   it("يُغلق العهدة القديمة ويفتح جديدة ويحدّث صاحب العهدة", async () => {
-    const a = await createAsset({ name: "لابتوب", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", usefulLifeYears: 5, custodianId: 1 });
+    const a = await mkAsset({ name: "لابتوب", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", usefulLifeYears: 5, custodianId: 1 });
     const after = await handoverCustody(a!.id, 2, "نقل");
     expect(after!.custodianId).toBe(2);
     const open = after!.custody.filter((c) => c.toDate === null);
@@ -81,7 +84,7 @@ describe("assetsService — handoverCustody (DB)", () => {
   });
 
   it("يرفض التسليم لنفس صاحب العهدة الحالي (لا سجلّ عهدة صفري)", async () => {
-    const a = await createAsset({ name: "لابتوب", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", usefulLifeYears: 5, custodianId: 1 });
+    const a = await mkAsset({ name: "لابتوب", category: "computers", purchaseDate: "2023-01-01", purchaseValue: "1000000", usefulLifeYears: 5, custodianId: 1 });
     await expect(handoverCustody(a!.id, 1)).rejects.toThrow();
   });
 });
@@ -89,7 +92,7 @@ describe("assetsService — handoverCustody (DB)", () => {
 describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
   it("الاستبعاد المبكر يحسب الربح/الخسارة مقابل القيمة الدفترية الحقيقية لا التخريدية", async () => {
     // أصل عمره ~سنة عند الاستبعاد: NBV ≈ 820,000 (لا 100,000 التخريدية) ⇒ بيعه بـ700,000 خسارة لا ربح وهمي.
-    const a = await createAsset({
+    const a = await mkAsset({
       name: "جهاز", category: "computers", purchaseDate: "2023-01-01",
       purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5,
       depreciationMethod: "sl", custodianId: 1,
@@ -109,7 +112,7 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
   });
 
   it("FA-02: التصرّف يُرحّل النقد (PAYMENT_IN + إيصال) وقيد الربح/الخسارة للدفتر (لا يُهمَلان)", async () => {
-    const a = await createAsset({
+    const a = await mkAsset({
       name: "جهاز", category: "computers", purchaseDate: "2023-01-01",
       purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5, depreciationMethod: "sl",
     });
@@ -134,7 +137,7 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
 
 describe("assetsService — updateAsset (DB)", () => {
   it("يحفظ التعديلات على الحقول القابلة للتعديل (دون لمس العهدة)", async () => {
-    const a = await createAsset({
+    const a = await mkAsset({
       name: "لابتوب", category: "computers", purchaseDate: "2023-01-01",
       purchaseValue: "1000000", salvageValue: "100000", usefulLifeYears: 5,
       depreciationMethod: "sl", custodianId: 1, branchId: 1,
@@ -156,10 +159,33 @@ describe("assetsService — updateAsset (DB)", () => {
   });
 
   it("يرفض تعديل أصل مُستبعَد", async () => {
-    const a = await createAsset({ name: "قديم", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", salvageValue: "50000", usefulLifeYears: 4, depreciationMethod: "sl" });
+    const a = await mkAsset({ name: "قديم", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", salvageValue: "50000", usefulLifeYears: 4, depreciationMethod: "sl" });
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "خردة", value: "0" }, ACTOR);
     await expect(
       updateAsset(a!.id, { name: "محاولة", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", usefulLifeYears: 4 }),
     ).rejects.toThrow();
+  });
+});
+
+describe("assetsService — FI-01 اقتناء يُرحَّل للدفتر (DB)", () => {
+  it("شراء بمورّد ⇒ قيد PURCHASE + زيادة ذمم المورّد (لا تُنفَخ حقوق الملكية)", async () => {
+    const a = await mkAsset({ name: "طابعة", category: "computers", purchaseDate: "2024-03-01", purchaseValue: "600000", usefulLifeYears: 5, supplierId: 1 });
+    const [acq] = await db().select().from(s.accountingEntries)
+      .where(and(eq(s.accountingEntries.entryType, "PURCHASE"), eq(s.accountingEntries.dedupeKey, `ASSET_ACQ:${a!.id}`)));
+    expect(acq).toBeTruthy();
+    expect(Number(acq.amount)).toBe(600000);
+    expect(Number(acq.supplierId)).toBe(1);
+    const [sup] = await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1));
+    expect(Number(sup.currentBalance)).toBe(600000); // AP زادت بقيمة الأصل
+  });
+
+  it("شراء بلا مورّد ⇒ نقد PAYMENT_OUT + إيصال OUT (الأصل مُقابَل بنقد)", async () => {
+    const a = await mkAsset({ name: "كرسي", category: "computers", purchaseDate: "2024-03-01", purchaseValue: "150000", usefulLifeYears: 5 });
+    const [acq] = await db().select().from(s.accountingEntries)
+      .where(and(eq(s.accountingEntries.entryType, "PAYMENT_OUT"), eq(s.accountingEntries.dedupeKey, `ASSET_ACQ:${a!.id}`)));
+    expect(acq).toBeTruthy();
+    expect(Number(acq.amount)).toBe(150000);
+    const [r] = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
+    expect(Number(r.amount)).toBe(150000);
   });
 });

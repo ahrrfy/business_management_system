@@ -19,7 +19,7 @@ import {
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
-import { postEntry } from "./ledgerService";
+import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { extractInsertId } from "../lib/insertId";
 import { money, sumMoney, toDateStr, toDbMoney } from "./money";
 
@@ -251,7 +251,7 @@ export interface CreateAssetInput {
   linkedDeviceId?: number | null;
 }
 
-export async function createAsset(input: CreateAssetInput) {
+export async function createAsset(input: CreateAssetInput, actor: Actor) {
   const id = await withTx(async (tx) => {
     const code = await nextAssetCode(tx);
     const [res] = await tx.insert(fixedAssets).values({
@@ -274,6 +274,34 @@ export async function createAsset(input: CreateAssetInput) {
       linkedDeviceId: input.linkedDeviceId ?? null,
     });
     const newId = extractInsertId(res);
+
+    // FI-01/FA-01 (تدقيق ٢٠/٦، قرار المالك «كل إضافة = شراء جديد يُقيَّد»، ولا أصول قائمة سابقاً):
+    // اقتناء الأصل يُرحَّل للدفتر فيُقابله التزام/نقد ⇒ لا تُنفَخ حقوق الملكية (أصل بلا مصدر تمويل).
+    // مورّد ⇒ ذمم دائنة AP + قيد PURCHASE (يُسدَّد لاحقاً بسند). بلا مورّد ⇒ نقد PAYMENT_OUT من الخزينة.
+    const value = money(input.purchaseValue);
+    const acqBranch = input.branchId ?? actor.branchId ?? null;
+    const acqDate = new Date(input.purchaseDate);
+    if (value.gt(0)) {
+      if (input.supplierId) {
+        await postEntry(tx, {
+          entryType: "PURCHASE", branchId: acqBranch, supplierId: input.supplierId,
+          cost: value, amount: value, entryDate: acqDate,
+          dedupeKey: `ASSET_ACQ:${newId}`, notes: `اقتناء أصل ${code} (آجل — مورّد)`,
+        });
+        await adjustSupplierBalance(tx, input.supplierId, value);
+      } else {
+        const rRes = await tx.insert(receipts).values({
+          branchId: acqBranch, cashBucket: "TREASURY", direction: "OUT",
+          amount: toDbMoney(value), paymentMethod: "CASH", status: "COMPLETED", createdBy: actor.userId,
+        });
+        const receiptId = extractInsertId(rRes);
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT", branchId: acqBranch, receiptId, amount: value, entryDate: acqDate,
+          dedupeKey: `ASSET_ACQ:${newId}`, notes: `اقتناء أصل ${code} (نقدي)`,
+        });
+      }
+    }
+
     // إن سُلّم بعهدة عند الإنشاء، افتح سطر عهدة جارية من تاريخ الشراء.
     if (input.custodianId) {
       await tx.insert(assetCustodyLog).values({
