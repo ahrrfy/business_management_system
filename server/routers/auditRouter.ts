@@ -61,13 +61,30 @@ export const auditRouter = router({
   facets: adminProcedure.query(async () => {
     const db = getDb();
     if (!db) return { entityTypes: [], actions: [], users: [] };
-    const ets = await db.selectDistinct({ v: auditLogs.entityType }).from(auditLogs);
-    const acts = await db.selectDistinct({ v: auditLogs.action }).from(auditLogs);
+    // PERF-03 (تدقيق ٢٠/٦): SELECT DISTINCT بلا حدّ = مسح كامل لجدول auditLogs (ينمو بلا سقف)
+    // في كل تحميل للقائمة المنسدلة. نحدّه بـLIMIT حارس مع ORDER BY ليكون حتمياً (لا اعتماد على
+    // ترتيب التخزين). action/entityType منخفضا التعدّد (enum-شبيهان) فالحدّ ٢٠٠ يكفي عملياً؛ لو
+    // فاق المتجرُ ذلك مستقبلاً، تعرض القائمة أحدث القيم المميّزة. ملاحظة فهارس: action لديه
+    // idx_audit_action، أمّا entityType فلا فهرس مخصّص له ⇒ DISTINCT عليه يبقى مسحاً (مقبول عند
+    // هذا الحجم؛ يُضاف فهرس إن كبر الجدول كثيراً).
+    const FACET_LIMIT = 200;
+    const ets = await db
+      .selectDistinct({ v: auditLogs.entityType })
+      .from(auditLogs)
+      .orderBy(auditLogs.entityType)
+      .limit(FACET_LIMIT);
+    const acts = await db
+      .selectDistinct({ v: auditLogs.action })
+      .from(auditLogs)
+      .orderBy(auditLogs.action)
+      .limit(FACET_LIMIT);
     // المستخدمون الذين ظهر اسمهم في السجلّ — قائمة قصيرة لقائمة منسدلة (لا كل المستخدمين).
     const usersRows = await db
       .selectDistinct({ id: auditLogs.userId, name: users.name })
       .from(auditLogs)
-      .leftJoin(users, eq(auditLogs.userId, users.id));
+      .leftJoin(users, eq(auditLogs.userId, users.id))
+      .orderBy(auditLogs.userId)
+      .limit(FACET_LIMIT);
     return {
       entityTypes: ets.map((r) => r.v).filter(Boolean).sort(),
       actions: acts.map((r) => r.v).filter(Boolean).sort(),

@@ -13,6 +13,15 @@ import {
   getSupplierStatement,
   getTopProducts,
 } from "../reportsService";
+import { getFinancialPosition } from "../reportsFinancialService";
+import { money } from "../money";
+import {
+  cancelWorkOrder,
+  createWorkOrder,
+  deliverWorkOrder,
+  markWorkOrderReady,
+  startWorkOrder,
+} from "../workOrderService";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -21,6 +30,8 @@ const TABLES = [
   "accountingEntries",
   "receipts",
   "inventoryMovements",
+  "workOrderMaterials",
+  "workOrders",
   "invoiceItems",
   "invoices",
   "branchStock",
@@ -340,5 +351,74 @@ describe("تقارير المبيعات التحليلية", () => {
     expect(slow).toHaveLength(1);
     // المخزون الحقيقي 98 (١٠٠ − بيعتان) لا 196 (98×صفّين) لو وقع انفجار الانضمام.
     expect(slow[0].qtyInStock).toBe("98");
+  });
+});
+
+/* ============================ FIN-05: المركز المالي + عرابين أوامر الشغل ============================ */
+
+describe("FIN-05: عرابين أوامر الشغل غير المُسلَّمة التزامٌ يَخفض حقوق الملكية", () => {
+  it("عربون على أمر شغل غير مُسلَّم يَظهر customerAdvances ويُحتسَب التزاماً (لا يتضخّم equity)", async () => {
+    await setStock(1, 1, 100);
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+
+    // المركز المالي قبل أي عربون: لا سُلف ولا أثر على حقوق الملكية.
+    const before = await getFinancialPosition({ verify: false });
+    expect(before.customerAdvances).toBe("0.00");
+
+    // أمر شغل بسعر 500 وعربون نقدي 200 (وردية actor مفتوحة في seedBase) — يبقى RECEIVED (غير مُسلَّم).
+    await createWorkOrder(
+      { branchId: 1, baseVariantId: 1, title: "درع تكريم", salePrice: "500.00", deposit: "200.00", paymentMethod: "CASH", customerId: 1 },
+      actor,
+    );
+
+    const after = await getFinancialPosition({ verify: false });
+    // العربون المقبوض = التزام «سُلف عملاء».
+    expect(after.customerAdvances).toBe("200.00");
+    // النقد ارتفع بمقدار العربون (asset).
+    expect(money(after.cash).sub(money(before.cash)).toString()).toBe("200");
+    // إجمالي الخصوم ارتفع بمقدار العربون نفسه.
+    expect(money(after.totalLiabilities).sub(money(before.totalLiabilities)).toString()).toBe("200");
+    // ⭐ جوهر FIN-05: النقد الداخل يُقابَل بالتزام ⇒ حقوق الملكية لا تتغيّر (لا تضخّم).
+    expect(after.equity).toBe(before.equity);
+    // الميزانية متوازنة: equity = assets − liabilities.
+    expect(money(after.totalAssets).sub(money(after.totalLiabilities)).toString()).toBe(money(after.equity).toString());
+  });
+
+  it("بعد التسليم: العربون يُعترَف إيراداً (لا يُحتسَب ضمن customerAdvances — لا ازدواج)", async () => {
+    await setStock(1, 1, 100);
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+
+    const wo = await createWorkOrder(
+      { branchId: 1, baseVariantId: 1, title: "درع", salePrice: "300.00", deposit: "100.00", paymentMethod: "CASH", customerId: 1 },
+      actor,
+    );
+    // قبل التسليم: العربون التزام.
+    expect((await getFinancialPosition({ verify: false })).customerAdvances).toBe("100.00");
+
+    // أكمل الدورة حتى التسليم ⇒ الأمر DELIVERED + invoiceId مُعيَّن ⇒ يخرج من نافذة الالتزام.
+    await startWorkOrder(wo.workOrderId, actor);
+    await markWorkOrderReady(wo.workOrderId, actor);
+    await deliverWorkOrder({ workOrderId: wo.workOrderId, payment: { amount: "200.00", method: "CASH" } }, actor);
+
+    const after = await getFinancialPosition({ verify: false });
+    // العربون لم يَعُد التزام سُلف (صار إيراداً مُعترَفاً عبر قيد SALE + paidAmount).
+    expect(after.customerAdvances).toBe("0.00");
+  });
+
+  it("أمر شغل ملغى لا يُحتسَب عربونه التزاماً (يُسترَدّ نقداً)", async () => {
+    await setStock(1, 1, 100);
+    await db().insert(s.customers).values({ id: 1, name: "عميل", defaultPriceTier: "RETAIL", currentBalance: "0" });
+
+    const wo = await createWorkOrder(
+      { branchId: 1, baseVariantId: 1, title: "درع ملغى", salePrice: "400.00", deposit: "150.00", paymentMethod: "CASH", customerId: 1 },
+      actor,
+    );
+    expect((await getFinancialPosition({ verify: false })).customerAdvances).toBe("150.00");
+
+    await cancelWorkOrder(wo.workOrderId, actor);
+
+    const after = await getFinancialPosition({ verify: false });
+    // الأمر CANCELLED + العربون مُسترَدّ (receipt OUT) ⇒ لا التزام معلّق.
+    expect(after.customerAdvances).toBe("0.00");
   });
 });
