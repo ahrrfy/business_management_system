@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like, sql } from "drizzle-orm";
-import { branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts } from "../../drizzle/schema";
+import { branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, users } from "../../drizzle/schema";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
@@ -206,6 +206,17 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     assertPurchaseBranch(po, actor);
     if (po.status === "RECEIVED" || po.status === "CANCELLED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء مستلَم أو ملغى" });
+    }
+    // SOD-06 (تدقيق ٢٠/٦، قرار المالك): اعتماد الشراء بفصل المهام — الاستلام يُلزِم الذمم الدائنة (AP)
+    // ويُرحّل قيد PURCHASE، فيجب أن يَختلف المُستلِم (المُعتمِد) عن مُنشئ الأمر، إلّا للأدمن. يضمن
+    // شخصين في الشراء الآجل (مُنشئ + مُعتمِد) — نفس نمط SOD-05 في cancelVoucher.
+    const receiverRole =
+      actor.role ?? (await tx.select({ role: users.role }).from(users).where(eq(users.id, actor.userId)).limit(1))[0]?.role ?? "";
+    if (receiverRole !== "admin" && po.createdBy != null && Number(po.createdBy) === actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يجوز استلام أمر شراء أنشأته بنفسك — يلزم شخص آخر لاعتماده (فصل المهام).",
+      });
     }
 
     const items = await tx

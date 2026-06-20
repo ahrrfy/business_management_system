@@ -84,20 +84,40 @@ export async function getItemLedger(opts: {
   const branchCond = opts.branchId ? sql`AND im.branchId = ${opts.branchId}` : sql``;
 
   // الرصيد الافتتاحي: صافي كل الحركات قبل from (DATE(createdAt) < from).
+  // REP-09: لتقليل الحمولة لا نَسحب كل الحركات السابقة إلى JS. الإشارة معروفة بـSQL لكل الأنواع
+  // الموجَّهة (IN/RETURN/TRANSFER_IN=+، OUT/TRANSFER_OUT=−) ⇒ نجمعها مُوقَّعةً في القاعدة. ADJUST
+  // وحده يحتاج إشارةً من نصّ الملاحظة (signedMoveQty/«(فرق ±D)») ⇒ نَسحب صفوفه فقط ونجمعها في JS.
+  // المجموع مطابق عددياً للجمع الكامل في JS (الكمية بالوحدة الأساس عدد صحيح؛ الأنواع غير المعروفة = 0
+  // في كلا المسارين). [⚠️ صفوف ADJUST السابقة لا تزال تُسحَب كاملةً — عادةً قليلة جداً.]
   let openingBalance = 0;
   if (opts.from) {
-    const opRows = rowsOf(
+    const directionalRow = rowsOf(
+      await db.execute(sql`
+        SELECT COALESCE(SUM(CASE
+          WHEN im.movementType IN ('IN','RETURN','TRANSFER_IN') THEN im.quantity
+          WHEN im.movementType IN ('OUT','TRANSFER_OUT')        THEN -im.quantity
+          ELSE 0 END), 0) AS signedQty
+        FROM inventoryMovements im
+        WHERE im.variantId = ${opts.variantId}
+          AND im.movementType <> 'ADJUST'
+          AND DATE(im.createdAt) < ${opts.from}
+          ${branchCond}
+      `),
+    )[0];
+    openingBalance += Number(directionalRow?.signedQty ?? 0);
+
+    const adjustRows = rowsOf(
       await db.execute(sql`
         SELECT im.movementType AS movementType, im.quantity AS quantity, im.notes AS notes
         FROM inventoryMovements im
         WHERE im.variantId = ${opts.variantId}
+          AND im.movementType = 'ADJUST'
           AND DATE(im.createdAt) < ${opts.from}
           ${branchCond}
       `),
     );
-    for (const r of opRows) {
-      // INV-001: ADJUST يُخزَّن مطلقاً والاتجاه في النص ⇒ SUM(quantity) المُجمَّع يَفقد الإشارة؛
-      // نجمع مُوقَّعاً صفّاً صفّاً عبر signedMoveQty (يستعيد إشارة ADJUST من «(فرق ±D)»).
+    for (const r of adjustRows) {
+      // INV-001: ADJUST يُخزَّن مطلقاً والاتجاه في النص ⇒ نستعيد إشارته من «(فرق ±D)» عبر signedMoveQty.
       openingBalance += signedMoveQty(String(r.movementType), Number(r.quantity ?? 0), r.notes != null ? String(r.notes) : null);
     }
   }
@@ -164,12 +184,6 @@ export interface AbcResult {
   totals: { revenue: string; aCount: number; bCount: number; cCount: number };
 }
 
-/** قسمة آمنة → نسبة مئوية بمنزلتين (المقام صفر ⇒ "0.00"). يعمل على نِسَب تراكمية. */
-function pct2(numerator: number, denominator: number): string {
-  if (denominator === 0) return "0.00";
-  return ((numerator / denominator) * 100).toFixed(2);
-}
-
 /**
  * تحليل ABC — يصنّف المنتجات حسب مساهمتها في الإيراد (مبدأ باريتو):
  *   - يُجمَع إيراد كل منتج من بنود الفواتير (مجموع invoiceItems.total) عبر invoices
@@ -211,9 +225,9 @@ export async function getAbcAnalysis(opts: {
     `),
   );
 
-  // §٥: المال عبر decimal.js (الإيراد قيمة مالية). النسبة المئوية وحدها رقميّة (ليست مالاً).
+  // §٥: المال عبر decimal.js (الإيراد قيمة مالية). النسبة التراكمية تُحسَب بـdecimal أيضاً (REP-08)
+  // لإزالة اضطراب الفاصلة العائمة عند حدّي ٨٠/٩٥ (تصنيف A/B/C على حافّة قد يختلف بفعل float).
   const totalRevenue = aggRows.reduce((acc, r) => acc.add(money(r.revenue ?? 0)), money(0));
-  const totalNum = totalRevenue.toNumber();
 
   let cumulative = money(0);
   let aCount = 0;
@@ -222,11 +236,10 @@ export async function getAbcAnalysis(opts: {
   const rows: AbcRow[] = aggRows.map((r) => {
     const rev = money(r.revenue ?? 0);
     cumulative = cumulative.add(rev);
-    const cumNum = cumulative.toNumber();
-    const cumPctNum = totalNum === 0 ? 0 : (cumNum / totalNum) * 100;
+    const cumPct = totalRevenue.isZero() ? money(0) : money(cumulative).div(totalRevenue).mul(100);
     let cls: "A" | "B" | "C";
-    if (cumPctNum <= 80) cls = "A";
-    else if (cumPctNum <= 95) cls = "B";
+    if (cumPct.lte(80)) cls = "A";
+    else if (cumPct.lte(95)) cls = "B";
     else cls = "C";
     if (cls === "A") aCount++;
     else if (cls === "B") bCount++;
@@ -235,7 +248,7 @@ export async function getAbcAnalysis(opts: {
       productId: Number(r.productId),
       productName: String(r.productName),
       revenue: toDbMoney(rev),
-      cumulativePct: pct2(cumNum, totalNum),
+      cumulativePct: cumPct.toFixed(2),
       class: cls,
     };
   });

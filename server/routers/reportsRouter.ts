@@ -471,10 +471,10 @@ export const reportsRouter = router({
 
   /** حالة المخزون / إعادة الطلب — رصيد كل صنف مقابل minStock. manager + عزل الفرع. */
   stockStatus: managerBranchScopedProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional(), onlyAlerts: z.boolean().optional() }))
+    .input(z.object({ branchId: z.number().int().positive().optional(), onlyAlerts: z.boolean().optional(), limit: z.number().int().positive().max(5000).optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getStockStatus({ branchId, onlyAlerts: input.onlyAlerts });
+      return getStockStatus({ branchId, onlyAlerts: input.onlyAlerts, limit: input.limit });
     }),
 
   /** بطاقة الصنف (Kardex) — حركات متغيّر واحد زمنياً برصيد متحرّك. manager + عزل الفرع. */

@@ -291,14 +291,18 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "المصروف ملغى بالفعل" });
 
     // عزل عبر-فرعي: admin يمرّ؛ غيره يجب أن يكون من فرع المصروف نفسه (نمط جذري ٢).
-    // expenseRouter لا يمرّر role، فنقرأه من قاعدة البيانات.
-    {
-      const role =
-        actor.role ??
-        ((await tx.select({ role: users.role }).from(users).where(eq(users.id, actor.userId)).limit(1))[0]?.role ?? "");
-      if (role !== "admin" && Number(actor.branchId) !== Number(exp.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع إلغاء مصروف لفرع آخر" });
-      }
+    // role يُمرَّر من الموجّه؛ نقرأه من قاعدة البيانات احتياطاً إن غاب.
+    const role =
+      actor.role ??
+      ((await tx.select({ role: users.role }).from(users).where(eq(users.id, actor.userId)).limit(1))[0]?.role ?? "");
+    if (role !== "admin" && Number(actor.branchId) !== Number(exp.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع إلغاء مصروف لفرع آخر" });
+    }
+
+    // SOD-05 (فصل المهام، قرار المالك ٢٠/٦): مُنشئ المصروف لا يُلغيه بنفسه (يلزم مدير آخر) — يَسدّ
+    // تلاعب «إنشاء مصروف ثم إلغاؤه» لإخفاء حركة نقد. الأدمن مستثنى (سلطة عليا للتصحيح الإداري).
+    if (role !== "admin" && exp.createdBy != null && Number(exp.createdBy) === actor.userId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز إلغاء مصروف أنشأته بنفسك — يلزم مدير آخر (فصل المهام)." });
     }
 
     if (exp.shiftId) {

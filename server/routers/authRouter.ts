@@ -73,7 +73,11 @@ async function registerFailedLogin(db: NonNullable<ReturnType<typeof getDb>>, us
     attempts >= LOCK_THRESHOLD
       ? { failedLoginAttempts: 0, lockedUntil: new Date(Date.now() + LOCK_MS) }
       : { failedLoginAttempts: attempts };
-  await db.update(users).set(patch).where(eq(users.id, user.id)).catch(() => {});
+  await db
+    .update(users)
+    .set(patch)
+    .where(eq(users.id, user.id))
+    .catch((e) => logger.warn({ err: e, userId: user.id }, "auth.login.lock_update_failed"));
 }
 
 export const authRouter = router({

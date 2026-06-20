@@ -503,12 +503,15 @@ export async function getProductForEdit(productId: number): Promise<ProductForEd
   const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
   const variantIds = variants.map((v) => Number(v.id));
   const units = variantIds.length
-    ? await db.select().from(productUnits).where(and(eq(productUnits.isActive, true)))
+    ? await db
+        .select()
+        .from(productUnits)
+        .where(and(eq(productUnits.isActive, true), inArray(productUnits.variantId, variantIds)))
     : [];
   const myUnits = units.filter((u) => variantIds.includes(Number(u.variantId)));
   const unitIds = myUnits.map((u) => Number(u.id));
   const prices = unitIds.length
-    ? await db.select().from(productPrices)
+    ? await db.select().from(productPrices).where(inArray(productPrices.productUnitId, unitIds))
     : [];
   const myPrices = prices.filter((p) => unitIds.includes(Number(p.productUnitId)));
 

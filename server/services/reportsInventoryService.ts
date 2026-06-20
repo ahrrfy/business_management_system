@@ -127,10 +127,13 @@ function variantLabel(r: any): string {
  * فلتر فرع اختياري على branchStock.branchId.
  */
 export async function getStockStatus(
-  opts: { branchId?: number; onlyAlerts?: boolean } = {},
+  opts: { branchId?: number; onlyAlerts?: boolean; limit?: number } = {},
 ): Promise<StockStatusResult> {
   const db = getDb();
   if (!db) return { rows: [], totals: { outCount: 0, lowCount: 0 } };
+
+  // حدّ مُقيَّد كبقيّة التقارير — يَمنع تحميل جدول (متغيّر×فرع) غير محدود.
+  const limit = Math.max(1, Math.min(opts.limit ?? 1000, 5000));
 
   const conds = [sql`1 = 1`];
   if (opts.branchId) conds.push(sql`bs.branchId = ${opts.branchId}`);
@@ -142,6 +145,7 @@ export async function getStockStatus(
   const where = sql.join(conds, sql` AND `);
 
   // statusRank: 0=نفد، 1=منخفض، 2=طبيعي — للترتيب بالشدّة. minStock قد يكون NULL ⇒ COALESCE 0.
+  // الترتيب بالشدّة أولاً ⇒ أخطر الصفوف تَبقى عند الاقتطاع بـLIMIT.
   const raw = rowsOf(
     await db.execute(sql`
       SELECT
@@ -165,16 +169,13 @@ export async function getStockStatus(
       LEFT JOIN branches b ON b.id = bs.branchId
       WHERE ${where}
       ORDER BY statusRank ASC, bs.quantity ASC
+      LIMIT ${limit}
     `),
   );
 
-  let outCount = 0;
-  let lowCount = 0;
   const rows: StockStatusRow[] = raw.map((r) => {
     const rank = Number(r.statusRank ?? 2);
     const status: StockStatusLevel = rank === 0 ? "out" : rank === 1 ? "low" : "ok";
-    if (status === "out") outCount += 1;
-    else if (status === "low") lowCount += 1;
     return {
       variantId: Number(r.variantId),
       productName: r.productName ?? "—",
@@ -185,6 +186,24 @@ export async function getStockStatus(
       status,
     };
   });
+
+  // شارات التنبيه (نفد/منخفض) تُحسَب من تجميع مستقلّ بلا LIMIT بنفس شروط WHERE —
+  // وإلّا لانخفضت الأرقام عند اقتطاع الصفوف. (onlyAlerts لا يُغيّر العدّ لأن out/low
+  // تُحتسب صراحةً بشرطها هنا، والصفوف ok لا تُعدّ أصلاً.)
+  const aggRow = rowsOf(
+    await db.execute(sql`
+      SELECT
+        SUM(CASE WHEN bs.quantity <= 0 THEN 1 ELSE 0 END) AS outCount,
+        SUM(CASE WHEN bs.quantity > 0 AND COALESCE(pv.minStock, 0) > 0 AND bs.quantity <= pv.minStock THEN 1 ELSE 0 END) AS lowCount
+      FROM branchStock bs
+      JOIN productVariants pv ON pv.id = bs.variantId
+      JOIN products p ON p.id = pv.productId
+      LEFT JOIN branches b ON b.id = bs.branchId
+      WHERE ${where}
+    `),
+  )[0];
+  const outCount = Number(aggRow?.outCount ?? 0);
+  const lowCount = Number(aggRow?.lowCount ?? 0);
 
   return { rows, totals: { outCount, lowCount } };
 }
