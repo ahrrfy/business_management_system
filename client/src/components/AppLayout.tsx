@@ -135,6 +135,7 @@ const NAV_GROUPS: NavGroup[] = [
     adminOnly: true,
     items: [
       { href: "/users", label: "المستخدمون", adminOnly: true },
+      { href: "/roles", label: "الأدوار والصلاحيات", adminOnly: true },
       { href: "/kiosk-devices", label: "شاشات قارئ الأسعار (الأجهزة)", adminOnly: true },
       { href: "/audit", label: "سجلّ التدقيق", adminOnly: true },
       { href: "/reconcile", label: "تدقيق التوافق المالي", adminOnly: true },

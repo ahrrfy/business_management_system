@@ -71,6 +71,8 @@ import Shifts from "@/pages/Shifts";
 import Users from "@/pages/Users";
 import UserNew from "@/pages/UserNew";
 import UserEdit from "@/pages/UserEdit";
+import Roles from "@/pages/Roles";
+import RoleEdit from "@/pages/RoleEdit";
 import Account from "@/pages/Account";
 import AuditLogs from "@/pages/AuditLogs";
 import PeriodLock from "@/pages/PeriodLock";
@@ -268,6 +270,9 @@ export default function App() {
       <Route path="/users"><Shell><RequireRole roles={["admin","manager"]}><Users /></RequireRole></Shell></Route>
       <Route path="/users/new"><Shell><RequireRole roles={["admin","manager"]}><UserNew /></RequireRole></Shell></Route>
       <Route path="/users/:id/edit"><Shell><RequireRole roles={["admin","manager"]}><UserEdit /></RequireRole></Shell></Route>
+      <Route path="/roles"><Shell><RequireRole roles={["admin"]}><Roles /></RequireRole></Shell></Route>
+      <Route path="/roles/new"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
+      <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
       <Route path="/audit"><Shell><RequireRole roles={["admin","manager"]}><AuditLogs /></RequireRole></Shell></Route>
       <Route path="/period-lock"><Shell><RequireRole roles={["admin"]}><PeriodLock /></RequireRole></Shell></Route>

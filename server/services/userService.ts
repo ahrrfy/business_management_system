@@ -12,7 +12,7 @@ import { ALL_ROLES } from "@shared/permissions";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { users } from "../../drizzle/schema";
+import { roles, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { hashPassword, verifyPassword } from "../auth/password";
 import { escapeLike } from "../lib/sqlLike";
@@ -28,6 +28,8 @@ export interface CreateUserInput {
   password: string;
   name: string;
   role?: Role;
+  /** دور مخصّص (من جدول roles) — إن وُجد يَجبّ `role` ويُحلّ إلى baseRole + يصفّر الـoverride. */
+  customRoleId?: number | null;
   branchId?: number | null;
   phone?: string | null;
   jobTitle?: string | null;
@@ -43,6 +45,8 @@ export interface UpdateUserInput {
   email?: string | null;
   username?: string | null;
   role?: Role;
+  /** رقم ⇒ إسناد دور مخصّص؛ null ⇒ مسحه (العودة لدور مبني عبر `role`)؛ undefined ⇒ بلا تغيير. */
+  customRoleId?: number | null;
   branchId?: number | null;
   phone?: string | null;
   jobTitle?: string | null;
@@ -65,6 +69,7 @@ const SAFE_COLUMNS = {
   username: users.username,
   phone: users.phone,
   role: users.role,
+  customRoleId: users.customRoleId,
   branchId: users.branchId,
   isActive: users.isActive,
   jobTitle: users.jobTitle,
@@ -153,6 +158,18 @@ export async function createUser(input: CreateUserInput, _actor: Actor) {
     assertPasswordPolicy(input.password);
     const mustChange = input.mustChangePassword ?? false;
     const expiresAt = mustChange ? new Date(Date.now() + 72 * 60 * 60 * 1000) : null;
+    // إسناد الدور: دور مخصّص (يَجبّ `role` ويُحلّ إلى baseRole + يصفّر الـoverride) أو دور مبني.
+    let roleValue: Role = input.role ?? "cashier";
+    let customRoleId: number | null = null;
+    let permsOverride = input.permissionsOverride ?? null;
+    if (input.customRoleId != null) {
+      const r = (await tx.select({ id: roles.id, baseRole: roles.baseRole }).from(roles)
+        .where(and(eq(roles.id, input.customRoleId), eq(roles.isActive, true))).limit(1))[0];
+      if (!r) throw new TRPCError({ code: "BAD_REQUEST", message: "الدور المخصّص غير موجود أو معطّل." });
+      roleValue = r.baseRole as Role;
+      customRoleId = Number(r.id);
+      permsOverride = null;
+    }
     try {
       const res = await tx.insert(users).values({
         openId: `local_${nanoid()}`,
@@ -160,14 +177,15 @@ export async function createUser(input: CreateUserInput, _actor: Actor) {
         username,
         name,
         passwordHash: hashPassword(input.password),
-        role: input.role ?? "cashier",
+        role: roleValue,
+        customRoleId,
         loginMethod: "local",
         branchId: input.branchId ?? null,
         isActive: true,
         phone: input.phone?.trim() || null,
         jobTitle: input.jobTitle?.trim() || null,
         hiredAt: input.hiredAt ? new Date(input.hiredAt) : null,
-        permissionsOverride: input.permissionsOverride ?? null,
+        permissionsOverride: permsOverride,
         mustChangePassword: mustChange,
         tempPasswordExpiresAt: expiresAt,
       });
@@ -215,14 +233,37 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
     if (input.hiredAt !== undefined) patch.hiredAt = input.hiredAt ? new Date(input.hiredAt) : null;
     if (input.permissionsOverride !== undefined) patch.permissionsOverride = input.permissionsOverride ?? null;
 
-    if (input.role !== undefined && input.role !== existing.role) {
-      if (input.userId === actor.userId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك تغيير دور حسابك بنفسك." });
+    // إسناد الدور (مبني أو مخصّص). نحسب الوجهة ثم نطبّق الحُرّاس إن تغيّر فعلاً.
+    let nextRole: Role | undefined;
+    let nextCustomRoleId: number | null | undefined;
+    if (input.customRoleId != null) {
+      const r = (await tx.select({ id: roles.id, baseRole: roles.baseRole }).from(roles)
+        .where(and(eq(roles.id, input.customRoleId), eq(roles.isActive, true))).limit(1))[0];
+      if (!r) throw new TRPCError({ code: "BAD_REQUEST", message: "الدور المخصّص غير موجود أو معطّل." });
+      nextRole = r.baseRole as Role;
+      nextCustomRoleId = Number(r.id);
+    } else if (input.role !== undefined) {
+      nextRole = input.role;              // اختيار دور مبني يمسح الدور المخصّص
+      nextCustomRoleId = null;
+    } else if (input.customRoleId === null) {
+      nextRole = existing.role as Role;   // مسح الدور المخصّص مع إبقاء baseRole المخزَّن
+      nextCustomRoleId = null;
+    }
+    if (nextRole !== undefined) {
+      const roleChanged = nextRole !== existing.role;
+      const customChanged = (nextCustomRoleId ?? null) !== (existing.customRoleId ?? null);
+      if (roleChanged || customChanged) {
+        if (input.userId === actor.userId) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك تغيير دور حسابك بنفسك." });
+        }
+        if (existing.role === "admin" && nextRole !== "admin") await assertNotLastActiveAdmin(tx, input.userId);
+        patch.role = nextRole;
+        patch.customRoleId = nextCustomRoleId ?? null;
+        // الدور المخصّص يقود الصلاحيات ⇒ صفّر الـoverride الفردي عند إسناده.
+        if (nextCustomRoleId != null) patch.permissionsOverride = null;
+        // تغيير الدور يُبطل الجلسات (يُعاد تحميل السياق/الصلاحيات).
+        patch.sessionsValidFrom = new Date();
       }
-      if (existing.role === "admin") await assertNotLastActiveAdmin(tx, input.userId);
-      patch.role = input.role;
-      // تغيير الدور يُبطل الجلسات لأن الـJWT يحمل الدور القديم.
-      patch.sessionsValidFrom = new Date();
     }
 
     if (Object.keys(patch).length === 0) return { userId: input.userId, changed: false };

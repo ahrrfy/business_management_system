@@ -16,6 +16,7 @@ import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
 import { userRouter } from "./routers/userRouter";
+import { roleRouter } from "./routers/roleRouter";
 import { auditRouter } from "./routers/auditRouter";
 import { barcodeRouter } from "./routers/barcodeRouter";
 import { importRouter } from "./routers/imports";
@@ -45,6 +46,7 @@ export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
   users: userRouter,
+  roles: roleRouter,
   sales: saleRouter,
   purchases: purchaseRouter,
   inventory: inventoryRouter,

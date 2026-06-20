@@ -9014,6 +9014,13 @@
           "notNull": false,
           "autoincrement": false
         },
+        "customRoleId": {
+          "name": "customRoleId",
+          "type": "bigint",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "mustChangePassword": {
           "name": "mustChangePassword",
           "type": "boolean",
@@ -9115,6 +9122,30 @@
             "username"
           ]
         }
+      },
+      "checkConstraint": {}
+    },
+    "roles": {
+      "name": "roles",
+      "columns": {
+        "id": { "name": "id", "type": "bigint", "primaryKey": false, "notNull": true, "autoincrement": true },
+        "key": { "name": "key", "type": "varchar(64)", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "label": { "name": "label", "type": "varchar(120)", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "description": { "name": "description", "type": "text", "primaryKey": false, "notNull": false, "autoincrement": false },
+        "baseRole": { "name": "baseRole", "type": "enum('user','admin','manager','cashier','warehouse','accountant','print_operator','sales_rep','purchasing','auditor')", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "'user'" },
+        "permissions": { "name": "permissions", "type": "json", "primaryKey": false, "notNull": true, "autoincrement": false },
+        "canSeeCost": { "name": "canSeeCost", "type": "boolean", "primaryKey": false, "notNull": true, "autoincrement": false, "default": false },
+        "isActive": { "name": "isActive", "type": "boolean", "primaryKey": false, "notNull": true, "autoincrement": false, "default": true },
+        "createdAt": { "name": "createdAt", "type": "timestamp", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "(now())" },
+        "updatedAt": { "name": "updatedAt", "type": "timestamp", "primaryKey": false, "notNull": true, "autoincrement": false, "default": "(now())" }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {
+        "roles_id": { "name": "roles_id", "columns": ["id"] }
+      },
+      "uniqueConstraints": {
+        "roles_key_unique": { "name": "roles_key_unique", "columns": ["key"] }
       },
       "checkConstraint": {}
     },

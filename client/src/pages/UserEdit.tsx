@@ -21,6 +21,8 @@ export default function UserEdit() {
 
   const detail = trpc.users.get.useQuery({ userId }, { enabled: userId > 0 });
   const branches = trpc.branches.list.useQuery();
+  const rolesQ = trpc.roles.list.useQuery();
+  const customRoles = rolesQ.data?.custom ?? [];
 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -28,6 +30,7 @@ export default function UserEdit() {
   const [usernameError, setUsernameError] = useState("");
   const [usernameChecked, setUsernameChecked] = useState(false);
   const [role, setRole] = useState<RoleKey>("cashier");
+  const [customRoleId, setCustomRoleId] = useState<number | null>(null);
   const [branchId, setBranchId] = useState<string>("");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -45,6 +48,7 @@ export default function UserEdit() {
       setEmail(u.email ?? "");
       setUsername((u as { username?: string | null }).username ?? "");
       setRole((u.role as RoleKey) ?? "cashier");
+      setCustomRoleId((u as { customRoleId?: number | null }).customRoleId ?? null);
       setBranchId(u.branchId ? String(u.branchId) : "");
       setLoaded(true);
     }
@@ -113,7 +117,7 @@ export default function UserEdit() {
     if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) return setError("بريد إلكتروني غير صالح.");
     if (usernameV && !USERNAME_REGEX.test(usernameV)) return setError(USERNAME_POLICY_MSG);
     // نرسل القيمتين دائماً: "" ⇒ مسح المعرّف صراحةً (الخادم يضمن بقاء معرّف واحد على الأقل).
-    update.mutate({ userId, name: name.trim(), email: emailV, username: usernameV, role, branchId: branchId ? Number(branchId) : null });
+    update.mutate({ userId, name: name.trim(), email: emailV, username: usernameV, role, customRoleId, branchId: branchId ? Number(branchId) : null });
   }
 
   function doReset() {
@@ -184,10 +188,23 @@ export default function UserEdit() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
-            <select id="role" className={selectCls} value={role} onChange={(e) => setRole(e.target.value as RoleKey)}>
-              {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+            <select
+              id="role" className={selectCls}
+              value={customRoleId ? `custom:${customRoleId}` : role}
+              onChange={(e) => { const v = e.target.value; if (v.startsWith("custom:")) setCustomRoleId(Number(v.slice(7))); else { setCustomRoleId(null); setRole(v as RoleKey); } }}
+            >
+              <optgroup label="أدوار النظام">
+                {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+              </optgroup>
+              {customRoles.length > 0 && (
+                <optgroup label="أدوار مخصّصة">
+                  {customRoles.map((r: any) => <option key={r.id} value={`custom:${r.id}`}>{r.label}</option>)}
+                </optgroup>
+              )}
             </select>
-            {roleInfo && <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p>}
+            {customRoleId ? (
+              <p className="text-[11px] text-muted-foreground">دور مخصّص — صلاحياته تُدار من شاشة «الأدوار والصلاحيات».</p>
+            ) : roleInfo ? <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p> : null}
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>

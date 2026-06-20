@@ -87,6 +87,7 @@ export default function UserNew() {
   const [jobTitle, setJobTitle] = useState("");
   const [hiredAt, setHiredAt] = useState("");
   const [role, setRole] = useState<RoleKey>("cashier");
+  const [customRoleId, setCustomRoleId] = useState<number | null>(null);
   const [branchId, setBranchId] = useState<number | "">("");
   const [permsOverride, setPermsOverride] = useState<PermissionMap>({});
   const [mustChangePassword, setMustChangePassword] = useState(true);
@@ -97,6 +98,8 @@ export default function UserNew() {
   } | null>(null);
 
   const branches = trpc.branches.list.useQuery();
+  const rolesQ = trpc.roles.list.useQuery();
+  const customRoles = rolesQ.data?.custom ?? [];
   const generatePwQ = trpc.users.generatePassword.useQuery(undefined, { enabled: false });
 
   // افتراضي: فرع المستخدم الحالي (يُقرأ من السياق حين يتوفر)
@@ -176,9 +179,14 @@ export default function UserNew() {
     }
   }
 
-  function handleRoleChange(next: RoleKey) {
-    setRole(next);
-    setPermsOverride({});
+  function handleRoleChange(val: string) {
+    if (val.startsWith("custom:")) {
+      setCustomRoleId(Number(val.slice(7))); // دور مخصّص — صلاحياته محفوظة فيه
+    } else {
+      setCustomRoleId(null);
+      setRole(val as RoleKey);
+      setPermsOverride({});
+    }
   }
 
   function handlePermChange(moduleKey: string, level: AccessLevel) {
@@ -210,7 +218,9 @@ export default function UserNew() {
         username: vars.username ?? undefined,
         password: vars.password,
         phone: vars.phone ?? undefined,
-        roleLabel: ROLE_OPTIONS.find((r) => r.value === vars.role)?.label ?? vars.role,
+        roleLabel: vars.customRoleId
+          ? (customRoles.find((r: any) => Number(r.id) === vars.customRoleId)?.label ?? "دور مخصّص")
+          : (ROLE_OPTIONS.find((r) => r.value === vars.role)?.label ?? vars.role),
         branchName: vars.branchId ? branches.data?.find((b: any) => b.id === vars.branchId)?.name ?? null : null,
         jobTitle: vars.jobTitle ?? null,
         mustChangePassword: vars.mustChangePassword,
@@ -225,7 +235,7 @@ export default function UserNew() {
     setUsername(""); setUsernameError(""); setUsernameChecked(false);
     setPassword(""); setPasswordConfirm("");
     setName(""); setPhone(""); setJobTitle(""); setHiredAt("");
-    setRole("cashier"); setPermsOverride({});
+    setRole("cashier"); setCustomRoleId(null); setPermsOverride({});
     setBranchId((me?.data?.branchId as number) ?? "");
     setMustChangePassword(true);
     setError("");
@@ -255,11 +265,12 @@ export default function UserNew() {
       password,
       name: name.trim(),
       role,
+      customRoleId: customRoleId ?? undefined,
       branchId: branchId === "" ? null : Number(branchId),
       phone: phone.trim() || null,
       jobTitle: jobTitle.trim() || null,
       hiredAt: hiredAt || null,
-      permissionsOverride: override,
+      permissionsOverride: customRoleId ? null : override,
       mustChangePassword,
     });
   }
@@ -400,14 +411,25 @@ export default function UserNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="role">الدور</Label>
-            <select id="role" className={selectCls} value={role} onChange={(e) => handleRoleChange(e.target.value as RoleKey)}>
-              {ROLE_OPTIONS.map((r) => (
-                <option key={r.value} value={r.value}>{r.label}</option>
-              ))}
+            <select id="role" className={selectCls} value={customRoleId ? `custom:${customRoleId}` : role} onChange={(e) => handleRoleChange(e.target.value)}>
+              <optgroup label="أدوار النظام">
+                {ROLE_OPTIONS.map((r) => (
+                  <option key={r.value} value={r.value}>{r.label}</option>
+                ))}
+              </optgroup>
+              {customRoles.length > 0 && (
+                <optgroup label="أدوار مخصّصة">
+                  {customRoles.map((r: any) => (
+                    <option key={r.id} value={`custom:${r.id}`}>{r.label}</option>
+                  ))}
+                </optgroup>
+              )}
             </select>
-            {roleInfo && (
+            {customRoleId ? (
+              <p className="text-[11px] text-muted-foreground">صلاحيات هذا الدور محفوظة فيه — تُدار من شاشة «الأدوار والصلاحيات».</p>
+            ) : roleInfo ? (
               <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p>
-            )}
+            ) : null}
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>
@@ -441,13 +463,19 @@ export default function UserNew() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <PermDiffSummary role={role} override={permsOverride} />
-          <PermissionMatrix
-            role={role}
-            permissions={resolvedPerms}
-            onChange={handlePermChange}
-            onReset={() => setPermsOverride({})}
-          />
+          {customRoleId ? (
+            <p className="text-sm text-muted-foreground">صلاحيات الدور المخصّص محفوظة في تعريفه — عدّلها من شاشة «الأدوار والصلاحيات».</p>
+          ) : (
+            <>
+              <PermDiffSummary role={role} override={permsOverride} />
+              <PermissionMatrix
+                role={role}
+                permissions={resolvedPerms}
+                onChange={handlePermChange}
+                onReset={() => setPermsOverride({})}
+              />
+            </>
+          )}
         </CardContent>
       </Card>
 

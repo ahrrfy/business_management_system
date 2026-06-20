@@ -57,6 +57,9 @@ export const users = mysqlTable(
     jobTitle: varchar("jobTitle", { length: 120 }),
     hiredAt: date("hiredAt"),
     permissionsOverride: json("permissionsOverride"),
+    // دور مخصّص (من جدول roles) — null ⇒ دور مبني (enum أعلاه). عند ضبطه: يُحلّ في context
+    // إلى role=baseRole + permissionsOverride مشتقّ من خريطة الدور، فتعمل كل البوّابات بلا تغيير.
+    customRoleId: bigint("customRoleId", { mode: "number" }),
     // إلزام تغيير كلمة المرور عند أول دخول (مؤقتة صادرة من مدير).
     mustChangePassword: boolean("mustChangePassword").default(false).notNull(),
     // صلاحية الكلمة المؤقتة — null يعني لا انتهاء (كلمة مرور عادية).
@@ -78,6 +81,37 @@ export const users = mysqlTable(
 
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
+
+/**
+ * الأدوار المخصّصة (يصنعها المالك) — مرونة في تسمية الأدوار وتحديد صلاحياتها.
+ * الأدوار المبنية العشرة تبقى في الكود (shared/permissions.ts) كقوالب ثابتة آمنة؛ هذا الجدول
+ * للأدوار الإضافية فقط. `baseRole` = الفئة/المستوى للبوّابات الخشنة (cashier/warehouse/manager…)،
+ * و`permissions` = خريطة الوحدات الكاملة للبوّابات الدقيقة. عند الإسناد لمستخدم: users.role=baseRole
+ * + users.customRoleId=id، ويُحلّ في context إلى permissionsOverride مشتقّ ⇒ لا تغيير في requireModule.
+ */
+export const roles = mysqlTable(
+  "roles",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    key: varchar("key", { length: 64 }).notNull().unique(),
+    label: varchar("label", { length: 120 }).notNull(),
+    description: text("description"),
+    // الفئة الأساسية للبوّابات الخشنة — قيم enum الأدوار نفسها.
+    baseRole: mysqlEnum("baseRole", [
+      "user", "admin", "manager", "cashier", "warehouse",
+      "accountant", "print_operator", "sales_rep", "purchasing", "auditor",
+    ]).default("user").notNull(),
+    // خريطة الصلاحيات الكاملة {moduleKey: FULL|READ|NONE}.
+    permissions: json("permissions").notNull(),
+    canSeeCost: boolean("canSeeCost").default(false).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  }
+);
+
+export type Role = typeof roles.$inferSelect;
+export type InsertRole = typeof roles.$inferInsert;
 
 /* ============================ الفروع ============================ */
 

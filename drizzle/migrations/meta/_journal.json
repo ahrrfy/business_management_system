@@ -141,6 +141,13 @@
       "when": 1782160000000,
       "tag": "0019_user_username_login",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "5",
+      "when": 1782180000000,
+      "tag": "0020_roles_custom",
+      "breakpoints": true
     }
   ]
 }
