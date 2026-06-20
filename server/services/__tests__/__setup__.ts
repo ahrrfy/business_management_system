@@ -64,15 +64,20 @@ afterEach(async () => {
   // ويُسجَّل صامتاً (catch) ⇒ تتراكم البيانات بين ملفات الاختبار وتسبّب DUPLICATE KEY في الملف التالي.
   const conn = await getPool().getConnection();
   try {
-    await conn.execute("SET FOREIGN_KEY_CHECKS = 0");
+    // ‼️ نستعمل conn.query (بروتوكول نصّي) لا conn.execute (مُهيَّأ/prepared): DELETE مع
+    // FK_CHECKS=0 في MySQL 8 يَزيد نسخة metadata للجدول، وexecute يُخزّن العبارة المُهيَّأة
+    // مُخبَّأةً على الاتصال ⇒ تُصبح بائتةً عبر الاختبارات فيَرمي ER_TABLE_DEF_CHANGED، يُبتلَع
+    // (catch) ⇒ لا يُحذَف branches ⇒ تَراكمٌ ⇒ DUPLICATE KEY في الملف التالي (سبب الفلاكي).
+    // query النصّي يُعيد التحليل كل مرّة ⇒ لا تخبئة بائتة ⇒ تنظيف موثوق.
+    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
     for (const t of tables) {
       // DELETE FROM (لا TRUNCATE) — DML تَحترم FK_CHECKS=0 على نَقيض TRUNCATE/DROP.
-      await conn.execute(`DELETE FROM \`${t}\``).catch((e: unknown) => {
+      await conn.query(`DELETE FROM \`${t}\``).catch((e: unknown) => {
         const msg = e instanceof Error ? e.message : String(e);
         console.error(`__setup__: DELETE FROM ${t} failed: ${msg}`);
       });
     }
-    await conn.execute("SET FOREIGN_KEY_CHECKS = 1");
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
   } finally {
     conn.release();
   }

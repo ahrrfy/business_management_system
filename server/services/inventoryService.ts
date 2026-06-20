@@ -18,6 +18,26 @@ const SIGN: Record<DirectionalType, 1 | -1> = {
 };
 const DEDUCTING = new Set<DirectionalType>(["OUT", "TRANSFER_OUT"]);
 
+/** INV-001: يعيد بناء الدلتا الموقَّعة لحركة ADJUST من علامة «(فرق ±D)» التي يُلحقها setStock في
+ *  **نهاية** النص دائماً. مُرتكَز على القوسين + نهاية السلسلة ($) لا أوّل مطابقة فضفاضة — وإلّا
+ *  لانتُزِعت قيمةٌ من ملاحظة المستخدم الحرّة (مثل «تصحيح فرق ٢٠٠ قطعة») بدل العلامة الحقيقية
+ *  (ثغرة تحقيق ٢٠/٦). null = لا علامة مطابِقة ⇒ يَتجاهلها المُستدعي. */
+export function adjustSignedDelta(notes: string | null): number | null {
+  if (!notes) return null;
+  const m = notes.match(/\(فرق\s*([+\-−]?)\s*(\d+)\)\s*$/);
+  if (!m) return null;
+  const sign = m[1] === "-" || m[1] === "−" ? -1 : 1;
+  return sign * parseInt(m[2], 10);
+}
+
+/** المصدر الوحيد لإشارة حركات المخزون (الكاردكس + الجرد يَستعملانه ⇒ لا تَباعُد). الكمية مخزَّنة
+ *  موجبةً والاتجاه من النوع: IN/RETURN/TRANSFER_IN=+، OUT/TRANSFER_OUT=−، وADJUST من علامة النص. */
+export function signedMoveQty(movementType: string, quantity: number, notes: string | null): number {
+  if (movementType === "ADJUST") return adjustSignedDelta(notes) ?? 0;
+  const s = SIGN[movementType as DirectionalType];
+  return s === undefined ? 0 : s * quantity;
+}
+
 export interface ApplyMovementArgs {
   variantId: number;
   branchId: number;

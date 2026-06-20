@@ -32,7 +32,7 @@ import {
 } from "../../drizzle/schema";
 import type { DB, Tx } from "../db";
 import { hashPassword, verifyPassword } from "../auth/password";
-import { setStock } from "./inventoryService";
+import { setStock, signedMoveQty } from "./inventoryService";
 import { postEntry } from "./ledgerService";
 import { money, toDbMoney } from "./money";
 import { requireDb, withTx } from "./tx";
@@ -82,36 +82,8 @@ function scopeLabelOf(scopeType: string, scopeDetail: string | null): string {
   return SCOPE_FALLBACK_LABEL[scopeType] ?? scopeType;
 }
 
-/**
- * إشارة حركة ADJUST: setStock يخزّن |الدلتا| في quantity والاتجاه في النص الافتراضي
- * «تسوية: من X إلى Y (فرق ±D)». نعيد بناء الدلتا الموقَّعة من النص إن طابق النمط؛
- * وإلا (ملاحظة مخصّصة من شاشة المخزون) نعيد null — تُعرض الحركة بكمية 0 ولا تدخل netAfter
- * (تسوية يدوية أثناء الجرد حالة نادرة؛ التشويه الصامت أسوأ من التجاهل المُعلَم).
- */
-function adjustSignedDelta(notes: string | null): number | null {
-  if (!notes) return null;
-  const m = notes.match(/فرق\s*([+\-−]?)\s*(\d+)/);
-  if (!m) return null;
-  const sign = m[1] === "-" || m[1] === "−" ? -1 : 1;
-  return sign * parseInt(m[2], 10);
-}
-
-/** الكمية الموقَّعة لحركة مخزون — تطابق إشارات inventoryService (IN/RETURN/TRANSFER_IN=+، OUT/TRANSFER_OUT=−). */
-function signedMoveQty(movementType: string, quantity: number, notes: string | null): number {
-  switch (movementType) {
-    case "IN":
-    case "RETURN":
-    case "TRANSFER_IN":
-      return quantity;
-    case "OUT":
-    case "TRANSFER_OUT":
-      return -quantity;
-    case "ADJUST":
-      return adjustSignedDelta(notes) ?? 0;
-    default:
-      return 0;
-  }
-}
+// INV-001: signedMoveQty + adjustSignedDelta نُقِلتا إلى inventoryService (مصدر واحد للإشارة
+// يَستعمله الكاردكس والجرد معاً ⇒ لا تَباعُد في حساب الرصيد المُوقَّع).
 
 /** PIN رباعي عشوائي مشفّر التوليد (crypto) فريد ضمن المجموعة المُمرَّرة. */
 function generateUniquePin(used: Set<string>): string {
