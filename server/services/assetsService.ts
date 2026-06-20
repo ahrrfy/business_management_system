@@ -19,7 +19,7 @@ import {
 import type { Tx } from "../db";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { money, toDateStr, toDbMoney } from "./money";
+import { money, sumMoney, toDateStr, toDbMoney } from "./money";
 
 /* ----------------------------------------------------------- حساب الإهلاك */
 export interface DepRow {
@@ -209,7 +209,8 @@ export async function getAsset(id: number) {
     db.select().from(assetDocuments).where(eq(assetDocuments.assetId, id)),
   ]);
 
-  const maintTotal = maintenance.reduce((s, m) => s + Number(m.cost), 0);
+  // FA-05 (§٥): جمع المال عبر decimal لا Number/float (يَمنع انجراف الكسور في إجمالي الصيانة).
+  const maintTotal = sumMoney(maintenance.map((m) => m.cost)).toNumber();
   return { ...a, ...computeDepreciation(a), custody, maintenance, docs, maintTotal };
 }
 
@@ -447,7 +448,8 @@ export async function dashboard() {
   const live = all.filter((a) => a.status === "active" || a.status === "maintenance" || a.status === "retired");
 
   const totalAssets = live.length;
-  const purchaseValue = live.reduce((s, a) => s + Number(a.purchaseValue), 0);
+  // FA-05 (§٥): جمع قيم الشراء عبر decimal لا Number/float.
+  const purchaseValue = sumMoney(live.map((a) => a.purchaseValue)).toNumber();
   const bookValue = live.reduce((s, a) => s + a.bookValue, 0);
   const accumulated = live.reduce((s, a) => s + a.accumulated, 0);
   const inMaintenance = live.filter((a) => a.status === "maintenance").length;

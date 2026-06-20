@@ -217,7 +217,11 @@ async function seed() {
   const actor = { userId: admin!.id, branchId: Number(mainBranch!.id) };
   const branchId = Number(mainBranch!.id);
 
-  await db.insert(categories).values({ name: "قرطاسية" });
+  // DIM-MIG-05: إدراج idempotent (categories.name فريد) — كان الإدراج غير المشروط يَفشل لو سبق
+  // بذر الفئة (بذر prod-style ثم dev، أو إعادة بذر) ⇒ تعطّل البذر التجريبي بـER_DUP_ENTRY.
+  if (!(await db.select().from(categories).where(eq(categories.name, "قرطاسية")).limit(1))[0]) {
+    await db.insert(categories).values({ name: "قرطاسية" });
+  }
   const cat = (await db.select().from(categories).where(eq(categories.name, "قرطاسية")).limit(1))[0];
 
   const samples: Array<{ create: Parameters<typeof createProduct>[0]; openingStock: { sku: string; qty: number }[] }> = [

@@ -7,7 +7,8 @@
 //
 // النسخة تُحتفَظ إن طابقت أيّ فئة. الباقي يُحذف. ثم تُنسخ النسخ المُبقاة إلى BACKUP_OFFSITE_DIR
 // (OneDrive/USB) إن ضُبط — فقد الجهاز لا يعني فقد البيانات.
-import { readdirSync, statSync, unlinkSync, mkdirSync, copyFileSync } from "node:fs";
+import { readdirSync, statSync, unlinkSync, mkdirSync, existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 const backupDir = process.env.BACKUP_DIR ?? "backups";
@@ -97,22 +98,39 @@ for (const f of files) {
 
 console.log(`✓ تدوير: ${keep.size} نسخة محفوظة (يومية≤${keepDaily}/أسبوعية≤${keepWeekly}/شهرية≤${keepMonthly})، حُذف ${deleted}.`);
 
-// نسخ خارجي للنسخ المُبقاة.
+// نسخ خارجي مشفّر للنسخ المُبقاة (BC-02).
+// النسخة النصّية تحوي جدول users + تجزئات scrypt لكلمات المرور + كامل بيانات العملاء/الموردين ⇒
+// **ممنوع** أن تغادر الجهاز نصّاً صريحاً (OneDrive/USB ضائع = تسريب اعتمادات + PII). نُشفّر عند النسخ
+// بـgpg AES256 (العبارة عبر stdin --passphrase-fd 0، لا تظهر في ps)، ونرفض النسخ الخارجي إن غابت العبارة.
 if (offsite) {
-  try {
-    mkdirSync(offsite, { recursive: true });
-    let copied = 0;
-    for (const name of keep) {
-      const dest = join(offsite, name);
-      try {
-        statSync(dest); // موجود مسبقاً — تخطَّ
-      } catch {
-        copyFileSync(join(backupDir, name), dest);
-        copied++;
+  const passphrase = process.env.BACKUP_GPG_PASSPHRASE;
+  if (!passphrase) {
+    console.error(
+      "⛔ BC-02: BACKUP_OFFSITE_DIR مضبوط لكن BACKUP_GPG_PASSPHRASE غائب ⇒ رُفِض النسخ الخارجي" +
+        " (لا نُسرّب نسخاً نصّية تحوي تجزئات كلمات المرور و PII). اضبط العبارة السرّية لتفعيل نسخ خارجي مشفّر.",
+    );
+  } else {
+    try {
+      mkdirSync(offsite, { recursive: true });
+      let copied = 0;
+      for (const name of keep) {
+        const dest = join(offsite, `${name}.gpg`);
+        if (existsSync(dest)) continue; // موجود مسبقاً — تخطَّ
+        const r = spawnSync(
+          "gpg",
+          ["--batch", "--yes", "--pinentry-mode", "loopback", "--passphrase-fd", "0", "--symmetric", "--cipher-algo", "AES256", "-o", dest, join(backupDir, name)],
+          { input: passphrase },
+        );
+        if (r.status === 0 && existsSync(dest)) {
+          copied++;
+        } else {
+          const err = (r.stderr?.toString() ?? r.error?.message ?? "").split("\n").filter(Boolean).slice(-1)[0] ?? "";
+          console.error(`⚠ تعذّر تشفير ${name} للنسخ الخارجي${err ? `: ${err}` : ""}.`);
+        }
       }
+      console.log(`✓ نسخ خارجي مشفّر (gpg AES256) إلى ${offsite}: ${copied} ملف جديد.`);
+    } catch (e) {
+      console.error(`⚠ تعذّر النسخ الخارجي المشفّر إلى ${offsite}: ${e?.message ?? e}`);
     }
-    console.log(`✓ نسخ خارجي إلى ${offsite}: ${copied} ملف جديد.`);
-  } catch (e) {
-    console.error(`⚠ تعذّر النسخ الخارجي إلى ${offsite}: ${e?.message ?? e}`);
   }
 }

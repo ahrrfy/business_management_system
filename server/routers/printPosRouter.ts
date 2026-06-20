@@ -6,20 +6,17 @@ import { listPrintServices } from "../services/catalogService";
 import { createPrintSale } from "../services/printSaleService";
 import { verifyManagerApproval } from "./saleRouter";
 import { cashierProcedure, router } from "../trpc";
-import { positiveMoneyString } from "../lib/schemas";
+import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
-// قيمة مالية موجبة (٢ منزلتان كحدّ أقصى) — تمنع سعراً سالباً يمرّر خدمة مجاناً.
-const nonNegMoney = z.string().regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة (موجبة، منزلتان عشريتان كحدّ أقصى)");
-
 const lineSchema = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
   // كمية الخدمة (صفحات/صور/خدمات) — عدد صحيح موجب.
   quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة"),
-  // السعر اليدوي (سعر الخدمة قابل للتعديل من الكاشير).
-  unitPriceOverride: nonNegMoney.optional(),
+  // السعر اليدوي (سعر الخدمة قابل للتعديل من الكاشير) — nonNegMoneyString المركزية.
+  unitPriceOverride: nonNegMoneyString.optional(),
 });
 
 export const printPosRouter = router({
@@ -53,19 +50,26 @@ export const printPosRouter = router({
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
-      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx);
+      // AUTHZ-1: مرّر effectiveBranchId لـverifyManagerApproval ⇒ مدير فرع آخر لا يَعتمد بيع هذا الفرع
+      // (كان يُستدعى بلا branchId ⇒ IDOR اعتماد عبر الفروع على قناة الطباعة — كان مُصلَحاً في saleRouter فقط).
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
+      // SALES-01/02: سلطة البيع تحت التكلفة (مدير/أدمن ذاتياً، الكاشير بموافقة مدير مُتحقَّقة).
+      const priceOverrideApprovedBy: number | null = approvedBy ?? (elevated ? ctx.user.id : null);
       // B5: مرّر managerOverrideByUserId مع creditApproved ⇒ printSaleService ينشئ approval ذرّياً.
       const effectiveInput = {
         ...saleInput,
         branchId: effectiveBranchId,
         creditApproved: approvedBy != null,
         managerOverrideByUserId: approvedBy ?? undefined,
+        priceOverrideApproved: priceOverrideApprovedBy != null,
       };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await createPrintSale(effectiveInput, actor);
           await logAudit(ctx, { action: "printPos.sale", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy } });
           if (approvedBy != null) await logAudit(ctx, { action: "printPos.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
+          // SALES-01/02: أثر تدقيقي صريح للبيع تحت التكلفة على قناة الطباعة.
+          if (res.priceOverride) await logAudit(ctx, { action: "printPos.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
           return res;
         } catch (e: any) {
           if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;

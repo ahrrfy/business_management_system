@@ -83,3 +83,23 @@ export function computeInvoiceCost(lines: { unitCost: string; baseQuantity: numb
     lines.reduce<Decimal>((a, l) => a.plus(money(l.unitCost).times(l.baseQuantity)), new Decimal(0))
   ).toFixed(2);
 }
+
+export interface BelowCostLine {
+  total: string;
+  unitCost: string;
+  baseQuantity: number;
+}
+
+/** SALES-01/02: هل تَبيع الفاتورة بأقل من التكلفة؟ يَكشف (أ) بنداً يُباع تحت تكلفته (سعر/خصم سطر)
+ *  أو (ب) فاتورةً يَنزل صافيها (subtotal − discount) تحت COGS الكلّي. الهدايا (تكلفة=صفر) ليست
+ *  «تحت التكلفة». مشترك بين saleService و printSaleService فلا تَنجرف سياسة القناتين. */
+export function isInvoiceBelowCost(
+  lines: BelowCostLine[],
+  subtotal: string,
+  discountAmount: string,
+  costTotal: string | Decimal,
+): boolean {
+  const lineBelowCost = lines.some((l) => money(l.total).lt(money(l.unitCost).times(l.baseQuantity)));
+  const revenue = money(subtotal).minus(money(discountAmount));
+  return lineBelowCost || revenue.lt(money(costTotal));
+}

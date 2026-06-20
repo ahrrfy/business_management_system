@@ -280,6 +280,11 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
     if (r.status !== "COMPLETED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء سند غير مكتمل" });
     }
+    // SOD-05 (فصل المهام، قرار المالك ٢٠/٦): مُنشئ السند لا يُلغيه بنفسه (يلزم مدير آخر) — يَسدّ
+    // تلاعب «إنشاء صرف ثم إلغاؤه» لإخفاء حركة نقد. الأدمن مستثنى (سلطة عليا للتصحيح الإداري).
+    if (actor.role !== "admin" && r.createdBy != null && Number(r.createdBy) === actor.userId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز إلغاء سند أنشأته بنفسك — يلزم مدير آخر (فصل المهام)." });
+    }
     // عزل عبر-فرعي: غير admin يجب أن يطابق فرعه فرع السند (نمط جذري ٢).
     await assertBranchOwnership(tx, actor, r.branchId != null ? Number(r.branchId) : null, "سند");
     if (r.shiftId != null) {

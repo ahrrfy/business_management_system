@@ -27,7 +27,7 @@ import {
   receipts,
   shifts,
 } from "../../drizzle/schema";
-import { computeInvoiceCost, computeInvoiceTotals, computeLineTotal } from "./billing";
+import { computeInvoiceCost, computeInvoiceTotals, computeLineTotal, isInvoiceBelowCost } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, roundCashIQD, toDbMoney } from "./money";
@@ -70,6 +70,9 @@ export interface CreatePrintSaleInput {
   dueDate?: string | null;
   /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS). */
   cashRoundIQD?: boolean;
+  /** SALES-01/02 (قناة الطباعة): موافقة على بيع خدمة بأقل من تكلفة موادها (سعر/خصم تحت COGS).
+   *  يضبطها الراوتر: مدير/أدمن ذاتياً، والكاشير بموافقة مدير مُتحقَّقة. */
+  priceOverrideApproved?: boolean;
 }
 
 export interface CreatePrintSaleResult {
@@ -78,6 +81,8 @@ export interface CreatePrintSaleResult {
   total: string;
   status: "PENDING" | "PARTIALLY_PAID" | "PAID";
   idempotentReplay?: boolean;
+  /** SALES-01/02: صحيح إن باعت الفاتورة تحت التكلفة (طُبِّق بموافقة) — للتدقيق. */
+  priceOverride?: boolean;
 }
 
 /** كمية مادة مستهلكة مُجمَّعة عبر كل أسطر الفاتورة (للخصم بحركة OUT واحدة لكل مادة). */
@@ -97,6 +102,10 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
         .where(eq(invoices.sourceId, input.clientRequestId))
         .limit(1);
       if (existing[0]) {
+        // SALES-03 (قناة الطباعة): عزل الفرع — مفتاح idempotency لفرع آخر لا يَكشف فاتورته.
+        if (Number(existing[0].branchId) !== input.branchId) {
+          throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لبيع فرع آخر" });
+        }
         return {
           invoiceId: Number(existing[0].id),
           invoiceNumber: existing[0].invoiceNumber,
@@ -238,6 +247,18 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     const totals = computeInvoiceTotals({ lineTotals: computed.map((c) => c.total) });
     const costTotal = money(computeInvoiceCost(computed.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))));
 
+    // ٧.b SALES-01/02 (قناة الطباعة) — بوّابة البيع تحت تكلفة المواد. كاشير الطباعة يضبط سعر
+    //     الخدمة يدوياً ⇒ نَمنع سعراً/خصماً يَنزل بالخدمة/الفاتورة تحت كلفة موادها بلا موافقة مدير.
+    //     المنطق مشترك في billing.isInvoiceBelowCost (نفس سياسة saleService)؛ خدمات بلا وصفة (تكلفة=صفر)
+    //     تَبقى مسموحة بأي سعر.
+    const belowCost = isInvoiceBelowCost(computed, totals.subtotal, totals.discountAmount, costTotal);
+    if (belowCost && !input.priceOverrideApproved) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "بيع خدمة بأقل من تكلفة موادها يتطلب موافقة مدير.",
+      });
+    }
+
     // ٨. تقريب نقدي IQD للبيع النقدي الكامل (نفس سياسة saleService): يُقرَّب الإجمالي، النقد = المقرّب،
     //    والفرق قيد ADJUST ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
@@ -287,7 +308,8 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     const insRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "POS",
-      sourceId: input.clientRequestId ?? null,
+      // TX-01: clientRequestId فارغ يُخزَّن null لا "" (تفادي اصطدام uq_invoice_source).
+      sourceId: input.clientRequestId || null,
       branchId: input.branchId,
       shiftId: input.shiftId ?? null,
       customerId: input.customerId ?? null,
@@ -404,6 +426,6 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
     }
 
-    return { invoiceId, invoiceNumber, total: toDbMoney(effectiveTotalD), status };
+    return { invoiceId, invoiceNumber, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost };
   });
 }

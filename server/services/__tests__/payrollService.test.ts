@@ -13,6 +13,8 @@ import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, getRun, payRun } from "../payrollService";
 
 const ACTOR = { userId: 1, branchId: 1 };
+// SOD-01/02 (فصل المهام): المُعتمِد/الدافع يجب أن يختلف عن المُولِّد ⇒ مستخدم ٢ يُعتمِد ويَدفع.
+const APPROVER = { userId: 2, branchId: 1 };
 
 const TABLES = [
   "accountingEntries",
@@ -44,6 +46,7 @@ async function seedBase() {
   ]);
   await d.insert(s.users).values([
     { id: 1, openId: "test-admin", name: "مدير", role: "admin", branchId: 1 },
+    { id: 2, openId: "test-approver", name: "مدقّق", role: "manager", branchId: 1 },
   ]);
 }
 beforeEach(async () => {
@@ -101,14 +104,28 @@ describe("payrollService — generate", () => {
     await generatePayroll("2026-06", ACTOR);
     await expect(generatePayroll("2026-06", ACTOR)).rejects.toThrow();
   });
+
+  it("HR-PAY-01: توليد متزامن لنفس الشهر (فرعان) ⇒ مسيّر واحد فقط (لا دفع مزدوج)", async () => {
+    await createEmployee({ firstName: "كاظم", lastName: "الجبوري", payType: "monthly", salary: "500000", allowances: "0" });
+    // نموذج «مسيّر واحد شهريّاً لكل الشركة»: فرعان يولّدان نفس الشهر بالتزامن، وUNIQUE(period)
+    // يَضمن نجاح واحدٍ فقط ⇒ يَستحيل وجود مسيّرَين يدفعان لكل موظّف (سدّ سباق الدفع المزدوج).
+    const results = await Promise.allSettled([
+      generatePayroll("2026-03", { userId: 1, branchId: 1 }),
+      generatePayroll("2026-03", { userId: 1, branchId: 2 }),
+    ]);
+    const fulfilled = results.filter((r) => r.status === "fulfilled");
+    expect(fulfilled.length).toBe(1); // الآخر يَفشل (ER_DUP_ENTRY/CONFLICT)
+    const runs = await db().select().from(s.payrollRuns).where(eq(s.payrollRuns.period, "2026-03"));
+    expect(runs.length).toBe(1);
+  });
 });
 
 describe("payrollService — pay posts ledger entries", () => {
   it("الدفع يقيّد accountingEntries بمفتاح dedupe PAYROLL:<runId>:<employeeId>", async () => {
     const emp = await createEmployee({ firstName: "كرار", lastName: "البديري", payType: "monthly", salary: "1200000", allowances: "100000" });
     const run = await generatePayroll("2026-07", ACTOR);
-    await approveRun(run!.id);
-    const paid = await payRun(run!.id, ACTOR);
+    await approveRun(run!.id, APPROVER);
+    const paid = await payRun(run!.id, APPROVER);
     expect(paid!.status).toBe("paid");
     expect(paid!.paidAt).toBeTruthy();
 
@@ -135,8 +152,8 @@ describe("payrollService — pay posts ledger entries", () => {
     const e1 = await createEmployee({ firstName: "عقيل", lastName: "ت", payType: "monthly", salary: "500000", allowances: "0", branchId: 1 });
     const e2 = await createEmployee({ firstName: "براء", lastName: "ث", payType: "monthly", salary: "600000", allowances: "0", branchId: 2 });
     const run = await generatePayroll("2026-12", ACTOR); // ACTOR.branchId = 1
-    await approveRun(run!.id);
-    await payRun(run!.id, ACTOR);
+    await approveRun(run!.id, APPROVER);
+    await payRun(run!.id, APPROVER);
 
     const [ent1] = await db()
       .select()
@@ -153,13 +170,13 @@ describe("payrollService — pay posts ledger entries", () => {
   it("عكس مسيّر مدفوع ثمّ إعادة دفعه يقيّد قيداً جديداً (:r1) بلا اصطدام بالمفتاح الفريد", async () => {
     await createEmployee({ firstName: "مصطفى", lastName: "الكناني", payType: "monthly", salary: "1000000", allowances: "0" });
     const run = await generatePayroll("2026-10", ACTOR);
-    await approveRun(run!.id);
-    await payRun(run!.id, ACTOR); // الدفع الأول: PAYROLL:<run>:<emp>
+    await approveRun(run!.id, APPROVER);
+    await payRun(run!.id, APPROVER); // الدفع الأول: PAYROLL:<run>:<emp>
 
     const reversed = await cancelRun(run!.id, ACTOR); // عكس ⇒ approved + قيد PAYROLL-REV
     expect(reversed.status).toBe("approved");
 
-    const repaid = await payRun(run!.id, ACTOR); // إعادة الدفع: PAYROLL:<run>:<emp>:r1
+    const repaid = await payRun(run!.id, APPROVER); // إعادة الدفع: PAYROLL:<run>:<emp>:r1
     expect(repaid!.status).toBe("paid");
 
     // الدفتر يحوي ٣ قيود PAYMENT_OUT: +net (أصلي) + (−net) (عكس) + +net (إعادة) ⇒ المحصّلة الصافية = net.
@@ -170,5 +187,26 @@ describe("payrollService — pay posts ledger entries", () => {
     expect(entries.length).toBe(3);
     const sum = entries.reduce((acc, e) => acc + Number(e.amount), 0);
     expect(sum).toBe(1000000);
+  });
+});
+
+describe("payrollService — فصل المهام (SOD-01/02)", () => {
+  it("لا يجوز اعتماد مسيّر أنشأته بنفسك (مُعتمِد ≠ مُولِّد)", async () => {
+    await createEmployee({ firstName: "حسن", lastName: "العامري", payType: "monthly", salary: "500000", allowances: "0" });
+    const run = await generatePayroll("2026-09", ACTOR); // أنشأه ACTOR (id 1)
+    await expect(approveRun(run!.id, ACTOR)).rejects.toThrow(); // اعتماد ذاتي مرفوض
+    const approved = await approveRun(run!.id, APPROVER); // مُعتمِد آخر ينجح
+    expect(approved!.status).toBe("approved");
+    expect(Number(approved!.approvedBy)).toBe(2);
+  });
+
+  it("لا يجوز صرف مسيّر أنشأته بنفسك (دافع ≠ مُولِّد)", async () => {
+    await createEmployee({ firstName: "عمّار", lastName: "الطائي", payType: "monthly", salary: "500000", allowances: "0" });
+    const run = await generatePayroll("2026-11", ACTOR);
+    await approveRun(run!.id, APPROVER);
+    await expect(payRun(run!.id, ACTOR)).rejects.toThrow(); // صرف ذاتي مرفوض
+    const paid = await payRun(run!.id, APPROVER);
+    expect(paid!.status).toBe("paid");
+    expect(Number(paid!.paidBy)).toBe(2);
   });
 });

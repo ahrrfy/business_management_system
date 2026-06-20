@@ -121,41 +121,30 @@ export const authRouter = router({
         });
       }
 
-      // قفل مؤقّت بعد محاولات فاشلة متتالية.
-      if (user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now()) {
-        await logAudit(
-          { user, req: ctx.req },
-          {
-            action: "auth.login.locked",
-            entityType: "user",
-            entityId: user.id,
-            newValue: { reason: "locked", ipHash, emailHash },
-          }
-        );
-        throw new TRPCError({
-          code: "TOO_MANY_REQUESTS",
-          message: "الحساب مقفل مؤقتاً. الرجاء المحاولة لاحقاً.",
-        });
-      }
-
-      // توحيد التوقيت: عند غياب المستخدم نُشغّل scrypt على تجزّئة وهمية بدل القفز،
-      // فيتساوى زمن الردّ ويُغلق تعداد المستخدمين الزمني.
+      // AUTH-01: احسب scrypt دائماً (توحيد التوقيت) قبل أي قرار، وعامِل الحساب المقفل كفشلٍ عام.
+      // كان فحص القفل يَرجع مبكراً برسالة/كود مختلفين (TOO_MANY_REQUESTS «الحساب مقفل») ودون تشغيل
+      // scrypt ⇒ أسرع زمناً + رسالة مميِّزة ⇒ عرّافا تعداد (وجود البريد) وقفلٍ موجَّه. الآن: القفل
+      // يُعامَل كفشل اعتماد عام (نفس الرسالة + نفس التوقيت)، ويُسجَّل خادمياً للأثر فقط.
       const stored = user?.passwordHash ?? DUMMY_STORED;
       const ok = verifyPassword(input.password, stored);
+      const locked = !!(user?.lockedUntil && new Date(user.lockedUntil).getTime() > Date.now());
 
-      // رسالة موحّدة لكل من: بريد غير موجود / كلمة خاطئة / حساب معطّل (لا تمييز جانبي).
-      if (!user || !ok || !user.isActive) {
-        if (user && !ok) await registerFailedLogin(db, user);
+      // رسالة + كود موحّدان لكل فشل: بريد غير موجود / كلمة خاطئة / معطّل / مقفل (لا تمييز جانبي).
+      if (!user || !ok || !user.isActive || locked) {
+        if (user && locked) {
+          // القفل يُسجَّل خادمياً للأثر فقط (لا يُكشَف للعميل)، ولا نزيد العدّاد أثناء نافذة القفل.
+          await logAudit(
+            { user, req: ctx.req },
+            { action: "auth.login.locked", entityType: "user", entityId: user.id, newValue: { reason: "locked", ipHash, emailHash } }
+          );
+        } else {
+          if (user && !ok) await registerFailedLogin(db, user);
+          await logAudit(
+            { user: user ?? null, req: ctx.req },
+            { action: "auth.login.failed", entityType: "user", entityId: user?.id ?? null, newValue: { reason: "invalid_credentials", ipHash, emailHash } }
+          );
+        }
         recordIpFailure(ip);
-        await logAudit(
-          { user: user ?? null, req: ctx.req },
-          {
-            action: "auth.login.failed",
-            entityType: "user",
-            entityId: user?.id ?? null,
-            newValue: { reason: "invalid_credentials", ipHash, emailHash },
-          }
-        );
         throw new TRPCError({ code: "UNAUTHORIZED", message: "البريد أو كلمة المرور غير صحيحة" });
       }
 

@@ -248,7 +248,7 @@ export async function updateItem(itemId: number, input: UpdateItemInput) {
 
 /* ─────────────────────────── اعتماد ─────────────────────────── */
 
-export async function approveRun(id: number) {
+export async function approveRun(id: number, actor: Actor) {
   return withTx(async (tx) => {
     const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, id)).for("update").limit(1);
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
@@ -256,7 +256,12 @@ export async function approveRun(id: number) {
     if (Number(run.employeeCount) === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر فارغ" });
     // حارس المسيّر «الشبح»: صافٍ كلّي صفر/سالب لا يُعتمد (لا شيء يُدفع) ⇒ يُمنع اعتماد/دفع بلا قيد.
     if (money(run.totalNet).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر صافيه صفر" });
-    await tx.update(payrollRuns).set({ status: "approved", approvedAt: new Date() }).where(eq(payrollRuns.id, id));
+    // SOD-01/02 (فصل المهام): المُعتمِد يجب أن يختلف عن مُولِّد المسيّر — يَكسر دورة إنشاء→اعتماد→دفع
+    // المنفردة (المسار الحرج لاحتيال الرواتب). نُسجّل approvedBy في السجلّ الثابت لإثبات المُعتمِد المستقلّ.
+    if (run.createdBy != null && Number(run.createdBy) === actor.userId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد مسيّر أنشأته بنفسك — يلزم مُعتمِد آخر (فصل المهام)." });
+    }
+    await tx.update(payrollRuns).set({ status: "approved", approvedAt: new Date(), approvedBy: actor.userId }).where(eq(payrollRuns.id, id));
   }).then(() => getRun(id));
 }
 
@@ -292,6 +297,11 @@ export async function payRun(id: number, actor: Actor) {
     const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, id)).for("update").limit(1);
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
     if (run.status !== "approved") throw new TRPCError({ code: "BAD_REQUEST", message: "يُدفع المسيّر بعد اعتماده فقط" });
+    // SOD-01 (فصل المهام): الدافع يجب أن يختلف عن مُولِّد المسيّر — يَمنع دورة إنشاء→دفع منفردة
+    // (المُعتمِد المستقلّ مفروض أصلاً في approveRun؛ هذا حارس إضافي على الصرف النقدي).
+    if (run.createdBy != null && Number(run.createdBy) === actor.userId) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز صرف مسيّر أنشأته بنفسك — يلزم دافع آخر (فصل المهام)." });
+    }
 
     // نجلب فرع كل موظف (employees.branchId) مع البند ⇒ يُرحَّل مصروف راتبه بفرعه هو.
     const items = await tx
@@ -320,7 +330,7 @@ export async function payRun(id: number, actor: Actor) {
       });
     }
 
-    await tx.update(payrollRuns).set({ status: "paid", paidAt: new Date() }).where(eq(payrollRuns.id, id));
+    await tx.update(payrollRuns).set({ status: "paid", paidAt: new Date(), paidBy: actor.userId }).where(eq(payrollRuns.id, id));
   }).then(() => getRun(id));
 }
 

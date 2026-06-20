@@ -4,7 +4,7 @@ import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { maskCostFields } from "../lib/redact";
-import { positiveMoneyString } from "../lib/schemas";
+import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../services/purchaseService";
@@ -21,15 +21,17 @@ export const purchaseRouter = router({
       z.object({
         supplierId: z.number().int().positive(),
         branchId: z.number().int().positive(),
-        taxRatePercent: z.string().optional(),
+        // PROC-03: نسبة الضريبة مُقيّدة [٠،١٠٠] على حدّ الثقة (كانت z.string() بلا قيد ⇒ ضريبة سالبة).
+        taxRatePercent: percentString.optional(),
         status: z.enum(["DRAFT", "SENT", "CONFIRMED"]).optional(),
         items: z
           .array(
             z.object({
               variantId: z.number().int().positive(),
               productUnitId: z.number().int().positive(),
-              quantity: z.string(),
-              unitPrice: z.string(),
+              // PROC-01: سعر/كمية الشراء على حدّ الثقة — كانا z.string() ⇒ سعر سالب يُسمّم WAVG ويُخفّض AP.
+              quantity: positiveQtyString,
+              unitPrice: nonNegMoneyString,
             })
           )
           .min(1),

@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import { createPurchaseReturn, listPurchaseReturns } from "../services/purchaseReturnsService";
+import { nonNegMoneyString, positiveQtyString } from "../lib/schemas";
 import { managerProcedure, router } from "../trpc";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -28,8 +29,9 @@ export const purchaseReturnsRouter = router({
             z.object({
               variantId: z.number().int().positive(),
               productUnitId: z.number().int().positive(),
-              quantity: z.string(),
-              unitPrice: z.string(),
+              // PROC-02: سعر/كمية إرجاع الشراء على حدّ الثقة — كانا z.string() بلا قيد إشارة.
+              quantity: positiveQtyString,
+              unitPrice: nonNegMoneyString,
             })
           )
           .min(1),
@@ -39,11 +41,22 @@ export const purchaseReturnsRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // AUTHZ-2: عزل الفرع — لغير الأدمن لا نُصدّق input.branchId (كان `ctx.user.branchId ?? input.branchId`
+      // يُتيح لمدير بلا فرع حقن أي فرع ⇒ مرتجع يَخصم مخزون فرع آخر). نُجبر فرع المستخدم؛ الأدمن وحده يَعبر.
+      const isAdmin = ctx.user.role === "admin";
+      let branchId = input.branchId;
+      if (!isAdmin) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء مرتجع شراء" });
+        }
+        branchId = Number(ctx.user.branchId);
+      }
+      const effInput = { ...input, branchId };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createPurchaseReturn(input, {
+          const res = await createPurchaseReturn(effInput, {
             userId: ctx.user.id,
-            branchId: ctx.user.branchId ?? input.branchId,
+            branchId,
           });
           await logAudit(ctx, {
             action: "purchaseReturn.create",
