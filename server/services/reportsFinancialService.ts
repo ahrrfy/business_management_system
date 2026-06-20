@@ -10,6 +10,7 @@
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
+import { reconcileCustomerBalances, reconcileSupplierBalances } from "./reconcileService";
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
 function rowsOf(res: unknown): any[] {
@@ -337,15 +338,24 @@ export interface FinancialPosition {
   totalLiabilities: string;
   equity: string;
   branchScoped: boolean;
+  // FI-02: حارس انحراف مرئي — AR/AP يُقرآن من currentBalance القابل للتحوّل؛ نطابقه (قراءة فقط)
+  // مع المُتوقَّع المُشتقّ عبر reconcile* فيظهر أيّ انحراف صامت بدل أن يُمرَّر بصمت في القوائم.
+  arReconciled: boolean;
+  apReconciled: boolean;
+  arDriftCount: number;
+  apDriftCount: number;
 }
 
-export async function getFinancialPosition(opts: { branchId?: number } = {}): Promise<FinancialPosition> {
+export async function getFinancialPosition(
+  opts: { branchId?: number; verify?: boolean } = {}
+): Promise<FinancialPosition> {
   const db = getDb();
   const zero = "0";
   const empty: FinancialPosition = {
     cash: zero, arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
     apCredit: zero, apDebit: zero, totalAssets: zero, totalLiabilities: zero, equity: zero,
     branchScoped: !!opts.branchId,
+    arReconciled: true, apReconciled: true, arDriftCount: 0, apDriftCount: 0,
   };
   if (!db) return empty;
 
@@ -396,6 +406,16 @@ export async function getFinancialPosition(opts: { branchId?: number } = {}): Pr
   const totalLiabilities = apCredit.add(arCredit);
   const equity = totalAssets.sub(totalLiabilities);
 
+  // FI-02: حارس انحراف مرئي (قراءة فقط). الأرقام أعلاه تبقى من currentBalance؛ هذه إشارةٌ فقط.
+  // verify=true افتراضياً؛ يَستطيع المستدعي تعطيلها للأداء (verify:false) فتُعتبر متّسقة بلا فحص.
+  const verify = opts.verify ?? true;
+  let arDrift: { length: number } = { length: 0 };
+  let apDrift: { length: number } = { length: 0 };
+  if (verify) {
+    arDrift = await reconcileCustomerBalances();
+    apDrift = await reconcileSupplierBalances();
+  }
+
   return {
     cash: toDbMoney(cash),
     arDebit: toDbMoney(arDebit),
@@ -408,6 +428,10 @@ export async function getFinancialPosition(opts: { branchId?: number } = {}): Pr
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),
     branchScoped: !!bId,
+    arReconciled: arDrift.length === 0,
+    apReconciled: apDrift.length === 0,
+    arDriftCount: arDrift.length,
+    apDriftCount: apDrift.length,
   };
 }
 

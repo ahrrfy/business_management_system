@@ -45,6 +45,9 @@ export interface ARAgingRow {
   d61_90: string;
   d91p: string;
   unpaidTotal: string;
+  /** الفرق بين الرصيد الجاري والمجموع المُبوَّب (OPENING/سندات مستقلّة خارج دلاء الفواتير، مُوقَّع).
+   *  ⇒ d0_30+d31_60+d61_90+d91p + unbucketed === currentBalance (يتّزن دائماً). */
+  unbucketed: string;
   oldestInvoiceDate: string | null;
 }
 
@@ -72,7 +75,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
       CAST(COALESCE(SUM(CASE WHEN DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) > 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
       CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaidTotal,
-      DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN i.invoiceDate END), '%Y-%m-%d') AS oldestInvoiceDate
+      DATE_FORMAT(MIN(CASE WHEN i.invoiceStatus IN ('PENDING','PARTIALLY_PAID') THEN DATE(COALESCE(i.dueDate, i.invoiceDate)) END), '%Y-%m-%d') AS oldestInvoiceDate
     FROM customers c
     LEFT JOIN invoices i
       ON i.customerId = c.id
@@ -85,7 +88,14 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
     LIMIT ${limit}
   `);
   const data = (rows as any)[0] ?? rows;
-  return Array.isArray(data) ? (data as ARAgingRow[]) : [];
+  if (!Array.isArray(data)) return [];
+  // REP-04: الدلاء تُعمَّر من الفواتير المستحقّة فقط؛ الرصيد الافتتاحي (OPENING) والسندات المستقلّة
+  // تقع خارجها ⇒ unbucketed = currentBalance − unpaidTotal (مُوقَّع، بلا قصّ) يُغلق الفرق فتتّزن
+  // الدلاء مع الرصيد الجاري. بدقّة decimal (§٥).
+  return (data as any[]).map((r) => ({
+    ...(r as ARAgingRow),
+    unbucketed: toDbMoney(money(r.currentBalance).sub(money(r.unpaidTotal))),
+  }));
 }
 
 export interface CustomerStatementInvoice {
@@ -204,6 +214,7 @@ export async function getCustomerStatement(
       dueDate: invoices.dueDate,
       total: invoices.total,
       paidAmount: invoices.paidAmount,
+      returnedTotal: invoices.returnedTotal,
       status: invoices.status,
       sourceType: invoices.sourceType,
     })
@@ -236,12 +247,21 @@ export async function getCustomerStatement(
   const openingBalance = await customerOpeningBalance(customerId, from);
 
   // أموال بدقّة decimal.js (§٥) — لا Number/toFixed على الأموال.
-  const totalSales = sumMoney(invs.map((i) => i.total ?? 0));
-  const totalPaid = sumMoney(invs.map((i) => i.paidAmount ?? 0));
+  // REP-01: الإجماليات المالية تُحسَب على غير الملغاة فقط، اتّساقاً مع customerOpeningBalance الذي
+  // يستثني CANCELLED (التزامها أُلغي) ⇒ totalSales/totalPaid لا يخالفان الرصيد المُرحَّل. الصفوف
+  // المعروضة تبقى شاملةً كل الفواتير (بما فيها CANCELLED) للعرض. لا يُطرَح RETURNED من totalSales.
+  const nonCancelled = invs.filter((i) => i.status !== "CANCELLED");
+  const totalSales = sumMoney(nonCancelled.map((i) => i.total ?? 0));
+  const totalPaid = sumMoney(nonCancelled.map((i) => i.paidAmount ?? 0));
+  // REP-06: المتبقّي على الفاتورة المستحقّة = total − paidAmount − returnedTotal (مقصوص ≥ 0)؛
+  // إغفال returnedTotal كان يضخّم المتبقّي بعد مرتجع جزئي على فاتورة آجلة.
   const unpaid = sumMoney(
     invs
       .filter((i) => i.status === "PENDING" || i.status === "PARTIALLY_PAID")
-      .map((i) => positiveDiff(i.total, i.paidAmount))
+      .map((i) => {
+        const d = money(i.total ?? 0).sub(money(i.paidAmount ?? 0)).sub(money(i.returnedTotal ?? 0));
+        return d.isNegative() ? money(0) : d;
+      })
   );
 
   return {
@@ -290,6 +310,9 @@ export interface APAgingRow {
   d61_90: string;
   d91p: string;
   unpaidTotal: string;
+  /** الفرق بين الرصيد الجاري والمجموع المُبوَّب (OPENING/شراء أصول خارج دلاء أوامر الشراء، مُوقَّع).
+   *  ⇒ d0_30+d31_60+d61_90+d91p + unbucketed === currentBalance (يتّزن دائماً). */
+  unbucketed: string;
   oldestPoDate: string | null;
 }
 
@@ -328,7 +351,13 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
     LIMIT ${limit}
   `);
   const data = (rows as any)[0] ?? rows;
-  return Array.isArray(data) ? (data as APAgingRow[]) : [];
+  if (!Array.isArray(data)) return [];
+  // REP-04 mirror: شراء الأصول/الرصيد الافتتاحي (OPENING) يقعان في currentBalance خارج دلاء أوامر
+  // الشراء ⇒ unbucketed = currentBalance − unpaidTotal (مُوقَّع، بلا قصّ) يُغلق الفرق فتتّزن الدلاء.
+  return (data as any[]).map((r) => ({
+    ...(r as APAgingRow),
+    unbucketed: toDbMoney(money(r.currentBalance).sub(money(r.unpaidTotal))),
+  }));
 }
 
 export interface SupplierStatementPO {
@@ -343,6 +372,8 @@ export interface SupplierStatementPO {
 
 export interface SupplierStatementPayment {
   id: number;
+  /** نوع القيد: PAYMENT_OUT دفعة مورد، PAYMENT_IN استرداد، RETURN مرتجع شراء (إشارة سالبة)، PURCHASE شراء أصل. */
+  entryType: string;
   purchaseOrderId: number | null;
   receiptId: number | null;
   amount: string;
