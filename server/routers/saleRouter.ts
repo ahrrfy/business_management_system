@@ -19,7 +19,7 @@ import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
 import { branchScopedProcedure, canSeeCost, cashierProcedure, router } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
-import { positiveMoneyString } from "../lib/schemas";
+import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -86,6 +86,17 @@ export async function verifyManagerApproval(
     });
     throw new TRPCError({ code: "FORBIDDEN", message: "موافقة المدير غير صالحة (تأكّد من البريد وكلمة المرور وأنّ الحساب مدير)." });
   }
+  // SOD-03 (فصل المهام): لا يجوز للمستخدم اعتماد عمليته بنفسه (كاشير بدور مدير يُدخل بيانات نفسه).
+  // كان غياب الفحص يُتيح للمدير-الكاشير تجاوز حدّ الائتمان على بيعه ذاتياً بلا حسيب.
+  if (Number(u.id) === Number(ctx.user.id)) {
+    await logAudit(ctx as any, {
+      action: "sale.creditOverride.fail",
+      entityType: "user",
+      entityId: u.id,
+      newValue: { email, reason: "self_approval" },
+    });
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز اعتماد عمليتك بنفسك — يلزم مدير آخر (فصل المهام)." });
+  }
   // عزل الفرع: admin يَعبر؛ manager يَجب أن يَخدم فرع الفاتورة نفسه.
   if (u.role === "manager" && branchId != null && Number(u.branchId) !== branchId) {
     await logAudit(ctx as any, {
@@ -103,17 +114,14 @@ const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 // تاريخ فلترة YYYY-MM-DD (فلاتر الفترات الخادمية — لا فلترة محلية تُخفي صفحات الخادم).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
-// قيمة مالية موجبة (٢ منزلتان): تمنع override/خصم سالباً يمرّر بضاعة مجاناً مع تشويش الأرقام.
-const nonNegMoney = z
-  .string()
-  .regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة (موجبة، منزلتان عشريتان كحدّ أقصى)");
+// قيمة override/خصم: مالية غير سالبة (٢ منزلتان) — nonNegMoneyString المركزية (سدّ تكرار schemas).
 const lineSchema = z.object({
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
   quantity: z.string().regex(/^\d+(\.\d{1,3})?$/, "كمية غير صالحة (موجبة، ثلاث منازل)"),
-  unitPriceOverride: nonNegMoney.optional(),
+  unitPriceOverride: nonNegMoneyString.optional(),
   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
-  discountAmount: nonNegMoney.optional(),
+  discountAmount: nonNegMoneyString.optional(),
 });
 
 // مخطط فلترة قائمة المبيعات — مشترك بين list و listSummary (نفس الفلاتر حتماً).
@@ -185,6 +193,9 @@ export const saleRouter = router({
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
+      // SALES-01/02: سلطة البيع تحت التكلفة. المدير/الأدمن لهما السلطة ذاتياً (elevated)؛
+      // الكاشير يحتاج managerApproval مُتحقَّقاً (approvedBy). الخدمة تَكشف البيع تحت COGS وتَرفضه بلا سلطة.
+      const priceOverrideApprovedBy: number | null = approvedBy ?? (elevated ? ctx.user.id : null);
       // B5 (١٩/٦/٢٦): الراوتر لا يمرّر creditApproved منفرداً — يمرّر معه managerOverrideByUserId
       // لتُنشئ saleService approval ذرّياً مرتبطاً بـ(customer, unpaid, single-use, 5min).
       const effectiveInput = {
@@ -192,12 +203,15 @@ export const saleRouter = router({
         branchId: effectiveBranchId,
         creditApproved: approvedBy != null,
         managerOverrideByUserId: approvedBy ?? undefined,
+        priceOverrideApproved: priceOverrideApprovedBy != null,
       };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await createSale(effectiveInput, actor);
           await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy } });
           if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
+          // SALES-01/02: أثر تدقيقي صريح للبيع تحت التكلفة (لا يُكتفى بعدّ الأسطر).
+          if (res.priceOverride) await logAudit(ctx, { action: "sale.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
           return res;
         } catch (e: any) {
           if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
@@ -222,7 +236,8 @@ export const saleRouter = router({
 
   pay: cashierProcedure
     .input(z.object({
-      invoiceId: z.number().int().positive(), amount: z.string(), method, shiftId: z.number().int().positive().optional(),
+      // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
+      invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, shiftId: z.number().int().positive().optional(),
       // idempotency: نفس المفتاح ⇒ دفعة واحدة (لا إيصال/قيد PAYMENT_IN/خصم AR مزدوج عند النقر المزدوج).
       clientRequestId: z.string().min(1).max(80).optional(),
     }))

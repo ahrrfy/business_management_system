@@ -221,6 +221,9 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
       })),
       payment: input.payment ?? null,
       notes: `محوّل من عرض السعر ${q.quoteNumber}`,
+      // SALES-01/02: التحويل إجراء مدير (convert=managerProcedure) والأسعار أُقِرّت عند إنشاء العرض
+      // (create=managerProcedure) ⇒ سلطة البيع تحت التكلفة ممنوحة شرعاً (لا يَبلغ الكاشير هذا المسار).
+      priceOverrideApproved: true,
     },
     actor
   );

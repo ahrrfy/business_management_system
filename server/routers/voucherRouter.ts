@@ -71,6 +71,7 @@ export const voucherRouter = router({
       const res = await cancelVoucher(input.receiptId, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId),
+        role: ctx.user.role, // SOD-05: لازم لاستثناء الأدمن من حارس «المُلغٍي ≠ المُنشئ».
       });
       await logAudit(ctx, {
         action: "voucher.cancel",

@@ -89,8 +89,12 @@ export const customerRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const r = await createCustomer(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name } });
+      // AUTHZ-3: حدّ الائتمان حقل مدير (محجوب عن الكاشير قراءةً عبر maskCustomerSensitive) ⇒ لا يَضبطه
+      // الكاشير كتابةً. نُهمله لغير المدير/الأدمن (المدير يَضبطه لاحقاً عبر update = managerProcedure).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const safeInput = elevated ? input : { ...input, creditLimit: null };
+      const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null } });
       // التوافق: المستهلكون القدامى يقرؤون `.id` (مثل WorkOrderNew)؛ نُبقي الكليهما.
       return { id: r.customerId, customerId: r.customerId };
     }),

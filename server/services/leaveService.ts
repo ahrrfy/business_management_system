@@ -154,6 +154,17 @@ export async function decideLeave(
     if (!lv) throw new Error("طلب الإجازة غير موجود");
     if (lv.status !== "pending") throw new Error("لا يمكن البتّ إلا في طلب قيد الموافقة");
 
+    // HR-PAY-03 (فصل المهام): لا يجوز للمستخدم البتّ في إجازة موظفٍ مرتبطٍ بحسابه (موافقة ذاتية)
+    // — يَكسر منح إجازةٍ مدفوعة لنفسه وخصم رصيده ذاتياً بلا مُقرِّر مستقلّ.
+    const [reqEmp] = await tx
+      .select({ userId: employees.userId })
+      .from(employees)
+      .where(eq(employees.id, lv.employeeId))
+      .limit(1);
+    if (reqEmp?.userId != null && Number(reqEmp.userId) === actor.userId) {
+      throw new Error("لا يجوز البتّ في إجازتك بنفسك — يلزم مُقرِّر آخر (فصل المهام).");
+    }
+
     if (decision === "approved" && lv.paid && (lv.leaveType === "سنوية" || lv.leaveType === "مرضية")) {
       // خصم دقيق بحارس كفاية الرصيد (لا قصّ صامت) ⇒ المخصوم = days بالضبط، فالإلغاء يستردّه بدقّة.
       // الأمومة مدفوعة بلا رصيد محدّد فلا خصم. القفل على صفّ الموظف يمنع السباق.

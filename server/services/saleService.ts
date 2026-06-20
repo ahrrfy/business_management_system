@@ -5,6 +5,7 @@ import {
   computeInvoiceCost,
   computeInvoiceTotals,
   computeLineTotal,
+  isInvoiceBelowCost,
   snapshotUnitCost,
 } from "./billing";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
@@ -54,6 +55,9 @@ export interface CreateSaleInput {
   dueDate?: string | null;
   /** تقريب نقدي عراقي للبيع النقدي الكامل (يضبطه POS): الخادم يقرّب الإجمالي ويُسجّل الفرق ADJUST. */
   cashRoundIQD?: boolean;
+  /** SALES-01/02: موافقة على البيع بأقل من التكلفة (سعر override أو خصم يَنزل بالبند/الفاتورة تحت COGS).
+   *  يضبطها الراوتر: مدير/أدمن لهما السلطة ذاتياً، والكاشير يحتاج managerApproval مُتحقَّقاً. */
+  priceOverrideApproved?: boolean;
 }
 
 export interface CreateSaleResult {
@@ -62,6 +66,8 @@ export interface CreateSaleResult {
   total: string;
   status: "PENDING" | "PARTIALLY_PAID" | "PAID";
   idempotentReplay?: boolean;
+  /** SALES-01/02: صحيح إن باع بند/فاتورة تحت التكلفة (طُبِّق بموافقة) — للتدقيق. */
+  priceOverride?: boolean;
 }
 
 export async function createSale(input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
@@ -74,6 +80,10 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         .where(eq(invoices.sourceId, input.clientRequestId))
         .limit(1);
       if (existing[0]) {
+        // SALES-03: عزل الفرع — مفتاح idempotency يخصّ بيع فرع آخر لا يُكشَف للمستخدم (تعارض، لا تسريب فاتورة).
+        if (Number(existing[0].branchId) !== input.branchId) {
+          throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لبيع فرع آخر" });
+        }
         return {
           invoiceId: Number(existing[0].id),
           invoiceNumber: existing[0].invoiceNumber,
@@ -170,6 +180,18 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       computed.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
     );
 
+    // 6.b SALES-01/02 — بوّابة البيع بأقل من التكلفة (سدّ حرج: كاشير يبيع بسعر/خصم صفر).
+    //     المنطق مشترك في billing.isInvoiceBelowCost ⇒ لا تَنجرف سياسة POS عن قناة الطباعة.
+    //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً)؛
+    //     الهدايا (تكلفة=صفر) تَبقى مسموحة.
+    const belowCost = isInvoiceBelowCost(computed, totals.subtotal, totals.discountAmount, costTotal);
+    if (belowCost && !input.priceOverrideApproved) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "بيع بأقل من التكلفة يتطلب موافقة مدير (سعر أو خصم تحت التكلفة).",
+      });
+    }
+
     // 7. تقريب نقدي IQD للبيع النقدي الكامل: يُقرَّب الإجمالي لفئة 250، فالنقد المستلم = الإجمالي المقرّب
     //    (لا فائض/عجز وهمي عند الرفع، ولا رفض بيع نقدي عند الخفض). الفرق يُسجَّل قيد ADJUST لاحقاً.
     const roundCash = !!input.cashRoundIQD && input.payment?.method === "CASH";
@@ -217,7 +239,9 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     const insRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: input.sourceType,
-      sourceId: input.clientRequestId ?? null,
+      // TX-01: clientRequestId فارغ ("") يُخزَّن null لا "" — وإلا اصطدم على uq_invoice_source وحجب
+      // كل بيعٍ لاحق بلا مفتاح. (|| يَلتقط "" بخلاف ?? الذي يُمرّره.)
+      sourceId: input.clientRequestId || null,
       branchId: input.branchId,
       shiftId: input.shiftId ?? null,
       customerId: input.customerId ?? null,
@@ -331,7 +355,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
     }
 
-    return { invoiceId, invoiceNumber, total: toDbMoney(effectiveTotalD), status };
+    return { invoiceId, invoiceNumber, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost };
   });
 }
 

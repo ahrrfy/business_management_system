@@ -34,6 +34,10 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     const rows = [];
     const lineNets: string[] = [];
     for (const it of input.items) {
+      // PROC-01: حدّ ثقة الخدمة — money() لا يَرفض السالب وحده، فنَفحص الإشارة صراحةً
+      // (الخدمة تُستدعى أيضاً من importService/seed لا الراوتر فقط ⇒ دفاع متعمّق إلزامي).
+      if (money(it.unitPrice).lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "سعر الشراء لا يصحّ أن يكون سالباً" });
+      if (money(it.quantity).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الشراء يجب أن تكون موجبة" });
       const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
       const lineNet = round2(money(it.unitPrice).times(money(it.quantity)));
       lineNets.push(lineNet.toFixed(2));
@@ -46,8 +50,11 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
         total: lineNet.toFixed(2),
       });
     }
+    // PROC-03: نسبة الضريبة في [٠، ١٠٠] — تَمنع ضريبة سالبة تُخفّض الإجمالي/AP، أو نسبة شاذّة.
+    const taxRate = money(input.taxRatePercent ?? "0");
+    if (taxRate.lt(0) || taxRate.gt(100)) throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة يجب أن تكون بين ٠ و١٠٠" });
     const subtotal = round2(sumMoney(lineNets));
-    const tax = round2(subtotal.times(money(input.taxRatePercent ?? "0")).dividedBy(100));
+    const tax = round2(subtotal.times(taxRate).dividedBy(100));
     const total = round2(subtotal.plus(tax));
 
     const ymd = toDateStr().replace(/-/g, "");
@@ -357,6 +364,11 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     // Optional payment to supplier.
     const paidNow = money(input.payment?.amount ?? "0");
     if (paidNow.gt(0)) {
+      // PROC-05: الدفعة لا تتجاوز المتبقّي على أمر الشراء (يَمنع دفعاً غير محدود ⇒ AP سالبة/تسريب نقد).
+      const outstandingPo = money(po.total).minus(money(po.paidAmount));
+      if (paidNow.gt(outstandingPo)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز المتبقّي على أمر الشراء (${outstandingPo.toFixed(2)})` });
+      }
       // G14 (١٩/٦/٢٦): دفع نقدي للمورد يَلزم وردية مفتوحة — كان receipts.shiftId=null دائماً
       // ⇒ نقد يَخرج من الصندوق بلا تسوية Z-report ⇒ عجز وهمي عند الإغلاق.
       // shiftIdForCashTx: admin/manager ⇒ DRAWER أو TREASURY، cashier/warehouse ⇒ وردية إلزامية.

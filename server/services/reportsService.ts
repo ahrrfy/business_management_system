@@ -393,18 +393,23 @@ async function supplierOpeningBalance(supplierId: number, from?: string) {
   //   PAYMENT_OUT يطرح، PAYMENT_IN يضيف (استرداد من مورد)، RETURN.amount مخزَّن سالباً فيطرح المرتجع.
   // كان نظير العميل (customerOpeningBalance) يضمّ الاتجاهين بصحّة، بينما المورد كان PAYMENT_OUT فقط
   // ⇒ كشف حساب لا يتّزن عند استرداد من مورد أو مرتجع شراء.
+  // FI-01 (تكامل الأصول↔كشف المورد، تحقيق عدائي ٢٠/٦): اقتناء أصل على ذمّة المورد يُقيَّد PURCHASE
+  // (بلا purchaseOrderId) ويَرفع currentBalance؛ كان الكشف يُعيد بناء AP من أوامر الشراء + الدفعات
+  // فقط ⇒ شراء الأصل يَغيب فلا يتّزن الرصيد. نُدرج PURCHASE اليتيمة (purchaseOrderId IS NULL) موجبةً
+  // على AP (شراء الأصول عبر PO تُحتسَب من purchaseOrders.total ⇒ لا ازدواج).
   const entriesRow = await db
     .select({
       v: sql<string>`COALESCE(SUM(CASE
         WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'RETURN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PURCHASE'    THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         ELSE 0 END), 0)`,
     })
     .from(accountingEntries)
     .where(
       and(
-        inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN", "RETURN"]),
+        sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
         eq(accountingEntries.supplierId, supplierId),
         sql`${accountingEntries.entryDate} < ${from}`
       )
@@ -446,8 +451,10 @@ export async function getSupplierStatement(
   // كان السابق PAYMENT_OUT فقط ⇒ استرداد المورد ومرتجع الشراء يغيبان عن الكشف فلا يتّزن
   // (الرصيد الجاري ≠ المُرحَّل + مشتريات الفترة − دفعات الفترة المعروضة). الفلترة على تاريخ القيد
   // نفسه: حركة داخل الفترة على أمر أقدم تظهر (الدلالة المحاسبية).
+  // FI-01: تشمل الحركة شراء الأصول اليتيم (PURCHASE بلا purchaseOrderId) ليَظهر في الكشف ويتّزن
+  // الرصيد مع currentBalance؛ شراء PO يُعرَض من purchaseOrders أعلاه ⇒ نَستثنيه هنا (لا ازدواج).
   const payConds = [
-    inArray(accountingEntries.entryType, ["PAYMENT_OUT", "PAYMENT_IN", "RETURN"]),
+    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
     eq(accountingEntries.supplierId, supplierId),
   ];
   if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
@@ -683,32 +690,40 @@ export async function getSlowMovers(
   const branchStockFilter = opts.branchId ? sql`AND bs.branchId = ${opts.branchId}` : sql``;
   const branchSalesFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
 
+  // REP-02 (تدقيق ٢٠/٦): المخزون وآخر بيع يُجمَّعان في subquery مستقلّ لكلٍّ ⇒ لا تكرار من ضرب
+  // branchStock × invoiceItems على نفس المتغيّر. كان SUM(bs.quantity) يُضرَب بعدد صفوف البيع
+  // (انضمام شجري) ⇒ مخزون منفوخ N مرّة. الآن كل مصدر يُجمَّع مرّةً ثم يُنضَمّ على productId.
   const rows = await db.execute(sql`
     SELECT
       p.id AS productId,
       p.name AS productName,
       c.name AS categoryName,
-      CAST(COALESCE(SUM(bs.quantity), 0) AS CHAR) AS qtyInStock,
-      DATE_FORMAT(MAX(i.invoiceDate), '%Y-%m-%d') AS lastSaleDate,
-      CASE
-        WHEN MAX(i.invoiceDate) IS NULL THEN NULL
-        ELSE DATEDIFF(CURDATE(), DATE(MAX(i.invoiceDate)))
-      END AS daysSinceLastSale
+      CAST(COALESCE(st.qty, 0) AS CHAR) AS qtyInStock,
+      DATE_FORMAT(sa.lastSale, '%Y-%m-%d') AS lastSaleDate,
+      CASE WHEN sa.lastSale IS NULL THEN NULL ELSE DATEDIFF(CURDATE(), DATE(sa.lastSale)) END AS daysSinceLastSale
     FROM products p
     LEFT JOIN categories c ON c.id = p.categoryId
-    INNER JOIN productVariants v ON v.productId = p.id
-    LEFT JOIN branchStock bs ON bs.variantId = v.id ${branchStockFilter}
-    LEFT JOIN invoiceItems ii ON ii.variantId = v.id
-    LEFT JOIN invoices i
-      ON i.id = ii.invoiceId
-      AND i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
-      AND i.invoiceDate >= DATE_SUB(CURDATE(), INTERVAL ${sinceDays} DAY)
-      ${branchSalesFilter}
-    WHERE p.isActive = TRUE AND v.isActive = TRUE
-    GROUP BY p.id, p.name, c.name
-    HAVING qtyInStock > 0
-       AND (MAX(i.invoiceDate) IS NULL
-            OR DATEDIFF(CURDATE(), DATE(MAX(i.invoiceDate))) >= ${sinceDays})
+    LEFT JOIN (
+      SELECT v.productId AS pid, SUM(bs.quantity) AS qty
+      FROM productVariants v
+      JOIN branchStock bs ON bs.variantId = v.id ${branchStockFilter}
+      WHERE v.isActive = TRUE
+      GROUP BY v.productId
+    ) st ON st.pid = p.id
+    LEFT JOIN (
+      SELECT v.productId AS pid, MAX(i.invoiceDate) AS lastSale
+      FROM productVariants v
+      JOIN invoiceItems ii ON ii.variantId = v.id
+      JOIN invoices i ON i.id = ii.invoiceId
+        AND i.invoiceStatus NOT IN ('CANCELLED', 'RETURNED')
+        AND i.invoiceDate >= DATE_SUB(CURDATE(), INTERVAL ${sinceDays} DAY)
+        ${branchSalesFilter}
+      WHERE v.isActive = TRUE
+      GROUP BY v.productId
+    ) sa ON sa.pid = p.id
+    WHERE p.isActive = TRUE
+      AND COALESCE(st.qty, 0) > 0
+      AND (sa.lastSale IS NULL OR DATEDIFF(CURDATE(), DATE(sa.lastSale)) >= ${sinceDays})
     ORDER BY daysSinceLastSale IS NULL DESC, daysSinceLastSale DESC, qtyInStock DESC
     LIMIT ${limit}
   `);

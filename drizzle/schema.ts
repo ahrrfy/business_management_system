@@ -1660,13 +1660,19 @@ export const payrollRuns = mysqlTable(
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     approvedAt: timestamp("approvedAt"),
+    // SOD-01/02: مُعتمِد ودافع المسيّر — لإنفاذ «صانع≠مدقّق» وإثبات الهوية في السجلّ المالي الثابت
+    // (كان الاعتماد/الدفع لا يُسجّلان مَن نفّذهما ⇒ تعذّر إثبات وجود مُعتمِد مستقلّ).
+    approvedBy: int("approvedBy").references(() => users.id),
+    paidBy: int("paidBy").references(() => users.id),
     paidAt: timestamp("paidAt"),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
   (t) => ({
-    // G12 (١٩/٦/٢٦): UNIQUE(period, branchId) — كان UNIQUE(period) وحده يمنع فرعَين من
-    // توليد مسيّر رواتب لنفس الشهر (ER_DUP_ENTRY على الفرع الثاني). كل فرع يحتاج مسيّره.
-    periodBranchUq: unique("uq_payroll_period_branch").on(t.period, t.branchId),
+    // HR-PAY-01 (تدقيق ٢٠/٦/٢٦): UNIQUE(period) — نموذج «مسيّر واحد شهريّاً لكل الشركة» (قرار المالك).
+    // كان (period,branchId) [G12] يُتيح مسيّراً لكل فرع بينما generatePayroll يُحمّل كل موظّفي الشركة
+    // ⇒ فرعان يولّدان مسيّرين كلٌّ يدفع لكل موظّف (دفع مزدوج). التفرّد بالشهر وحده يَمنعه ذرّياً
+    // (الفحص المسبق غير قافل؛ القيد الفريد هو الحارس + الراوتر يُحوّل ER_DUP_ENTRY إلى CONFLICT).
+    periodUq: unique("uq_payroll_period").on(t.period),
     statusIdx: index("idx_payroll_status").on(t.status),
   })
 );

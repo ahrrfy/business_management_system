@@ -62,6 +62,12 @@ if (!flag("--no-backup")) {
 
 // ── الاستعادة ──
 const sql = readFileSync(file);
+// BC-05: الاستعادة يجب أن تُطابق النسخة تماماً ⇒ نُسقط القاعدة أولاً، وإلا تنجو جداول/صفوف أُنشئت
+// بعد تاريخ النسخة (mysqldump --add-drop-table يُسقط جداول النسخة فقط لا الجداول الأحدث منها).
+// النسخ تُنشأ بـ--databases فتُعيد إنشاء القاعدة بترميزها الأصلي. نسخة الأمان أعلاه تحمي الحالة الراهنة.
+const restoreSql = dbName
+  ? Buffer.concat([Buffer.from("DROP DATABASE IF EXISTS `" + dbName + "`;\n"), sql])
+  : sql;
 console.log(`• استعادة «${dbName}» من ${file}…`);
 try {
   if (flag("--native") || process.env.DB_NATIVE === "1") {
@@ -70,16 +76,18 @@ try {
     if (!m) fail("تعذّر تفكيك DATABASE_URL للوضع الأصلي (--native).");
     const [, user, pass, host, port] = m;
     const args = ["-h", host, "-P", port, "-u", user];
-    if (pass) args.push(`-p${pass}`);
-    execFileSync("mysql", args, { input: sql, stdio: ["pipe", "inherit", "inherit"] });
+    // BC-04: كلمة المرور عبر MYSQL_PWD لا `-p` على سطر الأوامر (يُكشَف في `ps` على خادم مشترك).
+    execFileSync("mysql", args, { input: restoreSql, stdio: ["pipe", "inherit", "inherit"], env: pass ? { ...process.env, MYSQL_PWD: pass } : process.env });
   } else {
-    // docker exec -i <container> mysql -uroot -p<pw>  (الناتج يحوي CREATE/USE DATABASE)
+    // docker exec -i <container> mysql -uroot  (الناتج يحوي CREATE/USE DATABASE)
+    // BC-04: كلمة المرور عبر MYSQL_PWD (docker exec -e VAR بلا قيمة يسحبها من بيئة عميل docker) لا سطر الأوامر.
     const container = process.env.DB_CONTAINER ?? "erp-mysql";
     const pw = process.env.DB_ROOT_PW ?? "erp_root_pw";
-    execFileSync("docker", ["exec", "-i", container, "mysql", "-uroot", `-p${pw}`], {
-      input: sql,
+    execFileSync("docker", ["exec", "-i", "-e", "MYSQL_PWD", container, "mysql", "-uroot"], {
+      input: restoreSql,
       stdio: ["pipe", "inherit", "inherit"],
       maxBuffer: 1024 * 1024 * 512,
+      env: { ...process.env, MYSQL_PWD: pw },
     });
   }
 } catch (e) {

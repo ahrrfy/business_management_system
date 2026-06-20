@@ -104,13 +104,17 @@ describe("periodLockService — قفل الفترات المالية", () => {
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("unlockLatestPeriod يحذف أحدث قفل ⇒ assertPeriodOpen يُسمح", async () => {
+  it("FIN-03: unlockLatestPeriod يؤرشف القفل (append-only، لا DELETE) ⇒ الفترة تُفتح والسجلّ يَبقى", async () => {
     await withTx(async (tx) => {
       await lockPeriod(tx, { cutoffDate: "2025-12-31", lockedBy: 1 });
     });
     const r = await withTx(async (tx) => unlockLatestPeriod(tx));
     expect(r.unlocked).toBe(true);
     await withTx(async (tx) => assertPeriodOpen(tx, new Date("2025-06-15T00:00:00Z")));
+    // append-only: الصفّ لم يُحذَف — يَبقى ARCHIVED للأثر التدقيقي (لا فتحٌ خفيّ بلا أثر).
+    const rows = await db().select().from(s.financialPeriods);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("ARCHIVED");
   });
 
   it("unlockLatestPeriod على بلا قفل ⇒ unlocked: false", async () => {

@@ -1,43 +1,40 @@
 /**
- * يُشغَّل قبل **كل اختبار** (setupFiles في vitest.config.ts).
- * يُفرّغ كل الجداول قبل كل اختبار لمنع تلوّث الحالة بين الاختبارات داخل الملف
- * وبَين ملفات الاختبار.
+ * يُشغَّل بَعد **كل اختبار** (setupFiles في vitest.config.ts) لتفريغ كل الجداول ومنع تلوّث الحالة
+ * بَين الاختبارات داخل الملف وبَين ملفات الاختبار.
  *
- * **القائمة ذاتية الصيانة:** نقرأ كل الجداول من information_schema لقاعدة الاختبار
- * بدل قائمة ثابتة، حتى لا تتقادم مع نمو المخطط (جداول الاختبار الأحدث —
- * stocktake، production، HR، الأصول، السندات — كانت ناقصة ⇒ سبّبت ٢٢ فشل
- * عزل في CI رغم سلامة منطق المنتج — تدقيق ١٤/٦/٢٦). الاستثناءات: جداول
- * الهجرة نفسها (__drizzle_migrations) — لا نمسّ بياناتها.
+ * **القائمة ذاتية الصيانة:** نقرأ كل الجداول من information_schema لقاعدة الاختبار بدل قائمة ثابتة
+ * (الجداول الأحدث — stocktake/production/HR/الأصول/السندات — كانت تَنقص ⇒ ٢٢ فشل عزل في CI، تدقيق
+ * ١٤/٦). الاستثناء: __drizzle_migrations.
  *
- * **DELETE بَدل TRUNCATE + beforeEach بَدل beforeAll (٢٠٢٦/٦/١٨):**
- * - MySQL 8 يَرفض TRUNCATE على parent table لها FK من child constraint
- *   (مَوثَّق رَسمياً) حتى مع SET FOREIGN_KEY_CHECKS=0 لأن TRUNCATE من DDL لا DML
- *   ⇒ كانت اختبارات voucher/financialHardening2/production تَفشل عَشوائياً.
- * - DELETE FROM من DML ⇒ يَحترم FK_CHECKS=0 ⇒ يَحذف بلا فَحص FK مُهما كانت الـFKs.
- * - beforeEach بَدل beforeAll: كل اختبار يَبدأ بقاعدة عَذراء ⇒ لا تَراكم بَين اختبارات
- *   الملف الواحد، ولا تَلوّث من ملفات سابقة. تَكلفة الأَداء مَقبولة (~100ms لكل اختبار
- *   على ~50 جَدول فارغ) مُقابِل الـ٠ flakiness.
- * - الـcache: نَكتشف الجَداول مَرّة واحدة (cached) لتَوفير ٤ms على كل beforeEach.
+ * **اتصال مُكرَّس طازج (لا تجمّع Drizzle) — إصلاح فلاكي ٢٠/٦:** بعض الاختبارات تُغلق تجمّع Drizzle
+ * (closeDb عبر truncateTables) أو تُبدّل حالته؛ الاعتماد على getPool() جَعل afterEach يَفشل/يُتخطّى
+ * بصمت أحياناً ⇒ branches لا تُحذَف ⇒ DUPLICATE KEY في الملف التالي (تراكم متقطّع). اتصال mysql
+ * مُنشأ طازجاً كلَّ afterEach مُستقلٌّ تماماً عن حالة التجمّع ⇒ تنظيف موثوق دائماً.
+ *
+ * **DELETE لا TRUNCATE:** DML تَحترم FK_CHECKS=0 (TRUNCATE وهو DDL لا يَحترمها على الجداول الأمّ).
+ * **conn.query (نصّي) لا conn.execute (مُهيَّأ):** العبارة المُهيَّأة المُخبَّأة تَبيت عبر تغيّر
+ * metadata الناتج عن DELETE+FK_CHECKS=0 ⇒ ER_TABLE_DEF_CHANGED. النصّي يُعاد تحليله كلَّ مرّة.
+ * **فشل صريح لا مُبتلَع:** أي إخفاق DELETE يَرمي باسم الجدول بدل الابتلاع الصامت الذي يُخفي التراكم.
  */
-import { sql } from "drizzle-orm";
+import mysql from "mysql2/promise";
 import { afterEach } from "vitest";
-import { getDb, getPool } from "../../db";
 
 const SKIP = new Set(["__drizzle_migrations"]);
 
+// نلتقط رابط قاعدة الاختبار **مرّةً عند التحميل** قبل أيّ اختبار: بعض الاختبارات
+// (maintenanceService.currentDbName) تُبدّل process.env.DATABASE_URL مؤقّتاً لفحص التحليل؛
+// لو قرأ التنظيف الرابط الحيّ لاتّصل بقاعدة وهمية (Access denied/SSL). الرابط الملتقَط ثابت وصحيح.
+const TEST_DB_URL = process.env.DATABASE_URL;
+
 let cachedTables: string[] | null = null;
 
-async function discoverTables(db: NonNullable<ReturnType<typeof getDb>>): Promise<string[]> {
+async function discoverTables(conn: mysql.Connection): Promise<string[]> {
   if (cachedTables) return cachedTables;
-  const rows = await db.execute(
-    sql`SELECT TABLE_NAME AS name FROM information_schema.TABLES
-        WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'`,
+  const [rows] = await conn.query<mysql.RowDataPacket[]>(
+    "SELECT TABLE_NAME AS name FROM information_schema.TABLES " +
+      "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_TYPE = 'BASE TABLE'",
   );
-  const data = ((rows as any)[0] ?? rows) as Array<{ name: string }>;
-  if (!Array.isArray(data)) {
-    throw new Error(`__setup__: information_schema returned non-array (${typeof data}) — schema discovery failed`);
-  }
-  const tables = data.map((r) => r.name).filter((n) => !SKIP.has(n));
+  const tables = rows.map((r) => r.name as string).filter((n) => !SKIP.has(n));
   // فشل-سريع: قاعدة اختبار بصفر جداول ⇒ مخطّط غير مُهيَّأ (نسي pnpm db:push) — لا نمضي صامتاً.
   if (!tables.length) {
     throw new Error("__setup__: zero tables discovered — DATABASE() empty or schema not pushed; aborting to avoid silent isolation failure");
@@ -46,34 +43,25 @@ async function discoverTables(db: NonNullable<ReturnType<typeof getDb>>): Promis
   return tables;
 }
 
-/**
- * afterEach (بَدل beforeEach): نَنظّف بَعد كل اختبار ⇒ التالي يَجد قاعدة فارغة ⇒ TRUNCATE
- * في beforeEach المَحلّية للملفات يَعمل على جَداول فارغة (FK constraint لا يُهمّ على فارغ).
- *
- * لِمَ ليس beforeEach: vitest يُسجِّل hooks بترتيب الاستيراد. setupFiles' beforeEach يُمكن أن
- * يَعمل بَعد test file's beforeEach (بَعد seedBase) فيَمسح الـseed ⇒ كانت backbone تَفشل.
- * afterEach يَتجنّب التَنازع تماماً.
- */
 afterEach(async () => {
-  const db = getDb();
-  if (!db) return;
-  const tables = await discoverTables(db);
-  // استعمل اتصالاً مفرداً مُثبَّتاً بدل pool المُجزَّأ:
-  // SET FOREIGN_KEY_CHECKS=0 هي متغيّر جلسة SESSION؛ إذا انتقلنا إلى اتصال آخر من الـpool
-  // بين الـSET والـDELETE فإن الحذف يعمل مع FK_CHECKS=1 ⇒ يفشل على الجداول الأمّ (branches…)
-  // ويُسجَّل صامتاً (catch) ⇒ تتراكم البيانات بين ملفات الاختبار وتسبّب DUPLICATE KEY في الملف التالي.
-  const conn = await getPool().getConnection();
+  if (!TEST_DB_URL) return;
+  // اتصال مُكرَّس طازج بالرابط الملتقَط — مُستقلّ عن تجمّع Drizzle (تُغلقه الاختبارات) وعن أيّ
+  // تبديل لـprocess.env.DATABASE_URL داخل اختبار.
+  const conn = await mysql.createConnection(TEST_DB_URL);
   try {
-    await conn.execute("SET FOREIGN_KEY_CHECKS = 0");
+    const tables = await discoverTables(conn);
+    await conn.query("SET FOREIGN_KEY_CHECKS = 0");
     for (const t of tables) {
-      // DELETE FROM (لا TRUNCATE) — DML تَحترم FK_CHECKS=0 على نَقيض TRUNCATE/DROP.
-      await conn.execute(`DELETE FROM \`${t}\``).catch((e: unknown) => {
+      // DELETE FROM (لا TRUNCATE) — DML تَحترم FK_CHECKS=0. فشلٌ صريح (لا ابتلاع) لئلّا يَتراكم بصمت.
+      try {
+        await conn.query(`DELETE FROM \`${t}\``);
+      } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
-        console.error(`__setup__: DELETE FROM ${t} failed: ${msg}`);
-      });
+        throw new Error(`__setup__ cleanup: DELETE FROM ${t} failed: ${msg}`);
+      }
     }
-    await conn.execute("SET FOREIGN_KEY_CHECKS = 1");
+    await conn.query("SET FOREIGN_KEY_CHECKS = 1");
   } finally {
-    conn.release();
+    await conn.end();
   }
 });

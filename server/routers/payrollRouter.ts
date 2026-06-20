@@ -71,8 +71,8 @@ export const payrollRouter = router({
   approve: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const run = await svc.approveRun(input.id);
-      await logAudit(ctx, { action: "payroll.approve", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period } });
+      const run = await svc.approveRun(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0 });
+      await logAudit(ctx, { action: "payroll.approve", entityType: "payrollRun", entityId: input.id, newValue: { period: run?.period, approvedBy: ctx.user.id } });
       return run;
     }),
 

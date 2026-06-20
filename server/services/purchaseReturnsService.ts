@@ -108,6 +108,11 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       const factor = money(baseQuantity).dividedBy(money(it.quantity)); // وحدات الأساس لكل وحدة شراء
       const bookUnitCost = round2(bookCostPerBase.times(factor)); // تكلفة وحدة الشراء بالكتب
       const reqUnit = money(it.unitPrice);
+      // PROC-02: سعر الإرجاع لا يصحّ أن يكون سالباً — السقف العلوي وحده أعمى عن الإشارة
+      // (reqUnit.gt(bookUnitCost) يَمرّ على السالب) ⇒ كان سعرٌ سالب يَعكس اتجاه AP ويَحقن قيمة.
+      if (reqUnit.lt(0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "سعر إرجاع الشراء لا يصحّ أن يكون سالباً" });
+      }
       if (reqUnit.gt(bookUnitCost)) {
         throw new TRPCError({
           code: "BAD_REQUEST",

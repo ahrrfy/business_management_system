@@ -89,8 +89,10 @@ describe("auth.login — قفل الحساب وتوحيد الخطأ", () => {
     }
     const u = (await db().select().from(s.users).where(eq(s.users.id, 1)).limit(1))[0];
     expect(u.lockedUntil).toBeTruthy();
+    // AUTH-01: القفل لا يُكشَف للعميل (لا oracle وجود/قفل) — يُرفَض الدخول حتى بالكلمة الصحيحة،
+    // لكن بالرسالة الموحّدة لا برسالة «مقفل» المميِّزة.
     await expect(caller.auth.login({ email: "admin@test.local", password: "Admin@12345" })).rejects.toThrow(
-      /مقفل/,
+      /البريد أو كلمة المرور/,
     );
   });
 

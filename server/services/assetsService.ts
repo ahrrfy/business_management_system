@@ -14,12 +14,14 @@ import {
   branches,
   employees,
   fixedAssets,
+  receipts,
   suppliers,
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
-import { requireDb, withTx } from "./tx";
+import { requireDb, withTx, type Actor } from "./tx";
+import { adjustSupplierBalance, postEntry } from "./ledgerService";
 import { extractInsertId } from "../lib/insertId";
-import { money, toDateStr, toDbMoney } from "./money";
+import { money, sumMoney, toDateStr, toDbMoney } from "./money";
 
 /* ----------------------------------------------------------- حساب الإهلاك */
 export interface DepRow {
@@ -209,7 +211,8 @@ export async function getAsset(id: number) {
     db.select().from(assetDocuments).where(eq(assetDocuments.assetId, id)),
   ]);
 
-  const maintTotal = maintenance.reduce((s, m) => s + Number(m.cost), 0);
+  // FA-05 (§٥): جمع المال عبر decimal لا Number/float (يَمنع انجراف الكسور في إجمالي الصيانة).
+  const maintTotal = sumMoney(maintenance.map((m) => m.cost)).toNumber();
   return { ...a, ...computeDepreciation(a), custody, maintenance, docs, maintTotal };
 }
 
@@ -248,7 +251,7 @@ export interface CreateAssetInput {
   linkedDeviceId?: number | null;
 }
 
-export async function createAsset(input: CreateAssetInput) {
+export async function createAsset(input: CreateAssetInput, actor: Actor) {
   const id = await withTx(async (tx) => {
     const code = await nextAssetCode(tx);
     const [res] = await tx.insert(fixedAssets).values({
@@ -271,6 +274,34 @@ export async function createAsset(input: CreateAssetInput) {
       linkedDeviceId: input.linkedDeviceId ?? null,
     });
     const newId = extractInsertId(res);
+
+    // FI-01/FA-01 (تدقيق ٢٠/٦، قرار المالك «كل إضافة = شراء جديد يُقيَّد»، ولا أصول قائمة سابقاً):
+    // اقتناء الأصل يُرحَّل للدفتر فيُقابله التزام/نقد ⇒ لا تُنفَخ حقوق الملكية (أصل بلا مصدر تمويل).
+    // مورّد ⇒ ذمم دائنة AP + قيد PURCHASE (يُسدَّد لاحقاً بسند). بلا مورّد ⇒ نقد PAYMENT_OUT من الخزينة.
+    const value = money(input.purchaseValue);
+    const acqBranch = input.branchId ?? actor.branchId ?? null;
+    const acqDate = new Date(input.purchaseDate);
+    if (value.gt(0)) {
+      if (input.supplierId) {
+        await postEntry(tx, {
+          entryType: "PURCHASE", branchId: acqBranch, supplierId: input.supplierId,
+          cost: value, amount: value, entryDate: acqDate,
+          dedupeKey: `ASSET_ACQ:${newId}`, notes: `اقتناء أصل ${code} (آجل — مورّد)`,
+        });
+        await adjustSupplierBalance(tx, input.supplierId, value);
+      } else {
+        const rRes = await tx.insert(receipts).values({
+          branchId: acqBranch, cashBucket: "TREASURY", direction: "OUT",
+          amount: toDbMoney(value), paymentMethod: "CASH", status: "COMPLETED", createdBy: actor.userId,
+        });
+        const receiptId = extractInsertId(rRes);
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT", branchId: acqBranch, receiptId, amount: value, entryDate: acqDate,
+          dedupeKey: `ASSET_ACQ:${newId}`, notes: `اقتناء أصل ${code} (نقدي)`,
+        });
+      }
+    }
+
     // إن سُلّم بعهدة عند الإنشاء، افتح سطر عهدة جارية من تاريخ الشراء.
     if (input.custodianId) {
       await tx.insert(assetCustodyLog).values({
@@ -419,7 +450,7 @@ export interface DisposeInput {
 }
 
 /** إخراج من الخدمة (retired) أو استبعاد ببيع/خردة (disposed) مع احتساب الربح/الخسارة. */
-export async function disposeAsset(assetId: number, input: DisposeInput) {
+export async function disposeAsset(assetId: number, input: DisposeInput, actor: Actor) {
   await withTx(async (tx) => {
     const a = await loadForUpdate(tx, assetId);
     if (a.status === "disposed") throw new Error("الأصل مُستبعَد سلفاً");
@@ -427,6 +458,67 @@ export async function disposeAsset(assetId: number, input: DisposeInput) {
       .update(assetCustodyLog)
       .set({ toDate: input.date })
       .where(and(eq(assetCustodyLog.assetId, assetId), isNull(assetCustodyLog.toDate)));
+
+    // FA-02 (تدقيق ٢٠/٦، قرار المالك): التصرّف يُرحَّل للدفتر — نقد + ربح/خسارة (كانا يُهمَلان: نقد غير
+    // مرئيّ والربح/الخسارة يُحسَب للعرض فقط). NBV عند تاريخ التصرّف (computeDepreciation يَتوقّف عند
+    // disposalDate). الربح/الخسارة = المتحصّل − NBV. (الاتساق الكامل مع الميزانية يكتمل مع FI-02 قيد الإهلاك.)
+    const nbv = money(
+      computeDepreciation(
+        {
+          purchaseValue: a.purchaseValue,
+          salvageValue: a.salvageValue ?? "0",
+          usefulLifeYears: a.usefulLifeYears,
+          depreciationMethod: (a.depreciationMethod as "sl" | "db") ?? "sl",
+          purchaseDate: a.purchaseDate as unknown as string,
+          status: a.status,
+          disposalDate: input.date,
+        },
+        new Date(input.date),
+      ).bookValue,
+    );
+    const proceeds = input.kind === "disposed" ? money(input.value ?? "0") : new Decimal(0);
+    const branchId = a.branchId != null ? Number(a.branchId) : (actor.branchId || null);
+    const entryDate = new Date(input.date);
+
+    // (أ) النقد المتحصّل: إيصال IN (خزينة) + قيد PAYMENT_IN ⇒ النقد مرئيّ في الدفتر والخزينة (لا يُجيَّب).
+    if (proceeds.gt(0)) {
+      const rRes = await tx.insert(receipts).values({
+        branchId,
+        cashBucket: "TREASURY",
+        direction: "IN",
+        amount: toDbMoney(proceeds),
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        createdBy: actor.userId,
+      });
+      const receiptId = extractInsertId(rRes);
+      await postEntry(tx, {
+        entryType: "PAYMENT_IN",
+        branchId,
+        receiptId,
+        amount: proceeds,
+        entryDate,
+        dedupeKey: `ASSET_DISP:${assetId}`,
+        notes: `متحصّل تصرّف بأصل ${a.code}`,
+      });
+    }
+
+    // (ب) الربح/الخسارة = المتحصّل − NBV (موجب=ربح إيراد، سالب=خسارة) ⇒ يَظهر في P&L.
+    //     retired (بلا متحصّل) ⇒ خسارة = −NBV (شطب القيمة الدفترية المتبقّية).
+    const gain = proceeds.minus(nbv);
+    if (!gain.isZero()) {
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId,
+        revenue: gain,
+        profit: gain,
+        amount: gain,
+        entryDate,
+        dedupeKey: `ASSET_DISP_PL:${assetId}`,
+        notes: `ربح/خسارة تصرّف بأصل ${a.code} (متحصّل ${proceeds.toFixed(2)} − NBV ${nbv.toFixed(2)})`,
+      });
+    }
+
     await tx
       .update(fixedAssets)
       .set({
@@ -447,7 +539,8 @@ export async function dashboard() {
   const live = all.filter((a) => a.status === "active" || a.status === "maintenance" || a.status === "retired");
 
   const totalAssets = live.length;
-  const purchaseValue = live.reduce((s, a) => s + Number(a.purchaseValue), 0);
+  // FA-05 (§٥): جمع قيم الشراء عبر decimal لا Number/float.
+  const purchaseValue = sumMoney(live.map((a) => a.purchaseValue)).toNumber();
   const bookValue = live.reduce((s, a) => s + a.bookValue, 0);
   const accumulated = live.reduce((s, a) => s + a.accumulated, 0);
   const inMaintenance = live.filter((a) => a.status === "maintenance").length;

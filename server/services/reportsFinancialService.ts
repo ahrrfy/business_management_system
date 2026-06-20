@@ -120,6 +120,19 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
     `),
   )[0] ?? { amount: "0" };
 
+  // FA-02 (تكامل الأصول↔P&L، تحقيق عدائي ٢٠/٦): ربح/خسارة التصرّف بالأصول قيدُ ADJUST بمفتاح
+  // ASSET_DISP_PL، revenue=الربح موقَّعاً (موجب ربح/سالب خسارة). كان يُهمَل في P&L (يَجمع SALE/RETURN
+  // فقط) ⇒ صافي الربح لا يَعكس بيع الأصول. نَجمعه هنا ونُدرجه سطراً غير تشغيليّ في صافي الربح.
+  const dpl = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.revenue), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'ASSET_DISP_PL:%'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -142,6 +155,15 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
   if (stockLoss.gt(0)) {
     expenseLines.push({ key: "STOCK_LOSS", label: "نثرية وتلف (مخزون)", amount: toDbMoney(stockLoss) });
     totalExpenses = totalExpenses.add(stockLoss);
+  }
+
+  // FA-02: أثر صافٍ على الربح — الخسارة مصروفٌ موجب يَرفع totalExpenses، والربح سالبٌ (دخل) يَخفضه؛
+  // وفي الحالتين netProfit = grossProfit − totalExpenses يَعكس ربح/خسارة الأصل صحيحاً.
+  const disposalPL = money(dpl.amount ?? 0); // موجب=ربح، سالب=خسارة
+  if (!disposalPL.isZero()) {
+    const expenseEffect = disposalPL.neg();
+    expenseLines.push({ key: "ASSET_DISPOSAL_PL", label: "صافي ربح/خسارة بيع أصول", amount: toDbMoney(expenseEffect) });
+    totalExpenses = totalExpenses.add(expenseEffect);
   }
 
   const netProfit = grossProfit.sub(totalExpenses);

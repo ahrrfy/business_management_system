@@ -152,15 +152,16 @@ export const stocktakeRouter = router({
   assignableUsers: warehouseProcedure.query(async () => {
     const db = getDb();
     if (!db) return [] as { id: number; name: string; role: string }[];
+    // AUTHZ-4: لا نَسحب البريد إطلاقاً لمنتقٍ يَبلغه أمين المخزن — لا تسريب بريد (ولا اشتقاق اسم منه).
     const rows = await db
-      .select({ id: users.id, name: users.name, email: users.email, role: users.role })
+      .select({ id: users.id, name: users.name, role: users.role })
       .from(users)
       .where(eq(users.isActive, true));
     return rows
       .map((u) => {
         const id = Number(u.id);
-        // الاسم قد يكون فارغاً ⇒ البديل: الجزء المحلي من البريد ثم «مستخدم #id».
-        const name = u.name?.trim() || u.email?.split("@")[0] || `مستخدم #${id}`;
+        // الاسم قد يكون فارغاً ⇒ البديل «مستخدم #id» (لا نشتقّ من البريد كي لا يُكشَف).
+        const name = u.name?.trim() || `مستخدم #${id}`;
         return { id, name, role: u.role };
       })
       .sort((a, b) => a.name.localeCompare(b.name, "ar"));

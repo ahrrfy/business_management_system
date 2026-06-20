@@ -77,7 +77,7 @@ export const assetsRouter = router({
       // قيد UNIQUE على code هو الحارس النهائي لترقيم AST تحت FOR UPDATE ⇒ أعد المحاولة على التضارب.
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const a = await svc.createAsset(input);
+          const a = await svc.createAsset(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role });
           await logAudit(ctx, {
             action: "asset.create",
             entityType: "fixedAsset",
@@ -185,7 +185,7 @@ export const assetsRouter = router({
       if (input.kind === "disposed" && !input.value) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "أدخل قيمة العائد عند الاستبعاد ببيع/خردة (صفر إن بلا عائد)." });
       }
-      const a = await svc.disposeAsset(input.assetId, input);
+      const a = await svc.disposeAsset(input.assetId, input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role });
       await logAudit(ctx, { action: "asset.dispose", entityType: "fixedAsset", entityId: input.assetId, newValue: { kind: input.kind, value: input.value ?? null } });
       return a;
     }),

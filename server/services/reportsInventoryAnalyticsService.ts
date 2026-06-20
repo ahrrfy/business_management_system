@@ -8,6 +8,7 @@
 //   • invoices: status ← اسم عمود DB **invoiceStatus**، invoiceDate (عمود DATE/timestamp).
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
+import { signedMoveQty } from "./inventoryService";
 import { money, toDbMoney } from "./money";
 
 /** فكّ نتيجة mysql2 (الصفوف في الفهرس 0). */
@@ -18,23 +19,8 @@ function rowsOf(res: unknown): any[] {
 
 /* ============================ بطاقة الصنف (Kardex) ============================ */
 
-/** إشارة الكمية بحسب نوع الحركة. الكمية مخزَّنة موجبةً دائماً (الاتجاه من النوع):
- *  IN/RETURN/TRANSFER_IN ⇒ +  |  OUT/TRANSFER_OUT ⇒ −  |  ADJUST ⇒ كما هي (الخادم لا يخزّن إشارة التسوية).
- *  الكميات أعداد صحيحة (الوحدة الأساس) ⇒ حساب الرصيد المتحرّك بالأعداد الصحيحة بلا انجراف. */
-function signOf(movementType: string): 1 | -1 | 0 {
-  switch (movementType) {
-    case "IN":
-    case "RETURN":
-    case "TRANSFER_IN":
-      return 1;
-    case "OUT":
-    case "TRANSFER_OUT":
-      return -1;
-    default:
-      // ADJUST (وأي نوع غير متوقّع): تُحسب كما خُزّنت (موجبة) — لا نتظاهر بإشارة لا نعرفها.
-      return 1;
-  }
-}
+// INV-001: إشارة الحركات (بما فيها ADJUST من علامة النص) وُحِّدت في inventoryService.signedMoveQty
+// — مصدر واحد يَستعمله الكاردكس والجرد ⇒ لا تَباعُد في حساب الرصيد.
 
 export interface ItemLedgerRow {
   id: number;
@@ -102,16 +88,17 @@ export async function getItemLedger(opts: {
   if (opts.from) {
     const opRows = rowsOf(
       await db.execute(sql`
-        SELECT im.movementType AS movementType, CAST(COALESCE(SUM(im.quantity), 0) AS CHAR) AS qty
+        SELECT im.movementType AS movementType, im.quantity AS quantity, im.notes AS notes
         FROM inventoryMovements im
         WHERE im.variantId = ${opts.variantId}
           AND DATE(im.createdAt) < ${opts.from}
           ${branchCond}
-        GROUP BY im.movementType
       `),
     );
     for (const r of opRows) {
-      openingBalance += signOf(String(r.movementType)) * Number(r.qty ?? 0);
+      // INV-001: ADJUST يُخزَّن مطلقاً والاتجاه في النص ⇒ SUM(quantity) المُجمَّع يَفقد الإشارة؛
+      // نجمع مُوقَّعاً صفّاً صفّاً عبر signedMoveQty (يستعيد إشارة ADJUST من «(فرق ±D)»).
+      openingBalance += signedMoveQty(String(r.movementType), Number(r.quantity ?? 0), r.notes != null ? String(r.notes) : null);
     }
   }
 
@@ -125,6 +112,7 @@ export async function getItemLedger(opts: {
         DATE_FORMAT(im.createdAt, '%Y-%m-%d') AS date,
         im.movementType AS movementType,
         im.quantity AS quantity,
+        im.notes AS notes,
         im.referenceType AS referenceType,
         im.referenceId AS referenceId
       FROM inventoryMovements im
@@ -138,7 +126,7 @@ export async function getItemLedger(opts: {
 
   let running = openingBalance;
   const rows: ItemLedgerRow[] = moveRows.map((r) => {
-    const signed = signOf(String(r.movementType)) * Number(r.quantity ?? 0);
+    const signed = signedMoveQty(String(r.movementType), Number(r.quantity ?? 0), r.notes != null ? String(r.notes) : null);
     running += signed;
     const refType = r.referenceType ? String(r.referenceType) : null;
     const refId = r.referenceId == null ? null : Number(r.referenceId);

@@ -10,7 +10,7 @@
  * نقطة التهيئة: periodRouter.lock/unlock بـadminProcedure.
  */
 import { TRPCError } from "@trpc/server";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq } from "drizzle-orm";
 import { financialPeriods } from "../../drizzle/schema";
 import type { Tx } from "../db";
 
@@ -83,14 +83,17 @@ export async function lockPeriod(tx: Tx, input: LockPeriodInput): Promise<{ id: 
   return { id: insertId };
 }
 
-/** فتح أحدث قفل LOCKED (DELETE — لا soft delete، السجلات الأخرى تبقى ARCHIVED للأرشفة). */
+/** فتح أحدث قفل: FIN-03 (تدقيق ٢٠/٦) — append-only لا DELETE. نُحوّل الصفّ إلى ARCHIVED بدل حذفه
+ *  ⇒ getActiveLock (يُرشّح LOCKED) يَتجاوزه فتُفتَح الفترة، والسجلّ يَبقى للأثر التدقيقي. كان DELETE
+ *  الحرفي يَمحو القفل بلا أثر ⇒ فتحٌ خفيّ + قيدٌ بأثر رجعي بلا كشف (مناعة الإقفال قابلة للعكس بصمت). */
 export async function unlockLatestPeriod(tx: Tx): Promise<{ unlocked: boolean }> {
   const existing = await getActiveLock(tx);
   if (!existing) return { unlocked: false };
 
   await tx
-    .delete(financialPeriods)
-    .where(eq(financialPeriods.cutoffDate, existing.cutoffDate));
+    .update(financialPeriods)
+    .set({ status: "ARCHIVED" })
+    .where(and(eq(financialPeriods.status, "LOCKED"), eq(financialPeriods.cutoffDate, existing.cutoffDate)));
   return { unlocked: true };
 }
 
