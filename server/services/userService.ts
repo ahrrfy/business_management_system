@@ -136,6 +136,11 @@ export async function createUser(input: CreateUserInput, _actor: Actor) {
         permissionsOverride: input.permissionsOverride ?? null,
         mustChangePassword: mustChange,
         tempPasswordExpiresAt: expiresAt,
+        // AUTH-02: حدّ الإبطال أقدم بثانيتين من الإنشاء كي لا تُرفَض أوّل جلسةٍ يُصدرها دخولٌ
+        // يقع في نفس ثانية الإنشاء (الإبطال يرفض iat <= validFromSec). نطرح ٢٠٠٠ms (لا ١٠٠٠)
+        // لأنّ عمود TIMESTAMP يُقرِّب لأقرب ثانية ⇒ قد يستردّ التقريب ~٥٠٠ms؛ ثانيتان تضمنان
+        // بقاء الحدّ المخزَّن أصغرَ تماماً من ثانية الدخول اللاحق.
+        sessionsValidFrom: new Date(Date.now() - 2000),
       });
       const userId = extractInsertId(res);
       return { userId };
@@ -231,7 +236,11 @@ export async function resetUserPassword(
   });
 }
 
-/** تغيير كلمة مرور المستخدم بنفسه — يصفّر إلزام التغيير وانتهاء الصلاحية. */
+/**
+ * تغيير كلمة مرور المستخدم بنفسه — يصفّر إلزام التغيير وانتهاء الصلاحية.
+ * يُعيد `validFrom` (لحظة إبطال الجلسات) كي يُعيد الراوتر إصدار كوكي صاحب الجلسة
+ * بـ`iat` أكبر تماماً منها فلا يُطرَد (انظر getUserFromRequest: `iat <= validFromSec` يُرفض).
+ */
 export async function changePassword(userId: number, oldPassword: string, newPassword: string) {
   return withTx(async (tx) => {
     const u = (await tx.select().from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
@@ -243,13 +252,14 @@ export async function changePassword(userId: number, oldPassword: string, newPas
     if (oldPassword === newPassword) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "كلمة المرور الجديدة يجب أن تختلف عن الحالية." });
     }
+    const validFrom = new Date();
     await tx.update(users).set({
       passwordHash: hashPassword(newPassword),
-      sessionsValidFrom: new Date(),
+      sessionsValidFrom: validFrom,
       mustChangePassword: false,
       tempPasswordExpiresAt: null,
     }).where(eq(users.id, userId));
-    return { userId, success: true };
+    return { userId, success: true, validFrom };
   });
 }
 
