@@ -156,6 +156,7 @@ export const suppliers = mysqlTable(
     supplierCategory: varchar("supplierCategory", { length: 40 }),
     leadTimeDays: int("leadTimeDays"),
     minOrderAmount: decimal("minOrderAmount", { precision: 15, scale: 2 }),
+    // 0018: DB-level CHECK (rating BETWEEN 0 AND 5، يسمح بـNULL) أُضيف في migration 0018.
     rating: int("rating"),
     iban: varchar("iban", { length: 64 }),
     bankName: varchar("bankName", { length: 120 }),
@@ -230,6 +231,7 @@ export const productVariants = mysqlTable(
     variantName: varchar("variantName", { length: 255 }),
     color: varchar("color", { length: 60 }),
     size: varchar("size", { length: 60 }),
+    // 0018: DB-level CHECK (costPrice >= 0) أُضيف في migration 0018.
     costPrice: decimal("costPrice", { precision: 15, scale: 2 }).default("0").notNull(),
     minStock: int("minStock").default(0),
     reorderPoint: int("reorderPoint").default(0),
@@ -297,6 +299,8 @@ export const branchStock = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "cascade" }),
     branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    // DB-01: لا CHECK(quantity>=0) — خدمات الطباعة (allowNegative) تَدفع الرصيد سالباً عمداً (قرار عمل)؛
+    // حارس البيع الزائد تطبيقيّ للبيع العاديّ. أُقصِي من 0018 لأنّ قيد القاعدة يَكسر بيع الطباعة.
     quantity: int("quantity").default(0).notNull(),
     // آخر جرد معتمد شمل هذا الصنف في هذا الفرع — يغذّي «آخر جرد» والجرد الدوري ABC.
     lastCountedAt: timestamp("lastCountedAt"),
@@ -386,6 +390,8 @@ export const invoices = mysqlTable(
     priceTier: mysqlEnum("priceTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL").notNull(),
     invoiceDate: timestamp("invoiceDate").defaultNow().notNull(),
     dueDate: date("dueDate"),
+    // 0018: DB-level CHECK (>= 0) أُضيف على subtotal/total/paidAmount في migration 0018.
+    // (cashRoundingAdjustment موقَّع عمداً ⇒ مُستثنى.)
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
@@ -432,6 +438,7 @@ export const invoiceItems = mysqlTable(
     variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
     productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
     workOrderId: bigint("workOrderId", { mode: "number" }),
+    // 0018: DB-level CHECK (>= 0) أُضيف على quantity/baseQuantity/unitPrice/total في migration 0018.
     quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
     baseQuantity: int("baseQuantity").notNull(),
     returnedBaseQuantity: int("returnedBaseQuantity").default(0).notNull(),
@@ -522,6 +529,7 @@ export const receipts = mysqlTable(
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     shiftId: bigint("shiftId", { mode: "number" }).references(() => shifts.id),
     direction: mysqlEnum("direction", ["IN", "OUT"]).default("IN").notNull(),
+    // 0018: DB-level CHECK (amount >= 0) أُضيف في migration 0018 (المبلغ موجب؛ الاتجاه من `direction`).
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     paymentMethod: mysqlEnum("paymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).notNull(),
     /**
@@ -627,6 +635,7 @@ export const expenses = mysqlTable(
       "MARKETING",
       "OTHER",
     ]).default("OTHER").notNull(),
+    // 0018: DB-level CHECK (amount >= 0) أُضيف في migration 0018.
     amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
     paymentMethod: mysqlEnum("expensePaymentMethod", ["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]).default("CASH").notNull(),
     // cash-treasury-mode: مرآة receipts.cashBucket — DRAWER=درج كاشير، TREASURY=خزينة إدارية.
@@ -816,6 +825,7 @@ export const purchaseOrders = mysqlTable(
     expectedDeliveryDate: date("expectedDeliveryDate"),
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    // 0018: DB-level CHECK (>= 0) أُضيف على total/paidAmount في migration 0018.
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     status: mysqlEnum("poStatus", ["DRAFT", "SENT", "CONFIRMED", "RECEIVED", "CANCELLED"]).default("DRAFT").notNull(),
@@ -844,6 +854,7 @@ export const purchaseOrderItems = mysqlTable(
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).notNull().references(() => purchaseOrders.id, { onDelete: "cascade" }),
     variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
     productUnitId: bigint("productUnitId", { mode: "number" }).references(() => productUnits.id),
+    // 0018: DB-level CHECK (>= 0) أُضيف على quantity/baseQuantity/unitPrice/total في migration 0018.
     quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
     baseQuantity: int("baseQuantity").notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
@@ -954,6 +965,7 @@ export const employees = mysqlTable(
     governorate: varchar("governorate", { length: 80 }),
     district: varchar("district", { length: 120 }),
     addressLandmark: varchar("addressLandmark", { length: 255 }),
+    // 0018: UNIQUE(nationalId) — يسمح بتعدّد NULL، يفرض التفرّد على القيم الفعلية فقط (حارس بنيوي ضدّ ازدواج الموظف).
     nationalId: varchar("nationalId", { length: 40 }),
     emergencyContactName: varchar("emergencyContactName", { length: 150 }),
     emergencyContactPhone: varchar("emergencyContactPhone", { length: 20 }),
@@ -976,6 +988,8 @@ export const employees = mysqlTable(
     activeIdx: index("idx_emp_active").on(table.isActive),
     statusIdx: index("idx_emp_status").on(table.employmentStatus),
     deptIdx: index("idx_emp_dept").on(table.department),
+    // 0018: تفرّد الرقم الوطني (تعدّد NULL مسموح). أُضيف يدوياً في migration 0018.
+    nationalIdUq: unique("uq_employee_national_id").on(table.nationalId),
   })
 );
 
@@ -1718,6 +1732,7 @@ export const jobApplicants = mysqlTable(
     email: varchar("email", { length: 120 }),
     experience: varchar("experience", { length: 120 }),
     education: varchar("education", { length: 200 }),
+    // 0018: DB-level CHECK (rating BETWEEN 0 AND 5، يسمح بـNULL) أُضيف في migration 0018.
     rating: int("rating").default(0),
     notes: text("notes"),
     cvFileKey: varchar("cvFileKey", { length: 512 }),
