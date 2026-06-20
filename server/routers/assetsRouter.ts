@@ -93,6 +93,23 @@ export const assetsRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء الأصل" });
     }),
 
+  // FI-02: ترحيل إهلاك شهر (تشغيل يدويّ أو عبر مهمة دورية) — assets/FULL + تدقيق. idempotent.
+  postDepreciation: assetWrite
+    .input(z.object({ year: z.number().int().min(2000).max(2200), month: z.number().int().min(1).max(12) }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await svc.postMonthlyDepreciation(input.year, input.month, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 0,
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "asset.depreciation.post",
+        entityType: "fixedAsset",
+        newValue: { period: res.period, assetsPosted: res.assetsPosted, totalDepreciation: res.totalDepreciation },
+      });
+      return res;
+    }),
+
   update: assetWrite
     .input(
       z.object({

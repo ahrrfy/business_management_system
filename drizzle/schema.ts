@@ -1549,6 +1549,9 @@ export const fixedAssets = mysqlTable(
     usefulLifeYears: int("usefulLifeYears").notNull(),
     /** sl = القسط الثابت، db = القسط المتناقص المضاعف. */
     depreciationMethod: mysqlEnum("depreciationMethod", ["sl", "db"]).default("sl").notNull(),
+    /** FI-02: الإهلاك المتراكم المُرحَّل للدفتر — يَتتبّع computeDepreciation عبر الترحيل الشهري؛
+     *  الميزانية تَقرأ NBV = purchaseValue − هذا العمود. */
+    accumulatedDepreciation: decimal("accumulatedDepreciation", { precision: 15, scale: 2 }).default("0").notNull(),
 
     condition: varchar("condition", { length: 60 }),
     warrantyEnd: date("warrantyEnd", { mode: "string" }),
