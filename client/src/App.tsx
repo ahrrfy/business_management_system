@@ -97,6 +97,8 @@ import InventoryValuation from "@/pages/InventoryValuation";
 import StockStatus from "@/pages/StockStatus";
 import ItemLedger from "@/pages/ItemLedger";
 import AbcAnalysis from "@/pages/AbcAnalysis";
+import Treasury from "@/pages/Treasury";
+import TreasuryTransfers from "@/pages/TreasuryTransfers";
 import TreasuryReport from "@/pages/TreasuryReport";
 import ExpensesReport from "@/pages/ExpensesReport";
 import CashOrphanReport from "@/pages/CashOrphanReport";
@@ -235,6 +237,8 @@ export default function App() {
       <Route path="/vouchers/receipt/new"><Shell><VoucherReceiptNew /></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
       <Route path="/shifts"><Shell><Shifts /></Shell></Route>
+      <Route path="/treasury"><Shell><Treasury /></Shell></Route>
+      <Route path="/treasury/transfers"><Shell><TreasuryTransfers /></Shell></Route>
       <Route path="/reports"><Shell><ReportsCenter /></Shell></Route>
       <Route path="/reports/profit-loss"><Shell><RequireRole roles={["admin","manager"]}><ProfitLoss /></RequireRole></Shell></Route>
       <Route path="/reports/general-ledger"><Shell><RequireRole roles={["admin","manager"]}><GeneralLedger /></RequireRole></Shell></Route>

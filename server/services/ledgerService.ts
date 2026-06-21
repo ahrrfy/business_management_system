@@ -14,7 +14,11 @@ export type EntryType =
   | "ADJUST"
   | "OPENING"
   | "INTERNAL_USE" // نثرية داخلية: صرف مخزون كمصروف بالكلفة (بلا نقد)
-  | "WASTAGE"; // تلف/هدر: صرف مخزون كخسارة بالكلفة (بلا نقد)
+  | "WASTAGE" // تلف/هدر: صرف مخزون كخسارة بالكلفة (بلا نقد)
+  // treasury-stage2: حركات نقد لا تَمسّ revenue/cost (يَجِب على تقارير الإيراد استثناءها).
+  | "CASH_HANDOVER"     // تسليم وردية → خزينة (نقل بين دلوَين داخل نفس الفرع)
+  | "CASH_TRANSFER_OUT" // تحويل نقدي بين الفروع — الإرسال
+  | "CASH_TRANSFER_IN"; // تحويل نقدي بين الفروع — الاستلام
 
 export interface EntryInput {
   entryType: EntryType;
