@@ -11,6 +11,7 @@ import { D, roundCashIQD, round2 } from "@/lib/money";
 import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printDoc, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { useMediaQuery } from "@/hooks/useMobile";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -299,6 +300,9 @@ export default function POS() {
   const [bridge,         setBridge]         = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
   const [showCustPicker, setShowCustPicker] = useState(false);
   const [draftRestored,  setDraftRestored]  = useState(false);
+
+  // تحت 1024px (اللوحي/الأصغر) تُكدَّس لوحتا الكاشير عمودياً بدل الصفّ الأفقي ذي العرض الثابت.
+  const stacked = useMediaQuery("(max-width: 1023px)");
 
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -805,11 +809,12 @@ export default function POS() {
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
 
       {/* Body */}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden", padding: "7px 8px 8px", gap: 7, minHeight: 0 }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: stacked ? "column-reverse" : "row", overflow: "hidden", padding: "7px 8px 8px", gap: 7, minHeight: 0 }}>
 
         {/* Payment Panel (right in RTL) */}
         <PaymentPanel
           C={C}
+          stacked={stacked}
           total={total}
           payInput={activeTab.payInput}
           setPayInput={setPayInput}
@@ -1210,8 +1215,8 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
       </div>
 
       {/* Table */}
-      <div style={{ flex: 1, overflowY: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+      <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
+        <table style={{ width: "100%", minWidth: 540, borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ position: "sticky", top: 0, zIndex: 2 }}>
               <th style={{ ...TH, width: 32 }}>#</th>
@@ -1314,9 +1319,10 @@ interface PaymentPanelProps {
   onPay: () => void; onQuickPay: () => void;
   cartLen: number; selId: number | null;
   isPending: boolean; canPay: boolean;
+  stacked: boolean;
 }
 
-function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay }: PaymentPanelProps) {
+function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, stacked }: PaymentPanelProps) {
 
   const modeStyle = (active: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
@@ -1356,7 +1362,7 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
     : "المبلغ المستلم";
 
   return (
-    <div style={{ width: 420, flexShrink: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+    <div style={{ width: stacked ? "100%" : 420, maxWidth: "100%", flexShrink: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
 
       {/* Total */}
       <div style={{ padding: "8px 13px", background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>

@@ -1,9 +1,10 @@
 import { ThemeToggle } from "@/components/ThemeToggle";
 import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { openSearch } from "@/lib/searchEvents";
-import { Search } from "lucide-react";
+import { Menu, Search } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
@@ -177,6 +178,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   const [openGroups, setOpenGroups] = useState<Set<string>>(() => loadOpenGroups());
 
+  // درج التنقّل للأجهزة اللوحية/الأصغر (<lg) — يُغلق تلقائياً عند تغيّر المسار.
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => {
+    setNavOpen(false);
+  }, [loc]);
+
   // تفتح المجموعة التي تحتوي الصفحة النشطة تلقائياً
   const activeGroupKey = useMemo(() => {
     for (const g of NAV_GROUPS) {
@@ -209,15 +216,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const isAdmin = me.data?.role === "admin";
   const isManager = isAdmin || me.data?.role === "manager";
 
-  return (
-    <div className="min-h-screen flex bg-muted/30" dir="rtl">
-      <aside className="w-60 shrink-0 border-l bg-card flex flex-col">
-        {/* الرأس */}
-        <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
-          <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
-          <ThemeToggle />
-        </div>
-
+  const sidebarInner = (
+    <>
         {/* شريط البحث — يفتح CommandPalette */}
         <div className="px-2 pt-2 pb-1">
           <button
@@ -328,8 +328,47 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             تسجيل الخروج
           </Button>
         </div>
+    </>
+  );
+
+  return (
+    <div className="min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
+      {/* الشريط الجانبي — سطح المكتب (≥lg) */}
+      <aside className="hidden lg:flex w-60 shrink-0 border-l bg-card flex-col">
+        <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
+          <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
+          <ThemeToggle />
+        </div>
+        {sidebarInner}
       </aside>
-      <main className="flex-1 p-6 overflow-auto">{children}</main>
+
+      {/* الشريط العلوي + درج التنقّل — اللوحي/الأصغر (<lg). Sheet جذرٌ بلا DOM فيبقى
+          الـheader طفلاً مباشراً للحاوية، وSheetTrigger يُنسّق الفتح/الإغلاق (يتجنّب
+          مشكلة نقرة الفتح التي تصل لطبقة الإغلاق في النمط المُتحكَّم به يدوياً). */}
+      <Sheet open={navOpen} onOpenChange={setNavOpen}>
+        <header className="lg:hidden flex items-center justify-between gap-2 border-b bg-card px-3 py-2">
+          <SheetTrigger asChild>
+            <button
+              type="button"
+              aria-label="فتح القائمة"
+              className="flex size-9 items-center justify-center rounded-md border border-border/60 text-foreground transition-colors hover:bg-accent"
+            >
+              <Menu className="size-5" />
+            </button>
+          </SheetTrigger>
+          <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
+          <ThemeToggle />
+        </header>
+
+        <SheetContent side="right" dir="rtl" className="w-72 p-0">
+          <SheetHeader className="border-b px-4 py-4 text-right">
+            <SheetTitle>الرؤية العربية</SheetTitle>
+          </SheetHeader>
+          {sidebarInner}
+        </SheetContent>
+      </Sheet>
+
+      <main className="flex-1 p-3 md:p-6 overflow-auto">{children}</main>
     </div>
   );
 }

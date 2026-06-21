@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { D, fmtAr } from "@/lib/money";
 import { fmtTime } from "@/lib/date";
+import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
 
 /* ═══════════ DARK-MODE HOOK ═══════════ */
@@ -506,6 +507,7 @@ function MetricsBar() {
         borderBottom: `1px solid ${T.metricsBord}`,
         padding: "10px 0",
         display: "flex",
+        flexWrap: "wrap",
         gap: 12,
       }}
     >
@@ -515,6 +517,7 @@ function MetricsBar() {
             key={i}
             style={{
               flex: 1,
+              minWidth: 150,
               height: 50,
               borderRadius: 11,
               padding: "0 14px",
@@ -754,12 +757,17 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
   const T = useT();
   const me = trpc.auth.me.useQuery(); // مُخزَّن مؤقتاً (deduped) — لا طلب إضافي.
   const isAdmin = me.data?.role === "admin";
+  // عدد الأعمدة متجاوب: ٦ على سطح المكتب (≥lg، بلا تغيير)، ٣ على اللوحي، ٢ على الأصغر.
+  // (تُستدعى الـhooks قبل أي عودة مبكرة — قاعدة Hooks.)
+  const isXNarrow = useMediaQuery("(max-width: 640px)");
+  const isNarrow = useMediaQuery("(max-width: 1023px)");
+  const cols = isXNarrow ? 2 : isNarrow ? 3 : 6;
   // البطاقات adminOnly تظهر للأدمن فقط (اتّساقاً مع مجموعة «الإدارة» المحجوبة في الشريط الجانبي).
   const mods = MODULES.filter((m) => m.sec === sec.id && (!m.adminOnly || isAdmin));
   // قسم بلا بطاقات مرئية للدور الحالي ⇒ يُخفى كاملاً (لا رأس ولا فراغات).
   if (mods.length === 0) return null;
-  // يملأ بقية الصف الأخير فقط (يدعم 7+ وحدات في القسم الواحد).
-  const placeholders = (6 - (mods.length % 6)) % 6;
+  // يملأ بقية الصف الأخير فقط، وفق عدد الأعمدة الفعّال (يدعم 7+ وحدات في القسم الواحد).
+  const placeholders = (cols - (mods.length % cols)) % cols;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -770,7 +778,7 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
         </span>
         <div style={{ flex: 1, height: 1, background: T.secLine, opacity: 0.35 }} />
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 14 }}>
         {mods.map((m) => (
           <ModuleCard key={m.id} m={m} />
         ))}
