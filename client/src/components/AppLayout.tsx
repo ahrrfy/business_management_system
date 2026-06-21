@@ -103,6 +103,8 @@ const NAV_GROUPS: NavGroup[] = [
     label: "الخزينة والمدفوعات",
     icon: "💰",
     items: [
+      { href: "/treasury", label: "لوحة الخزينة" },
+      { href: "/treasury/transfers", label: "تحويلات بين الفروع", managerOnly: true },
       { href: "/expenses", label: "المصروفات اليومية" },
       { href: "/vouchers", label: "سندات قبض وصرف" },
       { href: "/shifts", label: "سجلّ الورديات" },

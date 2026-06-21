@@ -401,6 +401,9 @@ export const shifts = mysqlTable(
     openedAt: timestamp("openedAt").defaultNow().notNull(),
     closedAt: timestamp("closedAt"),
     notes: text("notes"),
+    // treasury-stage2: snapshot لعدّاد الفئات وقت الإغلاق (تدقيق فقط، بلا تأثير محاسبي).
+    // يَخزّن {250: n, 500: n, ...} للفئات السبع لـIQD. nullable لتوافق ورديات تاريخية.
+    countedBreakdown: json("countedBreakdown"),
   },
   (table) => ({
     branchIdx: index("idx_shift_branch").on(table.branchId),
@@ -613,7 +616,9 @@ export const accountingEntries = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     // import-integration: OPENING = قيد ترسيخ الرصيد الافتتاحي المستورد من النظام القديم.
     // production-slice: INTERNAL_USE = نثرية داخلية (مصروف بالكلفة)، WASTAGE = تلف/هدر (خسارة بالكلفة) — كلاهما بلا نقد.
-    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE"]).notNull(),
+    // treasury-stage2 (٢١/٦): CASH_HANDOVER = تسليم وردية → خزينة (نقل بين دلوَين)، CASH_TRANSFER_OUT/IN = تحويل نقدي بين الفروع.
+    // كلها لا تَدخل revenue/cost/profit (cash movements) — تُستثنى من تقارير الإيراد/الأرباح.
+    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }),
@@ -704,6 +709,46 @@ export const expenses = mysqlTable(
 
 export type Expense = typeof expenses.$inferSelect;
 export type InsertExpense = typeof expenses.$inferInsert;
+
+/* ============================ تحويل نقدي بين الفروع ============================
+ * treasury-stage2 (٢١/٦): نقل نقد من خزينة فرع إلى خزينة فرع آخر بتدفّق ثنائي ذرّي.
+ * الإرسال يَكتب receipt OUT في فرع المُرسل ، الاستلام يَكتب receipt IN في فرع المستلم ،
+ * كلاهما بـcashBucket=TREASURY. القيد المحاسبي CASH_TRANSFER_OUT/IN (مجموعهما = 0 على
+ * مستوى الشركة). الإلغاء قبل الاستلام: receipt تعويضي + قيد معاكس. لا إلغاء بعد الاستلام.
+ */
+export const cashTransfers = mysqlTable(
+  "cashTransfers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    transferNumber: varchar("transferNumber", { length: 50 }).notNull().unique(), // CT-fromBranch-YYYYMMDD-NNNNN
+    fromBranchId: bigint("fromBranchId", { mode: "number" }).notNull().references(() => branches.id),
+    toBranchId: bigint("toBranchId", { mode: "number" }).notNull().references(() => branches.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(), // DB CHECK > 0 (migration manual)
+    status: mysqlEnum("cashTransferStatus", ["IN_TRANSIT", "RECEIVED", "CANCELLED"]).default("IN_TRANSIT").notNull(),
+    sentBy: int("sentBy").notNull().references(() => users.id),
+    receivedBy: int("receivedBy").references(() => users.id),
+    cancelledBy: int("cancelledBy").references(() => users.id),
+    sentAt: timestamp("sentAt").defaultNow().notNull(),
+    receivedAt: timestamp("receivedAt"),
+    cancelledAt: timestamp("cancelledAt"),
+    sentReceiptId: bigint("sentReceiptId", { mode: "number" }).references(() => receipts.id),
+    receivedReceiptId: bigint("receivedReceiptId", { mode: "number" }).references(() => receipts.id),
+    reversalReceiptId: bigint("reversalReceiptId", { mode: "number" }).references(() => receipts.id),
+    notes: text("notes"),
+    cancellationReason: text("cancellationReason"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    fromIdx: index("idx_xfer_from").on(table.fromBranchId, table.status),
+    toIdx: index("idx_xfer_to").on(table.toBranchId, table.status),
+    statusIdx: index("idx_xfer_status").on(table.status),
+    sentAtIdx: index("idx_xfer_sent_at").on(table.sentAt),
+  })
+);
+
+export type CashTransfer = typeof cashTransfers.$inferSelect;
+export type InsertCashTransfer = typeof cashTransfers.$inferInsert;
 
 /* ============================ أوامر الشغل / التخصيص / المطبعة ============================ */
 

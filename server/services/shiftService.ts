@@ -55,9 +55,17 @@ async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: stri
  * Close a shift: compute expected cash, record counted cash + variance.
  * سياسة #14 — ملكية/فرع: الكاشير يُغلق ورديته نفسها فقط؛ المدير يُغلق أي وردية في فرعه
  * (لمعالجة الوردية المنسيّة)؛ admin مرور حر.
+ *
+ * treasury-stage2: حقول اختيارية لـcountedBreakdown (snapshot عدّاد الفئات) و handover
+ * (تسليم نقد للخزينة بـcashHandoverService — يَنشئ receipts + قيد CASH_HANDOVER في نفس tx).
  */
 export async function closeShift(
-  input: { shiftId: number; countedCash: string },
+  input: {
+    shiftId: number;
+    countedCash: string;
+    countedBreakdown?: Record<string, number> | null;
+    handover?: { amount: string; handoverTo: number; notes?: string | null } | null;
+  },
   actor: Actor & { role?: string },
 ) {
   return withTx(async (tx) => {
@@ -86,6 +94,31 @@ export async function closeShift(
     const counted = money(input.countedCash);
     const variance = counted.minus(expected);
 
+    // treasury-stage2: تسليم اختياري للخزينة قبل التعيين CLOSED — يَكتب receipts داخل
+    // الـtx الحالية بـcashHandoverService. يَفشل إن handover.amount > counted (تَحقّق داخلي).
+    let handoverResult: { handoverNumber: string; outReceiptId: number; inReceiptId: number } | null = null;
+    if (input.handover && input.handover.amount) {
+      const handoverAmount = money(input.handover.amount);
+      if (handoverAmount.gt(counted)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `لا يمكن تسليم أكثر من المعدود (${counted.toFixed(2)} < ${handoverAmount.toFixed(2)})`,
+        });
+      }
+      // استيراد كسول لتجنّب حلقة (cashHandover → ledger → period).
+      const { createHandover } = await import("./cashHandoverService");
+      handoverResult = await createHandover(
+        tx,
+        {
+          shiftId: input.shiftId,
+          amount: input.handover.amount,
+          handoverTo: input.handover.handoverTo,
+          notes: input.handover.notes ?? null,
+        },
+        { ...actor, role: actor.role ?? "cashier" },
+      );
+    }
+
     await tx
       .update(shifts)
       .set({
@@ -95,6 +128,7 @@ export async function closeShift(
         expectedCash: toDbMoney(expected),
         countedCash: toDbMoney(counted),
         variance: toDbMoney(variance),
+        countedBreakdown: input.countedBreakdown ?? null,
       })
       .where(eq(shifts.id, input.shiftId));
 
@@ -104,6 +138,7 @@ export async function closeShift(
       expectedCash: toDbMoney(expected),
       countedCash: toDbMoney(counted),
       variance: toDbMoney(variance),
+      handover: handoverResult,
     };
   });
 }

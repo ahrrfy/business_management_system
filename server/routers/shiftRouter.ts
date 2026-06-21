@@ -86,7 +86,22 @@ export const shiftRouter = router({
     }),
 
   close: cashierProcedure
-    .input(z.object({ shiftId: z.number().int().positive(), countedCash: z.string() }))
+    .input(
+      z.object({
+        shiftId: z.number().int().positive(),
+        countedCash: z.string(),
+        // treasury-stage2: snapshot عدّاد الفئات (اختياري).
+        countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
+        // treasury-stage2: تسليم نقد للخزينة (اختياري).
+        handover: z
+          .object({
+            amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح"),
+            handoverTo: z.number().int().positive(),
+            notes: z.string().max(500).nullish(),
+          })
+          .nullish(),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       // سياسة #14: نمرّر دور الفاعل + فرعه ليفرض closeShift فحص الملكية/الفرع.
       // G4: استبدال `?? -1` الذي كان يُمرَّر للخدمة فيرفع رسالة مضلّلة (لا تطابُق فرع)

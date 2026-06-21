@@ -38,6 +38,8 @@ import { globalSearchRouter } from "./routers/globalSearchRouter";
 import { periodLockRouter } from "./routers/periodLockRouter";
 import { creditApprovalRouter } from "./routers/creditApprovalRouter";
 import { yearEndRouter } from "./routers/yearEndRouter";
+import { treasuryRouter } from "./routers/treasuryRouter";
+import { cashTransfersRouter } from "./routers/cashTransfersRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -83,6 +85,8 @@ export const appRouter = router({
   periodLock: periodLockRouter,
   creditApproval: creditApprovalRouter,
   yearEnd: yearEndRouter,
+  treasury: treasuryRouter,
+  cashTransfers: cashTransfersRouter,
 });
 
 export type AppRouter = typeof appRouter;
