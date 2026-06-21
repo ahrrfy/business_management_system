@@ -41,6 +41,18 @@ const ADV_LABEL: Record<string, string> = {
   IN_PROGRESS: "▶ بدء التنفيذ (خصم المواد)", READY: "✓ وضع علامة: جاهز", DELIVERED: "📦 تسليم وإصدار فاتورة",
 };
 
+// أعمدة اللوحة (٥) — «مسحوب» ليست حالة DB بل عرضٌ لـRECEIVED المُسنَد (assignedTo != null).
+// لا هجرة: التسلسل الحقيقي يبقى RECEIVED→IN_PROGRESS→READY→DELIVERED؛ السحب يضبط assignedTo فقط.
+// السحب/الإسناد ينقل البطاقة بين «طابور وارد» و«مسحوب» (نفس الحالة)؛ والسحب يقدّم الحالة.
+type ColKey = "INBOX" | "CLAIMED" | "IN_PROGRESS" | "READY" | "DELIVERED";
+const COLUMNS: { key: ColKey; label: string; hint: string; hue: number; status: Status; match: (o: WO) => boolean }[] = [
+  { key: "INBOX", label: "طابور وارد", hint: "غير مسحوب — بانتظار فنّي", hue: 72, status: "RECEIVED", match: (o) => o.status === "RECEIVED" && !o.assignedTo },
+  { key: "CLAIMED", label: "مسحوب", hint: "مُسنَد لفنّي — لم يبدأ", hue: 235, status: "RECEIVED", match: (o) => o.status === "RECEIVED" && !!o.assignedTo },
+  { key: "IN_PROGRESS", label: "قيد التنفيذ", hint: "تحت الإنتاج الآن", hue: 250, status: "IN_PROGRESS", match: (o) => o.status === "IN_PROGRESS" },
+  { key: "READY", label: "جاهز للتسليم", hint: "جاهز — بانتظار العميل", hue: 293, status: "READY", match: (o) => o.status === "READY" },
+  { key: "DELIVERED", label: "مُسلَّم", hint: "اكتمل وصدرت الفاتورة", hue: 155, status: "DELIVERED", match: (o) => o.status === "DELIVERED" },
+];
+
 const CHANNELS: Record<string, { label: string; icon: string }> = {
   WHATSAPP: { label: "واتساب", icon: "💬" },
   INSTAGRAM: { label: "انستغرام", icon: "📷" },
@@ -519,8 +531,11 @@ export default function WorkOrders() {
 
   const byCol = useMemo(() => {
     const m: Record<string, WO[]> = {};
-    STATUSES.forEach((s) => (m[s.key] = []));
-    filtered.forEach((o) => { if (m[o.status]) m[o.status].push(o); });
+    COLUMNS.forEach((c) => (m[c.key] = []));
+    filtered.forEach((o) => {
+      const col = COLUMNS.find((c) => c.match(o));
+      if (col) m[col.key].push(o);
+    });
     Object.values(m).forEach((arr) =>
       arr.sort((a, b) => {
         const pr = (PRIORITIES[b.priority ?? "NORMAL"]?.rank ?? 2) - (PRIORITIES[a.priority ?? "NORMAL"]?.rank ?? 2);
@@ -577,9 +592,11 @@ export default function WorkOrders() {
       const dr = dragRef.current; dragRef.current = null;
       if (!dr) return;
       if (!dr.moved) { setSel(dr.order.id); setDrag(null); return; }
-      const over = hitCol(ev.clientX, ev.clientY);
+      const overKey = hitCol(ev.clientX, ev.clientY);
       setDrag(null);
-      if (over && over !== dr.order.status) attemptMove(dr.order, over as Status);
+      // overKey هو مفتاح العمود الافتراضي؛ نحوّله لحالة DB المستهدفة (مسحوب↔وارد = نفس الحالة ⇒ لا نقل).
+      const col = COLUMNS.find((c) => c.key === overKey);
+      if (col && col.status !== dr.order.status) attemptMove(dr.order, col.status);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
@@ -646,9 +663,9 @@ export default function WorkOrders() {
           <div className="wob-empty-board">{anyFilter ? "لا أوامر مطابقة للبحث/الفلاتر الحالية." : "لا أوامر شغل بعد. ابدأ بـ«أمر شغل جديد»."}</div>
         ) : (
           <div className="wob-board">
-            {STATUSES.map((s) => {
+            {COLUMNS.map((s) => {
               const list = byCol[s.key] ?? [];
-              const isOver = drag && drag.overCol === s.key && drag.order.status !== s.key && NEXT[drag.order.status] === s.key;
+              const isOver = drag && drag.overCol === s.key && NEXT[drag.order.status] === s.status;
               return (
                 <div className="wob-col" style={colVars(s.hue)} key={s.key}>
                   <div className="wob-col-head">

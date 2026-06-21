@@ -87,6 +87,11 @@ export default function WorkOrderNew() {
   const [branchId, setBranchId] = useState<number | "">("");
   const effectiveBranch = branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1);
 
+  // السلامة المخزنية/المحاسبية: الأصناف الجاهزة (السلّة) تُباع بفاتورة بيع مستقلّة عبر saleRouter
+  // (خصم مخزون + COGS + قيد SALE)، لا داخل أمر الشغل. يلزم وردية مفتوحة كنقطة البيع.
+  const shiftQ = trpc.shifts.current.useQuery({ branchId: Number(effectiveBranch) }, { enabled: !!effectiveBranch });
+  const shift = shiftQ.data;
+
   // ── (١) قنوات الاستلام ──────────────────────────────────────────
   const [channel, setChannel] = useState<string>("WALK_IN");
   const [channelHandle, setChannelHandle] = useState<string>("");
@@ -201,19 +206,29 @@ export default function WorkOrderNew() {
     () => D(salePrice || "0").times(Math.max(1, parseInt(quantity || "1", 10) || 1)),
     [salePrice, quantity]
   );
-  const subtotal = cartSubtotal.plus(customizationTotal);
   const discount = D(discountAmount || "0");
   const delivery = hasDelivery ? D(deliveryCost || "0") : D(0);
-  const grandTotal = subtotal.minus(discount).plus(delivery);
+  // ── الملخّص الهجين (وثيقتان منفصلتان) ──────────────────────────
+  // بيع مباشر (الأصناف الجاهزة): يُدفع كاملاً الآن بفاتورة بيع مستقلّة (خصم على السلّة يُطبَّق عليها).
+  const saleTotal = cartSubtotal.minus(discount);
+  // أمر التخصيص (المطبعة): سعر الخدمة + التوصيل = سعر بيع أمر الشغل، يُقبض عليه عربون.
+  const customTotal = customizationTotal.plus(delivery);
   const depositD = D(deposit || "0");
-  const remaining = grandTotal.minus(depositD);
+  const customRemaining = customTotal.minus(depositD);
+  const hasCart = cart.length > 0;
+  const hasCustom = customizationTotal.gt(0);
+  const paidNow = (hasCart ? saleTotal : D(0)).plus(depositD); // المقبوض فوراً (بيع كامل + عربون)
+  const grandTotal = saleTotal.plus(customTotal); // للعرض الكلّي فقط
 
   // ── الحفظ ──────────────────────────────────────────────────
   const [error, setError] = useState("");
   // idempotency: مفتاح ثابت للنموذج — يمنع إنشاء أمرين وقبض عربون مزدوج عند النقر المزدوج/إعادة الشبكة.
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
+  // idempotency منفصل لفاتورة بيع الأصناف الجاهزة (وثيقة مستقلّة عن أمر الشغل).
+  const [saleRequestId, setSaleRequestId] = useState(() => crypto.randomUUID());
 
   const createCustomer = trpc.customers.create.useMutation();
+  const createSale = trpc.sales.create.useMutation();
   const createWO = trpc.workOrders.create.useMutation({
     onSuccess: async (res, _vars, ctx) => {
       setClientRequestId(crypto.randomUUID());
@@ -251,10 +266,12 @@ export default function WorkOrderNew() {
   async function handleSave(opts: { print: boolean }) {
     setError("");
     if (!effectiveBranch) return setError("اختر الفرع.");
-    if (!title.trim() && cart.length === 0) return setError("أدخل عنواناً لخدمة التخصيص أو أضف منتجاً واحداً للسلة على الأقل.");
-    if (!cart.length && !salePrice.trim()) return setError("سعر بيع خدمة التخصيص مطلوب.");
+    if (!hasCart && !hasCustom) return setError("أضف منتجاً جاهزاً للسلّة أو أدخل خدمة تخصيص بسعر.");
+    if (hasCustom && !salePrice.trim()) return setError("سعر بيع خدمة التخصيص مطلوب.");
     if (paymentMethod === "CARD" && !paymentReference.trim()) return setError("رقم العملية المرجعي مطلوب للبطاقة.");
-    if (grandTotal.lte(0)) return setError("الإجمالي يجب أن يكون موجباً (أضف منتجاً أو سعر تخصيص).");
+    // الأصناف الجاهزة = فاتورة بيع تخصم النقد فوراً وتحدّث المخزون ⇒ تحتاج وردية مفتوحة (كنقطة البيع).
+    if (hasCart && !shift) return setError("افتح وردية لبيع المنتجات الجاهزة (فاتورة مستقلّة)، أو أزِل المنتجات من السلّة.");
+    if (hasCart && saleTotal.lte(0)) return setError("إجمالي السلّة بعد الخصم يجب أن يكون موجباً.");
 
     let customerId: number | null = null;
     try {
@@ -264,34 +281,68 @@ export default function WorkOrderNew() {
       return;
     }
 
-    // v3-add-screens(100%): baseVariantId اختياري الآن — للأمر بلا منتج جاهز نمرّر null.
-    const baseVariantId = cart.length ? cart[0].variantId : null;
-
-    // تأكيد نهائيّ — إنشاء أمر الشغل يقبض العربون فوراً ولا رجعة فيه.
+    // تأكيد نهائيّ — يصف الوثيقتين والمبلغ المقبوض فوراً (بيع كامل + عربون) ولا رجعة فيه.
+    const parts: string[] = [];
+    if (hasCart) parts.push(`فاتورة بيع للأصناف الجاهزة بقيمة ${fmt(saleTotal.toFixed(2))} د.ع تُدفع كاملة`);
+    if (hasCustom) parts.push(`أمر شغل بقيمة ${fmt(customTotal.toFixed(2))} د.ع بعربون ${fmt(depositD.toFixed(2))} د.ع`);
     if (!(await confirm({
       variant: "danger",
-      title: "إنشاء أمر شغل (يقبض عربوناً) لا رجعة فيه",
-      description: `سيُنشأ أمر الشغل ويُقبض عربون قدره ${fmt(depositD.toFixed(2))} د.ع من إجمالي ${fmt(grandTotal.toFixed(2))} د.ع، ولا يمكن التراجع عن العملية. اكتب «تأكيد» للمتابعة.`,
-      confirmText: "إنشاء أمر الشغل",
+      title: "تأكيد الاستلام (يقبض نقداً) لا رجعة فيه",
+      description: `سيُنشأ: ${parts.join(" + ")}. إجمالي المقبوض الآن ${fmt(paidNow.toFixed(2))} د.ع. اكتب «تأكيد» للمتابعة.`,
+      confirmText: "تأكيد الاستلام",
       requireText: "تأكيد",
     }))) return;
 
-    // v3-add-screens(100%): البيانات الإضافية تذهب لأعمدة DB مباشرة (لا ترميز JSON).
+    // ── (١) الأصناف الجاهزة → فاتورة بيع مستقلّة (خصم مخزون + COGS + قيد SALE) ──
+    if (hasCart) {
+      try {
+        await createSale.mutateAsync({
+          branchId: Number(effectiveBranch),
+          shiftId: shift!.id,
+          sourceType: "WORKORDER",
+          customerId: customerId ?? undefined,
+          priceTier: "RETAIL",
+          lines: cart.map((c) => ({
+            variantId: c.variantId,
+            productUnitId: c.productUnitId,
+            quantity: String(c.quantity),
+            unitPriceOverride: D(c.unitPrice).toFixed(2),
+          })),
+          invoiceDiscount: discount.gt(0) ? discount.toFixed(2) : undefined,
+          payment: { amount: saleTotal.toFixed(2), method: paymentMethod },
+          cashRoundIQD: paymentMethod === "CASH",
+          clientRequestId: saleRequestId,
+        } as any);
+        setSaleRequestId(crypto.randomUUID());
+        await utils.shifts.current.invalidate();
+      } catch (e: any) {
+        setError(e?.message || "تعذّر إتمام بيع الأصناف الجاهزة.");
+        return;
+      }
+    }
+
+    // ── (٢) خدمة التخصيص → أمر شغل (سعر = التخصيص + التوصيل، بلا أصناف بيع) ──
+    if (!hasCustom) {
+      // طلب أصناف جاهزة فقط بلا تخصيص ⇒ لا أمر شغل؛ ننتقل لقائمة الفواتير.
+      setCart([]);
+      navigate("/invoices");
+      return;
+    }
+
     createWO.mutate({
       branchId: Number(effectiveBranch),
       clientRequestId,
       customerId: customerId ?? null,
-      baseVariantId,
-      title: title.trim() || cart[0]?.productName || "أمر شغل",
+      // أمر التخصيص خدمةٌ خالصة بلا منتج أساس (الأصناف الجاهزة بيعت بفاتورتها).
+      baseVariantId: null,
+      title: title.trim() || "أمر شغل",
       customizationText: customizationText.trim() || null,
       quantity: Math.max(1, parseInt(quantity || "1", 10) || 1),
-      // المواد للاستهلاك من المخزون (إن وُجدت).
       materials: [],
       laborCost: D(laborCost || "0").toFixed(2),
-      salePrice: grandTotal.toFixed(2),
+      salePrice: customTotal.toFixed(2),
       dueDate: dueDate || null,
       notes: null,
-      // الحقول v3 الجديدة — تذهب لأعمدة workOrders الحقيقية.
       receptionChannel: channel as any,
       channelHandle: channelHandle.trim() || null,
       priority,
@@ -299,22 +350,10 @@ export default function WorkOrderNew() {
       deposit: depositD.toFixed(2),
       paymentMethod,
       paymentReference: paymentReference.trim() || null,
-      // إن وُجد إيصال دفع، نخزّن الـdataURL للأول (TEXT يستوعب).
       paymentReceiptUrl: paymentReceipts[0]?.dataUrl || null,
       hasDelivery,
       deliveryAddress: hasDelivery ? deliveryAddress.trim() || null : null,
       deliveryCost: hasDelivery ? D(deliveryCost || "0").toFixed(2) : "0",
-      // منتجات نقطة البيع المصغّرة — جدولها الصحيح workOrderItems.
-      items: cart.map((c) => ({
-        variantId: c.variantId,
-        productUnitId: c.productUnitId,
-        quantity: String(c.quantity),
-        baseQuantity: c.quantity * c.baseQuantityPerUnit,
-        unitPrice: c.unitPrice,
-        discountAmount: "0",
-        total: D(c.unitPrice).times(c.quantity).toFixed(2),
-      })),
-      // صور نموذج العمل — جدولها الصحيح workOrderImages.
       designImages: designImages.map((i, idx) => ({
         url: i.dataUrl,
         caption: i.name || null,
@@ -340,7 +379,7 @@ export default function WorkOrderNew() {
       <table><thead><tr><th>المنتج</th><th>الوحدة</th><th>الكمية</th><th>السعر</th></tr></thead><tbody>${rows || `<tr><td colspan="4" class="muted">لا منتجات</td></tr>`}</tbody></table>
       ${title ? `<p><b>خدمة التخصيص:</b> ${esc(title)}</p>` : ""}
       <p class="total">الإجمالي: ${esc(fmt(grandTotal.toFixed(2)))} د.ع</p>
-      <p>العربون: ${esc(fmt(depositD.toFixed(2)))} د.ع · المتبقّي: ${esc(fmt(remaining.toFixed(2)))} د.ع</p>
+      <p>العربون: ${esc(fmt(depositD.toFixed(2)))} د.ع · متبقّي التخصيص: ${esc(fmt(customRemaining.toFixed(2)))} د.ع</p>
       <script>setTimeout(()=>window.print(),300)</script>
       </body></html>`);
     w.document.close();
@@ -412,7 +451,10 @@ export default function WorkOrderNew() {
 
       {/* ── (٣) المنتجات والخدمات — نقطة بيع مصغّرة ─────────── */}
       <Card>
-        <CardHeader><CardTitle className="text-base">المنتجات والخدمات — نقطة بيع مصغّرة</CardTitle></CardHeader>
+        <CardHeader>
+          <CardTitle className="text-base">المنتجات الجاهزة — بيع مباشر</CardTitle>
+          <p className="text-[11px] text-muted-foreground">تُباع بفاتورة بيع مستقلّة (خصم فوري من المخزون) — منفصلة عن أمر التخصيص. تتطلّب وردية مفتوحة.</p>
+        </CardHeader>
         <CardContent className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div className="md:col-span-2 space-y-1">
@@ -670,8 +712,9 @@ export default function WorkOrderNew() {
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-1">
-              <Label htmlFor="dep">العربون (د.ع)</Label>
+              <Label htmlFor="dep">عربون أمر التخصيص (د.ع)</Label>
               <Input id="dep" dir="ltr" value={deposit} onChange={(e) => setDeposit(e.target.value)} placeholder="0" />
+              <p className="text-[11px] text-muted-foreground">على أمر التخصيص فقط — الأصناف الجاهزة تُدفع كاملةً بفاتورتها.</p>
             </div>
             {paymentMethod === "CARD" && (
               <div className="space-y-1">
@@ -695,25 +738,39 @@ export default function WorkOrderNew() {
             </div>
           )}
 
-          {/* الإجماليات */}
-          <div className="rounded-md border bg-muted/30 p-3 space-y-1 text-sm">
-            <div className="flex justify-between"><span>إجمالي السلّة</span><span dir="ltr">{fmt(cartSubtotal.toFixed(2))} د.ع</span></div>
-            <div className="flex justify-between"><span>خدمة التخصيص ({quantity} × {fmt(salePrice || "0")})</span><span dir="ltr">{fmt(customizationTotal.toFixed(2))} د.ع</span></div>
-            {discount.gt(0) && <div className="flex justify-between text-emerald-700"><span>− خصم</span><span dir="ltr">{fmt(discount.toFixed(2))} د.ع</span></div>}
-            {hasDelivery && delivery.gt(0) && <div className="flex justify-between"><span>+ توصيل</span><span dir="ltr">{fmt(delivery.toFixed(2))} د.ع</span></div>}
-            <div className="flex justify-between font-bold text-base border-t pt-1"><span>الإجمالي</span><span dir="ltr">{fmt(grandTotal.toFixed(2))} د.ع</span></div>
-            <div className="flex justify-between text-muted-foreground"><span>العربون</span><span dir="ltr">{fmt(depositD.toFixed(2))} د.ع</span></div>
-            <div className="flex justify-between font-medium"><span>المتبقّي</span><span dir="ltr">{fmt(remaining.toFixed(2))} د.ع</span></div>
+          {/* الملخّص الهجين — وثيقتان: بيع مباشر (يُدفع كاملاً) + أمر تخصيص (عربون + متبقٍّ) */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+            {/* بطاقة البيع المباشر */}
+            <div className={cn("rounded-md border p-3 space-y-1", hasCart ? "bg-emerald-500/5 border-emerald-500/30" : "bg-muted/20 opacity-60")}>
+              <div className="flex items-center justify-between font-semibold"><span>🛒 بيع مباشر (جاهز)</span>{hasCart && <Badge variant="outline" className="text-emerald-700 border-emerald-500/40">فاتورة مستقلّة</Badge>}</div>
+              <div className="flex justify-between"><span>إجمالي السلّة</span><span dir="ltr">{fmt(cartSubtotal.toFixed(2))} د.ع</span></div>
+              {discount.gt(0) && <div className="flex justify-between text-emerald-700"><span>− خصم</span><span dir="ltr">{fmt(discount.toFixed(2))} د.ع</span></div>}
+              <div className="flex justify-between font-bold border-t pt-1"><span>يُدفع كاملاً الآن</span><span dir="ltr">{fmt(saleTotal.toFixed(2))} د.ع</span></div>
+              {!shift && hasCart && <p className="text-[11px] text-destructive">يلزم وردية مفتوحة لبيع الأصناف الجاهزة.</p>}
+            </div>
+            {/* بطاقة أمر التخصيص */}
+            <div className={cn("rounded-md border p-3 space-y-1", hasCustom ? "bg-violet-500/5 border-violet-500/30" : "bg-muted/20 opacity-60")}>
+              <div className="flex items-center justify-between font-semibold"><span>🖨 أمر تخصيص (مطبعة)</span>{hasCustom && <Badge variant="outline" className="text-violet-700 border-violet-500/40">أمر شغل</Badge>}</div>
+              <div className="flex justify-between"><span>خدمة التخصيص ({quantity} × {fmt(salePrice || "0")})</span><span dir="ltr">{fmt(customizationTotal.toFixed(2))} د.ع</span></div>
+              {hasDelivery && delivery.gt(0) && <div className="flex justify-between"><span>+ توصيل</span><span dir="ltr">{fmt(delivery.toFixed(2))} د.ع</span></div>}
+              <div className="flex justify-between font-bold border-t pt-1"><span>سعر الأمر</span><span dir="ltr">{fmt(customTotal.toFixed(2))} د.ع</span></div>
+              <div className="flex justify-between text-muted-foreground"><span>العربون</span><span dir="ltr">{fmt(depositD.toFixed(2))} د.ع</span></div>
+              <div className="flex justify-between font-medium"><span>المتبقّي (آجل)</span><span dir="ltr">{fmt(customRemaining.toFixed(2))} د.ع</span></div>
+            </div>
+          </div>
+          <div className="rounded-md border bg-primary/5 border-primary/30 p-3 flex justify-between items-center font-bold">
+            <span>إجمالي المقبوض الآن</span>
+            <span dir="ltr">{fmt(paidNow.toFixed(2))} د.ع</span>
           </div>
         </CardContent>
       </Card>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex flex-wrap gap-2">
-        <Button onClick={() => handleSave({ print: false })} disabled={createWO.isPending || createCustomer.isPending}>
-          {createWO.isPending ? "جارٍ الحفظ…" : "حفظ الأمر"}
+        <Button onClick={() => handleSave({ print: false })} disabled={createWO.isPending || createSale.isPending || createCustomer.isPending}>
+          {createWO.isPending || createSale.isPending ? "جارٍ الحفظ…" : "حفظ"}
         </Button>
-        <Button variant="default" onClick={() => handleSave({ print: true })} disabled={createWO.isPending}>
+        <Button variant="default" onClick={() => handleSave({ print: true })} disabled={createWO.isPending || createSale.isPending}>
           🖨 حفظ وطباعة
         </Button>
         <Button variant="outline" onClick={exportImage}>

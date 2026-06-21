@@ -14,13 +14,14 @@ import {
 import { getDb } from "../db";
 import {
   cancelWorkOrder,
+  claimWorkOrder,
   createWorkOrder,
   deliverWorkOrder,
   markWorkOrderReady,
   startWorkOrder,
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
-import { branchScopedProcedure, canSeeCost, cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
+import { branchScopedProcedure, canSeeCost, cashierProcedure, managerProcedure, protectedProcedure, router, workOrderExecProcedure } from "../trpc";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
@@ -262,16 +263,8 @@ export const workOrderRouter = router({
         hasDelivery: z.boolean().nullish(),
         deliveryAddress: z.string().nullish(),
         deliveryCost: z.string().nullish(),
-        // v3-add-screens(100%): أصناف نقطة البيع المصغّرة.
-        items: z.array(z.object({
-          variantId: z.number().int().positive(),
-          productUnitId: z.number().int().positive().nullish(),
-          quantity: z.string(),
-          baseQuantity: z.number().int().positive(),
-          unitPrice: z.string(),
-          discountAmount: z.string().nullish(),
-          total: z.string(),
-        })).default([]),
+        // ملاحظة سلامة (٢١/٦/٢٦): أُزيل `items` (أصناف البيع المصغّرة) — كانت تُخزَّن بلا خصم
+        // مخزون ولا COGS. الأصناف الجاهزة تُباع الآن بفاتورة مستقلّة عبر saleRouter (القرار أ).
         // v3-add-screens(100%): صور نموذج العمل.
         designImages: z.array(z.object({
           url: z.string().min(1),
@@ -300,7 +293,6 @@ export const workOrderRouter = router({
                 priority: input.priority ?? null,
                 paymentMethod: input.paymentMethod ?? null,
                 hasDelivery: !!input.hasDelivery,
-                itemsCount: input.items?.length ?? 0,
                 imagesCount: input.designImages?.length ?? 0,
               },
             });
@@ -315,7 +307,26 @@ export const workOrderRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء أمر الشغل" });
     }),
 
-  start: cashierProcedure
+  /**
+   * السحب الذاتي للفني (محطة التنفيذ): يُسنِد الأمر الوارد لنفسه ليظهر في «أوامري».
+   * workOrderExecProcedure = كاشير/مدير/فني مطبعة + فرع مُسنَد. الخدمة تمنع سحب أمر زميل.
+   */
+  claim: workOrderExecProcedure
+    .input(z.object({ workOrderId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await claimWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      await logAudit(ctx, {
+        action: "workOrder.claim",
+        entityType: "workOrder",
+        entityId: input.workOrderId,
+        newValue: { assignedTo: ctx.user.id },
+      });
+      return res;
+    }),
+
+  // التنفيذ (بدء/تجهيز) متاح لفني المطبعة على أوامره المسحوبة + الكاشير/المدير. التسليم/الفوترة
+  // يبقيان cashierProcedure (مالٌ ونقد) — لا يُسلّم الفني ولا يُصدر فاتورة.
+  start: workOrderExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
@@ -323,7 +334,7 @@ export const workOrderRouter = router({
       return res;
     }),
 
-  markReady: cashierProcedure
+  markReady: workOrderExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await markWorkOrderReady(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });

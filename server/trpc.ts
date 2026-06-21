@@ -104,6 +104,14 @@ const requireOwnBranch = t.middleware(async ({ ctx, next }) => {
 export const cashierProcedure = t.procedure.use(requireRole("cashier", "manager")).use(requireOwnBranch);
 /** عمليات المخزون: أمين المخزن فأعلى (مع فحص branchId إلزامي لغير المدير). */
 export const warehouseProcedure = t.procedure.use(requireRole("warehouse", "manager")).use(requireOwnBranch);
+/**
+ * تنفيذ أوامر الشغل في المحطة (سحب/بدء/تجهيز): الكاشير/المدير + **فني المطبعة** (print_operator)،
+ * بفرع مُسنَد إلزامي لغير المدير. لا يشمل التسليم/الفوترة (cashierProcedure حصراً — مالٌ ونقد).
+ * عزلٌ إضافي في الخدمة: فني المطبعة يعمل على أوامره المُسنَدة إليه فقط (لا أوامر زملائه).
+ */
+export const workOrderExecProcedure = t.procedure
+  .use(requireRole("cashier", "manager", "print_operator"))
+  .use(requireOwnBranch);
 
 /** هل يُسمح لهذا الدور برؤية التكلفة/هامش الربح؟ (يشمل المحاسب الآن). */
 export const canSeeCost = (role: string) => _canSeeCost(role);

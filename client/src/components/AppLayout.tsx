@@ -7,7 +7,7 @@ import { Search } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
-type NavItem = { href: string; label: string; adminOnly?: boolean; managerOnly?: boolean };
+type NavItem = { href: string; label: string; adminOnly?: boolean; managerOnly?: boolean; roles?: string[] };
 type NavGroup = {
   key: string;
   label: string;
@@ -52,6 +52,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: "🖨️",
     items: [
       { href: "/work-orders", label: "أوامر الشغل" },
+      { href: "/work-orders/station", label: "محطة التنفيذ (الفني)", roles: ["print_operator", "cashier", "manager"] },
       { href: "/production", label: "الإنتاج والتحويل", managerOnly: true },
       { href: "/production-recipes", label: "وصفات الإنتاج", managerOnly: true },
     ],
@@ -250,7 +251,11 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {NAV_GROUPS.filter((g) => !g.adminOnly || isAdmin).map((group) => {
             const isOpen = openGroups.has(group.key);
             const hasActive = group.items.some((item) => item.href === loc);
-            const visibleItems = group.items.filter((item) => (!item.adminOnly || isAdmin) && (!item.managerOnly || isManager));
+            const visibleItems = group.items.filter((item) =>
+              (!item.adminOnly || isAdmin) &&
+              (!item.managerOnly || isManager) &&
+              (!item.roles || isAdmin || item.roles.includes(me.data?.role ?? "")),
+            );
             if (visibleItems.length === 0) return null;
 
             return (

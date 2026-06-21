@@ -8,7 +8,6 @@ import {
   productVariants,
   receipts,
   workOrderImages,
-  workOrderItems,
   workOrderMaterials,
   workOrders,
 } from "../../drizzle/schema";
@@ -58,16 +57,6 @@ export interface CreateWorkOrderInput {
   hasDelivery?: boolean | null;
   deliveryAddress?: string | null;
   deliveryCost?: string | null;
-  // v3-add-screens(100%): أصناف نقطة البيع المصغّرة (تذهب لجدول workOrderItems).
-  items?: Array<{
-    variantId: number;
-    productUnitId?: number | null;
-    quantity: string;          // كمية بالوحدة المختارة
-    baseQuantity: number;      // كمية بالوحدة الأساس
-    unitPrice: string;
-    discountAmount?: string | null;
-    total: string;
-  }>;
   // v3-add-screens(100%): صور نموذج العمل (تذهب لجدول workOrderImages).
   designImages?: Array<{ url: string; caption?: string | null; sortOrder?: number | null }>;
   /** idempotency: نقرة مزدوجة/إعادة شبكة بنفس المفتاح ⇒ أمر شغل واحد (لا عربون نقدي مزدوج). */
@@ -121,14 +110,6 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
         throw new TRPCError({ code: "BAD_REQUEST", message: "كميات المواد يجب أن تكون أعداداً صحيحة موجبة" });
       const v = await tx.select({ id: productVariants.id }).from(productVariants).where(eq(productVariants.id, m.variantId)).limit(1);
       if (!v[0]) throw new TRPCError({ code: "NOT_FOUND", message: `مادة #${m.variantId} غير موجودة` });
-    }
-
-    // v3-add-screens(100%): تحقّق أصناف نقطة البيع المصغّرة قبل الكتابة.
-    for (const it of input.items ?? []) {
-      const v = await tx.select({ id: productVariants.id }).from(productVariants).where(eq(productVariants.id, it.variantId)).limit(1);
-      if (!v[0]) throw new TRPCError({ code: "NOT_FOUND", message: `صنف #${it.variantId} غير موجود` });
-      if (!Number.isInteger(it.baseQuantity) || it.baseQuantity <= 0)
-        throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الصنف يجب أن تكون عدداً صحيحاً موجباً" });
     }
 
     // v3-add-screens(100%): الدفع بالبطاقة يستلزم مرجع.
@@ -207,19 +188,11 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
       });
     }
 
-    // v3-add-screens(100%): أصناف نقطة البيع المصغّرة في جدولها الصحيح.
-    for (const it of input.items ?? []) {
-      await tx.insert(workOrderItems).values({
-        workOrderId,
-        variantId: it.variantId,
-        productUnitId: it.productUnitId ?? null,
-        quantity: it.quantity,
-        baseQuantity: it.baseQuantity,
-        unitPrice: round2(money(it.unitPrice)).toFixed(2),
-        discountAmount: it.discountAmount ? round2(money(it.discountAmount)).toFixed(2) : "0.00",
-        total: round2(money(it.total)).toFixed(2),
-      });
-    }
+    // السلامة المخزنية/المحاسبية (٢١/٦/٢٦): أُزيل إدراج `workOrderItems` (أصناف البيع المصغّرة).
+    // كان أمر الشغل يُخزّنها بلا خصم مخزون (start يستهلك المواد فقط) وبلا تكلفة (COGS) في الفاتورة
+    // ⇒ مخزونٌ مُبالَغ فيه وربحٌ مُبالَغ فيه. القرار (أ): الأصناف الجاهزة تُباع بفاتورة بيع مستقلّة
+    // عبر saleRouter (خصم مخزون + COGS + قيد SALE)، وأمر الشغل يحمل خدمة التخصيص فقط. الجدول
+    // workOrderItems يبقى في المخطّط (بلا كاتب) تفادياً لهجرة، وقد يُستعمل مستقبلاً لمنطق صحيح.
 
     // v3-add-screens(100%): صور نموذج العمل في جدولها الصحيح.
     const imgs = (input.designImages ?? []).filter((i) => i.url?.trim()).slice(0, 10);
@@ -251,11 +224,45 @@ function assertWorkOrderBranch(wo: { branchId: number | string }, actor: Actor &
   }
 }
 
+/**
+ * عزل المحطة: فني المطبعة (print_operator) ينفّذ أوامره المُسنَدة إليه فقط — لا أوامر زملائه.
+ * الكاشير/المدير/الأدمن (مكتب الاستقبال) يُنفّذون أي أمر في فرعهم (مرونة تشغيلية). يُستدعى بعد
+ * فحص الفرع في start/markReady. السحب (claim) هو ما يجعل أمراً «أمري» قبل التنفيذ.
+ */
+function assertOperatorOwns(
+  wo: { assignedTo: number | string | null },
+  actor: Actor & { role?: string },
+) {
+  if (actor.role !== "print_operator") return;
+  if (wo.assignedTo == null || Number(wo.assignedTo) !== actor.userId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "اسحب الأمر إلى قائمتك أولاً لتنفيذه" });
+  }
+}
+
+/**
+ * السحب الذاتي (Pull/Claim): يضبط assignedTo = المستخدم الحالي على أمرٍ **في الطابور الوارد**
+ * (RECEIVED) غير مُسنَد (أو مُسنَد له سلفاً ⇒ idempotent). لا يسحب أمر زميلٍ آخر (لا «سرقة»).
+ * لا أثر مالي/مخزني — مجرّد إسناد. إعادة الإسناد القسرية تبقى للمدير عبر `assign`.
+ */
+export async function claimWorkOrder(workOrderId: number, actor: Actor & { role?: string }) {
+  return withTx(async (tx) => {
+    const wo = await loadWorkOrder(tx, workOrderId);
+    assertWorkOrderBranch(wo, actor);
+    if (wo.status !== "RECEIVED")
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن سحب أمر إلا وهو في الطابور الوارد" });
+    if (wo.assignedTo != null && Number(wo.assignedTo) !== actor.userId)
+      throw new TRPCError({ code: "CONFLICT", message: "الأمر مسحوبٌ بالفعل لمنفّذ آخر" });
+    await tx.update(workOrders).set({ assignedTo: actor.userId }).where(eq(workOrders.id, workOrderId));
+    return { workOrderId, assignedTo: actor.userId };
+  });
+}
+
 /** Move RECEIVED → IN_PROGRESS: consume materials from stock (OUT movements) + snapshot unitCost. */
 export async function startWorkOrder(workOrderId: number, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     assertWorkOrderBranch(wo, actor);
+    assertOperatorOwns(wo, actor);
     if (wo.status !== "RECEIVED") throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن بدء أمر ليس في حالة الاستلام" });
 
     const mats = await tx.select().from(workOrderMaterials).where(eq(workOrderMaterials.workOrderId, workOrderId));
@@ -302,7 +309,7 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
 export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
-    if (actor) assertWorkOrderBranch(wo, actor);
+    if (actor) { assertWorkOrderBranch(wo, actor); assertOperatorOwns(wo, actor); }
     if (wo.status !== "IN_PROGRESS") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس قيد التنفيذ" });
     await tx.update(workOrders).set({ status: "READY" }).where(eq(workOrders.id, workOrderId));
     return { workOrderId, status: "READY" };
@@ -321,14 +328,19 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
 
-    // Look up the base unit of the base variant for the invoice line.
-    const baseUnit = (
-      await tx
-        .select({ id: productUnits.id })
-        .from(productUnits)
-        .where(eq(productUnits.variantId, Number(wo.baseVariantId)))
-        .limit(1)
-    )[0];
+    // أمر خدمة خالص (بلا منتج أساس): الفاتورة بلا سطر مخزون (invoiceItems.variantId = NOT NULL FK).
+    // كانت deliver السابقة تُدرج variantId = Number(null) = 0 ⇒ انتهاك FK ⇒ تعذّر تسليم أوامر
+    // التخصيص الخالصة. الآن: سطرٌ فقط حين يوجد منتج أساس؛ صافي الفاتورة/القيد محفوظ بـsalePrice.
+    const hasBaseVariant = wo.baseVariantId != null;
+    const baseUnit = hasBaseVariant
+      ? (
+          await tx
+            .select({ id: productUnits.id })
+            .from(productUnits)
+            .where(eq(productUnits.variantId, Number(wo.baseVariantId)))
+            .limit(1)
+        )[0]
+      : undefined;
 
     const quantity = wo.quantity;
     const salePrice = money(wo.salePrice);
@@ -378,18 +390,20 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     });
     const invoiceId = extractInsertId(invRes);
 
-    await tx.insert(invoiceItems).values({
-      invoiceId,
-      variantId: Number(wo.baseVariantId),
-      productUnitId: baseUnit ? Number(baseUnit.id) : null,
-      workOrderId: Number(wo.id),
-      quantity: Number(quantity).toFixed(3),
-      baseQuantity: quantity,
-      unitPrice: unitPrice.toFixed(2),
-      unitCost: round2(costTotal.dividedBy(quantity)).toFixed(2),
-      discountAmount: "0",
-      total: salePrice.toFixed(2),
-    });
+    if (hasBaseVariant) {
+      await tx.insert(invoiceItems).values({
+        invoiceId,
+        variantId: Number(wo.baseVariantId),
+        productUnitId: baseUnit ? Number(baseUnit.id) : null,
+        workOrderId: Number(wo.id),
+        quantity: Number(quantity).toFixed(3),
+        baseQuantity: quantity,
+        unitPrice: unitPrice.toFixed(2),
+        unitCost: round2(costTotal.dividedBy(quantity)).toFixed(2),
+        discountAmount: "0",
+        total: salePrice.toFixed(2),
+      });
+    }
 
     // Ledger: SALE entry (no stock movement here — already consumed at start).
     await postEntry(tx, {
