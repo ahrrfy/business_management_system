@@ -32,6 +32,19 @@ export const notify = {
   err(error: unknown, description?: string) {
     return toast.error(errMsg(error), { description, duration: 6000 });
   },
+  /**
+   * خطأ بارز — أكبر وأوضح، لأخطاء البيع الحرجة (نقص المخزون/رفض الدفع) حيث يجب أن
+   * يلتقطها الكاشير فوراً وسط ضغط الشغل. خطّ أكبر + حشوة أوسع + مدّة ٨ث. الصنف
+   * notify-err-big في index.css يُكبّر العنوان والوصف والأيقونة معاً.
+   */
+  errBig(error: unknown, description?: string) {
+    return toast.error(errMsg(error), {
+      description,
+      duration: 8000,
+      className: "notify-err-big",
+      style: { fontSize: "17px", fontWeight: 800, padding: "18px 20px", minWidth: "min(440px, 92vw)" },
+    });
+  },
   /** معلومة محايدة. */
   info(message: string, description?: string) {
     return toast(message, { description, duration: 4000 });
