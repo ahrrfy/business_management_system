@@ -1,8 +1,14 @@
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import {
+  AccountFields, accountPermsPayload, emptyAccountValue, validateAccount, type AccountFieldsValue,
+} from "@/components/form/AccountFields";
+import { SmartUserInput, type SmartUserValue } from "@/components/form/SmartUserInput";
+import { CredentialsShare } from "@/components/form/CredentialsShare";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import {
@@ -12,6 +18,10 @@ import {
 import { AlertCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
+import { ROLE_OPTIONS } from "./Users";
+
+type AccountMode = "none" | "new" | "link";
+const roleLabelOf = (r: string) => ROLE_OPTIONS.find((o) => o.value === r)?.label ?? r;
 
 const selectCls = "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 const COLORS = ["#2563eb", "#7c3aed", "#db2777", "#0891b2", "#ea580c", "#16a34a", "#ca8a04", "#9333ea", "#0d9488", "#dc2626"];
@@ -43,6 +53,32 @@ export default function EmployeeNew() {
   const [dayRates, setDayRates] = useState<Record<string, number>>({ ...DAY_RATES_DEFAULT });
   const [photo, setPhoto] = useState<ImageItem[]>([]);
   const [edu, setEdu] = useState<EduRow[]>([]);
+
+  // —— حساب النظام (admin فقط) ——
+  const me = trpc.auth.me?.useQuery?.();
+  const isAdmin = me?.data?.role === "admin";
+  const [accountMode, setAccountMode] = useState<AccountMode>("none"); // وضع الإضافة
+  const [editAccountMode, setEditAccountMode] = useState<"new" | "link">("link"); // وضع التعديل (لا حساب بعد)
+  const [account, setAccount] = useState<AccountFieldsValue>(emptyAccountValue);
+  const patchAccount = (p: Partial<AccountFieldsValue>) => setAccount((a) => ({ ...a, ...p }));
+  const [linkUser, setLinkUser] = useState<SmartUserValue>({ userId: null, label: "" });
+  const [autoSuggestSignal, setAutoSuggestSignal] = useState(0);
+  const [createdInfo, setCreatedInfo] = useState<{
+    name: string; email: string; username?: string; password: string; phone?: string;
+    roleLabel?: string; branchName?: string | null; jobTitle?: string | null; mustChangePassword?: boolean; employeeId: number | null;
+  } | null>(null);
+  const employeeFullName = [form.firstName, form.fatherName, form.lastName].map((s) => s.trim()).filter(Boolean).join(" ");
+
+  function pickMode(m: AccountMode) {
+    if (m === "new" && accountMode !== "new") {
+      setAccount((a) => ({
+        ...a,
+        branchId: a.branchId !== "" ? a.branchId : form.branchId ? Number(form.branchId) : (me?.data?.branchId as number) ?? "",
+      }));
+      setAutoSuggestSignal((n) => n + 1);
+    }
+    setAccountMode(m);
+  }
 
   // تعبئة نموذج التعديل عند وصول البيانات (مرّة واحدة).
   if (isEdit && existing.data && !loaded) {
@@ -79,7 +115,48 @@ export default function EmployeeNew() {
   };
   const create = trpc.employees.create.useMutation(mutationOpts);
   const update = trpc.employees.update.useMutation(mutationOpts);
-  const pending = create.isPending || update.isPending;
+
+  // يحلّ بيانات الدخول المولّدة إلى بطاقة المشاركة (CredentialsShare).
+  function showCredentials(cred: { email: string | null; username: string | null; password: string; role: string; customRoleId: number | null; mustChangePassword: boolean }, employeeId: number | null) {
+    const accBranchId = account.branchId !== "" ? Number(account.branchId) : form.branchId ? Number(form.branchId) : null;
+    setCreatedInfo({
+      name: employeeFullName,
+      email: cred.email ?? "",
+      username: cred.username ?? undefined,
+      password: cred.password,
+      phone: form.phone.trim() || undefined,
+      roleLabel: cred.customRoleId ? "دور مخصّص" : roleLabelOf(cred.role),
+      branchName: accBranchId ? opts.data?.branches.find((b) => b.id === accBranchId)?.name ?? null : null,
+      jobTitle: form.position.trim() || null,
+      mustChangePassword: cred.mustChangePassword,
+      employeeId,
+    });
+  }
+
+  const createWithAccount = trpc.employees.createWithAccount.useMutation({
+    onSuccess: (res) => {
+      utils.employees.list.invalidate();
+      notify.ok(`أُضيف الموظف ${res.employee?.fullName ?? ""}`);
+      if (res.credentials) showCredentials(res.credentials, res.employee?.id ?? null);
+      else navigate(res.employee?.id ? `/hr/employees/${res.employee.id}` : "/hr/employees");
+    },
+    onError: (err: { message: string }) => { setError(err.message); notify.err(err); },
+  });
+
+  const linkAccountM = trpc.employees.linkAccount.useMutation({
+    onSuccess: () => { notify.ok("تم ربط الحساب بالموظف"); setLinkUser({ userId: null, label: "" }); void existing.refetch(); },
+    onError: (err: { message: string }) => { setError(err.message); notify.err(err); },
+  });
+  const unlinkAccountM = trpc.employees.unlinkAccount.useMutation({
+    onSuccess: () => { notify.ok("تم فكّ ربط الحساب"); void existing.refetch(); },
+    onError: (err: { message: string }) => { setError(err.message); notify.err(err); },
+  });
+  const createAccountForM = trpc.employees.createAccountFor.useMutation({
+    onSuccess: (res) => { notify.ok("تم إنشاء الحساب وربطه بالموظف"); void existing.refetch(); if (res.credentials) showCredentials(res.credentials, editId); },
+    onError: (err: { message: string }) => { setError(err.message); notify.err(err); },
+  });
+
+  const pending = create.isPending || update.isPending || createWithAccount.isPending;
 
   function submit() {
     setError("");
@@ -101,8 +178,78 @@ export default function EmployeeNew() {
       education: edu.length ? edu.map(({ key, ...e }) => ({ ...e, degree: e.degree, year: e.year ? Number(e.year) : undefined })) : undefined,
       annualLeaveBalance: Number(form.annualLeaveBalance || 0), sickLeaveBalance: Number(form.sickLeaveBalance || 0),
     };
-    if (isEdit) update.mutate({ id: editId!, ...payload });
-    else create.mutate(payload);
+    if (isEdit) { update.mutate({ id: editId!, ...payload }); return; }
+
+    // الإضافة — تفرّع حسب وضع الحساب (غير admin أو «بلا حساب» ⇒ المسار الحالي).
+    if (!isAdmin || accountMode === "none") { create.mutate(payload); return; }
+    if (accountMode === "link") {
+      if (!linkUser.userId) { setError("اختر حساباً موجوداً للربط، أو اختر «بلا حساب»."); return; }
+      createWithAccount.mutate({ ...payload, account: { mode: "link", userId: linkUser.userId } });
+      return;
+    }
+    // accountMode === "new"
+    const accErr = validateAccount(account);
+    if (accErr) { setError(accErr); return; }
+    createWithAccount.mutate({ ...payload, account: { mode: "new", ...accountNewPayload() } });
+  }
+
+  /** يبني حقول الحساب الجديد للإرسال (الاسم من الموظف؛ الفرع/الهاتف/المسمّى تُؤخذ من الموظف خادمياً). */
+  function accountNewPayload() {
+    return {
+      name: employeeFullName,
+      email: account.email.trim().toLowerCase() || undefined,
+      username: account.username.trim().toLowerCase() || undefined,
+      password: account.password,
+      role: account.role,
+      customRoleId: account.customRoleId ?? undefined,
+      branchId: account.branchId === "" ? undefined : Number(account.branchId),
+      permissionsOverride: accountPermsPayload(account),
+      mustChangePassword: account.mustChangePassword,
+    };
+  }
+
+  /** التعديل: إنشاء حساب جديد لموظف قائم وربطه. */
+  function createAccountForEdit() {
+    setError("");
+    const accErr = validateAccount(account);
+    if (accErr) { setError(accErr); return; }
+    createAccountForM.mutate({ employeeId: editId!, ...accountNewPayload() });
+  }
+
+  /** التعديل: ربط حساب قائم. */
+  function linkAccountForEdit() {
+    setError("");
+    if (!linkUser.userId) { setError("اختر حساباً موجوداً للربط."); return; }
+    linkAccountM.mutate({ employeeId: editId!, userId: linkUser.userId });
+  }
+
+  // بعد إنشاء حساب جديد للموظف: بطاقة مشاركة بيانات الدخول.
+  if (createdInfo) {
+    const dest = createdInfo.employeeId ? `/hr/employees/${createdInfo.employeeId}` : "/hr/employees";
+    return (
+      <div className="space-y-4 max-w-2xl">
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-bold">{isEdit ? "تعديل موظف" : "إضافة موظف"}</h1>
+          <Link href="/hr/employees" className="text-sm text-muted-foreground">← رجوع للموظفين</Link>
+        </div>
+        <CredentialsShare
+          name={createdInfo.name}
+          email={createdInfo.email}
+          username={createdInfo.username}
+          password={createdInfo.password}
+          phone={createdInfo.phone}
+          roleLabel={createdInfo.roleLabel}
+          branchName={createdInfo.branchName}
+          jobTitle={createdInfo.jobTitle}
+          mustChangePassword={createdInfo.mustChangePassword}
+          onClose={() => navigate(dest)}
+        />
+        <div className="flex gap-2">
+          <Button onClick={() => navigate(dest)}>عرض الموظف</Button>
+          <Link href="/hr/employees"><Button variant="outline">العودة للموظفين</Button></Link>
+        </div>
+      </div>
+    );
   }
 
   return (
@@ -204,6 +351,75 @@ export default function EmployeeNew() {
           )}
         </CardContent>
       </Card>
+
+      {/* حساب النظام — admin فقط. وضع الإضافة: ٣ خيارات. */}
+      {isAdmin && !isEdit && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">حساب النظام</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-xs text-muted-foreground">يستخدم بعض الموظفين النظام والبعض لا — اختر ما يناسب هذا الموظف.</p>
+            <div className="inline-flex flex-wrap rounded-md border p-0.5 gap-0.5">
+              {([["none", "بلا حساب — موظف فقط"], ["new", "إنشاء حساب جديد"], ["link", "ربط بحساب موجود"]] as const).map(([k, lbl]) => (
+                <button key={k} type="button" onClick={() => pickMode(k)} className={`px-3 h-8 rounded text-sm ${accountMode === k ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}>{lbl}</button>
+              ))}
+            </div>
+            {accountMode === "new" && (
+              <AccountFields value={account} onChange={patchAccount} nameForSuggest={employeeFullName} autoSuggestSignal={autoSuggestSignal} />
+            )}
+            {accountMode === "link" && (
+              <div className="space-y-1 max-w-md">
+                <Label>ربط بحساب موجود</Label>
+                <SmartUserInput value={linkUser} onChange={setLinkUser} placeholder="ابحث باسم المستخدم أو البريد — يعرض الحسابات غير المرتبطة" />
+                <p className="text-[11px] text-muted-foreground">تُعرض فقط الحسابات غير المرتبطة بموظف آخر.</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* حساب النظام — admin فقط. وضع التعديل: عرض/فكّ الربط أو ربط/إنشاء. */}
+      {isAdmin && isEdit && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">حساب النظام</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            {existing.data?.linkedUser ? (
+              <div className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 p-2 text-sm">
+                <span className="flex items-center gap-2 min-w-0">
+                  <span className="text-muted-foreground">الحساب المرتبط:</span>
+                  <span dir="ltr" className="truncate">{existing.data.linkedUser.username || existing.data.linkedUser.email || existing.data.linkedUser.name || `#${existing.data.linkedUser.id}`}</span>
+                  <Badge variant="outline" className="text-[10px]">{roleLabelOf(existing.data.linkedUser.role)}</Badge>
+                </span>
+                <Button
+                  variant="ghost" size="sm" className="text-destructive shrink-0"
+                  disabled={unlinkAccountM.isPending}
+                  onClick={() => { if (window.confirm("هل تريد إلغاء ربط هذا الحساب بالموظف؟ سيبقى الحساب فعّالاً لكن غير مرتبط.")) unlinkAccountM.mutate({ employeeId: editId! }); }}
+                >إلغاء الربط</Button>
+              </div>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground">لا حساب مرتبط بهذا الموظف.</p>
+                <div className="inline-flex rounded-md border p-0.5 gap-0.5">
+                  {([["new", "إنشاء حساب جديد"], ["link", "ربط بحساب موجود"]] as const).map(([k, lbl]) => (
+                    <button key={k} type="button" onClick={() => { setEditAccountMode(k); if (k === "new") setAutoSuggestSignal((n) => n + 1); }} className={`px-3 h-8 rounded text-sm ${editAccountMode === k ? "bg-primary text-primary-foreground" : "hover:bg-accent"}`}>{lbl}</button>
+                  ))}
+                </div>
+                {editAccountMode === "new" ? (
+                  <>
+                    <AccountFields value={account} onChange={patchAccount} nameForSuggest={employeeFullName} autoSuggestSignal={autoSuggestSignal} />
+                    <Button onClick={createAccountForEdit} disabled={createAccountForM.isPending}>{createAccountForM.isPending ? "جارٍ…" : "إنشاء الحساب وربطه"}</Button>
+                  </>
+                ) : (
+                  <div className="space-y-2 max-w-md">
+                    <SmartUserInput value={linkUser} onChange={setLinkUser} employeeId={editId ?? undefined} placeholder="ابحث باسم المستخدم أو البريد — يعرض الحسابات غير المرتبطة" />
+                    <p className="text-[11px] text-muted-foreground">تُعرض فقط الحسابات غير المرتبطة بموظف آخر.</p>
+                    <Button onClick={linkAccountForEdit} disabled={linkAccountM.isPending}>{linkAccountM.isPending ? "جارٍ…" : "ربط الحساب"}</Button>
+                  </div>
+                )}
+              </>
+            )}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">

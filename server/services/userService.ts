@@ -13,7 +13,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
 import { roles, users } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { getDb, type Tx } from "../db";
 import { hashPassword, verifyPassword } from "../auth/password";
 import { escapeLike } from "../lib/sqlLike";
 import { withTx, type Actor } from "./tx";
@@ -144,9 +144,18 @@ export function generateStrongPassword(): string {
   return [...base, ...extra].sort(() => Math.random() - 0.5).join("");
 }
 
-/** إنشاء مستخدم جديد. */
-export async function createUser(input: CreateUserInput, _actor: Actor) {
-  return withTx(async (tx) => {
+/** إنشاء مستخدم جديد (غلاف ذرّي مستقلّ). */
+export async function createUser(input: CreateUserInput, actor: Actor) {
+  return withTx((tx) => createUserTx(tx, input, actor));
+}
+
+/**
+ * إنشاء مستخدم داخل معاملة قائمة (tx مُمرَّر) — يسمح بتركيب الإنشاء مع عمليات أخرى
+ * في معاملة ذرّية واحدة (مثل «أضف موظفاً + أنشئ حسابه» معاً ⇒ أي فشل يُرجِع الكل).
+ * نفس منطق createUser تماماً لكن بلا withTx خاص.
+ */
+export async function createUserTx(tx: Tx, input: CreateUserInput, _actor: Actor) {
+  {
     const name = input.name?.trim();
     if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم مطلوب" });
     if (name.length > 255) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم طويل جداً" });
@@ -200,7 +209,7 @@ export async function createUser(input: CreateUserInput, _actor: Actor) {
     } catch (e) {
       rethrowDup(e);
     }
-  });
+  }
 }
 
 /** تعديل مستخدم. */

@@ -1027,6 +1027,8 @@ export const employees = mysqlTable(
     deptIdx: index("idx_emp_dept").on(table.department),
     // 0018: تفرّد الرقم الوطني (تعدّد NULL مسموح). أُضيف يدوياً في migration 0018.
     nationalIdUq: unique("uq_employee_national_id").on(table.nationalId),
+    // 0021: علاقة واحد-لواحد بين الموظف وحساب النظام (تعدّد NULL مسموح ⇒ موظفو «بلا حساب» غير متأثرين).
+    userIdUq: unique("uq_employee_user").on(table.userId),
   })
 );
 
