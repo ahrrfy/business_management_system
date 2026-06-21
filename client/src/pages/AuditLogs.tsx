@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportRows } from "@/lib/export";
+import { fmtDateTime } from "@/lib/date";
+import { fmtInt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 
@@ -75,8 +77,7 @@ function actionLabel(a: string): string {
 }
 
 function dt(d: string | Date | null | undefined): string {
-  if (!d) return "—";
-  return new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" });
+  return fmtDateTime(d);
 }
 
 function jsonStr(v: unknown): string {
@@ -176,7 +177,7 @@ export default function AuditLogs() {
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle className="text-base">السجلّات</CardTitle>
           <div className="flex items-center gap-3">
-            <div className="text-xs text-muted-foreground">{list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${total.toLocaleString("ar-IQ-u-nu-latn")}`}</div>
+            <div className="text-xs text-muted-foreground">{list.isLoading ? "جارٍ التحميل…" : `الإجمالي: ${fmtInt(total)}`}</div>
             <Button
               variant="outline"
               size="sm"

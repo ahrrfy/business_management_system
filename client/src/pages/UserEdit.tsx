@@ -212,9 +212,15 @@ export default function UserEdit() {
     });
   }
 
-  function doReset() {
+  async function doReset() {
     setPwMsg(""); setResetShare(null);
     if (!isStrongPassword(newPassword)) return setPwMsg(PASSWORD_POLICY_MSG);
+    if (!(await confirm({
+      variant: "warning",
+      title: "إعادة تعيين كلمة المرور",
+      description: `سيتم تعيين كلمة مرور جديدة لـ«${name || u?.email || `#${userId}`}» وإبطال كل جلساته الحالية فوراً. هل تتابع؟`,
+      confirmText: "إعادة التعيين",
+    }))) return;
     resetPassword.mutate({ userId, newPassword, mustChangePassword: mustChangeOnReset });
   }
 

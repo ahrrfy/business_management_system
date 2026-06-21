@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PASSWORD_MIN_LEN, isStrongPassword } from "@shared/const";
 import { trpc } from "@/lib/trpc";
+import { confirm as confirmDialog } from "@/lib/confirm";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { ROLE_LABEL } from "./Users";
@@ -101,7 +102,7 @@ export default function Account() {
           <p className="text-xs text-muted-foreground">
             إنهاء كل الجلسات النشطة على جميع الأجهزة. ستحتاج لتسجيل الدخول من جديد.
           </p>
-          <Button variant="outline" onClick={() => revoke.mutate()} disabled={revoke.isPending}>
+          <Button variant="outline" onClick={async () => { if (!(await confirmDialog({ variant: "danger", title: "إنهاء كل الجلسات", description: "سيُسجَّل خروجك من كل الأجهزة فوراً وتحتاج للدخول من جديد. اكتب «إنهاء» للتأكيد.", confirmText: "إنهاء الجلسات", requireText: "إنهاء" }))) return; revoke.mutate(); }} disabled={revoke.isPending}>
             {revoke.isPending ? "…" : "تسجيل الخروج من كل الأجهزة"}
           </Button>
         </CardContent>

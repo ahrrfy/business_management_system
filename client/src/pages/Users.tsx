@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ListToolbar, RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 
@@ -24,13 +25,6 @@ export const ROLE_LABEL: Record<string, string> = Object.fromEntries(
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-function fmtDate(d: string | Date | null | undefined): string {
-  if (!d) return "—";
-  const t = new Date(d);
-  if (Number.isNaN(t.getTime())) return "—";
-  return t.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit" });
-}
 
 /** ملصق لوني للدور */
 function RoleBadge({ role }: { role: string }) {
