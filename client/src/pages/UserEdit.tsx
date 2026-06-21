@@ -2,24 +2,72 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { PermissionMatrix } from "@/components/form/PermissionMatrix";
 import { CredentialsShare } from "@/components/form/CredentialsShare";
+import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { UsagePanel } from "@/components/UsagePanel";
 import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
-import { useEffect, useState } from "react";
-import { Link, useRoute } from "wouter";
+import { useEffect, useMemo, useState } from "react";
+import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_OPTIONS, ROLE_LABEL } from "./Users";
-import { ROLES, type RoleKey } from "@/lib/permissionsModel";
+import {
+  ROLES,
+  ROLE_TEMPLATES,
+  PERMISSION_MODULES,
+  diffFromTemplate,
+  resolvePermissions,
+  type AccessLevel,
+  type PermissionMap,
+  type RoleKey,
+} from "@/lib/permissionsModel";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
+/** يحوّل تاريخاً قادماً من الخادم (Date عبر superjson أو سلسلة) إلى yyyy-mm-dd لحقل type=date. */
+function toDateInput(d: unknown): string {
+  if (!d) return "";
+  if (typeof d === "string") return d.slice(0, 10);
+  try {
+    return new Date(d as Date).toISOString().slice(0, 10);
+  } catch {
+    return "";
+  }
+}
+
+/** فروق الصلاحيات عن قالب الدور — تُعرض فوق المصفوفة (مطابق لشاشة الإضافة). */
+function PermDiffSummary({ role, override }: { role: RoleKey; override: PermissionMap }) {
+  const entries = Object.entries(override);
+  if (!entries.length) return null;
+  const base = ROLE_TEMPLATES[role];
+  return (
+    <div className="flex flex-wrap gap-1 mb-2">
+      {entries.map(([k, v]) => {
+        const mod = PERMISSION_MODULES.find((m) => m.key === k);
+        const prev = base[k] ?? "NONE";
+        const label = v === "FULL" ? "كامل" : v === "READ" ? "قراءة" : "لا وصول";
+        const prevLabel = prev === "FULL" ? "كامل" : prev === "READ" ? "قراءة" : "لا وصول";
+        return (
+          <span key={k} className="text-[10px] rounded bg-primary/10 text-primary px-1.5 py-0.5">
+            {mod?.label ?? k}: {prevLabel} ← {label}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 export default function UserEdit() {
   const [, params] = useRoute<{ id: string }>("/users/:id/edit");
+  const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const userId = Number(params?.id ?? 0);
 
   const detail = trpc.users.get.useQuery({ userId }, { enabled: userId > 0 });
+  const usage = trpc.users.usage.useQuery({ userId }, { enabled: userId > 0 });
   const branches = trpc.branches.list.useQuery();
   const rolesQ = trpc.roles.list.useQuery();
   const customRoles = rolesQ.data?.custom ?? [];
@@ -32,6 +80,10 @@ export default function UserEdit() {
   const [role, setRole] = useState<RoleKey>("cashier");
   const [customRoleId, setCustomRoleId] = useState<number | null>(null);
   const [branchId, setBranchId] = useState<string>("");
+  const [phone, setPhone] = useState("");
+  const [jobTitle, setJobTitle] = useState("");
+  const [hiredAt, setHiredAt] = useState("");
+  const [permsOverride, setPermsOverride] = useState<PermissionMap>({});
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [loaded, setLoaded] = useState(false);
@@ -50,6 +102,10 @@ export default function UserEdit() {
       setRole((u.role as RoleKey) ?? "cashier");
       setCustomRoleId((u as { customRoleId?: number | null }).customRoleId ?? null);
       setBranchId(u.branchId ? String(u.branchId) : "");
+      setPhone((u as { phone?: string | null }).phone ?? "");
+      setJobTitle((u as { jobTitle?: string | null }).jobTitle ?? "");
+      setHiredAt(toDateInput((u as { hiredAt?: unknown }).hiredAt));
+      setPermsOverride(((u as { permissionsOverride?: PermissionMap | null }).permissionsOverride as PermissionMap) ?? {});
       setLoaded(true);
     }
   }, [detail.data, loaded]);
@@ -66,6 +122,10 @@ export default function UserEdit() {
     onSuccess: async () => { await invalidate(); },
     onError: (e) => setError(e.message),
   });
+  const del = trpc.users.delete.useMutation({
+    onSuccess: async () => { await utils.users.list.invalidate(); navigate("/users"); },
+    onError: (e) => setError(e.message),
+  });
   const resetPassword = trpc.users.resetPassword.useMutation({
     onSuccess: (_, vars) => {
       setPwMsg("تمّت إعادة تعيين كلمة المرور؛ أُبطِلت جلسات المستخدم.");
@@ -80,7 +140,25 @@ export default function UserEdit() {
     },
     onError: (e) => setPwMsg(e.message),
   });
-  const generatePw = trpc.users.generatePassword.useQuery(undefined, { enabled: false });
+  const resolvedPerms = useMemo(
+    () => resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
+    [role, permsOverride]
+  );
+
+  function handleRoleChange(val: string) {
+    if (val.startsWith("custom:")) {
+      setCustomRoleId(Number(val.slice(7))); // دور مخصّص — صلاحياته محفوظة فيه
+    } else {
+      setCustomRoleId(null);
+      setRole(val as RoleKey);
+      setPermsOverride({}); // اختيار دور مبني يعيد الصلاحيات لقالبه
+    }
+  }
+
+  function handlePermChange(moduleKey: string, level: AccessLevel) {
+    const newResolved = { ...resolvedPerms, [moduleKey]: level };
+    setPermsOverride(diffFromTemplate(role, newResolved) ?? {});
+  }
 
   async function handleGeneratePassword() {
     try {
@@ -116,8 +194,22 @@ export default function UserEdit() {
     if (!emailV && !usernameV) return setError("يجب إبقاء بريد إلكتروني أو اسم مستخدم واحد على الأقل.");
     if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) return setError("بريد إلكتروني غير صالح.");
     if (usernameV && !USERNAME_REGEX.test(usernameV)) return setError(USERNAME_POLICY_MSG);
+    if (hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(hiredAt)) return setError("تاريخ التوظيف غير صالح.");
+    const override = customRoleId ? null : diffFromTemplate(role, resolvedPerms);
     // نرسل القيمتين دائماً: "" ⇒ مسح المعرّف صراحةً (الخادم يضمن بقاء معرّف واحد على الأقل).
-    update.mutate({ userId, name: name.trim(), email: emailV, username: usernameV, role, customRoleId, branchId: branchId ? Number(branchId) : null });
+    update.mutate({
+      userId,
+      name: name.trim(),
+      email: emailV,
+      username: usernameV,
+      role,
+      customRoleId,
+      branchId: branchId ? Number(branchId) : null,
+      phone: phone.trim() || null,
+      jobTitle: jobTitle.trim() || null,
+      hiredAt: hiredAt || null,
+      permissionsOverride: override,
+    });
   }
 
   function doReset() {
@@ -126,7 +218,21 @@ export default function UserEdit() {
     resetPassword.mutate({ userId, newPassword, mustChangePassword: mustChangeOnReset });
   }
 
+  async function handleDelete() {
+    setError("");
+    if (!usage.data?.clean) return;
+    const label = name || u?.email || `#${userId}`;
+    if (!(await confirm({
+      variant: "danger",
+      title: "حذف المستخدم نهائياً",
+      description: `سيُحذف «${label}» نهائياً من القاعدة ولا يمكن التراجع. (متاح لأنّ الحساب نظيف بلا أي نشاط.) هل تتابع؟`,
+      confirmText: "حذف نهائياً",
+    }))) return;
+    del.mutate({ userId });
+  }
+
   const roleInfo = ROLES.find((r) => r.key === role);
+  const customCount = Object.keys(permsOverride).length;
 
   if (!userId) return <div className="p-6 text-center text-muted-foreground">معرّف مستخدم غير صالح.</div>;
   if (detail.isLoading) return <div className="p-6 text-center text-muted-foreground">جارٍ تحميل بيانات المستخدم…</div>;
@@ -136,7 +242,7 @@ export default function UserEdit() {
   const isActive = !!u.isActive;
 
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="space-y-4 max-w-4xl">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">تعديل مستخدم</h1>
         <Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
@@ -160,6 +266,13 @@ export default function UserEdit() {
               <span className="text-xs text-amber-600 font-medium">⚠️ تغيير إلزامي</span>
             </div>
           )}
+          <div className="col-span-2 md:col-span-1 md:row-span-2 flex justify-center md:justify-end">
+            <BarcodeDisplay
+              barcodeSet={{ barcode128: `USER-${Number(u.id)}`, qrPayload: `USER-${Number(u.id)}`, displayLabel: `${u.name ?? ""}\nUSER-${Number(u.id)}` }}
+              size="sm"
+              showCode128={false}
+            />
+          </div>
         </CardContent>
       </Card>
 
@@ -191,7 +304,7 @@ export default function UserEdit() {
             <select
               id="role" className={selectCls}
               value={customRoleId ? `custom:${customRoleId}` : role}
-              onChange={(e) => { const v = e.target.value; if (v.startsWith("custom:")) setCustomRoleId(Number(v.slice(7))); else { setCustomRoleId(null); setRole(v as RoleKey); } }}
+              onChange={(e) => handleRoleChange(e.target.value)}
             >
               <optgroup label="أدوار النظام">
                 {ROLE_OPTIONS.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
@@ -213,6 +326,54 @@ export default function UserEdit() {
               {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={String(b.id)}>{b.name}</option>)}
             </select>
           </div>
+        </CardContent>
+      </Card>
+
+      {/* البيانات الوظيفية */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">البيانات الوظيفية</CardTitle></CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="phone">رقم هاتف الاتصال</Label>
+            <IntlPhoneInput id="phone" value={phone} onChange={setPhone} />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="job">المسمى الوظيفي</Label>
+            <Input id="job" value={jobTitle} onChange={(e) => setJobTitle(e.target.value)} placeholder="مثال: كاشير / محاسب" />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="hired">تاريخ التوظيف</Label>
+            <Input id="hired" type="date" dir="ltr" value={hiredAt} onChange={(e) => setHiredAt(e.target.value)} />
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* الصلاحيات */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">
+            الصلاحيات
+            {!customRoleId && customCount > 0 && (
+              <span className="text-[10px] font-medium text-primary mr-2 align-middle">
+                {customCount} مخصّص
+              </span>
+            )}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {customRoleId ? (
+            <p className="text-sm text-muted-foreground">صلاحيات الدور المخصّص محفوظة في تعريفه — عدّلها من شاشة «الأدوار والصلاحيات».</p>
+          ) : (
+            <>
+              <PermDiffSummary role={role} override={permsOverride} />
+              <PermissionMatrix
+                role={role}
+                permissions={resolvedPerms}
+                onChange={handlePermChange}
+                onReset={() => setPermsOverride({})}
+              />
+            </>
+          )}
         </CardContent>
       </Card>
 
@@ -281,7 +442,25 @@ export default function UserEdit() {
         </CardContent>
       </Card>
 
-      void generatePw;
+      {/* الحذف النهائي — للنظيف فقط */}
+      <Card className="border-destructive/40">
+        <CardHeader><CardTitle className="text-base text-destructive">الحذف النهائي</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            يُحذف الحساب نهائياً من القاعدة ولا يمكن التراجع. متاح فقط للحساب «النظيف» (بلا أيّ نشاط أو ارتباط).
+            البديل الآمن القابل للتراجع: «تعطيل المستخدم» أعلاه.
+          </p>
+          <UsagePanel usage={usage.data} />
+          <Button
+            variant="outline"
+            className="text-destructive border-destructive/50 hover:bg-destructive/10"
+            disabled={usage.isLoading || !usage.data?.clean || del.isPending}
+            onClick={() => void handleDelete()}
+          >
+            {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

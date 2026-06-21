@@ -15,7 +15,7 @@
  */
 import type { ScanResult } from "@shared/barcodeTypes";
 
-const PIPE_PREFIX = /^(INV|WO|PO|QUO|CUST)\|/;
+const PIPE_PREFIX = /^(INV|WO|PO|QUO|CUST|EMP|USER)\|/;
 
 export function parseScan(raw: string): ScanResult {
   const s = raw.trim();
@@ -27,6 +27,8 @@ export function parseScan(raw: string): ScanResult {
     const docType = parts[0];
     const number = parts[1] ?? "";
     if (docType === "CUST") return { type: "customer", id: parseInt(number, 10) };
+    if (docType === "EMP") return { type: "employee", id: parseInt(number, 10) };
+    if (docType === "USER") return { type: "user", id: parseInt(number, 10) };
     return parseScan(number); // تفويض: "INV-1-…" → invoice
   }
 
@@ -35,10 +37,10 @@ export function parseScan(raw: string): ScanResult {
   if (s.startsWith("PO-"))   return { type: "purchaseOrder", number: s };
   if (s.startsWith("QUO-"))  return { type: "quotation",     number: s };
 
-  // CUST-NNNNN (من بطاقة QR العميل)
-  if (/^CUST-\d+$/.test(s)) {
-    return { type: "customer", id: parseInt(s.slice(5), 10) };
-  }
+  // CUST-NNNNN (بطاقة العميل) · EMP-N (بطاقة الموظف) · USER-N (بطاقة المستخدم)
+  if (/^CUST-\d+$/i.test(s)) return { type: "customer", id: parseInt(s.slice(5), 10) };
+  if (/^EMP-\d+$/i.test(s))  return { type: "employee", id: parseInt(s.slice(4), 10) };
+  if (/^USER-\d+$/i.test(s)) return { type: "user",     id: parseInt(s.slice(5), 10) };
 
   // أي شيء آخر = باركود منتج (EAN-13، ALR0000001، باركود مصنّعي)
   return { type: "product", barcode: s };

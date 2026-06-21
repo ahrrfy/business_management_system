@@ -6,6 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { UsagePanel } from "@/components/UsagePanel";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { EmpAvatar, EmploymentStatusBadge, iqd } from "@/lib/hr/ui";
@@ -13,7 +14,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { type EmployeeEducation, payTypeLabel, WEEK_DAYS } from "@shared/hr";
 import { useState } from "react";
-import { Link, useParams } from "wouter";
+import { Link, useLocation, useParams } from "wouter";
 
 const today = () => new Date().toISOString().slice(0, 10);
 
@@ -29,8 +30,12 @@ function Field({ label, value, dir }: { label: string; value: React.ReactNode; d
 export default function EmployeeDetail() {
   const params = useParams();
   const id = Number(params.id);
+  const [, navigate] = useLocation();
   const utils = trpc.useUtils();
   const q = trpc.employees.get.useQuery({ id }, { enabled: Number.isFinite(id) });
+  const usage = trpc.employees.usage.useQuery({ id }, { enabled: Number.isFinite(id) });
+  const me = trpc.auth.me.useQuery();
+  const isAdmin = me.data?.role === "admin"; // شاشة تعديل المستخدم admin-only ⇒ لا نربطها لغير الإدارة
   const [tab, setTab] = useState("overview");
   const [openTerminate, setOpenTerminate] = useState(false);
   const [tDate, setTDate] = useState(today());
@@ -39,6 +44,10 @@ export default function EmployeeDetail() {
   const refresh = async () => { await Promise.all([utils.employees.get.invalidate({ id }), utils.employees.list.invalidate()]); };
   const setStatus = trpc.employees.setStatus.useMutation({
     onSuccess: async () => { notify.ok("تم تحديث حالة التوظيف"); setOpenTerminate(false); setTReason(""); await refresh(); },
+    onError: (e) => notify.err(e),
+  });
+  const del = trpc.employees.delete.useMutation({
+    onSuccess: async () => { notify.ok("تم حذف الموظف نهائياً"); await utils.employees.list.invalidate(); navigate("/hr/employees"); },
     onError: (e) => notify.err(e),
   });
 
@@ -172,6 +181,42 @@ export default function EmployeeDetail() {
           </Card>
         </TabsContent>
       </Tabs>
+
+      {/* الوصول لحساب المستخدم المرتبط + الحذف النهائي */}
+      <Card className="border-destructive/40">
+        <CardHeader><CardTitle className="text-base text-destructive">أدوات الموظف — الحذف النهائي</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          {e.userId ? (
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-muted-foreground">حساب المستخدم المرتبط:</span>
+              {isAdmin ? (
+                <Link href={`/users/${e.userId}/edit`} className="text-primary underline">فتح حساب المستخدم #{e.userId}</Link>
+              ) : (
+                <span className="font-mono" dir="ltr">USER-{e.userId} <span className="text-xs text-muted-foreground">(إدارته للإدارة فقط)</span></span>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">لا حساب مستخدم (دخول للنظام) مرتبط بهذا الموظف.</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            يُحذف الموظف نهائياً من القاعدة ولا يمكن التراجع. متاح فقط للموظف «النظيف» (بلا حضور/عُهد/رواتب/إجازات/ترقيات).
+            البديل الآمن القابل للتراجع: «إنهاء الخدمة» أعلاه.
+          </p>
+          <UsagePanel usage={usage.data} />
+          <Button
+            variant="outline"
+            className="text-destructive border-destructive/50 hover:bg-destructive/10"
+            disabled={usage.isLoading || !usage.data?.clean || del.isPending}
+            onClick={() => void (async () => {
+              if (!usage.data?.clean) return;
+              if (!(await confirm({ variant: "danger", title: "حذف الموظف نهائياً", description: `سيُحذف «${e.fullName}» نهائياً من القاعدة ولا يمكن التراجع. (متاح لأنّه نظيف بلا نشاط.) هل تتابع؟`, confirmText: "حذف نهائياً" }))) return;
+              del.mutate({ id });
+            })()}
+          >
+            {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
+          </Button>
+        </CardContent>
+      </Card>
 
       {/* نافذة إنهاء الخدمة */}
       <Dialog open={openTerminate} onOpenChange={(o) => { setOpenTerminate(o); if (!o) setTReason(""); }}>

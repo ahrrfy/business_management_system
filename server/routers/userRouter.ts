@@ -6,6 +6,7 @@ import {
   checkEmailAvailable,
   checkUsernameAvailable,
   createUser,
+  deleteUser,
   generateStrongPassword,
   getUser,
   listUsers,
@@ -14,6 +15,7 @@ import {
   suggestUsername,
   updateUser,
 } from "../services/userService";
+import { getUserUsage } from "../services/entityUsage";
 import { adminProcedure, protectedProcedure, router } from "../trpc";
 
 // تحفظ tuple الـenum أنواع RoleKey الحرفية ⇒ z.infer ينتج RoleKey لا string ⇒ يُغني عن as any.
@@ -122,6 +124,20 @@ export const userRouter = router({
         entityId: input.userId,
         newValue: { name: input.name, email: input.email, username: input.username, role: input.role, branchId: input.branchId },
       });
+      return res;
+    }),
+
+  /** ملخّص ارتباطات المستخدم (لعرض النشاط + سبب منع الحذف + بيانات الكود عند المسح). */
+  usage: adminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .query(({ input }) => getUserUsage(input.userId)),
+
+  /** حذف نهائي — للنظيف فقط (يرمي رسالة عربية مفصّلة إن وُجد ارتباط). */
+  delete: adminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await deleteUser(input.userId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "user.delete", entityType: "user", entityId: input.userId });
       return res;
     }),
 

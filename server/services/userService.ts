@@ -18,6 +18,7 @@ import { hashPassword, verifyPassword } from "../auth/password";
 import { escapeLike } from "../lib/sqlLike";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { getUserUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 
 export type Role = typeof ALL_ROLES[number];
 
@@ -276,6 +277,37 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
       await tx.update(users).set(patch).where(eq(users.id, input.userId));
     } catch (e) { rethrowDup(e); }
     return { userId: input.userId, changed: true };
+  });
+}
+
+/**
+ * حذف مستخدم نهائياً — مسموح فقط للحساب «النظيف» (لا إشارة في أيّ جدول أعمال/ربط/تدقيق).
+ * الحُرّاس: لا حذف للذات، ولا حذف لآخر مدير نشط، وفحص النظافة، وقيد FK كحارس نهائي.
+ */
+export async function deleteUser(userId: number, actor: Actor) {
+  if (userId === actor.userId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكنك حذف حسابك بنفسك." });
+  }
+  return withTx(async (tx) => {
+    const u = (await tx.select().from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
+    if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
+    if (u.role === "admin") await assertNotLastActiveAdmin(tx, userId);
+    const usage = await getUserUsage(userId, tx);
+    if (!usage.clean) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: usageBlockMessage("هذا المستخدم", usage) });
+    }
+    try {
+      await tx.delete(users).where(eq(users.id, userId));
+    } catch (e) {
+      if (isFkBlocked(e)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "تعذّر الحذف: المستخدم مرتبط بسجلّات في النظام — عطّله بدل حذفه.",
+        });
+      }
+      throw e;
+    }
+    return { userId, deleted: true };
   });
 }
 

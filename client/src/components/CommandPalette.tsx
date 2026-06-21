@@ -21,8 +21,9 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { SEARCH_OPEN_EVENT } from "@/lib/searchEvents";
 import {
-  Boxes, FileText, LayoutDashboard, Package, Receipt, RotateCcw, ShoppingCart, Truck, Users, Wallet, Wrench,
+  Boxes, Contact, FileText, LayoutDashboard, Package, Receipt, RotateCcw, ScanLine, ShoppingCart, Truck, UserCog, Users, Wallet, Wrench,
 } from "lucide-react";
+import { CameraScanner } from "@/components/scan/CameraScanner";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 
@@ -57,6 +58,8 @@ const ENTITY_LABELS: Record<EntityType, string> = {
   CUSTOMER: "العملاء",
   SUPPLIER: "الموردون",
   EXPENSE: "المصاريف",
+  EMPLOYEE: "الموظفون",
+  USER: "المستخدمون",
 };
 
 const ENTITY_ICONS: Record<EntityType, React.ComponentType<{ className?: string }>> = {
@@ -68,11 +71,14 @@ const ENTITY_ICONS: Record<EntityType, React.ComponentType<{ className?: string 
   CUSTOMER: Users,
   SUPPLIER: Truck,
   EXPENSE: Wallet,
+  EMPLOYEE: Contact,
+  USER: UserCog,
 };
 
 const ENTITY_ORDER: EntityType[] = [
   "PRODUCT", "INVOICE", "QUOTATION", "WORK_ORDER",
   "CUSTOMER", "SUPPLIER", "PURCHASE_ORDER", "EXPENSE",
+  "EMPLOYEE", "USER",
 ];
 
 function useDebouncedValue<T>(value: T, ms: number): T {
@@ -94,6 +100,7 @@ function isEditableTarget(t: EventTarget | null): boolean {
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
+  const [scanOpen, setScanOpen] = useState(false);
   const [q, setQ] = useState("");
   const debouncedQ = useDebouncedValue(q, 200);
   const [, navigate] = useLocation();
@@ -166,10 +173,20 @@ export function CommandPalette() {
         >
           <CommandInput
             ref={inputRef}
-            placeholder="اكتب/امسح باركود/أدخل رقم وثيقة (INV-/QT-/PO-/WO-)…  (Ctrl+K)"
+            placeholder="اكتب/امسح باركود/أدخل رقم وثيقة (INV-/QT-/PO-/WO-) أو كود موظف/مستخدم (EMP-/USER-)…"
             value={q}
             onValueChange={setQ}
           />
+          <div className="flex items-center gap-2 px-3 py-1.5 border-b">
+            <button
+              type="button"
+              onClick={() => setScanOpen(true)}
+              className="inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-foreground/80 hover:bg-accent"
+            >
+              <ScanLine className="size-3.5" /> مسح بالكاميرا
+            </button>
+            <span className="text-[11px] text-muted-foreground">أو امسح بماسح ليزري — يُكتب الكود ثم Enter</span>
+          </div>
           <CommandList>
             {!term && (
               <CommandGroup heading="الصفحات">
@@ -232,6 +249,15 @@ export function CommandPalette() {
             })}
           </CommandList>
         </Command>
+        <CameraScanner
+          open={scanOpen}
+          onClose={() => setScanOpen(false)}
+          onDetect={(code) => {
+            setScanOpen(false);
+            setQ(code);
+            setTimeout(() => inputRef.current?.focus(), 10);
+          }}
+        />
       </DialogContent>
     </Dialog>
   );

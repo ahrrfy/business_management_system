@@ -486,6 +486,9 @@ export default function POS() {
     } else if (result.type === "customer") {
       setCustId(result.id);
       notify.ok(`تم تحديد العميل #${result.id}`);
+    } else if (result.type === "employee" || result.type === "user") {
+      // كود موظف/مستخدم لا ينطبق على نقطة البيع — أبلغ بدل ابتلاع المسح صامتاً.
+      notify.err("كود موظف/مستخدم — افتح البحث الشامل (Ctrl+K) لعرضه؛ لا ينطبق على نقطة البيع.");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lookupBarcode]);

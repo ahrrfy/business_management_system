@@ -7,6 +7,7 @@ import { z } from "zod";
 import { EMPLOYMENT_STATUS_KEYS, PAY_TYPE_KEYS } from "@shared/hr";
 import { logAudit } from "../services/auditService";
 import * as svc from "../services/employeeService";
+import { getEmployeeUsage } from "../services/entityUsage";
 import { protectedProcedure, requireModule, router } from "../trpc";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -113,5 +114,17 @@ export const employeeRouter = router({
       const e = await svc.setEmploymentStatus(input.id, input.status, { terminationDate: input.terminationDate, terminationReason: input.terminationReason });
       await logAudit(ctx, { action: "employee.setStatus", entityType: "employee", entityId: input.id, newValue: { status: input.status } });
       return e;
+    }),
+
+  /** ملخّص ارتباطات الموظف (نشاط + سبب منع الحذف + بيانات الكود عند المسح). */
+  usage: hrRead.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getEmployeeUsage(input.id)),
+
+  /** حذف نهائي — للنظيف فقط (يُمنع مع رسالة عربية إن وُجد ارتباط). */
+  delete: hrWrite
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await svc.deleteEmployee(input.id);
+      await logAudit(ctx, { action: "employee.delete", entityType: "employee", entityId: input.id });
+      return res;
     }),
 });

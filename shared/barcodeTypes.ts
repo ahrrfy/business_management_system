@@ -29,6 +29,8 @@ export type ScanResult =
   | { type: "purchaseOrder"; number: string }
   | { type: "quotation";     number: string }
   | { type: "customer";      id: number }
+  | { type: "employee";      id: number }
+  | { type: "user";          id: number }
   | { type: "product";       barcode: string }
   | { type: "unknown";       raw: string };
 

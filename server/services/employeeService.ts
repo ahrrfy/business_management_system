@@ -3,12 +3,14 @@
  * شريحة الأساس: CRUD + قائمة بفلاتر + تغيير حالة التوظيف. الأجر الشهري/بالساعة يُخزَّن،
  * أما حساب الرواتب/الحضور فشرائح لاحقة. المبالغ عبر money.ts (toDbMoney).
  * ========================================================================== */
+import { TRPCError } from "@trpc/server";
 import { and, desc, eq, getTableColumns, like, or, sql } from "drizzle-orm";
 import { fullEmployeeName, type EmployeeEducation } from "@shared/hr";
 import { branches, employees } from "../../drizzle/schema";
-import { requireDb } from "./tx";
+import { requireDb, withTx } from "./tx";
 import { toDbMoney } from "./money";
 import { extractInsertId } from "../lib/insertId";
+import { getEmployeeUsage, isFkBlocked, usageBlockMessage } from "./entityUsage";
 
 export interface EmployeeFilters {
   q?: string;
@@ -171,6 +173,33 @@ export async function updateEmployee(id: number, input: EmployeeInput) {
   if (!e) throw new Error("الموظف غير موجود");
   await db.update(employees).set(toValues(input)).where(eq(employees.id, id));
   return getEmployee(id);
+}
+
+/**
+ * حذف موظف نهائياً — مسموح فقط للموظف «النظيف» (لا حضور/عُهد/رواتب/إجازات/ترقيات/إنهاءات).
+ * غير النظيف يُمنع حذفه ويُعرض «إنهاء الخدمة» بديلاً. قيد FK حارس نهائي ضدّ التيتيم.
+ */
+export async function deleteEmployee(id: number) {
+  return withTx(async (tx) => {
+    const [e] = await tx.select().from(employees).where(eq(employees.id, id)).for("update").limit(1);
+    if (!e) throw new TRPCError({ code: "NOT_FOUND", message: "الموظف غير موجود" });
+    const usage = await getEmployeeUsage(id, tx);
+    if (!usage.clean) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: usageBlockMessage("هذا الموظف", usage) });
+    }
+    try {
+      await tx.delete(employees).where(eq(employees.id, id));
+    } catch (err) {
+      if (isFkBlocked(err)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "تعذّر الحذف: الموظف مرتبط بسجلّات في النظام — أنهِ خدمته بدل حذفه.",
+        });
+      }
+      throw err;
+    }
+    return { id, deleted: true };
+  });
 }
 
 /** تغيير حالة التوظيف: إنهاء خدمة (مع تاريخ وسبب) أو إعادة لرأس العمل أو وضعه بإجازة. */

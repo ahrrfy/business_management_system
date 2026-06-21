@@ -21,8 +21,12 @@
  */
 
 import { and, asc, desc, eq, like, or, sql } from "drizzle-orm";
+import { fullEmployeeName } from "@shared/hr";
+import { resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import {
+  branches,
   customers,
+  employees,
   expenses,
   invoices,
   productUnits,
@@ -31,6 +35,7 @@ import {
   purchaseOrders,
   quotations,
   suppliers,
+  users,
   workOrders,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -44,7 +49,9 @@ export type SearchEntityType =
   | "WORK_ORDER"
   | "CUSTOMER"
   | "SUPPLIER"
-  | "EXPENSE";
+  | "EXPENSE"
+  | "EMPLOYEE"
+  | "USER";
 
 export type SearchKind = "BARCODE" | "DOC_NUMBER" | "PHONE" | "TEXT";
 
@@ -91,6 +98,8 @@ export type GlobalSearchInput = {
   /** فرع المستخدم؛ null = elevated (admin/manager) يبحث عبر الفروع. */
   branchId: number | null;
   role: string;
+  /** فروق صلاحيات الدور المخصّص (يُحلّ إلى خريطة وحدات؛ يُحكم وصول الموظفين به). */
+  permissionsOverride?: Record<string, AccessLevel> | null;
   /** الحد لكل كيان (افتراضي ٦). */
   perEntityLimit?: number;
   /** قصر البحث على أنواع محدّدة (اختياري). */
@@ -105,6 +114,8 @@ const BRANCH_SCOPED_TYPES: ReadonlyArray<SearchEntityType> = [
   "WORK_ORDER",
   "EXPENSE",
 ];
+/** كيانات إدارية حسّاسة: الموظف (مدير/إدارة) والمستخدم (إدارة فقط). */
+const ADMIN_TYPES: ReadonlyArray<SearchEntityType> = ["EMPLOYEE", "USER"];
 
 /** الأنواع المخفيّة عن الكاشير (إدارة/مدير فأعلى). */
 const MANAGER_ONLY_TYPES: ReadonlyArray<SearchEntityType> = ["SUPPLIER", "PURCHASE_ORDER", "EXPENSE"];
@@ -113,7 +124,23 @@ function isElevated(role: string) {
   return role === "admin" || role === "manager";
 }
 
-function canSeeType(role: string, type: SearchEntityType): boolean {
+export function canSeeType(
+  role: string,
+  type: SearchEntityType,
+  override?: Record<string, AccessLevel> | null,
+): boolean {
+  // الإدارة ترى كل شيء (يطابق اختصار requireModule للأدمن).
+  if (role === "admin") return true;
+  // إدارة المستخدمين بلا «وحدة صلاحيات» مستقلّة ⇒ للأدمن فقط (يطابق adminProcedure في userRouter).
+  if (type === "USER") return false;
+  // الموظفون: تُحكَم بخريطة صلاحيات HR المحسوبة (قالب الدور + override) لا باسم الدور الأساس،
+  // كي تتطابق تماماً مع requireModule("hr","READ") على شاشات الموارد البشرية ⇒ لا تسريب PII
+  // لدورٍ مخصّص أُلغِيت عنه وحدة hr، ولا حجبٌ خاطئ عن دور (auditor) يملك hr:READ.
+  if (type === "EMPLOYEE") {
+    const map = resolvePermissions(role as RoleKey, override ?? null);
+    const lvl = map["hr"] ?? "NONE";
+    return lvl === "FULL" || lvl === "READ";
+  }
   if (isElevated(role) || role === "accountant") return true;
   return !MANAGER_ONLY_TYPES.includes(type);
 }
@@ -130,27 +157,148 @@ export async function globalSearch(input: GlobalSearchInput): Promise<SearchResu
   // قصر الفرع: لـelevated نمرّر null (يبحث في كل الفروع)، لغيرهم نقيّد بفرعه.
   const scopedBranchId = elevated ? null : input.branchId;
 
+  const override = input.permissionsOverride ?? null;
   const requested = new Set<SearchEntityType>(
-    (input.scopes ?? [...MASTER_DATA_TYPES, ...BRANCH_SCOPED_TYPES]).filter((t) => canSeeType(input.role, t)),
+    (input.scopes ?? [...MASTER_DATA_TYPES, ...BRANCH_SCOPED_TYPES, ...ADMIN_TYPES]).filter((t) =>
+      canSeeType(input.role, t, override),
+    ),
   );
 
   const tasks: Promise<SearchResult[]>[] = [];
 
   if (requested.has("PRODUCT")) tasks.push(searchProducts(db, kind, query, perEntityLimit));
   if (requested.has("CUSTOMER")) tasks.push(searchCustomers(db, kind, query, perEntityLimit));
-  if (requested.has("SUPPLIER") && canSeeType(input.role, "SUPPLIER"))
+  if (requested.has("SUPPLIER") && canSeeType(input.role, "SUPPLIER", override))
     tasks.push(searchSuppliers(db, kind, query, perEntityLimit));
 
   if (requested.has("INVOICE")) tasks.push(searchInvoices(db, kind, query, perEntityLimit, scopedBranchId));
   if (requested.has("QUOTATION")) tasks.push(searchQuotations(db, kind, query, perEntityLimit, scopedBranchId));
   if (requested.has("WORK_ORDER")) tasks.push(searchWorkOrders(db, kind, query, perEntityLimit, scopedBranchId));
-  if (requested.has("PURCHASE_ORDER") && canSeeType(input.role, "PURCHASE_ORDER"))
+  if (requested.has("PURCHASE_ORDER") && canSeeType(input.role, "PURCHASE_ORDER", override))
     tasks.push(searchPurchaseOrders(db, kind, query, perEntityLimit, scopedBranchId));
-  if (requested.has("EXPENSE") && canSeeType(input.role, "EXPENSE"))
+  if (requested.has("EXPENSE") && canSeeType(input.role, "EXPENSE", override))
     tasks.push(searchExpenses(db, kind, query, perEntityLimit, scopedBranchId));
+
+  // كيانات إدارية (موظف/مستخدم) — RBAC مطبَّق في canSeeType (يحلّ override)، وتشمل تحليل كود EMP-/USER-.
+  if (requested.has("EMPLOYEE") && canSeeType(input.role, "EMPLOYEE", override))
+    tasks.push(searchEmployees(db, kind, query, perEntityLimit));
+  if (requested.has("USER") && canSeeType(input.role, "USER", override))
+    tasks.push(searchUsers(db, kind, query, perEntityLimit));
 
   const groups = await Promise.all(tasks);
   return groups.flat().sort((a, b) => a.rank - b.rank);
+}
+
+// ────────────────────────────── الموظفون (HR) ──────────────────────────────
+
+async function searchEmployees(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  kind: SearchKind,
+  query: string,
+  limit: number,
+): Promise<SearchResult[]> {
+  // كود بطاقة الموظف: EMP-<id> ⇒ تطابق دقيق (أعلى رتبة).
+  const code = query.match(/^EMP-?(\d+)$/i);
+  const conds: any[] = [eq(employees.isActive, true)];
+  if (code) {
+    conds.push(eq(employees.id, Number(code[1])));
+  } else {
+    if (kind === "DOC_NUMBER" && /[A-Za-z]/.test(query)) return []; // مُعرّف وثيقة ≠ موظف
+    const like_ = `%${escapeLike(query)}%`;
+    conds.push(
+      or(
+        like(employees.firstName, like_),
+        like(employees.fatherName, like_),
+        like(employees.lastName, like_),
+        like(employees.phone, like_),
+        like(employees.nationalId, like_),
+        like(employees.position, like_),
+      ),
+    );
+  }
+  const rows = await db
+    .select({
+      id: employees.id,
+      firstName: employees.firstName,
+      fatherName: employees.fatherName,
+      grandfatherName: employees.grandfatherName,
+      lastName: employees.lastName,
+      position: employees.position,
+      department: employees.department,
+      phone: employees.phone,
+      branchName: branches.name,
+    })
+    .from(employees)
+    .leftJoin(branches, eq(branches.id, employees.branchId))
+    .where(and(...conds))
+    .orderBy(asc(employees.firstName), desc(employees.id))
+    .limit(limit);
+
+  return rows.map((r) => {
+    const name = fullEmployeeName(r);
+    return {
+      type: "EMPLOYEE" as const,
+      id: r.id,
+      title: name,
+      subtitle: [r.position, r.department].filter(Boolean).join(" · ") || r.phone || null,
+      meta: [`EMP-${r.id}`, r.branchName].filter(Boolean).join(" · "),
+      route: `/hr/employees/${r.id}`,
+      rank: code ? 0 : name.toLowerCase().startsWith(query.toLowerCase()) ? 1 : 2,
+    };
+  });
+}
+
+// ────────────────────────────── المستخدمون (إدارة) ──────────────────────────────
+
+async function searchUsers(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  kind: SearchKind,
+  query: string,
+  limit: number,
+): Promise<SearchResult[]> {
+  // كود بطاقة المستخدم: USER-<id> ⇒ تطابق دقيق.
+  const code = query.match(/^USER-?(\d+)$/i);
+  const conds: any[] = [];
+  if (code) {
+    conds.push(eq(users.id, Number(code[1])));
+  } else {
+    if (kind === "DOC_NUMBER" && /[A-Za-z]/.test(query)) return [];
+    const like_ = `%${escapeLike(query)}%`;
+    conds.push(
+      or(
+        like(users.name, like_),
+        like(users.username, like_),
+        like(users.email, like_),
+        like(users.phone, like_),
+      ),
+    );
+  }
+  const rows = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      username: users.username,
+      email: users.email,
+      role: users.role,
+      isActive: users.isActive,
+    })
+    .from(users)
+    .where(and(...conds))
+    .orderBy(asc(users.name), desc(users.id))
+    .limit(limit);
+
+  return rows.map((r) => {
+    const title = r.name || r.username || r.email || `مستخدم #${r.id}`;
+    return {
+      type: "USER" as const,
+      id: r.id,
+      title,
+      subtitle: r.username ? `@${r.username}` : r.email,
+      meta: [`USER-${r.id}`, r.role, r.isActive ? null : "معطّل"].filter(Boolean).join(" · "),
+      route: `/users/${r.id}/edit`,
+      rank: code ? 0 : title.toLowerCase().startsWith(query.toLowerCase()) ? 1 : 2,
+    };
+  });
 }
 
 // ────────────────────────────── المنتجات + الوحدات + الباركود ──────────────────────────────

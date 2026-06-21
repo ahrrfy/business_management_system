@@ -19,6 +19,8 @@ const ENTITY_TYPES = [
   "CUSTOMER",
   "SUPPLIER",
   "EXPENSE",
+  "EMPLOYEE",
+  "USER",
 ] as const satisfies readonly SearchEntityType[];
 
 export const globalSearchRouter = router({
@@ -35,6 +37,7 @@ export const globalSearchRouter = router({
         query: input.query,
         branchId: ctx.user.branchId ?? null,
         role: ctx.user.role,
+        permissionsOverride: (ctx.user as any).permissionsOverride ?? null,
         perEntityLimit: input.perEntityLimit,
         scopes: input.scopes,
       }),
