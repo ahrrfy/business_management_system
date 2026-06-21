@@ -68,7 +68,7 @@ export default function Roles() {
                     <td className="p-2">
                       <div className="flex items-center justify-center gap-1">
                         <Link href={`/roles/${id}/edit`}><Button variant="ghost" size="sm" className="h-7 text-xs">تعديل</Button></Link>
-                        <Button variant="ghost" size="sm" className="h-7 text-xs" disabled={setActive.isPending} onClick={() => setActive.mutate({ id, isActive: !active })}>
+                        <Button variant="ghost" size="sm" className="h-7 text-xs" disabled={setActive.isPending} onClick={async () => { if (!(await confirm({ variant: "warning", title: active ? "تعطيل الدور" : "تفعيل الدور", description: active ? "الأدوار المعطَّلة لا يمكن إسنادها لمستخدمين جدد. متابعة؟" : "تفعيل هذا الدور لإتاحته للإسناد. متابعة؟", confirmText: active ? "تعطيل" : "تفعيل" }))) return; setActive.mutate({ id, isActive: !active }); }}>
                           {active ? "تعطيل" : "تفعيل"}
                         </Button>
                         <Button
