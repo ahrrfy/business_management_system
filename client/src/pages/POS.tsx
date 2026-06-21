@@ -95,7 +95,9 @@ const LIGHT = {
   success:    "oklch(0.50  0.13 155)",
   successH:   "oklch(0.44  0.13 155)",
   amber:      "oklch(0.65  0.15 75)",
+  amberSoft:  "oklch(0.955 0.045 75)",
   danger:     "oklch(0.577 0.245 27.325)",
+  dangerSoft: "oklch(0.955 0.035 27.325)",
   modeActive: "oklch(0.90 0.10 72)",
   modeBord:   "oklch(0.72 0.14 72)",
   modeFg:     "oklch(0.38 0.14 60)",
@@ -120,7 +122,9 @@ const DARK = {
   success:    "oklch(0.55  0.14 155)",
   successH:   "oklch(0.49  0.14 155)",
   amber:      "oklch(0.72  0.15 75)",
+  amberSoft:  "oklch(0.32 0.07 75)",
   danger:     "oklch(0.65  0.22 27)",
+  dangerSoft: "oklch(0.30 0.08 27)",
   modeActive: "oklch(0.30 0.10 72)",
   modeBord:   "oklch(0.55 0.14 72)",
   modeFg:     "oklch(0.85 0.12 72)",
@@ -591,7 +595,8 @@ export default function POS() {
     onError: (e) => {
       if ((e.data as unknown as { code?: string })?.code === "PRECONDITION_FAILED")
         setCreditPrompt(e.message);
-      else notify.err(e);
+      // خطأ بيع حرج (نقص مخزون/رفض) ⇒ تنبيه بارز أكبر وأوضح يلتقطه الكاشير فوراً.
+      else notify.errBig(e);
     },
   });
 
@@ -1139,6 +1144,32 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
   const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
   const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
 
+  // حارس مخزون ليّن (إشارة بصرية فقط؛ الذرّية يفرضها الخادم في applyMovement). نجمع الطلب بالوحدة
+  // الأساس لكل صنف (variant) عبر كل وحداته في السلّة، لأنّ رصيد الفرع (stockBase) واحدٌ للصنف
+  // ويُشترَك بين وحداته (قطعة/درزن/كرتون). المقارنة بالمجموع لا بكل سطر ⇒ يُكتشف النقص حتى حين
+  // يُباع الصنف نفسه بوحدات متعددة (١ درزن + ١ قطعة قد يتجاوزان المتاح رغم أنّ كلّ سطر وحده لا يتجاوزه).
+  const demandByVariant = new Map<number, number>();
+  for (const c of cart) {
+    const f = Number(c.row.conversionFactor) || 1;
+    demandByVariant.set(c.row.variantId, (demandByVariant.get(c.row.variantId) ?? 0) + c.qty * f);
+  }
+  const stockState = (c: CartItem) => {
+    const convFactor  = Number(c.row.conversionFactor) || 1;
+    const availBase   = c.row.stockBase ?? 0;
+    const reqBase     = demandByVariant.get(c.row.variantId) ?? c.qty * convFactor; // إجمالي طلب الصنف
+    const isOut       = availBase <= 0;                       // نافذ — لا رصيد
+    const isShort     = !isOut && reqBase > availBase;        // الطلب يتجاوز المتاح
+    const availInUnit = Math.floor(availBase / convFactor);  // المتاح بوحدة السطر
+    return { isOut, isShort, availInUnit };
+  };
+  // ملخّص للشارة الدائمة في التذييل (كي لا يختفي التحذير حين ينزلق السطر المميَّز خارج الرؤية).
+  let anyOut = false, flaggedCount = 0;
+  for (const c of cart) {
+    const s = stockState(c);
+    if (s.isOut)        { anyOut = true; flaggedCount++; }
+    else if (s.isShort) { flaggedCount++; }
+  }
+
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
 
@@ -1241,19 +1272,35 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             {cart.map((c, i) => {
               const ep       = effectivePrice(c);
               const selected = selId === c.row.productUnitId;
+              // تمييز بصري + نصّ قبل محاولة الدفع (المنطق المُجمَّع للصنف في stockState أعلاه).
+              const { isOut, isShort, availInUnit } = stockState(c);
+              const rowBg  = selected ? C.primarySoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : "transparent";
+              const accent = isOut ? C.danger : isShort ? C.amber : "transparent";
               return (
                 <tr key={c.row.productUnitId}
                   onClick={() => { setSelId(c.row.productUnitId); setNumMode("QTY"); }}
-                  style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: selected ? C.primarySoft : "transparent", transition: "background .08s" }}
-                  onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = C.muted; }}
-                  onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
+                  style={{ borderBottom: `1px solid ${C.border}`, cursor: "pointer", background: rowBg, transition: "background .08s" }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = selected ? C.primarySoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : C.muted; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = rowBg; }}
                 >
-                  <td style={{ ...TD, color: C.mutedFg, fontWeight: 600 }}>{i + 1}</td>
+                  <td style={{ ...TD, color: C.mutedFg, fontWeight: 600, borderInlineStart: `4px solid ${accent}` }}>{i + 1}</td>
                   <td style={{ ...TD, textAlign: "right", fontWeight: 600, color: C.fg }}>
                     {c.row.productName}
                     <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 400, marginRight: 5 }}>{c.row.sku}</span>
                     {c.disc != null && c.disc > 0 && (
                       <span style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginRight: 4 }}>−{c.disc}%</span>
+                    )}
+                    {isOut && (
+                      <span style={{ display: "inline-block", fontSize: 11.5, color: "#fff", background: C.danger, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                        ⚠ نافذ — لا مخزون
+                      </span>
+                    )}
+                    {isShort && (
+                      <span style={{ display: "inline-block", fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                        {availInUnit === 0
+                          ? "⚠ لا يكفي لوحدة كاملة"
+                          : `⚠ المتاح ${fmt(availInUnit)} ${c.row.unitName} فقط`}
+                      </span>
                     )}
                   </td>
                   <td style={{ ...TD, color: C.mutedFg, fontSize: 12.5 }}>{c.row.unitName}</td>
@@ -1273,7 +1320,8 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                         style={{ width: 38, height: 38, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 20, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
                       <span style={{ minWidth: 40, textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.fg }}>{c.qty}</span>
                       <button onClick={(e) => { e.stopPropagation(); changeQty(c.row.productUnitId, c.qty + 1); }}
-                        style={{ width: 38, height: 38, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 20, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                        title={isOut || isShort ? "الزيادة تتجاوز المخزون المتاح" : undefined}
+                        style={{ width: 38, height: 38, border: `1.5px solid ${isOut || isShort ? accent : C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 20, color: isOut || isShort ? accent : C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
                     </div>
                   </td>
                   <td style={{ ...TD, direction: "ltr", fontWeight: 800, fontSize: 14.5, color: C.fg }}>{fmt(itemTotal(c))}</td>
@@ -1290,8 +1338,16 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
 
       {/* Footer */}
       {cart.length > 0 && (
-        <div style={{ borderTop: `2px solid ${C.border}`, padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.muted, flexShrink: 0 }}>
-          <span style={{ fontSize: 13, color: C.mutedFg }}>{cart.length} منتج · {itemCount} قطعة</span>
+        <div style={{ borderTop: `2px solid ${C.border}`, padding: "9px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", background: C.muted, flexShrink: 0, gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+            <span style={{ fontSize: 13, color: C.mutedFg, whiteSpace: "nowrap" }}>{cart.length} منتج · {itemCount} قطعة</span>
+            {flaggedCount > 0 && (
+              // شارة دائمة تلخّص أصناف نقص المخزون كي لا يختفي التحذير حين ينزلق سطره خارج الرؤية.
+              <span style={{ background: anyOut ? C.danger : C.amber, color: anyOut ? "#fff" : "#241900", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap" }}>
+                ⚠ {flaggedCount} صنف ناقص المخزون
+              </span>
+            )}
+          </div>
           <div style={{ display: "flex", alignItems: "baseline", gap: 5 }}>
             <span style={{ fontSize: 13.5, color: C.mutedFg }}>المجموع:</span>
             <span style={{ fontSize: 28, fontWeight: 900, direction: "ltr", color: C.fg }}>{fmt(total)}</span>

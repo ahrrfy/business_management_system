@@ -136,6 +136,28 @@
   }
 }
 
+/* تنبيه خطأ بارز (notify.errBig) — أخطاء البيع الحرجة كنقص المخزون: عنوان/وصف/أيقونة أكبر. */
+.notify-err-big [data-title] {
+  font-size: 16.5px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+.notify-err-big [data-description] {
+  font-size: 13.5px;
+  font-weight: 600;
+  opacity: 0.95;
+}
+/* الصنف يقع على نفس عنصر li الذي يحمل data-sonner-toast ⇒ نطابق نوعية محدِّد sonner
+   (0,3,0) بدمجهما بلا مسافة لنفوز بترتيب المصدر (CSS التطبيق يُحمَّل بعد CSS sonner المحقون). */
+.notify-err-big[data-sonner-toast] [data-icon] {
+  width: 22px;
+  height: 22px;
+}
+.notify-err-big[data-sonner-toast] [data-icon] svg {
+  width: 22px;
+  height: 22px;
+}
+
 @layer components {
   .container {
     width: 100%;
