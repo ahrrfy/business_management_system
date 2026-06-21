@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { confirm } from "@/lib/confirm";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
@@ -228,28 +229,72 @@ export default function WorkOrderDetail() {
 
       <div className="flex gap-2 flex-wrap">
         {data.status === "RECEIVED" && (
-          <Button onClick={() => start.mutate({ workOrderId })} disabled={start.isPending}>
+          <Button
+            onClick={async () => {
+              if (!(await confirm({
+                variant: "warning",
+                title: "بدء تنفيذ أمر الشغل",
+                description: `سيبدأ تنفيذ أمر «${data.title}» (${data.orderNumber}) وتُخصم المواد من المخزون. هل تريد المتابعة؟`,
+                confirmText: "بدء التنفيذ",
+              }))) return;
+              start.mutate({ workOrderId });
+            }}
+            disabled={start.isPending}
+          >
             {start.isPending ? "جارٍ…" : "بدء التنفيذ (خصم المواد)"}
           </Button>
         )}
         {data.status === "IN_PROGRESS" && (
-          <Button onClick={() => markReady.mutate({ workOrderId })} disabled={markReady.isPending}>
+          <Button
+            onClick={async () => {
+              if (!(await confirm({
+                variant: "info",
+                title: "وضع علامة جاهز للتسليم",
+                description: `سيُعلَّم أمر «${data.title}» (${data.orderNumber}) كجاهز للتسليم. هل تريد المتابعة؟`,
+                confirmText: "وضع علامة جاهز",
+              }))) return;
+              markReady.mutate({ workOrderId });
+            }}
+            disabled={markReady.isPending}
+          >
             {markReady.isPending ? "جارٍ…" : "وضع علامة جاهز"}
           </Button>
         )}
         {data.status === "READY" && (
           <Button
-            onClick={() => deliver.mutate({
-              workOrderId,
-              payment: Number(payAmount) > 0 ? { amount: String(Number(payAmount)), method: payMethod } : undefined,
-            })}
+            onClick={async () => {
+              const payNow = Number(payAmount) > 0;
+              if (!(await confirm({
+                variant: "danger",
+                title: "تسليم أمر الشغل وإصدار الفاتورة",
+                description: `سيُسلَّم أمر «${data.title}» (${data.orderNumber}) وتُصدر فاتورة بقيمة ${fmt(data.salePrice)}${payNow ? ` مع دفعة ${fmt(String(Number(payAmount)))}` : " (آجل بالكامل)"}. لا يمكن التراجع. اكتب «تسليم» للتأكيد.`,
+                confirmText: "تسليم وإصدار فاتورة",
+                requireText: "تسليم",
+              }))) return;
+              deliver.mutate({
+                workOrderId,
+                payment: payNow ? { amount: String(Number(payAmount)), method: payMethod } : undefined,
+              });
+            }}
             disabled={deliver.isPending}
           >
             {deliver.isPending ? "جارٍ…" : "تسليم وإصدار فاتورة"}
           </Button>
         )}
         {(data.status === "RECEIVED" || data.status === "IN_PROGRESS" || data.status === "READY") && (
-          <Button variant="outline" onClick={() => cancel.mutate({ workOrderId })} disabled={cancel.isPending}>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              if (!(await confirm({
+                variant: "warning",
+                title: "إلغاء أمر الشغل",
+                description: `سيُلغى أمر «${data.title}» (${data.orderNumber})، وتُعاد المواد للمخزون إن كانت قد خُصمت. هل تريد المتابعة؟`,
+                confirmText: "إلغاء الأمر",
+              }))) return;
+              cancel.mutate({ workOrderId });
+            }}
+            disabled={cancel.isPending}
+          >
             {cancel.isPending ? "جارٍ…" : "إلغاء الأمر"}
           </Button>
         )}

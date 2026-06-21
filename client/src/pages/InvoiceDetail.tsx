@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
+import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -76,12 +77,22 @@ export default function InvoiceDetail() {
   const remaining = round2(D(data.total).minus(D(data.paidAmount)));
   const canPay = data.status === "PENDING" || data.status === "PARTIALLY_PAID";
 
-  function submit() {
+  async function submit() {
     setError("");
     setDone("");
     const amt = D(payAmount || "0");
     if (amt.lte(0)) return setError("أدخل مبلغاً موجباً.");
     if (amt.gt(remaining)) return setError(`المبلغ يتجاوز المتبقّي (${fmt(remaining.toFixed(2))}).`);
+    const methodLabel = METHOD_LABEL[payMethod] ?? payMethod;
+    if (
+      !(await confirm({
+        variant: "info",
+        title: "تسجيل دفعة على الفاتورة؟",
+        description: `سيُسجَّل دفع مبلغ ${fmt(amt.toFixed(2))} (${methodLabel}) على الفاتورة ${data.invoiceNumber}. المتبقّي بعدها: ${fmt(round2(remaining.minus(amt)).toFixed(2))}.`,
+        confirmText: "تسجيل الدفعة",
+      }))
+    )
+      return;
     pay.mutate({ invoiceId, amount: amt.toFixed(2), method: payMethod, clientRequestId });
   }
 

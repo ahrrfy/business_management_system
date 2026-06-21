@@ -2,8 +2,9 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
-import { fmt } from "@/lib/money";
+import { fmt, fmtInt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
@@ -12,11 +13,6 @@ const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 type Row = RouterOutputs["production"]["list"][number];
-
-function fmtDateTime(d: Date | string) {
-  try { return new Date(d).toLocaleString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
-  catch { return String(d); }
-}
 
 export default function Production() {
   const me = trpc.auth.me.useQuery();
@@ -116,7 +112,7 @@ export default function Production() {
                 <tr key={Number(r.id)} className="border-t">
                   <td className="p-2 font-mono" dir="ltr">{r.docNumber}</td>
                   <td className="p-2 text-xs">{r.branchName}</td>
-                  <td className="p-2 text-center tabular-nums" dir="ltr">{Number(r.outputQty).toLocaleString("en-US")}</td>
+                  <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(r.outputQty)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.totalCost)}</td>
                   <td className="p-2 text-center">
                     <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "CANCELLED" ? "bg-muted text-muted-foreground" : "bg-emerald-100 text-emerald-700"}`}>

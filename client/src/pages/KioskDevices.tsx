@@ -10,20 +10,17 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
 import { downloadLauncherCmd, kioskUrl } from "@/lib/kioskLauncher";
+import { confirm, confirmDelete } from "@/lib/confirm";
+import { notify } from "@/lib/notify";
+import { fmtDateTime } from "@/lib/date";
 import { useState } from "react";
-import { toast } from "sonner";
 
 type Reveal = { deviceId: number; label: string; branchName: string | null; rawToken: string };
 
 const origin = typeof window !== "undefined" ? window.location.origin : "";
 
 function copy(text: string, msg: string) {
-  navigator.clipboard?.writeText(text).then(() => toast.success(msg)).catch(() => toast.error("تعذّر النسخ"));
-}
-
-function fmtDate(d: string | Date | null): string {
-  if (!d) return "—";
-  try { return new Date(d).toLocaleString("ar-IQ", { dateStyle: "short", timeStyle: "short" }); } catch { return "—"; }
+  navigator.clipboard?.writeText(text).then(() => notify.ok(msg)).catch(() => notify.err("تعذّر النسخ"));
 }
 
 export default function KioskDevices() {
@@ -43,30 +40,30 @@ export default function KioskDevices() {
       const bName = branches.find((b) => b.id === branchId)?.name ?? null;
       setReveal({ deviceId: data.id, label: label.trim(), branchName: bName, rawToken: data.rawToken });
       setLabel("");
-      toast.success("أُنشئ الجهاز — احفظ الرمز الآن (يظهر مرّة واحدة)");
+      notify.ok("أُنشئ الجهاز — احفظ الرمز الآن (يظهر مرّة واحدة)");
       void utils.kiosk.devices.list.invalidate();
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => notify.err(e.message),
   });
 
   const rotate = trpc.kiosk.devices.rotate.useMutation({
     onSuccess: (data, vars) => {
       const dev = devices.find((d) => d.id === vars.id);
       setReveal({ deviceId: vars.id, label: dev?.label ?? "", branchName: dev?.branchName ?? null, rawToken: data.rawToken });
-      toast.success("دُوِّر الرمز — الرمز القديم أُبطِل");
+      notify.ok("دُوِّر الرمز — الرمز القديم أُبطِل");
       void utils.kiosk.devices.list.invalidate();
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => notify.err(e.message),
   });
 
   const setActive = trpc.kiosk.devices.setActive.useMutation({
     onSuccess: () => { void utils.kiosk.devices.list.invalidate(); },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => notify.err(e.message),
   });
 
   const remove = trpc.kiosk.devices.remove.useMutation({
-    onSuccess: () => { toast.success("حُذف الجهاز"); void utils.kiosk.devices.list.invalidate(); },
-    onError: (e) => toast.error(e.message),
+    onSuccess: () => { notify.ok("حُذف الجهاز"); void utils.kiosk.devices.list.invalidate(); },
+    onError: (e) => notify.err(e.message),
   });
 
   if (me.data && me.data.role !== "admin") {
@@ -74,8 +71,8 @@ export default function KioskDevices() {
   }
 
   function submitCreate() {
-    if (!branchId || typeof branchId !== "number") return toast.error("اختر الفرع");
-    if (!label.trim()) return toast.error("أدخل اسم الجهاز");
+    if (!branchId || typeof branchId !== "number") return notify.err("اختر الفرع");
+    if (!label.trim()) return notify.err("أدخل اسم الجهاز");
     create.mutate({ branchId, label: label.trim() });
   }
 
@@ -188,10 +185,20 @@ export default function KioskDevices() {
                           ? <span className="inline-flex items-center gap-1 text-emerald-600"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />مفعّل</span>
                           : <span className="inline-flex items-center gap-1 text-destructive"><span className="h-1.5 w-1.5 rounded-full bg-destructive" />مُلغى</span>}
                       </td>
-                      <td className="py-2 px-2 text-xs text-muted-foreground">{fmtDate(d.lastSeenAt)}</td>
+                      <td className="py-2 px-2 text-xs text-muted-foreground">{fmtDateTime(d.lastSeenAt)}</td>
                       <td className="py-2 px-2">
                         <div className="flex flex-wrap gap-1.5">
-                          <Button variant="outline" size="sm" onClick={() => rotate.mutate({ id: d.id })} disabled={rotate.isPending}>تدوير الرمز</Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={async () => {
+                              if (!(await confirm({ variant: "warning", title: "تدوير رمز الجهاز", description: `تدوير الرمز يُبطل الرمز القديم لجهاز «${d.label}». متابعة؟`, confirmText: "تدوير الرمز" }))) return;
+                              rotate.mutate({ id: d.id });
+                            }}
+                            disabled={rotate.isPending}
+                          >
+                            تدوير الرمز
+                          </Button>
                           {d.isActive ? (
                             <Button variant="outline" size="sm" onClick={() => setActive.mutate({ id: d.id, active: false })} disabled={setActive.isPending}>إلغاء</Button>
                           ) : (
@@ -201,7 +208,10 @@ export default function KioskDevices() {
                             variant="ghost"
                             size="sm"
                             className="text-destructive"
-                            onClick={() => { if (window.confirm(`حذف الجهاز «${d.label}» نهائياً؟`)) remove.mutate({ id: d.id }); }}
+                            onClick={async () => {
+                              if (!(await confirmDelete({ description: `حذف الجهاز «${d.label}» نهائياً يلغي رمزه فوراً ويعطّل الشاشة.` }))) return;
+                              remove.mutate({ id: d.id });
+                            }}
                             disabled={remove.isPending}
                           >
                             حذف

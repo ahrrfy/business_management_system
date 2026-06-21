@@ -1,7 +1,10 @@
 import { RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { confirm } from "@/lib/confirm";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
+import { fmtInt } from "@/lib/money";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { trpc } from "@/lib/trpc";
@@ -72,13 +75,22 @@ export default function Inventory() {
     setTarget(String(r.quantity));
     setNotes("");
   }
-  function saveAdjust(variantId: number) {
+  async function saveAdjust(variantId: number) {
     setErr("");
     const t = Number(target);
     if (!Number.isInteger(t) || t < 0) {
       setErr("الرصيد المستهدف يجب أن يكون عدداً صحيحاً غير سالب.");
       return;
     }
+    if (
+      !(await confirm({
+        variant: "danger",
+        title: "تأكيد تسوية الرصيد",
+        description: `تعديل الرصيد إلى ${t.toLocaleString("ar-IQ-u-nu-latn")} تغيير مالي مباشر بلا رجوع. متابعة؟`,
+        confirmText: "تعديل",
+      }))
+    )
+      return;
     adjust.mutate({ variantId, branchId, targetQuantity: t, notes: notes.trim() || undefined });
   }
 
@@ -91,7 +103,7 @@ export default function Inventory() {
         <h1 className="text-2xl font-bold">المخزون</h1>
         {lowCount > 0 && (
           <span className="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs">
-            {lowCount.toLocaleString("ar-IQ-u-nu-latn")} منتج تحت الحد الأدنى
+            {fmtInt(lowCount)} منتج تحت الحد الأدنى
           </span>
         )}
       </div>
@@ -134,7 +146,7 @@ export default function Inventory() {
           <CardTitle className="text-base">الأرصدة الحالية</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {onHand.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} منتج`}
+              {onHand.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} منتج`}
             </span>
             <Button
               variant="outline"
@@ -190,17 +202,17 @@ export default function Inventory() {
                           autoFocus
                         />
                       ) : (
-                        r.quantity.toLocaleString("ar-IQ-u-nu-latn")
+                        fmtInt(r.quantity)
                       )}
                     </td>
-                    <td className="p-2 text-center tabular-nums text-muted-foreground">{r.minStock ?? 0}</td>
+                    <td className="p-2 text-center tabular-nums text-muted-foreground">{fmtInt(r.minStock ?? 0)}</td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.isLow ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
                         {r.isLow ? "منخفض" : "متوفّر"}
                       </span>
                     </td>
                     <td className="p-2 text-center text-xs text-muted-foreground" title="آخر جرد معتمد شمل هذا المنتج">
-                      {r.lastCountedAt ? new Date(r.lastCountedAt).toLocaleDateString("ar-IQ-u-nu-latn") : "لم يُجرَد"}
+                      {r.lastCountedAt ? fmtDate(r.lastCountedAt) : "لم يُجرَد"}
                     </td>
                     <td className="p-2 text-center">
                       {canInlineAdjust && isEditing ? (
@@ -275,10 +287,10 @@ export default function Inventory() {
             <tbody>
               {(movements.data ?? []).map((m) => (
                 <tr key={m.id} className="border-t">
-                  <td className="p-2 text-xs">{new Date(m.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
+                  <td className="p-2 text-xs">{fmtDateTime(m.createdAt)}</td>
                   <td className="p-2 font-mono text-xs" dir="ltr">#{m.variantId}</td>
                   <td className="p-2 text-xs">{MTYPE[m.movementType] ?? m.movementType}</td>
-                  <td className="p-2 text-center tabular-nums">{m.quantity}</td>
+                  <td className="p-2 text-center tabular-nums">{fmtInt(m.quantity)}</td>
                   <td className="p-2 text-muted-foreground text-xs">{m.referenceType ?? "—"}{m.referenceId ? ` #${m.referenceId}` : ""}</td>
                 </tr>
               ))}

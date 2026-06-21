@@ -154,6 +154,21 @@ export default function ExpenseNew() {
     // نقدي (CASH).
     if (!amount.trim() || D(amount).lte(0)) return setError("المبلغ مطلوب وموجب.");
     if (category === "OTHER" && !description.trim()) return setError("وصف المصروف مطلوب لفئة «أخرى».");
+
+    // cash-treasury-mode: مدير/مسؤول يسجّل مصروفاً نقدياً بلا وردية مفتوحة ⇒ يُكتب في الخزينة الإدارية.
+    // تأكيد صريح قبل المتابعة (الكاشير مَحجوب أصلاً بزرّ مُعطَّل، فلا يصل هنا).
+    const role = me.data?.role;
+    const isElevated = role === "admin" || role === "manager";
+    if (paymentMethod === "CASH" && !openShift.data && isElevated) {
+      const ok = await confirm({
+        variant: "warning",
+        title: "مصروف نقدي بلا وردية مفتوحة",
+        description: `تسجيل مصروف نقدي بقيمة ${fmt(D(amount).toFixed(2))} د.ع بلا وردية مفتوحة (خزينة إدارية). متابعة؟`,
+        confirmText: "تسجيل المصروف",
+      });
+      if (!ok) return;
+    }
+
     create.mutate({
       branchId: Number(effectiveBranch),
       shiftId: openShift.data?.id ? Number(openShift.data.id) : null,

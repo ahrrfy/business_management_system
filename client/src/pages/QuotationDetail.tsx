@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { confirm } from "@/lib/confirm";
 import { buildQuotationMessage } from "@/lib/whatsapp";
 import { fmt } from "@/lib/money";
 import { printQuotation } from "@/lib/printing/printTemplates";
@@ -153,7 +154,19 @@ export default function QuotationDetail() {
               </select>
             </div>
             <Button
-              onClick={() => convert.mutate({ quotationId, payment: Number(payAmount) > 0 ? { amount: String(Number(payAmount)), method: payMethod } : undefined })}
+              onClick={async () => {
+                const pay = Number(payAmount) > 0;
+                if (
+                  !(await confirm({
+                    variant: "danger",
+                    title: "تحويل إلى فاتورة",
+                    description: `تحويل عرض السعر ${data.quoteNumber} إلى فاتورة بإجمالي ${fmt(data.total)}${pay ? ` ودفعة ${fmt(String(Number(payAmount)))}` : " (آجل)"}. لا يمكن التراجع.`,
+                    confirmText: "تحويل",
+                  }))
+                )
+                  return;
+                convert.mutate({ quotationId, payment: pay ? { amount: String(Number(payAmount)), method: payMethod } : undefined });
+              }}
               disabled={convert.isPending}
             >
               {convert.isPending ? "جارٍ…" : "تحويل وإصدار فاتورة"}
@@ -167,13 +180,64 @@ export default function QuotationDetail() {
 
       <div className="flex gap-2 flex-wrap">
         {data.status === "DRAFT" && (
-          <Button variant="outline" onClick={() => setStatus.mutate({ quotationId, status: "SENT" })} disabled={setStatus.isPending}>وضع علامة «مُرسَل»</Button>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              if (
+                !(await confirm({
+                  variant: "info",
+                  title: "وضع علامة «مُرسَل»",
+                  description: `تعليم عرض السعر ${data.quoteNumber} كمُرسَل للعميل؟`,
+                  confirmText: "مُرسَل",
+                }))
+              )
+                return;
+              setStatus.mutate({ quotationId, status: "SENT" });
+            }}
+            disabled={setStatus.isPending}
+          >
+            وضع علامة «مُرسَل»
+          </Button>
         )}
         {isOpen && data.status !== "ACCEPTED" && (
-          <Button variant="outline" onClick={() => setStatus.mutate({ quotationId, status: "ACCEPTED" })} disabled={setStatus.isPending}>قبول</Button>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              if (
+                !(await confirm({
+                  variant: "info",
+                  title: "قبول العرض",
+                  description: `قبول عرض السعر ${data.quoteNumber} بإجمالي ${fmt(data.total)}؟ سيُتاح بعدها تحويله إلى فاتورة.`,
+                  confirmText: "قبول",
+                }))
+              )
+                return;
+              setStatus.mutate({ quotationId, status: "ACCEPTED" });
+            }}
+            disabled={setStatus.isPending}
+          >
+            قبول
+          </Button>
         )}
         {isOpen && (
-          <Button variant="outline" onClick={() => setStatus.mutate({ quotationId, status: "REJECTED" })} disabled={setStatus.isPending}>رفض</Button>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              if (
+                !(await confirm({
+                  variant: "warning",
+                  title: "رفض العرض",
+                  description: `رفض عرض السعر ${data.quoteNumber}؟ لن يعود قابلاً للتحويل إلى فاتورة.`,
+                  confirmText: "رفض",
+                }))
+              )
+                return;
+              setStatus.mutate({ quotationId, status: "REJECTED" });
+            }}
+            disabled={setStatus.isPending}
+          >
+            رفض
+          </Button>
         )}
         <Button variant="outline" onClick={printQuote}>طباعة العرض</Button>
         <WhatsAppShare

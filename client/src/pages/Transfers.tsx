@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { confirm } from "@/lib/confirm";
+import { fmtInt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { ArrowRightLeft, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -30,8 +32,6 @@ type Variant = {
   unitName: string;
 };
 type Line = Variant & { qty: string };
-
-const fmtNum = (n: number) => (Number.isFinite(n) ? n.toLocaleString("en-US") : "0");
 
 function genTrf(): string {
   const d = new Date();
@@ -145,13 +145,22 @@ export default function Transfers() {
   const totalUnits = cart.reduce((a, l) => a + (Math.trunc(Number(l.qty || "0")) || 0), 0);
   const valid = cart.length > 0 && lineErrors.every((e) => !e) && effectiveFrom && effectiveTo && effectiveFrom !== effectiveTo;
 
-  function submit() {
+  async function submit() {
     setError(""); setDone("");
     if (!effectiveFrom || !effectiveTo) return setError("اختر فرعَي المصدر والوجهة.");
     if (effectiveFrom === effectiveTo) return setError("لا يمكن التحويل لنفس الفرع.");
     if (cart.length === 0) return setError("أضِف صنفاً واحداً على الأقل للسند.");
     const bad = lineErrors.findIndex((e) => e);
     if (bad >= 0) return setError(`الصنف «${cart[bad].productName}»: ${lineErrors[bad]}.`);
+    if (
+      !(await confirm({
+        variant: "danger",
+        title: `سند تحويل ${trf}: من ${fromName} إلى ${toName}`,
+        description: `تنفيذ سند التحويل (${fmtInt(cart.length)} صنف، ${fmtInt(totalUnits)} وحدة) يؤثّر على أرصدة فرعين مباشرة. متابعة؟`,
+        confirmText: "تنفيذ",
+      }))
+    )
+      return;
     transfer.mutate({
       fromBranchId: Number(effectiveFrom),
       toBranchId: Number(effectiveTo),
@@ -261,7 +270,7 @@ export default function Transfers() {
                           <span className="text-xs text-muted-foreground"> · {v.unitName}</span>
                           {inCart ? <span className="text-[10px] text-primary mr-1">(مُضاف)</span> : null}
                         </span>
-                        <span className="text-xs text-muted-foreground font-mono shrink-0" dir="ltr">{v.sku} · متاح {fmtNum(v.stockBase)}</span>
+                        <span className="text-xs text-muted-foreground font-mono shrink-0" dir="ltr">{v.sku} · متاح {fmtInt(v.stockBase)}</span>
                       </button>
                     );
                   })}
@@ -289,7 +298,7 @@ export default function Transfers() {
                         <div className="font-medium">{l.productName}{l.variantName ? ` — ${l.variantName}` : ""}</div>
                         <div className="text-[11px] text-muted-foreground font-mono" dir="ltr">{l.sku} · {l.unitName}</div>
                       </td>
-                      <td className="p-2 text-center tabular-nums" dir="ltr">{fmtNum(l.stockBase)}</td>
+                      <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.stockBase)}</td>
                       <td className="p-2">
                         <Input
                           dir="ltr" value={l.qty} inputMode="numeric"
@@ -320,8 +329,8 @@ export default function Transfers() {
           <CardContent className="space-y-3 text-sm">
             <div className="flex justify-between"><span className="text-muted-foreground">من</span><span className="font-medium">{fromName}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">إلى</span><span className="font-medium">{toName}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">عدد الأصناف</span><span className="font-semibold tabular-nums" dir="ltr">{fmtNum(cart.length)}</span></div>
-            <div className="flex justify-between"><span className="text-muted-foreground">إجمالي الوحدات</span><span className="font-semibold tabular-nums" dir="ltr">{fmtNum(totalUnits)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">عدد الأصناف</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(cart.length)}</span></div>
+            <div className="flex justify-between"><span className="text-muted-foreground">إجمالي الوحدات</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(totalUnits)}</span></div>
             {error && <p className="text-sm text-destructive">{error}</p>}
             {done && <p className="text-sm text-emerald-600">{done}</p>}
             <Button className="w-full" onClick={submit} disabled={transfer.isPending || !valid}>

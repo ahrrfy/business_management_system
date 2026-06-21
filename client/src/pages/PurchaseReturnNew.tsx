@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef, useState, useReducer } from "react";
 import { Link, useLocation } from "wouter";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { confirm } from "@/lib/confirm";
 import { D, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import {
@@ -242,12 +243,21 @@ export default function PurchaseReturnNew() {
     return { ok: true, payload };
   }
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const v = validateAndBuildPayload();
     if (!v.ok) {
       toast.error(v.error);
       return;
     }
+    if (
+      !(await confirm({
+        variant: "danger",
+        title: "تأكيد حفظ مرتجع الشراء",
+        description: "حفظ مرتجع الشراء سيحرّك مخزوناً وذمم المورد. متابعة؟",
+        confirmText: "حفظ",
+      }))
+    )
+      return;
     mutation.mutate(v.payload);
   }
 
@@ -288,7 +298,7 @@ export default function PurchaseReturnNew() {
   const searchScrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    function onKey(e: KeyboardEvent) {
+    async function onKey(e: KeyboardEvent) {
       // تجنّب الالتقاط داخل حقول إدخال نشطة لأقل عرضاً (نسمح بمفاتيح الوظائف)
       const t = e.target as HTMLElement | null;
       const isFnKey = e.key.startsWith("F") && e.key.length >= 2;
@@ -312,7 +322,14 @@ export default function PurchaseReturnNew() {
         handlePrint();
       } else if (e.key === "F12") {
         e.preventDefault();
-        if (confirm("تفريغ النموذج وبدء مرتجع جديد؟")) {
+        if (
+          await confirm({
+            variant: "warning",
+            title: "تفريغ النموذج",
+            description: "تفريغ النموذج وبدء مرتجع جديد؟",
+            confirmText: "تفريغ",
+          })
+        ) {
           dispatch({ type: "RESET", invoiceType: TYPE });
           regenerateRequestId();
           setRefLastFetchedId(null);

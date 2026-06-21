@@ -12,6 +12,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { confirm, confirmDelete } from "@/lib/confirm";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -168,26 +169,26 @@ export default function Payroll() {
           <div className="flex-1" />
           {isDraft && (
             <>
-              <Button variant="outline" size="sm" onClick={() => approve.mutate({ id: Number(run.id) })} disabled={busy}>
+              <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: `اعتماد مسيّر رواتب ${run.period}`, description: "اعتماد المسيّر يقفل تعديل البنود. متابعة؟", confirmText: "اعتماد" }))) return; approve.mutate({ id: Number(run.id) }); }} disabled={busy}>
                 <Check className="size-4" /> اعتماد المسيّر
               </Button>
-              <Button variant="outline" size="sm" className="text-destructive" onClick={() => { if (confirm("حذف هذه المسوّدة وكل بنودها؟")) cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
+              <Button variant="outline" size="sm" className="text-destructive" onClick={async () => { if (!(await confirmDelete({ description: `حذف مسوّدة رواتب ${run.period} وكل بنودها (${run.employeeCount} موظف) نهائياً؟` }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
                 <X className="size-4" /> حذف المسوّدة
               </Button>
             </>
           )}
           {isApproved && (
             <>
-              <Button size="sm" onClick={() => { if (confirm("دفع المسيّر؟ سيُقيَّد صرف الرواتب من الخزينة.")) pay.mutate({ id: Number(run.id) }); }} disabled={busy}>
+              <Button size="sm" onClick={async () => { if (!(await confirm({ variant: "danger", title: `دفع مسيّر رواتب ${run.period}`, description: `سيُصرَف صافي ${iqd(totals.net)} د.ع لـ${run.employeeCount} موظف ويُقيَّد من الخزينة. صرف الرواتب من الخزينة لا يُعكَس بسهولة.`, confirmText: "دفع المسيّر", requireText: "دفع" }))) return; pay.mutate({ id: Number(run.id) }); }} disabled={busy}>
                 <Wallet className="size-4" /> دفع المسيّر
               </Button>
-              <Button variant="outline" size="sm" onClick={() => cancel.mutate({ id: Number(run.id) })} disabled={busy}>
+              <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: `إعادة مسيّر رواتب ${run.period} إلى مسوّدة`, description: "إعادة المسيّر إلى مسوّدة لإعادة التعديل؟", confirmText: "إعادة" }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
                 إعادة لمسوّدة
               </Button>
             </>
           )}
           {isPaid && (
-            <Button variant="outline" size="sm" className="text-destructive" onClick={() => { if (confirm("عكس دفع المسيّر؟ ستُقيَّد قيود معاكسة ويعود المسيّر إلى «معتمد».")) cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
+            <Button variant="outline" size="sm" className="text-destructive" onClick={async () => { if (!(await confirm({ variant: "danger", title: `عكس دفع مسيّر رواتب ${run.period}`, description: `عكس الدفع يقيّد قيوداً معاكسة بقيمة ${iqd(totals.net)} د.ع ويعيد المسيّر إلى «معتمد».`, confirmText: "عكس الدفع", requireText: "عكس" }))) return; cancel.mutate({ id: Number(run.id) }); }} disabled={busy}>
               <X className="size-4" /> عكس الدفع
             </Button>
           )}

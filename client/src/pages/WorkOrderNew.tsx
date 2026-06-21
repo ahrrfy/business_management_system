@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
+import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { esc } from "@/lib/printing/brand";
 import { trpc } from "@/lib/trpc";
@@ -230,6 +231,13 @@ export default function WorkOrderNew() {
   async function ensureCustomerId(): Promise<number | null> {
     if (customerSel.customerId) return customerSel.customerId;
     if (!customerSel.isNew || !customerSel.name.trim()) return null;
+    // تأكيد إنشاء عميل ضمنيّ جديد قبل كتابته في القاعدة.
+    if (!(await confirm({
+      variant: "warning",
+      title: "إنشاء عميل جديد",
+      description: `سيُنشأ عميل جديد باسم «${customerSel.name.trim()}». متابعة؟`,
+      confirmText: "إنشاء العميل",
+    }))) return null;
     // أنشئ عميلاً جديداً تلقائياً.
     const created = await createCustomer.mutateAsync({
       name: customerSel.name.trim(),
@@ -258,6 +266,15 @@ export default function WorkOrderNew() {
 
     // v3-add-screens(100%): baseVariantId اختياري الآن — للأمر بلا منتج جاهز نمرّر null.
     const baseVariantId = cart.length ? cart[0].variantId : null;
+
+    // تأكيد نهائيّ — إنشاء أمر الشغل يقبض العربون فوراً ولا رجعة فيه.
+    if (!(await confirm({
+      variant: "danger",
+      title: "إنشاء أمر شغل (يقبض عربوناً) لا رجعة فيه",
+      description: `سيُنشأ أمر الشغل ويُقبض عربون قدره ${fmt(depositD.toFixed(2))} د.ع من إجمالي ${fmt(grandTotal.toFixed(2))} د.ع، ولا يمكن التراجع عن العملية. اكتب «تأكيد» للمتابعة.`,
+      confirmText: "إنشاء أمر الشغل",
+      requireText: "تأكيد",
+    }))) return;
 
     // v3-add-screens(100%): البيانات الإضافية تذهب لأعمدة DB مباشرة (لا ترميز JSON).
     createWO.mutate({

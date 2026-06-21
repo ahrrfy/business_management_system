@@ -15,7 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { ListToolbar } from "@/components/list";
-import { fmt } from "@/lib/money";
+import { fmtDate, fmtDateTime } from "@/lib/date";
+import { fmt, fmtInt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
@@ -42,21 +43,9 @@ const SCOPE_TYPE_LABEL: Record<StScope, string> = {
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-/* أرقام لاتينية دائماً (123456789). */
-const nf = (n: number | null | undefined) => Number(n ?? 0).toLocaleString("ar-IQ-u-nu-latn");
-
+/* مقارنة زمنية فقط (للترتيب/اختيار الأحدث) — التنسيق عبر @/lib/date. */
 const toDate = (v: string | Date | null | undefined): Date | null =>
   v == null ? null : v instanceof Date ? v : new Date(v);
-const dOnly = (v: string | Date | null | undefined): string => {
-  const d = toDate(v);
-  return d && !Number.isNaN(d.getTime()) ? d.toLocaleDateString("ar-IQ-u-nu-latn", { dateStyle: "medium" }) : "—";
-};
-const dt = (v: string | Date | null | undefined): string => {
-  const d = toDate(v);
-  return d && !Number.isNaN(d.getTime())
-    ? d.toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "medium", timeStyle: "short" })
-    : "—";
-};
 
 /* ─────────────── أشكال مخرجات العقد (stocktake-contract §٣) ─────────────── */
 
@@ -255,16 +244,16 @@ export default function Stocktakes() {
 
       {/* المؤشرات */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <Stat label="جلسات قيد العدّ الآن" value={statsQ.isLoading ? "…" : nf(stats.counting)} tone="blue" />
-        <Stat label="بانتظار المراجعة والاعتماد" value={statsQ.isLoading ? "…" : nf(stats.review)} tone="amber" />
+        <Stat label="جلسات قيد العدّ الآن" value={statsQ.isLoading ? "…" : fmtInt(stats.counting)} tone="blue" />
+        <Stat label="بانتظار المراجعة والاعتماد" value={statsQ.isLoading ? "…" : fmtInt(stats.review)} tone="amber" />
         <Stat
           label="آخر جرد معتمد"
-          value={lastApproved ? dOnly(lastApproved.approvedAt) : "—"}
+          value={lastApproved ? fmtDate(lastApproved.approvedAt) : "—"}
           sub={lastApproved ? lastApproved.name : ""}
         />
         <Stat
           label="منتجات مستحقة للجرد الدوري"
-          value={cycleQ.isLoading ? "…" : nf(due.length)}
+          value={cycleQ.isLoading ? "…" : fmtInt(due.length)}
           sub="حسب تصنيف ABC ودوريّاته"
         />
       </div>
@@ -324,9 +313,9 @@ export default function Stocktakes() {
                 { key: "itemCount", header: "منتجات النطاق" },
                 { key: "countedCount", header: "المعدود" },
                 { key: "createdByName", header: "أنشأها" },
-                { key: "createdAt", header: "تاريخ الإنشاء", map: (r) => dOnly(r.createdAt) },
-                { key: "submittedAt", header: "تسليم العدّ", map: (r) => dOnly(r.submittedAt) },
-                { key: "approvedAt", header: "الاعتماد", map: (r) => dOnly(r.approvedAt) },
+                { key: "createdAt", header: "تاريخ الإنشاء", map: (r) => fmtDate(r.createdAt) },
+                { key: "submittedAt", header: "تسليم العدّ", map: (r) => fmtDate(r.submittedAt) },
+                { key: "approvedAt", header: "الاعتماد", map: (r) => fmtDate(r.approvedAt) },
               ],
             }}
           />
@@ -385,7 +374,7 @@ export default function Stocktakes() {
                         <div className="flex items-center gap-2">
                           <Progress value={pct} className="w-20" />
                           <span className="text-xs tabular-nums text-muted-foreground">
-                            {nf(s.countedCount)}/{nf(s.itemCount)}
+                            {fmtInt(s.countedCount)}/{fmtInt(s.itemCount)}
                           </span>
                         </div>
                       </td>
@@ -393,9 +382,9 @@ export default function Stocktakes() {
                         <StatusBadge status={s.status} />
                       </td>
                       <td className="p-2.5 text-xs text-muted-foreground">
-                        <p>إنشاء: {dOnly(s.createdAt)}</p>
-                        {s.submittedAt ? <p>تسليم: {dOnly(s.submittedAt)}</p> : null}
-                        {s.approvedAt ? <p>اعتماد: {dOnly(s.approvedAt)}</p> : null}
+                        <p>إنشاء: {fmtDate(s.createdAt)}</p>
+                        {s.submittedAt ? <p>تسليم: {fmtDate(s.submittedAt)}</p> : null}
+                        {s.approvedAt ? <p>اعتماد: {fmtDate(s.approvedAt)}</p> : null}
                       </td>
                       <td className="p-2.5 text-center">
                         <Button asChild size="sm" variant={action.primary ? "default" : "outline"}>
@@ -424,7 +413,7 @@ export default function Stocktakes() {
           <Button variant="outline" size="sm" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>
             ← السابق
           </Button>
-          <div className="text-muted-foreground">صفحة {nf(page + 1)}</div>
+          <div className="text-muted-foreground">صفحة {fmtInt(page + 1)}</div>
           <Button variant="outline" size="sm" disabled={rows.length < limit} onClick={() => setPage((p) => p + 1)}>
             التالي →
           </Button>
@@ -542,7 +531,7 @@ function CyclePlanCard({
             </p>
           </div>
           <Button size="sm" disabled={!canCreate || due.length === 0} onClick={onCreate}>
-            إنشاء جلسة للمستحق ({nf(due.length)})
+            إنشاء جلسة للمستحق ({fmtInt(due.length)})
           </Button>
         </div>
       </CardHeader>
@@ -570,7 +559,7 @@ function CyclePlanCard({
                   </span>
                 </p>
                 <p className="text-[11px] text-muted-foreground">
-                  دوريّته: {r.freqLabel} · آخر جرد: {r.lastCountedAt ? dOnly(r.lastCountedAt) : "لم يُجرد بعد"}
+                  دوريّته: {r.freqLabel} · آخر جرد: {r.lastCountedAt ? fmtDate(r.lastCountedAt) : "لم يُجرد بعد"}
                   {isManagerPlus && r.annualValue ? <> · قيمة سنوية: {fmt(r.annualValue)} د.ع</> : null}
                 </p>
               </div>
@@ -581,7 +570,7 @@ function CyclePlanCard({
                     : "bg-amber-50 text-amber-800 border-amber-200"
                 }`}
               >
-                {r.daysOver == null ? "لم يُجرد" : `متأخر ${nf(r.daysOver)} يوماً`}
+                {r.daysOver == null ? "لم يُجرد" : `متأخر ${fmtInt(r.daysOver)} يوماً`}
               </span>
             </div>
           ))}
@@ -591,7 +580,7 @@ function CyclePlanCard({
           )}
           {due.length > shown.length && (
             <p className="px-4 py-2 text-xs text-muted-foreground">
-              …و{nf(due.length - shown.length)} منتجات أخرى مستحقة — تُضمّ كلها للجلسة.
+              …و{fmtInt(due.length - shown.length)} منتجات أخرى مستحقة — تُضمّ كلها للجلسة.
             </p>
           )}
         </div>
@@ -665,7 +654,7 @@ function IraCard({ data, loading }: { data: IraData | null; loading: boolean }) 
             <div className="space-y-1.5">
               {workers.map((w) => (
                 <div key={w.name} className="flex items-center gap-2 text-sm">
-                  <span className="w-36 truncate" title={`${nf(w.counts)} عدّة معتمدة`}>
+                  <span className="w-36 truncate" title={`${fmtInt(w.counts)} عدّة معتمدة`}>
                     {w.name}
                   </span>
                   <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
@@ -738,10 +727,10 @@ function ReconDriftCard({
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="font-semibold">
-                    متغيّر رقم <span className="font-mono tabular-nums" dir="ltr">{nf(d.id)}</span>
+                    متغيّر رقم <span className="font-mono tabular-nums" dir="ltr">{fmtInt(d.id)}</span>
                   </p>
                   <p className="text-[11px] text-muted-foreground">
-                    رصيد سالب رُصد في الفحص الأخير (الرصيد الحالي: {nf(Number(d.actual))})
+                    رصيد سالب رُصد في الفحص الأخير (الرصيد الحالي: {fmtInt(Number(d.actual))})
                   </p>
                 </div>
                 <Link
@@ -754,11 +743,11 @@ function ReconDriftCard({
             ))}
             {inventory.length > 6 && (
               <p className="px-4 py-2 text-xs text-muted-foreground">
-                …و{nf(inventory.length - 6)} انحرافات أخرى — تُضمّ كلها للجلسة.
+                …و{fmtInt(inventory.length - 6)} انحرافات أخرى — تُضمّ كلها للجلسة.
               </p>
             )}
             <p className="px-4 py-2 text-[11px] text-muted-foreground">
-              آخر فحص: {dt(runAt)} ·{" "}
+              آخر فحص: {fmtDateTime(runAt)} ·{" "}
               <Link href="/reconcile" className="font-semibold text-primary hover:underline">
                 فتح شاشة تدقيق التوافق ↗
               </Link>

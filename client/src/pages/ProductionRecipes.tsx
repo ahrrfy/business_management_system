@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { confirmDelete } from "@/lib/confirm";
+import { confirm, confirmDelete } from "@/lib/confirm";
 import { D, fmt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -334,8 +334,14 @@ export default function ProductionRecipes() {
                       : <Button size="sm" disabled>إنتاج بهذه الوصفة ←</Button>}
                     <button className="text-sky-700 text-xs font-semibold" onClick={() => startEdit(Number(r.id))}>تعديل</button>
                     <button className="text-muted-foreground hover:text-sky-700 text-xs font-semibold" onClick={() => duplicate(r)}>تكرار</button>
-                    <button className="text-amber-700 text-xs font-semibold" onClick={() => setActive.mutate({ id: Number(r.id), active: !r.isActive })}>{r.isActive ? "تعطيل" : "تفعيل"}</button>
-                    <button className="text-rose-600 text-xs font-semibold" onClick={async () => { if (await confirmDelete({ description: `حذف وصفة «${r.name}»؟` })) remove.mutate({ id: Number(r.id) }); }}>حذف</button>
+                    <button className="text-amber-700 text-xs font-semibold" onClick={async () => {
+                      if (r.isActive && !(await confirm({ variant: "warning", title: "تعطيل الوصفة", description: `تعطيل وصفة «${r.name}»؟ الوصفات المعطَّلة لا تُستخدم للإنتاج. متابعة؟`, confirmText: "تعطيل" }))) return;
+                      setActive.mutate({ id: Number(r.id), active: !r.isActive });
+                    }}>{r.isActive ? "تعطيل" : "تفعيل"}</button>
+                    <button className="text-rose-600 text-xs font-semibold" onClick={async () => {
+                      if (!(await confirmDelete({ description: `حذف وصفة «${r.name}» نهائياً؟ الحذف نهائي ولا يُسترجَع.`, confirmText: "حذف نهائي" }))) return;
+                      remove.mutate({ id: Number(r.id) });
+                    }}>حذف</button>
                   </div>
                 </CardContent>
               </Card>

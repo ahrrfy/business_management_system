@@ -8,6 +8,7 @@ import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/rep
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { exportRows } from "@/lib/export";
+import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
@@ -27,14 +28,11 @@ const NEGATIVE = new Set(["OUT", "TRANSFER_OUT"]);
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const fmtNum = (n: number | string) =>
-  Number(n).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 0 });
-
 /** كمية بإشارة للعرض (+/−). الصفر بلا إشارة. */
 function signedDisplay(n: number): string {
-  if (n > 0) return `+${fmtNum(n)}`;
-  if (n < 0) return `−${fmtNum(Math.abs(n))}`;
-  return fmtNum(0);
+  if (n > 0) return `+${fmtInt(n)}`;
+  if (n < 0) return `−${fmtInt(Math.abs(n))}`;
+  return fmtInt(0);
 }
 
 function variantLabel(r: {
@@ -108,8 +106,8 @@ export default function ItemLedger() {
 
   const kpis: KpiItem[] = picked
     ? [
-        { label: "رصيد افتتاحي", value: fmtNum(opening), tone: "info" },
-        { label: "رصيد ختامي", value: fmtNum(closing), tone: "positive" },
+        { label: "رصيد افتتاحي", value: fmtInt(opening), tone: "info" },
+        { label: "رصيد ختامي", value: fmtInt(closing), tone: "positive" },
         { label: "عدد الحركات", value: rows.length },
       ]
     : [];
@@ -147,8 +145,8 @@ export default function ItemLedger() {
         { label: "SKU", value: variant?.sku ?? "—" },
         { label: "الفرع", value: branchLabel },
         { label: "الفترة", value: periodLabel },
-        { label: "رصيد افتتاحي", value: fmtNum(opening) },
-        { label: "رصيد ختامي", value: fmtNum(closing) },
+        { label: "رصيد افتتاحي", value: fmtInt(opening) },
+        { label: "رصيد ختامي", value: fmtInt(closing) },
       ],
       columns: [
         { key: "date", label: "التاريخ" },
@@ -161,12 +159,12 @@ export default function ItemLedger() {
         date: r.date,
         type: MTYPE_LABEL[r.type] ?? r.type,
         qty: signedDisplay(r.signedQty),
-        balance: fmtNum(r.balance),
+        balance: fmtInt(r.balance),
         ref: r.reference ?? "—",
       })),
       summary: [
-        { label: "رصيد افتتاحي", value: fmtNum(opening) },
-        { label: "رصيد ختامي", value: fmtNum(closing), large: true, bold: true },
+        { label: "رصيد افتتاحي", value: fmtInt(opening) },
+        { label: "رصيد ختامي", value: fmtInt(closing), large: true, bold: true },
       ],
     });
   }
@@ -209,7 +207,7 @@ export default function ItemLedger() {
                       <div className="font-medium">{variantLabel(v)}</div>
                       <div className="text-xs text-muted-foreground font-mono flex justify-between" dir="ltr">
                         <span>{v.sku}</span>
-                        <span>متاح {fmtNum(v.stockBase)}</span>
+                        <span>متاح {fmtInt(v.stockBase)}</span>
                       </div>
                     </button>
                   ))}
@@ -296,7 +294,7 @@ export default function ItemLedger() {
                       >
                         {signedDisplay(r.signedQty)}
                       </td>
-                      <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtNum(r.balance)}</td>
+                      <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtInt(r.balance)}</td>
                       <td className="p-2.5 text-right text-muted-foreground text-xs">{r.reference ?? "—"}</td>
                     </tr>
                   ))}
@@ -304,7 +302,7 @@ export default function ItemLedger() {
                 <tfoot>
                   <tr className="border-t bg-muted/40 text-sm font-semibold">
                     <td className="p-2.5 text-right" colSpan={3}>الرصيد الختامي</td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtNum(closing)}</td>
+                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(closing)}</td>
                     <td></td>
                   </tr>
                 </tfoot>

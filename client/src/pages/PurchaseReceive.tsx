@@ -1,4 +1,5 @@
 import { Button } from "@/components/ui/button";
+import { confirm } from "@/lib/confirm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -68,7 +69,7 @@ export default function PurchaseReceive() {
   const data = po.data;
   const closed = data.status === "RECEIVED" || data.status === "CANCELLED";
 
-  function submit() {
+  async function submit() {
     setError("");
     setDone("");
     const lines = data.items
@@ -81,6 +82,15 @@ export default function PurchaseReceive() {
       if (want > remaining) return setError(`الكمية المستلمة للمنتج «${it.productName}» تتجاوز المتبقّي (${remaining}).`);
     }
     const payment = Number(payAmount) > 0 ? { amount: String(Number(payAmount)), method: payMethod } : undefined;
+    if (
+      !(await confirm({
+        variant: "info",
+        title: `استلام أمر الشراء ${data.poNumber}`,
+        description: "استلام الكميات سيضيف للمخزون ويغيّر الذمم. تأكيد؟",
+        confirmText: "استلام",
+      }))
+    )
+      return;
     receive.mutate({ purchaseOrderId, lines, payment, clientRequestId });
   }
 

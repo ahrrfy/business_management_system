@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ListToolbar } from "@/components/list";
+import { fmtDate } from "@/lib/date";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc } from "@/lib/trpc";
@@ -115,7 +116,7 @@ export default function AssetDisposalLog() {
                     <td className="p-2 text-center">
                       <span className={`rounded-full px-2 py-0.5 text-xs ${r.status === "disposed" ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300" : "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة"}</span>
                     </td>
-                    <td className="p-2 text-xs" dir="ltr">{r.disposalDate ?? "—"}</td>
+                    <td className="p-2 text-xs" dir="ltr">{fmtDate(r.disposalDate)}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.purchaseValue)}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.bookValue)}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{r.proceeds != null ? iqd(r.proceeds) : "—"}</td>

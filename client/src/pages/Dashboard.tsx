@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
-import { D } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
+import { fmtTime } from "@/lib/date";
 import { Link } from "wouter";
 
 /* ═══════════ DARK-MODE HOOK ═══════════ */
@@ -419,22 +420,19 @@ function MetricsBar() {
   // جمع الأموال عبر decimal.js (قاعدة §٥: ممنوع parseFloat/Number على الأموال).
   const todaysTotalD = todays.reduce((acc, i) => acc.add(String(i.total)), D(0));
   const todaysTotal = todaysTotalD.toNumber();
-  const fmt = (n: number) => n.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 0 });
 
   const shiftLabel = shift.data ? "مفتوحة" : "لا وردية";
-  const shiftSince = shift.data
-    ? `منذ ${new Date(shift.data.openedAt).toLocaleTimeString("ar-IQ-u-nu-latn", { hour: "2-digit", minute: "2-digit" })}`
-    : "";
+  const shiftSince = shift.data ? `منذ ${fmtTime(shift.data.openedAt)}` : "";
 
   // قيم بطاقتَي التنبيه — "..." أثناء التحميل، الأرقام بعد النجاح.
   const lowStockValue = metrics.isLoading
     ? "..."
-    : fmt(metrics.data?.lowStockCount ?? 0);
+    : fmtAr(metrics.data?.lowStockCount ?? 0);
   const overdueCount = metrics.data?.overdueAR.count ?? 0;
-  const overdueValue = metrics.isLoading ? "..." : fmt(overdueCount);
+  const overdueValue = metrics.isLoading ? "..." : fmtAr(overdueCount);
   // إجمالٌ مختصر بالدينار (بلا كسور — IQD).
   const overdueTotalShort = metrics.data
-    ? fmt(Number(metrics.data.overdueAR.total))
+    ? fmtAr(Number(metrics.data.overdueAR.total))
     : "";
   const overdueUnit = metrics.isLoading
     ? "> 30 يوم"
@@ -445,7 +443,7 @@ function MetricsBar() {
   const stats = [
     {
       label: "مبيعات اليوم",
-      value: fmt(todaysTotal),
+      value: fmtAr(todaysTotal),
       unit: "د.ع",
       ico: <TrendIco color="oklch(0.60 0.22 155)" />,
       iBg: "oklch(0.60 0.22 155 / 0.15)",
@@ -489,8 +487,8 @@ function MetricsBar() {
       ? [
           {
             label: "جرد بانتظار المراجعة",
-            value: stk.isLoading ? "..." : fmt(stk.data?.review ?? 0),
-            unit: stk.data?.counting ? `${fmt(stk.data.counting)} قيد العدّ` : "جلسة",
+            value: stk.isLoading ? "..." : fmtAr(stk.data?.review ?? 0),
+            unit: stk.data?.counting ? `${fmtAr(stk.data.counting)} قيد العدّ` : "جلسة",
             ico: <WarnIco color="oklch(0.55 0.2 264)" />,
             iBg: "oklch(0.55 0.2 264 / 0.12)",
             isAlert: (stk.data?.review ?? 0) > 0,

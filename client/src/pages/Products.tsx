@@ -10,6 +10,7 @@ import { confirm } from "@/lib/confirm";
 import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
+import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useState } from "react";
@@ -158,7 +159,7 @@ export default function Products() {
                     <td className="p-2">{r.unitName ?? "—"}</td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{r.barcode ?? "—"}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">
-                      {r.price != null ? Number(r.price).toLocaleString("ar-IQ-u-nu-latn") : "—"}
+                      {fmtAr(r.price)}
                     </td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{r.stockBase}</td>
                     <td className="p-2 text-center">

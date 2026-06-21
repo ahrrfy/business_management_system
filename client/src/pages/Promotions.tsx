@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { confirm } from "@/lib/confirm";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -166,7 +167,10 @@ export default function Promotions() {
                         <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${promoStatusCls[p.status] ?? "bg-muted text-muted-foreground"}`}>{promoStatusLabel(p.status)}</span></td>
                         <td className="p-2 text-center">
                           {p.status === "pending" ? (
-                            <Button size="sm" variant="outline" className="h-7 text-emerald-600" disabled={approvePromo.isPending} onClick={() => approvePromo.mutate({ id: p.id })}>اعتماد</Button>
+                            <Button size="sm" variant="outline" className="h-7 text-emerald-600" disabled={approvePromo.isPending} onClick={async () => {
+                              if (!(await confirm({ variant: "warning", title: "اعتماد الترقية", description: `اعتماد ترقية «${p.employeeName}» إلى «${p.toTitle}» يحدّث بيانات الموظف المالية. متابعة؟`, confirmText: "اعتماد" }))) return;
+                              approvePromo.mutate({ id: p.id });
+                            }}>اعتماد</Button>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>
                           )}
@@ -224,7 +228,10 @@ export default function Promotions() {
                           <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${termStatusCls[t.status] ?? "bg-muted text-muted-foreground"}`}>{termStatusLabel(t.status)}</span></td>
                           <td className="p-2 text-center">
                             {t.status === "pending" ? (
-                              <Button size="sm" variant="outline" className="h-7" disabled={completeTerm.isPending} onClick={() => completeTerm.mutate({ id: t.id })}>إكمال</Button>
+                              <Button size="sm" variant="outline" className="h-7" disabled={completeTerm.isPending} onClick={async () => {
+                                if (!(await confirm({ variant: "danger", title: "إكمال إنهاء الخدمة", description: `إنهاء خدمة «${t.employeeName}» نهائي، سيُستثنى الموظف من المسيّرات. اكتب «إنهاء الخدمة» للتأكيد.`, confirmText: "إنهاء الخدمة", requireText: "إنهاء الخدمة" }))) return;
+                                completeTerm.mutate({ id: t.id });
+                              }}>إكمال</Button>
                             ) : (
                               <span className="text-xs text-muted-foreground">—</span>
                             )}
