@@ -4,23 +4,11 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
+import { formatIqd } from "@/lib/money";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
-import { toast } from "sonner";
-
-function fmtDate(d: string | Date | null | undefined): string {
-  if (!d) return "—";
-  const t = typeof d === "string" ? new Date(d) : d;
-  if (Number.isNaN(t.getTime())) return "—";
-  return t.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit" });
-}
-
-function fmtMoney(s: string | number | null | undefined): string {
-  if (s == null) return "—";
-  const n = typeof s === "string" ? Number(s) : s;
-  if (Number.isNaN(n)) return "—";
-  return n.toLocaleString("ar-IQ-u-nu-latn", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " د.ع";
-}
 
 export default function YearEndPage() {
   const utils = trpc.useUtils();
@@ -32,10 +20,10 @@ export default function YearEndPage() {
 
   const closeMut = trpc.yearEnd.close.useMutation({
     onSuccess: (r) => {
-      toast.success(`أُقفلت السنة ${r.year} — صافي الربح ${r.netProfit}`);
+      notify.ok(`أُقفلت السنة ${r.year} — صافي الربح ${r.netProfit}`);
       utils.yearEnd.list.invalidate();
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => notify.err(e),
   });
 
   return (
@@ -116,10 +104,10 @@ export default function YearEndPage() {
                     <tr key={s.id} className="hover:bg-accent/40">
                       <td className="p-2 border font-medium">{s.year}</td>
                       <td className="p-2 border">{s.branchId ?? "كل الفروع"}</td>
-                      <td className="p-2 border">{fmtMoney(s.totalRevenue)}</td>
-                      <td className="p-2 border">{fmtMoney(s.totalCogs)}</td>
-                      <td className="p-2 border">{fmtMoney(s.totalExpenses)}</td>
-                      <td className={`p-2 border font-semibold ${Number(s.netProfit) >= 0 ? "text-green-700" : "text-red-700"}`}>{fmtMoney(s.netProfit)}</td>
+                      <td className="p-2 border">{formatIqd(s.totalRevenue)}</td>
+                      <td className="p-2 border">{formatIqd(s.totalCogs)}</td>
+                      <td className="p-2 border">{formatIqd(s.totalExpenses)}</td>
+                      <td className={`p-2 border font-semibold ${Number(s.netProfit) >= 0 ? "text-green-700" : "text-red-700"}`}>{formatIqd(s.netProfit)}</td>
                       <td className="p-2 border text-muted-foreground">{fmtDate(s.closedAt)}</td>
                     </tr>
                   ))}

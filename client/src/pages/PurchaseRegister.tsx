@@ -7,7 +7,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -146,7 +146,7 @@ export default function PurchaseRegister() {
                       </td>
                       <td className="p-2.5 text-right">{r.supplierName ?? "—"}</td>
                       <td className="p-2.5 text-right">{r.productName ?? "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.quantity}</td>
+                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
                       <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
                     </tr>

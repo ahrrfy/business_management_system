@@ -33,6 +33,7 @@ import {
   type InvoiceLine,
 } from "@/components/invoice";
 import { Button } from "@/components/ui/button";
+import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -217,7 +218,7 @@ export default function SalesReturnNew() {
     return out;
   }
 
-  function handleSubmit(opts: { print?: boolean } = {}) {
+  async function handleSubmit(opts: { print?: boolean } = {}) {
     if (!sourceInvoiceId) {
       notify.err("اختر فاتورة مرجعية وحمّل بنودها قبل الحفظ.");
       return;
@@ -247,6 +248,16 @@ export default function SalesReturnNew() {
         refund = { amount: round2(amt).toFixed(2), method: state.paymentMethod };
       }
     }
+
+    if (
+      !(await confirm({
+        variant: "danger",
+        title: "تأكيد حفظ مرتجع البيع",
+        description: "حفظ مرتجع البيع سينقل المخزون ويسجّل استرداداً. متابعة؟",
+        confirmText: "حفظ",
+      }))
+    )
+      return;
 
     createMutation.mutate(
       { invoiceId: sourceInvoiceId, lines, refund, restock, clientRequestId },
@@ -279,7 +290,7 @@ export default function SalesReturnNew() {
         window.print();
       } else if (e.key === "F12") {
         e.preventDefault();
-        if (confirm("تفريغ كلّ بيانات المرتجع الحالي؟")) {
+        if (window.confirm("تفريغ كلّ بيانات المرتجع الحالي؟")) {
           dispatch({ type: "RESET", invoiceType: "SALE_RETURN" });
           setSourceInvoiceId(null);
           setRefMeta({});

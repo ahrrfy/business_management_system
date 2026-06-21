@@ -5,16 +5,10 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
-import { toast } from "sonner";
-
-function fmtDate(d: string | Date | null | undefined): string {
-  if (!d) return "—";
-  const t = typeof d === "string" ? new Date(d) : d;
-  if (Number.isNaN(t.getTime())) return "—";
-  return t.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit" });
-}
 
 export default function PeriodLockPage() {
   const utils = trpc.useUtils();
@@ -24,20 +18,20 @@ export default function PeriodLockPage() {
 
   const lockMut = trpc.periodLock.lock.useMutation({
     onSuccess: () => {
-      toast.success("تم قفل الفترة بنجاح");
+      notify.ok("تم قفل الفترة بنجاح");
       utils.periodLock.status.invalidate();
       setCutoffDate("");
       setNotes("");
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => notify.err(e),
   });
 
   const unlockMut = trpc.periodLock.unlock.useMutation({
     onSuccess: () => {
-      toast.success("تم فتح أحدث قفل");
+      notify.ok("تم فتح أحدث قفل");
       utils.periodLock.status.invalidate();
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => notify.err(e),
   });
 
   const lock = status.data?.lock;
@@ -107,11 +101,20 @@ export default function PeriodLockPage() {
             />
           </div>
           <Button
-            onClick={() => {
+            onClick={async () => {
               if (!cutoffDate) {
-                toast.error("اختر تاريخ الإقفال");
+                notify.err("اختر تاريخ الإقفال");
                 return;
               }
+              if (
+                !(await confirm({
+                  variant: "danger",
+                  title: "تطبيق قفل الفترة",
+                  description: `سيُمنع التعديل لكل تاريخ ≤ ${fmtDate(cutoffDate)}. متابعة؟`,
+                  confirmText: "إقفال",
+                }))
+              )
+                return;
               lockMut.mutate({ cutoffDate, notes: notes.trim() || undefined });
             }}
             disabled={lockMut.isPending}

@@ -6,6 +6,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { EmpAvatar, EmploymentStatusBadge, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -73,7 +75,7 @@ export default function EmployeeDetail() {
           <div className="flex items-center gap-2 flex-wrap">
             <Link href={`/hr/employees/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>
             {isTerminated ? (
-              <Button variant="outline" size="sm" onClick={() => setStatus.mutate({ id, status: "active" })} disabled={setStatus.isPending}>إعادة للعمل</Button>
+              <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "info", title: "إعادة الموظف للعمل", description: `إعادة الموظف «${e.fullName}» إلى الخدمة الفعّالة؟`, confirmText: "إعادة للعمل" }))) return; setStatus.mutate({ id, status: "active" }); }} disabled={setStatus.isPending}>إعادة للعمل</Button>
             ) : (
               <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenTerminate(true)}>إنهاء الخدمة</Button>
             )}
@@ -97,14 +99,14 @@ export default function EmployeeDetail() {
                 <Field label="المسمى الوظيفي" value={e.position} />
                 <Field label="الفرع" value={e.branchName} />
                 <Field label="المدير المباشر" value={e.managerName} />
-                <Field label="تاريخ المباشرة" value={e.hireDate} dir="ltr" />
+                <Field label="تاريخ المباشرة" value={fmtDate(e.hireDate)} dir="ltr" />
                 <Field label="طريقة الأجر" value={payTypeLabel(e.payType)} />
                 <Field label="الهاتف" value={e.phone} dir="ltr" />
                 <Field label="البريد الإلكتروني" value={e.email} dir="ltr" />
                 <Field label="العنوان" value={[e.governorate, e.district, e.addressLandmark].filter(Boolean).join(" / ") || "—"} />
                 <Field label="رصيد الإجازة السنوية" value={`${e.annualLeaveBalance ?? 0} يوم`} />
                 <Field label="رصيد الإجازة المرضية" value={`${e.sickLeaveBalance ?? 0} يوم`} />
-                {isTerminated && <Field label="تاريخ إنهاء الخدمة" value={e.terminationDate} dir="ltr" />}
+                {isTerminated && <Field label="تاريخ إنهاء الخدمة" value={fmtDate(e.terminationDate)} dir="ltr" />}
                 {isTerminated && e.terminationReason && <Field label="سبب إنهاء الخدمة" value={e.terminationReason} />}
               </CardContent>
             </Card>
@@ -120,7 +122,7 @@ export default function EmployeeDetail() {
         <TabsContent value="personal">
           <Card><CardContent className="p-4 grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
             <Field label="الجنس" value={e.gender} />
-            <Field label="تاريخ الميلاد" value={e.birthDate} dir="ltr" />
+            <Field label="تاريخ الميلاد" value={fmtDate(e.birthDate)} dir="ltr" />
             <Field label="الحالة الاجتماعية" value={e.maritalStatus} />
             <Field label="الجنسية" value={e.nationality} />
             <Field label="رقم الهوية الوطنية" value={e.nationalId} dir="ltr" />
@@ -181,7 +183,7 @@ export default function EmployeeDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpenTerminate(false)}>إلغاء</Button>
-            <Button className="bg-destructive text-white hover:bg-destructive/90" disabled={setStatus.isPending} onClick={() => setStatus.mutate({ id, status: "terminated", terminationDate: tDate, terminationReason: tReason.trim() || undefined })}>{setStatus.isPending ? "جارٍ…" : "تأكيد إنهاء الخدمة"}</Button>
+            <Button className="bg-destructive text-white hover:bg-destructive/90" disabled={setStatus.isPending} onClick={async () => { if (!(await confirm({ variant: "danger", title: "إنهاء خدمة الموظف", description: `إنهاء خدمة الموظف «${e.fullName}» نهائي ولا يمكن التراجع. اكتب اسم الموظف للتأكيد.`, confirmText: "إنهاء الخدمة", requireText: e.fullName }))) return; setStatus.mutate({ id, status: "terminated", terminationDate: tDate, terminationReason: tReason.trim() || undefined }); }}>{setStatus.isPending ? "جارٍ…" : "تأكيد إنهاء الخدمة"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -1,19 +1,12 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
-import { fmt, pct } from "@/lib/money";
+import { fmtDate, fmtDateTime } from "@/lib/date";
+import { fmt, fmtInt, pct } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { Link, useRoute } from "wouter";
-
-function fmtDateTime(d: Date | string) {
-  try { return new Date(d).toLocaleString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); }
-  catch { return String(d); }
-}
-function fmtDate(d: Date | string) {
-  try { return new Date(d).toLocaleDateString("en-GB"); } catch { return String(d); }
-}
 
 export default function ProductionDetail() {
   const [, params] = useRoute("/production/:id");
@@ -109,9 +102,9 @@ export default function ProductionDetail() {
         <Card>
           <CardHeader><CardTitle className="text-base">الإنتاجية والهدر</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
-            <div><div className="text-xs text-muted-foreground">الدفعة</div><div className="font-semibold tabular-nums" dir="ltr">{Number(doc.batchQty).toLocaleString("en-US")}</div></div>
-            <div><div className="text-xs text-muted-foreground">السليم</div><div className="font-semibold text-emerald-700 tabular-nums" dir="ltr">{Number(doc.goodQty).toLocaleString("en-US")}</div></div>
-            <div><div className="text-xs text-muted-foreground">التالف</div><div className="font-semibold text-amber-600 tabular-nums" dir="ltr">{Number(doc.scrapQty).toLocaleString("en-US")}</div></div>
+            <div><div className="text-xs text-muted-foreground">الدفعة</div><div className="font-semibold tabular-nums" dir="ltr">{fmtInt(doc.batchQty)}</div></div>
+            <div><div className="text-xs text-muted-foreground">السليم</div><div className="font-semibold text-emerald-700 tabular-nums" dir="ltr">{fmtInt(doc.goodQty)}</div></div>
+            <div><div className="text-xs text-muted-foreground">التالف</div><div className="font-semibold text-amber-600 tabular-nums" dir="ltr">{fmtInt(doc.scrapQty)}</div></div>
             <div><div className="text-xs text-muted-foreground">الإنتاجية</div><div className="font-semibold tabular-nums" dir="ltr">{yieldPct != null ? pct(yieldPct) : "—"}</div></div>
             <div><div className="text-xs text-muted-foreground">خسارة هدر غير طبيعي</div><div className={`font-semibold tabular-nums ${abLoss > 0 ? "text-rose-600" : "text-muted-foreground"}`} dir="ltr">{abLoss > 0 ? `${fmt(doc.abnormalLoss)} (${abnormalUnits} وحدة)` : "لا يوجد"}</div></div>
           </CardContent>
@@ -130,7 +123,7 @@ export default function ProductionDetail() {
                 <tr key={Number(l.id)} className="border-t">
                   <td className="p-2">{l.productName}{l.variantName ? ` — ${l.variantName}` : ""}</td>
                   <td className="p-2 font-mono text-xs" dir="ltr">{l.sku}</td>
-                  <td className="p-2 text-center tabular-nums" dir="ltr">{Number(l.baseQuantity).toLocaleString("en-US")}</td>
+                  <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.baseQuantity)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(l.unitCost)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(l.lineCost)}</td>
                 </tr>
@@ -152,7 +145,7 @@ export default function ProductionDetail() {
                 <tr key={Number(l.id)} className="border-t">
                   <td className="p-2">{l.productName}{l.variantName ? ` — ${l.variantName}` : ""}</td>
                   <td className="p-2 font-mono text-xs" dir="ltr">{l.sku}</td>
-                  <td className="p-2 text-center tabular-nums" dir="ltr">{Number(l.baseQuantity).toLocaleString("en-US")}</td>
+                  <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.baseQuantity)}</td>
                   <td className="p-2 text-left tabular-nums text-sky-700" dir="ltr">{fmt(l.unitCost)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(l.allocatedCost)}</td>
                 </tr>

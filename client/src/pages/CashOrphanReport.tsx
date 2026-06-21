@@ -8,6 +8,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr, formatIqd } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -116,7 +117,7 @@ export default function CashOrphanReport() {
         { key: "createdBy", label: "أنشأها" },
       ],
       rows: co.rows.map((r) => ({
-        createdAt: ymdOf(r.createdAt),
+        createdAt: fmtDate(r.createdAt),
         branch: r.branchName ?? "—",
         category: r.category === "TREASURY" ? "خزينة" : "يتيم",
         source: SOURCE_LABEL[r.source] ?? r.source,
@@ -225,7 +226,7 @@ export default function CashOrphanReport() {
                   return (
                     <tr key={r.receiptId} className={`border-b last:border-0 ${rowBg}`}>
                       <td className="p-3 text-right text-xs" dir="ltr">
-                        {ymdOf(r.createdAt)}
+                        {fmtDate(r.createdAt)}
                       </td>
                       <td className="p-3 text-right">{r.branchName ?? "—"}</td>
                       <td className="p-3 text-right">

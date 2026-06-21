@@ -2,19 +2,13 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { DangerConfirmDialog } from "@/components/DangerConfirmDialog";
+import { confirmDelete } from "@/lib/confirm";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
+import { fmtDateTime } from "@/lib/date";
 import { useEffect, useRef, useState } from "react";
-import { toast } from "sonner";
 
-function fmtDate(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleString("en-GB", {
-      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
-    });
-  } catch { return iso; }
-}
 function fmtKb(kb: number): string {
   return kb >= 1024 ? `${(kb / 1024).toFixed(1)} م.ب` : `${kb} ك.ب`;
 }
@@ -56,32 +50,32 @@ export default function Settings() {
 
   const backupNow = trpc.system.backupNow.useMutation({
     onSuccess: async (r) => {
-      toast.success(r.created ? `أُنشئت نسخة: ${r.created.name}` : "تمّت النسخة الاحتياطية");
+      notify.ok(r.created ? `أُنشئت نسخة: ${r.created.name}` : "تمّت النسخة الاحتياطية");
       await refresh();
     },
-    onError: (e) => toast.error(e.message || "فشلت النسخة"),
+    onError: (e) => notify.err(e.message || "فشلت النسخة"),
   });
   const deleteBackup = trpc.system.deleteBackup.useMutation({
-    onSuccess: async () => { toast.success("حُذفت النسخة"); await refresh(); },
-    onError: (e) => toast.error(e.message || "تعذّر الحذف"),
+    onSuccess: async () => { notify.ok("حُذفت النسخة"); await refresh(); },
+    onError: (e) => notify.err(e.message || "تعذّر الحذف"),
   });
 
   const afterDestructive = (msg: string) => {
     setDanger(null);
-    toast.success(`${msg} — سيُعاد تحميل النظام`);
+    notify.ok(`${msg} — سيُعاد تحميل النظام`);
     setTimeout(() => window.location.reload(), 1600);
   };
   const restoreBackup = trpc.system.restoreBackup.useMutation({
     onSuccess: () => afterDestructive("تمّت الاستعادة بنجاح"),
-    onError: (e) => toast.error(e.message || "فشلت الاستعادة"),
+    onError: (e) => notify.err(e.message || "فشلت الاستعادة"),
   });
   const restoreUpload = trpc.system.restoreUpload.useMutation({
     onSuccess: () => afterDestructive("تمّت الاستعادة من الملف"),
-    onError: (e) => toast.error(e.message || "فشلت الاستعادة من الملف"),
+    onError: (e) => notify.err(e.message || "فشلت الاستعادة من الملف"),
   });
   const resetSystem = trpc.system.resetSystem.useMutation({
     onSuccess: () => afterDestructive("تمّ تصفير النظام"),
-    onError: (e) => toast.error(e.message || "فشل التصفير"),
+    onError: (e) => notify.err(e.message || "فشل التصفير"),
   });
   const dangerPending = restoreBackup.isPending || restoreUpload.isPending || resetSystem.isPending;
 
@@ -97,11 +91,11 @@ export default function Settings() {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (!file.name.endsWith(".sql")) { toast.error("اختر ملف .sql صالحاً"); return; }
+    if (!file.name.endsWith(".sql")) { notify.err("اختر ملف .sql صالحاً"); return; }
     try {
       const fileB64 = await fileToB64(file);
       setDanger({ kind: "restore-upload", fileName: file.name, fileB64 });
-    } catch { toast.error("تعذّر قراءة الملف"); }
+    } catch { notify.err("تعذّر قراءة الملف"); }
   }
   function handleDangerConfirm({ password, seed, confirm }: { password: string; seed: boolean; confirm: string }) {
     if (!danger) return;
@@ -136,7 +130,7 @@ export default function Settings() {
           <Stat label="العملاء" value={c ? String(c.customers) : "…"} />
           <Stat label="الفواتير" value={c ? String(c.invoices) : "…"} />
           <Stat label="النسخ" value={info.data ? `${info.data.backups.count} (${fmtKb(info.data.backups.totalKb)})` : "…"} />
-          <Stat label="آخر نسخة" value={fmtDate(info.data?.backups.latest ?? null)} />
+          <Stat label="آخر نسخة" value={fmtDateTime(info.data?.backups.latest ?? null)} />
           <Stat label="الطباعة الصامتة" value={bridge.enabled ? "مفعّلة" : "غير مفعّلة"} ok={bridge.enabled} />
           <Stat label="النسخ التلقائي" value={`يومياً 02:00${info.data?.schedule.offsiteConfigured ? " + خارجي" : ""}`} />
         </CardContent>
@@ -178,12 +172,15 @@ export default function Settings() {
                   <TableRow key={b.name}>
                     <TableCell className="font-mono text-xs" dir="ltr">{b.name}</TableCell>
                     <TableCell className="text-left tabular-nums">{fmtKb(b.sizeKb)}</TableCell>
-                    <TableCell className="text-left tabular-nums" dir="ltr">{fmtDate(b.createdAt)}</TableCell>
+                    <TableCell className="text-left tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
                     <TableCell className="text-center whitespace-nowrap">
                       <Button size="sm" variant="ghost" onClick={() => downloadBackup(b.name)}>⬇ تنزيل</Button>
                       <Button size="sm" variant="ghost" className="text-amber-600" onClick={() => setDanger({ kind: "restore-server", name: b.name })}>↻ استعادة</Button>
                       <Button size="sm" variant="ghost" className="text-destructive"
-                        onClick={() => { if (confirm(`حذف النسخة ${b.name}؟`)) deleteBackup.mutate({ name: b.name }); }}>🗑 حذف</Button>
+                        onClick={async () => {
+                          if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
+                          deleteBackup.mutate({ name: b.name });
+                        }}>🗑 حذف</Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -214,7 +211,7 @@ export default function Settings() {
             <span>جسر الطباعة الصامتة: <b>{bridge.enabled ? "مفعّل" : "غير مفعّل"}</b>{bridge.enabled ? ` (${bridge.description})` : ""}</span>
             {bridge.enabled && (
               <Button size="sm" variant="outline" className="ms-auto"
-                onClick={async () => { const r = await serverPrintTest(); r.ok ? toast.success("أُرسلت تذكرة اختبار") : toast.error(r.error ?? "فشل الاختبار"); }}>
+                onClick={async () => { const r = await serverPrintTest(); r.ok ? notify.ok("أُرسلت تذكرة اختبار") : notify.err(r.error ?? "فشل الاختبار"); }}>
                 اختبار طباعة
               </Button>
             )}

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { HR_FINGERPRINT_TARGET } from "@shared/hr";
@@ -199,7 +200,15 @@ export default function HrDevices() {
                       </td>
                       <td className="p-2 text-left">
                         {!d.migrated && (
-                          <Button size="sm" disabled={migrate.isPending} onClick={() => migrate.mutate({ id: d.id })}>
+                          <Button size="sm" disabled={migrate.isPending} onClick={async () => {
+                            if (!(await confirm({
+                              variant: "warning",
+                              title: "نقل الجهاز إلى خادمك",
+                              description: `نقل الجهاز «${d.name}» من المزوّد الخارجي إلى خادمك قد يستغرق دقائق. متابعة؟`,
+                              confirmText: "نقل لخادمي",
+                            }))) return;
+                            migrate.mutate({ id: d.id });
+                          }}>
                             <ArrowLeftRight className="size-3.5" /> نقل لخادمي
                           </Button>
                         )}

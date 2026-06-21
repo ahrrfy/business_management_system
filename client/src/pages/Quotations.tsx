@@ -2,6 +2,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
+import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printQuotation } from "@/lib/printing/printTemplates";
@@ -168,7 +169,15 @@ export default function Quotations() {
                         {
                           key: "send",
                           label: "وضع مُرسَل",
-                          onSelect: () => setStatusMut.mutate({ quotationId: qr.id, status: "SENT" }),
+                          onSelect: async () => {
+                            if (!(await confirm({
+                              variant: "warning",
+                              title: "وضع العرض مُرسَلاً",
+                              description: `وضع العرض «${qr.quoteNumber}» مُرسَلاً لا يُعكَس من القائمة. متابعة؟`,
+                              confirmText: "وضع مُرسَل",
+                            }))) return;
+                            setStatusMut.mutate({ quotationId: qr.id, status: "SENT" });
+                          },
                           hidden: qr.status !== "DRAFT",
                           disabled: setStatusMut.isPending,
                         },

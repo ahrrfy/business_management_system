@@ -5,20 +5,8 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
-
-function fmtMoney(s: string | number | null | undefined): string {
-  if (s == null) return "—";
-  const n = typeof s === "string" ? Number(s) : s;
-  if (Number.isNaN(n)) return "—";
-  return n.toLocaleString("ar-IQ-u-nu-latn", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " د.ع";
-}
-
-function fmtDate(d: string | Date | null | undefined): string {
-  if (!d) return "—";
-  const t = typeof d === "string" ? new Date(d) : d;
-  if (Number.isNaN(t.getTime())) return "—";
-  return t.toLocaleDateString("ar-IQ-u-nu-latn", { year: "numeric", month: "2-digit", day: "2-digit" });
-}
+import { fmtDate } from "@/lib/date";
+import { formatIqd } from "@/lib/money";
 
 const STATUS_LABEL: Record<string, string> = {
   IN_PROGRESS: "قيد التنفيذ",
@@ -61,7 +49,7 @@ export default function WIPReportPage() {
             <>
               <div className="bg-blue-50 border border-blue-200 rounded p-3 grid grid-cols-2 gap-2 text-sm">
                 <div><span className="text-muted-foreground">إجمالي الأوامر:</span> <span className="font-semibold">{wip.data?.totalCount ?? 0}</span></div>
-                <div><span className="text-muted-foreground">قيمة WIP الإجمالية:</span> <span className="font-bold text-blue-900">{fmtMoney(wip.data?.totalMaterialsCost)}</span></div>
+                <div><span className="text-muted-foreground">قيمة WIP الإجمالية:</span> <span className="font-bold text-blue-900">{formatIqd(wip.data?.totalMaterialsCost)}</span></div>
               </div>
 
               {(wip.data?.rows.length ?? 0) === 0 ? (
@@ -84,7 +72,7 @@ export default function WIPReportPage() {
                           <td className="p-2 border font-mono">{r.orderNumber}</td>
                           <td className="p-2 border">{r.customerName ?? "—"}</td>
                           <td className="p-2 border">{STATUS_LABEL[r.status] ?? r.status}</td>
-                          <td className="p-2 border font-semibold">{fmtMoney(r.materialsCost)}</td>
+                          <td className="p-2 border font-semibold">{formatIqd(r.materialsCost)}</td>
                           <td className="p-2 border text-muted-foreground">{fmtDate(r.createdAt)}</td>
                         </tr>
                       ))}

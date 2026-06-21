@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { EmpAvatar } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -190,8 +192,8 @@ export default function Leaves() {
                           </div>
                         </td>
                         <td className="p-2 text-xs">{l.leaveType}{!l.paid && <span className="text-muted-foreground"> · غير مدفوعة</span>}</td>
-                        <td className="p-2 text-xs tabular-nums" dir="ltr">{l.fromDate}</td>
-                        <td className="p-2 text-xs tabular-nums" dir="ltr">{l.toDate}</td>
+                        <td className="p-2 text-xs tabular-nums" dir="ltr">{fmtDate(l.fromDate)}</td>
+                        <td className="p-2 text-xs tabular-nums" dir="ltr">{fmtDate(l.toDate)}</td>
                         <td className="p-2 text-center tabular-nums" dir="ltr">{l.days}</td>
                         <td className="p-2 text-xs text-muted-foreground max-w-[200px] truncate">{l.reason ?? "—"}</td>
                         <td className="p-2 text-center"><LeaveStatusBadge status={l.status} /></td>
@@ -201,20 +203,29 @@ export default function Leaves() {
                               <button
                                 className="text-xs font-medium text-emerald-600 hover:underline disabled:opacity-50"
                                 disabled={decide.isPending}
-                                onClick={() => decide.mutate({ id: l.id, decision: "approved" })}
+                                onClick={async () => {
+                                  if (!(await confirm({ variant: "info", title: "الموافقة على الإجازة", description: `الموافقة على إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) وخصم رصيدها؟`, confirmText: "موافقة" }))) return;
+                                  decide.mutate({ id: l.id, decision: "approved" });
+                                }}
                               >موافقة</button>
                               <span className="text-border">·</span>
                               <button
                                 className="text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
                                 disabled={decide.isPending}
-                                onClick={() => decide.mutate({ id: l.id, decision: "rejected" })}
+                                onClick={async () => {
+                                  if (!(await confirm({ variant: "warning", title: "رفض الطلب", description: `رفض طلب إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم)؟`, confirmText: "رفض" }))) return;
+                                  decide.mutate({ id: l.id, decision: "rejected" });
+                                }}
                               >رفض</button>
                             </div>
                           ) : l.status === "approved" ? (
                             <button
                               className="text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
                               disabled={cancel.isPending}
-                              onClick={() => { if (confirm("إلغاء الإجازة الموافق عليها واسترداد رصيدها؟")) cancel.mutate({ id: l.id }); }}
+                              onClick={async () => {
+                                if (!(await confirm({ variant: "danger", title: "إلغاء الإجازة", description: `إلغاء إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) واسترداد الأيام؟ يؤثّر على السجلّات.`, confirmText: "إلغاء الإجازة" }))) return;
+                                cancel.mutate({ id: l.id });
+                              }}
                             >إلغاء الإجازة</button>
                           ) : (
                             <span className="text-xs text-muted-foreground">—</span>

@@ -5,7 +5,8 @@ import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, fmtInt } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -27,7 +28,7 @@ export default function InventoryValuation() {
   const kpis: KpiItem[] = totals
     ? [
         { label: "عدد المنتجات", value: totals.items, tone: "info" },
-        { label: "إجمالي الكمية", value: totals.totalQty.toLocaleString("ar-IQ-u-nu-latn") },
+        { label: "إجمالي الكمية", value: fmtInt(totals.totalQty) },
         { label: "إجمالي القيمة (بالتكلفة)", value: fmtAr(totals.totalValue), tone: "positive" },
       ]
     : [];
@@ -50,7 +51,7 @@ export default function InventoryValuation() {
     printReportDoc({
       title: "تقييم المخزون بالتكلفة",
       headerExtra: [
-        { label: "كما في", value: new Date().toLocaleDateString("ar-IQ-u-nu-latn") },
+        { label: "كما في", value: fmtDate(new Date()) },
         { label: "الفرع", value: branchLabel },
       ],
       note: NOTE,
@@ -63,13 +64,13 @@ export default function InventoryValuation() {
       rows: rows.map((r) => ({
         category: r.categoryName,
         items: String(r.items),
-        qty: r.totalQty.toLocaleString("ar-IQ-u-nu-latn"),
+        qty: fmtInt(r.totalQty),
         value: fmtAr(r.totalValue),
       })),
       summary: totals
         ? [
             { label: "عدد المنتجات", value: String(totals.items) },
-            { label: "إجمالي الكمية", value: totals.totalQty.toLocaleString("ar-IQ-u-nu-latn") },
+            { label: "إجمالي الكمية", value: fmtInt(totals.totalQty) },
             { label: "إجمالي القيمة (بالتكلفة)", value: fmtAr(totals.totalValue), large: true, bold: true },
           ]
         : undefined,
@@ -117,8 +118,8 @@ export default function InventoryValuation() {
                   {rows.map((r) => (
                     <tr key={r.categoryId ?? "none"} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right">{r.categoryName}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.items.toLocaleString("ar-IQ-u-nu-latn")}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.totalQty.toLocaleString("ar-IQ-u-nu-latn")}</td>
+                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.items)}</td>
+                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.totalQty)}</td>
                       <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtAr(r.totalValue)}</td>
                     </tr>
                   ))}
@@ -127,8 +128,8 @@ export default function InventoryValuation() {
                   <tfoot>
                     <tr className="border-t-2 font-bold bg-muted/30">
                       <td className="p-2.5 text-right">الإجمالي</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{totals.items.toLocaleString("ar-IQ-u-nu-latn")}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{totals.totalQty.toLocaleString("ar-IQ-u-nu-latn")}</td>
+                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(totals.items)}</td>
+                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(totals.totalQty)}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(totals.totalValue)}</td>
                     </tr>
                   </tfoot>

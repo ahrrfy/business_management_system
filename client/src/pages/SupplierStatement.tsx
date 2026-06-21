@@ -8,6 +8,7 @@ import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { printSupplierStmt } from "@/lib/printing/printTemplates";
 import { exportRows } from "@/lib/export";
+import { fmtDate } from "@/lib/date";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
@@ -81,13 +82,13 @@ export default function SupplierStatement() {
     const d = stmt.data;
     const poTxs = d.purchaseOrders.map((p) => ({
       t: new Date(p.orderDate).getTime(),
-      date: new Date(p.orderDate).toLocaleDateString("en-GB"),
+      date: fmtDate(p.orderDate),
       ref: p.poNumber, description: "أمر شراء",
       debit: null as string | null, credit: p.total as string | null,
     }));
     const payTxs = d.payments.map((p) => ({
       t: new Date(p.entryDate).getTime(),
-      date: new Date(p.entryDate).toLocaleDateString("en-GB"),
+      date: fmtDate(p.entryDate),
       ref: "دفعة",
       description: p.purchaseOrderId ? "دفعة للمورد" : "دفعة مستقلة للمورد",
       debit: p.amount as string | null, credit: null as string | null,
@@ -275,7 +276,7 @@ export default function SupplierStatement() {
                   {from && (
                     <tr className="border-t bg-amber-50/60 font-medium">
                       <td className="p-2 text-xs">رصيد مُرحَّل</td>
-                      <td className="p-2 text-xs" dir="ltr">{from}</td>
+                      <td className="p-2 text-xs" dir="ltr">{fmtDate(from)}</td>
                       <td className="p-2 text-xs text-muted-foreground" colSpan={3}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
                       <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
                       <td className="p-2" colSpan={2} />

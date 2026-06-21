@@ -9,6 +9,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { AssetStatusBadge, categoryIcon, iqd } from "@/lib/assets/ui";
 import { printAssetLabel } from "@/lib/assets/print";
+import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
@@ -97,7 +99,7 @@ export default function AssetDetail() {
             {a.status !== "disposed" && <Link href={`/assets/${id}/edit`}><Button variant="outline" size="sm">تعديل</Button></Link>}
             <Button variant="outline" size="sm" onClick={() => setOpenLabel(true)}>بطاقة الأصل</Button>
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenMaint(true)}>تسجيل صيانة</Button>}
-            {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={() => returnMaint.mutate({ assetId: id })} disabled={returnMaint.isPending}>إعادة للخدمة</Button>}
+            {a.status === "maintenance" && <Button variant="outline" size="sm" onClick={async () => { if (!(await confirm({ variant: "warning", title: "إعادة الأصل للخدمة", description: `إعادة الأصل «${a.name}» (${a.code}) من الصيانة إلى الخدمة؟`, confirmText: "إعادة للخدمة" }))) return; returnMaint.mutate({ assetId: id }); }} disabled={returnMaint.isPending}>إعادة للخدمة</Button>}
             {isLive && <Button variant="outline" size="sm" onClick={() => setOpenHandover(true)}>تسليم عهدة</Button>}
             {isLive && <Button variant="outline" size="sm" className="text-destructive" onClick={() => setOpenDispose(true)}>إخراج / استبعاد</Button>}
           </div>
@@ -140,15 +142,15 @@ export default function AssetDetail() {
             <Field label="الموقع" value={a.location} />
             <Field label="العهدة الحالية" value={a.custodianName ?? "بلا عهدة"} />
             <Field label="المورّد" value={a.supplierName} />
-            <Field label="تاريخ الشراء" value={a.purchaseDate} dir="ltr" />
-            <Field label="نهاية الكفالة" value={a.warrantyEnd} dir="ltr" />
+            <Field label="تاريخ الشراء" value={fmtDate(a.purchaseDate)} dir="ltr" />
+            <Field label="نهاية الكفالة" value={fmtDate(a.warrantyEnd)} dir="ltr" />
             <Field label="الحالة الفنية" value={a.condition} />
             <Field label="العمر الإنتاجي" value={`${a.usefulLifeYears} سنة`} />
             <Field label="القيمة التخريدية" value={iqd(a.salvageValue)} dir="ltr" />
             <Field label="إجمالي الصيانة" value={iqd(a.maintTotal)} dir="ltr" />
             {a.status === "disposed" || a.status === "retired" ? (
               <>
-                <Field label="تاريخ الإخراج" value={a.disposalDate} dir="ltr" />
+                <Field label="تاريخ الإخراج" value={fmtDate(a.disposalDate)} dir="ltr" />
                 {a.disposalValue != null && <Field label="عائد الاستبعاد" value={iqd(a.disposalValue)} dir="ltr" />}
                 <Field label="سبب الإخراج" value={a.disposalReason} />
               </>
@@ -196,7 +198,7 @@ export default function AssetDetail() {
                 <tbody>
                   {a.maintenance.map((m) => (
                     <tr key={m.id} className="border-t">
-                      <td className="p-2 text-xs" dir="ltr">{m.maintDate}</td>
+                      <td className="p-2 text-xs" dir="ltr">{fmtDate(m.maintDate)}</td>
                       <td className="p-2">{m.type}</td>
                       <td className="p-2 text-xs">{m.vendor ?? "—"}</td>
                       <td className="p-2 text-xs text-muted-foreground">{m.note ?? "—"}</td>
@@ -219,7 +221,7 @@ export default function AssetDetail() {
                 <div key={c.id} className="flex items-start gap-3 border-s-2 ps-3 border-border">
                   <div className="flex-1">
                     <div className="font-medium text-sm">{c.employeeName ?? "موظف"}</div>
-                    <div className="text-xs text-muted-foreground" dir="ltr">{c.fromDate} — {c.toDate ?? "حتى الآن"}</div>
+                    <div className="text-xs text-muted-foreground" dir="ltr">{fmtDate(c.fromDate)} — {c.toDate ? fmtDate(c.toDate) : "حتى الآن"}</div>
                     {c.note && <div className="text-xs text-muted-foreground mt-0.5">{c.note}</div>}
                   </div>
                   {!c.toDate && <span className="rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 px-2 py-0.5 text-xs h-fit">جارية</span>}
@@ -326,7 +328,7 @@ export default function AssetDetail() {
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setOpenDispose(false)}>إلغاء</Button>
-            <Button className="bg-destructive text-white hover:bg-destructive/90" disabled={dispose.isPending || (dKind === "disposed" && !dValue.trim())} onClick={() => dispose.mutate({ assetId: id, kind: dKind, date: dDate, reason: dReason.trim() || undefined, value: dKind === "disposed" ? dValue.trim() : undefined })}>{dispose.isPending ? "جارٍ…" : "تأكيد"}</Button>
+            <Button className="bg-destructive text-white hover:bg-destructive/90" disabled={dispose.isPending || (dKind === "disposed" && !dValue.trim())} onClick={async () => { if (!(await confirm({ variant: "danger", title: dKind === "disposed" ? "استبعاد الأصل" : "إخراج الأصل من الخدمة", description: `الإخراج/الاستبعاد لا رجعة فيه — يُحذف الأصل «${a.name}» (${a.code}) من السجلّ النشط ويؤثّر على الدفتر. اكتب اسم الأصل للتأكيد.`, confirmText: dKind === "disposed" ? "استبعاد" : "إخراج", requireText: a.name }))) return; dispose.mutate({ assetId: id, kind: dKind, date: dDate, reason: dReason.trim() || undefined, value: dKind === "disposed" ? dValue.trim() : undefined }); }}>{dispose.isPending ? "جارٍ…" : "تأكيد"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

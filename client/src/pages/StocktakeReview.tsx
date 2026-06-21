@@ -24,6 +24,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { D, fmt, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { STOCKTAKE_REASON_LABEL } from "@/lib/printing/stocktakeTemplates";
@@ -330,9 +331,19 @@ export default function StocktakeReview() {
     }
     requestRecount.mutate({ sessionId, variantId: recountFor.variantId, reason });
   }
-  function onApproveClick() {
-    if (approveMode === "first") firstSign.mutate({ sessionId });
-    else setConfirmOpen(true);
+  async function onApproveClick() {
+    if (approveMode === "first") {
+      if (
+        !(await confirm({
+          variant: "warning",
+          title: "تأكيد التوقيع الأول",
+          description: `سيُسجَّل توقيعك الأول على جلسة الجرد ${s.code} ويُرسَل للتوقيع الثاني من مسؤول آخر. لن يُنفَّذ أي تسوية بعد — الاعتماد النهائي يلزم توقيعاً ثانياً من شخص مختلف.`,
+          confirmText: "توقيع أول وإرسال",
+        }))
+      )
+        return;
+      firstSign.mutate({ sessionId });
+    } else setConfirmOpen(true);
   }
 
   /** تصدير صفوف الفروقات إلى Excel (المعروضة بعد الفلتر/البحث) — للمدير+ فقط. */

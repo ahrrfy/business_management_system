@@ -1,4 +1,5 @@
 import { CopyInline } from "@/components/CopyButton";
+import { confirm } from "@/lib/confirm";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -215,6 +216,12 @@ export default function BarcodeLabels() {
 
   async function saveBarcode(item: QueueItem) {
     setError("");
+    if (!(await confirm({
+      variant: "warning",
+      title: "حفظ الباركود",
+      description: `حفظ الباركود «${item.barcode}» للمنتج «${item.productName} — ${item.unitName}» يجعله قابلاً للمسح وقد يستبدل باركوداً قائماً. متابعة؟`,
+      confirmText: "حفظ الباركود",
+    }))) return;
     try {
       await assign.mutateAsync({ productUnitId: item.productUnitId, barcode: item.barcode });
       patch(item.key, { saved: true });
@@ -456,7 +463,21 @@ export default function BarcodeLabels() {
       {info && <p className="text-sm text-emerald-600">{info}</p>}
       <div className="flex gap-2">
         <Button onClick={printLabels} disabled={queue.length === 0}>طباعة {totalLabels} ملصق</Button>
-        <Button variant="outline" onClick={() => setQueue([])} disabled={queue.length === 0}>تفريغ القائمة</Button>
+        <Button
+          variant="outline"
+          onClick={async () => {
+            if (!(await confirm({
+              variant: "warning",
+              title: "تفريغ قائمة الطباعة",
+              description: `تفريغ كل قائمة الطباعة (${queue.length} منتج / ${totalLabels} ملصق)؟`,
+              confirmText: "تفريغ القائمة",
+            }))) return;
+            setQueue([]);
+          }}
+          disabled={queue.length === 0}
+        >
+          تفريغ القائمة
+        </Button>
       </div>
     </div>
   );

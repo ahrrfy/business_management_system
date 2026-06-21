@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { confirm, confirmDelete } from "@/lib/confirm";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
@@ -310,7 +311,18 @@ export default function Recruitment() {
                             variant="ghost"
                             className="flex-1 h-6 text-[10px] text-rose-600 hover:text-rose-700"
                             disabled={move.isPending}
-                            onClick={() => move.mutate({ id: a.id, stage: "rejected" })}
+                            onClick={async () => {
+                              if (
+                                !(await confirm({
+                                  variant: "warning",
+                                  title: "رفض المتقدّم",
+                                  description: `نقل المتقدّم «${a.name}» إلى مرحلة «${applicantStageLabel("rejected")}»؟`,
+                                  confirmText: "رفض",
+                                }))
+                              )
+                                return;
+                              move.mutate({ id: a.id, stage: "rejected" });
+                            }}
                           >
                             رفض
                           </Button>
@@ -319,7 +331,18 @@ export default function Recruitment() {
                             variant="ghost"
                             className="flex-1 h-6 text-[10px] text-muted-foreground"
                             disabled={move.isPending}
-                            onClick={() => move.mutate({ id: a.id, stage: "archived" })}
+                            onClick={async () => {
+                              if (
+                                !(await confirm({
+                                  variant: "warning",
+                                  title: "أرشفة المتقدّم",
+                                  description: `نقل المتقدّم «${a.name}» إلى مرحلة «${applicantStageLabel("archived")}»؟`,
+                                  confirmText: "أرشفة",
+                                }))
+                              )
+                                return;
+                              move.mutate({ id: a.id, stage: "archived" });
+                            }}
                           >
                             أرشفة
                           </Button>
@@ -499,7 +522,6 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
   const countMap = (counts.data ?? {}) as Record<string, number>;
 
   const [editing, setEditing] = useState<Vacancy | "new" | null>(null);
-  const [confirmDel, setConfirmDel] = useState<Vacancy | null>(null);
 
   const publishedCount = rows.filter((v) => v.isPublished).length;
 
@@ -513,7 +535,6 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
   const del = trpc.recruitment.vacancyDelete.useMutation({
     onSuccess: () => {
       notify.ok("حُذفت الوظيفة");
-      setConfirmDel(null);
       void utils.recruitment.vacancyList.invalidate();
       void utils.recruitment.openVacancies.invalidate();
       void utils.recruitment.vacancyCounts.invalidate();
@@ -635,7 +656,24 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
                     <Button size="sm" variant="ghost" className="h-7 px-2" onClick={() => setEditing(v)}>
                       <Pencil className="size-3.5" /> تعديل
                     </Button>
-                    <Button size="sm" variant="ghost" className="h-7 px-2 text-rose-600 hover:text-rose-700" onClick={() => setConfirmDel(v)}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-7 px-2 text-rose-600 hover:text-rose-700"
+                      disabled={del.isPending}
+                      onClick={async () => {
+                        if (
+                          !(await confirmDelete({
+                            title: "حذف الوظيفة",
+                            description: `حذف وظيفة «${v.title}» نهائياً؟ ستختفي من المعرض، ويبقى المتقدّمون عليها في مسار التوظيف (بعنوان الوظيفة المحفوظ). لا يمكن التراجع.`,
+                            requireText: v.title,
+                            confirmText: "حذف نهائياً",
+                          }))
+                        )
+                          return;
+                        del.mutate({ id: v.id });
+                      }}
+                    >
                       <Trash2 className="size-3.5" />
                     </Button>
                   </div>
@@ -656,27 +694,6 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
           }}
         />
       )}
-
-      {/* تأكيد الحذف */}
-      <Dialog open={!!confirmDel} onOpenChange={(o) => { if (!o) setConfirmDel(null); }}>
-        <DialogContent dir="rtl" className="sm:max-w-md">
-          <DialogHeader><DialogTitle>حذف الوظيفة</DialogTitle></DialogHeader>
-          <p className="text-sm text-muted-foreground leading-7">
-            هل تريد حذف وظيفة «{confirmDel?.title}»؟ ستختفي من المعرض، ويبقى المتقدّمون عليها في مسار التوظيف
-            (بعنوان الوظيفة المحفوظ). لا يمكن التراجع.
-          </p>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setConfirmDel(null)}>إلغاء</Button>
-            <Button
-              className="bg-rose-600 hover:bg-rose-700"
-              disabled={del.isPending}
-              onClick={() => confirmDel && del.mutate({ id: confirmDel.id })}
-            >
-              {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

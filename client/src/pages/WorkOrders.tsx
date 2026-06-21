@@ -5,6 +5,8 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
+import { fmtAr, fmtInt } from "@/lib/money";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { RowActions } from "@/components/list";
@@ -60,11 +62,6 @@ const TL_LABEL: Record<string, string> = {
   "workOrder.cancel": "أُلغي الأمر",
   "workOrder.assign": "أُعيد الإسناد",
 };
-
-const fmtN = (n: string | number | null | undefined) =>
-  Number(n ?? 0).toLocaleString("en-US", { maximumFractionDigits: 0 });
-const fmtDT = (d: string | number | Date) =>
-  new Date(d).toLocaleString("en-GB", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit", hour12: true });
 
 function colVars(hue: number): React.CSSProperties {
   return {
@@ -181,8 +178,8 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
         </div>
       </div>
       <div className="wob-meta">
-        <span className="wob-meta-pill"><span className="wob-ml">الكمية </span>{fmtN(o.quantity)}</span>
-        <span className="wob-meta-pill"><span className="wob-ml">السعر </span>{fmtN(o.salePrice)} <span className="wob-ml">د.ع</span></span>
+        <span className="wob-meta-pill"><span className="wob-ml">الكمية </span>{fmtInt(o.quantity)}</span>
+        <span className="wob-meta-pill"><span className="wob-ml">السعر </span>{fmtAr(o.salePrice)} <span className="wob-ml">د.ع</span></span>
         <span className={`wob-due wob-${di.state}`} style={{ marginInlineStart: "auto" }}>{late ? "⏱" : "📅"} {di.text}</span>
       </div>
       <div className="wob-prog">
@@ -228,7 +225,7 @@ function Stats({ orders }: { orders: WO[] }) {
       {cards.map((s, i) => (
         <div className="wob-stat" key={i} style={{ ["--stat-c" as string]: s.c } as React.CSSProperties}>
           <div className="wob-stat-label">{s.label}</div>
-          <div className="wob-stat-val">{s.val.toLocaleString("en-US")}</div>
+          <div className="wob-stat-val">{fmtInt(s.val)}</div>
           <div className="wob-stat-sub">{s.sub}</div>
         </div>
       ))}
@@ -250,14 +247,14 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
         <DialogHeader>
           <DialogTitle>تسليم وإصدار فاتورة</DialogTitle>
           <DialogDescription>
-            الأمر «{order.title}» ({order.orderNumber}) — سعر البيع {fmtN(order.salePrice)} د.ع.
+            الأمر «{order.title}» ({order.orderNumber}) — سعر البيع {fmtAr(order.salePrice)} د.ع.
             سيُصدر فاتورة فوراً ويُحدَّث المخزون والذمم. هذا إجراء لا رجعة فيه.
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 py-1">
           <div className="space-y-1">
             <label className="text-sm font-medium">المبلغ المدفوع الآن (اختياري — الباقي يُسجَّل آجلاً)</label>
-            <input dir="ltr" inputMode="decimal" className={dlgInput} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`0 – ${fmtN(order.salePrice)}`} />
+            <input dir="ltr" inputMode="decimal" className={dlgInput} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`0 – ${fmtAr(order.salePrice)}`} />
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">طريقة الدفع</label>
@@ -347,12 +344,12 @@ function Drawer({
                 <div className="wob-kv">
                   <div><div className="wob-k">العميل</div><div className="wob-v">{d.customerName ?? "عميل نقدي"}</div></div>
                   <div><div className="wob-k">قناة الاستلام</div><div className="wob-v">{ch?.icon} {ch?.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</div></div>
-                  <div><div className="wob-k">الكمية</div><div className="wob-v">{fmtN(d.quantity)}</div></div>
-                  <div><div className="wob-k">سعر البيع</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtN(d.salePrice)} د.ع</div></div>
-                  {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">العربون</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtN(d.deposit)} د.ع</div></div>}
-                  <div><div className="wob-k">الاستحقاق</div><div className="wob-v">{d.dueDate ? String(d.dueDate).slice(0, 10) : "—"}</div></div>
-                  {d.materialsCost != null && <div><div className="wob-k">كلفة المواد</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtN(d.materialsCost)} د.ع</div></div>}
-                  {d.laborCost != null && <div><div className="wob-k">كلفة العمالة</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtN(d.laborCost)} د.ع</div></div>}
+                  <div><div className="wob-k">الكمية</div><div className="wob-v">{fmtInt(d.quantity)}</div></div>
+                  <div><div className="wob-k">سعر البيع</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.salePrice)} د.ع</div></div>
+                  {Number(d.deposit ?? 0) > 0 && <div><div className="wob-k">العربون</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.deposit)} د.ع</div></div>}
+                  <div><div className="wob-k">الاستحقاق</div><div className="wob-v">{fmtDate(d.dueDate)}</div></div>
+                  {d.materialsCost != null && <div><div className="wob-k">كلفة المواد</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.materialsCost)} د.ع</div></div>}
+                  {d.laborCost != null && <div><div className="wob-k">كلفة العمالة</div><div className="wob-v" style={{ direction: "ltr", textAlign: "right" }}>{fmtAr(d.laborCost)} د.ع</div></div>}
                   <div style={{ gridColumn: "1 / -1" }}>
                     <div className="wob-k">الموظف المسؤول</div>
                     {isManager ? (
@@ -389,7 +386,7 @@ function Drawer({
                     <div className="wob-tl-item" key={i}>
                       <div className="wob-tl-dot" style={{ background: i === 0 ? `oklch(0.6 0.17 ${hue})` : "var(--border-strong)" }} />
                       <div className="wob-tl-ev">{e.ev}</div>
-                      <div className="wob-tl-meta" style={{ direction: "ltr", textAlign: "right" }}>{fmtDT(e.at)}{e.by ? ` — ${e.by}` : ""}</div>
+                      <div className="wob-tl-meta" style={{ direction: "ltr", textAlign: "right" }}>{fmtDateTime(e.at)}{e.by ? ` — ${e.by}` : ""}</div>
                     </div>
                   ))}
                   {tlItems.length === 0 && <div style={{ color: "var(--muted-fg)", fontSize: 12.5 }}>لا أحداث مسجّلة بعد.</div>}
@@ -537,13 +534,19 @@ export default function WorkOrders() {
   }, [filtered]);
 
   // ── الانتقال بين المراحل (الخطوة التالية فقط — التسليم خلف تأكيد مالي) ──
-  function attemptMove(order: WO, to: Status) {
+  async function attemptMove(order: WO, to: Status) {
     if (NEXT[order.status] !== to) {
       notify.warn("انتقال غير مسموح", "اتبع التسلسل: مُستلَم ← قيد التنفيذ ← جاهز ← مُسلَّم.");
       return;
     }
-    if (to === "IN_PROGRESS") { optimisticMove(order.id, "IN_PROGRESS"); start.mutate({ workOrderId: order.id }); }
-    else if (to === "READY") { optimisticMove(order.id, "READY"); markReady.mutate({ workOrderId: order.id }); }
+    if (to === "IN_PROGRESS") {
+      if (!(await confirm({ variant: "warning", title: "بدء تنفيذ أمر الشغل", description: `بدء تنفيذ «${order.title}» (${order.orderNumber}) يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟`, confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
+      optimisticMove(order.id, "IN_PROGRESS"); start.mutate({ workOrderId: order.id });
+    }
+    else if (to === "READY") {
+      if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: `وضع «${order.title}» (${order.orderNumber}) في حالة «جاهز للتسليم». متابعة؟`, confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
+      optimisticMove(order.id, "READY"); markReady.mutate({ workOrderId: order.id });
+    }
     else if (to === "DELIVERED") { setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice }); }
   }
 
@@ -681,13 +684,22 @@ export default function WorkOrders() {
           onClose={() => setSel(null)}
           isManager={isManager}
           busy={busy}
-          onAdvance={(id, to) => {
-            if (to === "IN_PROGRESS") { optimisticMove(id, "IN_PROGRESS"); start.mutate({ workOrderId: id }); }
-            else if (to === "READY") { optimisticMove(id, "READY"); markReady.mutate({ workOrderId: id }); }
+          onAdvance={async (id, to) => {
+            if (to === "IN_PROGRESS") {
+              if (!(await confirm({ variant: "warning", title: "بدء تنفيذ أمر الشغل", description: "بدء التنفيذ يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟", confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
+              optimisticMove(id, "IN_PROGRESS"); start.mutate({ workOrderId: id });
+            }
+            else if (to === "READY") {
+              if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: "وضع الأمر في حالة «جاهز للتسليم» وإبلاغ العميل. متابعة؟", confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
+              optimisticMove(id, "READY"); markReady.mutate({ workOrderId: id });
+            }
           }}
           onDeliver={(d) => setDeliverOrder({ id: d.id, orderNumber: d.orderNumber, title: d.title, salePrice: d.salePrice })}
           onCancel={onCancelOrder}
-          onAssign={(id, staffId) => assign.mutate({ workOrderId: id, assignedTo: staffId })}
+          onAssign={async (id, staffId) => {
+            if (!(await confirm({ variant: "info", title: "تغيير إسناد الأمر", description: staffId ? "إسناد هذا الأمر إلى الموظف المحدّد. متابعة؟" : "إلغاء إسناد هذا الأمر (سيصبح غير مُسنَد). متابعة؟", confirmText: "تأكيد الإسناد", cancelText: "تراجع" }))) return;
+            assign.mutate({ workOrderId: id, assignedTo: staffId });
+          }}
         />
       )}
 
@@ -695,7 +707,11 @@ export default function WorkOrders() {
         order={deliverOrder}
         pending={deliver.isPending}
         onClose={() => setDeliverOrder(null)}
-        onConfirm={(payment) => deliverOrder && deliver.mutate({ workOrderId: deliverOrder.id, payment })}
+        onConfirm={async (payment) => {
+          if (!deliverOrder) return;
+          if (!(await confirm({ variant: "danger", title: "تسليم الأمر وإصدار الفاتورة", description: `تسليم «${deliverOrder.title}» (${deliverOrder.orderNumber}) يُصدر فاتورة نهائية بمبلغ ${fmtAr(deliverOrder.salePrice)} د.ع ويحدّث المخزون والذمم — لا رجعة فيه. اكتب «تسليم» للتأكيد.`, confirmText: "تسليم وإصدار الفاتورة", cancelText: "تراجع", requireText: "تسليم" }))) return;
+          deliver.mutate({ workOrderId: deliverOrder.id, payment });
+        }}
       />
     </div>
   );

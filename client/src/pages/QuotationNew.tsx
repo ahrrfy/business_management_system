@@ -13,6 +13,7 @@ import { Link, useLocation } from "wouter";
 
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { D } from "@/lib/money";
 
 import {
@@ -130,11 +131,20 @@ export default function QuotationNew() {
     create.mutate(buildPayload());
   }
 
-  function handleConvert() {
+  async function handleConvert() {
     if (!savedQuotationId) {
       notify.warn("احفظ عرض السعر أولاً ثم اضغط «تحويل لفاتورة».");
       return;
     }
+    if (
+      !(await confirm({
+        variant: "danger",
+        title: "تحويل العرض إلى فاتورة",
+        description: `سيُحوَّل عرض السعر رقم ${savedQuotationId} إلى فاتورة بيع نهائية تؤثر على المخزون والذمم. لا يمكن التراجع. هل تريد المتابعة؟`,
+        confirmText: "تحويل",
+      }))
+    )
+      return;
     convert.mutate({ quotationId: savedQuotationId });
   }
 

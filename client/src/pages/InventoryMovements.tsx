@@ -13,7 +13,10 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { confirm } from "@/lib/confirm";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
+import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -57,23 +60,6 @@ const ADJUST_TYPES = new Set<MovementType>(["ADJUST"]);
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-const fmtNum = (n: number | string) =>
-  Number(n).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 0 });
-
-function fmtDateTime(d: Date | string) {
-  try {
-    return new Date(d).toLocaleString("ar-IQ-u-nu-latn", {
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return String(d);
-  }
-}
-
 function variantLine(r: {
   productName: string;
   variantName: string | null;
@@ -102,11 +88,11 @@ function TypeBadge({ type }: { type: MovementType }) {
 
 function signedQty(type: MovementType, qty: number): string {
   const abs = Math.abs(qty);
-  if (POSITIVE_TYPES.has(type)) return `+${fmtNum(abs)}`;
-  if (NEGATIVE_TYPES.has(type)) return `−${fmtNum(abs)}`;
+  if (POSITIVE_TYPES.has(type)) return `+${fmtInt(abs)}`;
+  if (NEGATIVE_TYPES.has(type)) return `−${fmtInt(abs)}`;
   // ADJUST: الخادم يخزّن abs(delta) بلا إشارة (انظر setStock في inventoryService) —
   // لا نتظاهر بإشارة لا نعرفها؛ الاتجاه يُستنبط من notes ("من X إلى Y").
-  return fmtNum(abs);
+  return fmtInt(abs);
 }
 
 /* ============================ Page ============================ */
@@ -237,12 +223,21 @@ export default function InventoryMovements() {
     onError: (e) => setMError(e.message),
   });
 
-  function submitManual() {
+  async function submitManual() {
     setMError("");
     if (!mPicked) return setMError("اختر متغيّراً أولاً.");
     if (!mProductUnitId) return setMError("اختر الوحدة.");
     const n = Number(mQty);
     if (!Number.isFinite(n) || n <= 0) return setMError("الكمية يجب أن تكون رقماً موجباً.");
+    if (
+      !(await confirm({
+        variant: "warning",
+        title: "تأكيد إضافة حركة يدوية",
+        description: "إضافة حركة يدوية قد تؤثّر على الأرصدة. تأكّد من البيانات.",
+        confirmText: "حفظ",
+      }))
+    )
+      return;
     createManual.mutate({
       variantId: mPicked.variantId,
       branchId: Number(manualBranchId),
@@ -261,6 +256,7 @@ export default function InventoryMovements() {
       filename: "حركات المخزون",
       columns: [
         { key: "createdAt", header: "التاريخ والوقت", map: (r) => fmtDateTime(r.createdAt) },
+        // ملاحظة: التاريخ يُصدَّر كنص معروض (لا قيمة رقمية) — تنسيق موحّد عبر @/lib/date.
         { key: "productName", header: "المنتج", map: (r) => variantLine(r).primary },
         { key: "sku", header: "SKU" },
         { key: "movementType", header: "النوع", map: (r) => MTYPE_LABEL[r.movementType as MovementType] ?? r.movementType },
@@ -395,14 +391,14 @@ export default function InventoryMovements() {
           <CardTitle className="text-base">
             السجلّ{" "}
             <span className="text-xs text-muted-foreground font-normal">
-              ({fmtNum(total)} حركة)
+              ({fmtInt(total)} حركة)
             </span>
           </CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
               {movements.isLoading
                 ? "جارٍ التحميل…"
-                : `صفحة ${fmtNum(currentPage)} من ${fmtNum(totalPages)}`}
+                : `صفحة ${fmtInt(currentPage)} من ${fmtInt(totalPages)}`}
             </span>
             <Button
               variant="outline"
@@ -430,7 +426,7 @@ export default function InventoryMovements() {
                   rows: rows.map((r) => {
                     const t = r.movementType as MovementType;
                     return {
-                      date: new Date(r.createdAt).toLocaleDateString("ar-IQ-u-nu-latn"),
+                      date: fmtDate(r.createdAt),
                       product: variantLine(r).primary,
                       type: MTYPE_LABEL[t] ?? r.movementType,
                       qty: signedQty(t, r.quantity),
@@ -550,8 +546,8 @@ export default function InventoryMovements() {
         </CardContent>
         <div className="flex items-center justify-between p-3 border-t">
           <span className="text-xs text-muted-foreground">
-            عرض {rows.length > 0 ? fmtNum(offset + 1) : 0}–
-            {fmtNum(offset + rows.length)} من {fmtNum(total)}
+            عرض {rows.length > 0 ? fmtInt(offset + 1) : 0}–
+            {fmtInt(offset + rows.length)} من {fmtInt(total)}
           </span>
           <div className="flex gap-2">
             <Button
@@ -622,7 +618,7 @@ export default function InventoryMovements() {
                         <div className="font-medium">{variantLine(v).primary}</div>
                         <div className="text-xs text-muted-foreground font-mono flex justify-between" dir="ltr">
                           <span>{v.sku}</span>
-                          <span>متاح {fmtNum(v.stockBase)}</span>
+                          <span>متاح {fmtInt(v.stockBase)}</span>
                         </div>
                       </button>
                     ))}
@@ -644,7 +640,7 @@ export default function InventoryMovements() {
                   <div className="text-left">
                     <div className="text-xs text-muted-foreground">المتاح</div>
                     <div className="font-semibold tabular-nums" dir="ltr">
-                      {fmtNum(mPicked.stockBase)}
+                      {fmtInt(mPicked.stockBase)}
                     </div>
                   </div>
                 </div>

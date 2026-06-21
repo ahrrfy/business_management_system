@@ -7,6 +7,8 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { fmtInt } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 
 type Row = RouterOutputs["reports"]["stockStatus"]["rows"][number];
 
@@ -18,8 +20,6 @@ const STATUS_CLS: Record<string, string> = {
 };
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
-
-const numAr = (n: number) => n.toLocaleString("ar-IQ-u-nu-latn");
 
 export default function StockStatus() {
   const [branchId, setBranchId] = useState<number | "">("");
@@ -35,9 +35,9 @@ export default function StockStatus() {
 
   const kpis: KpiItem[] = totals
     ? [
-        { label: "نفد من المخزون", value: numAr(totals.outCount), tone: "negative" },
-        { label: "مخزون منخفض", value: numAr(totals.lowCount), tone: "warning" },
-        { label: "عدد السطور", value: numAr(rows.length), tone: "info" },
+        { label: "نفد من المخزون", value: fmtInt(totals.outCount), tone: "negative" },
+        { label: "مخزون منخفض", value: fmtInt(totals.lowCount), tone: "warning" },
+        { label: "عدد السطور", value: fmtInt(rows.length), tone: "info" },
       ]
     : [];
 
@@ -61,7 +61,7 @@ export default function StockStatus() {
     printReportDoc({
       title: "حالة المخزون / إعادة الطلب",
       headerExtra: [
-        { label: "كما في", value: new Date().toLocaleDateString("ar-IQ-u-nu-latn") },
+        { label: "كما في", value: fmtDate(new Date()) },
         { label: "الفرع", value: branchLabel },
         { label: "النطاق", value: onlyAlerts ? "التنبيهات فقط" : "الكل" },
       ],
@@ -77,14 +77,14 @@ export default function StockStatus() {
         product: r.productName,
         variant: r.variantLabel,
         branch: r.branchName ?? "—",
-        qty: numAr(r.quantity),
-        min: numAr(r.minStock),
+        qty: fmtInt(r.quantity),
+        min: fmtInt(r.minStock),
         status: STATUS_LABEL[r.status] ?? r.status,
       })),
       summary: totals
         ? [
-            { label: "نفد من المخزون", value: numAr(totals.outCount) },
-            { label: "مخزون منخفض", value: numAr(totals.lowCount), large: true, bold: true },
+            { label: "نفد من المخزون", value: fmtInt(totals.outCount) },
+            { label: "مخزون منخفض", value: fmtInt(totals.lowCount), large: true, bold: true },
           ]
         : undefined,
     });
@@ -147,8 +147,8 @@ export default function StockStatus() {
                       <td className="p-2.5 text-right">{r.productName}</td>
                       <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
                       <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{numAr(r.quantity)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{numAr(r.minStock)}</td>
+                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
+                      <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtInt(r.minStock)}</td>
                       <td className="p-2.5 text-right">
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
                           {STATUS_LABEL[r.status] ?? r.status}

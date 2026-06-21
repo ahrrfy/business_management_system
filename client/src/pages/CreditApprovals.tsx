@@ -4,16 +4,12 @@
  */
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { confirm } from "@/lib/confirm";
+import { fmtDateTime } from "@/lib/date";
+import { fmtAr } from "@/lib/money";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
-import { toast } from "sonner";
-
-function fmtDateTime(d: string | Date | null | undefined): string {
-  if (!d) return "—";
-  const t = typeof d === "string" ? new Date(d) : d;
-  if (Number.isNaN(t.getTime())) return "—";
-  return t.toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" });
-}
 
 export default function CreditApprovalsPage() {
   const utils = trpc.useUtils();
@@ -33,13 +29,13 @@ export default function CreditApprovalsPage() {
 
   const createMut = trpc.creditApproval.create.useMutation({
     onSuccess: (r) => {
-      toast.success(`أُنشئت الموافقة #${r.id} — تنتهي ${fmtDateTime(r.expiresAt)}`);
+      notify.ok(`أُنشئت الموافقة #${r.id} — تنتهي ${fmtDateTime(r.expiresAt)}`);
       setCreatedId(r.id);
       utils.creditApproval.listForCustomer.invalidate();
       setMaxAmount("");
       setNotes("");
     },
-    onError: (e) => toast.error(e.message),
+    onError: (e) => notify.err(e),
   });
 
   return (
@@ -70,7 +66,7 @@ export default function CreditApprovalsPage() {
                   className={`w-full text-right p-2 hover:bg-accent border-b text-sm ${customerId === Number(c.id) ? "bg-accent" : ""}`}
                 >
                   <div className="font-medium">{c.name}</div>
-                  <div className="text-xs text-muted-foreground">رصيد: {c.currentBalance ?? "0.00"} د.ع</div>
+                  <div className="text-xs text-muted-foreground">رصيد: {fmtAr(c.currentBalance)} د.ع</div>
                 </button>
               )) : (
                 <p className="p-2 text-sm text-muted-foreground">لا نتائج</p>
@@ -115,9 +111,20 @@ export default function CreditApprovalsPage() {
           </div>
 
           <Button
-            onClick={() => {
-              if (!customerId) return toast.error("اختر عميلاً");
-              if (!/^\d+(\.\d{1,2})?$/.test(maxAmount)) return toast.error("سقف غير صالح");
+            onClick={async () => {
+              if (!customerId) return notify.err("اختر عميلاً");
+              if (!/^\d+(\.\d{1,2})?$/.test(maxAmount)) return notify.err("سقف غير صالح");
+              const customerName =
+                customers.data?.rows?.find((c: any) => Number(c.id) === customerId)?.name ?? `#${customerId}`;
+              if (
+                !(await confirm({
+                  variant: "warning",
+                  title: "إنشاء موافقة ائتمان",
+                  description: `إنشاء موافقة ائتمان محدّدة المدّة للعميل «${customerName}» بسقف ${maxAmount} د.ع لمدّة ${ttlMinutes} دقيقة؟`,
+                  confirmText: "إنشاء الموافقة",
+                }))
+              )
+                return;
               createMut.mutate({ customerId, maxAmount, ttlMinutes, notes: notes.trim() || undefined });
             }}
             disabled={createMut.isPending}
