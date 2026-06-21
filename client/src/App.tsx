@@ -45,6 +45,7 @@ import PurchaseReturns from "@/pages/PurchaseReturns";
 import Transfers from "@/pages/Transfers";
 import WorkOrderDetail from "@/pages/WorkOrderDetail";
 import WorkOrderNew from "@/pages/WorkOrderNew";
+import WorkOrderStation from "@/pages/WorkOrderStation";
 import WorkOrders from "@/pages/WorkOrders";
 import Production from "@/pages/Production";
 import ProductionNew from "@/pages/ProductionNew";
@@ -205,6 +206,7 @@ export default function App() {
       <Route path="/transfers"><Shell><Transfers /></Shell></Route>
       <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>
       <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
+      <Route path="/work-orders/station"><Shell><RequireRole roles={["admin","manager","print_operator","cashier"]}><WorkOrderStation /></RequireRole></Shell></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
       <Route path="/production"><Shell><Production /></Shell></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
