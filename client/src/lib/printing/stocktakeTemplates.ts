@@ -447,8 +447,12 @@ export function printCountSheets(d: CountSheetsPrintData): void {
 ${CAIRO_FONT}
 <style>
   *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  *{-webkit-print-color-adjust:exact !important;print-color-adjust:exact !important;color-adjust:exact !important}
   html,body{font-family:'Cairo',sans-serif;background:#fff;color:#000}
   @page{size:A4;margin:0}
+  table{border-collapse:collapse}
+  thead{display:table-header-group}
+  tr,td,th{page-break-inside:avoid;break-inside:avoid}
 </style>
 </head>
 <body>${pages}</body></html>`;

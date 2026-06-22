@@ -116,7 +116,7 @@ export function SmartUserInput({ value, onChange, employeeId, placeholder, class
                       <span className="text-sm font-medium truncate max-w-[200px]">{u.name ?? "—"}</span>
                       <span className="text-[11px] text-muted-foreground" dir="ltr">{u.username || u.email || ""}</span>
                     </div>
-                    <Badge variant="outline" className="text-[10px] flex-shrink-0">{roleLabel(u.role)}</Badge>
+                    <Badge variant="outline" className="text-[10px] shrink-0">{roleLabel(u.role)}</Badge>
                   </button>
                 </li>
               ))}

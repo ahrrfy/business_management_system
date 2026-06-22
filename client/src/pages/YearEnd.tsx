@@ -8,6 +8,7 @@ import { fmtDate } from "@/lib/date";
 import { formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { TrendingUp, TrendingDown } from "lucide-react";
 import { useState } from "react";
 
 export default function YearEndPage() {
@@ -100,17 +101,28 @@ export default function YearEndPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {list.data!.rows.map((s: any) => (
-                    <tr key={s.id} className="hover:bg-accent/40">
-                      <td className="p-2 border font-medium">{s.year}</td>
-                      <td className="p-2 border">{s.branchId ?? "كل الفروع"}</td>
-                      <td className="p-2 border">{formatIqd(s.totalRevenue)}</td>
-                      <td className="p-2 border">{formatIqd(s.totalCogs)}</td>
-                      <td className="p-2 border">{formatIqd(s.totalExpenses)}</td>
-                      <td className={`p-2 border font-semibold ${Number(s.netProfit) >= 0 ? "text-green-700" : "text-red-700"}`}>{formatIqd(s.netProfit)}</td>
-                      <td className="p-2 border text-muted-foreground">{fmtDate(s.closedAt)}</td>
-                    </tr>
-                  ))}
+                  {list.data!.rows.map((s: any) => {
+                    const net = Number(s.netProfit);
+                    const isProfit = net >= 0;
+                    return (
+                      <tr key={s.id} className="hover:bg-accent/40">
+                        <td className="p-2 border font-medium">{s.year}</td>
+                        <td className="p-2 border">{s.branchId ?? "كل الفروع"}</td>
+                        <td className="p-2 border">{formatIqd(s.totalRevenue)}</td>
+                        <td className="p-2 border">{formatIqd(s.totalCogs)}</td>
+                        <td className="p-2 border">{formatIqd(s.totalExpenses)}</td>
+                        <td className={`p-2 border font-semibold ${isProfit ? "text-emerald-700 dark:text-emerald-400" : "text-rose-700 dark:text-rose-400"}`}>
+                          <span className="inline-flex items-center gap-1.5" aria-label={isProfit ? "ربح" : "خسارة"}>
+                            {isProfit
+                              ? <TrendingUp className="size-4" aria-hidden="true" />
+                              : <TrendingDown className="size-4" aria-hidden="true" />}
+                            {isProfit ? formatIqd(net) : `(${formatIqd(Math.abs(net))})`}
+                          </span>
+                        </td>
+                        <td className="p-2 border text-muted-foreground">{fmtDate(s.closedAt)}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
