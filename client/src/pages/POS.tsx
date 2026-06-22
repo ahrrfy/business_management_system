@@ -63,79 +63,36 @@ type Receipt = {
   isCredit: boolean;
 };
 
-// ─── Dark Mode ────────────────────────────────────────────────────────────────
+// ─── Colour Tokens — مَربوطة بـtokens.css لِتَتنفّس مع .dark بِلا MutationObserver ─
 
-function useDarkMode() {
-  const [dark, setDark] = useState(() =>
-    document.documentElement.classList.contains("dark")
-  );
-  useEffect(() => {
-    const obs = new MutationObserver(() =>
-      setDark(document.documentElement.classList.contains("dark"))
-    );
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => obs.disconnect();
-  }, []);
-  return dark;
-}
+const POS_COLORS = {
+  bg:         "var(--pos-bg)",
+  card:       "var(--pos-card)",
+  border:     "var(--pos-border)",
+  muted:      "var(--pos-muted)",
+  mutedFg:    "var(--pos-muted-fg)",
+  fg:         "var(--pos-fg)",
+  primary:    "var(--pos-primary)",
+  primaryH:   "var(--pos-primary-h)",
+  primaryFg:  "var(--pos-primary-fg)",
+  primarySoft:"var(--pos-primary-soft)",
+  success:    "var(--pos-success)",
+  successH:   "var(--pos-success-h)",
+  amber:      "var(--pos-amber)",
+  amberSoft:  "var(--pos-amber-soft)",
+  danger:     "var(--pos-danger)",
+  dangerSoft: "var(--pos-danger-soft)",
+  modeActive: "var(--pos-mode-active)",
+  modeBord:   "var(--pos-mode-bord)",
+  modeFg:     "var(--pos-mode-fg)",
+  numKey:     "var(--pos-numkey)",
+  numKeyHov:  "var(--pos-numkey-hov)",
+  delKey:     "var(--pos-delkey)",
+  delFg:      "var(--pos-del-fg)",
+  overlay:    "var(--pos-overlay)",
+} as const;
 
-// ─── Colour Tokens ────────────────────────────────────────────────────────────
-
-const LIGHT = {
-  bg:         "oklch(0.985 0.002 247.858)",
-  card:       "#fff",
-  border:     "oklch(0.922 0.004 247.858)",
-  muted:      "oklch(0.962 0.004 247.858)",
-  mutedFg:    "oklch(0.552 0.016 285.938)",
-  fg:         "oklch(0.235 0.015 65)",
-  primary:    "oklch(0.488 0.243 264.376)",
-  primaryH:   "oklch(0.43  0.243 264.376)",
-  primaryFg:  "#fff",
-  primarySoft:"oklch(0.94 0.04 264.376)",
-  success:    "oklch(0.50  0.13 155)",
-  successH:   "oklch(0.44  0.13 155)",
-  amber:      "oklch(0.65  0.15 75)",
-  amberSoft:  "oklch(0.955 0.045 75)",
-  danger:     "oklch(0.577 0.245 27.325)",
-  dangerSoft: "oklch(0.955 0.035 27.325)",
-  modeActive: "oklch(0.90 0.10 72)",
-  modeBord:   "oklch(0.72 0.14 72)",
-  modeFg:     "oklch(0.38 0.14 60)",
-  numKey:     "oklch(0.962 0.004 247.858)",
-  numKeyHov:  "oklch(0.93 0.004 247.858)",
-  delKey:     "oklch(0.92 0.05 20)",
-  delFg:      "oklch(0.50 0.22 25)",
-  overlay:    "oklch(0.15 0.01 265 / .88)",
-};
-
-const DARK = {
-  bg:         "oklch(0.14 0.010 65)",
-  card:       "oklch(0.20 0.012 65)",
-  border:     "oklch(1 0 0 / 0.12)",
-  muted:      "oklch(0.22 0.012 65)",
-  mutedFg:    "oklch(0.72 0.010 247)",
-  fg:         "oklch(1 0 0)",
-  primary:    "oklch(0.55  0.22 264)",
-  primaryH:   "oklch(0.50  0.22 264)",
-  primaryFg:  "#fff",
-  primarySoft:"oklch(0.28 0.06 264)",
-  success:    "oklch(0.55  0.14 155)",
-  successH:   "oklch(0.49  0.14 155)",
-  amber:      "oklch(0.72  0.15 75)",
-  amberSoft:  "oklch(0.32 0.07 75)",
-  danger:     "oklch(0.65  0.22 27)",
-  dangerSoft: "oklch(0.30 0.08 27)",
-  modeActive: "oklch(0.30 0.10 72)",
-  modeBord:   "oklch(0.55 0.14 72)",
-  modeFg:     "oklch(0.85 0.12 72)",
-  numKey:     "oklch(0.24 0.010 65)",
-  numKeyHov:  "oklch(0.28 0.010 65)",
-  delKey:     "oklch(0.26 0.05 20)",
-  delFg:      "oklch(0.75 0.22 25)",
-  overlay:    "oklch(0.08 0.01 265 / .92)",
-};
-
-type C = typeof LIGHT;
+type C = typeof POS_COLORS;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -268,8 +225,7 @@ function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function POS() {
-  const dark = useDarkMode();
-  const C: C = dark ? DARK : LIGHT;
+  const C: C = POS_COLORS;
 
   const me       = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
@@ -790,7 +746,7 @@ export default function POS() {
 
       {/* Header */}
       <POSHeader
-        C={C} dark={dark}
+        C={C}
         search={search} setSearch={setSearch}
         showDrop={showDrop} setShowDrop={setShowDrop}
         results={search.trim().length >= 2 ? (searchResults.data ?? []) : []}
@@ -897,7 +853,7 @@ export default function POS() {
 type ShiftData = RouterOutputs["shifts"]["current"];
 
 interface POSHeaderProps {
-  C: C; dark: boolean;
+  C: C;
   search: string; setSearch: (s: string) => void;
   showDrop: boolean; setShowDrop: (v: boolean) => void;
   results: RouterOutputs["catalog"]["posList"];
@@ -918,7 +874,7 @@ interface POSHeaderProps {
   onTestPrint: () => void;
 }
 
-function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
+function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -1025,7 +981,7 @@ function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results,
 
       {/* Last invoice badge */}
       {lastInv && (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", background: dark ? "oklch(0.28 0.05 264)" : "oklch(0.96 0.012 264)", border: `1px solid ${dark ? "oklch(0.38 0.08 264)" : "oklch(0.88 0.04 264)"}`, borderRadius: 8, padding: "3px 12px", flexShrink: 0, lineHeight: 1.3 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", background: "var(--pos-branch-bg)", border: "1px solid var(--pos-branch-bord)", borderRadius: 8, padding: "3px 12px", flexShrink: 0, lineHeight: 1.3 }}>
           <span style={{ fontSize: 10, color: C.mutedFg, fontWeight: 600 }}>آخر فاتورة</span>
           <span style={{ fontSize: 15, fontWeight: 900, direction: "ltr", color: C.primary }}>{fmt(lastInv.total)}</span>
           <span style={{ fontSize: 9.5, color: C.mutedFg }}>{lastInv.num}</span>

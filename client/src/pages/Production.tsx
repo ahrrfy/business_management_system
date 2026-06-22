@@ -97,11 +97,11 @@ export default function Production() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr className="text-end">
                 <th className="p-2">رقم المستند</th>
                 <th className="p-2">الفرع</th>
                 <th className="p-2 text-center">كمية المخرجات</th>
-                <th className="p-2 text-left">الكلفة الكلية</th>
+                <th className="p-2 text-start">الكلفة الكلية</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2">التاريخ</th>
                 <th className="p-2 text-center">إجراء</th>

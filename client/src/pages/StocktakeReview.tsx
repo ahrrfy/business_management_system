@@ -471,7 +471,7 @@ export default function StocktakeReview() {
             )}
             <button
               type="button"
-              className="mr-auto font-bold underline"
+              className="me-auto font-bold underline"
               onClick={() =>
                 setFilter(barriers.openConflicts > 0 ? "conflict" : barriers.pendingRecounts > 0 ? "recount" : "over")
               }
@@ -486,7 +486,7 @@ export default function StocktakeReview() {
           <span className="tabular-nums" dir="ltr">{money(s.dualThreshold)}</span> — يستوجب توقيع مسؤولَين مختلفَين قبل
           التنفيذ.
           {s.firstSign && (
-            <span className="mr-2 font-bold">
+            <span className="me-2 font-bold">
               التوقيع الأول: {s.firstSign.byName} · {dt(s.firstSign.at)} ✓ — بانتظار التوقيع الثاني من مسؤول آخر.
             </span>
           )}
@@ -576,7 +576,7 @@ export default function StocktakeReview() {
             placeholder="بحث: اسم / SKU…"
             className="h-8 w-44 rounded-md border bg-card px-2.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           />
-          <span className="mr-auto text-xs text-muted-foreground">
+          <span className="me-auto text-xs text-muted-foreground">
             {nf(filtered.length)} منتجاً{review.isFetching ? " · يُحدَّث…" : ""}
           </span>
         </div>
@@ -584,7 +584,7 @@ export default function StocktakeReview() {
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-muted/60">
-              <tr className="text-right text-xs text-muted-foreground">
+              <tr className="text-end text-xs text-muted-foreground">
                 <th className="p-2.5 font-semibold">المنتج</th>
                 <th className="p-2.5 font-semibold">عدّه</th>
                 <th className="p-2.5 text-center font-semibold" title="لقطة الرصيد الدفتري لحظة إنشاء الجلسة">الدفتري المتوقع</th>

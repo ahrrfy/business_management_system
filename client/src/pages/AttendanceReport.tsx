@@ -133,19 +133,19 @@ export default function AttendanceReport() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">التاريخ</th>
-                    <th className="p-2.5 text-right font-medium">الموظف</th>
-                    <th className="p-2.5 text-right font-medium">الحالة</th>
-                    <th className="p-2.5 text-left font-medium">الساعات</th>
-                    <th className="p-2.5 text-left font-medium">الأجر</th>
+                    <th className="p-2.5 text-end font-medium">التاريخ</th>
+                    <th className="p-2.5 text-end font-medium">الموظف</th>
+                    <th className="p-2.5 text-end font-medium">الحالة</th>
+                    <th className="p-2.5 text-start font-medium">الساعات</th>
+                    <th className="p-2.5 text-start font-medium">الأجر</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r, i) => (
                     <tr key={i} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
-                      <td className="p-2.5 text-right">{r.employeeName}</td>
-                      <td className="p-2.5 text-right">
+                      <td className="p-2.5 text-end">{r.employeeName}</td>
+                      <td className="p-2.5 text-end">
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.statusKey] ?? "bg-muted"}`}>
                           {r.status}
                         </span>

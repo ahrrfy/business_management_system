@@ -141,7 +141,7 @@ export default function Users() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr className="text-end">
                 <th className="p-2">الاسم</th>
                 <th className="p-2">معرّف الدخول</th>
                 <th className="p-2">الدور</th>
@@ -160,7 +160,7 @@ export default function Users() {
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">
                       {u.name ?? "—"}
-                      {mustChange && <span className="mr-1 text-[10px] text-amber-600" title="إلزام تغيير كلمة المرور">⚠️</span>}
+                      {mustChange && <span className="me-1 text-[10px] text-amber-600" title="إلزام تغيير كلمة المرور">⚠️</span>}
                     </td>
                     <td className="p-2 font-mono text-xs" dir="ltr">
                       {(u as { username?: string | null }).username

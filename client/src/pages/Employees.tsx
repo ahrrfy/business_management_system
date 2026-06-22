@@ -93,7 +93,7 @@ export default function Employees() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
-                <tr className="text-right">
+                <tr className="text-end">
                   <th className="p-2">الموظف</th>
                   <th className="p-2">القسم</th>
                   <th className="p-2">الفرع</th>

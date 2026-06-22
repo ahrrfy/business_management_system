@@ -137,12 +137,12 @@ export default function Quotations() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr className="text-end">
                 <th className="p-2">رقم العرض</th>
                 <th className="p-2">العميل</th>
                 <th className="p-2">التاريخ</th>
                 <th className="p-2">الصلاحية</th>
-                <th className="p-2 text-left">الإجمالي</th>
+                <th className="p-2 text-start">الإجمالي</th>
                 <th className="p-2">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
