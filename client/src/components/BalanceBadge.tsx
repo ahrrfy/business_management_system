@@ -79,9 +79,7 @@ export function BalanceBadge({
     <span
       className={cn(
         "inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-bold",
-        isEmerald
-          ? "bg-emerald-100 text-emerald-800"
-          : "bg-rose-100 text-rose-800",
+        isEmerald ? "badge-status-active" : "badge-stock-out",
         className
       )}
     >
@@ -119,7 +117,7 @@ export function BalanceCell({
     <span
       className={cn(
         "tabular-nums font-semibold",
-        isEmerald ? "text-emerald-700" : "text-rose-700"
+        isEmerald ? "text-money-positive" : "text-money-negative"
       )}
       dir="ltr"
     >

@@ -51,12 +51,12 @@ const STATUS_LABEL: Record<string, string> = {
   CONFIRMED: "مؤكّدة",
 };
 const STATUS_CLS: Record<string, string> = {
-  PENDING: "bg-amber-100 text-amber-700",
-  PARTIALLY_PAID: "bg-blue-100 text-blue-700",
-  PAID: "bg-emerald-100 text-emerald-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
-  RETURNED: "bg-rose-100 text-rose-700",
-  CONFIRMED: "bg-slate-100 text-slate-700",
+  PENDING: "badge-status-pending",
+  PARTIALLY_PAID: "badge-status-pending",
+  PAID: "badge-status-active",
+  CANCELLED: "badge-stock-out",
+  RETURNED: "badge-stock-out",
+  CONFIRMED: "bg-muted text-muted-foreground",
 };
 const METHOD_LABEL: Record<string, string> = {
   CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة",
@@ -348,7 +348,7 @@ export default function CustomerStatement() {
                         )}
                       </td>
                       <td className="p-2">
-                        <span className={`inline-block rounded px-2 py-0.5 text-xs ${p.direction === "IN" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                        <span className={`inline-block rounded px-2 py-0.5 text-xs ${p.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
                           {p.direction === "IN" ? "وارد" : "صادر/استرداد"}
                         </span>
                       </td>
@@ -382,12 +382,12 @@ function Stat({ label, value, emphasis }: { label: string; value: string | numbe
 function StatBalance({ label, value }: { label: string; value: string | number }) {
   const num = Number(value);
   return (
-    <div className={`rounded-md p-2 ${num > 0 ? "bg-emerald-50" : num < 0 ? "bg-rose-50" : "bg-muted/40"}`}>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`tabular-nums text-xl font-bold ${num > 0 ? "text-emerald-700" : num < 0 ? "text-rose-700" : ""}`} dir="ltr">
+    <div className={`rounded-md p-2 ${num > 0 ? "badge-status-active" : num < 0 ? "badge-stock-out" : "bg-muted/40"}`}>
+      <div className="text-xs opacity-80">{label}</div>
+      <div className={`tabular-nums text-xl font-bold ${num > 0 ? "text-money-positive" : num < 0 ? "text-money-negative" : ""}`} dir="ltr">
         {fmt(Math.abs(num))}
       </div>
-      <div className={`text-xs font-semibold mt-0.5 ${num > 0 ? "text-emerald-600" : num < 0 ? "text-rose-600" : "text-muted-foreground"}`}>
+      <div className={`text-xs font-semibold mt-0.5 ${num > 0 ? "text-money-positive" : num < 0 ? "text-money-negative" : "text-muted-foreground"}`}>
         {num > 0 ? "لنا عليه" : num < 0 ? "له علينا" : "لا ذمم"}
       </div>
     </div>

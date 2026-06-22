@@ -40,6 +40,8 @@ ${CAIRO_FONT}
   tfoot{display:table-footer-group}
   tr,td,th{page-break-inside:avoid;break-inside:avoid}
   .summary-box,.signatures-box,.footer-box{page-break-inside:avoid;break-inside:avoid}
+  /* عَلى الورق الفِعلي: لا ظِلال (تَتحوّل ضَوضاء)، لا حواف مُدوَّرة (لا تَخدم الطِباعة) */
+  @media print { *{box-shadow:none !important} div,td,th,span{border-radius:0 !important} }
 </style>
 </head>
 <body style="background:#fff;">

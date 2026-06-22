@@ -17,6 +17,16 @@
   --status-active: oklch(0.55 0.13 155);
   --status-done: oklch(0.50 0.10 200);
   --status-cancelled: var(--muted-foreground);
+  /* علامات تجارية و قراءة مُعزَّزة (P1 من تَدقيق CSS العَدائي) */
+  --brand-whatsapp: oklch(0.66 0.18 145); /* WhatsApp green — مَوحَّد */
+  --strong-muted: oklch(0.42 0.015 65); /* نَصّ ثانوي قابل للقراءة (بَديل عن opacity-70 الذي يَنتَهك WCAG) */
+  /* ألوان رسوم بَيانية ذات دَلالة سيمياء — مَوحَّدة عَبر Treasury/Recharts */
+  --chart-cash: oklch(0.62 0.16 155); /* أخضر — نَقد/داخل */
+  --chart-card: oklch(0.60 0.15 245); /* أزرق — بِطاقة */
+  --chart-check: oklch(0.55 0.18 295); /* بَنفسجي — صَكّ */
+  --chart-transfer: oklch(0.70 0.15 75); /* كَهرماني — حَوالة */
+  --chart-wallet: oklch(0.62 0.20 0); /* وَردي — مَحفظة */
+  --chart-out: oklch(0.62 0.20 25); /* أحمر — صَرف/خَارج */
 }
 
 .dark {
@@ -28,6 +38,14 @@
   --status-pending: oklch(0.70 0.09 250);
   --status-active: oklch(0.72 0.15 155);
   --status-done: oklch(0.68 0.11 200);
+  --brand-whatsapp: oklch(0.74 0.18 145);
+  --strong-muted: oklch(0.72 0.015 65);
+  --chart-cash: oklch(0.74 0.16 155);
+  --chart-card: oklch(0.72 0.15 245);
+  --chart-check: oklch(0.70 0.18 295);
+  --chart-transfer: oklch(0.80 0.16 80);
+  --chart-wallet: oklch(0.74 0.20 0);
+  --chart-out: oklch(0.74 0.20 25);
 }
 
 @layer utilities {

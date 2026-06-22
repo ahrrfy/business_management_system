@@ -89,7 +89,7 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
       </div>
       <div className="font-medium text-sm mt-0.5 line-clamp-1">{o.title}</div>
       <div className="flex items-center justify-between mt-1 text-[11px] text-muted-foreground">
-        <span title={ch.label}>{ch.icon} {o.customerName ?? "عميل نقدي"}</span>
+        <span title={ch.label}><span role="img" aria-label={ch.label}>{ch.icon}</span> {o.customerName ?? "عميل نقدي"}</span>
         {mine ? <span>{STATUS_LABEL[o.status]}</span> : <span className="text-amber-600">سحب ←</span>}
       </div>
     </button>
@@ -156,7 +156,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <div className="font-mono text-[11px] text-muted-foreground" dir="ltr">{d.orderNumber}</div>
-          <h2 className="text-xl font-bold">{ch.icon} {d.title}</h2>
+          <h2 className="text-xl font-bold"><span role="img" aria-label={ch.label}>{ch.icon}</span> {d.title}</h2>
           <div className="flex items-center gap-2 mt-1 text-sm text-muted-foreground">
             <Badge variant="outline" className={pri.cls}>{pri.label}</Badge>
             <span>{ch.label}{d.channelHandle ? ` · ${d.channelHandle}` : ""}</span>
