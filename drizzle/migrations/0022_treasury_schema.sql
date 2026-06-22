@@ -36,7 +36,7 @@ CREATE TABLE `cashTransfers` (
 	`fromBranchId` bigint NOT NULL,
 	`toBranchId` bigint NOT NULL,
 	`amount` decimal(15,2) NOT NULL,
-	`status` enum('IN_TRANSIT','RECEIVED','CANCELLED') NOT NULL DEFAULT 'IN_TRANSIT',
+	`cashTransferStatus` enum('IN_TRANSIT','RECEIVED','CANCELLED') NOT NULL DEFAULT 'IN_TRANSIT',
 	`sentBy` int NOT NULL,
 	`receivedBy` int,
 	`cancelledBy` int,
@@ -62,9 +62,9 @@ ALTER TABLE `cashTransfers` ADD CONSTRAINT `cashTransfers_cancelledBy_users_id_f
 ALTER TABLE `cashTransfers` ADD CONSTRAINT `cashTransfers_sentReceiptId_receipts_id_fk` FOREIGN KEY (`sentReceiptId`) REFERENCES `receipts`(`id`) ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `cashTransfers` ADD CONSTRAINT `cashTransfers_receivedReceiptId_receipts_id_fk` FOREIGN KEY (`receivedReceiptId`) REFERENCES `receipts`(`id`) ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE `cashTransfers` ADD CONSTRAINT `cashTransfers_reversalReceiptId_receipts_id_fk` FOREIGN KEY (`reversalReceiptId`) REFERENCES `receipts`(`id`) ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE INDEX `idx_xfer_from` ON `cashTransfers` (`fromBranchId`,`status`);--> statement-breakpoint
-CREATE INDEX `idx_xfer_to` ON `cashTransfers` (`toBranchId`,`status`);--> statement-breakpoint
-CREATE INDEX `idx_xfer_status` ON `cashTransfers` (`status`);--> statement-breakpoint
+CREATE INDEX `idx_xfer_from` ON `cashTransfers` (`fromBranchId`,`cashTransferStatus`);--> statement-breakpoint
+CREATE INDEX `idx_xfer_to` ON `cashTransfers` (`toBranchId`,`cashTransferStatus`);--> statement-breakpoint
+CREATE INDEX `idx_xfer_status` ON `cashTransfers` (`cashTransferStatus`);--> statement-breakpoint
 CREATE INDEX `idx_xfer_sent_at` ON `cashTransfers` (`sentAt`);--> statement-breakpoint
 
 -- ── ٤) CHECK يدوي: مبلغ التحويل > 0 (سابقة 0018) ─────────────────────────────
