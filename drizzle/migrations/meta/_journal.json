@@ -155,6 +155,13 @@
       "when": 1782200000000,
       "tag": "0021_employee_user_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "5",
+      "when": 1782220000000,
+      "tag": "0022_treasury_schema",
+      "breakpoints": true
     }
   ]
 }
