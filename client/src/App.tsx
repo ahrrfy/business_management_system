@@ -1,126 +1,142 @@
+// تَوزيع الشيفرة (code-splitting): كل صفحة تُحمَّل عند الطَلب عبر `lazy()` ⇒ الحُزمة
+// الأوّليّة تَنخفض من ~3.6MB chunk واحد إلى ~vendor + AppLayout + Login فقط، وكل مَسار
+// يَجلب chunk صَغيراً عند الزيارة. السَبب: على VPS مُشترك بشبكة بطيئة، تَحميل 3.6MB قبل
+// أيّ paint يُعطي إحساس «النظام ثقيل ولا يَفتح» — حتى لو الخادم سَريع. SW يُخبّئ الـchunks
+// بعد أوّل زيارة (انظر vite.config.ts → workbox.maximumFileSizeToCacheInBytes=5MiB).
+//
+// استثناءات eager (تَبقى في الحُزمة الأساسية):
+//  • Login: أوّل شاشة لمُستخدم غير مُصادَق ⇒ تجنّب وَميض Suspense قبل النَموذج.
+//  • AppLayout/ErrorBoundary/RouteErrorBoundary/RequireRole/Protected: بنية الـshell.
+//
+// حَدّ Suspense واحد حَول `Switch` (لا حَول كل Route) ⇒ تَنقّل المَسارات يُظهر fallback
+// مَرّة واحدة فَقط أثناء جَلب chunk الوِجهة، والـAppLayout (الشَريط الجانبي/الترويسة) يَبقى
+// مَرسوماً. fallback نَفس نَصّ `Protected` ⇒ تَتابع بصري سَلِس.
+import { lazy, Suspense } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { trpc } from "@/lib/trpc";
-import APAging from "@/pages/APAging";
-import ARAging from "@/pages/ARAging";
-import BarcodeLabels from "@/pages/BarcodeLabels";
-import CustomerStatement from "@/pages/CustomerStatement";
-import Customers from "@/pages/Customers";
-import CustomerNew from "@/pages/CustomerNew";
-import CustomerEdit from "@/pages/CustomerEdit";
-import SupplierStatement from "@/pages/SupplierStatement";
-import Suppliers from "@/pages/Suppliers";
-import SupplierNew from "@/pages/SupplierNew";
-import SupplierEdit from "@/pages/SupplierEdit";
-import Dashboard from "@/pages/Dashboard";
-import ExpenseNew from "@/pages/ExpenseNew";
-import Expenses from "@/pages/Expenses";
-import Inventory from "@/pages/Inventory";
-import VoucherPaymentNew from "@/pages/VoucherPaymentNew";
-import VoucherReceiptNew from "@/pages/VoucherReceiptNew";
-import Vouchers from "@/pages/Vouchers";
-import InvoiceDetail from "@/pages/InvoiceDetail";
-import Invoices from "@/pages/Invoices";
-import Login from "@/pages/Login";
-import POS from "@/pages/POS";
-import PrintPOS from "@/pages/PrintPOS";
-import PriceChecker from "@/pages/PriceChecker";
-import Kiosk from "@/pages/Kiosk";
-import KioskDevices from "@/pages/KioskDevices";
-import SalesInvoiceNew from "@/pages/SalesInvoiceNew";
-import ProductEdit from "@/pages/ProductEdit";
-import ProductNew from "@/pages/ProductNew";
-import Products from "@/pages/Products";
-import Purchases from "@/pages/Purchases";
-import PurchaseNew from "@/pages/PurchaseNew";
-import PurchaseReceive from "@/pages/PurchaseReceive";
-import Quotations from "@/pages/Quotations";
-import QuotationNew from "@/pages/QuotationNew";
-import QuotationDetail from "@/pages/QuotationDetail";
-import Returns from "@/pages/Returns";
-import SalesReturnNew from "@/pages/SalesReturnNew";
-import SalesReturns from "@/pages/SalesReturns";
-import PurchaseReturnNew from "@/pages/PurchaseReturnNew";
-import PurchaseReturns from "@/pages/PurchaseReturns";
-import Transfers from "@/pages/Transfers";
-import WorkOrderDetail from "@/pages/WorkOrderDetail";
-import WorkOrderNew from "@/pages/WorkOrderNew";
-import WorkOrderStation from "@/pages/WorkOrderStation";
-import WorkOrders from "@/pages/WorkOrders";
-import Production from "@/pages/Production";
-import ProductionNew from "@/pages/ProductionNew";
-import ProductionDetail from "@/pages/ProductionDetail";
-import ProductionRecipes from "@/pages/ProductionRecipes";
-import Assets from "@/pages/Assets";
-import AssetRegister from "@/pages/AssetRegister";
-import AssetDetail from "@/pages/AssetDetail";
-import AssetNew from "@/pages/AssetNew";
-import AssetCustodyReport from "@/pages/AssetCustodyReport";
-import AssetDisposalLog from "@/pages/AssetDisposalLog";
-import AssetEdit from "@/pages/AssetEdit";
-import Employees from "@/pages/Employees";
-import EmployeeNew from "@/pages/EmployeeNew";
-import EmployeeDetail from "@/pages/EmployeeDetail";
-import Attendance from "@/pages/Attendance";
-import Payroll from "@/pages/Payroll";
-import Leaves from "@/pages/Leaves";
-import Recruitment from "@/pages/Recruitment";
-import HrDevices from "@/pages/HrDevices";
-import Promotions from "@/pages/Promotions";
-import JobApply from "@/pages/JobApply";
-import Shifts from "@/pages/Shifts";
-import Users from "@/pages/Users";
-import UserNew from "@/pages/UserNew";
-import UserEdit from "@/pages/UserEdit";
-import Roles from "@/pages/Roles";
-import RoleEdit from "@/pages/RoleEdit";
-import Account from "@/pages/Account";
-import AuditLogs from "@/pages/AuditLogs";
-import PeriodLock from "@/pages/PeriodLock";
-import CreditApprovals from "@/pages/CreditApprovals";
-import YearEnd from "@/pages/YearEnd";
-import WIPReport from "@/pages/WIPReport";
-import InventoryMovements from "@/pages/InventoryMovements";
-import SalesReport from "@/pages/SalesReport";
-import ReportsCenter from "@/pages/ReportsCenter";
-import ProfitLoss from "@/pages/ProfitLoss";
-import GeneralLedger from "@/pages/GeneralLedger";
-import TrialBalance from "@/pages/TrialBalance";
-import BalanceSheet from "@/pages/BalanceSheet";
-import CashFlow from "@/pages/CashFlow";
-import SalesRegister from "@/pages/SalesRegister";
-import SalesByDimension from "@/pages/SalesByDimension";
-import PurchasesReport from "@/pages/PurchasesReport";
-import PurchaseRegister from "@/pages/PurchaseRegister";
-import ArApAgingDetail from "@/pages/ArApAgingDetail";
-import InventoryValuation from "@/pages/InventoryValuation";
-import StockStatus from "@/pages/StockStatus";
-import ItemLedger from "@/pages/ItemLedger";
-import AbcAnalysis from "@/pages/AbcAnalysis";
-import Treasury from "@/pages/Treasury";
-import TreasuryTransfers from "@/pages/TreasuryTransfers";
-import TreasuryReport from "@/pages/TreasuryReport";
-import ExpensesReport from "@/pages/ExpensesReport";
-import CashOrphanReport from "@/pages/CashOrphanReport";
-import ProductionReport from "@/pages/ProductionReport";
-import WorkOrdersReport from "@/pages/WorkOrdersReport";
-import PayrollReport from "@/pages/PayrollReport";
-import AttendanceReport from "@/pages/AttendanceReport";
-import LeaveReport from "@/pages/LeaveReport";
-import HrChangesReport from "@/pages/HrChangesReport";
-import ExecutiveDashboard from "@/pages/ExecutiveDashboard";
-import Reconcile from "@/pages/Reconcile";
-import Settings from "@/pages/Settings";
-import Stocktakes from "@/pages/Stocktakes";
-import StocktakeNew from "@/pages/StocktakeNew";
-import StocktakeMonitor from "@/pages/StocktakeMonitor";
-import StocktakeReview from "@/pages/StocktakeReview";
-import StocktakeReport from "@/pages/StocktakeReport";
-import StocktakeCountSheets from "@/pages/StocktakeCountSheets";
-import CountPortal from "@/pages/CountPortal";
 import { RequireRole } from "@/components/RequireRole";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
+import { RouteFallback } from "@/components/RouteFallback";
+import { trpc } from "@/lib/trpc";
+import Login from "@/pages/Login";
 import { Redirect, Route, Switch } from "wouter";
+
+const APAging = lazy(() => import("@/pages/APAging"));
+const ARAging = lazy(() => import("@/pages/ARAging"));
+const BarcodeLabels = lazy(() => import("@/pages/BarcodeLabels"));
+const CustomerStatement = lazy(() => import("@/pages/CustomerStatement"));
+const Customers = lazy(() => import("@/pages/Customers"));
+const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
+const CustomerEdit = lazy(() => import("@/pages/CustomerEdit"));
+const SupplierStatement = lazy(() => import("@/pages/SupplierStatement"));
+const Suppliers = lazy(() => import("@/pages/Suppliers"));
+const SupplierNew = lazy(() => import("@/pages/SupplierNew"));
+const SupplierEdit = lazy(() => import("@/pages/SupplierEdit"));
+const Dashboard = lazy(() => import("@/pages/Dashboard"));
+const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
+const Expenses = lazy(() => import("@/pages/Expenses"));
+const Inventory = lazy(() => import("@/pages/Inventory"));
+const VoucherPaymentNew = lazy(() => import("@/pages/VoucherPaymentNew"));
+const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
+const Vouchers = lazy(() => import("@/pages/Vouchers"));
+const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
+const Invoices = lazy(() => import("@/pages/Invoices"));
+const POS = lazy(() => import("@/pages/POS"));
+const PrintPOS = lazy(() => import("@/pages/PrintPOS"));
+const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
+const Kiosk = lazy(() => import("@/pages/Kiosk"));
+const KioskDevices = lazy(() => import("@/pages/KioskDevices"));
+const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
+const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
+const ProductNew = lazy(() => import("@/pages/ProductNew"));
+const Products = lazy(() => import("@/pages/Products"));
+const Purchases = lazy(() => import("@/pages/Purchases"));
+const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
+const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
+const Quotations = lazy(() => import("@/pages/Quotations"));
+const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
+const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
+const Returns = lazy(() => import("@/pages/Returns"));
+const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
+const SalesReturns = lazy(() => import("@/pages/SalesReturns"));
+const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
+const PurchaseReturns = lazy(() => import("@/pages/PurchaseReturns"));
+const Transfers = lazy(() => import("@/pages/Transfers"));
+const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
+const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
+const WorkOrderStation = lazy(() => import("@/pages/WorkOrderStation"));
+const WorkOrders = lazy(() => import("@/pages/WorkOrders"));
+const Production = lazy(() => import("@/pages/Production"));
+const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
+const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
+const ProductionRecipes = lazy(() => import("@/pages/ProductionRecipes"));
+const Assets = lazy(() => import("@/pages/Assets"));
+const AssetRegister = lazy(() => import("@/pages/AssetRegister"));
+const AssetDetail = lazy(() => import("@/pages/AssetDetail"));
+const AssetNew = lazy(() => import("@/pages/AssetNew"));
+const AssetCustodyReport = lazy(() => import("@/pages/AssetCustodyReport"));
+const AssetDisposalLog = lazy(() => import("@/pages/AssetDisposalLog"));
+const AssetEdit = lazy(() => import("@/pages/AssetEdit"));
+const Employees = lazy(() => import("@/pages/Employees"));
+const EmployeeNew = lazy(() => import("@/pages/EmployeeNew"));
+const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
+const Attendance = lazy(() => import("@/pages/Attendance"));
+const Payroll = lazy(() => import("@/pages/Payroll"));
+const Leaves = lazy(() => import("@/pages/Leaves"));
+const Recruitment = lazy(() => import("@/pages/Recruitment"));
+const HrDevices = lazy(() => import("@/pages/HrDevices"));
+const Promotions = lazy(() => import("@/pages/Promotions"));
+const JobApply = lazy(() => import("@/pages/JobApply"));
+const Shifts = lazy(() => import("@/pages/Shifts"));
+const Users = lazy(() => import("@/pages/Users"));
+const UserNew = lazy(() => import("@/pages/UserNew"));
+const UserEdit = lazy(() => import("@/pages/UserEdit"));
+const Roles = lazy(() => import("@/pages/Roles"));
+const RoleEdit = lazy(() => import("@/pages/RoleEdit"));
+const Account = lazy(() => import("@/pages/Account"));
+const AuditLogs = lazy(() => import("@/pages/AuditLogs"));
+const PeriodLock = lazy(() => import("@/pages/PeriodLock"));
+const CreditApprovals = lazy(() => import("@/pages/CreditApprovals"));
+const YearEnd = lazy(() => import("@/pages/YearEnd"));
+const WIPReport = lazy(() => import("@/pages/WIPReport"));
+const InventoryMovements = lazy(() => import("@/pages/InventoryMovements"));
+const SalesReport = lazy(() => import("@/pages/SalesReport"));
+const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
+const ProfitLoss = lazy(() => import("@/pages/ProfitLoss"));
+const GeneralLedger = lazy(() => import("@/pages/GeneralLedger"));
+const TrialBalance = lazy(() => import("@/pages/TrialBalance"));
+const BalanceSheet = lazy(() => import("@/pages/BalanceSheet"));
+const CashFlow = lazy(() => import("@/pages/CashFlow"));
+const SalesRegister = lazy(() => import("@/pages/SalesRegister"));
+const SalesByDimension = lazy(() => import("@/pages/SalesByDimension"));
+const PurchasesReport = lazy(() => import("@/pages/PurchasesReport"));
+const PurchaseRegister = lazy(() => import("@/pages/PurchaseRegister"));
+const ArApAgingDetail = lazy(() => import("@/pages/ArApAgingDetail"));
+const InventoryValuation = lazy(() => import("@/pages/InventoryValuation"));
+const StockStatus = lazy(() => import("@/pages/StockStatus"));
+const ItemLedger = lazy(() => import("@/pages/ItemLedger"));
+const AbcAnalysis = lazy(() => import("@/pages/AbcAnalysis"));
+const Treasury = lazy(() => import("@/pages/Treasury"));
+const TreasuryTransfers = lazy(() => import("@/pages/TreasuryTransfers"));
+const TreasuryReport = lazy(() => import("@/pages/TreasuryReport"));
+const ExpensesReport = lazy(() => import("@/pages/ExpensesReport"));
+const CashOrphanReport = lazy(() => import("@/pages/CashOrphanReport"));
+const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
+const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
+const PayrollReport = lazy(() => import("@/pages/PayrollReport"));
+const AttendanceReport = lazy(() => import("@/pages/AttendanceReport"));
+const LeaveReport = lazy(() => import("@/pages/LeaveReport"));
+const HrChangesReport = lazy(() => import("@/pages/HrChangesReport"));
+const ExecutiveDashboard = lazy(() => import("@/pages/ExecutiveDashboard"));
+const Reconcile = lazy(() => import("@/pages/Reconcile"));
+const Settings = lazy(() => import("@/pages/Settings"));
+const Stocktakes = lazy(() => import("@/pages/Stocktakes"));
+const StocktakeNew = lazy(() => import("@/pages/StocktakeNew"));
+const StocktakeMonitor = lazy(() => import("@/pages/StocktakeMonitor"));
+const StocktakeReview = lazy(() => import("@/pages/StocktakeReview"));
+const StocktakeReport = lazy(() => import("@/pages/StocktakeReport"));
+const StocktakeCountSheets = lazy(() => import("@/pages/StocktakeCountSheets"));
+const CountPortal = lazy(() => import("@/pages/CountPortal"));
 
 function Protected({ children }: { children: React.ReactNode }) {
   const me = trpc.auth.me.useQuery();
@@ -149,6 +165,7 @@ function NotFound() {
 export default function App() {
   return (
     <ErrorBoundary>
+    <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />
       {/* نقطة البيع بملء الشاشة (بلا قائمة جانبية) */}
@@ -289,6 +306,7 @@ export default function App() {
       <Route path="/settings"><Shell><RequireRole roles={["admin","manager"]}><Settings /></RequireRole></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
+    </Suspense>
     </ErrorBoundary>
   );
 }
