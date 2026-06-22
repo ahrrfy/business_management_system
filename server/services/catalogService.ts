@@ -28,6 +28,7 @@ export interface PosRow {
   isBaseUnit: boolean;
   price: string | null; // null = no price defined for this unit×tier
   stockBase: number; // variant stock in base units at the branch
+  isService: boolean; // مُنتج خِدمي: لا مَخزون، POS يَتجاوز فَحص نَقص المَخزون.
 }
 
 function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number, tier: PriceTier) {
@@ -47,6 +48,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       isBaseUnit: productUnits.isBaseUnit,
       price: productPrices.price,
       stockBase: branchStock.quantity,
+      isService: products.isService,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -69,6 +71,7 @@ function normalize(rows: any[]): PosRow[] {
     productUnitId: Number(r.productUnitId),
     isBaseUnit: !!r.isBaseUnit,
     stockBase: r.stockBase ?? 0,
+    isService: !!r.isService,
   }));
 }
 
@@ -435,6 +438,8 @@ export interface CreateProductInput {
   description?: string | null;
   categoryId?: number | null;
   isCustomizable?: boolean;
+  // مُنتج خِدمي (لا مَخزون): البَيع/الشِراء لا يُحرّك branchStock، رَصيد افتتاحي يُتجاهَل.
+  isService?: boolean;
   variants: Array<{
     sku: string;
     variantName?: string | null;
@@ -475,6 +480,7 @@ export interface ProductForEdit {
   name: string;
   categoryId: number | null;
   isCustomizable: boolean;
+  isService: boolean;
   isActive: boolean;
   variants: Array<{
     id: number;
@@ -520,6 +526,7 @@ export async function getProductForEdit(productId: number): Promise<ProductForEd
     name: p.name,
     categoryId: p.categoryId != null ? Number(p.categoryId) : null,
     isCustomizable: !!p.isCustomizable,
+    isService: !!p.isService,
     isActive: !!p.isActive,
     variants: variants.map((v) => ({
       id: Number(v.id),
@@ -746,6 +753,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       description: input.description?.trim() || null,
       categoryId: input.categoryId ?? null,
       isCustomizable: input.isCustomizable ?? false,
+      isService: input.isService ?? false,
     });
     const productId = extractInsertId(pRes);
 

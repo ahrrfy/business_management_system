@@ -61,6 +61,7 @@ export default function ProductNew() {
   const [costPrice, setCostPrice] = useState("");
   const [defaultMin, setDefaultMin] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
+  const [isService, setIsService] = useState(false);
   const [isActive, setIsActive] = useState(true);
 
   // ── قالب الوحدات المشترك ──
@@ -261,6 +262,7 @@ export default function ProductNew() {
       description: description.trim() || null,
       categoryId: categoryId === "" ? undefined : Number(categoryId),
       isCustomizable,
+      isService,
       variants: variants.map((v) => {
         const overrideCost = v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim();
         return {
@@ -431,12 +433,18 @@ export default function ProductNew() {
           <Field label="سعر التكلفة (د.ع)" required hint="سعر شراء موحّد لكل الألوان.">
             <Input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} dir="ltr" placeholder="150" />
           </Field>
-          <Field label="الحد الأدنى الافتراضي" hint="يُطبَّق على المتغيّرات الجديدة.">
-            <Input value={defaultMin} onChange={(e) => setDefaultMin(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" />
+          <Field label="الحد الأدنى الافتراضي" hint={isService ? "—" : "يُطبَّق على المتغيّرات الجديدة."}>
+            <Input value={defaultMin} onChange={(e) => setDefaultMin(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" disabled={isService} />
+          </Field>
+          <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً؛ الإيراد + التَكلفة تَدخلان كالعادة.">
+            <div className="flex items-center gap-2 h-9">
+              <Switch checked={isService} onCheckedChange={setIsService} />
+              <span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة مَلموسة"}</span>
+            </div>
           </Field>
           <Field label="قابل للتخصيص">
             <div className="flex items-center gap-2 h-9">
-              <Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} />
+              <Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} />
               <span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span>
             </div>
           </Field>

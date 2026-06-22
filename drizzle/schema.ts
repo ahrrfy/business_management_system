@@ -244,6 +244,10 @@ export const products = mysqlTable(
     // النَّسَب: لدعم دمج المنتجات بحفظ التاريخ (أب/ابن) — مرحلة لاحقة.
     parentProductId: bigint("parentProductId", { mode: "number" }),
     isCustomizable: boolean("isCustomizable").default(false),
+    // مُنتج خدمي: لا يَتتبَّع مَخزوناً (تَصميم، طِباعة بَسيطة، رُسوم). البَيع لا يُحرّك
+    // branchStock ولا يَكتب inventoryMovements (يُتجاوَز في inventoryService.applyMovement).
+    // التَحويل بين الفُروع مَمنوع. الإيراد يَدخل كَالعَادة، التَكلفة من productVariants.cost.
+    isService: boolean("isService").default(false).notNull(),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),

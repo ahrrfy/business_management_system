@@ -62,6 +62,7 @@ export default function ProductEdit() {
   const [baseSku, setBaseSku] = useState("");
   const [costPrice, setCostPrice] = useState("");
   const [isCustomizable, setIsCustomizable] = useState(false);
+  const [isService, setIsService] = useState(false);
   const [isActive, setIsActive] = useState(true);
 
   const [units, setUnits] = useState<ClientUnit[]>([]);
@@ -92,6 +93,7 @@ export default function ProductEdit() {
     setDescription(d.description ?? "");
     setCategoryId(d.categoryId ?? "");
     setIsCustomizable(d.isCustomizable);
+    setIsService(d.isService);
     setIsActive(d.isActive);
 
     // قالب الوحدات بمعرّفات محلّية.
@@ -311,6 +313,7 @@ export default function ProductEdit() {
       description: description.trim() || null,
       categoryId: categoryId === "" ? null : Number(categoryId),
       isCustomizable,
+      isService,
       isActive,
       unitTemplate,
       variants: variants.map((v) => {
@@ -428,7 +431,8 @@ export default function ProductEdit() {
         <CardHeader><CardTitle className="text-base">التسعير · مشترك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Field label="سعر التكلفة (د.ع)" required hint="موحّد لكل الألوان إلا ما له سعر خاص."><Input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} dir="ltr" placeholder="150" /></Field>
-          <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
+          <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
+          <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span></div></Field>
         </CardContent>
       </Card>
