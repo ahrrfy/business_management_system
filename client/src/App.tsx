@@ -102,6 +102,8 @@ const YearEnd = lazy(() => import("@/pages/YearEnd"));
 const WIPReport = lazy(() => import("@/pages/WIPReport"));
 const InventoryMovements = lazy(() => import("@/pages/InventoryMovements"));
 const SalesReport = lazy(() => import("@/pages/SalesReport"));
+const SalesReportsHub = lazy(() => import("@/pages/SalesReportsHub"));
+const AgingReportsHub = lazy(() => import("@/pages/AgingReportsHub"));
 const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
 const ProfitLoss = lazy(() => import("@/pages/ProfitLoss"));
 const GeneralLedger = lazy(() => import("@/pages/GeneralLedger"));
@@ -283,6 +285,8 @@ export default function App() {
       <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager"]}><HrChangesReport /></RequireRole></Shell></Route>
       <Route path="/reports/executive"><Shell><RequireRole roles={["admin","manager"]}><ExecutiveDashboard /></RequireRole></Shell></Route>
       <Route path="/sales-report"><Shell><SalesReport /></Shell></Route>
+      <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager"]}><SalesReportsHub /></RequireRole></Shell></Route>
+      <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager"]}><AgingReportsHub /></RequireRole></Shell></Route>
       <Route path="/ar-aging"><Shell><ARAging /></Shell></Route>
       <Route path="/customers-statement"><Shell><CustomerStatement /></Shell></Route>
       <Route path="/suppliers"><Shell><Suppliers /></Shell></Route>

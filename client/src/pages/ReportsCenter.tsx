@@ -54,7 +54,8 @@ const SECTIONS: Section[] = [
     label: "المبيعات والإيرادات",
     icon: "🛒",
     items: [
-      { title: "تقرير المبيعات", desc: "فواتير + أكثر مبيعاً + بطيئة + ربح حسب الفئة", href: "/sales-report", icon: "🧾", gate: "manager", status: "ready" },
+      { title: "تقارير المبيعات المُوحَّدة", desc: "٣ زَوايا في صَفحة واحدة (مُلخّص/تَفصيلي/حَسَب البُعد)", href: "/reports/sales-hub", icon: "📋", gate: "manager", status: "ready" },
+      { title: "تقرير المبيعات (مُلخّص)", desc: "فواتير + أكثر مبيعاً + بطيئة + ربح حسب الفئة", href: "/sales-report", icon: "🧾", gate: "manager", status: "ready" },
       { title: "سجلّ المبيعات المفصّل", desc: "بمستوى بنود الفاتورة (drill-down)", href: "/reports/sales-register", icon: "🔍", gate: "manager", status: "ready" },
       { title: "المبيعات حسب البُعد", desc: "عميل/فرع/كاشير/طريقة دفع", href: "/reports/sales-by-dimension", icon: "📐", gate: "manager", status: "ready" },
     ],
@@ -65,7 +66,8 @@ const SECTIONS: Section[] = [
     icon: "👥",
     items: [
       { title: "كشف حساب عميل", desc: "فواتير + دفعات + الرصيد الحالي", href: "/customers-statement", icon: "📄", gate: "manager", status: "ready" },
-      { title: "أعمار الذمم المدينة", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ar-aging", icon: "⏳", gate: "manager", status: "ready" },
+      { title: "أعمار الذمم المُوحَّدة (مدينة/دائنة)", desc: "مَدينة ودائنة + مُلخَّص/تَفصيل في صَفحة واحدة", href: "/reports/aging-hub", icon: "⏳", gate: "manager", status: "ready" },
+      { title: "أعمار الذمم المدينة (مُلخَّص)", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ar-aging", icon: "⏳", gate: "manager", status: "ready" },
       { title: "تفصيل أعمار الذمم (AR/AP)", desc: "مستندٌ بمستند مع المتبقّي والتأخّر", href: "/reports/aging-detail", icon: "🔎", gate: "manager", status: "ready" },
       { title: "التعرّض الائتماني للعملاء", desc: "أرصدة ومخاطر التحصيل", href: "/reports/customer-balances", icon: "💳", gate: "manager", status: "soon" },
     ],
