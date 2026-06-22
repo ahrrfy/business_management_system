@@ -1,10 +1,21 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, sql } from "drizzle-orm";
-import { branchStock, inventoryMovements, productUnits } from "../../drizzle/schema";
+import { branchStock, inventoryMovements, productUnits, productVariants, products } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import type { DecimalInput } from "./money";
 import { extractInsertId } from "../lib/insertId";
+
+/** يَتحقّق إن كان المُتغيّر يَنتمي لمُنتج خِدمي (لا مَخزون). يُستعمَل لِتجاوز inventoryMovements/branchStock. */
+async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
+  const rows = await tx
+    .select({ isService: products.isService })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(eq(productVariants.id, variantId))
+    .limit(1);
+  return !!rows[0]?.isService;
+}
 
 export type MovementType = "IN" | "OUT" | "ADJUST" | "RETURN" | "TRANSFER_IN" | "TRANSFER_OUT";
 type DirectionalType = Exclude<MovementType, "ADJUST">;
@@ -65,6 +76,16 @@ export interface ApplyMovementResult {
 export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<ApplyMovementResult> {
   if (!Number.isInteger(a.baseQuantity) || a.baseQuantity <= 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية الأساس يجب أن تكون عدداً صحيحاً موجباً" });
+  }
+
+  // مُنتج خِدمي: لا تَتبُّع مَخزون. التَحويل بين الفُروع مَمنوع منطقياً (الخَدمة لا تُحَوَّل
+  // كَأنها بِضاعة). البَيع/الشِراء/المُرتجَع/التَسوية: نَخرج بِنَتيجة اصطناعية بِلا حركة ولا
+  // كِتابة على branchStock. الإيراد/التَكلفة يَستمرّ عَبر مَسارات أخرى (saleService، COGS).
+  if (await isServiceVariant(tx, a.variantId)) {
+    if (a.movementType === "TRANSFER_IN" || a.movementType === "TRANSFER_OUT") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُمكن تَحويل مُنتج خِدمي بين الفُروع" });
+    }
+    return { movementId: 0, newQuantity: 0 };
   }
 
   // اضمن وجود صفّ الرصيد قبل القفل — FOR UPDATE لا يقفل شيئاً على صفّ غير موجود (يتسرّب بيعٌ زائد/فقدُ تحديث).
@@ -172,6 +193,10 @@ export interface SetStockArgs {
 export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementResult> {
   if (!Number.isInteger(a.targetQuantity) || a.targetQuantity < 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
+  }
+  // مُنتج خِدمي: لا تَسوية مَخزون لـ«ما لا مَخزون له». نَتجاهل بِنَتيجة اصطناعية.
+  if (await isServiceVariant(tx, a.variantId)) {
+    return { movementId: 0, newQuantity: 0 };
   }
   // اضمن وجود الصفّ قبل القفل (نفس علّة FOR UPDATE على صفّ غير موجود).
   await tx

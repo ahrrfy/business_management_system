@@ -991,12 +991,19 @@ function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results,
                 onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
               >
                 <div>
-                  <div style={{ fontWeight: 700, fontSize: 13.5, color: C.fg }}>{p.productName}</div>
+                  <div style={{ fontWeight: 700, fontSize: 13.5, color: C.fg }}>
+                    {p.productName}
+                    {p.isService && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#0891b2", background: "#cffafe", padding: "1px 6px", borderRadius: 4, marginRight: 6, verticalAlign: "middle" }}>خِدمة</span>
+                    )}
+                  </div>
                   <div style={{ fontSize: 11.5, color: C.mutedFg, marginTop: 2 }}>
                     {p.sku} · {p.unitName}
-                    <span style={{ marginRight: 10, color: stockColor(p.stockBase) }}>
-                      مخزون: {fmt(p.stockBase)}
-                    </span>
+                    {!p.isService && (
+                      <span style={{ marginRight: 10, color: stockColor(p.stockBase) }}>
+                        مخزون: {fmt(p.stockBase)}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div style={{ textAlign: "left", flexShrink: 0, marginRight: 16 }}>
@@ -1155,6 +1162,10 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
   }
   const stockState = (c: CartItem) => {
     const convFactor  = Number(c.row.conversionFactor) || 1;
+    // مُنتج خِدمي: لا مَخزون ⇒ لا نَفاد ولا نَقص (الخَادم يَتجاوز فَحص المَخزون أيضاً).
+    if (c.row.isService) {
+      return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
+    }
     const availBase   = c.row.stockBase ?? 0;
     const reqBase     = demandByVariant.get(c.row.variantId) ?? c.qty * convFactor; // إجمالي طلب الصنف
     const isOut       = availBase <= 0;                       // نافذ — لا رصيد

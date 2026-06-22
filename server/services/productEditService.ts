@@ -56,6 +56,7 @@ export interface ProductForVariantEdit {
   description: string | null;
   categoryId: number | null;
   isCustomizable: boolean;
+  isService: boolean;
   isActive: boolean;
   /** قالب الوحدات المشترك — مُشتقّ من وحدات أوّل متغيّر فعّال (النموذج يصنعها موحّدة). */
   unitTemplate: VariantEditUnit[];
@@ -80,6 +81,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       description: p.description,
       categoryId: p.categoryId != null ? Number(p.categoryId) : null,
       isCustomizable: !!p.isCustomizable,
+      isService: !!p.isService,
       isActive: !!p.isActive,
       unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "" }],
       variants: [],
@@ -144,6 +146,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     description: p.description,
     categoryId: p.categoryId != null ? Number(p.categoryId) : null,
     isCustomizable: !!p.isCustomizable,
+    isService: !!p.isService,
     isActive: !!p.isActive,
     unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "" }],
     variants: variantRows,
@@ -185,6 +188,7 @@ export interface UpdateProductVariantsInput {
   description?: string | null;
   categoryId?: number | null;
   isCustomizable?: boolean;
+  isService?: boolean;
   isActive?: boolean;
   unitTemplate: UpdateUnitTemplate[];
   variants: UpdateVariantRow[];
@@ -306,6 +310,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
         description: input.description?.trim() || null,
         categoryId: input.categoryId ?? null,
         isCustomizable: input.isCustomizable ?? !!p.isCustomizable,
+        isService: input.isService ?? !!p.isService,
         ...(input.isActive != null ? { isActive: input.isActive } : {}),
       })
       .where(eq(products.id, input.productId));
