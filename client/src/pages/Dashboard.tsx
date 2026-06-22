@@ -600,7 +600,7 @@ function ActionButton({ a, primary, color }: { a: Action; primary: boolean; colo
           alignItems: "center",
           justifyContent: "center",
           gap: 4,
-          fontSize: 10,
+          fontSize: 12,
           fontWeight: primary ? 700 : 600,
           color: base,
           padding: "0 4px",
@@ -708,7 +708,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           style={{
             display: "flex",
             alignItems: "stretch",
-            height: 40,
+            height: 48,
             flexShrink: 0,
             borderTop: `1px solid ${bord}`,
             background: m.color.replace(")", " / 0.04)"),

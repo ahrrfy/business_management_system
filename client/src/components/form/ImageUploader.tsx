@@ -217,6 +217,12 @@ export function ImageUploader({
           intake(Array.from(e.dataTransfer.files));
         }}
         onClick={() => inputRef.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            inputRef.current?.click();
+          }
+        }}
         className={cn(
           "relative cursor-pointer rounded-md border-2 border-dashed bg-muted/30 hover:bg-muted/50 transition-colors p-4 text-center",
           dragging ? "border-primary bg-primary/5" : "border-input"

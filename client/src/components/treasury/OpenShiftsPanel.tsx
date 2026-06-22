@@ -68,12 +68,12 @@ export function OpenShiftsPanel({ shifts, loading }: OpenShiftsPanelProps) {
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-1.5 text-sm font-medium truncate">
-                    <User className="h-3.5 w-3.5 text-muted-foreground flex-shrink-0" />
+                    <User className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                     <span className="truncate">{s.userName}</span>
                   </div>
                   <div className="text-[11px] text-muted-foreground mt-0.5">{s.branchName}</div>
                 </div>
-                <div className="text-[10px] text-muted-foreground flex items-center gap-1 flex-shrink-0">
+                <div className="text-[10px] text-muted-foreground flex items-center gap-1 shrink-0">
                   <Clock className="h-3 w-3" />
                   <span>{relativeTime(s.openedAt)}</span>
                 </div>

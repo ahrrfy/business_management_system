@@ -161,7 +161,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
                       <span className="text-sm font-medium truncate max-w-[200px]">{renderName(s.name)}</span>
                       {s.phone && <span className="text-[11px] text-muted-foreground" dir="ltr">{s.phone}</span>}
                     </div>
-                    <div className="flex items-center gap-1 flex-shrink-0">
+                    <div className="flex items-center gap-1 shrink-0">
                       {s.isVip && <Badge variant="default" className="text-[10px] bg-amber-500 hover:bg-amber-500">VIP</Badge>}
                       {s.isFrequent && !s.isVip && <Badge variant="secondary" className="text-[10px]">متكرّر</Badge>}
                       {typeof s.orderCount === "number" && (

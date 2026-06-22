@@ -229,7 +229,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <Search className="size-3.5 shrink-0" />
-            <span className="flex-1 text-right">بحث…</span>
+            <span className="flex-1 text-start">بحث…</span>
             <kbd className="rounded border border-border/50 bg-background px-1 font-mono text-[10px] opacity-70">Ctrl+K</kbd>
           </button>
         </div>
@@ -341,7 +341,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
       {/* الشريط الجانبي — سطح المكتب (≥lg) */}
-      <aside className="hidden lg:flex w-60 shrink-0 border-l bg-card flex-col">
+      <aside className="hidden lg:flex w-60 shrink-0 border-s bg-card flex-col">
         <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <ThemeToggle />
@@ -368,7 +368,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </header>
 
         <SheetContent side="right" dir="rtl" className="w-72 p-0">
-          <SheetHeader className="border-b px-4 py-4 text-right">
+          <SheetHeader className="border-b px-4 py-4 text-start">
             <SheetTitle>الرؤية العربية</SheetTitle>
           </SheetHeader>
           {sidebarInner}

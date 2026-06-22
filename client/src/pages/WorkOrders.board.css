@@ -35,9 +35,11 @@
   --shadow-pop: 0 12px 44px oklch(0 0 0 / 0.5);
 }
 
-.wob *,
-.wob *::before,
-.wob *::after { box-sizing: border-box; }
+/* a11y: حَلقات تَركيز ظاهرة لكل العَناصِر التَفاعُلية في اللَوحة (كان غائباً ⇒ كيبورد مَكسور). */
+.wob :is(button, a, input, select, [tabindex], .wob-card):focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
 
 /* ─── الرأس ─── */
 .wob-topbar { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }

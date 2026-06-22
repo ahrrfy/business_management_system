@@ -134,6 +134,23 @@
   input[type="radio"]:not(:disabled) {
     @apply cursor-pointer;
   }
+  /* قاعدة دفاع a11y: لو أُسقط outline سهواً، يَبقى :focus-visible مَرئياً بِالـring token. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+}
+
+/* WCAG SC 2.3.3: احترام تَفضيل تَقليل الحَرَكة على مُستوى نظام التَشغيل. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* تنبيه خطأ بارز (notify.errBig) — أخطاء البيع الحرجة كنقص المخزون: عنوان/وصف/أيقونة أكبر. */
@@ -161,29 +178,26 @@
 @layer components {
   .container {
     width: 100%;
-    margin-left: auto;
-    margin-right: auto;
-    padding-left: 1rem;
-    padding-right: 1rem;
-  }
-
-  .flex {
-    min-height: 0;
-    min-width: 0;
+    margin-inline: auto;
+    padding-inline: 1rem;
   }
 
   @media (min-width: 640px) {
     .container {
-      padding-left: 1.5rem;
-      padding-right: 1.5rem;
+      padding-inline: 1.5rem;
     }
   }
 
   @media (min-width: 1024px) {
     .container {
-      padding-left: 2rem;
-      padding-right: 2rem;
+      padding-inline: 2rem;
       max-width: 1280px;
     }
   }
+}
+
+/* بَديل مُتاح عِند اللُزوم بَدَل تَعديل utility الـ.flex الأَساسي عالمياً (كان يَطغى على كل التَطبيق). */
+@utility flex-safe {
+  min-height: 0;
+  min-width: 0;
 }
