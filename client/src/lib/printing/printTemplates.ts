@@ -295,7 +295,7 @@ export function printPO(d: POPrintData): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ٤. أمر شغل — A4
+// ٤. طلب خدمة — A4
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export interface WorkOrderPrintData {
@@ -385,7 +385,7 @@ export function printWorkOrder(d: WorkOrderPrintData): void {
   const extraHeader = d.dueDate ? [{ label: 'تاريخ التسليم', value: d.dueDate }] : [];
 
   const body = [
-    docHeader('أمر شغل', d.woNumber, d.woDate ?? undefined, extraHeader),
+    docHeader('طلب خدمة', d.woNumber, d.woDate ?? undefined, extraHeader),
     `<div style="display:flex;gap:3mm;margin-bottom:4mm;">${custCard}${jobCard}</div>`,
     docTable(cols, rows),
     docSummary(summaryItems),
@@ -394,7 +394,7 @@ export function printWorkOrder(d: WorkOrderPrintData): void {
     docFooter(),
   ].join('');
 
-  openPrintWindow(wrapA4Doc(`أمر شغل ${d.woNumber}`, body));
+  openPrintWindow(wrapA4Doc(`طلب خدمة ${d.woNumber}`, body));
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -751,7 +751,7 @@ export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'docume
     { label: 'نوع المستند', value: title },
     { label: 'الفرع', value: d.branchName ?? '—' },
     { label: 'التاريخ', value: date },
-    ...(d.workOrder ? [{ label: 'أمر شغل', value: d.workOrder }] : []),
+    ...(d.workOrder ? [{ label: 'طلب خدمة', value: d.workOrder }] : []),
   ];
 
   const cols = [
@@ -944,7 +944,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ١١. إيصال أمر الشغل الحراري — 80مم (بديل المتصفّح)
+// ١١. إيصال طلب الخدمة الحراري — 80مم (بديل المتصفّح)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 import type { WorkOrderReceiptData } from './workOrderRaster';
@@ -1007,7 +1007,7 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   ${barSvg ? `<div style="text-align:center;margin:2mm 0;">${barSvg}</div>` : ''}
 
   <div style="border-top:2px solid #000;border-bottom:2px solid #000;padding:2mm 0;text-align:center;margin:2mm 0;">
-    <span style="font-size:13px;font-weight:900;">أمر شغل / المطبعة</span>
+    <span style="font-size:13px;font-weight:900;">طلب خدمة / المطبعة</span>
   </div>
 
   <div style="margin:2mm 0;">${infoHtml}</div>
@@ -1048,5 +1048,5 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
   </table>
   <div style="text-align:center;font-size:8.5px;color:#555;margin-top:1.5mm;">بغداد — العامرية / شارع العمل الشعبي</div>`;
 
-  openPrintWindow(wrapReceiptDoc(`أمر شغل ${d.orderNumber}`, body), 'width=380,height=750');
+  openPrintWindow(wrapReceiptDoc(`طلب خدمة ${d.orderNumber}`, body), 'width=380,height=750');
 }

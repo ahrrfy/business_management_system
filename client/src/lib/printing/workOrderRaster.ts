@@ -1,4 +1,4 @@
-// الراسم الحراري لأمر الشغل — يرسم تذكرة 80مم على Canvas ثم يحوّلها نقطية ESC/POS.
+// الراسم الحراري لطلب الخدمة — يرسم تذكرة 80مم على Canvas ثم يحوّلها نقطية ESC/POS.
 // البنية مماثلة لـreceiptRaster.ts (نفس W=576، نفس الخطوط، نفس أسلوب الرسم).
 // التصميم: رأس شركة → باركود رقم الأمر → معلومات العمل → الإجمالي → ملاحظة → تذييل.
 import { imageDataToRaster, type Raster } from "./escpos";
@@ -51,7 +51,7 @@ async function ensureFonts(): Promise<void> {
   try {
     const fonts = (document as Document & { fonts?: FontFaceSet }).fonts;
     if (!fonts) return;
-    const sample = "مكتبة العربية للطباعة 0123 IQD أمر شغل";
+    const sample = "مكتبة العربية للطباعة 0123 IQD طلب خدمة";
     await Promise.all(
       ["400 21px Cairo", "600 19px Cairo", "700 21px Cairo", "800 25px Cairo", "900 29px Cairo", "900 38px Cairo"].map(
         (f) => fonts.load(f, sample).catch(() => undefined),
@@ -96,7 +96,7 @@ function dashedLine(ctx: CanvasRenderingContext2D, y: number): void {
   ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(W - PAD, y); ctx.stroke(); ctx.restore();
 }
 
-/** رسم أمر الشغل على Canvas. يعيد {canvas, height} أو null خارج المتصفح. */
+/** رسم طلب الخدمة على Canvas. يعيد {canvas, height} أو null خارج المتصفح. */
 export async function workOrderToCanvas(
   d: WorkOrderReceiptData,
 ): Promise<{ canvas: HTMLCanvasElement; height: number } | null> {
@@ -139,10 +139,10 @@ export async function workOrderToCanvas(
     }
   } catch { /* بلا باركود */ }
 
-  // ──── ٣) عنوان «أمر شغل» ────
+  // ──── ٣) عنوان «طلب خدمة» ────
   y += 20; solidLine(ctx, y, 2); y += 4;
   ctx.font = "900 32px Cairo, sans-serif"; ctx.textAlign = "center"; y += 40;
-  ctx.fillText("أمر شغل / المطبعة", W / 2, y);
+  ctx.fillText("طلب خدمة / المطبعة", W / 2, y);
   y += 4; solidLine(ctx, y, 2); y += 28;
 
   // ──── ٤) صفوف المعلومات ────
@@ -237,7 +237,7 @@ export async function workOrderToCanvas(
   return { canvas, height: Math.min(Math.ceil(y) + 8, estH) };
 }
 
-/** أمر الشغل نقطيةً ESC/POS (مقصوصاً للارتفاع المستعمل). null خارج المتصفح. */
+/** طلب الخدمة نقطيةً ESC/POS (مقصوصاً للارتفاع المستعمل). null خارج المتصفح. */
 export async function workOrderToRaster(d: WorkOrderReceiptData): Promise<Raster | null> {
   const drawn = await workOrderToCanvas(d);
   if (!drawn) return null;

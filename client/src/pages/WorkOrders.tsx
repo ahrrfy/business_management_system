@@ -108,7 +108,7 @@ function isLate(o: { status: string; dueDate: unknown }) { return dueInfo(o).sta
 function progressOf(status: string) { const i = STAGE_INDEX[status] ?? 0; return { idx: i, pct: Math.round((i / 3) * 100) }; }
 function waUrl(phone: string, customer: string | null, o: { orderNumber: string; title: string; status: string; dueDate: unknown }) {
   const msg = encodeURIComponent(
-    `مرحباً ${customer ?? ""}،\nأمر شغل رقم: ${o.orderNumber}\nالعمل: ${o.title}\nالحالة: ${STATUS_LABEL[o.status] ?? o.status}\nالاستحقاق: ${o.dueDate ? String(o.dueDate).slice(0, 10) : "—"}\nشكراً — المطبعة`
+    `مرحباً ${customer ?? ""}،\nطلب خدمة رقم: ${o.orderNumber}\nالعمل: ${o.title}\nالحالة: ${STATUS_LABEL[o.status] ?? o.status}\nالاستحقاق: ${o.dueDate ? String(o.dueDate).slice(0, 10) : "—"}\nشكراً — المطبعة`
   );
   return `https://wa.me/${String(phone).replace(/[^\d]/g, "")}?text=${msg}`;
 }
@@ -120,7 +120,7 @@ const WaIcon = ({ size = 13 }: { size?: number }) => (
 );
 
 // ─────────────── البطاقة ───────────────
-/** طباعة أمر الشغل من بيانات البطاقة — نفس قالب printWorkOrder المستعمل في الـDrawer
+/** طباعة طلب الخدمة من بيانات البطاقة — نفس قالب printWorkOrder المستعمل في الـDrawer
  *  (صف القائمة بلا customizationText فتُطبع التذكرة بلا حقل التخصيص فقط). */
 function printWoFromCard(o: WO) {
   printWorkOrder({
@@ -137,7 +137,7 @@ function printWoFromCard(o: WO) {
   });
 }
 
-/** طباعة حرارية 80مم لأمر الشغل من بيانات البطاقة — نفس مسار التذكرة (جسر/WebUSB/متصفّح). */
+/** طباعة حرارية 80مم لطلب الخدمة من بيانات البطاقة — نفس مسار التذكرة (جسر/WebUSB/متصفّح). */
 function printWoThermalFromCard(o: WO) {
   void printWorkOrderReceipt({
     orderNumber: o.orderNumber,
@@ -328,7 +328,7 @@ function Drawer({
   return (
     <>
       <div className="wob-scrim" onClick={onClose} />
-      <div className="wob-drawer" role="dialog" aria-modal="true" aria-label="تفاصيل أمر الشغل">
+      <div className="wob-drawer" role="dialog" aria-modal="true" aria-label="تفاصيل طلب الخدمة">
         <button className="wob-dr-close" onClick={onClose} aria-label="إغلاق">✕</button>
         {!d ? (
           <div className="wob-dr-body"><div style={{ color: "var(--muted-fg)", textAlign: "center", padding: 40 }}>{detail.isLoading ? "جارٍ التحميل…" : "تعذّر العثور على الأمر."}</div></div>
@@ -428,7 +428,7 @@ function Drawer({
               })}>🖨️ طباعة A4</button>
               <button
                 className="wob-btn wob-btn-ghost"
-                title="إيصال أمر شغل حراري 80مم — جسر الخادم/WebUSB/متصفّح"
+                title="إيصال طلب خدمة حراري 80مم — جسر الخادم/WebUSB/متصفّح"
                 onClick={() => void printWorkOrderReceipt({
                   orderNumber: d.orderNumber,
                   orderDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,
@@ -555,7 +555,7 @@ export default function WorkOrders() {
       return;
     }
     if (to === "IN_PROGRESS") {
-      if (!(await confirm({ variant: "warning", title: "بدء تنفيذ أمر الشغل", description: `بدء تنفيذ «${order.title}» (${order.orderNumber}) يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟`, confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
+      if (!(await confirm({ variant: "warning", title: "بدء تنفيذ طلب الخدمة", description: `بدء تنفيذ «${order.title}» (${order.orderNumber}) يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟`, confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
       optimisticMove(order.id, "IN_PROGRESS"); start.mutate({ workOrderId: order.id });
     }
     else if (to === "READY") {
@@ -603,7 +603,7 @@ export default function WorkOrders() {
   }
 
   async function onCancelOrder(d: Detail) {
-    if (!(await confirm({ variant: "danger", title: "إلغاء أمر الشغل", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الأمر", cancelText: "تراجع" }))) return;
+    if (!(await confirm({ variant: "danger", title: "إلغاء طلب الخدمة", description: `إلغاء «${d.title}» (${d.orderNumber})؟ تُعكَس المواد المخصومة للمخزون.`, confirmText: "إلغاء الطلب", cancelText: "تراجع" }))) return;
     cancel.mutate({ workOrderId: d.id });
   }
 
@@ -614,13 +614,13 @@ export default function WorkOrders() {
     <div className="wob">
       <div className="wob-topbar">
         <div>
-          <div className="wob-title">أوامر الشغل / المطبعة</div>
+          <div className="wob-title">طلبات خدمة العملاء</div>
           <div className="wob-sub">من الاستلام إلى التسليم — اسحب البطاقة بين المراحل. فاتورة تلقائية عند التسليم.</div>
         </div>
         <div className="wob-head-actions">
           <button className="wob-btn wob-btn-ghost" disabled={filtered.length === 0}
             onClick={() => exportRows(filtered, {
-              filename: "أوامر-الشغل",
+              filename: "طلبات-خدمة-العملاء",
               columns: [
                 { key: "orderNumber", header: "رقم الأمر" },
                 { key: "title", header: "العنوان" },
@@ -634,7 +634,7 @@ export default function WorkOrders() {
                 { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
               ],
             })}>📄 تصدير Excel</button>
-          <Link href="/work-orders/new" className="wob-btn wob-btn-primary">＋ أمر شغل جديد</Link>
+          <Link href="/work-orders/new" className="wob-btn wob-btn-primary">＋ طلب خدمة جديد</Link>
         </div>
       </div>
 
@@ -660,7 +660,7 @@ export default function WorkOrders() {
         {rows.isLoading ? (
           <div className="wob-empty-board">جارٍ التحميل…</div>
         ) : boardEmpty ? (
-          <div className="wob-empty-board">{anyFilter ? "لا أوامر مطابقة للبحث/الفلاتر الحالية." : "لا أوامر شغل بعد. ابدأ بـ«أمر شغل جديد»."}</div>
+          <div className="wob-empty-board">{anyFilter ? "لا طلبات مطابقة للبحث/الفلاتر الحالية." : "لا طلبات خدمة بعد. ابدأ بـ«طلب خدمة جديد»."}</div>
         ) : (
           <div className="wob-board">
             {COLUMNS.map((s) => {
@@ -703,7 +703,7 @@ export default function WorkOrders() {
           busy={busy}
           onAdvance={async (id, to) => {
             if (to === "IN_PROGRESS") {
-              if (!(await confirm({ variant: "warning", title: "بدء تنفيذ أمر الشغل", description: "بدء التنفيذ يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟", confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
+              if (!(await confirm({ variant: "warning", title: "بدء تنفيذ طلب الخدمة", description: "بدء التنفيذ يخصم المواد المطلوبة من المخزون تلقائياً. متابعة؟", confirmText: "بدء التنفيذ", cancelText: "تراجع" }))) return;
               optimisticMove(id, "IN_PROGRESS"); start.mutate({ workOrderId: id });
             }
             else if (to === "READY") {

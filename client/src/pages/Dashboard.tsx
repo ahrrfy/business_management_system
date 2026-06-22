@@ -109,7 +109,7 @@ const MODULES: ModuleDef[] = [
   { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "oklch(0.60 0.18 322)" },
   { id: "suppStatement", href: "/suppliers-statement", name: "كشف حساب مورد",     desc: "حسابات الموردين",   sec: 3, color: "oklch(0.62 0.18 262)" },
   { id: "salesReport",   href: "/sales-report",        name: "تقرير المبيعات",    desc: "ملخّص وأرباح",      sec: 3, color: "oklch(0.60 0.20 215)" },
-  { id: "workOrders",    href: "/work-orders",         name: "أوامر الشغل",       desc: "المطبعة والإنتاج",  sec: 4, color: "oklch(0.65 0.20 128)" },
+  { id: "workOrders",    href: "/work-orders",         name: "خدمة العملاء",      desc: "طلبات الطباعة والتخصيص",  sec: 4, color: "oklch(0.65 0.20 128)" },
   { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "oklch(0.58 0.18 262)", adminOnly: true },
   { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "oklch(0.56 0.16 300)", adminOnly: true },
   { id: "reconcile",     href: "/reconcile",           name: "تدقيق التوافق",     desc: "كشف الانحراف",      sec: 5, color: "oklch(0.55 0.20 25)",  adminOnly: true },

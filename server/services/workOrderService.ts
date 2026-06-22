@@ -34,7 +34,7 @@ export interface WorkOrderMaterialInput {
 export interface CreateWorkOrderInput {
   branchId: number;
   customerId?: number | null;
-  // v3-add-screens(100%): اختياري لأمر شغل خدمة تخصيص خالصة بلا منتج خام.
+  // v3-add-screens(100%): اختياري لطلب خدمة خدمة تخصيص خالصة بلا منتج خام.
   baseVariantId?: number | null;
   title: string;
   customizationText?: string | null;
@@ -59,7 +59,7 @@ export interface CreateWorkOrderInput {
   deliveryCost?: string | null;
   // v3-add-screens(100%): صور نموذج العمل (تذهب لجدول workOrderImages).
   designImages?: Array<{ url: string; caption?: string | null; sortOrder?: number | null }>;
-  /** idempotency: نقرة مزدوجة/إعادة شبكة بنفس المفتاح ⇒ أمر شغل واحد (لا عربون نقدي مزدوج). */
+  /** idempotency: نقرة مزدوجة/إعادة شبكة بنفس المفتاح ⇒ طلب خدمة واحد (لا عربون نقدي مزدوج). */
   clientRequestId?: string | null;
 }
 
@@ -96,12 +96,12 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
     if (!Number.isInteger(qty) || qty <= 0)
       throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية يجب أن تكون عدداً صحيحاً موجباً" });
 
-    // v3-add-screens(100%): baseVariantId اختياري — أمر شغل قد يكون خدمة تخصيص بلا منتج خام.
+    // v3-add-screens(100%): baseVariantId اختياري — طلب خدمة قد يكون خدمة تخصيص بلا منتج خام.
     if (input.baseVariantId != null) {
       const base = (
         await tx.select().from(productVariants).where(eq(productVariants.id, input.baseVariantId)).limit(1)
       )[0];
-      if (!base) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج الأساس لأمر الشغل غير موجود" });
+      if (!base) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج الأساس لطلب الخدمة غير موجود" });
     }
 
     // Validate materials list — allow zero materials (printing-only WO).
@@ -189,9 +189,9 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
     }
 
     // السلامة المخزنية/المحاسبية (٢١/٦/٢٦): أُزيل إدراج `workOrderItems` (أصناف البيع المصغّرة).
-    // كان أمر الشغل يُخزّنها بلا خصم مخزون (start يستهلك المواد فقط) وبلا تكلفة (COGS) في الفاتورة
+    // كان طلب الخدمة يُخزّنها بلا خصم مخزون (start يستهلك المواد فقط) وبلا تكلفة (COGS) في الفاتورة
     // ⇒ مخزونٌ مُبالَغ فيه وربحٌ مُبالَغ فيه. القرار (أ): الأصناف الجاهزة تُباع بفاتورة بيع مستقلّة
-    // عبر saleRouter (خصم مخزون + COGS + قيد SALE)، وأمر الشغل يحمل خدمة التخصيص فقط. الجدول
+    // عبر saleRouter (خصم مخزون + COGS + قيد SALE)، وطلب الخدمة يحمل خدمة التخصيص فقط. الجدول
     // workOrderItems يبقى في المخطّط (بلا كاتب) تفادياً لهجرة، وقد يُستعمل مستقبلاً لمنطق صحيح.
 
     // v3-add-screens(100%): صور نموذج العمل في جدولها الصحيح.
@@ -211,16 +211,16 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
 
 async function loadWorkOrder(tx: any, workOrderId: number) {
   const rows = await tx.select().from(workOrders).where(eq(workOrders.id, workOrderId)).for("update").limit(1);
-  if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشغل غير موجود" });
+  if (!rows[0]) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
   return rows[0];
 }
 
-/** عزل الفرع: أي عملية مال على أمر الشغل تُجبر فرع الموظّف (غير المدير). يُمرَّر actor.role من الراوتر. */
+/** عزل الفرع: أي عملية مال على طلب الخدمة تُجبر فرع الموظّف (غير المدير). يُمرَّر actor.role من الراوتر. */
 function assertWorkOrderBranch(wo: { branchId: number | string }, actor: Actor & { role?: string }) {
   const elevated = actor.role === "admin" || actor.role === "manager";
   if (elevated) return;
   if (Number(wo.branchId) !== actor.branchId) {
-    throw new TRPCError({ code: "FORBIDDEN", message: "أمر الشغل لا يخصّ فرعك" });
+    throw new TRPCError({ code: "FORBIDDEN", message: "طلب الخدمة لا يخصّ فرعك" });
   }
 }
 
@@ -356,7 +356,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     if (paidNow.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المدفوع لا يمكن أن يكون سالباً" });
     if (totalPaid.gt(salePrice)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ المدفوع (مع العربون) يتجاوز إجمالي الأمر" });
     if (totalPaid.lt(salePrice) && !wo.customerId)
-      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشغل الآجل يتطلب عميلاً محدداً" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "طلب الخدمة الآجل يتطلب عميلاً محدداً" });
 
     // H5: فحص حدّ الائتمان على الجزء الآجل قبل إنشاء الفاتورة (يَرمي FORBIDDEN عند التجاوز).
     const unpaidPortion = round2(salePrice.minus(totalPaid));
@@ -385,7 +385,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       paidAmount: toDbMoney(totalPaid),
       paymentMethod: input.payment?.method ?? null,
       paymentDate: totalPaid.gt(0) ? new Date() : null,
-      notes: `أمر شغل ${wo.orderNumber}: ${wo.title}`,
+      notes: `طلب خدمة ${wo.orderNumber}: ${wo.title}`,
       createdBy: actor.userId,
     });
     const invoiceId = extractInsertId(invRes);
@@ -533,7 +533,7 @@ export async function cancelWorkOrder(workOrderId: number, actor: Actor & { role
           receiptId: refundReceiptId,
           customerId: wo.customerId ?? null,
           amount: refundAmt,
-          notes: `استرداد عربون أمر شغل ملغى #${workOrderId}`,
+          notes: `استرداد عربون طلب خدمة ملغى #${workOrderId}`,
         });
       }
     }

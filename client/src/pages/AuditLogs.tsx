@@ -51,12 +51,12 @@ const ACTION_AR: Record<string, string> = {
   // المصاريف
   "expense.create": "مصروف",
   "expense.cancel": "إلغاء مصروف",
-  // أوامر الشغل
-  "workOrder.create": "أمر شغل",
-  "workOrder.start": "بدء أمر شغل",
-  "workOrder.markReady": "تجهيز أمر شغل",
-  "workOrder.deliver": "تسليم أمر شغل",
-  "workOrder.cancel": "إلغاء أمر شغل",
+  // خدمة العملاء
+  "workOrder.create": "طلب خدمة",
+  "workOrder.start": "بدء طلب خدمة",
+  "workOrder.markReady": "تجهيز طلب خدمة",
+  "workOrder.deliver": "تسليم طلب خدمة",
+  "workOrder.cancel": "إلغاء طلب خدمة",
   // عروض الأسعار
   "quotation.create": "عرض سعر",
   "quotation.setStatus": "تغيير حالة عرض",

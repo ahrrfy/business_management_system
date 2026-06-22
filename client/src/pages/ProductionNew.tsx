@@ -127,7 +127,7 @@ export default function ProductionNew() {
     if (!pv) return setError("انتظر اكتمال المعاينة.");
     if (pv.anyShort) return setError("المخزون لا يكفي لأحد المدخلات — قلّل الدفعة أو جهّز المخزون.");
     setError("");
-    const noteParts = [notes.trim(), workOrder.trim() ? `مرتبط بأمر شغل: ${workOrder.trim()}` : ""].filter(Boolean);
+    const noteParts = [notes.trim(), workOrder.trim() ? `مرتبط بطلب خدمة: ${workOrder.trim()}` : ""].filter(Boolean);
     const ok = await confirm({
       variant: "warning",
       title: "تأكيد ترحيل التشغيل",
@@ -324,9 +324,9 @@ export default function ProductionNew() {
                       <p className="text-[11px] text-muted-foreground">إن سجّلت أجر العامل كمصروف رواتب منفصل اتركها صفراً (تفادي الاحتساب المزدوج).</p>
                     </div>
                     <div className="space-y-1">
-                      <Label className="flex items-center gap-1">ربط بأمر شغل (مرجع، اختياري) <span title="إن كان الإنتاج لأمر شغل بعينه، اذكره لتفادي خصم الورق مرّتين." className="inline-grid place-items-center w-4 h-4 rounded-full bg-muted text-[10px] text-muted-foreground cursor-help">؟</span></Label>
+                      <Label className="flex items-center gap-1">ربط بطلب خدمة (مرجع، اختياري) <span title="إن كان الإنتاج لطلب خدمة بعينه، اذكره لتفادي خصم الورق مرّتين." className="inline-grid place-items-center w-4 h-4 rounded-full bg-muted text-[10px] text-muted-foreground cursor-help">؟</span></Label>
                       <Input dir="ltr" value={workOrder} onChange={(e) => setWorkOrder(e.target.value)} placeholder="WO-1-…" />
-                      {workOrder.trim() && <p className="text-[11px] text-amber-600">تأكّد أن الورق لا يُخصَم مرّتين (هنا وداخل أمر الشغل).</p>}
+                      {workOrder.trim() && <p className="text-[11px] text-amber-600">تأكّد أن الورق لا يُخصَم مرّتين (هنا وداخل طلب الخدمة).</p>}
                     </div>
                   </CardContent>
                 </Card>

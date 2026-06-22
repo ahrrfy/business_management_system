@@ -1,4 +1,4 @@
-// تقرير أوامر الشغل — توزيع الحالات (كلها بما فيها الملغاة) + قنوات الاستلام + ربحية المُسلَّم.
+// تقرير طلبات خدمة العملاء — توزيع الحالات (كلها بما فيها الملغاة) + قنوات الاستلام + ربحية المُسلَّم.
 // المصدر: reports.workOrdersReport. عرض + تصدير Excel (توزيع الحالات) + طباعة A4.
 import { useState } from "react";
 import { trpc } from "@/lib/trpc";
@@ -52,7 +52,7 @@ export default function WorkOrdersReport() {
 
   function onExport() {
     exportRows(statusRows, {
-      filename: `تقرير-أوامر-الشغل-${period.from}-${period.to}`,
+      filename: `تقرير-طلبات-خدمة-العملاء-${period.from}-${period.to}`,
       columns: [
         { key: "label", header: "الحالة" },
         { key: "count", header: "عدد الأوامر", map: (r) => r.count },
@@ -62,7 +62,7 @@ export default function WorkOrdersReport() {
 
   function onPrint() {
     printReportDoc({
-      title: "تقرير أوامر الشغل",
+      title: "تقرير طلبات خدمة العملاء",
       headerExtra: [
         { label: "الفترة", value: periodLabel },
         { label: "الفرع", value: branchLabel },
@@ -87,8 +87,8 @@ export default function WorkOrdersReport() {
 
   return (
     <ReportShell
-      title="تقرير أوامر الشغل"
-      description="توزيع أوامر الشغل حسب الحالة وقناة الاستلام مع ربحية الأوامر المُسلَّمة."
+      title="تقرير طلبات خدمة العملاء"
+      description="توزيع طلبات خدمة العملاء حسب الحالة وقناة الاستلام مع ربحية الطلبات المُسلَّمة."
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
@@ -110,7 +110,7 @@ export default function WorkOrdersReport() {
       {q.isLoading ? (
         <Card><CardContent><p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p></CardContent></Card>
       ) : !hasData ? (
-        <Card><CardContent><p className="p-8 text-center text-sm text-muted-foreground">لا أوامر شغل في هذا النطاق.</p></CardContent></Card>
+        <Card><CardContent><p className="p-8 text-center text-sm text-muted-foreground">لا طلبات خدمة في هذا النطاق.</p></CardContent></Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           {/* توزيع الحالات */}
