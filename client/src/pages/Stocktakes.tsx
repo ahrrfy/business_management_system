@@ -235,7 +235,7 @@ export default function Stocktakes() {
                 <span className="rounded-full border border-border bg-muted px-3 py-1.5">{s}</span>
               </span>
             ))}
-            <span className="mr-auto font-normal text-muted-foreground">
+            <span className="me-auto font-normal text-muted-foreground">
               الفروقات ضمن الحدّ تُعتمد مباشرة، وما يتجاوزه يستوجب قرار مشرف أو إعادة عدّ.
             </span>
           </div>
@@ -327,7 +327,7 @@ export default function Stocktakes() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
-                <tr className="text-right text-xs text-muted-foreground">
+                <tr className="text-end text-xs text-muted-foreground">
                   <th className="p-2.5 font-semibold">الرقم</th>
                   <th className="p-2.5 font-semibold">الجلسة</th>
                   <th className="p-2.5 font-semibold">النطاق</th>
@@ -461,7 +461,7 @@ export default function Stocktakes() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="text-right text-xs text-muted-foreground">
+                <tr className="text-end text-xs text-muted-foreground">
                   <th className="p-2 font-semibold">الإجراء</th>
                   <th className="p-2 text-center font-semibold">مدير النظام</th>
                   <th className="p-2 text-center font-semibold">مدير فرع</th>
@@ -663,7 +663,7 @@ function IraCard({ data, loading }: { data: IraData | null; loading: boolean }) 
                       style={{ width: `${Math.max(0, Math.min(100, w.accuracy))}%` }}
                     />
                   </div>
-                  <span className="w-14 text-left text-xs font-bold tabular-nums">
+                  <span className="w-14 text-start text-xs font-bold tabular-nums">
                     {w.accuracy.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 })}٪
                   </span>
                 </div>

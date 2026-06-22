@@ -137,27 +137,27 @@ export default function SalesRegister() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">التاريخ</th>
-                    <th className="p-2.5 text-right font-medium">الفاتورة</th>
-                    <th className="p-2.5 text-right font-medium">العميل</th>
-                    <th className="p-2.5 text-right font-medium">المنتج</th>
-                    <th className="p-2.5 text-left font-medium">الكمية</th>
-                    <th className="p-2.5 text-left font-medium">السعر</th>
-                    <th className="p-2.5 text-left font-medium">الإجمالي</th>
-                    <th className="p-2.5 text-left font-medium">الربح</th>
+                    <th className="p-2.5 text-end font-medium">التاريخ</th>
+                    <th className="p-2.5 text-end font-medium">الفاتورة</th>
+                    <th className="p-2.5 text-end font-medium">العميل</th>
+                    <th className="p-2.5 text-end font-medium">المنتج</th>
+                    <th className="p-2.5 text-start font-medium">الكمية</th>
+                    <th className="p-2.5 text-start font-medium">السعر</th>
+                    <th className="p-2.5 text-start font-medium">الإجمالي</th>
+                    <th className="p-2.5 text-start font-medium">الربح</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.invoiceDate}</td>
-                      <td className="p-2.5 text-right">
+                      <td className="p-2.5 text-end">
                         <Link href={`/invoices/${r.invoiceId}`} className="text-primary underline-offset-2 hover:underline">
                           {r.invoiceNumber}
                         </Link>
                       </td>
-                      <td className="p-2.5 text-right">{r.customerName ?? "—"}</td>
-                      <td className="p-2.5 text-right">{r.productName}</td>
+                      <td className="p-2.5 text-end">{r.customerName ?? "—"}</td>
+                      <td className="p-2.5 text-end">{r.productName}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.quantity)}</td>
                       <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.total)}</td>

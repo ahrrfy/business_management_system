@@ -116,21 +116,21 @@ export default function TrialBalance() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-right font-medium">الحساب</th>
-                  <th className="p-3 text-left font-medium">مدين</th>
-                  <th className="p-3 text-left font-medium">دائن</th>
+                  <th className="p-3 text-end font-medium">الحساب</th>
+                  <th className="p-3 text-start font-medium">مدين</th>
+                  <th className="p-3 text-start font-medium">دائن</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((r, i) => (
                   <tr key={i} className="border-b">
-                    <td className="p-3 text-right">{r.label}</td>
+                    <td className="p-3 text-end">{r.label}</td>
                     <td className="p-3 text-left tabular-nums" dir="ltr">{D(r.debit).gt(0) ? fmtAr(r.debit) : "—"}</td>
                     <td className="p-3 text-left tabular-nums" dir="ltr">{D(r.credit).gt(0) ? fmtAr(r.credit) : "—"}</td>
                   </tr>
                 ))}
                 <tr className="font-bold bg-muted/30">
-                  <td className="p-3 text-right">الإجمالي</td>
+                  <td className="p-3 text-end">الإجمالي</td>
                   <td className="p-3 text-left tabular-nums" dir="ltr">{fmtAr(totalDebit)}</td>
                   <td className="p-3 text-left tabular-nums" dir="ltr">{fmtAr(totalCredit)}</td>
                 </tr>

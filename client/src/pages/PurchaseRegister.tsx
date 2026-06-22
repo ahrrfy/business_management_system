@@ -126,26 +126,26 @@ export default function PurchaseRegister() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">التاريخ</th>
-                    <th className="p-2.5 text-right font-medium">أمر الشراء</th>
-                    <th className="p-2.5 text-right font-medium">المورّد</th>
-                    <th className="p-2.5 text-right font-medium">المنتج</th>
-                    <th className="p-2.5 text-left font-medium">الكمية</th>
-                    <th className="p-2.5 text-left font-medium">سعر الوحدة</th>
-                    <th className="p-2.5 text-left font-medium">الإجمالي</th>
+                    <th className="p-2.5 text-end font-medium">التاريخ</th>
+                    <th className="p-2.5 text-end font-medium">أمر الشراء</th>
+                    <th className="p-2.5 text-end font-medium">المورّد</th>
+                    <th className="p-2.5 text-end font-medium">المنتج</th>
+                    <th className="p-2.5 text-start font-medium">الكمية</th>
+                    <th className="p-2.5 text-start font-medium">سعر الوحدة</th>
+                    <th className="p-2.5 text-start font-medium">الإجمالي</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r: Row) => (
                     <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.orderDate}</td>
-                      <td className="p-2.5 text-right">
+                      <td className="p-2.5 text-end">
                         <Link href={`/purchases/${r.poId}`} className="text-primary underline-offset-2 hover:underline">
                           {r.poNumber ?? `#${r.poId}`}
                         </Link>
                       </td>
-                      <td className="p-2.5 text-right">{r.supplierName ?? "—"}</td>
-                      <td className="p-2.5 text-right">{r.productName ?? "—"}</td>
+                      <td className="p-2.5 text-end">{r.supplierName ?? "—"}</td>
+                      <td className="p-2.5 text-end">{r.productName ?? "—"}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
                       <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.total)}</td>

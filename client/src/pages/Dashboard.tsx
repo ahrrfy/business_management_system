@@ -1,70 +1,30 @@
-import { createContext, useContext, useEffect, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { D, fmtAr } from "@/lib/money";
 import { fmtTime } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
 
-/* ═══════════ DARK-MODE HOOK ═══════════ */
+/* ═══════════ THEME — CSS variables in tokens.css ═══════════
+   مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
 
-function useDarkMode() {
-  const [dark, setDark] = useState(() =>
-    document.documentElement.classList.contains("dark")
-  );
-  useEffect(() => {
-    const obs = new MutationObserver(() =>
-      setDark(document.documentElement.classList.contains("dark"))
-    );
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => obs.disconnect();
-  }, []);
-  return dark;
-}
-
-/* ═══════════ THEME PALETTES ═══════════ */
-
-const LIGHT = {
-  bg:          "oklch(0.963 0.012 75)",
-  cardBg:      "oklch(1 0 0)",
-  cardBord:    "oklch(0 0 0 / 0.09)",
-  secLine:     "oklch(0 0 0 / 0.10)",
-  secLabel:    "oklch(0.40 0.08 262)",
-  text:        "oklch(0.18 0.014 65)",
-  sub:         "oklch(0.48 0.012 65)",
-  muted:       "oklch(0.62 0.010 65)",
-  statBg:      "oklch(1 0 0)",
-  statBord:    "oklch(0 0 0 / 0.08)",
-  alertBg:     "oklch(0.62 0.24 22 / 0.08)",
-  featuredBg:  "oklch(0.62 0.24 22 / 0.07)",
-  featuredBd:  "oklch(0.62 0.24 22 / 0.35)",
-  metricsBg:   "oklch(0.985 0.007 75)",
-  metricsBord: "oklch(0 0 0 / 0.08)",
-};
-
-const DARK = {
-  bg:          "oklch(0.14 0.010 65)",
-  cardBg:      "oklch(0.20 0.012 65)",
-  cardBord:    "oklch(1 0 0 / 0.10)",
-  secLine:     "oklch(1 0 0 / 0.22)",
-  secLabel:    "oklch(0.88 0.10 262)",
-  text:        "oklch(1 0 0)",
-  sub:         "oklch(0.90 0.005 75)",
-  muted:       "oklch(0.80 0.005 75)",
-  statBg:      "oklch(0.20 0.012 65)",
-  statBord:    "oklch(1 0 0 / 0.10)",
-  alertBg:     "oklch(0.62 0.24 22 / 0.14)",
-  featuredBg:  "oklch(0.62 0.24 22 / 0.14)",
-  featuredBd:  "oklch(0.62 0.24 22 / 0.50)",
-  metricsBg:   "oklch(0.17 0.010 65)",
-  metricsBord: "oklch(1 0 0 / 0.10)",
-};
-
-type Theme = typeof LIGHT;
-
-/* ═══════════ THEME CONTEXT ═══════════ */
-
-const ThemeCtx = createContext<Theme>(LIGHT);
-const useT = () => useContext(ThemeCtx);
+const T = {
+  bg:          "var(--dash-bg)",
+  cardBg:      "var(--dash-card-bg)",
+  cardBord:    "var(--dash-card-bord)",
+  secLine:     "var(--dash-sec-line)",
+  secLabel:    "var(--dash-sec-label)",
+  text:        "var(--dash-text)",
+  sub:         "var(--dash-sub)",
+  muted:       "var(--dash-muted)",
+  statBg:      "var(--dash-stat-bg)",
+  statBord:    "var(--dash-stat-bord)",
+  alertBg:     "var(--dash-alert-bg)",
+  featuredBg:  "var(--dash-featured-bg)",
+  featuredBd:  "var(--dash-featured-bd)",
+  metricsBg:   "var(--dash-metrics-bg)",
+  metricsBord: "var(--dash-metrics-bord)",
+} as const;
+const useT = () => T;
 
 /* ═══════════ SECTIONS & MODULES ═══════════ */
 
@@ -793,34 +753,29 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
 /* ═══════════ DASHBOARD ═══════════ */
 
 export default function Dashboard() {
-  const dark = useDarkMode();
-  const T = dark ? DARK : LIGHT;
-
   return (
-    <ThemeCtx.Provider value={T}>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: T.bg,
+        direction: "rtl",
+        fontFamily: "'Cairo', sans-serif",
+        margin: "-24px",
+      }}
+    >
+      <MetricsBar />
       <div
         style={{
-          minHeight: "100vh",
-          background: T.bg,
-          direction: "rtl",
-          fontFamily: "'Cairo', sans-serif",
-          margin: "-24px",
+          padding: "18px 24px 32px",
+          display: "flex",
+          flexDirection: "column",
+          gap: 20,
         }}
       >
-        <MetricsBar />
-        <div
-          style={{
-            padding: "18px 24px 32px",
-            display: "flex",
-            flexDirection: "column",
-            gap: 20,
-          }}
-        >
-          {SECTIONS.map((sec) => (
-            <SectionRow key={sec.id} sec={sec} />
-          ))}
-        </div>
+        {SECTIONS.map((sec) => (
+          <SectionRow key={sec.id} sec={sec} />
+        ))}
       </div>
-    </ThemeCtx.Provider>
+    </div>
   );
 }

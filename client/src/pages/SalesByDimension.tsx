@@ -134,17 +134,17 @@ export default function SalesByDimension() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">{dimLabel}</th>
-                    <th className="p-2.5 text-left font-medium">عدد الفواتير</th>
-                    <th className="p-2.5 text-left font-medium">الإيراد</th>
-                    <th className="p-2.5 text-left font-medium">المحصّل</th>
-                    <th className="p-2.5 text-left font-medium">المتبقّي</th>
+                    <th className="p-2.5 text-end font-medium">{dimLabel}</th>
+                    <th className="p-2.5 text-start font-medium">عدد الفواتير</th>
+                    <th className="p-2.5 text-start font-medium">الإيراد</th>
+                    <th className="p-2.5 text-start font-medium">المحصّل</th>
+                    <th className="p-2.5 text-start font-medium">المتبقّي</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r: Row) => (
                     <tr key={r.key} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">{r.label}</td>
+                      <td className="p-2.5 text-end">{r.label}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.invoices}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
                       <td className="p-2.5 text-left tabular-nums text-emerald-600" dir="ltr">{fmtAr(r.paid)}</td>

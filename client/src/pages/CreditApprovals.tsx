@@ -63,7 +63,7 @@ export default function CreditApprovalsPage() {
                   key={c.id}
                   type="button"
                   onClick={() => setCustomerId(Number(c.id))}
-                  className={`w-full text-right p-2 hover:bg-accent border-b text-sm ${customerId === Number(c.id) ? "bg-accent" : ""}`}
+                  className={`w-full text-end p-2 hover:bg-accent border-b text-sm ${customerId === Number(c.id) ? "bg-accent" : ""}`}
                 >
                   <div className="font-medium">{c.name}</div>
                   <div className="text-xs text-muted-foreground">رصيد: {fmtAr(c.currentBalance)} د.ع</div>

@@ -144,13 +144,13 @@ export default function Suppliers() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr className="text-end">
                 <th className="p-2">الاسم</th>
                 {hasLegacy && <th className="p-2">الرقم القديم</th>}
                 <th className="p-2">الهاتف</th>
                 <th className="p-2">المدينة</th>
                 <th className="p-2">شروط الدفع</th>
-                <th className="p-2 text-left">الرصيد</th>
+                <th className="p-2 text-start">الرصيد</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -170,7 +170,7 @@ export default function Suppliers() {
                     <td className="p-2"><CopyInline value={s.phone} /></td>
                     <td className="p-2 text-xs">{s.city ?? "—"}</td>
                     <td className="p-2 text-xs">{s.paymentTerms ?? "—"}</td>
-                    <td className="p-2 text-left">
+                    <td className="p-2 text-start">
                       <BalanceCell amount={s.currentBalance} entityType="supplier" />
                     </td>
                     <td className="p-2 text-center">

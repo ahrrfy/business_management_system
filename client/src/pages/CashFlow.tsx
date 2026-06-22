@@ -105,8 +105,8 @@ export default function CashFlow() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
-                  <th className="p-3 text-right font-medium">البند</th>
-                  <th className="p-3 text-left font-medium">القيمة</th>
+                  <th className="p-3 text-end font-medium">البند</th>
+                  <th className="p-3 text-start font-medium">القيمة</th>
                 </tr>
               </thead>
               <tbody>
@@ -115,7 +115,7 @@ export default function CashFlow() {
                   const isTotal = r.label.startsWith("إجمالي") || r.label.startsWith("صافي");
                   return (
                     <tr key={i} className={`border-b last:border-0 ${isHeader || isTotal ? "font-bold bg-muted/30" : ""}`}>
-                      <td className="p-3 text-right">{r.label}</td>
+                      <td className="p-3 text-end">{r.label}</td>
                       <td className={`p-3 text-left tabular-nums ${r.neg ? "text-rose-600" : ""}`} dir="ltr">
                         {r.amount === "" ? "" : r.neg ? `(${fmtAr(r.amount)})` : fmtAr(r.amount)}
                       </td>
