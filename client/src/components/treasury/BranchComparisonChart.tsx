@@ -118,8 +118,8 @@ export function BranchComparisonChart({
             <YAxis tickFormatter={abbreviateNumber} tick={{ fontSize: 11 }} />
             <Tooltip content={<FmtTooltip />} />
             <Legend wrapperStyle={{ fontSize: 12 }} />
-            <Bar dataKey="درج" stackId="bal" fill="#10b981" radius={[0, 0, 0, 0]} />
-            {showTreasury && <Bar dataKey="خزينة" stackId="bal" fill="#8b5cf6" radius={[4, 4, 0, 0]} />}
+            <Bar dataKey="درج" stackId="bal" fill="var(--chart-cash)" radius={[0, 0, 0, 0]} />
+            {showTreasury && <Bar dataKey="خزينة" stackId="bal" fill="var(--chart-check)" radius={[4, 4, 0, 0]} />}
           </BarChart>
         </ResponsiveContainer>
       )}

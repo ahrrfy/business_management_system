@@ -304,7 +304,7 @@ export default function BarcodeLabels() {
             <div
               dir="ltr"
               className="shrink-0 rounded bg-white relative overflow-hidden"
-              style={{ width: pxW * PREVIEW_ZOOM, height: pxH * PREVIEW_ZOOM, outline: "1px dashed #94a3b8" }}
+              style={{ width: pxW * PREVIEW_ZOOM, height: pxH * PREVIEW_ZOOM, outline: "1px dashed var(--border)" }}
             >
               <iframe
                 title="معاينة الملصق"

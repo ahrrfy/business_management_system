@@ -13,21 +13,27 @@
 @keyframes kpc-grow { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 
 .kioskpc-root {
-  /* ===== رموز النظام (فاتح) ===== */
-  --bg: oklch(0.985 0.002 247.858);
-  --fg: oklch(0.235 0.015 65);
-  --card: #ffffff;
-  --muted: oklch(0.962 0.004 247.858);
-  --muted-fg: oklch(0.552 0.016 285.938);
-  --border: oklch(0.922 0.004 247.858);
-  --success: oklch(0.50 0.13 155);
-  --brand: #3f46d6;
-  --brand-weak: color-mix(in srgb, var(--brand) 12%, transparent);
-  --brand-soft: color-mix(in srgb, var(--brand) 16%, transparent);
-  --success-soft: color-mix(in srgb, var(--success) 16%, transparent);
-  --qr-fg: oklch(0.235 0.015 65);
-  --shadow-lg: 0 40px 90px -38px rgba(20, 24, 50, 0.42);
-  --shadow-md: 0 24px 50px -28px rgba(20, 24, 50, 0.30);
+  /* ===== رموز النظام (فاتح) — kpc-* prefix لِعَزل النِطاق عن أَصناف shadcn ===== */
+  --kpc-bg: oklch(0.985 0.002 247.858);
+  --kpc-fg: oklch(0.235 0.015 65);
+  --kpc-card: oklch(1 0 0);
+  --kpc-muted: oklch(0.962 0.004 247.858);
+  --kpc-muted-fg: oklch(0.552 0.016 285.938);
+  --kpc-border: oklch(0.922 0.004 247.858);
+  --kpc-success: oklch(0.50 0.13 155);
+  --kpc-brand: oklch(0.52 0.20 270);
+  --kpc-brand-weak: color-mix(in oklch, var(--kpc-brand) 12%, transparent);
+  --kpc-brand-soft: color-mix(in oklch, var(--kpc-brand) 16%, transparent);
+  --kpc-success-soft: color-mix(in oklch, var(--kpc-success) 16%, transparent);
+  --kpc-qr-fg: oklch(0.235 0.015 65);
+  --kpc-shadow-lg: 0 40px 90px -38px oklch(0.15 0.04 264 / 0.42);
+  --kpc-shadow-md: 0 24px 50px -28px oklch(0.15 0.04 264 / 0.30);
+  /* أَلياس قَديم لِتَوافُق رجعي مع المُحدِّدات الكَثيرة دونَ ضَخّ ٢٠٠ سَطر تَعديلات */
+  --bg: var(--kpc-bg); --fg: var(--kpc-fg); --card: var(--kpc-card); --muted: var(--kpc-muted);
+  --muted-fg: var(--kpc-muted-fg); --border: var(--kpc-border); --success: var(--kpc-success);
+  --brand: var(--kpc-brand); --brand-weak: var(--kpc-brand-weak); --brand-soft: var(--kpc-brand-soft);
+  --success-soft: var(--kpc-success-soft); --qr-fg: var(--kpc-qr-fg);
+  --shadow-lg: var(--kpc-shadow-lg); --shadow-md: var(--kpc-shadow-md);
 
   position: fixed;
   inset: 0;

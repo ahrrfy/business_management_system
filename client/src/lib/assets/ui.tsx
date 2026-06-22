@@ -27,10 +27,10 @@ export function CategoryIcon({ category, className }: { category: string; classN
 }
 
 const STATUS_CLS: Record<string, string> = {
-  active: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-  maintenance: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
-  retired: "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
-  disposed: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
+  active: "badge-status-active",
+  maintenance: "badge-status-pending",
+  retired: "bg-muted text-muted-foreground",
+  disposed: "badge-stock-out",
 };
 
 export function AssetStatusBadge({ status }: { status: string }) {
@@ -43,7 +43,7 @@ export function AssetStatusBadge({ status }: { status: string }) {
 
 /** بطاقة مؤشّر هادئة: أيقونة + عنوان فوق رقم بارز (الرقم هو البطل). */
 export function StatCard({ label, value, icon: Icon, sub, tone }: { label: string; value: ReactNode; icon?: LucideIcon; sub?: ReactNode; tone?: "default" | "negative" | "positive" }) {
-  const valueCls = tone === "negative" ? "text-rose-600 dark:text-rose-400" : tone === "positive" ? "text-emerald-600 dark:text-emerald-400" : "";
+  const valueCls = tone === "negative" ? "text-money-negative" : tone === "positive" ? "text-money-positive" : "";
   return (
     <Card>
       <CardContent className="p-4">

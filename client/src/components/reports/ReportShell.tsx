@@ -19,10 +19,10 @@ export interface KpiItem {
 
 const toneCls: Record<KpiTone, string> = {
   default: "text-foreground",
-  positive: "text-emerald-600",
-  negative: "text-rose-600",
-  warning: "text-amber-600",
-  info: "text-sky-600",
+  positive: "text-money-positive",
+  negative: "text-money-negative",
+  warning: "text-stock-low",
+  info: "text-sky-600 dark:text-sky-400",
 };
 
 export function ReportShell({

@@ -55,12 +55,12 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STAGE_COLOR: Record<string, string> = {
-  new: "#2563eb",
-  review: "#ca8a04",
-  interview: "#7c3aed",
-  accepted: "#16a34a",
-  rejected: "#dc2626",
-  archived: "#64748b",
+  new: "var(--status-pending)",
+  review: "var(--stock-low)",
+  interview: "var(--chart-check)",
+  accepted: "var(--money-positive)",
+  rejected: "var(--money-negative)",
+  archived: "var(--muted-foreground)",
 };
 
 /** المرحلة التالية في المسار (للزر «نقل»). الرفض/الأرشيف نهايتان. */

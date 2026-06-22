@@ -37,7 +37,7 @@ export function StatementReconcile({ entityName, entityType, phone, currentBalan
   };
 
   return (
-    <Card className="border-[#25D366]/40">
+    <Card style={{ borderColor: "color-mix(in oklch, var(--brand-whatsapp) 40%, transparent)" }}>
       <CardContent className="pt-6 space-y-4">
         <div className="flex items-start justify-between flex-wrap gap-3">
           <div>

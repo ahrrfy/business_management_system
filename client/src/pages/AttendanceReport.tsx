@@ -12,10 +12,10 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type Row = RouterOutputs["attendance"]["report"]["rows"][number];
 
 const STATUS_CLS: Record<string, string> = {
-  PRESENT: "bg-emerald-100 text-emerald-700",
-  ABSENT: "bg-rose-100 text-rose-700",
-  LATE: "bg-amber-100 text-amber-700",
-  LEAVE: "bg-sky-100 text-sky-700",
+  PRESENT: "badge-status-active",
+  ABSENT: "badge-stock-out",
+  LATE: "badge-status-pending",
+  LEAVE: "bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300",
 };
 
 const selectCls =

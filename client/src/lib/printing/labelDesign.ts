@@ -25,11 +25,12 @@ function widthScale(widthMm: number): number {
 function nameFontPt(name: string, widthMm: number): number {
   const n = name.trim().length;
   const base = n <= 18 ? 12 : n <= 28 ? 10 : n <= 40 ? 8.5 : 7.5;
-  return Math.round(base * widthScale(widthMm) * 10) / 10;
+  // حَدٌّ أَدنى ٨pt لِاسم المُنتَج — أَقَل من ذلك يَصير غَير مَقروء على 203dpi الحَراري.
+  return Math.max(8, Math.round(base * widthScale(widthMm) * 10) / 10);
 }
 
 /** حجم خطّ ثانويّ (أرقام الباركود/الرمز/السعر) مقيّساً بعرض الملصق وبحدٍّ أدنى واضح. */
-function scaledPt(pt: number, widthMm: number, floor = 6): number {
+function scaledPt(pt: number, widthMm: number, floor = 7): number {
   return Math.max(floor, Math.round(pt * widthScale(widthMm) * 10) / 10);
 }
 

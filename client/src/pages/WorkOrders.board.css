@@ -139,9 +139,9 @@
 .wob-avatar.wob-unassigned { background: var(--muted); color: var(--muted-fg); border: 1px dashed var(--border-strong); }
 .wob-who { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .wob-who-name { font-size: 12px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.wob-wa { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 8px; background: #25d366; color: #fff; text-decoration: none; flex-shrink: 0; box-shadow: 0 1px 4px #25d36650; }
+.wob-wa { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; border-radius: 8px; background: var(--brand-whatsapp); color: #fff; text-decoration: none; flex-shrink: 0; box-shadow: 0 1px 4px color-mix(in oklch, var(--brand-whatsapp) 50%, transparent); }
 .wob-wa:hover { filter: brightness(1.06); }
-.wob-wa-lg { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 18px; border-radius: 10px; font-weight: 700; font-size: 14px; background: #25d366; color: #fff; text-decoration: none; box-shadow: 0 2px 8px #25d36640; }
+.wob-wa-lg { display: inline-flex; align-items: center; gap: 8px; height: 42px; padding: 0 18px; border-radius: 10px; font-weight: 700; font-size: 14px; background: var(--brand-whatsapp); color: #fff; text-decoration: none; box-shadow: 0 2px 8px color-mix(in oklch, var(--brand-whatsapp) 40%, transparent); }
 .wob-wa-lg:hover { filter: brightness(1.08); }
 
 /* ─── الدرج (لوحة التفاصيل) ─── */
@@ -180,4 +180,13 @@
 
 @media (max-width: 900px) {
   .wob-stats { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* استجابة لوحة الكانبان — كانت ٥ أَعمدة ثابتة ١٦٠٠px تَكسر على الشاشات الصَغيرة. */
+@media (max-width: 1366px) {
+  .wob { --wob-col-w: 280px; }
+}
+@media (max-width: 768px) {
+  .wob { --wob-col-w: 88vw; }
+  .wob-stats { grid-template-columns: 1fr 1fr; gap: 8px; }
 }

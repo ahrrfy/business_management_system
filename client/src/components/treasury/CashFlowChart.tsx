@@ -109,8 +109,8 @@ export function CashFlowChart({ data, loading, height = 300 }: CashFlowChartProp
               <YAxis tickFormatter={abbreviateNumber} tick={{ fontSize: 11 }} />
               <Tooltip content={<FmtTooltip />} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Bar dataKey="inflow" name="مقبوضات" fill="#10b981" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="outflow" name="مدفوعات" fill="#f43f5e" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="inflow" name="مقبوضات" fill="var(--money-positive)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="outflow" name="مدفوعات" fill="var(--money-negative)" radius={[4, 4, 0, 0]} />
             </BarChart>
           ) : variant === "line" ? (
             <LineChart data={chartData} margin={{ top: 5, right: 8, left: -8, bottom: 0 }}>
@@ -119,19 +119,19 @@ export function CashFlowChart({ data, loading, height = 300 }: CashFlowChartProp
               <YAxis tickFormatter={abbreviateNumber} tick={{ fontSize: 11 }} />
               <Tooltip content={<FmtTooltip />} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line type="monotone" dataKey="inflow" name="مقبوضات" stroke="#10b981" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="outflow" name="مدفوعات" stroke="#f43f5e" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="inflow" name="مقبوضات" stroke="var(--money-positive)" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="outflow" name="مدفوعات" stroke="var(--money-negative)" strokeWidth={2} dot={false} />
             </LineChart>
           ) : (
             <AreaChart data={chartData} margin={{ top: 5, right: 8, left: -8, bottom: 0 }}>
               <defs>
                 <linearGradient id="gradIn" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#10b981" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
+                  <stop offset="0%" stopColor="var(--money-positive)" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="var(--money-positive)" stopOpacity={0} />
                 </linearGradient>
                 <linearGradient id="gradOut" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#f43f5e" stopOpacity={0.3} />
-                  <stop offset="100%" stopColor="#f43f5e" stopOpacity={0} />
+                  <stop offset="0%" stopColor="var(--money-negative)" stopOpacity={0.3} />
+                  <stop offset="100%" stopColor="var(--money-negative)" stopOpacity={0} />
                 </linearGradient>
               </defs>
               <CartesianGrid strokeDasharray="3 3" className="stroke-border/40" />
@@ -143,7 +143,7 @@ export function CashFlowChart({ data, loading, height = 300 }: CashFlowChartProp
                 type="monotone"
                 dataKey="inflow"
                 name="مقبوضات"
-                stroke="#10b981"
+                stroke="var(--money-positive)"
                 strokeWidth={2}
                 fill="url(#gradIn)"
               />
@@ -151,7 +151,7 @@ export function CashFlowChart({ data, loading, height = 300 }: CashFlowChartProp
                 type="monotone"
                 dataKey="outflow"
                 name="مدفوعات"
-                stroke="#f43f5e"
+                stroke="var(--money-negative)"
                 strokeWidth={2}
                 fill="url(#gradOut)"
               />
