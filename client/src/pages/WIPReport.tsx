@@ -1,5 +1,5 @@
 /**
- * تقرير WIP (Work-in-Progress) — قيمة المواد المُستهلَكة في أوامر شغل قيد التنفيذ.
+ * تقرير WIP (Work-in-Progress) — قيمة المواد المُستهلَكة في طلبات خدمة قيد التنفيذ.
  * managerBranchScopedProcedure.
  */
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
@@ -22,7 +22,7 @@ export default function WIPReportPage() {
     <div className="container mx-auto p-4 space-y-4 max-w-6xl">
       <h1 className="text-2xl font-bold">تقرير WIP — قيمة الإنتاج تحت التنفيذ</h1>
       <p className="text-sm text-muted-foreground">
-        المواد المُستهلَكة في أوامر شغل لم تُسلَّم بعد — قيمة معلَّقة بين «المخزون» و«تكلفة المبيع» (تظهر فعلياً في SALE.cost عند التسليم).
+        المواد المُستهلَكة في طلبات خدمة لم تُسلَّم بعد — قيمة معلَّقة بين «المخزون» و«تكلفة المبيع» (تظهر فعلياً في SALE.cost عند التسليم).
       </p>
 
       <Card>
@@ -53,7 +53,7 @@ export default function WIPReportPage() {
               </div>
 
               {(wip.data?.rows.length ?? 0) === 0 ? (
-                <p className="text-muted-foreground text-sm pt-2">لا أوامر شغل قيد التنفيذ</p>
+                <p className="text-muted-foreground text-sm pt-2">لا طلبات خدمة قيد التنفيذ</p>
               ) : (
                 <div className="overflow-auto">
                   <table className="w-full text-sm border-collapse">

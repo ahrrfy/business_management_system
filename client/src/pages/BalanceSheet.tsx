@@ -33,8 +33,8 @@ export default function BalanceSheet() {
     const liabilities = [
       { label: "الذمم الدائنة (موردون)", v: p.apCredit },
       { label: "سُلف العملاء", v: p.arCredit },
-      // FIN-05: عرابين أوامر الشغل غير المُسلَّمة — التزامٌ يقابل النقد الداخل (الخدمة لم تُنجَز بعد).
-      { label: "سُلف عملاء (عرابين أوامر شغل)", v: p.customerAdvances },
+      // FIN-05: عرابين طلبات خدمة العملاء غير المُسلَّمة — التزامٌ يقابل النقد الداخل (الخدمة لم تُنجَز بعد).
+      { label: "سُلف عملاء (عرابين طلبات خدمة)", v: p.customerAdvances },
     ].filter((r) => D(r.v).gt(0));
     return { assets, liabilities };
   }, [p]);

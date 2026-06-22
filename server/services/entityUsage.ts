@@ -97,7 +97,7 @@ export async function getUserUsage(userId: number, conn?: any): Promise<UsageSum
     ["purchaseOrders", "طلبات شراء", countRows(db, purchaseOrders, eq(purchaseOrders.createdBy, userId))],
     [
       "workOrders",
-      "أوامر شغل",
+      "طلبات خدمة",
       countRows(db, workOrders, or(eq(workOrders.createdBy, userId), eq(workOrders.assignedTo, userId))),
     ],
     ["quotations", "عروض أسعار", countRows(db, quotations, eq(quotations.createdBy, userId))],

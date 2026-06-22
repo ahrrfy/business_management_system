@@ -179,7 +179,7 @@ export const workOrderRouter = router({
       .orderBy(asc(users.name));
   }),
 
-  /** إسناد/إعادة إسناد المنفّذ المسؤول عن أمر الشغل (null = إلغاء الإسناد). مدير فأعلى + تدقيق. */
+  /** إسناد/إعادة إسناد المنفّذ المسؤول عن طلب الخدمة (null = إلغاء الإسناد). مدير فأعلى + تدقيق. */
   assign: managerProcedure
     .input(z.object({ workOrderId: z.number().int().positive(), assignedTo: z.number().int().positive().nullable() }))
     .mutation(async ({ input, ctx }) => {
@@ -188,7 +188,7 @@ export const workOrderRouter = router({
       const wo = (
         await db.select({ id: workOrders.id }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
       )[0];
-      if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشغل غير موجود" });
+      if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
       if (input.assignedTo != null) {
         const u = (
           await db.select({ id: users.id, isActive: users.isActive }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
@@ -301,10 +301,10 @@ export const workOrderRouter = router({
         } catch (e: any) {
           if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء أمر الشغل" });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء طلب الخدمة" });
         }
       }
-      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء أمر الشغل" });
+      throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء طلب الخدمة" });
     }),
 
   /**
@@ -359,7 +359,7 @@ export const workOrderRouter = router({
         } catch (e: any) {
           if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تسليم أمر الشغل" });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تسليم طلب الخدمة" });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });

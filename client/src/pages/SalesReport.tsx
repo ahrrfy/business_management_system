@@ -33,7 +33,7 @@ const SOURCE: Record<string, string> = {
   POS: "نقطة بيع",
   ONLINE: "أونلاين",
   ORDER: "طلب",
-  WORKORDER: "أمر شغل",
+  WORKORDER: "طلب خدمة",
 };
 
 const fmt = fmtAr;
@@ -255,7 +255,7 @@ export default function SalesReport() {
                 >
                   <option value="">الكل</option>
                   <option value="POS">نقطة بيع</option>
-                  <option value="WORKORDER">أمر شغل</option>
+                  <option value="WORKORDER">طلب خدمة</option>
                   <option value="ORDER">طلب</option>
                 </select>
               </div>

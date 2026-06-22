@@ -17,7 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
 
 /**
- * أمر شغل جديد — v3 add-screens (شاشة احترافية متكاملة).
+ * طلب خدمة جديد — v3 add-screens (شاشة احترافية متكاملة).
  *
  * تصميم — ٧ أقسام:
  *  ١) قنوات الاستلام (واتساب/انستغرام/تيك توك/هاتف/مباشر) + معرّف القناة.
@@ -88,7 +88,7 @@ export default function WorkOrderNew() {
   const effectiveBranch = branchId || me.data?.branchId || (branches.data?.[0] ? Number(branches.data[0].id) : 1);
 
   // السلامة المخزنية/المحاسبية: الأصناف الجاهزة (السلّة) تُباع بفاتورة بيع مستقلّة عبر saleRouter
-  // (خصم مخزون + COGS + قيد SALE)، لا داخل أمر الشغل. يلزم وردية مفتوحة كنقطة البيع.
+  // (خصم مخزون + COGS + قيد SALE)، لا داخل طلب الخدمة. يلزم وردية مفتوحة كنقطة البيع.
   const shiftQ = trpc.shifts.current.useQuery({ branchId: Number(effectiveBranch) }, { enabled: !!effectiveBranch });
   const shift = shiftQ.data;
 
@@ -211,7 +211,7 @@ export default function WorkOrderNew() {
   // ── الملخّص الهجين (وثيقتان منفصلتان) ──────────────────────────
   // بيع مباشر (الأصناف الجاهزة): يُدفع كاملاً الآن بفاتورة بيع مستقلّة (خصم على السلّة يُطبَّق عليها).
   const saleTotal = cartSubtotal.minus(discount);
-  // أمر التخصيص (المطبعة): سعر الخدمة + التوصيل = سعر بيع أمر الشغل، يُقبض عليه عربون.
+  // أمر التخصيص (المطبعة): سعر الخدمة + التوصيل = سعر بيع طلب الخدمة، يُقبض عليه عربون.
   const customTotal = customizationTotal.plus(delivery);
   const depositD = D(deposit || "0");
   const customRemaining = customTotal.minus(depositD);
@@ -224,7 +224,7 @@ export default function WorkOrderNew() {
   const [error, setError] = useState("");
   // idempotency: مفتاح ثابت للنموذج — يمنع إنشاء أمرين وقبض عربون مزدوج عند النقر المزدوج/إعادة الشبكة.
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
-  // idempotency منفصل لفاتورة بيع الأصناف الجاهزة (وثيقة مستقلّة عن أمر الشغل).
+  // idempotency منفصل لفاتورة بيع الأصناف الجاهزة (وثيقة مستقلّة عن طلب الخدمة).
   const [saleRequestId, setSaleRequestId] = useState(() => crypto.randomUUID());
 
   const createCustomer = trpc.customers.create.useMutation();
@@ -284,7 +284,7 @@ export default function WorkOrderNew() {
     // تأكيد نهائيّ — يصف الوثيقتين والمبلغ المقبوض فوراً (بيع كامل + عربون) ولا رجعة فيه.
     const parts: string[] = [];
     if (hasCart) parts.push(`فاتورة بيع للأصناف الجاهزة بقيمة ${fmt(saleTotal.toFixed(2))} د.ع تُدفع كاملة`);
-    if (hasCustom) parts.push(`أمر شغل بقيمة ${fmt(customTotal.toFixed(2))} د.ع بعربون ${fmt(depositD.toFixed(2))} د.ع`);
+    if (hasCustom) parts.push(`طلب خدمة بقيمة ${fmt(customTotal.toFixed(2))} د.ع بعربون ${fmt(depositD.toFixed(2))} د.ع`);
     if (!(await confirm({
       variant: "danger",
       title: "تأكيد الاستلام (يقبض نقداً) لا رجعة فيه",
@@ -321,9 +321,9 @@ export default function WorkOrderNew() {
       }
     }
 
-    // ── (٢) خدمة التخصيص → أمر شغل (سعر = التخصيص + التوصيل، بلا أصناف بيع) ──
+    // ── (٢) خدمة التخصيص → طلب خدمة (سعر = التخصيص + التوصيل، بلا أصناف بيع) ──
     if (!hasCustom) {
-      // طلب أصناف جاهزة فقط بلا تخصيص ⇒ لا أمر شغل؛ ننتقل لقائمة الفواتير.
+      // طلب أصناف جاهزة فقط بلا تخصيص ⇒ لا طلب خدمة؛ ننتقل لقائمة الفواتير.
       setCart([]);
       navigate("/invoices");
       return;
@@ -335,7 +335,7 @@ export default function WorkOrderNew() {
       customerId: customerId ?? null,
       // أمر التخصيص خدمةٌ خالصة بلا منتج أساس (الأصناف الجاهزة بيعت بفاتورتها).
       baseVariantId: null,
-      title: title.trim() || "أمر شغل",
+      title: title.trim() || "طلب خدمة",
       customizationText: customizationText.trim() || null,
       quantity: Math.max(1, parseInt(quantity || "1", 10) || 1),
       materials: [],
@@ -369,10 +369,10 @@ export default function WorkOrderNew() {
     const w = window.open("", "_blank", "width=720,height=900");
     if (!w) return;
     const rows = cart.map((c) => `<tr><td>${esc(c.productName)}</td><td>${esc(c.unitName)}</td><td>${c.quantity}</td><td>${esc(fmt(c.unitPrice))}</td></tr>`).join("");
-    w.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>أمر شغل</title>
+    w.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>طلب خدمة</title>
       <style>body{font-family:Cairo,sans-serif;padding:24px;color:#222}h1{margin:0 0 12px}table{width:100%;border-collapse:collapse;margin:12px 0}th,td{border:1px solid #ddd;padding:6px 8px;text-align:right}thead{background:#f4f4f5}.muted{color:#666;font-size:13px}.total{font-weight:700;font-size:16px;margin-top:8px}</style>
       </head><body>
-      <h1>أمر شغل — معاينة</h1>
+      <h1>طلب خدمة — معاينة</h1>
       <p class="muted">العميل: ${esc(customerSel.name || "—")} ${customerSel.isNew ? "(جديد)" : ""}</p>
       <p class="muted">القناة: ${esc(CHANNELS.find((c) => c.v === channel)?.label || "—")} ${channelHandle ? `· <bdi>${esc(channelHandle)}</bdi>` : ""}</p>
       <p class="muted">الأولوية: ${esc(PRIORITIES.find((p) => p.v === priority)?.label || "عادي")}</p>
@@ -394,7 +394,7 @@ export default function WorkOrderNew() {
   return (
     <div className="space-y-4 max-w-6xl">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold">أمر شغل جديد</h1>
+        <h1 className="text-2xl font-bold">طلب خدمة جديد</h1>
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={exportImage}>تحميل/طباعة كصورة</Button>
           <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع</Link>
@@ -750,7 +750,7 @@ export default function WorkOrderNew() {
             </div>
             {/* بطاقة أمر التخصيص */}
             <div className={cn("rounded-md border p-3 space-y-1", hasCustom ? "bg-violet-500/5 border-violet-500/30" : "bg-muted/20 opacity-60")}>
-              <div className="flex items-center justify-between font-semibold"><span>🖨 أمر تخصيص (مطبعة)</span>{hasCustom && <Badge variant="outline" className="text-violet-700 border-violet-500/40">أمر شغل</Badge>}</div>
+              <div className="flex items-center justify-between font-semibold"><span>🖨 أمر تخصيص (مطبعة)</span>{hasCustom && <Badge variant="outline" className="text-violet-700 border-violet-500/40">طلب خدمة</Badge>}</div>
               <div className="flex justify-between"><span>خدمة التخصيص ({quantity} × {fmt(salePrice || "0")})</span><span dir="ltr">{fmt(customizationTotal.toFixed(2))} د.ع</span></div>
               {hasDelivery && delivery.gt(0) && <div className="flex justify-between"><span>+ توصيل</span><span dir="ltr">{fmt(delivery.toFixed(2))} د.ع</span></div>}
               <div className="flex justify-between font-bold border-t pt-1"><span>سعر الأمر</span><span dir="ltr">{fmt(customTotal.toFixed(2))} د.ع</span></div>

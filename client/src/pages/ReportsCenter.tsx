@@ -108,11 +108,11 @@ const SECTIONS: Section[] = [
   },
   {
     key: "production",
-    label: "الإنتاج وأوامر الشغل",
+    label: "الإنتاج وخدمة العملاء",
     icon: "🖨️",
     items: [
       { title: "تقرير الإنتاج", desc: "بالفترة + تفصيل التكلفة + الهدر/المردود", href: "/reports/production", icon: "🏭", gate: "manager", status: "ready" },
-      { title: "تقرير أوامر الشغل", desc: "توزيع الحالات + الربحية + أعمار التسليم", href: "/reports/work-orders", icon: "📑", gate: "manager", status: "ready" },
+      { title: "تقرير طلبات خدمة العملاء", desc: "توزيع الحالات + الربحية + أعمار التسليم", href: "/reports/work-orders", icon: "📑", gate: "manager", status: "ready" },
     ],
   },
   {

@@ -272,7 +272,7 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
     // دفاع متعمّق: السندات المستقلّة لا تحمل invoiceId/workOrderId أبداً (دفعات الفواتير تمرّ
     // عبر sales.pay بلا voucherNumber) — لكن نحرس بنيوياً كي لا يُفسد إلغاءٌ حالةَ سداد فاتورة.
     if (r.invoiceId != null || r.workOrderId != null) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء إيصال مرتبط بفاتورة/أمر شغل من هنا" });
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء إيصال مرتبط بفاتورة/طلب خدمة من هنا" });
     }
     if (r.status === "REVERSED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "السند ملغى بالفعل" });

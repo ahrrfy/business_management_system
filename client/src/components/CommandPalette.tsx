@@ -1,5 +1,5 @@
 // بحث شامل بـCtrl+K — وصول فوري لأي صفحة + بحث ذرّي عبر كل وحدات النظام
-// (منتجات/فواتير/عروض أسعار/مشتريات/أوامر شغل/عملاء/موردين/مصاريف) بنقرة واحدة.
+// (منتجات/فواتير/عروض أسعار/مشتريات/طلبات خدمة/عملاء/موردين/مصاريف) بنقرة واحدة.
 //
 // النمط مكتشَف تلقائياً على الخادم (`globalSearch.search`):
 //  - أرقام صرفة ٨-١٤ ⇒ باركود (تطابق دقيق على productUnits.barcode + أرقام وثائق)
@@ -39,7 +39,7 @@ const PAGES: PageItem[] = [
   { label: "المبيعات / الفواتير", href: "/invoices", icon: FileText, keywords: "invoices sales" },
   { label: "المرتجعات", href: "/returns", icon: RotateCcw, keywords: "returns إرجاع" },
   { label: "المشتريات", href: "/purchases", icon: Truck, keywords: "purchases شراء" },
-  { label: "أوامر الشغل", href: "/work-orders", icon: Wrench, keywords: "work orders مطبعة" },
+  { label: "طلبات خدمة العملاء", href: "/work-orders", icon: Wrench, keywords: "work orders مطبعة" },
   { label: "المخزون", href: "/inventory", icon: Boxes, keywords: "inventory stock حركات" },
   { label: "التحويلات", href: "/transfers", icon: Truck, keywords: "transfers نقل" },
   { label: "المصروفات", href: "/expenses", icon: Wallet, keywords: "expenses مصاريف" },
@@ -54,7 +54,7 @@ const ENTITY_LABELS: Record<EntityType, string> = {
   INVOICE: "الفواتير",
   QUOTATION: "عروض الأسعار",
   PURCHASE_ORDER: "أوامر الشراء",
-  WORK_ORDER: "أوامر الشغل",
+  WORK_ORDER: "طلبات خدمة العملاء",
   CUSTOMER: "العملاء",
   SUPPLIER: "الموردون",
   EXPENSE: "المصاريف",
@@ -164,7 +164,7 @@ export function CommandPalette() {
         <DialogHeader className="sr-only">
           <DialogTitle>البحث الشامل</DialogTitle>
           <DialogDescription>
-            ابحث في كل النظام: منتجات، فواتير، عملاء، أوامر شغل، باركود، أرقام وثائق…
+            ابحث في كل النظام: منتجات، فواتير، عملاء، طلبات خدمة، باركود، أرقام وثائق…
           </DialogDescription>
         </DialogHeader>
         <Command

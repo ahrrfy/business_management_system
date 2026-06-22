@@ -124,7 +124,7 @@ export function workOrderBarcodeSet(wo: WorkOrderPayloadFields): BarcodeSet {
   return {
     barcode128: wo.orderNumber,
     qrPayload: [...dataFields, sig].join("|"),
-    displayLabel: `أمر شغل: ${wo.orderNumber}\n${toDisplayDate(isoDate)}`,
+    displayLabel: `طلب خدمة: ${wo.orderNumber}\n${toDisplayDate(isoDate)}`,
   };
 }
 

@@ -52,7 +52,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "المطبعة والإنتاج",
     icon: "🖨️",
     items: [
-      { href: "/work-orders", label: "أوامر الشغل" },
+      { href: "/work-orders", label: "طلبات خدمة العملاء" },
       { href: "/work-orders/station", label: "محطة التنفيذ (الفني)", roles: ["print_operator", "cashier", "manager"] },
       { href: "/production", label: "الإنتاج والتحويل", managerOnly: true },
       { href: "/production-recipes", label: "وصفات الإنتاج", managerOnly: true },

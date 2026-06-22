@@ -24,7 +24,7 @@ const STATUS_CLS: Record<string, string> = {
   PAID: "bg-emerald-100 text-emerald-700", PARTIALLY_PAID: "bg-amber-100 text-amber-700",
   PENDING: "bg-muted text-foreground/70", RETURNED: "bg-rose-100 text-rose-700", CANCELLED: "bg-rose-100 text-rose-700",
 };
-const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "أمر شغل" };
+const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "طلب خدمة" };
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";

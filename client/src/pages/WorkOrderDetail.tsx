@@ -89,7 +89,7 @@ export default function WorkOrderDetail() {
   });
 
   if (wo.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (!wo.data) return <div className="p-10 text-center text-muted-foreground">أمر الشغل غير موجود.</div>;
+  if (!wo.data) return <div className="p-10 text-center text-muted-foreground">طلب الخدمة غير موجود.</div>;
   const data = wo.data;
 
   const fmt = fmtAr;
@@ -97,7 +97,7 @@ export default function WorkOrderDetail() {
   return (
     <div className="space-y-4 max-w-4xl">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">أمر شغل</h1>
+        <h1 className="text-2xl font-bold">طلب خدمة</h1>
         <div className="flex items-center gap-3">
           <Button variant="outline" size="sm" onClick={() => printWorkOrder({
             woNumber: data.orderNumber,
@@ -207,16 +207,16 @@ export default function WorkOrderDetail() {
         </Card>
       )}
 
-      {/* باركود + QR تذكرة أمر الشغل */}
+      {/* باركود + QR تذكرة طلب الخدمة */}
       {data.qrPayload && (
         <Card>
-          <CardHeader><CardTitle className="text-base">باركود أمر الشغل</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base">باركود طلب الخدمة</CardTitle></CardHeader>
           <CardContent className="flex justify-center py-4">
             <BarcodeDisplay
               barcodeSet={{
                 barcode128: data.orderNumber,
                 qrPayload: data.qrPayload,
-                displayLabel: `أمر شغل: ${data.orderNumber}${data.customerName ? `\nالعميل: ${data.customerName}` : ""}`,
+                displayLabel: `طلب خدمة: ${data.orderNumber}${data.customerName ? `\nالعميل: ${data.customerName}` : ""}`,
               }}
               size="md"
             />
@@ -233,7 +233,7 @@ export default function WorkOrderDetail() {
             onClick={async () => {
               if (!(await confirm({
                 variant: "warning",
-                title: "بدء تنفيذ أمر الشغل",
+                title: "بدء تنفيذ طلب الخدمة",
                 description: `سيبدأ تنفيذ أمر «${data.title}» (${data.orderNumber}) وتُخصم المواد من المخزون. هل تريد المتابعة؟`,
                 confirmText: "بدء التنفيذ",
               }))) return;
@@ -266,7 +266,7 @@ export default function WorkOrderDetail() {
               const payNow = Number(payAmount) > 0;
               if (!(await confirm({
                 variant: "danger",
-                title: "تسليم أمر الشغل وإصدار الفاتورة",
+                title: "تسليم طلب الخدمة وإصدار الفاتورة",
                 description: `سيُسلَّم أمر «${data.title}» (${data.orderNumber}) وتُصدر فاتورة بقيمة ${fmt(data.salePrice)}${payNow ? ` مع دفعة ${fmt(String(Number(payAmount)))}` : " (آجل بالكامل)"}. لا يمكن التراجع. اكتب «تسليم» للتأكيد.`,
                 confirmText: "تسليم وإصدار فاتورة",
                 requireText: "تسليم",
@@ -287,7 +287,7 @@ export default function WorkOrderDetail() {
             onClick={async () => {
               if (!(await confirm({
                 variant: "warning",
-                title: "إلغاء أمر الشغل",
+                title: "إلغاء طلب الخدمة",
                 description: `سيُلغى أمر «${data.title}» (${data.orderNumber})، وتُعاد المواد للمخزون إن كانت قد خُصمت. هل تريد المتابعة؟`,
                 confirmText: "إلغاء الأمر",
               }))) return;

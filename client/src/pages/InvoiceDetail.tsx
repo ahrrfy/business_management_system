@@ -27,7 +27,7 @@ const STATUS_CLS: Record<string, string> = {
   RETURNED: "bg-rose-100 text-rose-700",
   CANCELLED: "bg-rose-100 text-rose-700",
 };
-const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "أمر شغل" };
+const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "طلب خدمة" };
 const METHOD_LABEL: Record<string, string> = { CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة" };
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
