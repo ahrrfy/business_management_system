@@ -3,6 +3,7 @@ import { D, fmtAr } from "@/lib/money";
 import { fmtTime } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
+import { CopyButton } from "@/components/CopyButton";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -401,11 +402,14 @@ function MetricsBar() {
       ? `${overdueTotalShort} د.ع`
       : "> 30 يوم";
 
+  // نص النسخ موحَّد: «التسمية: القيمة الوحدة» — يفيد المالك عند لصق رقم في واتساب/مراسلة.
+  // أثناء التحميل ("...") أو الحالات النصّية بلا قيمة (مثل «لا وردية») = لا نسخ (CopyButton يُعطَّل تلقائياً على الفارغ).
   const stats = [
     {
       label: "مبيعات اليوم",
       value: fmtAr(todaysTotal),
       unit: "د.ع",
+      copyText: `مبيعات اليوم: ${fmtAr(todaysTotal)} د.ع`,
       ico: <TrendIco color="oklch(0.60 0.22 155)" />,
       iBg: "oklch(0.60 0.22 155 / 0.15)",
     },
@@ -413,6 +417,7 @@ function MetricsBar() {
       label: "فواتير اليوم",
       value: String(todays.length),
       unit: "فاتورة",
+      copyText: `فواتير اليوم: ${todays.length} فاتورة`,
       ico: <TrendIco color="oklch(0.60 0.22 155)" />,
       iBg: "oklch(0.60 0.22 155 / 0.15)",
     },
@@ -420,6 +425,9 @@ function MetricsBar() {
       label: "الوردية الحالية",
       value: shiftLabel,
       unit: shiftSince,
+      copyText: shift.data
+        ? `الوردية الحالية: مفتوحة ${shiftSince}`.trim()
+        : "الوردية الحالية: لا وردية",
       ico: <ShiftIco color="oklch(0.62 0.22 200)" />,
       iBg: "oklch(0.62 0.22 200 / 0.15)",
     },
@@ -427,6 +435,9 @@ function MetricsBar() {
       label: "مخزون منخفض",
       value: lowStockValue,
       unit: "منتج",
+      copyText: metrics.isLoading
+        ? ""
+        : `مخزون منخفض: ${fmtAr(metrics.data?.lowStockCount ?? 0)} منتج`,
       ico: <WarnIco color="oklch(0.72 0.18 75)" />,
       iBg: "oklch(0.72 0.18 75 / 0.15)",
       isAlert: true,
@@ -437,6 +448,11 @@ function MetricsBar() {
       label: "ذمم متأخّرة",
       value: overdueValue,
       unit: overdueUnit,
+      copyText: metrics.isLoading
+        ? ""
+        : overdueCount > 0
+          ? `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل — ${overdueTotalShort} د.ع`
+          : `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل`,
       ico: <WarnIco color="oklch(0.62 0.24 22)" />,
       iBg: "oklch(0.62 0.24 22 / 0.12)",
       isAlert: true,
@@ -450,6 +466,11 @@ function MetricsBar() {
             label: "جرد بانتظار المراجعة",
             value: stk.isLoading ? "..." : fmtAr(stk.data?.review ?? 0),
             unit: stk.data?.counting ? `${fmtAr(stk.data.counting)} قيد العدّ` : "جلسة",
+            copyText: stk.isLoading
+              ? ""
+              : `جرد بانتظار المراجعة: ${fmtAr(stk.data?.review ?? 0)} جلسة${
+                  stk.data?.counting ? ` — ${fmtAr(stk.data.counting)} قيد العدّ` : ""
+                }`,
             ico: <WarnIco color="oklch(0.55 0.2 264)" />,
             iBg: "oklch(0.55 0.2 264 / 0.12)",
             isAlert: (stk.data?.review ?? 0) > 0,
@@ -475,6 +496,7 @@ function MetricsBar() {
         const card = (
           <div
             key={i}
+            className="group"
             style={{
               flex: 1,
               minWidth: 150,
@@ -521,6 +543,22 @@ function MetricsBar() {
             {s.unit && (
               <div style={{ marginRight: "auto", fontSize: 9.5, color: T.muted }}>{s.unit}</div>
             )}
+            {/* زِرّ نَسخ يَظهَر عِند الـhover — يَنسَخ «التَسمية: القيمة الوحدة»
+                stopPropagation/preventDefault لمَنع تَفعيل رابط البِطاقة (href). */}
+            <div
+              onClick={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+              }}
+              className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+              style={{ marginInlineStart: s.unit ? 4 : "auto", flexShrink: 0 }}
+            >
+              <CopyButton
+                value={s.copyText}
+                title={`نسخ ${s.label}`}
+                successMessage={`نُسخت ${s.label}`}
+              />
+            </div>
           </div>
         );
         return s.href ? (

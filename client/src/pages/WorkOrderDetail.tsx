@@ -9,6 +9,9 @@ import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { Printer } from "lucide-react";
+import { CopyInline } from "@/components/CopyButton";
+import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
+import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
 
@@ -99,6 +102,29 @@ export default function WorkOrderDetail() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">طلب خدمة</h1>
         <div className="flex items-center gap-3">
+          <CopyAsMenu
+            label="نَسخ التَفاصيل"
+            plain={formatWorkOrderAsWhatsApp({
+              number: data.orderNumber,
+              date: data.createdAt,
+              customer: data.customerName,
+              description: data.customizationText,
+              status: STATUS_LABEL[data.status] ?? data.status,
+              items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
+              total: data.salePrice,
+              deliveryDate: data.dueDate,
+            })}
+            whatsapp={formatWorkOrderAsWhatsApp({
+              number: data.orderNumber,
+              date: data.createdAt,
+              customer: data.customerName,
+              description: data.customizationText,
+              status: STATUS_LABEL[data.status] ?? data.status,
+              items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
+              total: data.salePrice,
+              deliveryDate: data.dueDate,
+            })}
+          />
           <Button variant="outline" size="sm" onClick={() => printWorkOrder({
             woNumber: data.orderNumber,
             woDate: data.createdAt ? String(data.createdAt).slice(0, 10) : undefined,
@@ -144,7 +170,7 @@ export default function WorkOrderDetail() {
       <Card>
         <CardHeader><CardTitle className="text-base">{data.title}</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <div><div className="text-muted-foreground text-xs">رقم الأمر</div><div className="font-mono" dir="ltr">{data.orderNumber}</div></div>
+          <div><div className="text-muted-foreground text-xs">رقم الأمر</div><div><CopyInline value={data.orderNumber} successMessage="تم نَسخ رَقم الأَمر" /></div></div>
           <div><div className="text-muted-foreground text-xs">الحالة</div><div>{STATUS_LABEL[data.status] ?? data.status}</div></div>
           <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "عميل نقدي"}</div></div>
           <div><div className="text-muted-foreground text-xs">الكمية</div><div>{data.quantity}</div></div>

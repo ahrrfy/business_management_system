@@ -18,6 +18,7 @@ import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, RefreshCw, Zap, ChevronDown } from "lucide-react";
+import { CopyButton } from "@/components/CopyButton";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -983,10 +984,16 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
 
       {/* Last invoice badge */}
       {lastInv && (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", background: "var(--pos-branch-bg)", border: "1px solid var(--pos-branch-bord)", borderRadius: 8, padding: "3px 12px", flexShrink: 0, lineHeight: 1.3 }}>
-          <span style={{ fontSize: 10, color: C.mutedFg, fontWeight: 600 }}>آخر فاتورة</span>
-          <span style={{ fontSize: 15, fontWeight: 900, direction: "ltr", color: C.primary }}>{fmt(lastInv.total)}</span>
-          <span style={{ fontSize: 9.5, color: C.mutedFg }}>{lastInv.num}</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--pos-branch-bg)", border: "1px solid var(--pos-branch-bord)", borderRadius: 8, padding: "3px 6px 3px 12px", flexShrink: 0, lineHeight: 1.3 }}>
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center" }}>
+            <span style={{ fontSize: 10, color: C.mutedFg, fontWeight: 600 }}>آخر فاتورة</span>
+            <span style={{ fontSize: 15, fontWeight: 900, direction: "ltr", color: C.primary }}>{fmt(lastInv.total)}</span>
+            <span style={{ fontSize: 9.5, color: C.mutedFg }}>{lastInv.num}</span>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 1 }}>
+            <CopyButton value={lastInv.num} title="نسخ رقم آخر فاتورة" successMessage="تم نسخ رقم الفاتورة" />
+            <CopyButton value={String(lastInv.total)} title="نسخ إجمالي آخر فاتورة" successMessage="تم نسخ الإجمالي" />
+          </div>
         </div>
       )}
 
@@ -1490,13 +1497,19 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         {cartLen > 0 && !!payInput && isChange && (
           <>
             <span style={{ fontSize: 13.5, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span>
-            <span style={{ fontSize: 22, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12.5, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 22, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12.5, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span>
+              <CopyButton value={String(change)} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
+            </span>
           </>
         )}
         {cartLen > 0 && !!payInput && isOwing && (
           <>
             <span style={{ fontSize: 13.5, color: C.amber, fontWeight: 600 }}>المتبقي للدفع</span>
-            <span style={{ fontSize: 22, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 22, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12.5, fontWeight: 500 }}>د.ع</span></span>
+              <CopyButton value={String(credit)} title="نسخ المتبقي" successMessage="تم نسخ المتبقي" />
+            </span>
           </>
         )}
       </div>
@@ -1573,14 +1586,20 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
         </div>
 
         <div style={{ fontSize: 24, fontWeight: 900, marginBottom: 4, color: C.fg }}>تم الدفع بنجاح</div>
-        <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 24 }}>فاتورة: {receipt.invoiceNumber}</div>
+        <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 24, display: "inline-flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
+          <span>فاتورة: {receipt.invoiceNumber}</span>
+          <CopyButton value={receipt.invoiceNumber} title="نسخ رقم الفاتورة" successMessage="تم نسخ رقم الفاتورة" />
+        </div>
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 16 }}>
           {[
-            { label: "المبلغ المدفوع", value: fmt(receipt.received), color: C.primary },
-            { label: "إجمالي الفاتورة", value: fmt(receipt.total),   color: C.fg },
+            { label: "المبلغ المدفوع", raw: receipt.received, value: fmt(receipt.received), color: C.primary },
+            { label: "إجمالي الفاتورة", raw: receipt.total,    value: fmt(receipt.total),    color: C.fg },
           ].map((item) => (
-            <div key={item.label} style={{ background: C.muted, borderRadius: 10, padding: "14px 10px", textAlign: "center" }}>
+            <div key={item.label} style={{ background: C.muted, borderRadius: 10, padding: "14px 10px", textAlign: "center", position: "relative" }}>
+              <div style={{ position: "absolute", top: 4, left: 4 }}>
+                <CopyButton value={String(item.raw)} title={`نسخ ${item.label}`} successMessage={`تم نسخ ${item.label}`} />
+              </div>
               <div style={{ fontSize: 12, color: C.mutedFg, marginBottom: 4 }}>{item.label}</div>
               <div style={{ fontSize: 26, fontWeight: 900, direction: "ltr", color: item.color }}>{item.value}</div>
               <div style={{ fontSize: 11, color: C.mutedFg }}>د.ع</div>
@@ -1591,14 +1610,20 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
         {receipt.change > 0 && (
           <div style={{ background: "oklch(0.50 0.13 155 / .1)", border: "1.5px solid oklch(0.50 0.13 155 / .28)", borderRadius: 10, padding: "12px 18px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 14, fontWeight: 700, color: C.success }}>الباقي للعميل</span>
-            <span style={{ fontSize: 26, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(receipt.change)} <span style={{ fontSize: 12 }}>د.ع</span></span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 26, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(receipt.change)} <span style={{ fontSize: 12 }}>د.ع</span></span>
+              <CopyButton value={String(receipt.change)} title="نسخ الباقي" successMessage="تم نسخ الباقي" />
+            </span>
           </div>
         )}
 
         {receipt.isCredit && receipt.credit > 0 && (
           <div style={{ background: "oklch(0.65 0.15 75 / .1)", border: "1.5px solid oklch(0.65 0.15 75 / .3)", borderRadius: 10, padding: "12px 18px", marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <span style={{ fontSize: 14, fontWeight: 700, color: C.amber }}>آجل على {receipt.customerName ?? "العميل"}</span>
-            <span style={{ fontSize: 26, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(receipt.credit)} <span style={{ fontSize: 12 }}>د.ع</span></span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 26, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(receipt.credit)} <span style={{ fontSize: 12 }}>د.ع</span></span>
+              <CopyButton value={String(receipt.credit)} title="نسخ المتبقي الآجل" successMessage="تم نسخ المتبقي" />
+            </span>
           </div>
         )}
 

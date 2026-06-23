@@ -11,6 +11,9 @@ import { fmtDate, fmtDateTime } from "@/lib/date";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
 import { RowActions } from "@/components/list";
+import { CopyInline } from "@/components/CopyButton";
+import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
+import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
 import {
   Dialog,
   DialogContent,
@@ -166,7 +169,18 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
   return (
     <div className={cls} style={{ ["--accent" as string]: `oklch(0.6 0.17 ${hue})` } as React.CSSProperties} onPointerDown={onPointerDown}>
       <div className="wob-card-top">
-        <span className="wob-num">{o.orderNumber}</span>
+        {ghost ? (
+          <span className="wob-num">{o.orderNumber}</span>
+        ) : (
+          // إيقاف انتشار pointer/click كي لا يلتقطها محرّك السحب أو فتح الـDrawer
+          <span
+            className="wob-num"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <CopyInline value={o.orderNumber} successMessage="تم نَسخ رَقم الأَمر" />
+          </span>
+        )}
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
         {!ghost && (
           // إيقاف انتشار pointer/click كي لا يلتقطها محرّك السحب أو فتح الـDrawer
@@ -343,7 +357,9 @@ function Drawer({
                   {d.images?.[0]?.url ? <img src={d.images[0].url} alt="" /> : <span className="wob-thumb-abbr"><Printer aria-hidden size={20} /></span>}
                 </div>
                 <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 11, color: "var(--muted-fg)", fontFamily: "ui-monospace, monospace", direction: "ltr", textAlign: "right" }}>{d.orderNumber}</div>
+                  <div style={{ fontSize: 11, color: "var(--muted-fg)" }}>
+                    <CopyInline value={d.orderNumber} successMessage="تم نَسخ رَقم الأَمر" />
+                  </div>
                   <div style={{ fontSize: 18, fontWeight: 800, lineHeight: 1.3 }}>{d.title}</div>
                 </div>
               </div>
@@ -417,6 +433,31 @@ function Drawer({
             </div>
 
             <div className="wob-dr-foot">
+              <CopyAsMenu
+                label="نَسخ تَفاصيل الأَمر"
+                plain={formatWorkOrderAsWhatsApp({
+                  number: d.orderNumber,
+                  date: d.createdAt,
+                  customer: d.customerName,
+                  description: d.customizationText,
+                  status: STATUS_LABEL[d.status] ?? d.status,
+                  items: [{ name: d.title, qty: d.quantity, unit: "نُسخة" }],
+                  deposit: d.deposit,
+                  total: d.salePrice,
+                  deliveryDate: d.dueDate,
+                })}
+                whatsapp={formatWorkOrderAsWhatsApp({
+                  number: d.orderNumber,
+                  date: d.createdAt,
+                  customer: d.customerName,
+                  description: d.customizationText,
+                  status: STATUS_LABEL[d.status] ?? d.status,
+                  items: [{ name: d.title, qty: d.quantity, unit: "نُسخة" }],
+                  deposit: d.deposit,
+                  total: d.salePrice,
+                  deliveryDate: d.dueDate,
+                })}
+              />
               <button className="wob-btn wob-btn-ghost" onClick={() => printWorkOrder({
                 woNumber: d.orderNumber,
                 woDate: d.createdAt ? String(d.createdAt).slice(0, 10) : undefined,

@@ -1,12 +1,15 @@
 // شاشة إدارة المنتجات — قائمة خادمية كاملة (بحث ذكي + تقسيم صفحات + إظهار المعطّل)
 // على نمط Customers.tsx. تستبدل posList (INNER JOIN يخفي الناقص + حدّ 500) بـadminList
 // التي تعرض كل منتجات المالك (~9413) حتى الناقصة بلا متغيّرات/وحدات.
+import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
+import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
+import { formatTableAsTSV } from "@/lib/copy/formatters";
 import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
@@ -19,6 +22,11 @@ type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
 
 const limit = 50;
 
+/** مِفتاح فَريد لِكُل صَفّ (مُنتَج × مُتَغَيِّر × وَحدة). */
+function rowKey(r: Row): string {
+  return `${r.productId}-${r.variantId ?? 0}-${r.productUnitId ?? 0}`;
+}
+
 export default function Products() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
@@ -30,6 +38,7 @@ export default function Products() {
   const [importOpen, setImportOpen] = useState(false);
   const importMut = trpc.imports.products.useMutation();
   const dq = useDebouncedValue(q, 200);
+  const sel = useRowSelection<string>();
 
   const list = trpc.catalog.adminList.useQuery({
     branchId,
@@ -50,6 +59,46 @@ export default function Products() {
     },
     onError: (e) => notify.err(e),
   });
+
+  /** نَسخ المُحَدَّد كَ‍TSV (باركود/سِعر/مَخزون) — جاهِز لِلَصق في Excel. */
+  async function copySelectedAsTSV() {
+    const picked = rows.filter((r) => sel.isSelected(rowKey(r)));
+    if (picked.length === 0) return;
+    const tsv = formatTableAsTSV(
+      ["المنتج", "المتغيّر", "الوحدة", "الباركود", "السعر", "المخزون"],
+      picked.map((r) => ({
+        "المنتج": r.productName,
+        "المتغيّر": r.variantName ?? r.color ?? r.sku ?? "",
+        "الوحدة": r.unitName ?? "",
+        "الباركود": r.barcode ?? "",
+        "السعر": r.price != null ? String(r.price) : "",
+        "المخزون": r.stockBase ?? 0,
+      })),
+    );
+    try {
+      await navigator.clipboard.writeText(tsv);
+      notify.ok(`نُسِخت ${picked.length} صفّاً إلى الحافظة (TSV)`);
+    } catch {
+      notify.err("تَعَذَّر النَسخ — استَعمِل زِرّ التَصدير");
+    }
+  }
+
+  /** طِباعة مُلصَقات الباركود لِلمُحَدَّد (دَفعة واحِدة). */
+  function printSelectedLabels() {
+    const picked = rows.filter((r) => sel.isSelected(rowKey(r)) && r.barcode);
+    if (picked.length === 0) {
+      notify.err("لا يوجَد باركود في المُحَدَّد");
+      return;
+    }
+    void printLabel(
+      picked.map((r) => ({
+        name: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
+        sku: r.sku ?? "",
+        price: r.price,
+        barcode: r.barcode ?? "",
+      })),
+    );
+  }
 
   async function toggle(productId: number, isActive: boolean, name: string) {
     if (isActive) {
@@ -136,6 +185,15 @@ export default function Products() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr className="text-right">
+                <th className="p-2 w-8">
+                  <input
+                    type="checkbox"
+                    className="size-4"
+                    aria-label="تحديد كل الصفوف"
+                    checked={rows.length > 0 && rows.every((r) => sel.isSelected(rowKey(r)))}
+                    onChange={(e) => sel.setMany(rows.map(rowKey), e.target.checked)}
+                  />
+                </th>
                 <th className="p-2">المنتج</th>
                 <th className="p-2">المتغيّر</th>
                 <th className="p-2">الوحدة</th>
@@ -149,15 +207,27 @@ export default function Products() {
             <tbody>
               {rows.map((r: Row) => {
                 const dimmed = !r.productIsActive || r.variantIsActive === false || r.unitIsActive === false;
+                const key = rowKey(r);
                 return (
                   <tr
-                    key={`${r.productId}-${r.variantId ?? 0}-${r.productUnitId ?? 0}`}
+                    key={key}
                     className={`border-t ${dimmed ? "opacity-60" : ""}`}
                   >
+                    <td className="p-2">
+                      <input
+                        type="checkbox"
+                        className="size-4"
+                        aria-label={`تحديد ${r.productName}`}
+                        checked={sel.isSelected(key)}
+                        onChange={() => sel.toggle(key)}
+                      />
+                    </td>
                     <td className="p-2 font-medium">{r.productName}</td>
                     <td className="p-2 text-muted-foreground">{r.variantName ?? r.color ?? r.sku ?? "—"}</td>
                     <td className="p-2">{r.unitName ?? "—"}</td>
-                    <td className="p-2 font-mono text-xs" dir="ltr">{r.barcode ?? "—"}</td>
+                    <td className="p-2">
+                      <CopyInline value={r.barcode ?? ""} />
+                    </td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">
                       {fmtAr(r.price)}
                     </td>
@@ -207,12 +277,21 @@ export default function Products() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا منتجات مطابقة. غيّر البحث أو أضف منتجاً.</td></tr>
+                <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا منتجات مطابقة. غيّر البحث أو أضف منتجاً.</td></tr>
               )}
             </tbody>
           </table>
         </CardContent>
       </Card>
+
+      <SelectionBar
+        count={sel.count}
+        onClear={sel.clear}
+        onExport={() => void copySelectedAsTSV()}
+        onPrint={printSelectedLabels}
+        exportLabel="نَسخ TSV"
+        printLabel="طِباعة مُلصَقات"
+      />
 
       {pages > 1 && (
         <div className="flex items-center justify-between text-sm">

@@ -12,6 +12,8 @@ import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
+import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
+import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -115,6 +117,46 @@ export default function CustomerStatement() {
     return { txs, totDebit: totDebit.toFixed(2), totCredit: totCredit.toFixed(2), closingBalance: bal.toFixed(2) };
   }, [stmt.data, from]);
 
+  // حُمولة نَسخ الكَشف بِثَلاث صِيَغ (نَصّ مُلَخَّص / واتساب مُفَصَّل / TSV لِلَصق في Excel).
+  // تُبنى مَرّة واحِدة على دَفتَر الحَرَكات المُجمَّع لِضَمان اتِّساق المَجاميع مَع الطِباعة والتَصدير.
+  const copyPayload = useMemo(() => {
+    if (!stmt.data || !ledger) return { plain: "", whatsapp: "", tsv: "" };
+    const d = stmt.data;
+    const plain = buildStatementMessage({
+      entityName: d.customer.name,
+      entityType: "customer",
+      currentBalance: d.summary.currentBalance,
+      totalSales: d.summary.totalSales,
+      totalPaid: d.summary.totalPaid,
+      unpaid: d.summary.unpaid,
+    });
+    const whatsapp = formatStatementAsWhatsApp({
+      entityName: d.customer.name,
+      entityType: "customer",
+      lines: ledger.txs.map((r) => ({
+        date: r.date,
+        doc: `${r.ref} — ${r.description}`,
+        debit: r.debit,
+        credit: r.credit,
+        balance: r.balance,
+      })),
+      closingBalance: from ? ledger.closingBalance : d.summary.currentBalance,
+      asOfDate: to || undefined,
+    });
+    const tsv = formatTableAsTSV(
+      ["التاريخ", "المرجع", "البيان", "مدين", "دائن", "الرصيد"],
+      ledger.txs.map((r) => ({
+        "التاريخ": r.date,
+        "المرجع": r.ref,
+        "البيان": r.description,
+        "مدين": r.debit == null ? "" : r.debit,
+        "دائن": r.credit == null ? "" : r.credit,
+        "الرصيد": r.balance,
+      })),
+    );
+    return { plain, whatsapp, tsv };
+  }, [stmt.data, ledger, from, to]);
+
   // يفتح نافذة الطباعة (المتصفّح: «حفظ كـ PDF») اعتماداً على دفتر الحركات المُجمَّع.
   const printStatement = () => {
     if (!stmt.data || !ledger) return;
@@ -162,6 +204,14 @@ export default function CustomerStatement() {
             >
               تصدير Excel
             </Button>
+          )}
+          {stmt.data && (
+            <CopyAsMenu
+              plain={copyPayload.plain}
+              whatsapp={copyPayload.whatsapp}
+              tsv={copyPayload.tsv}
+              label="نسخ الكشف"
+            />
           )}
           {stmt.data && (
             <WhatsAppShare
