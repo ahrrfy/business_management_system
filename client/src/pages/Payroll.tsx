@@ -204,14 +204,14 @@ export default function Payroll() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
-                <tr className="text-right">
+                <tr className="text-end">
                   <th className="p-2.5">الموظف</th>
                   <th className="p-2.5 text-center">نوع الأجر</th>
-                  <th className="p-2.5 text-left">الأساسي / الساعات</th>
-                  <th className="p-2.5 text-left">مخصّصات</th>
-                  <th className="p-2.5 text-left">إضافي</th>
-                  <th className="p-2.5 text-left">استقطاع</th>
-                  <th className="p-2.5 text-left">الصافي</th>
+                  <th className="p-2.5 text-start">الأساسي / الساعات</th>
+                  <th className="p-2.5 text-start">مخصّصات</th>
+                  <th className="p-2.5 text-start">إضافي</th>
+                  <th className="p-2.5 text-start">استقطاع</th>
+                  <th className="p-2.5 text-start">الصافي</th>
                   <th className="p-2.5 text-center">الحالة</th>
                   <th className="p-2.5 text-center"></th>
                 </tr>

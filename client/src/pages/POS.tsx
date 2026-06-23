@@ -17,6 +17,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
+import { Printer, ShoppingCart, User, Power, Globe, Check } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,79 +64,36 @@ type Receipt = {
   isCredit: boolean;
 };
 
-// ─── Dark Mode ────────────────────────────────────────────────────────────────
+// ─── Colour Tokens — مَربوطة بـtokens.css لِتَتنفّس مع .dark بِلا MutationObserver ─
 
-function useDarkMode() {
-  const [dark, setDark] = useState(() =>
-    document.documentElement.classList.contains("dark")
-  );
-  useEffect(() => {
-    const obs = new MutationObserver(() =>
-      setDark(document.documentElement.classList.contains("dark"))
-    );
-    obs.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
-    return () => obs.disconnect();
-  }, []);
-  return dark;
-}
+const POS_COLORS = {
+  bg:         "var(--pos-bg)",
+  card:       "var(--pos-card)",
+  border:     "var(--pos-border)",
+  muted:      "var(--pos-muted)",
+  mutedFg:    "var(--pos-muted-fg)",
+  fg:         "var(--pos-fg)",
+  primary:    "var(--pos-primary)",
+  primaryH:   "var(--pos-primary-h)",
+  primaryFg:  "var(--pos-primary-fg)",
+  primarySoft:"var(--pos-primary-soft)",
+  success:    "var(--pos-success)",
+  successH:   "var(--pos-success-h)",
+  amber:      "var(--pos-amber)",
+  amberSoft:  "var(--pos-amber-soft)",
+  danger:     "var(--pos-danger)",
+  dangerSoft: "var(--pos-danger-soft)",
+  modeActive: "var(--pos-mode-active)",
+  modeBord:   "var(--pos-mode-bord)",
+  modeFg:     "var(--pos-mode-fg)",
+  numKey:     "var(--pos-numkey)",
+  numKeyHov:  "var(--pos-numkey-hov)",
+  delKey:     "var(--pos-delkey)",
+  delFg:      "var(--pos-del-fg)",
+  overlay:    "var(--pos-overlay)",
+} as const;
 
-// ─── Colour Tokens ────────────────────────────────────────────────────────────
-
-const LIGHT = {
-  bg:         "oklch(0.985 0.002 247.858)",
-  card:       "#fff",
-  border:     "oklch(0.922 0.004 247.858)",
-  muted:      "oklch(0.962 0.004 247.858)",
-  mutedFg:    "oklch(0.552 0.016 285.938)",
-  fg:         "oklch(0.235 0.015 65)",
-  primary:    "oklch(0.488 0.243 264.376)",
-  primaryH:   "oklch(0.43  0.243 264.376)",
-  primaryFg:  "#fff",
-  primarySoft:"oklch(0.94 0.04 264.376)",
-  success:    "oklch(0.50  0.13 155)",
-  successH:   "oklch(0.44  0.13 155)",
-  amber:      "oklch(0.65  0.15 75)",
-  amberSoft:  "oklch(0.955 0.045 75)",
-  danger:     "oklch(0.577 0.245 27.325)",
-  dangerSoft: "oklch(0.955 0.035 27.325)",
-  modeActive: "oklch(0.90 0.10 72)",
-  modeBord:   "oklch(0.72 0.14 72)",
-  modeFg:     "oklch(0.38 0.14 60)",
-  numKey:     "oklch(0.962 0.004 247.858)",
-  numKeyHov:  "oklch(0.93 0.004 247.858)",
-  delKey:     "oklch(0.92 0.05 20)",
-  delFg:      "oklch(0.50 0.22 25)",
-  overlay:    "oklch(0.15 0.01 265 / .88)",
-};
-
-const DARK = {
-  bg:         "oklch(0.14 0.010 65)",
-  card:       "oklch(0.20 0.012 65)",
-  border:     "oklch(1 0 0 / 0.12)",
-  muted:      "oklch(0.22 0.012 65)",
-  mutedFg:    "oklch(0.72 0.010 247)",
-  fg:         "oklch(1 0 0)",
-  primary:    "oklch(0.55  0.22 264)",
-  primaryH:   "oklch(0.50  0.22 264)",
-  primaryFg:  "#fff",
-  primarySoft:"oklch(0.28 0.06 264)",
-  success:    "oklch(0.55  0.14 155)",
-  successH:   "oklch(0.49  0.14 155)",
-  amber:      "oklch(0.72  0.15 75)",
-  amberSoft:  "oklch(0.32 0.07 75)",
-  danger:     "oklch(0.65  0.22 27)",
-  dangerSoft: "oklch(0.30 0.08 27)",
-  modeActive: "oklch(0.30 0.10 72)",
-  modeBord:   "oklch(0.55 0.14 72)",
-  modeFg:     "oklch(0.85 0.12 72)",
-  numKey:     "oklch(0.24 0.010 65)",
-  numKeyHov:  "oklch(0.28 0.010 65)",
-  delKey:     "oklch(0.26 0.05 20)",
-  delFg:      "oklch(0.75 0.22 25)",
-  overlay:    "oklch(0.08 0.01 265 / .92)",
-};
-
-type C = typeof LIGHT;
+type C = typeof POS_COLORS;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -268,8 +226,7 @@ function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 export default function POS() {
-  const dark = useDarkMode();
-  const C: C = dark ? DARK : LIGHT;
+  const C: C = POS_COLORS;
 
   const me       = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
@@ -790,7 +747,7 @@ export default function POS() {
 
       {/* Header */}
       <POSHeader
-        C={C} dark={dark}
+        C={C}
         search={search} setSearch={setSearch}
         showDrop={showDrop} setShowDrop={setShowDrop}
         results={search.trim().length >= 2 ? (searchResults.data ?? []) : []}
@@ -897,7 +854,7 @@ export default function POS() {
 type ShiftData = RouterOutputs["shifts"]["current"];
 
 interface POSHeaderProps {
-  C: C; dark: boolean;
+  C: C;
   search: string; setSearch: (s: string) => void;
   showDrop: boolean; setShowDrop: (v: boolean) => void;
   results: RouterOutputs["catalog"]["posList"];
@@ -918,7 +875,7 @@ interface POSHeaderProps {
   onTestPrint: () => void;
 }
 
-function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
+function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -1025,7 +982,7 @@ function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results,
 
       {/* Last invoice badge */}
       {lastInv && (
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", background: dark ? "oklch(0.28 0.05 264)" : "oklch(0.96 0.012 264)", border: `1px solid ${dark ? "oklch(0.38 0.08 264)" : "oklch(0.88 0.04 264)"}`, borderRadius: 8, padding: "3px 12px", flexShrink: 0, lineHeight: 1.3 }}>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", background: "var(--pos-branch-bg)", border: "1px solid var(--pos-branch-bord)", borderRadius: 8, padding: "3px 12px", flexShrink: 0, lineHeight: 1.3 }}>
           <span style={{ fontSize: 10, color: C.mutedFg, fontWeight: 600 }}>آخر فاتورة</span>
           <span style={{ fontSize: 15, fontWeight: 900, direction: "ltr", color: C.primary }}>{fmt(lastInv.total)}</span>
           <span style={{ fontSize: 9.5, color: C.mutedFg }}>{lastInv.num}</span>
@@ -1057,23 +1014,25 @@ function POSHeader({ C, dark, search, setSearch, showDrop, setShowDrop, results,
       {/* جسر الطباعة على الخادم (طباعة صامتة) — يظهر حين يكون مفعّلاً؛ نقرة = تذكرة اختبار. */}
       {bridgeEnabled && (
         <button onClick={onTestPrint} title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
-          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12, color: C.success, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>
-          🖨️🌐
+          aria-label="جسر طباعة على الخادم — تذكرة اختبار"
+          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: C.success, fontFamily: "inherit", fontWeight: 600, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
+          <Printer size={15} aria-hidden /><Globe size={13} aria-hidden />
         </button>
       )}
 
       {/* Printer (WebUSB) */}
       {isWebUsbSupported() && (
         <button onClick={onConnectPrinter} title={printerReady ? "الطابعة الافتراضية مربوطة (تلقائياً) — اضغط لتبديلها" : "اربط طابعة حرارية (تُربط تلقائياً بعدها)"}
-          style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12, color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>
-          {printerReady ? "🖨️✓" : "🖨️"}
+          aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
+          style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 600, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
+          <Printer size={15} aria-hidden />{printerReady && <Check size={13} aria-hidden strokeWidth={3} />}
         </button>
       )}
 
       {/* Close shift */}
       <button onClick={onCloseShift}
         style={{ height: 44, padding: "0 14px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-        ⏻ إغلاق الوردية
+        <Power size={16} aria-hidden /> إغلاق الوردية
       </button>
     </div>
   );
@@ -1187,7 +1146,9 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 12px", height: 46, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg }}>🛒 سلة المشتريات</span>
+          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg, display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <ShoppingCart size={17} aria-hidden /> سلة المشتريات
+          </span>
           {cart.length > 0 && (
             <span style={{ background: C.primary, color: C.primaryFg, borderRadius: 12, padding: "2px 9px", fontSize: 12, fontWeight: 700 }}>
               {cart.length} منتج · {itemCount} قطعة
@@ -1201,7 +1162,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             <button
               onClick={() => setShowCustPicker(!showCustPicker)}
               style={{ height: 34, padding: "0 11px", background: customerId ? C.primarySoft : C.card, border: `1.5px solid ${customerId ? C.primary : C.border}`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: customerId ? C.primary : C.mutedFg, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
-              👤 {selectedCustomer ? selectedCustomer.name : "عميل نقدي"}
+              <User size={14} aria-hidden /> {selectedCustomer ? selectedCustomer.name : "عميل نقدي"}
               {selectedCustomer && (
                 <span style={{ fontSize: 11, opacity: 0.8 }}>({TIER_LABEL[effectiveTier]})</span>
               )}
@@ -1274,7 +1235,9 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             {cart.length === 0 && (
               <tr>
                 <td colSpan={7} style={{ padding: "56px 0", textAlign: "center", color: C.mutedFg }}>
-                  <div style={{ fontSize: 38, marginBottom: 10 }}>🛒</div>
+                  <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}>
+                    <ShoppingCart size={42} strokeWidth={1.5} aria-hidden />
+                  </div>
                   <div style={{ fontSize: 14.5, fontWeight: 600 }}>السلة فارغة</div>
                   <div style={{ fontSize: 12.5, marginTop: 6 }}>ابحث أو امسح الباركود لإضافة المنتجات</div>
                 </td>
@@ -1328,11 +1291,11 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                   <td style={{ ...TD, padding: "6px 6px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
                       <button onClick={(e) => { e.stopPropagation(); changeQty(c.row.productUnitId, c.qty - 1); }}
-                        style={{ width: 38, height: 38, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 20, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
+                        style={{ width: 44, height: 44, border: `1.5px solid ${C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>−</button>
                       <span style={{ minWidth: 40, textAlign: "center", fontWeight: 800, fontSize: 15, direction: "ltr", color: C.fg }}>{c.qty}</span>
                       <button onClick={(e) => { e.stopPropagation(); changeQty(c.row.productUnitId, c.qty + 1); }}
                         title={isOut || isShort ? "الزيادة تتجاوز المخزون المتاح" : undefined}
-                        style={{ width: 38, height: 38, border: `1.5px solid ${isOut || isShort ? accent : C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 20, color: isOut || isShort ? accent : C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
+                        style={{ width: 44, height: 44, border: `1.5px solid ${isOut || isShort ? accent : C.border}`, borderRadius: 8, background: C.card, cursor: "pointer", fontSize: 22, color: isOut || isShort ? accent : C.fg, display: "flex", alignItems: "center", justifyContent: "center" }}>+</button>
                     </div>
                   </td>
                   <td style={{ ...TD, direction: "ltr", fontWeight: 800, fontSize: 14.5, color: C.fg }}>{fmt(itemTotal(c))}</td>
@@ -1638,8 +1601,8 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
 
         <div style={{ display: "flex", gap: 10 }}>
           <button onClick={onPrint}
-            style={{ flex: 1, height: 50, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.fg }}>
-            🖨️ طباعة الإيصال
+            style={{ flex: 1, height: 50, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <Printer size={18} aria-hidden /> طباعة الإيصال
           </button>
           <button onClick={onDismiss}
             style={{ flex: 1, height: 50, background: C.primary, border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.primaryFg }}>

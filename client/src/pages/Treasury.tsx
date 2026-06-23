@@ -249,7 +249,7 @@ export default function Treasury() {
             ))}
           </select>
           <Button size="sm" variant="outline" onClick={refreshAll} title="تحديث">
-            <RefreshCcw className="h-3.5 w-3.5 ml-1" />
+            <RefreshCcw className="h-3.5 w-3.5 me-1" />
             تحديث
           </Button>
         </div>

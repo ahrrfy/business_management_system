@@ -313,7 +313,7 @@ export default function SalesReturnNew() {
       {/* شريط العنوان */}
       <div className="flex shrink-0 items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          <span aria-hidden>{typeMeta.icon}</span>
+          {(() => { const TIcon = typeMeta.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
           {typeMeta.label} جديد
         </h1>
         <Link href="/invoices" className="text-sm text-muted-foreground hover:text-foreground">

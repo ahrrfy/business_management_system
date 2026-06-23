@@ -76,11 +76,11 @@ export default function Assets() {
           <CardContent className="p-0">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
-                <tr className="text-right">
+                <tr className="text-end">
                   <th className="p-2">الأصل</th>
                   <th className="p-2">النوع</th>
                   <th className="p-2">التاريخ</th>
-                  <th className="p-2 text-left">التكلفة</th>
+                  <th className="p-2 text-start">التكلفة</th>
                 </tr>
               </thead>
               <tbody>

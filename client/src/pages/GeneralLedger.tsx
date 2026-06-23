@@ -164,14 +164,14 @@ export default function GeneralLedger() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">التاريخ</th>
-                    <th className="p-2.5 text-right font-medium">النوع</th>
-                    <th className="p-2.5 text-right font-medium">الطرف</th>
-                    <th className="p-2.5 text-right font-medium">الفرع</th>
-                    <th className="p-2.5 text-left font-medium">الإيراد</th>
-                    <th className="p-2.5 text-left font-medium">التكلفة</th>
-                    <th className="p-2.5 text-left font-medium">المبلغ</th>
-                    <th className="p-2.5 text-right font-medium">المرجع</th>
+                    <th className="p-2.5 text-end font-medium">التاريخ</th>
+                    <th className="p-2.5 text-end font-medium">النوع</th>
+                    <th className="p-2.5 text-end font-medium">الطرف</th>
+                    <th className="p-2.5 text-end font-medium">الفرع</th>
+                    <th className="p-2.5 text-start font-medium">الإيراد</th>
+                    <th className="p-2.5 text-start font-medium">التكلفة</th>
+                    <th className="p-2.5 text-start font-medium">المبلغ</th>
+                    <th className="p-2.5 text-end font-medium">المرجع</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -180,17 +180,17 @@ export default function GeneralLedger() {
                     return (
                       <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
                         <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.entryDate}</td>
-                        <td className="p-2.5 text-right">
+                        <td className="p-2.5 text-end">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${TYPE_CLS[r.entryType] ?? "bg-muted"}`}>
                             {TYPE_LABEL[r.entryType] ?? r.entryType}
                           </span>
                         </td>
-                        <td className="p-2.5 text-right">{r.partyName ?? "—"}</td>
-                        <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
+                        <td className="p-2.5 text-end">{r.partyName ?? "—"}</td>
+                        <td className="p-2.5 text-end text-muted-foreground">{r.branchName ?? "—"}</td>
                         <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
                         <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.cost)}</td>
                         <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.amount)}</td>
-                        <td className="p-2.5 text-right">
+                        <td className="p-2.5 text-end">
                           {ref.href ? (
                             <Link href={ref.href} className="text-primary underline-offset-2 hover:underline">{ref.text}</Link>
                           ) : (

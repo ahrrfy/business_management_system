@@ -15,7 +15,8 @@ export function WhatsAppShare({ phone, message, label = "إرسال واتساب
     <Button
       variant="outline"
       size={size}
-      className={`gap-1.5 border-[#25D366]/50 text-[#128C7E] hover:bg-[#25D366]/10 hover:border-[#25D366] ${className ?? ""}`}
+      style={{ borderColor: "color-mix(in oklch, var(--brand-whatsapp) 50%, transparent)", color: "var(--brand-whatsapp)" }}
+      className={`gap-1.5 hover:brightness-110 ${className ?? ""}`}
       onClick={() => openWhatsApp(phone, message)}
       type="button"
     >

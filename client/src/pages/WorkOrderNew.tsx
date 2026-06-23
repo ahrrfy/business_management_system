@@ -401,8 +401,41 @@ export default function WorkOrderNew() {
         </div>
       </div>
 
+      {/* مَلّاحة سَريعة بِخُطوات النَموذَج — انقر للقَفز للقِسم */}
+      <Card className="overflow-hidden">
+        <CardContent className="p-3 flex flex-wrap items-center justify-center gap-1.5 sm:gap-3">
+          {[
+            { id: "sec-channel",  n: 1, label: "القناة",   done: !!channel },
+            { id: "sec-customer", n: 2, label: "العميل",   done: !!customerSel.name },
+            { id: "sec-cart",     n: 3, label: "المنتجات", done: hasCart },
+            { id: "sec-service",  n: 4, label: "التخصيص",  done: hasCustom },
+            { id: "sec-images",   n: 5, label: "الصور",    done: designImages.length > 0 },
+            { id: "sec-delivery", n: 6, label: "التوصيل",  done: !hasDelivery || !!deliveryAddress.trim() },
+            { id: "sec-payment",  n: 7, label: "الدفع",    done: depositD.gt(0) || customRemaining.eq(0) },
+          ].map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => document.getElementById(s.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}
+              className="flex items-center gap-1.5 text-xs font-medium hover:text-primary transition-colors"
+            >
+              <span
+                aria-label={s.done ? "مُكتمَل" : "قَيد التَعبئة"}
+                className={cn(
+                  "flex items-center justify-center w-6 h-6 rounded-full text-[11px] font-bold transition-colors",
+                  s.done ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground border"
+                )}
+              >
+                {s.done ? "✓" : s.n}
+              </span>
+              <span className="hidden sm:inline">{s.label}</span>
+            </button>
+          ))}
+        </CardContent>
+      </Card>
+
       {/* ── (١) قناة الاستلام ─────────────────────────────────── */}
-      <Card>
+      <Card id="sec-channel">
         <CardHeader><CardTitle className="text-base">قناة الاستلام</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="flex flex-wrap gap-2">
@@ -435,7 +468,7 @@ export default function WorkOrderNew() {
       </Card>
 
       {/* ── (٢) العميل الذكي ─────────────────────────────────── */}
-      <Card>
+      <Card id="sec-customer">
         <CardHeader><CardTitle className="text-base">العميل</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <SmartCustomerInput value={customerSel} onChange={setCustomerSel} />
@@ -450,7 +483,7 @@ export default function WorkOrderNew() {
       </Card>
 
       {/* ── (٣) المنتجات والخدمات — نقطة بيع مصغّرة ─────────── */}
-      <Card>
+      <Card id="sec-cart">
         <CardHeader>
           <CardTitle className="text-base">المنتجات الجاهزة — بيع مباشر</CardTitle>
           <p className="text-[11px] text-muted-foreground">تُباع بفاتورة بيع مستقلّة (خصم فوري من المخزون) — منفصلة عن أمر التخصيص. تتطلّب وردية مفتوحة.</p>
@@ -578,7 +611,7 @@ export default function WorkOrderNew() {
       </Card>
 
       {/* ── (٤) خدمة التخصيص ──────────────────────────────────── */}
-      <Card>
+      <Card id="sec-service">
         <CardHeader><CardTitle className="text-base">خدمة التخصيص (المطبعة/التعديل)</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1 md:col-span-2">
@@ -653,7 +686,7 @@ export default function WorkOrderNew() {
       </Card>
 
       {/* ── (٥) صور نموذج العمل ──────────────────────────────── */}
-      <Card>
+      <Card id="sec-images">
         <CardHeader><CardTitle className="text-base">صور نموذج العمل المطلوب</CardTitle></CardHeader>
         <CardContent>
           <ImageUploader
@@ -668,7 +701,7 @@ export default function WorkOrderNew() {
       </Card>
 
       {/* ── (٦) التوصيل ──────────────────────────────────────── */}
-      <Card>
+      <Card id="sec-delivery">
         <CardHeader><CardTitle className="text-base">التوصيل</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="flex items-center gap-3">
@@ -690,7 +723,7 @@ export default function WorkOrderNew() {
       </Card>
 
       {/* ── (٧) الدفع ────────────────────────────────────────── */}
-      <Card>
+      <Card id="sec-payment">
         <CardHeader><CardTitle className="text-base">الدفع والعربون</CardTitle></CardHeader>
         <CardContent className="space-y-4">
           <div className="flex gap-2">
@@ -714,6 +747,24 @@ export default function WorkOrderNew() {
             <div className="space-y-1">
               <Label htmlFor="dep">عربون أمر التخصيص (د.ع)</Label>
               <Input id="dep" dir="ltr" value={deposit} onChange={(e) => setDeposit(e.target.value)} placeholder="0" />
+              {customTotal.gt(0) && (
+                <div className="flex gap-1.5 pt-1">
+                  {[
+                    { pct: 25, label: "٢٥٪" },
+                    { pct: 50, label: "٥٠٪" },
+                    { pct: 100, label: "كامِل" },
+                  ].map((p) => (
+                    <button
+                      key={p.pct}
+                      type="button"
+                      onClick={() => setDeposit(customTotal.times(p.pct).dividedBy(100).toFixed(0))}
+                      className="flex-1 h-8 text-xs font-semibold rounded-md border bg-muted/40 hover:bg-accent transition-colors"
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              )}
               <p className="text-[11px] text-muted-foreground">على أمر التخصيص فقط — الأصناف الجاهزة تُدفع كاملةً بفاتورتها.</p>
             </div>
             {paymentMethod === "CARD" && (

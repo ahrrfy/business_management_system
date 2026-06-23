@@ -211,7 +211,7 @@ export default function ProductionRecipes() {
                     </Label>
                     <div className="relative">
                       <Input dir="ltr" value={wastePct} onChange={(e) => setWastePct(e.target.value)} placeholder="5" className="pl-7" />
-                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold text-sm">%</span>
+                      <span className="absolute start-3 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold text-sm">%</span>
                     </div>
                   </div>
                 </div>
@@ -243,7 +243,7 @@ export default function ProductionRecipes() {
                       </select>
                     </div>
                     <div className="col-span-2 md:col-span-2 text-left text-sm font-semibold tabular-nums" dir="ltr">{fmt(compLineCost(c).toString())}</div>
-                    <div className="col-span-1 text-left">
+                    <div className="col-span-1 text-start">
                       <button type="button" className="text-rose-600 text-sm" onClick={() => setComps((p) => p.filter((x) => x.key !== c.key))}>حذف</button>
                     </div>
                   </div>

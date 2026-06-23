@@ -108,16 +108,16 @@ export default function InventoryValuation() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">الفئة</th>
-                    <th className="p-2.5 text-left font-medium">عدد المنتجات</th>
-                    <th className="p-2.5 text-left font-medium">إجمالي الكمية</th>
-                    <th className="p-2.5 text-left font-medium">القيمة بالتكلفة</th>
+                    <th className="p-2.5 text-end font-medium">الفئة</th>
+                    <th className="p-2.5 text-start font-medium">عدد المنتجات</th>
+                    <th className="p-2.5 text-start font-medium">إجمالي الكمية</th>
+                    <th className="p-2.5 text-start font-medium">القيمة بالتكلفة</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.categoryId ?? "none"} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">{r.categoryName}</td>
+                      <td className="p-2.5 text-end">{r.categoryName}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.items)}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.totalQty)}</td>
                       <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtAr(r.totalValue)}</td>
@@ -127,7 +127,7 @@ export default function InventoryValuation() {
                 {totals && (
                   <tfoot>
                     <tr className="border-t-2 font-bold bg-muted/30">
-                      <td className="p-2.5 text-right">الإجمالي</td>
+                      <td className="p-2.5 text-end">الإجمالي</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(totals.items)}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(totals.totalQty)}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(totals.totalValue)}</td>

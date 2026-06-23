@@ -4,7 +4,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { openSearch } from "@/lib/searchEvents";
-import { Menu, Search } from "lucide-react";
+import {
+  Menu, Search, ChevronDown, Home,
+  ShoppingCart, Package, Printer, Boxes, Server,
+  Briefcase, Wallet, Users, BarChart3, Settings, Lock,
+  type LucideIcon,
+} from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
@@ -12,45 +17,46 @@ type NavItem = { href: string; label: string; adminOnly?: boolean; managerOnly?:
 type NavGroup = {
   key: string;
   label: string;
-  icon: string;
+  icon: LucideIcon;
   items: NavItem[];
   adminOnly?: boolean;
 };
 
+// إعادة هَيكلة الشَريط الجَانبي (يونيو ٢٠٢٦) — نَتيجة تَدقيق UX/IA:
+//  - حَذف كل مَداخل «جَديد» ⇒ CTAs داخل صَفحات القوائم (نَمط مُتّسق)
+//  - تَمييز التَحويلات: «مَخزون» vs «نَقدية» (كانتا بِنفس النَصّ في مَجموعتين)
+//  - توحيد مَسار المُرتجَعات: السِجلّ فَقط + CTA داخلي
+//  - فَصل «الإقفال والرَقابة المالية» عن «الإدارة» (هَويّة vs رَقابة محاسبية)
+//  - إخراج «(adminOnly)» من label عَربي (تَفصيل تِقني)
+//  - تَسميات أَوضح: «الكاشير السَريع» / «كاشير الطِباعة» / «قارئ الأسعار للمُوظَّف»
 const NAV_GROUPS: NavGroup[] = [
   {
     key: "sales",
     label: "البيع والكاشير",
-    icon: "🛒",
+    icon: ShoppingCart,
     items: [
-      { href: "/pos", label: "نقطة البيع" },
-      { href: "/print-pos", label: "نقطة بيع الطباعة" },
-      { href: "/price-checker", label: "قارئ الأسعار (شاشة الزبون)" },
-      { href: "/sales/new", label: "فاتورة بيع متقدّمة" },
-      { href: "/invoices", label: "الفواتير" },
+      { href: "/pos", label: "الكاشير السَريع" },
+      { href: "/print-pos", label: "كاشير الطباعة" },
+      { href: "/price-checker", label: "قارئ الأسعار (للمُوظَّف)" },
+      { href: "/invoices", label: "فواتير المبيعات" },
       { href: "/quotations", label: "عروض الأسعار" },
-      { href: "/quotations/new", label: "عرض سعر جديد" },
-      { href: "/returns", label: "المرتجعات" },
-      { href: "/sales-returns/new", label: "مرتجع بيع جديد" },
-      { href: "/sales-returns", label: "سجلّ مرتجعات البيع" },
+      { href: "/sales-returns", label: "مُرتجَعات البيع" },
     ],
   },
   {
     key: "purchases",
     label: "المشتريات والموردون",
-    icon: "📦",
+    icon: Package,
     items: [
       { href: "/purchases", label: "أوامر الشراء" },
-      { href: "/purchases/new", label: "فاتورة شراء جديدة" },
-      { href: "/purchase-returns/new", label: "مرتجع شراء جديد" },
-      { href: "/purchase-returns", label: "سجلّ مرتجعات الشراء" },
+      { href: "/purchase-returns", label: "مُرتجَعات الشراء" },
       { href: "/suppliers", label: "الموردون" },
     ],
   },
   {
     key: "print",
     label: "المطبعة والإنتاج",
-    icon: "🖨️",
+    icon: Printer,
     items: [
       { href: "/work-orders", label: "طلبات خدمة العملاء" },
       { href: "/work-orders/station", label: "محطة التنفيذ (الفني)", roles: ["print_operator", "cashier", "manager"] },
@@ -61,35 +67,33 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "inventory",
     label: "المخزون والبضاعة",
-    icon: "🗃️",
+    icon: Boxes,
     items: [
       { href: "/products", label: "المنتجات" },
       { href: "/inventory", label: "أرصدة المخزون" },
       { href: "/stocktakes", label: "الجرد والتسوية" },
       { href: "/inventory-movements", label: "حركات المخزون" },
-      { href: "/transfers", label: "تحويلات بين الفروع" },
+      { href: "/transfers", label: "تحويلات مَخزون بين الفروع" },
       { href: "/barcode-labels", label: "ملصقات الباركود" },
     ],
   },
   {
     key: "assets",
     label: "الأصول الثابتة",
-    icon: "🖥️",
+    icon: Server,
     items: [
       { href: "/assets", label: "لوحة الأصول", managerOnly: true },
       { href: "/assets/register", label: "سجلّ الأصول", managerOnly: true },
-      { href: "/assets/new", label: "أصل جديد", managerOnly: true },
-      { href: "/assets/custody-report", label: "تقرير العهد", managerOnly: true },
+      { href: "/assets/custody-report", label: "تقرير العُهد", managerOnly: true },
       { href: "/assets/disposal-log", label: "سجلّ الاستبعاد", managerOnly: true },
     ],
   },
   {
     key: "hr",
     label: "الموارد البشرية",
-    icon: "💼",
+    icon: Briefcase,
     items: [
       { href: "/hr/employees", label: "الموظفون", managerOnly: true },
-      { href: "/hr/employees/new", label: "موظف جديد", managerOnly: true },
       { href: "/hr/attendance", label: "الحضور والدوام", managerOnly: true },
       { href: "/hr/payroll", label: "الرواتب", managerOnly: true },
       { href: "/hr/leaves", label: "الإجازات", managerOnly: true },
@@ -101,10 +105,10 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "treasury",
     label: "الخزينة والمدفوعات",
-    icon: "💰",
+    icon: Wallet,
     items: [
       { href: "/treasury", label: "لوحة الخزينة" },
-      { href: "/treasury/transfers", label: "تحويلات بين الفروع", managerOnly: true },
+      { href: "/treasury/transfers", label: "تحويلات نَقدية بين الفروع", managerOnly: true },
       { href: "/expenses", label: "المصروفات اليومية" },
       { href: "/vouchers", label: "سندات قبض وصرف" },
       { href: "/shifts", label: "سجلّ الورديات" },
@@ -113,7 +117,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "customers",
     label: "العملاء",
-    icon: "👥",
+    icon: Users,
     items: [
       { href: "/customers", label: "العملاء" },
     ],
@@ -121,33 +125,40 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "reports",
     label: "التقارير والكشوفات",
-    icon: "📊",
+    icon: BarChart3,
     items: [
       { href: "/reports", label: "مركز التقارير" },
       { href: "/sales-report", label: "تقرير المبيعات", managerOnly: true },
       { href: "/customers-statement", label: "كشف حساب عميل", managerOnly: true },
-      { href: "/ar-aging", label: "أعمار الذمم المدينة", managerOnly: true },
+      { href: "/ar-aging", label: "أعمار الذمم (مدينة)", managerOnly: true },
       { href: "/suppliers-statement", label: "كشف حساب مورد", managerOnly: true },
-      { href: "/ap-aging", label: "أعمار الذمم الدائنة", managerOnly: true },
+      { href: "/ap-aging", label: "أعمار الذمم (دائنة)", managerOnly: true },
       { href: "/reports/cash-orphans", label: "نقد بلا وردية (يتيم)", managerOnly: true },
+    ],
+  },
+  {
+    key: "closing",
+    label: "الإقفال والرَقابة المالية",
+    icon: Lock,
+    items: [
+      { href: "/reconcile", label: "تدقيق التوافق المالي", managerOnly: true },
+      { href: "/period-lock", label: "إقفال الفترات المالية", adminOnly: true },
+      { href: "/year-end", label: "الإقفال السنوي", adminOnly: true },
+      { href: "/credit-approvals", label: "موافقات الائتمان", managerOnly: true },
+      { href: "/wip-report", label: "الإنتاج تحت التنفيذ (WIP)", managerOnly: true },
     ],
   },
   {
     key: "admin",
     label: "الإدارة",
-    icon: "⚙️",
+    icon: Settings,
     adminOnly: true,
     items: [
       { href: "/users", label: "المستخدمون", adminOnly: true },
       { href: "/roles", label: "الأدوار والصلاحيات", adminOnly: true },
       { href: "/kiosk-devices", label: "شاشات قارئ الأسعار (الأجهزة)", adminOnly: true },
       { href: "/audit", label: "سجلّ التدقيق", adminOnly: true },
-      { href: "/reconcile", label: "تدقيق التوافق المالي", adminOnly: true },
-      { href: "/period-lock", label: "إقفال الفترات المالية", adminOnly: true },
-      { href: "/year-end", label: "الإقفال السنوي", adminOnly: true },
-      { href: "/credit-approvals", label: "موافقات الائتمان", managerOnly: true },
-      { href: "/wip-report", label: "تقرير الإنتاج تحت التنفيذ (WIP)", managerOnly: true },
-      { href: "/settings", label: "النسخ الاحتياطي والإعدادات", adminOnly: true },
+      { href: "/settings", label: "إعدادات النظام والنسخ الاحتياطي", adminOnly: true },
     ],
   },
 ];
@@ -229,7 +240,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <Search className="size-3.5 shrink-0" />
-            <span className="flex-1 text-right">بحث…</span>
+            <span className="flex-1 text-start">بحث…</span>
             <kbd className="rounded border border-border/50 bg-background px-1 font-mono text-[10px] opacity-70">Ctrl+K</kbd>
           </button>
         </div>
@@ -243,8 +254,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               loc === "/" ? "bg-primary text-primary-foreground font-semibold" : "hover:bg-accent"
             )}
           >
-            <span>🏠</span>
-            <span>لوحة التحكم</span>
+            <Home className="size-4 shrink-0" aria-hidden />
+            <span className="truncate">لوحة التحكم</span>
           </Link>
 
           <div className="my-1 mx-2 border-b border-border/50" />
@@ -260,6 +271,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             );
             if (visibleItems.length === 0) return null;
 
+            const GroupIcon = group.icon;
             return (
               <div key={group.key} className="mx-2 mb-0.5">
                 {/* رأس المجموعة */}
@@ -267,23 +279,22 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                   type="button"
                   onClick={() => toggleGroup(group.key)}
                   className={cn(
-                    "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-semibold transition",
+                    "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 min-h-[40px] text-xs font-semibold transition",
                     "text-muted-foreground hover:text-foreground hover:bg-accent/60",
                     hasActive && "text-primary"
                   )}
                 >
-                  <span className="flex items-center gap-1.5">
-                    <span>{group.icon}</span>
-                    <span>{group.label}</span>
+                  <span className="flex items-center gap-2 min-w-0">
+                    <GroupIcon className="size-4 shrink-0" aria-hidden />
+                    <span className="truncate">{group.label}</span>
                   </span>
-                  <span
+                  <ChevronDown
+                    aria-hidden
                     className={cn(
-                      "text-[10px] transition-transform duration-150",
-                      isOpen ? "rotate-90" : ""
+                      "size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150",
+                      isOpen ? "" : "rotate-90"
                     )}
-                  >
-                    ▶
-                  </span>
+                  />
                 </button>
 
                 {/* عناصر المجموعة */}
@@ -295,8 +306,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                         <Link
                           key={item.href}
                           href={item.href}
+                          title={item.label}
                           className={cn(
-                            "block rounded-md px-3 py-1.5 text-sm transition",
+                            "block truncate rounded-md px-3 py-1.5 text-sm transition",
                             active
                               ? "bg-primary text-primary-foreground font-semibold"
                               : "hover:bg-accent text-foreground/80"
@@ -341,7 +353,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
       {/* الشريط الجانبي — سطح المكتب (≥lg) */}
-      <aside className="hidden lg:flex w-60 shrink-0 border-l bg-card flex-col">
+      <aside className="hidden lg:flex w-64 shrink-0 border-s bg-card flex-col">
         <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <ThemeToggle />
@@ -358,7 +370,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             <button
               type="button"
               aria-label="فتح القائمة"
-              className="flex size-9 items-center justify-center rounded-md border border-border/60 text-foreground transition-colors hover:bg-accent"
+              className="flex size-11 items-center justify-center rounded-md border border-border/60 text-foreground transition-colors hover:bg-accent"
             >
               <Menu className="size-5" />
             </button>
@@ -368,7 +380,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </header>
 
         <SheetContent side="right" dir="rtl" className="w-72 p-0">
-          <SheetHeader className="border-b px-4 py-4 text-right">
+          <SheetHeader className="border-b px-4 py-4 text-start">
             <SheetTitle>الرؤية العربية</SheetTitle>
           </SheetHeader>
           {sidebarInner}

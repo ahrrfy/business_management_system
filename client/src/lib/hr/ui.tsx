@@ -4,9 +4,9 @@ import { employmentStatusLabel } from "@shared/hr";
 import { fmtInt } from "@/lib/money";
 
 const STATUS_CLS: Record<string, string> = {
-  active: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-  leave: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
-  terminated: "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
+  active: "badge-status-active",
+  leave: "badge-status-pending",
+  terminated: "bg-muted text-muted-foreground",
 };
 
 export function EmploymentStatusBadge({ status }: { status: string }) {

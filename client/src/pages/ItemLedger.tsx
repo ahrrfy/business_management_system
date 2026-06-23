@@ -198,7 +198,7 @@ export default function ItemLedger() {
                     <button
                       key={v.variantId}
                       type="button"
-                      className="block w-full text-right px-3 py-2 text-sm hover:bg-accent"
+                      className="block w-full text-end px-3 py-2 text-sm hover:bg-accent"
                       onClick={() => {
                         setPicked(v);
                         setSearch("");
@@ -274,20 +274,20 @@ export default function ItemLedger() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">التاريخ</th>
-                    <th className="p-2.5 text-right font-medium">النوع</th>
-                    <th className="p-2.5 text-left font-medium">الكمية</th>
-                    <th className="p-2.5 text-left font-medium">الرصيد</th>
-                    <th className="p-2.5 text-right font-medium">المرجع</th>
+                    <th className="p-2.5 text-end font-medium">التاريخ</th>
+                    <th className="p-2.5 text-end font-medium">النوع</th>
+                    <th className="p-2.5 text-start font-medium">الكمية</th>
+                    <th className="p-2.5 text-start font-medium">الرصيد</th>
+                    <th className="p-2.5 text-end font-medium">المرجع</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
-                      <td className="p-2.5 text-right"><TypeBadge type={r.type} /></td>
+                      <td className="p-2.5 text-end"><TypeBadge type={r.type} /></td>
                       <td
-                        className={`p-2.5 text-left tabular-nums font-semibold ${
+                        className={`p-2.5 text-start tabular-nums font-semibold ${
                           r.signedQty > 0 ? "text-emerald-700" : r.signedQty < 0 ? "text-rose-700" : "text-amber-700"
                         }`}
                         dir="ltr"
@@ -295,13 +295,13 @@ export default function ItemLedger() {
                         {signedDisplay(r.signedQty)}
                       </td>
                       <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtInt(r.balance)}</td>
-                      <td className="p-2.5 text-right text-muted-foreground text-xs">{r.reference ?? "—"}</td>
+                      <td className="p-2.5 text-end text-muted-foreground text-xs">{r.reference ?? "—"}</td>
                     </tr>
                   ))}
                 </tbody>
                 <tfoot>
                   <tr className="border-t bg-muted/40 text-sm font-semibold">
-                    <td className="p-2.5 text-right" colSpan={3}>الرصيد الختامي</td>
+                    <td className="p-2.5 text-end" colSpan={3}>الرصيد الختامي</td>
                     <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(closing)}</td>
                     <td></td>
                   </tr>

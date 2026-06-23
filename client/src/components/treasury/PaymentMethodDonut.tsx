@@ -18,12 +18,13 @@ interface PaymentMethodDonutProps {
   direction?: "in" | "out";
 }
 
+// سيمياء طُرُق الدَفع — مَربوطة بـtokens.css ⇒ تَتجاوب مع .dark تِلقائياً.
 const COLORS: Record<string, string> = {
-  CASH: "#10b981",
-  CARD: "#0ea5e9",
-  CHECK: "#8b5cf6",
-  TRANSFER: "#f59e0b",
-  WALLET: "#ec4899",
+  CASH: "var(--chart-cash)",
+  CARD: "var(--chart-card)",
+  CHECK: "var(--chart-check)",
+  TRANSFER: "var(--chart-transfer)",
+  WALLET: "var(--chart-wallet)",
 };
 
 export function PaymentMethodDonut({
@@ -83,7 +84,7 @@ export function PaymentMethodDonut({
                   isAnimationActive={false}
                 >
                   {slices.map((s) => (
-                    <Cell key={s.key} fill={COLORS[s.key] ?? "#94a3b8"} stroke="transparent" />
+                    <Cell key={s.key} fill={COLORS[s.key] ?? "var(--muted-foreground)"} stroke="transparent" />
                   ))}
                 </Pie>
               </PieChart>
@@ -101,8 +102,8 @@ export function PaymentMethodDonut({
               return (
                 <div key={s.key} className="flex items-center gap-2">
                   <span
-                    className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-                    style={{ background: COLORS[s.key] ?? "#94a3b8" }}
+                    className="w-2.5 h-2.5 rounded-full shrink-0"
+                    style={{ background: COLORS[s.key] ?? "var(--muted-foreground)" }}
                   />
                   <span className="flex-1">{s.name}</span>
                   <span className="tabular-nums text-muted-foreground" dir="ltr">

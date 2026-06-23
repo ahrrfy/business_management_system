@@ -14,12 +14,13 @@ const ACCENT_BG: Record<Accent, string> = {
   purple: "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300",
 };
 
+// مَربوطة بـtokens.css ⇒ تَتنفّس مع .dark.
 const SPARK_COLOR: Record<Accent, string> = {
-  green: "#10b981",
-  red: "#f43f5e",
-  blue: "#0ea5e9",
-  amber: "#f59e0b",
-  purple: "#8b5cf6",
+  green: "var(--money-positive)",
+  red: "var(--money-negative)",
+  blue: "var(--chart-card)",
+  amber: "var(--chart-transfer)",
+  purple: "var(--chart-check)",
 };
 
 interface TreasuryKpiCardProps {

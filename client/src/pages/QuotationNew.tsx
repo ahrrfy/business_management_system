@@ -250,7 +250,7 @@ export default function QuotationNew() {
       {/* شريط العنوان */}
       <div className="flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          <span aria-hidden>{typeInfo.icon}</span>
+          {(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
           {typeInfo.label} جديد
         </h1>
         <Link
