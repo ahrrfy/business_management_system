@@ -392,7 +392,11 @@ export interface ZReportCopyData {
   openingFloat: string | number;
   cashIn: string | number;
   cashOut: string | number;
-  expectedCash: string | number;
+  /**
+   * المُتَوَقَّع في الصُندوق. لِلوَردِيات المَفتوحة قَد يَكون null/undefined
+   * (لا يُحفَظ إلا عِند الإغلاق) ⇒ يُحسَب داخِلياً = openingFloat + cashIn − cashOut.
+   */
+  expectedCash?: string | number | null;
   countedCash?: string | number | null;
   variance?: string | number | null;
 }
@@ -405,10 +409,16 @@ export function formatZReportAsText(z: ZReportCopyData): string {
   L.push(COMPANY_NAME);
   L.push(SEP);
 
+  // لِلوَردية المَفتوحة لا يُحفَظ expectedCash في الـDB إلا عِند الإغلاق ⇒ احسُبه هُنا.
+  const expected =
+    z.expectedCash !== null && z.expectedCash !== undefined
+      ? z.expectedCash
+      : round2(D(z.openingFloat ?? 0).plus(D(z.cashIn ?? 0)).minus(D(z.cashOut ?? 0))).toString();
+
   L.push(`الرَصيد الافتِتاحي: ${fmtAr(z.openingFloat)} د.ع`);
   L.push(`النَقد الداخِل: ${fmtAr(z.cashIn)} د.ع`);
   L.push(`النَقد الخارِج: ${fmtAr(z.cashOut)} د.ع`);
-  L.push(`المُتَوَقَّع في الصُندوق: ${fmtAr(z.expectedCash)} د.ع`);
+  L.push(`المُتَوَقَّع في الصُندوق: ${fmtAr(expected)} د.ع`);
 
   if (z.countedCash !== null && z.countedCash !== undefined) {
     L.push(`المَعدود فِعلياً: ${fmtAr(z.countedCash)} د.ع`);

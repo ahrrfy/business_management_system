@@ -4,7 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
@@ -102,9 +102,11 @@ export default function WorkOrderDetail() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">طلب خدمة</h1>
         <div className="flex items-center gap-3">
-          <CopyAsMenu
-            label="نَسخ التَفاصيل"
-            plain={formatWorkOrderAsWhatsApp({
+          {(() => {
+            const woDeposit = D(data.deposit ?? 0);
+            const woTotal = D(data.salePrice ?? 0);
+            const woRemaining = woTotal.minus(woDeposit).toString();
+            const woCopyPayload = {
               number: data.orderNumber,
               date: data.createdAt,
               customer: data.customerName,
@@ -112,19 +114,18 @@ export default function WorkOrderDetail() {
               status: STATUS_LABEL[data.status] ?? data.status,
               items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
               total: data.salePrice,
+              deposit: woDeposit.toString(),
+              remaining: woRemaining,
               deliveryDate: data.dueDate,
-            })}
-            whatsapp={formatWorkOrderAsWhatsApp({
-              number: data.orderNumber,
-              date: data.createdAt,
-              customer: data.customerName,
-              description: data.customizationText,
-              status: STATUS_LABEL[data.status] ?? data.status,
-              items: [{ name: data.title, qty: data.quantity, unit: "نُسخة" }],
-              total: data.salePrice,
-              deliveryDate: data.dueDate,
-            })}
-          />
+            };
+            return (
+              <CopyAsMenu
+                label="نَسخ التَفاصيل"
+                plain={formatWorkOrderAsWhatsApp(woCopyPayload)}
+                whatsapp={formatWorkOrderAsWhatsApp(woCopyPayload)}
+              />
+            );
+          })()}
           <Button variant="outline" size="sm" onClick={() => printWorkOrder({
             woNumber: data.orderNumber,
             woDate: data.createdAt ? String(data.createdAt).slice(0, 10) : undefined,

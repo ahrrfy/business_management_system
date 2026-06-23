@@ -7,7 +7,7 @@ import { printARAging } from "@/lib/printing/printTemplates";
 import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 
@@ -29,6 +29,13 @@ export default function ARAging() {
   const [branchId, setBranchId] = useState<number | "">("");
   const aging = trpc.reports.arAging.useQuery({ branchId: branchId ? Number(branchId) : undefined });
   const sel = useRowSelection<number>();
+
+  // مَسح التَحديد عِند تَغَيُّر فِلتَر الفَرع — وَإلّا يَبقى sel.count يَحوي customerIds
+  // مَخفية بَينَما selectedRows يُبنى مِن aging.data الحالية ⇒ تَصدير/واتساب يَنسَخ أَقَل.
+  useEffect(() => {
+    sel.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [branchId]);
 
   // عقد import-integration §٦: «رصيد غير مفوتر/افتتاحي» = الرصيد الجاري − غير المدفوع،
   // يُحسب في العميل بـDecimal (لا parseFloat) — يفسّر فجوة المستورَد برصيد افتتاحي بلا فواتير.

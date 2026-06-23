@@ -140,7 +140,10 @@ export default function Shifts() {
         openingFloat: sh.openingBalance,
         cashIn: cashIn.toFixed(2),
         cashOut: cashOut.toFixed(2),
-        expectedCash: sh.expectedCash ?? sh.openingBalance,
+        // لِلوَردية المَفتوحة expectedCash = null في الـDB ⇒ مَرِّر null لِيَحسُبَه المُنَسِّق
+        // داخِلياً (= openingFloat + cashIn − cashOut). تَمرير openingBalance كَـfallback
+        // كان يُبَلِّغ المُستَخدِم برَقم خاطِئ يَتَجاهَل الحَركات النَقدية أَعلاه.
+        expectedCash: sh.expectedCash,
         countedCash: sh.countedCash,
         variance: sh.variance,
       });

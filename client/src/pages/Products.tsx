@@ -7,6 +7,7 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { useClipboard } from "@/hooks/useClipboard";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
@@ -16,7 +17,7 @@ import { notify } from "@/lib/notify";
 import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
 
@@ -39,6 +40,14 @@ export default function Products() {
   const importMut = trpc.imports.products.useMutation();
   const dq = useDebouncedValue(q, 200);
   const sel = useRowSelection<string>();
+  const { copy } = useClipboard({ successMessage: null });
+
+  // مَسح التَحديد عِند تَغَيُّر الصَفحة/البَحث/فِلتَر المُعَطَّل — وَإلّا يَبقى sel.count يَحوي
+  // مَفاتيح صُفوف مَخفية بَينَما النَسخ/الطِباعة تَعمَل عَلى rows الحالية فَقَط ⇒ تَفاوُت كاذِب.
+  useEffect(() => {
+    sel.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dq, includeInactive, page]);
 
   const list = trpc.catalog.adminList.useQuery({
     branchId,
@@ -75,12 +84,11 @@ export default function Products() {
         "المخزون": r.stockBase ?? 0,
       })),
     );
-    try {
-      await navigator.clipboard.writeText(tsv);
+    const ok = await copy(tsv);
+    if (ok) {
       notify.ok(`نُسِخت ${picked.length} صفّاً إلى الحافظة (TSV)`);
-    } catch {
-      notify.err("تَعَذَّر النَسخ — استَعمِل زِرّ التَصدير");
     }
+    // فَشل النَسخ ⇒ useClipboard أَطلَق notify.err بِنَفسه (لا ضَجيج مُكَرَّر).
   }
 
   /** طِباعة مُلصَقات الباركود لِلمُحَدَّد (دَفعة واحِدة). */

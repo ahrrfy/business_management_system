@@ -13,7 +13,7 @@ import type { CustomerImportRow } from "@/lib/importTypes";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
 const TIER_LABEL: Record<string, string> = {
@@ -89,6 +89,14 @@ export default function Customers() {
     () => rows.filter((r) => sel.isSelected(Number(r.id))),
     [rows, sel],
   );
+
+  // مَسح التَحديد عِند تَغَيُّر الصَفحة/الفِلتَر — وَإلّا يَبقى sel.count يَحوي ids مَخفية
+  // بَينَما selectedRows يُبنى مِن rows الحالية فَقَط ⇒ شَريط التَحديد يَكذِب وَنَسخ TSV/واتساب
+  // يَنسَخ أَقَل (أَو لا شَيء). الحَلّ الأَنظَف: مَسح صَريح كُلَّما تَبَدَّلَت الصَفحة المَعروضة.
+  useEffect(() => {
+    sel.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [q, customerType, priceTier, includeInactive, page]);
 
   async function copySelectedAsTSV() {
     if (selectedRows.length === 0) return;

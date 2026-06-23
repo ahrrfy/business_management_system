@@ -13,7 +13,7 @@ import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 
 type Row = RouterOutputs["sales"]["list"][number];
@@ -41,6 +41,13 @@ export default function Invoices() {
 
   // تَحديد مُتَعَدِّد لِلصُفوف (نَسخ/تَصدير المُحَدَّد فَقَط).
   const sel = useRowSelection<number>();
+
+  // مَسح التَحديد عِند تَغَيُّر الفِلتَر — وَإلّا يَبقى sel.count يَحوي ids لِفَواتير مَخفية
+  // بَينَما selectedRows يُبنى مِن data الحالية ⇒ TSV/واتساب يَنسَخ أَقَل (أَو لا شَيء).
+  useEffect(() => {
+    sel.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [from, to, status]);
 
   const rows = trpc.sales.list.useQuery({
     limit: 200,
