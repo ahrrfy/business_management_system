@@ -597,7 +597,12 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
   return (
     <div
       style={{
+        // aspect-ratio يَحفَظ المَظهَر المُربَّع عَلى العَرض الكافي، وَ min-height يُؤَمِّن
+        // أَلّا تَنكَمِش البِطاقة دون مَجموع ارتِفاع المُحتَوى (Shape 94 + نَصّ + شَريط إجراءات 48
+        // + حَواشي ≈ 220-235). كان aspectRatio وَحدَه يَقُصّ شَريط الإجراءات عِند تَكبير
+        // المُتَصَفِّح ١٢٥٪+ لأَن عَرض العَمود يَهبُط دون ٢٤٠px فَيَضغَط الارتِفاع آلياً.
         aspectRatio: "1",
+        minHeight: 240,
         borderRadius: 16,
         overflow: "hidden",
         display: "flex",
@@ -624,6 +629,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
         href={m.href}
         style={{
           flex: 1,
+          minHeight: 0,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
@@ -690,7 +696,9 @@ function PlaceholderCard() {
   return (
     <div
       style={{
+        // مُطابِق لِـModuleCard: aspect-ratio + min-height يَمنَع انكِماشاً يُخالِف صَفّ البِطاقات.
         aspectRatio: "1",
+        minHeight: 240,
         borderRadius: 16,
         border: `1.5px dashed ${T.secLine}`,
         display: "flex",
