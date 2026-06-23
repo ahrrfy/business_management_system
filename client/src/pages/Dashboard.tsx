@@ -763,11 +763,19 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
   const T = useT();
   const me = trpc.auth.me.useQuery(); // مُخزَّن مؤقتاً (deduped) — لا طلب إضافي.
   const isAdmin = me.data?.role === "admin";
-  // عدد الأعمدة متجاوب: ٦ على سطح المكتب (≥lg، بلا تغيير)، ٣ على اللوحي، ٢ على الأصغر.
+  // عدد الأعمدة متجاوب — كَسر ذَكي يَحفَظ نِسبة البِطاقة قَريبة من المُربَّع:
+  //   ≤640px      ⇒ 2 (مَوبايل)
+  //   641-1023px  ⇒ 3 (لَوحي)
+  //   1024-1279px ⇒ 4 (تَكبير ١٥٠٪ على شاشة 1920، أَو لابتوب صَغير)
+  //   1280-1599px ⇒ 5 (تَكبير ١٢٥٪ على 1920، أَو شاشة وَسَط)
+  //   ≥1600px     ⇒ 6 (دِسكتوب كامِل)
+  // كان 6 ثابتاً ≥1024 يَنتُج بِطاقات ١٤٠×٢٤٠ (مُستَطيلات طَويلة قَبيحة) على ١٥٠٪ زوم.
   // (تُستدعى الـhooks قبل أي عودة مبكرة — قاعدة Hooks.)
   const isXNarrow = useMediaQuery("(max-width: 640px)");
   const isNarrow = useMediaQuery("(max-width: 1023px)");
-  const cols = isXNarrow ? 2 : isNarrow ? 3 : 6;
+  const isMidNarrow = useMediaQuery("(max-width: 1279px)");
+  const isMidWide = useMediaQuery("(max-width: 1599px)");
+  const cols = isXNarrow ? 2 : isNarrow ? 3 : isMidNarrow ? 4 : isMidWide ? 5 : 6;
   // البطاقات adminOnly تظهر للأدمن فقط (اتّساقاً مع مجموعة «الإدارة» المحجوبة في الشريط الجانبي).
   const mods = MODULES.filter((m) => m.sec === sec.id && (!m.adminOnly || isAdmin));
   // قسم بلا بطاقات مرئية للدور الحالي ⇒ يُخفى كاملاً (لا رأس ولا فراغات).
