@@ -6,18 +6,17 @@ import { useClipboard } from "@/hooks/useClipboard";
 import { formatZReportAsText } from "@/lib/copy/formatters";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { printDoc } from "@/lib/printing/print";
+import { printShiftClose } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { Copy, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 
 /* ═══════════ سجلّ الورديات + إعادة طباعة Z-report ═══════════
    يستهلك shifts.list (branch-scoped): ورديات الكاشير مع فُتحت/أُغلقت/المتوقع/المعدود/الفرق.
-   فلاتر فرع/حالة + ترقيم خادمي + تصدير Excel + زر إعادة طباعة تقرير الوردية (Z) عبر printDoc.
+   فلاتر فرع/حالة + ترقيم خادمي + تصدير Excel + زر إعادة طباعة تقرير الوردية (Z) عبر printShiftClose.
 ═══════════════════════════════════════════════════════════ */
 
 const PAGE = 50;
-const SHOP = "الرؤية العربية";
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -26,7 +25,6 @@ const STATUS_CLS: Record<string, string> = {
   OPEN: "bg-blue-100 text-blue-700",
   CLOSED: "bg-emerald-100 text-emerald-700",
 };
-const METHOD_AR: Record<string, string> = { CASH: "نقدي", CARD: "بطاقة", CHECK: "صك", TRANSFER: "تحويل", WALLET: "محفظة" };
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
   d ? new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" }) : "—";
@@ -82,32 +80,51 @@ export default function Shifts() {
         status: string; openedAt: string | Date; closedAt: string | Date | null;
       };
       const open = sh.status === "OPEN";
-      const payRows: string[][] = (rep.payments ?? []).map((p) => [
-        `${METHOD_AR[p.method] ?? p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`,
-        String(p.count),
-        fmt(p.total),
-      ]);
-      await printDoc({
-        kind: "zreport",
-        title: SHOP,
-        subtitle: open ? "تقرير وردية مفتوحة (X) — مبدئي" : "تقرير نهاية الوردية (Z) — نسخة",
-        meta: [
-          `وردية #${shiftId}`,
-          open ? `فُتحت: ${fmtDT(sh.openedAt)}` : `أُغلقت: ${fmtDT(sh.closedAt)}`,
-          `طُبعت: ${new Date().toLocaleString("ar-IQ-u-nu-latn")}`,
-        ],
-        columns: ["الحركة", "عدد", "مبلغ"],
-        rows: payRows.length ? payRows : [["لا حركات", "0", "0.00"]],
-        totals: [
-          { label: "عدد الفواتير", value: String(rep.invoiceCount) },
-          { label: "إجمالي المبيعات", value: fmt(rep.salesTotal) },
-          { label: "الرصيد الافتتاحي", value: fmt(sh.openingBalance) },
-          ...(sh.expectedCash != null ? [{ label: "النقد المتوقع", value: fmt(sh.expectedCash) }] : []),
-          ...(sh.countedCash != null ? [{ label: "النقد المعدود", value: fmt(sh.countedCash) }] : []),
-          ...(sh.variance != null ? [{ label: "الفرق", value: fmt(sh.variance) }] : []),
-        ],
-        footer: open ? "تقرير مبدئي — الوردية لم تُغلق بعد" : "نهاية الوردية — شكراً",
-      });
+      // اسم الكاشير واسم الفرع من صف الوردية المعروض
+      const row = rows.find((r) => r.id === shiftId);
+      const cashierName = row?.userName ?? `#${shiftId}`;
+      const bName = branchName(row?.branchId);
+
+      const payments = (rep.payments ?? []).map((p) => ({
+        method:    p.method,
+        direction: p.direction as "IN" | "OUT",
+        count:     Number(p.count),
+        total:     p.total,
+      }));
+
+      if (open) {
+        // وردية مفتوحة: تقرير مبدئي بالتصميم الجديد (النقد المتوقع = الرصيد الافتتاحي مبدئياً)
+        await printShiftClose({
+          shiftId,
+          openedAt:       sh.openedAt,
+          closedAt:       new Date(),
+          cashierName,
+          branchName:     bName,
+          openingBalance: sh.openingBalance,
+          invoiceCount:   rep.invoiceCount,
+          salesTotal:     rep.salesTotal,
+          payments,
+          expectedCash:   sh.expectedCash ?? sh.openingBalance,
+          countedCash:    sh.countedCash  ?? "0",
+          variance:       sh.variance     ?? "0",
+        });
+      } else {
+        // وردية مغلقة: Z-Report نهائي
+        await printShiftClose({
+          shiftId,
+          openedAt:       sh.openedAt,
+          closedAt:       sh.closedAt ? new Date(sh.closedAt) : new Date(),
+          cashierName,
+          branchName:     bName,
+          openingBalance: sh.openingBalance,
+          invoiceCount:   rep.invoiceCount,
+          salesTotal:     rep.salesTotal,
+          payments,
+          expectedCash:   sh.expectedCash ?? "0",
+          countedCash:    sh.countedCash  ?? "0",
+          variance:       sh.variance     ?? "0",
+        });
+      }
     } catch (e) {
       notify.err(e);
     } finally {

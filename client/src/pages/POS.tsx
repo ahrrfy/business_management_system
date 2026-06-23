@@ -8,7 +8,8 @@ import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printDoc, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
+import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
+import { printShiftOpen, printShiftClose } from "@/lib/printing/printTemplates";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
@@ -230,6 +231,7 @@ export default function POS() {
   const C: C = POS_COLORS;
 
   const me       = trpc.auth.me.useQuery();
+  const branches = trpc.branches.list.useQuery();
   const branchId = me.data?.branchId ?? 1;
   const utils    = trpc.useUtils();
 
@@ -632,12 +634,12 @@ export default function POS() {
   const openShift = trpc.shifts.open.useMutation({
     onSuccess: async (res) => {
       await shiftQ.refetch();
-      await printDoc({
-        kind: "opening", title: SHOP,
-        subtitle: "بيان الرصيد الافتتاحي",
-        meta: [`وردية #${res.shiftId}`, new Date().toLocaleString("ar-IQ-u-nu-latn")],
-        totals: [{ label: "الرصيد الافتتاحي", value: fmt(Number(opening || 0)) }],
-        footer: "بداية الوردية",
+      printShiftOpen({
+        shiftId:        res.shiftId,
+        openingBalance: Number(opening || 0),
+        cashierName:    me.data?.name ?? "كاشير",
+        branchName:     (branches.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
+        openedAt:       new Date(),
       });
     },
     onError: (e) => notify.err(e),
@@ -832,6 +834,8 @@ export default function POS() {
           C={C} shift={shift} branchId={branchId}
           onClose={() => setShifting(false)}
           onClosed={() => { setShifting(false); shiftQ.refetch(); }}
+          me={me.data}
+          branches={branches.data}
         />
       )}
       {creditPrompt && (
@@ -1666,9 +1670,11 @@ interface ShiftCloseDialogProps {
   branchId: number;
   onClose: () => void;
   onClosed: () => void;
+  me: RouterOutputs["auth"]["me"] | undefined;
+  branches: RouterOutputs["branches"]["list"] | undefined;
 }
 
-function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed }: ShiftCloseDialogProps) {
+function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches }: ShiftCloseDialogProps) {
   const [counted, setCounted] = useState("");
   const utils = trpc.useUtils();
 
@@ -1681,26 +1687,24 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed }: ShiftCloseD
   const closeShift = trpc.shifts.close.useMutation({
     onSuccess: async (r) => {
       const rep = report;
-      const payRows: [string, string, string][] = (rep?.payments ?? []).map((p) => [
-        `${p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`,
-        String(p.count),
-        String(p.total),
-      ]);
-      await printDoc({
-        kind: "zreport", title: SHOP,
-        subtitle: "تقرير نهاية الوردية (Z)",
-        meta: [`وردية #${r.shiftId}`, new Date().toLocaleString("ar-IQ-u-nu-latn")],
-        columns: ["الحركة", "عدد", "مبلغ"],
-        rows: payRows.length ? payRows : [["لا حركات", "0", "0.00"]],
-        totals: [
-          { label: "عدد الفواتير",      value: String(rep?.invoiceCount ?? 0) },
-          { label: "إجمالي المبيعات",   value: String(rep?.salesTotal ?? "0.00") },
-          { label: "الرصيد الافتتاحي",  value: r.openingBalance },
-          { label: "النقد المتوقع",      value: r.expectedCash },
-          { label: "النقد المعدود",      value: r.countedCash },
-          { label: "الفرق",             value: r.variance },
-        ],
-        footer: "نهاية الوردية — شكراً",
+      printShiftClose({
+        shiftId:        r.shiftId,
+        openedAt:       shift?.openedAt ?? null,
+        closedAt:       new Date(),
+        cashierName:    me?.name ?? "كاشير",
+        branchName:     (branches ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
+        openingBalance: r.openingBalance,
+        invoiceCount:   rep?.invoiceCount ?? 0,
+        salesTotal:     rep?.salesTotal ?? "0",
+        payments:       (rep?.payments ?? []).map((p) => ({
+          method:    p.method,
+          direction: p.direction as "IN" | "OUT",
+          count:     Number(p.count),
+          total:     p.total,
+        })),
+        expectedCash: r.expectedCash,
+        countedCash:  r.countedCash,
+        variance:     r.variance,
       });
       await utils.shifts.current.invalidate();
       onClosed();

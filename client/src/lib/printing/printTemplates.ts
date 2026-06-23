@@ -1050,3 +1050,362 @@ export function printBrowserWorkOrderReceipt(d: WorkOrderReceiptData): void {
 
   openPrintWindow(wrapReceiptDoc(`طلب خدمة ${d.orderNumber}`, body), 'width=380,height=750');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// إيصالات الوردية الحرارية — فتح / إغلاق (Z-Report)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// دالة مساعدة: حساب مدة الوردية
+function calcDuration(openedAt: Date | string | null, closedAt: Date): string {
+  if (!openedAt) return '—';
+  const ms = closedAt.getTime() - new Date(openedAt).getTime();
+  if (ms < 0) return '—';
+  const h = Math.floor(ms / 3600000);
+  const m = Math.floor((ms % 3600000) / 60000);
+  if (h === 0) return `${m} دقيقة`;
+  return m > 0 ? `${h} ساعة ${m} دقيقة` : `${h} ساعة`;
+}
+
+// ترجمة طرق الدفع
+const METHOD_AR: Record<string, string> = {
+  CASH: 'نقدي', CARD: 'بطاقة', CHECK: 'صك', TRANSFER: 'تحويل', WALLET: 'محفظة',
+};
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ١١. إيصال فتح الوردية — حراري 80مم
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface ShiftOpenData {
+  shiftId: number;
+  openingBalance: number;
+  /** اسم الكاشير — من me.data?.name في POS.tsx */
+  cashierName: string;
+  /** اسم الفرع — من branches.data?.find(b => b.id === branchId)?.name */
+  branchName: string;
+  /** وقت فتح الوردية — new Date() مباشرةً بعد onSuccess */
+  openedAt: Date;
+}
+
+export function printShiftOpen(d: ShiftOpenData): void {
+  const logo    = logoUrl();
+  const date    = d.openedAt.toLocaleDateString('en-GB');
+  const time    = d.openedAt.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' });
+  const printed = d.openedAt.toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' });
+
+  const metaRows = [
+    ['رقم الوردية', `#${d.shiftId}`],
+    ['التاريخ',     date],
+    ['وقت الفتح',   time],
+    ['الكاشير',     esc(d.cashierName)],
+    ['الفرع',       esc(d.branchName)],
+    ['طُبعت في',    esc(printed)],
+  ].map(([l, v]) =>
+    `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+      <span style="font-weight:600;color:#333;">${l}</span>
+      <span style="font-weight:800;">${v}</span>
+    </div>`,
+  ).join('');
+
+  const phones = RECEIPT_PHONES.slice(0, 2)
+    .map(p => `<div>${esc(p.l)}: <strong>${esc(p.n)}</strong></div>`)
+    .join('');
+
+  const body = `
+  <!-- رأس الشركة -->
+  <div style="text-align:center;padding:14px 0 10px;">
+    <img src="${logo}" style="width:52px;height:52px;object-fit:contain;margin-bottom:6px;"
+         alt="" onerror="this.style.display='none'">
+    <div style="font-size:19px;font-weight:900;">مكتبة العربية</div>
+    <div style="font-size:14px;font-weight:800;margin-top:1px;">للطباعة والقرطاسية</div>
+    <div style="font-size:10.5px;font-weight:600;margin-top:3px;line-height:1.45;">
+      ${esc(CO.name)}<br>${esc(CO.address)}
+    </div>
+  </div>
+
+  <div style="height:2.5px;background:#000;margin-bottom:8px;"></div>
+
+  <!-- شارة العنوان — معكوسة -->
+  <div style="background:#000;color:#fff;text-align:center;padding:8px 0;margin-bottom:10px;border-radius:2px;">
+    <div style="font-size:16px;font-weight:900;letter-spacing:.5px;">فتح الوردية</div>
+    <div style="font-size:11px;font-weight:600;opacity:.85;">بيان الرصيد الافتتاحي</div>
+  </div>
+
+  <!-- بيانات الوردية -->
+  ${metaRows}
+
+  <div style="border-top:1.5px dashed #000;margin:10px 0;"></div>
+
+  <!-- الرصيد الافتتاحي — معكوس كبير -->
+  <div style="background:#000;color:#fff;text-align:center;padding:12px 8px;margin:8px 0;border-radius:2px;">
+    <div style="font-size:11.5px;font-weight:700;opacity:.9;margin-bottom:4px;">الرصيد الافتتاحي للصندوق</div>
+    <div style="font-size:36px;font-weight:900;direction:ltr;line-height:1;letter-spacing:-1px;">${fmt(d.openingBalance)}</div>
+    <div style="font-size:14px;font-weight:800;margin-top:4px;">دينار عراقي</div>
+  </div>
+
+  <!-- صندوق تحقق الكاشير -->
+  <div style="border:1.5px solid #000;border-radius:2px;padding:8px 10px;margin-bottom:10px;">
+    <div style="text-align:center;font-size:11.5px;font-weight:800;margin-bottom:6px;">تحقق الكاشير من الرصيد المستلم</div>
+    <div style="display:flex;justify-content:space-between;font-size:13px;">
+      <span style="font-weight:600;">مستلم نقداً:</span>
+      <span style="font-weight:900;direction:ltr;border-bottom:1px solid #000;
+            min-width:90px;text-align:left;display:inline-block;">
+        ${fmt(d.openingBalance)} د.ع
+      </span>
+    </div>
+  </div>
+
+  <div style="border-top:1.5px dashed #000;margin:10px 0;"></div>
+
+  <!-- توقيعات -->
+  <div style="text-align:center;font-size:11.5px;font-weight:800;margin-bottom:8px;">التوقيعات</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:8px 0 4px;">
+    <div style="text-align:center;">
+      <div style="height:26px;border-bottom:1.5px solid #000;margin-bottom:3px;"></div>
+      <div style="font-size:10.5px;font-weight:700;">توقيع الكاشير</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="height:26px;border-bottom:1.5px solid #000;margin-bottom:3px;"></div>
+      <div style="font-size:10.5px;font-weight:700;">توقيع المشرف</div>
+    </div>
+  </div>
+
+  <div style="height:2px;background:#000;margin:10px 0;"></div>
+
+  <!-- فوتر -->
+  <div style="text-align:center;font-size:11.5px;font-weight:600;line-height:1.7;padding-bottom:4px;">
+    <div style="font-weight:900;font-size:13px;">${esc(CO.footer)}</div>
+    ${phones}
+  </div>`;
+
+  openPrintWindow(wrapReceiptDoc(`فتح الوردية #${d.shiftId}`, body), 'width=380,height=720');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ١٢. إيصال إغلاق الوردية / Z-Report — حراري 80مم
+// ═══════════════════════════════════════════════════════════════════════════════
+
+export interface ShiftCloseData {
+  shiftId: number;
+  /** وقت فتح الوردية — من shift?.openedAt */
+  openedAt: Date | string | null;
+  /** وقت الإغلاق — new Date() مباشرةً بعد onSuccess */
+  closedAt: Date;
+  cashierName: string;
+  branchName: string;
+  /** من r.openingBalance (نتيجة shifts.close) */
+  openingBalance: string | number;
+  /** من rep?.invoiceCount (نتيجة shifts.report) */
+  invoiceCount: number;
+  /** من rep?.salesTotal */
+  salesTotal: string | number;
+  /** اختياري — إجمالي الخصومات (إن أُضيف لـ shifts.report مستقبلاً) */
+  discountsTotal?: string | number | null;
+  /** اختياري — إجمالي المرتجعات */
+  returnsTotal?: string | number | null;
+  /** من rep?.payments */
+  payments: {
+    method: string;
+    direction: 'IN' | 'OUT';
+    count: number;
+    total: string | number;
+  }[];
+  /** من r.expectedCash */
+  expectedCash: string | number;
+  /** من r.countedCash */
+  countedCash: string | number;
+  /** من r.variance */
+  variance: string | number;
+}
+
+export function printShiftClose(d: ShiftCloseData): void {
+  const logo     = logoUrl();
+  const openedStr  = d.openedAt
+    ? new Date(d.openedAt).toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' })
+    : '—';
+  const closedStr  = d.closedAt.toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' });
+  const duration   = calcDuration(d.openedAt, d.closedAt);
+
+  // صفوف بيانات الوردية
+  const metaRows = [
+    ['رقم الوردية', `#${d.shiftId}`],
+    ['فُتحت',        esc(openedStr)],
+    ['أُغلقت',       esc(closedStr)],
+    ['مدة الوردية',  esc(duration)],
+    ['الكاشير',      esc(d.cashierName)],
+    ['الفرع',        esc(d.branchName)],
+  ].map(([l, v]) =>
+    `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+      <span style="font-weight:600;color:#333;">${l}</span>
+      <span style="font-weight:800;">${v}</span>
+    </div>`,
+  ).join('');
+
+  // جدول طرق الدفع
+  const payRows = d.payments
+    .filter(p => Number(p.total) !== 0)
+    .map(p => {
+      const label  = `${METHOD_AR[p.method] ?? p.method} ${p.direction === 'IN' ? 'وارد' : 'صادر'}`;
+      const amtStr = p.direction === 'OUT' ? `( ${fmt(p.total)} )` : fmt(p.total);
+      return `<div style="display:grid;grid-template-columns:1fr 42px 82px;font-size:12px;
+               padding:4.5px 0;border-bottom:1px dashed #999;align-items:center;">
+        <span style="font-weight:700;">${esc(label)}</span>
+        <span style="text-align:center;font-weight:600;">${p.count}</span>
+        <span style="text-align:left;direction:ltr;font-weight:800;">${amtStr}</span>
+      </div>`;
+    }).join('');
+
+  // حساب صافي المبيعات
+  const discounts = Number(d.discountsTotal ?? 0);
+  const returns   = Number(d.returnsTotal   ?? 0);
+  const netSales  = Number(d.salesTotal) - discounts - returns;
+
+  // الفرق: label + قيمة
+  const varNum   = Number(d.variance);
+  const varLabel = varNum === 0 ? 'مطابق تماماً ✓' : varNum > 0 ? 'الفرق — زيادة' : 'الفرق — عجز';
+  const varVal   = varNum === 0 ? 'صفر' : `${varNum > 0 ? '+' : '−'} ${fmt(Math.abs(varNum))} د.ع`;
+
+  const phones = RECEIPT_PHONES.slice(0, 2)
+    .map(p => `<div>${esc(p.l)}: <strong>${esc(p.n)}</strong></div>`)
+    .join('');
+
+  const sectionHdr = (title: string) =>
+    `<div style="background:#000;color:#fff;text-align:center;padding:5px 0;
+      font-size:12px;font-weight:900;letter-spacing:.5px;margin:8px 0 4px;border-radius:2px;">
+      ${esc(title)}
+    </div>`;
+
+  const body = `
+  <!-- رأس الشركة -->
+  <div style="text-align:center;padding:14px 0 10px;">
+    <img src="${logo}" style="width:52px;height:52px;object-fit:contain;margin-bottom:6px;"
+         alt="" onerror="this.style.display='none'">
+    <div style="font-size:19px;font-weight:900;">مكتبة العربية</div>
+    <div style="font-size:14px;font-weight:800;margin-top:1px;">للطباعة والقرطاسية</div>
+    <div style="font-size:10.5px;font-weight:600;margin-top:3px;line-height:1.45;">
+      ${esc(CO.name)}<br>${esc(CO.address)}
+    </div>
+  </div>
+
+  <div style="height:2.5px;background:#000;margin-bottom:8px;"></div>
+
+  <!-- شارة العنوان -->
+  <div style="background:#000;color:#fff;text-align:center;padding:8px 0;margin-bottom:10px;border-radius:2px;">
+    <div style="font-size:16px;font-weight:900;letter-spacing:.5px;">إغلاق الوردية</div>
+    <div style="font-size:11px;font-weight:600;opacity:.85;">تقرير نهاية اليوم — Z Report</div>
+  </div>
+
+  <!-- بيانات الوردية -->
+  ${metaRows}
+  <div style="border-top:1.5px dashed #000;margin:8px 0;"></div>
+
+  <!-- ملخص المبيعات -->
+  ${sectionHdr('ملخّص المبيعات')}
+
+  <div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+    <span style="font-weight:600;color:#333;">عدد الفواتير</span>
+    <span style="font-size:16px;font-weight:900;">${d.invoiceCount} فاتورة</span>
+  </div>
+  <div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+    <span style="font-weight:600;color:#333;">إجمالي المبيعات</span>
+    <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(d.salesTotal)} د.ع</span>
+  </div>
+  ${discounts > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+    <span style="font-weight:600;color:#333;">إجمالي الخصومات</span>
+    <span style="font-weight:800;direction:ltr;">${fmt(discounts)} د.ع</span>
+  </div>` : ''}
+  ${returns > 0 ? `<div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+    <span style="font-weight:600;color:#333;">المرتجعات</span>
+    <span style="font-weight:800;direction:ltr;">${fmt(returns)} د.ع</span>
+  </div>` : ''}
+
+  <!-- صافي المبيعات — معكوس -->
+  <div style="background:#000;color:#fff;display:flex;justify-content:space-between;
+    align-items:center;padding:7px 6px;margin:4px 0;border-radius:2px;">
+    <span style="font-size:14px;font-weight:900;">صافي المبيعات</span>
+    <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(netSales)} د.ع</span>
+  </div>
+
+  <!-- تفصيل طرق الدفع -->
+  ${sectionHdr('تفصيل طرق الدفع')}
+
+  <div style="display:grid;grid-template-columns:1fr 42px 82px;font-size:11px;font-weight:800;
+    padding:3px 0;border-bottom:2px solid #000;">
+    <span style="text-align:right;">الطريقة</span>
+    <span style="text-align:center;">عدد</span>
+    <span style="text-align:left;">المبلغ</span>
+  </div>
+  ${payRows || '<div style="font-size:12px;padding:6px 0;text-align:center;">لا حركات</div>'}
+
+  <!-- تسوية الصندوق -->
+  ${sectionHdr('تسوية الصندوق النقدي')}
+
+  <div style="display:flex;justify-content:space-between;padding:4.5px 0;border-bottom:1px dashed #999;font-size:13px;">
+    <span style="font-weight:600;color:#333;">الرصيد الافتتاحي</span>
+    <span style="font-weight:800;direction:ltr;">${fmt(d.openingBalance)} د.ع</span>
+  </div>
+
+  <!-- النقد المتوقع — صندوق بارز -->
+  <div style="display:flex;justify-content:space-between;align-items:center;
+    padding:6px;border:2px solid #000;border-radius:2px;margin:4px 0;">
+    <span style="font-size:13px;font-weight:900;">النقد المتوقع</span>
+    <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(d.expectedCash)} د.ع</span>
+  </div>
+
+  <!-- النقد المعدود — صندوق بارز -->
+  <div style="display:flex;justify-content:space-between;align-items:center;
+    padding:6px;border:2.5px solid #000;border-radius:2px;margin:4px 0;">
+    <span style="font-size:13px;font-weight:900;">النقد المعدود</span>
+    <span style="font-size:16px;font-weight:900;direction:ltr;">${fmt(d.countedCash)} د.ع</span>
+  </div>
+
+  <!-- الفرق — معكوس -->
+  <div style="background:#000;color:#fff;display:flex;justify-content:space-between;
+    align-items:center;padding:9px 10px;margin:8px 0;border-radius:2px;">
+    <div>
+      <div style="font-size:14px;font-weight:900;">${esc(varLabel)}</div>
+      ${varNum !== 0 ? '<div style="font-size:10.5px;font-weight:700;opacity:.8;">يتطلّب مراجعة المشرف</div>' : ''}
+    </div>
+    <div style="font-size:22px;font-weight:900;direction:ltr;">${esc(varVal)}</div>
+  </div>
+
+  <!-- الإجمالي الكبير — معكوس -->
+  <div style="background:#000;color:#fff;text-align:center;padding:12px 8px;
+    margin:10px 0;border-radius:2px;">
+    <div style="font-size:11.5px;font-weight:700;opacity:.9;margin-bottom:4px;">إجمالي مبيعات الوردية</div>
+    <div style="font-size:36px;font-weight:900;direction:ltr;line-height:1;letter-spacing:-1px;">
+      ${fmt(d.salesTotal)}
+    </div>
+    <div style="font-size:14px;font-weight:800;margin-top:4px;">دينار عراقي</div>
+  </div>
+
+  <div style="border-top:1.5px dashed #000;margin:10px 0;"></div>
+
+  <!-- توقيعات -->
+  <div style="text-align:center;font-size:11.5px;font-weight:800;margin-bottom:8px;">التوقيعات والمراجعة</div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:8px 0 4px;">
+    <div style="text-align:center;">
+      <div style="height:26px;border-bottom:1.5px solid #000;margin-bottom:3px;"></div>
+      <div style="font-size:10.5px;font-weight:700;">توقيع الكاشير</div>
+    </div>
+    <div style="text-align:center;">
+      <div style="height:26px;border-bottom:1.5px solid #000;margin-bottom:3px;"></div>
+      <div style="font-size:10.5px;font-weight:700;">توقيع المشرف</div>
+    </div>
+  </div>
+
+  <!-- تاريخ الطباعة -->
+  <div style="border-top:1px dashed #aaa;margin:8px 0;"></div>
+  <div style="text-align:center;font-size:10.5px;font-weight:600;margin-bottom:8px;direction:ltr;">
+    طُبع: ${esc(closedStr)} · نسخة أصلية
+  </div>
+
+  <div style="height:2px;background:#000;margin-bottom:10px;"></div>
+
+  <!-- فوتر -->
+  <div style="text-align:center;font-size:11.5px;font-weight:600;line-height:1.7;padding-bottom:4px;">
+    <div style="font-weight:900;font-size:13px;">نهاية الوردية — شكراً</div>
+    ${phones}
+  </div>`;
+
+  openPrintWindow(wrapReceiptDoc(`إغلاق الوردية #${d.shiftId}`, body), 'width=380,height=920');
+}

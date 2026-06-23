@@ -87,11 +87,12 @@ export async function docToHtml(doc: PrintDoc): Promise<string> {
   }
 
   return `<!doctype html><html dir="rtl" lang="ar"><head><meta charset="utf-8"><title>${esc(doc.title)}</title>
-<style>@page{size:80mm auto;margin:3mm}body{font-family:"Cairo",monospace;width:74mm;font-size:12px;color:#000}
-h2{text-align:center;margin:2px 0;font-size:15px}.muted{text-align:center;margin:0;color:#222}
-table{width:100%;border-collapse:collapse;margin-top:6px}th{border-bottom:1px dashed #000}th,td{padding:2px 0}
-.tot{display:flex;justify-content:space-between;border-top:1px dashed #000;padding-top:2px;font-weight:bold}
-.foot{text-align:center;margin-top:8px}
+<style>@page{size:80mm auto;margin:3mm}body{font-family:"Cairo",monospace;width:74mm;font-size:14px;color:#000;line-height:1.6}
+h2{text-align:center;margin:3px 0;font-size:18px;font-weight:900}.muted{text-align:center;margin:0;color:#222;font-size:13px}
+table{width:100%;border-collapse:collapse;margin-top:8px}th{border-bottom:2px solid #000;font-size:13px;padding:3px 0}td{padding:3px 0;font-size:13px}
+.tot{display:flex;justify-content:space-between;border-top:1px dashed #000;padding-top:4px;font-weight:bold;font-size:14px}
+.tot:last-child{font-size:16px;font-weight:900;border-top:2px solid #000;padding-top:5px;margin-top:3px}
+.foot{text-align:center;margin-top:10px;font-size:13px}
 .bc-wrap{text-align:center;margin-top:10px;border-top:1px dashed #000;padding-top:8px}
 .bc-wrap svg{display:block;margin:0 auto}
 .bc-qr svg{width:140px;height:140px}
@@ -116,7 +117,7 @@ const BARCODE_SECTION_H = 150 + 16 + 76 + 20; // QR(150) + gap(16) + Code128(76)
  */
 export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster | null> {
   if (typeof document === "undefined") return null;
-  const line = 28;
+  const line = 36;
   const pad = 14;
   const rowsCount =
     1 +
@@ -143,32 +144,40 @@ export async function docToRaster(doc: PrintDoc, widthPx = 576): Promise<Raster 
   let y = pad + line;
 
   ctx.textAlign = "center";
-  ctx.font = "bold 26px Cairo, sans-serif";
+  ctx.font = "900 38px Cairo, sans-serif";
   ctx.fillText(doc.title, widthPx / 2, y);
   y += line;
-  ctx.font = "20px Cairo, sans-serif";
+  ctx.font = "700 28px Cairo, sans-serif";
   if (doc.subtitle) { ctx.fillText(doc.subtitle, widthPx / 2, y); y += line; }
   for (const m of doc.meta) { ctx.fillText(m, widthPx / 2, y); y += line; }
 
   if (doc.columns && doc.rows) {
     const last = doc.columns.length - 1;
+    ctx.font = "800 30px Cairo, sans-serif";
     ctx.textAlign = "right"; ctx.fillText(doc.columns[0], right, y);
     ctx.textAlign = "left"; ctx.fillText(doc.columns[last], left, y);
     y += line;
+    ctx.font = "700 28px Cairo, sans-serif";
     for (const r of doc.rows) {
       ctx.textAlign = "right"; ctx.fillText(r[0], right, y);
       ctx.textAlign = "left"; ctx.fillText(r[r.length - 1], left, y);
       y += line;
     }
   }
-  for (const t of doc.totals ?? []) {
-    ctx.font = "bold 20px Cairo, sans-serif";
+
+  const totals = doc.totals ?? [];
+  for (let i = 0; i < totals.length; i++) {
+    const t = totals[i];
+    const isLast = i === totals.length - 1;
+    ctx.font = isLast
+      ? "900 44px Cairo, sans-serif"
+      : "800 30px Cairo, sans-serif";
     ctx.textAlign = "right"; ctx.fillText(t.label, right, y);
     ctx.textAlign = "left"; ctx.fillText(t.value, left, y);
-    ctx.font = "20px Cairo, sans-serif";
-    y += line;
+    y += isLast ? line * 1.3 : line;
   }
   if (doc.footer) {
+    ctx.font = "600 26px Cairo, sans-serif";
     ctx.textAlign = "center";
     ctx.fillText(doc.footer, widthPx / 2, y + line);
     y += line * 2;
