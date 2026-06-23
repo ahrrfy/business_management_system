@@ -461,6 +461,8 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
         direction: "IN",
         amount: toDbMoney(paidNow),
         paymentMethod: input.payment!.method,
+        // cashBucket='DRAWER' للنقد ⇒ يَدخل تسوية الدرج/Z-report (مرآة createSale/processPayment).
+        cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
         status: "COMPLETED",
         invoiceId,
         createdBy: actor.userId,

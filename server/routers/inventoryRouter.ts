@@ -1,6 +1,9 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, like, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
+
+// استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
+const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 import { z } from "zod";
 import { branches, branchStock, inventoryMovements, productVariants, products, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -238,9 +241,9 @@ export const inventoryRouter = router({
       const conds: any[] = [eq(branchStock.branchId, branchId)];
       const search = input?.q?.trim();
       if (search) {
-        const pat = `%${search}%`;
+        const pat = `%${escLike(search)}%`;
         conds.push(
-          or(like(products.name, pat), like(productVariants.sku, pat), like(productVariants.variantName, pat))
+          sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`
         );
       }
       if (input?.lowOnly) {
@@ -346,9 +349,9 @@ export const inventoryRouter = router({
       if (i.referenceType) conds.push(eq(inventoryMovements.referenceType, i.referenceType));
       const search = i.q?.trim();
       if (search) {
-        const pat = `%${search}%`;
+        const pat = `%${escLike(search)}%`;
         conds.push(
-          or(like(products.name, pat), like(productVariants.sku, pat), like(productVariants.variantName, pat))
+          sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`
         );
       }
       if (i.fromDate) {
