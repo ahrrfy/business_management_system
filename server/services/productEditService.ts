@@ -194,9 +194,13 @@ export interface UpdateProductVariantsInput {
   variants: UpdateVariantRow[];
 }
 
+// الاسم الصريح (input.name) هو المرجع الأول: المنتجات المستوردة تحمل اسماً كاملاً في `name`
+// بلا أجزاء (نوع/ماركة/موديل)، وحقل «اسم المنتج» في شاشة التعديل يحرّره مباشرةً. الأجزاء الثلاثة
+// تبقى وصفاً اختيارياً (تصنيف/بحث) ولا تَجُبّ الاسم الصريح. عند غياب الاسم الصريح نركّب من الأجزاء.
 function composeName(input: UpdateProductVariantsInput, fallback: string): string {
+  const explicit = (input.name ?? "").trim();
   const composed = [input.productType, input.brand, input.modelName].map((s) => (s ?? "").trim()).filter(Boolean).join(" ");
-  return composed || (input.name ?? "").trim() || fallback;
+  return explicit || composed || fallback;
 }
 
 /** يرفض الباركود/SKU المكرّر داخل الحمولة أو ضدّ منتجات أخرى (يستثني هذا المنتج). */

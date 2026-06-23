@@ -4,6 +4,14 @@ import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { assignBarcode, checkBarcodesTaken, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
+import {
+  createCategory,
+  deleteCategory,
+  listCategoriesAdmin,
+  mergeCategories,
+  reassignProducts,
+  updateCategory,
+} from "../services/categoryService";
 import { logAudit } from "../services/auditService";
 import { managerProcedure, protectedProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
@@ -82,6 +90,8 @@ export const catalogRouter = router({
         branchId: z.number().int().positive(),
         q: z.string().optional(),
         includeInactive: z.boolean().default(false),
+        // فلترة بالفئة: رقم = فئة محدّدة، 0 = «بلا فئة» (categoryId NULL)، غياب = الكل.
+        categoryId: z.number().int().min(0).optional(),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),
       })
@@ -282,7 +292,7 @@ export const catalogRouter = router({
       return res;
     }),
 
-  /** قائمة الفئات (لنطاق الجرد «حسب الفئة» وأي منتقي فئات لاحق). */
+  /** قائمة الفئات (لمنتقي الفئة في شاشات المنتج ونطاق الجرد «حسب الفئة»). */
   categories: protectedProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
@@ -291,4 +301,78 @@ export const catalogRouter = router({
       .from(categories)
       .orderBy(asc(categories.name));
   }),
+
+  /* ============================ إدارة الفئات (categories CRUD + دمج + نقل) ============================ */
+
+  /** قائمة الفئات بعدد منتجاتها لشاشة الإدارة (يكشف عدّاً فقط ⇒ مدير فأعلى). */
+  categoriesAdmin: managerProcedure.query(() => listCategoriesAdmin()),
+
+  createCategory: managerProcedure
+    .input(z.object({ name: z.string().min(1).max(255), description: z.string().max(1000).nullish() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await createCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "category.create", entityType: "category", entityId: res.id, newValue: { name: res.name } });
+      return res;
+    }),
+
+  updateCategory: managerProcedure
+    .input(
+      z.object({
+        id: z.number().int().positive(),
+        name: z.string().min(1).max(255).optional(),
+        description: z.string().max(1000).nullish(),
+        isActive: z.boolean().optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await updateCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "category.update",
+        entityType: "category",
+        entityId: input.id,
+        newValue: { name: input.name, description: input.description, isActive: input.isActive },
+      });
+      return res;
+    }),
+
+  deleteCategory: managerProcedure
+    .input(z.object({ id: z.number().int().positive(), reassignToId: z.number().int().positive().nullish() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await deleteCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "category.delete",
+        entityType: "category",
+        entityId: input.id,
+        newValue: { reassigned: res.reassigned, reassignedTo: res.reassignedTo },
+      });
+      return res;
+    }),
+
+  mergeCategories: managerProcedure
+    .input(z.object({ sourceIds: z.array(z.number().int().positive()).min(1), targetId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await mergeCategories(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "category.merge",
+        entityType: "category",
+        entityId: input.targetId,
+        oldValue: { sourceIds: input.sourceIds },
+        newValue: { moved: res.moved, deleted: res.deleted, targetId: res.targetId },
+      });
+      return res;
+    }),
+
+  /** نقل منتجات محدّدة إلى فئة (categoryId=null ⇒ بلا فئة) — للنقل الجماعي من قائمة المنتجات. */
+  reassignProducts: managerProcedure
+    .input(z.object({ productIds: z.array(z.number().int().positive()).min(1).max(2000), categoryId: z.number().int().positive().nullable() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await reassignProducts(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "product.reassignCategory",
+        entityType: "product",
+        entityId: input.productIds[0] ?? null,
+        newValue: { productIds: input.productIds, categoryId: input.categoryId, moved: res.moved },
+      });
+      return res;
+    }),
 });

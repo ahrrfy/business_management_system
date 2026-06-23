@@ -43,10 +43,12 @@ export type SelectionBarProps = {
   onPrint?: () => void;
   exportLabel?: string;
   printLabel?: string;
+  /** إجراءات جماعية إضافية (أزرار) تُعرض قبل التصدير/الطباعة — مثل «نقل إلى فئة». */
+  actions?: React.ReactNode;
   className?: string;
 };
 
-/** شريط عائم يظهر عند تحديد صفوف — تصدير/طباعة المحدَّد. */
+/** شريط عائم يظهر عند تحديد صفوف — تصدير/طباعة المحدَّد + إجراءات إضافية اختيارية. */
 export function SelectionBar({
   count,
   onClear,
@@ -54,6 +56,7 @@ export function SelectionBar({
   onPrint,
   exportLabel = "تصدير المحدَّد",
   printLabel = "طباعة المحدَّد",
+  actions,
   className,
 }: SelectionBarProps) {
   if (count <= 0) return null;
@@ -68,6 +71,7 @@ export function SelectionBar({
         المحدَّد: {count.toLocaleString("ar-IQ-u-nu-latn")}
       </span>
       <div className="h-4 w-px bg-border" />
+      {actions}
       {onExport && (
         <Button variant="outline" size="sm" onClick={onExport}>
           <Download className="size-4" />
