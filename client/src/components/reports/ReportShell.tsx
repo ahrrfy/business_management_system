@@ -13,7 +13,10 @@ export type KpiTone = "default" | "positive" | "negative" | "warning" | "info";
 export interface KpiItem {
   label: string;
   value: ReactNode;
+  /** نَصّ تَلميح خام — يُحفَظ سَلسِلة لِلتَصدير/الطِباعة (Excel/PDF). */
   hint?: string;
+  /** عُقدة عَرض غَنية (JSX/Lucide) لِلشاشة فَقَط. تَلغي `hint` بَصَرياً لكِنّ `hint` يَبقى لِلتَصدير. */
+  hintNode?: ReactNode;
   tone?: KpiTone;
 }
 
@@ -114,7 +117,7 @@ export function ReportShell({
                 <p className={cn("text-xl font-bold tabular-nums", toneCls[k.tone ?? "default"])} dir="ltr">
                   {k.value}
                 </p>
-                {k.hint && <p className="mt-0.5 text-[10px] text-muted-foreground">{k.hint}</p>}
+                {(k.hintNode ?? k.hint) && <p className="mt-0.5 text-[10px] text-muted-foreground">{k.hintNode ?? k.hint}</p>}
               </CardContent>
             </Card>
           ))}

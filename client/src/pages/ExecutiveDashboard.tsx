@@ -29,16 +29,21 @@ function deltaPct(current: string | number, previous: string | number): number |
   return cur.sub(prev).div(prev).times(100).toDecimalPlaces(1).toNumber();
 }
 
-/** تلميح المقارنة للمؤشّر (سهم Lucide + نسبة) — أخضر للصعود، أحمر للهبوط. */
-function deltaHint(d: number | null): { text: ReactNode; up: boolean } | null {
+/** تلميح المقارنة للمؤشّر — يَرجِع:
+ *  - `text`: سَلسِلة خام لِلتَصدير/الطِباعة (Excel/PDF لا يَفهَم JSX ⇒ String() عَلى ReactNode = "[object Object]").
+ *  - `node`: JSX مَع سَهم Lucide لِعَرض الشاشة فَقَط.
+ *  أخضر للصعود، أحمر للهبوط. */
+function deltaHint(d: number | null): { text: string; node: ReactNode; up: boolean } | null {
   if (d === null) return null;
   const Arrow = d > 0 ? TrendingUp : d < 0 ? TrendingDown : Minus;
   const sign = d > 0 ? "+" : "";
+  const text = `${sign}${d}% مقابل السابقة`;
   return {
-    text: (
+    text,
+    node: (
       <span className="inline-flex items-center gap-1">
         <Arrow aria-hidden className="size-3.5" />
-        <span>{`${sign}${d}% مقابل السابقة`}</span>
+        <span>{text}</span>
       </span>
     ),
     up: d >= 0,
@@ -93,7 +98,9 @@ export default function ExecutiveDashboard() {
         label: "الإيراد",
         value: fmtAr(cur.revenue),
         tone: "info",
-        hint: revDelta?.text as unknown as string | undefined,
+        // hint: نَصّ خام لِلتَصدير | hintNode: JSX مَع سَهم لِلشاشة
+        hint: revDelta?.text,
+        hintNode: revDelta?.node,
       });
       items.push({
         label: "مجمل الربح",
@@ -105,7 +112,9 @@ export default function ExecutiveDashboard() {
         label: "صافي الربح",
         value: fmtAr(cur.netProfit),
         tone: D(cur.netProfit).gte(0) ? "positive" : "negative",
-        hint: (netDelta?.text ?? `هامش ${cur.netMarginPct}%`) as unknown as string,
+        // تَفضيل دلتا المقارنة (text+node) إن وُجِدَت، وَإلّا الهامش كَنَصّ ثابِت.
+        hint: netDelta?.text ?? `هامش ${cur.netMarginPct}%`,
+        hintNode: netDelta?.node,
       });
     }
     if (fp) {
