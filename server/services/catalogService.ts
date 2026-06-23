@@ -2,7 +2,8 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import type { MySqlColumn } from "drizzle-orm/mysql-core";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
-import { ARABIC_FOLD_PAIRS, escapeLikePattern, tokenizeSearchQuery } from "../../shared/searchNormalize";
+import { ARABIC_FOLD_PAIRS, tokenizeSearchQuery } from "../../shared/searchNormalize";
+import { escLike } from "../lib/sqlLike";
 import { getDb } from "../db";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
@@ -118,11 +119,9 @@ function buildCatalogSearchWhere(query: string | undefined): SQL | null {
   const tokens = tokenizeSearchQuery(query ?? "");
   if (!tokens.length) return null;
   const cols = searchableCols();
-  // محرف هروب LIKE الافتراضي في MySQL هو \ — escapeLikePattern يهرّب به، والأنماط
-  // معاملات مربوطة (لا تمرّ بمحلّل النصوص) ⇒ لا حاجة لعبارة ESCAPE صريحة.
   const perToken = tokens.map((t) => {
-    const pat = `%${escapeLikePattern(t)}%`;
-    return or(...cols.map((c) => sql`${c} like ${pat}`));
+    const pat = `%${escLike(t)}%`;
+    return or(...cols.map((c) => sql`${c} LIKE ${pat} ESCAPE '!'`));
   });
   return and(...perToken) ?? null;
 }
@@ -135,12 +134,12 @@ function buildCatalogSearchOrder(query: string | undefined): SQL[] {
   const tokens = tokenizeSearchQuery(query ?? "");
   if (!tokens.length) return [];
   const whole = tokens.join(" ");
-  const wholePrefix = `${escapeLikePattern(whole)}%`;
+  const wholePrefix = `${escLike(whole)}%`;
   const name = foldedCol(products.name);
   const rank = sql`case
     when ${foldedCol(productUnits.barcode)} = ${whole} then 0
     when ${foldedCol(productVariants.sku)} = ${whole} then 1
-    when ${name} like ${wholePrefix} then 2
+    when ${name} LIKE ${wholePrefix} ESCAPE '!' then 2
     else 3
   end`;
   return [rank, sql`instr(${name}, ${tokens[0]})`, asc(products.name)];

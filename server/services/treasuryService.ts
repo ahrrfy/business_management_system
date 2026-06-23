@@ -501,7 +501,7 @@ async function fetchDailySparkline(
   const byDay = new Map<string, number>();
   for (const r of rows) {
     const d = r.day instanceof Date ? r.day.toISOString().slice(0, 10) : String(r.day).slice(0, 10);
-    byDay.set(d, Number(money(r.amount ?? 0).toString()));
+    byDay.set(d, money(r.amount ?? 0).toNumber());
   }
 
   const out: number[] = [];

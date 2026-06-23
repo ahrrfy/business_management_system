@@ -240,7 +240,7 @@ export default function SupplierStatement() {
               <option value={0}>— اختر مورداً —</option>
               {(index.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name} {s.phone ? `· ${s.phone}` : ""} {Number(s.currentBalance) > 0 ? `· له علينا ${fmt(s.currentBalance)}` : Number(s.currentBalance) < 0 ? `· لنا عليه ${fmt(Math.abs(Number(s.currentBalance)))}` : ""}
+                  {s.name} {s.phone ? `· ${s.phone}` : ""}
                 </option>
               ))}
             </select>

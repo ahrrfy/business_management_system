@@ -84,7 +84,7 @@ export async function getArApAgingDetail(opts: {
             c.name AS partyName,
             DATE_FORMAT(i.invoiceDate, '%Y-%m-%d') AS date,
             DATE_FORMAT(i.dueDate, '%Y-%m-%d') AS dueDate,
-            DATEDIFF(CURDATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) AS daysOverdue,
+            DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) AS daysOverdue,
             CAST(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) AS CHAR) AS unpaid
           FROM invoices i
           LEFT JOIN customers c ON c.id = i.customerId
@@ -102,7 +102,7 @@ export async function getArApAgingDetail(opts: {
             s.name AS partyName,
             DATE_FORMAT(po.orderDate, '%Y-%m-%d') AS date,
             NULL AS dueDate,
-            DATEDIFF(CURDATE(), DATE(po.orderDate)) AS daysOverdue,
+            DATEDIFF(UTC_DATE(), DATE(po.orderDate)) AS daysOverdue,
             CAST(GREATEST(po.total - po.paidAmount, 0) AS CHAR) AS unpaid
           FROM purchaseOrders po
           LEFT JOIN suppliers s ON s.id = po.supplierId

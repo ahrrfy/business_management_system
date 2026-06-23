@@ -33,7 +33,7 @@ export async function listEmployees(filters?: EmployeeFilters) {
   if (filters?.branchId) conds.push(eq(employees.branchId, filters.branchId));
   if (filters?.status) conds.push(eq(employees.employmentStatus, filters.status as never));
   if (filters?.q) {
-    const t = `%${filters.q.trim()}%`;
+    const t = `%${escapeLike(filters.q.trim())}%`;
     conds.push(
       or(
         like(employees.firstName, t),

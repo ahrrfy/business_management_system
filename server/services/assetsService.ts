@@ -648,8 +648,8 @@ export async function dashboard() {
   const totalAssets = live.length;
   // FA-05 (§٥): جمع قيم الشراء عبر decimal لا Number/float.
   const purchaseValue = sumMoney(live.map((a) => a.purchaseValue)).toNumber();
-  const bookValue = live.reduce((s, a) => s + a.bookValue, 0);
-  const accumulated = live.reduce((s, a) => s + a.accumulated, 0);
+  const bookValue = live.reduce((s: Decimal, a) => s.plus(a.bookValue), new Decimal(0)).toNumber();
+  const accumulated = live.reduce((s: Decimal, a) => s.plus(a.accumulated), new Decimal(0)).toNumber();
   const inMaintenance = live.filter((a) => a.status === "maintenance").length;
   const inCustody = live.filter((a) => a.custodianId).length;
 
@@ -658,7 +658,7 @@ export async function dashboard() {
   for (const a of live) {
     const c = byCategory.get(a.category) ?? { count: 0, value: 0 };
     c.count += 1;
-    c.value += a.bookValue;
+    c.value = new Decimal(c.value).plus(a.bookValue).toNumber();
     byCategory.set(a.category, c);
   }
   // القيمة الدفترية حسب الفرع.
@@ -667,7 +667,7 @@ export async function dashboard() {
     const key = a.branchName ?? "بلا فرع";
     const b = byBranch.get(key) ?? { count: 0, value: 0 };
     b.count += 1;
-    b.value += a.bookValue;
+    b.value = new Decimal(b.value).plus(a.bookValue).toNumber();
     byBranch.set(key, b);
   }
 
@@ -749,7 +749,7 @@ export async function disposalLog() {
       ...a,
       ...dep,
       proceeds,
-      gain: proceeds !== null ? proceeds - dep.bookValue : null,
+      gain: proceeds !== null ? new Decimal(a.disposalValue ?? "0").minus(new Decimal(dep.bookValue)).toDecimalPlaces(2).toString() : null,
     };
   });
 }

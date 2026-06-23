@@ -7,6 +7,7 @@
 import { and, asc, desc, eq, like, or } from "drizzle-orm";
 import { jobApplicants, jobVacancies } from "../../drizzle/schema";
 import { requireDb, withTx } from "./tx";
+import { escapeLike } from "../lib/sqlLike";
 import { toDateStr } from "./money";
 import { extractInsertId } from "../lib/insertId";
 
@@ -22,7 +23,7 @@ export async function listApplicants(filters?: ApplicantFilters) {
   if (filters?.stage) conds.push(eq(jobApplicants.stage, filters.stage as never));
   if (filters?.source) conds.push(eq(jobApplicants.source, filters.source));
   if (filters?.q) {
-    const t = `%${filters.q.trim()}%`;
+    const t = `%${escapeLike(filters.q.trim())}%`;
     conds.push(
       or(
         like(jobApplicants.name, t),

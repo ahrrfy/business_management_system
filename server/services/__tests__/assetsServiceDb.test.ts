@@ -103,7 +103,8 @@ describe("assetsService — dispose + disposalLog (DB, انحدار)", () => {
     expect(row).toBeTruthy();
     expect(row!.bookValue).toBeGreaterThan(700000); // ليست التخريدية 100,000
     expect(row!.proceeds).toBe(700000);
-    expect(row!.gain!).toBeLessThan(0); // خسارة حقيقية، لا الربح الوهمي +600,000 قبل الإصلاح
+    // FIN-14: gain صار نصاً (Decimal.toString) منعاً لخطأ float ⇒ نلفّه بـNumber للمقارنة العددية.
+    expect(Number(row!.gain!)).toBeLessThan(0); // خسارة حقيقية، لا الربح الوهمي +600,000 قبل الإصلاح
 
     const fresh = await getAsset(a!.id);
     expect(fresh!.status).toBe("disposed");

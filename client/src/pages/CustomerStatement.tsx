@@ -240,7 +240,7 @@ export default function CustomerStatement() {
               <option value={0}>— اختر عميلاً —</option>
               {(index.data ?? []).map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name} {c.phone ? `· ${c.phone}` : ""} {Number(c.currentBalance) > 0 ? `· لنا عليه ${fmt(c.currentBalance)}` : Number(c.currentBalance) < 0 ? `· له علينا ${fmt(Math.abs(Number(c.currentBalance)))}` : ""}
+                  {c.name} {c.phone ? `· ${c.phone}` : ""}
                 </option>
               ))}
             </select>
