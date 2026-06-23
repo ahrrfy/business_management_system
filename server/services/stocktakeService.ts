@@ -15,6 +15,7 @@ import { randomBytes, randomInt } from "node:crypto";
 import { mysqlCodeFrom } from "../../shared/errorMap.ar";
 import { and, asc, desc, eq, gt, gte, inArray, like, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
+import { escLike } from "../lib/sqlLike";
 import {
   branches,
   branchStock,
@@ -655,14 +656,14 @@ export async function monitorStocktakeSession(
 
   const q = opts.q?.trim() ?? "";
   // تهريب محارف LIKE من مدخل المستخدم — «%» المُدخلة تطابق نصاً لا كل شيء.
-  const likePattern = `%${q.replace(/[\\%_]/g, (m) => `\\${m}`)}%`;
+  const likePattern = `%${escLike(q)}%`;
   const recentWhere = q
     ? and(
         eq(stocktakeCounts.sessionId, sessionId),
         or(
-          like(products.name, likePattern),
-          like(productVariants.sku, likePattern),
-          like(productVariants.variantName, likePattern)
+          sql`${products.name} LIKE ${likePattern} ESCAPE '!'`,
+          sql`${productVariants.sku} LIKE ${likePattern} ESCAPE '!'`,
+          sql`${productVariants.variantName} LIKE ${likePattern} ESCAPE '!'`
         )
       )
     : eq(stocktakeCounts.sessionId, sessionId);

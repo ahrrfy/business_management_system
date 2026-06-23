@@ -39,7 +39,7 @@ import {
   workOrders,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { escapeLike } from "../lib/sqlLike";
+import { escapeLike, escLike } from "../lib/sqlLike";
 
 export type SearchEntityType =
   | "PRODUCT"
@@ -204,15 +204,15 @@ async function searchEmployees(
     conds.push(eq(employees.id, Number(code[1])));
   } else {
     if (kind === "DOC_NUMBER" && /[A-Za-z]/.test(query)) return []; // مُعرّف وثيقة ≠ موظف
-    const like_ = `%${escapeLike(query)}%`;
+    const like_ = `%${escLike(query)}%`;
     conds.push(
       or(
-        like(employees.firstName, like_),
-        like(employees.fatherName, like_),
-        like(employees.lastName, like_),
-        like(employees.phone, like_),
-        like(employees.nationalId, like_),
-        like(employees.position, like_),
+        sql`${employees.firstName} LIKE ${like_} ESCAPE '!'`,
+        sql`${employees.fatherName} LIKE ${like_} ESCAPE '!'`,
+        sql`${employees.lastName} LIKE ${like_} ESCAPE '!'`,
+        sql`${employees.phone} LIKE ${like_} ESCAPE '!'`,
+        sql`${employees.nationalId} LIKE ${like_} ESCAPE '!'`,
+        sql`${employees.position} LIKE ${like_} ESCAPE '!'`,
       ),
     );
   }
@@ -263,13 +263,13 @@ async function searchUsers(
     conds.push(eq(users.id, Number(code[1])));
   } else {
     if (kind === "DOC_NUMBER" && /[A-Za-z]/.test(query)) return [];
-    const like_ = `%${escapeLike(query)}%`;
+    const like_ = `%${escLike(query)}%`;
     conds.push(
       or(
-        like(users.name, like_),
-        like(users.username, like_),
-        like(users.email, like_),
-        like(users.phone, like_),
+        sql`${users.name} LIKE ${like_} ESCAPE '!'`,
+        sql`${users.username} LIKE ${like_} ESCAPE '!'`,
+        sql`${users.email} LIKE ${like_} ESCAPE '!'`,
+        sql`${users.phone} LIKE ${like_} ESCAPE '!'`,
       ),
     );
   }
@@ -340,7 +340,7 @@ async function searchProducts(
   }
   if (kind === "PHONE" || kind === "DOC_NUMBER") return []; // المنتجات لا تُطابِق هاتفاً ولا رقم وثيقة
 
-  const like_ = `%${escapeLike(query)}%`;
+  const like_ = `%${escLike(query)}%`;
   const rows = await db
     .select({
       id: products.id,
@@ -351,7 +351,7 @@ async function searchProducts(
     .leftJoin(productVariants, eq(productVariants.productId, products.id))
     .where(and(
       eq(products.isActive, true),
-      or(like(products.name, like_), like(productVariants.sku, like_)),
+      or(sql`${products.name} LIKE ${like_} ESCAPE '!'`, sql`${productVariants.sku} LIKE ${like_} ESCAPE '!'`),
     ))
     .orderBy(asc(products.name), desc(products.id))
     .limit(limit);
@@ -386,16 +386,16 @@ async function searchCustomers(
   if (kind === "BARCODE") return []; // العملاء بلا باركود
   if (kind === "DOC_NUMBER" && !/^\d+$/.test(query)) return []; // مُعرّف وثيقة كامل ⇒ ليس عميلاً
 
-  const like_ = `%${escapeLike(query)}%`;
+  const like_ = `%${escLike(query)}%`;
   const conds = [
     eq(customers.isActive, true),
     or(
-      like(customers.name, like_),
-      like(customers.phone, like_),
-      like(customers.phone2, like_),
-      like(customers.phone3, like_),
-      like(customers.whatsapp, like_),
-      like(customers.legacyCode, like_),
+      sql`${customers.name} LIKE ${like_} ESCAPE '!'`,
+      sql`${customers.phone} LIKE ${like_} ESCAPE '!'`,
+      sql`${customers.phone2} LIKE ${like_} ESCAPE '!'`,
+      sql`${customers.phone3} LIKE ${like_} ESCAPE '!'`,
+      sql`${customers.whatsapp} LIKE ${like_} ESCAPE '!'`,
+      sql`${customers.legacyCode} LIKE ${like_} ESCAPE '!'`,
     ),
   ];
   const rows = await db
@@ -434,7 +434,7 @@ async function searchSuppliers(
   if (kind === "BARCODE") return [];
   if (kind === "DOC_NUMBER" && !/^\d+$/.test(query)) return [];
 
-  const like_ = `%${escapeLike(query)}%`;
+  const like_ = `%${escLike(query)}%`;
   const rows = await db
     .select({
       id: suppliers.id,
@@ -447,11 +447,11 @@ async function searchSuppliers(
     .where(and(
       eq(suppliers.isActive, true),
       or(
-        like(suppliers.name, like_),
-        like(suppliers.phone, like_),
-        like(suppliers.phone2, like_),
-        like(suppliers.phone3, like_),
-        like(suppliers.legacyCode, like_),
+        sql`${suppliers.name} LIKE ${like_} ESCAPE '!'`,
+        sql`${suppliers.phone} LIKE ${like_} ESCAPE '!'`,
+        sql`${suppliers.phone2} LIKE ${like_} ESCAPE '!'`,
+        sql`${suppliers.phone3} LIKE ${like_} ESCAPE '!'`,
+        sql`${suppliers.legacyCode} LIKE ${like_} ESCAPE '!'`,
       ),
     ))
     .orderBy(asc(suppliers.name), desc(suppliers.id))
@@ -484,12 +484,12 @@ async function searchInvoices(
 
   // باركود ⇒ يطابق رقم فاتورة بالضبط، أو رقم فاتورة يحتوي الباركود (نادر لكن المالك يطلبه: مسح ⇒ فاتورة).
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    const like_ = `%${escapeLike(query)}%`;
-    conds.push(or(eq(invoices.invoiceNumber, query), like(invoices.invoiceNumber, like_)));
+    const like_ = `%${escLike(query)}%`;
+    conds.push(or(eq(invoices.invoiceNumber, query), sql`${invoices.invoiceNumber} LIKE ${like_} ESCAPE '!'`));
   } else {
-    const like_ = `%${escapeLike(query)}%`;
+    const like_ = `%${escLike(query)}%`;
     // نص ⇒ نطابق رقم الفاتورة أو ملاحظة (الملاحظات أحياناً تحوي اسم عميل/مرجع).
-    conds.push(or(like(invoices.invoiceNumber, like_), like(invoices.notes, like_)));
+    conds.push(or(sql`${invoices.invoiceNumber} LIKE ${like_} ESCAPE '!'`, sql`${invoices.notes} LIKE ${like_} ESCAPE '!'`));
   }
 
   const rows = await db
@@ -536,11 +536,11 @@ async function searchQuotations(
   const conds: any[] = [];
   if (scopedBranchId !== null) conds.push(eq(quotations.branchId, scopedBranchId));
 
-  const like_ = `%${escapeLike(query)}%`;
+  const like_ = `%${escLike(query)}%`;
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(or(eq(quotations.quoteNumber, query), like(quotations.quoteNumber, like_)));
+    conds.push(or(eq(quotations.quoteNumber, query), sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`));
   } else {
-    conds.push(or(like(quotations.quoteNumber, like_), like(quotations.notes, like_)));
+    conds.push(or(sql`${quotations.quoteNumber} LIKE ${like_} ESCAPE '!'`, sql`${quotations.notes} LIKE ${like_} ESCAPE '!'`));
   }
 
   const rows = await db
@@ -582,11 +582,11 @@ async function searchWorkOrders(
   const conds: any[] = [];
   if (scopedBranchId !== null) conds.push(eq(workOrders.branchId, scopedBranchId));
 
-  const like_ = `%${escapeLike(query)}%`;
+  const like_ = `%${escLike(query)}%`;
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(or(eq(workOrders.orderNumber, query), like(workOrders.orderNumber, like_)));
+    conds.push(or(eq(workOrders.orderNumber, query), sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`));
   } else {
-    conds.push(or(like(workOrders.orderNumber, like_), like(workOrders.title, like_)));
+    conds.push(or(sql`${workOrders.orderNumber} LIKE ${like_} ESCAPE '!'`, sql`${workOrders.title} LIKE ${like_} ESCAPE '!'`));
   }
 
   const rows = await db
@@ -629,11 +629,11 @@ async function searchPurchaseOrders(
   const conds: any[] = [];
   if (scopedBranchId !== null) conds.push(eq(purchaseOrders.branchId, scopedBranchId));
 
-  const like_ = `%${escapeLike(query)}%`;
+  const like_ = `%${escLike(query)}%`;
   if (kind === "BARCODE" || kind === "DOC_NUMBER") {
-    conds.push(or(eq(purchaseOrders.poNumber, query), like(purchaseOrders.poNumber, like_)));
+    conds.push(or(eq(purchaseOrders.poNumber, query), sql`${purchaseOrders.poNumber} LIKE ${like_} ESCAPE '!'`));
   } else {
-    conds.push(or(like(purchaseOrders.poNumber, like_), like(purchaseOrders.notes, like_)));
+    conds.push(or(sql`${purchaseOrders.poNumber} LIKE ${like_} ESCAPE '!'`, sql`${purchaseOrders.notes} LIKE ${like_} ESCAPE '!'`));
   }
 
   const rows = await db
@@ -677,11 +677,11 @@ async function searchExpenses(
   const conds: any[] = [eq(expenses.status, "ACTIVE")];
   if (scopedBranchId !== null) conds.push(eq(expenses.branchId, scopedBranchId));
 
-  const like_ = `%${escapeLike(query)}%`;
+  const like_ = `%${escLike(query)}%`;
   conds.push(or(
-    like(expenses.description, like_),
-    like(expenses.referenceNumber, like_),
-    like(expenses.payee, like_),
+    sql`${expenses.description} LIKE ${like_} ESCAPE '!'`,
+    sql`${expenses.referenceNumber} LIKE ${like_} ESCAPE '!'`,
+    sql`${expenses.payee} LIKE ${like_} ESCAPE '!'`,
   ));
 
   const rows = await db
