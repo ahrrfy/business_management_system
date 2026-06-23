@@ -115,7 +115,27 @@ export const shiftRouter = router({
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
         role: ctx.user.role,
       });
-      await logAudit(ctx, { action: "shift.close", entityType: "shift", entityId: input.shiftId, newValue: { countedCash: input.countedCash } });
+      // M (تدقيق ٢٣/٦/٢٦): سجلّ إغلاق الوردية كان «countedCash» فقط — بلا expectedCash ولا
+      // variance ولا handover. تحقيق الفروقات اللاحق لا يَعرف من قَبَض ولا كَم سُلِّم. الآن نَلتقط
+      // الناتج الكامل من closeShift ⇒ سجلٌّ كاشف لحظة الإقفال (Z-report snapshot في audit).
+      await logAudit(ctx, {
+        action: "shift.close",
+        entityType: "shift",
+        entityId: input.shiftId,
+        newValue: {
+          countedCash: input.countedCash,
+          expectedCash: res.expectedCash,
+          variance: res.variance,
+          openingBalance: res.openingBalance,
+          handover: res.handover
+            ? {
+                handoverNumber: res.handover.handoverNumber,
+                amount: input.handover?.amount ?? null,
+                handoverTo: input.handover?.handoverTo ?? null,
+              }
+            : null,
+        },
+      });
       return res;
     }),
 

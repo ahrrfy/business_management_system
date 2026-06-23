@@ -189,11 +189,23 @@ export const catalogRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       // §٧ audit oldValue: لقطة سريعة قبل التحديث (للتدقيق الفروقات).
+      // H6 (تدقيق ٢٣/٦/٢٦): كان السجلّ يَلتقط sku/costPrice فقط — أسعار البيع (priceTier × unit)
+      // كانت تَتغيّر بلا أَثر تاريخي. سيناريو: موظّف يَخفض سعر صنف لزبون-شريك، يَبيع كميات، ثمّ
+      // يُعيد السعر — كل البيوع تَبدو طبيعية وسجلّ التعديل لا يُظهر تَلاعب الأسعار. الآن نَلتقط
+      // units (مع barcode + isBaseUnit) و prices (priceTier+price) في القبل والبعد ⇒ كَشف فروقي.
       const before = await getProductForEdit(input.productId);
       const oldVariantsSummary = before?.variants.map((v) => ({
         id: v.id,
         sku: v.sku,
         costPrice: v.costPrice,
+        units: v.units.map((u) => ({
+          id: u.id,
+          unitName: u.unitName,
+          conversionFactor: u.conversionFactor,
+          isBaseUnit: u.isBaseUnit,
+          barcode: u.barcode,
+          prices: u.prices, // priceTier+price لكل وحدة (RETAIL/WHOLESALE/GOVERNMENT)
+        })),
       })) ?? [];
       const res = await updateProduct(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
@@ -204,7 +216,19 @@ export const catalogRouter = router({
         newValue: {
           name: input.name,
           isActive: input.isActive,
-          variants: input.variants.map((v) => ({ id: v.id, sku: v.sku, costPrice: v.costPrice })),
+          variants: input.variants.map((v) => ({
+            id: v.id,
+            sku: v.sku,
+            costPrice: v.costPrice,
+            units: v.units.map((u) => ({
+              id: u.id ?? null,
+              unitName: u.unitName,
+              conversionFactor: u.conversionFactor,
+              isBaseUnit: u.isBaseUnit,
+              barcode: u.barcode,
+              prices: u.prices, // تَلتقط أيّ تَغيير في أسعار البيع — الحارس الفعلي ضدّ تلاعب الأسعار.
+            })),
+          })),
         },
       });
       return res;

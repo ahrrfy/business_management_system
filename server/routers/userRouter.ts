@@ -117,12 +117,35 @@ export const userRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // M (تدقيق ٢٣/٦/٢٦): سجلّ user.update كان newValue فقط — بلا oldValue ولا permissionsOverride.
+      // ترقية مستخدم لدور أعلى أو منحه FULL على وحدة عبر override يَمرّ بلا أَثَر فروقات. الآن نَلتقط
+      // قبل/بعد كاملاً (مع override) ⇒ تَدقيق فعلي للأذونات.
+      const before = await getUser(input.userId);
       const res = await updateUser(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
         action: "user.update",
         entityType: "user",
         entityId: input.userId,
-        newValue: { name: input.name, email: input.email, username: input.username, role: input.role, branchId: input.branchId },
+        oldValue: before
+          ? {
+              name: before.name,
+              email: before.email,
+              username: (before as { username?: string | null }).username ?? null,
+              role: before.role,
+              branchId: before.branchId,
+              customRoleId: (before as { customRoleId?: number | null }).customRoleId ?? null,
+              permissionsOverride: (before as { permissionsOverride?: unknown }).permissionsOverride ?? null,
+            }
+          : null,
+        newValue: {
+          name: input.name,
+          email: input.email,
+          username: input.username,
+          role: input.role,
+          branchId: input.branchId,
+          customRoleId: input.customRoleId,
+          permissionsOverride: input.permissionsOverride,
+        },
       });
       return res;
     }),

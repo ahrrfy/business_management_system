@@ -35,12 +35,23 @@ export const periodLockRouter = router({
     }),
 
   unlock: adminProcedure.mutation(async ({ ctx }) => {
-    const r = await withTx(async (tx) => unlockLatestPeriod(tx));
+    // M (تدقيق ٢٣/٦/٢٦): فتح الفترة المالية المغلقة كان يُسجَّل «unlocked: true» فقط —
+    // بلا cutoffDate ولا entityId. القيد المالي بعد الفتح يَدخل بفترة كانت مقفلة، والمراجع
+    // اللاحق لا يَستطيع معرفة أيّ تاريخ فُتِح. الآن: نَلتقط lock.cutoffDate + entityId قبل
+    // الفتح ⇒ سجلٌّ كاشف يَربط الفتح بتاريخ القفل المُلغى.
+    const { lock, result } = await withTx(async (tx) => {
+      const lock = await getActiveLock(tx);
+      const result = await unlockLatestPeriod(tx);
+      return { lock, result };
+    });
     await logAudit(ctx, {
       action: "period.unlock",
       entityType: "financialPeriod",
-      newValue: { unlocked: r.unlocked },
+      oldValue: lock
+        ? { cutoffDate: lock.cutoffDate, notes: lock.notes ?? null, lockedBy: lock.lockedBy, lockedAt: lock.lockedAt }
+        : null,
+      newValue: { unlocked: result.unlocked },
     });
-    return r;
+    return result;
   }),
 });
