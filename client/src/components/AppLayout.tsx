@@ -4,7 +4,12 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/co
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { openSearch } from "@/lib/searchEvents";
-import { Menu, Search } from "lucide-react";
+import {
+  Menu, Search, ChevronDown, Home,
+  ShoppingCart, Package, Printer, Boxes, Server,
+  Briefcase, Wallet, Users, BarChart3, Settings,
+  type LucideIcon,
+} from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { useEffect, useMemo, useState } from "react";
 
@@ -12,7 +17,7 @@ type NavItem = { href: string; label: string; adminOnly?: boolean; managerOnly?:
 type NavGroup = {
   key: string;
   label: string;
-  icon: string;
+  icon: LucideIcon;
   items: NavItem[];
   adminOnly?: boolean;
 };
@@ -21,7 +26,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "sales",
     label: "البيع والكاشير",
-    icon: "🛒",
+    icon: ShoppingCart,
     items: [
       { href: "/pos", label: "نقطة البيع" },
       { href: "/print-pos", label: "نقطة بيع الطباعة" },
@@ -38,7 +43,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "purchases",
     label: "المشتريات والموردون",
-    icon: "📦",
+    icon: Package,
     items: [
       { href: "/purchases", label: "أوامر الشراء" },
       { href: "/purchases/new", label: "فاتورة شراء جديدة" },
@@ -50,7 +55,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "print",
     label: "المطبعة والإنتاج",
-    icon: "🖨️",
+    icon: Printer,
     items: [
       { href: "/work-orders", label: "طلبات خدمة العملاء" },
       { href: "/work-orders/station", label: "محطة التنفيذ (الفني)", roles: ["print_operator", "cashier", "manager"] },
@@ -61,7 +66,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "inventory",
     label: "المخزون والبضاعة",
-    icon: "🗃️",
+    icon: Boxes,
     items: [
       { href: "/products", label: "المنتجات" },
       { href: "/inventory", label: "أرصدة المخزون" },
@@ -74,7 +79,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "assets",
     label: "الأصول الثابتة",
-    icon: "🖥️",
+    icon: Server,
     items: [
       { href: "/assets", label: "لوحة الأصول", managerOnly: true },
       { href: "/assets/register", label: "سجلّ الأصول", managerOnly: true },
@@ -86,7 +91,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "hr",
     label: "الموارد البشرية",
-    icon: "💼",
+    icon: Briefcase,
     items: [
       { href: "/hr/employees", label: "الموظفون", managerOnly: true },
       { href: "/hr/employees/new", label: "موظف جديد", managerOnly: true },
@@ -101,7 +106,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "treasury",
     label: "الخزينة والمدفوعات",
-    icon: "💰",
+    icon: Wallet,
     items: [
       { href: "/treasury", label: "لوحة الخزينة" },
       { href: "/treasury/transfers", label: "تحويلات بين الفروع", managerOnly: true },
@@ -113,7 +118,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "customers",
     label: "العملاء",
-    icon: "👥",
+    icon: Users,
     items: [
       { href: "/customers", label: "العملاء" },
     ],
@@ -121,7 +126,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "reports",
     label: "التقارير والكشوفات",
-    icon: "📊",
+    icon: BarChart3,
     items: [
       { href: "/reports", label: "مركز التقارير" },
       { href: "/sales-report", label: "تقرير المبيعات", managerOnly: true },
@@ -135,7 +140,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "admin",
     label: "الإدارة",
-    icon: "⚙️",
+    icon: Settings,
     adminOnly: true,
     items: [
       { href: "/users", label: "المستخدمون", adminOnly: true },
@@ -243,8 +248,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               loc === "/" ? "bg-primary text-primary-foreground font-semibold" : "hover:bg-accent"
             )}
           >
-            <span>🏠</span>
-            <span>لوحة التحكم</span>
+            <Home className="size-4 shrink-0" aria-hidden />
+            <span className="truncate">لوحة التحكم</span>
           </Link>
 
           <div className="my-1 mx-2 border-b border-border/50" />
@@ -260,6 +265,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             );
             if (visibleItems.length === 0) return null;
 
+            const GroupIcon = group.icon;
             return (
               <div key={group.key} className="mx-2 mb-0.5">
                 {/* رأس المجموعة */}
@@ -267,23 +273,22 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                   type="button"
                   onClick={() => toggleGroup(group.key)}
                   className={cn(
-                    "flex w-full items-center justify-between rounded-md px-2 py-1.5 text-xs font-semibold transition",
+                    "flex w-full items-center justify-between gap-2 rounded-md px-2 py-2 min-h-[40px] text-xs font-semibold transition",
                     "text-muted-foreground hover:text-foreground hover:bg-accent/60",
                     hasActive && "text-primary"
                   )}
                 >
-                  <span className="flex items-center gap-1.5">
-                    <span>{group.icon}</span>
-                    <span>{group.label}</span>
+                  <span className="flex items-center gap-2 min-w-0">
+                    <GroupIcon className="size-4 shrink-0" aria-hidden />
+                    <span className="truncate">{group.label}</span>
                   </span>
-                  <span
+                  <ChevronDown
+                    aria-hidden
                     className={cn(
-                      "text-[10px] transition-transform duration-150",
-                      isOpen ? "rotate-90" : ""
+                      "size-3.5 shrink-0 text-muted-foreground/70 transition-transform duration-150",
+                      isOpen ? "" : "rotate-90"
                     )}
-                  >
-                    ▶
-                  </span>
+                  />
                 </button>
 
                 {/* عناصر المجموعة */}
@@ -295,8 +300,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                         <Link
                           key={item.href}
                           href={item.href}
+                          title={item.label}
                           className={cn(
-                            "block rounded-md px-3 py-1.5 text-sm transition",
+                            "block truncate rounded-md px-3 py-1.5 text-sm transition",
                             active
                               ? "bg-primary text-primary-foreground font-semibold"
                               : "hover:bg-accent text-foreground/80"
@@ -341,7 +347,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
       {/* الشريط الجانبي — سطح المكتب (≥lg) */}
-      <aside className="hidden lg:flex w-60 shrink-0 border-s bg-card flex-col">
+      <aside className="hidden lg:flex w-64 shrink-0 border-s bg-card flex-col">
         <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <ThemeToggle />
@@ -358,7 +364,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
             <button
               type="button"
               aria-label="فتح القائمة"
-              className="flex size-9 items-center justify-center rounded-md border border-border/60 text-foreground transition-colors hover:bg-accent"
+              className="flex size-11 items-center justify-center rounded-md border border-border/60 text-foreground transition-colors hover:bg-accent"
             >
               <Menu className="size-5" />
             </button>

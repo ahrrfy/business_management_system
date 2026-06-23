@@ -14,6 +14,7 @@ import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
+import { Printer, Search, Sun, Moon, Power, Globe, Check } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -424,7 +425,9 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 14px", height: 64, flexShrink: 0, background: C.card, borderBottom: `1px solid ${C.border}`, position: "relative", zIndex: 40 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 9, flexShrink: 0 }}>
-        <div style={{ width: 40, height: 40, borderRadius: 11, background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 19 }}>🖨️</div>
+        <div style={{ width: 40, height: 40, borderRadius: 11, background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center" }} aria-hidden>
+          <Printer size={20} />
+        </div>
         <div>
           <div style={{ fontSize: 13.5, fontWeight: 800, lineHeight: 1.2, color: C.fg }}>{SHOP}</div>
           <div style={{ fontSize: 11, color: C.mutedFg, lineHeight: 1.3 }}>{DEPT}</div>
@@ -432,7 +435,9 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
       </div>
       <div style={{ width: 1, height: 28, background: C.border, flexShrink: 0 }} />
       <div style={{ flex: 1, maxWidth: 440, position: "relative", display: "flex", alignItems: "center" }}>
-        <span style={{ position: "absolute", right: 13, color: C.mutedFg, pointerEvents: "none", fontSize: 16 }}>🔍</span>
+        <span style={{ position: "absolute", right: 13, color: C.mutedFg, pointerEvents: "none", display: "flex", alignItems: "center" }} aria-hidden>
+          <Search size={16} />
+        </span>
         <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن خدمة بالاسم… (F2)"
           style={{ width: "100%", height: 46, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14, outline: "none", paddingRight: 42, paddingLeft: search ? 36 : 14 }}
           onFocus={(e) => (e.target.style.borderColor = C.primary)} onBlur={(e) => (e.target.style.borderColor = C.border)} />
@@ -449,7 +454,9 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
       <div style={{ background: C.muted, borderRadius: 8, padding: "5px 11px", fontSize: 12, color: C.mutedFg, fontWeight: 700, flexShrink: 0, border: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
         <span style={{ color: "#22c55e", marginLeft: 5 }}>●</span>وردية #{shiftId}
       </div>
-      <button onClick={toggleDark} title="تبديل الوضع الليلي" style={{ width: 42, height: 42, borderRadius: 9, background: "none", border: `1.5px solid ${C.border}`, cursor: "pointer", fontSize: 17, color: C.fg, flexShrink: 0 }}>{dark ? "☀️" : "🌙"}</button>
+      <button onClick={toggleDark} title="تبديل الوضع الليلي" aria-label="تبديل الوضع الليلي" style={{ width: 42, height: 42, borderRadius: 9, background: "none", border: `1.5px solid ${C.border}`, cursor: "pointer", color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        {dark ? <Sun size={18} aria-hidden /> : <Moon size={18} aria-hidden />}
+      </button>
       {me && (
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
           <div style={{ textAlign: "left" }}>
@@ -462,19 +469,22 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
       {/* جسر الطباعة على الخادم (طباعة صامتة) — يظهر حين يكون مفعّلاً؛ نقرة = تذكرة اختبار. */}
       {bridgeEnabled && (
         <button onClick={onTestPrint} title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
-          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 9, padding: "7px 11px", cursor: "pointer", fontSize: 13, color: C.success, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}>
-          🖨️🌐
+          aria-label="جسر طباعة على الخادم — تذكرة اختبار"
+          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 9, padding: "7px 11px", cursor: "pointer", color: C.success, fontFamily: "inherit", fontWeight: 700, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
+          <Printer size={16} aria-hidden /><Globe size={14} aria-hidden />
         </button>
       )}
       {/* الطابعة الحرارية (WebUSB) — ربط/تبديل الطابعة الافتراضية للإيصال الحراري. */}
       {isWebUsbSupported() && (
         <button onClick={onConnectPrinter} title={printerReady ? "الطابعة الافتراضية مربوطة (تلقائياً) — اضغط لتبديلها" : "اربط طابعة حرارية للفواتير (تُربط تلقائياً بعدها)"}
-          style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 9, padding: "7px 11px", cursor: "pointer", fontSize: 13, color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 700, flexShrink: 0 }}
+          style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 9, padding: "7px 11px", cursor: "pointer", color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 700, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}
           aria-label={printerReady ? "الطابعة مربوطة" : "ربط الطابعة الحرارية"}>
-          {printerReady ? "🖨️✓" : "🖨️"}
+          <Printer size={16} aria-hidden />{printerReady && <Check size={14} aria-hidden strokeWidth={3} />}
         </button>
       )}
-      <button onClick={onCloseShift} style={{ height: 42, padding: "0 13px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>⏻ إغلاق الوردية</button>
+      <button onClick={onCloseShift} style={{ height: 42, padding: "0 13px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 13, fontWeight: 700, color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+        <Power size={15} aria-hidden /> إغلاق الوردية
+      </button>
     </div>
   );
 }
@@ -731,7 +741,9 @@ function ReceiptOverlay({ C, r, onDismiss, onPrint }: { C: C; r: Receipt; onDism
         {r.credit > 0 && <Bar C={C} c={C.amber} k={`آجل على ${r.customer ?? "العميل"}`} v={r.credit} />}
         <div style={{ marginBottom: 18, fontSize: 13, color: C.mutedFg }}>الدفع: <strong style={{ color: C.fg }}>{r.method}</strong> · {r.lines.length} خدمة</div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={onPrint} style={{ flex: 1, height: 50, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.fg }}>🖨️ طباعة الإيصال</button>
+          <button onClick={onPrint} style={{ flex: 1, height: 50, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <Printer size={18} aria-hidden /> طباعة الإيصال
+          </button>
           <button onClick={onDismiss} style={{ flex: 1, height: 50, background: C.primary, border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.primaryFg }}>فاتورة جديدة</button>
         </div>
         <div style={{ marginTop: 14, fontSize: 12, color: C.mutedFg }}>المس الشاشة في أي مكان للمتابعة</div>
