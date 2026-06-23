@@ -12,6 +12,7 @@ import { useMemo, useState, type ReactNode } from "react";
 import { trpc } from "@/lib/trpc";
 import { errMsg } from "@/lib/notify";
 import { employmentTypeLabel, vacancyAccent } from "@shared/hr";
+import { Check } from "lucide-react";
 
 const COMPANY = "الرؤية العربية للتجارة العامة";
 const SUBTITLE = "المكتبة العربية للطباعة والقرطاسية";
@@ -375,7 +376,7 @@ function ApplyModal({ target, onClose }: { target: Vacancy | "general"; onClose:
 
         {done ? (
           <div className="cj-done">
-            <div className="ring">✓</div>
+            <div className="ring"><Check aria-hidden className="size-4" /></div>
             <h2>شكراً لتقديمك</h2>
             <p>
               وصلنا طلبك بنجاح{vacancy ? ` على وظيفة «${vacancy.title}»` : ""}. سيراجعه فريق الموارد البشرية

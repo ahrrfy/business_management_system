@@ -4,6 +4,7 @@
  * الرصيد: "لنا عليه" (أخضر) أو "له علينا" (أحمر) حسب اتجاه الدين.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { Input } from "@/components/ui/input";
@@ -74,7 +75,7 @@ export function EntityPicker({ type, selectedId, onSelect }: EntityPickerProps) 
         )}
       >
         <span className="truncate">{selected ? selected.name : `— اختر ${entityLabel} —`}</span>
-        <span aria-hidden className="shrink-0 text-[10px]">▼</span>
+        <ChevronDown aria-hidden className="size-3.5 shrink-0" />
       </button>
 
       {selected && (

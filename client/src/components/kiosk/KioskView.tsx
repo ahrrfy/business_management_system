@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import QRCode from "qrcode";
 import { trpc } from "@/lib/trpc";
+import { X, Maximize } from "lucide-react";
 
 export type KProduct = {
   productId: number;
@@ -396,7 +397,7 @@ export default function KioskView({
         <div className="kpc-panel">
           <div className="kpc-panel-head">
             <strong>إعدادات الكشك{isDevice ? " (للموظّف)" : ""}</strong>
-            <button onClick={() => setPanelOpen(false)} aria-label="إغلاق">✕</button>
+            <button onClick={() => setPanelOpen(false)} aria-label="إغلاق"><X aria-hidden className="size-4" /></button>
           </div>
           <div className="kpc-panel-body">
             {/* اختيار الفرع — الموظّف فقط؛ في وضع الجهاز الفرع مفروض خادمياً */}
@@ -480,8 +481,9 @@ export default function KioskView({
             )}
 
             <div className="kpc-field">
-              <button className="kpc-link-btn" onClick={() => { const el = document.documentElement; if (el.requestFullscreen) el.requestFullscreen().catch(() => {}); }}>
-                ملء الشاشة ⛶
+              <button className="kpc-link-btn inline-flex items-center gap-1.5" onClick={() => { const el = document.documentElement; if (el.requestFullscreen) el.requestFullscreen().catch(() => {}); }}>
+                <span>ملء الشاشة</span>
+                <Maximize aria-hidden className="size-4" />
               </button>
               {!isDevice ? (
                 <button className="kpc-link-btn" onClick={() => navigate("/")}>خروج من الكشك ← لوحة التحكم</button>

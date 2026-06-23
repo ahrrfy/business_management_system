@@ -10,6 +10,7 @@ import { UsagePanel } from "@/components/UsagePanel";
 import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
+import { AlertTriangle, Check, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_OPTIONS, ROLE_LABEL } from "./Users";
@@ -269,7 +270,7 @@ export default function UserEdit() {
           {(u as any).mustChangePassword && (
             <div>
               <div className="text-muted-foreground text-xs">كلمة المرور</div>
-              <span className="text-xs text-amber-600 font-medium">⚠️ تغيير إلزامي</span>
+              <span className="text-xs text-amber-600 font-medium inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" />تغيير إلزامي</span>
             </div>
           )}
           <div className="col-span-2 md:col-span-1 md:row-span-2 flex justify-center md:justify-end">
@@ -299,7 +300,7 @@ export default function UserEdit() {
               className={usernameError ? "border-destructive" : usernameChecked && !usernameError ? "border-emerald-500" : ""}
             />
             {usernameError && <p className="text-[11px] text-destructive">{usernameError}</p>}
-            {usernameChecked && !usernameError && username.trim() && <p className="text-[11px] text-emerald-600">✓ اسم المستخدم متاح</p>}
+            {usernameChecked && !usernameError && username.trim() && <p className="text-[11px] text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />اسم المستخدم متاح</p>}
           </div>
           <div className="space-y-1">
             <Label htmlFor="email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
@@ -420,8 +421,8 @@ export default function UserEdit() {
             <div className="space-y-1 flex-1 min-w-[200px]">
               <div className="flex items-center justify-between">
                 <Label htmlFor="newpw">كلمة المرور الجديدة</Label>
-                <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleGeneratePassword}>
-                  ⚡ توليد
+                <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2 inline-flex items-center gap-1" onClick={handleGeneratePassword}>
+                  <Zap aria-hidden className="size-3.5" />توليد
                 </Button>
               </div>
               <Input id="newpw" type="text" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="12 خانة على الأقل" className="font-mono" />

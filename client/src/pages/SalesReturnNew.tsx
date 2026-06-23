@@ -32,6 +32,7 @@ import {
   invoiceReducer,
   type InvoiceLine,
 } from "@/components/invoice";
+import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
@@ -382,9 +383,12 @@ export default function SalesReturnNew() {
             tier={state.tier}
           />
           {state.items.length > 0 && !hasRefLoaded && (
-            <div className="rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              ⚠️ هذه البنود ليست مرتبطة بفاتورة مصدر — لن يتمكّن الخادم من حفظ المرتجع.
-              حمّل الفاتورة المرجعية أعلاه.
+            <div className="flex items-start gap-2 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertTriangle aria-hidden className="size-4 shrink-0" />
+              <span>
+                هذه البنود ليست مرتبطة بفاتورة مصدر — لن يتمكّن الخادم من حفظ المرتجع.
+                حمّل الفاتورة المرجعية أعلاه.
+              </span>
             </div>
           )}
         </div>

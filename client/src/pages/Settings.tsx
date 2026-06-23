@@ -7,6 +7,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
 import { fmtDateTime } from "@/lib/date";
+import { Download, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 function fmtKb(kb: number): string {
@@ -174,13 +175,13 @@ export default function Settings() {
                     <TableCell className="text-left tabular-nums">{fmtKb(b.sizeKb)}</TableCell>
                     <TableCell className="text-left tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
                     <TableCell className="text-center whitespace-nowrap">
-                      <Button size="sm" variant="ghost" onClick={() => downloadBackup(b.name)}>⬇ تنزيل</Button>
-                      <Button size="sm" variant="ghost" className="text-amber-600" onClick={() => setDanger({ kind: "restore-server", name: b.name })}>↻ استعادة</Button>
-                      <Button size="sm" variant="ghost" className="text-destructive"
+                      <Button size="sm" variant="ghost" onClick={() => downloadBackup(b.name)} className="inline-flex items-center gap-1"><Download aria-hidden className="size-4" />تنزيل</Button>
+                      <Button size="sm" variant="ghost" className="text-amber-600 inline-flex items-center gap-1" onClick={() => setDanger({ kind: "restore-server", name: b.name })}><RotateCcw aria-hidden className="size-4" />استعادة</Button>
+                      <Button size="sm" variant="ghost" className="text-destructive inline-flex items-center gap-1"
                         onClick={async () => {
                           if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
                           deleteBackup.mutate({ name: b.name });
-                        }}>🗑 حذف</Button>
+                        }}><Trash2 aria-hidden className="size-4" />حذف</Button>
                     </TableCell>
                   </TableRow>
                 ))}
@@ -207,7 +208,7 @@ export default function Settings() {
         <CardHeader><CardTitle className="text-base">الطباعة</CardTitle></CardHeader>
         <CardContent className="space-y-2 text-sm">
           <div className="flex items-center gap-2">
-            <span className={bridge.enabled ? "text-emerald-600" : "text-muted-foreground"}>{bridge.enabled ? "●" : "○"}</span>
+            <span aria-hidden className={`inline-block size-2 rounded-full ${bridge.enabled ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
             <span>جسر الطباعة الصامتة: <b>{bridge.enabled ? "مفعّل" : "غير مفعّل"}</b>{bridge.enabled ? ` (${bridge.description})` : ""}</span>
             {bridge.enabled && (
               <Button size="sm" variant="outline" className="ms-auto"

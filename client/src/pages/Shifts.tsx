@@ -6,6 +6,7 @@ import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printDoc } from "@/lib/printing/print";
 import { trpc } from "@/lib/trpc";
+import { Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 
 /* ═══════════ سجلّ الورديات + إعادة طباعة Z-report ═══════════
@@ -207,7 +208,8 @@ export default function Shifts() {
                       actions={[
                         {
                           key: "zreport",
-                          label: printing === r.id ? "جارٍ…" : "🖨️ Z-report",
+                          label: printing === r.id ? "جارٍ…" : "Z-report",
+                          icon: Printer,
                           disabled: printing === r.id,
                           onSelect: () => void reprintZ(r.id),
                         },

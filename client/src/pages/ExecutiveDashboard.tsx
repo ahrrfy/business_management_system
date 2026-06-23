@@ -2,7 +2,8 @@
 // قائمة الأرباح والخسائر (إيراد/ربح/هامش + مقارنة الفترة) + المركز المالي (نقد/ذمم/مخزون) +
 // مقاييس اللوحة (تنبيهات مخزون + ذمم متأخّرة) + أبرز المنتجات (٥ بالإيراد، شريط SVG خفيف).
 // تُركّب endpoints موجودة عبر ReportShell + PeriodFilter + reportDoc + export — نمط بقيّة التقارير.
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
+import { TrendingUp, TrendingDown, Minus } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import {
@@ -28,12 +29,20 @@ function deltaPct(current: string | number, previous: string | number): number |
   return cur.sub(prev).div(prev).times(100).toDecimalPlaces(1).toNumber();
 }
 
-/** تلميح المقارنة للمؤشّر (سهم + نسبة) — أخضر للصعود، أحمر للهبوط. */
-function deltaHint(d: number | null): { text: string; up: boolean } | null {
+/** تلميح المقارنة للمؤشّر (سهم Lucide + نسبة) — أخضر للصعود، أحمر للهبوط. */
+function deltaHint(d: number | null): { text: ReactNode; up: boolean } | null {
   if (d === null) return null;
-  const arrow = d > 0 ? "▲" : d < 0 ? "▼" : "▬";
+  const Arrow = d > 0 ? TrendingUp : d < 0 ? TrendingDown : Minus;
   const sign = d > 0 ? "+" : "";
-  return { text: `${arrow} ${sign}${d}% مقابل السابقة`, up: d >= 0 };
+  return {
+    text: (
+      <span className="inline-flex items-center gap-1">
+        <Arrow aria-hidden className="size-3.5" />
+        <span>{`${sign}${d}% مقابل السابقة`}</span>
+      </span>
+    ),
+    up: d >= 0,
+  };
 }
 
 export default function ExecutiveDashboard() {
@@ -84,7 +93,7 @@ export default function ExecutiveDashboard() {
         label: "الإيراد",
         value: fmtAr(cur.revenue),
         tone: "info",
-        hint: revDelta?.text,
+        hint: revDelta?.text as unknown as string | undefined,
       });
       items.push({
         label: "مجمل الربح",
@@ -96,7 +105,7 @@ export default function ExecutiveDashboard() {
         label: "صافي الربح",
         value: fmtAr(cur.netProfit),
         tone: D(cur.netProfit).gte(0) ? "positive" : "negative",
-        hint: netDelta?.text ?? `هامش ${cur.netMarginPct}%`,
+        hint: (netDelta?.text ?? `هامش ${cur.netMarginPct}%`) as unknown as string,
       });
     }
     if (fp) {

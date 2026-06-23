@@ -14,7 +14,7 @@ import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, Search, Sun, Moon, Power, Globe, Check } from "lucide-react";
+import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -219,7 +219,7 @@ export default function PrintPOS() {
       };
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
-      setMessage({ kind: "ok", text: `تمّ البيع ✓ فاتورة ${r.invoiceNumber}` });
+      setMessage({ kind: "ok", text: `تمّ البيع — فاتورة ${r.invoiceNumber}` });
       setCart([]); setPayInput(""); patch({ selUid: null });
       setClientRequestId(crypto.randomUUID());
       await printReceipt(brandedReceipt(rec));
@@ -374,7 +374,7 @@ export default function PrintPOS() {
               <span>{t.label}</span>
               {tt > 0 && <span style={{ fontSize: 12, fontWeight: 800, direction: "ltr", opacity: active ? 1 : 0.75 }}>{fmt(tt)} د.ع</span>}
               {items > 0 && <span style={{ background: active ? "rgba(255,255,255,.25)" : C.muted, color: active ? "#fff" : C.mutedFg, borderRadius: 10, padding: "1px 7px", fontSize: 11, fontWeight: 700 }}>{items}</span>}
-              {tabs.length > 1 && <button onClick={(e) => { e.stopPropagation(); closeTab(t.id); }} style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", fontSize: 13, color: active ? "rgba(255,255,255,.7)" : C.mutedFg, lineHeight: 1 }}>✕</button>}
+              {tabs.length > 1 && <button onClick={(e) => { e.stopPropagation(); closeTab(t.id); }} aria-label="إغلاق التبويب" style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: active ? "rgba(255,255,255,.7)" : C.mutedFg, lineHeight: 1, display: "inline-flex" }}><X aria-hidden size={13} /></button>}
             </div>
           );
         })}
@@ -385,7 +385,7 @@ export default function PrintPOS() {
         <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "oklch(0.95 0.05 155)" : "oklch(0.95 0.05 27)", color: message.kind === "ok" ? C.success : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <span>{message.text}</span>
           {message.kind === "ok" && receipt && <Link href={`/invoices/${receipt.invoiceId}`} style={{ color: C.primary, textDecoration: "underline", fontSize: 12 }}>فتح الفاتورة</Link>}
-          <button onClick={() => setMessage(null)} style={{ marginRight: "auto", background: "none", border: "none", cursor: "pointer", fontSize: 14, color: C.mutedFg }}>✕</button>
+          <button onClick={() => setMessage(null)} aria-label="إغلاق التنبيه" style={{ marginRight: "auto", background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex" }}><X aria-hidden size={14} /></button>
         </div>
       )}
 
@@ -441,7 +441,7 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
         <input ref={searchRef} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="ابحث عن خدمة بالاسم… (F2)"
           style={{ width: "100%", height: 46, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14, outline: "none", paddingRight: 42, paddingLeft: search ? 36 : 14 }}
           onFocus={(e) => (e.target.style.borderColor = C.primary)} onBlur={(e) => (e.target.style.borderColor = C.border)} />
-        {search && <button onClick={() => setSearch("")} style={{ position: "absolute", left: 8, background: "none", border: "none", cursor: "pointer", fontSize: 15, color: C.mutedFg, padding: 4 }}>✕</button>}
+        {search && <button onClick={() => setSearch("")} aria-label="مسح البحث" style={{ position: "absolute", left: 8, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, padding: 4, display: "inline-flex" }}><X aria-hidden size={15} /></button>}
       </div>
       <div style={{ flex: 1 }} />
       {lastInv && (
@@ -452,7 +452,7 @@ function Header({ C, dark, toggleDark, search, setSearch, searchRef, me, shiftId
         </div>
       )}
       <div style={{ background: C.muted, borderRadius: 8, padding: "5px 11px", fontSize: 12, color: C.mutedFg, fontWeight: 700, flexShrink: 0, border: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-        <span style={{ color: "#22c55e", marginLeft: 5 }}>●</span>وردية #{shiftId}
+        <span aria-hidden className="inline-block size-2 rounded-full bg-emerald-500" style={{ marginLeft: 6 }} />وردية #{shiftId}
       </div>
       <button onClick={toggleDark} title="تبديل الوضع الليلي" aria-label="تبديل الوضع الليلي" style={{ width: 42, height: 42, borderRadius: 9, background: "none", border: `1.5px solid ${C.border}`, cursor: "pointer", color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
         {dark ? <Sun size={18} aria-hidden /> : <Moon size={18} aria-hidden />}
@@ -522,7 +522,7 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
           <div style={{ padding: "60px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل الخدمات…</div>
         ) : list.length === 0 ? (
           <div style={{ padding: "60px 0", textAlign: "center", color: C.mutedFg }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>🔍</div>
+            <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}><Search aria-hidden size={40} strokeWidth={1.5} /></div>
             <div style={{ fontSize: 14, fontWeight: 600 }}>{q ? "لا توجد خدمة بهذا الاسم" : "لا خدمات في هذه الفئة"}</div>
           </div>
         ) : (
@@ -583,14 +583,16 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 11px", height: 48, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg }}>🧾 الفاتورة</span>
+          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg, display: "inline-flex", alignItems: "center", gap: 6 }}><ReceiptIcon aria-hidden size={17} /> الفاتورة</span>
           {cart.length > 0 && <span style={{ background: C.primary, color: C.primaryFg, borderRadius: 12, padding: "2px 9px", fontSize: 11.5, fontWeight: 700 }}>{cart.length} · {items}</span>}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: customerId != null ? C.primary : C.mutedFg }} aria-hidden><User size={14} /></span>
           <select value={customerId ?? ""} onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
+            aria-label="اختيار العميل"
             style={{ height: 36, borderRadius: 9, border: `1.5px solid ${customerId != null ? C.primary : C.border}`, background: customerId != null ? C.primarySoft : C.card, color: customerId != null ? C.primary : C.mutedFg, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "0 8px", outline: "none", cursor: "pointer", maxWidth: 160 }}>
-            <option value="">👤 عميل نقدي</option>
-            {customers.map((c) => <option key={c.id} value={c.id}>👤 {c.name}</option>)}
+            <option value="">عميل نقدي</option>
+            {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
           </select>
           {cart.length > 0 && <button onClick={onClear} style={{ height: 36, padding: "0 11px", background: "none", border: `1px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontSize: 12.5, color: C.danger, fontFamily: "inherit", fontWeight: 700 }}>تفريغ</button>}
         </div>
@@ -598,7 +600,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
       <div style={{ flex: 1, overflowY: "auto", padding: cart.length ? 9 : 0 }}>
         {cart.length === 0 ? (
           <div style={{ padding: "50px 0", textAlign: "center", color: C.mutedFg }}>
-            <div style={{ fontSize: 40, marginBottom: 10 }}>🧾</div>
+            <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}><ReceiptIcon aria-hidden size={40} strokeWidth={1.5} /></div>
             <div style={{ fontSize: 14, fontWeight: 700 }}>الفاتورة فارغة</div>
             <div style={{ fontSize: 12.5, marginTop: 6 }}>اضغط على خدمة من اليسار</div>
           </div>
@@ -616,7 +618,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
                       {c.svc.productName}
                       <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 500 }}>/ {c.svc.unitName}</span>
                     </div>
-                    <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} style={{ width: 34, height: 34, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 15, color: C.mutedFg }}>✕</button>
+                    <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} aria-label="حذف السطر" style={{ width: 34, height: 34, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={15} /></button>
                   </div>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                     <div onClick={(e) => { e.stopPropagation(); setSelUid(c.uid); setEditPriceUid(c.uid); }} style={{ minWidth: 78 }}>
@@ -629,7 +631,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
                           style={{ width: 84, height: 36, textAlign: "center", border: `1.5px solid ${C.primary}`, borderRadius: 8, background: C.card, color: C.fg, fontFamily: "inherit", fontSize: 14, fontWeight: 800, outline: "none", direction: "ltr" }} />
                       ) : (
                         <span style={{ display: "inline-flex", alignItems: "center", gap: 4, direction: "ltr", color: isCustomPriceSku(c.svc.sku) ? C.amber : C.mutedFg, fontWeight: isCustomPriceSku(c.svc.sku) ? 800 : 600, fontSize: 13.5, padding: "5px 9px", borderRadius: 8, border: `1px dashed ${isCustomPriceSku(c.svc.sku) ? C.amber : C.border}` }}>
-                          {fmt(c.price)}<span style={{ fontSize: 10, opacity: 0.7 }}>✎</span>
+                          {fmt(c.price)}<Pencil aria-hidden size={10} style={{ opacity: 0.7 }} />
                         </span>
                       )}
                     </div>
@@ -666,10 +668,10 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numP
     <button onClick={() => numPress(k)} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.95)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")} onMouseLeave={(e) => (e.currentTarget.style.transform = "")}
       style={{ height: 44, fontSize: 20, fontWeight: 800, background: del ? C.delKey : C.numKey, color: del ? C.delFg : C.fg, border: `1.5px solid ${C.border}`, borderRadius: 10, cursor: "pointer", fontFamily: "inherit", direction: "ltr", userSelect: "none", touchAction: "manipulation" }}>{k}</button>
   );
-  const Method = ({ m, icon, label }: { m: PaymentMethod; icon: string; label: string }) => (
+  const Method = ({ m, Icon, label }: { m: PaymentMethod; Icon: React.ComponentType<{ "aria-hidden"?: boolean; size?: number }>; label: string }) => (
     <button onClick={() => setMethod(m)}
       style={{ flex: 1, minHeight: 46, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, border: `2px solid ${method === m ? C.primary : C.border}`, borderRadius: 10, background: method === m ? C.primary : C.card, color: method === m ? C.primaryFg : C.fg, fontWeight: 800, fontSize: 13.5, cursor: "pointer", fontFamily: "inherit", touchAction: "manipulation" }}>
-      <span style={{ fontSize: 19 }}>{icon}</span>{label}
+      <Icon aria-hidden size={19} />{label}
     </button>
   );
 
@@ -696,13 +698,13 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numP
           <Key k="00" /><Key k="0" /><Key k="⌫" del />
         </div>
         <div style={{ display: "flex", gap: 6, marginBottom: 6 }}>
-          <Method m="CASH" icon="💵" label="نقداً" />
-          <Method m="CARD" icon="💳" label="بطاقة" />
-          <Method m="TRANSFER" icon="🔄" label="تحويل" />
+          <Method m="CASH" Icon={Banknote} label="نقداً" />
+          <Method m="CARD" Icon={CreditCard} label="بطاقة" />
+          <Method m="TRANSFER" Icon={RefreshCw} label="تحويل" />
         </div>
         <div style={{ minHeight: 24, display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           {!cartLen && <span style={{ fontSize: 12.5, color: C.mutedFg }}>اختر خدمة للبدء</span>}
-          {cartLen > 0 && hasZeroLine && <span style={{ fontSize: 12, color: C.amber, fontWeight: 700 }}>أدخل سعراً للخدمات ذات السعر اليدوي (✎)</span>}
+          {cartLen > 0 && hasZeroLine && <span style={{ fontSize: 12, color: C.amber, fontWeight: 700, display: "inline-flex", alignItems: "center", gap: 4 }}>أدخل سعراً للخدمات ذات السعر اليدوي (<Pencil aria-hidden size={11} />)</span>}
           {cartLen > 0 && !hasZeroLine && !payInput && <span style={{ fontSize: 12, color: C.mutedFg }}>{method === "CASH" && cashTotal !== total ? `نقداً يُقرَّب إلى ${fmt(cashTotal)} د.ع` : "أدخل المبلغ أو «إتمام» للدفع الكامل"}</span>}
           {cartLen > 0 && !!payInput && isChange && (<><span style={{ fontSize: 13, color: C.mutedFg, fontWeight: 600 }}>الباقي للعميل</span><span style={{ fontSize: 21, fontWeight: 900, color: C.success, direction: "ltr" }}>{fmt(change)} <span style={{ fontSize: 12, fontWeight: 500, color: C.mutedFg }}>د.ع</span></span></>)}
           {cartLen > 0 && !!payInput && isOwing && (<><span style={{ fontSize: 13, color: C.amber, fontWeight: 600 }}>المتبقي (آجل)</span><span style={{ fontSize: 21, fontWeight: 900, color: C.amber, direction: "ltr" }}>{fmt(credit)} <span style={{ fontSize: 12, fontWeight: 500 }}>د.ع</span></span></>)}
@@ -710,11 +712,15 @@ function PaymentBlock({ C, total, payInput, setPayInput, method, setMethod, numP
         <div style={{ display: "flex", gap: 7 }}>
           <button disabled={!cartLen || hasZeroLine || isPending} onClick={onQuickPay}
             style={{ width: 116, height: 52, background: cartLen && !hasZeroLine && !isPending ? "linear-gradient(135deg, oklch(0.62 0.18 50), oklch(0.56 0.20 40))" : C.muted, color: cartLen && !hasZeroLine && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 13.5, fontWeight: 900, cursor: cartLen && !hasZeroLine && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, touchAction: "manipulation" }}>
-            <span style={{ fontSize: 17 }}>⚡</span>دفع سريع
+            <Zap aria-hidden size={17} />دفع سريع
           </button>
           <button disabled={!canPay || isPending} onClick={onPay}
             style={{ flex: 1, height: 52, background: canPay && !isPending ? C.success : C.muted, color: canPay && !isPending ? "#fff" : C.mutedFg, border: "none", borderRadius: 11, fontFamily: "inherit", fontSize: 16, fontWeight: 900, cursor: canPay && !isPending ? "pointer" : "not-allowed", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, touchAction: "manipulation" }}>
-            {isPending ? "جارٍ…" : !cartLen ? "الفاتورة فارغة" : "✓ إتمام الدفع"}
+            {isPending
+              ? "جارٍ…"
+              : !cartLen
+                ? "الفاتورة فارغة"
+                : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع</>}
           </button>
         </div>
       </div>
@@ -727,7 +733,7 @@ function ReceiptOverlay({ C, r, onDismiss, onPrint }: { C: C; r: Receipt; onDism
   return (
     <div onClick={onDismiss} style={{ position: "fixed", inset: 0, zIndex: 100, background: C.overlay, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 20, padding: "34px 42px 28px", width: 460, maxWidth: "92vw", boxShadow: "0 28px 72px rgb(0 0 0/.42)", cursor: "default", textAlign: "center" }}>
-        <div style={{ width: 74, height: 74, borderRadius: "50%", background: C.success, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px" }}><span style={{ fontSize: 38, color: "#fff" }}>✓</span></div>
+        <div style={{ width: 74, height: 74, borderRadius: "50%", background: C.success, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 16px", color: "#fff" }}><Check aria-hidden size={42} strokeWidth={3} /></div>
         <div style={{ fontSize: 23, fontWeight: 900, marginBottom: 3, color: C.fg }}>تمّت العملية بنجاح</div>
         <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 22 }}>فاتورة: {r.num}</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
@@ -817,7 +823,14 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
               <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>النقد المعدود في الصندوق (د.ع)</label>
               <input value={counted} onChange={(e) => setCounted(e.target.value.replace(/[^0-9]/g, ""))} dir="ltr" placeholder="0"
                 style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 9, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 19, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box" }} />
-              {diff !== null && <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger }}>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع{diff === 0 ? " ✓ مطابق" : diff > 0 ? " (زيادة)" : " (عجز)"}</div>}
+              {diff !== null && (
+                <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                  <span>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع</span>
+                  {diff === 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><Check aria-hidden size={14} strokeWidth={3} /> مطابق</span>}
+                  {diff > 0 && <span>(زيادة)</span>}
+                  {diff < 0 && <span>(عجز)</span>}
+                </div>
+              )}
             </div>
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose} style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>إلغاء</button>
@@ -839,7 +852,7 @@ function CreditApprovalDialog({ C, message, mgrEmail, setMgrEmail, mgrPwd, setMg
   return (
     <div onClick={onCancel} style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgb(0 0 0/.45)", display: "flex", alignItems: "center", justifyContent: "center", direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 16, padding: "24px 28px", width: 380, boxShadow: "0 20px 56px rgb(0 0 0/.3)" }}>
-        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber }}>⚠ موافقة مدير مطلوبة</div>
+        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber, display: "inline-flex", alignItems: "center", gap: 6 }}><AlertTriangle aria-hidden size={18} /> موافقة مدير مطلوبة</div>
         <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 18 }}>{message}</div>
         {[{ label: "بريد المدير", value: mgrEmail, setter: setMgrEmail, type: "email", placeholder: "manager@alroya.local" }, { label: "كلمة المرور", value: mgrPwd, setter: setMgrPwd, type: "password", placeholder: "••••••••" }].map((f) => (
           <div key={f.label} style={{ marginBottom: 12 }}>

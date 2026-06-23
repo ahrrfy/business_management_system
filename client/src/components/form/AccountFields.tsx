@@ -19,6 +19,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ROLE_OPTIONS } from "@/pages/Users";
+import { AlertTriangle, Check, Zap } from "lucide-react";
 
 /**
  * قسم «حساب النظام» المشترك — بيانات الدخول + الدور والفرع + الصلاحيات.
@@ -255,8 +256,8 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
           <div className="space-y-1">
             <div className="flex items-center justify-between">
               <Label htmlFor="acc-username">اسم المستخدم (للدخول)</Label>
-              <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={() => void fillSuggestedUsername()}>
-                ⚡ توليد تلقائي
+              <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2 gap-1" onClick={() => void fillSuggestedUsername()}>
+                <Zap aria-hidden className="size-3.5" /> توليد تلقائي
               </Button>
             </div>
             <Input
@@ -268,7 +269,7 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
               className={usernameError ? "border-destructive" : usernameChecked && !usernameError ? "border-emerald-500" : ""}
             />
             {usernameError && <p className="text-[11px] text-destructive">{usernameError}</p>}
-            {usernameChecked && !usernameError && value.username.trim() && <p className="text-[11px] text-emerald-600">✓ اسم المستخدم متاح</p>}
+            {usernameChecked && !usernameError && value.username.trim() && <p className="text-[11px] text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" /> اسم المستخدم متاح</p>}
           </div>
           <div className="space-y-1">
             <Label htmlFor="acc-email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
@@ -281,13 +282,13 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
               className={emailError ? "border-destructive" : emailChecked && !emailError ? "border-emerald-500" : ""}
             />
             {emailError && <p className="text-[11px] text-destructive">{emailError}</p>}
-            {emailChecked && !emailError && <p className="text-[11px] text-emerald-600">✓ البريد متاح</p>}
+            {emailChecked && !emailError && <p className="text-[11px] text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" /> البريد متاح</p>}
           </div>
           <div className="space-y-1">
             <div className="flex items-center justify-between">
               <Label htmlFor="acc-pw">كلمة المرور *</Label>
-              <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2" onClick={handleGeneratePassword}>
-                ⚡ توليد تلقائي
+              <Button type="button" variant="ghost" size="sm" className="h-6 text-xs px-2 gap-1" onClick={handleGeneratePassword}>
+                <Zap aria-hidden className="size-3.5" /> توليد تلقائي
               </Button>
             </div>
             <PasswordInput id="acc-pw" value={value.password} onChange={(v) => onChange({ password: v })} autoComplete="new-password" />
@@ -371,7 +372,7 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
               ))}
             </select>
             {branchWarn && (
-              <p className="text-[11px] text-amber-600">⚠️ هذا الدور يُنصح بتحديد فرع محدد لتجنّب الوصول لكل الفروع.</p>
+              <p className="text-[11px] text-amber-600 inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" /> هذا الدور يُنصح بتحديد فرع محدد لتجنّب الوصول لكل الفروع.</p>
             )}
           </div>
         </CardContent>

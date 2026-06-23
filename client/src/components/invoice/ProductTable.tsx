@@ -5,6 +5,7 @@
  * `showCost` is controlled by RBAC at the page level (cashier → false; manager → true).
  */
 import type { Dispatch } from "react";
+import { Package, ShoppingCart, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
@@ -138,7 +139,9 @@ export function ProductTable({
 
       <div className="flex shrink-0 items-center justify-between border-b bg-muted px-3.5 py-1.5">
         <div className="flex items-center gap-2">
-          <span className="text-sm font-extrabold">🛒 سلة المنتجات</span>
+          <span className="inline-flex items-center gap-1.5 text-sm font-extrabold">
+            <ShoppingCart aria-hidden className="size-4" /> سلة المنتجات
+          </span>
           {items.length > 0 && (
             <span className="rounded-full bg-primary px-2.5 py-0.5 text-xs font-bold text-primary-foreground">
               {items.length} منتج · {totalQty} قطعة
@@ -153,7 +156,7 @@ export function ProductTable({
             className="h-7 border-primary/40 bg-primary/10 text-primary hover:bg-primary/20"
             onClick={onOpenBulkPicker}
           >
-            📦 إضافة متعددة
+            <Package aria-hidden className="size-4" /> إضافة متعددة
           </Button>
           {items.length > 0 && (
             <Button
@@ -192,7 +195,7 @@ export function ProductTable({
             {items.length === 0 && (
               <tr>
                 <td colSpan={colCount} className="py-12 text-center text-muted-foreground">
-                  <div className="text-4xl opacity-50">📦</div>
+                  <div className="opacity-50 flex justify-center"><Package aria-hidden size={40} /></div>
                   <div className="mt-2 text-sm font-semibold">لا توجد منتجات في السلة</div>
                   <div className="mx-auto mt-1 max-w-xs text-xs">ابحث بالاسم أو رمز SKU أو امسح الباركود لإضافة منتجات</div>
                 </td>
@@ -292,7 +295,7 @@ export function ProductTable({
                       onClick={() => dispatch({ type: "REMOVE_ITEM", idx })}
                       aria-label="حذف"
                     >
-                      ✕
+                      <X aria-hidden className="size-4" />
                     </Button>
                   </td>
                 </tr>

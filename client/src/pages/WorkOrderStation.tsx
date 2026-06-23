@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Check, CheckCircle2, ChevronRight, CornerDownLeft } from "lucide-react";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
@@ -246,7 +247,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
             <CardContent className="space-y-2">
               {STAGES.map((s, i) => (
                 <div key={s.key} className="flex items-center gap-2">
-                  <div className={`w-5 h-5 rounded-md grid place-items-center text-[11px] text-white ${i < cur ? "bg-emerald-500" : i === cur ? "bg-primary" : "bg-muted-foreground/30"}`}>{i < cur ? "✓" : i + 1}</div>
+                  <div className={`w-5 h-5 rounded-md grid place-items-center text-[11px] text-white ${i < cur ? "bg-emerald-500" : i === cur ? "bg-primary" : "bg-muted-foreground/30"}`}>{i < cur ? <Check aria-hidden className="size-3" /> : i + 1}</div>
                   <span className={`text-sm ${i === cur ? "font-semibold" : "text-muted-foreground"}`}>{s.label}</span>
                 </div>
               ))}
@@ -255,14 +256,14 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
 
           {/* زر الإجراء المتدرّج */}
           {d.status === "RECEIVED" && (
-            <Button className="w-full h-12 text-base" disabled={busy} onClick={doStart}>▶ بدء التنفيذ (خصم المواد)</Button>
+            <Button className="w-full h-12 text-base" disabled={busy} onClick={doStart}><ChevronRight aria-hidden className="size-4 me-1" /> بدء التنفيذ (خصم المواد)</Button>
           )}
           {d.status === "IN_PROGRESS" && (
-            <Button className="w-full h-12 text-base bg-violet-600 hover:bg-violet-700" disabled={busy} onClick={doReady}>✓ وضع علامة: جاهز</Button>
+            <Button className="w-full h-12 text-base bg-violet-600 hover:bg-violet-700" disabled={busy} onClick={doReady}><Check aria-hidden className="size-4 me-1" /> وضع علامة: جاهز</Button>
           )}
           {d.status === "READY" && (
-            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-center text-sm">
-              ✅ جاهز للتسليم — سلّمه للكاشير للتسليم وإصدار الفاتورة.
+            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-center text-sm inline-flex items-center justify-center gap-1.5 w-full">
+              <CheckCircle2 aria-hidden className="size-4 text-emerald-600" /> جاهز للتسليم — سلّمه للكاشير للتسليم وإصدار الفاتورة.
             </div>
           )}
           {(d.status === "DELIVERED" || d.status === "CANCELLED") && (
@@ -323,7 +324,7 @@ export default function WorkOrderStation() {
         </div>
 
         <div>
-          <div className="text-xs font-semibold text-muted-foreground mb-1.5">⤵ الطابور العام — مشترك للجميع ({queue.length})</div>
+          <div className="text-xs font-semibold text-muted-foreground mb-1.5 inline-flex items-center gap-1"><CornerDownLeft aria-hidden className="size-3.5" /> الطابور العام — مشترك للجميع ({queue.length})</div>
           <div className="space-y-2">
             {queue.map((o) => (
               <div key={o.id} className="relative">

@@ -7,6 +7,7 @@
  *   (sale-side only). On purchase side, we fall back to substring match.
  */
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Camera, Search, X } from "lucide-react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -209,8 +210,8 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
     <div ref={wrapRef} className="relative">
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
-          <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-base text-muted-foreground">
-            🔍
+          <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+            <Search aria-hidden className="size-4" />
           </span>
           <Input
             ref={inputRef}
@@ -234,12 +235,12 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
               }}
               className="absolute start-2 top-1/2 -translate-y-1/2 rounded-md p-1 text-sm text-muted-foreground hover:bg-muted"
             >
-              ✕
+              <X aria-hidden className="size-4" />
             </button>
           )}
         </div>
         <div className="flex h-11 shrink-0 items-center gap-1.5 rounded-lg border bg-muted px-3 text-xs font-semibold text-muted-foreground">
-          <span className="text-base">📷</span> باركود
+          <Camera aria-hidden className="size-4" /> باركود
         </div>
         <div className="shrink-0 rounded-md bg-muted px-2 py-1 text-[11px] font-semibold text-muted-foreground">F2 للبحث</div>
       </div>

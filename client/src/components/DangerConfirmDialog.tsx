@@ -5,6 +5,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useEffect, useState } from "react";
+import { AlertTriangle, ShieldCheck } from "lucide-react";
 
 /**
  * حوار تأكيد للعمليات المدمّرة (استعادة/تصفير). حماية قصوى:
@@ -44,7 +45,7 @@ export function DangerConfirmDialog(props: {
     <Dialog open={open} onOpenChange={(o) => { if (!pending) onOpenChange(o); }}>
       <DialogContent className="max-w-md">
         <DialogHeader>
-          <DialogTitle className="text-destructive">⚠ {title}</DialogTitle>
+          <DialogTitle className="text-destructive flex items-center gap-2"><AlertTriangle aria-hidden className="size-4" /> {title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
         </DialogHeader>
 
@@ -54,8 +55,9 @@ export function DangerConfirmDialog(props: {
               {warnings.map((w, i) => <li key={i}>{w}</li>)}
             </ul>
           )}
-          <p className="text-xs text-muted-foreground">
-            🛡 ستُؤخذ نسخة احتياطية تلقائية للحالة الراهنة قبل التنفيذ (تتوقّف العملية إن فشلت النسخة).
+          <p className="text-xs text-muted-foreground flex items-start gap-2">
+            <ShieldCheck aria-hidden className="size-4 shrink-0 mt-0.5" />
+            <span>ستُؤخذ نسخة احتياطية تلقائية للحالة الراهنة قبل التنفيذ (تتوقّف العملية إن فشلت النسخة).</span>
           </p>
 
           <div className="space-y-1">

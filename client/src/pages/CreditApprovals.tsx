@@ -9,6 +9,7 @@ import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { Check } from "lucide-react";
 import { useState } from "react";
 
 export default function CreditApprovalsPage() {
@@ -133,8 +134,9 @@ export default function CreditApprovalsPage() {
           </Button>
 
           {createdId && (
-            <div className="bg-green-50 text-green-900 p-3 rounded text-sm">
-              ✓ approvalId = <span className="font-mono font-bold">{createdId}</span> — سلّم هذا الرقم للكاشير.
+            <div className="bg-green-50 text-green-900 p-3 rounded text-sm flex items-center gap-2">
+              <Check aria-hidden className="size-4" />
+              <span>approvalId = <span className="font-mono font-bold">{createdId}</span> — سلّم هذا الرقم للكاشير.</span>
             </div>
           )}
         </CardContent>

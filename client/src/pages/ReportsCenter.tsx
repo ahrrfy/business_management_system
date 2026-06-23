@@ -323,7 +323,7 @@ function ReportCard({
             type="button"
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleFav(item.href); }}
             className={cn(
-              "shrink-0 transition",
+              "inline-flex size-11 shrink-0 items-center justify-center transition",
               fav ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500",
             )}
             aria-label={fav ? "إزالة من المفضّلة" : "إضافة للمفضّلة"}

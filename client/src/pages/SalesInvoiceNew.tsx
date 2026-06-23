@@ -27,6 +27,7 @@ import { D, round2, toBase } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { AlertTriangle, Lock } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -360,8 +361,9 @@ export default function SalesInvoiceNew() {
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
 
       {hasZeroPriceLine && (
-        <div className="rounded-md border border-amber-300/40 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
-          ⚠️ هناك بنود بسعر غير صالح — صحّحها قبل الحفظ.
+        <div className="rounded-md border border-amber-300/40 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 flex items-center gap-2">
+          <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+          <span>هناك بنود بسعر غير صالح — صحّحها قبل الحفظ.</span>
         </div>
       )}
 
@@ -418,7 +420,8 @@ export default function SalesInvoiceNew() {
         <DialogContent dir="rtl" className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-rose-600">
-              🔒 موافقة مدير مطلوبة
+              <Lock aria-hidden className="size-5" />
+              موافقة مدير مطلوبة
             </DialogTitle>
             <DialogDescription className="text-right">
               {creditPrompt ?? "تجاوز حدّ الائتمان — يلزم اعتماد مدير لإتمام البيع الآجل."}

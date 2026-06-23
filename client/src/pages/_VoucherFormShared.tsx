@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { AlertTriangle, Building2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 
@@ -217,14 +218,16 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       )}
 
       {hardBlock && (
-        <div className="rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm p-3">
-          ⚠️ لا توجد وردية مفتوحة في هذا الفرع. السندات النقدية للكاشير تَمسّ صندوق الوردية —
-          {" "}<Link href="/shifts" className="underline">افتح وردية</Link> أوّلاً، أو غيِّر طريقة الدفع لغير نقدية.
+        <div className="rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm p-3 flex items-start gap-2">
+          <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
+          <span>لا توجد وردية مفتوحة في هذا الفرع. السندات النقدية للكاشير تَمسّ صندوق الوردية —
+          {" "}<Link href="/shifts" className="underline">افتح وردية</Link> أوّلاً، أو غيِّر طريقة الدفع لغير نقدية.</span>
         </div>
       )}
       {treasuryNotice && (
-        <div className="rounded-md bg-blue-50 border border-blue-300 text-blue-800 text-sm p-3">
-          🏦 يُسجَّل في <strong>الخزينة الإدارية</strong> (بلا وردية كاشير) — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.
+        <div className="rounded-md bg-blue-50 border border-blue-300 text-blue-800 text-sm p-3 flex items-start gap-2">
+          <Building2 aria-hidden className="size-4 shrink-0 mt-0.5" />
+          <span>يُسجَّل في <strong>الخزينة الإدارية</strong> (بلا وردية كاشير) — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.</span>
         </div>
       )}
 

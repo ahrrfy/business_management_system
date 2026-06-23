@@ -10,6 +10,7 @@
  * البيانات آمنة للزبون (kioskRouter): بلا تكلفة ولا مخزون. الرمز نطاقه قراءة الأسعار فقط.
  */
 import { useEffect, useRef, useState } from "react";
+import { Lock } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import KioskView from "@/components/kiosk/KioskView";
 
@@ -100,7 +101,7 @@ export default function Kiosk() {
   return (
     <div style={wrap}>
       <div style={card}>
-        <div style={{ width: 60, height: 60, margin: "0 auto 14px", borderRadius: 16, background: "#1d2336", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 28 }}>🔒</div>
+        <div style={{ width: 60, height: 60, margin: "0 auto 14px", borderRadius: 16, background: "#1d2336", display: "flex", alignItems: "center", justifyContent: "center" }}><Lock aria-hidden size={28} /></div>
         <div style={{ fontSize: 19, fontWeight: 800 }}>هذا الجهاز غير مُصرَّح</div>
         <p style={{ fontSize: 13.5, opacity: 0.75, lineHeight: 1.9, margin: "10px 0 18px" }}>
           {failed

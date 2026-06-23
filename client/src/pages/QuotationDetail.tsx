@@ -50,7 +50,7 @@ export default function QuotationDetail() {
   });
   const convert = trpc.quotations.convert.useMutation({
     onSuccess: async (r) => {
-      setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل ✓ فاتورة ${r.invoiceNumber ?? r.invoiceId}.`);
+      setDone(r.alreadyConverted ? "مُحوّل مسبقاً." : `تم التحويل فاتورة ${r.invoiceNumber ?? r.invoiceId}.`);
       setError("");
       await refresh();
     },

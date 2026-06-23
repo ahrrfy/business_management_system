@@ -5,6 +5,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
+import { AlertTriangle } from "lucide-react";
 
 export const ROLE_OPTIONS = [
   { value: "admin",          label: "مدير النظام" },
@@ -160,7 +161,7 @@ export default function Users() {
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
                     <td className="p-2 font-medium">
                       {u.name ?? "—"}
-                      {mustChange && <span className="me-1 text-[10px] text-amber-600" title="إلزام تغيير كلمة المرور">⚠️</span>}
+                      {mustChange && <span className="me-1 inline-flex text-amber-600" title="إلزام تغيير كلمة المرور"><AlertTriangle aria-hidden className="size-3.5" /></span>}
                     </td>
                     <td className="p-2 font-mono text-xs" dir="ltr">
                       {(u as { username?: string | null }).username

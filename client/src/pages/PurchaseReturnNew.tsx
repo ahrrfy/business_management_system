@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef, useState, useReducer } from "react";
 import { Link, useLocation } from "wouter";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Download } from "lucide-react";
 import { confirm } from "@/lib/confirm";
 import { D, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -365,7 +366,8 @@ export default function PurchaseReturnNew() {
             disabled={!state.poReference && !state.refInvoice}
             title="جلب بنود أمر الشراء المرجعي"
           >
-            📥 استيراد من أمر الشراء
+            <Download aria-hidden className="size-4" />
+            استيراد من أمر الشراء
           </Button>
           <Link href="/purchases" className="text-sm text-muted-foreground hover:underline">
             ← رجوع للمشتريات

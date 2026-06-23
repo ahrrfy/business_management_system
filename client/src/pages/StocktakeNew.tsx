@@ -30,6 +30,7 @@ import { trpc } from "@/lib/trpc";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { Check, AlertTriangle, Printer } from "lucide-react";
 
 /* ───────────────────────── ثوابت ───────────────────────── */
 
@@ -357,7 +358,7 @@ export default function StocktakeNew() {
                       : "bg-muted text-muted-foreground"
                 }`}
               >
-                {i < step ? "✓" : nf(i + 1)}
+                {i < step ? <Check aria-hidden className="size-4" /> : nf(i + 1)}
               </span>
               <span className={`text-sm font-semibold ${i === step ? "" : "text-muted-foreground"}`}>{s}</span>
             </span>
@@ -461,13 +462,13 @@ export default function StocktakeNew() {
                           onClick={() =>
                             setCategoryIds((prev) => (on ? prev.filter((x) => x !== id) : [...prev, id]))
                           }
-                          className={`rounded-full border px-3 py-1.5 text-sm transition-colors ${
+                          className={`inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-sm transition-colors ${
                             on
                               ? "border-primary bg-primary/10 font-semibold text-primary"
                               : "border-border hover:bg-muted/50"
                           }`}
                         >
-                          {on ? "✓ " : ""}
+                          {on ? <Check aria-hidden className="size-3.5" /> : null}
                           {c.name}
                         </button>
                       );
@@ -937,7 +938,7 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
 
   function waMessage(a: CreateResult["assignments"][number]): string {
     const lines = [
-      `🧮 *جلسة جرد — ${sessionName}*`,
+      `*جلسة جرد — ${sessionName}*`,
       `العامل: ${a.name}`,
       `المنطقة: ${a.zone || "كامل النطاق"} · ${nf(a.itemCount)} منتجاً`,
       "",
@@ -954,7 +955,9 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
     <div className="mx-auto max-w-2xl space-y-4">
       <Card>
         <CardContent className="p-8 text-center">
-          <div className="mx-auto grid size-14 place-items-center rounded-full bg-emerald-100 text-2xl">✓</div>
+          <div className="mx-auto grid size-14 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+            <Check aria-hidden className="size-7" />
+          </div>
           <h1 className="mt-3 text-xl font-bold">
             أُنشئت الجلسة <span className="font-mono" dir="ltr">{created.code}</span>
           </h1>
@@ -968,8 +971,9 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
       <Card>
         <CardHeader>
           <p className="text-base font-semibold">روابط العدّ ورموز الدخول</p>
-          <p className="text-xs text-amber-800">
-            ⚠ رموز PIN تظهر هنا مرة واحدة فقط — انسخها الآن. يمكن إعادة توليد رمز عامل من شاشة المتابعة.
+          <p className="inline-flex items-start gap-1 text-xs text-amber-800">
+            <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+            <span>رموز PIN تظهر هنا مرة واحدة فقط — انسخها الآن. يمكن إعادة توليد رمز عامل من شاشة المتابعة.</span>
           </p>
         </CardHeader>
         <CardContent className="p-0">
@@ -1031,7 +1035,9 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
           <Link href="/stocktakes">العودة للقائمة</Link>
         </Button>
         <Button asChild variant="outline">
-          <Link href={`/stocktakes/${created.sessionId}/sheets`}>🖨 قوائم عدّ ورقية</Link>
+          <Link href={`/stocktakes/${created.sessionId}/sheets`}>
+            <Printer aria-hidden className="size-4" /> قوائم عدّ ورقية
+          </Link>
         </Button>
         <Button asChild>
           <Link href={`/stocktakes/${created.sessionId}`}>متابعة العدّ الحيّ</Link>

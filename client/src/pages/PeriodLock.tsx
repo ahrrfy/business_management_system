@@ -2,6 +2,7 @@
  * إقفال الفترات المالية — adminProcedure.
  * يعرض الـlock النشِط ويوفّر آلية إنشاء/فتح (admin فقط).
  */
+import { AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
@@ -55,8 +56,9 @@ export default function PeriodLockPage() {
                 <div className="text-muted-foreground">ملاحظات:</div>
                 <div>{lock.notes ?? "—"}</div>
               </div>
-              <p className="text-sm text-amber-700 bg-amber-50 rounded p-2">
-                ⚠️ أي قيد محاسبي بتاريخ ≤ {fmtDate(lock.cutoffDate)} سيُرفَض.
+              <p className="text-sm text-amber-700 bg-amber-50 rounded p-2 flex items-center gap-2">
+                <AlertTriangle aria-hidden className="size-4" />
+                <span>أي قيد محاسبي بتاريخ ≤ {fmtDate(lock.cutoffDate)} سيُرفَض.</span>
               </p>
               <Button
                 variant="destructive"

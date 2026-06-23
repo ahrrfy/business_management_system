@@ -28,6 +28,7 @@ import {
   type ParsedVariantRow,
 } from "@/lib/variants";
 import { ColorDot } from "./variantBits";
+import { AlertTriangle, Printer } from "lucide-react";
 
 /* ============================ استيراد / لصق ============================ */
 
@@ -234,7 +235,10 @@ export function LabelPrintModal({
                     </span>
                     <span className="text-[10px] rounded bg-secondary px-1.5 py-0.5 text-secondary-foreground">{l.unit.name || "وحدة"}</span>
                   </div>
-                  <div className="text-[10px] text-muted-foreground truncate" dir="ltr">{l.barcode}{!isValidEan13(l.barcode) ? " ⚠" : ""}</div>
+                  <div className="text-[10px] text-muted-foreground truncate inline-flex items-center gap-1" dir="ltr">
+                    <span>{l.barcode}</span>
+                    {!isValidEan13(l.barcode) && <AlertTriangle aria-hidden className="size-3 text-amber-500" />}
+                  </div>
                   <label className="flex items-center justify-between gap-1 text-[11px] text-muted-foreground">
                     عدد النسخ:
                     <Input
@@ -256,8 +260,9 @@ export function LabelPrintModal({
           </span>
           <div className="flex gap-2">
             <Button type="button" variant="outline" size="sm" onClick={() => onOpenChange(false)}>إغلاق</Button>
-            <Button type="button" size="sm" disabled={!totalCopies} onClick={doPrint}>
-              اطبع {toArabicDigits(totalCopies)} ملصق ⎙
+            <Button type="button" size="sm" disabled={!totalCopies} onClick={doPrint} className="inline-flex items-center gap-1.5">
+              <span>اطبع {toArabicDigits(totalCopies)} ملصق</span>
+              <Printer aria-hidden className="size-4" />
             </Button>
           </div>
         </DialogFooter>

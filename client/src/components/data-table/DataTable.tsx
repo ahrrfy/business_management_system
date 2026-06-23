@@ -11,6 +11,7 @@ import {
   type SortingState,
 } from "@tanstack/react-table";
 import { useState } from "react";
+import { ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 
 type DataTableProps<T> = {
   columns: ColumnDef<T, unknown>[];
@@ -75,7 +76,7 @@ export function DataTable<T>({
                       {h.isPlaceholder ? null : (
                         <span className="inline-flex items-center gap-1">
                           {flexRender(h.column.columnDef.header, h.getContext())}
-                          {dir === "asc" ? "▲" : dir === "desc" ? "▼" : sortable ? <span className="opacity-30">↕</span> : null}
+                          {dir === "asc" ? <ChevronUp aria-hidden className="size-3.5" /> : dir === "desc" ? <ChevronDown aria-hidden className="size-3.5" /> : sortable ? <ArrowUpDown aria-hidden className="size-3.5 opacity-30" /> : null}
                         </span>
                       )}
                     </th>

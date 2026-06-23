@@ -20,6 +20,7 @@ import { fmt, fmtInt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { Check, AlertTriangle } from "lucide-react";
 
 /* ───────────────────────── ثوابت العرض ───────────────────────── */
 
@@ -487,7 +488,7 @@ export default function Stocktakes() {
                     {[a, m, w, c].map((v, i) => (
                       <td key={i} className="p-2 text-center">
                         {v ? (
-                          <span className="font-bold text-emerald-600">✓</span>
+                          <Check aria-hidden className="mx-auto size-4 text-emerald-600" />
                         ) : (
                           <span className="text-border">—</span>
                         )}
@@ -576,7 +577,9 @@ function CyclePlanCard({
           ))}
           {loading && <p className="p-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>}
           {!loading && due.length === 0 && (
-            <p className="p-6 text-center text-sm text-muted-foreground">✓ لا منتجات مستحقة — الخطة الدورية مكتملة.</p>
+            <p className="inline-flex w-full items-center justify-center gap-1.5 p-6 text-center text-sm text-muted-foreground">
+              <Check aria-hidden className="size-4" /> لا منتجات مستحقة — الخطة الدورية مكتملة.
+            </p>
           )}
           {due.length > shown.length && (
             <p className="px-4 py-2 text-xs text-muted-foreground">
@@ -717,13 +720,15 @@ function ReconDriftCard({
         ) : loading ? (
           <p className="p-6 text-center text-sm text-muted-foreground">جارٍ الفحص…</p>
         ) : inventory.length === 0 ? (
-          <p className="p-6 text-center text-sm text-muted-foreground">✓ لا انحرافات مخزون في آخر فحص.</p>
+          <p className="inline-flex w-full items-center justify-center gap-1.5 p-6 text-center text-sm text-muted-foreground">
+            <Check aria-hidden className="size-4" /> لا انحرافات مخزون في آخر فحص.
+          </p>
         ) : (
           <div className="divide-y">
             {inventory.slice(0, 6).map((d, i) => (
               <div key={`${d.id}-${i}`} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-rose-100 text-xs font-bold text-rose-700">
-                  ⚠
+                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-rose-100 text-rose-700">
+                  <AlertTriangle aria-hidden className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">
                   <p className="font-semibold">

@@ -30,6 +30,16 @@ import { openWhatsApp } from "@/lib/whatsapp";
 import { fmtInt } from "@/lib/money";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
+import {
+  Lock,
+  AlertTriangle,
+  RefreshCw,
+  Link as LinkIcon,
+  User,
+  Mail,
+  Key,
+  Printer,
+} from "lucide-react";
 
 /* ───────── ثوابت العرض ───────── */
 const STATUS_META: Record<string, { label: string; cls: string }> = {
@@ -197,7 +207,9 @@ export default function StocktakeMonitor() {
   if (me.data && !canView)
     return (
       <div className="mx-auto max-w-lg space-y-4 p-10 text-center">
-        <p className="text-4xl">🔒</p>
+        <div className="mx-auto grid size-16 place-items-center rounded-full bg-muted text-muted-foreground">
+          <Lock aria-hidden className="size-8" />
+        </div>
         <p className="font-bold">متابعة الجرد صلاحية أمين مخزن فأعلى</p>
         <p className="text-sm text-muted-foreground">دورك الحالي لا يخوّلك الاطلاع على جلسات الجرد.</p>
         <Link href="/"><Button variant="outline">العودة للوحة التحكم</Button></Link>
@@ -264,12 +276,12 @@ export default function StocktakeMonitor() {
     openWhatsApp(
       null,
       [
-        "تذكير بعدّ الجرد 📋",
+        "تذكير بعدّ الجرد",
         `الجلسة: ${s.name} (${s.code})`,
         a.zone ? `المنطقة: ${a.zone}` : "",
         `تقدمك: ${nf(a.counted)} من ${nf(a.total)} منتجاً`,
         `رابط شاشة العدّ: ${link}`,
-        "يرجى إكمال العدّ ثم تسليمه. شكراً 🌹",
+        "يرجى إكمال العدّ ثم تسليمه. شكراً.",
       ]
         .filter(Boolean)
         .join("\n"),
@@ -330,7 +342,9 @@ export default function StocktakeMonitor() {
             نسخ رابط العدّ
           </Button>
           <Link href={`/stocktakes/${sessionId}/sheets`}>
-            <Button variant="outline" size="sm">🖨 قوائم عدّ ورقية</Button>
+            <Button variant="outline" size="sm">
+              <Printer aria-hidden className="size-4" /> قوائم عدّ ورقية
+            </Button>
           </Link>
           {s.status === "APPROVED" && (
             <Link href={`/stocktakes/${sessionId}/report`}>
@@ -373,7 +387,9 @@ export default function StocktakeMonitor() {
       {/* تعارضات وإعادات عدّ معلّقة */}
       {conflicts.length > 0 && (
         <div className="space-y-1 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-800">
-          <p className="font-bold">⚠ تعارض عدَّين على {nf(conflicts.length)} منتج — يحجب الاعتماد حتى يُفصل فيه:</p>
+          <p className="inline-flex items-center gap-1.5 font-bold">
+            <AlertTriangle aria-hidden className="size-4" /> تعارض عدَّين على {nf(conflicts.length)} منتج — يحجب الاعتماد حتى يُفصل فيه:
+          </p>
           {conflicts.map((c: { variantId: number; variantLabel: string; qty1: number; by1: string; qty2: number; by2: string }) => (
             <p key={c.variantId} className="text-xs">
               {c.variantLabel}: {c.by1} عدّ <b dir="ltr">{nf(c.qty1)}</b> — {c.by2} عدّ <b dir="ltr">{nf(c.qty2)}</b>
@@ -388,7 +404,9 @@ export default function StocktakeMonitor() {
       )}
       {pendingRecounts.length > 0 && (
         <div className="space-y-1 rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm text-violet-800">
-          <p className="font-bold">⟳ {nf(pendingRecounts.length)} طلب إعادة عدّ بانتظار العامل:</p>
+          <p className="inline-flex items-center gap-1.5 font-bold">
+            <RefreshCw aria-hidden className="size-4" /> {nf(pendingRecounts.length)} طلب إعادة عدّ بانتظار العامل:
+          </p>
           {pendingRecounts.map((r: { variantId: number; variantLabel: string; reason: string; requestedByName: string }) => (
             <p key={r.variantId} className="text-xs">
               {r.variantLabel} — السبب: {r.reason} (طلبها {r.requestedByName})
@@ -445,12 +463,12 @@ export default function StocktakeMonitor() {
                         </span>
                       )}
                       {a.method === "PIN" ? (
-                        <span className="inline-flex items-center rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
-                          🔗 رابط خارجي PIN
+                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                          <LinkIcon aria-hidden className="size-3" /> رابط خارجي PIN
                         </span>
                       ) : (
-                        <span className="inline-flex items-center rounded-full border bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
-                          👤 حساب داخل النظام
+                        <span className="inline-flex items-center gap-1 rounded-full border bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                          <User aria-hidden className="size-3" /> حساب داخل النظام
                         </span>
                       )}
                     </p>
@@ -478,7 +496,7 @@ export default function StocktakeMonitor() {
                             title="فتح واتساب برسالة تذكير جاهزة"
                             onClick={() => remind(a)}
                           >
-                            ✉ تذكير واتساب
+                            <Mail aria-hidden className="size-4" /> تذكير واتساب
                           </Button>
                         )}
                         {a.method === "PIN" && (
@@ -489,7 +507,7 @@ export default function StocktakeMonitor() {
                             title="يُبطل الرمز الحالي ويولّد رمزاً جديداً يظهر مرة واحدة"
                             onClick={() => void onRegenPin(a)}
                           >
-                            🔑 PIN جديد
+                            <Key aria-hidden className="size-4" /> PIN جديد
                           </Button>
                         )}
                       </div>
@@ -565,7 +583,7 @@ export default function StocktakeMonitor() {
                             setRecountFor({ variantId: c.variantId, label: c.variantLabel });
                           }}
                         >
-                          ⟳
+                          <RefreshCw aria-hidden className="size-4" />
                         </Button>
                       )}
                     </div>

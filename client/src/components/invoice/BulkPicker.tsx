@@ -5,6 +5,7 @@
  * grouping by category is replaced with a simple flat list (no category endpoint yet).
  */
 import { useMemo, useState } from "react";
+import { Check, Package, Search } from "lucide-react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { trpc } from "@/lib/trpc";
 import {
@@ -160,7 +161,9 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
     >
       <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b p-5">
-          <DialogTitle className="flex items-center gap-2 text-lg font-extrabold">📦 إضافة متعددة</DialogTitle>
+          <DialogTitle className="flex items-center gap-2 text-lg font-extrabold">
+            <Package aria-hidden className="size-5" /> إضافة متعددة
+          </DialogTitle>
           <DialogDescription className="text-xs">
             اختر منتجات لإضافتها دفعة واحدة (الكمية تبدأ بـ 1 لكل منتج)
           </DialogDescription>
@@ -168,7 +171,9 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
 
         <div className="flex shrink-0 items-center gap-2 border-b px-5 py-2.5">
           <div className="relative flex-1">
-            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-sm text-muted-foreground">🔍</span>
+            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+              <Search aria-hidden className="size-4" />
+            </span>
             <Input
               value={searchQ}
               onChange={(e) => { setSearchQ(e.target.value); setLimit(PAGE); }}
@@ -188,7 +193,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
           {initialLoading && <div className="px-3 py-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</div>}
           {!initialLoading && rows.length === 0 && (
             <div className="px-3 py-10 text-center text-muted-foreground">
-              <div className="mb-2 text-3xl">🔍</div>
+              <div className="mb-2 flex justify-center"><Search aria-hidden size={32} /></div>
               <div className="text-sm">لا نتائج</div>
             </div>
           )}
@@ -249,7 +254,7 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
               إلغاء
             </Button>
             <Button type="button" disabled={selected.size === 0} onClick={handleConfirm}>
-              ✓ إضافة {selected.size > 0 ? `(${selected.size})` : ""} للسلة
+              <Check aria-hidden className="size-4" /> إضافة {selected.size > 0 ? `(${selected.size})` : ""} للسلة
             </Button>
           </div>
         </DialogFooter>

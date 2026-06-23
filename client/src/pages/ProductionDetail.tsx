@@ -6,6 +6,7 @@ import { fmt, fmtInt, pct } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
+import { Printer } from "lucide-react";
 import { Link, useRoute } from "wouter";
 
 export default function ProductionDetail() {
@@ -75,7 +76,7 @@ export default function ProductionDetail() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">مستند إنتاج <span className="font-mono text-lg" dir="ltr">{doc.docNumber}</span></h1>
         <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" onClick={printDocument}>🖨 طباعة المستند</Button>
+          <Button variant="outline" size="sm" onClick={printDocument}><Printer aria-hidden className="size-4" /> طباعة المستند</Button>
           <Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>
         </div>
       </div>

@@ -12,6 +12,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { Landmark } from "lucide-react";
 
 /**
  * مصروف جديد — v3 add-screens.
@@ -232,8 +233,9 @@ export default function ExpenseNew() {
               if (!isStock && paymentMethod === "CASH") {
                 if (isElevated) {
                   return (
-                    <p className="text-xs text-blue-700">
-                      🏦 يُسجَّل في <strong>الخزينة الإدارية</strong> — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.
+                    <p className="text-xs text-blue-700 inline-flex items-center gap-1">
+                      <Landmark aria-hidden className="size-4" />
+                      <span>يُسجَّل في <strong>الخزينة الإدارية</strong> — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.</span>
                     </p>
                   );
                 }

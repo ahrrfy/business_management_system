@@ -10,6 +10,7 @@ import { notify } from "@/lib/notify";
 import { printProductionDoc } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { Check, Printer } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useSearch } from "wouter";
 
@@ -307,7 +308,7 @@ export default function ProductionNew() {
                             <Meter value={i.consumed} max={i.available ?? i.consumed} tone={tone} right={`${fmt(i.consumed)} / ${i.available != null ? fmt(i.available) : "—"}`} />
                             {i.short
                               ? <div className="text-xs font-semibold text-rose-600 mt-1.5">المتاح أقل بـ {fmt(i.consumed - (i.available ?? 0))} — سيُرفض الترحيل</div>
-                              : i.available != null && <div className="text-xs font-semibold text-emerald-600 mt-1.5">يكفي ✓ يتبقّى {fmt(i.available - i.consumed)}</div>}
+                              : i.available != null && <div className="text-xs font-semibold text-emerald-600 mt-1.5 flex items-center gap-1"><Check aria-hidden className="size-3.5" /><span>يكفي — يتبقّى {fmt(i.available - i.consumed)}</span></div>}
                           </div>
                         </div>
                       );
@@ -341,7 +342,7 @@ export default function ProductionNew() {
                   <Button onClick={submitRecipe} disabled={create.isPending || !pv || pv.anyShort || !(pv.good > 0)}>
                     {create.isPending ? "جارٍ الترحيل…" : pv?.anyShort ? "المخزون لا يكفي" : "ترحيل المستند"}
                   </Button>
-                  <Button variant="outline" onClick={printOrder} disabled={!pv}>🖨 طباعة أمر تشغيل</Button>
+                  <Button variant="outline" onClick={printOrder} disabled={!pv}><Printer aria-hidden className="size-4" /> طباعة أمر تشغيل</Button>
                   <Link href="/production"><Button variant="ghost">إلغاء</Button></Link>
                 </div>
               </>

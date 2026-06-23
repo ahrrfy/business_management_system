@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import { AlertTriangle, Check, ClipboardList } from "lucide-react";
 import { Link } from "wouter";
 
 /* ═══════════ شاشة تدقيق التوافق المالي (admin فقط) ═══════════
@@ -80,13 +81,21 @@ export default function Reconcile() {
         <>
           <Card>
             <CardContent
-              className={`p-6 text-center text-lg font-bold ${
+              className={`p-6 text-center text-lg font-bold inline-flex items-center justify-center gap-2 w-full ${
                 total === 0 ? "text-emerald-700" : "text-rose-700"
               }`}
             >
-              {total === 0
-                ? "✓ كل المحاور متوازنة — لا انحراف"
-                : `⚠ ${total} انحراف يستوجب المراجعة`}
+              {total === 0 ? (
+                <>
+                  <Check aria-hidden className="size-5" />
+                  كل المحاور متوازنة — لا انحراف
+                </>
+              ) : (
+                <>
+                  <AlertTriangle aria-hidden className="size-5" />
+                  {`${total} انحراف يستوجب المراجعة`}
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -112,7 +121,7 @@ export default function Reconcile() {
                 <Link
                   href={`/stocktakes/new?variants=${Array.from(new Set(data.inventory.map((r) => r.id))).join(",")}&name=${encodeURIComponent("جرد تحقّق — انحرافات التدقيق المالي")}`}
                 >
-                  <Button size="sm">📋 أنشئ جلسة جرد لهذه المنتجات</Button>
+                  <Button size="sm" className="inline-flex items-center gap-1.5"><ClipboardList aria-hidden className="size-4" />أنشئ جلسة جرد لهذه المنتجات</Button>
                 </Link>
               ) : null
             }
@@ -162,13 +171,20 @@ function DriftSection({
           <div className="flex shrink-0 items-center gap-2">
             {action}
             <span
-              className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
+              className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold inline-flex items-center gap-1 ${
                 rows.length === 0
                   ? "bg-emerald-50 text-emerald-700"
                   : "bg-rose-50 text-rose-700"
               }`}
             >
-              {rows.length === 0 ? "✓ لا انحراف" : `${rows.length} انحراف`}
+              {rows.length === 0 ? (
+                <>
+                  <Check aria-hidden className="size-3.5" />
+                  لا انحراف
+                </>
+              ) : (
+                `${rows.length} انحراف`
+              )}
             </span>
           </div>
         </div>

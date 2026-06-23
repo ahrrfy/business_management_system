@@ -7,6 +7,7 @@ import { trpc } from "@/lib/trpc";
 import { confirm as confirmDialog } from "@/lib/confirm";
 import { useState } from "react";
 import { useLocation } from "wouter";
+import { AlertTriangle } from "lucide-react";
 import { ROLE_LABEL } from "./Users";
 
 export default function Account() {
@@ -54,7 +55,7 @@ export default function Account() {
 
       {mustChange && (
         <div className="rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-950/30 p-4 text-sm text-amber-800 dark:text-amber-300 flex gap-3 items-start">
-          <span className="text-xl leading-none mt-0.5">⚠️</span>
+          <AlertTriangle aria-hidden className="size-5 mt-0.5 shrink-0" />
           <div>
             <p className="font-semibold mb-1">كلمة المرور مؤقتة — يجب تغييرها الآن</p>
             <p className="text-xs opacity-80">أُنشئ حسابك بكلمة مرور مؤقتة. غيّرها أدناه قبل استخدام النظام.</p>

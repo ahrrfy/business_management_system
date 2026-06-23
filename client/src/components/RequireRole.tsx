@@ -10,6 +10,7 @@
  */
 import { trpc } from "@/lib/trpc";
 import type { RoleKey } from "@shared/permissions";
+import { Lock } from "lucide-react";
 
 type Props = {
   /** الأدوار المسموح لها بالوصول. لا تقبل قائمة فارغة. */
@@ -40,7 +41,7 @@ export function RequireRole({ roles, children }: Props) {
 function Forbidden() {
   return (
     <div className="min-h-[60vh] flex flex-col items-center justify-center gap-3 text-center px-4">
-      <div className="text-6xl" aria-hidden>🔒</div>
+      <Lock aria-hidden className="size-16 text-muted-foreground" />
       <h1 className="text-xl font-semibold">لا تملك صلاحية للوصول إلى هذه الصفحة</h1>
       <p className="text-sm text-muted-foreground max-w-md">
         هذه الشاشة مخصّصة للإدارة. إن كنت تحتاج إليها فعلاً، تواصل مع مدير النظام لمنحك الصلاحية المناسبة.

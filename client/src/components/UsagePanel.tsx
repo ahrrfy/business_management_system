@@ -4,6 +4,7 @@
  * يخدم غرضين: (١) إظهار «البيانات الفعلية» لما فعله الكيان (يُستعمل أيضاً عند مسح كوده)،
  * و(٢) توضيح سبب منع الحذف النهائي حين يكون غير نظيف.
  */
+import { Check } from "lucide-react";
 
 export interface UsageSummaryView {
   clean: boolean;
@@ -13,13 +14,18 @@ export interface UsageSummaryView {
 
 export function UsagePanel({
   usage,
-  cleanText = "✓ لا نشاط مسجّل — نظيف، يمكن حذفه نهائياً.",
+  cleanText = "لا نشاط مسجّل — نظيف، يمكن حذفه نهائياً.",
 }: {
   usage?: UsageSummaryView;
   cleanText?: string;
 }) {
   if (!usage) return <p className="text-xs text-muted-foreground">جارٍ حساب النشاط…</p>;
-  if (usage.clean) return <p className="text-sm text-emerald-600">{cleanText}</p>;
+  if (usage.clean) return (
+    <p className="text-sm text-emerald-600 flex items-center gap-1.5">
+      <Check aria-hidden className="size-4" />
+      <span>{cleanText}</span>
+    </p>
+  );
   const active = usage.categories.filter((c) => c.count > 0);
   return (
     <div className="space-y-1">

@@ -17,7 +17,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { Printer, ShoppingCart, User, Power, Globe, Check } from "lucide-react";
+import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, RefreshCw, Zap, ChevronDown } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -537,7 +537,7 @@ export default function POS() {
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: ctx.total });
       clearCartDraft(branchId);
-      notify.ok(`تم البيع ✓ فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
+      notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, clientRequestId: newClientRequestId() });
 
@@ -893,7 +893,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
 
       {/* Brand */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-        <div style={{ width: 40, height: 40, borderRadius: "50%", background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 18 }}>🏪</div>
+        <div style={{ width: 40, height: 40, borderRadius: "50%", background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}><Store aria-hidden size={20} /></div>
         <div>
           <div style={{ fontSize: 13.5, fontWeight: 800, lineHeight: 1.2, color: C.fg }}>{SHOP}</div>
           <div style={{ fontSize: 11, color: C.mutedFg, lineHeight: 1.2 }}>نقطة البيع</div>
@@ -905,7 +905,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
       {/* Search with smart scan */}
       <div ref={wrapRef} style={{ flex: 1, maxWidth: 560, position: "relative" }}>
         <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
-          <span style={{ position: "absolute", right: 13, zIndex: 1, color: C.mutedFg, display: "flex", pointerEvents: "none", fontSize: 17 }}>🔍</span>
+          <span style={{ position: "absolute", right: 13, zIndex: 1, color: C.mutedFg, display: "flex", pointerEvents: "none" }} aria-hidden><Search size={17} /></span>
           <input
             ref={searchRef} autoFocus
             placeholder="ابحث بالاسم أو SKU أو امسح الباركود… (F2)"
@@ -925,7 +925,8 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
           />
           {search && (
             <button onClick={() => { setSearch(""); setShowDrop(false); searchRef.current?.focus(); }}
-              style={{ position: "absolute", left: 8, background: "none", border: "none", cursor: "pointer", fontSize: 16, color: C.mutedFg, display: "flex", padding: 4 }}>✕</button>
+              aria-label="مسح البحث"
+              style={{ position: "absolute", left: 8, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "flex", padding: 4 }}><X aria-hidden size={16} /></button>
           )}
         </div>
 
@@ -992,7 +993,7 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
       {/* Shift badge */}
       {shift && (
         <div style={{ background: C.muted, borderRadius: 8, padding: "4px 11px", fontSize: 12, color: C.mutedFg, fontWeight: 700, flexShrink: 0, border: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>
-          <span style={{ color: "#22c55e", marginLeft: 4 }}>●</span>وردية #{shift.id}
+          <span aria-hidden className="inline-block size-2 rounded-full bg-emerald-500" style={{ marginLeft: 6 }} />وردية #{shift.id}
         </div>
       )}
 
@@ -1072,7 +1073,8 @@ function TabBar({ C, tabs, activeId, onSwitch, onAdd, onClose }: TabBarProps) {
             )}
             {tabs.length > 1 && (
               <button onClick={(e) => { e.stopPropagation(); onClose(tab.id); }}
-                style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", fontSize: 13, color: active ? "rgba(255,255,255,.7)" : C.mutedFg, lineHeight: 1 }}>✕</button>
+                aria-label="إغلاق التبويب"
+                style={{ background: "none", border: "none", cursor: "pointer", padding: "0 2px", color: active ? "rgba(255,255,255,.7)" : C.mutedFg, lineHeight: 1, display: "inline-flex" }}><X aria-hidden size={13} /></button>
             )}
           </div>
         );
@@ -1166,7 +1168,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
               {selectedCustomer && (
                 <span style={{ fontSize: 11, opacity: 0.8 }}>({TIER_LABEL[effectiveTier]})</span>
               )}
-              ▾
+              <ChevronDown aria-hidden size={14} />
             </button>
 
             {showCustPicker && (
@@ -1202,7 +1204,8 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                   )}
                 </div>
                 <button onClick={() => setShowCustPicker(false)}
-                  style={{ position: "absolute", top: 8, left: 10, background: "none", border: "none", cursor: "pointer", fontSize: 16, color: C.mutedFg }}>✕</button>
+                  aria-label="إغلاق منتقي العميل"
+                  style={{ position: "absolute", top: 8, left: 10, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex" }}><X aria-hidden size={16} /></button>
               </div>
             )}
           </div>
@@ -1265,15 +1268,16 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                       <span style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginRight: 4 }}>−{c.disc}%</span>
                     )}
                     {isOut && (
-                      <span style={{ display: "inline-block", fontSize: 11.5, color: "#fff", background: C.danger, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
-                        ⚠ نافذ — لا مخزون
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#fff", background: C.danger, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                        <AlertTriangle aria-hidden size={12} /> نافذ — لا مخزون
                       </span>
                     )}
                     {isShort && (
-                      <span style={{ display: "inline-block", fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                        <AlertTriangle aria-hidden size={12} />
                         {availInUnit === 0
-                          ? "⚠ لا يكفي لوحدة كاملة"
-                          : `⚠ المتاح ${fmt(availInUnit)} ${c.row.unitName} فقط`}
+                          ? "لا يكفي لوحدة كاملة"
+                          : `المتاح ${fmt(availInUnit)} ${c.row.unitName} فقط`}
                       </span>
                     )}
                   </td>
@@ -1301,7 +1305,8 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                   <td style={{ ...TD, direction: "ltr", fontWeight: 800, fontSize: 14.5, color: C.fg }}>{fmt(itemTotal(c))}</td>
                   <td style={{ ...TD, padding: "6px" }}>
                     <button onClick={(e) => { e.stopPropagation(); removeRow(c.row.productUnitId); }}
-                      style={{ width: 36, height: 36, background: "none", border: "none", cursor: "pointer", fontSize: 17, color: C.mutedFg }}>✕</button>
+                      aria-label="حذف السطر"
+                      style={{ width: 36, height: 36, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={17} /></button>
                   </td>
                 </tr>
               );
@@ -1317,8 +1322,8 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             <span style={{ fontSize: 13, color: C.mutedFg, whiteSpace: "nowrap" }}>{cart.length} منتج · {itemCount} قطعة</span>
             {flaggedCount > 0 && (
               // شارة دائمة تلخّص أصناف نقص المخزون كي لا يختفي التحذير حين ينزلق سطره خارج الرؤية.
-              <span style={{ background: anyOut ? C.danger : C.amber, color: anyOut ? "#fff" : "#241900", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap" }}>
-                ⚠ {flaggedCount} صنف ناقص المخزون
+              <span style={{ background: anyOut ? C.danger : C.amber, color: anyOut ? "#fff" : "#241900", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 800, whiteSpace: "nowrap", display: "inline-flex", alignItems: "center", gap: 4 }}>
+                <AlertTriangle aria-hidden size={13} /> {flaggedCount} صنف ناقص المخزون
               </span>
             )}
           </div>
@@ -1464,15 +1469,15 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         <div style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 700, marginBottom: 4 }}>طريقة الدفع</div>
         <div style={{ display: "flex", gap: 6 }}>
           <button style={payMethodStyle(method === "CASH")}     onClick={() => setMethod("CASH")}>
-            <span style={{ fontSize: 22 }}>💵</span>نقداً
+            <Banknote aria-hidden size={22} />نقداً
           </button>
           <button style={payMethodStyle(method === "CARD")}     onClick={() => setMethod("CARD")}>
-            <span style={{ fontSize: 22 }}>💳</span>بطاقة
+            <CreditCard aria-hidden size={22} />بطاقة
           </button>
           <button
             style={{ ...payMethodStyle(method === "TRANSFER" || method === "WALLET"), minHeight: 50, fontSize: 12 }}
             onClick={() => setMethod(method === "TRANSFER" ? "WALLET" : "TRANSFER")}>
-            <span style={{ fontSize: 18 }}>🔄</span>
+            <RefreshCw aria-hidden size={18} />
             {method === "TRANSFER" ? "تحويل" : method === "WALLET" ? "محفظة" : "أخرى"}
           </button>
         </div>
@@ -1496,7 +1501,7 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         )}
       </div>
 
-      {/* ⚡ Quick pay */}
+      {/* Quick pay */}
       <div style={{ padding: "4px 11px 2px", flexShrink: 0 }}>
         <button
           disabled={!cartLen || isPending}
@@ -1511,7 +1516,7 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
             boxShadow: cartLen && !isPending ? "0 4px 14px oklch(0.60 0.18 50 / .38)" : "none",
             transition: "all .1s",
           }}>
-          ⚡ دفع سريع وطباعة — نقداً
+          <Zap aria-hidden size={18} /> دفع سريع وطباعة — نقداً
         </button>
         <div style={{ textAlign: "center", marginTop: 2, fontSize: 10, color: C.mutedFg }}>للأوقات المزدحمة — يتجاوز كل الخطوات</div>
       </div>
@@ -1533,7 +1538,11 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
             boxShadow: canPay && !isPending ? `0 3px 12px oklch(0.50 0.13 155 / .30)` : "none",
             transition: "all .1s",
           }}>
-          {isPending ? "جارٍ…" : !cartLen ? "السلة فارغة" : `✓ إتمام الدفع — ${fmt(total)} د.ع`}
+          {isPending
+            ? "جارٍ…"
+            : !cartLen
+              ? "السلة فارغة"
+              : <><Check aria-hidden size={18} strokeWidth={3} /> إتمام الدفع — {fmt(total)} د.ع</>}
         </button>
         <div style={{ textAlign: "center", marginTop: 4, fontSize: 10.5, color: C.mutedFg }}>F4 للدفع · F2 للبحث · F9 طباعة</div>
       </div>
@@ -1559,8 +1568,8 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
       <div onClick={(e) => e.stopPropagation()}
         style={{ background: C.card, borderRadius: 20, padding: "36px 44px 30px", width: 480, maxWidth: "92vw", boxShadow: "0 28px 72px rgb(0 0 0/.42)", animation: "popIn .22s ease", cursor: "default", textAlign: "center", direction: "rtl" }}>
 
-        <div style={{ width: 76, height: 76, borderRadius: "50%", background: C.success, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px", animation: "pulse 1.2s ease-out" }}>
-          <span style={{ fontSize: 38, color: "#fff" }}>✓</span>
+        <div style={{ width: 76, height: 76, borderRadius: "50%", background: C.success, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px", animation: "pulse 1.2s ease-out", color: "#fff" }}>
+          <Check aria-hidden size={42} strokeWidth={3} />
         </div>
 
         <div style={{ fontSize: 24, fontWeight: 900, marginBottom: 4, color: C.fg }}>تم الدفع بنجاح</div>
@@ -1738,11 +1747,11 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed }: ShiftCloseD
                 onBlur={(e)  => (e.target.style.borderColor = C.border)}
               />
               {diff !== null && (
-                <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger }}>
-                  الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع
-                  {diff === 0 && " ✓ مطابق تماماً"}
-                  {diff > 0  && " (زيادة)"}
-                  {diff < 0  && " (عجز)"}
+                <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                  <span>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع</span>
+                  {diff === 0 && <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}><Check aria-hidden size={14} strokeWidth={3} /> مطابق تماماً</span>}
+                  {diff > 0  && <span>(زيادة)</span>}
+                  {diff < 0  && <span>(عجز)</span>}
                 </div>
               )}
             </div>
@@ -1786,7 +1795,7 @@ function CreditApprovalDialog({ C, message, mgrEmail, setMgrEmail, mgrPwd, setMg
       style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgb(0 0 0/.45)", display: "flex", alignItems: "center", justifyContent: "center", direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
       <div onClick={(e) => e.stopPropagation()}
         style={{ background: C.card, borderRadius: 16, padding: "24px 28px", width: 380, boxShadow: "0 20px 56px rgb(0 0 0/.3)", animation: "popIn .2s ease" }}>
-        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber }}>⚠ موافقة مدير مطلوبة</div>
+        <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber, display: "inline-flex", alignItems: "center", gap: 6 }}><AlertTriangle aria-hidden size={18} /> موافقة مدير مطلوبة</div>
         <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 18 }}>{message}</div>
         {[
           { label: "بريد المدير", value: mgrEmail, setter: setMgrEmail, type: "email",    placeholder: "manager@alroya.local" },

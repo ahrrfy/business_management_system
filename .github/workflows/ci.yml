@@ -41,6 +41,8 @@ jobs:
         run: pnpm db:push
       - name: فحص الأنواع
         run: pnpm check
+      - name: حارِس الإيموجي UI
+        run: pnpm check:emoji
       - name: الاختبارات
         run: pnpm test
       - name: بناء الإنتاج

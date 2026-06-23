@@ -18,6 +18,7 @@ import {
   type ClientVariant,
 } from "@/lib/variants";
 import { ColorDot, Field, ImageSlot, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
+import { ChevronLeft, X } from "lucide-react";
 
 interface Branch {
   id: number;
@@ -256,7 +257,7 @@ function VariantRow({
               aria-label="تفاصيل المتغيّر"
               className={cn("h-7 w-7 inline-flex items-center justify-center rounded-md hover:bg-accent text-muted-foreground transition", open && "bg-accent text-foreground")}
             >
-              <span className={cn("transition-transform text-[10px] inline-block", open && "rotate-90")}>▶</span>
+              <ChevronLeft aria-hidden className={cn("size-3.5 transition-transform", open && "-rotate-90")} />
             </button>
             <button
               type="button"
@@ -265,7 +266,7 @@ function VariantRow({
               aria-label="حذف المتغيّر"
               className="h-7 w-7 inline-flex items-center justify-center rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition"
             >
-              ✕
+              <X aria-hidden className="size-3.5" />
             </button>
           </div>
         </td>
