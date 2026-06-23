@@ -17,13 +17,13 @@ import { managerProcedure, protectedProcedure, router } from "../trpc";
  * البريد محتفظ به للتوافق فقط (لا يُعرض في النموذج). الواجهة لا ترسله ⇒ يبقى ما هو مخزّن.
  */
 export const supplierRouter = router({
-  /** قائمة بسيطة سريعة — لشاشة المشتريات والقوائم. */
-  list: protectedProcedure.query(async ({ ctx }) => {
+  /** قائمة بسيطة سريعة — لشاشة المشتريات والقوائم (مدير/أدمن فقط). */
+  list: managerProcedure.query(async ({ ctx }) => {
     const { rows } = await listSuppliers({ includeInactive: false, limit: 500 });
     return rows.map((r) => maskSupplierSensitive(r, ctx.user.role));
   }),
 
-  search: protectedProcedure
+  search: managerProcedure
     .input(
       z
         .object({
@@ -40,7 +40,7 @@ export const supplierRouter = router({
       return { ...res, rows: res.rows.map((r) => maskSupplierSensitive(r, ctx.user.role)) };
     }),
 
-  get: protectedProcedure
+  get: managerProcedure
     .input(z.object({ supplierId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const row = await getSupplier(input.supplierId);

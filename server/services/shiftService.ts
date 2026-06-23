@@ -45,7 +45,9 @@ async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: stri
       cashOut: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.paymentMethod} = 'CASH' THEN ${receipts.amount} ELSE 0 END), 0)`,
     })
     .from(receipts)
-    .where(eq(receipts.shiftId, shiftId));
+    // فلتر cashBucket='DRAWER' دفاعي: يَمنع إدراج سندات TREASURY (shiftId=null عادةً)
+    // في حالة انتقلت إليها shiftId بطريق غير متوقّع.
+    .where(and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER")));
   const cashIn = money(rows[0]?.cashIn ?? "0");
   const cashOut = money(rows[0]?.cashOut ?? "0");
   return money(openingBalance).plus(cashIn).minus(cashOut);

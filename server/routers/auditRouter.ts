@@ -4,6 +4,8 @@ import { auditLogs, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { adminProcedure, router } from "../trpc";
 
+const escLike = (s: string) => s.replace(/[%_\\]/g, "\\$&");
+
 /** سجلّ التدقيق — عرض فقط للأدمن (من فعل ماذا، متى، من أين). */
 export const auditRouter = router({
   list: adminProcedure
@@ -27,7 +29,7 @@ export const auditRouter = router({
       const conds: any[] = [];
       if (i.userId) conds.push(eq(auditLogs.userId, i.userId));
       if (i.entityType) conds.push(eq(auditLogs.entityType, i.entityType));
-      if (i.action?.trim()) conds.push(like(auditLogs.action, `%${i.action.trim()}%`));
+      if (i.action?.trim()) conds.push(like(auditLogs.action, `%${escLike(i.action.trim())}%`));
       if (i.from) conds.push(gte(auditLogs.createdAt, new Date(i.from + "T00:00:00")));
       if (i.to) conds.push(lte(auditLogs.createdAt, new Date(i.to + "T23:59:59")));
       const where = conds.length ? and(...conds) : undefined;

@@ -1,5 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, like, lt, or, sql } from "drizzle-orm";
+
+const escLike = (s: string) => s.replace(/[%_\\]/g, "\\$&");
 import { alias } from "drizzle-orm/mysql-core";
 import { z } from "zod";
 import { branches, branchStock, inventoryMovements, productVariants, products, users } from "../../drizzle/schema";
@@ -238,7 +240,7 @@ export const inventoryRouter = router({
       const conds: any[] = [eq(branchStock.branchId, branchId)];
       const search = input?.q?.trim();
       if (search) {
-        const pat = `%${search}%`;
+        const pat = `%${escLike(search)}%`;
         conds.push(
           or(like(products.name, pat), like(productVariants.sku, pat), like(productVariants.variantName, pat))
         );
@@ -346,7 +348,7 @@ export const inventoryRouter = router({
       if (i.referenceType) conds.push(eq(inventoryMovements.referenceType, i.referenceType));
       const search = i.q?.trim();
       if (search) {
-        const pat = `%${search}%`;
+        const pat = `%${escLike(search)}%`;
         conds.push(
           or(like(products.name, pat), like(productVariants.sku, pat), like(productVariants.variantName, pat))
         );
