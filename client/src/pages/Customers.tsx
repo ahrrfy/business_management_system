@@ -4,7 +4,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
+import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
+import { useClipboard } from "@/hooks/useClipboard";
 import { confirm } from "@/lib/confirm";
+import { formatCustomerCard, formatTableAsTSV } from "@/lib/copy/formatters";
 import { CUSTOMER_FIELDS, CUSTOMER_IMPORT_META } from "@/lib/importFields";
 import type { CustomerImportRow } from "@/lib/importTypes";
 import { fmtAr as fmt } from "@/lib/money";
@@ -75,6 +78,63 @@ export default function Customers() {
   const pages = Math.max(1, Math.ceil(total / limit));
   // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ).
   const hasLegacy = rows.some((r) => legacyCodeOf(r) !== null);
+
+  // التحديد المُتعدِّد + النسخ الجماعي — TSV للصق في Excel، وملخّص واتساب لقائمة العملاء.
+  const sel = useRowSelection<number>();
+  const { copy } = useClipboard({ successMessage: null });
+  const pageIds = useMemo(() => rows.map((r) => Number(r.id)), [rows]);
+  const allOnPageSelected = pageIds.length > 0 && pageIds.every((id) => sel.isSelected(id));
+  const someOnPageSelected = pageIds.some((id) => sel.isSelected(id));
+  const selectedRows = useMemo(
+    () => rows.filter((r) => sel.isSelected(Number(r.id))),
+    [rows, sel],
+  );
+
+  async function copySelectedAsTSV() {
+    if (selectedRows.length === 0) return;
+    // أعمدة مُطابِقة لعرض الجدول — تَنسيق Excel-friendly.
+    const headers = [
+      "الاسم",
+      "الرقم القديم",
+      "النوع",
+      "الهاتف",
+      "المدينة/المنطقة",
+      "فئة السعر",
+      "سقف الائتمان",
+      "الرصيد الحالي",
+      "نشط",
+    ];
+    const tsvRows = selectedRows.map((r) => ({
+      "الاسم": r.name ?? "",
+      "الرقم القديم": legacyCodeOf(r) ?? "",
+      "النوع": r.customerType ?? "",
+      "الهاتف": r.phone ?? "",
+      "المدينة/المنطقة": [r.city, r.district].filter(Boolean).join(" / "),
+      "فئة السعر": TIER_LABEL[r.defaultPriceTier] ?? r.defaultPriceTier ?? "",
+      "سقف الائتمان": Number(r.creditLimit ?? 0),
+      "الرصيد الحالي": Number(r.currentBalance ?? 0),
+      "نشط": r.isActive ? "نعم" : "لا",
+    }));
+    const text = formatTableAsTSV(headers, tsvRows);
+    const ok = await copy(text);
+    if (ok) notify.ok(`تم نسخ ${selectedRows.length} عميلاً كَـTSV (الصق في Excel)`);
+  }
+
+  async function copySelectedAsWhatsAppSummary() {
+    if (selectedRows.length === 0) return;
+    // ملخّص قائمة: بطاقة لكل عميل مفصولة بسطر فارغ — قابلة للّصق في واتساب.
+    const cards = selectedRows.map((r) =>
+      formatCustomerCard({
+        name: r.name ?? "",
+        phone: r.phone,
+        balance: r.currentBalance,
+        legacyCode: legacyCodeOf(r),
+      }),
+    );
+    const text = `قائمة العملاء (${selectedRows.length})\n\n${cards.join("\n\n")}`;
+    const ok = await copy(text);
+    if (ok) notify.ok(`تم نسخ ملخّص ${selectedRows.length} عميلاً لواتساب`);
+  }
 
   async function toggle(id: number, isActive: boolean, name: string) {
     if (isActive) {
@@ -193,6 +253,18 @@ export default function Customers() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr className="text-end">
+                <th className="p-2 w-8 text-center">
+                  <input
+                    type="checkbox"
+                    className="size-4"
+                    aria-label="تحديد كل العملاء في الصفحة"
+                    checked={allOnPageSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = !allOnPageSelected && someOnPageSelected;
+                    }}
+                    onChange={(e) => sel.setMany(pageIds, e.target.checked)}
+                  />
+                </th>
                 <th className="p-2">الاسم</th>
                 {hasLegacy && <th className="p-2">الرقم القديم</th>}
                 <th className="p-2">النوع</th>
@@ -211,6 +283,15 @@ export default function Customers() {
                 const isActive = !!c.isActive;
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
+                    <td className="p-2 text-center">
+                      <input
+                        type="checkbox"
+                        className="size-4"
+                        aria-label={`تحديد ${c.name ?? "العميل"}`}
+                        checked={sel.isSelected(id)}
+                        onChange={() => sel.toggle(id)}
+                      />
+                    </td>
                     <td className="p-2 font-medium">{c.name}</td>
                     {hasLegacy && (
                       <td className="p-2 text-xs tabular-nums text-muted-foreground" dir="ltr">
@@ -251,7 +332,7 @@ export default function Customers() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={hasLegacy ? 10 : 9} className="p-6 text-center text-muted-foreground">لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر.</td></tr>
+                <tr><td colSpan={hasLegacy ? 11 : 10} className="p-6 text-center text-muted-foreground">لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر.</td></tr>
               )}
             </tbody>
           </table>
@@ -269,6 +350,16 @@ export default function Customers() {
           </Button>
         </div>
       )}
+
+      {/* شريط التحديد الجماعي: TSV لـExcel + ملخّص واتساب لقائمة العملاء. */}
+      <SelectionBar
+        count={sel.count}
+        onClear={sel.clear}
+        onExport={copySelectedAsTSV}
+        exportLabel="نَسخ المُحَدَّد كَـTSV"
+        onPrint={copySelectedAsWhatsAppSummary}
+        printLabel="ملخّص واتساب"
+      />
     </div>
   );
 }

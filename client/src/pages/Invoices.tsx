@@ -1,10 +1,12 @@
 import { CopyInline } from "@/components/CopyButton";
 import { DataTable } from "@/components/data-table/DataTable";
-import { RowActions } from "@/components/list";
+import { RowActions, SelectionBar, useRowSelection } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
+import { formatTableAsTSV } from "@/lib/copy/formatters";
 import { exportRows } from "@/lib/export";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -36,6 +38,9 @@ export default function Invoices() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [status, setStatus] = useState("");
+
+  // تَحديد مُتَعَدِّد لِلصُفوف (نَسخ/تَصدير المُحَدَّد فَقَط).
+  const sel = useRowSelection<number>();
 
   const rows = trpc.sales.list.useQuery({
     limit: 200,
@@ -152,6 +157,48 @@ export default function Invoices() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   ], []);
 
+  // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
+  // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.
+  const TSV_HEADERS = useMemo(
+    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "الإجمالي", "المدفوع", "الحالة"],
+    [],
+  );
+  const selectedRows = useMemo(() => data.filter((r) => sel.isSelected(r.id)), [data, sel]);
+  const selectedTsv = useMemo(() => {
+    if (!selectedRows.length) return "";
+    const rows = selectedRows.map((r) => ({
+      "رقم الفاتورة": r.invoiceNumber,
+      "التاريخ": new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
+      "العميل": r.customerName ?? "",
+      "المصدر": SOURCE[r.sourceType] ?? r.sourceType,
+      "الإجمالي": Number(r.total),
+      "المدفوع": Number(r.paidAmount),
+      "الحالة": STATUS[r.status] ?? r.status,
+    }));
+    return formatTableAsTSV(TSV_HEADERS, rows);
+  }, [selectedRows, TSV_HEADERS]);
+  const selectedWhatsApp = useMemo(() => {
+    if (!selectedRows.length) return "";
+    const lines: string[] = [];
+    lines.push(`ملخّص الفواتير (${selectedRows.length.toLocaleString("ar-IQ-u-nu-latn")})`);
+    let sumTotal = D(0);
+    let sumPaid = D(0);
+    for (const r of selectedRows) {
+      const t = D(r.total);
+      const p = D(r.paidAmount);
+      sumTotal = sumTotal.plus(t);
+      sumPaid = sumPaid.plus(p);
+      const customer = r.customerName ?? "—";
+      const st = STATUS[r.status] ?? r.status;
+      lines.push(`• ${r.invoiceNumber} — ${customer} — ${fmt(r.total)} (${st})`);
+    }
+    lines.push("");
+    lines.push(`الإجمالي: ${fmt(sumTotal.toString())}`);
+    lines.push(`المسدَّد: ${fmt(sumPaid.toString())}`);
+    lines.push(`المتبقي: ${fmt(sumTotal.minus(sumPaid).toString())}`);
+    return lines.join("\n");
+  }, [selectedRows]);
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold">المبيعات</h1>
@@ -184,6 +231,8 @@ export default function Invoices() {
         data={data}
         searchPlaceholder="بحث في الفواتير…"
         emptyText={rows.isLoading ? "جارٍ التحميل…" : "لا فواتير مطابقة."}
+        selection={sel}
+        getRowId={(r) => r.id}
         toolbar={
           <Button variant="outline" size="sm" disabled={!data.length}
             onClick={() =>
@@ -204,6 +253,37 @@ export default function Invoices() {
           </Button>
         }
       />
+
+      {/* شَريط التَحديد المُتَعَدِّد — يَظهَر عِند تَحديد صَفّ واحِد فَأَكثَر. */}
+      <SelectionBar
+        count={sel.count}
+        onClear={sel.clear}
+        onExport={() => {
+          if (!selectedRows.length) return;
+          exportRows(selectedRows, {
+            filename: "المبيعات-المُحَدَّدة",
+            columns: [
+              { key: "invoiceNumber", header: "رقم الفاتورة" },
+              { key: "invoiceDate", header: "التاريخ", map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn") },
+              { key: "customerName", header: "العميل" },
+              { key: "sourceType", header: "المصدر", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
+              { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+              { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+              { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
+            ],
+          });
+        }}
+      />
+      {/* زِرّ «نَسخ المُحَدَّد كَـ» — يَظهَر بِجانب شَريط التَحديد بِنَفس الشَرط. */}
+      {sel.count > 0 && (
+        <div className="sticky bottom-16 z-20 mx-auto flex w-fit items-center justify-center">
+          <CopyAsMenu
+            label="نسخ المُحَدَّد"
+            tsv={selectedTsv}
+            whatsapp={selectedWhatsApp}
+          />
+        </div>
+      )}
 
       {/* شريط المجاميع — لكل النتائج المطابقة للفلتر خادمياً (لا الصفحة المعروضة فقط). */}
       {summary.data && (
