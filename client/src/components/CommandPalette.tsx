@@ -21,7 +21,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { SEARCH_OPEN_EVENT } from "@/lib/searchEvents";
 import {
-  Boxes, Contact, FileText, LayoutDashboard, Package, Receipt, RotateCcw, ScanLine, ShoppingCart, Truck, UserCog, Users, Wallet, Wrench,
+  Boxes, Contact, FileText, Inbox as InboxIcon, LayoutDashboard, Package, Receipt, RotateCcw, ScanLine, ShoppingCart, Truck, UserCog, Users, Wallet, Wrench,
 } from "lucide-react";
 import { CameraScanner } from "@/components/scan/CameraScanner";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -37,6 +37,7 @@ const PAGES: PageItem[] = [
   { label: "نقطة البيع — تجزئة", href: "/pos", icon: ShoppingCart, keywords: "pos cashier كاشير بيع نقطة تجزئة retail" },
   { label: "نقطة البيع — خدمات طباعة", href: "/pos?mode=PRINT_SERVICES", icon: ShoppingCart, keywords: "print pos طباعة خدمات نسخ" },
   { label: "نقطة البيع — استقبال أوامر شغل", href: "/pos?mode=RECEPTION", icon: ShoppingCart, keywords: "reception استقبال تخصيص أمر شغل قنوات" },
+  { label: "صَندوق الوارد (القَنوات)", href: "/inbox", icon: InboxIcon, keywords: "inbox channels whatsapp instagram phone قنوات واتساب انستغرام اتصال محادثات" },
   { label: "المنتجات", href: "/products", icon: Package, keywords: "products منتجات" },
   { label: "فواتير المبيعات", href: "/invoices", icon: FileText, keywords: "invoices sales فواتير" },
   { label: "عروض الأسعار", href: "/quotations", icon: Receipt, keywords: "quotations عرض سعر" },

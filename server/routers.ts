@@ -40,6 +40,7 @@ import { creditApprovalRouter } from "./routers/creditApprovalRouter";
 import { yearEndRouter } from "./routers/yearEndRouter";
 import { treasuryRouter } from "./routers/treasuryRouter";
 import { cashTransfersRouter } from "./routers/cashTransfersRouter";
+import { conversationRouter } from "./routers/conversationRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -87,6 +88,8 @@ export const appRouter = router({
   yearEnd: yearEndRouter,
   treasury: treasuryRouter,
   cashTransfers: cashTransfersRouter,
+  // شَريحة #5 (٢٣/٦/٢٦): صَندوق الوارد المُوحَّد — WhatsApp/Instagram/متجر/يَدوي.
+  conversations: conversationRouter,
 });
 
 export type AppRouter = typeof appRouter;
