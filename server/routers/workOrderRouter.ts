@@ -371,6 +371,7 @@ export const workOrderRouter = router({
       z.object({
         workOrderId: z.number().int().positive(),
         payment: z.object({ amount: positiveMoneyString, method }).optional(),
+        clientRequestId: z.string().optional().nullable(),
       })
     )
     .mutation(async ({ input, ctx }) => {

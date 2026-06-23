@@ -23,6 +23,7 @@ import { localTodayDate } from "./dateRange";
 import { money, round2, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { assertPeriodOpen } from "./periodLockService";
 
 // ───────────────────────── العقد المشترك ─────────────────────────
 
@@ -287,6 +288,7 @@ async function postOpeningEntry(
   partyId: number,
   amount: string,
 ): Promise<void> {
+  await assertPeriodOpen(tx, localTodayDate());
   await tx.insert(accountingEntries).values({
     entryType: "OPENING",
     customerId: party === "CUSTOMER" ? partyId : null,
