@@ -150,13 +150,14 @@ describe("escLike — تهريب محارف LIKE الخاصة (ESCAPE '!')", () 
   it("البحث بـ% لا يُعيد كل المنتجات (يُهرَّب لـ!%)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
     // % بعد الهروب = !% ⇒ LIKE '%!%%' ESCAPE '!' ⇒ يطلب % حرفياً لا wildcard
-    const rows = await caller.inventory.stockByBranch({ branchId: 1, q: "%" });
+    // onHand هي الـendpoint التي تحمل فلتر LIKE (stockByBranch لا تقبل q)
+    const rows = await caller.inventory.onHand({ branchId: 1, q: "%" });
     expect(rows.length).toBe(0); // لا منتج اسمه «%»
   });
 
   it("البحث بنصّ صحيح يُعيد النتيجة الصحيحة", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
-    const rows = await caller.inventory.stockByBranch({ branchId: 1, q: "A4" });
+    const rows = await caller.inventory.onHand({ branchId: 1, q: "A4" });
     expect(rows.length).toBe(1);
     expect(rows[0].sku).toBe("A4");
   });
