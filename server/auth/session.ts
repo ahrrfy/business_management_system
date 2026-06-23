@@ -105,6 +105,8 @@ export async function signSession(
   return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setIssuedAt(issuedAtSeconds)
+    // nbf = iat: التوكن لا يُقبَل قبل لحظة إصداره (يقطع replay من مزامنة ساعة عكسية).
+    .setNotBefore(issuedAtSeconds)
     .setExpirationTime(expirationSeconds)
     .sign(getSecret());
 }
@@ -126,6 +128,8 @@ export async function verifySession(
   try {
     const { payload } = await jwtVerify(token, getSecret(), {
       algorithms: ["HS256"],
+      // هامش ٦٠ث لـnbf/exp: نمط إعادة الإصدار عند تغيير كلمة المرور يضع nbf=iat=validFromSec+1
+      clockTolerance: 60,
     });
     const uid = Number(payload.uid);
     const iat = Number(payload.iat);
