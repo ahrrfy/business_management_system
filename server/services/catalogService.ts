@@ -29,6 +29,8 @@ export interface PosRow {
   price: string | null; // null = no price defined for this unit×tier
   stockBase: number; // variant stock in base units at the branch
   isService: boolean; // مُنتج خِدمي: لا مَخزون، POS يَتجاوز فَحص نَقص المَخزون.
+  // شاشة الاستقبال الهجينة: المنتج المخصّص يفتح نافذة التخصيص بدل الإضافة المباشرة للسلّة.
+  isCustomizable: boolean;
 }
 
 function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number, tier: PriceTier) {
@@ -49,6 +51,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       price: productPrices.price,
       stockBase: branchStock.quantity,
       isService: products.isService,
+      isCustomizable: products.isCustomizable,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -72,6 +75,7 @@ function normalize(rows: any[]): PosRow[] {
     isBaseUnit: !!r.isBaseUnit,
     stockBase: r.stockBase ?? 0,
     isService: !!r.isService,
+    isCustomizable: !!r.isCustomizable,
   }));
 }
 
