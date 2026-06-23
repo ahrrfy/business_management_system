@@ -159,7 +159,7 @@ describe("processPayment — تعارض طريقة السداد ⇒ CONFLICT", (
       id: 1,
       invoiceNumber: "INV-001",
       branchId: 1,
-      sourceType: "MANUAL",
+      sourceType: "ORDER",
       sourceId: "M-1",
       subtotal: "200.00",
       taxAmount: "0.00",
