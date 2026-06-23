@@ -67,6 +67,7 @@ const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
 const WorkOrderStation = lazy(() => import("@/pages/WorkOrderStation"));
 const WorkOrders = lazy(() => import("@/pages/WorkOrders"));
+const Reception = lazy(() => import("@/pages/Reception"));
 const Production = lazy(() => import("@/pages/Production"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -228,6 +229,7 @@ export default function App() {
       <Route path="/transfers"><Shell><Transfers /></Shell></Route>
       <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>
       <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
+      <Route path="/work-orders/reception"><Shell><RequireRole roles={["admin","manager","cashier"]}><Reception /></RequireRole></Shell></Route>
       <Route path="/work-orders/station"><Shell><RequireRole roles={["admin","manager","print_operator","cashier"]}><WorkOrderStation /></RequireRole></Shell></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
       <Route path="/production"><Shell><Production /></Shell></Route>
