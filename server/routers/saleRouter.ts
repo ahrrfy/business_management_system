@@ -118,6 +118,17 @@ export async function verifyManagerApproval(
     });
     throw new TRPCError({ code: "FORBIDDEN", message: "المعتمد ليس مدير هذا الفرع" });
   }
+  // M (تَدقيق ٢٣/٦/٢٦): admin عابر-الفرع يَجتاز بلا تَوثيق صريح ⇒ نَسجّل سطر تَدقيق مُكثَّف
+  // عند المرور. لا يَمنع المرور (admin له سلطة عليا بالتَصميم)، لكن يَترك أَثَراً forensic
+  // كَشّافاً لإساءة استعمال admin مُخترَق (نافذة تَحقيقات لاحقة كاشفة).
+  if (u.role === "admin" && branchId != null && u.branchId != null && Number(u.branchId) !== branchId) {
+    await logAudit(ctx as any, {
+      action: "sale.creditOverride.adminCrossBranch",
+      entityType: "user",
+      entityId: u.id,
+      newValue: { email, approverBranchId: u.branchId, saleBranchId: branchId, saleActorId: ctx.user.id },
+    });
+  }
   return Number(u.id);
 }
 

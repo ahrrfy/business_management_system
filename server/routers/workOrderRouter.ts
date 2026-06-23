@@ -172,10 +172,16 @@ export const workOrderRouter = router({
   assignableStaff: cashierProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
+    // عزل (تَدقيق ٢٣/٦/٢٦): القائمة كانت تَكشف admin/manager للكاشير ⇒ تَسريب هياكل المنظّمة.
+    // المُسنَد إليه أمر شغل يَنفّذه فعلياً، فيكفي أدوار التنفيذ. الأدمن/المدير يُسنَدون عبر `assign`
+    // (managerProcedure) لو لزم لاحقاً.
     return db
       .select({ id: users.id, name: users.name, role: users.role })
       .from(users)
-      .where(eq(users.isActive, true))
+      .where(and(
+        eq(users.isActive, true),
+        inArray(users.role, ["print_operator", "cashier", "warehouse"]),
+      ))
       .orderBy(asc(users.name));
   }),
 

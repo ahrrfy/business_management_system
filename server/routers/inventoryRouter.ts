@@ -229,6 +229,10 @@ export const inventoryRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
+      // عزل (تَدقيق ٢٣/٦/٢٦): مدير الفرع يُقيَّد بفرعه. الـadmin يَعبر.
+      if (ctx.user.role === "manager" && input?.branchId != null && input.branchId !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة مخزون فرع آخر" });
+      }
       const branchId = ctx.scopedBranchId ?? input?.branchId ?? ctx.user.branchId ?? 1;
 
       const conds: any[] = [eq(branchStock.branchId, branchId)];
@@ -276,7 +280,12 @@ export const inventoryRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      // عزل: غير المدير/الأدمن يُجبَر على فرعه.
+      // عزل (تَدقيق ٢٣/٦/٢٦): branchScopedProcedure يُعامل المدير كـelevated (scope=null) ⇒
+      // مدير ف١ كان يَقرأ مخزون ف٢ بلا حسيب. الـadmin يَبقى cross-branch (سلطة عليا)، والمدير
+      // يُحَدّ في فرعه. الكاشير/المخزن مُجبَران سلفاً عبر scopedBranchId.
+      if (ctx.user.role === "manager" && input.branchId !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة مخزون فرع آخر" });
+      }
       const branchId = ctx.scopedBranchId ?? input.branchId;
       return db.select().from(branchStock).where(eq(branchStock.branchId, branchId));
     }),
@@ -287,7 +296,10 @@ export const inventoryRouter = router({
       const db = getDb();
       if (!db) return [];
       const conds = [];
-      // عزل: غير المدير/الأدمن يُجبَر على فرعه.
+      // عزل (تَدقيق ٢٣/٦/٢٦): مدير الفرع يُقيَّد بفرعه على movements (كاردكس عبر-فرعي = تَسريب).
+      if (ctx.user.role === "manager" && input.branchId != null && input.branchId !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة حركات فرع آخر" });
+      }
       const branchId = ctx.scopedBranchId ?? input.branchId;
       if (input.variantId) conds.push(eq(inventoryMovements.variantId, input.variantId));
       if (branchId) conds.push(eq(inventoryMovements.branchId, branchId));
@@ -321,7 +333,10 @@ export const inventoryRouter = router({
       if (!db) return { rows: [], total: 0 };
       const i = input ?? { limit: 200, offset: 0 };
 
-      // عزل الفرع: غير المدير/الأدمن يُجبَر على فرعه (ctx.scopedBranchId).
+      // عزل (تَدقيق ٢٣/٦/٢٦): مدير الفرع يُقيَّد بفرعه على movementsRich (كاردكس عبر-فرعي = تَسريب).
+      if (ctx.user.role === "manager" && i.branchId != null && i.branchId !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة حركات فرع آخر" });
+      }
       const branchFilter = ctx.scopedBranchId ?? i.branchId ?? null;
 
       const conds: any[] = [];
