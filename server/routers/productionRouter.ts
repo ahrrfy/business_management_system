@@ -68,7 +68,10 @@ export const productionRouter = router({
         })
         .optional()
     )
-    .query(({ input }) => listProductions({ branchId: input?.branchId, status: input?.status, limit: input?.limit })),
+    .query(({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? input?.branchId : Number(ctx.user.branchId ?? 0) || undefined;
+      return listProductions({ branchId, status: input?.status, limit: input?.limit });
+    }),
 
   get: managerProcedure
     .input(z.object({ productionOrderId: z.number().int().positive() }))
@@ -106,9 +109,12 @@ export const productionRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      if (ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createProduction(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+          const res = await createProduction(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) });
           if (!(res as { idempotent?: boolean }).idempotent) {
             await logAudit(ctx, {
               action: "production.create",

@@ -46,7 +46,10 @@ export const printPosRouter = router({
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: غير المدير يُجبَر على فرعه (لا يُصدَّق branchId القادم من العميل — منع IDOR).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      const effectiveBranchId = elevated ? input.branchId : (ctx.user.branchId ?? input.branchId);
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الكاشير" });
+      }
+      const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
