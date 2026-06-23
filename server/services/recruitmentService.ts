@@ -6,7 +6,7 @@
  * ========================================================================== */
 import { and, asc, desc, eq, like, or } from "drizzle-orm";
 import { jobApplicants, jobVacancies } from "../../drizzle/schema";
-import { requireDb } from "./tx";
+import { requireDb, withTx } from "./tx";
 import { toDateStr } from "./money";
 import { extractInsertId } from "../lib/insertId";
 
@@ -221,11 +221,12 @@ export async function setVacancyPublished(id: number, isPublished: boolean) {
 
 /** حذف وظيفة. المتقدّمون المرتبطون بها يبقون (vacancyId يصبح NULL عبر ON DELETE — لكنّا نفصلهم يدوياً للأمان). */
 export async function deleteVacancy(id: number) {
-  const db = requireDb();
   const existing = await getVacancy(id);
   if (!existing) throw new Error("الوظيفة غير موجودة");
-  // افصل المتقدّمين عن الوظيفة قبل حذفها (يحفظ عنوان الوظيفة المخزّن في jobTitle ويرفع قيد المفتاح الأجنبي).
-  await db.update(jobApplicants).set({ vacancyId: null }).where(eq(jobApplicants.vacancyId, id));
-  await db.delete(jobVacancies).where(eq(jobVacancies.id, id));
-  return { id };
+  return withTx(async (tx) => {
+    // افصل المتقدّمين عن الوظيفة قبل حذفها (يحفظ عنوان الوظيفة المخزّن في jobTitle ويرفع قيد المفتاح الأجنبي).
+    await tx.update(jobApplicants).set({ vacancyId: null }).where(eq(jobApplicants.vacancyId, id));
+    await tx.delete(jobVacancies).where(eq(jobVacancies.id, id));
+    return { id };
+  });
 }

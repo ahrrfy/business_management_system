@@ -319,11 +319,21 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
   payment?: { amount: string; method: PaymentMethod } | null;
+  clientRequestId?: string | null;
 }
 
 /** READY → DELIVERED: create invoice (sourceType=WORKORDER) + optional payment + SALE entry + AR adjust. */
 export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
+    // Idempotency: double-click / network-retry ⇒ return the already-created invoice.
+    if (input.clientRequestId) {
+      const existingId = await findIdempotentRefId(tx, "workOrder.deliver", input.clientRequestId);
+      if (existingId != null) {
+        const inv = (await tx.select({ invoiceNumber: invoices.invoiceNumber, status: invoices.status })
+          .from(invoices).where(eq(invoices.id, existingId)).limit(1))[0];
+        return { workOrderId: input.workOrderId, invoiceId: existingId, invoiceNumber: inv?.invoiceNumber ?? "", status: inv?.status ?? "PENDING", idempotentReplay: true as const };
+      }
+    }
     const wo = await loadWorkOrder(tx, input.workOrderId);
     assertWorkOrderBranch(wo, actor);
     if (wo.status !== "READY") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس جاهزاً للتسليم" });
@@ -470,6 +480,10 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       .update(workOrders)
       .set({ status: "DELIVERED", invoiceId, deliveredAt: new Date() })
       .where(eq(workOrders.id, Number(wo.id)));
+
+    if (input.clientRequestId) {
+      await recordIdempotencyKey(tx, "workOrder.deliver", input.clientRequestId, invoiceId);
+    }
 
     return { workOrderId: Number(wo.id), invoiceId, invoiceNumber, status };
   });

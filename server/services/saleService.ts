@@ -428,6 +428,12 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
             message: "تعارض idempotency: المفتاح مستعمَل لدفعة بمبلغ مختلف",
           });
         }
+        if ((r.paymentMethod ?? null) !== (input.method ?? null)) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لدفعة بطريقة سداد مختلفة",
+          });
+        }
         // أعِد قراءة الفاتورة لإرجاع حالتها الحديثة (replay آمن، لا كتابة).
         const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
         if (input.enforceBranchId != null && inv && Number(inv.branchId) !== input.enforceBranchId) {
