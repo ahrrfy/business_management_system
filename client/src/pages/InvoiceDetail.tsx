@@ -4,6 +4,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { CopyInline } from "@/components/CopyButton";
+import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
+import { formatInvoiceAsWhatsApp } from "@/lib/copy/formatters";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
@@ -118,6 +121,28 @@ export default function InvoiceDetail() {
               remaining: remaining.toFixed(2),
             })}
           />
+          <CopyAsMenu
+            label="نسخ الفاتورة"
+            plain={data.invoiceNumber}
+            whatsapp={formatInvoiceAsWhatsApp({
+              number: data.invoiceNumber,
+              date: data.invoiceDate,
+              customer: data.customerName,
+              items: data.items.map((it) => ({
+                name: `${it.productName ?? ""}${it.variantName ? ` — ${it.variantName}` : ""}`,
+                qty: it.quantity,
+                unit: it.unitName,
+                price: it.unitPrice,
+                total: it.total,
+              })),
+              subtotal: data.subtotal,
+              discount: data.discountAmount,
+              tax: data.taxAmount,
+              total: data.total,
+              paid: data.paidAmount,
+              remaining: remaining.toFixed(2),
+            })}
+          />
           <Button variant="outline" size="sm" onClick={async () => printInvoiceA4({
             invoiceNumber: data.invoiceNumber,
             invoiceDate: data.invoiceDate,
@@ -136,7 +161,7 @@ export default function InvoiceDetail() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center justify-between">
-            <span className="font-mono" dir="ltr">{data.invoiceNumber}</span>
+            <CopyInline value={data.invoiceNumber} />
             <span className={`text-xs rounded-full px-2 py-0.5 ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
               {STATUS[data.status] ?? data.status}
             </span>
@@ -147,12 +172,21 @@ export default function InvoiceDetail() {
           <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "عميل نقدي"}</div></div>
           <div><div className="text-muted-foreground text-xs">التاريخ</div><div>{new Date(data.invoiceDate).toLocaleString("ar-IQ-u-nu-latn")}</div></div>
           <div><div className="text-muted-foreground text-xs">الاستحقاق</div><div>{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</div></div>
-          <div><div className="text-muted-foreground text-xs">قبل الضريبة</div><div dir="ltr" className="tabular-nums">{fmt(data.subtotal)}</div></div>
-          <div><div className="text-muted-foreground text-xs">الضريبة</div><div dir="ltr" className="tabular-nums">{fmt(data.taxAmount)}</div></div>
-          <div><div className="text-muted-foreground text-xs">الإجمالي</div><div dir="ltr" className="tabular-nums font-semibold">{fmt(data.total)}</div></div>
-          <div><div className="text-muted-foreground text-xs">المدفوع / المتبقّي</div><div dir="ltr" className="tabular-nums">{fmt(data.paidAmount)} / <span className={remaining.gt(0) ? "text-amber-600" : "text-emerald-600"}>{fmt(remaining.toFixed(2))}</span></div></div>
+          <div><div className="text-muted-foreground text-xs">قبل الضريبة</div><div className="tabular-nums"><CopyInline value={data.subtotal} display={fmt(data.subtotal)} /></div></div>
+          <div><div className="text-muted-foreground text-xs">الضريبة</div><div className="tabular-nums"><CopyInline value={data.taxAmount} display={fmt(data.taxAmount)} /></div></div>
+          <div><div className="text-muted-foreground text-xs">الإجمالي</div><div className="tabular-nums font-semibold"><CopyInline value={data.total} display={fmt(data.total)} /></div></div>
+          <div>
+            <div className="text-muted-foreground text-xs">المدفوع / المتبقّي</div>
+            <div className="tabular-nums flex items-center gap-1">
+              <CopyInline value={data.paidAmount} display={fmt(data.paidAmount)} />
+              <span className="text-muted-foreground">/</span>
+              <span className={remaining.gt(0) ? "text-amber-600" : "text-emerald-600"}>
+                <CopyInline value={remaining.toFixed(2)} display={fmt(remaining.toFixed(2))} />
+              </span>
+            </div>
+          </div>
           {data.customerId && (
-            <div className="md:col-span-4"><div className="text-muted-foreground text-xs">ذمة العميل الحالية</div><div dir="ltr" className="tabular-nums">{fmt(data.customerBalance ?? "0")}</div></div>
+            <div className="md:col-span-4"><div className="text-muted-foreground text-xs">ذمة العميل الحالية</div><div className="tabular-nums"><CopyInline value={data.customerBalance ?? "0"} display={fmt(data.customerBalance ?? "0")} /></div></div>
           )}
           {data.notes && (
             <div className="md:col-span-4"><div className="text-muted-foreground text-xs">ملاحظات</div><div className="whitespace-pre-wrap">{data.notes}</div></div>
@@ -180,8 +214,8 @@ export default function InvoiceDetail() {
                   <td className="p-2">{it.productName ?? "—"}{it.variantName ? ` — ${it.variantName}` : ""} <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku ?? ""}</span></td>
                   <td className="p-2 text-muted-foreground">{it.unitName ?? "—"}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(it.total)}</td>
+                  <td className="p-2 text-left tabular-nums"><CopyInline value={it.unitPrice} display={fmt(it.unitPrice)} /></td>
+                  <td className="p-2 text-left tabular-nums"><CopyInline value={it.total} display={fmt(it.total)} /></td>
                   <td className="p-2 text-center text-xs">{it.returnedBaseQuantity}/{it.baseQuantity}</td>
                 </tr>
               ))}
@@ -209,7 +243,7 @@ export default function InvoiceDetail() {
                   <td className="p-2">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
                   <td className="p-2">{p.direction === "IN" ? "وارد" : "صادر"}</td>
                   <td className="p-2">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.amount)}</td>
+                  <td className="p-2 text-left tabular-nums"><CopyInline value={p.amount} display={fmt(p.amount)} /></td>
                   <td className="p-2 text-xs text-muted-foreground">{p.status}</td>
                 </tr>
               ))}
@@ -226,7 +260,7 @@ export default function InvoiceDetail() {
           <CardHeader><CardTitle className="text-base">تسديد دفعة</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
             <div className="space-y-1">
-              <Label>المبلغ (المتبقّي: <span dir="ltr">{fmt(remaining.toFixed(2))}</span>)</Label>
+              <Label>المبلغ (المتبقّي: <CopyInline value={remaining.toFixed(2)} display={fmt(remaining.toFixed(2))} mono={false} />)</Label>
               <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} />
             </div>
             <div className="space-y-1">

@@ -1,13 +1,15 @@
-import { CopyInline } from "@/components/CopyButton";
+import { CopyButton, CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
 import { Label } from "@/components/ui/label";
 import { printARAging } from "@/lib/printing/printTemplates";
-import { D, fmt as fmtMoney } from "@/lib/money";
+import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
+import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -26,6 +28,7 @@ export default function ARAging() {
   const branches = trpc.branches.list.useQuery();
   const [branchId, setBranchId] = useState<number | "">("");
   const aging = trpc.reports.arAging.useQuery({ branchId: branchId ? Number(branchId) : undefined });
+  const sel = useRowSelection<number>();
 
   // عقد import-integration §٦: «رصيد غير مفوتر/افتتاحي» = الرصيد الجاري − غير المدفوع،
   // يُحسب في العميل بـDecimal (لا parseFloat) — يفسّر فجوة المستورَد برصيد افتتاحي بلا فواتير.
@@ -56,6 +59,56 @@ export default function ARAging() {
       unbilled: acc.currentBalance.minus(acc.unpaidTotal).toFixed(2),
     };
   }, [aging.data]);
+
+  // الصُفوف المُحدَّدة فَقَط — لِلتَصدير الجُزئي ولِنَسخ ملَخَّص واتساب.
+  const selectedRows = useMemo(
+    () => (aging.data ?? []).filter((r) => sel.isSelected(r.customerId)),
+    [aging.data, sel],
+  );
+
+  // ملَخَّص واتساب لِالذِمم المُحدَّدة (مَبلَغ غَير المَدفوع + أَقدَم فاتورة + الهاتِف).
+  // يَنبَني عَبر sanitizeForWhatsApp ⇒ بِلا إيموجي.
+  const whatsappSummary = useMemo(() => {
+    if (selectedRows.length === 0) return "";
+    const L: string[] = [];
+    L.push("*ذِمم مُستَحَقّة — لَنا عَلَيكُم*");
+    L.push(`التاريخ: ${new Date().toLocaleDateString("en-GB")}`);
+    L.push("المَكتَبة العَرَبية لِلطِباعة والقِرطاسية");
+    L.push("————————————————");
+    let grand = D(0);
+    for (const r of selectedRows) {
+      const unpaid = D(r.unpaidTotal || 0);
+      grand = grand.plus(unpaid);
+      const phone = r.phone ? ` — ${r.phone}` : "";
+      const oldest = r.oldestInvoiceDate ? ` — أَقدَم فاتورة ${r.oldestInvoiceDate}` : "";
+      L.push(`- ${r.customerName}${phone}: ${fmtAr(unpaid.toFixed(2))} د.ع${oldest}`);
+    }
+    L.push("————————————————");
+    L.push(`*الإجمالي المُستَحَقّ: ${fmtAr(grand.toFixed(2))} د.ع*`);
+    L.push("");
+    L.push("نَرجو التَكَرُّم بِالسَداد أَو التَواصُل لِترتيب التَسوية.");
+    return sanitizeForWhatsApp(L.join("\n"));
+  }, [selectedRows]);
+
+  const onExportSelected = () => {
+    if (selectedRows.length === 0) return;
+    exportRows(selectedRows, {
+      filename: "ذمم-مدينة-محددة",
+      columns: [
+        { key: "customerName", header: "العميل" },
+        { key: "customerType", header: "الفئة" },
+        { key: "phone", header: "الهاتف" },
+        { key: "d0_30", header: "0–30", map: (r) => Number(r.d0_30) },
+        { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
+        { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
+        { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
+        { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
+        { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
+        { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance) },
+        { key: "oldestInvoiceDate", header: "أقدم فاتورة" },
+      ],
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -138,6 +191,14 @@ export default function ARAging() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr className="text-end">
+                <th className="p-2 w-8 text-center">
+                  <input
+                    type="checkbox"
+                    aria-label="تحديد كل الذمم"
+                    checked={(aging.data ?? []).length > 0 && (aging.data ?? []).every((r) => sel.isSelected(r.customerId))}
+                    onChange={(e) => sel.setMany((aging.data ?? []).map((r) => r.customerId), e.target.checked)}
+                  />
+                </th>
                 <th className="p-2">العميل</th>
                 <th className="p-2">الفئة</th>
                 <th className="p-2">الهاتف</th>
@@ -155,6 +216,14 @@ export default function ARAging() {
             <tbody>
               {(aging.data ?? []).map((r) => (
                 <tr key={r.customerId} className="border-t">
+                  <td className="p-2 text-center">
+                    <input
+                      type="checkbox"
+                      aria-label={`تحديد ${r.customerName}`}
+                      checked={sel.isSelected(r.customerId)}
+                      onChange={() => sel.toggle(r.customerId)}
+                    />
+                  </td>
                   <td className="p-2 font-medium">{r.customerName}</td>
                   <td className="p-2 text-xs">{CUST_TYPE_LABEL[r.customerType ?? ""] ?? r.customerType ?? "—"}</td>
                   <td className="p-2"><CopyInline value={r.phone} /></td>
@@ -174,12 +243,33 @@ export default function ARAging() {
                 </tr>
               ))}
               {aging.data && aging.data.length === 0 && (
-                <tr><td colSpan={12} className="p-6 text-center text-muted-foreground">لا ذمم مستحقّة. ممتاز.</td></tr>
+                <tr><td colSpan={13} className="p-6 text-center text-muted-foreground">لا ذمم مستحقّة. ممتاز.</td></tr>
               )}
             </tbody>
           </table>
         </CardContent>
       </Card>
+
+      {sel.count > 0 && (
+        <div className="sticky bottom-3 z-20 mx-auto flex w-fit items-center gap-2 rounded-full border bg-background/95 px-3 py-1.5 shadow-lg backdrop-blur">
+          <CopyButton
+            value={whatsappSummary}
+            title="نَسخ المُحَدَّد كَـ WhatsApp summary"
+            size="sm"
+            variant="outline"
+            successMessage="تَم نَسخ المُلَخَّص"
+            className="gap-1"
+          />
+          <span className="text-xs text-muted-foreground">ملَخَّص واتساب</span>
+        </div>
+      )}
+
+      <SelectionBar
+        count={sel.count}
+        onClear={sel.clear}
+        onExport={onExportSelected}
+        exportLabel="تصدير المحدَّد Excel"
+      />
     </div>
   );
 }

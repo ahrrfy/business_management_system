@@ -2,11 +2,13 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { useClipboard } from "@/hooks/useClipboard";
+import { formatZReportAsText } from "@/lib/copy/formatters";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printDoc } from "@/lib/printing/print";
 import { trpc } from "@/lib/trpc";
-import { Printer } from "lucide-react";
+import { Copy, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 
 /* ═══════════ سجلّ الورديات + إعادة طباعة Z-report ═══════════
@@ -37,6 +39,8 @@ export default function Shifts() {
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
   const [printing, setPrinting] = useState<number | null>(null);
+  const [copying, setCopying] = useState<number | null>(null);
+  const { copy } = useClipboard({ successMessage: "نُسِخ تقرير Z" });
 
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
@@ -108,6 +112,43 @@ export default function Shifts() {
       notify.err(e);
     } finally {
       setPrinting(null);
+    }
+  }
+
+  // نَسخ مُلَخَّص Z نَصّياً (للَصق في واتساب/مُلاحَظة الإدارة) — يَجلب نَفس تَقرير الطباعة ويُمَرِّرُه إلى formatZReportAsText.
+  async function copyZ(shiftId: number) {
+    setCopying(shiftId);
+    try {
+      const rep = await utils.shifts.report.fetch({ shiftId });
+      if (!rep) { notify.err("تعذّر جلب تقرير الوردية"); return; }
+      const sh = rep.shift as {
+        openingBalance: string; expectedCash: string | null; countedCash: string | null; variance: string | null;
+        openedAt: string | Date; closedAt: string | Date | null;
+      };
+      // النَقد الداخل/الخارج = مَجموع الحَركات النَقدِية (CASH) حَسَب الاتجاه.
+      let cashIn = D(0);
+      let cashOut = D(0);
+      for (const p of rep.payments ?? []) {
+        if (p.method !== "CASH") continue;
+        if (p.direction === "IN") cashIn = cashIn.plus(D(p.total));
+        else if (p.direction === "OUT") cashOut = cashOut.plus(D(p.total));
+      }
+      const text = formatZReportAsText({
+        shiftId,
+        opened: sh.openedAt,
+        closed: sh.closedAt ?? undefined,
+        openingFloat: sh.openingBalance,
+        cashIn: cashIn.toFixed(2),
+        cashOut: cashOut.toFixed(2),
+        expectedCash: sh.expectedCash ?? sh.openingBalance,
+        countedCash: sh.countedCash,
+        variance: sh.variance,
+      });
+      await copy(text);
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setCopying(null);
     }
   }
 
@@ -202,7 +243,7 @@ export default function Shifts() {
                     </span>
                   </td>
                   <td className="p-2 text-center">
-                    {/* زر Z-report بنمط إجراءات الصف الموحّد (RowActions inline) — نفس onSelect السابق. */}
+                    {/* زر Z-report + نَسخ مُلَخَّص نَصّي (RowActions inline). */}
                     <RowActions
                       mode="inline"
                       actions={[
@@ -212,6 +253,13 @@ export default function Shifts() {
                           icon: Printer,
                           disabled: printing === r.id,
                           onSelect: () => void reprintZ(r.id),
+                        },
+                        {
+                          key: "copy",
+                          label: copying === r.id ? "جارٍ…" : "نسخ",
+                          icon: Copy,
+                          disabled: copying === r.id,
+                          onSelect: () => void copyZ(r.id),
                         },
                       ]}
                     />

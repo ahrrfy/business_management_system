@@ -1,13 +1,15 @@
-import { CopyInline } from "@/components/CopyButton";
+import { CopyButton, CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { exportRows } from "@/lib/export";
 import { Label } from "@/components/ui/label";
 import { printAPAging } from "@/lib/printing/printTemplates";
-import { D, fmt as fmtMoney } from "@/lib/money";
+import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
+import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -18,6 +20,7 @@ export default function APAging() {
   const branches = trpc.branches.list.useQuery();
   const [branchId, setBranchId] = useState<number | "">("");
   const aging = trpc.reports.apAging.useQuery({ branchId: branchId ? Number(branchId) : undefined });
+  const sel = useRowSelection<number>();
 
   // عقد import-integration §٦: «رصيد غير مفوتر/افتتاحي» = الرصيد الجاري − غير المدفوع،
   // يُحسب في العميل بـDecimal (لا parseFloat) — يفسّر فجوة المستورَد برصيد افتتاحي بلا أوامر شراء.
@@ -48,6 +51,55 @@ export default function APAging() {
       unbilled: acc.currentBalance.minus(acc.unpaidTotal).toFixed(2),
     };
   }, [aging.data]);
+
+  // الصُفوف المُحدَّدة فَقَط — لِلتَصدير الجُزئي ولِنَسخ ملَخَّص واتساب.
+  const selectedRows = useMemo(
+    () => (aging.data ?? []).filter((r) => sel.isSelected(r.supplierId)),
+    [aging.data, sel],
+  );
+
+  // ملَخَّص واتساب لِالذِمم المُحدَّدة (مَبلَغ غَير المَدفوع + أَقدَم أَمر شِراء + الهاتِف).
+  // يَنبَني عَبر sanitizeForWhatsApp ⇒ بِلا إيموجي.
+  const whatsappSummary = useMemo(() => {
+    if (selectedRows.length === 0) return "";
+    const L: string[] = [];
+    L.push("*ذِمم مُستَحَقّة — لَكُم عَلَينا*");
+    L.push(`التاريخ: ${new Date().toLocaleDateString("en-GB")}`);
+    L.push("المَكتَبة العَرَبية لِلطِباعة والقِرطاسية");
+    L.push("————————————————");
+    let grand = D(0);
+    for (const r of selectedRows) {
+      const unpaid = D(r.unpaidTotal || 0);
+      grand = grand.plus(unpaid);
+      const phone = r.phone ? ` — ${r.phone}` : "";
+      const oldest = r.oldestPoDate ? ` — أَقدَم أَمر ${r.oldestPoDate}` : "";
+      L.push(`- ${r.supplierName}${phone}: ${fmtAr(unpaid.toFixed(2))} د.ع${oldest}`);
+    }
+    L.push("————————————————");
+    L.push(`*الإجمالي المُستَحَقّ: ${fmtAr(grand.toFixed(2))} د.ع*`);
+    L.push("");
+    L.push("سَنُحاوِل تَرتيب السَداد في أَقرَب وَقت — لِأَي استِفسار تَواصَلوا مَعَنا.");
+    return sanitizeForWhatsApp(L.join("\n"));
+  }, [selectedRows]);
+
+  const onExportSelected = () => {
+    if (selectedRows.length === 0) return;
+    exportRows(selectedRows, {
+      filename: "ذمم-دائنة-محددة",
+      columns: [
+        { key: "supplierName", header: "المورد" },
+        { key: "phone", header: "الهاتف" },
+        { key: "d0_30", header: "0–30", map: (r) => Number(r.d0_30) },
+        { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
+        { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
+        { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
+        { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
+        { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
+        { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance) },
+        { key: "oldestPoDate", header: "أقدم أمر شراء" },
+      ],
+    });
+  };
 
   return (
     <div className="space-y-4">
@@ -129,6 +181,14 @@ export default function APAging() {
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr className="text-end">
+                <th className="p-2 w-8 text-center">
+                  <input
+                    type="checkbox"
+                    aria-label="تحديد كل الذمم"
+                    checked={(aging.data ?? []).length > 0 && (aging.data ?? []).every((r) => sel.isSelected(r.supplierId))}
+                    onChange={(e) => sel.setMany((aging.data ?? []).map((r) => r.supplierId), e.target.checked)}
+                  />
+                </th>
                 <th className="p-2">المورد</th>
                 <th className="p-2">الهاتف</th>
                 <th className="p-2 text-start">0–30</th>
@@ -145,6 +205,14 @@ export default function APAging() {
             <tbody>
               {(aging.data ?? []).map((r) => (
                 <tr key={r.supplierId} className="border-t">
+                  <td className="p-2 text-center">
+                    <input
+                      type="checkbox"
+                      aria-label={`تحديد ${r.supplierName}`}
+                      checked={sel.isSelected(r.supplierId)}
+                      onChange={() => sel.toggle(r.supplierId)}
+                    />
+                  </td>
                   <td className="p-2 font-medium">{r.supplierName}</td>
                   <td className="p-2"><CopyInline value={r.phone} /></td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d0_30)}</td>
@@ -163,12 +231,33 @@ export default function APAging() {
                 </tr>
               ))}
               {aging.data && aging.data.length === 0 && (
-                <tr><td colSpan={11} className="p-6 text-center text-muted-foreground">لا ذمم دائنة مستحقّة.</td></tr>
+                <tr><td colSpan={12} className="p-6 text-center text-muted-foreground">لا ذمم دائنة مستحقّة.</td></tr>
               )}
             </tbody>
           </table>
         </CardContent>
       </Card>
+
+      {sel.count > 0 && (
+        <div className="sticky bottom-3 z-20 mx-auto flex w-fit items-center gap-2 rounded-full border bg-background/95 px-3 py-1.5 shadow-lg backdrop-blur">
+          <CopyButton
+            value={whatsappSummary}
+            title="نَسخ المُحَدَّد كَـ WhatsApp summary"
+            size="sm"
+            variant="outline"
+            successMessage="تَم نَسخ المُلَخَّص"
+            className="gap-1"
+          />
+          <span className="text-xs text-muted-foreground">ملَخَّص واتساب</span>
+        </div>
+      )}
+
+      <SelectionBar
+        count={sel.count}
+        onClear={sel.clear}
+        onExport={onExportSelected}
+        exportLabel="تصدير المحدَّد Excel"
+      />
     </div>
   );
 }

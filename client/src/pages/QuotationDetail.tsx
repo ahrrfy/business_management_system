@@ -3,6 +3,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { CopyInline } from "@/components/CopyButton";
+import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
+import { formatQuotationAsWhatsApp } from "@/lib/copy/formatters";
 import { confirm } from "@/lib/confirm";
 import { buildQuotationMessage } from "@/lib/whatsapp";
 import { fmt } from "@/lib/money";
@@ -93,7 +96,7 @@ export default function QuotationDetail() {
       <Card>
         <CardHeader>
           <CardTitle className="text-base flex items-center justify-between">
-            <span className="font-mono" dir="ltr">{data.quoteNumber}</span>
+            <CopyInline value={data.quoteNumber} />
             <span className="text-xs rounded-full px-2 py-0.5 bg-muted">{STATUS[data.status] ?? data.status}</span>
           </CardTitle>
         </CardHeader>
@@ -240,6 +243,27 @@ export default function QuotationDetail() {
           </Button>
         )}
         <Button variant="outline" onClick={printQuote}>طباعة العرض</Button>
+        <CopyAsMenu
+          label="نسخ العرض"
+          plain={data.quoteNumber}
+          whatsapp={formatQuotationAsWhatsApp({
+            number: data.quoteNumber,
+            date: data.quoteDate ? String(data.quoteDate) : undefined,
+            validUntil: data.validUntil ? String(data.validUntil) : undefined,
+            customer: data.customerName,
+            items: data.items.map((it) => ({
+              name: `${it.productName ?? ""}${it.variantName ? ` — ${it.variantName}` : ""}`,
+              qty: it.quantity,
+              unit: it.unitName,
+              price: it.unitPrice,
+              total: it.total,
+            })),
+            subtotal: data.subtotal,
+            tax: data.taxAmount,
+            total: data.total,
+            notes: data.notes,
+          })}
+        />
         <WhatsAppShare
           message={buildQuotationMessage({
             quoteNumber: data.quoteNumber,

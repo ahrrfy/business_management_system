@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr, formatIqd, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { CopyButton, CopyInline } from "@/components/CopyButton";
 
 type TS = RouterOutputs["reports"]["treasurySummary"];
 
@@ -49,6 +50,25 @@ export default function TreasuryReport() {
   );
 
   const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل";
+
+  // نص مُلخَّص قابل للنسخ (للترويسة).
+  const summaryText = useMemo(() => {
+    if (!ts) return "";
+    const lines = [
+      "تقرير الخزينة",
+      `الفترة: ${period.from} — ${period.to}`,
+      `الفرع: ${branchLabel}`,
+      "",
+      `المقبوضات: ${fmtAr(ts.totalIn)}`,
+      `المدفوعات: ${fmtAr(ts.totalOut)}`,
+      `صافي الصندوق: ${fmtAr(ts.net)}`,
+      "",
+      `عدد الورديات: ${ts.shifts.count}`,
+      `النقد المعدود: ${fmtAr(ts.shifts.totalCounted)}`,
+      `إجمالي الفروقات: ${fmtAr(ts.shifts.totalVariance)}`,
+    ];
+    return lines.join("\n");
+  }, [ts, period.from, period.to, branchLabel]);
 
   function onExport() {
     if (!ts) return;
@@ -99,6 +119,11 @@ export default function TreasuryReport() {
       description="مقبوضات/مدفوعات حسب طريقة الدفع (أساس نقدي) + فروقات الورديات."
       note={NOTE}
       kpis={kpis}
+      actions={
+        ts ? (
+          <CopyButton value={summaryText} title="نسخ المُلخَّص" size="sm" variant="outline" />
+        ) : null
+      }
       onExport={onExport}
       onPrint={onPrint}
       exportDisabled={!ts}
@@ -138,8 +163,12 @@ export default function TreasuryReport() {
                   rows.map((r, i) => (
                     <tr key={i} className="border-b last:border-0">
                       <td className="p-3 text-right">{r.label}</td>
-                      <td className="p-3 text-left tabular-nums text-emerald-600" dir="ltr">{fmtAr(r.in)}</td>
-                      <td className="p-3 text-left tabular-nums text-rose-600" dir="ltr">{fmtAr(r.out)}</td>
+                      <td className="p-3 text-left tabular-nums text-emerald-600" dir="ltr">
+                        <CopyInline value={String(r.in)} display={fmtAr(r.in)} mono={false} />
+                      </td>
+                      <td className="p-3 text-left tabular-nums text-rose-600" dir="ltr">
+                        <CopyInline value={String(r.out)} display={fmtAr(r.out)} mono={false} />
+                      </td>
                     </tr>
                   ))
                 )}
@@ -147,8 +176,12 @@ export default function TreasuryReport() {
               <tfoot>
                 <tr className="border-t font-bold bg-muted/30">
                   <td className="p-3 text-right">الإجمالي</td>
-                  <td className="p-3 text-left tabular-nums" dir="ltr">{fmtAr(ts.totalIn)}</td>
-                  <td className="p-3 text-left tabular-nums" dir="ltr">{fmtAr(ts.totalOut)}</td>
+                  <td className="p-3 text-left tabular-nums" dir="ltr">
+                    <CopyInline value={String(ts.totalIn)} display={fmtAr(ts.totalIn)} mono={false} />
+                  </td>
+                  <td className="p-3 text-left tabular-nums" dir="ltr">
+                    <CopyInline value={String(ts.totalOut)} display={fmtAr(ts.totalOut)} mono={false} />
+                  </td>
                 </tr>
               </tfoot>
             </table>
@@ -164,11 +197,19 @@ export default function TreasuryReport() {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <div className="rounded-md border p-3 text-center">
                 <p className="text-xs text-muted-foreground">عدد الورديات</p>
-                <p className="text-lg font-bold tabular-nums" dir="ltr">{ts.shifts.count}</p>
+                <p className="text-lg font-bold tabular-nums" dir="ltr">
+                  <CopyInline value={String(ts.shifts.count)} display={String(ts.shifts.count)} mono={false} />
+                </p>
               </div>
               <div className="rounded-md border p-3 text-center">
                 <p className="text-xs text-muted-foreground">النقد المعدود</p>
-                <p className="text-lg font-bold tabular-nums" dir="ltr">{fmtAr(ts.shifts.totalCounted)}</p>
+                <p className="text-lg font-bold tabular-nums" dir="ltr">
+                  <CopyInline
+                    value={String(ts.shifts.totalCounted)}
+                    display={fmtAr(ts.shifts.totalCounted)}
+                    mono={false}
+                  />
+                </p>
               </div>
               <div className="rounded-md border p-3 text-center">
                 <p className="text-xs text-muted-foreground">إجمالي الفروقات</p>
@@ -176,7 +217,11 @@ export default function TreasuryReport() {
                   className={`text-lg font-bold tabular-nums ${D(ts.shifts.totalVariance).lt(0) ? "text-rose-600" : "text-emerald-600"}`}
                   dir="ltr"
                 >
-                  {fmtAr(ts.shifts.totalVariance)}
+                  <CopyInline
+                    value={String(ts.shifts.totalVariance)}
+                    display={fmtAr(ts.shifts.totalVariance)}
+                    mono={false}
+                  />
                 </p>
               </div>
             </div>
