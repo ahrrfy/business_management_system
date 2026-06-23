@@ -60,8 +60,8 @@ describe("signSession — nbf = iat في التوكن المُصدَر", () => {
     const futureSec = Math.floor(Date.now() / 1000) + 300;
     const token = await signSession(1, 3600_000, null, futureSec);
     const secret = new TextEncoder().encode(process.env.JWT_SECRET ?? "test_secret_32bytes_padding1234!");
-    // nbf مستقبلي → يُرفض الآن
-    await expect(jwtVerify(token, secret)).rejects.toThrow(/not before/i);
+    // nbf مستقبلي → يُرفض الآن ("nbf" claim timestamp check failed)
+    await expect(jwtVerify(token, secret)).rejects.toThrow(/"nbf" claim/i);
   });
 });
 
@@ -73,7 +73,7 @@ describe("auth.register — يقبل أدواراً من الـenum الكامل
     const res = await caller.auth.register({
       email: "acct@t.test",
       name: "محاسب",
-      password: "P@ssw0rd!",
+      password: "P@ssw0rd12345!",
       role: "accountant",
       branchId: 1,
     });
@@ -88,7 +88,7 @@ describe("auth.register — يقبل أدواراً من الـenum الكامل
     const res = await caller.auth.register({
       email: "aud@t.test",
       name: "مدقّق",
-      password: "P@ssw0rd!",
+      password: "P@ssw0rd12345!",
       role: "auditor",
       branchId: 1,
     });
