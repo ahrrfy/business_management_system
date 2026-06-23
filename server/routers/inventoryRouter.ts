@@ -243,11 +243,7 @@ export const inventoryRouter = router({
       if (search) {
         const pat = `%${escLike(search)}%`;
         conds.push(
-          or(
-            sql`${products.name} LIKE ${pat} ESCAPE '!'`,
-            sql`${productVariants.sku} LIKE ${pat} ESCAPE '!'`,
-            sql`${productVariants.variantName} LIKE ${pat} ESCAPE '!'`,
-          )
+          sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`
         );
       }
       if (input?.lowOnly) {
@@ -355,11 +351,7 @@ export const inventoryRouter = router({
       if (search) {
         const pat = `%${escLike(search)}%`;
         conds.push(
-          or(
-            sql`${products.name} LIKE ${pat} ESCAPE '!'`,
-            sql`${productVariants.sku} LIKE ${pat} ESCAPE '!'`,
-            sql`${productVariants.variantName} LIKE ${pat} ESCAPE '!'`,
-          )
+          sql`(${products.name} LIKE ${pat} ESCAPE '!' OR ${productVariants.sku} LIKE ${pat} ESCAPE '!' OR ${productVariants.variantName} LIKE ${pat} ESCAPE '!')`
         );
       }
       if (i.fromDate) {
