@@ -509,7 +509,8 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
             return (
               <button key={ct.id} onClick={() => setCatId(ct.id)}
                 style={{ display: "flex", alignItems: "center", gap: 7, padding: "0 17px", height: 50, borderRadius: 10, whiteSpace: "nowrap", cursor: "pointer", fontFamily: "inherit", fontSize: 14.5, fontWeight: 800, flexShrink: 0, touchAction: "manipulation", background: active ? C.primary : C.card, color: active ? C.primaryFg : C.fg, border: `${active ? 2 : 1.5}px solid ${active ? C.primary : C.border}` }}>
-                <span style={{ fontSize: 19 }}>{categoryIcon(ct.name)}</span>{ct.name}
+                {(() => { const CIcon = categoryIcon(ct.name); return <CIcon aria-hidden size={19} />; })()}
+                {ct.name}
               </button>
             );
           })}
@@ -536,7 +537,7 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
                   onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.96)")}
                   onMouseUp={(e) => (e.currentTarget.style.transform = "")}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%" }}>
-                    <span style={{ fontSize: 28 }}>{serviceIcon(s.sku)}</span>
+                    {(() => { const SIcon = serviceIcon(s.sku); return <SIcon aria-hidden size={28} strokeWidth={1.6} />; })()}
                     {custom && <span style={{ fontSize: 10, fontWeight: 800, color: C.amber, background: `color-mix(in oklch, ${C.amber} 14%, transparent)`, padding: "2px 7px", borderRadius: 20 }}>سعر يدوي</span>}
                   </div>
                   <div style={{ width: "100%" }}>
@@ -610,9 +611,10 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
                 <div key={c.uid} onClick={() => setSelUid(c.uid)}
                   style={{ borderRadius: 11, border: `1.5px solid ${sel ? C.primary : C.border}`, background: sel ? C.primarySoft : C.card, padding: "9px 11px", cursor: "pointer" }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
-                    <div style={{ fontSize: 14, fontWeight: 800, color: C.fg, lineHeight: 1.3 }}>
-                      <span style={{ marginLeft: 6, fontSize: 16 }}>{serviceIcon(c.svc.sku)}</span>{c.svc.productName}
-                      <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 500, marginRight: 5 }}>/ {c.svc.unitName}</span>
+                    <div style={{ fontSize: 14, fontWeight: 800, color: C.fg, lineHeight: 1.3, display: "flex", alignItems: "center", gap: 6 }}>
+                      {(() => { const SIcon = serviceIcon(c.svc.sku); return <SIcon aria-hidden size={16} />; })()}
+                      {c.svc.productName}
+                      <span style={{ fontSize: 11, color: C.mutedFg, fontWeight: 500 }}>/ {c.svc.unitName}</span>
                     </div>
                     <button onClick={(e) => { e.stopPropagation(); removeRow(c.uid); }} style={{ width: 34, height: 34, flexShrink: 0, background: "none", border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 15, color: C.mutedFg }}>✕</button>
                   </div>
