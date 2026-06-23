@@ -49,7 +49,9 @@ export const roleRouter = router({
         action: "role.create",
         entityType: "role",
         entityId: res.id,
-        newValue: { key: res.key, label: input.label, baseRole: input.baseRole },
+        // H5 (تدقيق ٢٣/٦/٢٦): سَجِّل خريطة الصلاحيات الأوّليّة كاملةً ⇒ يَكشف لاحقاً «من
+        // أعطى أيّ صلاحية من البداية» (لا يَكفي label/baseRole — هما لا يُظهران FULL/READ/NONE).
+        newValue: { key: res.key, label: input.label, baseRole: input.baseRole, permissions: input.permissions },
       });
       return res;
     }),
@@ -65,12 +67,27 @@ export const roleRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // H5 (تدقيق ٢٣/٦/٢٦): توسعة دور خفيّة كانت بلا أَثَر forensic — لا oldValue ولا حتى
+      // newValue لخريطة الصلاحيات. أَدمن مُخترَق يَمنح cashier صلاحية FULL على /reports لساعة
+      // ثم يَعيدها، فالسجلّ يُظهر «تعديل عنوان» فقط. الآن نَلتقط لقطة كاملة قبل/بعد ⇒ نافذة
+      // الإساءة كاشفة (audit log diff).
+      const before = await getRole(input.id);
       const res = await updateRole(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
         action: "role.update",
         entityType: "role",
         entityId: input.id,
-        newValue: { label: input.label, baseRole: input.baseRole },
+        oldValue: {
+          label: before?.label ?? null,
+          baseRole: before?.baseRole ?? null,
+          permissions: (before as { permissions?: unknown })?.permissions ?? null,
+        },
+        newValue: {
+          label: input.label,
+          baseRole: input.baseRole,
+          // input.permissions optional ⇒ undefined = «بلا تغيير» (لا نَكتب null بدل غير المعطى).
+          permissions: input.permissions,
+        },
       });
       return res;
     }),
