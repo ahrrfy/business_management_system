@@ -22,22 +22,25 @@ type NavGroup = {
   adminOnly?: boolean;
 };
 
+// إعادة هَيكلة الشَريط الجَانبي (يونيو ٢٠٢٦) — نَتيجة تَدقيق UX/IA:
+//  - حَذف كل مَداخل «جَديد» ⇒ CTAs داخل صَفحات القوائم (نَمط مُتّسق)
+//  - تَمييز التَحويلات: «مَخزون» vs «نَقدية» (كانتا بِنفس النَصّ في مَجموعتين)
+//  - توحيد مَسار المُرتجَعات: السِجلّ فَقط + CTA داخلي
+//  - فَصل «الإقفال والرَقابة المالية» عن «الإدارة» (هَويّة vs رَقابة محاسبية)
+//  - إخراج «(adminOnly)» من label عَربي (تَفصيل تِقني)
+//  - تَسميات أَوضح: «الكاشير السَريع» / «كاشير الطِباعة» / «قارئ الأسعار للمُوظَّف»
 const NAV_GROUPS: NavGroup[] = [
   {
     key: "sales",
     label: "البيع والكاشير",
     icon: ShoppingCart,
     items: [
-      { href: "/pos", label: "نقطة البيع" },
-      { href: "/print-pos", label: "نقطة بيع الطباعة" },
-      { href: "/price-checker", label: "قارئ الأسعار (شاشة الزبون)" },
-      { href: "/sales/new", label: "فاتورة بيع متقدّمة" },
-      { href: "/invoices", label: "الفواتير" },
+      { href: "/pos", label: "الكاشير السَريع" },
+      { href: "/print-pos", label: "كاشير الطباعة" },
+      { href: "/price-checker", label: "قارئ الأسعار (للمُوظَّف)" },
+      { href: "/invoices", label: "فواتير المبيعات" },
       { href: "/quotations", label: "عروض الأسعار" },
-      { href: "/quotations/new", label: "عرض سعر جديد" },
-      { href: "/returns", label: "المرتجعات" },
-      { href: "/sales-returns/new", label: "مرتجع بيع جديد" },
-      { href: "/sales-returns", label: "سجلّ مرتجعات البيع" },
+      { href: "/sales-returns", label: "مُرتجَعات البيع" },
     ],
   },
   {
@@ -46,9 +49,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Package,
     items: [
       { href: "/purchases", label: "أوامر الشراء" },
-      { href: "/purchases/new", label: "فاتورة شراء جديدة" },
-      { href: "/purchase-returns/new", label: "مرتجع شراء جديد" },
-      { href: "/purchase-returns", label: "سجلّ مرتجعات الشراء" },
+      { href: "/purchase-returns", label: "مُرتجَعات الشراء" },
       { href: "/suppliers", label: "الموردون" },
     ],
   },
@@ -72,7 +73,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/inventory", label: "أرصدة المخزون" },
       { href: "/stocktakes", label: "الجرد والتسوية" },
       { href: "/inventory-movements", label: "حركات المخزون" },
-      { href: "/transfers", label: "تحويلات بين الفروع" },
+      { href: "/transfers", label: "تحويلات مَخزون بين الفروع" },
       { href: "/barcode-labels", label: "ملصقات الباركود" },
     ],
   },
@@ -83,8 +84,7 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/assets", label: "لوحة الأصول", managerOnly: true },
       { href: "/assets/register", label: "سجلّ الأصول", managerOnly: true },
-      { href: "/assets/new", label: "أصل جديد", managerOnly: true },
-      { href: "/assets/custody-report", label: "تقرير العهد", managerOnly: true },
+      { href: "/assets/custody-report", label: "تقرير العُهد", managerOnly: true },
       { href: "/assets/disposal-log", label: "سجلّ الاستبعاد", managerOnly: true },
     ],
   },
@@ -94,7 +94,6 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Briefcase,
     items: [
       { href: "/hr/employees", label: "الموظفون", managerOnly: true },
-      { href: "/hr/employees/new", label: "موظف جديد", managerOnly: true },
       { href: "/hr/attendance", label: "الحضور والدوام", managerOnly: true },
       { href: "/hr/payroll", label: "الرواتب", managerOnly: true },
       { href: "/hr/leaves", label: "الإجازات", managerOnly: true },
@@ -109,7 +108,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Wallet,
     items: [
       { href: "/treasury", label: "لوحة الخزينة" },
-      { href: "/treasury/transfers", label: "تحويلات بين الفروع", managerOnly: true },
+      { href: "/treasury/transfers", label: "تحويلات نَقدية بين الفروع", managerOnly: true },
       { href: "/expenses", label: "المصروفات اليومية" },
       { href: "/vouchers", label: "سندات قبض وصرف" },
       { href: "/shifts", label: "سجلّ الورديات" },
@@ -131,10 +130,22 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/reports", label: "مركز التقارير" },
       { href: "/sales-report", label: "تقرير المبيعات", managerOnly: true },
       { href: "/customers-statement", label: "كشف حساب عميل", managerOnly: true },
-      { href: "/ar-aging", label: "أعمار الذمم المدينة", managerOnly: true },
+      { href: "/ar-aging", label: "أعمار الذمم (مدينة)", managerOnly: true },
       { href: "/suppliers-statement", label: "كشف حساب مورد", managerOnly: true },
-      { href: "/ap-aging", label: "أعمار الذمم الدائنة", managerOnly: true },
+      { href: "/ap-aging", label: "أعمار الذمم (دائنة)", managerOnly: true },
       { href: "/reports/cash-orphans", label: "نقد بلا وردية (يتيم)", managerOnly: true },
+    ],
+  },
+  {
+    key: "closing",
+    label: "الإقفال والرَقابة المالية",
+    icon: "🔒",
+    items: [
+      { href: "/reconcile", label: "تدقيق التوافق المالي", managerOnly: true },
+      { href: "/period-lock", label: "إقفال الفترات المالية", adminOnly: true },
+      { href: "/year-end", label: "الإقفال السنوي", adminOnly: true },
+      { href: "/credit-approvals", label: "موافقات الائتمان", managerOnly: true },
+      { href: "/wip-report", label: "الإنتاج تحت التنفيذ (WIP)", managerOnly: true },
     ],
   },
   {
@@ -147,12 +158,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/roles", label: "الأدوار والصلاحيات", adminOnly: true },
       { href: "/kiosk-devices", label: "شاشات قارئ الأسعار (الأجهزة)", adminOnly: true },
       { href: "/audit", label: "سجلّ التدقيق", adminOnly: true },
-      { href: "/reconcile", label: "تدقيق التوافق المالي", adminOnly: true },
-      { href: "/period-lock", label: "إقفال الفترات المالية", adminOnly: true },
-      { href: "/year-end", label: "الإقفال السنوي", adminOnly: true },
-      { href: "/credit-approvals", label: "موافقات الائتمان", managerOnly: true },
-      { href: "/wip-report", label: "تقرير الإنتاج تحت التنفيذ (WIP)", managerOnly: true },
-      { href: "/settings", label: "النسخ الاحتياطي والإعدادات", adminOnly: true },
+      { href: "/settings", label: "إعدادات النظام والنسخ الاحتياطي", adminOnly: true },
     ],
   },
 ];
