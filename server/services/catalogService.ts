@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import type { MySqlColumn } from "drizzle-orm/mysql-core";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
-import { ARABIC_FOLD_PAIRS, escapeLikePattern, tokenizeSearchQuery } from "../../shared/searchNormalize";
+import { ARABIC_FOLD_PAIRS, tokenizeSearchQuery } from "../../shared/searchNormalize";
 import { escLike } from "../lib/sqlLike";
 import { getDb } from "../db";
 import { toDbMoney } from "./money";

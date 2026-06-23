@@ -39,7 +39,7 @@ import {
   workOrders,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { escapeLike, escLike } from "../lib/sqlLike";
+import { escLike } from "../lib/sqlLike";
 
 export type SearchEntityType =
   | "PRODUCT"

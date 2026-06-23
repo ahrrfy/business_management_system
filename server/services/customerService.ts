@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
 import { customers, invoices, workOrders } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { escapeLike, escLike } from "../lib/sqlLike";
+import { escLike } from "../lib/sqlLike";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
