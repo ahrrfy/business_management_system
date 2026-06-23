@@ -11,6 +11,7 @@ import { printCountSheets } from "@/lib/printing/stocktakeTemplates";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
+import { Printer } from "lucide-react";
 
 // ─── شكل مخرج stocktakes.countSheets المُستهلَك (العقد §٣):
 //     لكل تكليف { assignment, items: [{ productName, variantName, sku, barcode, baseUnit }] } ───
@@ -104,7 +105,9 @@ export default function StocktakeCountSheets() {
           <Link href="/stocktakes">
             <Button variant="outline">قائمة الجلسات</Button>
           </Link>
-          <Button onClick={doPrint} disabled={!sheets.length}>🖨 طباعة القوائم</Button>
+          <Button onClick={doPrint} disabled={!sheets.length}>
+            <Printer aria-hidden className="size-4" /> طباعة القوائم
+          </Button>
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { buildCredentialsMessage, whatsappLink } from "@/lib/credentialsMessage";
-import { CheckIcon, CopyIcon, MessageCircleIcon, XIcon } from "lucide-react";
+import { AlertTriangle, CheckCircle2, CheckIcon, CopyIcon, MessageCircleIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 export interface CredentialsShareProps {
@@ -75,8 +75,8 @@ export function CredentialsShare({
   return (
     <Card className="border-emerald-200 bg-emerald-50 dark:bg-emerald-950/20 dark:border-emerald-800">
       <CardHeader className="pb-2 flex flex-row items-center justify-between">
-        <CardTitle className="text-base text-emerald-700 dark:text-emerald-400">
-          ✅ تمّ إنشاء الحساب بنجاح
+        <CardTitle className="text-base text-emerald-700 dark:text-emerald-400 inline-flex items-center gap-1">
+          <CheckCircle2 aria-hidden className="size-4" /> تمّ إنشاء الحساب بنجاح
         </CardTitle>
         {onClose && (
           <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
@@ -103,7 +103,7 @@ export function CredentialsShare({
           <div><span className="text-muted-foreground text-xs">كلمة المرور: </span><span dir="ltr" className="font-bold tracking-wider">{password}</span></div>
           <div><span className="text-muted-foreground text-xs">الرابط: </span><span dir="ltr">{appUrl}</span></div>
           {mustChangePassword && (
-            <p className="text-xs text-amber-600 mt-1">⚠️ سيُطلب تغيير كلمة المرور عند أول دخول (صالحة 72 ساعة)</p>
+            <p className="text-xs text-amber-600 mt-1 inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" /> سيُطلب تغيير كلمة المرور عند أول دخول (صالحة 72 ساعة)</p>
           )}
         </div>
 

@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
+import { Banknote, Check, CreditCard, Printer, Send, ShoppingCart, X } from "lucide-react";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
@@ -426,7 +427,7 @@ export default function WorkOrderNew() {
                   s.done ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground border"
                 )}
               >
-                {s.done ? "✓" : s.n}
+                {s.done ? <Check aria-hidden className="size-3.5" /> : s.n}
               </span>
               <span className="hidden sm:inline">{s.label}</span>
             </button>
@@ -588,7 +589,7 @@ export default function WorkOrderNew() {
                       </td>
                       <td className="px-2 py-1.5 text-center font-medium" dir="ltr">{fmt(D(c.unitPrice).times(c.quantity).toFixed(2))}</td>
                       <td className="px-1 py-1.5 text-center">
-                        <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={() => removeRow(c.key)}>✕</Button>
+                        <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={() => removeRow(c.key)} aria-label="إزالة"><X aria-hidden className="size-3.5" /></Button>
                       </td>
                     </tr>
                   ))}
@@ -732,14 +733,14 @@ export default function WorkOrderNew() {
               onClick={() => setPaymentMethod("CASH")}
               className={cn("h-10 px-4 rounded-md border text-sm flex items-center gap-1.5", paymentMethod === "CASH" ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent")}
             >
-              💵 نقدي
+              <Banknote aria-hidden className="size-4" /> نقدي
             </button>
             <button
               type="button"
               onClick={() => setPaymentMethod("CARD")}
               className={cn("h-10 px-4 rounded-md border text-sm flex items-center gap-1.5", paymentMethod === "CARD" ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent")}
             >
-              💳 بطاقة (ماستر/فيزا)
+              <CreditCard aria-hidden className="size-4" /> بطاقة (ماستر/فيزا)
             </button>
           </div>
 
@@ -793,7 +794,7 @@ export default function WorkOrderNew() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
             {/* بطاقة البيع المباشر */}
             <div className={cn("rounded-md border p-3 space-y-1", hasCart ? "bg-emerald-500/5 border-emerald-500/30" : "bg-muted/20 opacity-60")}>
-              <div className="flex items-center justify-between font-semibold"><span>🛒 بيع مباشر (جاهز)</span>{hasCart && <Badge variant="outline" className="text-emerald-700 border-emerald-500/40">فاتورة مستقلّة</Badge>}</div>
+              <div className="flex items-center justify-between font-semibold"><span className="inline-flex items-center gap-1.5"><ShoppingCart aria-hidden className="size-4" /> بيع مباشر (جاهز)</span>{hasCart && <Badge variant="outline" className="text-emerald-700 border-emerald-500/40">فاتورة مستقلّة</Badge>}</div>
               <div className="flex justify-between"><span>إجمالي السلّة</span><span dir="ltr">{fmt(cartSubtotal.toFixed(2))} د.ع</span></div>
               {discount.gt(0) && <div className="flex justify-between text-emerald-700"><span>− خصم</span><span dir="ltr">{fmt(discount.toFixed(2))} د.ع</span></div>}
               <div className="flex justify-between font-bold border-t pt-1"><span>يُدفع كاملاً الآن</span><span dir="ltr">{fmt(saleTotal.toFixed(2))} د.ع</span></div>
@@ -801,7 +802,7 @@ export default function WorkOrderNew() {
             </div>
             {/* بطاقة أمر التخصيص */}
             <div className={cn("rounded-md border p-3 space-y-1", hasCustom ? "bg-violet-500/5 border-violet-500/30" : "bg-muted/20 opacity-60")}>
-              <div className="flex items-center justify-between font-semibold"><span>🖨 أمر تخصيص (مطبعة)</span>{hasCustom && <Badge variant="outline" className="text-violet-700 border-violet-500/40">طلب خدمة</Badge>}</div>
+              <div className="flex items-center justify-between font-semibold"><span className="inline-flex items-center gap-1.5"><Printer aria-hidden className="size-4" /> أمر تخصيص (مطبعة)</span>{hasCustom && <Badge variant="outline" className="text-violet-700 border-violet-500/40">طلب خدمة</Badge>}</div>
               <div className="flex justify-between"><span>خدمة التخصيص ({quantity} × {fmt(salePrice || "0")})</span><span dir="ltr">{fmt(customizationTotal.toFixed(2))} د.ع</span></div>
               {hasDelivery && delivery.gt(0) && <div className="flex justify-between"><span>+ توصيل</span><span dir="ltr">{fmt(delivery.toFixed(2))} د.ع</span></div>}
               <div className="flex justify-between font-bold border-t pt-1"><span>سعر الأمر</span><span dir="ltr">{fmt(customTotal.toFixed(2))} د.ع</span></div>
@@ -822,10 +823,10 @@ export default function WorkOrderNew() {
           {createWO.isPending || createSale.isPending ? "جارٍ الحفظ…" : "حفظ"}
         </Button>
         <Button variant="default" onClick={() => handleSave({ print: true })} disabled={createWO.isPending || createSale.isPending}>
-          🖨 حفظ وطباعة
+          <Printer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> حفظ وطباعة
         </Button>
         <Button variant="outline" onClick={exportImage}>
-          📤 تحميل كصورة
+          <Send aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تحميل كصورة
         </Button>
         <Link href="/work-orders"><Button variant="ghost">إلغاء</Button></Link>
       </div>

@@ -5,11 +5,12 @@
  * - state عبر invoiceReducer (نوع QUOTATION ثابت).
  * - mutation = trpc.quotations.create؛ بعد النجاح يفتح صفحة التفاصيل ويفعّل «تحويل لفاتورة».
  * - clientRequestId للحماية من الإرسال المزدوج (idempotency على مستوى الراوتر).
- * - الأموال عبر decimal.js (money.ts) — ⛔ ممنوع parseFloat/Number على الأموال.
+ * - الأموال عبر decimal.js (money.ts) — ممنوع parseFloat/Number على الأموال.
  * - اختصارات F2/F4/F9/F12/Esc.
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { AlertTriangle } from "lucide-react";
 
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -266,8 +267,9 @@ export default function QuotationNew() {
 
       {/* تنبيه ناعم لبنود بسعر صفر/سالب */}
       {hasZeroPriceLine && (
-        <div className="rounded-md border border-amber-300/40 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
-          ⚠️ هناك بنود بسعر غير صالح — صحّحها قبل الحفظ.
+        <div className="flex items-center gap-2 rounded-md border border-amber-300/40 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
+          <AlertTriangle aria-hidden className="size-4" />
+          هناك بنود بسعر غير صالح — صحّحها قبل الحفظ.
         </div>
       )}
 

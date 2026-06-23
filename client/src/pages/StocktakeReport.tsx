@@ -17,6 +17,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { useMemo } from "react";
 import { Link, useParams } from "wouter";
+import { Printer } from "lucide-react";
 
 // ─── شكل مخرج stocktakes.report المُستهلَك (العقد §٣ report + بنية §٤ review) ───
 
@@ -218,15 +219,15 @@ export default function StocktakeReport() {
   }
 
   const waMessage = [
-    `📋 *محضر جرد وتسوية — ${s.code}*`,
-    `🏪 المكتبة العربية — ${s.branchName ?? "—"}`,
-    `🗂 ${s.name} (${scopeLabel})`,
-    s.approved ? `📅 اعتُمد: ${dts(s.approved.at)} (${s.approved.byName})` : `⏳ الحالة: ${statusLabel}`,
+    `*محضر جرد وتسوية — ${s.code}*`,
+    `المكتبة العربية — ${s.branchName ?? "—"}`,
+    `${s.name} (${scopeLabel})`,
+    s.approved ? `اعتُمد: ${dts(s.approved.at)} (${s.approved.byName})` : `الحالة: ${statusLabel}`,
     "",
-    `✅ معدودة: ${fmtInt(calc.counted.length)} · مطابقة: ${fmtInt(calc.matched.length)}`,
-    `🔺 زيادة: ${fmtInt(calc.over)} · 🔻 نقص: ${fmtInt(calc.short)}`,
-    `💰 صافي قيمة التسوية: ${signedMoney(calc.netValue)}`,
-    calc.iraPct != null ? `🎯 دقة المخزون (IRA): ${calc.iraPct}٪` : "",
+    `معدودة: ${fmtInt(calc.counted.length)} · مطابقة: ${fmtInt(calc.matched.length)}`,
+    `زيادة: ${fmtInt(calc.over)} · نقص: ${fmtInt(calc.short)}`,
+    `صافي قيمة التسوية: ${signedMoney(calc.netValue)}`,
+    calc.iraPct != null ? `دقة المخزون (IRA): ${calc.iraPct}٪` : "",
   ].filter(Boolean).join("\n");
 
   return (
@@ -274,7 +275,9 @@ export default function StocktakeReport() {
           >
             تصدير Excel
           </Button>
-          <Button onClick={doPrint}>🖨 طباعة المحضر</Button>
+          <Button onClick={doPrint}>
+            <Printer aria-hidden className="size-4" /> طباعة المحضر
+          </Button>
         </div>
       </div>
 

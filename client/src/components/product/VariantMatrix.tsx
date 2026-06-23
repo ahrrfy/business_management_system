@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { COLOR_PRESETS, onlyDigits, toArabicDigits, type ClientUnit } from "@/lib/variants";
 import { ChipInput, ColorDot, Field } from "./variantBits";
+import { Check } from "lucide-react";
 
 /* ── مولّد المصفوفة + شبكة الاستثناء ──────────────────── */
 export function MatrixGenerator({
@@ -82,7 +83,7 @@ export function MatrixGenerator({
                                 : "bg-primary/10 text-primary border-primary/20 hover:bg-primary/20"
                             )}
                           >
-                            {off ? "—" : "✓"}
+                            {off ? "—" : <Check aria-hidden className="size-3.5 inline-block" />}
                           </button>
                         </td>
                       );

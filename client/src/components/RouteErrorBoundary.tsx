@@ -4,13 +4,14 @@ import { Button } from "@/components/ui/button";
 import { nanoid } from "nanoid";
 import { ErrorBoundary, type FallbackProps } from "react-error-boundary";
 import { useLocation } from "wouter";
+import { AlertTriangle } from "lucide-react";
 
 function Fallback({ error, resetErrorBoundary }: FallbackProps) {
   const ref = (error as { _ref?: string })?._ref ?? "—";
   return (
     <div className="min-h-[60vh] flex items-center justify-center p-6" dir="rtl">
       <div className="max-w-md text-center space-y-4">
-        <div className="text-4xl">⚠️</div>
+        <div className="flex justify-center"><AlertTriangle aria-hidden className="size-10 text-destructive" /></div>
         <h2 className="text-xl font-bold">حدث خطأ غير متوقّع</h2>
         <p className="text-sm text-muted-foreground">
           نعتذر — حدث خلل في هذه الشاشة. بياناتك سليمة. جرّب إعادة المحاولة، وإن تكرّر فاذكر الرقم المرجعي للدعم.

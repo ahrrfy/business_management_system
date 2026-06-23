@@ -3,6 +3,7 @@
  * Ported from `_design-bundle/project/invoice-footer.jsx#TotalsPanel`.
  */
 import type { Dispatch } from "react";
+import { Calculator, CreditCard, Lock, Package, Truck } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -39,7 +40,7 @@ export function TotalsPanel({
   return (
     <section className="overflow-hidden rounded-xl border bg-card">
       <header className="flex items-center gap-2 border-b bg-muted px-4 py-2.5">
-        <span className="text-base">🧮</span>
+        <Calculator aria-hidden className="size-5" />
         <span className="text-sm font-extrabold">ملخص المبالغ</span>
       </header>
 
@@ -104,7 +105,9 @@ export function TotalsPanel({
         {/* Shipping */}
         {showShipping && (
           <div className={rowCls}>
-            <span className={labelCls}>🚛 مصاريف شحن</span>
+            <span className={cn(labelCls, "inline-flex items-center gap-1.5")}>
+              <Truck aria-hidden className="size-4" /> مصاريف شحن
+            </span>
             <Input
               dir="ltr"
               value={state.shipping || ""}
@@ -118,7 +121,9 @@ export function TotalsPanel({
         {/* Other expenses */}
         {showOtherExpenses && (
           <div className={cn(rowCls, "border-b pb-2.5")}>
-            <span className={labelCls}>📦 مصاريف أخرى</span>
+            <span className={cn(labelCls, "inline-flex items-center gap-1.5")}>
+              <Package aria-hidden className="size-4" /> مصاريف أخرى
+            </span>
             <Input
               dir="ltr"
               value={state.otherExpenses || ""}
@@ -143,11 +148,13 @@ export function TotalsPanel({
 
       {/* Payment section */}
       <div className="border-t-2 px-4 py-3">
-        <div className="mb-2 flex items-center gap-1.5 text-xs font-extrabold">💳 الدفع</div>
+        <div className="mb-2 flex items-center gap-1.5 text-xs font-extrabold">
+          <CreditCard aria-hidden className="size-4" /> الدفع
+        </div>
 
         {state.paymentTerms === "CREDIT" ? (
           <div className="flex items-center gap-2 rounded-lg border border-amber-300/40 bg-amber-50 px-3.5 py-3 text-amber-700">
-            <span className="text-xl">🔒</span>
+            <Lock aria-hidden className="size-5" />
             <div>
               <div className="text-sm font-extrabold">دفع آجل (ذمة)</div>
               <div className="mt-0.5 text-[11px] text-muted-foreground">

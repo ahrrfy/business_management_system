@@ -13,6 +13,7 @@ import { downloadLauncherCmd, kioskUrl } from "@/lib/kioskLauncher";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
+import { Download, X } from "lucide-react";
 import { useState } from "react";
 
 type Reveal = { deviceId: number; label: string; branchName: string | null; rawToken: string };
@@ -93,7 +94,7 @@ export default function KioskDevices() {
             <CardTitle className="text-base text-emerald-700 dark:text-emerald-400">
               رمز الجهاز «{reveal.label}» — اظهر مرّة واحدة فقط
             </CardTitle>
-            <button className="text-muted-foreground hover:text-foreground text-lg" onClick={() => setReveal(null)} aria-label="إغلاق">✕</button>
+            <button className="text-muted-foreground hover:text-foreground" onClick={() => setReveal(null)} aria-label="إغلاق"><X aria-hidden className="size-5" /></button>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 p-3 text-xs text-amber-800 dark:text-amber-300">
@@ -117,8 +118,8 @@ export default function KioskDevices() {
             </div>
 
             <div className="flex flex-wrap gap-2 pt-1">
-              <Button onClick={() => downloadLauncherCmd({ origin, token: reveal.rawToken, label: reveal.label, branchName: reveal.branchName, deviceId: reveal.deviceId })}>
-                ⬇ تنزيل المُشغّل (.cmd)
+              <Button className="inline-flex items-center gap-1.5" onClick={() => downloadLauncherCmd({ origin, token: reveal.rawToken, label: reveal.label, branchName: reveal.branchName, deviceId: reveal.deviceId })}>
+                <Download aria-hidden className="size-4" />تنزيل المُشغّل (.cmd)
               </Button>
               <span className="text-xs text-muted-foreground self-center">
                 شغّل الملف على جهاز الشاشة، أو ضعه في مجلّد بدء التشغيل (shell:startup) للتشغيل التلقائي.

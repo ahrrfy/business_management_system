@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { X } from "lucide-react";
 
 /**
  * حقل عميل ذكي — v3-add-screens.
@@ -139,7 +140,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
             className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-destructive"
             aria-label="مسح اختيار العميل"
           >
-            ✕
+            <X aria-hidden className="size-3.5" />
           </button>
         )}
       </div>

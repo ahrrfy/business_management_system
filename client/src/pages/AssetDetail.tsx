@@ -14,6 +14,7 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
+import { PlayCircle } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
 
@@ -172,7 +173,7 @@ export default function AssetDetail() {
                 <tbody>
                   {a.schedule.map((r) => (
                     <tr key={r.year} className={`border-t ${r.isCurrent ? "bg-primary/5 font-medium" : ""}`}>
-                      <td className="p-2" dir="ltr">{r.year}{r.isCurrent ? " ◄" : ""}</td>
+                      <td className="p-2" dir="ltr"><span className="inline-flex items-center gap-1">{r.year}{r.isCurrent ? <PlayCircle aria-hidden className="size-3" /> : null}</span></td>
                       <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.opening)}</td>
                       <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.dep)}</td>
                       <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.closing)}</td>

@@ -4,6 +4,7 @@ import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { ROLE_OPTIONS } from "@/pages/Users";
 import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 
 /**
  * منتقي حساب نظام موجود لربطه بموظف — على نمط SmartCustomerInput لكن بلا «إنشاء جديد»
@@ -95,7 +96,7 @@ export function SmartUserInput({ value, onChange, employeeId, placeholder, class
             className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground hover:text-destructive"
             aria-label="مسح اختيار الحساب"
           >
-            ✕
+            <X aria-hidden className="size-3.5" />
           </button>
         )}
       </div>

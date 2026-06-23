@@ -2,7 +2,8 @@
 //  - الخزينة الإدارية (TREASURY): معاملات admin/manager بـcashBucket='TREASURY' (متوقَّعة، مشروعة).
 //  - نقد يتيم حقيقي (TRUE_ORPHAN): سجلات تاريخية قبل cashBucket (NULL) أو خَلل كاشير بـnull-shift.
 // كلاهما خارج Z-report. تَسوية درج الكاشير تَبقى دقيقة، والمعاملات الإدارية تَدخل تَسوية شهرية مستقلّة.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
+import { AlertTriangle, Building2 } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
@@ -170,9 +171,9 @@ export default function CashOrphanReport() {
       {/* تبويبات الفئات */}
       <div className="flex gap-1">
         {([
-          { key: "all" as Tab, label: "الكلّ" },
-          { key: "TREASURY" as Tab, label: "🏦 خزينة إدارية" },
-          { key: "TRUE_ORPHAN" as Tab, label: "⚠️ يتيم حقيقي" },
+          { key: "all" as Tab, label: "الكلّ" as ReactNode },
+          { key: "TREASURY" as Tab, label: (<span className="inline-flex items-center gap-1"><Building2 aria-hidden className="size-3.5" />خزينة إدارية</span>) as ReactNode },
+          { key: "TRUE_ORPHAN" as Tab, label: (<span className="inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" />يتيم حقيقي</span>) as ReactNode },
         ]).map((t) => (
           <button
             key={t.key}
@@ -230,8 +231,8 @@ export default function CashOrphanReport() {
                       </td>
                       <td className="p-3 text-right">{r.branchName ?? "—"}</td>
                       <td className="p-3 text-right">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.category === "TREASURY" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-800"}`}>
-                          {r.category === "TREASURY" ? "🏦 خزينة" : "⚠️ يتيم"}
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${r.category === "TREASURY" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-800"}`}>
+                          {r.category === "TREASURY" ? <><Building2 aria-hidden className="size-3.5" />خزينة</> : <><AlertTriangle aria-hidden className="size-3.5" />يتيم</>}
                         </span>
                       </td>
                       <td className="p-3 text-right">

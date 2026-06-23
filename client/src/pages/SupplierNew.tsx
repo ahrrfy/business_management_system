@@ -10,6 +10,7 @@ import { whatsappLink } from "@/lib/intlPhone";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
+import { Star } from "lucide-react";
 
 /**
  * إضافة مورّد — v3 add-screens.
@@ -209,11 +210,11 @@ export default function SupplierNew() {
                   onClick={() => setRating(rating === n ? 0 : n)}
                   aria-label={`${n} نجوم`}
                   className={cn(
-                    "text-xl transition-colors",
+                    "transition-colors",
                     n <= rating ? "text-amber-500" : "text-muted-foreground/40 hover:text-muted-foreground"
                   )}
                 >
-                  {n <= rating ? "★" : "☆"}
+                  <Star aria-hidden className={cn("size-5", n <= rating && "fill-current")} />
                 </button>
               ))}
               {rating > 0 && (

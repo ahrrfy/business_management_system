@@ -12,6 +12,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { type ExportColumn, exportRows } from "@/lib/export";
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 
 type DataTableProps<T extends object> = {
   data: T[];
@@ -93,12 +94,14 @@ export function DataTable<T extends object>({
                     onClick={header.column.getToggleSortingHandler()}
                     style={{ cursor: header.column.getCanSort() ? "pointer" : "default" }}
                   >
-                    {flexRender(header.column.columnDef.header, header.getContext())}
-                    {header.column.getIsSorted() === "asc"
-                      ? " ▴"
-                      : header.column.getIsSorted() === "desc"
-                        ? " ▾"
-                        : ""}
+                    <span className="inline-flex items-center gap-1">
+                      {flexRender(header.column.columnDef.header, header.getContext())}
+                      {header.column.getIsSorted() === "asc"
+                        ? <ChevronUp aria-hidden className="size-3.5" />
+                        : header.column.getIsSorted() === "desc"
+                          ? <ChevronDown aria-hidden className="size-3.5" />
+                          : null}
+                    </span>
                   </th>
                 ))}
               </tr>
@@ -144,16 +147,18 @@ export function DataTable<T extends object>({
               variant="outline"
               onClick={() => table.previousPage()}
               disabled={!table.getCanPreviousPage()}
+              aria-label="السابق"
             >
-              ‹
+              <ChevronRight aria-hidden className="size-4" />
             </Button>
             <Button
               size="sm"
               variant="outline"
               onClick={() => table.nextPage()}
               disabled={!table.getCanNextPage()}
+              aria-label="التالي"
             >
-              ›
+              <ChevronLeft aria-hidden className="size-4" />
             </Button>
           </div>
         </div>

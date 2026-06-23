@@ -14,6 +14,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { useEffect } from "react";
 import { FormProvider, useForm, type DefaultValues, type FieldValues, type SubmitHandler } from "react-hook-form";
 import type { ZodType } from "zod";
+import { Check } from "lucide-react";
 
 type FormProps<T extends FieldValues> = {
   schema: ZodType<T>;
@@ -77,7 +78,7 @@ export function Form<T extends FieldValues>({
           </Button>
           {cancel}
           {autosaveKey && draft.savedAt && (
-            <span className="text-xs text-muted-foreground ms-auto">✓ مسوّدة محفوظة</span>
+            <span className="text-xs text-muted-foreground ms-auto inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" /> مسوّدة محفوظة</span>
           )}
         </div>
       </form>

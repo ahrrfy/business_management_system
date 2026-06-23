@@ -44,7 +44,7 @@ export default function TrialBalance() {
     ? [
         { label: "إجمالي المدين", value: fmtAr(totalDebit), tone: "info" },
         { label: "إجمالي الدائن", value: fmtAr(totalCredit), tone: "info" },
-        { label: "التوازن", value: D(totalDebit).sub(D(totalCredit)).abs().lt(D("0.01")) ? "متوازن ✓" : "غير متوازن", tone: "positive" },
+        { label: "التوازن", value: D(totalDebit).sub(D(totalCredit)).abs().lt(D("0.01")) ? "متوازن" : "غير متوازن", tone: "positive" },
       ]
     : [];
 

@@ -1,6 +1,7 @@
 import "./WorkOrders.board.css";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
+import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, Package, Printer, Receipt, Search, Timer, Wrench, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -37,8 +38,10 @@ const STATUS_LABEL: Record<string, string> = {
 const STATUS_HUE: Record<string, number> = { RECEIVED: 72, IN_PROGRESS: 250, READY: 293, DELIVERED: 155 };
 const STAGE_INDEX: Record<string, number> = { RECEIVED: 0, IN_PROGRESS: 1, READY: 2, DELIVERED: 3 };
 const NEXT: Record<string, Status> = { RECEIVED: "IN_PROGRESS", IN_PROGRESS: "READY", READY: "DELIVERED" };
-const ADV_LABEL: Record<string, string> = {
-  IN_PROGRESS: "▶ بدء التنفيذ (خصم المواد)", READY: "✓ وضع علامة: جاهز", DELIVERED: "📦 تسليم وإصدار فاتورة",
+const ADV_LABEL: Record<string, React.ReactNode> = {
+  IN_PROGRESS: (<><ChevronRight aria-hidden className="size-4 inline-block align-text-bottom me-1" /> بدء التنفيذ (خصم المواد)</>),
+  READY: (<><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> وضع علامة: جاهز</>),
+  DELIVERED: (<><Package aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تسليم وإصدار فاتورة</>),
 };
 
 // أعمدة اللوحة (٥) — «مسحوب» ليست حالة DB بل عرضٌ لـRECEIVED المُسنَد (assignedTo != null).
@@ -182,7 +185,7 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
       </div>
       <div className="wob-card-body">
         <div className="wob-thumb" style={{ background: `oklch(0.6 0.15 ${hue})` }}>
-          {o.thumbnailUrl ? <img src={o.thumbnailUrl} alt="" /> : <span className="wob-thumb-abbr" style={{ fontSize: 22 }}>🖨</span>}
+          {o.thumbnailUrl ? <img src={o.thumbnailUrl} alt="" /> : <span className="wob-thumb-abbr"><Printer aria-hidden size={22} /></span>}
         </div>
         <div className="wob-info">
           <div className="wob-card-title">{o.title}</div>
@@ -192,7 +195,7 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
       <div className="wob-meta">
         <span className="wob-meta-pill"><span className="wob-ml">الكمية </span>{fmtInt(o.quantity)}</span>
         <span className="wob-meta-pill"><span className="wob-ml">السعر </span>{fmtAr(o.salePrice)} <span className="wob-ml">د.ع</span></span>
-        <span className={`wob-due wob-${di.state}`} style={{ marginInlineStart: "auto" }}>{late ? "⏱" : "📅"} {di.text}</span>
+        <span className={`wob-due wob-${di.state}`} style={{ marginInlineStart: "auto", display: "inline-flex", alignItems: "center", gap: 4 }}>{late ? <Timer aria-hidden className="size-3.5" /> : <Calendar aria-hidden className="size-3.5" />} {di.text}</span>
       </div>
       <div className="wob-prog">
         <div className="wob-prog-bar"><div className="wob-prog-fill" style={{ width: pr.pct + "%", background: `oklch(0.6 0.17 ${hue})` }} /></div>
@@ -225,12 +228,12 @@ function Stats({ orders }: { orders: WO[] }) {
   const inProg = orders.filter((o) => o.status === "IN_PROGRESS").length;
   const ready = orders.filter((o) => o.status === "READY").length;
   const delivered = orders.filter((o) => o.status === "DELIVERED").length;
-  const cards = [
-    { c: "var(--primary)", label: "🧾 أوامر نشطة", val: active, sub: "قيد المعالجة الآن" },
-    { c: "oklch(0.577 0.245 27.325)", label: "⏱ متأخرة عن الاستحقاق", val: late, sub: "تحتاج تدخّلاً فورياً" },
-    { c: "oklch(0.60 0.16 250)", label: "🛠 قيد التنفيذ", val: inProg, sub: "تحت الإنتاج" },
-    { c: "oklch(0.58 0.22 293)", label: "✅ جاهز للتسليم", val: ready, sub: "بانتظار العميل" },
-    { c: "oklch(0.62 0.16 155)", label: "📦 مُسلَّم", val: delivered, sub: "اكتمل وصدرت الفاتورة" },
+  const cards: { c: string; label: React.ReactNode; val: number; sub: string }[] = [
+    { c: "var(--primary)", label: (<><Receipt aria-hidden className="size-4 inline-block align-text-bottom me-1" /> أوامر نشطة</>), val: active, sub: "قيد المعالجة الآن" },
+    { c: "oklch(0.577 0.245 27.325)", label: (<><Timer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> متأخرة عن الاستحقاق</>), val: late, sub: "تحتاج تدخّلاً فورياً" },
+    { c: "oklch(0.60 0.16 250)", label: (<><Wrench aria-hidden className="size-4 inline-block align-text-bottom me-1" /> قيد التنفيذ</>), val: inProg, sub: "تحت الإنتاج" },
+    { c: "oklch(0.58 0.22 293)", label: (<><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> جاهز للتسليم</>), val: ready, sub: "بانتظار العميل" },
+    { c: "oklch(0.62 0.16 155)", label: (<><Package aria-hidden className="size-4 inline-block align-text-bottom me-1" /> مُسلَّم</>), val: delivered, sub: "اكتمل وصدرت الفاتورة" },
   ];
   return (
     <div className="wob-stats">
@@ -329,7 +332,7 @@ function Drawer({
     <>
       <div className="wob-scrim" onClick={onClose} />
       <div className="wob-drawer" role="dialog" aria-modal="true" aria-label="تفاصيل طلب الخدمة">
-        <button className="wob-dr-close" onClick={onClose} aria-label="إغلاق">✕</button>
+        <button className="wob-dr-close" onClick={onClose} aria-label="إغلاق"><X aria-hidden className="size-4" /></button>
         {!d ? (
           <div className="wob-dr-body"><div style={{ color: "var(--muted-fg)", textAlign: "center", padding: 40 }}>{detail.isLoading ? "جارٍ التحميل…" : "تعذّر العثور على الأمر."}</div></div>
         ) : (
@@ -337,7 +340,7 @@ function Drawer({
             <div className="wob-dr-head">
               <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
                 <div className="wob-thumb" style={{ width: 48, height: 48, background: `oklch(0.6 0.15 ${hue})` }}>
-                  {d.images?.[0]?.url ? <img src={d.images[0].url} alt="" /> : <span className="wob-thumb-abbr" style={{ fontSize: 20 }}>🖨</span>}
+                  {d.images?.[0]?.url ? <img src={d.images[0].url} alt="" /> : <span className="wob-thumb-abbr"><Printer aria-hidden size={20} /></span>}
                 </div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontSize: 11, color: "var(--muted-fg)", fontFamily: "ui-monospace, monospace", direction: "ltr", textAlign: "right" }}>{d.orderNumber}</div>
@@ -345,9 +348,9 @@ function Drawer({
                 </div>
               </div>
               <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", alignItems: "center" }}>
-                <span className="wob-meta-pill" style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})` }}>● {STATUS_LABEL[d.status]}</span>
+                <span className="wob-meta-pill" style={{ background: `oklch(0.6 0.17 ${hue} / 0.13)`, color: `oklch(0.45 0.17 ${hue})`, display: "inline-flex", alignItems: "center", gap: 6 }}><span className="inline-block size-2 rounded-full" style={{ background: `oklch(0.45 0.17 ${hue})` }} />{STATUS_LABEL[d.status]}</span>
                 {pri && <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>}
-                {di && <span className={`wob-due wob-${di.state}`}>{di.state === "late" ? "⏱" : "📅"} {di.text}</span>}
+                {di && <span className={`wob-due wob-${di.state}`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>{di.state === "late" ? <Timer aria-hidden className="size-3.5" /> : <Calendar aria-hidden className="size-3.5" />} {di.text}</span>}
               </div>
             </div>
 
@@ -385,7 +388,7 @@ function Drawer({
                 <div className="wob-prog-bar" style={{ marginBottom: 12 }}><div className="wob-prog-fill" style={{ width: progressOf(d.status).pct + "%", background: `oklch(0.6 0.17 ${hue})` }} /></div>
                 {STATUSES.map((s, i) => (
                   <div key={s.key} className={`wob-stage-row ${i < cur ? "wob-on" : ""}`}>
-                    <div className={`wob-stage-box ${i < cur ? "wob-on" : ""} ${i === cur ? "wob-cur" : ""}`}>{i < cur ? "✓" : i + 1}</div>
+                    <div className={`wob-stage-box ${i < cur ? "wob-on" : ""} ${i === cur ? "wob-cur" : ""}`}>{i < cur ? <CheckCircle2 aria-hidden className="size-4" /> : i + 1}</div>
                     <span className="wob-stage-label">{s.label}</span>
                   </div>
                 ))}
@@ -425,7 +428,7 @@ function Drawer({
                 items: [{ name: `${d.title} (${d.quantity} نسخة)`, unit: "مهمة", quantity: 1, unitPrice: d.salePrice, total: d.salePrice }],
                 subtotal: d.salePrice,
                 total: d.salePrice,
-              })}>🖨️ طباعة A4</button>
+              })}><Printer aria-hidden className="size-4 inline-block align-text-bottom me-1" /> طباعة A4</button>
               <button
                 className="wob-btn wob-btn-ghost"
                 title="إيصال طلب خدمة حراري 80مم — جسر الخادم/WebUSB/متصفّح"
@@ -441,7 +444,7 @@ function Drawer({
                   specs: d.customizationText ?? undefined,
                   total: d.salePrice,
                 })}
-              >🧾 حراري 80مم</button>
+              ><Receipt aria-hidden className="size-4 inline-block align-text-bottom me-1" /> حراري 80مم</button>
               {d.customerPhone && (
                 <a className="wob-wa-lg" href={waUrl(d.customerPhone, d.customerName, d)} target="_blank" rel="noopener noreferrer"><WaIcon size={18} /> راسل العميل</a>
               )}
@@ -449,7 +452,7 @@ function Drawer({
                 <button className="wob-btn wob-btn-primary" style={{ flex: 1 }} disabled={busy}
                   onClick={() => (next === "DELIVERED" ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
               ) : (
-                <button className="wob-btn wob-btn-ghost" disabled style={{ flex: 1, opacity: 0.6 }}>✓ اكتمل الأمر</button>
+                <button className="wob-btn wob-btn-ghost" disabled style={{ flex: 1, opacity: 0.6 }}><CheckCircle2 aria-hidden className="size-4 inline-block align-text-bottom me-1" /> اكتمل الأمر</button>
               )}
               {isManager && d.status !== "DELIVERED" && d.status !== "CANCELLED" && (
                 <button className="wob-btn wob-btn-danger" disabled={busy} onClick={() => onCancel(d)}>إلغاء الأمر</button>
@@ -633,7 +636,7 @@ export default function WorkOrders() {
                 { key: "assigneeName", header: "المسؤول", map: (r) => r.assigneeName ?? "" },
                 { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
               ],
-            })}>📄 تصدير Excel</button>
+            })}><FileText aria-hidden className="size-4 inline-block align-text-bottom me-1" /> تصدير Excel</button>
           <Link href="/work-orders/new" className="wob-btn wob-btn-primary">＋ طلب خدمة جديد</Link>
         </div>
       </div>
@@ -642,7 +645,7 @@ export default function WorkOrders() {
 
       <div className="wob-toolbar">
         <div className="wob-search">
-          <span className="wob-si">🔍</span>
+          <span className="wob-si"><Search aria-hidden className="size-4" /></span>
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="بحث (رقم / عنوان / عميل)" />
         </div>
         <select className="wob-sel" value={fPri} onChange={(e) => setFPri(e.target.value)}>
@@ -653,7 +656,7 @@ export default function WorkOrders() {
           <option value="">كل القنوات</option>
           {Object.entries(CHANNELS).map(([k, c]) => <option key={k} value={k}>{c.icon} {c.label}</option>)}
         </select>
-        {anyFilter && <button className="wob-chip-clear" onClick={() => { setQ(""); setFPri(""); setFCh(""); }}>مسح الفلاتر ✕</button>}
+        {anyFilter && <button className="wob-chip-clear" onClick={() => { setQ(""); setFPri(""); setFCh(""); }}>مسح الفلاتر <X aria-hidden className="size-3.5 inline-block align-text-bottom" /></button>}
       </div>
 
       <div className="wob-board-wrap">

@@ -22,6 +22,21 @@ import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { cn } from "@/lib/utils";
+import {
+  WifiOff,
+  Check,
+  Hourglass,
+  Lock,
+  Ban,
+  Send,
+  ScanLine,
+  Camera,
+  RefreshCw,
+  PartyPopper,
+  ChevronUp,
+  ChevronDown,
+  Hand,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp";
 import {
@@ -222,7 +237,7 @@ export default function CountPortal() {
       setQueueCount(queueSize(code));
       if (synced > 0) {
         setOnline(true);
-        notify.ok(`عاد الاتصال — تمت مزامنة ${fmtInt(synced)} عدّة محفوظة محلياً ✓`);
+        notify.ok(`عاد الاتصال — تمت مزامنة ${fmtInt(synced)} عدّة محفوظة محلياً`);
         void utils.count.state.invalidate();
       }
     }
@@ -303,8 +318,8 @@ export default function CountPortal() {
       if (!i.isMine && dupBlocked) {
         notify.info(
           i.colleagueCounted
-            ? "🔒 المنتج معدود من زميلك — سياسة الجلسة تمنع العدّ المكرر"
-            : "🔒 المنتج من منطقة زميل — اطلب من المسؤول إسناده إليك",
+            ? "المنتج معدود من زميلك — سياسة الجلسة تمنع العدّ المكرر"
+            : "المنتج من منطقة زميل — اطلب من المسؤول إسناده إليك",
         );
         return;
       }
@@ -380,13 +395,13 @@ export default function CountPortal() {
             const r = res as unknown as { isConflict?: boolean; kind?: string } | undefined;
             const kind = r?.kind ?? mode;
             if (kind === "VERIFY") {
-              if (r?.isConflict === true) notify.warn("⚠ اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
-              else if (r?.isConflict === false) notify.ok("✓ تطابق العدّان — تأكيد إضافي للموثوقية");
-              else notify.ok("سُجّل العدّ التحقّقي ✓");
+              if (r?.isConflict === true) notify.warn("اختلف عدّك عن عدّ زميلك — رُفع تعارض للمسؤول للفصل");
+              else if (r?.isConflict === false) notify.ok("تطابق العدّان — تأكيد إضافي للموثوقية");
+              else notify.ok("سُجّل العدّ التحقّقي");
             } else if (kind === "RECOUNT") {
-              notify.ok("سُجّلت إعادة العدّ ✓");
+              notify.ok("سُجّلت إعادة العدّ");
             } else {
-              notify.ok("سُجّلت الكمية ✓");
+              notify.ok("سُجّلت الكمية");
             }
             void utils.count.state.invalidate();
           },
@@ -403,7 +418,7 @@ export default function CountPortal() {
               setQueueCount(queueSize(code));
               setOpenVariantId(null);
               if (persisted) {
-                notify.info("📴 لا اتصال — حُفظت الكمية محلياً", "سيُزامَن العدّ تلقائياً عند عودة الاتصال");
+                notify.info("لا اتصال — حُفظت الكمية محلياً", "سيُزامَن العدّ تلقائياً عند عودة الاتصال");
               } else {
                 notify.err("تعذّر الحفظ محلياً على هذا الجهاز — أعد المحاولة عند توفّر الاتصال");
               }
@@ -437,7 +452,7 @@ export default function CountPortal() {
           const moved = Boolean((res as unknown as { sessionMovedToReview?: boolean })?.sessionMovedToReview);
           setFinished({ sessionMovedToReview: moved });
           setShowListAfterSubmit(false);
-          notify.ok(moved ? "سُلّم العدّ — اكتمل الجرد وانتقلت الجلسة للمراجعة ✓" : "سُلّم العدّ — شكراً لجهدك ✓");
+          notify.ok(moved ? "سُلّم العدّ — اكتمل الجرد وانتقلت الجلسة للمراجعة" : "سُلّم العدّ — شكراً لجهدك");
           void utils.count.state.invalidate();
         },
         onError: (e) => notify.err(e),
@@ -471,7 +486,9 @@ export default function CountPortal() {
       bootOffline ? (
         <CenterScreen>
           <BrandMark />
-          <p className="text-lg font-bold">📴 لا اتصال بالشبكة</p>
+          <p className="flex items-center justify-center gap-2 text-lg font-bold">
+            <WifiOff aria-hidden className="size-5" /> لا اتصال بالشبكة
+          </p>
           <p className="text-sm text-muted-foreground">تعذّر الوصول للخادم — تحقّق من الإنترنت ثم أعد المحاولة.</p>
           <Button size="lg" className="w-44" onClick={() => void boot()}>
             إعادة المحاولة
@@ -542,8 +559,14 @@ export default function CountPortal() {
         <CenterScreen>
           <BrandMark />
           <p className="text-lg font-bold">تعذّر الوصول للجلسة</p>
-          <p className="text-sm text-muted-foreground">
-            {isNetworkError(stateQ.error) ? "📴 لا اتصال بالشبكة — سنعيد المحاولة تلقائياً." : errMsg(stateQ.error)}
+          <p className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
+            {isNetworkError(stateQ.error) ? (
+              <>
+                <WifiOff aria-hidden className="size-4" /> لا اتصال بالشبكة — سنعيد المحاولة تلقائياً.
+              </>
+            ) : (
+              errMsg(stateQ.error)
+            )}
           </p>
           <Button size="lg" className="w-44" onClick={() => void stateQ.refetch()}>
             إعادة المحاولة
@@ -562,7 +585,9 @@ export default function CountPortal() {
   if (sessionStatus === "CANCELLED") {
     return frame(
       <CenterScreen>
-        <div className="grid size-16 place-items-center rounded-full bg-muted text-3xl">🚫</div>
+        <div className="grid size-16 place-items-center rounded-full bg-muted text-muted-foreground">
+          <Ban aria-hidden className="size-8" />
+        </div>
         <p className="text-lg font-bold">أُلغيت جلسة الجرد</p>
         <p className="text-sm leading-relaxed text-muted-foreground">
           ألغى المسؤول هذه الجلسة — لا حاجة لمزيد من العدّ. شكراً لجهدك {st.assignment.name}.
@@ -573,7 +598,9 @@ export default function CountPortal() {
   if (sessionStatus === "APPROVED") {
     return frame(
       <CenterScreen>
-        <div className="grid size-16 place-items-center rounded-full bg-emerald-100 text-3xl text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">✓</div>
+        <div className="grid size-16 place-items-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+          <Check aria-hidden className="size-8" />
+        </div>
         <p className="text-lg font-bold">اعتُمدت نتائج الجرد</p>
         <p className="text-sm leading-relaxed text-muted-foreground">
           أُغلقت جلسة «{st.session.name}» واعتُمدت نتائجها — شكراً لمشاركتك {st.assignment.name}.
@@ -588,17 +615,22 @@ export default function CountPortal() {
     const waNotify = Boolean((st.session as unknown as { waNotify?: boolean }).waNotify);
     const sessionProgress = st.progress.session;
     const waMsg = [
-      `✅ سلّمت عدّي — جلسة الجرد «${st.session.name}» (${st.session.code})`,
-      `👷 العامل: ${st.assignment.name}`,
-      st.assignment.zone ? `📍 المنطقة: ${st.assignment.zone}` : "",
-      `📊 تقدّم الجلسة: ${fmtInt(sessionProgress.counted)}/${fmtInt(sessionProgress.total)}`,
+      `سلّمت عدّي — جلسة الجرد «${st.session.name}» (${st.session.code})`,
+      `العامل: ${st.assignment.name}`,
+      st.assignment.zone ? `المنطقة: ${st.assignment.zone}` : "",
+      `تقدّم الجلسة: ${fmtInt(sessionProgress.counted)}/${fmtInt(sessionProgress.total)}`,
     ]
       .filter(Boolean)
       .join("\n");
     return frame(
       <CenterScreen>
-        <div className="grid size-20 place-items-center rounded-full bg-emerald-100 text-4xl text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">✓</div>
-        <p className="text-xl font-bold">سلّمت عدّك — شكراً {st.assignment.name.split(" ")[0]} 🎉</p>
+        <div className="grid size-20 place-items-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+          <Check aria-hidden className="size-10" />
+        </div>
+        <p className="flex items-center justify-center gap-2 text-xl font-bold">
+          سلّمت عدّك — شكراً {st.assignment.name.split(" ")[0]}
+          <PartyPopper aria-hidden className="size-5" />
+        </p>
         <p className="text-sm leading-relaxed text-muted-foreground">
           {movedToReview
             ? "اكتمل العدّ من جميع العمّال — الجلسة الآن قيد مراجعة المسؤول."
@@ -606,7 +638,7 @@ export default function CountPortal() {
         </p>
         {waNotify && (
           <Button variant="outline" size="lg" className="h-12 w-60 text-base font-bold" onClick={() => openWhatsApp(null, waMsg)}>
-            📤 إبلاغ المسؤول عبر واتساب
+            <Send aria-hidden className="size-4" /> إبلاغ المسؤول عبر واتساب
           </Button>
         )}
         <button type="button" className="py-2 text-sm font-bold text-primary" onClick={() => setShowListAfterSubmit(true)}>
@@ -620,7 +652,9 @@ export default function CountPortal() {
   if (sessionStatus === "REVIEW" && !submittedAssignment) {
     return frame(
       <CenterScreen>
-        <div className="grid size-16 place-items-center rounded-full bg-amber-100 text-3xl dark:bg-amber-950">🔒</div>
+        <div className="grid size-16 place-items-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+          <Lock aria-hidden className="size-8" />
+        </div>
         <p className="text-lg font-bold">أُقفل العدّ</p>
         <p className="text-sm leading-relaxed text-muted-foreground">
           نقل المسؤول الجلسة لمرحلة المراجعة — لم يعد إدخال العدّ متاحاً. شكراً لجهدك {st.assignment.name}.
@@ -643,14 +677,16 @@ export default function CountPortal() {
             <p className="truncate text-sm font-bold">
               {st.session.name} <span className="font-normal text-muted-foreground">— {st.session.branchName}</span>
             </p>
-            <p className="mt-0.5 text-[12px] text-muted-foreground">
-              مرحباً {firstName} 👋{st.assignment.zone ? ` · منطقتك: ${st.assignment.zone}` : ""}
+            <p className="mt-0.5 flex items-center gap-1 text-[12px] text-muted-foreground">
+              مرحباً {firstName}
+              <Hand aria-hidden className="size-3.5" />
+              {st.assignment.zone ? <span>· منطقتك: {st.assignment.zone}</span> : null}
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1.5 pt-0.5">
             {queueCount > 0 && (
-              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="عدّات بانتظار المزامنة">
-                ⏳ {fmtInt(queueCount)}
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800 dark:bg-amber-950 dark:text-amber-300" title="عدّات بانتظار المزامنة">
+                <Hourglass aria-hidden className="size-3" /> {fmtInt(queueCount)}
               </span>
             )}
             {st.session.blind && (
@@ -658,9 +694,14 @@ export default function CountPortal() {
                 جرد أعمى
               </span>
             )}
-            <span className="text-sm leading-none" title={online ? "متصل" : "لا اتصال"} aria-label={online ? "متصل" : "لا اتصال"}>
-              {online ? "🟢" : "🔴"}
-            </span>
+            <span
+              className={cn(
+                "inline-block size-2.5 rounded-full",
+                online ? "bg-emerald-500" : "bg-rose-500",
+              )}
+              title={online ? "متصل" : "لا اتصال"}
+              aria-label={online ? "متصل" : "لا اتصال"}
+            />
           </div>
         </div>
         <div className="mt-2.5 flex items-center gap-2">
@@ -679,7 +720,9 @@ export default function CountPortal() {
       {/* مؤشر انقطاع الاتصال */}
       {!online && (
         <div className="flex items-center justify-between border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-bold text-amber-800 dark:border-amber-900 dark:bg-amber-950/50 dark:text-amber-300">
-          <span>📴 لا اتصال — العدّ يُحفظ محلياً</span>
+          <span className="inline-flex items-center gap-1.5">
+            <WifiOff aria-hidden className="size-3.5" /> لا اتصال — العدّ يُحفظ محلياً
+          </span>
           {queueCount > 0 && (
             <span className="rounded-full bg-amber-200 px-2 py-0.5 dark:bg-amber-900">{fmtInt(queueCount)} بانتظار المزامنة</span>
           )}
@@ -689,7 +732,9 @@ export default function CountPortal() {
       {/* مهام إعادة العدّ */}
       {canCount && st.recountTasks.length > 0 && (
         <div className="border-b border-amber-200 bg-amber-50 px-4 py-2.5 dark:border-amber-900 dark:bg-amber-950/40">
-          <p className="text-xs font-bold text-amber-800 dark:text-amber-300">⟳ مطلوب إعادة عدّ ({fmtInt(st.recountTasks.length)}):</p>
+          <p className="inline-flex items-center gap-1 text-xs font-bold text-amber-800 dark:text-amber-300">
+            <RefreshCw aria-hidden className="size-3.5" /> مطلوب إعادة عدّ ({fmtInt(st.recountTasks.length)}):
+          </p>
           {st.recountTasks.map((t) => (
             <button
               key={t.variantId}
@@ -732,11 +777,11 @@ export default function CountPortal() {
           type="button"
           onClick={() => {
             searchRef.current?.focus();
-            notify.info("جاهز للمسح 📷", "استخدم ماسح الباركود، أو اكتب الرقم في حقل البحث ثم اضغط إدخال");
+            notify.info("جاهز للمسح", "استخدم ماسح الباركود، أو اكتب الرقم في حقل البحث ثم اضغط إدخال");
           }}
           className="flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-primary px-4 text-sm font-bold text-primary-foreground active:scale-95"
         >
-          <span className="text-base leading-none">▮▍▮</span> مسح
+          <ScanLine aria-hidden className="size-4" /> مسح
         </button>
       </div>
 
@@ -775,7 +820,13 @@ export default function CountPortal() {
                       : "bg-muted text-muted-foreground",
                 )}
               >
-                {countedHere && !isRecPending ? "✓" : isRecPending ? "⟳" : "•"}
+                {countedHere && !isRecPending ? (
+                  <Check aria-hidden className="size-4" />
+                ) : isRecPending ? (
+                  <RefreshCw aria-hidden className="size-4" />
+                ) : (
+                  <span className="inline-block size-1.5 rounded-full bg-current opacity-60" />
+                )}
               </div>
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-bold">
@@ -791,7 +842,8 @@ export default function CountPortal() {
                   className="flex shrink-0 items-center gap-1 rounded-lg bg-emerald-50 px-2.5 py-1 font-mono text-xs font-bold tabular-nums text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300"
                   dir="ltr"
                 >
-                  {queued && <span title="بانتظار المزامنة">⏳</span>}✓ {fmtInt(shownQty)} {baseUnitName(i)}
+                  {queued && <Hourglass aria-hidden className="size-3" />}
+                  <Check aria-hidden className="size-3" /> {fmtInt(shownQty)} {baseUnitName(i)}
                 </span>
               ) : canCount ? (
                 <span className="shrink-0 text-xs font-semibold text-primary">عدّ ←</span>
@@ -812,7 +864,13 @@ export default function CountPortal() {
                 من مناطق الزملاء ({fmtInt(needle ? otherFiltered.length : otherAll.length)}) —{" "}
                 {dupBlocked ? "مقفلة (سياسة الجلسة: منع العدّ المكرر)" : "متاح عدّ تحقّقي للمعدود منها"}
               </span>
-              <span className="text-xs text-muted-foreground">{othersOpen ? "▲" : "▼"}</span>
+              <span className="text-xs text-muted-foreground">
+                {othersOpen ? (
+                  <ChevronUp aria-hidden className="size-3.5" />
+                ) : (
+                  <ChevronDown aria-hidden className="size-3.5" />
+                )}
+              </span>
             </button>
             {othersOpen &&
               otherFiltered.map((i) => {
@@ -852,7 +910,18 @@ export default function CountPortal() {
                             : "bg-muted text-muted-foreground",
                       )}
                     >
-                      {dupBlocked ? "🔒" : verifiedByMe ? "✓✓" : i.colleagueCounted ? "✓" : "•"}
+                      {dupBlocked ? (
+                        <Lock aria-hidden className="size-4" />
+                      ) : verifiedByMe ? (
+                        <span className="inline-flex items-center -space-x-1 rtl:space-x-reverse">
+                          <Check aria-hidden className="size-3.5" />
+                          <Check aria-hidden className="size-3.5" />
+                        </span>
+                      ) : i.colleagueCounted ? (
+                        <Check aria-hidden className="size-4" />
+                      ) : (
+                        <span className="inline-block size-1.5 rounded-full bg-current opacity-60" />
+                      )}
                     </div>
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-bold">
@@ -862,7 +931,14 @@ export default function CountPortal() {
                       <p className="truncate text-[10px] text-muted-foreground">
                         {/* جرد أعمى: «معدود من زميل» بلا أي كمية */}
                         {i.colleagueCounted ? "معدود من زميل" : "لم يُعدّ بعد"}
-                        {verifiedByMe ? ` · عدّك التحقّقي مُسجّل${queued ? " ⏳" : ""}` : ""}
+                        {verifiedByMe ? (
+                          <>
+                            {" · عدّك التحقّقي مُسجّل"}
+                            {queued ? (
+                              <Hourglass aria-hidden className="ml-1 inline size-3 align-text-bottom" />
+                            ) : null}
+                          </>
+                        ) : null}
                         {bc ? <span className="font-mono" dir="ltr"> · {bc}</span> : null}
                       </p>
                     </div>
@@ -879,8 +955,8 @@ export default function CountPortal() {
       {/* شريط التسليم السفلي */}
       <div className="pointer-events-none absolute inset-x-0 bottom-0 z-20 bg-gradient-to-t from-background via-background/95 to-transparent px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-8">
         {submittedAssignment ? (
-          <div className="pointer-events-auto rounded-xl bg-emerald-100 px-4 py-3 text-center text-sm font-bold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
-            ✓ سلّمت العدّ — بانتظار مراجعة المسؤول
+          <div className="pointer-events-auto inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-emerald-100 px-4 py-3 text-center text-sm font-bold text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+            <Check aria-hidden className="size-4" /> سلّمت العدّ — بانتظار مراجعة المسؤول
           </div>
         ) : (
           <button
@@ -895,9 +971,9 @@ export default function CountPortal() {
             )}
           >
             {!online
-              ? "📴 التسليم يتطلب اتصالاً — العدّ محفوظ"
+              ? "التسليم يتطلب اتصالاً — العدّ محفوظ"
               : queueCount > 0
-                ? `⏳ بانتظار مزامنة ${fmtInt(queueCount)} عدّة — التسليم بعدها`
+                ? `بانتظار مزامنة ${fmtInt(queueCount)} عدّة — التسليم بعدها`
                 : !allDone
                   ? `بقي ${fmtInt(remaining)} — أكمل العدّ للتسليم`
                   : finishMut.isPending
@@ -1015,14 +1091,19 @@ function QtySheet({
       </button>
 
       {isRecount && (
-        <div className="mb-2 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
-          ⟳ مطلوب إعادة عدّ ثانية لهذا المنتج{recountReason ? ` — السبب: ${recountReason}` : ""}. عُدّ من جديد بتمعّن.
+        <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold leading-relaxed text-amber-800 dark:bg-amber-950/50 dark:text-amber-300">
+          <RefreshCw aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+          <span>مطلوب إعادة عدّ ثانية لهذا المنتج{recountReason ? ` — السبب: ${recountReason}` : ""}. عُدّ من جديد بتمعّن.</span>
         </div>
       )}
       {isVerify && (
-        <div className="mb-2 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold leading-relaxed text-violet-800 dark:bg-violet-950/50 dark:text-violet-300">
-          ✓✓ عدّ تحقّقي — المنتج عدّه زميلك سابقاً. عدّك لن يستبدل عدّه: إن تطابقا تأكّد الرقم، وإن اختلفا يُرفع
-          تعارض يفصل فيه المسؤول. (كميته لا تُعرض لك — جرد أعمى)
+        <div className="mb-2 inline-flex items-start gap-1.5 rounded-lg bg-violet-50 px-3 py-2 text-xs font-semibold leading-relaxed text-violet-800 dark:bg-violet-950/50 dark:text-violet-300">
+          <span className="mt-0.5 inline-flex shrink-0 items-center -space-x-1 rtl:space-x-reverse">
+            <Check aria-hidden className="size-3.5" />
+            <Check aria-hidden className="size-3.5" />
+          </span>
+          <span>عدّ تحقّقي — المنتج عدّه زميلك سابقاً. عدّك لن يستبدل عدّه: إن تطابقا تأكّد الرقم، وإن اختلفا يُرفع
+          تعارض يفصل فيه المسؤول. (كميته لا تُعرض لك — جرد أعمى)</span>
         </div>
       )}
       {!item.isMine && !isVerify && (

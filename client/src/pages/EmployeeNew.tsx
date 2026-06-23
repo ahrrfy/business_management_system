@@ -15,7 +15,7 @@ import {
   DAY_RATES_DEFAULT, DEGREES, GENDERS, HR_DEPARTMENTS, MARITAL_STATUSES, PAY_TYPES, WEEK_DAYS,
   type EmployeeEducation,
 } from "@shared/hr";
-import { AlertCircle } from "lucide-react";
+import { AlertCircle, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
 import { ROLE_OPTIONS } from "./Users";
@@ -438,7 +438,7 @@ export default function EmployeeNew() {
               <div className="space-y-1"><Label className="text-xs">السنة</Label><Input dir="ltr" inputMode="numeric" value={e.year ? String(e.year) : ""} onChange={(ev) => patchEdu(e.key, { year: Number(ev.target.value.replace(/\D/g, "")) || undefined })} /></div>
               <div className="flex items-end gap-1">
                 <div className="space-y-1 flex-1"><Label className="text-xs">التقدير</Label><Input value={e.gpa ?? ""} onChange={(ev) => patchEdu(e.key, { gpa: ev.target.value })} /></div>
-                <Button variant="ghost" size="sm" onClick={() => removeEdu(e.key)}>✕</Button>
+                <Button variant="ghost" size="sm" onClick={() => removeEdu(e.key)} aria-label="حذف"><X aria-hidden className="size-4" /></Button>
               </div>
             </div>
           ))}

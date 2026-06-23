@@ -4,7 +4,7 @@ import { Progress } from "@/components/ui/progress";
 import { trpc } from "@/lib/trpc";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { assetCategoryLabel } from "@shared/assets";
-import { AlertTriangle, ArrowLeft, Banknote, Coins, Package, TrendingDown, Users, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Banknote, Coins, Package, ThumbsUp, TrendingDown, Users, Wrench } from "lucide-react";
 import { Link, useLocation } from "wouter";
 
 export default function Assets() {
@@ -58,7 +58,7 @@ export default function Assets() {
         <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-1.5"><AlertTriangle className="size-4 text-amber-500" />تحتاج إجراءً</CardTitle></CardHeader>
           <CardContent className="space-y-2">
-            {d.needsAction.length === 0 && <p className="text-sm text-muted-foreground">لا شيء يحتاج إجراءً الآن. 👍</p>}
+            {d.needsAction.length === 0 && <p className="text-sm text-muted-foreground inline-flex items-center gap-1.5">لا شيء يحتاج إجراءً الآن. <ThumbsUp aria-hidden className="size-4" /></p>}
             {d.needsAction.map((n) => (
               <Link key={n.id} href={`/assets/${n.id}`} className="flex items-center justify-between rounded-md px-2 py-1.5 hover:bg-accent text-sm transition">
                 <span className="truncate">{n.name}</span>

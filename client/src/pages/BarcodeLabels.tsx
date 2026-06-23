@@ -17,6 +17,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { Check, X } from "lucide-react";
 import { Link } from "wouter";
 
 const PX_PER_MM = 96 / 25.4; // ≈3.78 بكسل/مم @96dpi
@@ -112,7 +113,7 @@ export default function BarcodeLabels() {
     try {
       await pairPrinter("label");
       setLabelPrinterReady(true);
-      setInfo("تم ربط طابعة الملصقات ✓");
+      setInfo("تم ربط طابعة الملصقات");
     } catch (e) {
       setError(e instanceof Error ? e.message : "تعذّر ربط طابعة الملصقات");
     }
@@ -124,7 +125,7 @@ export default function BarcodeLabels() {
       { showName, showPrice },
       size,
     );
-    if (r.via === "thermal") setInfo("طُبع ملصق تجريبي عبر الطابعة المربوطة ✓");
+    if (r.via === "thermal") setInfo("طُبع ملصق تجريبي عبر الطابعة المربوطة");
     else if (r.ok) setInfo("فُتحت نافذة طباعة الملصق التجريبي.");
     else setError("تعذّر فتح نافذة الطباعة — اسمح بالنوافذ المنبثقة لهذا الموقع.");
   }
@@ -244,7 +245,7 @@ export default function BarcodeLabels() {
     );
     // نفس تقنية الكاشير: WebUSB(label) إن رُبطت الطابعة، وإلا نافذة المتصفّح بمقاس الملصق.
     const r = await printLabel(expanded, { showName, showPrice }, size);
-    if (r.via === "thermal") setInfo(`تم إرسال ${expanded.length} ملصق للطابعة المربوطة ✓`);
+    if (r.via === "thermal") setInfo(`تم إرسال ${expanded.length} ملصق للطابعة المربوطة`);
     else if (r.ok) setInfo(`فُتحت نافذة الطباعة (${expanded.length} ملصق).`);
     else setError("تعذّر فتح نافذة الطباعة — اسمح بالنوافذ المنبثقة لهذا الموقع، أو اربط طابعة الملصقات.");
   }
@@ -330,7 +331,7 @@ export default function BarcodeLabels() {
                 <span className="text-xs text-muted-foreground">المتصفّح لا يدعم الطباعة المباشرة (WebUSB) — ستُفتح نافذة الطباعة. استخدم Chrome/Edge للطباعة الصامتة.</span>
               ) : labelPrinterReady ? (
                 <>
-                  <span className="text-sm text-emerald-600">طابعة الملصقات مربوطة ✓</span>
+                  <span className="text-sm text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-4" />طابعة الملصقات مربوطة</span>
                   <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>تغيير الطابعة</Button>
                 </>
               ) : (
@@ -435,7 +436,7 @@ export default function BarcodeLabels() {
                             حفظ الباركود
                           </Button>
                         )}
-                        {q.saved && <span className="text-xs text-emerald-600">محفوظ ✓</span>}
+                        {q.saved && <span className="text-xs text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />محفوظ</span>}
                       </div>
                     </td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{q.price != null ? money(q.price) : "—"}</td>
@@ -447,7 +448,7 @@ export default function BarcodeLabels() {
                         onKeyDown={(e) => { if (e.key === "Enter") commitCount(q.key); }} />
                     </td>
                     <td className="p-2 text-center" dangerouslySetInnerHTML={{ __html: preview }} />
-                    <td className="p-2 text-center"><Button variant="ghost" size="sm" onClick={() => remove(q.key)}>✕</Button></td>
+                    <td className="p-2 text-center"><Button variant="ghost" size="sm" onClick={() => remove(q.key)} aria-label="حذف"><X aria-hidden className="size-4" /></Button></td>
                   </tr>
                 );
               })}

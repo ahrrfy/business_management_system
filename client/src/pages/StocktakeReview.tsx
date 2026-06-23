@@ -30,6 +30,20 @@ import { exportRows } from "@/lib/export";
 import { STOCKTAKE_REASON_LABEL } from "@/lib/printing/stocktakeTemplates";
 import { useState, type ReactNode } from "react";
 import { Link, useLocation, useParams } from "wouter";
+import {
+  Printer,
+  Download,
+  Lock,
+  AlertTriangle,
+  RefreshCw,
+  Scale,
+  Pen,
+  Info,
+  Check,
+  X,
+  CheckCheck,
+  Undo2,
+} from "lucide-react";
 
 /* ───────── ثوابت العرض ───────── */
 const STATUS_META: Record<string, { label: string; cls: string }> = {
@@ -180,7 +194,7 @@ export default function StocktakeReview() {
   });
   const firstSign = trpc.stocktakes.firstSign.useMutation({
     onSuccess: async (r) => {
-      notify.ok("وُقّع التوقيع الأول ✓", `${r.firstSignByName} · ${dt(r.firstSignAt)} — الاعتماد النهائي يلزم أن يكون من مسؤول آخر.`);
+      notify.ok("وُقّع التوقيع الأول", `${r.firstSignByName} · ${dt(r.firstSignAt)} — الاعتماد النهائي يلزم أن يكون من مسؤول آخر.`);
       await invalidate();
     },
     onError: (e) => notify.err(e),
@@ -191,7 +205,7 @@ export default function StocktakeReview() {
       if (r.alreadyApproved) notify.info("الجلسة معتمدة سلفاً — لا أثر جديد.");
       else
         notify.ok(
-          "اعتُمدت الجلسة ونُفّذت التسوية ✓",
+          "اعتُمدت الجلسة ونُفّذت التسوية",
           `${nf(r.adjustedCount)} حركة تسوية — عجز ${money(r.shortExpense)} · زيادة ${money(r.overGain)}`,
         );
       await invalidate();
@@ -206,7 +220,9 @@ export default function StocktakeReview() {
   if (me.data && !isManager)
     return (
       <div className="mx-auto max-w-lg space-y-4 p-10 text-center">
-        <p className="text-4xl">🔒</p>
+        <div className="mx-auto grid size-16 place-items-center rounded-full bg-muted text-muted-foreground">
+          <Lock aria-hidden className="size-8" />
+        </div>
         <p className="font-bold">مراجعة الجرد واعتماده صلاحية مشرف فأعلى</p>
         <p className="text-sm text-muted-foreground">
           قيم التكلفة وقرارات التسوية محجوبة عن دورك في الخادم. يمكنك متابعة تقدم العدّ وطلب إعادة العدّ من
@@ -269,13 +285,13 @@ export default function StocktakeReview() {
     approveLabel = "اعتماد الجلسة وتنفيذ التسوية";
   } else if (!barriers.firstSigned) {
     approveMode = "first";
-    approveLabel = "🖊 توقيع أول — إرسال للتوقيع الثاني";
+    approveLabel = "توقيع أول — إرسال للتوقيع الثاني";
   } else if (!barriers.canFinalApprove) {
     approveMode = "wait";
     approveLabel = "بانتظار توقيع مسؤول آخر…";
   } else {
     approveMode = "final";
-    approveLabel = "🖊 التوقيع الثاني والاعتماد النهائي";
+    approveLabel = "التوقيع الثاني والاعتماد النهائي";
   }
   const approveDisabled =
     !isReview || !barriers.canApprove || approveMode === "wait" || approve.isPending || firstSign.isPending;
@@ -284,11 +300,11 @@ export default function StocktakeReview() {
       ? "الجلسة معتمدة ومقفلة"
       : "الاعتماد متاح لجلسة قيد المراجعة فقط"
     : barriers.openConflicts > 0
-      ? `⚠ ${nf(barriers.openConflicts)} تعارض بين عدَّين يحتاج فصلاً`
+      ? `${nf(barriers.openConflicts)} تعارض بين عدَّين يحتاج فصلاً`
       : barriers.pendingRecounts > 0
-        ? `⟳ ${nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ`
+        ? `${nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ`
         : barriers.undecidedOverThreshold > 0
-          ? `⚖ ${nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ بلا قرار`
+          ? `${nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ بلا قرار`
           : approveMode === "wait"
             ? "وقّعتَ أولاً — التوقيع الثاني يلزم أن يكون من مسؤول آخر"
             : "";
@@ -416,10 +432,12 @@ export default function StocktakeReview() {
             <Button variant="outline" size="sm">تفاصيل العدّ والسجلّ</Button>
           </Link>
           <Link href={`/stocktakes/${sessionId}/sheets`}>
-            <Button variant="outline" size="sm">🖨 قوائم العدّ الورقية</Button>
+            <Button variant="outline" size="sm">
+              <Printer aria-hidden className="size-4" /> قوائم العدّ الورقية
+            </Button>
           </Link>
           <Button variant="outline" size="sm" onClick={onExport} title="تصدير صفوف الفروقات إلى Excel">
-            ⬇ تصدير Excel
+            <Download aria-hidden className="size-4" /> تصدير Excel
           </Button>
           {isApproved ? (
             <Link href={`/stocktakes/${sessionId}/report`}>
@@ -441,9 +459,12 @@ export default function StocktakeReview() {
 
       {/* لافتات الحالة والحواجز */}
       {s.status === "COUNTING" && (
-        <div className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-800">
-          ℹ الجلسة ما تزال قيد العدّ — هذه معاينة حية. الاعتماد يتاح بعد تسليم العدّ أو إغلاقه من{" "}
-          <Link href={`/stocktakes/${sessionId}`} className="font-bold underline">شاشة المتابعة</Link>.
+        <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-800">
+          <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>
+            الجلسة ما تزال قيد العدّ — هذه معاينة حية. الاعتماد يتاح بعد تسليم العدّ أو إغلاقه من{" "}
+            <Link href={`/stocktakes/${sessionId}`} className="font-bold underline">شاشة المتابعة</Link>.
+          </span>
         </div>
       )}
       {s.status === "CANCELLED" && (
@@ -452,8 +473,9 @@ export default function StocktakeReview() {
         </div>
       )}
       {isApproved && (
-        <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">
-          ✓ <span className="font-bold">معتمدة ومُسوّاة</span>
+        <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm text-emerald-800">
+          <Check aria-hidden className="size-4" />
+          <span className="font-bold">معتمدة ومُسوّاة</span>
           {s.approved && <> — اعتمدها {s.approved.byName} · {dt(s.approved.at)}</>}
           {s.firstSign && <> (التوقيع الأول: {s.firstSign.byName} · {dt(s.firstSign.at)})</>}
           {" "}· الجلسة مقفلة نهائياً.{" "}
@@ -464,10 +486,20 @@ export default function StocktakeReview() {
         (barriers.openConflicts > 0 || barriers.pendingRecounts > 0 || barriers.undecidedOverThreshold > 0) && (
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
             <span className="font-bold">قبل الاعتماد:</span>
-            {barriers.openConflicts > 0 && <span>⚠ {nf(barriers.openConflicts)} تعارض بين عدَّين يحتاج فصلاً</span>}
-            {barriers.pendingRecounts > 0 && <span>⟳ {nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ</span>}
+            {barriers.openConflicts > 0 && (
+              <span className="inline-flex items-center gap-1">
+                <AlertTriangle aria-hidden className="size-3.5" /> {nf(barriers.openConflicts)} تعارض بين عدَّين يحتاج فصلاً
+              </span>
+            )}
+            {barriers.pendingRecounts > 0 && (
+              <span className="inline-flex items-center gap-1">
+                <RefreshCw aria-hidden className="size-3.5" /> {nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ
+              </span>
+            )}
             {barriers.undecidedOverThreshold > 0 && (
-              <span>⚖ {nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ يحتاج قرارك (تسوية / إبقاء / إعادة عدّ)</span>
+              <span className="inline-flex items-center gap-1">
+                <Scale aria-hidden className="size-3.5" /> {nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ يحتاج قرارك (تسوية / إبقاء / إعادة عدّ)
+              </span>
             )}
             <button
               type="button"
@@ -481,20 +513,26 @@ export default function StocktakeReview() {
           </div>
         )}
       {barriers.requiresDualSign && !isApproved && (
-        <div className="rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm text-violet-800">
-          🖊 <span className="font-bold">اعتماد مزدوج (توقيعان):</span> {nf(dualItems.length)} فرق تتجاوز قيمته{" "}
-          <span className="tabular-nums" dir="ltr">{money(s.dualThreshold)}</span> — يستوجب توقيع مسؤولَين مختلفَين قبل
-          التنفيذ.
-          {s.firstSign && (
-            <span className="me-2 font-bold">
-              التوقيع الأول: {s.firstSign.byName} · {dt(s.firstSign.at)} ✓ — بانتظار التوقيع الثاني من مسؤول آخر.
-            </span>
-          )}
+        <div className="flex flex-wrap items-start gap-1.5 rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm text-violet-800">
+          <Pen aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>
+            <span className="font-bold">اعتماد مزدوج (توقيعان):</span> {nf(dualItems.length)} فرق تتجاوز قيمته{" "}
+            <span className="tabular-nums" dir="ltr">{money(s.dualThreshold)}</span> — يستوجب توقيع مسؤولَين مختلفَين قبل
+            التنفيذ.
+            {s.firstSign && (
+              <span className="me-2 inline-flex items-center gap-1 font-bold">
+                التوقيع الأول: {s.firstSign.byName} · {dt(s.firstSign.at)}
+                <Check aria-hidden className="size-3.5" />
+                — بانتظار التوقيع الثاني من مسؤول آخر.
+              </span>
+            )}
+          </span>
         </div>
       )}
       {barriers.notCounted > 0 && !isApproved && (
-        <div className="rounded-lg border bg-muted/50 px-4 py-2.5 text-sm text-muted-foreground">
-          ℹ مراجعة جزئية: {nf(barriers.notCounted)} منتج لم يُعَدّ — سيبقى رصيده الدفتري دون تسوية.
+        <div className="flex items-start gap-2 rounded-lg border bg-muted/50 px-4 py-2.5 text-sm text-muted-foreground">
+          <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
+          <span>مراجعة جزئية: {nf(barriers.notCounted)} منتج لم يُعَدّ — سيبقى رصيده الدفتري دون تسوية.</span>
         </div>
       )}
 
@@ -518,26 +556,65 @@ export default function StocktakeReview() {
           <CardTitle className="text-sm">حواجز الاعتماد — يجب أن تخضرّ كلها قبل التنفيذ</CardTitle>
         </CardHeader>
         <div className="grid gap-x-6 gap-y-2 p-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
-          <p className={barriers.notCounted === 0 ? "text-emerald-700" : "text-amber-700"}>
-            {barriers.notCounted === 0 ? "✓ كل منتجات النطاق معدودة" : `⚠ ${nf(barriers.notCounted)} منتج غير معدود (لا يحجب — يبقى دفترياً)`}
+          <p className={`inline-flex items-center gap-1.5 ${barriers.notCounted === 0 ? "text-emerald-700" : "text-amber-700"}`}>
+            {barriers.notCounted === 0 ? (
+              <>
+                <Check aria-hidden className="size-3.5" /> كل منتجات النطاق معدودة
+              </>
+            ) : (
+              <>
+                <AlertTriangle aria-hidden className="size-3.5" /> {nf(barriers.notCounted)} منتج غير معدود (لا يحجب — يبقى دفترياً)
+              </>
+            )}
           </p>
-          <p className={barriers.pendingRecounts === 0 ? "text-emerald-700" : "text-rose-700"}>
-            {barriers.pendingRecounts === 0 ? "✓ لا إعادات عدّ معلّقة" : `✗ ${nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ`}
+          <p className={`inline-flex items-center gap-1.5 ${barriers.pendingRecounts === 0 ? "text-emerald-700" : "text-rose-700"}`}>
+            {barriers.pendingRecounts === 0 ? (
+              <>
+                <Check aria-hidden className="size-3.5" /> لا إعادات عدّ معلّقة
+              </>
+            ) : (
+              <>
+                <X aria-hidden className="size-3.5" /> {nf(barriers.pendingRecounts)} منتج بانتظار إعادة العدّ
+              </>
+            )}
           </p>
-          <p className={barriers.openConflicts === 0 ? "text-emerald-700" : "text-rose-700"}>
-            {barriers.openConflicts === 0 ? "✓ لا تعارض بين عدَّين" : `✗ ${nf(barriers.openConflicts)} تعارض مفتوح يحتاج فصلاً`}
+          <p className={`inline-flex items-center gap-1.5 ${barriers.openConflicts === 0 ? "text-emerald-700" : "text-rose-700"}`}>
+            {barriers.openConflicts === 0 ? (
+              <>
+                <Check aria-hidden className="size-3.5" /> لا تعارض بين عدَّين
+              </>
+            ) : (
+              <>
+                <X aria-hidden className="size-3.5" /> {nf(barriers.openConflicts)} تعارض مفتوح يحتاج فصلاً
+              </>
+            )}
           </p>
-          <p className={barriers.undecidedOverThreshold === 0 ? "text-emerald-700" : "text-rose-700"}>
-            {barriers.undecidedOverThreshold === 0
-              ? "✓ كل ما يتجاوز الحدّ له قرار"
-              : `✗ ${nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ بلا قرار`}
+          <p className={`inline-flex items-center gap-1.5 ${barriers.undecidedOverThreshold === 0 ? "text-emerald-700" : "text-rose-700"}`}>
+            {barriers.undecidedOverThreshold === 0 ? (
+              <>
+                <Check aria-hidden className="size-3.5" /> كل ما يتجاوز الحدّ له قرار
+              </>
+            ) : (
+              <>
+                <X aria-hidden className="size-3.5" /> {nf(barriers.undecidedOverThreshold)} فرق يتجاوز الحدّ بلا قرار
+              </>
+            )}
           </p>
           {barriers.requiresDualSign && (
-            <p className={`sm:col-span-2 xl:col-span-4 ${barriers.firstSigned ? "text-violet-700" : "text-amber-700"}`}>
-              🖊 توقيع مزدوج مطلوب (فروقات فوق {money(s.dualThreshold)}) —{" "}
-              {barriers.firstSigned
-                ? `التوقيع الأول ✓ ${s.firstSign ? `(${s.firstSign.byName} · ${dt(s.firstSign.at)})` : ""} — الاعتماد النهائي من مسؤول آخر`
-                : "لم يوقَّع التوقيع الأول بعد"}
+            <p className={`inline-flex items-center gap-1.5 sm:col-span-2 xl:col-span-4 ${barriers.firstSigned ? "text-violet-700" : "text-amber-700"}`}>
+              <Pen aria-hidden className="size-3.5" />
+              <span>
+                توقيع مزدوج مطلوب (فروقات فوق {money(s.dualThreshold)}) —{" "}
+                {barriers.firstSigned ? (
+                  <>
+                    التوقيع الأول
+                    <Check aria-hidden className="mx-1 inline size-3.5 align-text-bottom" />
+                    {s.firstSign ? `(${s.firstSign.byName} · ${dt(s.firstSign.at)})` : ""} — الاعتماد النهائي من مسؤول آخر
+                  </>
+                ) : (
+                  "لم يوقَّع التوقيع الأول بعد"
+                )}
+              </span>
             </p>
           )}
         </div>
@@ -635,31 +712,38 @@ export default function StocktakeReview() {
                         {r.assignmentName ? ` · ${r.assignmentName}` : ""}
                       </p>
                       {recDone && r.recount && (
-                        <p className="mt-1 text-[11px] font-semibold text-violet-700">
-                          ⟲ أُعيد عدّه وتأكدت الكمية{" "}
-                          <span className="tabular-nums" dir="ltr">{r.recount.qty2 != null ? nf(r.recount.qty2) : "—"}</span>
-                          {" "}(طلبها {r.recount.requestedByName} — {r.recount.reason})
+                        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700">
+                          <Undo2 aria-hidden className="size-3" />
+                          <span>
+                            أُعيد عدّه وتأكدت الكمية{" "}
+                            <span className="tabular-nums" dir="ltr">{r.recount.qty2 != null ? nf(r.recount.qty2) : "—"}</span>
+                            {" "}(طلبها {r.recount.requestedByName} — {r.recount.reason})
+                          </span>
                         </p>
                       )}
                       {recPending && r.recount && (
-                        <p className="mt-1 text-[11px] font-semibold text-violet-700">
-                          ⟳ إعادة عدّ معلّقة (طلبها {r.recount.requestedByName} — {r.recount.reason})
+                        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700">
+                          <RefreshCw aria-hidden className="size-3" />
+                          إعادة عدّ معلّقة (طلبها {r.recount.requestedByName} — {r.recount.reason})
                         </p>
                       )}
                       {r.verify && r.verify.match && !conflictOpen && (
-                        <p className="mt-1 text-[11px] font-semibold text-emerald-700">
-                          ✓✓ عدّ تحقّقي مطابق من {r.verify.byName}
+                        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700">
+                          <CheckCheck aria-hidden className="size-3" />
+                          عدّ تحقّقي مطابق من {r.verify.byName}
                         </p>
                       )}
                       {conflictOpen && r.conflict && (
                         <p className="mt-1 inline-flex items-center gap-1 rounded-md bg-rose-50 px-1.5 py-0.5 text-[11px] font-bold text-rose-700">
-                          ⚠ تعارض: {r.conflict.by1} عدّ <span dir="ltr">{nf(r.conflict.qty1)}</span> — {r.conflict.by2} عدّ{" "}
+                          <AlertTriangle aria-hidden className="size-3" />
+                          تعارض: {r.conflict.by1} عدّ <span dir="ltr">{nf(r.conflict.qty1)}</span> — {r.conflict.by2} عدّ{" "}
                           <span dir="ltr">{nf(r.conflict.qty2)}</span>
                         </p>
                       )}
                       {r.conflict?.resolvedPick && (
-                        <p className="mt-1 text-[11px] font-semibold text-violet-700">
-                          ⚖ فُصل في تعارض العدَّين: اعتُمد عدّ{" "}
+                        <p className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700">
+                          <Scale aria-hidden className="size-3" />
+                          فُصل في تعارض العدَّين: اعتُمد عدّ{" "}
                           {r.conflict.resolvedPick === "FIRST" ? r.conflict.by1 : r.conflict.by2}
                         </p>
                       )}
@@ -758,9 +842,13 @@ export default function StocktakeReview() {
                         {uncounted ? (
                           <Pill tone="muted">لم يُعَدّ</Pill>
                         ) : conflictOpen ? (
-                          <Pill tone="rose">⚠ تعارض عدَّين</Pill>
+                          <Pill tone="rose">
+                            <AlertTriangle aria-hidden className="size-3" /> تعارض عدَّين
+                          </Pill>
                         ) : recPending ? (
-                          <Pill tone="violet">⟳ إعادة عدّ معلّقة</Pill>
+                          <Pill tone="violet">
+                            <RefreshCw aria-hidden className="size-3" /> إعادة عدّ معلّقة
+                          </Pill>
                         ) : r.diff === 0 ? (
                           <Pill tone="emerald">مطابق</Pill>
                         ) : r.overThreshold ? (
@@ -770,11 +858,19 @@ export default function StocktakeReview() {
                         )}
                         {r.requiresDualSign && (
                           <Pill tone="violet" title={`قيمة الفرق تتجاوز حدّ التوقيعين ${money(s.dualThreshold)}`}>
-                            🖊 توقيعان
+                            <Pen aria-hidden className="size-3" /> توقيعان
                           </Pill>
                         )}
-                        {recDone && !conflictOpen && <Pill tone="violet">⟲ إعادة عدّ منجزة</Pill>}
-                        {r.verify && r.verify.match && !conflictOpen && <Pill tone="emerald">✓✓ تحقّقي مطابق</Pill>}
+                        {recDone && !conflictOpen && (
+                          <Pill tone="violet">
+                            <Undo2 aria-hidden className="size-3" /> إعادة عدّ منجزة
+                          </Pill>
+                        )}
+                        {r.verify && r.verify.match && !conflictOpen && (
+                          <Pill tone="emerald">
+                            <CheckCheck aria-hidden className="size-3" /> تحقّقي مطابق
+                          </Pill>
+                        )}
                       </div>
                     </td>
                     {/* القرار */}
@@ -787,7 +883,7 @@ export default function StocktakeReview() {
                           disabled={!isReview}
                           onClick={() => setConflictFor(r.variantId)}
                         >
-                          ⚖ الفصل في التعارض
+                          <Scale aria-hidden className="size-4" /> الفصل في التعارض
                         </Button>
                       ) : uncounted || recPending ? (
                         <span className="text-xs text-muted-foreground">—</span>
@@ -822,7 +918,9 @@ export default function StocktakeReview() {
                             </>
                           ) : !r.overThreshold && s.directUnderThreshold ? (
                             <>
-                              <span className="text-xs font-semibold text-emerald-700">تسوية تلقائية ✓</span>
+                              <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                                تسوية تلقائية <Check aria-hidden className="size-3" />
+                              </span>
                               {isReview && (
                                 <div className="flex flex-wrap justify-center gap-1">
                                   <Button
@@ -842,7 +940,7 @@ export default function StocktakeReview() {
                                     title="طلب إعادة عدّ (سبب إلزامي)"
                                     onClick={() => openRecount(r)}
                                   >
-                                    ⟳ إعادة عدّ
+                                    <RefreshCw aria-hidden className="size-3" /> إعادة عدّ
                                   </Button>
                                 </div>
                               )}
@@ -874,7 +972,7 @@ export default function StocktakeReview() {
                                 title="طلب إعادة عدّ (سبب إلزامي)"
                                 onClick={() => openRecount(r)}
                               >
-                                ⟳ إعادة عدّ
+                                <RefreshCw aria-hidden className="size-4" /> إعادة عدّ
                               </Button>
                             </div>
                           ) : (
@@ -979,7 +1077,7 @@ export default function StocktakeReview() {
                   openRecount(r);
                 }}
               >
-                ⟳ طلب عدّ ثالث حاسم (يمسح التعارض ويحلّ محلّ العدَّين)
+                <RefreshCw aria-hidden className="size-4" /> طلب عدّ ثالث حاسم (يمسح التعارض ويحلّ محلّ العدَّين)
               </Button>
             </div>
           )}
@@ -1077,14 +1175,18 @@ export default function StocktakeReview() {
             </div>
 
             {noReasonCount > 0 && (
-              <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                ⚠ {nf(noReasonCount)} فرق بلا سبب محدد — يُنصح بتصنيفها (تلف/فقدان/خطأ إدخال) ليصدق تقرير
-                الانكماش السنوي. يمكنك المتابعة على أي حال.
+              <p className="flex items-start gap-1.5 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+                <span>
+                  {nf(noReasonCount)} فرق بلا سبب محدد — يُنصح بتصنيفها (تلف/فقدان/خطأ إدخال) ليصدق تقرير
+                  الانكماش السنوي. يمكنك المتابعة على أي حال.
+                </span>
               </p>
             )}
             {barriers.requiresDualSign && s.firstSign && (
-              <p className="rounded-md bg-violet-50 px-3 py-2 text-xs text-violet-800">
-                🖊 اعتماد مزدوج: التوقيع الأول {s.firstSign.byName} · {dt(s.firstSign.at)} — توقيعك الآن هو النهائي.
+              <p className="flex items-start gap-1.5 rounded-md bg-violet-50 px-3 py-2 text-xs text-violet-800">
+                <Pen aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+                <span>اعتماد مزدوج: التوقيع الأول {s.firstSign.byName} · {dt(s.firstSign.at)} — توقيعك الآن هو النهائي.</span>
               </p>
             )}
             <p className="text-xs text-muted-foreground">

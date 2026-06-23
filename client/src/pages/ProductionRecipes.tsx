@@ -7,6 +7,7 @@ import { confirm, confirmDelete } from "@/lib/confirm";
 import { D, fmt, pct, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { Search } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
@@ -310,7 +311,10 @@ export default function ProductionRecipes() {
       {!showForm && (
         <>
           <div className="flex items-center gap-3">
-            <Input className="max-w-xs" value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 ابحث في الوصفات…" />
+            <div className="relative max-w-xs w-full">
+              <Search aria-hidden className="size-4 absolute top-1/2 -translate-y-1/2 start-3 text-muted-foreground pointer-events-none" />
+              <Input className="ps-9" value={q} onChange={(e) => setQ(e.target.value)} placeholder="ابحث في الوصفات…" />
+            </div>
             <span className="inline-block rounded-full px-2 py-0.5 text-xs bg-muted text-muted-foreground">{filtered.length} وصفة</span>
           </div>
 
