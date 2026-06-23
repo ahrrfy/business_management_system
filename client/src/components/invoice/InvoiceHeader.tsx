@@ -15,6 +15,11 @@ import {
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import type { Dispatch } from "react";
+import {
+  FileText, Hash, Calendar, Building, User, Factory, Wallet, Tag,
+  ClipboardList, Clock, DollarSign, UserCheck, Pin, CalendarDays, NotebookPen,
+  type LucideIcon,
+} from "lucide-react";
 import { EntityPicker } from "./EntityPicker";
 import {
   CURRENCIES,
@@ -39,19 +44,19 @@ export interface InvoiceHeaderProps {
 
 function FieldGroup({
   label,
-  icon,
+  icon: Icon,
   required,
   children,
 }: {
   label: string;
-  icon?: string;
+  icon?: LucideIcon;
   required?: boolean;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col gap-1.5">
       <Label className="flex items-center gap-1 text-[11px] font-bold uppercase tracking-wide text-muted-foreground">
-        {icon && <span aria-hidden className="text-xs opacity-80">{icon}</span>}
+        {Icon && <Icon aria-hidden className="size-3.5 opacity-70" />}
         {label}
         {required && <span className="text-destructive">*</span>}
       </Label>
@@ -62,19 +67,19 @@ function FieldGroup({
 
 function HeaderSection({
   title,
-  icon,
+  icon: Icon,
   children,
   columnsClass,
 }: {
   title: string;
-  icon?: string;
+  icon?: LucideIcon;
   children: React.ReactNode;
   columnsClass?: string;
 }) {
   return (
     <div>
       <div className="mb-2 flex items-center gap-1.5 text-[11px] font-extrabold uppercase tracking-wider text-primary">
-        {icon && <span className="text-sm">{icon}</span>}
+        {Icon && <Icon aria-hidden className="size-4" />}
         {title}
         <div className="ms-1 h-px flex-1 bg-border" />
       </div>
@@ -102,8 +107,8 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
         style={{ background: `linear-gradient(135deg, ${typeInfo.colorHex}0a, transparent)` }}
       >
         <div className="flex items-center gap-2">
-          <div className={cn("flex h-8 w-8 items-center justify-center rounded-lg text-base text-white", typeInfo.colorBg)}>
-            {typeInfo.icon}
+          <div className={cn("flex h-8 w-8 items-center justify-center rounded-lg text-white", typeInfo.colorBg)}>
+            <typeInfo.icon aria-hidden className="size-4" />
           </div>
           <span className="text-base font-extrabold text-foreground">{typeInfo.label}</span>
           <span className="rounded-md border border-amber-300/40 bg-amber-50 px-2 py-0.5 text-[11px] font-bold text-amber-700">
@@ -117,12 +122,12 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
 
       {/* Sections */}
       <div className="flex flex-col gap-3.5 px-4 pb-3.5 pt-3">
-        <HeaderSection title="بيانات المستند" icon="📄" columnsClass="grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
-          <FieldGroup label="رقم المستند" icon="🔢">
+        <HeaderSection title="بيانات المستند" icon={FileText} columnsClass="grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
+          <FieldGroup label="رقم المستند" icon={Hash}>
             <Input value={state.invoiceNumber} readOnly className="bg-muted font-bold" />
           </FieldGroup>
 
-          <FieldGroup label="التاريخ" icon="📅">
+          <FieldGroup label="التاريخ" icon={Calendar}>
             <Input
               type="date"
               dir="ltr"
@@ -131,7 +136,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             />
           </FieldGroup>
 
-          <FieldGroup label="الفرع" icon="🏢">
+          <FieldGroup label="الفرع" icon={Building}>
             <Select
               value={String(state.branchId)}
               onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "branchId", value: Number(v) })}
@@ -149,7 +154,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             </Select>
           </FieldGroup>
 
-          <FieldGroup label={isSale ? "العميل" : "المورد"} icon={isSale ? "👤" : "🏭"} required>
+          <FieldGroup label={isSale ? "العميل" : "المورد"} icon={isSale ? User : Factory} required>
             <EntityPicker
               type={invoiceType}
               selectedId={state.entityId}
@@ -158,9 +163,9 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           </FieldGroup>
         </HeaderSection>
 
-        <HeaderSection title="الشروط المالية والمراجع" icon="💰" columnsClass="grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
+        <HeaderSection title="الشروط المالية والمراجع" icon={Wallet} columnsClass="grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
           {isSale && (
-            <FieldGroup label="فئة السعر" icon="🏷️">
+            <FieldGroup label="فئة السعر" icon={Tag}>
               <Select
                 value={state.tier}
                 onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "tier", value: v as PriceTier })}
@@ -175,7 +180,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             </FieldGroup>
           )}
 
-          <FieldGroup label="شروط الدفع" icon="📋">
+          <FieldGroup label="شروط الدفع" icon={ClipboardList}>
             <Select
               value={state.paymentTerms}
               onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "paymentTerms", value: v as PaymentTerm })}
@@ -190,7 +195,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           </FieldGroup>
 
           {(state.paymentTerms === "CREDIT" || state.paymentTerms === "INSTALLMENT") && (
-            <FieldGroup label="تاريخ الاستحقاق" icon="⏰">
+            <FieldGroup label="تاريخ الاستحقاق" icon={Clock}>
               <Input
                 type="date"
                 dir="ltr"
@@ -200,7 +205,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             </FieldGroup>
           )}
 
-          <FieldGroup label="العملة" icon="💱">
+          <FieldGroup label="العملة" icon={DollarSign}>
             <Select
               value={state.currency}
               onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "currency", value: v as Currency })}
@@ -215,7 +220,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           </FieldGroup>
 
           {isSale && !isReturn && salesReps && salesReps.length > 0 && (
-            <FieldGroup label="مندوب المبيعات" icon="🧑‍💼">
+            <FieldGroup label="مندوب المبيعات" icon={UserCheck}>
               <Select
                 value={state.salesRepId ? String(state.salesRepId) : ""}
                 onValueChange={(v) => dispatch({ type: "SET_FIELD", field: "salesRepId", value: v ? Number(v) : "" })}
@@ -231,7 +236,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           )}
 
           {isReturn && (
-            <FieldGroup label="رقم الفاتورة المرجعية" icon="📌" required>
+            <FieldGroup label="رقم الفاتورة المرجعية" icon={Pin} required>
               <Input
                 value={state.refInvoice}
                 onChange={(e) => dispatch({ type: "SET_FIELD", field: "refInvoice", value: e.target.value })}
@@ -241,7 +246,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           )}
 
           {isPurchase && (
-            <FieldGroup label="رقم أمر الشراء المرجعي" icon="📌">
+            <FieldGroup label="رقم أمر الشراء المرجعي" icon={Pin}>
               <Input
                 value={state.poReference}
                 onChange={(e) => dispatch({ type: "SET_FIELD", field: "poReference", value: e.target.value })}
@@ -251,7 +256,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
           )}
 
           {isQuote && (
-            <FieldGroup label="صالح حتى" icon="📆">
+            <FieldGroup label="صالح حتى" icon={CalendarDays}>
               <Input
                 type="date"
                 dir="ltr"
@@ -261,7 +266,7 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             </FieldGroup>
           )}
 
-          <FieldGroup label="ملاحظات" icon="📝">
+          <FieldGroup label="ملاحظات" icon={NotebookPen}>
             <Input
               value={state.notes}
               onChange={(e) => dispatch({ type: "SET_FIELD", field: "notes", value: e.target.value })}

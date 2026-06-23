@@ -172,7 +172,7 @@ export function TotalsPanel({
                       active ? "border-primary bg-primary/10 text-primary" : "border-input bg-card text-foreground hover:bg-muted"
                     )}
                   >
-                    <span>{m.icon}</span>
+                    {(() => { const MIcon = m.icon; return <MIcon aria-hidden className="size-4" />; })()}
                     {m.label}
                   </button>
                 );

@@ -79,12 +79,13 @@ export type InvoiceAction =
   | { type: "RESET"; invoiceType: InvoiceType };
 
 /* ─── Static option lists (Arabic) ──────────────────────────────────────────── */
+import { Upload, Download, ClipboardList, Undo2, Redo2, Banknote, CreditCard, Building2, Wallet, type LucideIcon } from "lucide-react";
 
 export interface InvoiceTypeMeta {
   key: InvoiceType;
   label: string;
   prefix: string;
-  icon: string;
+  icon: LucideIcon;
   /** Tailwind classes for the active tab/button background + ring color. */
   colorBg: string;
   colorRing: string;
@@ -93,11 +94,11 @@ export interface InvoiceTypeMeta {
 }
 
 export const INVOICE_TYPES: Record<InvoiceType, InvoiceTypeMeta> = {
-  SALE:            { key: "SALE",            label: "فاتورة بيع",  prefix: "INV", icon: "📤", colorBg: "bg-indigo-600",  colorRing: "ring-indigo-300",  colorHex: "#4f46e5" },
-  PURCHASE:        { key: "PURCHASE",        label: "فاتورة شراء", prefix: "PO",  icon: "📥", colorBg: "bg-emerald-600", colorRing: "ring-emerald-300", colorHex: "#059669" },
-  QUOTATION:       { key: "QUOTATION",       label: "عرض سعر",     prefix: "QT",  icon: "📋", colorBg: "bg-amber-500",   colorRing: "ring-amber-300",   colorHex: "#d97706" },
-  SALE_RETURN:     { key: "SALE_RETURN",     label: "مرتجع بيع",   prefix: "SR",  icon: "↩️", colorBg: "bg-rose-600",    colorRing: "ring-rose-300",    colorHex: "#e11d48" },
-  PURCHASE_RETURN: { key: "PURCHASE_RETURN", label: "مرتجع شراء",  prefix: "PR",  icon: "↪️", colorBg: "bg-fuchsia-600", colorRing: "ring-fuchsia-300", colorHex: "#c026d3" },
+  SALE:            { key: "SALE",            label: "فاتورة بيع",  prefix: "INV", icon: Upload,         colorBg: "bg-indigo-600",  colorRing: "ring-indigo-300",  colorHex: "#4f46e5" },
+  PURCHASE:        { key: "PURCHASE",        label: "فاتورة شراء", prefix: "PO",  icon: Download,       colorBg: "bg-emerald-600", colorRing: "ring-emerald-300", colorHex: "#059669" },
+  QUOTATION:       { key: "QUOTATION",       label: "عرض سعر",     prefix: "QT",  icon: ClipboardList,  colorBg: "bg-amber-500",   colorRing: "ring-amber-300",   colorHex: "#d97706" },
+  SALE_RETURN:     { key: "SALE_RETURN",     label: "مرتجع بيع",   prefix: "SR",  icon: Undo2,          colorBg: "bg-rose-600",    colorRing: "ring-rose-300",    colorHex: "#e11d48" },
+  PURCHASE_RETURN: { key: "PURCHASE_RETURN", label: "مرتجع شراء",  prefix: "PR",  icon: Redo2,          colorBg: "bg-fuchsia-600", colorRing: "ring-fuchsia-300", colorHex: "#c026d3" },
 };
 
 export const TIER_OPTIONS: Array<{ value: PriceTier; label: string }> = [
@@ -112,11 +113,11 @@ export const PAYMENT_TERMS: Array<{ value: PaymentTerm; label: string }> = [
   { value: "INSTALLMENT", label: "أقساط" },
 ];
 
-export const PAYMENT_METHODS: Array<{ value: PaymentMethod; label: string; icon: string }> = [
-  { value: "CASH",     label: "نقدي",   icon: "💵" },
-  { value: "CARD",     label: "بطاقة",  icon: "💳" },
-  { value: "TRANSFER", label: "تحويل",  icon: "🏦" },
-  { value: "WALLET",   label: "محفظة",  icon: "📱" },
+export const PAYMENT_METHODS: Array<{ value: PaymentMethod; label: string; icon: LucideIcon }> = [
+  { value: "CASH",     label: "نقدي",   icon: Banknote },
+  { value: "CARD",     label: "بطاقة",  icon: CreditCard },
+  { value: "TRANSFER", label: "تحويل",  icon: Building2 },
+  { value: "WALLET",   label: "محفظة",  icon: Wallet },
 ];
 
 export const CURRENCIES: Array<{ value: Currency; label: string; symbol: string }> = [

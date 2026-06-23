@@ -23,6 +23,7 @@ export function InvoiceTypeTabs({ activeType, onTypeChange, visibleTypes }: Invo
     >
       {types.map((t) => {
         const active = t.key === activeType;
+        const TypeIcon = t.icon;
         return (
           <button
             key={t.key}
@@ -38,7 +39,7 @@ export function InvoiceTypeTabs({ activeType, onTypeChange, visibleTypes }: Invo
                 : "font-semibold text-muted-foreground hover:bg-background/60"
             )}
           >
-            <span className="text-base leading-none">{t.icon}</span>
+            <TypeIcon aria-hidden className="size-4" />
             {t.label}
           </button>
         );
