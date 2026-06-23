@@ -17,6 +17,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
+import { Printer, ShoppingCart, User, Power, Globe, Check } from "lucide-react";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -1013,23 +1014,25 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
       {/* جسر الطباعة على الخادم (طباعة صامتة) — يظهر حين يكون مفعّلاً؛ نقرة = تذكرة اختبار. */}
       {bridgeEnabled && (
         <button onClick={onTestPrint} title={`جسر طباعة صامت: ${bridgeDesc} — اضغط لطباعة تذكرة اختبار`}
-          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12, color: C.success, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>
-          🖨️🌐
+          aria-label="جسر طباعة على الخادم — تذكرة اختبار"
+          style={{ background: "none", border: `1.5px solid ${C.success}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: C.success, fontFamily: "inherit", fontWeight: 600, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
+          <Printer size={15} aria-hidden /><Globe size={13} aria-hidden />
         </button>
       )}
 
       {/* Printer (WebUSB) */}
       {isWebUsbSupported() && (
         <button onClick={onConnectPrinter} title={printerReady ? "الطابعة الافتراضية مربوطة (تلقائياً) — اضغط لتبديلها" : "اربط طابعة حرارية (تُربط تلقائياً بعدها)"}
-          style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 12, color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 600, flexShrink: 0 }}>
-          {printerReady ? "🖨️✓" : "🖨️"}
+          aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
+          style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 600, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
+          <Printer size={15} aria-hidden />{printerReady && <Check size={13} aria-hidden strokeWidth={3} />}
         </button>
       )}
 
       {/* Close shift */}
       <button onClick={onCloseShift}
         style={{ height: 44, padding: "0 14px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-        ⏻ إغلاق الوردية
+        <Power size={16} aria-hidden /> إغلاق الوردية
       </button>
     </div>
   );
@@ -1143,7 +1146,9 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 12px", height: 46, background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0, gap: 8 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg }}>🛒 سلة المشتريات</span>
+          <span style={{ fontWeight: 800, fontSize: 14.5, color: C.fg, display: "inline-flex", alignItems: "center", gap: 6 }}>
+            <ShoppingCart size={17} aria-hidden /> سلة المشتريات
+          </span>
           {cart.length > 0 && (
             <span style={{ background: C.primary, color: C.primaryFg, borderRadius: 12, padding: "2px 9px", fontSize: 12, fontWeight: 700 }}>
               {cart.length} منتج · {itemCount} قطعة
@@ -1157,7 +1162,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             <button
               onClick={() => setShowCustPicker(!showCustPicker)}
               style={{ height: 34, padding: "0 11px", background: customerId ? C.primarySoft : C.card, border: `1.5px solid ${customerId ? C.primary : C.border}`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, color: customerId ? C.primary : C.mutedFg, display: "flex", alignItems: "center", gap: 5, whiteSpace: "nowrap" }}>
-              👤 {selectedCustomer ? selectedCustomer.name : "عميل نقدي"}
+              <User size={14} aria-hidden /> {selectedCustomer ? selectedCustomer.name : "عميل نقدي"}
               {selectedCustomer && (
                 <span style={{ fontSize: 11, opacity: 0.8 }}>({TIER_LABEL[effectiveTier]})</span>
               )}
@@ -1230,7 +1235,9 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
             {cart.length === 0 && (
               <tr>
                 <td colSpan={7} style={{ padding: "56px 0", textAlign: "center", color: C.mutedFg }}>
-                  <div style={{ fontSize: 38, marginBottom: 10 }}>🛒</div>
+                  <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}>
+                    <ShoppingCart size={42} strokeWidth={1.5} aria-hidden />
+                  </div>
                   <div style={{ fontSize: 14.5, fontWeight: 600 }}>السلة فارغة</div>
                   <div style={{ fontSize: 12.5, marginTop: 6 }}>ابحث أو امسح الباركود لإضافة المنتجات</div>
                 </td>
@@ -1594,8 +1601,8 @@ function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps)
 
         <div style={{ display: "flex", gap: 10 }}>
           <button onClick={onPrint}
-            style={{ flex: 1, height: 50, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.fg }}>
-            🖨️ طباعة الإيصال
+            style={{ flex: 1, height: 50, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.fg, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            <Printer size={18} aria-hidden /> طباعة الإيصال
           </button>
           <button onClick={onDismiss}
             style={{ flex: 1, height: 50, background: C.primary, border: "none", borderRadius: 9, fontFamily: "inherit", fontSize: 14.5, fontWeight: 700, cursor: "pointer", color: C.primaryFg }}>
