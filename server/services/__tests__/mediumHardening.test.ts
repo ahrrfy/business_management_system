@@ -1,8 +1,8 @@
 /**
  * اختبارات شريحة «تَصليب متوسّط» (٢٣/٦/٢٦):
- *  1) supplier.list/search/get — كاشير ⇒ UNAUTHORIZED (لا يَرى الموردين).
+ *  1) supplier.list/search/get — كاشير ⇒ FORBIDDEN (لا يَرى الموردين).
  *  2) computeExpectedCash — فلتر cashBucket='DRAWER' (سندات TREASURY لا تَدخل التسوية).
- *  3) escLike — البحث يُهرّب % و _ ليُعامَلا كنصّ لا وايلد-كارد.
+ *  3) escLike — البحث يُهرّب % و ! و _ باستخدام ESCAPE '!' (يَعمل بصرف النظر عن MySQL mode).
  */
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -72,21 +72,21 @@ async function userById(id: number) {
 
 beforeEach(async () => { await reset(); await seed(); });
 
-// ─── (1) supplier.list/search/get — cashier ⇒ UNAUTHORIZED ──────────────────
+// ─── (1) supplier.list/search/get — cashier ⇒ FORBIDDEN ─────────────────────
 describe("supplierRouter — كاشير لا يَرى الموردين", () => {
-  it("list: كاشير ⇒ UNAUTHORIZED", async () => {
+  it("list: كاشير ⇒ FORBIDDEN", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2)));
-    await expect(caller.suppliers.list()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller.suppliers.list()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("search: كاشير ⇒ UNAUTHORIZED", async () => {
+  it("search: كاشير ⇒ FORBIDDEN", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2)));
-    await expect(caller.suppliers.search()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller.suppliers.search()).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("get: كاشير ⇒ UNAUTHORIZED", async () => {
+  it("get: كاشير ⇒ FORBIDDEN", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2)));
-    await expect(caller.suppliers.get({ supplierId: 1 })).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+    await expect(caller.suppliers.get({ supplierId: 1 })).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
   it("list: مدير ⇒ يَصل", async () => {
@@ -129,9 +129,9 @@ describe("computeExpectedCash — سندات TREASURY لا تَدخل تسوية
   });
 });
 
-// ─── (3) escLike — الهروب من % و _ ─────────────────────────────────────────
-describe("escLike — تهريب محارف LIKE الخاصة", () => {
-  it("البحث بـ% لا يُعيد كل المنتجات", async () => {
+// ─── (3) escLike — ESCAPE '!' يُهرّب % و _ و ! ───────────────────────────────
+describe("escLike — تهريب محارف LIKE الخاصة (ESCAPE '!')", () => {
+  beforeEach(async () => {
     const d = db();
     await d.insert(s.products).values([
       { id: 1, name: "ورق A4" },
@@ -145,11 +145,19 @@ describe("escLike — تهريب محارف LIKE الخاصة", () => {
       { variantId: 1, branchId: 1, quantity: 10 },
       { variantId: 2, branchId: 1, quantity: 10 },
     ]);
+  });
 
+  it("البحث بـ% لا يُعيد كل المنتجات (يُهرَّب لـ!%)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(1)));
-    // البحث بنجمة خام: يجب ألّا يجلب كل السجلّات (الهروب يجعلها نصّاً حرفياً)
+    // % بعد الهروب = !% ⇒ LIKE '%!%%' ESCAPE '!' ⇒ يطلب % حرفياً لا wildcard
     const rows = await caller.inventory.stockByBranch({ branchId: 1, q: "%" });
-    // لا منتج اسمه «%» حرفياً ⇒ نتيجة فارغة أو محدودة (لا الكل)
-    expect(rows.length).toBe(0);
+    expect(rows.length).toBe(0); // لا منتج اسمه «%»
+  });
+
+  it("البحث بنصّ صحيح يُعيد النتيجة الصحيحة", async () => {
+    const caller = appRouter.createCaller(makeCtx(await userById(1)));
+    const rows = await caller.inventory.stockByBranch({ branchId: 1, q: "A4" });
+    expect(rows.length).toBe(1);
+    expect(rows[0].sku).toBe("A4");
   });
 });

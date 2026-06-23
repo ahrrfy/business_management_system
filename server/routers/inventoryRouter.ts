@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, like, lt, or, sql } from "drizzle-orm";
-
-const escLike = (s: string) => s.replace(/[%_\\]/g, "\\$&");
+import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/mysql-core";
+
+// استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
+const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 import { z } from "zod";
 import { branches, branchStock, inventoryMovements, productVariants, products, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -242,7 +243,11 @@ export const inventoryRouter = router({
       if (search) {
         const pat = `%${escLike(search)}%`;
         conds.push(
-          or(like(products.name, pat), like(productVariants.sku, pat), like(productVariants.variantName, pat))
+          or(
+            sql`${products.name} LIKE ${pat} ESCAPE '!'`,
+            sql`${productVariants.sku} LIKE ${pat} ESCAPE '!'`,
+            sql`${productVariants.variantName} LIKE ${pat} ESCAPE '!'`,
+          )
         );
       }
       if (input?.lowOnly) {
@@ -350,7 +355,11 @@ export const inventoryRouter = router({
       if (search) {
         const pat = `%${escLike(search)}%`;
         conds.push(
-          or(like(products.name, pat), like(productVariants.sku, pat), like(productVariants.variantName, pat))
+          or(
+            sql`${products.name} LIKE ${pat} ESCAPE '!'`,
+            sql`${productVariants.sku} LIKE ${pat} ESCAPE '!'`,
+            sql`${productVariants.variantName} LIKE ${pat} ESCAPE '!'`,
+          )
         );
       }
       if (i.fromDate) {
