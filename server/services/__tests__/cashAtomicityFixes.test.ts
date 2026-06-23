@@ -342,7 +342,7 @@ describe("workOrder.create — كاشير لا يُنشئ أمر شغل بفرع
   it("كاشير ف٢ يحاول إنشاء أمر في ف١ ⇒ FORBIDDEN (لا أمر، لا عربون)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(3))); // كاشير ف٢
     await expect(
-      caller.workOrder.create({
+      caller.workOrders.create({
         branchId: 1, // ❌ ليس فرع المستخدم
         title: "بطاقات أعمال",
         quantity: 100,
@@ -355,7 +355,7 @@ describe("workOrder.create — كاشير لا يُنشئ أمر شغل بفرع
 
   it("كاشير ف٢ يُنشئ في فرعه ⇒ مقبول، والأمر في ف٢", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(3)));
-    const r = await caller.workOrder.create({
+    const r = await caller.workOrders.create({
       branchId: 2,
       title: "كروت دعوة",
       quantity: 50,
