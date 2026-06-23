@@ -36,6 +36,7 @@ export const purchaseRouter = router({
           )
           .min(1),
         notes: z.string().optional(),
+        clientRequestId: z.string().min(1).max(80).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {

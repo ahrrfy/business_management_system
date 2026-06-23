@@ -13,3 +13,8 @@
 export function escapeLike(input: string): string {
   return input.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
+
+/** تهريب LIKE بـ"!" كحرف هروب — آمن بصرف النظر عن sql_mode (لا يعتمد على \ الافتراضي). */
+export function escLike(s: string): string {
+  return s.replace(/[!%_]/g, '!$&');
+}

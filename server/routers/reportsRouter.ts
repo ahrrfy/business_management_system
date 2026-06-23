@@ -69,16 +69,11 @@ export const reportsRouter = router({
     }),
 
   customerStatement: managerBranchScopedProcedure
-    .input(
-      z.object({
-        customerId: z.number().int().positive(),
-        from: ymdStr.optional(),
-        to: ymdStr.optional(),
-      })
-    )
-    .query(async ({ input }) =>
-      getCustomerStatement(input.customerId, { from: input.from, to: input.to })
-    ),
+    .input(z.object({ customerId: z.number().int().positive(), from: ymdStr.optional(), to: ymdStr.optional() }))
+    .query(async ({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? undefined : Number(ctx.user.branchId ?? 0) || undefined;
+      return getCustomerStatement(input.customerId, { from: input.from, to: input.to, branchId });
+    }),
 
   /** Lightweight customer index for the statement picker. */
   customersIndex: managerProcedure.query(async () => {
@@ -89,7 +84,6 @@ export const reportsRouter = router({
         id: customers.id,
         name: customers.name,
         phone: customers.phone,
-        currentBalance: customers.currentBalance,
       })
       .from(customers)
       .orderBy(asc(customers.name));
@@ -103,16 +97,11 @@ export const reportsRouter = router({
     }),
 
   supplierStatement: managerBranchScopedProcedure
-    .input(
-      z.object({
-        supplierId: z.number().int().positive(),
-        from: ymdStr.optional(),
-        to: ymdStr.optional(),
-      })
-    )
-    .query(async ({ input }) =>
-      getSupplierStatement(input.supplierId, { from: input.from, to: input.to })
-    ),
+    .input(z.object({ supplierId: z.number().int().positive(), from: ymdStr.optional(), to: ymdStr.optional() }))
+    .query(async ({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? undefined : Number(ctx.user.branchId ?? 0) || undefined;
+      return getSupplierStatement(input.supplierId, { from: input.from, to: input.to, branchId });
+    }),
 
   /** Lightweight supplier index for the statement picker. */
   suppliersIndex: managerProcedure.query(async () => {
@@ -123,7 +112,6 @@ export const reportsRouter = router({
         id: suppliers.id,
         name: suppliers.name,
         phone: suppliers.phone,
-        currentBalance: suppliers.currentBalance,
       })
       .from(suppliers)
       .orderBy(asc(suppliers.name));

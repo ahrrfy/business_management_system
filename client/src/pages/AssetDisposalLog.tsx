@@ -64,7 +64,7 @@ export default function AssetDisposalLog() {
                         purchase: iqd(r.purchaseValue),
                         book: iqd(r.bookValue),
                         proceeds: r.proceeds != null ? iqd(r.proceeds) : "—",
-                        gain: r.gain != null ? `${r.gain >= 0 ? "+" : ""}${iqd(r.gain)}` : "—",
+                        gain: r.gain != null ? `${Number(r.gain) >= 0 ? "+" : ""}${iqd(r.gain)}` : "—",
                       })),
                       summary: [
                         { label: "مُستبعَد (بيع/خردة)", value: iqd(disposed.length) },
@@ -122,7 +122,7 @@ export default function AssetDisposalLog() {
                     <td className="p-2 text-left tabular-nums" dir="ltr">{r.proceeds != null ? iqd(r.proceeds) : "—"}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">
                       {r.gain != null ? (
-                        <span className={r.gain >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>{r.gain >= 0 ? "+" : ""}{iqd(r.gain)}</span>
+                        <span className={Number(r.gain) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>{Number(r.gain) >= 0 ? "+" : ""}{iqd(r.gain)}</span>
                       ) : "—"}
                     </td>
                   </tr>

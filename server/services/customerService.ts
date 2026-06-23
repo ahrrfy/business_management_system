@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
 import { customers, invoices, workOrders } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { escapeLike } from "../lib/sqlLike";
+import { escapeLike, escLike } from "../lib/sqlLike";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -214,16 +214,16 @@ export async function listCustomers(input: ListCustomersInput = {}) {
   if (input.customerType) conds.push(eq(customers.customerType, input.customerType));
   if (input.priceTier) conds.push(eq(customers.defaultPriceTier, input.priceTier));
   if (input.q?.trim()) {
-    const q = `%${escapeLike(input.q.trim())}%`;
+    const q = `%${escLike(input.q.trim())}%`;
     // v3-add-screens: البحث يطال هواتف العميل الثلاثة + الواتساب.
     // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
     conds.push(or(
-      like(customers.name, q),
-      like(customers.phone, q),
-      like(customers.phone2, q),
-      like(customers.phone3, q),
-      like(customers.whatsapp, q),
-      like(customers.legacyCode, q),
+      sql`${customers.name} LIKE ${q} ESCAPE '!'`,
+      sql`${customers.phone} LIKE ${q} ESCAPE '!'`,
+      sql`${customers.phone2} LIKE ${q} ESCAPE '!'`,
+      sql`${customers.phone3} LIKE ${q} ESCAPE '!'`,
+      sql`${customers.whatsapp} LIKE ${q} ESCAPE '!'`,
+      sql`${customers.legacyCode} LIKE ${q} ESCAPE '!'`,
     ));
   }
   const where = conds.length ? and(...conds) : undefined;
@@ -275,7 +275,7 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
   if (!q || q.length < 2) return [];
   const limit = Math.min(Math.max(input.limit ?? 6, 1), 20);
 
-  const like_ = `%${escapeLike(q)}%`;
+  const like_ = `%${escLike(q)}%`;
   const matched = await db
     .select({
       id: customers.id,
@@ -286,11 +286,11 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
     .where(and(
       eq(customers.isActive, true),
       or(
-        like(customers.name, like_),
-        like(customers.phone, like_),
-        like(customers.phone2, like_),
-        like(customers.phone3, like_),
-        like(customers.whatsapp, like_),
+        sql`${customers.name} LIKE ${like_} ESCAPE '!'`,
+        sql`${customers.phone} LIKE ${like_} ESCAPE '!'`,
+        sql`${customers.phone2} LIKE ${like_} ESCAPE '!'`,
+        sql`${customers.phone3} LIKE ${like_} ESCAPE '!'`,
+        sql`${customers.whatsapp} LIKE ${like_} ESCAPE '!'`,
       ),
     ))
     .orderBy(asc(customers.name))

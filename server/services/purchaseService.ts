@@ -25,10 +25,17 @@ export interface CreatePurchaseOrderInput {
   status?: "DRAFT" | "SENT" | "CONFIRMED";
   items: PurchaseLineInput[];
   notes?: string | null;
+  clientRequestId?: string;
 }
 
 export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
   return withTx(async (tx) => {
+    // IDEM-06: idempotency check — نفس clientRequestId يعيد نفس المعرّف بدل إنشاء أمر مزدوج.
+    if (input.clientRequestId) {
+      const existing = await findIdempotentRefId(tx, "purchase.create", input.clientRequestId);
+      if (existing != null) return { purchaseOrderId: existing, idempotent: true };
+    }
+
     if (!input.items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء بلا أصناف" });
 
     const rows = [];
@@ -85,6 +92,8 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     for (const r of rows) {
       await tx.insert(purchaseOrderItems).values({ purchaseOrderId, ...r });
     }
+    // IDEM-06: سجّل مفتاح الـidempotency — طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى (ROLLBACK).
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "purchase.create", input.clientRequestId, purchaseOrderId);
     return { purchaseOrderId, poNumber, total: total.toFixed(2) };
   });
 }
@@ -249,6 +258,15 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       .from(productUnits)
       .where(inArray(productUnits.id, unitIds));
     const unitFactorMap = new Map(unitRows.map((u) => [Number(u.id), u.factor]));
+
+    // INV-004: التحقّق من قابلية الكمية المستلَمة للقسمة على معامل الوحدة (conversionFactor > 1).
+    // مثال: وحدة «درزن» factor=12 ⇒ receivedBaseQuantity يجب أن يكون مضاعفاً لـ12.
+    for (const { line, item } of work) {
+      const factor = Number(unitFactorMap.get(Number(item.productUnitId)) ?? 1);
+      if (factor > 1 && line.receivedBaseQuantity % factor !== 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `الكمية المستلَمة (${line.receivedBaseQuantity}) غير قابلة للقسمة على معامل الوحدة (${factor})` });
+      }
+    }
 
     // قفل صفوف branchStock للمتغيّرات المعنية قبل قراءة الـSUM:
     // يَسَلْسِل receive مع أي sale متزامن على نفس المتغيّرات (تلك تأخذ قفلاً على نفس الصفوف

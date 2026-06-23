@@ -216,7 +216,7 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
     }
 
     if (effectiveShiftId) {
-      const s = (await tx.select().from(shifts).where(eq(shifts.id, effectiveShiftId)).limit(1))[0];
+      const s = (await tx.select().from(shifts).where(eq(shifts.id, effectiveShiftId)).for("update").limit(1))[0];
       if (!s) throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
       if (s.status !== "OPEN")
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تسجيل مصروف على وردية مغلقة" });
@@ -307,7 +307,7 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
 
     if (exp.shiftId) {
       const s = (
-        await tx.select({ status: shifts.status }).from(shifts).where(eq(shifts.id, Number(exp.shiftId))).limit(1)
+        await tx.select({ status: shifts.status }).from(shifts).where(eq(shifts.id, Number(exp.shiftId))).for("update").limit(1)
       )[0];
       if (s && s.status === "CLOSED")
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء مصروف على وردية مغلقة" });

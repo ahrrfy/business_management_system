@@ -14,6 +14,8 @@ import { money, sumMoney, toDbMoney } from "./money";
 export interface StatementPeriod {
   from?: string;
   to?: string;
+  /** عزل الفرع (RPT-01/02): مدير الفرع يرى فواتير فرعه فقط؛ admin بلا قيد. */
+  branchId?: number;
 }
 
 /** اليوم التالي YYYY-MM-DD — حدّ أعلى **حصري** على أعمدة timestamp يشمل كامل يوم `to`
@@ -206,11 +208,12 @@ export async function getCustomerStatement(
   if (!db) return null;
   const c = (await db.select().from(customers).where(eq(customers.id, customerId)).limit(1))[0];
   if (!c) return null;
-  const { from, to } = period;
+  const { from, to, branchId } = period;
 
   const invConds = [eq(invoices.customerId, customerId)];
   if (from) invConds.push(sql`${invoices.invoiceDate} >= ${`${from} 00:00:00`}`);
   if (to) invConds.push(sql`${invoices.invoiceDate} < ${`${nextDayStr(to)} 00:00:00`}`);
+  if (branchId) invConds.push(eq(invoices.branchId, branchId));
   const invs = await db
     .select({
       id: invoices.id,
@@ -467,11 +470,12 @@ export async function getSupplierStatement(
   if (!db) return null;
   const s = (await db.select().from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0];
   if (!s) return null;
-  const { from, to } = period;
+  const { from, to, branchId } = period;
 
   const poConds = [eq(purchaseOrders.supplierId, supplierId)];
   if (from) poConds.push(sql`${purchaseOrders.orderDate} >= ${`${from} 00:00:00`}`);
   if (to) poConds.push(sql`${purchaseOrders.orderDate} < ${`${nextDayStr(to)} 00:00:00`}`);
+  if (branchId) poConds.push(eq(purchaseOrders.branchId, branchId));
   const pos = await db
     .select({
       id: purchaseOrders.id,
