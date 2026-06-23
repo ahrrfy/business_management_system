@@ -71,7 +71,11 @@ export async function sendTransfer(
   actor: Actor,
 ): Promise<SendTransferResult> {
   return withTx(async (tx) => {
-    // 1. Idempotency
+    // 1. Idempotency — مع فحص بصمة الكيان (تدقيق ٢٣/٦/٢٦):
+    //    البصمة كانت قاصرة على clientRequestId ⇒ مدير يُعيد استعمال المفتاح لتحويل جديد فيتلقّى
+    //    تأكيد التحويل القديم بينما الجديد لم يُنفَّذ ⇒ مال لا يصل لوجهته مع رسالة «نُقل بنجاح».
+    //    الآن: نتحقّق أنّ التحويل المخزَّن يَطابق (from, to, amount) قبل إرجاعه — وإلا CONFLICT
+    //    صريح يَكشف للمستخدم أنّ المفتاح يخصّ تحويلاً مغايراً (نمط voucherService.137-147).
     if (input.clientRequestId) {
       const existing = await findIdempotentRefId(tx, "cashTransfer.send", input.clientRequestId);
       if (existing != null) {
@@ -79,7 +83,18 @@ export async function sendTransfer(
           await tx.select().from(cashTransfers).where(eq(cashTransfers.id, existing)).limit(1)
         )[0];
         if (!t) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "tarnsfer idempotency missing" });
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "transfer idempotency missing" });
+        }
+        const requestedAmount = money(input.amount);
+        if (
+          Number(t.fromBranchId) !== input.fromBranchId ||
+          Number(t.toBranchId) !== input.toBranchId ||
+          money(t.amount).toFixed(2) !== requestedAmount.toFixed(2)
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لتحويل بفرع/مبلغ مختلف",
+          });
         }
         return {
           transferId: existing,

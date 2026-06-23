@@ -191,6 +191,12 @@ export async function getOpenShift(userId: number, branchId: number) {
 /**
  * معرّف وردية الموظّف المفتوحة في فرعٍ ما، مرتبط بالمعاملة — لنسب إيصالات الصندوق (نقد داخل/خارج)
  * إلى الوردية فيتوازن الـZ-report. يُرجع null إن لم تكن للموظّف وردية مفتوحة (لا شيء يُنسَب).
+ *
+ * **سباق مع closeShift (تدقيق ٢٣/٦/٢٦):** القراءة بلا قفل كانت تُرجع shiftId='OPEN' لحظةَ
+ * إصدار closeShift أمرَ CLOSE نفسها ⇒ تُكتب receipt على وردية أُغلقت توّاً ولا تظهر في
+ * Z-report بعد قطع التسوية. الحلّ: نَستعيد المرشّح ثم نَقفل صفّه بـFOR UPDATE ونُعيد فحص
+ * status='OPEN' تحت القفل. إن غُيِّر بعد القفل (closeShift سبَقَنا للالتزام) ⇒ نُرجع null
+ * كما لو لم تكن وردية مفتوحة، فيرتفع PRECONDITION_FAILED في الطبقة العليا (سلوك مُحدَّد).
  */
 export async function openShiftIdTx(tx: Tx, userId: number, branchId: number): Promise<number | null> {
   const rows = await tx
@@ -198,7 +204,18 @@ export async function openShiftIdTx(tx: Tx, userId: number, branchId: number): P
     .from(shifts)
     .where(and(eq(shifts.userId, userId), eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")))
     .limit(1);
-  return rows[0] ? Number(rows[0].id) : null;
+  if (!rows[0]) return null;
+  const id = Number(rows[0].id);
+  // قفل صفّ الوردية ثم إعادة فحص الحالة: closeShift يأخذ نفس القفل، فلا تُصدَر receipts
+  // على وردية أُغلقت في أثناء التسلسل. الـlock يُحَرَّر تلقائياً عند commit/rollback للـtx.
+  const locked = await tx
+    .select({ status: shifts.status })
+    .from(shifts)
+    .where(eq(shifts.id, id))
+    .for("update")
+    .limit(1);
+  if (!locked[0] || locked[0].status !== "OPEN") return null;
+  return id;
 }
 
 /**

@@ -278,10 +278,28 @@ export const workOrderRouter = router({
     .mutation(async ({ input, ctx }) => {
       for (const img of input.designImages ?? []) assertValidImageDataUrl(img.url);
       if (input.paymentReceiptUrl) assertValidImageDataUrl(input.paymentReceiptUrl);
+
+      // عزل الفرع (تدقيق ٢٣/٦/٢٦): قبل الإصلاح كان input.branchId يُمرَّر خاماً للخدمة ⇒ كاشير
+      // يُنشئ أمر شغل + يَقبض عربون نقدي في فرع آخر (نقدُه يَدخل وردية لا يَملكها، وفاتورة
+      // التسليم باسم فرعٍ خاطئ). نَمنع غير-elevated من خَلق أمرٍ خارج فرعهم بـFORBIDDEN صريح
+      // (نمط inventoryRouter.transferBatch وsaleRouter G1).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      let effectiveBranchId = input.branchId;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        if (Number(ctx.user.branchId) !== input.branchId) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا تستطيع إنشاء أمر شغل لفرع آخر" });
+        }
+        effectiveBranchId = Number(ctx.user.branchId);
+      }
+      const enforcedInput = { ...input, branchId: effectiveBranchId };
+
       // أعد المحاولة على سباق idempotency (طلبان متزامنان بنفس المفتاح ⇒ الثاني يُعيد الأول).
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createWorkOrder(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? input.branchId });
+          const res = await createWorkOrder(enforcedInput, { userId: ctx.user.id, branchId: effectiveBranchId });
           if (!(res as { idempotent?: boolean }).idempotent) {
             await logAudit(ctx, {
               action: "workOrder.create",

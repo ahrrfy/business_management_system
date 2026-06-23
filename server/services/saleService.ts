@@ -73,6 +73,10 @@ export interface CreateSaleResult {
 export async function createSale(input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
   return withTx(async (tx) => {
     // 1. Idempotency: replay the existing invoice for a repeated clientRequestId.
+    //    SALES-04 (تدقيق ٢٣/٦/٢٦): البصمة كانت قاصرة على branchId ⇒ كاشير يُعيد استعمال المفتاح
+    //    على بيع مختلف فيستلم فاتورة بيعٍ سابق ولا يُسجَّل البيع الجديد ⇒ منفذ سرقة نقد. الحلّ على
+    //    نمط processPayment/voucherService: نتحقّق من (branch, customer, payment.method, عدد الأسطر)
+    //    قبل إرجاع الفاتورة القديمة، وإلا CONFLICT صريح يُظهر للمستخدم أن المفتاح يخصّ بيعاً مغايراً.
     if (input.clientRequestId) {
       const existing = await tx
         .select()
@@ -80,15 +84,43 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         .where(eq(invoices.sourceId, input.clientRequestId))
         .limit(1);
       if (existing[0]) {
+        const ex = existing[0];
         // SALES-03: عزل الفرع — مفتاح idempotency يخصّ بيع فرع آخر لا يُكشَف للمستخدم (تعارض، لا تسريب فاتورة).
-        if (Number(existing[0].branchId) !== input.branchId) {
+        if (Number(ex.branchId) !== input.branchId) {
           throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لبيع فرع آخر" });
         }
+        const requestedCustomerId = input.customerId ?? null;
+        const storedCustomerId = ex.customerId != null ? Number(ex.customerId) : null;
+        if (storedCustomerId !== requestedCustomerId) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لبيع عميل مختلف",
+          });
+        }
+        const requestedMethod = input.payment?.method ?? null;
+        if ((ex.paymentMethod ?? null) !== requestedMethod) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لبيع بطريقة دفع مختلفة",
+          });
+        }
+        // عدد الأسطر إشارة رخيصة قوية (لا نُجبر الفاتورة بأكملها على الحفظ مرّتين، لكن نَحرس أن
+        // طلباً بأسطر مغايرة لا يُصادَر بفاتورة قديمة بصمت).
+        const existingItems = await tx
+          .select({ id: invoiceItems.id })
+          .from(invoiceItems)
+          .where(eq(invoiceItems.invoiceId, ex.id));
+        if (existingItems.length !== input.lines.length) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لبيع بعدد أصناف مختلف",
+          });
+        }
         return {
-          invoiceId: Number(existing[0].id),
-          invoiceNumber: existing[0].invoiceNumber,
-          total: existing[0].total,
-          status: existing[0].status as CreateSaleResult["status"],
+          invoiceId: Number(ex.id),
+          invoiceNumber: ex.invoiceNumber,
+          total: ex.total,
+          status: ex.status as CreateSaleResult["status"],
           idempotentReplay: true,
         };
       }
@@ -335,6 +367,9 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         invoiceId,
         branchId: input.branchId,
         shiftId: input.shiftId ?? null,
+        // cashBucket=DRAWER للنقد (يدخل تسوية Z-report)، NULL لغير النقد (لا يَمسّ صندوقاً).
+        // مرآة لنمط voucherService — يَحرس مستقبلاً صيَغ reconcile/cashOrphans التي تَفلتر بـcashBucket.
+        cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
         direction: "IN",
         amount: toDbMoney(paidNow),
         paymentMethod: input.payment!.method,
@@ -461,6 +496,8 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
       invoiceId: input.invoiceId,
       branchId: Number(inv.branchId),
       shiftId,
+      // cashBucket=DRAWER للنقد، NULL لغير النقد — مرآة لـcreateSale ولـvoucherService.
+      cashBucket: input.method === "CASH" ? "DRAWER" : null,
       direction: "IN",
       amount: toDbMoney(amount),
       paymentMethod: input.method,

@@ -6,6 +6,7 @@ import { branches, branchStock, inventoryMovements, productVariants, products, u
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { applyMovement, convertToBaseQuantity, setStock, transferBetweenBranches } from "../services/inventoryService";
+import { findIdempotentRefId, recordIdempotencyKey } from "../services/idempotency";
 import { withTx } from "../services/tx";
 import { branchScopedProcedure, protectedProcedure, router, warehouseProcedure } from "../trpc";
 
@@ -101,6 +102,9 @@ export const inventoryRouter = router({
           )
           .min(1, "أضف صنفاً واحداً على الأقل")
           .max(200, "حدّ الأصناف في السند الواحد 200"),
+        // idempotency (تدقيق ٢٣/٦/٢٦): نقرة مزدوجة كانت تنقل المخزون بين الفروع مرّتين ⇒
+        // عجز/فائض ظاهر في الجرد. المفتاح يَحرس ضدّ النقر المزدوج وإعادة المحاولة الشبكية.
+        clientRequestId: z.string().min(1).max(80).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -131,10 +135,20 @@ export const inventoryRouter = router({
         .join(" — ") || undefined;
 
       // معاملة واحدة لكل الأسطر ⇒ ذرّية (فشل أي سطر يُرجِع كل السند).
-      const lines = await withTx(async (tx) => {
+      // idempotency: المفتاح يُربط بأوّل movementId. على replay نَرفض بـCONFLICT بدل
+      // إعادة تنفيذ الحركات (السند الواحد له «خروج» واحد لا قابل لإعادة الإصدار).
+      const { lines, idempotentReplay } = await withTx(async (tx) => {
+        if (input.clientRequestId) {
+          const existing = await findIdempotentRefId(tx, "inventory.transferBatch", input.clientRequestId);
+          if (existing != null) {
+            // السند نُفِّذ مسبقاً — لا نُعيد الكتابة. الواجهة تستطيع استعلام movementsRich لرؤية النتيجة.
+            return { lines: input.items.length, idempotentReplay: true as const };
+          }
+        }
         const out: Array<{ variantId: number }> = [];
+        let firstMovementId = 0;
         for (const it of input.items) {
-          await transferBetweenBranches(tx, {
+          const res = await transferBetweenBranches(tx, {
             variantId: it.variantId,
             fromBranchId,
             toBranchId: input.toBranchId,
@@ -142,25 +156,33 @@ export const inventoryRouter = router({
             notes: noteLine,
             createdBy: ctx.user.id,
           });
+          if (firstMovementId === 0) firstMovementId = Number(res.from.movementId);
           out.push({ variantId: it.variantId });
         }
-        return out;
+        if (input.clientRequestId && firstMovementId > 0) {
+          // الـUNIQUE على (operation, key) يَلتقط السباق المتزامن بنفس المفتاح ⇒ ER_DUP_ENTRY يُرجِع كل السند.
+          await recordIdempotencyKey(tx, "inventory.transferBatch", input.clientRequestId, firstMovementId);
+        }
+        return { lines: out.length, idempotentReplay: false as const };
       });
 
-      await logAudit(ctx, {
-        action: "inventory.transferBatch",
-        entityType: "transfer",
-        entityId: fromBranchId,
-        newValue: {
-          fromBranchId,
-          toBranchId: input.toBranchId,
-          reason: input.reason ?? null,
-          notes: input.notes ?? null,
-          itemCount: lines.length,
-          items: input.items,
-        },
-      });
-      return { lines: lines.length };
+      // لا نَكتب audit log على replay (السند مُسجَّل مسبقاً) — يَمنع تضخّم السجلّ بمحاولات مكرّرة.
+      if (!idempotentReplay) {
+        await logAudit(ctx, {
+          action: "inventory.transferBatch",
+          entityType: "transfer",
+          entityId: fromBranchId,
+          newValue: {
+            fromBranchId,
+            toBranchId: input.toBranchId,
+            reason: input.reason ?? null,
+            notes: input.notes ?? null,
+            itemCount: lines,
+            items: input.items,
+          },
+        });
+      }
+      return { lines, idempotentReplay };
     }),
 
   adjust: warehouseProcedure
