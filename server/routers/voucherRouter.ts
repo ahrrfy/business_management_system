@@ -108,5 +108,11 @@ export const voucherRouter = router({
 
   get: managerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
-    .query(({ input }) => getVoucher(input.receiptId)),
+    .query(async ({ input, ctx }) => {
+      const voucher = await getVoucher(input.receiptId);
+      if (voucher && ctx.user.role !== "admin" && ctx.user.branchId != null && Number(voucher.branchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "هذا السند لفرع آخر" });
+      }
+      return voucher;
+    }),
 });

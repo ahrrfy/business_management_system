@@ -59,7 +59,10 @@ export const returnRouter = router({
         })
         .optional()
     )
-    .query(({ input }) => listSalesReturns(input ?? {})),
+    .query(({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? input?.branchId : (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined);
+      return listSalesReturns({ ...(input ?? {}), branchId });
+    }),
 
   getInvoice: managerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input }) => {
     const db = getDb();

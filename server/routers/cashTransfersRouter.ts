@@ -112,7 +112,10 @@ export const cashTransfersRouter = router({
         .optional(),
     )
     .query(async ({ input, ctx }) => {
-      const scopedBranchId = ctx.user.role === "admin" ? null : Number(ctx.user.branchId ?? 0);
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const scopedBranchId = ctx.user.role === "admin" ? null : Number(ctx.user.branchId);
       return listTransfers(input ?? { direction: "ALL", limit: 50, offset: 0 }, scopedBranchId);
     }),
 });

@@ -92,7 +92,8 @@ export const purchaseReturnsRouter = router({
         })
         .optional()
     )
-    .query(async ({ input }) => {
-      return listPurchaseReturns(input ?? {});
+    .query(async ({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? input?.branchId : (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined);
+      return listPurchaseReturns({ ...(input ?? {}), branchId });
     }),
 });
