@@ -42,8 +42,7 @@ const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
 const Vouchers = lazy(() => import("@/pages/Vouchers"));
 const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
 const Invoices = lazy(() => import("@/pages/Invoices"));
-const POS = lazy(() => import("@/pages/POS"));
-const PrintPOS = lazy(() => import("@/pages/PrintPOS"));
+const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
 const KioskDevices = lazy(() => import("@/pages/KioskDevices"));
@@ -67,7 +66,6 @@ const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
 const WorkOrderStation = lazy(() => import("@/pages/WorkOrderStation"));
 const WorkOrders = lazy(() => import("@/pages/WorkOrders"));
-const Reception = lazy(() => import("@/pages/Reception"));
 const Production = lazy(() => import("@/pages/Production"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -172,17 +170,15 @@ export default function App() {
     <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />
-      {/* نقطة البيع بملء الشاشة (بلا قائمة جانبية) */}
+      {/* نقطة البيع الموحَّدة — Shell واحد لـ٣ أوضاع (تجزئة/خدمات طباعة/استقبال أوامر شغل) */}
       <Route path="/pos">
         <Protected>
-          <POS />
+          <PointOfSale />
         </Protected>
       </Route>
-      {/* نقطة بيع قسم الطباعة والاستنساخ بملء الشاشة (بلا قائمة جانبية) */}
+      {/* إعادة توجيه قَديمة: /print-pos ⇒ /pos?mode=PRINT_SERVICES */}
       <Route path="/print-pos">
-        <Protected>
-          <PrintPOS />
-        </Protected>
+        <Redirect to="/pos?mode=PRINT_SERVICES" />
       </Route>
       {/* شاشة قارئ الأسعار (الكشك) بملء الشاشة (بلا قائمة جانبية) — جهاز المتجر مسجَّل الدخول */}
       <Route path="/price-checker">
@@ -229,7 +225,8 @@ export default function App() {
       <Route path="/transfers"><Shell><Transfers /></Shell></Route>
       <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>
       <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
-      <Route path="/work-orders/reception"><Shell><RequireRole roles={["admin","manager","cashier"]}><Reception /></RequireRole></Shell></Route>
+      {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
+      <Route path="/work-orders/reception"><Redirect to="/pos?mode=RECEPTION" /></Route>
       <Route path="/work-orders/station"><Shell><RequireRole roles={["admin","manager","print_operator","cashier"]}><WorkOrderStation /></RequireRole></Shell></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
       <Route path="/production"><Shell><Production /></Shell></Route>

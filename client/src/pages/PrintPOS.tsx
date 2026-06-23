@@ -358,7 +358,7 @@ export default function PrintPOS() {
 
   // ── الشاشة الرئيسية ──
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
       <Header C={C} dark={dark} toggleDark={toggleDark} search={search} setSearch={setSearch} searchRef={searchRef}
         me={me.data} shiftId={shift.id} lastInv={lastInv} onCloseShift={() => setShifting(true)}
         printerReady={printerReady} onConnectPrinter={connectPrinter}
