@@ -107,7 +107,7 @@ describe("postOpeningEntry — يَحترم قفل الفترة", () => {
 });
 
 async function d_insert_customer() {
-  await db().insert(s.customers).values({ id: 1, name: "عميل اختبار", customerType: "INDIVIDUAL" });
+  await db().insert(s.customers).values({ id: 1, name: "عميل اختبار", customerType: "فرد" });
 }
 
 // ─── (2) workOrder.deliver — clientRequestId idempotency ─────────────────────
@@ -135,7 +135,8 @@ describe("workOrder.deliver — clientRequestId يَمنع تسليم مزدوج
 
     const { deliverWorkOrder } = await import("../workOrderService");
     const actor = { userId: 1, branchId: 1, role: "cashier" as const };
-    const input = { workOrderId: 1, clientRequestId: "deliver-key-001" };
+    // TRANSFER لا يَستوجب وردية ⇒ يَتجنّب خطأ «وردية مفتوحة»؛ المبلغ = salePrice ⇒ لا آجل.
+    const input = { workOrderId: 1, clientRequestId: "deliver-key-001", payment: { amount: "100.00", method: "TRANSFER" as const } };
 
     const r1 = await deliverWorkOrder(input, actor);
     expect(r1.invoiceId).toBeGreaterThan(0);
@@ -153,7 +154,7 @@ describe("processPayment — تعارض طريقة السداد ⇒ CONFLICT", (
   it("نفس المفتاح + طريقة مختلفة ⇒ CONFLICT", async () => {
     const d = db();
     // فاتورة آجلة بسيطة
-    await d.insert(s.customers).values({ id: 1, name: "عميل", customerType: "INDIVIDUAL" });
+    await d.insert(s.customers).values({ id: 1, name: "عميل", customerType: "فرد" });
     await d.insert(s.invoices).values({
       id: 1,
       invoiceNumber: "INV-001",
