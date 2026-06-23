@@ -789,6 +789,11 @@ export const workOrders = mysqlTable(
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     assignedTo: int("assignedTo").references(() => users.id),
     dueDate: date("dueDate"),
+    // تَتبّع زَمن التَنفيذ الفِعلي (شَريحة #4 backend gaps):
+    // workStartedAt يُكتَب عند startWorkOrder، workSeconds يُحسَب عند markWorkOrderReady
+    // (= TIMESTAMPDIFF(SECOND, workStartedAt, NOW())). يَستبدل اشتقاق المؤقّت من auditLogs.
+    workStartedAt: timestamp("workStartedAt"),
+    workSeconds: int("workSeconds"),
     deliveredAt: timestamp("deliveredAt"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

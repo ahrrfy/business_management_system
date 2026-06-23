@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, desc, eq, inArray, isNull, like } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, like, sql } from "drizzle-orm";
 import {
   invoiceItems,
   invoices,
@@ -299,19 +299,38 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
 
     await tx
       .update(workOrders)
-      .set({ status: "IN_PROGRESS", materialsCost: materialsCost.toFixed(2) })
+      .set({
+        status: "IN_PROGRESS",
+        materialsCost: materialsCost.toFixed(2),
+        // شَريحة #4: ختم بدء التَنفيذ بالـDB clock (لا client clock — يَضمن مَرجعاً واحداً
+        // لِكل المُستهلِكين بَلا انجراف ساعات الفروع).
+        workStartedAt: sql`NOW()`,
+        // إعادة بدء (مَنطق نَظري — التَدفّق الحالي لا يَدعمه، لكن إن نَفّذ نِظام pause/resume
+        // في المُستقبل نُصفّر workSeconds هُنا بَدل تَجميع جُزئي).
+        workSeconds: null,
+      })
       .where(eq(workOrders.id, workOrderId));
     return { workOrderId, status: "IN_PROGRESS", materialsCost: materialsCost.toFixed(2) };
   });
 }
 
-/** IN_PROGRESS → READY (no stock change). */
+/** IN_PROGRESS → READY (no stock change).
+ *  يَحسب زَمن التَنفيذ كَـ TIMESTAMPDIFF(SECOND, workStartedAt, NOW()) على DB clock
+ *  ⇒ لا انجراف ولا اعتماد على عَميل. لو workStartedAt = NULL (أَوامر قَديمة قبل الهجرة)
+ *  يَبقى workSeconds = NULL ولا يَكسر شَيئاً (الواجهة تَتعامل مع NULL بِفقاطِع رَمادية). */
 export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { role?: string }) {
   return withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     if (actor) { assertWorkOrderBranch(wo, actor); assertOperatorOwns(wo, actor); }
     if (wo.status !== "IN_PROGRESS") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس قيد التنفيذ" });
-    await tx.update(workOrders).set({ status: "READY" }).where(eq(workOrders.id, workOrderId));
+    await tx
+      .update(workOrders)
+      .set({
+        status: "READY",
+        // GREATEST(...,0) حِماية: لو ساعة DB رُجِعَت بَين start و markReady (نَدراً) لا نَعطي سالباً.
+        workSeconds: sql`GREATEST(TIMESTAMPDIFF(SECOND, ${workOrders.workStartedAt}, NOW()), 0)`,
+      })
+      .where(eq(workOrders.id, workOrderId));
     return { workOrderId, status: "READY" };
   });
 }

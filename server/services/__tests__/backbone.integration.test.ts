@@ -443,6 +443,9 @@ describe("أوامر الشغل/المطبعة", () => {
     let wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
     expect(wo.status).toBe("IN_PROGRESS");
     expect(wo.materialsCost).toBe("20.00"); // 1 × 20.00
+    // شَريحة #4: ختم بدء التَنفيذ من DB clock + workSeconds يُصفَّر عند البدء (لو سَبق إعادة).
+    expect(wo.workStartedAt).not.toBeNull();
+    expect(wo.workSeconds).toBeNull();
     const mats = await db().select().from(s.workOrderMaterials).where(eq(s.workOrderMaterials.workOrderId, r.workOrderId));
     expect(mats[0].unitCost).toBe("20.00"); // snapshot
 
@@ -450,6 +453,9 @@ describe("أوامر الشغل/المطبعة", () => {
     await markWorkOrderReady(r.workOrderId);
     wo = (await db().select().from(s.workOrders).where(eq(s.workOrders.id, r.workOrderId)))[0];
     expect(wo.status).toBe("READY");
+    // شَريحة #4: workSeconds يُحسَب من TIMESTAMPDIFF(SECOND, workStartedAt, NOW()) ≥ 0.
+    expect(wo.workSeconds).not.toBeNull();
+    expect(Number(wo.workSeconds)).toBeGreaterThanOrEqual(0);
 
     // READY → DELIVERED مع دفعة نقدية كاملة 500
     await openShift(1);
