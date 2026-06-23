@@ -1,12 +1,41 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData } from "@tanstack/react-query";
 import { Link } from "wouter";
+import {
+  ArrowLeftRight,
+  Banknote,
+  Camera,
+  Check,
+  CreditCard,
+  FileText,
+  Image as ImageIcon,
+  Layers,
+  MessageCircle,
+  Minus,
+  Music,
+  Package,
+  Palette,
+  Pencil,
+  Phone,
+  Plus,
+  Printer,
+  Ruler,
+  Search,
+  ShoppingCart,
+  Store,
+  Trash2,
+  Truck,
+  X,
+  Zap,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
@@ -37,15 +66,9 @@ type CartLine = {
   custom?: CustomizationData; // إن كان مخصّصاً
 };
 
+// مبالغ سريعة بالقيمة الفعلية (د.ع). إصلاح P2 (٢٣/٦/٢٦): كان `setQuickAmt(v * 1000)` يجعل
+// زرّ «5,000» يُدخل 5,000,000 ⇒ فكّةٌ خاطئة ١٠٠٠× — كارثة كاشير.
 const QUICK_AMTS = [1000, 5000, 10000, 25000];
-const CHANNEL_BADGE_COLORS = {
-  WHATSAPP: "bg-emerald-500",
-  INSTAGRAM: "bg-pink-500",
-  TIKTOK: "bg-rose-500",
-  PHONE: "bg-sky-500",
-  WALK_IN: "bg-slate-500",
-  OTHER: "bg-violet-500",
-} as const;
 
 function effectivePrice(line: CartLine): number {
   const base = line.origPrice ?? Number(line.row.price ?? 0);
@@ -58,13 +81,20 @@ function lineTotal(line: CartLine): number {
 function isCustomKind(line: CartLine): boolean {
   return !!line.custom;
 }
+/** الإجمالي الكامل لسطر مخصّص (سعر السطر + تكلفة التوصيل). يُستعمل لـsalePrice على workOrder
+ *  ليطابق إجمالي الفاتورة عند التسليم (deliverWorkOrder يَحسبه من wo.salePrice وحده). */
+function customLineGrand(line: CartLine): number {
+  if (!line.custom) return lineTotal(line);
+  const delivery = line.custom.hasDelivery ? Number(line.custom.deliveryCost || 0) : 0;
+  return lineTotal(line) + delivery;
+}
 
 export default function Reception() {
   const me = trpc.auth.me.useQuery();
   const branchId = useMemo(() => Number(me.data?.branchId ?? 1), [me.data?.branchId]);
   const utils = trpc.useUtils();
 
-  // وردية مفتوحة لازمة لتسجيل البيع (saleRouter).
+  // وردية مفتوحة لازمة لتسجيل البيع (saleRouter) ولقبض عربون نقدي.
   const shiftQ = trpc.shifts.current.useQuery({ branchId });
   const shift = shiftQ.data ?? null;
 
@@ -76,10 +106,11 @@ export default function Reception() {
   const [numMode, setNumMode] = useState<NumMode>("PAY");
   const [payInput, setPayInput] = useState("");
   const [method, setMethod] = useState<PayMethod>("CASH");
+  const [paymentReference, setPaymentReference] = useState(""); // P2 fix: مرجع البطاقة للعرابين
   const [showInbox, setShowInbox] = useState(false);
   const [showCustomization, setShowCustomization] = useState<{ row: PosRow; editingKey?: string } | null>(null);
   const [customer, setCustomer] = useState<SmartCustomerValue>({ customerId: null, name: "", phone: null, isNew: false });
-  const [channel, setChannel] = useState<keyof typeof CHANNEL_BADGE_COLORS>("WALK_IN");
+  const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
   const [channelHandle, setChannelHandle] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -90,11 +121,7 @@ export default function Reception() {
   // ───── حسابات هجينة ───────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
   const sumDirectD = cart.filter((c) => !isCustomKind(c)).reduce((s, c) => s.plus(D(lineTotal(c))), D(0));
-  const sumCustomD = cart.filter((c) => isCustomKind(c)).reduce((s, c) => {
-    const base = D(lineTotal(c));
-    const delivery = c.custom?.hasDelivery ? D(c.custom.deliveryCost || 0) : D(0);
-    return s.plus(base).plus(delivery);
-  }, D(0));
+  const sumCustomD = cart.filter((c) => isCustomKind(c)).reduce((s, c) => s.plus(D(customLineGrand(c))), D(0));
   const grandTotalD = sumDirectD.plus(sumCustomD);
   const grandTotal = round2(grandTotalD).toNumber();
   const sumDirect = round2(sumDirectD).toNumber();
@@ -118,6 +145,12 @@ export default function Reception() {
   const isChange = paidD.gt(0) && paidD.gte(expectedNowD);
   const isOwing = paidD.gt(0) && paidD.lt(expectedNowD);
 
+  const hasCustom = cart.some(isCustomKind);
+  // TRANSFER غير مدعوم على workOrders (schema: CASH/CARD فقط). إصلاح P2: نعطّل التحويل عند وجود
+  // مخصّص بدل تحويله صامتاً لـCASH (كان يشوّه نوع الدفع المُسجَّل).
+  const transferDisabled = hasCustom;
+  const needPaymentRef = hasCustom && method === "CARD";
+
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
@@ -129,16 +162,18 @@ export default function Reception() {
 
   // ───── السلّة ─────────────────────────────────────────────────────────────
   const addRow = useCallback((row: PosRow) => {
+    // إصلاح P2 (٢٣/٦/٢٦): حارس السعر **قبل** فتح نافذة التخصيص — كان يَسمح لمخصَّصٍ بلا سعر RETAIL
+    // بالدخول للسلّة ثم يَفشل عند الإرسال (createWorkOrder يَرفض salePrice<=0) بَعد ما اَلتزَمت
+    // فاتورة البيع — رحلةٌ بِنصف نتيجة. الحارس موحَّد للنوعين.
+    if (row.price == null || Number(row.price) <= 0) {
+      notify.err(`لا سعر RETAIL لـ ${row.productName} (${row.unitName}) — حدّد سعراً من /products أوّلاً`);
+      return;
+    }
     // المنتج المخصّص (products.isCustomizable=true) ⇒ افتح نافذة التخصيص.
-    // الموجود مسبقاً في السلّة كمخصّص نتركه — لإضافة آخر، يضيفه المستخدم سطراً جديداً.
     if (row.isCustomizable) {
       setShowCustomization({ row });
       setSearch("");
       setShowDrop(false);
-      return;
-    }
-    if (row.price == null) {
-      notify.err(`لا سعر لـ ${row.productName} (${row.unitName})`);
       return;
     }
     setCart((prev) => {
@@ -182,9 +217,14 @@ export default function Reception() {
     setCart((prev) => prev.filter((c) => c.key !== key));
     if (selKey === key) setSelKey(null);
   }
-  function clearCart() {
+  async function clearCart() {
     if (cart.length === 0) return;
-    if (!confirm("تفريغ السلّة؟ سيُمسح كلّ ما في الطلب الحالي.")) return;
+    if (!(await confirm({
+      variant: "warning",
+      title: "تفريغ السلّة",
+      description: "سيُمسح كلّ ما في الطلب الحالي. متابعة؟",
+      confirmText: "تفريغ",
+    }))) return;
     setCart([]);
     setSelKey(null);
     setPayInput("");
@@ -227,7 +267,7 @@ export default function Reception() {
         prev.map((c) => {
           if (c.key !== selKey) return c;
           let s = String(c.qty);
-          if (k === "⌫") s = s.length > 1 ? s.slice(0, -1) : "1";
+          if (k === "DEL") s = s.length > 1 ? s.slice(0, -1) : "1";
           else if (k === "C") s = "1";
           else s = s === "0" ? k : s + k;
           return { ...c, qty: Math.max(1, parseInt(s, 10) || 1) };
@@ -241,7 +281,7 @@ export default function Reception() {
           if (c.key !== selKey) return c;
           const base = c.origPrice ?? Number(c.row.price ?? 0);
           let s = c.disc != null ? String(c.disc) : "";
-          if (k === "⌫") s = s.slice(0, -1);
+          if (k === "DEL") s = s.slice(0, -1);
           else if (k === "C") s = "";
           else if (k === "." && s.includes(".")) return c;
           else s = s + k;
@@ -251,7 +291,7 @@ export default function Reception() {
       );
     } else {
       setPayInput((prev) => {
-        if (k === "⌫") return prev.slice(0, -1);
+        if (k === "DEL") return prev.slice(0, -1);
         if (k === "C") return "";
         if (k === "." && prev.includes(".")) return prev;
         return prev + k;
@@ -267,6 +307,37 @@ export default function Reception() {
     setPayInput(String(expectedNow));
   }
 
+  // ───── إنشاء العميل عند الحاجة (ensureCustomerId) ────────────────────────
+  // إصلاح P2 (٢٣/٦/٢٦): قبل الإصلاح كان customer.customerId=null يُسقط الاسم/الهاتف ⇒ فاتورة وأمر
+  // شغل بلا عميل (تَسليم آجل لاحقاً يَفشل بـ«طلب الخدمة الآجل يتطلب عميلاً محدداً»).
+  const createCustomerM = trpc.customers.create.useMutation();
+  async function ensureCustomerId(): Promise<number | null> {
+    if (customer.customerId) return customer.customerId;
+    if (!customer.name?.trim()) return null;
+    if (!(await confirm({
+      variant: "warning",
+      title: "إنشاء عميل جديد",
+      description: `سيُنشأ عميل جديد باسم «${customer.name.trim()}». متابعة؟`,
+      confirmText: "إنشاء العميل",
+    }))) {
+      throw new Error("ألغى المستخدم إنشاء العميل");
+    }
+    const created = await createCustomerM.mutateAsync({
+      name: customer.name.trim(),
+      phone: customer.phone || null,
+      customerType: "فرد",
+      defaultPriceTier: "RETAIL",
+    });
+    // عَقد الراوتر يُرجع {id, customerId} كلاهما (للتوافق). نَحرس ضدّ NaN لو تَغيّر العقد.
+    const id = Number((created as any).id ?? (created as any).customerId);
+    if (!Number.isFinite(id) || id <= 0) {
+      throw new Error("تعذّر قراءة مُعرّف العميل الجديد من الخادم");
+    }
+    // عكس الاختيار في الواجهة بعد الإنشاء.
+    setCustomer({ customerId: id, name: customer.name.trim(), phone: customer.phone ?? null, isNew: false });
+    return id;
+  }
+
   // ───── الإرسال (هجين) ─────────────────────────────────────────────────────
   const saleM = trpc.sales.create.useMutation();
   const woM = trpc.workOrders.create.useMutation();
@@ -277,17 +348,28 @@ export default function Reception() {
       notify.err("لا توجد وردية مفتوحة — افتح الوردية من /pos أو /shifts");
       return;
     }
+    // P2: مرجع البطاقة إلزاميّ عند وجود مخصَّص (createWorkOrder يَرفض CARD بلا مرجع).
+    if (hasCustom && method === "CARD" && !paymentReference.trim()) {
+      notify.err("رقم العملية المرجعي مطلوب عند الدفع ببطاقة لطلبات الخدمة المخصّصة");
+      return;
+    }
+    // P2: التحويل غير مدعوم في workOrders (CASH/CARD فقط) ⇒ لا نقبله مع وجود مخصّصات.
+    if (hasCustom && method === "TRANSFER") {
+      notify.err("التحويل البنكي غير مدعوم لعرابين أوامر الشغل — اختر نقداً أو بطاقة");
+      return;
+    }
 
     const directLines = cart.filter((c) => !isCustomKind(c));
     const customItems = cart.filter(isCustomKind);
 
     // عربون كل صنف مخصّص: Quick = كامل سعر الصنف+التوصيل؛ غير ذلك = ما حفظه في النافذة.
+    // إصلاح P1: salePrice على workOrder = lineTotal + deliveryCost. deliverWorkOrder يَحسب
+    // إجمالي الفاتورة من wo.salePrice وحده ويَرفض deposit > salePrice ⇒ إن استَبعَدنا التوصيل
+    // فأمر التسليم المدفوع كاملاً يَفشل، وإن لم يَفشل فالتوصيل بلا إيراد فعلاً.
     const customWithDeposits = customItems.map((c) => {
-      const base = D(lineTotal(c));
-      const delivery = c.custom!.hasDelivery ? D(c.custom!.deliveryCost || 0) : D(0);
-      const full = base.plus(delivery);
+      const full = D(customLineGrand(c));
       const deposit = opts.quickFullPay ? full.toFixed(2) : (c.custom?.deposit || "0");
-      return { c, depositStr: deposit, fullStr: full.toFixed(2), deliveryStr: delivery.toFixed(2) };
+      return { c, depositStr: deposit, salePriceStr: full.toFixed(2) };
     });
 
     // الدفع المتوقّع لهذا التنفيذ.
@@ -295,16 +377,29 @@ export default function Reception() {
     const expectedTotalD = round2(sumDirectD.plus(expectedDepositsD));
     const inputPaidD = opts.quickFullPay ? expectedTotalD : paidD;
 
-    if (!opts.quickFullPay) {
-      if (inputPaidD.lt(sumDirectD)) {
-        notify.err("المبلغ المُدخَل أقلّ من إجمالي البيع المباشر — لا بدّ من دفع البيع الجاهز كاملاً.");
-        return;
-      }
+    // إصلاح P1 (٢٣/٦/٢٦): الفحص السابق كان يَتحقّق من تَغطية البيع المباشر فقط، بَينما يَرسل
+    // العربون الكامل لكل صنف لـcreateWorkOrder الذي يَقيّده receipt(IN)+PAYMENT_IN فوراً.
+    // النتيجة: نَقد غير مَقبوض فعلاً يَدخل الدفتر ⇒ تَسوية صندوق/AR مشوَّهة. الفحص الآن
+    // يَستلزم تَغطية إجمالي العَرابين أيضاً (المُدخَل ≥ المتوقَّع).
+    if (!opts.quickFullPay && inputPaidD.lt(expectedTotalD)) {
+      notify.err(`المبلغ المُدخَل (${fmt(inputPaidD.toFixed(2))}) أقلّ من المتوقَّع (${fmt(expectedTotalD.toFixed(2))} = بيع + عرابين). عدّل العرابين من النوافذ أو أكمِل المبلغ.`);
+      return;
     }
 
-    const customerId = customer.customerId ?? undefined;
-
+    // تَفعيل قَفل الإرسال **قبل** ensureCustomerId لمنع سباق نَقر مَزدوج يُنشئ عميلاً مكرَّراً
+    // (ensureCustomerId يَحتوي عميلية confirm() غير متزامنة).
+    if (submitting) return;
     setSubmitting(true);
+
+    let customerId: number | null = null;
+    try {
+      customerId = await ensureCustomerId();
+    } catch (e: any) {
+      setSubmitting(false);
+      notify.err(e?.message || "تعذّر تجهيز العميل");
+      return;
+    }
+
     try {
       let invoiceId: number | null = null;
       const createdWoIds: number[] = [];
@@ -325,7 +420,7 @@ export default function Reception() {
           branchId,
           shiftId: shift.id,
           sourceType: "POS",
-          customerId,
+          customerId: customerId ?? undefined,
           lines,
           payment: { amount: saleAmount, method },
           clientRequestId: `${reqIdRef.current}-sale`,
@@ -338,26 +433,39 @@ export default function Reception() {
         const c = x.c;
         const custom = c.custom!;
         const finalText = composeCustomizationText(custom);
-        const salePrice = D(lineTotal(c)).toFixed(2); // السعر الأساس بلا توصيل (deliveryCost عمود مستقل)
+        // إصلاح P1 (٢٣/٦/٢٦): المنتجات المخصّصة ذات المخزون كانت تَخرج بلا materials ⇒ المخزون
+        // لا يَنخفض و COGS صفر، وعند التسليم الفاتورة تُنشَأ بسطر للمنتج الأساس بدون خصم سابق
+        // ⇒ بيعٌ بلا تكلفة، أرباح مُبالَغة، رصيدٌ مُبالَغ في المخزون.
+        // الحل: لو المنتج Service (بلا مخزون) ⇒ لا مواد. غير ذلك ⇒ المنتج الأساس يَستهلك
+        // baseQuantity = qty * conversionFactor (يُقرَّب لعدد صحيح لمطابقة فحص createWorkOrder).
+        const materials: { variantId: number; baseQuantity: number }[] = [];
+        if (!c.row.isService) {
+          const factor = Number(c.row.conversionFactor) || 1;
+          const baseQty = Math.max(1, Math.round(c.qty * factor));
+          materials.push({ variantId: c.row.variantId, baseQuantity: baseQty });
+        }
         const res = await woM.mutateAsync({
           branchId,
-          customerId,
+          customerId: customerId ?? undefined,
           baseVariantId: c.row.variantId,
           title: custom.title.trim() || c.row.productName,
           customizationText: finalText || null,
           quantity: c.qty,
-          materials: [],
+          materials,
           laborCost: "0",
-          salePrice,
+          // ملاحظة: salePrice الآن يَضمّ التوصيل (إصلاح P1 — حتى يَتطابق مع deliverWorkOrder).
+          salePrice: x.salePriceStr,
           dueDate: custom.dueDate || null,
           priority: custom.priority,
           deposit: x.depositStr,
           paymentMethod: method === "TRANSFER" ? "CASH" : method,
+          paymentReference: needPaymentRef ? paymentReference.trim() : null,
           receptionChannel: channel,
           channelHandle: channelHandle || null,
           hasDelivery: custom.hasDelivery,
           deliveryAddress: custom.deliveryAddress || null,
-          deliveryCost: x.deliveryStr,
+          // deliveryCost يَبقى في عمود مستقلّ للتقرير؛ salePrice الإجماليّ ضمّه فعلاً.
+          deliveryCost: custom.hasDelivery ? D(custom.deliveryCost || 0).toFixed(2) : "0",
           designImages: custom.designImages.map((img, idx) => ({
             url: img.dataUrl,
             caption: img.name ?? null,
@@ -369,7 +477,7 @@ export default function Reception() {
         if (woId) createdWoIds.push(woId);
       }
 
-      // إفراغ + إشعار + تجديد idempotency key
+      // إفراغ + إشعار + تجديد idempotency key (نَجاح كامل فقط).
       const summary = [
         invoiceId ? `فاتورة #${invoiceId}` : null,
         createdWoIds.length > 0 ? `${createdWoIds.length} أمر شغل` : null,
@@ -380,18 +488,30 @@ export default function Reception() {
       setCart([]);
       setSelKey(null);
       setPayInput("");
+      setPaymentReference("");
       reqIdRef.current = crypto.randomUUID();
       // تحديث القوائم.
       utils.workOrders.list.invalidate().catch(() => {});
       utils.shifts.current.invalidate().catch(() => {});
     } catch (e: unknown) {
-      notify.err(e, "تعذّر إتمام الاستلام");
+      // ذرّية جزئية: الفاتورة قد تَكون التُزِمت قبل فَشل أوامر الشغل (أو العكس). نُبقي reqIdRef
+      // ثابتاً (لا نُجدّده) — sales.create و workOrders.create يَستعملان clientRequestId فريداً
+      // (`-sale` و`-wo-${key}`) ⇒ إعادة الضغط على نفس الزرّ تُكمل ما نَقص بأمان (idempotency
+      // على الخادم تُجنّب التَكرار) ولا تُنشئ سَلَّةً مَلتزَمة مرّتَين.
+      notify.err(e, "تعذّر إتمام الاستلام بالكامل — اضغط مرّة أخرى لاستئناف ما لم يَلتَزم (idempotent)");
     } finally {
       setSubmitting(false);
     }
   }
 
-  // اختصارات لوحة المفاتيح: F2 بحث، F4 دفع، Esc إغلاق درج/نافذة.
+  // إصلاح P2 (٢٣/٦/٢٦): F4 كان يُمسك إغلاقاً بياناتيّاً قديماً (payInput/method/customer/shift)
+  // لأن الاعتماديّات لم تَشملها ⇒ نقرة F4 بعد تعديل المبلغ تَنفّذ بمبلغ قديم. الحل: ref يَحمل
+  // أحدث `handleSubmit` ⇒ المُستَمع يَستدعي ref.current دائماً.
+  const submitRef = useRef<(opts: { quickFullPay: boolean }) => void>(() => {});
+  useEffect(() => {
+    submitRef.current = handleSubmit;
+  });
+
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       if (showCustomization) return;
@@ -400,7 +520,7 @@ export default function Reception() {
         searchRef.current?.focus();
       } else if (e.key === "F4") {
         e.preventDefault();
-        if (cart.length > 0 && !submitting) void handleSubmit({ quickFullPay: false });
+        submitRef.current?.({ quickFullPay: false });
       } else if (e.key === "Escape") {
         if (showInbox) setShowInbox(false);
         else if (showDrop) setShowDrop(false);
@@ -408,8 +528,7 @@ export default function Reception() {
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showInbox, showDrop, showCustomization, cart.length, submitting, expectedNow]);
+  }, [showInbox, showDrop, showCustomization]);
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
   if (me.isLoading) {
@@ -421,7 +540,7 @@ export default function Reception() {
       {/* ─── شريط البحث + جسر الطباعة + الوارد ─── */}
       <div className="flex flex-shrink-0 items-center gap-3 border-b bg-card px-4 py-2.5">
         <div className="relative max-w-[640px] flex-1">
-          <span className="pointer-events-none absolute inset-y-0 end-3 grid place-items-center text-base text-muted-foreground">🔍</span>
+          <Search aria-hidden className="pointer-events-none absolute inset-y-0 end-3 my-auto size-4 text-muted-foreground" />
           <input
             ref={searchRef}
             value={search}
@@ -456,11 +575,11 @@ export default function Reception() {
                 >
                   <div
                     className={cn(
-                      "grid size-10 flex-shrink-0 place-items-center rounded-lg text-lg",
-                      r.isCustomizable ? "bg-violet-100" : "bg-emerald-100",
+                      "grid size-10 flex-shrink-0 place-items-center rounded-lg",
+                      r.isCustomizable ? "bg-violet-100 text-violet-700" : "bg-emerald-100 text-emerald-700",
                     )}
                   >
-                    {r.isCustomizable ? "🎨" : "📦"}
+                    {r.isCustomizable ? <Palette aria-hidden className="size-5" /> : <Package aria-hidden className="size-5" />}
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
@@ -504,9 +623,10 @@ export default function Reception() {
           <button
             type="button"
             onClick={() => setShowInbox(true)}
-            className="flex h-9 items-center gap-1.5 rounded-lg border bg-card px-3 text-xs font-bold hover:bg-muted/60"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-card px-3 text-xs font-bold hover:bg-muted/60"
           >
-            💬 الوارد
+            <MessageCircle aria-hidden className="size-4" />
+            الوارد
             <span className="rounded-full bg-muted px-1.5 text-[10px] font-bold text-muted-foreground">قريباً</span>
           </button>
         </div>
@@ -518,7 +638,9 @@ export default function Reception() {
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-card">
           <div className="flex h-12 flex-shrink-0 items-center justify-between gap-2 border-b bg-muted/40 px-3">
             <div className="flex items-center gap-2">
-              <span className="text-sm font-extrabold">🛒 الطلب الحالي</span>
+              <span className="inline-flex items-center gap-1.5 text-sm font-extrabold">
+                <ShoppingCart aria-hidden className="size-4" /> الطلب الحالي
+              </span>
               {cart.length > 0 && (
                 <Badge variant="default" className="text-[11px]">
                   {cart.length} منتج · {cartCount} قطعة
@@ -528,7 +650,7 @@ export default function Reception() {
             <div className="flex items-center gap-2">
               <SmartCustomerInput value={customer} onChange={setCustomer} className="w-56" placeholder="عميل نقدي" />
               {cart.length > 0 && (
-                <Button size="sm" variant="ghost" className="text-destructive" onClick={clearCart}>
+                <Button size="sm" variant="ghost" className="text-destructive" onClick={() => void clearCart()}>
                   تفريغ
                 </Button>
               )}
@@ -539,7 +661,7 @@ export default function Reception() {
             {cart.length === 0 ? (
               <div className="grid h-full place-items-center px-4 py-10 text-center text-muted-foreground">
                 <div>
-                  <div className="text-4xl opacity-40">🛒</div>
+                  <ShoppingCart aria-hidden className="mx-auto size-10 opacity-40" />
                   <div className="mt-2 text-sm font-bold">السلة فارغة</div>
                   <div className="mt-1 text-xs">امسح الباركود أو ابحث لإضافة المنتجات</div>
                 </div>
@@ -560,7 +682,7 @@ export default function Reception() {
                 <tbody>
                   {cart.map((l, idx) => {
                     const isCustom = isCustomKind(l);
-                    const total = lineTotal(l);
+                    const total = isCustom ? customLineGrand(l) : lineTotal(l);
                     const selected = selKey === l.key;
                     return (
                       <tr
@@ -597,16 +719,27 @@ export default function Reception() {
                             <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5">
                               <div className="flex flex-wrap gap-1.5">
                                 {l.custom!.size && (
-                                  <span className="rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">📐 {l.custom!.size}</span>
+                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
+                                    <Ruler aria-hidden className="size-3" /> {l.custom!.size}
+                                  </span>
                                 )}
                                 {l.custom!.material && (
-                                  <span className="rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">🧱 {l.custom!.material}</span>
+                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
+                                    <Layers aria-hidden className="size-3" /> {l.custom!.material}
+                                  </span>
                                 )}
                                 {l.custom!.dueDate && (
-                                  <span className="rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold" dir="ltr">⏱ {l.custom!.dueDate}</span>
+                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold" dir="ltr">
+                                    {l.custom!.dueDate}
+                                  </span>
                                 )}
                                 {l.custom!.hasDelivery && (
-                                  <span className="rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">🚚 توصيل</span>
+                                  <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-0.5 text-[11px] font-bold">
+                                    <Truck aria-hidden className="size-3" /> توصيل
+                                    {Number(l.custom!.deliveryCost) > 0 && (
+                                      <span dir="ltr">+{fmt(l.custom!.deliveryCost)}</span>
+                                    )}
+                                  </span>
                                 )}
                                 <span
                                   className={cn(
@@ -620,24 +753,25 @@ export default function Reception() {
                                 </span>
                               </div>
                               {l.custom!.customizationText && (
-                                <div className="mt-2 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
-                                  📝 {l.custom!.customizationText}
+                                <div className="mt-2 line-clamp-2 inline-flex items-start gap-1 text-[11px] leading-relaxed text-muted-foreground">
+                                  <FileText aria-hidden className="size-3 mt-0.5 flex-shrink-0" />
+                                  <span>{l.custom!.customizationText}</span>
                                 </div>
                               )}
                               <div className="mt-2 flex items-center gap-2">
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  className="h-7 text-[11px]"
+                                  className="h-7 text-[11px] inline-flex items-center gap-1"
                                   onClick={(e) => {
                                     e.stopPropagation();
                                     setShowCustomization({ row: l.row, editingKey: l.key });
                                   }}
                                 >
-                                  ✎ تعديل التخصيص
+                                  <Pencil aria-hidden className="size-3" /> تعديل التخصيص
                                 </Button>
-                                <span className="rounded-md border bg-card px-2 py-1 text-[11px] font-bold text-muted-foreground">
-                                  🖼 صور: {l.custom!.designImages.length}
+                                <span className="inline-flex items-center gap-1 rounded-md border bg-card px-2 py-1 text-[11px] font-bold text-muted-foreground">
+                                  <ImageIcon aria-hidden className="size-3" /> صور: {l.custom!.designImages.length}
                                 </span>
                               </div>
                             </div>
@@ -656,10 +790,12 @@ export default function Reception() {
                                 e.stopPropagation();
                                 changeQty(l.key, -1);
                               }}
-                              className="grid size-8 place-items-center rounded-md border bg-card text-base hover:bg-muted disabled:opacity-40"
+                              className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed"
                               disabled={isCustom && l.qty <= 1}
+                              title={isCustom && l.qty <= 1 ? "لا يُمكن تقليل كمية صنف مخصَّص دون ١ — احذف السطر بدلاً من ذلك" : "تقليل الكمية"}
+                              aria-label="تقليل الكمية"
                             >
-                              −
+                              <Minus aria-hidden className="size-3.5" />
                             </button>
                             <span className="min-w-[28px] text-center text-sm font-extrabold tabular-nums" dir="ltr">{l.qty}</span>
                             <button
@@ -668,9 +804,10 @@ export default function Reception() {
                                 e.stopPropagation();
                                 changeQty(l.key, +1);
                               }}
-                              className="grid size-8 place-items-center rounded-md border bg-card text-base hover:bg-muted"
+                              className="grid size-8 place-items-center rounded-md border bg-card hover:bg-muted"
+                              aria-label="زيادة الكمية"
                             >
-                              +
+                              <Plus aria-hidden className="size-3.5" />
                             </button>
                           </div>
                         </td>
@@ -682,10 +819,10 @@ export default function Reception() {
                               e.stopPropagation();
                               removeRow(l.key);
                             }}
-                            className="text-base text-muted-foreground hover:text-destructive"
+                            className="text-muted-foreground hover:text-destructive"
                             aria-label="حذف الصنف"
                           >
-                            ✕
+                            <Trash2 aria-hidden className="size-4" />
                           </button>
                         </td>
                       </tr>
@@ -721,11 +858,15 @@ export default function Reception() {
             </div>
             <div className="mt-2 grid grid-cols-2 gap-2">
               <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/10 p-2">
-                <div className="text-[10px] font-bold text-emerald-700">🛒 بيع مباشر</div>
+                <div className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700">
+                  <ShoppingCart aria-hidden className="size-3" /> بيع مباشر
+                </div>
                 <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumDirect)}</div>
               </div>
               <div className="rounded-lg border border-violet-500/25 bg-violet-500/10 p-2">
-                <div className="text-[10px] font-bold text-violet-700">🖨 أوامر مطبعة</div>
+                <div className="inline-flex items-center gap-1 text-[10px] font-bold text-violet-700">
+                  <Printer aria-hidden className="size-3" /> أوامر مطبعة
+                </div>
                 <div className="mt-0.5 text-sm font-extrabold tabular-nums" dir="ltr">{fmt(sumCustom)}</div>
               </div>
             </div>
@@ -758,11 +899,11 @@ export default function Reception() {
               <button
                 key={v}
                 type="button"
-                onClick={() => setQuickAmt(v * 1000)}
+                onClick={() => setQuickAmt(v)}
                 className="h-7 rounded-md border-[1.5px] bg-card px-2 text-[11px] font-bold tabular-nums hover:bg-muted"
                 dir="ltr"
               >
-                {v},000
+                {v.toLocaleString("en-US")}
               </button>
             ))}
             <button
@@ -792,7 +933,9 @@ export default function Reception() {
               <NumKey k="8" onPress={numPress} />
               <NumKey k="7" onPress={numPress} />
 
-              <button onClick={() => numPress("⌫")} className="h-12 rounded-lg border-[1.5px] bg-red-50 text-lg font-extrabold text-red-700 hover:bg-red-100">⌫</button>
+              <button onClick={() => numPress("DEL")} className="grid h-12 place-items-center rounded-lg border-[1.5px] bg-red-50 text-red-700 hover:bg-red-100" aria-label="حذف">
+                <X aria-hidden className="size-4" />
+              </button>
               <NumKey k="." onPress={numPress} />
               <NumKey k="0" onPress={numPress} />
               <button onClick={() => numPress("C")} className="h-12 rounded-lg border-[1.5px] bg-card text-xs font-extrabold text-muted-foreground hover:bg-muted">C</button>
@@ -805,26 +948,39 @@ export default function Reception() {
             <div className="flex gap-1.5">
               {(
                 [
-                  { v: "CASH", label: "نقداً", icon: "💵" },
-                  { v: "CARD", label: "بطاقة", icon: "💳" },
-                  { v: "TRANSFER", label: "تحويل", icon: "🔄" },
+                  { v: "CASH", label: "نقداً", Icon: Banknote, disabled: false },
+                  { v: "CARD", label: "بطاقة", Icon: CreditCard, disabled: false },
+                  { v: "TRANSFER", label: "تحويل", Icon: ArrowLeftRight, disabled: transferDisabled },
                 ] as const
               ).map((p) => (
                 <button
                   key={p.v}
-                  onClick={() => setMethod(p.v)}
+                  onClick={() => !p.disabled && setMethod(p.v)}
+                  disabled={p.disabled}
+                  title={p.disabled ? "غير مدعوم لأوامر الشغل (CASH/CARD فقط)" : ""}
                   className={cn(
                     "flex flex-1 flex-col items-center justify-center gap-0.5 rounded-lg border-2 py-2 text-xs font-extrabold transition-colors",
-                    method === p.v
+                    p.disabled
+                      ? "bg-muted/30 text-muted-foreground opacity-50 cursor-not-allowed"
+                      : method === p.v
                       ? "border-primary bg-primary text-primary-foreground"
                       : "bg-card hover:bg-muted",
                   )}
                 >
-                  <span className="text-lg">{p.icon}</span>
+                  <p.Icon aria-hidden className="size-5" />
                   {p.label}
                 </button>
               ))}
             </div>
+            {needPaymentRef && (
+              <Input
+                value={paymentReference}
+                onChange={(e) => setPaymentReference(e.target.value)}
+                placeholder="رقم العملية / المرجع (إلزامي للبطاقة)"
+                className="mt-2 h-9 text-xs"
+                dir="ltr"
+              />
+            )}
           </div>
 
           {/* مؤشّر فكّة/متبقّي */}
@@ -856,21 +1012,25 @@ export default function Reception() {
               type="button"
               disabled={cart.length === 0 || submitting || !shift}
               onClick={() => void handleSubmit({ quickFullPay: true })}
-              className="h-11 w-full rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-lg bg-amber-500 text-sm font-black text-white shadow-md transition hover:bg-amber-600 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
-              ⚡ دفع سريع وطباعة
+              <Zap aria-hidden className="size-4" /> دفع سريع وطباعة
             </button>
             <button
               type="button"
               disabled={cart.length === 0 || submitting || !shift}
               onClick={() => void handleSubmit({ quickFullPay: false })}
-              className="h-12 w-full rounded-lg bg-primary text-sm font-black text-primary-foreground shadow-md transition hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
+              className="inline-flex h-12 w-full items-center justify-center gap-1.5 rounded-lg bg-primary text-sm font-black text-primary-foreground shadow-md transition hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground disabled:shadow-none"
             >
-              {submitting ? "جارٍ الإرسال…" : sumCustom > 0 && sumDirect > 0
-                ? "🖨 إرسال أوامر الشغل ودفع البيع"
-                : sumCustom > 0
-                ? "🖨 إرسال للمطبعة"
-                : "✓ إتمام الدفع وطباعة"}
+              {submitting ? (
+                "جارٍ الإرسال…"
+              ) : sumCustom > 0 && sumDirect > 0 ? (
+                <><Printer aria-hidden className="size-4" /> إرسال أوامر الشغل ودفع البيع</>
+              ) : sumCustom > 0 ? (
+                <><Printer aria-hidden className="size-4" /> إرسال للمطبعة</>
+              ) : (
+                <><Check aria-hidden className="size-4" /> إتمام الدفع وطباعة</>
+              )}
             </button>
             <div className="text-center text-[10px] text-muted-foreground">F4 دفع · F2 بحث</div>
           </div>
@@ -899,16 +1059,20 @@ export default function Reception() {
           <div className="fixed inset-0 z-40 bg-black/40 backdrop-blur-sm" onClick={() => setShowInbox(false)} />
           <aside className="fixed inset-y-0 end-0 z-50 flex w-[360px] max-w-[92vw] flex-col bg-card shadow-2xl">
             <div className="flex items-center justify-between border-b p-4">
-              <div className="flex items-center gap-2 font-extrabold">💬 صندوق الوارد الموحّد</div>
-              <button onClick={() => setShowInbox(false)} className="grid size-8 place-items-center rounded-md bg-muted text-lg hover:bg-muted/80" aria-label="إغلاق">×</button>
+              <div className="inline-flex items-center gap-2 font-extrabold">
+                <MessageCircle aria-hidden className="size-4" /> صندوق الوارد الموحّد
+              </div>
+              <button onClick={() => setShowInbox(false)} className="grid size-8 place-items-center rounded-md bg-muted hover:bg-muted/80" aria-label="إغلاق">
+                <X aria-hidden className="size-4" />
+              </button>
             </div>
             <div className="border-b bg-primary/5 p-3 text-xs leading-relaxed">
-              ℹ️ تكامل القنوات (واتساب Business / انستغرام / المتجر) <b>قيد التنفيذ</b> — هذه معاينة فقط.
+              تكامل القنوات (واتساب Business / انستغرام / المتجر) <b>قيد التنفيذ</b> — هذه معاينة فقط.
               عند الاكتمال، يُمكنك الردّ على العميل وتحويل محادثته إلى طلب خدمة من هنا مباشرة.
             </div>
             <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
               <div>
-                <div className="text-4xl opacity-40">💬</div>
+                <MessageCircle aria-hidden className="mx-auto size-10 opacity-40" />
                 <div className="mt-3 font-bold">لا محادثات بعد</div>
                 <div className="mt-1 text-xs">تظهر هنا تلقائياً عند ربط القنوات.</div>
               </div>
@@ -916,16 +1080,24 @@ export default function Reception() {
             <div className="border-t bg-muted/30 p-3">
               <div className="text-[11px] text-muted-foreground">قناة الطلب الحالي</div>
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {(["WALK_IN", "WHATSAPP", "INSTAGRAM", "TIKTOK", "PHONE"] as const).map((c) => (
+                {(
+                  [
+                    { v: "WALK_IN", label: "مباشر", Icon: Store },
+                    { v: "WHATSAPP", label: "واتساب", Icon: MessageCircle },
+                    { v: "INSTAGRAM", label: "انستغرام", Icon: Camera },
+                    { v: "TIKTOK", label: "تيك توك", Icon: Music },
+                    { v: "PHONE", label: "اتصال", Icon: Phone },
+                  ] as const
+                ).map((c) => (
                   <button
-                    key={c}
-                    onClick={() => setChannel(c)}
+                    key={c.v}
+                    onClick={() => setChannel(c.v)}
                     className={cn(
-                      "rounded-md border px-2 py-1 text-[11px] font-bold transition-colors",
-                      channel === c ? "border-primary bg-primary/10 text-primary" : "bg-card hover:bg-muted",
+                      "inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[11px] font-bold transition-colors",
+                      channel === c.v ? "border-primary bg-primary/10 text-primary" : "bg-card hover:bg-muted",
                     )}
                   >
-                    {c === "WALK_IN" ? "🏪 مباشر" : c === "WHATSAPP" ? "💬 واتساب" : c === "INSTAGRAM" ? "📷 انستغرام" : c === "TIKTOK" ? "🎵 تيك توك" : "📞 اتصال"}
+                    <c.Icon aria-hidden className="size-3.5" /> {c.label}
                   </button>
                 ))}
               </div>

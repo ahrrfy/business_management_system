@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Banknote, Check, FileText, Image as ImageIcon, Palette, Ruler, Truck, Layers } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -51,9 +52,9 @@ export function emptyCustomization(productName: string, price: string): Customiz
 /** تركيب نصّ التخصيص النهائي مع رؤوس مهيكلة (مقاس/خامة/توصيل) + ملاحظة العميل. */
 export function composeCustomizationText(d: CustomizationData): string {
   const lines: string[] = [];
-  if (d.size.trim()) lines.push(`📐 ${d.size.trim()}`);
-  if (d.material.trim()) lines.push(`🧱 ${d.material.trim()}`);
-  if (d.hasDelivery) lines.push(`🚚 توصيل${d.deliveryAddress.trim() ? ` — ${d.deliveryAddress.trim()}` : ""}`);
+  if (d.size.trim()) lines.push(`[المقاس] ${d.size.trim()}`);
+  if (d.material.trim()) lines.push(`[الخامة] ${d.material.trim()}`);
+  if (d.hasDelivery) lines.push(`[توصيل] ${d.deliveryAddress.trim() || "—"}`);
   if (d.customizationText.trim()) {
     if (lines.length) lines.push("---");
     lines.push(d.customizationText.trim());
@@ -92,8 +93,25 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
   const grandWithDelivery = D(price).plus(D(data.deliveryCost || 0));
   const remaining = grandWithDelivery.minus(D(data.deposit || 0));
 
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   function handleSave() {
-    if (!data.title.trim()) return;
+    setSaveError(null);
+    if (!data.title.trim()) {
+      setSaveError("عنوان أمر الشغل مطلوب");
+      return;
+    }
+    // حارس عميل: deposit لا يَتجاوز الإجمالي (إصلاح عدائي ٢٣/٦/٢٦). الـmax على input تَحقّق HTML
+    // فقط ولا يَحمي من تَعديل state بَرمجياً ⇒ لو غاب هذا الفحص الخادم سيَرمي عند الإرسال.
+    const depD = D(data.deposit || 0);
+    if (depD.gt(grandWithDelivery)) {
+      setSaveError(`العربون (${fmt(depD.toString())}) يَتجاوز إجمالي الصنف (${fmt(grandWithDelivery.toString())})`);
+      return;
+    }
+    if (depD.lt(0)) {
+      setSaveError("العربون لا يَكون سالباً");
+      return;
+    }
     onSave(data);
   }
 
@@ -102,7 +120,7 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
       <DialogContent dir="rtl" className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
-            <span className="text-lg" aria-hidden>🎨</span>
+            <Palette aria-hidden className="size-5 text-violet-600" />
             تخصيص: {productName}
           </DialogTitle>
         </DialogHeader>
@@ -123,7 +141,9 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
           {/* المقاس + الخامة */}
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1.5">
-              <Label htmlFor="cz-size" className="text-xs">📐 المقاس</Label>
+              <Label htmlFor="cz-size" className="text-xs inline-flex items-center gap-1">
+                <Ruler aria-hidden className="size-3.5" /> المقاس
+              </Label>
               <Input
                 id="cz-size"
                 value={data.size}
@@ -145,7 +165,9 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="cz-material" className="text-xs">🧱 الخامة</Label>
+              <Label htmlFor="cz-material" className="text-xs inline-flex items-center gap-1">
+                <Layers aria-hidden className="size-3.5" /> الخامة
+              </Label>
               <Input
                 id="cz-material"
                 value={data.material}
@@ -190,7 +212,7 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
               </div>
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="cz-due" className="text-xs">⏱ موعد التسليم</Label>
+              <Label htmlFor="cz-due" className="text-xs">موعد التسليم</Label>
               <Input
                 id="cz-due"
                 type="date"
@@ -212,7 +234,7 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
                 onChange={(e) => upd("hasDelivery", e.target.checked)}
                 className="size-4"
               />
-              🚚 توصيل للعميل
+              <Truck aria-hidden className="size-4" /> توصيل للعميل
             </label>
             {data.hasDelivery && (
               <div className="grid grid-cols-3 gap-2 pt-1">
@@ -237,7 +259,9 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
 
           {/* نصّ التخصيص */}
           <div className="space-y-1.5">
-            <Label htmlFor="cz-text" className="text-xs">📝 نصّ التخصيص / تفاصيل العمل المطلوب</Label>
+            <Label htmlFor="cz-text" className="text-xs inline-flex items-center gap-1">
+              <FileText aria-hidden className="size-3.5" /> نصّ التخصيص / تفاصيل العمل المطلوب
+            </Label>
             <Textarea
               id="cz-text"
               value={data.customizationText}
@@ -251,7 +275,9 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
           {/* صور النموذج */}
           <div className="space-y-1.5">
             <Label className="text-xs flex items-center justify-between">
-              <span>🖼 صور النموذج / المرفقات</span>
+              <span className="inline-flex items-center gap-1">
+                <ImageIcon aria-hidden className="size-3.5" /> صور النموذج / المرفقات
+              </span>
               <span className="text-[10px] text-muted-foreground font-normal">حد أقصى ١٠ صور</span>
             </Label>
             <ImageUploader value={data.designImages} onChange={(v) => upd("designImages", v)} maxItems={10} />
@@ -264,7 +290,9 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
               <span className="font-bold tabular-nums" dir="ltr">{fmt(grandWithDelivery.toString())} د.ع</span>
             </div>
             <div className="space-y-1">
-              <Label htmlFor="cz-deposit" className="text-xs">💵 العربون المدفوع الآن</Label>
+              <Label htmlFor="cz-deposit" className="text-xs inline-flex items-center gap-1">
+                <Banknote aria-hidden className="size-3.5" /> العربون المدفوع الآن
+              </Label>
               <Input
                 id="cz-deposit"
                 type="number"
@@ -285,10 +313,16 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
           </div>
         </div>
 
+        {saveError && (
+          <div role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs font-bold text-destructive">
+            {saveError}
+          </div>
+        )}
+
         <DialogFooter className="gap-2 sm:gap-2">
           <Button variant="outline" onClick={onCancel} size="sm">إلغاء</Button>
-          <Button onClick={handleSave} size="sm" disabled={!data.title.trim()}>
-            ✓ حفظ التخصيص
+          <Button onClick={handleSave} size="sm" disabled={!data.title.trim()} className="inline-flex items-center gap-1">
+            <Check aria-hidden className="size-4" /> حفظ التخصيص
           </Button>
         </DialogFooter>
       </DialogContent>
