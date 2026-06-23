@@ -169,6 +169,13 @@
       "when": 1782240000000,
       "tag": "0023_product_is_service",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "5",
+      "when": 1782260000000,
+      "tag": "0024_work_order_timer",
+      "breakpoints": true
     }
   ]
 }

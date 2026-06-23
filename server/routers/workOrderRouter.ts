@@ -110,6 +110,9 @@ export const workOrderRouter = router({
           invoiceId: workOrders.invoiceId,
           assignedTo: workOrders.assignedTo,
           assigneeName: users.name,
+          // شَريحة #4: مؤقّت تَنفيذ حَقيقي بَدل اشتقاق من auditLogs.
+          workStartedAt: workOrders.workStartedAt,
+          workSeconds: workOrders.workSeconds,
           deliveredAt: workOrders.deliveredAt,
           createdAt: workOrders.createdAt,
           updatedAt: workOrders.updatedAt,

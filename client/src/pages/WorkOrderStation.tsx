@@ -159,8 +159,22 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
 
   const d = detail.data ?? null;
 
-  // المؤقّت من سجلّ التدقيق: حدث البدء → حدث الجاهزية.
+  // المؤقّت — يَستعمل أَعمدة workOrders الجَديدة (workStartedAt + workSeconds) من شَريحة #4.
+  // مَرجع واحد على ساعة DB ⇒ صِفر انجراف بين متَصفّحات/فُروع. fallback لِسَجلّ التَدقيق لِلأَوامر
+  // القَديمة قبل الهَجرة (workStartedAt = NULL) فلا يَفقد المؤقّت ظهوره.
   const { startAt, endAt } = useMemo(() => {
+    // المسار الجَديد: قراءة من الأَعمدة الصَريحة.
+    if (d?.workStartedAt) {
+      const startAt = new Date(d.workStartedAt as unknown as string);
+      if (d.status === "IN_PROGRESS") return { startAt, endAt: null };
+      if (d.workSeconds != null) {
+        const endAt = new Date(startAt.getTime() + Number(d.workSeconds) * 1000);
+        return { startAt, endAt };
+      }
+      // IN_PROGRESS انتقل لـREADY/DELIVERED قبل الهَجرة ⇒ نَعرض البَدء فَقط مُجمَّداً عليه.
+      return { startAt, endAt: startAt };
+    }
+    // المسار القَديم (fallback): اشتقاق من سَجلّ التَدقيق للأَوامر قبل الهَجرة.
     const rows = timeline.data ?? [];
     const s = rows.find((r) => r.action === "workOrder.start");
     const e = rows.find((r) => r.action === "workOrder.markReady" || r.action === "workOrder.deliver");
@@ -169,7 +183,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
     // قيد التنفيذ بلا حدث جاهزية ⇒ حيّ (endAt = null).
     if (d?.status === "IN_PROGRESS") endAt = null;
     return { startAt, endAt };
-  }, [timeline.data, d?.status]);
+  }, [d?.workStartedAt, d?.workSeconds, d?.status, timeline.data]);
 
   if (!d) {
     return <div className="grid place-items-center h-full text-muted-foreground">{detail.isLoading ? "جارٍ التحميل…" : "اختر أمراً من القائمة."}</div>;
