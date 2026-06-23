@@ -7,7 +7,7 @@ import { openSearch } from "@/lib/searchEvents";
 import {
   Menu, Search, ChevronDown, Home,
   ShoppingCart, Package, Printer, Boxes, Server,
-  Briefcase, Wallet, Users, BarChart3, Settings,
+  Briefcase, Wallet, Users, BarChart3, Settings, Lock,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -139,7 +139,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     key: "closing",
     label: "الإقفال والرَقابة المالية",
-    icon: "🔒",
+    icon: Lock,
     items: [
       { href: "/reconcile", label: "تدقيق التوافق المالي", managerOnly: true },
       { href: "/period-lock", label: "إقفال الفترات المالية", adminOnly: true },
