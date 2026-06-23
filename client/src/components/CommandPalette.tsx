@@ -34,8 +34,9 @@ type PageItem = { label: string; href: string; icon: React.ComponentType<{ class
 
 const PAGES: PageItem[] = [
   { label: "لوحة التحكّم", href: "/", icon: LayoutDashboard, keywords: "dashboard home رئيسية" },
-  { label: "الكاشير السَريع", href: "/pos", icon: ShoppingCart, keywords: "pos cashier كاشير بيع نقطة" },
-  { label: "كاشير الطباعة", href: "/print-pos", icon: ShoppingCart, keywords: "print pos طباعة" },
+  { label: "نقطة البيع — تجزئة", href: "/pos", icon: ShoppingCart, keywords: "pos cashier كاشير بيع نقطة تجزئة retail" },
+  { label: "نقطة البيع — خدمات طباعة", href: "/pos?mode=PRINT_SERVICES", icon: ShoppingCart, keywords: "print pos طباعة خدمات نسخ" },
+  { label: "نقطة البيع — استقبال أوامر شغل", href: "/pos?mode=RECEPTION", icon: ShoppingCart, keywords: "reception استقبال تخصيص أمر شغل قنوات" },
   { label: "المنتجات", href: "/products", icon: Package, keywords: "products منتجات" },
   { label: "فواتير المبيعات", href: "/invoices", icon: FileText, keywords: "invoices sales فواتير" },
   { label: "عروض الأسعار", href: "/quotations", icon: Receipt, keywords: "quotations عرض سعر" },

@@ -35,8 +35,7 @@ const NAV_GROUPS: NavGroup[] = [
     label: "البيع والكاشير",
     icon: ShoppingCart,
     items: [
-      { href: "/pos", label: "الكاشير السَريع" },
-      { href: "/print-pos", label: "كاشير الطباعة" },
+      { href: "/pos", label: "نقطة البيع (موحَّدة — ٣ أوضاع)" },
       { href: "/price-checker", label: "قارئ الأسعار (للمُوظَّف)" },
       { href: "/invoices", label: "فواتير المبيعات" },
       { href: "/quotations", label: "عروض الأسعار" },
@@ -58,7 +57,6 @@ const NAV_GROUPS: NavGroup[] = [
     label: "المطبعة والإنتاج",
     icon: Printer,
     items: [
-      { href: "/work-orders/reception", label: "الاستقبال (POS هجين)", roles: ["cashier", "manager", "admin"] },
       { href: "/work-orders", label: "طابور المطبعة (لوحة الطلبات)" },
       { href: "/work-orders/station", label: "محطة التنفيذ (الفني)", roles: ["print_operator", "cashier", "manager"] },
       { href: "/production", label: "الإنتاج والتحويل", managerOnly: true },
