@@ -275,6 +275,9 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
         invoiceId: input.invoiceId,
         branchId: Number(inv.branchId),
         shiftId,
+        // cashBucket=DRAWER للنقد (يَخرج من الدُرج بمرتجع نقدي ويظهر في Z-report).
+        // غير النقد ⇒ NULL (لا يَمسّ صندوقاً). مرآة لنمط saleService/voucherService.
+        cashBucket: input.refund!.method === "CASH" ? "DRAWER" : null,
         direction: "OUT",
         amount: toDbMoney(cashRefund),
         paymentMethod: input.refund!.method,

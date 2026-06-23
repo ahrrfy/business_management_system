@@ -289,8 +289,15 @@ export const reportsRouter = router({
     runAt: new Date().toISOString(),
   })),
 
-  /** أكثر المنتجات مبيعاً — ترتيب بالإيراد أو الكمية، فلاتر زمن+فرع. */
-  topProducts: managerProcedure
+  /**
+   * أكثر المنتجات مبيعاً — ترتيب بالإيراد أو الكمية، فلاتر زمن+فرع.
+   *
+   * **عزل الفرع (تدقيق ٢٣/٦/٢٦):** كانت managerProcedure تُسرّب هامش الربح وقائمة منتجات
+   * فرعٍ آخر إلى مدير الفرع الحالي ⇒ كَسر حاجز السلطة المالية بين الفروع. الآن
+   * managerBranchScopedProcedure تَرفض branchId مختلف عن فرع المدير، و scopedBranchId
+   * تَفرض الفرع عند التجميع حتى لو حُذف branchId من الإدخال.
+   */
+  topProducts: managerBranchScopedProcedure
     .input(
       z
         .object({
@@ -302,10 +309,14 @@ export const reportsRouter = router({
         })
         .optional()
     )
-    .query(async ({ input }) => getTopProducts(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getTopProducts({ ...(input ?? {}), branchId });
+    }),
 
-  /** بطيئات الحركة — منتجات بمخزون موجب بلا بيع في النافذة. */
-  slowMovers: managerProcedure
+  /** بطيئات الحركة — منتجات بمخزون موجب بلا بيع في النافذة. عزل الفرع: مدير الفرع لا يَرى
+   *  حركة فرعٍ آخر (انظر شرح topProducts). */
+  slowMovers: managerBranchScopedProcedure
     .input(
       z
         .object({
@@ -315,10 +326,14 @@ export const reportsRouter = router({
         })
         .optional()
     )
-    .query(async ({ input }) => getSlowMovers(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getSlowMovers({ ...(input ?? {}), branchId });
+    }),
 
-  /** ربح حسب الفئة — تجميع revenue/cost/profit/margin على categoryId. */
-  profitByCategory: managerProcedure
+  /** ربح حسب الفئة — تجميع revenue/cost/profit/margin على categoryId.
+   *  عزل الفرع: مدير الفرع لا يَرى ربح فرعٍ آخر (انظر شرح topProducts). */
+  profitByCategory: managerBranchScopedProcedure
     .input(
       z
         .object({
@@ -328,7 +343,10 @@ export const reportsRouter = router({
         })
         .optional()
     )
-    .query(async ({ input }) => getProfitByCategory(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getProfitByCategory({ ...(input ?? {}), branchId });
+    }),
 
   /**
    * قائمة الأرباح والخسائر المبسّطة — إيراد صافٍ − تكلفة المبيعات − مصروفات تشغيلية.
