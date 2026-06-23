@@ -17,12 +17,13 @@ import { getSessionCookieOptions } from "../cookies";
 import { getDb } from "../db";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
+import { ALL_ROLES, type RoleKey } from "@shared/permissions";
 import { changePassword as changePasswordSvc, createUser } from "../services/userService";
 import { withTx } from "../services/tx";
 import { adminProcedure, protectedProcedure, publicProcedure, router } from "../trpc";
 
-// للتوافق الخلفي — لم يعد مستخدماً بعد أن أصبح ALL_ROLES مصدر الحقيقة
-const ROLES = ["user", "admin", "manager", "cashier", "warehouse"] as const; // kept for reference only
+// مزامنة مع ALL_ROLES (shared/permissions) الذي يُمثّل الـenum الكامل في الـschema (١٠ أدوار).
+const ROLE = z.enum(ALL_ROLES as [RoleKey, ...RoleKey[]]);
 
 /** قفل الحساب ضدّ التخمين: ٥ محاولات فاشلة ⇒ قفل ١٥ دقيقة. */
 const LOCK_THRESHOLD = 5;
@@ -287,7 +288,7 @@ export const authRouter = router({
             .max(128)
             .regex(PASSWORD_REGEX, PASSWORD_POLICY_MSG),
           name: z.string().min(1),
-          role: z.enum(ROLES).default("cashier"),
+          role: ROLE.default("cashier"),
           branchId: z.number().optional(),
         })
         .refine((d) => !!(d.email || d.username), {

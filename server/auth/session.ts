@@ -105,6 +105,8 @@ export async function signSession(
   return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
     .setIssuedAt(issuedAtSeconds)
+    // nbf = iat: التوكن لا يُقبَل قبل لحظة إصداره (يقطع replay من مزامنة ساعة عكسية).
+    .setNotBefore(issuedAtSeconds)
     .setExpirationTime(expirationSeconds)
     .sign(getSecret());
 }
