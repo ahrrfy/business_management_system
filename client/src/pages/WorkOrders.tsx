@@ -158,7 +158,17 @@ function printWoThermalFromCard(o: WO) {
   });
 }
 
-function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e: React.PointerEvent) => void; dragging?: boolean; ghost?: boolean }) {
+function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPending }: {
+  o: WO;
+  onPointerDown?: (e: React.PointerEvent) => void;
+  dragging?: boolean;
+  ghost?: boolean;
+  /** عند توفّره: تظهر شريط الإسناد inline في عَمود «طابور وارد» (مَدير فَقط). */
+  inboxAssign?: (orderId: number, staffId: number) => void;
+  /** بَيانات الفنّيين من `assignableStaff` (name قد يَكون null في DB ⇒ يُعرَض «بلا اسم»). */
+  staff?: { id: number; name: string | null; role: string }[];
+  assignPending?: boolean;
+}) {
   const pr = progressOf(o.status);
   const di = dueInfo(o);
   const ch = CHANNELS[o.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
@@ -166,6 +176,8 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
   const hue = STATUS_HUE[o.status] ?? 255;
   const late = di.state === "late";
   const cls = ["wob-card", late ? "wob-late" : "", dragging ? "wob-dragging" : "", ghost ? "wob-ghost" : ""].filter(Boolean).join(" ");
+  // حالة محلّية لاختيار الفنّي في شريط الإسناد — لكل بطاقة على حِدة.
+  const [pickedStaff, setPickedStaff] = useState<string>("");
   return (
     <div className={cls} style={{ ["--accent" as string]: `oklch(0.6 0.17 ${hue})` } as React.CSSProperties} onPointerDown={onPointerDown}>
       <div className="wob-card-top">
@@ -181,6 +193,11 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
             <CopyInline value={o.orderNumber} successMessage="تم نَسخ رَقم الأَمر" />
           </span>
         )}
+        {/* شارة قَناة المَصدر — مَوضوعة في رأس البطاقة per README §5.2 (لإبراز جانب المبيعات). */}
+        <span className="wob-ch-chip" title={`القناة: ${ch.label}`}>
+          <span aria-hidden>{ch.icon}</span>
+          <span className="wob-ch-chip-l">{ch.label}</span>
+        </span>
         <span className={`wob-pri ${pri.cls}`}><span className="wob-pri-dot" />{pri.label}</span>
         {!ghost && (
           // إيقاف انتشار pointer/click كي لا يلتقطها محرّك السحب أو فتح الـDrawer
@@ -203,7 +220,7 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
         </div>
         <div className="wob-info">
           <div className="wob-card-title">{o.title}</div>
-          <div className="wob-cust"><span className="wob-ch" title={ch.label}>{ch.icon}</span>{o.customerName ?? "عميل نقدي"}</div>
+          <div className="wob-cust">{o.customerName ?? "عميل نقدي"}</div>
         </div>
       </div>
       <div className="wob-meta">
@@ -231,6 +248,37 @@ function Card({ o, onPointerDown, dragging, ghost }: { o: WO; onPointerDown?: (e
           </a>
         )}
       </div>
+      {/* شَريط إسناد inline لعَمود «طابور وارد» فَقط — مَدير فَقط، per README §5.2. */}
+      {inboxAssign && staff && !ghost && (
+        <div className="wob-inbox-assign" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
+          <select
+            className="wob-sel wob-inbox-sel"
+            value={pickedStaff}
+            onChange={(e) => setPickedStaff(e.target.value)}
+            disabled={assignPending}
+            aria-label={`إسناد ${o.orderNumber} لفنّي`}
+          >
+            <option value="">— اختر فنّياً —</option>
+            {staff.map((s) => (
+              <option key={s.id} value={s.id}>{s.name ?? "بلا اسم"}{s.role ? ` — ${s.role}` : ""}</option>
+            ))}
+          </select>
+          <button
+            type="button"
+            className="wob-btn wob-btn-primary wob-inbox-btn"
+            disabled={assignPending || !pickedStaff}
+            onClick={() => {
+              const n = Number(pickedStaff);
+              if (!Number.isFinite(n) || n <= 0) return;
+              inboxAssign(o.id, n);
+              setPickedStaff("");
+            }}
+            title="إسناد الأمر للفنّي المُختار"
+          >
+            <ChevronRight aria-hidden className="size-3.5" /> إسناد
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -517,6 +565,10 @@ export default function WorkOrders() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل
+  // في الإسناد inline على بطاقات «طابور وارد» (بَدل فَتح الـDrawer لِكل أَمر).
+  // مَفعَّلة لِلمَدير فَقط لِتَوافق صَلاحية `assignableStaff` على الخادم.
+  const assignableStaff = trpc.workOrders.assignableStaff.useQuery(undefined, { enabled: isManager });
 
   const [q, setQ] = useState("");
   const [fPri, setFPri] = useState("");
@@ -722,7 +774,23 @@ export default function WorkOrders() {
                   </div>
                   <div className={`wob-col-body ${isOver ? "wob-drop-on" : ""}`} ref={(el) => { colRefs.current[s.key] = el; }}>
                     {list.map((o) => (
-                      <Card key={o.id} o={o} dragging={!!drag && drag.order.id === o.id} onPointerDown={(e) => onCardPointerDown(e, o)} />
+                      <Card
+                        key={o.id}
+                        o={o}
+                        dragging={!!drag && drag.order.id === o.id}
+                        onPointerDown={(e) => onCardPointerDown(e, o)}
+                        // إسناد inline لعَمود INBOX فَقط (مَدير + بَيانات الفنّيين جاهزة) per README §5.2.
+                        inboxAssign={
+                          s.key === "INBOX" && isManager && (assignableStaff.data?.length ?? 0) > 0
+                            ? (orderId, staffId) => {
+                                // بلا تأكيد — العَملية رَخيصة وعَكسية (يُمكن إعادة الإسناد بَعدها).
+                                assign.mutate({ workOrderId: orderId, assignedTo: staffId });
+                              }
+                            : undefined
+                        }
+                        staff={s.key === "INBOX" && isManager ? assignableStaff.data : undefined}
+                        assignPending={assign.isPending}
+                      />
                     ))}
                     {list.length === 0 && <div className="wob-col-empty">— لا أوامر —</div>}
                   </div>
