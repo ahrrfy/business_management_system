@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Check, CheckCircle2, ChevronRight, CornerDownLeft } from "lucide-react";
+import { Check, CheckCircle2, ChevronRight, CornerDownLeft, Layers, MessageSquare, Ruler, Truck, Timer as TimerIcon } from "lucide-react";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
@@ -54,7 +54,8 @@ function fmtElapsed(ms: number): string {
   return `${pad2(Math.floor(s / 3600))}:${pad2(Math.floor((s % 3600) / 60))}:${pad2(s % 60)}`;
 }
 
-/** مؤقّت تنفيذ حيّ — يدقّ كل ثانية أثناء التنفيذ، ويتجمّد عند «جاهز». */
+/** مؤقّت تنفيذ حيّ كَبير — يَدقّ كل ثانية أثناء التنفيذ، ويَتجمّد عند «جاهز».
+ *  لون أَخضر مُتَوَهّج مع نَبضة عند الحَياة per spec §5.3 «مؤقّت تَنفيذ حيّ». */
 function ElapsedTimer({ startAt, endAt }: { startAt: Date | null; endAt: Date | null }) {
   const live = startAt != null && endAt == null;
   const [now, setNow] = useState(() => Date.now());
@@ -64,15 +65,51 @@ function ElapsedTimer({ startAt, endAt }: { startAt: Date | null; endAt: Date | 
     return () => clearInterval(t);
   }, [live]);
   if (!startAt) {
-    return <div className="text-2xl font-bold tabular-nums text-muted-foreground" dir="ltr">--:--:--</div>;
+    return (
+      <div className="text-center py-2">
+        <div className="text-4xl font-extrabold tabular-nums text-muted-foreground/50" dir="ltr">--:--:--</div>
+        <div className="text-[11px] text-muted-foreground mt-1">لم يَبدأ بَعد</div>
+      </div>
+    );
   }
   const ms = (endAt ? endAt.getTime() : now) - startAt.getTime();
   return (
-    <div className="flex items-center gap-2">
-      {live && <span className="inline-block w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />}
-      <div className={`text-2xl font-bold tabular-nums ${live ? "text-emerald-700" : ""}`} dir="ltr">{fmtElapsed(ms)}</div>
+    <div className={`text-center py-2 rounded-lg ${live ? "bg-emerald-500/5 ring-1 ring-emerald-500/20" : ""}`}>
+      <div className="flex items-center justify-center gap-2">
+        {live && <span className="inline-block w-3 h-3 rounded-full bg-emerald-500 animate-pulse" aria-hidden />}
+        <div
+          className={`text-4xl font-extrabold tabular-nums leading-none ${live ? "text-emerald-700 dark:text-emerald-400" : "text-foreground"}`}
+          dir="ltr"
+        >
+          {fmtElapsed(ms)}
+        </div>
+      </div>
+      <div className={`text-[11px] mt-1.5 font-medium ${live ? "text-emerald-700/80 dark:text-emerald-400/80" : "text-muted-foreground"}`}>
+        {live ? "يَعمل الآن" : "زَمن التَنفيذ الإجمالي"}
+      </div>
     </div>
   );
+}
+
+/** يَستخرج الحُقول المُنسَّقة `[Tag] value` من customizationText الذي تَكتبه Reception
+ *  عبر composeCustomizationText. يَدعم: المقاس، الخامة، توصيل (العنوان). */
+function parseCustomSpecs(text: string | null | undefined): { size: string | null; material: string | null; delivery: string | null; raw: string } {
+  if (!text) return { size: null, material: null, delivery: null, raw: "" };
+  const lines = text.split(/\r?\n/);
+  const get = (tag: string) => {
+    for (const ln of lines) {
+      const m = ln.match(/^\[([^\]]+)\]\s*(.+)$/);
+      if (m && m[1].trim() === tag) return m[2].trim();
+    }
+    return null;
+  };
+  return {
+    size: get("المقاس"),
+    material: get("الخامة"),
+    delivery: get("توصيل"),
+    // raw يُبقي الأَسطر بَلا الـtag prefix كَمُلاحظات حُرّة (لِعَرضها في كَتلة منفصلة).
+    raw: lines.filter((ln) => !/^\[[^\]]+\]/.test(ln)).join("\n").trim(),
+  };
 }
 
 function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClick: () => void; mine?: boolean }) {
@@ -173,20 +210,45 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* المحتوى */}
         <div className="lg:col-span-2 space-y-4">
-          {/* مواصفات التنفيذ */}
-          <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm">مواصفات التنفيذ</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-2 gap-3 text-sm">
-              <div><div className="text-[11px] text-muted-foreground">الكمية</div><div className="font-medium">{fmtInt(d.quantity)}</div></div>
-              <div><div className="text-[11px] text-muted-foreground">الحالة</div><div className="font-medium">{STATUS_LABEL[d.status]}</div></div>
-              {d.customizationText && (
-                <div className="col-span-2">
-                  <div className="text-[11px] text-muted-foreground">نصّ التخصيص</div>
-                  <div className="rounded-md border bg-muted/30 p-2 mt-0.5 whitespace-pre-wrap">{d.customizationText}</div>
-                </div>
-              )}
-            </CardContent>
-          </Card>
+          {/* مواصفات التنفيذ — شَبكة 2×2 per spec §5.3: المقاس/الخامة/الكمية/التسليم.
+              المقاس والخامة والتوصيل تُستخرَج من customizationText المُنسَّق (Reception)؛
+              الكَمية من العَمود المُخصَّص؛ نصّ المُلاحظات الحُرّ (إن وُجد) كَتلةٌ مُنفصلة. */}
+          {(() => {
+            const specs = parseCustomSpecs(d.customizationText);
+            return (
+              <Card>
+                <CardHeader className="pb-2"><CardTitle className="text-sm">مواصفات التَنفيذ</CardTitle></CardHeader>
+                <CardContent className="space-y-3">
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div className="rounded-lg border bg-muted/20 p-3">
+                      <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Ruler aria-hidden className="size-3.5" /> المقاس</div>
+                      <div className="font-bold text-base mt-1">{specs.size ?? "—"}</div>
+                    </div>
+                    <div className="rounded-lg border bg-muted/20 p-3">
+                      <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Layers aria-hidden className="size-3.5" /> الخامة</div>
+                      <div className="font-bold text-base mt-1">{specs.material ?? "—"}</div>
+                    </div>
+                    <div className="rounded-lg border bg-muted/20 p-3">
+                      <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Layers aria-hidden className="size-3.5" /> الكَمية</div>
+                      <div className="font-bold text-base mt-1 tabular-nums">{fmtInt(d.quantity)}</div>
+                    </div>
+                    <div className="rounded-lg border bg-muted/20 p-3">
+                      <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Truck aria-hidden className="size-3.5" /> التَسليم</div>
+                      <div className={`font-bold text-base mt-1 ${specs.delivery ? "text-sky-700 dark:text-sky-400" : ""}`}>
+                        {specs.delivery ?? "استلام من المَطبعة"}
+                      </div>
+                    </div>
+                  </div>
+                  {specs.raw && (
+                    <div>
+                      <div className="text-[11px] text-muted-foreground mb-1">نَصّ إضافي / مُلاحظات</div>
+                      <div className="rounded-md border bg-muted/30 p-2 text-sm whitespace-pre-wrap">{specs.raw}</div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })()}
 
           {/* صور نموذج العمل */}
           {d.images && d.images.length > 0 && (
@@ -228,17 +290,42 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
               )}
             </CardContent>
           </Card>
+
+          {/* لوحة محادثة مع خدمة العملاء — stub per spec §5.3.
+              التَكامل الفِعلي يَنتظر backend القنوات (شَريحة #5 المؤجَّلة).
+              حالياً نَعرض إرشاد للفنّي يُحوّله للقَناة الأَصلية حسب receptionChannel. */}
+          <Card className="border-dashed">
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm inline-flex items-center gap-2">
+                <MessageSquare aria-hidden className="size-4 text-muted-foreground" />
+                محادثة مع خِدمة العُملاء
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="text-sm space-y-2">
+              <div className="text-muted-foreground">
+                للتَواصل بِخصوص هذا الأَمر، يَصِله خِدمة العُملاء عبر:
+                <span className="font-medium text-foreground"> {ch.icon} {ch.label}</span>
+                {d.channelHandle && <span className="font-mono text-xs ms-1" dir="ltr">· {d.channelHandle}</span>}
+              </div>
+              <div className="text-xs text-muted-foreground bg-muted/30 border border-dashed rounded-md p-2">
+                المحادثة الموحَّدة داخل النِظام تَأتي في تَكامل القنوات لاحقاً — حالياً اِستعمل القناة الأَصلية أو راسِل خِدمة العُملاء مُباشرة.
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
         {/* العمود الجانبي: المؤقّت + المراحل + الإجراء */}
         <div className="space-y-4">
           <Card>
-            <CardHeader className="pb-2"><CardTitle className="text-sm">مؤقّت التنفيذ</CardTitle></CardHeader>
-            <CardContent>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm inline-flex items-center gap-2">
+                <TimerIcon aria-hidden className="size-4 text-muted-foreground" />
+                مؤقّت التَنفيذ
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="pt-0">
+              {/* المؤقّت نَفسه يَعرض الحالة (يَعمل / لم يَبدأ / إجمالي) بنَصّ ثانوي. */}
               <ElapsedTimer startAt={startAt} endAt={endAt} />
-              <div className="text-[11px] text-muted-foreground mt-1">
-                {d.status === "IN_PROGRESS" ? "يعمل الآن" : startAt ? "زمن التنفيذ الإجمالي" : "لم يبدأ بعد"}
-              </div>
             </CardContent>
           </Card>
 
