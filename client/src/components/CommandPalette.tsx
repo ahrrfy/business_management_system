@@ -34,19 +34,25 @@ type PageItem = { label: string; href: string; icon: React.ComponentType<{ class
 
 const PAGES: PageItem[] = [
   { label: "لوحة التحكّم", href: "/", icon: LayoutDashboard, keywords: "dashboard home رئيسية" },
-  { label: "نقطة البيع", href: "/pos", icon: ShoppingCart, keywords: "pos cashier كاشير بيع" },
+  { label: "الكاشير السَريع", href: "/pos", icon: ShoppingCart, keywords: "pos cashier كاشير بيع نقطة" },
+  { label: "كاشير الطباعة", href: "/print-pos", icon: ShoppingCart, keywords: "print pos طباعة" },
   { label: "المنتجات", href: "/products", icon: Package, keywords: "products منتجات" },
-  { label: "المبيعات / الفواتير", href: "/invoices", icon: FileText, keywords: "invoices sales" },
-  { label: "المرتجعات", href: "/returns", icon: RotateCcw, keywords: "returns إرجاع" },
+  { label: "فواتير المبيعات", href: "/invoices", icon: FileText, keywords: "invoices sales فواتير" },
+  { label: "عروض الأسعار", href: "/quotations", icon: Receipt, keywords: "quotations عرض سعر" },
+  { label: "مُرتجَعات البيع", href: "/sales-returns", icon: RotateCcw, keywords: "returns sales إرجاع" },
   { label: "المشتريات", href: "/purchases", icon: Truck, keywords: "purchases شراء" },
-  { label: "طلبات خدمة العملاء", href: "/work-orders", icon: Wrench, keywords: "work orders مطبعة" },
+  { label: "الموردون", href: "/suppliers", icon: Truck, keywords: "suppliers موردين" },
+  { label: "طلبات خدمة العملاء", href: "/work-orders", icon: Wrench, keywords: "work orders مطبعة خدمة" },
   { label: "المخزون", href: "/inventory", icon: Boxes, keywords: "inventory stock حركات" },
-  { label: "التحويلات", href: "/transfers", icon: Truck, keywords: "transfers نقل" },
+  { label: "تحويلات مَخزون بين الفروع", href: "/transfers", icon: Truck, keywords: "transfers stock نقل مخزون" },
+  { label: "تحويلات نَقدية بين الفروع", href: "/treasury/transfers", icon: Truck, keywords: "transfers cash نقل نقد" },
+  { label: "لوحة الخزينة", href: "/treasury", icon: Wallet, keywords: "treasury cash خزينة" },
   { label: "المصروفات", href: "/expenses", icon: Wallet, keywords: "expenses مصاريف" },
   { label: "أعمار الذمم (مدينة)", href: "/ar-aging", icon: Receipt, keywords: "ar aging ذمم تحصيل" },
   { label: "كشف حساب عميل", href: "/customers-statement", icon: Users, keywords: "customer statement كشف" },
   { label: "أعمار الذمم (دائنة)", href: "/ap-aging", icon: Receipt, keywords: "ap aging موردين" },
   { label: "كشف حساب مورد", href: "/suppliers-statement", icon: Users, keywords: "supplier statement" },
+  { label: "حسابي (كلمة المرور)", href: "/account", icon: UserCog, keywords: "account profile password حساب" },
 ];
 
 const ENTITY_LABELS: Record<EntityType, string> = {

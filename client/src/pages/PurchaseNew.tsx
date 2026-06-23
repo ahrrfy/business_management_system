@@ -200,7 +200,7 @@ export default function PurchaseNew() {
       {/* Title bar */}
       <div className="flex items-center justify-between">
         <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          <span className="text-2xl">{meta.icon}</span>
+          {(() => { const MIcon = meta.icon; return <MIcon aria-hidden className="size-6 text-primary" />; })()}
           {meta.label} جديد
         </h1>
         <div className="flex items-center gap-3 text-xs">
