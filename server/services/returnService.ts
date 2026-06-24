@@ -158,7 +158,14 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       }
       await tx
         .update(invoiceItems)
-        .set({ returnedBaseQuantity: (item.returnedBaseQuantity ?? 0) + line.baseQuantity })
+        .set({
+          returnedBaseQuantity: (item.returnedBaseQuantity ?? 0) + line.baseQuantity,
+          // returnedRestockedBaseQuantity يزيد فقط حين عادت البضاعة للرفّ (restock) — يُميّز المُعاد
+          // للمخزون عن التالف كي تطرح تقارير COGS التحليلية تكلفة المُعاد فقط (مطابِقةً للدفتر).
+          ...(restock
+            ? { returnedRestockedBaseQuantity: (item.returnedRestockedBaseQuantity ?? 0) + line.baseQuantity }
+            : {}),
+        })
         .where(eq(invoiceItems.id, Number(item.id)));
     }
 

@@ -16,6 +16,7 @@ import * as s from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
+import { getSalesRegister } from "../reportsSalesService";
 import { returnSale } from "../returnService";
 import { createSale } from "../saleService";
 
@@ -99,6 +100,8 @@ describe("returnSale — COGS تُعكَس فقط حين تعود البضاعة
     expect(Number(e.cost)).toBeCloseTo(-20, 2); // COGS مُعكَسة (5×4) — البضاعة عادت
     expect(Number(e.profit)).toBeCloseTo(-30, 2); // −(50−20)
     expect(await stockQty()).toBe(before + 5); // عادت للمخزون
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, itemId)))[0];
+    expect(item.returnedRestockedBaseQuantity).toBe(5); // أُعيدت للرفّ ⇒ تُطرَح تكلفتها في التقارير
   });
 
   it("restock=false (تالف): لا يعكس COGS ولا يُعيد البضاعة", async () => {
@@ -110,6 +113,8 @@ describe("returnSale — COGS تُعكَس فقط حين تعود البضاعة
     expect(Number(e.cost)).toBeCloseTo(0, 2); // التكلفة تبقى خسارة — لا تُعكَس
     expect(Number(e.profit)).toBeCloseTo(-50, 2); // الخسارة = الإيراد المُعكَس كاملاً (لا تعويض من عكس COGS)
     expect(await stockQty()).toBe(before); // لم تعد للمخزون
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.id, itemId)))[0];
+    expect(item.returnedRestockedBaseQuantity).toBe(0); // تالف ⇒ تكلفته تبقى في تقارير COGS (لا تُطرَح)
   });
 
   it("مرتجع جزئي restock=false يعكس التكلفة صفراً ويُبقي الباقي قابلاً للإرجاع", async () => {
@@ -151,5 +156,25 @@ describe("returns.getInvoice — عزل الفرع (IDOR قراءة)", () => {
     // مدير بفرعٍ مُسنَد يمرّ (يُقصَر على فرعه)، وadmin يرى الكل.
     await expect(caller("manager", 1).returns.list({})).resolves.toBeTruthy();
     await expect(caller("admin", null).returns.list({})).resolves.toBeTruthy();
+  });
+});
+
+describe("تقارير COGS التحليلية تطابق الدفتر بعد المرتجع", () => {
+  const range = { from: "2020-01-01", to: "2099-12-31" };
+
+  it("restock=false (تالف): سجلّ المبيعات يُبقي التكلفة كاملةً = الدفتر (لا يُخفي خسارة التلف)", async () => {
+    const { invoiceId, itemId } = await sellFive(); // SALE: COGS +20
+    await returnSale({ invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 5 }], restock: false }, actor);
+    const reg = await getSalesRegister(range);
+    // الدفتر: SALE cost +20، RETURN cost 0 ⇒ صافي 20. التقرير الآن يطابقه (لا يطرح التالف).
+    expect(Number(reg.totals.cost)).toBeCloseTo(20, 2);
+  });
+
+  it("restock=true: سجلّ المبيعات يُحيّد التكلفة = الدفتر صفر (البضاعة عادت للرفّ)", async () => {
+    const { invoiceId, itemId } = await sellFive();
+    await returnSale({ invoiceId, lines: [{ invoiceItemId: itemId, baseQuantity: 5 }], restock: true }, actor);
+    const reg = await getSalesRegister(range);
+    // الدفتر: SALE cost +20، RETURN cost −20 ⇒ صافي 0. التقرير يطابقه (يطرح المُعاد بالكامل).
+    expect(Number(reg.totals.cost)).toBeCloseTo(0, 2);
   });
 });
