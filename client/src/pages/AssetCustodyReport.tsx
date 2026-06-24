@@ -74,7 +74,7 @@ export default function AssetCustodyReport() {
         <CardHeader><CardTitle className="text-base">العهد حسب الموظف</CardTitle></CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
-            <thead className="bg-muted/50"><tr className="text-right">
+            <thead className="bg-muted/50"><tr>
               <th className="p-2 w-8"></th>
               <th className="p-2">الموظف</th>
               <th className="p-2 text-center">عدد الأصول</th>
@@ -124,7 +124,7 @@ export default function AssetCustodyReport() {
           <CardHeader><CardTitle className="text-base">أصول بلا عهدة ({d.unassigned.length})</CardTitle></CardHeader>
           <CardContent className="p-0">
             <table className="w-full text-sm">
-              <thead className="bg-muted/50"><tr className="text-right"><th className="p-2">الأصل</th><th className="p-2">الرمز</th><th className="p-2">الفرع</th><th className="p-2 text-left">القيمة الدفترية</th></tr></thead>
+              <thead className="bg-muted/50"><tr><th className="p-2">الأصل</th><th className="p-2">الرمز</th><th className="p-2">الفرع</th><th className="p-2 text-left">القيمة الدفترية</th></tr></thead>
               <tbody>
                 {d.unassigned.map((a) => (
                   <tr key={a.id} className="border-t hover:bg-accent/50">

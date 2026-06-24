@@ -146,7 +146,7 @@ export default function Suppliers() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
+              <tr>
                 <th className="p-2">الاسم</th>
                 {hasLegacy && <th className="p-2">الرقم القديم</th>}
                 <th className="p-2">الهاتف</th>

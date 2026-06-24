@@ -283,11 +283,11 @@ export default function Transfers() {
             <div className="border rounded-md overflow-hidden">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40">
-                  <tr className="text-right">
+                  <tr>
                     <th className="p-2 px-3">الصنف</th>
                     <th className="p-2 text-center w-28">المتاح (مصدر)</th>
-                    <th className="p-2 text-center w-32">الكمية (أساس)</th>
-                    <th className="p-2 w-10"></th>
+                    <th className="p-2 w-32">الكمية (أساس)</th>
+                    <th className="p-2 text-center w-10"></th>
                   </tr>
                 </thead>
                 <tbody>

@@ -143,7 +143,7 @@ export default function EmployeeDetail() {
         <TabsContent value="education">
           <Card><CardContent className="p-0">
             <table className="w-full text-sm">
-              <thead className="bg-muted/50"><tr className="text-right"><th className="p-2">الشهادة</th><th className="p-2">التخصص</th><th className="p-2">الجهة</th><th className="p-2">السنة</th><th className="p-2">التقدير</th></tr></thead>
+              <thead className="bg-muted/50"><tr><th className="p-2">الشهادة</th><th className="p-2">التخصص</th><th className="p-2">الجهة</th><th className="p-2">السنة</th><th className="p-2">التقدير</th></tr></thead>
               <tbody>
                 {education.map((ed, i) => (
                   <tr key={i} className="border-t"><td className="p-2">{ed.degree}</td><td className="p-2">{ed.major ?? "—"}</td><td className="p-2">{ed.school ?? "—"}</td><td className="p-2" dir="ltr">{ed.year ?? "—"}</td><td className="p-2">{ed.gpa ?? "—"}</td></tr>

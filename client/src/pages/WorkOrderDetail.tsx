@@ -236,9 +236,9 @@ export default function WorkOrderDetail() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr className="text-right">
-                  <th className="px-3 py-2 font-medium">المادة</th>
-                  <th className="px-3 py-2 font-medium">SKU</th>
+                <tr>
+                  <th className="px-3 py-2 font-medium text-start">المادة</th>
+                  <th className="px-3 py-2 font-medium text-start">SKU</th>
                   <th className="px-3 py-2 font-medium text-center">كمية (أساس)</th>
                   <th className="px-3 py-2 font-medium text-left">كلفة الوحدة</th>
                   <th className="px-3 py-2 font-medium text-left">كلفة السطر</th>

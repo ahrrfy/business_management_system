@@ -263,7 +263,7 @@ export default function InvoiceDetail() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr className="text-right">
+                <tr>
                   <th className="px-3 py-2 font-medium">المنتج</th>
                   <th className="px-3 py-2 font-medium">الوحدة</th>
                   <th className="px-3 py-2 font-medium text-center">الكمية</th>
@@ -312,7 +312,7 @@ export default function InvoiceDetail() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr className="text-right">
+                <tr>
                   <th className="px-3 py-2 font-medium">التاريخ</th>
                   <th className="px-3 py-2 font-medium">الاتجاه</th>
                   <th className="px-3 py-2 font-medium">الطريقة</th>

@@ -131,7 +131,7 @@ export default function Categories() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr>
                 <th className="p-2 w-8">
                   <input
                     type="checkbox"

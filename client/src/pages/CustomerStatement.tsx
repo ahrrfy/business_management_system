@@ -321,7 +321,7 @@ export default function CustomerStatement() {
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">الفواتير</div>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
-                  <tr className="text-right">
+                  <tr>
                     <th className="p-2">الفاتورة</th>
                     <th className="p-2">التاريخ</th>
                     <th className="p-2">الاستحقاق</th>
@@ -382,7 +382,7 @@ export default function CustomerStatement() {
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">الدفعات والاستردادات</div>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
-                  <tr className="text-right">
+                  <tr>
                     <th className="p-2">التاريخ</th>
                     <th className="p-2">الفاتورة</th>
                     <th className="p-2">الاتجاه</th>

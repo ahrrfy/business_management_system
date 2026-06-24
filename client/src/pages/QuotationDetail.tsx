@@ -164,9 +164,9 @@ export default function QuotationDetail() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50 text-xs text-muted-foreground">
-                <tr className="text-right">
-                  <th className="px-3 py-2 font-medium">المنتج</th>
-                  <th className="px-3 py-2 font-medium">الوحدة</th>
+                <tr>
+                  <th className="px-3 py-2 font-medium text-start">المنتج</th>
+                  <th className="px-3 py-2 font-medium text-start">الوحدة</th>
                   <th className="px-3 py-2 font-medium text-center">الكمية</th>
                   <th className="px-3 py-2 font-medium text-left">سعر الوحدة</th>
                   <th className="px-3 py-2 font-medium text-left">الإجمالي</th>

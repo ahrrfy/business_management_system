@@ -408,13 +408,13 @@ export default function BarcodeLabels() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr>
                 <th className="p-2">المنتج</th>
                 <th className="p-2">الباركود</th>
                 <th className="p-2 text-left">السعر</th>
-                <th className="p-2 w-24 text-center">عدد الملصقات</th>
+                <th className="p-2 w-24">عدد الملصقات</th>
                 <th className="p-2 text-center">معاينة</th>
-                <th className="p-2 w-10"></th>
+                <th className="p-2 w-10 text-center"></th>
               </tr>
             </thead>
             <tbody>

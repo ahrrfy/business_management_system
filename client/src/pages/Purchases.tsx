@@ -154,12 +154,12 @@ export default function Purchases() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
+              <tr>
                 <th className="p-2">رقم الأمر</th>
                 <th className="p-2">المورد</th>
                 <th className="p-2">التاريخ</th>
-                <th className="p-2 text-start">الإجمالي</th>
-                <th className="p-2 text-start">المدفوع</th>
+                <th className="p-2 text-left">الإجمالي</th>
+                <th className="p-2 text-left">المدفوع</th>
                 <th className="p-2">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>

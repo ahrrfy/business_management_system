@@ -39,12 +39,12 @@ export default function Roles() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
-              <tr className="text-right">
-                <th className="p-2 px-3">الاسم</th>
-                <th className="p-2">الفئة الأساسية</th>
+              <tr>
+                <th className="p-2 px-3 text-start">الاسم</th>
+                <th className="p-2 text-start">الفئة الأساسية</th>
                 <th className="p-2 text-center">مستخدمون</th>
                 <th className="p-2 text-center">الحالة</th>
-                <th className="p-2 text-center">إجراء</th>
+                <th className="p-2 text-start">إجراء</th>
               </tr>
             </thead>
             <tbody>
