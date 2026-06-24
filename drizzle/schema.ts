@@ -486,6 +486,10 @@ export const invoiceItems = mysqlTable(
     quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
     baseQuantity: int("baseQuantity").notNull(),
     returnedBaseQuantity: int("returnedBaseQuantity").default(0).notNull(),
+    // الكمية المُرتجعة التي أُعيدت للمخزون فعلاً (restock=true فقط). التالف/أمر الشغل لا يزيدها،
+    // فتبقى تكلفته خسارةً في تقارير COGS التحليلية مطابِقةً لدفتر P&L (returnService يزيدها عند
+    // restock فقط؛ والقيم التاريخية مُعبَّأة = returnedBaseQuantity في هجرة الإضافة لحفظ تطابق الماضي).
+    returnedRestockedBaseQuantity: int("returnedRestockedBaseQuantity").default(0).notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
     unitCost: decimal("unitCost", { precision: 15, scale: 2 }).default("0").notNull(),
     discountPercent: decimal("discountPercent", { precision: 5, scale: 2 }).default("0"),

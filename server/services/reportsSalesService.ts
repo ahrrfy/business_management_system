@@ -6,8 +6,9 @@
 //    DATE(invoices.invoiceDate) لمقارنة التاريخ (حدّان شاملان YYYY-MM-DD).
 //    أسماء الأعمدة بأسماء DB: invoices.status ⇒ العمود invoiceStatus.
 //
-// تعريف الربح للسطر = الإجمالي − (الكمية الأساس المُباعة فعلاً) × تكلفة الوحدة،
-//   حيث الكمية المُباعة فعلاً = baseQuantity − returnedBaseQuantity ⇒ المرتجع الجزئي يُحيّد تكلفته.
+// تعريف الربح للسطر = الإجمالي − (الكمية الأساس بعد طرح المُعاد للمخزون) × تكلفة الوحدة،
+//   حيث المطروح = returnedRestockedBaseQuantity (المُعاد للرفّ فقط) ⇒ التالف تبقى تكلفته خسارةً
+//   مطابِقةً لدفتر P&L (لا تُحيَّد تكلفة المرتجع التالف).
 import { sql } from "drizzle-orm";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
@@ -61,7 +62,8 @@ export async function getSalesRegister(opts: {
     ${branchCond}
   `;
 
-  // الربح للسطر: ii.total − (ii.baseQuantity − ii.returnedBaseQuantity) × ii.unitCost.
+  // الربح للسطر: ii.total − (ii.baseQuantity − ii.returnedRestockedBaseQuantity) × ii.unitCost
+  // (التكلفة تطرح المُعاد للمخزون فقط؛ التالف يبقى خسارةً مطابِقةً للدفتر).
   const rows = rowsOf(
     await db.execute(sql`
       SELECT
@@ -75,7 +77,7 @@ export async function getSalesRegister(opts: {
         CAST(ii.unitPrice AS CHAR) AS unitPrice,
         CAST(ii.unitCost AS CHAR) AS unitCost,
         CAST(ii.total AS CHAR) AS total,
-        CAST(ii.total - (ii.baseQuantity - ii.returnedBaseQuantity) * ii.unitCost AS CHAR) AS profit
+        CAST(ii.total - (ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost AS CHAR) AS profit
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
       JOIN productVariants pv ON pv.id = ii.variantId
@@ -94,8 +96,8 @@ export async function getSalesRegister(opts: {
       SELECT
         COUNT(*) AS cnt,
         CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue,
-        CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
-        CAST(COALESCE(SUM(ii.total - (ii.baseQuantity - ii.returnedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
+        CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
+        CAST(COALESCE(SUM(ii.total - (ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
         CAST(COALESCE(SUM(ii.quantity), 0) AS CHAR) AS qty
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId

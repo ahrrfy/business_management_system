@@ -623,7 +623,8 @@ export async function getDashboardMetrics(
 // النمط: SQL خام بأسماء أعمدة DB الفعلية (راجع [[raw-sql-column-names]]):
 //   - invoices.invoiceStatus (لا status)؛ استبعد CANCELLED/RETURNED من إجماليات المبيعات.
 //   - invoiceItems.baseQuantity جاهز بالوحدة الأساس ⇒ لا حاجة لحساب quantity×conversionFactor.
-//   - تخصم returnedBaseQuantity من الكمية المباعة (الفعلية) للحصول على صافي البيع.
+//   - الكمية: تخصم returnedBaseQuantity للحصول على صافي البيع (ما بقي مع العميل).
+//   - التكلفة (COGS): تخصم returnedRestockedBaseQuantity فقط (المُعاد للرفّ) ⇒ التالف يبقى خسارةً مطابِقةً للدفتر.
 //   - الأموال تُعاد كنصوص (CAST AS CHAR) لتمرّ عبر decimal.js على الواجهة بلا فقد دقّة.
 
 /** فلاتر نطاق زمني + فرع تتشاركها تقارير المبيعات التحليلية. */
@@ -671,8 +672,8 @@ export async function getTopProducts(
       c.name AS categoryName,
       CAST(COALESCE(SUM(ii.baseQuantity - ii.returnedBaseQuantity), 0) AS CHAR) AS qtySold,
       CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue,
-      CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
-      CAST(COALESCE(SUM(ii.total) - SUM((ii.baseQuantity - ii.returnedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
+      CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
+      CAST(COALESCE(SUM(ii.total) - SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
       COUNT(DISTINCT ii.invoiceId) AS invoicesCount
     FROM invoiceItems ii
     INNER JOIN invoices i ON i.id = ii.invoiceId
@@ -805,8 +806,8 @@ export async function getProfitByCategory(opts: SalesAnalyticsFilters = {}): Pro
       p.categoryId AS categoryId,
       COALESCE(c.name, 'بلا فئة') AS categoryName,
       CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue,
-      CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
-      CAST(COALESCE(SUM(ii.total) - SUM((ii.baseQuantity - ii.returnedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
+      CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
+      CAST(COALESCE(SUM(ii.total) - SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
       COUNT(*) AS itemsCount
     FROM invoiceItems ii
     INNER JOIN invoices i ON i.id = ii.invoiceId
