@@ -254,7 +254,7 @@ export default function Customers() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
+              <tr>
                 <th className="p-2 w-8 text-center">
                   <input
                     type="checkbox"
@@ -273,7 +273,7 @@ export default function Customers() {
                 <th className="p-2">الهاتف</th>
                 <th className="p-2">المدينة/المنطقة</th>
                 <th className="p-2">فئة السعر</th>
-                <th className="p-2 text-start">سقف الائتمان</th>
+                <th className="p-2 text-left">سقف الائتمان</th>
                 <th className="p-2 text-start">الرصيد</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>

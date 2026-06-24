@@ -226,7 +226,7 @@ export default function Shifts() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr>
                 <th className="p-2">#</th>
                 <th className="p-2">الموظف</th>
                 <th className="p-2">الفرع</th>

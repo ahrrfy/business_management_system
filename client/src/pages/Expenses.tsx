@@ -183,7 +183,7 @@ export default function Expenses() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr>
                 <th className="p-2">التاريخ</th>
                 <th className="p-2">الفرع</th>
                 <th className="p-2">الفئة</th>

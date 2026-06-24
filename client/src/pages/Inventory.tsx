@@ -174,9 +174,9 @@ export default function Inventory() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
-                <th className="p-2">المنتج</th>
-                <th className="p-2">المتغيّر / SKU</th>
+              <tr>
+                <th className="p-2 text-start">المنتج</th>
+                <th className="p-2 text-start">المتغيّر / SKU</th>
                 <th className="p-2 text-center">الرصيد</th>
                 <th className="p-2 text-center">الحد الأدنى</th>
                 <th className="p-2 text-center">الحالة</th>
@@ -278,12 +278,12 @@ export default function Inventory() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
-                <th className="p-2">التاريخ</th>
-                <th className="p-2">المتغيّر</th>
-                <th className="p-2">النوع</th>
+              <tr>
+                <th className="p-2 text-start">التاريخ</th>
+                <th className="p-2 text-start">المتغيّر</th>
+                <th className="p-2 text-start">النوع</th>
                 <th className="p-2 text-center">الكمية (أساس)</th>
-                <th className="p-2">المرجع</th>
+                <th className="p-2 text-start">المرجع</th>
               </tr>
             </thead>
             <tbody>
