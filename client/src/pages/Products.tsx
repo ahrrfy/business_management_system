@@ -7,6 +7,14 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
@@ -34,9 +42,14 @@ export default function Products() {
 
   const [q, setQ] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
+  // فلترة بالفئة: "" = الكل، "0" = بلا فئة، "<id>" = فئة محدّدة. القيمة الأولية من ?category= (رابط من شاشة الفئات).
+  const [categoryFilter, setCategoryFilter] = useState<string>(() => new URLSearchParams(window.location.search).get("category") ?? "");
   const [page, setPage] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [moveTo, setMoveTo] = useState<number | null>(null);
   const importMut = trpc.imports.products.useMutation();
+  const categoriesQ = trpc.catalog.categories.useQuery();
   const dq = useDebouncedValue(q, 200);
   const sel = useRowSelection<string>();
 
@@ -44,6 +57,7 @@ export default function Products() {
     branchId,
     q: dq.trim() || undefined,
     includeInactive,
+    categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),
     limit,
     offset: page * limit,
   });
@@ -100,6 +114,32 @@ export default function Products() {
     );
   }
 
+  const reassignMut = trpc.catalog.reassignProducts.useMutation({
+    onSuccess: (res) => {
+      utils.catalog.adminList.invalidate();
+      utils.catalog.categoriesAdmin.invalidate();
+      sel.clear();
+      setMoveOpen(false);
+      notify.ok(`نُقل ${res.moved.toLocaleString("ar-IQ-u-nu-latn")} منتجاً`);
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  /** معرّفات المنتجات الفريدة من الصفوف المحدَّدة في الصفحة الحالية. */
+  function selectedProductIds(): number[] {
+    return Array.from(new Set(rows.filter((r) => sel.isSelected(rowKey(r))).map((r) => r.productId)));
+  }
+  function openMove() {
+    if (!selectedProductIds().length) { notify.err("حدّد منتجات أولاً"); return; }
+    setMoveTo(null);
+    setMoveOpen(true);
+  }
+  function confirmMove() {
+    const ids = selectedProductIds();
+    if (!ids.length) return;
+    reassignMut.mutate({ productIds: ids, categoryId: moveTo });
+  }
+
   async function toggle(productId: number, isActive: boolean, name: string) {
     if (isActive) {
       if (!(await confirm({
@@ -153,15 +193,29 @@ export default function Products() {
               placeholder: "بحث (اسم/SKU/باركود)",
             }}
             filters={
-              <label className="flex items-center gap-2 h-8 text-sm">
-                <input
-                  type="checkbox"
-                  className="size-4"
-                  checked={includeInactive}
-                  onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
-                />
-                <span className="text-muted-foreground">إظهار المعطّل</span>
-              </label>
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="flex items-center gap-1.5 h-8 text-sm">
+                  <span className="text-muted-foreground">الفئة:</span>
+                  <select
+                    value={categoryFilter}
+                    onChange={(e) => { setCategoryFilter(e.target.value); setPage(0); }}
+                    className="h-8 rounded-md border border-input bg-transparent px-2 text-sm"
+                  >
+                    <option value="">كل الفئات</option>
+                    <option value="0">— بلا فئة —</option>
+                    {(categoriesQ.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </label>
+                <label className="flex items-center gap-2 h-8 text-sm">
+                  <input
+                    type="checkbox"
+                    className="size-4"
+                    checked={includeInactive}
+                    onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
+                  />
+                  <span className="text-muted-foreground">إظهار المعطّل</span>
+                </label>
+              </div>
             }
             exportSpec={{
               filename: "المنتجات",
@@ -195,6 +249,7 @@ export default function Products() {
                   />
                 </th>
                 <th className="p-2">المنتج</th>
+                <th className="p-2">الفئة</th>
                 <th className="p-2">المتغيّر</th>
                 <th className="p-2">الوحدة</th>
                 <th className="p-2">الباركود</th>
@@ -223,6 +278,7 @@ export default function Products() {
                       />
                     </td>
                     <td className="p-2 font-medium">{r.productName}</td>
+                    <td className="p-2 text-muted-foreground">{r.categoryName ?? "—"}</td>
                     <td className="p-2 text-muted-foreground">{r.variantName ?? r.color ?? r.sku ?? "—"}</td>
                     <td className="p-2">{r.unitName ?? "—"}</td>
                     <td className="p-2">
@@ -277,7 +333,7 @@ export default function Products() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا منتجات مطابقة. غيّر البحث أو أضف منتجاً.</td></tr>
+                <tr><td colSpan={10} className="p-6 text-center text-muted-foreground">لا منتجات مطابقة. غيّر البحث أو أضف منتجاً.</td></tr>
               )}
             </tbody>
           </table>
@@ -291,7 +347,41 @@ export default function Products() {
         onPrint={printSelectedLabels}
         exportLabel="نَسخ TSV"
         printLabel="طِباعة مُلصَقات"
+        actions={
+          <Button variant="outline" size="sm" onClick={openMove}>
+            نقل إلى فئة
+          </Button>
+        }
       />
+
+      {/* نقل المنتجات المحدَّدة إلى فئة */}
+      <Dialog open={moveOpen} onOpenChange={setMoveOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>نقل المنتجات إلى فئة</DialogTitle>
+            <DialogDescription>
+              ستُنقل {selectedProductIds().length.toLocaleString("ar-IQ-u-nu-latn")} منتجاً (من الصفحة الحالية) إلى الفئة المختارة.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-1">
+            <label className="text-sm font-medium">الفئة الهدف</label>
+            <select
+              value={moveTo == null ? "" : String(moveTo)}
+              onChange={(e) => setMoveTo(e.target.value === "" ? null : Number(e.target.value))}
+              className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-sm"
+            >
+              <option value="">— بلا فئة —</option>
+              {(categoriesQ.data ?? []).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" size="sm" onClick={() => setMoveOpen(false)}>إلغاء</Button>
+            <Button size="sm" onClick={confirmMove} disabled={reassignMut.isPending}>
+              {reassignMut.isPending ? "جارٍ النقل…" : "نقل"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {pages > 1 && (
         <div className="flex items-center justify-between text-sm">

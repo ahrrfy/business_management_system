@@ -50,6 +50,7 @@ const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
 const Products = lazy(() => import("@/pages/Products"));
+const Categories = lazy(() => import("@/pages/Categories"));
 const Purchases = lazy(() => import("@/pages/Purchases"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
@@ -198,6 +199,7 @@ export default function App() {
       <Route path="/products"><Shell><Products /></Shell></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
+      <Route path="/categories"><Shell><RequireRole roles={["admin","manager"]}><Categories /></RequireRole></Shell></Route>
       <Route path="/barcode-labels"><Shell><BarcodeLabels /></Shell></Route>
       <Route path="/invoices"><Shell><Invoices /></Shell></Route>
       <Route path="/sales/new"><Shell><SalesInvoiceNew /></Shell></Route>

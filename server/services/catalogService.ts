@@ -295,6 +295,8 @@ export interface AdminProductRow {
   productId: number;
   productName: string;
   productIsActive: boolean;
+  categoryId: number | null;
+  categoryName: string | null;
   variantId: number | null;
   variantName: string | null;
   color: string | null;
@@ -315,6 +317,8 @@ export interface ListProductsAdminInput {
   branchId: number;
   q?: string;
   includeInactive?: boolean;
+  /** فلترة بالفئة: رقم موجب = فئة محدّدة، 0 = «بلا فئة» (NULL)، غياب = كل الفئات. */
+  categoryId?: number;
   limit?: number;
   offset?: number;
 }
@@ -340,6 +344,10 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
   }
   const search = buildCatalogSearchWhere(input.q);
   if (search) conds.push(search);
+  // فلترة بالفئة: 0 ⇒ «بلا فئة» (NULL)، رقم موجب ⇒ تلك الفئة.
+  if (input.categoryId != null) {
+    conds.push(input.categoryId === 0 ? isNull(products.categoryId) : eq(products.categoryId, input.categoryId));
+  }
   const where = conds.length ? and(...conds) : undefined;
 
   // ترتيب حتمي للتقسيم: مفاتيح الحبيبة (variant ثم unit) تذيّل الترتيب دائماً.
@@ -352,6 +360,8 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
       productId: products.id,
       productName: products.name,
       productIsActive: products.isActive,
+      categoryId: products.categoryId,
+      categoryName: categories.name,
       variantId: productVariants.id,
       variantName: productVariants.variantName,
       color: productVariants.color,
@@ -368,6 +378,7 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
       stockBase: branchStock.quantity,
     })
     .from(products)
+    .leftJoin(categories, eq(categories.id, products.categoryId))
     .leftJoin(productVariants, eq(productVariants.productId, products.id))
     .leftJoin(productUnits, eq(productUnits.variantId, productVariants.id))
     .leftJoin(
@@ -398,6 +409,8 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
       productId: Number(r.productId),
       productName: r.productName,
       productIsActive: !!r.productIsActive,
+      categoryId: r.categoryId != null ? Number(r.categoryId) : null,
+      categoryName: r.categoryName ?? null,
       variantId: r.variantId != null ? Number(r.variantId) : null,
       variantName: r.variantName ?? null,
       color: r.color ?? null,
@@ -469,11 +482,12 @@ export interface CreateProductInput {
   images?: Array<{ url: string; isPrimary?: boolean; sortOrder?: number }>;
 }
 
-/** v3-add-screens: يبني اسماً نهائياً من القطع الثلاث + يحذف الفراغات الزائدة. */
+/** يبني الاسم النهائي: الاسم الصريح (name) أولاً، فإن غاب رُكّب من النوع/الماركة/الموديل.
+ *  (الأجزاء الثلاثة وصفية اختيارية ولا تَجُبّ الاسم الصريح — مطابقٌ لمنطق التعديل.) */
 function composeProductName(input: { name?: string | null; productType?: string | null; brand?: string | null; modelName?: string | null }) {
+  const explicit = (input.name ?? "").trim();
   const composed = [input.productType, input.brand, input.modelName].map((s) => (s ?? "").trim()).filter(Boolean).join(" ");
-  const fallback = (input.name ?? "").trim();
-  return composed || fallback;
+  return explicit || composed;
 }
 
 /* ============================ Product read (for edit) ============================ */
@@ -746,7 +760,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
   if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
   return withTx(async (tx) => {
     const composedName = composeProductName(input);
-    if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (نوع/ماركة/موديل)" });
+    if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل)" });
     await assertCatalogUniqueness(tx, input);
     const pRes = await tx.insert(products).values({
       name: composedName,

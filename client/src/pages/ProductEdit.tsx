@@ -306,7 +306,8 @@ export default function ProductEdit() {
     }));
     return {
       productId,
-      name: composedName || originalName.trim() || null,
+      // الاسم الصريح هو المرجع؛ التركيب من الأجزاء مجرّد بديل عند فراغه (يطابق composeName في الخادم).
+      name: originalName.trim() || composedName || null,
       productType: productType.trim() || null,
       brand: brand.trim() || null,
       modelName: modelName.trim() || null,
@@ -356,10 +357,10 @@ export default function ProductEdit() {
 
   function exportExcel() {
     exportRows(variants, {
-      filename: `منتج-${composedName || originalName || "بمتغيرات"}`,
+      filename: `منتج-${originalName || composedName || "بمتغيرات"}`,
       sheetName: "المنتجات",
       columns: [
-        { key: "name", header: "الاسم الكامل", map: (v) => [composedName || originalName, v.color, v.size].filter(Boolean).join(" ") },
+        { key: "name", header: "الاسم الكامل", map: (v) => [originalName || composedName, v.color, v.size].filter(Boolean).join(" ") },
         { key: "color", header: "اللون", map: (v) => v.color },
         { key: "size", header: "القياس", map: (v) => v.size },
         { key: "sku", header: "SKU", map: (v) => v.sku },
@@ -389,11 +390,33 @@ export default function ProductEdit() {
       {/* اسم مركّب + معاينة */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
-          <CardHeader><CardTitle className="text-base">اسم المنتج المركّب · مشترك لكل المتغيّرات</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base">اسم المنتج وبياناته</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Field label="النوع"><Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" /></Field>
-            <Field label="الماركة"><Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Pilot" dir="auto" /></Field>
-            <Field label="الموديل"><Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="G-2" dir="auto" /></Field>
+            <Field
+              label="اسم المنتج"
+              required
+              hint="يظهر في البيع والفواتير والتقارير. هذا اسم المنتج الكامل (وهو ما يظهر للمنتجات المستوردة)."
+              className="md:col-span-3"
+            >
+              <div className="flex items-center gap-2">
+                <Input value={originalName} onChange={(e) => setOriginalName(e.target.value)} placeholder="اسم المنتج الكامل" dir="auto" />
+                {composedName && composedName !== originalName.trim() && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 whitespace-nowrap"
+                    onClick={() => setOriginalName(composedName)}
+                    title="تركيب الاسم من النوع/الماركة/الموديل"
+                  >
+                    ↻ تركيب من الحقول
+                  </Button>
+                )}
+              </div>
+            </Field>
+            <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً."><Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" /></Field>
+            <Field label="الماركة (اختياري)"><Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Pilot" dir="auto" /></Field>
+            <Field label="الموديل (اختياري)"><Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="G-2" dir="auto" /></Field>
             <Field label="الفئة / التصنيف">
               <select
                 value={categoryId}
@@ -413,7 +436,7 @@ export default function ProductEdit() {
           <CardContent>
             <div className="rounded-lg border bg-muted/30 overflow-hidden">
               <div className="aspect-[4/3] flex items-center justify-center text-muted-foreground" style={{ background: "repeating-linear-gradient(135deg, oklch(0.95 0.005 250), oklch(0.95 0.005 250) 10px, oklch(0.93 0.005 250) 10px, oklch(0.93 0.005 250) 20px)" }}>
-                <span className="font-mono text-[11px] bg-card/80 px-2 py-1 rounded">{composedName || originalName || "—"}</span>
+                <span className="font-mono text-[11px] bg-card/80 px-2 py-1 rounded">{originalName || composedName || "—"}</span>
               </div>
               <div className="p-3 space-y-2">
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -505,7 +528,7 @@ export default function ProductEdit() {
             branches={branches}
             branchId={branchId}
             costPrice={costPrice}
-            baseName={composedName || originalName}
+            baseName={originalName || composedName}
             takenInDb={takenInDb}
             patchVariant={patchVariant}
             removeVariant={removeVariant}
@@ -540,7 +563,7 @@ export default function ProductEdit() {
       </div>
 
       <ImportModal open={importOpen} onOpenChange={setImportOpen} units={units} onImport={applyImport} />
-      <LabelPrintModal open={printOpen} onOpenChange={setPrintOpen} variants={variants} units={units} baseName={composedName || originalName} baseRetail={baseRetail} />
+      <LabelPrintModal open={printOpen} onOpenChange={setPrintOpen} variants={variants} units={units} baseName={originalName || composedName} baseRetail={baseRetail} />
     </div>
   );
 }

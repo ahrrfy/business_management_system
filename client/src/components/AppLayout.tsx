@@ -70,6 +70,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: Boxes,
     items: [
       { href: "/products", label: "المنتجات" },
+      { href: "/categories", label: "الفئات والتصنيفات", managerOnly: true },
       { href: "/inventory", label: "أرصدة المخزون" },
       { href: "/stocktakes", label: "الجرد والتسوية" },
       { href: "/inventory-movements", label: "حركات المخزون" },

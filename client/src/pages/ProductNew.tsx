@@ -50,6 +50,7 @@ export default function ProductNew() {
   const categoriesQ = trpc.catalog.categories.useQuery();
 
   // ── الاسم المركّب + الرأس المشترك ──
+  const [productName, setProductName] = useState("");
   const [productType, setProductType] = useState("");
   const [brand, setBrand] = useState("");
   const [modelName, setModelName] = useState("");
@@ -235,7 +236,7 @@ export default function ProductNew() {
 
   /* ── التحقّق المحليّ قبل الحفظ ── */
   function validateLocal(): string | null {
-    if (!composedName) return "أدخل النوع/الماركة/الموديل لتركيب اسم المنتج.";
+    if (!productName.trim() && !composedName) return "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل).";
     if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
     if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
     if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط في قالب الوحدات.";
@@ -256,6 +257,8 @@ export default function ProductNew() {
 
   function buildPayload() {
     return {
+      // الاسم الصريح هو المرجع؛ التركيب من الأجزاء بديل عند فراغه (يطابق composeProductName في الخادم).
+      name: productName.trim() || composedName || undefined,
       productType: productType.trim() || null,
       brand: brand.trim() || null,
       modelName: modelName.trim() || null,
@@ -327,10 +330,10 @@ export default function ProductNew() {
   /* ── تصدير Excel: صف لكل متغيّر، عمود باركود لكل وحدة (كل لون كأنه منتج مستقل) ── */
   function exportExcel() {
     exportRows(variants, {
-      filename: `منتج-${composedName || "بمتغيرات"}`,
+      filename: `منتج-${productName.trim() || composedName || "بمتغيرات"}`,
       sheetName: "المنتجات",
       columns: [
-        { key: "name", header: "الاسم الكامل", map: (v) => [composedName, v.color, v.size].filter(Boolean).join(" ") },
+        { key: "name", header: "الاسم الكامل", map: (v) => [productName.trim() || composedName, v.color, v.size].filter(Boolean).join(" ") },
         { key: "color", header: "اللون", map: (v) => v.color },
         { key: "size", header: "القياس", map: (v) => v.size },
         { key: "sku", header: "SKU", map: (v) => v.sku },
@@ -364,15 +367,37 @@ export default function ProductNew() {
       {/* ── اسم مركّب + معاينة الكاتالوج ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
-          <CardHeader><CardTitle className="text-base">اسم المنتج المركّب · مشترك لكل المتغيّرات</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base">اسم المنتج وبياناته</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Field label="النوع" required>
+            <Field
+              label="اسم المنتج"
+              required
+              hint="يظهر في البيع والفواتير والتقارير. اكتبه مباشرةً أو ركّبه من النوع/الماركة/الموديل."
+              className="md:col-span-3"
+            >
+              <div className="flex items-center gap-2">
+                <Input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="اسم المنتج الكامل" dir="auto" />
+                {composedName && composedName !== productName.trim() && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0 whitespace-nowrap"
+                    onClick={() => setProductName(composedName)}
+                    title="تركيب الاسم من النوع/الماركة/الموديل"
+                  >
+                    ↻ تركيب من الحقول
+                  </Button>
+                )}
+              </div>
+            </Field>
+            <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً.">
               <Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" />
             </Field>
-            <Field label="الماركة" required>
+            <Field label="الماركة (اختياري)">
               <Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Pilot" dir="auto" />
             </Field>
-            <Field label="الموديل" required>
+            <Field label="الموديل (اختياري)">
               <Input value={modelName} onChange={(e) => setModelName(e.target.value)} placeholder="G-2" dir="auto" />
             </Field>
             <Field label="الفئة / التصنيف">
@@ -402,14 +427,14 @@ export default function ProductNew() {
             <div className="rounded-lg border bg-muted/30 overflow-hidden">
               <div className="aspect-[4/3] bg-card flex items-center justify-center text-muted-foreground text-xs">
                 {primaryImage ? (
-                  <img src={primaryImage.dataUrl || primaryImage.url} alt={composedName} className="w-full h-full object-cover" />
+                  <img src={primaryImage.dataUrl || primaryImage.url} alt={productName.trim() || composedName} className="w-full h-full object-cover" />
                 ) : (
                   <span className="font-mono text-[11px]">— لا صورة —</span>
                 )}
               </div>
               <div className="p-3 space-y-2">
                 <div className="text-sm font-semibold">
-                  {composedName || <span className="text-muted-foreground">— اسم المنتج —</span>}
+                  {productName.trim() || composedName || <span className="text-muted-foreground">— اسم المنتج —</span>}
                 </div>
                 <div className="flex flex-wrap gap-1">
                   {baseSku && <Badge variant="outline" dir="ltr">{baseSku}</Badge>}
