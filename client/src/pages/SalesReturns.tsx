@@ -121,7 +121,7 @@ export default function SalesReturns() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr>
                 <th className="p-2">رقم القيد</th>
                 <th className="p-2">التاريخ</th>
                 <th className="p-2">رقم الفاتورة</th>
