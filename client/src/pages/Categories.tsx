@@ -16,6 +16,8 @@ import {
 } from "@/components/ui/dialog";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Plus } from "lucide-react";
@@ -111,18 +113,20 @@ export default function Categories() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold">الفئات والتصنيفات</h1>
-        <Button size="sm" onClick={openAdd}><Plus className="size-4" /> إضافة فئة</Button>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        نظّم منتجاتك في فئات. تستطيع إضافة فئة، تعديلها، دمج عدّة فئات في واحدة، أو حذفها مع نقل منتجاتها.
-        لنقل منتجات محدّدة بين الفئات: افتح <span className="font-medium">المنتجات</span>، حدّدها، ثم «نقل إلى فئة».
-      </p>
+      <PageHeader
+        title="الفئات والتصنيفات"
+        description={
+          <>
+            نظّم منتجاتك في فئات. تستطيع إضافة فئة، تعديلها، دمج عدّة فئات في واحدة، أو حذفها مع نقل منتجاتها.
+            لنقل منتجات محدّدة بين الفئات: افتح <span className="font-medium">المنتجات</span>، حدّدها، ثم «نقل إلى فئة».
+          </>
+        }
+        actions={<Button size="sm" onClick={openAdd}><Plus className="size-4" /> إضافة فئة</Button>}
+      />
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2">
-          <div className="text-sm text-muted-foreground">{list.isLoading ? "جارٍ التحميل…" : `${num(rows.length)} فئة`}</div>
+          <div className="text-sm text-muted-foreground">{list.isLoading ? "" : `${num(rows.length)} فئة`}</div>
         </CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
@@ -160,7 +164,7 @@ export default function Categories() {
                   <td className="p-2 text-muted-foreground">{c.description || "—"}</td>
                   <td className="p-2 text-center tabular-nums">{num(c.productCount)}</td>
                   <td className="p-2 text-center">
-                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${c.isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${c.isActive ? "badge-status-active" : "badge-status-cancelled"}`}>
                       {c.isActive ? "مفعّلة" : "معطّلة"}
                     </span>
                   </td>
@@ -175,8 +179,11 @@ export default function Categories() {
                   </td>
                 </tr>
               ))}
+              {list.isLoading && (
+                <tr><td colSpan={6}><LoadingState /></td></tr>
+              )}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">لا فئات بعد — أضِف أوّل فئة.</td></tr>
+                <TableEmptyRow colSpan={6} message="لا فئات بعد — أضِف أوّل فئة." />
               )}
             </tbody>
           </table>

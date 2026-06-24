@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtAr as fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -114,18 +116,24 @@ export default function CustomerEdit() {
   }
 
   if (!customerId) return <div className="p-6 text-center text-muted-foreground">معرّف عميل غير صالح.</div>;
-  if (detail.isLoading) return <div className="p-6 text-center text-muted-foreground">جارٍ تحميل بيانات العميل…</div>;
-  if (!detail.data) return <div className="p-6 text-center text-muted-foreground">العميل غير موجود. <Link className="text-primary underline" href="/customers">رجوع للقائمة</Link></div>;
+  if (detail.isLoading) return <LoadingState message="جارٍ تحميل بيانات العميل…" />;
+  if (!detail.data)
+    return (
+      <ErrorState
+        message={<>العميل غير موجود. <Link className="text-primary underline" href="/customers">رجوع للقائمة</Link></>}
+        onRetry={() => void detail.refetch()}
+      />
+    );
 
   const c = detail.data;
   const isActive = !!c.isActive;
 
   return (
     <div className="space-y-4 max-w-3xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">تعديل عميل</h1>
-        <Link href="/customers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
-      </div>
+      <PageHeader
+        title="تعديل عميل"
+        actions={<Link href="/customers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">بطاقة العميل</CardTitle></CardHeader>
@@ -135,7 +143,7 @@ export default function CustomerEdit() {
           <div><div className="text-muted-foreground text-xs">سقف الائتمان</div><div dir="ltr">{fmt(c.creditLimit)}</div></div>
           <div>
             <div className="text-muted-foreground text-xs">الحالة</div>
-            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
               {isActive ? "مفعّل" : "معطّل"}
             </span>
           </div>
@@ -226,7 +234,7 @@ export default function CustomerEdit() {
       )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-600">{done}</p>}
+      {done && <p className="text-sm text-money-positive">{done}</p>}
 
       <div className="flex flex-wrap gap-2">
         <Button onClick={submit} disabled={update.isPending}>

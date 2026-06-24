@@ -8,6 +8,7 @@ import {
   type PeriodValue, type CompareMode,
 } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { formatIqd, fmtAr, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -136,7 +137,9 @@ export default function ProfitLoss() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message={q.error?.message} onRetry={() => q.refetch()} />
           ) : !cur ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
           ) : (
@@ -152,7 +155,7 @@ export default function ProfitLoss() {
                 {lines.map((r, i) => (
                   <tr key={i} className={`border-b last:border-0 ${r.bold ? "font-bold bg-muted/30" : ""}`}>
                     <td className="p-3 text-right">{r.label}</td>
-                    <td className={`p-3 text-left tabular-nums ${r.neg ? "text-rose-600" : ""}`} dir="ltr">
+                    <td className={`p-3 text-left tabular-nums ${r.neg ? "text-money-negative" : ""}`} dir="ltr">
                       {r.neg ? `(${fmtAr(r.cur)})` : fmtAr(r.cur)}
                     </td>
                     {prev && (

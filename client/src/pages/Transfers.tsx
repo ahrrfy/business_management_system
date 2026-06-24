@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -176,13 +177,11 @@ export default function Transfers() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">تحويل بين الفروع</h1>
-          <p className="text-sm text-muted-foreground">سند تحويل مخزني بأسطر متعددة (TRANSFER_OUT/IN) — ذرّي، بلا قيد محاسبي.</p>
-        </div>
-        <Link href="/inventory" className="text-sm text-muted-foreground">حركات المخزون ←</Link>
-      </div>
+      <PageHeader
+        title="تحويل بين الفروع"
+        description="سند تحويل مخزني بأسطر متعددة (TRANSFER_OUT/IN) — ذرّي، بلا قيد محاسبي."
+        actions={<Link href="/inventory" className="text-sm text-muted-foreground">حركات المخزون ←</Link>}
+      />
 
       {/* الفروع: من → إلى + عكس */}
       <Card>
@@ -332,7 +331,7 @@ export default function Transfers() {
             <div className="flex justify-between"><span className="text-muted-foreground">عدد الأصناف</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(cart.length)}</span></div>
             <div className="flex justify-between"><span className="text-muted-foreground">إجمالي الوحدات</span><span className="font-semibold tabular-nums" dir="ltr">{fmtInt(totalUnits)}</span></div>
             {error && <p className="text-sm text-destructive">{error}</p>}
-            {done && <p className="text-sm text-emerald-600">{done}</p>}
+            {done && <p className="text-sm text-money-positive">{done}</p>}
             <Button className="w-full" onClick={submit} disabled={transfer.isPending || !valid}>
               {transfer.isPending ? "جارٍ التنفيذ…" : "تنفيذ التحويل"}
             </Button>

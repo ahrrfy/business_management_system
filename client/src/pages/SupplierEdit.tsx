@@ -6,6 +6,8 @@ import { fmtAr as fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState } from "@/components/PageState";
 
 export default function SupplierEdit() {
   const [, params] = useRoute<{ id: string }>("/suppliers/:id/edit");
@@ -73,16 +75,16 @@ export default function SupplierEdit() {
     });
   }
 
-  if (detail.isLoading) return <div className="p-6 text-muted-foreground">جارٍ التحميل…</div>;
-  if (!detail.data) return <div className="p-6 text-muted-foreground">المورّد غير موجود. <Link href="/suppliers" className="text-primary">← القائمة</Link></div>;
+  if (detail.isLoading) return <LoadingState />;
+  if (!detail.data) return <ErrorState message={<>المورّد غير موجود. <Link href="/suppliers" className="text-primary">← القائمة</Link></>} />;
 
   return (
     <div className="space-y-4 max-w-3xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">تعديل مورّد</h1>
-        <Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
-      </div>
-      <p className="text-sm text-muted-foreground">الرصيد الحالي: <span className="tabular-nums" dir="ltr">{fmt(detail.data.currentBalance)}</span> دينار</p>
+      <PageHeader
+        title="تعديل مورّد"
+        description={<>الرصيد الحالي: <span className="tabular-nums" dir="ltr">{fmt(detail.data.currentBalance)}</span> دينار</>}
+        actions={<Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
@@ -113,7 +115,7 @@ export default function SupplierEdit() {
       </Card>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-700">{done}</p>}
+      {done && <p className="badge-status-active inline-block rounded-md px-2 py-1 text-sm">{done}</p>}
       <div className="flex gap-2">
         <Button onClick={submit} disabled={update.isPending}>{update.isPending ? "جارٍ الحفظ…" : "حفظ التعديلات"}</Button>
         <Link href="/suppliers"><Button variant="outline">رجوع</Button></Link>

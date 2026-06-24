@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { LoadingState, ErrorState } from "@/components/PageState";
 
 type Row = RouterOutputs["reports"]["purchasesReport"]["rows"][number];
 
@@ -109,7 +110,9 @@ export default function PurchasesReport() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل تقرير المشتريات." onRetry={() => q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مشتريات في هذا النطاق.</p>
           ) : (
@@ -130,8 +133,8 @@ export default function PurchasesReport() {
                       <td className="p-2.5 text-right">{r.supplierName ?? "—"}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.orders}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-emerald-600" dir="ltr">{fmtAr(r.paid)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-amber-600" dir="ltr">{fmtAr(r.unpaid)}</td>
+                      <td className="p-2.5 text-left tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
+                      <td className="p-2.5 text-left tabular-nums text-[var(--stock-low)]" dir="ltr">{fmtAr(r.unpaid)}</td>
                     </tr>
                   ))}
                 </tbody>

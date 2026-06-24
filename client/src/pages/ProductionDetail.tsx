@@ -1,5 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt, pct } from "@/lib/money";
@@ -41,7 +43,7 @@ export default function ProductionDetail() {
     cancel.mutate({ productionOrderId: id });
   }
 
-  if (q.isLoading) return <div className="p-6 text-muted-foreground" dir="rtl">جارٍ التحميل…</div>;
+  if (q.isLoading) return <LoadingState />;
   if (!doc) return <div className="p-6 text-muted-foreground" dir="rtl">المستند غير موجود.</div>;
 
   const inputs = doc.inputs ?? [];
@@ -73,20 +75,22 @@ export default function ProductionDetail() {
 
   return (
     <div className="space-y-4 max-w-4xl" dir="rtl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">مستند إنتاج <span className="font-mono text-lg" dir="ltr">{doc.docNumber}</span></h1>
-        <div className="flex items-center gap-3">
-          <Button variant="outline" size="sm" onClick={printDocument}><Printer aria-hidden className="size-4" /> طباعة المستند</Button>
-          <Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>
-        </div>
-      </div>
+      <PageHeader
+        title={<>مستند إنتاج <span className="font-mono text-lg" dir="ltr">{doc.docNumber}</span></>}
+        actions={
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm" onClick={printDocument}><Printer aria-hidden className="size-4" /> طباعة المستند</Button>
+            <Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>
+          </div>
+        }
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">الرأس</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-xs text-muted-foreground">الفرع</div><div>{doc.branchName}</div></div>
           <div><div className="text-xs text-muted-foreground">الحالة</div>
-            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${doc.status === "CANCELLED" ? "bg-muted text-muted-foreground" : "bg-emerald-100 text-emerald-700"}`}>
+            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${doc.status === "CANCELLED" ? "badge-status-cancelled" : "badge-status-active"}`}>
               {doc.status === "CANCELLED" ? "ملغى" : "مُرحَّل"}
             </span>
           </div>
@@ -104,10 +108,10 @@ export default function ProductionDetail() {
           <CardHeader><CardTitle className="text-base">الإنتاجية والهدر</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
             <div><div className="text-xs text-muted-foreground">الدفعة</div><div className="font-semibold tabular-nums" dir="ltr">{fmtInt(doc.batchQty)}</div></div>
-            <div><div className="text-xs text-muted-foreground">السليم</div><div className="font-semibold text-emerald-700 tabular-nums" dir="ltr">{fmtInt(doc.goodQty)}</div></div>
-            <div><div className="text-xs text-muted-foreground">التالف</div><div className="font-semibold text-amber-600 tabular-nums" dir="ltr">{fmtInt(doc.scrapQty)}</div></div>
+            <div><div className="text-xs text-muted-foreground">السليم</div><div className="font-semibold text-money-positive tabular-nums" dir="ltr">{fmtInt(doc.goodQty)}</div></div>
+            <div><div className="text-xs text-muted-foreground">التالف</div><div className="font-semibold text-[var(--stock-low)] tabular-nums" dir="ltr">{fmtInt(doc.scrapQty)}</div></div>
             <div><div className="text-xs text-muted-foreground">الإنتاجية</div><div className="font-semibold tabular-nums" dir="ltr">{yieldPct != null ? pct(yieldPct) : "—"}</div></div>
-            <div><div className="text-xs text-muted-foreground">خسارة هدر غير طبيعي</div><div className={`font-semibold tabular-nums ${abLoss > 0 ? "text-rose-600" : "text-muted-foreground"}`} dir="ltr">{abLoss > 0 ? `${fmt(doc.abnormalLoss)} (${abnormalUnits} وحدة)` : "لا يوجد"}</div></div>
+            <div><div className="text-xs text-muted-foreground">خسارة هدر غير طبيعي</div><div className={`font-semibold tabular-nums ${abLoss > 0 ? "text-money-negative" : "text-muted-foreground"}`} dir="ltr">{abLoss > 0 ? `${fmt(doc.abnormalLoss)} (${abnormalUnits} وحدة)` : "لا يوجد"}</div></div>
           </CardContent>
         </Card>
       )}

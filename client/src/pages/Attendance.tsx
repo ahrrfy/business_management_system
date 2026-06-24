@@ -5,6 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ListToolbar } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -110,15 +112,15 @@ export default function Attendance() {
   return (
     <div className="space-y-4">
       {/* الترويسة */}
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">الحضور والانصراف</h1>
-          <p className="text-sm text-muted-foreground mt-1">نظام احتساب بالساعة — أجر اليوم = ساعات الحضور × سعر ساعة ذلك اليوم. المصدر: أجهزة البصمة.</p>
-        </div>
-        <Button asChild variant="outline" size="sm">
-          <Link href="/hr/devices"><Fingerprint className="size-4" /> أجهزة البصمة</Link>
-        </Button>
-      </div>
+      <PageHeader
+        title="الحضور والانصراف"
+        description="نظام احتساب بالساعة — أجر اليوم = ساعات الحضور × سعر ساعة ذلك اليوم. المصدر: أجهزة البصمة."
+        actions={
+          <Button asChild variant="outline" size="sm">
+            <Link href="/hr/devices"><Fingerprint className="size-4" /> أجهزة البصمة</Link>
+          </Button>
+        }
+      />
 
       {/* مؤشرات */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -199,23 +201,26 @@ export default function Attendance() {
                       <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums">{Number(r.hours ?? 0)}</td>
-                      <td className={`p-2.5 text-left tabular-nums ${weekend ? "text-amber-600 font-medium" : ""}`} dir="ltr">{iqd(r.hourlyRate)}</td>
+                      <td className={`p-2.5 text-left tabular-nums ${weekend ? "text-[var(--stock-low)] font-medium" : ""}`} dir="ltr">{iqd(r.hourlyRate)}</td>
                       <td className="p-2.5 text-left tabular-nums font-semibold" dir="ltr">{iqd(r.amount)}</td>
                       <td className="p-2.5 text-center">
                         {r.source === "fingerprint" ? (
                           <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Fingerprint className="size-3.5" /> بصمة</span>
                         ) : (
-                          <span className="text-[11px] text-amber-600 inline-flex items-center gap-1"><PenLine className="size-3.5" /> يدوي</span>
+                          <span className="text-[11px] text-[var(--stock-low)] inline-flex items-center gap-1"><PenLine className="size-3.5" /> يدوي</span>
                         )}
                       </td>
                     </tr>
                   );
                 })}
+                {list.isLoading && (
+                  <tr><td colSpan={9}><LoadingState /></td></tr>
+                )}
                 {list.isError && (
-                  <tr><td colSpan={9} className="p-6 text-center text-rose-600">تعذّر تحميل سجلّات الحضور. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button></td></tr>
+                  <tr><td colSpan={9}><ErrorState message="تعذّر تحميل سجلّات الحضور." onRetry={() => list.refetch()} /></td></tr>
                 )}
                 {!list.isLoading && !list.isError && rows.length === 0 && (
-                  <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً.</td></tr>
+                  <TableEmptyRow colSpan={9} message="لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً." />
                 )}
                 {rows.length > 0 && (
                   <tr className="border-t-2 border-border bg-muted/40 font-bold">

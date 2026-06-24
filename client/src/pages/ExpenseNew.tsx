@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
+import { PageHeader } from "@/components/PageHeader";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -189,10 +190,10 @@ export default function ExpenseNew() {
 
   return (
     <div className="space-y-4 max-w-3xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">مصروف جديد</h1>
-        <Link href="/expenses" className="text-sm text-muted-foreground">← رجوع للمصروفات</Link>
-      </div>
+      <PageHeader
+        title="مصروف جديد"
+        actions={<Link href="/expenses" className="text-sm text-muted-foreground">← رجوع للمصروفات</Link>}
+      />
 
       {/* مصدر الصرف: نقدي أو صرف من المخزون (نثرية/تلف) */}
       <Card>
@@ -228,19 +229,19 @@ export default function ExpenseNew() {
               const role = me.data?.role;
               const isElevated = role === "admin" || role === "manager";
               if (openShift.data) {
-                return <p className="text-xs text-emerald-700">سيُربط بوردية #{Number(openShift.data.id)} المفتوحة (drawer).</p>;
+                return <p className="text-xs text-money-positive">سيُربط بوردية #{Number(openShift.data.id)} المفتوحة (drawer).</p>;
               }
               if (!isStock && paymentMethod === "CASH") {
                 if (isElevated) {
                   return (
-                    <p className="text-xs text-blue-700 inline-flex items-center gap-1">
+                    <p className="text-xs text-[var(--status-pending)] inline-flex items-center gap-1">
                       <Landmark aria-hidden className="size-4" />
                       <span>يُسجَّل في <strong>الخزينة الإدارية</strong> — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.</span>
                     </p>
                   );
                 }
                 return (
-                  <p className="text-xs text-rose-700">
+                  <p className="text-xs text-destructive">
                     لا وردية مفتوحة — الكاشير يجب أن يَفتح وردية قبل المصروف النقدي. <Link href="/shifts" className="underline">افتح وردية</Link> أو غيِّر طريقة الدفع لغير نقدية.
                   </p>
                 );
@@ -303,16 +304,16 @@ export default function ExpenseNew() {
                   </div>
                   <div className="col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setItems((p) => p.map((x) => x.key === l.key ? { ...x, qty: e.target.value } : x))} /></div>
                   <div className="col-span-2 text-left text-sm tabular-nums" dir="ltr">{fmt(round2(D(l.costPriceBase).times(base)).toString())}</div>
-                  <div className="col-span-1 text-left"><button type="button" className="text-rose-600 text-sm" onClick={() => setItems((p) => p.filter((x) => x.key !== l.key))}>حذف</button></div>
-                  {!valid && <div className="col-span-12 text-xs text-rose-600">الكمية يجب أن تُنتج عدداً صحيحاً موجباً.</div>}
-                  {over && <div className="col-span-12 text-xs text-amber-600">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
+                  <div className="col-span-1 text-left"><button type="button" className="text-destructive text-sm" onClick={() => setItems((p) => p.filter((x) => x.key !== l.key))}>حذف</button></div>
+                  {!valid && <div className="col-span-12 text-xs text-destructive">الكمية يجب أن تُنتج عدداً صحيحاً موجباً.</div>}
+                  {over && <div className="col-span-12 text-xs text-stock-low">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
                 </div>
               );
             })}
             {items.length === 0 && <p className="text-xs text-muted-foreground">لم تُضف منتجات بعد.</p>}
             <div className="flex justify-end text-sm">
               <span className="text-muted-foreground">سيُسجَّل {source === "WASTAGE" ? "خسارةً" : "مصروفاً"}:&nbsp;</span>
-              <span className="font-bold text-sky-700 tabular-nums" dir="ltr">{fmt(itemsTotal.toString())}</span>
+              <span className="font-bold text-money-negative tabular-nums" dir="ltr">{fmt(itemsTotal.toString())}</span>
             </div>
           </CardContent>
         </Card>

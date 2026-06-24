@@ -6,6 +6,8 @@ import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState } from "@/components/PageState";
 import { useMemo, useState } from "react";
 
 /**
@@ -32,10 +34,10 @@ const CHANNEL_META: Record<Channel, { label: string; Icon: typeof MessageSquare;
 };
 
 const STATUS_META: Record<string, { label: string; cls: string }> = {
-  PENDING: { label: "بانتظار التَحقّق", cls: "bg-amber-500/10 text-amber-700 dark:text-amber-400 border-amber-500/30" },
-  ACTIVE: { label: "مُتَّصِل", cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30" },
-  FAILED: { label: "فَشل", cls: "bg-destructive/10 text-destructive border-destructive/30" },
-  DISABLED: { label: "مُعَطَّل", cls: "bg-muted text-muted-foreground border-border" },
+  PENDING: { label: "بانتظار التَحقّق", cls: "badge-status-pending" },
+  ACTIVE: { label: "مُتَّصِل", cls: "badge-status-active" },
+  FAILED: { label: "فَشل", cls: "badge-stock-out" },
+  DISABLED: { label: "مُعَطَّل", cls: "badge-status-cancelled" },
 };
 
 /** حَقل secret: قَناع •••• افتراضي + زر إظهار + إدخال نَصّ جَديد (يَستَبدِل القَديم). */
@@ -395,20 +397,18 @@ pnpm prod:deploy
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div>
-          <h1 className="text-2xl font-bold">تَكاملات القَنوات</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            إدارة tokens WhatsApp/Instagram/المتجر — مُشَفَّرة AES-256-GCM داخل DB. لا حاجة لـSSH.
-          </p>
-        </div>
-        <Button onClick={() => setShowNew(true)} disabled={branches.length === 0}>
-          <Plus aria-hidden className="size-4 me-1" /> إضافة تَكامل
-        </Button>
-      </div>
+      <PageHeader
+        title="تَكاملات القَنوات"
+        description="إدارة tokens WhatsApp/Instagram/المتجر — مُشَفَّرة AES-256-GCM داخل DB. لا حاجة لـSSH."
+        actions={
+          <Button onClick={() => setShowNew(true)} disabled={branches.length === 0}>
+            <Plus aria-hidden className="size-4 me-1" /> إضافة تَكامل
+          </Button>
+        }
+      />
 
       {cryptoReady.isLoading || list.isLoading ? (
-        <div className="text-center text-muted-foreground py-8">جارٍ التَحميل…</div>
+        <LoadingState />
       ) : list.data?.length === 0 ? (
         <Card>
           <CardContent className="text-center py-12 space-y-3">

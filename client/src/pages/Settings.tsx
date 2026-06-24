@@ -1,6 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { DangerConfirmDialog } from "@/components/DangerConfirmDialog";
 import { confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -110,13 +112,13 @@ export default function Settings() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      <h1 className="text-2xl font-bold">الإعدادات والنسخ الاحتياطي</h1>
+      <PageHeader title="الإعدادات والنسخ الاحتياطي" description="معلومات النظام والنسخ الاحتياطي والاستعادة وإعدادات الطباعة." />
 
       {(info.isError || backups.isError) && (
-        <div className="flex items-center justify-between gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          <span>تعذّر تحميل بيانات النظام/النسخ. تحقّق من الاتصال بالخادم.</span>
-          <Button size="sm" variant="outline" onClick={() => { info.refetch(); backups.refetch(); }}>إعادة المحاولة</Button>
-        </div>
+        <ErrorState
+          message="تعذّر تحميل بيانات النظام/النسخ. تحقّق من الاتصال بالخادم."
+          onRetry={() => { info.refetch(); backups.refetch(); }}
+        />
       )}
 
       {/* معلومات النظام */}
@@ -155,7 +157,7 @@ export default function Settings() {
             نسخة كاملة (mysqldump ذرّي) تطابق قاعدة الإنتاج. التنزيل يحفظ الملف على جهازك. النسخ اليومي 02:00 تلقائي.
           </p>
           {backups.isLoading ? (
-            <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
           ) : list.length === 0 ? (
             <p className="text-sm text-muted-foreground">لا نسخ بعد — اضغط «نسخة الآن».</p>
           ) : (
@@ -176,7 +178,7 @@ export default function Settings() {
                     <TableCell className="text-left tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
                     <TableCell className="text-center whitespace-nowrap">
                       <Button size="sm" variant="ghost" onClick={() => downloadBackup(b.name)} className="inline-flex items-center gap-1"><Download aria-hidden className="size-4" />تنزيل</Button>
-                      <Button size="sm" variant="ghost" className="text-amber-600 inline-flex items-center gap-1" onClick={() => setDanger({ kind: "restore-server", name: b.name })}><RotateCcw aria-hidden className="size-4" />استعادة</Button>
+                      <Button size="sm" variant="ghost" className="text-[var(--stock-low)] inline-flex items-center gap-1" onClick={() => setDanger({ kind: "restore-server", name: b.name })}><RotateCcw aria-hidden className="size-4" />استعادة</Button>
                       <Button size="sm" variant="ghost" className="text-destructive inline-flex items-center gap-1"
                         onClick={async () => {
                           if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
@@ -208,7 +210,7 @@ export default function Settings() {
         <CardHeader><CardTitle className="text-base">الطباعة</CardTitle></CardHeader>
         <CardContent className="space-y-2 text-sm">
           <div className="flex items-center gap-2">
-            <span aria-hidden className={`inline-block size-2 rounded-full ${bridge.enabled ? "bg-emerald-500" : "bg-muted-foreground/40"}`} />
+            <span aria-hidden className={`inline-block size-2 rounded-full ${bridge.enabled ? "bg-[var(--status-active)]" : "bg-muted-foreground/40"}`} />
             <span>جسر الطباعة الصامتة: <b>{bridge.enabled ? "مفعّل" : "غير مفعّل"}</b>{bridge.enabled ? ` (${bridge.description})` : ""}</span>
             {bridge.enabled && (
               <Button size="sm" variant="outline" className="ms-auto"
@@ -276,7 +278,7 @@ function Stat({ label, value, mono, ok }: { label: string; value: string; mono?:
   return (
     <div>
       <div className="text-muted-foreground text-xs">{label}</div>
-      <div className={`${mono ? "font-mono" : ""} ${ok ? "text-emerald-600 font-semibold" : ""}`} dir={mono ? "ltr" : undefined}>{value}</div>
+      <div className={`${mono ? "font-mono" : ""} ${ok ? "text-[var(--status-active)] font-semibold" : ""}`} dir={mono ? "ltr" : undefined}>{value}</div>
     </div>
   );
 }

@@ -8,6 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { trpc } from "@/lib/trpc";
 import { downloadLauncherCmd, kioskUrl } from "@/lib/kioskLauncher";
 import { confirm, confirmDelete } from "@/lib/confirm";
@@ -79,13 +81,15 @@ export default function KioskDevices() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      <div>
-        <h1 className="text-2xl font-bold">شاشات قارئ الأسعار (الأجهزة الخارجية)</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          أجهزة مستقلّة تعرض الأسعار للزبون عبر المتصفّح بوضع كشك. كل جهاز يُصادَق برمز
-          <b> للقراءة فقط</b> مربوط بفرع — لا يرى التكلفة ولا المخزون، وقابل للإلغاء فوراً.
-        </p>
-      </div>
+      <PageHeader
+        title="شاشات قارئ الأسعار (الأجهزة الخارجية)"
+        description={
+          <>
+            أجهزة مستقلّة تعرض الأسعار للزبون عبر المتصفّح بوضع كشك. كل جهاز يُصادَق برمز
+            <b> للقراءة فقط</b> مربوط بفرع — لا يرى التكلفة ولا المخزون، وقابل للإلغاء فوراً.
+          </>
+        }
+      />
 
       {/* الرمز المكشوف مرّة واحدة */}
       {reveal && (
@@ -159,9 +163,7 @@ export default function KioskDevices() {
         <CardHeader><CardTitle className="text-base">الأجهزة المُسجَّلة ({devices.length})</CardTitle></CardHeader>
         <CardContent>
           {devicesQ.isLoading ? (
-            <div className="text-sm text-muted-foreground py-6 text-center">جارٍ التحميل…</div>
-          ) : devices.length === 0 ? (
-            <div className="text-sm text-muted-foreground py-6 text-center">لا أجهزة بعد — أضف جهازاً أعلاه.</div>
+            <LoadingState />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -176,6 +178,9 @@ export default function KioskDevices() {
                   </tr>
                 </thead>
                 <tbody>
+                  {devices.length === 0 && (
+                    <TableEmptyRow colSpan={6} message="لا أجهزة بعد — أضف جهازاً أعلاه." />
+                  )}
                   {devices.map((d) => (
                     <tr key={d.id} className="border-b last:border-0">
                       <td className="py-2 px-2 font-medium">{d.label}</td>
@@ -183,7 +188,7 @@ export default function KioskDevices() {
                       <td className="py-2 px-2 font-mono text-xs" dir="ltr">{d.tokenPrefix}…</td>
                       <td className="py-2 px-2">
                         {d.isActive
-                          ? <span className="inline-flex items-center gap-1 text-emerald-600"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />مفعّل</span>
+                          ? <span className="inline-flex items-center gap-1 text-[var(--status-active)]"><span className="h-1.5 w-1.5 rounded-full bg-[var(--status-active)]" />مفعّل</span>
                           : <span className="inline-flex items-center gap-1 text-destructive"><span className="h-1.5 w-1.5 rounded-full bg-destructive" />مُلغى</span>}
                       </td>
                       <td className="py-2 px-2 text-xs text-muted-foreground">{fmtDateTime(d.lastSeenAt)}</td>

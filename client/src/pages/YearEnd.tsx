@@ -1,6 +1,8 @@
 /**
  * إقفال سنوي + رولوفر Retained Earnings — adminProcedure.
  */
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
@@ -29,10 +31,10 @@ export default function YearEndPage() {
 
   return (
     <div className="container mx-auto p-4 space-y-4 max-w-5xl">
-      <h1 className="text-2xl font-bold">الإقفال السنوي</h1>
-      <p className="text-sm text-muted-foreground">
-        يحسب revenue/cogs/expenses من دفتر الأستاذ، يقفل الفترة حتى Dec 31، وينشر قيد ADJUST بقيمة net profit على Jan 1 من السنة التالية.
-      </p>
+      <PageHeader
+        title="الإقفال السنوي"
+        description="يحسب revenue/cogs/expenses من دفتر الأستاذ، يقفل الفترة حتى Dec 31، وينشر قيد ADJUST بقيمة net profit على Jan 1 من السنة التالية."
+      />
 
       <Card>
         <CardHeader className="font-semibold">إقفال سنة جديدة</CardHeader>
@@ -83,9 +85,7 @@ export default function YearEndPage() {
         <CardHeader className="font-semibold">الإقفالات السابقة</CardHeader>
         <CardContent>
           {list.isLoading ? (
-            <p className="text-muted-foreground">جاري التحميل…</p>
-          ) : (list.data?.rows.length ?? 0) === 0 ? (
-            <p className="text-muted-foreground text-sm">لا إقفالات سابقة</p>
+            <LoadingState />
           ) : (
             <div className="overflow-auto">
               <table className="w-full text-sm border-collapse">
@@ -101,28 +101,32 @@ export default function YearEndPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {list.data!.rows.map((s: any) => {
-                    const net = Number(s.netProfit);
-                    const isProfit = net >= 0;
-                    return (
-                      <tr key={s.id} className="hover:bg-accent/40">
-                        <td className="p-2 border font-medium">{s.year}</td>
-                        <td className="p-2 border">{s.branchId ?? "كل الفروع"}</td>
-                        <td className="p-2 border">{formatIqd(s.totalRevenue)}</td>
-                        <td className="p-2 border">{formatIqd(s.totalCogs)}</td>
-                        <td className="p-2 border">{formatIqd(s.totalExpenses)}</td>
-                        <td className={`p-2 border font-semibold ${isProfit ? "text-emerald-700 dark:text-emerald-400" : "text-rose-700 dark:text-rose-400"}`}>
-                          <span className="inline-flex items-center gap-1.5" aria-label={isProfit ? "ربح" : "خسارة"}>
-                            {isProfit
-                              ? <TrendingUp className="size-4" aria-hidden="true" />
-                              : <TrendingDown className="size-4" aria-hidden="true" />}
-                            {isProfit ? formatIqd(net) : `(${formatIqd(Math.abs(net))})`}
-                          </span>
-                        </td>
-                        <td className="p-2 border text-muted-foreground">{fmtDate(s.closedAt)}</td>
-                      </tr>
-                    );
-                  })}
+                  {(list.data?.rows.length ?? 0) === 0 ? (
+                    <TableEmptyRow colSpan={7} message="لا إقفالات سابقة" />
+                  ) : (
+                    list.data!.rows.map((s: any) => {
+                      const net = Number(s.netProfit);
+                      const isProfit = net >= 0;
+                      return (
+                        <tr key={s.id} className="hover:bg-accent/40">
+                          <td className="p-2 border font-medium">{s.year}</td>
+                          <td className="p-2 border">{s.branchId ?? "كل الفروع"}</td>
+                          <td className="p-2 border">{formatIqd(s.totalRevenue)}</td>
+                          <td className="p-2 border">{formatIqd(s.totalCogs)}</td>
+                          <td className="p-2 border">{formatIqd(s.totalExpenses)}</td>
+                          <td className={`p-2 border font-semibold ${isProfit ? "text-money-positive" : "text-money-negative"}`}>
+                            <span className="inline-flex items-center gap-1.5" aria-label={isProfit ? "ربح" : "خسارة"}>
+                              {isProfit
+                                ? <TrendingUp className="size-4" aria-hidden="true" />
+                                : <TrendingDown className="size-4" aria-hidden="true" />}
+                              {isProfit ? formatIqd(net) : `(${formatIqd(Math.abs(net))})`}
+                            </span>
+                          </td>
+                          <td className="p-2 border text-muted-foreground">{fmtDate(s.closedAt)}</td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>

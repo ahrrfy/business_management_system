@@ -2,6 +2,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fmt, fmtInt } from "@/lib/money";
@@ -56,11 +58,11 @@ export default function Production() {
 
   return (
     <div className="space-y-4" dir="rtl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">الإنتاج والتحويل</h1>
-        <Link href="/production/new"><Button>＋ مستند إنتاج جديد</Button></Link>
-      </div>
-      <p className="text-sm text-muted-foreground">تحويل المخزون إلى منتجات (ملازم/كتب/أكياس). يُخصم المدخل ويُنتَج المخرَج بكلفته الحقيقية.</p>
+      <PageHeader
+        title="الإنتاج والتحويل"
+        description="تحويل المخزون إلى منتجات (ملازم/كتب/أكياس). يُخصم المدخل ويُنتَج المخرَج بكلفته الحقيقية."
+        actions={<Link href="/production/new"><Button>＋ مستند إنتاج جديد</Button></Link>}
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">الفلاتر</CardTitle></CardHeader>
@@ -115,7 +117,7 @@ export default function Production() {
                   <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(r.outputQty)}</td>
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.totalCost)}</td>
                   <td className="p-2 text-center">
-                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "CANCELLED" ? "bg-muted text-muted-foreground" : "bg-emerald-100 text-emerald-700"}`}>
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "CANCELLED" ? "badge-status-cancelled" : "badge-status-active"}`}>
                       {r.status === "CANCELLED" ? "ملغى" : "مُرحَّل"}
                     </span>
                   </td>
@@ -124,7 +126,7 @@ export default function Production() {
                 </tr>
               ))}
               {!list.isLoading && filtered.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا مستندات إنتاج بعد.</td></tr>
+                <TableEmptyRow colSpan={7} message="لا مستندات إنتاج بعد." />
               )}
             </tbody>
           </table>

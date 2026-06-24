@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { Archive, ArchiveRestore, Inbox as InboxIcon, MessageSquare, Phone, Send, ShoppingBag, Store, User } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -82,7 +83,7 @@ function MessageBubble({ m }: { m: RouterOutputs["conversations"]["messages"][nu
   if (isNote) {
     return (
       <div className="my-2 text-center">
-        <div className="inline-block bg-amber-500/10 border border-amber-500/30 text-amber-700 dark:text-amber-400 rounded-md px-3 py-1.5 text-xs">
+        <div className="inline-block badge-stock-low border rounded-md px-3 py-1.5 text-xs">
           <span className="font-bold">مُلاحظة داخِلية: </span>{m.body}
           <span className="text-[10px] text-muted-foreground/80 ms-2" dir="ltr">{fmtDateTime(m.createdAt)}</span>
         </div>
@@ -208,7 +209,7 @@ function ConversationDetail({ id, onChanged }: { id: number; onChanged: () => vo
         </div>
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto p-4" dir="rtl">
-        {messages.isLoading && <div className="text-center text-muted-foreground text-sm">جارٍ التَحميل…</div>}
+        {messages.isLoading && <LoadingState />}
         {messages.data?.length === 0 && (
           <div className="text-center text-muted-foreground text-sm py-8">
             لا رَسائل بَعد. اِبدأ بإرسال رِسالة أو تَسجيل اتصال هاتفي.
@@ -328,7 +329,7 @@ export default function Inbox() {
         </div>
 
         <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-          {list.isLoading && <div className="text-xs text-muted-foreground p-3 text-center">جارٍ التَحميل…</div>}
+          {list.isLoading && <LoadingState />}
           {list.data?.length === 0 && (
             <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-4 text-center">
               لا محادثات. اِضغط «+ جَديدة» لِتَسجيل اتصال أو رَسالة وارِدة.

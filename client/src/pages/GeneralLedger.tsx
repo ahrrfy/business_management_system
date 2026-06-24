@@ -7,6 +7,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -19,11 +20,11 @@ const TYPE_LABEL: Record<string, string> = {
   RETURN: "مرتجع", ADJUST: "تسوية", OPENING: "افتتاحي", INTERNAL_USE: "نثرية", WASTAGE: "تلف",
 };
 const TYPE_CLS: Record<string, string> = {
-  SALE: "bg-emerald-100 text-emerald-700", PURCHASE: "bg-sky-100 text-sky-700",
-  PAYMENT_IN: "bg-emerald-100 text-emerald-700", PAYMENT_OUT: "bg-amber-100 text-amber-700",
-  RETURN: "bg-rose-100 text-rose-700", ADJUST: "bg-muted text-foreground/70",
-  OPENING: "bg-violet-100 text-violet-700", INTERNAL_USE: "bg-amber-100 text-amber-700",
-  WASTAGE: "bg-rose-100 text-rose-700",
+  SALE: "badge-status-active", PURCHASE: "badge-status-pending",
+  PAYMENT_IN: "badge-status-active", PAYMENT_OUT: "badge-stock-low",
+  RETURN: "badge-stock-out", ADJUST: "bg-muted text-muted-foreground",
+  OPENING: "badge-status-done", INTERNAL_USE: "badge-stock-low",
+  WASTAGE: "badge-stock-out",
 };
 const TYPE_OPTIONS = Object.keys(TYPE_LABEL);
 const PAGE = 200;
@@ -156,7 +157,9 @@ export default function GeneralLedger() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل دفتر الأستاذ." onRetry={() => q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا قيود في هذا النطاق.</p>
           ) : (
@@ -181,7 +184,7 @@ export default function GeneralLedger() {
                       <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
                         <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.entryDate}</td>
                         <td className="p-2.5 text-end">
-                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${TYPE_CLS[r.entryType] ?? "bg-muted"}`}>
+                          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${TYPE_CLS[r.entryType] ?? "bg-muted text-muted-foreground"}`}>
                             {TYPE_LABEL[r.entryType] ?? r.entryType}
                           </span>
                         </td>

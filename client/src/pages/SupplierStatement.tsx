@@ -15,6 +15,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "wouter";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -53,11 +55,11 @@ const PO_STATUS_LABEL: Record<string, string> = {
   CANCELLED: "ملغى",
 };
 const PO_STATUS_CLS: Record<string, string> = {
-  DRAFT: "bg-slate-100 text-slate-700",
-  SENT: "bg-blue-100 text-blue-700",
-  CONFIRMED: "bg-amber-100 text-amber-700",
-  RECEIVED: "bg-emerald-100 text-emerald-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
+  DRAFT: "badge-status-cancelled",
+  SENT: "badge-status-pending",
+  CONFIRMED: "badge-stock-low",
+  RECEIVED: "badge-status-active",
+  CANCELLED: "badge-stock-out",
 };
 
 export default function SupplierStatement() {
@@ -189,48 +191,50 @@ export default function SupplierStatement() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">كشف حساب مورد</h1>
-        <div className="flex gap-2">
-          {stmt.data && (
-            <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
-          )}
-          {stmt.data && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!ledger?.rows.length}
-              onClick={exportStatement}
-            >
-              تصدير Excel
-            </Button>
-          )}
-          {stmt.data && (
-            <CopyAsMenu
-              plain={copyPayload.plain}
-              whatsapp={copyPayload.whatsapp}
-              tsv={copyPayload.tsv}
-              label="نسخ الكشف"
-            />
-          )}
-          {stmt.data && (
-            <WhatsAppShare
-              phone={stmt.data.supplier.phone}
-              message={buildStatementMessage({
-                entityName: stmt.data.supplier.name,
-                entityType: "supplier",
-                currentBalance: stmt.data.summary.currentBalance,
-                totalSales: stmt.data.summary.totalPurchases,
-                totalPaid: stmt.data.summary.totalPaid,
-                unpaid: stmt.data.summary.unpaid,
-              })}
-              label="إرسال كشف الحساب"
-            />
-          )}
-          <Link href="/ap-aging"><Button variant="outline">أعمار الذمم الدائنة</Button></Link>
-        </div>
-      </div>
-      <p className="text-sm text-muted-foreground">كل أوامر الشراء والدفعات لمورد واحد، مع ملخّص الرصيد الحالي.</p>
+      <PageHeader
+        title="كشف حساب مورد"
+        description="كل أوامر الشراء والدفعات لمورد واحد، مع ملخّص الرصيد الحالي."
+        actions={
+          <>
+            {stmt.data && (
+              <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
+            )}
+            {stmt.data && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!ledger?.rows.length}
+                onClick={exportStatement}
+              >
+                تصدير Excel
+              </Button>
+            )}
+            {stmt.data && (
+              <CopyAsMenu
+                plain={copyPayload.plain}
+                whatsapp={copyPayload.whatsapp}
+                tsv={copyPayload.tsv}
+                label="نسخ الكشف"
+              />
+            )}
+            {stmt.data && (
+              <WhatsAppShare
+                phone={stmt.data.supplier.phone}
+                message={buildStatementMessage({
+                  entityName: stmt.data.supplier.name,
+                  entityType: "supplier",
+                  currentBalance: stmt.data.summary.currentBalance,
+                  totalSales: stmt.data.summary.totalPurchases,
+                  totalPaid: stmt.data.summary.totalPaid,
+                  unpaid: stmt.data.summary.unpaid,
+                })}
+                label="إرسال كشف الحساب"
+              />
+            )}
+            <Link href="/ap-aging"><Button variant="outline">أعمار الذمم الدائنة</Button></Link>
+          </>
+        }
+      />
 
       <Card>
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -267,7 +271,11 @@ export default function SupplierStatement() {
         <p className="text-sm text-muted-foreground text-center py-8">اختر مورداً لعرض كشف الحساب.</p>
       )}
 
-      {supplierId > 0 && stmt.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+      {supplierId > 0 && stmt.isLoading && <LoadingState />}
+
+      {supplierId > 0 && stmt.isError && (
+        <ErrorState message={stmt.error.message} onRetry={() => stmt.refetch()} />
+      )}
 
       {stmt.data && (
         <>
@@ -357,7 +365,7 @@ export default function SupplierStatement() {
                     );
                   })}
                   {stmt.data.purchaseOrders.length === 0 && (
-                    <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا أوامر شراء لهذا المورد.</td></tr>
+                    <TableEmptyRow colSpan={8} message="لا أوامر شراء لهذا المورد." />
                   )}
                 </tbody>
               </table>
@@ -385,7 +393,7 @@ export default function SupplierStatement() {
                           <CopyInline value={p.purchaseOrderId} />
                         ) : (
                           // دفعة بلا أمر شراء (سند صرف مستقل للمورد) — وسمها يمنع الالتباس.
-                          <span className="inline-block rounded bg-violet-100 text-violet-700 px-2 py-0.5 text-xs">دفعة مستقلة</span>
+                          <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">دفعة مستقلة</span>
                         )}
                       </td>
                       <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.amount)}</td>
@@ -393,7 +401,7 @@ export default function SupplierStatement() {
                     </tr>
                   ))}
                   {stmt.data.payments.length === 0 && (
-                    <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">لا دفعات مسجّلة لهذا المورد.</td></tr>
+                    <TableEmptyRow colSpan={4} message="لا دفعات مسجّلة لهذا المورد." />
                   )}
                 </tbody>
               </table>
@@ -420,12 +428,12 @@ function StatBalance({ label, value, entityType }: { label: string; value: strin
   const weHaveClaim = entityType === "customer" ? num > 0 : num < 0;
   const hasBalance = num !== 0;
   return (
-    <div className={`rounded-md p-2 ${hasBalance ? (weHaveClaim ? "bg-emerald-50" : "bg-rose-50") : "bg-muted/40"}`}>
+    <div className={`rounded-md p-2 ${hasBalance ? (weHaveClaim ? "badge-status-active" : "badge-stock-out") : "bg-muted/40"}`}>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`tabular-nums text-xl font-bold ${hasBalance ? (weHaveClaim ? "text-emerald-700" : "text-rose-700") : ""}`} dir="ltr">
+      <div className={`tabular-nums text-xl font-bold ${hasBalance ? (weHaveClaim ? "text-money-positive" : "text-money-negative") : ""}`} dir="ltr">
         {fmt(Math.abs(num))}
       </div>
-      <div className={`text-xs font-semibold mt-0.5 ${hasBalance ? (weHaveClaim ? "text-emerald-600" : "text-rose-600") : "text-muted-foreground"}`}>
+      <div className={`text-xs font-semibold mt-0.5 ${hasBalance ? (weHaveClaim ? "text-money-positive" : "text-money-negative") : "text-muted-foreground"}`}>
         {!hasBalance ? "لا ذمم" : weHaveClaim ? "لنا عليه" : "له علينا"}
       </div>
     </div>

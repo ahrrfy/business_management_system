@@ -9,6 +9,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
@@ -24,13 +26,13 @@ const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const promoStatusCls: Record<string, string> = {
-  approved: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-  pending: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+  approved: "badge-status-active",
+  pending: "badge-status-pending",
 };
 const promoStatusLabel = (s: string) => (s === "approved" ? "معتمدة" : "قيد الاعتماد");
 const termStatusCls: Record<string, string> = {
-  completed: "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300",
-  pending: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
+  completed: "badge-status-cancelled",
+  pending: "badge-status-pending",
 };
 const termStatusLabel = (s: string) => (s === "completed" ? "مكتملة" : "قيد التنفيذ");
 
@@ -117,17 +119,17 @@ export default function Promotions() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">الترقيات وإنهاء الخدمات</h1>
-          <p className="text-sm text-muted-foreground mt-1">ترقيات المسمّى والراتب، وإجراءات إنهاء الخدمة مع التسوية النهائية للمستحقات.</p>
-        </div>
-        {tab === "promotions" ? (
-          <Button onClick={() => setPromoOpen(true)}><TrendingUp className="size-4 ml-1" /> ترقية موظف</Button>
-        ) : (
-          <Button className="bg-destructive text-white hover:bg-destructive/90" onClick={() => setTermOpen(true)}><UserMinus className="size-4 ml-1" /> إنهاء خدمة</Button>
-        )}
-      </div>
+      <PageHeader
+        title="الترقيات وإنهاء الخدمات"
+        description="ترقيات المسمّى والراتب، وإجراءات إنهاء الخدمة مع التسوية النهائية للمستحقات."
+        actions={
+          tab === "promotions" ? (
+            <Button onClick={() => setPromoOpen(true)}><TrendingUp className="size-4 ml-1" /> ترقية موظف</Button>
+          ) : (
+            <Button className="bg-destructive text-white hover:bg-destructive/90" onClick={() => setTermOpen(true)}><UserMinus className="size-4 ml-1" /> إنهاء خدمة</Button>
+          )
+        }
+      />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
@@ -160,7 +162,7 @@ export default function Promotions() {
                         <td className="p-2 text-xs text-muted-foreground">{p.fromTitle ?? "—"}</td>
                         <td className="p-2 text-[13px] font-medium">{p.toTitle}</td>
                         <td className="p-2 text-left tabular-nums text-xs" dir="ltr">
-                          <span className="text-muted-foreground">{iqd(p.fromSalary)}</span> → <span className="font-medium text-emerald-600">{p.toSalary != null ? iqd(p.toSalary) : "—"}</span>
+                          <span className="text-muted-foreground">{iqd(p.fromSalary)}</span> → <span className="font-medium text-money-positive">{p.toSalary != null ? iqd(p.toSalary) : "—"}</span>
                         </td>
                         <td className="p-2 text-center text-xs tabular-nums" dir="ltr">{p.effectiveDate}</td>
                         <td className="p-2 text-xs">{p.reason ?? "—"}</td>
@@ -177,11 +179,14 @@ export default function Promotions() {
                         </td>
                       </tr>
                     ))}
+                    {promotions.isLoading && (
+                      <tr><td colSpan={8}><LoadingState /></td></tr>
+                    )}
                     {promotions.isError && (
-                      <tr><td colSpan={8} className="p-6 text-center text-rose-600">تعذّر تحميل الترقيات. <button className="underline" onClick={() => promotions.refetch()}>إعادة المحاولة</button></td></tr>
+                      <tr><td colSpan={8}><ErrorState message="تعذّر تحميل الترقيات." onRetry={() => promotions.refetch()} /></td></tr>
                     )}
                     {!promotions.isLoading && !promotions.isError && promoRows.length === 0 && (
-                      <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا ترقيات مسجّلة بعد.</td></tr>
+                      <TableEmptyRow colSpan={8} message="لا ترقيات مسجّلة بعد." />
                     )}
                   </tbody>
                 </table>
@@ -193,8 +198,8 @@ export default function Promotions() {
         {/* ===== إنهاء الخدمات ===== */}
         <TabsContent value="terminations">
           {terminations.isError ? (
-            <Card><CardContent className="py-10 text-center text-rose-600">
-              تعذّر تحميل إنهاءات الخدمة. <button className="underline" onClick={() => terminations.refetch()}>إعادة المحاولة</button>
+            <Card><CardContent className="p-0">
+              <ErrorState message="تعذّر تحميل إنهاءات الخدمة." onRetry={() => terminations.refetch()} />
             </CardContent></Card>
           ) : !terminations.isLoading && termRows.length === 0 ? (
             <Card><CardContent className="py-10 text-center text-muted-foreground">

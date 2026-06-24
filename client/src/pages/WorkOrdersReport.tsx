@@ -8,16 +8,17 @@ import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STATUS_CLS: Record<string, string> = {
-  RECEIVED: "bg-sky-100 text-sky-700",
-  IN_PROGRESS: "bg-amber-100 text-amber-700",
-  READY: "bg-violet-100 text-violet-700",
-  DELIVERED: "bg-emerald-100 text-emerald-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
+  RECEIVED: "badge-status-pending",
+  IN_PROGRESS: "badge-stock-low",
+  READY: "badge-status-done",
+  DELIVERED: "badge-status-active",
+  CANCELLED: "badge-stock-out",
 };
 
 export default function WorkOrdersReport() {
@@ -108,7 +109,9 @@ export default function WorkOrdersReport() {
       }
     >
       {q.isLoading ? (
-        <Card><CardContent><p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p></CardContent></Card>
+        <Card><CardContent><LoadingState /></CardContent></Card>
+      ) : q.isError ? (
+        <Card><CardContent><ErrorState message={q.error.message} onRetry={() => q.refetch()} /></CardContent></Card>
       ) : !hasData ? (
         <Card><CardContent><p className="p-8 text-center text-sm text-muted-foreground">لا طلبات خدمة في هذا النطاق.</p></CardContent></Card>
       ) : (
@@ -167,7 +170,7 @@ export default function WorkOrdersReport() {
                         </tr>
                       ))
                     ) : (
-                      <tr><td colSpan={2} className="p-6 text-center text-sm text-muted-foreground">لا بيانات قنوات.</td></tr>
+                      <TableEmptyRow colSpan={2} message="لا بيانات قنوات." />
                     )}
                   </tbody>
                 </table>

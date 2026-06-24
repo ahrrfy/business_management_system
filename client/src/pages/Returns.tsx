@@ -1,5 +1,7 @@
 import { CopyInline } from "@/components/CopyButton";
 import { ListToolbar, RowActions } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -142,11 +144,11 @@ export default function Returns() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">المرتجعات</h1>
-        <Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>
-      </div>
-      <p className="text-sm text-muted-foreground">اختر فاتورة، حدّد كميات الإرجاع (بالوحدة الأساس)، ثم أكّد. يُعاد للمخزون اختيارياً ويُسجَّل الاسترداد.</p>
+      <PageHeader
+        title="المرتجعات"
+        description="اختر فاتورة، حدّد كميات الإرجاع (بالوحدة الأساس)، ثم أكّد. يُعاد للمخزون اختيارياً ويُسجَّل الاسترداد."
+        actions={<Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>}
+      />
 
       <Card>
         <CardHeader>
@@ -219,12 +221,13 @@ export default function Returns() {
                 );
               })}
               {!invoicesQuery.isLoading && filteredInvoices.length === 0 && (
-                <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">
-                  {(invoicesQuery.data ?? []).length === 0 ? "لا فواتير بعد." : "لا فواتير مطابقة. غيّر البحث أو الفلتر."}
-                </td></tr>
+                <TableEmptyRow
+                  colSpan={4}
+                  message={(invoicesQuery.data ?? []).length === 0 ? "لا فواتير بعد." : "لا فواتير مطابقة. غيّر البحث أو الفلتر."}
+                />
               )}
               {invoicesQuery.isLoading && (
-                <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td></tr>
+                <tr><td colSpan={4} className="p-0"><LoadingState /></td></tr>
               )}
             </tbody>
           </table>
@@ -232,7 +235,7 @@ export default function Returns() {
       </Card>
 
       {selectedId && detail.isLoading && (
-        <div className="p-6 text-center text-muted-foreground">جارٍ تحميل بنود الفاتورة…</div>
+        <LoadingState message="جارٍ تحميل بنود الفاتورة…" />
       )}
       {selectedId && !detail.isLoading && !detail.data && (
         <div className="p-6 text-center text-muted-foreground">الفاتورة غير موجودة.</div>
@@ -321,10 +324,10 @@ export default function Returns() {
           </Card>
 
           {(detail.data.status === "RETURNED" || detail.data.status === "CANCELLED") && (
-            <p className="text-sm text-amber-600">هذه الفاتورة {INVOICE_STATUS[detail.data.status]} — لا يمكن تسجيل مرتجع جديد.</p>
+            <p className="text-sm text-[var(--stock-low)]">هذه الفاتورة {INVOICE_STATUS[detail.data.status]} — لا يمكن تسجيل مرتجع جديد.</p>
           )}
           {error && <p className="text-sm text-destructive">{error}</p>}
-          {done && <p className="text-sm text-emerald-600">{done}</p>}
+          {done && <p className="text-sm text-money-positive">{done}</p>}
 
           <div className="flex gap-2">
             <Button

@@ -8,6 +8,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -28,10 +29,10 @@ const PARTY_LABEL: Record<string, string> = {
   OTHER: "متفرّق",
 };
 const ROLE_LABEL: Record<string, { label: string; cls: string }> = {
-  admin: { label: "مدير عام", cls: "bg-purple-100 text-purple-700" },
-  manager: { label: "مدير", cls: "bg-blue-100 text-blue-700" },
-  cashier: { label: "كاشير", cls: "bg-amber-100 text-amber-800" },
-  warehouse: { label: "مخزن", cls: "bg-orange-100 text-orange-700" },
+  admin: { label: "مدير عام", cls: "badge-status-done" },
+  manager: { label: "مدير", cls: "badge-status-pending" },
+  cashier: { label: "كاشير", cls: "badge-stock-low" },
+  warehouse: { label: "مخزن", cls: "badge-stock-low" },
 };
 
 const NOTE =
@@ -193,11 +194,9 @@ export default function CashOrphanReport() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading || !co ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">
-              {q.isLoading ? "جارٍ التحميل…" : "لا بيانات."}
-            </p>
+            <LoadingState />
           ) : co.rows.length === 0 ? (
-            <p className="p-8 text-center text-sm text-emerald-700">
+            <p className="p-8 text-center text-sm text-money-positive">
               {tab === "TRUE_ORPHAN"
                 ? "ممتاز — لا نقد يتيم حقيقي في هذه الفترة. تَسوية الصندوق متّسقة."
                 : tab === "TREASURY"
@@ -231,12 +230,12 @@ export default function CashOrphanReport() {
                       </td>
                       <td className="p-3 text-right">{r.branchName ?? "—"}</td>
                       <td className="p-3 text-right">
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${r.category === "TREASURY" ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-800"}`}>
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ${r.category === "TREASURY" ? "badge-status-pending" : "badge-stock-low"}`}>
                           {r.category === "TREASURY" ? <><Building2 aria-hidden className="size-3.5" />خزينة</> : <><AlertTriangle aria-hidden className="size-3.5" />يتيم</>}
                         </span>
                       </td>
                       <td className="p-3 text-right">
-                        <span className="inline-block rounded-full px-2 py-0.5 text-xs bg-slate-100 text-slate-700">
+                        <span className="inline-block rounded-full px-2 py-0.5 text-xs badge-status-cancelled">
                           {SOURCE_LABEL[r.source] ?? r.source}
                         </span>
                       </td>
@@ -246,7 +245,7 @@ export default function CashOrphanReport() {
                       <td className="p-3 text-right">
                         <span
                           className={`inline-block rounded-full px-2 py-0.5 text-xs ${
-                            r.direction === "IN" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                            r.direction === "IN" ? "badge-status-active" : "badge-stock-out"
                           }`}
                         >
                           {DIR_LABEL[r.direction] ?? r.direction}
@@ -254,7 +253,7 @@ export default function CashOrphanReport() {
                       </td>
                       <td
                         className={`p-3 text-left tabular-nums ${
-                          r.direction === "IN" ? "text-emerald-700" : "text-rose-700"
+                          r.direction === "IN" ? "text-money-positive" : "text-money-negative"
                         }`}
                         dir="ltr"
                       >

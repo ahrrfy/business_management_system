@@ -7,6 +7,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
+import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -68,15 +70,11 @@ export default function HrDevices() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-2xl font-bold">أجهزة البصمة والتكامل</h1>
-          <p className="text-sm text-muted-foreground mt-0.5">
-            انقل أجهزة البصمة من الاشتراك الخارجي المدفوع إلى خادم الرؤية العربية الخاص بك — بصمة ضمن نظامك بلا رسوم شهرية.
-          </p>
-        </div>
-        <Button onClick={() => setOpenAdd(true)}><Plus className="size-4" /> جهاز جديد</Button>
-      </div>
+      <PageHeader
+        title="أجهزة البصمة والتكامل"
+        description="انقل أجهزة البصمة من الاشتراك الخارجي المدفوع إلى خادم الرؤية العربية الخاص بك — بصمة ضمن نظامك بلا رسوم شهرية."
+        actions={<Button onClick={() => setOpenAdd(true)}><Plus className="size-4" /> جهاز جديد</Button>}
+      />
 
       {/* بطاقة الهجرة (البطل): من ← إلى + شريط تقدّم */}
       <Card>
@@ -179,7 +177,7 @@ export default function HrDevices() {
                       <td className="p-2 text-xs">{d.location ?? "—"}</td>
                       <td className="p-2 text-xs">{d.branchName ?? "—"}</td>
                       <td className="p-2 text-center">
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${online ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300"}`}>
+                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ${online ? "badge-status-active" : "badge-stock-out"}`}>
                           <span className={`size-1.5 rounded-full ${online ? "bg-emerald-500" : "bg-rose-500"}`} />
                           {online ? "متصل" : "منقطع"}
                         </span>
@@ -189,11 +187,11 @@ export default function HrDevices() {
                       </td>
                       <td className="p-2 text-center">
                         {d.migrated ? (
-                          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+                          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium badge-status-active">
                             <Check className="size-3" /> على خادمك
                           </span>
                         ) : (
-                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium badge-stock-low">
                             على المزوّد المدفوع
                           </span>
                         )}
@@ -217,13 +215,13 @@ export default function HrDevices() {
                   );
                 })}
                 {list.isError && (
-                  <tr><td colSpan={7} className="p-6 text-center text-rose-600">تعذّر تحميل الأجهزة. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button></td></tr>
+                  <tr><td colSpan={7} className="p-0"><ErrorState message="تعذّر تحميل الأجهزة." onRetry={() => list.refetch()} /></td></tr>
                 )}
                 {!list.isLoading && !list.isError && devices.length === 0 && (
-                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أجهزة بصمة مسجّلة بعد. أضف جهازاً للبدء بالهجرة.</td></tr>
+                  <TableEmptyRow colSpan={7} message="لا أجهزة بصمة مسجّلة بعد. أضف جهازاً للبدء بالهجرة." />
                 )}
                 {list.isLoading && (
-                  <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td></tr>
+                  <tr><td colSpan={7} className="p-0"><LoadingState /></td></tr>
                 )}
               </tbody>
             </table>

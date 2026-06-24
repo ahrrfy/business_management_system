@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/DataTable";
+import { PageHeader } from "@/components/PageHeader";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -20,9 +21,9 @@ const STATUS_AR: Record<string, string> = {
 };
 
 const STATUS_CLS: Record<string, string> = {
-  IN_TRANSIT: "bg-amber-100 text-amber-800 dark:bg-amber-950/40 dark:text-amber-300",
-  RECEIVED: "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300",
-  CANCELLED: "bg-rose-100 text-rose-800 dark:bg-rose-950/40 dark:text-rose-300",
+  IN_TRANSIT: "badge-stock-low",
+  RECEIVED: "badge-status-active",
+  CANCELLED: "badge-stock-out",
 };
 
 const selectCls =
@@ -184,29 +185,25 @@ export default function TreasuryTransfers() {
   return (
     <div className="space-y-4 max-w-[1400px] mx-auto" dir="rtl">
       {/* Header */}
-      <div className="flex flex-wrap items-center gap-3">
-        <div>
-          <h1 className="text-xl font-bold leading-tight flex items-center gap-2">
-            <Send className="h-5 w-5 text-primary" />
-            تحويلات نقدية بين الفروع
-          </h1>
-          <p className="text-xs text-muted-foreground mt-1">
-            نقل نقد من خزينة فرع إلى خزينة فرع آخر بتدفّق ثنائي ذرّي.
-          </p>
-        </div>
-        <div className="mr-auto flex items-center gap-2">
-          <Link href="/treasury">
-            <Button size="sm" variant="ghost" className="gap-1">
-              <ArrowRight className="h-3 w-3" />
-              عودة للوحة الخزينة
+      <PageHeader
+        icon={<Send className="h-5 w-5 text-primary" />}
+        title="تحويلات نقدية بين الفروع"
+        description="نقل نقد من خزينة فرع إلى خزينة فرع آخر بتدفّق ثنائي ذرّي."
+        actions={
+          <>
+            <Link href="/treasury">
+              <Button size="sm" variant="ghost" className="gap-1">
+                <ArrowRight className="h-3 w-3" />
+                عودة للوحة الخزينة
+              </Button>
+            </Link>
+            <Button size="sm" onClick={() => setShowSendDialog(true)} className="gap-1.5">
+              <Plus className="h-4 w-4" />
+              إرسال تحويل جديد
             </Button>
-          </Link>
-          <Button size="sm" onClick={() => setShowSendDialog(true)} className="gap-1.5">
-            <Plus className="h-4 w-4" />
-            إرسال تحويل جديد
-          </Button>
-        </div>
-      </div>
+          </>
+        }
+      />
 
       {/* Tabs + filter */}
       <Card className="p-3">

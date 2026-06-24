@@ -4,6 +4,8 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { exportRows } from "@/lib/export";
@@ -177,60 +179,62 @@ export default function CustomerStatement() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">كشف حساب عميل</h1>
-        <div className="flex gap-2">
-          {stmt.data && (
-            <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
-          )}
-          {stmt.data && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!ledger?.txs.length}
-              onClick={() =>
-                exportRows(ledger?.txs ?? [], {
-                  filename: `كشف-حساب-${stmt.data!.customer.name}`,
-                  columns: [
-                    { key: "date", header: "التاريخ" },
-                    { key: "ref", header: "المرجع" },
-                    { key: "description", header: "البيان" },
-                    { key: "debit", header: "مدين", map: (r) => (r.debit == null ? 0 : Number(r.debit)) },
-                    { key: "credit", header: "دائن", map: (r) => (r.credit == null ? 0 : Number(r.credit)) },
-                    { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
-                  ],
-                })
-              }
-            >
-              تصدير Excel
-            </Button>
-          )}
-          {stmt.data && (
-            <CopyAsMenu
-              plain={copyPayload.plain}
-              whatsapp={copyPayload.whatsapp}
-              tsv={copyPayload.tsv}
-              label="نسخ الكشف"
-            />
-          )}
-          {stmt.data && (
-            <WhatsAppShare
-              phone={stmt.data.customer.phone}
-              message={buildStatementMessage({
-                entityName: stmt.data.customer.name,
-                entityType: "customer",
-                currentBalance: stmt.data.summary.currentBalance,
-                totalSales: stmt.data.summary.totalSales,
-                totalPaid: stmt.data.summary.totalPaid,
-                unpaid: stmt.data.summary.unpaid,
-              })}
-              label="إرسال كشف الحساب"
-            />
-          )}
-          <Link href="/ar-aging"><Button variant="outline">أعمار الذمم</Button></Link>
-        </div>
-      </div>
-      <p className="text-sm text-muted-foreground">كل الفواتير والدفعات لعميل واحد، مع ملخّص الرصيد الحالي.</p>
+      <PageHeader
+        title="كشف حساب عميل"
+        description="كل الفواتير والدفعات لعميل واحد، مع ملخّص الرصيد الحالي."
+        actions={
+          <>
+            {stmt.data && (
+              <Button variant="outline" size="sm" onClick={printStatement}>طباعة / PDF الكشف</Button>
+            )}
+            {stmt.data && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!ledger?.txs.length}
+                onClick={() =>
+                  exportRows(ledger?.txs ?? [], {
+                    filename: `كشف-حساب-${stmt.data!.customer.name}`,
+                    columns: [
+                      { key: "date", header: "التاريخ" },
+                      { key: "ref", header: "المرجع" },
+                      { key: "description", header: "البيان" },
+                      { key: "debit", header: "مدين", map: (r) => (r.debit == null ? 0 : Number(r.debit)) },
+                      { key: "credit", header: "دائن", map: (r) => (r.credit == null ? 0 : Number(r.credit)) },
+                      { key: "balance", header: "الرصيد", map: (r) => Number(r.balance) },
+                    ],
+                  })
+                }
+              >
+                تصدير Excel
+              </Button>
+            )}
+            {stmt.data && (
+              <CopyAsMenu
+                plain={copyPayload.plain}
+                whatsapp={copyPayload.whatsapp}
+                tsv={copyPayload.tsv}
+                label="نسخ الكشف"
+              />
+            )}
+            {stmt.data && (
+              <WhatsAppShare
+                phone={stmt.data.customer.phone}
+                message={buildStatementMessage({
+                  entityName: stmt.data.customer.name,
+                  entityType: "customer",
+                  currentBalance: stmt.data.summary.currentBalance,
+                  totalSales: stmt.data.summary.totalSales,
+                  totalPaid: stmt.data.summary.totalPaid,
+                  unpaid: stmt.data.summary.unpaid,
+                })}
+                label="إرسال كشف الحساب"
+              />
+            )}
+            <Link href="/ar-aging"><Button variant="outline">أعمار الذمم</Button></Link>
+          </>
+        }
+      />
 
       <Card>
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -267,7 +271,11 @@ export default function CustomerStatement() {
         <p className="text-sm text-muted-foreground text-center py-8">اختر عميلاً لعرض كشف الحساب.</p>
       )}
 
-      {customerId > 0 && stmt.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+      {customerId > 0 && stmt.isLoading && <LoadingState />}
+
+      {customerId > 0 && stmt.isError && (
+        <ErrorState message={stmt.error?.message} onRetry={() => stmt.refetch()} />
+      )}
 
       {stmt.data && (
         <>
@@ -361,7 +369,7 @@ export default function CustomerStatement() {
                     );
                   })}
                   {stmt.data.invoices.length === 0 && (
-                    <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا فواتير لهذا العميل.</td></tr>
+                    <TableEmptyRow colSpan={9} message="لا فواتير لهذا العميل." />
                   )}
                 </tbody>
               </table>
@@ -390,7 +398,7 @@ export default function CustomerStatement() {
                         {p.isStandalone ? (
                           // سند مستقل (بلا فاتورة): كان غائباً عن الكشف فيبدو الرصيد منحرفاً بلا تفسير.
                           <span className="inline-flex items-center gap-1" title={p.description ?? undefined}>
-                            <span className="inline-block rounded bg-violet-100 text-violet-700 px-2 py-0.5 text-xs">سند مستقل</span>
+                            <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">سند مستقل</span>
                             {p.voucherNumber && <CopyInline value={p.voucherNumber} />}
                           </span>
                         ) : (
@@ -408,7 +416,7 @@ export default function CustomerStatement() {
                     </tr>
                   ))}
                   {stmt.data.payments.length === 0 && (
-                    <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">لا دفعات.</td></tr>
+                    <TableEmptyRow colSpan={6} message="لا دفعات." />
                   )}
                 </tbody>
               </table>

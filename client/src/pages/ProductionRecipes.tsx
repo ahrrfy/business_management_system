@@ -1,3 +1,4 @@
+import { PageHeader } from "@/components/PageHeader";
 import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -161,13 +162,11 @@ export default function ProductionRecipes() {
 
   return (
     <div className="space-y-4" dir="rtl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">وصفات الإنتاج</h1>
-          <p className="text-sm text-muted-foreground mt-1">عرّف منتجاً متكرّراً مرّة واحدة (ملزمة/كتاب/كيس) ⇒ في الإنتاج تختار الوصفة وتكتب العدد فقط. مسار لا يقبل خطأ الموظف.</p>
-        </div>
-        {!showForm && <Button onClick={() => { resetForm(); setShowForm(true); }}>＋ وصفة جديدة</Button>}
-      </div>
+      <PageHeader
+        title="وصفات الإنتاج"
+        description="عرّف منتجاً متكرّراً مرّة واحدة (ملزمة/كتاب/كيس) ⇒ في الإنتاج تختار الوصفة وتكتب العدد فقط. مسار لا يقبل خطأ الموظف."
+        actions={!showForm ? <Button onClick={() => { resetForm(); setShowForm(true); }}>＋ وصفة جديدة</Button> : undefined}
+      />
 
       {showForm && (
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_330px] gap-4 items-start">
@@ -277,7 +276,7 @@ export default function ProductionRecipes() {
                   <b className="text-lg text-sky-700" dir="ltr">{fmt(cost.stdUnit.toString())}</b>
                 </div>
                 {cost.delta != null && (
-                  <div className={`text-xs text-center ${cost.delta.gt(0) ? "text-rose-600" : cost.delta.lt(0) ? "text-emerald-600" : "text-muted-foreground"}`}>
+                  <div className={`text-xs text-center ${cost.delta.gt(0) ? "text-money-negative" : cost.delta.lt(0) ? "text-money-positive" : "text-muted-foreground"}`}>
                     {cost.delta.eq(0) ? "مطابِقة لكلفة المنتج الحالية" : <>الكلفة الحالية المخزّنة <span dir="ltr">{fmt(cost.stored!.toString())}</span> · فرق <span dir="ltr">{cost.delta.gt(0) ? "+" : ""}{fmt(cost.delta.toString())}</span></>}
                   </div>
                 )}
@@ -324,7 +323,7 @@ export default function ProductionRecipes() {
                 <CardContent className="pt-4 space-y-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="font-semibold leading-snug">{r.name}</div>
-                    <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-xs ${r.isActive ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>{r.isActive ? "مفعّلة" : "معطّلة"}</span>
+                    <span className={`shrink-0 inline-block rounded-full px-2 py-0.5 text-xs ${r.isActive ? "badge-status-active" : "bg-muted text-muted-foreground"}`}>{r.isActive ? "مفعّلة" : "معطّلة"}</span>
                   </div>
                   <div className="text-sm text-muted-foreground">→ {r.outputProductName} <span className="text-xs">({r.outputUnitName})</span></div>
                   <div className="grid grid-cols-3 gap-2 border-y py-2 text-center">

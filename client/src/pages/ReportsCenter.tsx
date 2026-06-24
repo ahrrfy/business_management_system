@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { trpc } from "@/lib/trpc";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
 import { formatIqd } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import {
@@ -213,26 +214,26 @@ export default function ReportsCenter() {
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">مركز التقارير والكشوفات</h1>
-          <p className="text-sm text-muted-foreground">كل تقارير النظام في مكان واحد — عرض وتصدير Excel وطباعة A4.</p>
-        </div>
-        <input
-          type="search"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="ابحث في التقارير…"
-          className="h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        />
-      </div>
+      <PageHeader
+        title="مركز التقارير والكشوفات"
+        description="كل تقارير النظام في مكان واحد — عرض وتصدير Excel وطباعة A4."
+        actions={
+          <input
+            type="search"
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="ابحث في التقارير…"
+            className="h-9 w-full max-w-xs rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          />
+        }
+      />
 
       {/* مؤشّرات حيّة */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
         <Card>
           <CardContent className="pt-4 pb-3 text-center">
             <p className="text-xs text-muted-foreground">المخزون المنخفض</p>
-            <p className="text-2xl font-bold tabular-nums text-amber-600" dir="ltr">
+            <p className="text-2xl font-bold tabular-nums text-[var(--stock-low)]" dir="ltr">
               {metrics.isLoading ? "…" : (metrics.data?.lowStockCount ?? 0)}
             </p>
             <p className="mt-0.5 text-[10px] text-muted-foreground">منتجات تحت حدّ الطلب</p>
@@ -241,7 +242,7 @@ export default function ReportsCenter() {
         <Card>
           <CardContent className="pt-4 pb-3 text-center">
             <p className="text-xs text-muted-foreground">الذمم المتأخّرة (+٣٠ يوم)</p>
-            <p className="text-xl font-bold tabular-nums text-rose-600" dir="ltr">
+            <p className="text-xl font-bold tabular-nums text-money-negative" dir="ltr">
               {metrics.isLoading ? "…" : formatIqd(metrics.data?.overdueAR.total ?? 0)}
             </p>
             <p className="mt-0.5 text-[10px] text-muted-foreground">{metrics.data?.overdueAR.count ?? 0} فاتورة</p>

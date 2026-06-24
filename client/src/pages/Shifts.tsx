@@ -1,4 +1,6 @@
 import { ListToolbar, RowActions } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -22,8 +24,8 @@ const selectCls =
 
 const STATUS_LABEL: Record<string, string> = { OPEN: "مفتوحة", CLOSED: "مغلقة" };
 const STATUS_CLS: Record<string, string> = {
-  OPEN: "bg-blue-100 text-blue-700",
-  CLOSED: "bg-emerald-100 text-emerald-700",
+  OPEN: "badge-status-pending",
+  CLOSED: "badge-status-active",
 };
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
@@ -65,8 +67,8 @@ export default function Shifts() {
   const varianceCls = (v: string | null) => {
     if (v == null) return "text-muted-foreground";
     const d = D(v);
-    if (d.gt(0)) return "text-emerald-600";
-    if (d.lt(0)) return "text-destructive";
+    if (d.gt(0)) return "text-money-positive";
+    if (d.lt(0)) return "text-money-negative";
     return "text-foreground";
   };
 
@@ -175,12 +177,10 @@ export default function Shifts() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">سجلّ الورديات</h1>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        ورديات الكاشير (فتح/إغلاق الصندوق) مع النقد المتوقّع والمعدود والفرق. أعد طباعة تقرير نهاية الوردية (Z) لأي وردية مغلقة.
-      </p>
+      <PageHeader
+        title="سجلّ الورديات"
+        description="ورديات الكاشير (فتح/إغلاق الصندوق) مع النقد المتوقّع والمعدود والفرق. أعد طباعة تقرير نهاية الوردية (Z) لأي وردية مغلقة."
+      />
 
       <Card>
         <CardHeader>
@@ -284,14 +284,13 @@ export default function Shifts() {
                 </tr>
               ))}
               {!list.isLoading && rows.length === 0 && (
-                <tr>
-                  <td colSpan={11} className="p-6 text-center text-muted-foreground">
-                    {total === 0 && !anyFilter ? "لا ورديات بعد. تُفتح الورديات من نقطة البيع." : "لا ورديات مطابقة. غيّر الفلتر."}
-                  </td>
-                </tr>
+                <TableEmptyRow
+                  colSpan={11}
+                  message={total === 0 && !anyFilter ? "لا ورديات بعد. تُفتح الورديات من نقطة البيع." : "لا ورديات مطابقة. غيّر الفلتر."}
+                />
               )}
               {list.isLoading && (
-                <tr><td colSpan={11} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td></tr>
+                <tr><td colSpan={11}><LoadingState /></td></tr>
               )}
             </tbody>
           </table>

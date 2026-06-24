@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 type LedgerRow = RouterOutputs["reports"]["itemLedger"]["rows"][number];
@@ -48,10 +49,10 @@ function variantLabel(r: {
 function TypeBadge({ type }: { type: string }) {
   const label = MTYPE_LABEL[type] ?? type;
   const cls = POSITIVE.has(type)
-    ? "bg-emerald-100 text-emerald-700"
+    ? "badge-status-active"
     : NEGATIVE.has(type)
-    ? "bg-rose-100 text-rose-700"
-    : "bg-amber-100 text-amber-700";
+    ? "badge-stock-out"
+    : "badge-stock-low";
   return <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${cls}`}>{label}</span>;
 }
 
@@ -266,9 +267,7 @@ export default function ItemLedger() {
               ابحث عن منتج واخترْه لعرض بطاقته.
             </p>
           ) : ledger.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا حركات لهذا المنتج في هذا النطاق.</p>
+            <LoadingState />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -282,13 +281,16 @@ export default function ItemLedger() {
                   </tr>
                 </thead>
                 <tbody>
+                  {!rows.length && (
+                    <TableEmptyRow colSpan={5} message="لا حركات لهذا المنتج في هذا النطاق." />
+                  )}
                   {rows.map((r) => (
                     <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
                       <td className="p-2.5 text-end"><TypeBadge type={r.type} /></td>
                       <td
                         className={`p-2.5 text-start tabular-nums font-semibold ${
-                          r.signedQty > 0 ? "text-emerald-700" : r.signedQty < 0 ? "text-rose-700" : "text-amber-700"
+                          r.signedQty > 0 ? "text-money-positive" : r.signedQty < 0 ? "text-money-negative" : "text-muted-foreground"
                         }`}
                         dir="ltr"
                       >
@@ -299,13 +301,15 @@ export default function ItemLedger() {
                     </tr>
                   ))}
                 </tbody>
-                <tfoot>
-                  <tr className="border-t bg-muted/40 text-sm font-semibold">
-                    <td className="p-2.5 text-end" colSpan={3}>الرصيد الختامي</td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(closing)}</td>
-                    <td></td>
-                  </tr>
-                </tfoot>
+                {rows.length > 0 && (
+                  <tfoot>
+                    <tr className="border-t bg-muted/40 text-sm font-semibold">
+                      <td className="p-2.5 text-end" colSpan={3}>الرصيد الختامي</td>
+                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(closing)}</td>
+                      <td></td>
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
           )}

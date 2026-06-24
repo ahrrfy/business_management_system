@@ -14,6 +14,8 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ListToolbar } from "@/components/list";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt } from "@/lib/money";
@@ -28,10 +30,10 @@ type StStatus = "COUNTING" | "REVIEW" | "APPROVED" | "CANCELLED";
 type StScope = "FULL" | "MOVING" | "CATEGORY" | "MANUAL";
 
 const STATUS_BADGE: Record<StStatus, { label: string; cls: string }> = {
-  COUNTING: { label: "قيد العدّ", cls: "bg-blue-50 text-blue-700 border-blue-200" },
-  REVIEW: { label: "قيد المراجعة", cls: "bg-amber-50 text-amber-800 border-amber-200" },
-  APPROVED: { label: "معتمدة ومُسوّاة", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  CANCELLED: { label: "ملغاة", cls: "bg-rose-50 text-rose-700 border-rose-200" },
+  COUNTING: { label: "قيد العدّ", cls: "badge-status-pending" },
+  REVIEW: { label: "قيد المراجعة", cls: "badge-stock-low" },
+  APPROVED: { label: "معتمدة ومُسوّاة", cls: "badge-status-active" },
+  CANCELLED: { label: "ملغاة", cls: "badge-stock-out" },
 };
 
 const SCOPE_TYPE_LABEL: Record<StScope, string> = {
@@ -125,7 +127,7 @@ function StatusBadge({ status }: { status: StStatus }) {
 }
 
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "blue" | "amber" }) {
-  const toneCls = tone === "blue" ? "text-blue-700" : tone === "amber" ? "text-amber-700" : "";
+  const toneCls = tone === "blue" ? "text-[var(--status-pending)]" : tone === "amber" ? "text-[var(--stock-low)]" : "";
   return (
     <Card>
       <CardContent className="p-4">
@@ -193,7 +195,7 @@ export default function Stocktakes() {
   if (me.data && !canCreate) {
     return (
       <div className="space-y-4">
-        <h1 className="text-2xl font-bold">الجرد والتسوية</h1>
+        <PageHeader title="الجرد والتسوية" />
         <Card>
           <CardContent className="p-8 text-center text-sm text-muted-foreground">
             وحدة الجرد والتسوية متاحة لأدوار المخزن والإدارة فقط.
@@ -206,19 +208,17 @@ export default function Stocktakes() {
   return (
     <div className="space-y-4">
       {/* الترويسة */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">الجرد والتسوية</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            جلسات جرد مُوثّقة بخطوات واضحة: تحديد النطاق ← عدّ أعمى ← مراجعة وتدقيق ← اعتماد التسوية ← تقرير نهائي.
-          </p>
-        </div>
-        {canCreate && (
-          <Button asChild size="lg">
-            <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
-          </Button>
-        )}
-      </div>
+      <PageHeader
+        title="الجرد والتسوية"
+        description="جلسات جرد مُوثّقة بخطوات واضحة: تحديد النطاق ← عدّ أعمى ← مراجعة وتدقيق ← اعتماد التسوية ← تقرير نهائي."
+        actions={
+          canCreate ? (
+            <Button asChild size="lg">
+              <Link href="/stocktakes/new">+ جلسة جرد جديدة</Link>
+            </Button>
+          ) : undefined
+        }
+      />
 
       {/* شريط خطوات الدورة */}
       <Card>
@@ -396,11 +396,7 @@ export default function Stocktakes() {
                   );
                 })}
                 {!listQ.isLoading && rows.length === 0 && (
-                  <tr>
-                    <td colSpan={7} className="p-6 text-center text-muted-foreground">
-                      لا جلسات جرد مطابقة. أنشئ جلسة جديدة أو غيّر الفلاتر.
-                    </td>
-                  </tr>
+                  <TableEmptyRow colSpan={7} message="لا جلسات جرد مطابقة. أنشئ جلسة جديدة أو غيّر الفلاتر." />
                 )}
               </tbody>
             </table>
@@ -488,7 +484,7 @@ export default function Stocktakes() {
                     {[a, m, w, c].map((v, i) => (
                       <td key={i} className="p-2 text-center">
                         {v ? (
-                          <Check aria-hidden className="mx-auto size-4 text-emerald-600" />
+                          <Check aria-hidden className="mx-auto size-4 text-[var(--status-active)]" />
                         ) : (
                           <span className="text-border">—</span>
                         )}
@@ -543,9 +539,9 @@ function CyclePlanCard({
               <span
                 className={`grid size-7 shrink-0 place-items-center rounded-md text-xs font-bold ${
                   r.abc === "A"
-                    ? "bg-rose-100 text-rose-700"
+                    ? "badge-stock-out"
                     : r.abc === "B"
-                      ? "bg-amber-100 text-amber-800"
+                      ? "badge-stock-low"
                       : "bg-muted text-muted-foreground"
                 }`}
               >
@@ -566,16 +562,14 @@ function CyclePlanCard({
               </div>
               <span
                 className={`inline-block whitespace-nowrap rounded-full border px-2.5 py-0.5 text-xs font-semibold ${
-                  r.daysOver == null || r.daysOver > 60
-                    ? "bg-rose-50 text-rose-700 border-rose-200"
-                    : "bg-amber-50 text-amber-800 border-amber-200"
+                  r.daysOver == null || r.daysOver > 60 ? "badge-stock-out" : "badge-stock-low"
                 }`}
               >
                 {r.daysOver == null ? "لم يُجرد" : `متأخر ${fmtInt(r.daysOver)} يوماً`}
               </span>
             </div>
           ))}
-          {loading && <p className="p-6 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>}
+          {loading && <LoadingState />}
           {!loading && due.length === 0 && (
             <p className="inline-flex w-full items-center justify-center gap-1.5 p-6 text-center text-sm text-muted-foreground">
               <Check aria-hidden className="size-4" /> لا منتجات مستحقة — الخطة الدورية مكتملة.
@@ -606,7 +600,7 @@ function IraCard({ data, loading }: { data: IraData | null; loading: boolean }) 
         </p>
       </CardHeader>
       <CardContent className="space-y-4 pt-0">
-        {loading && <p className="py-4 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>}
+        {loading && <LoadingState />}
         {!loading && branches.length === 0 && (
           <p className="py-4 text-center text-sm text-muted-foreground">
             تُحتسب الدقة بعد اعتماد أول جلسة جرد.
@@ -621,7 +615,7 @@ function IraCard({ data, loading }: { data: IraData | null; loading: boolean }) 
                 <span className="font-semibold">{b.name}</span>
                 <span
                   className={`font-bold tabular-nums ${
-                    cur != null && cur >= 95 ? "text-emerald-700" : "text-amber-700"
+                    cur != null && cur >= 95 ? "text-[var(--status-active)]" : "text-[var(--stock-low)]"
                   }`}
                 >
                   {cur == null ? "—" : `${cur.toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 1 })}٪`}
@@ -662,7 +656,7 @@ function IraCard({ data, loading }: { data: IraData | null; loading: boolean }) 
                   </span>
                   <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full rounded-full bg-emerald-500"
+                      className="h-full rounded-full bg-[var(--status-active)]"
                       style={{ width: `${Math.max(0, Math.min(100, w.accuracy))}%` }}
                     />
                   </div>
@@ -718,7 +712,7 @@ function ReconDriftCard({
             فحص التوافق المالي صلاحية مدير النظام — عند رصد انحرافات تُحال لجلسة جرد تحقّق من شاشة «تدقيق التوافق».
           </p>
         ) : loading ? (
-          <p className="p-6 text-center text-sm text-muted-foreground">جارٍ الفحص…</p>
+          <LoadingState message="جارٍ الفحص…" />
         ) : inventory.length === 0 ? (
           <p className="inline-flex w-full items-center justify-center gap-1.5 p-6 text-center text-sm text-muted-foreground">
             <Check aria-hidden className="size-4" /> لا انحرافات مخزون في آخر فحص.
@@ -727,7 +721,7 @@ function ReconDriftCard({
           <div className="divide-y">
             {inventory.slice(0, 6).map((d, i) => (
               <div key={`${d.id}-${i}`} className="flex items-center gap-3 px-4 py-2.5 text-sm">
-                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-rose-100 text-rose-700">
+                <span className="grid size-7 shrink-0 place-items-center rounded-md badge-stock-out">
                   <AlertTriangle aria-hidden className="size-4" />
                 </span>
                 <div className="min-w-0 flex-1">

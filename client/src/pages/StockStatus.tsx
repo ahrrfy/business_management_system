@@ -5,6 +5,7 @@ import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtInt } from "@/lib/money";
@@ -14,9 +15,9 @@ type Row = RouterOutputs["reports"]["stockStatus"]["rows"][number];
 
 const STATUS_LABEL: Record<string, string> = { out: "نفد", low: "منخفض", ok: "طبيعي" };
 const STATUS_CLS: Record<string, string> = {
-  out: "bg-rose-100 text-rose-700",
-  low: "bg-amber-100 text-amber-700",
-  ok: "bg-muted text-foreground/70",
+  out: "badge-stock-out",
+  low: "badge-stock-low",
+  ok: "bg-muted text-muted-foreground",
 };
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -123,11 +124,7 @@ export default function StockStatus() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">
-              {onlyAlerts ? "لا تنبيهات في هذا النطاق." : "لا مخزون في هذا النطاق."}
-            </p>
+            <LoadingState />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -142,7 +139,9 @@ export default function StockStatus() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r, i) => (
+                  {!rows.length ? (
+                    <TableEmptyRow colSpan={6} message={onlyAlerts ? "لا تنبيهات في هذا النطاق." : "لا مخزون في هذا النطاق."} />
+                  ) : rows.map((r, i) => (
                     <tr key={`${r.variantId}-${r.branchName ?? i}`} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right">{r.productName}</td>
                       <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>

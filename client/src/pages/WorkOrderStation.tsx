@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { Check, CheckCircle2, ChevronRight, CornerDownLeft, Layers, MessageSquare, Ruler, Truck, Timer as TimerIcon } from "lucide-react";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
@@ -33,9 +34,9 @@ const CHANNELS: Record<string, { label: string; icon: string }> = {
   OTHER: { label: "أخرى", icon: "✳️" },
 };
 const PRIORITIES: Record<string, { label: string; cls: string }> = {
-  URGENT: { label: "عاجل", cls: "bg-destructive/10 text-destructive border-destructive/30" },
-  NORMAL: { label: "عادي", cls: "bg-sky-500/10 text-sky-700 border-sky-500/30" },
-  LOW: { label: "منخفض", cls: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30" },
+  URGENT: { label: "عاجل", cls: "badge-stock-out border-transparent" },
+  NORMAL: { label: "عادي", cls: "badge-status-pending border-transparent" },
+  LOW: { label: "منخفض", cls: "badge-status-active border-transparent" },
 };
 const STATUS_LABEL: Record<string, string> = {
   RECEIVED: "بانتظار البدء", IN_PROGRESS: "قيد التنفيذ", READY: "جاهز للتسليم", DELIVERED: "مُسلَّم", CANCELLED: "ملغى",
@@ -74,17 +75,17 @@ function ElapsedTimer({ startAt, endAt }: { startAt: Date | null; endAt: Date | 
   }
   const ms = (endAt ? endAt.getTime() : now) - startAt.getTime();
   return (
-    <div className={`text-center py-2 rounded-lg ${live ? "bg-emerald-500/5 ring-1 ring-emerald-500/20" : ""}`}>
+    <div className={`text-center py-2 rounded-lg ${live ? "badge-status-active" : ""}`}>
       <div className="flex items-center justify-center gap-2">
-        {live && <span className="inline-block w-3 h-3 rounded-full bg-emerald-500 animate-pulse" aria-hidden />}
+        {live && <span className="inline-block w-3 h-3 rounded-full bg-[var(--status-active)] animate-pulse" aria-hidden />}
         <div
-          className={`text-4xl font-extrabold tabular-nums leading-none ${live ? "text-emerald-700 dark:text-emerald-400" : "text-foreground"}`}
+          className={`text-4xl font-extrabold tabular-nums leading-none ${live ? "text-money-positive" : "text-foreground"}`}
           dir="ltr"
         >
           {fmtElapsed(ms)}
         </div>
       </div>
-      <div className={`text-[11px] mt-1.5 font-medium ${live ? "text-emerald-700/80 dark:text-emerald-400/80" : "text-muted-foreground"}`}>
+      <div className={`text-[11px] mt-1.5 font-medium ${live ? "text-money-positive" : "text-muted-foreground"}`}>
         {live ? "يَعمل الآن" : "زَمن التَنفيذ الإجمالي"}
       </div>
     </div>
@@ -128,7 +129,7 @@ function OrderRow({ o, active, onClick, mine }: { o: WO; active: boolean; onClic
       <div className="font-medium text-sm mt-0.5 line-clamp-1">{o.title}</div>
       <div className="flex items-center justify-between mt-1 text-[11px] text-muted-foreground">
         <span title={ch.label}><span role="img" aria-label={ch.label}>{ch.icon}</span> {o.customerName ?? "عميل نقدي"}</span>
-        {mine ? <span>{STATUS_LABEL[o.status]}</span> : <span className="text-amber-600">سحب ←</span>}
+        {mine ? <span>{STATUS_LABEL[o.status]}</span> : <span className="text-stock-low">سحب ←</span>}
       </div>
     </button>
   );
@@ -186,7 +187,9 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
   }, [d?.workStartedAt, d?.workSeconds, d?.status, timeline.data]);
 
   if (!d) {
-    return <div className="grid place-items-center h-full text-muted-foreground">{detail.isLoading ? "جارٍ التحميل…" : "اختر أمراً من القائمة."}</div>;
+    return detail.isLoading
+      ? <LoadingState />
+      : <div className="grid place-items-center h-full text-muted-foreground">اختر أمراً من القائمة.</div>;
   }
 
   const ch = CHANNELS[d.receptionChannel ?? "WALK_IN"] ?? CHANNELS.OTHER;
@@ -248,7 +251,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
                     </div>
                     <div className="rounded-lg border bg-muted/20 p-3">
                       <div className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Truck aria-hidden className="size-3.5" /> التَسليم</div>
-                      <div className={`font-bold text-base mt-1 ${specs.delivery ? "text-sky-700 dark:text-sky-400" : ""}`}>
+                      <div className={`font-bold text-base mt-1 ${specs.delivery ? "text-[var(--status-pending)]" : ""}`}>
                         {specs.delivery ?? "استلام من المَطبعة"}
                       </div>
                     </div>
@@ -348,7 +351,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
             <CardContent className="space-y-2">
               {STAGES.map((s, i) => (
                 <div key={s.key} className="flex items-center gap-2">
-                  <div className={`w-5 h-5 rounded-md grid place-items-center text-[11px] text-white ${i < cur ? "bg-emerald-500" : i === cur ? "bg-primary" : "bg-muted-foreground/30"}`}>{i < cur ? <Check aria-hidden className="size-3" /> : i + 1}</div>
+                  <div className={`w-5 h-5 rounded-md grid place-items-center text-[11px] text-white ${i < cur ? "bg-[var(--status-active)]" : i === cur ? "bg-primary" : "bg-muted-foreground/30"}`}>{i < cur ? <Check aria-hidden className="size-3" /> : i + 1}</div>
                   <span className={`text-sm ${i === cur ? "font-semibold" : "text-muted-foreground"}`}>{s.label}</span>
                 </div>
               ))}
@@ -360,11 +363,11 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
             <Button className="w-full h-12 text-base" disabled={busy} onClick={doStart}><ChevronRight aria-hidden className="size-4 me-1" /> بدء التنفيذ (خصم المواد)</Button>
           )}
           {d.status === "IN_PROGRESS" && (
-            <Button className="w-full h-12 text-base bg-violet-600 hover:bg-violet-700" disabled={busy} onClick={doReady}><Check aria-hidden className="size-4 me-1" /> وضع علامة: جاهز</Button>
+            <Button className="w-full h-12 text-base bg-[var(--status-done)] hover:opacity-90 text-white" disabled={busy} onClick={doReady}><Check aria-hidden className="size-4 me-1" /> وضع علامة: جاهز</Button>
           )}
           {d.status === "READY" && (
-            <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-3 text-center text-sm inline-flex items-center justify-center gap-1.5 w-full">
-              <CheckCircle2 aria-hidden className="size-4 text-emerald-600" /> جاهز للتسليم — سلّمه للكاشير للتسليم وإصدار الفاتورة.
+            <div className="rounded-lg border border-[var(--status-active)]/40 badge-status-active p-3 text-center text-sm inline-flex items-center justify-center gap-1.5 w-full">
+              <CheckCircle2 aria-hidden className="size-4 text-money-positive" /> جاهز للتسليم — سلّمه للكاشير للتسليم وإصدار الفاتورة.
             </div>
           )}
           {(d.status === "DELIVERED" || d.status === "CANCELLED") && (

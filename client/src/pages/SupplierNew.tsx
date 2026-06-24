@@ -8,6 +8,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { whatsappLink } from "@/lib/intlPhone";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/PageHeader";
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Star } from "lucide-react";
@@ -100,10 +101,10 @@ export default function SupplierNew() {
 
   return (
     <div className="space-y-4 max-w-3xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">إضافة مورّد</h1>
-        <Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
-      </div>
+      <PageHeader
+        title="إضافة مورّد"
+        actions={<Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+      />
 
       <Card>
         <CardHeader>

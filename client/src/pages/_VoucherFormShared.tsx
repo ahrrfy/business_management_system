@@ -1,5 +1,6 @@
 // نموذج موحَّد لإنشاء سند قبض/صرف. الاختلاف الوحيد بينهما هو voucherType والـlabels والألوان.
 import { BalanceBadge, balanceOptionText } from "@/components/BalanceBadge";
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -64,7 +65,6 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
     onError: (e) => setErr(e.message),
   });
 
-  const titleColor = isReceipt ? "text-emerald-700" : "text-rose-700";
   const submitColor = isReceipt ? "bg-emerald-600 hover:bg-emerald-700" : "bg-rose-600 hover:bg-rose-700";
 
   const partyList = useMemo(() => {
@@ -104,19 +104,17 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
 
   return (
     <div className="space-y-4 max-w-2xl">
-      <div className="flex items-center justify-between">
-        <h1 className={`text-2xl font-bold ${titleColor}`}>
-          {isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
-        </h1>
-        <Link href="/vouchers">
-          <Button variant="outline" size="sm">→ القائمة</Button>
-        </Link>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        {isReceipt
+      <PageHeader
+        title={isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
+        description={isReceipt
           ? "إيرادات/تحصيلات مستقلّة بلا فاتورة (مثل: دفعة من عميل بلا تخصيص، إيرادات متفرّقة، استرداد من مورّد)."
           : "مصاريف/مدفوعات مستقلّة بلا فاتورة (مثل: راتب موظف، إيجار، صيانة، دفعة لمورّد)."}
-      </p>
+        actions={
+          <Link href="/vouchers">
+            <Button variant="outline" size="sm">→ القائمة</Button>
+          </Link>
+        }
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">البيانات الرئيسية</CardTitle></CardHeader>
@@ -214,18 +212,18 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       </Card>
 
       {err && (
-        <div className="rounded-md bg-rose-50 border border-rose-200 text-rose-700 text-sm p-3">{err}</div>
+        <div className="rounded-md border badge-stock-out text-sm p-3">{err}</div>
       )}
 
       {hardBlock && (
-        <div className="rounded-md bg-amber-50 border border-amber-300 text-amber-800 text-sm p-3 flex items-start gap-2">
+        <div className="rounded-md border badge-stock-low text-sm p-3 flex items-start gap-2">
           <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />
           <span>لا توجد وردية مفتوحة في هذا الفرع. السندات النقدية للكاشير تَمسّ صندوق الوردية —
           {" "}<Link href="/shifts" className="underline">افتح وردية</Link> أوّلاً، أو غيِّر طريقة الدفع لغير نقدية.</span>
         </div>
       )}
       {treasuryNotice && (
-        <div className="rounded-md bg-blue-50 border border-blue-300 text-blue-800 text-sm p-3 flex items-start gap-2">
+        <div className="rounded-md border badge-status-pending text-sm p-3 flex items-start gap-2">
           <Building2 aria-hidden className="size-4 shrink-0 mt-0.5" />
           <span>يُسجَّل في <strong>الخزينة الإدارية</strong> (بلا وردية كاشير) — يَظهر في تقرير «النقد خارج الوردية» مفصولاً عن تَسوية درج الكاشير.</span>
         </div>

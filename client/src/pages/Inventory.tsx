@@ -1,4 +1,6 @@
 import { RowActions } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
@@ -99,17 +101,17 @@ export default function Inventory() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">المخزون</h1>
-        {lowCount > 0 && (
-          <span className="rounded-full bg-amber-100 text-amber-800 px-3 py-1 text-xs">
-            {fmtInt(lowCount)} منتج تحت الحد الأدنى
-          </span>
-        )}
-      </div>
-      <p className="text-sm text-muted-foreground">
-        الأرصدة الحالية لكل منتج مع تسوية يدوية (جرد/تلف/تصحيح) تُسجَّل كحركة تدقيق، وسجلّ آخر الحركات.
-      </p>
+      <PageHeader
+        title="المخزون"
+        description="الأرصدة الحالية لكل منتج مع تسوية يدوية (جرد/تلف/تصحيح) تُسجَّل كحركة تدقيق، وسجلّ آخر الحركات."
+        actions={
+          lowCount > 0 ? (
+            <span className="badge-stock-low rounded-full px-3 py-1 text-xs">
+              {fmtInt(lowCount)} منتج تحت الحد الأدنى
+            </span>
+          ) : undefined
+        }
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">الفلاتر</CardTitle></CardHeader>
@@ -207,7 +209,7 @@ export default function Inventory() {
                     </td>
                     <td className="p-2 text-center tabular-nums text-muted-foreground">{fmtInt(r.minStock ?? 0)}</td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.isLow ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.isLow ? "badge-stock-low" : "badge-status-active"}`}>
                         {r.isLow ? "منخفض" : "متوفّر"}
                       </span>
                     </td>
@@ -264,7 +266,7 @@ export default function Inventory() {
                 );
               })}
               {!onHand.isLoading && rows.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء.</td></tr>
+                <TableEmptyRow colSpan={7} message="لا منتجات برصيد في هذا الفرع. أضف رصيداً افتتاحياً أو سجّل استلام شراء." />
               )}
             </tbody>
           </table>
@@ -295,7 +297,7 @@ export default function Inventory() {
                 </tr>
               ))}
               {movements.data && movements.data.length === 0 && (
-                <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا حركات مخزون بعد.</td></tr>
+                <TableEmptyRow colSpan={5} message="لا حركات مخزون بعد." />
               )}
             </tbody>
           </table>

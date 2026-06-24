@@ -1,6 +1,8 @@
 import { CopyButton, CopyInline } from "@/components/CopyButton";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { exportRows } from "@/lib/export";
 import { Label } from "@/components/ui/label";
 import { printAPAging } from "@/lib/printing/printTemplates";
@@ -103,54 +105,53 @@ export default function APAging() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">أعمار الذمم الدائنة — لهم علينا</h1>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!aging.data?.length}
-            onClick={() =>
-              exportRows(aging.data ?? [], {
-                filename: "ذمم-دائنة",
-                columns: [
-                  { key: "supplierName", header: "المورد" },
-                  { key: "phone", header: "الهاتف" },
-                  { key: "d0_30", header: "0–30", map: (r) => Number(r.d0_30) },
-                  { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
-                  { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
-                  { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
-                  { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
-                  { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
-                  { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance) },
-                  { key: "oldestPoDate", header: "أقدم أمر شراء" },
-                ],
-              })
-            }
-          >
-            تصدير Excel
-          </Button>
-          <Button variant="outline" size="sm" disabled={!aging.data?.length} onClick={() => printAPAging({
-            date: new Date().toLocaleDateString('en-GB'),
-            rows: (aging.data ?? []).map(r => ({
-              name: r.supplierName,
-              d0_30: D(r.d0_30||0).toNumber(), d31_60: D(r.d31_60||0).toNumber(),
-              d61_90: D(r.d61_90||0).toNumber(), d91p: D(r.d91p||0).toNumber(),
-              unpaidTotal: D(r.unpaidTotal||0).toNumber(), currentBalance: D(r.currentBalance||0).toNumber(),
-            })),
-            totals: {
-              d0_30: D(totals.d0_30).toNumber(), d31_60: D(totals.d31_60).toNumber(),
-              d61_90: D(totals.d61_90).toNumber(), d91p: D(totals.d91p).toNumber(),
-              unpaidTotal: D(totals.unpaidTotal).toNumber(), currentBalance: D(totals.currentBalance).toNumber(),
-            },
-          })}>طباعة PDF</Button>
-          <Link href="/suppliers-statement"><Button variant="outline">كشف حساب مورد</Button></Link>
-        </div>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        المبالغ المستحقّة <strong>لهم</strong> علينا (للموردين)، مُجمَّعة في أربع شرائح عمرية.
-        كلما طال العمر كلما استوجب الأولويّة. المسوّدات والملغاة مستثناة.
-      </p>
+      <PageHeader
+        title="أعمار الذمم الدائنة — لهم علينا"
+        description="المبالغ المستحقّة لهم علينا (للموردين)، مُجمَّعة في أربع شرائح عمرية. كلما طال العمر كلما استوجب الأولويّة. المسوّدات والملغاة مستثناة."
+        actions={
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!aging.data?.length}
+              onClick={() =>
+                exportRows(aging.data ?? [], {
+                  filename: "ذمم-دائنة",
+                  columns: [
+                    { key: "supplierName", header: "المورد" },
+                    { key: "phone", header: "الهاتف" },
+                    { key: "d0_30", header: "0–30", map: (r) => Number(r.d0_30) },
+                    { key: "d31_60", header: "31–60", map: (r) => Number(r.d31_60) },
+                    { key: "d61_90", header: "61–90", map: (r) => Number(r.d61_90) },
+                    { key: "d91p", header: "+90", map: (r) => Number(r.d91p) },
+                    { key: "unpaidTotal", header: "إجمالي غير المدفوع", map: (r) => Number(r.unpaidTotal) },
+                    { key: "unbilled", header: "غير مفوتر/افتتاحي", map: (r) => unbilledOf(r).toNumber() },
+                    { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance) },
+                    { key: "oldestPoDate", header: "أقدم أمر شراء" },
+                  ],
+                })
+              }
+            >
+              تصدير Excel
+            </Button>
+            <Button variant="outline" size="sm" disabled={!aging.data?.length} onClick={() => printAPAging({
+              date: new Date().toLocaleDateString('en-GB'),
+              rows: (aging.data ?? []).map(r => ({
+                name: r.supplierName,
+                d0_30: D(r.d0_30||0).toNumber(), d31_60: D(r.d31_60||0).toNumber(),
+                d61_90: D(r.d61_90||0).toNumber(), d91p: D(r.d91p||0).toNumber(),
+                unpaidTotal: D(r.unpaidTotal||0).toNumber(), currentBalance: D(r.currentBalance||0).toNumber(),
+              })),
+              totals: {
+                d0_30: D(totals.d0_30).toNumber(), d31_60: D(totals.d31_60).toNumber(),
+                d61_90: D(totals.d61_90).toNumber(), d91p: D(totals.d91p).toNumber(),
+                unpaidTotal: D(totals.unpaidTotal).toNumber(), currentBalance: D(totals.currentBalance).toNumber(),
+              },
+            })}>طباعة PDF</Button>
+            <Link href="/suppliers-statement"><Button variant="outline">كشف حساب مورد</Button></Link>
+          </div>
+        }
+      />
 
       <Card>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-6">
@@ -231,7 +232,7 @@ export default function APAging() {
                 </tr>
               ))}
               {aging.data && aging.data.length === 0 && (
-                <tr><td colSpan={12} className="p-6 text-center text-muted-foreground">لا ذمم دائنة مستحقّة.</td></tr>
+                <TableEmptyRow colSpan={12} message="لا ذمم دائنة مستحقّة." />
               )}
             </tbody>
           </table>

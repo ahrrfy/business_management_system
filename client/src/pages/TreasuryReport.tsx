@@ -10,6 +10,7 @@ import { fmtAr, formatIqd, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { CopyButton, CopyInline } from "@/components/CopyButton";
+import { LoadingState, TableEmptyRow } from "@/components/PageState";
 
 type TS = RouterOutputs["reports"]["treasurySummary"];
 
@@ -144,7 +145,11 @@ export default function TreasuryReport() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading || !ts ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">{q.isLoading ? "جارٍ التحميل…" : "لا بيانات."}</p>
+            q.isLoading ? (
+              <LoadingState />
+            ) : (
+              <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
+            )
           ) : (
             <table className="w-full text-sm">
               <thead>
@@ -156,17 +161,15 @@ export default function TreasuryReport() {
               </thead>
               <tbody>
                 {rows.length === 0 ? (
-                  <tr>
-                    <td colSpan={3} className="p-6 text-center text-sm text-muted-foreground">لا حركات في الفترة.</td>
-                  </tr>
+                  <TableEmptyRow colSpan={3} message="لا حركات في الفترة." />
                 ) : (
                   rows.map((r, i) => (
                     <tr key={i} className="border-b last:border-0">
                       <td className="p-3 text-right">{r.label}</td>
-                      <td className="p-3 text-left tabular-nums text-emerald-600" dir="ltr">
+                      <td className="p-3 text-left tabular-nums text-money-positive" dir="ltr">
                         <CopyInline value={String(r.in)} display={fmtAr(r.in)} mono={false} />
                       </td>
-                      <td className="p-3 text-left tabular-nums text-rose-600" dir="ltr">
+                      <td className="p-3 text-left tabular-nums text-money-negative" dir="ltr">
                         <CopyInline value={String(r.out)} display={fmtAr(r.out)} mono={false} />
                       </td>
                     </tr>
@@ -214,7 +217,7 @@ export default function TreasuryReport() {
               <div className="rounded-md border p-3 text-center">
                 <p className="text-xs text-muted-foreground">إجمالي الفروقات</p>
                 <p
-                  className={`text-lg font-bold tabular-nums ${D(ts.shifts.totalVariance).lt(0) ? "text-rose-600" : "text-emerald-600"}`}
+                  className={`text-lg font-bold tabular-nums ${D(ts.shifts.totalVariance).lt(0) ? "text-money-negative" : "text-money-positive"}`}
                   dir="ltr"
                 >
                   <CopyInline

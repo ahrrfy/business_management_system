@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { CopyInline } from "@/components/CopyButton";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
@@ -129,22 +131,20 @@ export default function Vouchers() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-bold">سندات القبض والصرف</h1>
-          <p className="text-sm text-muted-foreground">
-            سندات مستقلّة بلا فاتورة — رواتب، إيجارات، إيرادات متفرّقة، دفعات لعميل/مورّد بلا ربط بفاتورة محدّدة.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link href="/vouchers/receipt/new">
-            <Button className="bg-emerald-600 hover:bg-emerald-700">+ سند قبض</Button>
-          </Link>
-          <Link href="/vouchers/payment/new">
-            <Button className="bg-rose-600 hover:bg-rose-700">+ سند صرف</Button>
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        title="سندات القبض والصرف"
+        description="سندات مستقلّة بلا فاتورة — رواتب، إيجارات، إيرادات متفرّقة، دفعات لعميل/مورّد بلا ربط بفاتورة محدّدة."
+        actions={
+          <div className="flex flex-wrap gap-2">
+            <Link href="/vouchers/receipt/new">
+              <Button className="bg-emerald-600 hover:bg-emerald-700">+ سند قبض</Button>
+            </Link>
+            <Link href="/vouchers/payment/new">
+              <Button className="bg-rose-600 hover:bg-rose-700">+ سند صرف</Button>
+            </Link>
+          </div>
+        }
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">فلاتر</CardTitle></CardHeader>
@@ -185,19 +185,19 @@ export default function Vouchers() {
         <Card>
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground">إجمالي القبض</div>
-            <div className="text-xl font-bold text-emerald-700 tabular-nums" dir="ltr">{fmt(totals.inn)}</div>
+            <div className="text-xl font-bold text-money-positive tabular-nums" dir="ltr">{fmt(totals.inn)}</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground">إجمالي الصرف</div>
-            <div className="text-xl font-bold text-rose-700 tabular-nums" dir="ltr">{fmt(totals.out)}</div>
+            <div className="text-xl font-bold text-money-negative tabular-nums" dir="ltr">{fmt(totals.out)}</div>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="p-4">
             <div className="text-xs text-muted-foreground">الصافي</div>
-            <div className={`text-xl font-bold tabular-nums ${totals.net >= 0 ? "text-emerald-700" : "text-rose-700"}`} dir="ltr">
+            <div className={`text-xl font-bold tabular-nums ${totals.net >= 0 ? "text-money-positive" : "text-money-negative"}`} dir="ltr">
               {fmt(totals.net)}
             </div>
           </CardContent>
@@ -209,7 +209,7 @@ export default function Vouchers() {
           <CardTitle className="text-base">القائمة</CardTitle>
           <div className="flex items-center gap-3">
             <span className="text-xs text-muted-foreground">
-              {list.isLoading ? "جارٍ التحميل…" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} سند`}
+              {list.isLoading ? "" : `${rows.length.toLocaleString("ar-IQ-u-nu-latn")} سند`}
             </span>
             <Button
               variant="outline"
@@ -251,12 +251,22 @@ export default function Vouchers() {
               </tr>
             </thead>
             <tbody>
+              {list.isLoading && (
+                <tr><td colSpan={9}><LoadingState /></td></tr>
+              )}
+              {list.isError && !list.isLoading && (
+                <tr>
+                  <td colSpan={9}>
+                    <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
+                  </td>
+                </tr>
+              )}
               {rows.map((r) => (
                 <tr key={Number(r.id)} className={`border-t ${r.status === "REVERSED" ? "opacity-60" : ""}`}>
                   <td className="p-2 font-mono text-xs"><CopyInline value={String(r.voucherNumber ?? "—")} /></td>
                   <td className="p-2 text-xs">{fmtDate(r.createdAt as any)}</td>
                   <td className="p-2 text-center">
-                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.direction === "IN" ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.direction === "IN" ? "badge-status-active" : "badge-stock-out"}`}>
                       {TYPE_LABEL[r.direction]}
                     </span>
                   </td>
@@ -265,7 +275,7 @@ export default function Vouchers() {
                   <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.amount)}</td>
                   <td className="p-2 text-center text-xs">{METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}</td>
                   <td className="p-2 text-center">
-                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "REVERSED" ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"}`}>
+                    <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "REVERSED" ? "badge-status-cancelled" : "badge-status-active"}`}>
                       {r.status === "REVERSED" ? "مُلغى" : "مكتمل"}
                     </span>
                   </td>
@@ -293,8 +303,8 @@ export default function Vouchers() {
                   </td>
                 </tr>
               ))}
-              {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا سندات مطابقة. أضِف سند قبض أو صرف جديداً.</td></tr>
+              {!list.isLoading && !list.isError && rows.length === 0 && (
+                <TableEmptyRow colSpan={9} message="لا سندات مطابقة. أضِف سند قبض أو صرف جديداً." />
               )}
             </tbody>
           </table>

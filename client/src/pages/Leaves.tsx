@@ -3,6 +3,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
+import { ErrorState, TableEmptyRow } from "@/components/PageState";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
@@ -18,9 +20,9 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STATUS_CLS: Record<string, string> = {
-  approved: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
-  pending: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
-  rejected: "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300",
+  approved: "badge-status-active",
+  pending: "badge-status-pending",
+  rejected: "badge-stock-out",
 };
 
 function LeaveStatusBadge({ status }: { status: string }) {
@@ -128,13 +130,11 @@ export default function Leaves() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <h1 className="text-2xl font-bold">الإجازات</h1>
-          <p className="text-sm text-muted-foreground">طلبات الإجازات وأرصدتها — سنوية، مرضية، أمومة، بدون راتب.</p>
-        </div>
-        <Button onClick={() => setOpen(true)}><Plus className="size-4" /> طلب إجازة جديد</Button>
-      </div>
+      <PageHeader
+        title="الإجازات"
+        description="طلبات الإجازات وأرصدتها — سنوية، مرضية، أمومة، بدون راتب."
+        actions={<Button onClick={() => setOpen(true)}><Plus className="size-4" /> طلب إجازة جديد</Button>}
+      />
 
       {/* المؤشّرات */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -201,7 +201,7 @@ export default function Leaves() {
                           {l.status === "pending" ? (
                             <div className="flex items-center justify-center gap-1.5">
                               <button
-                                className="text-xs font-medium text-emerald-600 hover:underline disabled:opacity-50"
+                                className="text-xs font-medium text-money-positive hover:underline disabled:opacity-50"
                                 disabled={decide.isPending}
                                 onClick={async () => {
                                   if (!(await confirm({ variant: "info", title: "الموافقة على الإجازة", description: `الموافقة على إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) وخصم رصيدها؟`, confirmText: "موافقة" }))) return;
@@ -210,7 +210,7 @@ export default function Leaves() {
                               >موافقة</button>
                               <span className="text-border">·</span>
                               <button
-                                className="text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
+                                className="text-xs font-medium text-destructive hover:underline disabled:opacity-50"
                                 disabled={decide.isPending}
                                 onClick={async () => {
                                   if (!(await confirm({ variant: "warning", title: "رفض الطلب", description: `رفض طلب إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم)؟`, confirmText: "رفض" }))) return;
@@ -220,7 +220,7 @@ export default function Leaves() {
                             </div>
                           ) : l.status === "approved" ? (
                             <button
-                              className="text-xs font-medium text-rose-600 hover:underline disabled:opacity-50"
+                              className="text-xs font-medium text-destructive hover:underline disabled:opacity-50"
                               disabled={cancel.isPending}
                               onClick={async () => {
                                 if (!(await confirm({ variant: "danger", title: "إلغاء الإجازة", description: `إلغاء إجازة «${l.employeeName || "الموظف"}» (${l.days} يوم) واسترداد الأيام؟ يؤثّر على السجلّات.`, confirmText: "إلغاء الإجازة" }))) return;
@@ -234,10 +234,10 @@ export default function Leaves() {
                       </tr>
                     ))}
                     {list.isError && (
-                      <tr><td colSpan={8} className="p-6 text-center text-rose-600">تعذّر تحميل الطلبات. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button></td></tr>
+                      <tr><td colSpan={8}><ErrorState message="تعذّر تحميل الطلبات." onRetry={() => list.refetch()} /></td></tr>
                     )}
                     {!list.isLoading && !list.isError && rows.length === 0 && (
-                      <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا طلبات مطابقة. غيّر الفلاتر أو أضف طلباً جديداً.</td></tr>
+                      <TableEmptyRow colSpan={8} message="لا طلبات مطابقة. غيّر الفلاتر أو أضف طلباً جديداً." />
                     )}
                   </tbody>
                 </table>
@@ -276,10 +276,10 @@ export default function Leaves() {
                       </tr>
                     ))}
                     {balances.isError && (
-                      <tr><td colSpan={4} className="p-6 text-center text-rose-600">تعذّر تحميل الأرصدة. <button className="underline" onClick={() => balances.refetch()}>إعادة المحاولة</button></td></tr>
+                      <tr><td colSpan={4}><ErrorState message="تعذّر تحميل الأرصدة." onRetry={() => balances.refetch()} /></td></tr>
                     )}
                     {!balances.isLoading && !balances.isError && (balances.data?.length ?? 0) === 0 && (
-                      <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">لا موظفين على رأس العمل.</td></tr>
+                      <TableEmptyRow colSpan={4} message="لا موظفين على رأس العمل." />
                     )}
                   </tbody>
                 </table>

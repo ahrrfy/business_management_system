@@ -8,6 +8,8 @@
  * كل المبالغ تُعرَض عبر iqd() (الخادم هو المرجع الحسابي).
  * ========================================================================== */
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -25,9 +27,9 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const STATUS_CLS: Record<string, string> = {
-  draft: "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300",
-  approved: "bg-sky-100 text-sky-700 dark:bg-sky-950 dark:text-sky-300",
-  paid: "bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300",
+  draft: "badge-stock-low",
+  approved: "badge-status-pending",
+  paid: "badge-status-active",
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -126,32 +128,30 @@ export default function Payroll() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-start justify-between flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold">الرواتب</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            مسيّر الرواتب الشهري — يجمع الراتب الثابت وأجر الساعات والإضافي ويخصم السلف والغياب.
-          </p>
-        </div>
-        <div className="flex items-center gap-2 flex-wrap">
-          <select
-            className={selectCls}
-            value={effectiveId != null ? String(effectiveId) : ""}
-            onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
-            aria-label="المسيّر"
-          >
-            {runs.length === 0 && <option value="">لا مسيّرات</option>}
-            {runs.map((r) => (
-              <option key={r.id} value={String(r.id)}>
-                مسيّر {r.period} — {payrollStatusLabel(r.status)}
-              </option>
-            ))}
-          </select>
-          <Button onClick={() => setGenOpen(true)} disabled={busy}>
-            <Plus className="size-4" /> توليد مسيّر
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="الرواتب"
+        description="مسيّر الرواتب الشهري — يجمع الراتب الثابت وأجر الساعات والإضافي ويخصم السلف والغياب."
+        actions={
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              className={selectCls}
+              value={effectiveId != null ? String(effectiveId) : ""}
+              onChange={(e) => setSelectedId(e.target.value ? Number(e.target.value) : null)}
+              aria-label="المسيّر"
+            >
+              {runs.length === 0 && <option value="">لا مسيّرات</option>}
+              {runs.map((r) => (
+                <option key={r.id} value={String(r.id)}>
+                  مسيّر {r.period} — {payrollStatusLabel(r.status)}
+                </option>
+              ))}
+            </select>
+            <Button onClick={() => setGenOpen(true)} disabled={busy}>
+              <Plus className="size-4" /> توليد مسيّر
+            </Button>
+          </div>
+        }
+      />
 
       {/* المؤشّرات */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -233,7 +233,7 @@ export default function Payroll() {
                         </div>
                       </td>
                       <td className="p-2.5 text-center">
-                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${monthly ? "bg-primary/10 text-primary" : "bg-amber-100 text-amber-700 dark:bg-amber-950 dark:text-amber-300"}`}>
+                        <span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${monthly ? "bg-primary/10 text-primary" : "badge-stock-low"}`}>
                           {payTypeLabel(p.payType)}
                         </span>
                       </td>
@@ -241,8 +241,8 @@ export default function Payroll() {
                         {monthly ? iqd(baseDisplay) : `${iqd(p.gross)} (${p.hours ?? "0"} س)`}
                       </td>
                       <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{monthly ? iqd(p.allowances) : "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums text-emerald-600" dir="ltr">{D(p.overtime).gt(0) ? `+${iqd(p.overtime)}` : "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums text-destructive" dir="ltr">{D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"}</td>
+                      <td className="p-2.5 text-left tabular-nums text-money-positive" dir="ltr">{D(p.overtime).gt(0) ? `+${iqd(p.overtime)}` : "—"}</td>
+                      <td className="p-2.5 text-left tabular-nums text-money-negative" dir="ltr">{D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"}</td>
                       <td className="p-2.5 text-left tabular-nums font-bold" dir="ltr">{iqd(p.net)}</td>
                       <td className="p-2.5 text-center"><StatusBadge status={run!.status} /></td>
                       <td className="p-2.5 text-center whitespace-nowrap">
@@ -263,18 +263,17 @@ export default function Payroll() {
                     <td className="p-2.5" colSpan={2}>الإجمالي</td>
                     <td className="p-2.5 text-left tabular-nums" dir="ltr">{iqd(totals.gross)}</td>
                     <td></td>
-                    <td className="p-2.5 text-left tabular-nums text-emerald-600" dir="ltr">+{iqd(totals.overtime)}</td>
-                    <td className="p-2.5 text-left tabular-nums text-destructive" dir="ltr">−{iqd(totals.deductions)}</td>
+                    <td className="p-2.5 text-left tabular-nums text-money-positive" dir="ltr">+{iqd(totals.overtime)}</td>
+                    <td className="p-2.5 text-left tabular-nums text-money-negative" dir="ltr">−{iqd(totals.deductions)}</td>
                     <td className="p-2.5 text-left tabular-nums" dir="ltr">{iqd(totals.net)}</td>
                     <td colSpan={2}></td>
                   </tr>
                 )}
                 {!runQ.isLoading && items.length === 0 && (
-                  <tr>
-                    <td colSpan={9} className="p-8 text-center text-muted-foreground">
-                      {runs.length === 0 ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء." : "لا بنود في هذا المسيّر."}
-                    </td>
-                  </tr>
+                  <TableEmptyRow
+                    colSpan={9}
+                    message={runs.length === 0 ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء." : "لا بنود في هذا المسيّر."}
+                  />
                 )}
               </tbody>
             </table>
@@ -338,13 +337,13 @@ export default function Payroll() {
                 {slip.payType === "monthly" && (
                   <div className="flex justify-between"><span className="text-muted-foreground">المخصّصات</span><span className="tabular-nums" dir="ltr">{iqd(slip.allowances)}</span></div>
                 )}
-                <div className="flex justify-between"><span className="text-muted-foreground">العمل الإضافي</span><span className="tabular-nums text-emerald-600" dir="ltr">+{iqd(slip.overtime)}</span></div>
-                <div className="flex justify-between"><span className="text-muted-foreground">الاستقطاعات (سلف/غياب)</span><span className="tabular-nums text-destructive" dir="ltr">−{iqd(slip.deductions)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">العمل الإضافي</span><span className="tabular-nums text-money-positive" dir="ltr">+{iqd(slip.overtime)}</span></div>
+                <div className="flex justify-between"><span className="text-muted-foreground">الاستقطاعات (سلف/غياب)</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.deductions)}</span></div>
                 {slip.note && <div className="flex justify-between"><span className="text-muted-foreground">ملاحظة</span><span>{slip.note}</span></div>}
               </div>
               <div className="flex justify-between items-center py-3 border-t-2">
                 <span className="font-bold">الصافي المستحق</span>
-                <span className="text-xl font-bold text-emerald-600 tabular-nums" dir="ltr">{iqd(slip.net)}</span>
+                <span className="text-xl font-bold text-money-positive tabular-nums" dir="ltr">{iqd(slip.net)}</span>
               </div>
             </div>
           )}

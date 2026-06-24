@@ -25,6 +25,8 @@ import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState } from "@/components/PageState";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useParams } from "wouter";
@@ -372,20 +374,20 @@ export default function ProductEdit() {
     });
   }
 
-  if (product.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (product.isLoading) return <LoadingState />;
   if (!product.data) return <div className="p-10 text-center text-muted-foreground">المنتج غير موجود.</div>;
 
   const activeCount = variants.filter((v) => v.isActive).length;
 
   return (
     <div className="max-w-6xl mx-auto space-y-4 pb-28">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <div>
-          <div className="text-xs text-muted-foreground mb-1">المنتجات / <span className="text-foreground">تعديل المنتج</span></div>
-          <h1 className="text-2xl font-bold leading-tight">تعديل منتج بمتغيّرات</h1>
-        </div>
-        <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
-      </div>
+      <PageHeader
+        title="تعديل منتج بمتغيّرات"
+        description="المنتجات / تعديل المنتج"
+        actions={
+          <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
+        }
+      />
 
       {/* اسم مركّب + معاينة */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -546,7 +548,7 @@ export default function ProductEdit() {
         </div>
       )}
       {done && (
-        <div className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700">
+        <div className="flex items-center gap-2 rounded-md border px-3 py-2 text-sm badge-status-active">
           <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" />
           <span>{done}</span>
         </div>

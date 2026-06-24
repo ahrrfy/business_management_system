@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { AssetStatusBadge, categoryIcon, iqd } from "@/lib/assets/ui";
 import { printAssetLabel } from "@/lib/assets/print";
 import { confirm } from "@/lib/confirm";
@@ -68,8 +69,8 @@ export default function AssetDetail() {
   const a = q.data;
   const Icon = useMemo(() => (a ? categoryIcon(a.category) : null), [a]);
 
-  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (q.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل الأصل: {q.error.message}</div>;
+  if (q.isLoading) return <LoadingState />;
+  if (q.error) return <ErrorState message={`تعذّر تحميل الأصل: ${q.error.message}`} onRetry={() => q.refetch()} />;
   if (!a) return <div className="p-10 text-center text-muted-foreground">الأصل غير موجود. <Link href="/assets/register" className="text-primary">رجوع للسجلّ</Link></div>;
 
   const isLive = a.status === "active" || a.status === "maintenance";
@@ -206,7 +207,7 @@ export default function AssetDetail() {
                       <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(m.cost)}</td>
                     </tr>
                   ))}
-                  {a.maintenance.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا عمليات صيانة مسجّلة.</td></tr>}
+                  {a.maintenance.length === 0 && <TableEmptyRow colSpan={5} message="لا عمليات صيانة مسجّلة." />}
                 </tbody>
               </table>
             </CardContent>
@@ -225,7 +226,7 @@ export default function AssetDetail() {
                     <div className="text-xs text-muted-foreground" dir="ltr">{fmtDate(c.fromDate)} — {c.toDate ? fmtDate(c.toDate) : "حتى الآن"}</div>
                     {c.note && <div className="text-xs text-muted-foreground mt-0.5">{c.note}</div>}
                   </div>
-                  {!c.toDate && <span className="rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300 px-2 py-0.5 text-xs h-fit">جارية</span>}
+                  {!c.toDate && <span className="badge-status-active rounded-full px-2 py-0.5 text-xs h-fit">جارية</span>}
                 </div>
               ))}
             </CardContent>
@@ -324,7 +325,7 @@ export default function AssetDetail() {
             </div>
             <div className="space-y-1"><Label>السبب</Label><Textarea rows={2} value={dReason} onChange={(e) => setDReason(e.target.value)} /></div>
             {dKind === "disposed" && dValue.trim() && Number.isFinite(Number(dValue)) && (
-              <div className="text-xs text-muted-foreground">النتيجة مقابل القيمة الدفترية ({iqd(a.bookValue)}): <span dir="ltr" className={Number(dValue) - a.bookValue >= 0 ? "text-emerald-600" : "text-rose-600"}>{iqd(Number(dValue) - a.bookValue)}</span></div>
+              <div className="text-xs text-muted-foreground">النتيجة مقابل القيمة الدفترية ({iqd(a.bookValue)}): <span dir="ltr" className={Number(dValue) - a.bookValue >= 0 ? "text-money-positive" : "text-money-negative"}>{iqd(Number(dValue) - a.bookValue)}</span></div>
             )}
           </div>
           <DialogFooter>

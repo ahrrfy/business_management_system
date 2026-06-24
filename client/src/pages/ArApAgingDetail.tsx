@@ -7,6 +7,7 @@ import { Link } from "wouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -20,10 +21,10 @@ const selectCls =
 const SIDE_LABEL: Record<Side, string> = { AR: "ذمم مدينة (لنا)", AP: "ذمم دائنة (علينا)" };
 
 const BUCKET_CLS: Record<string, string> = {
-  "0-30": "bg-emerald-100 text-emerald-700",
-  "31-60": "bg-amber-100 text-amber-700",
-  "61-90": "bg-orange-100 text-orange-700",
-  "90+": "bg-rose-100 text-rose-700",
+  "0-30": "badge-status-active",
+  "31-60": "badge-stock-low",
+  "61-90": "badge-stock-low",
+  "90+": "badge-stock-out",
 };
 
 export default function ArApAgingDetail() {
@@ -150,7 +151,9 @@ export default function ArApAgingDetail() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
+          ) : q.error ? (
+            <ErrorState message={q.error.message} onRetry={() => q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">
               لا مستندات مستحقّة في هذا النطاق.
@@ -186,7 +189,7 @@ export default function ArApAgingDetail() {
                       )}
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.daysOverdue}</td>
                       <td className="p-2.5 text-center">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${BUCKET_CLS[r.bucket] ?? "bg-muted"}`}>
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${BUCKET_CLS[r.bucket] ?? "bg-muted text-muted-foreground"}`}>
                           {r.bucket}
                         </span>
                       </td>
