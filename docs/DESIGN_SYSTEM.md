@@ -58,12 +58,12 @@
 
 | المكوّن | الملف | الغرض |
 |---|---|---|
-| `PageHeader` | `components/PageHeader.tsx` | رأس صفحة: عنوان + وصف + إجراءات |
+| `PageHeader` | `components/PageHeader.tsx` | رأس صفحة: عنوان + وصف + إجراءات + **مسار تنقّل اختياري** (`breadcrumbs` — للشاشات التفصيلية) |
 | `StatCard` | `components/StatCard.tsx` | بطاقة مؤشّر KPI («الرقم هو البطل») |
-| `LoadingState` / `ErrorState` / `TableEmptyRow` | `components/PageState.tsx` | حالات التحميل/الخطأ/الصفّ الفارغ |
+| `LoadingState` / `ErrorState` / `TableEmptyRow` / `TableSkeleton` | `components/PageState.tsx` | حالات التحميل/الخطأ/الصفّ الفارغ + **صفوف هيكلية للجداول** |
 | `EmptyState` | `components/EmptyState.tsx` | حالة فارغة كاملة بنّاءة (أيقونة+عنوان+CTA) |
 | `Badge` (success/warning/danger/info/neutral) | `components/ui/badge.tsx` | شارات الحالة الدلالية |
-| `ListToolbar` / `SelectionBar` / `DataTable` | `components/` | شريط أدوات القوائم + التحديد المتعدّد + الجداول |
+| `ListToolbar` / `SelectionBar` / `DataTable` | `components/` | شريط أدوات القوائم + التحديد المتعدّد + الجداول (`DataTable` يدعم `loading` ⇒ تحميل هيكلي) |
 | `Button` / `Card` / `Table` | `components/ui/` | لا تبنِ `<button>`/`<table>` خاماً منسّقاً يدوياً |
 
 ### قالب صفحة قائمة قياسي

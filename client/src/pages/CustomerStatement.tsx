@@ -180,6 +180,7 @@ export default function CustomerStatement() {
   return (
     <div className="space-y-4">
       <PageHeader
+        breadcrumbs={[{ label: "العملاء", href: "/customers" }, { label: "كشف حساب" }]}
         title="كشف حساب عميل"
         description="كل الفواتير والدفعات لعميل واحد، مع ملخّص الرصيد الحالي."
         actions={

@@ -2,6 +2,7 @@ import * as React from "react";
 import { AlertTriangle } from "lucide-react";
 import { Spinner } from "@/components/ui/spinner";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
 
 /**
@@ -67,5 +68,26 @@ export function TableEmptyRow({
         {message}
       </td>
     </tr>
+  );
+}
+
+/**
+ * صفوف هيكلية (skeleton) لتحميل الجداول — إحساس سرعة أفضل من المؤشّر الدوّار،
+ * إذ تُبقي بنية الجدول ثابتة فلا «قفزة تخطيط» عند وصول البيانات (CLS).
+ * تُعرض داخل `<tbody>` أثناء التحميل بدل صفّ فارغ/نصّ «جارٍ التحميل».
+ */
+export function TableSkeleton({ rows = 6, cols, className }: { rows?: number; cols: number; className?: string }) {
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, r) => (
+        <tr key={r} className="border-t" aria-hidden>
+          {Array.from({ length: cols }).map((__, c) => (
+            <td key={c} className={cn("p-2", className)}>
+              <Skeleton className="h-4 w-full" />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
   );
 }

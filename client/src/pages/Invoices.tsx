@@ -233,7 +233,8 @@ export default function Invoices() {
         columns={columns}
         data={data}
         searchPlaceholder="بحث في الفواتير…"
-        emptyText={rows.isLoading ? "جارٍ التحميل…" : "لا فواتير مطابقة."}
+        loading={rows.isLoading}
+        emptyText="لا فواتير مطابقة."
         selection={sel}
         getRowId={(r) => r.id}
         toolbar={
