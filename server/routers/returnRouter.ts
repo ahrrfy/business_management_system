@@ -60,11 +60,20 @@ export const returnRouter = router({
         .optional()
     )
     .query(({ input, ctx }) => {
-      const branchId = ctx.user.role === "admin" ? input?.branchId : (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined);
+      // عزل الفرع: admin يختار الفرع بحرّية؛ غير-admin مُقيَّد بفرعه. مدير بلا فرع مُسنَد ⇒
+      // FORBIDDEN لا فلتر مفتوح (وإلّا تسرّبت مرتجعات كل الفروع) — مرآةٌ لفحص create/getInvoice.
+      let branchId: number | undefined;
+      if (ctx.user.role === "admin") {
+        branchId = input?.branchId;
+      } else if (ctx.user.branchId != null) {
+        branchId = Number(ctx.user.branchId);
+      } else {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
       return listSalesReturns({ ...(input ?? {}), branchId });
     }),
 
-  getInvoice: managerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input }) => {
+  getInvoice: managerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (
@@ -88,6 +97,11 @@ export const returnRouter = router({
         .limit(1)
     )[0];
     if (!inv) return null;
+    // عزل الفرع (IDOR قراءة): مدير فرعٍ لا يقرأ تفاصيل فاتورة فرعٍ آخر (بنود/عميل/مبالغ).
+    // مرآةٌ لفحص ملكية الفرع في returnSale.create؛ admin يتجاوز، وغياب الفرع للمدير ⇒ منع.
+    if (ctx.user.role !== "admin" && Number(inv.branchId) !== Number(ctx.user.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "الفاتورة لا تخصّ فرعك" });
+    }
 
     const rows = await db
       .select({

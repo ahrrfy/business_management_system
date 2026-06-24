@@ -197,6 +197,12 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       returnedTotal = round2(returnedRevenue.plus(returnedTax));
     }
     returnedCost = round2(returnedCost);
+    // عند restock=false (تالف/أمر شغل) البضاعة لا تعود للمخزون ⇒ تكلفتها خسارة فعلية،
+    // فلا يصحّ عكس COGS (وإلا تبخّرت التكلفة من الدفتر = ربح مُبالَغ + نقص أصل بلا مصروف
+    // مقابل، مناقضةً لسياسة «التلف مصروفٌ بالكلفة»). نعكس التكلفة فقط حين تعود البضاعة للرفّ
+    // (restock=true) فيتعادل ازديادُ المخزون مع نقصان COGS. أمّا الإيراد/الضريبة/الذمة فتُعكَس
+    // في الحالتين (العميل أُسترِدّ/أُسقطت ذمّته بصرف النظر عن مصير البضاعة المُعادة).
+    const reversedCost = restock ? returnedCost : new Decimal(0);
 
     // RETURN ledger entry: negative values.
     await postEntry(tx, {
@@ -205,8 +211,8 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       invoiceId: input.invoiceId,
       customerId: inv.customerId,
       revenue: returnedRevenue.neg(),
-      cost: returnedCost.neg(),
-      profit: returnedRevenue.minus(returnedCost).neg(),
+      cost: reversedCost.neg(),
+      profit: returnedRevenue.minus(reversedCost).neg(),
       taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
     });
