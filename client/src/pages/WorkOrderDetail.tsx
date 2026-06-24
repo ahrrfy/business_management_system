@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { confirm } from "@/lib/confirm";
 import { fmtAr } from "@/lib/money";
+import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
@@ -12,6 +13,7 @@ import { Printer } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
+import type { ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearch } from "wouter";
 
@@ -21,6 +23,13 @@ const STATUS_LABEL: Record<string, string> = {
   READY: "جاهز للتسليم",
   DELIVERED: "مُسلَّم",
   CANCELLED: "ملغى",
+};
+const STATUS_CLS: Record<string, string> = {
+  RECEIVED: "bg-muted text-foreground/70",
+  IN_PROGRESS: "bg-blue-100 text-blue-700",
+  READY: "bg-amber-100 text-amber-700",
+  DELIVERED: "bg-emerald-100 text-emerald-700",
+  CANCELLED: "bg-rose-100 text-rose-700",
 };
 
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
@@ -32,6 +41,26 @@ const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: st
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** حقل وصفي: عنوان صغير + قيمة. */
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="space-y-0.5 min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="font-medium truncate">{children}</div>
+    </div>
+  );
+}
+
+/** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، بلا اقتطاع). */
+function SummaryRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className={cn("text-muted-foreground", strong && "font-semibold text-foreground")}>{label}</span>
+      <span dir="ltr" className={cn("tabular-nums", strong ? "text-lg font-bold" : "text-sm")}>{fmtAr(value)}</span>
+    </div>
+  );
+}
 
 export default function WorkOrderDetail() {
   const params = useParams();
@@ -168,50 +197,79 @@ export default function WorkOrderDetail() {
       </div>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">{data.title}</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <div><div className="text-muted-foreground text-xs">رقم الأمر</div><div><CopyInline value={data.orderNumber} successMessage="تم نَسخ رَقم الأَمر" /></div></div>
-          <div><div className="text-muted-foreground text-xs">الحالة</div><div>{STATUS_LABEL[data.status] ?? data.status}</div></div>
-          <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "عميل نقدي"}</div></div>
-          <div><div className="text-muted-foreground text-xs">الكمية</div><div>{data.quantity}</div></div>
-          <div><div className="text-muted-foreground text-xs">سعر البيع</div><div dir="ltr" className="tabular-nums">{fmt(data.salePrice)}</div></div>
-          <div><div className="text-muted-foreground text-xs">كلفة المواد</div><div dir="ltr" className="tabular-nums">{fmt(data.materialsCost)}</div></div>
-          <div><div className="text-muted-foreground text-xs">كلفة العمالة</div><div dir="ltr" className="tabular-nums">{fmt(data.laborCost)}</div></div>
-          <div><div className="text-muted-foreground text-xs">الاستحقاق</div><div>{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</div></div>
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center justify-between gap-2">
+            <span className="truncate">{data.title}</span>
+            <span className={`text-xs rounded-full px-2.5 py-0.5 font-medium shrink-0 ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
+              {STATUS_LABEL[data.status] ?? data.status}
+            </span>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-5 md:grid-cols-3">
+            <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
+              <Field label="رقم الأمر"><CopyInline value={data.orderNumber} successMessage="تم نَسخ رَقم الأَمر" /></Field>
+              <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
+              <Field label="الكمية">{data.quantity}</Field>
+              <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
+            </div>
+
+            <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
+              <SummaryRow label="سعر البيع" value={data.salePrice} strong />
+              <SummaryRow label="كلفة المواد" value={data.materialsCost} />
+              <SummaryRow label="كلفة العمالة" value={data.laborCost} />
+            </div>
+          </div>
+
           {data.customizationText && (
-            <div className="md:col-span-4"><div className="text-muted-foreground text-xs">التخصيص</div><div className="whitespace-pre-wrap">{data.customizationText}</div></div>
+            <div className="rounded-md bg-muted/40 p-3 text-sm">
+              <div className="text-xs text-muted-foreground mb-1">التخصيص</div>
+              <div className="whitespace-pre-wrap">{data.customizationText}</div>
+            </div>
           )}
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">المواد</CardTitle></CardHeader>
+        <CardHeader className="pb-3"><CardTitle className="text-base">المواد</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr className="text-right">
-                <th className="p-2">المادة</th>
-                <th className="p-2">SKU</th>
-                <th className="p-2 text-center">كمية (أساس)</th>
-                <th className="p-2 text-left">كلفة الوحدة</th>
-                <th className="p-2 text-left">كلفة السطر</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.materials.map((m) => (
-                <tr key={m.id} className="border-t">
-                  <td className="p-2">{m.productName}{m.variantName ? ` — ${m.variantName}` : ""}</td>
-                  <td className="p-2 font-mono text-xs" dir="ltr">{m.sku}</td>
-                  <td className="p-2 text-center">{m.baseQuantity}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(Number(m.unitCost) * m.baseQuantity)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-xs text-muted-foreground">
+                <tr className="text-right">
+                  <th className="px-3 py-2 font-medium">المادة</th>
+                  <th className="px-3 py-2 font-medium">SKU</th>
+                  <th className="px-3 py-2 font-medium text-center">كمية (أساس)</th>
+                  <th className="px-3 py-2 font-medium text-left">كلفة الوحدة</th>
+                  <th className="px-3 py-2 font-medium text-left">كلفة السطر</th>
                 </tr>
-              ))}
-              {data.materials.length === 0 && (
-                <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا مواد مرفقة (أمر طباعة/خدمة صرفة).</td></tr>
+              </thead>
+              <tbody>
+                {data.materials.map((m) => (
+                  <tr key={m.id} className="border-t hover:bg-muted/30">
+                    <td className="px-3 py-2">{m.productName}{m.variantName ? ` — ${m.variantName}` : ""}</td>
+                    <td className="px-3 py-2 font-mono text-xs" dir="ltr">{m.sku}</td>
+                    <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{m.baseQuantity}</td>
+                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>
+                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(Number(m.unitCost) * m.baseQuantity)}</td>
+                  </tr>
+                ))}
+                {data.materials.length === 0 && (
+                  <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا مواد مرفقة (أمر طباعة/خدمة صرفة).</td></tr>
+                )}
+              </tbody>
+              {data.materials.length > 0 && (
+                <tfoot>
+                  <tr className="border-t-2 bg-muted/40 font-semibold">
+                    <td className="px-3 py-2" colSpan={4}>إجمالي كلفة المواد</td>
+                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">
+                      {fmt(data.materials.reduce((s, m) => s + Number(m.unitCost) * m.baseQuantity, 0))}
+                    </td>
+                  </tr>
+                </tfoot>
               )}
-            </tbody>
-          </table>
+            </table>
+          </div>
         </CardContent>
       </Card>
 
