@@ -183,6 +183,13 @@
       "when": 1782280000000,
       "tag": "0025_channels_inbox",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "5",
+      "when": 1782300000000,
+      "tag": "0026_channel_integrations",
+      "breakpoints": true
     }
   ]
 }
