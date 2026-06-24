@@ -63,7 +63,7 @@ ${CAIRO_FONT}
   body{font-family:'Cairo',monospace;width:80mm;background:#fff;color:#000;margin:0;padding:3mm;font-size:11px;line-height:1.5}
 </style>
 </head>
-<body>${bodyContent}</body></html>`;
+<body onload="window.print();setTimeout(function(){window.close()},400)">${bodyContent}</body></html>`;
 }
 
 // ─── رأس المستند ─────────────────────────────────────────────────────────────

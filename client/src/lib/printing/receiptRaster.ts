@@ -264,6 +264,7 @@ export async function receiptToCanvas(
   solidLine(ctx, y, 2);
   y += 34;
 
+  if (d.paymentMethod) totRow("طريقة الدفع:", d.paymentMethod, true);
   if (d.paid != null) totRow("المدفوع:", fmt(d.paid));
   if (d.change != null) totRow("الباقي:", fmt(d.change));
   if (Number(d.credit ?? 0) > 0) totRow("آجل/ذمة:", fmt(d.credit), true);

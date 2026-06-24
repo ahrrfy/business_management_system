@@ -12,6 +12,7 @@ import { code128Svg } from './barcode';
 import { type LabelRenderItem, type LabelRenderOpts } from './labelRaster';
 import { getLabelSize, type LabelSize } from './labelSize';
 import { labelDocHtml } from './labelDesign';
+import type { PrintDoc } from './render';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ١. فاتورة مبيعات ضريبية — A4 + QR Code
@@ -856,6 +857,8 @@ export interface ReceiptBrowserData {
   change?: string | number | null;
   /** مبلغ الآجل/الذمة في البيع الآجل (يظهر صفّاً بارزاً بعد المدفوع) */
   credit?: string | number | null;
+  /** طريقة الدفع كنصّ جاهز للعرض (نقدي/بطاقة/تحويل/محفظة/صك) — تظهر في كتلة الإجماليات */
+  paymentMethod?: string | null;
 }
 
 export function printBrowserReceipt(d: ReceiptBrowserData): void {
@@ -914,6 +917,7 @@ export function printBrowserReceipt(d: ReceiptBrowserData): void {
       padding:1.5mm 0;border-top:1px solid #000;border-bottom:1px solid #000;">
       <span>الإجمالي:</span><span>${fmt(d.total)} د.ع</span>
     </div>
+    ${d.paymentMethod ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>طريقة الدفع:</span><span>${esc(d.paymentMethod)}</span></div>` : ''}
     ${d.paid != null ? `<div style="display:flex;justify-content:space-between;"><span>المدفوع:</span><span>${fmt(d.paid)}</span></div>` : ''}
     ${d.change != null ? `<div style="display:flex;justify-content:space-between;"><span>الباقي:</span><span>${fmt(d.change)}</span></div>` : ''}
     ${Number(d.credit ?? 0) > 0 ? `<div style="display:flex;justify-content:space-between;font-weight:800;"><span>آجل/ذمة:</span><span>${fmt(d.credit)}</span></div>` : ''}
@@ -1086,7 +1090,27 @@ export interface ShiftOpenData {
   openedAt: Date;
 }
 
-export function printShiftOpen(d: ShiftOpenData): void {
+/** بناء مستند طباعة عام (PrintDoc) لفتح الوردية — لمسار النقطية الحرارية (WebUSB/جسر الخادم). */
+export function shiftOpenDoc(d: ShiftOpenData): PrintDoc {
+  const date = d.openedAt.toLocaleDateString('en-GB');
+  const time = d.openedAt.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' });
+  return {
+    kind: 'opening',
+    title: 'فتح الوردية',
+    subtitle: 'بيان الرصيد الافتتاحي',
+    meta: [
+      `رقم الوردية: #${d.shiftId}`,
+      `التاريخ: ${date}`,
+      `وقت الفتح: ${time}`,
+      `الكاشير: ${d.cashierName}`,
+      `الفرع: ${d.branchName}`,
+    ],
+    totals: [{ label: 'الرصيد الافتتاحي', value: `${fmt(d.openingBalance)} د.ع` }],
+    footer: CO.footer,
+  };
+}
+
+export function printShiftOpenBrowser(d: ShiftOpenData): void {
   const logo    = logoUrl();
   const date    = d.openedAt.toLocaleDateString('en-GB');
   const time    = d.openedAt.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' });
@@ -1217,7 +1241,50 @@ export interface ShiftCloseData {
   variance: string | number;
 }
 
-export function printShiftClose(d: ShiftCloseData): void {
+/** بناء مستند طباعة عام (PrintDoc) لإغلاق الوردية / Z — لمسار النقطية الحرارية. */
+export function shiftCloseDoc(d: ShiftCloseData): PrintDoc {
+  const openedStr = d.openedAt
+    ? new Date(d.openedAt).toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' })
+    : '—';
+  const closedStr = d.closedAt.toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' });
+
+  const payRows = d.payments
+    .filter(p => Number(p.total) !== 0)
+    .map(p => [
+      `${METHOD_AR[p.method] ?? p.method} ${p.direction === 'IN' ? 'وارد' : 'صادر'}`,
+      String(p.count),
+      p.direction === 'OUT' ? `( ${fmt(p.total)} )` : fmt(p.total),
+    ]);
+
+  const varNum   = Number(d.variance);
+  const varLabel = varNum === 0 ? 'الفرق — مطابق ✓' : varNum > 0 ? 'الفرق — زيادة' : 'الفرق — عجز';
+  const varVal   = varNum === 0 ? 'صفر' : `${varNum > 0 ? '+' : '−'} ${fmt(Math.abs(varNum))} د.ع`;
+
+  return {
+    kind: 'zreport',
+    title: 'إغلاق الوردية',
+    subtitle: 'تقرير نهاية اليوم — Z',
+    meta: [
+      `رقم الوردية: #${d.shiftId}`,
+      `فُتحت: ${openedStr}`,
+      `أُغلقت: ${closedStr}`,
+      `الكاشير: ${d.cashierName}`,
+      `الفرع: ${d.branchName}`,
+    ],
+    ...(payRows.length ? { columns: ['الطريقة', 'عدد', 'المبلغ'], rows: payRows } : {}),
+    totals: [
+      { label: 'عدد الفواتير', value: `${d.invoiceCount}` },
+      { label: 'إجمالي المبيعات', value: `${fmt(d.salesTotal)} د.ع` },
+      { label: 'الرصيد الافتتاحي', value: `${fmt(d.openingBalance)} د.ع` },
+      { label: 'النقد المتوقع', value: `${fmt(d.expectedCash)} د.ع` },
+      { label: 'النقد المعدود', value: `${fmt(d.countedCash)} د.ع` },
+      { label: varLabel, value: varVal },
+    ],
+    footer: 'نهاية الوردية — شكراً',
+  };
+}
+
+export function printShiftCloseBrowser(d: ShiftCloseData): void {
   const logo     = logoUrl();
   const openedStr  = d.openedAt
     ? new Date(d.openedAt).toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' })

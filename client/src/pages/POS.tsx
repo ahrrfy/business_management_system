@@ -8,8 +8,7 @@ import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
-import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
-import { printShiftOpen, printShiftClose } from "@/lib/printing/printTemplates";
+import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, printShiftClose, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
@@ -220,6 +219,7 @@ function buildBrandedReceipt(r: Receipt): ReceiptBrowserData {
     // (بلا إدخال مبلغ) باقيه ٠ ⇒ لا سطر، بدل طباعة «الباقي: ‑الإجمالي» (باقٍ سالب لا معنى له).
     change: r.isCredit || r.change <= 0 ? null : r.change,
     credit: r.isCredit ? r.credit : null,
+    paymentMethod: r.method,
   };
 }
 
@@ -634,7 +634,7 @@ export default function POS() {
   const openShift = trpc.shifts.open.useMutation({
     onSuccess: async (res) => {
       await shiftQ.refetch();
-      printShiftOpen({
+      void printShiftOpen({
         shiftId:        res.shiftId,
         openingBalance: Number(opening || 0),
         cashierName:    me.data?.name ?? "كاشير",
@@ -1687,7 +1687,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const closeShift = trpc.shifts.close.useMutation({
     onSuccess: async (r) => {
       const rep = report;
-      printShiftClose({
+      void printShiftClose({
         shiftId:        r.shiftId,
         openedAt:       shift?.openedAt ?? null,
         closedAt:       new Date(),

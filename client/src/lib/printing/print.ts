@@ -6,7 +6,11 @@ import { receiptToRaster } from "./receiptRaster";
 import { workOrderToRaster, type WorkOrderReceiptData } from "./workOrderRaster";
 import { buildLabelBytes, type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
 import { getLabelSize, type LabelSize } from "./labelSize";
-import { printBrowserReceipt, printBarcodeSheet, printBrowserWorkOrderReceipt, type ReceiptBrowserData } from "./printTemplates";
+import {
+  printBrowserReceipt, printBarcodeSheet, printBrowserWorkOrderReceipt,
+  printShiftOpenBrowser, printShiftCloseBrowser, shiftOpenDoc, shiftCloseDoc,
+  type ReceiptBrowserData, type ShiftOpenData, type ShiftCloseData,
+} from "./printTemplates";
 
 export type { PrintDoc, ReceiptBrowserData, WorkOrderReceiptData, LabelRenderItem, LabelRenderOpts, LabelSize };
 export { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter } from "./thermal";
@@ -176,4 +180,46 @@ export async function printWorkOrderReceipt(
   }
   printBrowserWorkOrderReceipt(d);
   return { via: "browser" };
+}
+
+export type { ShiftOpenData, ShiftCloseData };
+
+/**
+ * طباعة إيصال الوردية (فتح/إغلاق) بنفس ترتيب أولوية إيصال الكاشير تماماً:
+ *  ١) جسر الخادم  ٢) WebUSB (نقطية عبر docToRaster)  ٣) نافذة المتصفّح بالتصميم المُعلَّم (تطبع تلقائياً).
+ * يعالج علّة «إيصالات الوردية لا تُطبع»: كانت تفتح نافذة متصفّح فقط بلا مسار حراري ولا طباعة تلقائية،
+ * فلا تصل لطابعة الكاشير (المربوطة WinUSB عبر WebUSB) بينما الفواتير تطبع لأنها تمرّ بهذا المسار.
+ */
+async function printShiftDoc(
+  doc: PrintDoc,
+  browserFallback: () => void,
+): Promise<{ via: "server" | "thermal" | "browser" }> {
+  // إعادة ربط صامتة لطابعة الإيصالات إن لم تكن مربوطة (مطابق لـ printWorkOrderReceipt).
+  if (!isPaired() && isWebUsbSupported()) {
+    try { await tryReconnectPrinter(); } catch { /* تجاهل — نتراجع للبدائل */ }
+  }
+
+  if ((await isServerBridgeEnabled()) || isPaired()) {
+    const bytes = await buildReceiptBytes(doc);
+    if (bytes) {
+      if (await isServerBridgeEnabled()) {
+        try { await sendRawToServer(bytes); return { via: "server" }; }
+        catch (e) { console.warn("[print] فشل جسر الخادم (وردية)، نتراجع للبديل:", e); }
+      }
+      if (isPaired()) {
+        try { await sendBytes(bytes); return { via: "thermal" }; }
+        catch (e) { console.warn("[print] فشل WebUSB (وردية)، نتراجع لنافذة المتصفّح:", e); }
+      }
+    }
+  }
+  browserFallback();
+  return { via: "browser" };
+}
+
+export function printShiftOpen(d: ShiftOpenData): Promise<{ via: "server" | "thermal" | "browser" }> {
+  return printShiftDoc(shiftOpenDoc(d), () => printShiftOpenBrowser(d));
+}
+
+export function printShiftClose(d: ShiftCloseData): Promise<{ via: "server" | "thermal" | "browser" }> {
+  return printShiftDoc(shiftCloseDoc(d), () => printShiftCloseBrowser(d));
 }

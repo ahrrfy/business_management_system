@@ -6,7 +6,7 @@ import { useClipboard } from "@/hooks/useClipboard";
 import { formatZReportAsText } from "@/lib/copy/formatters";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { printShiftClose } from "@/lib/printing/printTemplates";
+import { printShiftClose } from "@/lib/printing/print";
 import { trpc } from "@/lib/trpc";
 import { Copy, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
