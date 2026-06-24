@@ -8,9 +8,11 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatQuotationAsWhatsApp } from "@/lib/copy/formatters";
 import { confirm } from "@/lib/confirm";
 import { buildQuotationMessage } from "@/lib/whatsapp";
-import { fmt } from "@/lib/money";
+import { D, fmt } from "@/lib/money";
+import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
+import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
 
@@ -23,6 +25,14 @@ const STATUS: Record<string, string> = {
   EXPIRED: "منتهٍ",
 };
 const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
+const STATUS_CLS: Record<string, string> = {
+  DRAFT: "bg-muted text-foreground/70",
+  SENT: "bg-blue-100 text-blue-700",
+  ACCEPTED: "bg-emerald-100 text-emerald-700",
+  REJECTED: "bg-rose-100 text-rose-700",
+  CONVERTED: "bg-violet-100 text-violet-700",
+  EXPIRED: "bg-amber-100 text-amber-700",
+};
 const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: string }[] = [
   { v: "CASH", label: "نقدي" },
   { v: "TRANSFER", label: "تحويل" },
@@ -31,6 +41,26 @@ const METHODS: { v: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET"; label: st
 ];
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+/** حقل وصفي: عنوان صغير + قيمة. */
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="space-y-0.5 min-w-0">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="font-medium truncate">{children}</div>
+    </div>
+  );
+}
+
+/** سطر في لوحة الملخّص المالي: تسمية يميناً + مبلغ يساراً (LTR، بلا اقتطاع). */
+function SummaryRow({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <span className={cn("text-muted-foreground", strong && "font-semibold text-foreground")}>{label}</span>
+      <span dir="ltr" className={cn("tabular-nums", strong ? "text-lg font-bold" : "text-sm")}>{fmt(value)}</span>
+    </div>
+  );
+}
 
 export default function QuotationDetail() {
   const params = useParams();
@@ -64,6 +94,7 @@ export default function QuotationDetail() {
   if (!q.data) return <div className="p-10 text-center text-muted-foreground">عرض السعر غير موجود.</div>;
   const data = q.data;
   const isOpen = data.status === "DRAFT" || data.status === "SENT" || data.status === "ACCEPTED";
+  const hasTax = D(data.taxAmount ?? "0").gt(0);
 
   function printQuote() {
     printQuotation({
@@ -94,51 +125,74 @@ export default function QuotationDetail() {
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base flex items-center justify-between">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center justify-between gap-2">
             <CopyInline value={data.quoteNumber} />
-            <span className="text-xs rounded-full px-2 py-0.5 bg-muted">{STATUS[data.status] ?? data.status}</span>
+            <span className={`text-xs rounded-full px-2.5 py-0.5 font-medium ${STATUS_CLS[data.status] ?? "bg-muted"}`}>
+              {STATUS[data.status] ?? data.status}
+            </span>
           </CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <div><div className="text-muted-foreground text-xs">العميل</div><div>{data.customerName ?? "—"}</div></div>
-          <div><div className="text-muted-foreground text-xs">فئة السعر</div><div>{TIER[data.priceTier] ?? data.priceTier}</div></div>
-          <div><div className="text-muted-foreground text-xs">التاريخ</div><div>{new Date(data.quoteDate).toLocaleDateString("ar-IQ-u-nu-latn")}</div></div>
-          <div><div className="text-muted-foreground text-xs">صالح حتى</div><div>{data.validUntil ? String(data.validUntil).slice(0, 10) : "—"}</div></div>
-          <div><div className="text-muted-foreground text-xs">المجموع</div><div dir="ltr" className="tabular-nums">{fmt(data.subtotal)}</div></div>
-          <div><div className="text-muted-foreground text-xs">الضريبة</div><div dir="ltr" className="tabular-nums">{fmt(data.taxAmount)}</div></div>
-          <div><div className="text-muted-foreground text-xs">الإجمالي</div><div dir="ltr" className="tabular-nums font-semibold">{fmt(data.total)}</div></div>
-          {data.convertedInvoiceId && (
-            <div><div className="text-muted-foreground text-xs">الفاتورة</div><Link href={`/invoices/${data.convertedInvoiceId}`} className="underline">#{data.convertedInvoiceId}</Link></div>
-          )}
+        <CardContent>
+          <div className="grid gap-5 md:grid-cols-3">
+            <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
+              <Field label="العميل">{data.customerName ?? "—"}</Field>
+              <Field label="فئة السعر">{TIER[data.priceTier] ?? data.priceTier}</Field>
+              <Field label="التاريخ">{new Date(data.quoteDate).toLocaleDateString("ar-IQ-u-nu-latn")}</Field>
+              <Field label="صالح حتى">{data.validUntil ? String(data.validUntil).slice(0, 10) : "—"}</Field>
+              {data.convertedInvoiceId && (
+                <Field label="الفاتورة">
+                  <Link href={`/invoices/${data.convertedInvoiceId}`} className="underline">#{data.convertedInvoiceId}</Link>
+                </Field>
+              )}
+            </div>
+
+            <div className="rounded-lg border bg-muted/30 p-4 space-y-2.5 text-sm self-start">
+              <SummaryRow label="المجموع" value={data.subtotal} />
+              {hasTax && <SummaryRow label="الضريبة" value={data.taxAmount} />}
+              <div className="border-t pt-2.5">
+                <SummaryRow label="الإجمالي" value={data.total} strong />
+              </div>
+            </div>
+          </div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle className="text-base">البنود</CardTitle></CardHeader>
+        <CardHeader className="pb-3"><CardTitle className="text-base">البنود</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr className="text-right">
-                <th className="p-2">المنتج</th>
-                <th className="p-2">الوحدة</th>
-                <th className="p-2 text-center">الكمية</th>
-                <th className="p-2 text-left">سعر الوحدة</th>
-                <th className="p-2 text-left">الإجمالي</th>
-              </tr>
-            </thead>
-            <tbody>
-              {data.items.map((it) => (
-                <tr key={it.id} className="border-t">
-                  <td className="p-2">{it.productName}{it.variantName ? ` — ${it.variantName}` : ""} <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span></td>
-                  <td className="p-2 text-muted-foreground">{it.unitName}</td>
-                  <td className="p-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(it.total)}</td>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-xs text-muted-foreground">
+                <tr className="text-right">
+                  <th className="px-3 py-2 font-medium">المنتج</th>
+                  <th className="px-3 py-2 font-medium">الوحدة</th>
+                  <th className="px-3 py-2 font-medium text-center">الكمية</th>
+                  <th className="px-3 py-2 font-medium text-left">سعر الوحدة</th>
+                  <th className="px-3 py-2 font-medium text-left">الإجمالي</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {data.items.map((it) => (
+                  <tr key={it.id} className="border-t hover:bg-muted/30">
+                    <td className="px-3 py-2">{it.productName}{it.variantName ? ` — ${it.variantName}` : ""}{" "}
+                      {it.sku && <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span>}
+                    </td>
+                    <td className="px-3 py-2 text-muted-foreground">{it.unitName}</td>
+                    <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
+                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
+                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(it.total)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr className="border-t-2 bg-muted/40 font-semibold">
+                  <td className="px-3 py-2" colSpan={4}>مجموع البنود</td>
+                  <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(data.subtotal)}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
         </CardContent>
       </Card>
 
