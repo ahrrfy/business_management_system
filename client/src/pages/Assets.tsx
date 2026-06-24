@@ -84,7 +84,7 @@ export default function Assets() {
                   <th className="p-2">الأصل</th>
                   <th className="p-2">النوع</th>
                   <th className="p-2">التاريخ</th>
-                  <th className="p-2 text-left">التكلفة</th>
+                  <th className="p-2 text-right">التكلفة</th>
                 </tr>
               </thead>
               <tbody>
@@ -93,7 +93,7 @@ export default function Assets() {
                     <td className="p-2">{m.assetName ?? "—"} <span className="text-xs text-muted-foreground" dir="ltr">{m.assetCode ?? ""}</span></td>
                     <td className="p-2 text-xs">{m.type}</td>
                     <td className="p-2 text-xs" dir="ltr">{m.maintDate}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(m.cost)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(m.cost)}</td>
                   </tr>
                 ))}
                 {d.recentMaintenance.length === 0 && (

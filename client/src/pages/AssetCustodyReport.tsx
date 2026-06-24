@@ -78,7 +78,7 @@ export default function AssetCustodyReport() {
               <th className="p-2 w-8"></th>
               <th className="p-2">الموظف</th>
               <th className="p-2 text-center">عدد الأصول</th>
-              <th className="p-2 text-left">القيمة الدفترية</th>
+              <th className="p-2 text-right">القيمة الدفترية</th>
               <th className="p-2 text-center">إقرار</th>
             </tr></thead>
             <tbody>
@@ -88,7 +88,7 @@ export default function AssetCustodyReport() {
                     <td className="p-2 text-muted-foreground">{open.has(e.employeeId) ? <ChevronDown className="size-4" /> : <ChevronLeft className="size-4" />}</td>
                     <td className="p-2 font-medium">{e.employeeName ?? "موظف"}</td>
                     <td className="p-2 text-center tabular-nums">{e.count}</td>
-                    <td className="p-2 text-left tabular-nums font-medium" dir="ltr">{iqd(e.value)}</td>
+                    <td className="p-2 text-right tabular-nums font-medium" dir="ltr">{iqd(e.value)}</td>
                     <td className="p-2 text-center">
                       <Button variant="outline" size="sm" onClick={(ev) => { ev.stopPropagation(); printCustodyAck({ employeeName: e.employeeName ?? "موظف", items: e.items.map((i) => ({ code: i.code, name: i.name, serial: i.serial, bookValue: i.bookValue })) }); }}>إقرار عهدة</Button>
                     </td>
@@ -103,7 +103,7 @@ export default function AssetCustodyReport() {
                                 <td className="p-2 ps-10"><Link href={`/assets/${i.id}`} className="flex items-center gap-1.5 hover:text-primary"><CategoryIcon category={i.category} />{i.name}</Link></td>
                                 <td className="p-2 font-mono" dir="ltr">{i.code}</td>
                                 <td className="p-2 text-muted-foreground">{i.location ?? "—"}</td>
-                                <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(i.bookValue)}</td>
+                                <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(i.bookValue)}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -124,14 +124,14 @@ export default function AssetCustodyReport() {
           <CardHeader><CardTitle className="text-base">أصول بلا عهدة ({d.unassigned.length})</CardTitle></CardHeader>
           <CardContent className="p-0">
             <table className="w-full text-sm">
-              <thead className="bg-muted/50"><tr><th className="p-2">الأصل</th><th className="p-2">الرمز</th><th className="p-2">الفرع</th><th className="p-2 text-left">القيمة الدفترية</th></tr></thead>
+              <thead className="bg-muted/50"><tr><th className="p-2">الأصل</th><th className="p-2">الرمز</th><th className="p-2">الفرع</th><th className="p-2 text-right">القيمة الدفترية</th></tr></thead>
               <tbody>
                 {d.unassigned.map((a) => (
                   <tr key={a.id} className="border-t hover:bg-accent/50">
                     <td className="p-2"><Link href={`/assets/${a.id}`} className="flex items-center gap-1.5 hover:text-primary"><CategoryIcon category={a.category} />{a.name}</Link></td>
                     <td className="p-2 font-mono text-xs" dir="ltr">{a.code}</td>
                     <td className="p-2 text-xs">{a.branchName ?? "—"}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(a.bookValue)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(a.bookValue)}</td>
                   </tr>
                 ))}
               </tbody>

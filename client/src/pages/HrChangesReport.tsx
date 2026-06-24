@@ -167,7 +167,7 @@ export default function HrChangesReport() {
                     <th className="p-2.5 text-right font-medium">الموظف</th>
                     <th className="p-2.5 text-right font-medium">النوع</th>
                     <th className="p-2.5 text-right font-medium">آخر يوم عمل</th>
-                    <th className="p-2.5 text-left font-medium">التسوية</th>
+                    <th className="p-2.5 text-right font-medium">التسوية</th>
                     <th className="p-2.5 text-right font-medium">الحالة</th>
                   </tr>
                 </thead>
@@ -177,7 +177,7 @@ export default function HrChangesReport() {
                       <td className="p-2.5 text-right">{t.employeeName}</td>
                       <td className="p-2.5 text-right">{t.type}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{t.lastDay}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(t.settlement)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(t.settlement)}</td>
                       <td className="p-2.5 text-right">
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[t.status] ?? "bg-muted text-muted-foreground"}`}>
                           {TERM_STATUS_LABEL[t.status] ?? t.status}

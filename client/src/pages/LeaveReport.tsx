@@ -78,16 +78,16 @@ export default function LeaveReport() {
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="p-2.5 text-right font-medium">الموظف</th>
-                    <th className="p-2.5 text-left font-medium">أيام مستهلكة (معتمدة)</th>
-                    <th className="p-2.5 text-left font-medium">أيام معلّقة</th>
+                    <th className="p-2.5 text-right font-medium">أيام مستهلكة (معتمدة)</th>
+                    <th className="p-2.5 text-right font-medium">أيام معلّقة</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r) => (
                     <tr key={r.employeeId} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right">{r.employeeName}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.usedDays}</td>
-                      <td className="p-2.5 text-left tabular-nums text-[var(--stock-low)]" dir="ltr">
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.usedDays}</td>
+                      <td className="p-2.5 text-right tabular-nums text-[var(--stock-low)]" dir="ltr">
                         {r.pendingDays || "—"}
                       </td>
                     </tr>

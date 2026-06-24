@@ -147,8 +147,8 @@ export default function AbcAnalysis() {
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="p-2.5 text-right font-medium">#</th>
                     <th className="p-2.5 text-right font-medium">المنتج</th>
-                    <th className="p-2.5 text-left font-medium">الإيراد</th>
-                    <th className="p-2.5 text-left font-medium">النسبة التراكمية</th>
+                    <th className="p-2.5 text-right font-medium">الإيراد</th>
+                    <th className="p-2.5 text-right font-medium">النسبة التراكمية</th>
                     <th className="p-2.5 text-center font-medium">الفئة</th>
                   </tr>
                 </thead>
@@ -157,8 +157,8 @@ export default function AbcAnalysis() {
                     <tr key={r.productId} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{i + 1}</td>
                       <td className="p-2.5 text-right">{r.productName}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{r.cumulativePct}%</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{r.cumulativePct}%</td>
                       <td className="p-2.5 text-center">
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${CLASS_CLS[r.class] ?? "bg-muted"}`}>
                           {CLASS_LABEL[r.class] ?? r.class}

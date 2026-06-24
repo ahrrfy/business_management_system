@@ -167,17 +167,17 @@ export default function AssetDetail() {
               <table className="w-full text-sm">
                 <thead className="bg-muted/50"><tr>
                   <th className="p-2">السنة</th>
-                  <th className="p-2 text-left">القيمة أول المدة</th>
-                  <th className="p-2 text-left">إهلاك السنة</th>
-                  <th className="p-2 text-left">القيمة آخر المدة</th>
+                  <th className="p-2 text-right">القيمة أول المدة</th>
+                  <th className="p-2 text-right">إهلاك السنة</th>
+                  <th className="p-2 text-right">القيمة آخر المدة</th>
                 </tr></thead>
                 <tbody>
                   {a.schedule.map((r) => (
                     <tr key={r.year} className={`border-t ${r.isCurrent ? "bg-primary/5 font-medium" : ""}`}>
                       <td className="p-2" dir="ltr"><span className="inline-flex items-center gap-1">{r.year}{r.isCurrent ? <PlayCircle aria-hidden className="size-3" /> : null}</span></td>
-                      <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.opening)}</td>
-                      <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.dep)}</td>
-                      <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.closing)}</td>
+                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.opening)}</td>
+                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.dep)}</td>
+                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.closing)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -195,7 +195,7 @@ export default function AssetDetail() {
             <CardContent className="p-0">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50"><tr>
-                  <th className="p-2">التاريخ</th><th className="p-2">النوع</th><th className="p-2">المزوّد</th><th className="p-2">ملاحظات</th><th className="p-2 text-left">التكلفة</th>
+                  <th className="p-2">التاريخ</th><th className="p-2">النوع</th><th className="p-2">المزوّد</th><th className="p-2">ملاحظات</th><th className="p-2 text-right">التكلفة</th>
                 </tr></thead>
                 <tbody>
                   {a.maintenance.map((m) => (
@@ -204,7 +204,7 @@ export default function AssetDetail() {
                       <td className="p-2">{m.type}</td>
                       <td className="p-2 text-xs">{m.vendor ?? "—"}</td>
                       <td className="p-2 text-xs text-muted-foreground">{m.note ?? "—"}</td>
-                      <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(m.cost)}</td>
+                      <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(m.cost)}</td>
                     </tr>
                   ))}
                   {a.maintenance.length === 0 && <TableEmptyRow colSpan={5} message="لا عمليات صيانة مسجّلة." />}

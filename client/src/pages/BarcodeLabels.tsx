@@ -411,7 +411,7 @@ export default function BarcodeLabels() {
               <tr>
                 <th className="p-2">المنتج</th>
                 <th className="p-2">الباركود</th>
-                <th className="p-2 text-left">السعر</th>
+                <th className="p-2 text-right">السعر</th>
                 <th className="p-2 w-24">عدد الملصقات</th>
                 <th className="p-2 text-center">معاينة</th>
                 <th className="p-2 w-10 text-center"></th>
@@ -439,7 +439,7 @@ export default function BarcodeLabels() {
                         {q.saved && <span className="text-xs text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />محفوظ</span>}
                       </div>
                     </td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{q.price != null ? money(q.price) : "—"}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{q.price != null ? money(q.price) : "—"}</td>
                     <td className="p-2">
                       <Input dir="ltr" inputMode="numeric" className="h-8 text-center"
                         value={countDraft[q.key] ?? String(q.count)}

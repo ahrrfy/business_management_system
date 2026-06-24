@@ -106,10 +106,10 @@ export default function AssetDisposalLog() {
                 <th className="p-2">الأصل</th>
                 <th className="p-2 text-center">النوع</th>
                 <th className="p-2">التاريخ</th>
-                <th className="p-2 text-left">قيمة الشراء</th>
-                <th className="p-2 text-left">الدفترية عند الإخراج</th>
-                <th className="p-2 text-left">العائد</th>
-                <th className="p-2 text-left">النتيجة</th>
+                <th className="p-2 text-right">قيمة الشراء</th>
+                <th className="p-2 text-right">الدفترية عند الإخراج</th>
+                <th className="p-2 text-right">العائد</th>
+                <th className="p-2 text-right">النتيجة</th>
               </tr></thead>
               <tbody>
                 {rows.map((r) => (
@@ -119,10 +119,10 @@ export default function AssetDisposalLog() {
                       <span className={`rounded-full px-2 py-0.5 text-xs ${r.status === "disposed" ? "badge-stock-out" : "badge-status-cancelled"}`}>{r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة"}</span>
                     </td>
                     <td className="p-2 text-xs" dir="ltr">{fmtDate(r.disposalDate)}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.purchaseValue)}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.bookValue)}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{r.proceeds != null ? iqd(r.proceeds) : "—"}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.purchaseValue)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(r.bookValue)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{r.proceeds != null ? iqd(r.proceeds) : "—"}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">
                       {r.gain != null ? (
                         <span className={Number(r.gain) >= 0 ? "text-money-positive" : "text-money-negative"}>{Number(r.gain) >= 0 ? "+" : ""}{iqd(r.gain)}</span>
                       ) : "—"}

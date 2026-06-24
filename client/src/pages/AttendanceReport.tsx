@@ -151,8 +151,8 @@ export default function AttendanceReport() {
                           {r.status}
                         </span>
                       </td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.hours)}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.amount)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.hours)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.amount)}</td>
                     </tr>
                   ))}
                 </tbody>
