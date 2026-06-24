@@ -138,8 +138,8 @@ export default function ExpensesReport() {
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
                   <th className="p-3 text-right font-medium">{tab === "category" ? "الفئة" : "جهة الصرف"}</th>
-                  <th className="p-3 text-left font-medium">المبلغ</th>
-                  <th className="p-3 text-left font-medium">العدد</th>
+                  <th className="p-3 text-right font-medium">المبلغ</th>
+                  <th className="p-3 text-right font-medium">العدد</th>
                 </tr>
               </thead>
               <tbody>
@@ -149,8 +149,8 @@ export default function ExpensesReport() {
                   activeRows.map((r, i) => (
                     <tr key={i} className="border-b last:border-0">
                       <td className="p-3 text-right">{r.label}</td>
-                      <td className="p-3 text-left tabular-nums text-money-negative" dir="ltr">{fmtAr(r.amount)}</td>
-                      <td className="p-3 text-left tabular-nums text-muted-foreground" dir="ltr">{r.count}</td>
+                      <td className="p-3 text-right tabular-nums text-money-negative" dir="ltr">{fmtAr(r.amount)}</td>
+                      <td className="p-3 text-right tabular-nums text-muted-foreground" dir="ltr">{r.count}</td>
                     </tr>
                   ))
                 )}
@@ -158,8 +158,8 @@ export default function ExpensesReport() {
               <tfoot>
                 <tr className="border-t font-bold bg-muted/30">
                   <td className="p-3 text-right">الإجمالي</td>
-                  <td className="p-3 text-left tabular-nums" dir="ltr">{fmtAr(er.total)}</td>
-                  <td className="p-3 text-left" dir="ltr"></td>
+                  <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(er.total)}</td>
+                  <td className="p-3 text-right" dir="ltr"></td>
                 </tr>
               </tfoot>
             </table>

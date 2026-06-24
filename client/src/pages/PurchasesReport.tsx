@@ -121,20 +121,20 @@ export default function PurchasesReport() {
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="p-2.5 text-right font-medium">المورّد</th>
-                    <th className="p-2.5 text-left font-medium">عدد الأوامر</th>
-                    <th className="p-2.5 text-left font-medium">الإجمالي</th>
-                    <th className="p-2.5 text-left font-medium">المدفوع</th>
-                    <th className="p-2.5 text-left font-medium">المتبقّي</th>
+                    <th className="p-2.5 text-right font-medium">عدد الأوامر</th>
+                    <th className="p-2.5 text-right font-medium">الإجمالي</th>
+                    <th className="p-2.5 text-right font-medium">المدفوع</th>
+                    <th className="p-2.5 text-right font-medium">المتبقّي</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r: Row) => (
                     <tr key={r.supplierId ?? r.supplierName ?? Math.random()} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right">{r.supplierName ?? "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.orders}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-[var(--stock-low)]" dir="ltr">{fmtAr(r.unpaid)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.orders}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-[var(--stock-low)]" dir="ltr">{fmtAr(r.unpaid)}</td>
                     </tr>
                   ))}
                 </tbody>

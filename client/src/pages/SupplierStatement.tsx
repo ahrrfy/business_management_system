@@ -323,9 +323,9 @@ export default function SupplierStatement() {
                     <th className="p-2">أمر الشراء</th>
                     <th className="p-2">التاريخ</th>
                     <th className="p-2">الاستحقاق</th>
-                    <th className="p-2 text-left">الإجمالي</th>
-                    <th className="p-2 text-left">المدفوع</th>
-                    <th className="p-2 text-left">المتبقّي</th>
+                    <th className="p-2 text-right">الإجمالي</th>
+                    <th className="p-2 text-right">المدفوع</th>
+                    <th className="p-2 text-right">المتبقّي</th>
                     <th className="p-2">الحالة</th>
                     <th className="p-2 text-center">فتح</th>
                   </tr>
@@ -337,7 +337,7 @@ export default function SupplierStatement() {
                       <td className="p-2 text-xs">رصيد مُرحَّل</td>
                       <td className="p-2 text-xs" dir="ltr">{fmtDate(from)}</td>
                       <td className="p-2 text-xs text-muted-foreground" colSpan={3}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
-                      <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
+                      <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
                       <td className="p-2" colSpan={2} />
                     </tr>
                   )}
@@ -349,9 +349,9 @@ export default function SupplierStatement() {
                         <td className="p-2"><CopyInline value={p.poNumber} /></td>
                         <td className="p-2 text-xs" dir="ltr">{new Date(p.orderDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
                         <td className="p-2 text-xs" dir="ltr">{p.expectedDeliveryDate ? String(p.expectedDeliveryDate).slice(0, 10) : "—"}</td>
-                        <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.total)}</td>
-                        <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
-                        <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
+                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.total)}</td>
+                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
+                        <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
                         <td className="p-2">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${PO_STATUS_CLS[p.status] ?? "bg-muted"}`}>
                             {PO_STATUS_LABEL[p.status] ?? p.status}
@@ -381,7 +381,7 @@ export default function SupplierStatement() {
                   <tr>
                     <th className="p-2">التاريخ</th>
                     <th className="p-2">أمر الشراء</th>
-                    <th className="p-2 text-left">المبلغ</th>
+                    <th className="p-2 text-right">المبلغ</th>
                     <th className="p-2">ملاحظات</th>
                   </tr>
                 </thead>
@@ -397,7 +397,7 @@ export default function SupplierStatement() {
                           <span className="inline-block rounded badge-status-done px-2 py-0.5 text-xs">دفعة مستقلة</span>
                         )}
                       </td>
-                      <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.amount)}</td>
+                      <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
                       <td className="p-2 text-xs">{p.notes ?? "—"}</td>
                     </tr>
                   ))}

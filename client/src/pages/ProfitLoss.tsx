@@ -147,19 +147,19 @@ export default function ProfitLoss() {
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
                   <th className="p-3 text-right font-medium">البند</th>
-                  <th className="p-3 text-left font-medium">الفترة</th>
-                  {prev && <th className="p-3 text-left font-medium">الفترة السابقة</th>}
+                  <th className="p-3 text-right font-medium">الفترة</th>
+                  {prev && <th className="p-3 text-right font-medium">الفترة السابقة</th>}
                 </tr>
               </thead>
               <tbody>
                 {lines.map((r, i) => (
                   <tr key={i} className={`border-b last:border-0 ${r.bold ? "font-bold bg-muted/30" : ""}`}>
                     <td className="p-3 text-right">{r.label}</td>
-                    <td className={`p-3 text-left tabular-nums ${r.neg ? "text-money-negative" : ""}`} dir="ltr">
+                    <td className={`p-3 text-right tabular-nums ${r.neg ? "text-money-negative" : ""}`} dir="ltr">
                       {r.neg ? `(${fmtAr(r.cur)})` : fmtAr(r.cur)}
                     </td>
                     {prev && (
-                      <td className="p-3 text-left tabular-nums text-muted-foreground" dir="ltr">
+                      <td className="p-3 text-right tabular-nums text-muted-foreground" dir="ltr">
                         {r.prev != null ? (r.neg ? `(${fmtAr(r.prev)})` : fmtAr(r.prev)) : "—"}
                       </td>
                     )}

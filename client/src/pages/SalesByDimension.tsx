@@ -136,20 +136,20 @@ export default function SalesByDimension() {
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="p-2.5 text-end font-medium">{dimLabel}</th>
-                    <th className="p-2.5 text-start font-medium">عدد الفواتير</th>
-                    <th className="p-2.5 text-start font-medium">الإيراد</th>
-                    <th className="p-2.5 text-start font-medium">المحصّل</th>
-                    <th className="p-2.5 text-start font-medium">المتبقّي</th>
+                    <th className="p-2.5 text-right font-medium">عدد الفواتير</th>
+                    <th className="p-2.5 text-right font-medium">الإيراد</th>
+                    <th className="p-2.5 text-right font-medium">المحصّل</th>
+                    <th className="p-2.5 text-right font-medium">المتبقّي</th>
                   </tr>
                 </thead>
                 <tbody>
                   {rows.map((r: Row) => (
                     <tr key={r.key} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-end">{r.label}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.invoices}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-money-negative" dir="ltr">{fmtAr(r.unpaid)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.invoices}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{fmtAr(r.unpaid)}</td>
                     </tr>
                   ))}
                 </tbody>
