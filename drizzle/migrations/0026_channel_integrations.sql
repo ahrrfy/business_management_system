@@ -31,4 +31,5 @@ CREATE TABLE `channelIntegrations` (
   CONSTRAINT `channelIntegrations_branchId_branches_id_fk` FOREIGN KEY (`branchId`) REFERENCES `branches`(`id`),
   CONSTRAINT `channelIntegrations_updatedBy_users_id_fk` FOREIGN KEY (`updatedBy`) REFERENCES `users`(`id`)
 );
+--> statement-breakpoint
 CREATE INDEX `idx_int_status` ON `channelIntegrations` (`intStatus`);
