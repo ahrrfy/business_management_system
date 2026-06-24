@@ -1,3 +1,5 @@
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
@@ -25,13 +27,11 @@ export default function Roles() {
 
   return (
     <div className="space-y-4 max-w-5xl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">الأدوار والصلاحيات</h1>
-          <p className="text-sm text-muted-foreground">أدوار النظام المبنية + أدوار مخصّصة تصنعها بنفسك بصلاحيات محفوظة.</p>
-        </div>
-        <Link href="/roles/new"><Button>+ إضافة دور مخصّص</Button></Link>
-      </div>
+      <PageHeader
+        title="الأدوار والصلاحيات"
+        description="أدوار النظام المبنية + أدوار مخصّصة تصنعها بنفسك بصلاحيات محفوظة."
+        actions={<Link href="/roles/new"><Button>+ إضافة دور مخصّص</Button></Link>}
+      />
 
       {/* الأدوار المخصّصة */}
       <Card>
@@ -61,7 +61,7 @@ export default function Roles() {
                     <td className="p-2 text-xs">{roleLabel(r.baseRole)}{r.canSeeCost ? " · يرى التكلفة" : ""}</td>
                     <td className="p-2 text-center">{count}</td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${active ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${active ? "badge-status-active" : "badge-stock-out"}`}>
                         {active ? "مفعّل" : "معطّل"}
                       </span>
                     </td>
@@ -84,7 +84,7 @@ export default function Roles() {
                 );
               })}
               {!list.isLoading && custom.length === 0 && (
-                <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا أدوار مخصّصة بعد — أضِف دوراً جديداً بصلاحيات حسب حاجتك.</td></tr>
+                <TableEmptyRow colSpan={5} message="لا أدوار مخصّصة بعد — أضِف دوراً جديداً بصلاحيات حسب حاجتك." />
               )}
             </tbody>
           </table>

@@ -5,6 +5,8 @@ import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { useClipboard } from "@/hooks/useClipboard";
 import { confirm } from "@/lib/confirm";
 import { formatCustomerCard, formatTableAsTSV } from "@/lib/copy/formatters";
@@ -152,7 +154,10 @@ export default function Customers() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">العملاء</h1>
+      <PageHeader
+        title="العملاء"
+        description="إدارة العملاء (أفراد/تجّار/شركات/حكومي): إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد المفتوح."
+      />
 
       <ImportDialog<CustomerImportRow>
         open={importOpen}
@@ -181,9 +186,6 @@ export default function Customers() {
           }
         }}
       />
-      <p className="text-sm text-muted-foreground">
-        إدارة العملاء (أفراد/تجّار/شركات/حكومي): إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد المفتوح.
-      </p>
 
       <Card>
         <CardHeader>
@@ -307,7 +309,7 @@ export default function Customers() {
                       <BalanceCell amount={c.currentBalance} entityType="customer" />
                     </td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
                         {isActive ? "مفعّل" : "معطّل"}
                       </span>
                     </td>
@@ -332,7 +334,7 @@ export default function Customers() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={hasLegacy ? 11 : 10} className="p-6 text-center text-muted-foreground">لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر.</td></tr>
+                <TableEmptyRow colSpan={hasLegacy ? 11 : 10} message="لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر." />
               )}
             </tbody>
           </table>

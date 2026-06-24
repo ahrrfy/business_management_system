@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { fmt } from "@/lib/money";
@@ -44,8 +46,8 @@ function sourceLabel(r: { source?: string | null; stockReason?: string | null; p
 }
 
 const STATUS_CLS: Record<string, string> = {
-  ACTIVE: "bg-emerald-100 text-emerald-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
+  ACTIVE: "badge-status-active",
+  CANCELLED: "badge-status-cancelled",
 };
 const STATUS_LABEL: Record<string, string> = { ACTIVE: "نافذ", CANCELLED: "مُلغى" };
 
@@ -99,31 +101,31 @@ export default function Expenses() {
   // أموال العرض عبر fmt من @/lib/money (فواصل آلاف + منزلتان) — بديل الدالة المحلية السابقة.
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">المصروفات اليومية</h1>
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            disabled={!list.data?.rows?.length}
-            onClick={() => exportRows(list.data?.rows ?? [], {
-              filename: "المصروفات",
-              columns: [
-                { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ-u-nu-latn") : "" },
-                { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
-                { key: "category", header: "الفئة", map: (r) => CATEGORY_LABEL[r.category] ?? r.category },
-                { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
-                { key: "paymentMethod", header: "طريقة الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
-                { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
-                { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
-              ],
-            })}
-          >تصدير Excel</Button>
-          <Link href="/expenses/new"><Button>+ مصروف جديد</Button></Link>
-        </div>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        كل مصروف يولّد قبضاً صادراً (يُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر.
-      </p>
+      <PageHeader
+        title="المصروفات اليومية"
+        description="كل مصروف يولّد قبضاً صادراً (يُخصم من صندوق الوردية إن كانت مفتوحة) وقيداً في الدفتر."
+        actions={
+          <div className="flex gap-2">
+            <Button
+              variant="outline"
+              disabled={!list.data?.rows?.length}
+              onClick={() => exportRows(list.data?.rows ?? [], {
+                filename: "المصروفات",
+                columns: [
+                  { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ-u-nu-latn") : "" },
+                  { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
+                  { key: "category", header: "الفئة", map: (r) => CATEGORY_LABEL[r.category] ?? r.category },
+                  { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
+                  { key: "paymentMethod", header: "طريقة الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
+                  { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
+                  { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+                ],
+              })}
+            >تصدير Excel</Button>
+            <Link href="/expenses/new"><Button>+ مصروف جديد</Button></Link>
+          </div>
+        }
+      />
 
       <Card>
         <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3 pt-6">
@@ -239,7 +241,7 @@ export default function Expenses() {
                 </tr>
               ))}
               {list.data && list.data.rows.length === 0 && (
-                <tr><td colSpan={8} className="p-6 text-center text-muted-foreground">لا مصروفات لهذا الفلتر.</td></tr>
+                <TableEmptyRow colSpan={8} message="لا مصروفات لهذا الفلتر." />
               )}
             </tbody>
           </table>

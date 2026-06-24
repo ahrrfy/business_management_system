@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
 import { exportRows } from "@/lib/export";
@@ -23,8 +24,8 @@ const STATUS: Record<string, string> = {
   CONFIRMED: "مؤكّدة", CANCELLED: "ملغاة", RETURNED: "مرتجعة",
 };
 const STATUS_CLS: Record<string, string> = {
-  PAID: "bg-emerald-100 text-emerald-700", PARTIALLY_PAID: "bg-amber-100 text-amber-700",
-  PENDING: "bg-muted text-foreground/70", RETURNED: "bg-rose-100 text-rose-700", CANCELLED: "bg-rose-100 text-rose-700",
+  PAID: "badge-status-active", PARTIALLY_PAID: "badge-stock-low",
+  PENDING: "badge-status-cancelled", RETURNED: "badge-stock-out", CANCELLED: "badge-stock-out",
 };
 const SOURCE: Record<string, string> = { POS: "نقطة بيع", ONLINE: "أونلاين", ORDER: "طلب", WORKORDER: "طلب خدمة" };
 
@@ -201,8 +202,10 @@ export default function Invoices() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">المبيعات</h1>
-      <p className="text-sm text-muted-foreground">قائمة الفواتير — فرز بنقرة، بحث فوري، وتصدير. اضغط «عرض» لمتابعة فاتورة أو تسديد دفعة.</p>
+      <PageHeader
+        title="المبيعات"
+        description="قائمة الفواتير — فرز بنقرة، بحث فوري، وتصدير. اضغط «عرض» لمتابعة فاتورة أو تسديد دفعة."
+      />
 
       <Card>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-6">
@@ -299,11 +302,11 @@ export default function Invoices() {
             </span>
             <span>
               المسدَّد:{" "}
-              <b className="tabular-nums text-emerald-700" dir="ltr">{fmt(summary.data.paidAmount)}</b>
+              <b className="tabular-nums text-money-positive" dir="ltr">{fmt(summary.data.paidAmount)}</b>
             </span>
             <span>
               المتبقي:{" "}
-              <b className="tabular-nums text-amber-700" dir="ltr">{fmt(summary.data.dueAmount)}</b>
+              <b className="tabular-nums text-[var(--stock-low)]" dir="ltr">{fmt(summary.data.dueAmount)}</b>
             </span>
             <span className="text-xs text-muted-foreground">المجاميع لكل النتائج المطابقة للفلتر</span>
           </CardContent>

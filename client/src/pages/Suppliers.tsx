@@ -4,6 +4,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { SUPPLIER_FIELDS, SUPPLIER_IMPORT_META } from "@/lib/importFields";
 import type { SupplierImportRow } from "@/lib/importTypes";
@@ -69,7 +71,10 @@ export default function Suppliers() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">الموردون</h1>
+      <PageHeader
+        title="الموردون"
+        description="إدارة الموردين: إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد الدائن المفتوح."
+      />
 
       <ImportDialog<SupplierImportRow>
         open={importOpen}
@@ -97,9 +102,6 @@ export default function Suppliers() {
           }
         }}
       />
-      <p className="text-sm text-muted-foreground">
-        إدارة الموردين: إضافة، تعديل، تعطيل، بحث، ومتابعة الرصيد الدائن المفتوح.
-      </p>
 
       <Card>
         <CardHeader>
@@ -174,7 +176,7 @@ export default function Suppliers() {
                       <BalanceCell amount={s.currentBalance} entityType="supplier" />
                     </td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
                         {isActive ? "مفعّل" : "معطّل"}
                       </span>
                     </td>
@@ -200,7 +202,7 @@ export default function Suppliers() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={hasLegacy ? 8 : 7} className="p-6 text-center text-muted-foreground">لا موردين مطابقين. أضف مورّداً جديداً أو غيّر البحث.</td></tr>
+                <TableEmptyRow colSpan={hasLegacy ? 8 : 7} message="لا موردين مطابقين. أضف مورّداً جديداً أو غيّر البحث." />
               )}
             </tbody>
           </table>

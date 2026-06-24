@@ -21,6 +21,8 @@ import { formatTableAsTSV } from "@/lib/copy/formatters";
 import { PRODUCT_FIELDS } from "@/lib/importFields";
 import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -156,7 +158,10 @@ export default function Products() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">المنتجات</h1>
+      <PageHeader
+        title="المنتجات"
+        description="عرض المنتجات بوحداتها وأسعارها ومخزونها — مع بحث فوري وتصدير."
+      />
 
       <ImportDialog<ProductImportRow>
         open={importOpen}
@@ -179,7 +184,6 @@ export default function Products() {
           utils.catalog.posList.invalidate();
         }}
       />
-      <p className="text-sm text-muted-foreground">عرض المنتجات بوحداتها وأسعارها ومخزونها — مع بحث فوري وتصدير.</p>
 
       <Card>
         <CardHeader>
@@ -289,7 +293,7 @@ export default function Products() {
                     </td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{r.stockBase}</td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "badge-status-active" : "badge-stock-out"}`}>
                         {r.productIsActive ? "مفعّل" : "معطّل"}
                       </span>
                     </td>
@@ -333,7 +337,7 @@ export default function Products() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={10} className="p-6 text-center text-muted-foreground">لا منتجات مطابقة. غيّر البحث أو أضف منتجاً.</td></tr>
+                <TableEmptyRow colSpan={10} message="لا منتجات مطابقة. غيّر البحث أو أضف منتجاً." />
               )}
             </tbody>
           </table>

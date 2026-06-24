@@ -2,6 +2,8 @@ import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -18,12 +20,12 @@ const STATUS: Record<string, string> = {
   EXPIRED: "منتهٍ",
 };
 const STATUS_CLS: Record<string, string> = {
-  DRAFT: "bg-muted text-foreground/70",
-  SENT: "bg-blue-100 text-blue-700",
-  ACCEPTED: "bg-violet-100 text-violet-700",
-  REJECTED: "bg-rose-100 text-rose-700",
-  CONVERTED: "bg-emerald-100 text-emerald-700",
-  EXPIRED: "bg-amber-100 text-amber-700",
+  DRAFT: "bg-muted text-muted-foreground",
+  SENT: "badge-status-pending",
+  ACCEPTED: "badge-status-done",
+  REJECTED: "badge-stock-out",
+  CONVERTED: "badge-status-active",
+  EXPIRED: "badge-stock-low",
 };
 
 const selectCls =
@@ -94,8 +96,7 @@ export default function Quotations() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">عروض الأسعار</h1>
-      <p className="text-sm text-muted-foreground">عروض الأسعار مستندات تفاوضية بلا أثر على المخزون حتى تُحوَّل إلى فاتورة.</p>
+      <PageHeader title="عروض الأسعار" description="عروض الأسعار مستندات تفاوضية بلا أثر على المخزون حتى تُحوَّل إلى فاتورة." />
       <Card>
         <CardHeader>
           <ListToolbar
@@ -187,7 +188,7 @@ export default function Quotations() {
                 </tr>
               ))}
               {!rows.isLoading && filtered.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا عروض أسعار مطابقة.</td></tr>
+                <TableEmptyRow colSpan={7} message="لا عروض أسعار مطابقة." />
               )}
             </tbody>
           </table>
