@@ -244,7 +244,7 @@ export default function Vouchers() {
                 <th className="p-2 text-center">النوع</th>
                 <th className="p-2">الطرف</th>
                 <th className="p-2">الوصف</th>
-                <th className="p-2 text-left">المبلغ</th>
+                <th className="p-2 text-right">المبلغ</th>
                 <th className="p-2 text-center">الدفع</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
@@ -272,7 +272,7 @@ export default function Vouchers() {
                   </td>
                   <td className="p-2 text-xs">{PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—"}</td>
                   <td className="p-2">{r.description ?? "—"}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.amount)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.amount)}</td>
                   <td className="p-2 text-center text-xs">{METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod}</td>
                   <td className="p-2 text-center">
                     <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "REVERSED" ? "badge-status-cancelled" : "badge-status-active"}`}>

@@ -232,10 +232,10 @@ export default function Shifts() {
                 <th className="p-2">الفرع</th>
                 <th className="p-2">فُتحت</th>
                 <th className="p-2">أُغلقت</th>
-                <th className="p-2 text-left">الافتتاحي</th>
-                <th className="p-2 text-left">المتوقع</th>
-                <th className="p-2 text-left">المعدود</th>
-                <th className="p-2 text-left">الفرق</th>
+                <th className="p-2 text-right">الافتتاحي</th>
+                <th className="p-2 text-right">المتوقع</th>
+                <th className="p-2 text-right">المعدود</th>
+                <th className="p-2 text-right">الفرق</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -248,10 +248,10 @@ export default function Shifts() {
                   <td className="p-2">{branchName(r.branchId)}</td>
                   <td className="p-2 text-xs" dir="ltr">{fmtDT(r.openedAt)}</td>
                   <td className="p-2 text-xs" dir="ltr">{fmtDT(r.closedAt)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.openingBalance)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{r.expectedCash != null ? fmt(r.expectedCash) : "—"}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{r.countedCash != null ? fmt(r.countedCash) : "—"}</td>
-                  <td className={`p-2 text-left font-semibold tabular-nums ${varianceCls(r.variance)}`} dir="ltr">
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.openingBalance)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{r.expectedCash != null ? fmt(r.expectedCash) : "—"}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{r.countedCash != null ? fmt(r.countedCash) : "—"}</td>
+                  <td className={`p-2 text-right font-semibold tabular-nums ${varianceCls(r.variance)}`} dir="ltr">
                     {r.variance != null ? fmt(r.variance) : "—"}
                   </td>
                   <td className="p-2 text-center">

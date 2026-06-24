@@ -189,7 +189,7 @@ export default function Returns() {
             <thead className="bg-muted/50">
               <tr>
                 <th className="p-2 text-start">رقم الفاتورة</th>
-                <th className="p-2 text-left">الإجمالي</th>
+                <th className="p-2 text-right">الإجمالي</th>
                 <th className="p-2 text-start">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -201,7 +201,7 @@ export default function Returns() {
                 return (
                   <tr key={inv.id} className={`border-t ${isPicked ? "bg-muted/40" : ""}`}>
                     <td className="p-2"><CopyInline value={inv.invoiceNumber} /></td>
-                    <td className="p-2 text-left" dir="ltr">{fmt(inv.total)}</td>
+                    <td className="p-2 text-right" dir="ltr">{fmt(inv.total)}</td>
                     <td className="p-2">{INVOICE_STATUS[inv.status] ?? inv.status}</td>
                     <td className="p-2 text-center">
                       <RowActions
@@ -265,7 +265,7 @@ export default function Returns() {
                     <th className="p-2 text-center">المُباع (أساس)</th>
                     <th className="p-2 text-center">المُرتجع</th>
                     <th className="p-2 text-center">المتبقّي</th>
-                    <th className="p-2 text-left">السعر</th>
+                    <th className="p-2 text-right">السعر</th>
                     <th className="p-2 w-32 text-start">إرجاع الآن (أساس)</th>
                   </tr>
                 </thead>
@@ -277,7 +277,7 @@ export default function Returns() {
                       <td className="p-2 text-center">{it.baseQuantity}</td>
                       <td className="p-2 text-center">{it.returnedBaseQuantity}</td>
                       <td className="p-2 text-center">{it.remaining}</td>
-                      <td className="p-2 text-left" dir="ltr">{fmt(it.unitPrice)}</td>
+                      <td className="p-2 text-right" dir="ltr">{fmt(it.unitPrice)}</td>
                       <td className="p-2">
                         <Input
                           dir="ltr"

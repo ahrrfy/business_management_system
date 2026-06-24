@@ -189,7 +189,7 @@ export default function Expenses() {
                 <th className="p-2">الفئة</th>
                 <th className="p-2">الوصف</th>
                 <th className="p-2">الدفع / المصدر</th>
-                <th className="p-2 text-left">المبلغ</th>
+                <th className="p-2 text-right">المبلغ</th>
                 <th className="p-2">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -202,7 +202,7 @@ export default function Expenses() {
                   <td className="p-2">{CATEGORY_LABEL[r.category] ?? r.category}</td>
                   <td className="p-2 max-w-xs truncate" title={r.description ?? ""}>{r.description ?? "—"}</td>
                   <td className="p-2">{sourceLabel(r)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.amount)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.amount)}</td>
                   <td className="p-2">
                     <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
                       {STATUS_LABEL[r.status] ?? r.status}

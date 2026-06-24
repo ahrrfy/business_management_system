@@ -158,8 +158,8 @@ export default function Purchases() {
                 <th className="p-2">رقم الأمر</th>
                 <th className="p-2">المورد</th>
                 <th className="p-2">التاريخ</th>
-                <th className="p-2 text-left">الإجمالي</th>
-                <th className="p-2 text-left">المدفوع</th>
+                <th className="p-2 text-right">الإجمالي</th>
+                <th className="p-2 text-right">المدفوع</th>
                 <th className="p-2">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -172,8 +172,8 @@ export default function Purchases() {
                     <td className="p-2"><CopyInline value={p.poNumber} /></td>
                     <td className="p-2">{p.supplierName ?? "—"}</td>
                     <td className="p-2">{new Date(p.orderDate).toLocaleString("ar-IQ-u-nu-latn")}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.total)}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.total)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
                     <td className="p-2">{PO_STATUS[p.status] ?? p.status}</td>
                     <td className="p-2 text-center">
                       <RowActions

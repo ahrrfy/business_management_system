@@ -146,9 +146,9 @@ export default function PurchaseRegister() {
                       </td>
                       <td className="p-2.5 text-end">{r.supplierName ?? "—"}</td>
                       <td className="p-2.5 text-end">{r.productName ?? "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
                     </tr>
                   ))}
                 </tbody>
