@@ -12,13 +12,17 @@ import {
   getPaymentMethodBreakdown,
   getRecentMovements,
 } from "../services/treasuryService";
-import { branchScopedProcedure, router } from "../trpc";
+import { branchScopedProcedure, requireModule, router } from "../trpc";
 
 const periodEnum = z.enum(["today", "yesterday", "week", "month"]);
 
+// إنفاذ وحدة «الخزينة» (treasury) فَوق عَزل الفرع: قراءة. الكاشير (treasury=READ) يَصل ويَرى
+// دَرْجه فقط (getDashboard يُمرّر الدور)؛ أدوار غَير مالية (مخزن/مشتريات…) = NONE ⇒ تُحجَب فِعلياً.
+const treasuryRead = branchScopedProcedure.use(requireModule("treasury", "READ"));
+
 export const treasuryRouter = router({
   /** لوحة قيادة كاملة: drawer/treasury per branch + KPIs اليوم + عدد الورديات المفتوحة. */
-  getDashboard: branchScopedProcedure
+  getDashboard: treasuryRead
     .input(
       z
         .object({
@@ -35,7 +39,7 @@ export const treasuryRouter = router({
     }),
 
   /** آخر N حركة موحَّدة (receipts + expenses) لجدول الداشبورد. */
-  getRecentMovements: branchScopedProcedure
+  getRecentMovements: treasuryRead
     .input(
       z
         .object({
@@ -52,7 +56,7 @@ export const treasuryRouter = router({
     }),
 
   /** سلسلة تدفّق نقدي يومية — تَملأ الأيام الفارغة بأصفار للـchart. */
-  getCashFlowSeries: branchScopedProcedure
+  getCashFlowSeries: treasuryRead
     .input(
       z
         .object({
@@ -69,7 +73,7 @@ export const treasuryRouter = router({
     }),
 
   /** توزيع المقبوضات والمدفوعات حسب طريقة الدفع (للدونات). */
-  getPaymentMethodBreakdown: branchScopedProcedure
+  getPaymentMethodBreakdown: treasuryRead
     .input(
       z
         .object({
@@ -86,7 +90,7 @@ export const treasuryRouter = router({
     }),
 
   /** اتجاهات الـKPIs (قيمة اليوم/الأمس/delta٪/sparkline). */
-  getKpiTrends: branchScopedProcedure
+  getKpiTrends: treasuryRead
     .input(
       z
         .object({
@@ -102,7 +106,7 @@ export const treasuryRouter = router({
     }),
 
   /** بطاقات الورديات المفتوحة الآن (للوحة جانبية في الداشبورد). */
-  getOpenShifts: branchScopedProcedure
+  getOpenShifts: treasuryRead
     .input(
       z
         .object({

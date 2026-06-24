@@ -3,7 +3,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { conversations } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { branchScopedProcedure, cashierProcedure, router } from "../trpc";
+import { branchScopedProcedure, cashierProcedure, requireModule, router } from "../trpc";
 import {
   addMessage,
   getConversationMessages,
@@ -21,7 +21,7 @@ const channelEnum = z.enum(["WHATSAPP", "INSTAGRAM", "TIKTOK", "STORE", "PHONE",
  *
  * الصَلاحيات:
  *   - list/get/messages: branchScopedProcedure (عَزل فُروع تِلقائي عبر ctx.scopedBranchId).
- *   - create/send/mark/link/setStatus: cashierProcedure (الكاشير يَتعامل مع الزَبائن مُباشرة).
+ *   - create/send/mark/link/setStatus: channelsWrite (الكاشير يَتعامل مع الزَبائن مُباشرة).
  *
  * IDOR: نَفحص branchId المحادثة قَبل أَي تَعديل ⇒ مَنع كاشير الفَرع X مِن تَعديل مُحادثات الفَرع Y.
  */
@@ -52,9 +52,15 @@ async function assertConversationBranch(conversationId: number, scopedBranchId: 
   return Number(row.branchId);
 }
 
+// إنفاذ وحدة «القنوات» (channels) فَوق عَزل الفرع/الدور: قراءة للعرض، FULL للتعديل.
+// (admin يَتجاوز requireModule؛ القوالب تُطابق الوصول الحالي ⇒ صفر تَغيير للأدوار المبنية،
+//  ودَور مُخصَّص بـchannels=NONE يُحجَب فِعلياً — لا «وهم اكتمال».)
+const channelsRead = branchScopedProcedure.use(requireModule("channels", "READ"));
+const channelsWrite = cashierProcedure.use(requireModule("channels", "FULL"));
+
 export const conversationRouter = router({
   /** قائمة الـinbox للفَرع الحالي. */
-  list: branchScopedProcedure
+  list: channelsRead
     .input(z.object({
       filter: z.enum(["all", "unread", "archived", "closed"]).optional(),
       channel: channelEnum.optional(),
@@ -75,7 +81,7 @@ export const conversationRouter = router({
     }),
 
   /** رَسائل مُحادثة مُحدَّدة (بَعد التَحقّق من عَزل الفُروع). */
-  messages: branchScopedProcedure
+  messages: channelsRead
     .input(z.object({ conversationId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertConversationBranch(input.conversationId, ctx.scopedBranchId);
@@ -83,7 +89,7 @@ export const conversationRouter = router({
     }),
 
   /** إنشاء/upsert مُحادثة (إدخال يَدوي مِن الكاشير: اتصال هاتفي، حُضوري، ...). */
-  upsert: cashierProcedure
+  upsert: channelsWrite
     .input(z.object({
       branchId: z.number().int().positive().optional(),
       channel: channelEnum,
@@ -107,7 +113,7 @@ export const conversationRouter = router({
     }),
 
   /** إرسال رِسالة OUT أو تَسجيل IN يَدوياً (لاتصال هاتفي). */
-  sendMessage: cashierProcedure
+  sendMessage: channelsWrite
     .input(z.object({
       conversationId: z.number().int().positive(),
       direction: z.enum(["IN", "OUT", "NOTE"]),
@@ -131,7 +137,7 @@ export const conversationRouter = router({
     }),
 
   /** تَصفير عَدّاد غَير المَقروء. */
-  markRead: cashierProcedure
+  markRead: channelsWrite
     .input(z.object({ conversationId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const scopedBranchId = deriveScopedBranchId(ctx.user);
@@ -140,7 +146,7 @@ export const conversationRouter = router({
     }),
 
   /** رَبط/فَصل مُحادثة بأَمر شَغل. */
-  linkWorkOrder: cashierProcedure
+  linkWorkOrder: channelsWrite
     .input(z.object({
       conversationId: z.number().int().positive(),
       workOrderId: z.number().int().positive().nullable(),
@@ -151,7 +157,7 @@ export const conversationRouter = router({
     }),
 
   /** تَأرشيف/إغلاق مُحادثة. */
-  setStatus: cashierProcedure
+  setStatus: channelsWrite
     .input(z.object({
       conversationId: z.number().int().positive(),
       status: z.enum(["OPEN", "ARCHIVED", "CLOSED"]),
