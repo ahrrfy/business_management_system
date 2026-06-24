@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import type { MySqlColumn } from "drizzle-orm/mysql-core";
-import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
+import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products, productionRecipes, productionRecipeLines } from "../../drizzle/schema";
 import { ARABIC_FOLD_PAIRS, tokenizeSearchQuery } from "../../shared/searchNormalize";
 import { escLike } from "../lib/sqlLike";
 import { getDb } from "../db";
@@ -456,6 +456,12 @@ export interface CreateProductInput {
   isCustomizable?: boolean;
   // مُنتج خِدمي (لا مَخزون): البَيع/الشِراء لا يُحرّك branchStock، رَصيد افتتاحي يُتجاهَل.
   isService?: boolean;
+  // print-catalog: توجيه البَند لنقطة بَيع الطباعة (productType=PRINT_SERVICE) ⇒ يَظهر في شاشة
+  // خدمات الطباعة ويُباع عبر printSaleService (لا مخزون ذاتي؛ يَخصم المواد عبر الوصفة أدناه).
+  printService?: boolean;
+  // print-catalog: وصفة المواد الخام التي تَستهلكها الخدمة (ورق/حبر…). تُربَط بمتغيّر البَند الأوّل
+  // (الخدمات أحاديّة المتغيّر). اختيارية: خدمة بلا مواد (إلكترونية/تصميم) تُترَك بلا وصفة.
+  recipe?: Array<{ inputVariantId: number; qtyPerOutputBase: string }>;
   variants: Array<{
     sku: string;
     variantName?: string | null;
@@ -762,17 +768,24 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     const composedName = composeProductName(input);
     if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل)" });
     await assertCatalogUniqueness(tx, input);
+    // print-catalog: التَوجيه لنقطة الطباعة يَفرض الراية PRINT_SERVICE (تَجُبّ «النوع» الوصفي)
+    // ويُلزم isService (خدمة بلا مخزون). غير ذلك ⇒ النوع الوصفي كَما هو.
+    const isService = !!(input.isService || input.printService);
     const pRes = await tx.insert(products).values({
       name: composedName,
-      productType: input.productType?.trim() || null,
+      productType: input.printService ? PRINT_SERVICE_TYPE : input.productType?.trim() || null,
       brand: input.brand?.trim() || null,
       modelName: input.modelName?.trim() || null,
       description: input.description?.trim() || null,
       categoryId: input.categoryId ?? null,
       isCustomizable: input.isCustomizable ?? false,
-      isService: input.isService ?? false,
+      isService,
     });
     const productId = extractInsertId(pRes);
+
+    // print-catalog: نَلتقط متغيّر البَند الأوّل ووحدته الأساس لِربط الوصفة (الخدمات أحاديّة المتغيّر).
+    let recipeOutputVariantId: number | null = null;
+    let recipeOutputUnitId: number | null = null;
 
     for (const v of input.variants) {
       if (!v.units.some((u) => u.isBaseUnit)) {
@@ -791,6 +804,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         isActive: v.isActive ?? true,
       });
       const variantId = extractInsertId(vRes);
+      if (recipeOutputVariantId == null) recipeOutputVariantId = variantId;
 
       for (const u of v.units) {
         const uRes = await tx.insert(productUnits).values({
@@ -801,6 +815,10 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
           isBaseUnit: u.isBaseUnit ?? false,
         });
         const productUnitId = extractInsertId(uRes);
+        // print-catalog: وحدة أساس متغيّر البَند الأوّل = مخرَج الوصفة.
+        if (recipeOutputVariantId === variantId && (u.isBaseUnit ?? false) && recipeOutputUnitId == null) {
+          recipeOutputUnitId = productUnitId;
+        }
         for (const p of u.prices ?? []) {
           await tx.insert(productPrices).values({ productUnitId, priceTier: p.priceTier, price: toDbMoney(p.price) });
         }
@@ -850,8 +868,82 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       }
     }
 
+    // print-catalog: وصفة المواد الخام للخدمة — تُربَط بمتغيّر البَند الأوّل ووحدته الأساس.
+    // يَخصمها printSaleService عند البيع (snapshot كلفة المواد = COGS). idempotent بالاسم.
+    const recipe = (input.recipe ?? []).filter((r) => r.inputVariantId > 0 && Number(r.qtyPerOutputBase) > 0);
+    if (recipe.length) {
+      if (recipeOutputVariantId == null || recipeOutputUnitId == null) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "تَعذّر ربط وصفة المواد: لا متغيّر/وحدة أساس للبَند" });
+      }
+      const rRes = await tx.insert(productionRecipes).values({
+        name: `[طباعة] ${composedName} #${productId}`,
+        outputVariantId: recipeOutputVariantId,
+        outputProductUnitId: recipeOutputUnitId,
+        laborPerOutputBase: "0",
+        wasteStdPct: "0",
+        isActive: true,
+        createdBy: actor.userId,
+      });
+      const recipeId = extractInsertId(rRes);
+      for (const rl of recipe) {
+        await tx.insert(productionRecipeLines).values({
+          recipeId,
+          inputVariantId: rl.inputVariantId,
+          qtyPerOutputBase: toDbMoney(rl.qtyPerOutputBase),
+        });
+      }
+    }
+
     return { productId };
   });
+}
+
+/** print-catalog: مواد خام لمنتقي وصفة الخدمة — متغيّرات سلعيّة فعّالة (لا خدمات طباعة) بوحدة الأساس
+ *  واسم المنتج والكلفة. يَكشف الكلفة ⇒ يُستدعى من managerProcedure فقط. */
+export interface MaterialRow {
+  variantId: number;
+  productName: string;
+  variantName: string | null;
+  sku: string;
+  unitName: string;
+  costPrice: string;
+}
+export async function listMaterialsForRecipe(query?: string, limit = 100): Promise<MaterialRow[]> {
+  const db = getDb();
+  if (!db) return [];
+  const conds: SQL[] = [
+    eq(productVariants.isActive, true),
+    eq(productUnits.isBaseUnit, true),
+    notPrintService,
+  ];
+  const q = (query ?? "").trim();
+  if (q) {
+    const like = `%${escLike(q)}%`;
+    conds.push(or(sql`${products.name} LIKE ${like}`, sql`${productVariants.sku} LIKE ${like}`)!);
+  }
+  const rows = await db
+    .select({
+      variantId: productVariants.id,
+      productName: products.name,
+      variantName: productVariants.variantName,
+      sku: productVariants.sku,
+      unitName: productUnits.unitName,
+      costPrice: productVariants.costPrice,
+    })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .innerJoin(productUnits, eq(productUnits.variantId, productVariants.id))
+    .where(and(...conds))
+    .orderBy(asc(products.name))
+    .limit(limit);
+  return rows.map((r) => ({
+    variantId: Number(r.variantId),
+    productName: r.productName,
+    variantName: r.variantName,
+    sku: r.sku,
+    unitName: r.unitName,
+    costPrice: r.costPrice,
+  }));
 }
 
 /** v3-add-screens: قراءة صور منتج مرتّبة (الرئيسية أولاً). */
