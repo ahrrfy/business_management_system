@@ -380,7 +380,8 @@ function InvoicesTab({
         columns={invoiceColumns}
         data={rows}
         searchPlaceholder="بحث في التقرير…"
-        emptyText={isLoading ? "جارٍ التحميل…" : "لا فواتير في هذا النطاق."}
+        loading={isLoading}
+        emptyText="لا فواتير في هذا النطاق."
         toolbar={
           <>
             <Button
@@ -520,7 +521,8 @@ function TopProductsTab({
       columns={topColumns}
       data={rows}
       searchPlaceholder="بحث في المنتجات…"
-      emptyText={isLoading ? "جارٍ التحميل…" : "لا مبيعات في هذا النطاق."}
+      loading={isLoading}
+      emptyText="لا مبيعات في هذا النطاق."
       toolbar={
         <Button
           variant="outline"
@@ -593,7 +595,8 @@ function SlowMoversTab({
       columns={slowColumns}
       data={rows}
       searchPlaceholder="بحث…"
-      emptyText={isLoading ? "جارٍ التحميل…" : "لا منتجات بطيئة الحركة في هذا النطاق."}
+      loading={isLoading}
+      emptyText="لا منتجات بطيئة الحركة في هذا النطاق."
       toolbar={
         <Button
           variant="outline"
@@ -674,7 +677,8 @@ function CategoryProfitTab({
       columns={catColumns}
       data={rows}
       searchPlaceholder="بحث في الفئات…"
-      emptyText={isLoading ? "جارٍ التحميل…" : "لا بيانات في هذا النطاق."}
+      loading={isLoading}
+      emptyText="لا بيانات في هذا النطاق."
       toolbar={
         <Button
           variant="outline"

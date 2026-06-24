@@ -192,6 +192,7 @@ export default function SupplierStatement() {
   return (
     <div className="space-y-4">
       <PageHeader
+        breadcrumbs={[{ label: "الموردون", href: "/suppliers" }, { label: "كشف حساب" }]}
         title="كشف حساب مورد"
         description="كل أوامر الشراء والدفعات لمورد واحد، مع ملخّص الرصيد الحالي."
         actions={

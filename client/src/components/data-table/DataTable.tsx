@@ -13,6 +13,7 @@ import {
 import { useMemo, useState } from "react";
 import { ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
 import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
+import { TableSkeleton } from "@/components/PageState";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -46,6 +47,8 @@ type DataTableProps<T, K = string> = {
   searchable?: boolean;
   searchPlaceholder?: string;
   emptyText?: string;
+  /** أثناء التحميل: تُعرض صفوف هيكلية (skeleton) بدل النصّ الفارغ — إحساس سرعة أفضل بلا قفزة تخطيط. */
+  loading?: boolean;
   toolbar?: React.ReactNode; // أزرار إضافية (تصدير/إضافة) تظهر بجانب البحث
   // === التَحديد المُتَعَدِّد (اختِياري) ===
   selection?: DataTableSelection<K>;
@@ -60,6 +63,7 @@ export function DataTable<T, K = string>({
   searchable = true,
   searchPlaceholder = "بحث…",
   emptyText = "لا بيانات",
+  loading = false,
   toolbar,
   selection,
   getRowId,
@@ -204,7 +208,10 @@ export function DataTable<T, K = string>({
             ))}
           </thead>
           <tbody>
-            {visibleRows.map((row, rowIndex) => {
+            {loading && (
+              <TableSkeleton rows={8} cols={columns.length + (selectionEnabled ? 1 : 0)} />
+            )}
+            {!loading && visibleRows.map((row, rowIndex) => {
               const id = selectionEnabled ? visibleIds[rowIndex] : undefined;
               const isSelected = selectionEnabled && selection!.isSelected(id as K);
               return (
@@ -261,7 +268,7 @@ export function DataTable<T, K = string>({
                 </tr>
               );
             })}
-            {visibleRows.length === 0 && (
+            {!loading && visibleRows.length === 0 && (
               <tr><td colSpan={columns.length + (selectionEnabled ? 1 : 0)} className="p-6 text-center text-muted-foreground">{emptyText}</td></tr>
             )}
           </tbody>
