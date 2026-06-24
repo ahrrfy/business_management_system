@@ -4,6 +4,7 @@ import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -16,9 +17,9 @@ const STATUS_LABEL: Record<string, string> = {
   paid: "مدفوع",
 };
 const STATUS_CLS: Record<string, string> = {
-  draft: "bg-muted text-foreground/70",
-  approved: "bg-sky-100 text-sky-700",
-  paid: "bg-emerald-100 text-emerald-700",
+  draft: "badge-status-cancelled",
+  approved: "badge-status-pending",
+  paid: "badge-status-active",
 };
 
 const inputCls =
@@ -112,7 +113,7 @@ export default function PayrollReport() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مسيّرات رواتب في هذا النطاق.</p>
           ) : (

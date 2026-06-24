@@ -5,6 +5,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -12,8 +13,8 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type Row = RouterOutputs["reports"]["abcAnalysis"]["rows"][number];
 
 const CLASS_CLS: Record<string, string> = {
-  A: "bg-emerald-100 text-emerald-700",
-  B: "bg-amber-100 text-amber-700",
+  A: "badge-status-active",
+  B: "badge-stock-low",
   C: "bg-muted text-foreground/70",
 };
 const CLASS_LABEL: Record<string, string> = {
@@ -134,7 +135,9 @@ export default function AbcAnalysis() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message={q.error?.message} onRetry={() => q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مبيعات في هذا النطاق.</p>
           ) : (

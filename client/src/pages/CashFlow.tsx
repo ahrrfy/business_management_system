@@ -5,6 +5,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -100,7 +101,11 @@ export default function CashFlow() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading || !cf ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">{q.isLoading ? "جارٍ التحميل…" : "لا بيانات."}</p>
+            q.isLoading ? (
+              <LoadingState />
+            ) : (
+              <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
+            )
           ) : (
             <table className="w-full text-sm">
               <thead>
@@ -116,7 +121,7 @@ export default function CashFlow() {
                   return (
                     <tr key={i} className={`border-b last:border-0 ${isHeader || isTotal ? "font-bold bg-muted/30" : ""}`}>
                       <td className="p-3 text-end">{r.label}</td>
-                      <td className={`p-3 text-left tabular-nums ${r.neg ? "text-rose-600" : ""}`} dir="ltr">
+                      <td className={`p-3 text-left tabular-nums ${r.neg ? "text-money-negative" : ""}`} dir="ltr">
                         {r.amount === "" ? "" : r.neg ? `(${fmtAr(r.amount)})` : fmtAr(r.amount)}
                       </td>
                     </tr>

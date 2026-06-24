@@ -5,6 +5,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -118,9 +119,9 @@ export default function ProductionReport() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا مستندات إنتاج في هذا النطاق.</p>
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message={q.error?.message} onRetry={() => q.refetch()} />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -136,17 +137,21 @@ export default function ProductionReport() {
                   </tr>
                 </thead>
                 <tbody>
-                  {rows.map((r: Row) => (
-                    <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">{r.docNumber ?? "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
-                      <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.inputsCost)}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.laborCost)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-amber-600" dir="ltr">{fmtAr(r.wasteCost)}</td>
-                      <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtAr(r.totalCost)}</td>
-                    </tr>
-                  ))}
+                  {!rows.length ? (
+                    <TableEmptyRow colSpan={7} message="لا مستندات إنتاج في هذا النطاق." />
+                  ) : (
+                    rows.map((r: Row) => (
+                      <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
+                        <td className="p-2.5 text-right">{r.docNumber ?? "—"}</td>
+                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
+                        <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
+                        <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.inputsCost)}</td>
+                        <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.laborCost)}</td>
+                        <td className="p-2.5 text-left tabular-nums text-money-negative" dir="ltr">{fmtAr(r.wasteCost)}</td>
+                        <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtAr(r.totalCost)}</td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>

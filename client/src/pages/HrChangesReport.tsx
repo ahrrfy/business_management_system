@@ -2,6 +2,7 @@
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). يكشف رواتب/تسويات ⇒ صلاحية hr/READ خادمياً.
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell } from "@/components/reports/ReportShell";
+import { LoadingState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -14,9 +15,9 @@ type Term = Data["terminations"][number];
 const PROMO_STATUS_LABEL: Record<string, string> = { pending: "معلّق", approved: "معتمد" };
 const TERM_STATUS_LABEL: Record<string, string> = { pending: "معلّق", completed: "مكتمل" };
 const STATUS_CLS: Record<string, string> = {
-  pending: "bg-amber-100 text-amber-700",
-  approved: "bg-emerald-100 text-emerald-700",
-  completed: "bg-emerald-100 text-emerald-700",
+  pending: "badge-stock-low",
+  approved: "badge-status-active",
+  completed: "badge-status-active",
 };
 
 export default function HrChangesReport() {
@@ -114,7 +115,7 @@ export default function HrChangesReport() {
         <CardContent className="p-0">
           <div className="border-b px-4 py-2.5 text-sm font-semibold">الترقيات</div>
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
           ) : !promotions.length ? (
             <p className="p-6 text-center text-sm text-muted-foreground">لا ترقيات مسجّلة.</p>
           ) : (
@@ -137,7 +138,7 @@ export default function HrChangesReport() {
                       <td className="p-2.5 text-right font-medium">{p.toTitle}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{p.effectiveDate}</td>
                       <td className="p-2.5 text-right">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[p.status] ?? "bg-muted"}`}>
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[p.status] ?? "bg-muted text-muted-foreground"}`}>
                           {PROMO_STATUS_LABEL[p.status] ?? p.status}
                         </span>
                       </td>
@@ -155,7 +156,7 @@ export default function HrChangesReport() {
         <CardContent className="p-0">
           <div className="border-b px-4 py-2.5 text-sm font-semibold">إنهاء الخدمات</div>
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
           ) : !terminations.length ? (
             <p className="p-6 text-center text-sm text-muted-foreground">لا حالات إنهاء خدمة مسجّلة.</p>
           ) : (
@@ -178,7 +179,7 @@ export default function HrChangesReport() {
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{t.lastDay}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(t.settlement)}</td>
                       <td className="p-2.5 text-right">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[t.status] ?? "bg-muted"}`}>
+                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[t.status] ?? "bg-muted text-muted-foreground"}`}>
                           {TERM_STATUS_LABEL[t.status] ?? t.status}
                         </span>
                       </td>

@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -116,7 +117,7 @@ export default function BalanceSheet() {
       }
     >
       {q.isLoading || !p || !sections ? (
-        <Card><CardContent className="p-8 text-center text-sm text-muted-foreground">{q.isLoading ? "جارٍ التحميل…" : "لا بيانات."}</CardContent></Card>
+        <Card><CardContent className="p-0">{q.isLoading ? <LoadingState /> : <div className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</div>}</CardContent></Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           <SectionCard title="الأصول" rows={sections.assets} total={p.totalAssets} totalLabel="إجمالي الأصول" tone="emerald" />
@@ -125,7 +126,7 @@ export default function BalanceSheet() {
             <Card>
               <CardContent className="flex items-center justify-between p-4">
                 <span className="font-bold">حقوق الملكية (مشتقّة)</span>
-                <span className={`text-xl font-bold tabular-nums ${D(p.equity).gte(0) ? "text-emerald-600" : "text-rose-600"}`} dir="ltr">{fmtAr(p.equity)}</span>
+                <span className={`text-xl font-bold tabular-nums ${D(p.equity).gte(0) ? "text-money-positive" : "text-money-negative"}`} dir="ltr">{fmtAr(p.equity)}</span>
               </CardContent>
             </Card>
           </div>

@@ -1,6 +1,7 @@
 import { DataTable } from "@/components/data-table/DataTable";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
@@ -23,11 +24,11 @@ const STATUS: Record<string, string> = {
   RETURNED: "مرتجعة",
 };
 const STATUS_CLS: Record<string, string> = {
-  PAID: "bg-emerald-100 text-emerald-700",
-  PARTIALLY_PAID: "bg-amber-100 text-amber-700",
-  PENDING: "bg-muted text-foreground/70",
-  RETURNED: "bg-rose-100 text-rose-700",
-  CANCELLED: "bg-rose-100 text-rose-700",
+  PAID: "badge-status-active",
+  PARTIALLY_PAID: "badge-stock-low",
+  PENDING: "bg-muted text-muted-foreground",
+  RETURNED: "badge-stock-out",
+  CANCELLED: "badge-stock-out",
 };
 const SOURCE: Record<string, string> = {
   POS: "نقطة بيع",
@@ -93,7 +94,7 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
       const unpaidD = positiveDiff(c.row.original.total, c.row.original.paidAmount);
       const isOwing = unpaidD.gt(0);
       return (
-        <span className={`tabular-nums ${isOwing ? "text-rose-600 font-medium" : ""}`} dir="ltr">
+        <span className={`tabular-nums ${isOwing ? "text-money-negative font-medium" : ""}`} dir="ltr">
           {fmt(unpaidD.toString())}
         </span>
       );
@@ -105,7 +106,7 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
     cell: (c) => {
       const s = c.getValue() as string;
       return (
-        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted"}`}>
+        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[s] ?? "bg-muted text-muted-foreground"}`}>
           {STATUS[s] ?? s}
         </span>
       );
@@ -177,10 +178,10 @@ export default function SalesReport() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">تقارير المبيعات</h1>
-      <p className="text-sm text-muted-foreground">
-        فواتير + أكثر مبيعاً + بطيئات الحركة + ربح حسب الفئة. كل تبويبة بفلاترها وتصدير Excel.
-      </p>
+      <PageHeader
+        title="تقارير المبيعات"
+        description="فواتير + أكثر مبيعاً + بطيئات الحركة + ربح حسب الفئة. كل تبويبة بفلاترها وتصدير Excel."
+      />
 
       {/* تبويبات */}
       <div className="flex gap-1 border-b" role="tablist">
@@ -362,13 +363,13 @@ function InvoicesTab({
           <Card>
             <CardContent className="pt-4 pb-3 text-center">
               <p className="text-xs text-muted-foreground">المحصَّل</p>
-              <p className="text-xl font-bold tabular-nums text-emerald-600" dir="ltr">{fmt(totals.paid)}</p>
+              <p className="text-xl font-bold tabular-nums text-money-positive" dir="ltr">{fmt(totals.paid)}</p>
             </CardContent>
           </Card>
           <Card>
             <CardContent className="pt-4 pb-3 text-center">
               <p className="text-xs text-muted-foreground">المتبقّي</p>
-              <p className={`text-xl font-bold tabular-nums ${D(totals.unpaid).gt(0) ? "text-rose-600" : "text-foreground"}`} dir="ltr">
+              <p className={`text-xl font-bold tabular-nums ${D(totals.unpaid).gt(0) ? "text-money-negative" : "text-foreground"}`} dir="ltr">
                 {fmt(totals.unpaid)}
               </p>
             </CardContent>
@@ -485,7 +486,7 @@ const topColumns: ColumnDef<TopRow, unknown>[] = [
     header: "الربح",
     cell: (c) => {
       const v = c.getValue() as string;
-      const cls = Number(v) >= 0 ? "text-emerald-600" : "text-rose-600";
+      const cls = Number(v) >= 0 ? "text-money-positive" : "text-money-negative";
       return <span className={`tabular-nums font-medium ${cls}`} dir="ltr">{fmt(v)}</span>;
     },
   },
@@ -563,7 +564,7 @@ const slowColumns: ColumnDef<SlowRow, unknown>[] = [
     header: "آخر بيع",
     cell: (c) => {
       const v = c.getValue() as string | null;
-      return v ? new Date(v).toLocaleDateString("ar-IQ-u-nu-latn") : <span className="text-rose-600 font-medium">لم يُبَع قط</span>;
+      return v ? new Date(v).toLocaleDateString("ar-IQ-u-nu-latn") : <span className="text-destructive font-medium">لم يُبَع قط</span>;
     },
   },
   {
@@ -572,7 +573,7 @@ const slowColumns: ColumnDef<SlowRow, unknown>[] = [
     cell: (c) => {
       const v = c.getValue() as number | null;
       if (v == null) return <span className="text-muted-foreground">—</span>;
-      const cls = v > 180 ? "text-rose-600 font-medium" : v > 90 ? "text-amber-600" : "";
+      const cls = v > 180 ? "text-destructive font-medium" : v > 90 ? "text-[var(--stock-low)]" : "";
       return <span className={`tabular-nums ${cls}`} dir="ltr">{v}</span>;
     },
   },
@@ -641,7 +642,7 @@ const catColumns: ColumnDef<CatRow, unknown>[] = [
     header: "الربح",
     cell: (c) => {
       const v = c.getValue() as string;
-      const cls = Number(v) >= 0 ? "text-emerald-600" : "text-rose-600";
+      const cls = Number(v) >= 0 ? "text-money-positive" : "text-money-negative";
       return <span className={`tabular-nums font-medium ${cls}`} dir="ltr">{fmt(v)}</span>;
     },
   },

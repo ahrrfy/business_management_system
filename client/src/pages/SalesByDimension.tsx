@@ -5,6 +5,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -126,7 +127,7 @@ export default function SalesByDimension() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مبيعات في هذا النطاق.</p>
           ) : (
@@ -147,8 +148,8 @@ export default function SalesByDimension() {
                       <td className="p-2.5 text-end">{r.label}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.invoices}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-emerald-600" dir="ltr">{fmtAr(r.paid)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-amber-600" dir="ltr">{fmtAr(r.unpaid)}</td>
+                      <td className="p-2.5 text-left tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
+                      <td className="p-2.5 text-left tabular-nums text-money-negative" dir="ltr">{fmtAr(r.unpaid)}</td>
                     </tr>
                   ))}
                 </tbody>

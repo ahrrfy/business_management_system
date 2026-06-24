@@ -5,6 +5,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -15,7 +16,7 @@ const STATUS_CLS: Record<string, string> = {
   PRESENT: "badge-status-active",
   ABSENT: "badge-stock-out",
   LATE: "badge-status-pending",
-  LEAVE: "bg-sky-100 text-sky-700 dark:bg-sky-950/50 dark:text-sky-300",
+  LEAVE: "badge-status-pending",
 };
 
 const selectCls =
@@ -125,7 +126,7 @@ export default function AttendanceReport() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا سجلّات حضور في هذا النطاق.</p>
           ) : (

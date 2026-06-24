@@ -5,6 +5,8 @@
  */
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { exportRows } from "@/lib/export";
 import { D, round2, fmt, fmtInt } from "@/lib/money";
@@ -156,8 +158,8 @@ export default function StocktakeReport() {
   }, [data]);
 
   if (!Number.isFinite(sessionId)) return <div className="p-10 text-center text-muted-foreground">جلسة غير صالحة.</div>;
-  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (q.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل المحضر: {q.error.message}</div>;
+  if (q.isLoading) return <LoadingState />;
+  if (q.error) return <ErrorState message={`تعذّر تحميل المحضر: ${q.error.message}`} onRetry={() => q.refetch()} />;
   if (!data || !calc) return <div className="p-10 text-center text-muted-foreground">الجلسة غير موجودة.</div>;
 
   const s = data.session;
@@ -233,56 +235,60 @@ export default function StocktakeReport() {
   return (
     <div className="space-y-4 max-w-5xl">
       {/* شريط الإجراءات */}
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <h1 className="text-2xl font-bold">محضر جرد وتسوية</h1>
-          <Badge variant={s.status === "APPROVED" ? "default" : "secondary"}>{statusLabel}</Badge>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Link href={`/stocktakes/${sessionId}/review`}>
-            <Button variant="outline">← رجوع للمراجعة</Button>
-          </Link>
-          <Link href="/stocktakes">
-            <Button variant="outline">قائمة الجلسات</Button>
-          </Link>
-          <WhatsAppShare message={waMessage} label="مشاركة الملخص" size="default" />
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!calc.adjusted.length}
-            onClick={() =>
-              exportRows(calc.adjusted, {
-                filename: `محضر-جرد-${s.code || ""}`,
-                columns: [
-                  {
-                    key: "name",
-                    header: "المنتج",
-                    map: (r) => `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
-                  },
-                  { key: "sku", header: "SKU", map: (r) => r.sku ?? "" },
-                  { key: "book", header: "الرصيد الدفتري", map: (r) => calc.bookOf(r) },
-                  { key: "actual", header: "المعدود المصحَّح", map: (r) => calc.finalOf(r) },
-                  { key: "diff", header: "الفرق", map: (r) => calc.diffOf(r) },
-                  {
-                    key: "reason",
-                    header: "السبب",
-                    map: (r) => STOCKTAKE_REASON_LABEL[r.decision?.reason ?? "UNSPECIFIED"] ?? "غير محدد",
-                  },
-                  { key: "value", header: "قيمة الفرق", map: (r) => Number(calc.valueOf(r)) },
-                ],
-              })
-            }
-          >
-            تصدير Excel
-          </Button>
-          <Button onClick={doPrint}>
-            <Printer aria-hidden className="size-4" /> طباعة المحضر
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title={
+          <span className="flex items-center gap-2">
+            محضر جرد وتسوية
+            <Badge variant={s.status === "APPROVED" ? "default" : "secondary"}>{statusLabel}</Badge>
+          </span>
+        }
+        actions={
+          <>
+            <Link href={`/stocktakes/${sessionId}/review`}>
+              <Button variant="outline">← رجوع للمراجعة</Button>
+            </Link>
+            <Link href="/stocktakes">
+              <Button variant="outline">قائمة الجلسات</Button>
+            </Link>
+            <WhatsAppShare message={waMessage} label="مشاركة الملخص" size="default" />
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!calc.adjusted.length}
+              onClick={() =>
+                exportRows(calc.adjusted, {
+                  filename: `محضر-جرد-${s.code || ""}`,
+                  columns: [
+                    {
+                      key: "name",
+                      header: "المنتج",
+                      map: (r) => `${r.productName}${r.variantName ? ` — ${r.variantName}` : ""}`,
+                    },
+                    { key: "sku", header: "SKU", map: (r) => r.sku ?? "" },
+                    { key: "book", header: "الرصيد الدفتري", map: (r) => calc.bookOf(r) },
+                    { key: "actual", header: "المعدود المصحَّح", map: (r) => calc.finalOf(r) },
+                    { key: "diff", header: "الفرق", map: (r) => calc.diffOf(r) },
+                    {
+                      key: "reason",
+                      header: "السبب",
+                      map: (r) => STOCKTAKE_REASON_LABEL[r.decision?.reason ?? "UNSPECIFIED"] ?? "غير محدد",
+                    },
+                    { key: "value", header: "قيمة الفرق", map: (r) => Number(calc.valueOf(r)) },
+                  ],
+                })
+              }
+            >
+              تصدير Excel
+            </Button>
+            <Button onClick={doPrint}>
+              <Printer aria-hidden className="size-4" /> طباعة المحضر
+            </Button>
+          </>
+        }
+      />
 
       {s.status !== "APPROVED" && (
-        <p className="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-200">
+        <p className="badge-stock-low rounded-lg border p-3 text-sm">
           الجلسة {statusLabel} — هذا المحضر مسودّة معاينة قبل الاعتماد النهائي.
         </p>
       )}
@@ -365,7 +371,7 @@ export default function StocktakeReport() {
                   </td>
                   <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{fmtInt(calc.bookOf(r))}</td>
                   <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{fmtInt(calc.finalOf(r))}</td>
-                  <td className={`px-2 py-1.5 text-center font-mono font-bold tabular-nums ${diff < 0 ? "text-rose-700" : "text-blue-700"}`} dir="ltr">
+                  <td className={`px-2 py-1.5 text-center font-mono font-bold tabular-nums ${diff < 0 ? "text-money-negative" : "text-money-positive"}`} dir="ltr">
                     {signedInt(diff)}
                   </td>
                   <td className="px-2 py-1.5 text-center font-mono tabular-nums" dir="ltr">{signedMoney(calc.valueOf(r))}</td>
@@ -375,7 +381,7 @@ export default function StocktakeReport() {
               );
             })}
             {calc.adjusted.length === 0 && (
-              <tr><td colSpan={7} className="py-3 text-center text-muted-foreground">لا تسويات — الجرد مطابق.</td></tr>
+              <TableEmptyRow colSpan={7} message="لا تسويات — الجرد مطابق." />
             )}
           </tbody>
           {calc.adjusted.length > 0 && (
@@ -456,13 +462,13 @@ export default function StocktakeReport() {
                 {D(calc.shortExpense).gt(0) && (
                   <p className="flex justify-between">
                     <span>مصروف عجز مخزون (مدين)</span>
-                    <span className="font-mono font-bold text-rose-700" dir="ltr">{fmt(calc.shortExpense)} د.ع</span>
+                    <span className="font-mono font-bold text-money-negative" dir="ltr">{fmt(calc.shortExpense)} د.ع</span>
                   </p>
                 )}
                 {D(calc.overGain).gt(0) && (
                   <p className="flex justify-between">
                     <span>تسوية زيادة مخزون (دائن)</span>
-                    <span className="font-mono font-bold text-emerald-700" dir="ltr">{fmt(calc.overGain)} د.ع</span>
+                    <span className="font-mono font-bold text-money-positive" dir="ltr">{fmt(calc.overGain)} د.ع</span>
                   </p>
                 )}
               </div>
@@ -473,9 +479,9 @@ export default function StocktakeReport() {
               العجز يظهر مصروفاً صريحاً في الدفتر — لا يُدفن في التسوية، فتبقى الأرباح صادقة.
             </p>
           </div>
-          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3.5 text-center dark:border-emerald-800 dark:bg-emerald-950">
+          <div className="badge-status-active rounded-lg border p-3.5 text-center">
             <p className="text-xs text-muted-foreground">مؤشر دقة المخزون (IRA) لهذه الجلسة</p>
-            <p className="mt-1 text-2xl font-black text-emerald-700 dark:text-emerald-400" dir="ltr">
+            <p className="mt-1 text-2xl font-black" dir="ltr">
               {calc.iraPct != null ? `${calc.iraPct}٪` : "—"}
             </p>
             <p className="text-[11px] text-muted-foreground">

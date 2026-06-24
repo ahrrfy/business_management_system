@@ -3,6 +3,7 @@
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState } from "@/components/PageState";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -68,7 +69,7 @@ export default function LeaveReport() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا موظفين نشِطين.</p>
           ) : (
@@ -86,7 +87,7 @@ export default function LeaveReport() {
                     <tr key={r.employeeId} className="border-b last:border-0 hover:bg-accent/40">
                       <td className="p-2.5 text-right">{r.employeeName}</td>
                       <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.usedDays}</td>
-                      <td className="p-2.5 text-left tabular-nums text-amber-600" dir="ltr">
+                      <td className="p-2.5 text-left tabular-nums text-[var(--stock-low)]" dir="ltr">
                         {r.pendingDays || "—"}
                       </td>
                     </tr>

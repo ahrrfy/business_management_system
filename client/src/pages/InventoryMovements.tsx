@@ -13,6 +13,8 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -75,11 +77,11 @@ function variantLine(r: {
 function TypeBadge({ type }: { type: MovementType }) {
   const label = MTYPE_LABEL[type] ?? type;
   const cls = POSITIVE_TYPES.has(type)
-    ? "bg-emerald-100 text-emerald-700"
+    ? "badge-status-active"
     : NEGATIVE_TYPES.has(type)
-    ? "bg-rose-100 text-rose-700"
+    ? "badge-stock-out"
     : ADJUST_TYPES.has(type)
-    ? "bg-amber-100 text-amber-700"
+    ? "badge-stock-low"
     : "bg-muted text-foreground";
   return (
     <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${cls}`}>{label}</span>
@@ -279,22 +281,22 @@ export default function InventoryMovements() {
   /* ----- render ----- */
   return (
     <div className="space-y-4" dir="rtl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">حركات المخزون</h1>
-        {canCreateManual && (
-          <Button
-            onClick={() => {
-              resetDialog();
-              setOpen(true);
-            }}
-          >
-            + حركة يدوية
-          </Button>
-        )}
-      </div>
-      <p className="text-sm text-muted-foreground">
-        السجلّ الكامل للوارد والصادر، التحويلات، التسويات، والمرتجعات. أنشئ حركات يدوية للجرد والتالف.
-      </p>
+      <PageHeader
+        title="حركات المخزون"
+        description="السجلّ الكامل للوارد والصادر، التحويلات، التسويات، والمرتجعات. أنشئ حركات يدوية للجرد والتالف."
+        actions={
+          canCreateManual ? (
+            <Button
+              onClick={() => {
+                resetDialog();
+                setOpen(true);
+              }}
+            >
+              + حركة يدوية
+            </Button>
+          ) : undefined
+        }
+      />
 
       {pageMsg && (
         <div className="rounded-md bg-emerald-50 border border-emerald-200 text-emerald-800 text-sm p-2">
@@ -481,10 +483,10 @@ export default function InventoryMovements() {
                     <td
                       className={`p-2 text-center tabular-nums font-semibold ${
                         POSITIVE_TYPES.has(t)
-                          ? "text-emerald-700"
+                          ? "text-money-positive"
                           : NEGATIVE_TYPES.has(t)
-                          ? "text-rose-700"
-                          : "text-amber-700"
+                          ? "text-money-negative"
+                          : "text-[var(--stock-low)]"
                       }`}
                       dir="ltr"
                     >
@@ -535,11 +537,7 @@ export default function InventoryMovements() {
                 );
               })}
               {!movements.isLoading && rows.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="p-6 text-center text-muted-foreground">
-                    لا توجد حركات مطابقة للفلاتر.
-                  </td>
-                </tr>
+                <TableEmptyRow colSpan={9} message="لا توجد حركات مطابقة للفلاتر." />
               )}
             </tbody>
           </table>
