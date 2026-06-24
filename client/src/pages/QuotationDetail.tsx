@@ -168,8 +168,8 @@ export default function QuotationDetail() {
                   <th className="px-3 py-2 font-medium text-start">المنتج</th>
                   <th className="px-3 py-2 font-medium text-start">الوحدة</th>
                   <th className="px-3 py-2 font-medium text-center">الكمية</th>
-                  <th className="px-3 py-2 font-medium text-left">سعر الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-left">الإجمالي</th>
+                  <th className="px-3 py-2 font-medium text-right">سعر الوحدة</th>
+                  <th className="px-3 py-2 font-medium text-right">الإجمالي</th>
                 </tr>
               </thead>
               <tbody>
@@ -180,15 +180,15 @@ export default function QuotationDetail() {
                     </td>
                     <td className="px-3 py-2 text-muted-foreground">{it.unitName}</td>
                     <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
-                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
-                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(it.total)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(it.unitPrice)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(it.total)}</td>
                   </tr>
                 ))}
               </tbody>
               <tfoot>
                 <tr className="border-t-2 bg-muted/40 font-semibold">
                   <td className="px-3 py-2" colSpan={4}>مجموع البنود</td>
-                  <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(data.subtotal)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(data.subtotal)}</td>
                 </tr>
               </tfoot>
             </table>

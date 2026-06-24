@@ -190,9 +190,9 @@ export default function GeneralLedger() {
                         </td>
                         <td className="p-2.5 text-end">{r.partyName ?? "—"}</td>
                         <td className="p-2.5 text-end text-muted-foreground">{r.branchName ?? "—"}</td>
-                        <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                        <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.cost)}</td>
-                        <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.amount)}</td>
+                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
+                        <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.cost)}</td>
+                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.amount)}</td>
                         <td className="p-2.5 text-end">
                           {ref.href ? (
                             <Link href={ref.href} className="text-primary underline-offset-2 hover:underline">{ref.text}</Link>

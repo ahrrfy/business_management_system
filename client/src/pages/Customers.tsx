@@ -273,7 +273,7 @@ export default function Customers() {
                 <th className="p-2">الهاتف</th>
                 <th className="p-2">المدينة/المنطقة</th>
                 <th className="p-2">فئة السعر</th>
-                <th className="p-2 text-left">سقف الائتمان</th>
+                <th className="p-2 text-right">سقف الائتمان</th>
                 <th className="p-2 text-start">الرصيد</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
@@ -304,7 +304,7 @@ export default function Customers() {
                     <td className="p-2"><CopyInline value={c.phone} /></td>
                     <td className="p-2 text-xs">{[c.city, c.district].filter(Boolean).join(" / ") || "—"}</td>
                     <td className="p-2 text-xs">{TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(c.creditLimit)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(c.creditLimit)}</td>
                     <td className="p-2 text-start">
                       <BalanceCell amount={c.currentBalance} entityType="customer" />
                     </td>

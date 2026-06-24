@@ -257,8 +257,8 @@ export default function Products() {
                 <th className="p-2">المتغيّر</th>
                 <th className="p-2">الوحدة</th>
                 <th className="p-2">الباركود</th>
-                <th className="p-2 text-left">السعر (مفرد)</th>
-                <th className="p-2 text-left">المخزون</th>
+                <th className="p-2 text-right">السعر (مفرد)</th>
+                <th className="p-2 text-right">المخزون</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -288,10 +288,10 @@ export default function Products() {
                     <td className="p-2">
                       <CopyInline value={r.barcode ?? ""} />
                     </td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">
+                    <td className="p-2 text-right tabular-nums" dir="ltr">
                       {fmtAr(r.price)}
                     </td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{r.stockBase}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{r.stockBase}</td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.productIsActive ? "badge-status-active" : "badge-stock-out"}`}>
                         {r.productIsActive ? "مفعّل" : "معطّل"}

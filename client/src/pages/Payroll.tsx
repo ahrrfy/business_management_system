@@ -207,11 +207,11 @@ export default function Payroll() {
                 <tr>
                   <th className="p-2.5">الموظف</th>
                   <th className="p-2.5 text-center">نوع الأجر</th>
-                  <th className="p-2.5 text-left">الأساسي / الساعات</th>
-                  <th className="p-2.5 text-left">مخصّصات</th>
-                  <th className="p-2.5 text-left">إضافي</th>
-                  <th className="p-2.5 text-left">استقطاع</th>
-                  <th className="p-2.5 text-left">الصافي</th>
+                  <th className="p-2.5 text-right">الأساسي / الساعات</th>
+                  <th className="p-2.5 text-right">مخصّصات</th>
+                  <th className="p-2.5 text-right">إضافي</th>
+                  <th className="p-2.5 text-right">استقطاع</th>
+                  <th className="p-2.5 text-right">الصافي</th>
                   <th className="p-2.5 text-center">الحالة</th>
                   <th className="p-2.5 text-center"></th>
                 </tr>
@@ -237,13 +237,13 @@ export default function Payroll() {
                           {payTypeLabel(p.payType)}
                         </span>
                       </td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">
                         {monthly ? iqd(baseDisplay) : `${iqd(p.gross)} (${p.hours ?? "0"} س)`}
                       </td>
-                      <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{monthly ? iqd(p.allowances) : "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums text-money-positive" dir="ltr">{D(p.overtime).gt(0) ? `+${iqd(p.overtime)}` : "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums text-money-negative" dir="ltr">{D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums font-bold" dir="ltr">{iqd(p.net)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{monthly ? iqd(p.allowances) : "—"}</td>
+                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{D(p.overtime).gt(0) ? `+${iqd(p.overtime)}` : "—"}</td>
+                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"}</td>
+                      <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(p.net)}</td>
                       <td className="p-2.5 text-center"><StatusBadge status={run!.status} /></td>
                       <td className="p-2.5 text-center whitespace-nowrap">
                         <button onClick={() => setSlip(p)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
@@ -261,11 +261,11 @@ export default function Payroll() {
                 {items.length > 0 && (
                   <tr className="border-t-2 bg-muted/40 font-bold">
                     <td className="p-2.5" colSpan={2}>الإجمالي</td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{iqd(totals.gross)}</td>
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totals.gross)}</td>
                     <td></td>
-                    <td className="p-2.5 text-left tabular-nums text-money-positive" dir="ltr">+{iqd(totals.overtime)}</td>
-                    <td className="p-2.5 text-left tabular-nums text-money-negative" dir="ltr">−{iqd(totals.deductions)}</td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{iqd(totals.net)}</td>
+                    <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">+{iqd(totals.overtime)}</td>
+                    <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">−{iqd(totals.deductions)}</td>
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totals.net)}</td>
                     <td colSpan={2}></td>
                   </tr>
                 )}

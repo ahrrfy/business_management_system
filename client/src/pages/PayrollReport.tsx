@@ -123,9 +123,9 @@ export default function PayrollReport() {
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="p-2.5 text-right font-medium">الشهر</th>
                     <th className="p-2.5 text-right font-medium">الحالة</th>
-                    <th className="p-2.5 text-left font-medium">عدد الموظفين</th>
-                    <th className="p-2.5 text-left font-medium">إجمالي الرواتب</th>
-                    <th className="p-2.5 text-left font-medium">الصافي</th>
+                    <th className="p-2.5 text-right font-medium">عدد الموظفين</th>
+                    <th className="p-2.5 text-right font-medium">إجمالي الرواتب</th>
+                    <th className="p-2.5 text-right font-medium">الصافي</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -137,9 +137,9 @@ export default function PayrollReport() {
                           {STATUS_LABEL[r.status] ?? r.status}
                         </span>
                       </td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.employees}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.gross)}</td>
-                      <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtAr(r.net)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.employees}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.gross)}</td>
+                      <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{fmtAr(r.net)}</td>
                     </tr>
                   ))}
                 </tbody>

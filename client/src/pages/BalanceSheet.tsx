@@ -150,12 +150,12 @@ function SectionCard({ title, rows, total, totalLabel, tone }: {
             ) : rows.map((r, i) => (
               <tr key={i} className="border-b">
                 <td className="p-3 text-end">{r.label}</td>
-                <td className="p-3 text-left tabular-nums" dir="ltr">{fmtAr(r.v)}</td>
+                <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(r.v)}</td>
               </tr>
             ))}
             <tr className="font-bold bg-muted/30">
               <td className="p-3 text-end">{totalLabel}</td>
-              <td className="p-3 text-left tabular-nums" dir="ltr">{fmtAr(total)}</td>
+              <td className="p-3 text-right tabular-nums" dir="ltr">{fmtAr(total)}</td>
             </tr>
           </tbody>
         </table>

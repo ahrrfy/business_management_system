@@ -125,7 +125,7 @@ export default function WorkOrdersReport() {
                   <thead>
                     <tr className="border-b text-xs text-muted-foreground">
                       <th className="p-2.5 text-right font-medium">الحالة</th>
-                      <th className="p-2.5 text-left font-medium">عدد الأوامر</th>
+                      <th className="p-2.5 text-right font-medium">عدد الأوامر</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -136,12 +136,12 @@ export default function WorkOrdersReport() {
                             {r.label}
                           </span>
                         </td>
-                        <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.count}</td>
+                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.count}</td>
                       </tr>
                     ))}
                     <tr className="border-t bg-muted/40 font-medium">
                       <td className="p-2.5 text-right">الإجمالي</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{totalCount}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{totalCount}</td>
                     </tr>
                   </tbody>
                 </table>
@@ -158,7 +158,7 @@ export default function WorkOrdersReport() {
                   <thead>
                     <tr className="border-b text-xs text-muted-foreground">
                       <th className="p-2.5 text-right font-medium">القناة</th>
-                      <th className="p-2.5 text-left font-medium">عدد الأوامر</th>
+                      <th className="p-2.5 text-right font-medium">عدد الأوامر</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -166,7 +166,7 @@ export default function WorkOrdersReport() {
                       channelRows.map((r) => (
                         <tr key={r.channel} className="border-b last:border-0 hover:bg-accent/40">
                           <td className="p-2.5 text-right">{r.label}</td>
-                          <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.count}</td>
+                          <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.count}</td>
                         </tr>
                       ))
                     ) : (

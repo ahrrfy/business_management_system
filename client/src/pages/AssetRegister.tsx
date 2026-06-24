@@ -102,8 +102,8 @@ export default function AssetRegister() {
                   <th className="p-2">الفرع / الموقع</th>
                   <th className="p-2">العهدة</th>
                   <th className="p-2">تاريخ الشراء</th>
-                  <th className="p-2 text-left">قيمة الشراء</th>
-                  <th className="p-2 text-left">القيمة الدفترية</th>
+                  <th className="p-2 text-right">قيمة الشراء</th>
+                  <th className="p-2 text-right">القيمة الدفترية</th>
                   <th className="p-2 text-center">الحالة</th>
                   <th className="p-2"></th>
                 </tr>
@@ -137,8 +137,8 @@ export default function AssetRegister() {
                       )}
                     </td>
                     <td className="p-2 text-xs" dir="ltr">{a.purchaseDate}</td>
-                    <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(a.purchaseValue)}</td>
-                    <td className="p-2 text-left tabular-nums font-medium" dir="ltr">{iqd(a.bookValue)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{iqd(a.purchaseValue)}</td>
+                    <td className="p-2 text-right tabular-nums font-medium" dir="ltr">{iqd(a.bookValue)}</td>
                     <td className="p-2 text-center"><AssetStatusBadge status={a.status} /></td>
                     <td className="p-2 text-muted-foreground"><ChevronLeft className="size-4" /></td>
                   </tr>

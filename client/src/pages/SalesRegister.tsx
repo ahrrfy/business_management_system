@@ -141,10 +141,10 @@ export default function SalesRegister() {
                     <th className="p-2.5 text-end font-medium">الفاتورة</th>
                     <th className="p-2.5 text-end font-medium">العميل</th>
                     <th className="p-2.5 text-end font-medium">المنتج</th>
-                    <th className="p-2.5 text-start font-medium">الكمية</th>
-                    <th className="p-2.5 text-start font-medium">السعر</th>
-                    <th className="p-2.5 text-start font-medium">الإجمالي</th>
-                    <th className="p-2.5 text-start font-medium">الربح</th>
+                    <th className="p-2.5 text-right font-medium">الكمية</th>
+                    <th className="p-2.5 text-right font-medium">السعر</th>
+                    <th className="p-2.5 text-right font-medium">الإجمالي</th>
+                    <th className="p-2.5 text-right font-medium">الربح</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -158,10 +158,10 @@ export default function SalesRegister() {
                       </td>
                       <td className="p-2.5 text-end">{r.customerName ?? "—"}</td>
                       <td className="p-2.5 text-end">{r.productName}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.quantity)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.profit)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.quantity)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.unitPrice)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.total)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.profit)}</td>
                     </tr>
                   ))}
                 </tbody>

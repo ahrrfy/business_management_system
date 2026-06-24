@@ -155,8 +155,8 @@ export default function TreasuryReport() {
               <thead>
                 <tr className="border-b text-xs text-muted-foreground">
                   <th className="p-3 text-right font-medium">طريقة الدفع</th>
-                  <th className="p-3 text-left font-medium">مقبوضات</th>
-                  <th className="p-3 text-left font-medium">مدفوعات</th>
+                  <th className="p-3 text-right font-medium">مقبوضات</th>
+                  <th className="p-3 text-right font-medium">مدفوعات</th>
                 </tr>
               </thead>
               <tbody>
@@ -166,10 +166,10 @@ export default function TreasuryReport() {
                   rows.map((r, i) => (
                     <tr key={i} className="border-b last:border-0">
                       <td className="p-3 text-right">{r.label}</td>
-                      <td className="p-3 text-left tabular-nums text-money-positive" dir="ltr">
+                      <td className="p-3 text-right tabular-nums text-money-positive" dir="ltr">
                         <CopyInline value={String(r.in)} display={fmtAr(r.in)} mono={false} />
                       </td>
-                      <td className="p-3 text-left tabular-nums text-money-negative" dir="ltr">
+                      <td className="p-3 text-right tabular-nums text-money-negative" dir="ltr">
                         <CopyInline value={String(r.out)} display={fmtAr(r.out)} mono={false} />
                       </td>
                     </tr>
@@ -179,10 +179,10 @@ export default function TreasuryReport() {
               <tfoot>
                 <tr className="border-t font-bold bg-muted/30">
                   <td className="p-3 text-right">الإجمالي</td>
-                  <td className="p-3 text-left tabular-nums" dir="ltr">
+                  <td className="p-3 text-right tabular-nums" dir="ltr">
                     <CopyInline value={String(ts.totalIn)} display={fmtAr(ts.totalIn)} mono={false} />
                   </td>
-                  <td className="p-3 text-left tabular-nums" dir="ltr">
+                  <td className="p-3 text-right tabular-nums" dir="ltr">
                     <CopyInline value={String(ts.totalOut)} display={fmtAr(ts.totalOut)} mono={false} />
                   </td>
                 </tr>

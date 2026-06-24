@@ -208,13 +208,13 @@ export default function ARAging() {
                 <th className="p-2">العميل</th>
                 <th className="p-2">الفئة</th>
                 <th className="p-2">الهاتف</th>
-                <th className="p-2 text-left">0–30</th>
-                <th className="p-2 text-left">31–60</th>
-                <th className="p-2 text-left">61–90</th>
-                <th className="p-2 text-left">+90</th>
-                <th className="p-2 text-left">إجمالي غير المدفوع</th>
-                <th className="p-2 text-left" title="الرصيد الجاري ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
-                <th className="p-2 text-left">الرصيد (لنا عليه)</th>
+                <th className="p-2 text-right">0–30</th>
+                <th className="p-2 text-right">31–60</th>
+                <th className="p-2 text-right">61–90</th>
+                <th className="p-2 text-right">+90</th>
+                <th className="p-2 text-right">إجمالي غير المدفوع</th>
+                <th className="p-2 text-right" title="الرصيد الجاري ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
+                <th className="p-2 text-right">الرصيد (لنا عليه)</th>
                 <th className="p-2">أقدم فاتورة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -233,13 +233,13 @@ export default function ARAging() {
                   <td className="p-2 font-medium">{r.customerName}</td>
                   <td className="p-2 text-xs">{CUST_TYPE_LABEL[r.customerType ?? ""] ?? r.customerType ?? "—"}</td>
                   <td className="p-2"><CopyInline value={r.phone} /></td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d0_30)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d31_60)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d61_90)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.d91p)}</td>
-                  <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(r.unpaidTotal)}</td>
-                  <td className="p-2 text-left tabular-nums text-sky-800" dir="ltr">{fmt(unbilledOf(r).toFixed(2))}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.currentBalance)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d0_30)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d31_60)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d61_90)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d91p)}</td>
+                  <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(r.unpaidTotal)}</td>
+                  <td className="p-2 text-right tabular-nums text-sky-800" dir="ltr">{fmt(unbilledOf(r).toFixed(2))}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.currentBalance)}</td>
                   <td className="p-2 text-xs" dir="ltr">{r.oldestInvoiceDate ?? "—"}</td>
                   <td className="p-2 text-center">
                     <Link href={`/customers-statement?id=${r.customerId}`}>

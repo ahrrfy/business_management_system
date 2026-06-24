@@ -133,8 +133,8 @@ export default function StockStatus() {
                     <th className="p-2.5 text-right font-medium">المنتج</th>
                     <th className="p-2.5 text-right font-medium">المتغيّر</th>
                     <th className="p-2.5 text-right font-medium">الفرع</th>
-                    <th className="p-2.5 text-left font-medium">الكمية</th>
-                    <th className="p-2.5 text-left font-medium">حدّ إعادة الطلب</th>
+                    <th className="p-2.5 text-right font-medium">الكمية</th>
+                    <th className="p-2.5 text-right font-medium">حدّ إعادة الطلب</th>
                     <th className="p-2.5 text-right font-medium">الحالة</th>
                   </tr>
                 </thead>
@@ -146,8 +146,8 @@ export default function StockStatus() {
                       <td className="p-2.5 text-right">{r.productName}</td>
                       <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
                       <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-muted-foreground" dir="ltr">{fmtInt(r.minStock)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtInt(r.minStock)}</td>
                       <td className="p-2.5 text-right">
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
                           {STATUS_LABEL[r.status] ?? r.status}

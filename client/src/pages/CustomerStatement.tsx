@@ -326,9 +326,9 @@ export default function CustomerStatement() {
                     <th className="p-2">التاريخ</th>
                     <th className="p-2">الاستحقاق</th>
                     <th className="p-2">المصدر</th>
-                    <th className="p-2 text-left">الإجمالي</th>
-                    <th className="p-2 text-left">المدفوع</th>
-                    <th className="p-2 text-left">المتبقّي</th>
+                    <th className="p-2 text-right">الإجمالي</th>
+                    <th className="p-2 text-right">المدفوع</th>
+                    <th className="p-2 text-right">المتبقّي</th>
                     <th className="p-2">الحالة</th>
                     <th className="p-2 text-center">فتح</th>
                   </tr>
@@ -340,7 +340,7 @@ export default function CustomerStatement() {
                       <td className="p-2 text-xs">رصيد مُرحَّل</td>
                       <td className="p-2 text-xs" dir="ltr">{from}</td>
                       <td className="p-2 text-xs text-muted-foreground" colSpan={4}>ما قبل الفترة (افتتاحي + نشاط سابق)</td>
-                      <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
+                      <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(stmt.data.summary.openingBalance)}</td>
                       <td className="p-2" colSpan={2} />
                     </tr>
                   )}
@@ -353,9 +353,9 @@ export default function CustomerStatement() {
                         <td className="p-2 text-xs" dir="ltr">{new Date(i.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
                         <td className="p-2 text-xs" dir="ltr">{i.dueDate ? String(i.dueDate).slice(0, 10) : "—"}</td>
                         <td className="p-2 text-xs">{i.sourceType}</td>
-                        <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(i.total)}</td>
-                        <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(i.paidAmount)}</td>
-                        <td className="p-2 text-left tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
+                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.total)}</td>
+                        <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.paidAmount)}</td>
+                        <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(remaining)}</td>
                         <td className="p-2">
                           <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[i.status] ?? "bg-muted"}`}>
                             {STATUS_LABEL[i.status] ?? i.status}
@@ -387,7 +387,7 @@ export default function CustomerStatement() {
                     <th className="p-2">الفاتورة</th>
                     <th className="p-2">الاتجاه</th>
                     <th className="p-2">طريقة الدفع</th>
-                    <th className="p-2 text-left">المبلغ</th>
+                    <th className="p-2 text-right">المبلغ</th>
                     <th className="p-2">الحالة</th>
                   </tr>
                 </thead>
@@ -412,7 +412,7 @@ export default function CustomerStatement() {
                         </span>
                       </td>
                       <td className="p-2 text-xs">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
-                      <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(p.amount)}</td>
+                      <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.amount)}</td>
                       <td className="p-2 text-xs">{p.status}</td>
                     </tr>
                   ))}

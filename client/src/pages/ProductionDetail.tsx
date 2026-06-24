@@ -121,7 +121,7 @@ export default function ProductionDetail() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50"><tr>
-              <th className="p-2">المادة</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th><th className="p-2 text-left">كلفة الوحدة</th><th className="p-2 text-left">كلفة السطر</th>
+              <th className="p-2">المادة</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th><th className="p-2 text-right">كلفة الوحدة</th><th className="p-2 text-right">كلفة السطر</th>
             </tr></thead>
             <tbody>
               {inputs.map((l: any) => (
@@ -129,8 +129,8 @@ export default function ProductionDetail() {
                   <td className="p-2">{l.productName}{l.variantName ? ` — ${l.variantName}` : ""}</td>
                   <td className="p-2 font-mono text-xs" dir="ltr">{l.sku}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.baseQuantity)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(l.unitCost)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(l.lineCost)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(l.unitCost)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(l.lineCost)}</td>
                 </tr>
               ))}
             </tbody>
@@ -143,7 +143,7 @@ export default function ProductionDetail() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50"><tr>
-              <th className="p-2">المنتَج</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th><th className="p-2 text-left">كلفة الوحدة المحتسبة</th><th className="p-2 text-left">الكلفة المُمتصّة</th>
+              <th className="p-2">المنتَج</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th><th className="p-2 text-right">كلفة الوحدة المحتسبة</th><th className="p-2 text-right">الكلفة المُمتصّة</th>
             </tr></thead>
             <tbody>
               {outputs.map((l: any) => (
@@ -151,8 +151,8 @@ export default function ProductionDetail() {
                   <td className="p-2">{l.productName}{l.variantName ? ` — ${l.variantName}` : ""}</td>
                   <td className="p-2 font-mono text-xs" dir="ltr">{l.sku}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.baseQuantity)}</td>
-                  <td className="p-2 text-left tabular-nums text-sky-700" dir="ltr">{fmt(l.unitCost)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(l.allocatedCost)}</td>
+                  <td className="p-2 text-right tabular-nums text-sky-700" dir="ltr">{fmt(l.unitCost)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(l.allocatedCost)}</td>
                 </tr>
               ))}
             </tbody>

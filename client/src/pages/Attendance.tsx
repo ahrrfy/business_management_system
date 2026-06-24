@@ -180,8 +180,8 @@ export default function Attendance() {
                   <th className="p-2.5 text-center">دخول</th>
                   <th className="p-2.5 text-center">خروج</th>
                   <th className="p-2.5 text-center">ساعات</th>
-                  <th className="p-2.5 text-left">سعر الساعة</th>
-                  <th className="p-2.5 text-left">أجر اليوم</th>
+                  <th className="p-2.5 text-right">سعر الساعة</th>
+                  <th className="p-2.5 text-right">أجر اليوم</th>
                   <th className="p-2.5 text-center">المصدر</th>
                 </tr>
               </thead>
@@ -201,8 +201,8 @@ export default function Attendance() {
                       <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkIn ? new Date(r.checkIn).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums" dir="ltr">{r.checkOut ? new Date(r.checkOut).toISOString().slice(11, 16) : "—"}</td>
                       <td className="p-2.5 text-center tabular-nums">{Number(r.hours ?? 0)}</td>
-                      <td className={`p-2.5 text-left tabular-nums ${weekend ? "text-[var(--stock-low)] font-medium" : ""}`} dir="ltr">{iqd(r.hourlyRate)}</td>
-                      <td className="p-2.5 text-left tabular-nums font-semibold" dir="ltr">{iqd(r.amount)}</td>
+                      <td className={`p-2.5 text-right tabular-nums ${weekend ? "text-[var(--stock-low)] font-medium" : ""}`} dir="ltr">{iqd(r.hourlyRate)}</td>
+                      <td className="p-2.5 text-right tabular-nums font-semibold" dir="ltr">{iqd(r.amount)}</td>
                       <td className="p-2.5 text-center">
                         {r.source === "fingerprint" ? (
                           <span className="text-[11px] text-muted-foreground inline-flex items-center gap-1"><Fingerprint className="size-3.5" /> بصمة</span>
@@ -227,7 +227,7 @@ export default function Attendance() {
                     <td className="p-2.5" colSpan={5}>الإجمالي</td>
                     <td className="p-2.5 text-center tabular-nums">{totalHours.toNumber().toLocaleString("en-US")}</td>
                     <td></td>
-                    <td className="p-2.5 text-left tabular-nums" dir="ltr">{iqd(totalAmount.toFixed(2))}</td>
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totalAmount.toFixed(2))}</td>
                     <td></td>
                   </tr>
                 )}

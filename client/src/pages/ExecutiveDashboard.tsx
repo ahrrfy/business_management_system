@@ -283,18 +283,18 @@ export default function ExecutiveDashboard() {
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
                     <th className="p-2.5 text-right font-medium">المنتج</th>
-                    <th className="p-2.5 text-left font-medium">الكمية</th>
-                    <th className="p-2.5 text-left font-medium">الإيراد</th>
-                    <th className="p-2.5 text-left font-medium">الربح</th>
+                    <th className="p-2.5 text-right font-medium">الكمية</th>
+                    <th className="p-2.5 text-right font-medium">الإيراد</th>
+                    <th className="p-2.5 text-right font-medium">الربح</th>
                   </tr>
                 </thead>
                 <tbody>
                   {topRows.map((r, i) => (
                     <tr key={i} className="border-b last:border-0">
                       <td className="p-2.5 text-right">{r.productName}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.qtySold)}</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                      <td className="p-2.5 text-left tabular-nums text-emerald-600" dir="ltr">{fmtAr(r.profit)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.qtySold)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
+                      <td className="p-2.5 text-right tabular-nums text-emerald-600" dir="ltr">{fmtAr(r.profit)}</td>
                     </tr>
                   ))}
                 </tbody>

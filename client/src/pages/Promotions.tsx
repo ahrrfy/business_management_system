@@ -148,7 +148,7 @@ export default function Promotions() {
                       <th className="p-2">الموظف</th>
                       <th className="p-2">من مسمّى</th>
                       <th className="p-2">إلى مسمّى</th>
-                      <th className="p-2 text-left">تغيّر الراتب</th>
+                      <th className="p-2 text-right">تغيّر الراتب</th>
                       <th className="p-2 text-center">التاريخ</th>
                       <th className="p-2">السبب</th>
                       <th className="p-2 text-center">الحالة</th>
@@ -161,7 +161,7 @@ export default function Promotions() {
                         <td className="p-2"><EmpCell name={p.employeeName} color={p.colorTag} photoUrl={p.photoUrl} /></td>
                         <td className="p-2 text-xs text-muted-foreground">{p.fromTitle ?? "—"}</td>
                         <td className="p-2 text-[13px] font-medium">{p.toTitle}</td>
-                        <td className="p-2 text-left tabular-nums text-xs" dir="ltr">
+                        <td className="p-2 text-right tabular-nums text-xs" dir="ltr">
                           <span className="text-muted-foreground">{iqd(p.fromSalary)}</span> → <span className="font-medium text-money-positive">{p.toSalary != null ? iqd(p.toSalary) : "—"}</span>
                         </td>
                         <td className="p-2 text-center text-xs tabular-nums" dir="ltr">{p.effectiveDate}</td>
@@ -216,7 +216,7 @@ export default function Promotions() {
                         <th className="p-2">الموظف</th>
                         <th className="p-2">نوع الإنهاء</th>
                         <th className="p-2 text-center">آخر يوم عمل</th>
-                        <th className="p-2 text-left">التسوية النهائية</th>
+                        <th className="p-2 text-right">التسوية النهائية</th>
                         <th className="p-2">السبب</th>
                         <th className="p-2 text-center">الحالة</th>
                         <th className="p-2 text-center">إجراء</th>
@@ -228,7 +228,7 @@ export default function Promotions() {
                           <td className="p-2"><EmpCell name={t.employeeName} color={t.colorTag} photoUrl={t.photoUrl} /></td>
                           <td className="p-2 text-[13px]">{t.terminationType}</td>
                           <td className="p-2 text-center text-xs tabular-nums" dir="ltr">{t.lastDay}</td>
-                          <td className="p-2 text-left tabular-nums font-medium" dir="ltr">{iqd(t.settlement)}</td>
+                          <td className="p-2 text-right tabular-nums font-medium" dir="ltr">{iqd(t.settlement)}</td>
                           <td className="p-2 text-xs text-muted-foreground">{t.reason ?? "—"}</td>
                           <td className="p-2 text-center"><span className={`inline-flex rounded-full px-2 py-0.5 text-[11px] font-medium ${termStatusCls[t.status] ?? "bg-muted text-muted-foreground"}`}>{termStatusLabel(t.status)}</span></td>
                           <td className="p-2 text-center">

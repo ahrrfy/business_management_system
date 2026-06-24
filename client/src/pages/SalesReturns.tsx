@@ -127,7 +127,7 @@ export default function SalesReturns() {
                 <th className="p-2">رقم الفاتورة</th>
                 <th className="p-2">العميل</th>
                 <th className="p-2">الفرع</th>
-                <th className="p-2 text-left">القيمة المرتجعة</th>
+                <th className="p-2 text-right">القيمة المرتجعة</th>
                 <th className="p-2">ملاحظات</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -144,7 +144,7 @@ export default function SalesReturns() {
                   {/* customerName فارغ = بيع نقدي بلا عميل مسجَّل. */}
                   <td className="p-2 font-medium">{r.customerName ?? "—"}</td>
                   <td className="p-2">{branchName(r.branchId)}</td>
-                  <td className="p-2 text-left font-semibold tabular-nums" dir="ltr">{fmt(returned(r.amount))}</td>
+                  <td className="p-2 text-right font-semibold tabular-nums" dir="ltr">{fmt(returned(r.amount))}</td>
                   <td className="p-2 text-xs text-muted-foreground">{noteText(r.notes)}</td>
                   <td className="p-2 text-center">
                     <RowActions

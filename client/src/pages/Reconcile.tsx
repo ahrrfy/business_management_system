@@ -182,9 +182,9 @@ function DriftSection({
             <thead className="bg-muted/50">
               <tr>
                 <th className="p-2">{idLabel}</th>
-                <th className="p-2 text-left">المتوقّع</th>
-                <th className="p-2 text-left">الفعلي</th>
-                <th className="p-2 text-left">الانحراف</th>
+                <th className="p-2 text-right">المتوقّع</th>
+                <th className="p-2 text-right">الفعلي</th>
+                <th className="p-2 text-right">الانحراف</th>
                 {link && <th className="p-2 text-center">إجراء</th>}
               </tr>
             </thead>
@@ -195,13 +195,13 @@ function DriftSection({
                   <td className="p-2 font-medium tabular-nums" dir="ltr">
                     {r.id}
                   </td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">
+                  <td className="p-2 text-right tabular-nums" dir="ltr">
                     {val(r.expected)}
                   </td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">
+                  <td className="p-2 text-right tabular-nums" dir="ltr">
                     {val(r.actual)}
                   </td>
-                  <td className="p-2 text-left font-semibold tabular-nums text-money-negative" dir="ltr">
+                  <td className="p-2 text-right font-semibold tabular-nums text-money-negative" dir="ltr">
                     {val(r.drift)}
                   </td>
                   {link && (

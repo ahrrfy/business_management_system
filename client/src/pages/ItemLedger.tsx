@@ -296,7 +296,7 @@ export default function ItemLedger() {
                       >
                         {signedDisplay(r.signedQty)}
                       </td>
-                      <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtInt(r.balance)}</td>
+                      <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{fmtInt(r.balance)}</td>
                       <td className="p-2.5 text-end text-muted-foreground text-xs">{r.reference ?? "—"}</td>
                     </tr>
                   ))}
@@ -305,7 +305,7 @@ export default function ItemLedger() {
                   <tfoot>
                     <tr className="border-t bg-muted/40 text-sm font-semibold">
                       <td className="p-2.5 text-end" colSpan={3}>الرصيد الختامي</td>
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtInt(closing)}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(closing)}</td>
                       <td></td>
                     </tr>
                   </tfoot>

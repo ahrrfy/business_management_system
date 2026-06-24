@@ -143,7 +143,7 @@ export default function Quotations() {
                 <th className="p-2">العميل</th>
                 <th className="p-2">التاريخ</th>
                 <th className="p-2">الصلاحية</th>
-                <th className="p-2 text-left">الإجمالي</th>
+                <th className="p-2 text-right">الإجمالي</th>
                 <th className="p-2">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -155,7 +155,7 @@ export default function Quotations() {
                   <td className="p-2">{qr.customerName ?? "—"}</td>
                   <td className="p-2">{new Date(qr.quoteDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
                   <td className="p-2 text-xs">{qr.validUntil ? String(qr.validUntil).slice(0, 10) : "—"}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(qr.total)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(qr.total)}</td>
                   <td className="p-2">
                     <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[qr.status] ?? "bg-muted"}`}>
                       {STATUS[qr.status] ?? qr.status}

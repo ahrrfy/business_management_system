@@ -167,9 +167,9 @@ export default function ArApAgingDetail() {
                     <th className="p-2.5 text-right font-medium">{isAR ? "العميل" : "المورد"}</th>
                     <th className="p-2.5 text-right font-medium">التاريخ</th>
                     {isAR && <th className="p-2.5 text-right font-medium">الاستحقاق</th>}
-                    <th className="p-2.5 text-left font-medium">أيام التأخّر</th>
+                    <th className="p-2.5 text-right font-medium">أيام التأخّر</th>
                     <th className="p-2.5 text-center font-medium">الشريحة</th>
-                    <th className="p-2.5 text-left font-medium">المتبقّي</th>
+                    <th className="p-2.5 text-right font-medium">المتبقّي</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -187,13 +187,13 @@ export default function ArApAgingDetail() {
                           {r.dueDate ?? "—"}
                         </td>
                       )}
-                      <td className="p-2.5 text-left tabular-nums" dir="ltr">{r.daysOverdue}</td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.daysOverdue}</td>
                       <td className="p-2.5 text-center">
                         <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${BUCKET_CLS[r.bucket] ?? "bg-muted text-muted-foreground"}`}>
                           {r.bucket}
                         </span>
                       </td>
-                      <td className="p-2.5 text-left tabular-nums font-semibold" dir="ltr">{fmtAr(r.unpaid)}</td>
+                      <td className="p-2.5 text-right tabular-nums font-semibold" dir="ltr">{fmtAr(r.unpaid)}</td>
                     </tr>
                   ))}
                 </tbody>
