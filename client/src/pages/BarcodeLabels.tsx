@@ -1,4 +1,6 @@
 import { CopyInline } from "@/components/CopyButton";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -254,13 +256,11 @@ export default function BarcodeLabels() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">طباعة ملصقات الباركود</h1>
-        <Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>
-      </div>
-      <p className="text-sm text-muted-foreground">
-        ابحث عن منتج وأضفه. للمنتجات بلا باركود مصنّعي يُولَّد باركود داخلي (ALR…) — احفظه ليصبح قابلاً للمسح في الكاشير، ثم اطبع الملصقات.
-      </p>
+      <PageHeader
+        title="طباعة ملصقات الباركود"
+        description="ابحث عن منتج وأضفه. للمنتجات بلا باركود مصنّعي يُولَّد باركود داخلي (ALR…) — احفظه ليصبح قابلاً للمسح في الكاشير، ثم اطبع الملصقات."
+        actions={<Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>}
+      />
 
       {/* مقاس الملصق + طابعة الملصقات */}
       <Card>
@@ -331,7 +331,7 @@ export default function BarcodeLabels() {
                 <span className="text-xs text-muted-foreground">المتصفّح لا يدعم الطباعة المباشرة (WebUSB) — ستُفتح نافذة الطباعة. استخدم Chrome/Edge للطباعة الصامتة.</span>
               ) : labelPrinterReady ? (
                 <>
-                  <span className="text-sm text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-4" />طابعة الملصقات مربوطة</span>
+                  <span className="text-sm text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-4" />طابعة الملصقات مربوطة</span>
                   <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>تغيير الطابعة</Button>
                 </>
               ) : (
@@ -436,7 +436,7 @@ export default function BarcodeLabels() {
                             حفظ الباركود
                           </Button>
                         )}
-                        {q.saved && <span className="text-xs text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />محفوظ</span>}
+                        {q.saved && <span className="text-xs text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />محفوظ</span>}
                       </div>
                     </td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{q.price != null ? money(q.price) : "—"}</td>
@@ -453,7 +453,7 @@ export default function BarcodeLabels() {
                 );
               })}
               {queue.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-muted-foreground">ابحث أعلاه لإضافة منتجات للطباعة.</td></tr>
+                <TableEmptyRow colSpan={6} message="ابحث أعلاه لإضافة منتجات للطباعة." />
               )}
             </tbody>
           </table>
@@ -461,7 +461,7 @@ export default function BarcodeLabels() {
       </Card>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {info && <p className="text-sm text-emerald-600">{info}</p>}
+      {info && <p className="text-sm text-money-positive">{info}</p>}
       <div className="flex gap-2">
         <Button onClick={printLabels} disabled={queue.length === 0}>طباعة {totalLabels} ملصق</Button>
         <Button

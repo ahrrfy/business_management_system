@@ -1,4 +1,5 @@
 import { ProductSearchPicker, type PurchaseRow } from "@/components/production/ProductSearchPicker";
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -191,9 +192,9 @@ export default function ProductionNew() {
           </div>
           <div className="col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setLine(list, setList, l.key, { qty: e.target.value })} /></div>
           <div className="col-span-2 text-left text-sm tabular-nums" dir="ltr">{kind === "in" ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : <span className="text-sky-700">{fmt(unitOutCost.toString())}/و</span>}</div>
-          <div className="col-span-1 text-left"><button type="button" className="text-rose-600 text-sm" onClick={() => setList(list.filter((x) => x.key !== l.key))}>حذف</button></div>
-          {!valid && <div className="col-span-12 text-xs text-rose-600">الكمية يجب أن تُنتج عدداً صحيحاً موجباً من الوحدة الأساس.</div>}
-          {over && <div className="col-span-12 text-xs text-amber-600">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
+          <div className="col-span-1 text-left"><button type="button" className="text-destructive text-sm" onClick={() => setList(list.filter((x) => x.key !== l.key))}>حذف</button></div>
+          {!valid && <div className="col-span-12 text-xs text-destructive">الكمية يجب أن تُنتج عدداً صحيحاً موجباً من الوحدة الأساس.</div>}
+          {over && <div className="col-span-12 text-xs text-[var(--stock-low)]">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
         </div>
       );
     });
@@ -201,13 +202,11 @@ export default function ProductionNew() {
 
   return (
     <div className="space-y-4" dir="rtl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">الإنتاج / تحويل المخزون</h1>
-          <p className="text-sm text-muted-foreground mt-1">يُخصَم الورق المُدخَل ويُنتَج المنتج بكلفته الحقيقية. الورق مصدر حقيقة واحد ⇒ لا سالب.</p>
-        </div>
-        <Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>
-      </div>
+      <PageHeader
+        title="الإنتاج / تحويل المخزون"
+        description="يُخصَم الورق المُدخَل ويُنتَج المنتج بكلفته الحقيقية. الورق مصدر حقيقة واحد ⇒ لا سالب."
+        actions={<Link href="/production" className="text-sm text-muted-foreground">← رجوع</Link>}
+      />
 
       {/* محدّد الوضع */}
       <div className="inline-flex gap-1 rounded-lg bg-muted p-1">
@@ -241,7 +240,7 @@ export default function ProductionNew() {
                     <option value="">— اختر وصفة —</option>
                     {(recipes.data ?? []).map((r: any) => <option key={r.id} value={Number(r.id)}>{r.name}</option>)}
                   </select>
-                  {(recipes.data ?? []).length === 0 && <p className="text-xs text-amber-600">لا وصفات مفعّلة. <Link href="/production-recipes" className="underline">أنشئ وصفة</Link> أولاً.</p>}
+                  {(recipes.data ?? []).length === 0 && <p className="text-xs text-[var(--stock-low)]">لا وصفات مفعّلة. <Link href="/production-recipes" className="underline">أنشئ وصفة</Link> أولاً.</p>}
                 </div>
                 <div className="space-y-1">
                   <Label>الفرع</Label>
@@ -268,12 +267,12 @@ export default function ProductionNew() {
                       <div className="text-xl text-muted-foreground pb-2">−</div>
                       <div className="space-y-1">
                         <Label>التالف (هدر)</Label>
-                        <Input dir="ltr" value={scrap} onChange={(e) => setScrap(e.target.value)} className="border-amber-400" />
+                        <Input dir="ltr" value={scrap} onChange={(e) => setScrap(e.target.value)} className="border-[var(--stock-low)]" />
                       </div>
                       <div className="text-xl text-muted-foreground pb-2">=</div>
                       <div className="space-y-1">
                         <Label>السليم الناتج</Label>
-                        <div className="h-9 flex items-center gap-1 font-bold text-emerald-700 bg-emerald-50 rounded-md px-3" dir="ltr">{fmt(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
+                        <div className="h-9 flex items-center gap-1 font-bold badge-status-active rounded-md px-3" dir="ltr">{fmt(pv?.good ?? Math.max(0, Math.trunc(Number(batch) || 0) - Math.trunc(Number(scrap) || 0)))} <span className="text-xs text-muted-foreground font-normal">{pv?.outputUnitName}</span></div>
                       </div>
                     </div>
                     {pv && (
@@ -282,7 +281,7 @@ export default function ProductionNew() {
                         <div className="flex gap-4 flex-wrap text-xs text-muted-foreground mt-2">
                           <span>بدأ التشغيل: <b className="text-foreground" dir="ltr">{fmt(pv.batch)}</b></span>
                           <span>مسموح طبيعي: <b className="text-foreground" dir="ltr">{fmt(pv.normalAllow)}</b></span>
-                          {pv.abnormalUnits > 0 && <span>هدر غير طبيعي: <b className="text-rose-600" dir="ltr">{fmt(pv.abnormalUnits)}</b></span>}
+                          {pv.abnormalUnits > 0 && <span>هدر غير طبيعي: <b className="text-destructive" dir="ltr">{fmt(pv.abnormalUnits)}</b></span>}
                         </div>
                       </div>
                     )}
@@ -307,8 +306,8 @@ export default function ProductionNew() {
                           <div>
                             <Meter value={i.consumed} max={i.available ?? i.consumed} tone={tone} right={`${fmt(i.consumed)} / ${i.available != null ? fmt(i.available) : "—"}`} />
                             {i.short
-                              ? <div className="text-xs font-semibold text-rose-600 mt-1.5">المتاح أقل بـ {fmt(i.consumed - (i.available ?? 0))} — سيُرفض الترحيل</div>
-                              : i.available != null && <div className="text-xs font-semibold text-emerald-600 mt-1.5 flex items-center gap-1"><Check aria-hidden className="size-3.5" /><span>يكفي — يتبقّى {fmt(i.available - i.consumed)}</span></div>}
+                              ? <div className="text-xs font-semibold text-destructive mt-1.5">المتاح أقل بـ {fmt(i.consumed - (i.available ?? 0))} — سيُرفض الترحيل</div>
+                              : i.available != null && <div className="text-xs font-semibold text-money-positive mt-1.5 flex items-center gap-1"><Check aria-hidden className="size-3.5" /><span>يكفي — يتبقّى {fmt(i.available - i.consumed)}</span></div>}
                           </div>
                         </div>
                       );
@@ -327,7 +326,7 @@ export default function ProductionNew() {
                     <div className="space-y-1">
                       <Label className="flex items-center gap-1">ربط بطلب خدمة (مرجع، اختياري) <span title="إن كان الإنتاج لطلب خدمة بعينه، اذكره لتفادي خصم الورق مرّتين." className="inline-grid place-items-center w-4 h-4 rounded-full bg-muted text-[10px] text-muted-foreground cursor-help">؟</span></Label>
                       <Input dir="ltr" value={workOrder} onChange={(e) => setWorkOrder(e.target.value)} placeholder="WO-1-…" />
-                      {workOrder.trim() && <p className="text-[11px] text-amber-600">تأكّد أن الورق لا يُخصَم مرّتين (هنا وداخل طلب الخدمة).</p>}
+                      {workOrder.trim() && <p className="text-[11px] text-[var(--stock-low)]">تأكّد أن الورق لا يُخصَم مرّتين (هنا وداخل طلب الخدمة).</p>}
                     </div>
                   </CardContent>
                 </Card>
@@ -361,14 +360,14 @@ export default function ProductionNew() {
                 <div className="flex justify-between border-t border-dashed pt-2"><span className="font-semibold">الكلفة الكلية للتشغيل</span><b dir="ltr">{fmt(pv?.totalCost ?? 0)}</b></div>
                 <div className="mt-2 p-2 rounded-md bg-muted/50 space-y-1">
                   <div className="text-xs font-semibold text-muted-foreground">معالجة الهدر</div>
-                  <div className="flex justify-between text-xs text-emerald-700"><span>هدر طبيعي ({fmt(pv?.normalAllow ?? 0)}) — يُمتَص في كلفة السليم</span><b>مُحمَّل</b></div>
+                  <div className="flex justify-between text-xs text-money-positive"><span>هدر طبيعي ({fmt(pv?.normalAllow ?? 0)}) — يُمتَص في كلفة السليم</span><b>مُحمَّل</b></div>
                   {pv && pv.abnormalUnits > 0
-                    ? <div className="flex justify-between text-xs text-rose-600"><span>هدر غير طبيعي ({fmt(pv.abnormalUnits)}) — خسارة منفصلة</span><b dir="ltr">− {fmt(pv.abnormalLoss)}</b></div>
+                    ? <div className="flex justify-between text-xs text-money-negative"><span>هدر غير طبيعي ({fmt(pv.abnormalUnits)}) — خسارة منفصلة</span><b dir="ltr">− {fmt(pv.abnormalLoss)}</b></div>
                     : <div className="flex justify-between text-xs text-muted-foreground"><span>لا هدر غير طبيعي</span><b dir="ltr">0</b></div>}
                 </div>
-                <div className="flex justify-between items-center mt-2 px-3 py-2 rounded-md bg-emerald-50">
+                <div className="flex justify-between items-center mt-2 px-3 py-2 rounded-md badge-status-active">
                   <span className="font-semibold">كلفة الوحدة السليمة</span>
-                  <b className="text-lg text-emerald-700" dir="ltr">{fmt(pv?.unitCost ?? 0)}</b>
+                  <b className="text-lg text-money-positive" dir="ltr">{fmt(pv?.unitCost ?? 0)}</b>
                 </div>
               </CardContent>
             </Card>

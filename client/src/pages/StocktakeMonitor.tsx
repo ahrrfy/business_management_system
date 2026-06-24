@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -43,10 +45,10 @@ import {
 
 /* ───────── ثوابت العرض ───────── */
 const STATUS_META: Record<string, { label: string; cls: string }> = {
-  COUNTING: { label: "قيد العدّ", cls: "bg-blue-50 text-blue-700 border-blue-200" },
-  REVIEW: { label: "قيد المراجعة", cls: "bg-amber-50 text-amber-800 border-amber-200" },
-  APPROVED: { label: "معتمدة ومُسوّاة", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  CANCELLED: { label: "ملغاة", cls: "bg-rose-50 text-rose-700 border-rose-200" },
+  COUNTING: { label: "قيد العدّ", cls: "badge-status-pending" },
+  REVIEW: { label: "قيد المراجعة", cls: "badge-stock-low" },
+  APPROVED: { label: "معتمدة ومُسوّاة", cls: "badge-status-active" },
+  CANCELLED: { label: "ملغاة", cls: "badge-stock-out" },
 };
 const SCOPE_LABEL: Record<string, string> = {
   FULL: "جرد شامل للفرع",
@@ -56,8 +58,8 @@ const SCOPE_LABEL: Record<string, string> = {
 };
 const KIND_META: Record<string, { label: string; cls: string }> = {
   FIRST: { label: "عدّ أول", cls: "bg-muted text-muted-foreground border-border" },
-  RECOUNT: { label: "إعادة عدّ", cls: "bg-violet-50 text-violet-700 border-violet-200" },
-  VERIFY: { label: "عدّ تحقّقي", cls: "bg-blue-50 text-blue-700 border-blue-200" },
+  RECOUNT: { label: "إعادة عدّ", cls: "badge-status-done" },
+  VERIFY: { label: "عدّ تحقّقي", cls: "badge-status-pending" },
 };
 const LOG_LABEL: Record<string, string> = {
   "stocktake.create": "إنشاء الجلسة وتحديد النطاق",
@@ -111,10 +113,10 @@ function StatusBadge({ status }: { status: string }) {
 
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "blue" | "amber" | "emerald" | "rose" }) {
   const tones: Record<string, string> = {
-    blue: "text-blue-700",
-    amber: "text-amber-700",
-    emerald: "text-emerald-700",
-    rose: "text-rose-700",
+    blue: "text-[var(--status-pending)]",
+    amber: "text-stock-low",
+    emerald: "text-money-positive",
+    rose: "text-money-negative",
   };
   return (
     <Card className="p-4 gap-1">
@@ -202,8 +204,7 @@ export default function StocktakeMonitor() {
 
   /* ───── حواجز عرض مبكرة (بعد كل الـhooks) ───── */
   if (!idOk) return <div className="p-10 text-center text-muted-foreground">معرّف الجلسة غير صالح.</div>;
-  if (me.isLoading || (canView && monitor.isLoading))
-    return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
+  if (me.isLoading || (canView && monitor.isLoading)) return <LoadingState />;
   if (me.data && !canView)
     return (
       <div className="mx-auto max-w-lg space-y-4 p-10 text-center">
@@ -217,10 +218,11 @@ export default function StocktakeMonitor() {
     );
   if (monitor.error)
     return (
-      <div className="mx-auto max-w-lg space-y-4 p-10 text-center">
-        <p className="font-bold text-rose-700">تعذّر تحميل الجلسة</p>
-        <p className="text-sm text-muted-foreground">{monitor.error.message}</p>
-        <Link href="/stocktakes"><Button variant="outline">→ جلسات الجرد</Button></Link>
+      <div className="space-y-4">
+        <ErrorState message={monitor.error.message} onRetry={() => void monitor.refetch()} />
+        <div className="text-center">
+          <Link href="/stocktakes"><Button variant="outline">→ جلسات الجرد</Button></Link>
+        </div>
       </div>
     );
   if (!monitor.data) return <div className="p-10 text-center text-muted-foreground">الجلسة غير موجودة.</div>;
@@ -317,76 +319,80 @@ export default function StocktakeMonitor() {
       </div>
 
       {/* الترويسة */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold">{s.name}</h1>
+      <PageHeader
+        title={
+          <span className="flex items-center gap-3">
+            {s.name}
             <StatusBadge status={s.status} />
-          </div>
-          <p className="mt-1 text-sm text-muted-foreground">
+          </span>
+        }
+        description={
+          <>
             <span className="font-mono" dir="ltr">{s.code}</span> · {s.branchName} · {scopeLabel}
             {s.blind && (
-              <span className="mr-2 inline-flex items-center rounded-full border border-violet-200 bg-violet-50 px-2.5 py-0.5 text-xs font-semibold text-violet-700">
+              <span className="badge-status-done mr-2 inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold">
                 جرد أعمى
               </span>
             )}
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {isAdmin && (s.status === "COUNTING" || s.status === "REVIEW") && (
-            <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)}>
-              إلغاء الجلسة
+          </>
+        }
+        actions={
+          <>
+            {isAdmin && (s.status === "COUNTING" || s.status === "REVIEW") && (
+              <Button variant="destructive" size="sm" onClick={() => setCancelOpen(true)}>
+                إلغاء الجلسة
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={() => void copyCountLink()}>
+              نسخ رابط العدّ
             </Button>
-          )}
-          <Button variant="outline" size="sm" onClick={() => void copyCountLink()}>
-            نسخ رابط العدّ
-          </Button>
-          <Link href={`/stocktakes/${sessionId}/sheets`}>
-            <Button variant="outline" size="sm">
-              <Printer aria-hidden className="size-4" /> قوائم عدّ ورقية
-            </Button>
-          </Link>
-          {s.status === "APPROVED" && (
-            <Link href={`/stocktakes/${sessionId}/report`}>
-              <Button size="sm">المحضر والتقرير</Button>
-            </Link>
-          )}
-          {(s.status === "REVIEW" || s.status === "APPROVED") && (
-            <Link href={`/stocktakes/${sessionId}/review`}>
-              <Button size="sm" variant={s.status === "REVIEW" ? "default" : "outline"}>
-                {s.status === "REVIEW" ? "مراجعة واعتماد" : "شاشة المراجعة"}
+            <Link href={`/stocktakes/${sessionId}/sheets`}>
+              <Button variant="outline" size="sm">
+                <Printer aria-hidden className="size-4" /> قوائم عدّ ورقية
               </Button>
             </Link>
-          )}
-          {isCounting && (
-            <Button
-              size="sm"
-              variant={submittedCount === assignments.length ? "default" : "outline"}
-              disabled={!isManager || forceReview.isPending}
-              title={
-                isManager
-                  ? counted < total
-                    ? "العدّ لم يكتمل — سينتقل كمراجعة جزئية"
-                    : ""
-                  : "إنهاء العدّ صلاحية مشرف فأعلى"
-              }
-              onClick={() => void onForceReview()}
-            >
-              {forceReview.isPending ? "جارٍ الإغلاق…" : "إنهاء العدّ والانتقال للمراجعة"}
-            </Button>
-          )}
-        </div>
-      </div>
+            {s.status === "APPROVED" && (
+              <Link href={`/stocktakes/${sessionId}/report`}>
+                <Button size="sm">المحضر والتقرير</Button>
+              </Link>
+            )}
+            {(s.status === "REVIEW" || s.status === "APPROVED") && (
+              <Link href={`/stocktakes/${sessionId}/review`}>
+                <Button size="sm" variant={s.status === "REVIEW" ? "default" : "outline"}>
+                  {s.status === "REVIEW" ? "مراجعة واعتماد" : "شاشة المراجعة"}
+                </Button>
+              </Link>
+            )}
+            {isCounting && (
+              <Button
+                size="sm"
+                variant={submittedCount === assignments.length ? "default" : "outline"}
+                disabled={!isManager || forceReview.isPending}
+                title={
+                  isManager
+                    ? counted < total
+                      ? "العدّ لم يكتمل — سينتقل كمراجعة جزئية"
+                      : ""
+                    : "إنهاء العدّ صلاحية مشرف فأعلى"
+                }
+                onClick={() => void onForceReview()}
+              >
+                {forceReview.isPending ? "جارٍ الإغلاق…" : "إنهاء العدّ والانتقال للمراجعة"}
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {s.status === "CANCELLED" && (
-        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-800">
+        <div className="badge-stock-out rounded-lg border px-4 py-2.5 text-sm">
           أُلغيت هذه الجلسة — لا عدّ ولا تسوية عليها.
         </div>
       )}
 
       {/* تعارضات وإعادات عدّ معلّقة */}
       {conflicts.length > 0 && (
-        <div className="space-y-1 rounded-lg border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm text-rose-800">
+        <div className="badge-stock-out space-y-1 rounded-lg border px-4 py-2.5 text-sm">
           <p className="inline-flex items-center gap-1.5 font-bold">
             <AlertTriangle aria-hidden className="size-4" /> تعارض عدَّين على {nf(conflicts.length)} منتج — يحجب الاعتماد حتى يُفصل فيه:
           </p>
@@ -403,7 +409,7 @@ export default function StocktakeMonitor() {
         </div>
       )}
       {pendingRecounts.length > 0 && (
-        <div className="space-y-1 rounded-lg border border-violet-200 bg-violet-50 px-4 py-2.5 text-sm text-violet-800">
+        <div className="badge-status-done space-y-1 rounded-lg border px-4 py-2.5 text-sm">
           <p className="inline-flex items-center gap-1.5 font-bold">
             <RefreshCw aria-hidden className="size-4" /> {nf(pendingRecounts.length)} طلب إعادة عدّ بانتظار العامل:
           </p>
@@ -454,16 +460,16 @@ export default function StocktakeMonitor() {
                     <p className="flex flex-wrap items-center gap-1.5 font-bold">
                       {a.name}
                       {a.status === "SUBMITTED" ? (
-                        <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                        <span className="badge-status-active inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold">
                           سلّم العدّ
                         </span>
                       ) : (
-                        <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                        <span className="badge-status-pending inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold">
                           يعدّ الآن
                         </span>
                       )}
                       {a.method === "PIN" ? (
-                        <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                        <span className="badge-stock-low inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold">
                           <LinkIcon aria-hidden className="size-3" /> رابط خارجي PIN
                         </span>
                       ) : (
@@ -478,7 +484,7 @@ export default function StocktakeMonitor() {
                     <div className="mt-1.5 flex items-center gap-2">
                       <Progress
                         value={a.total > 0 ? Math.round((a.counted / a.total) * 100) : 0}
-                        className={`w-36 ${a.status === "SUBMITTED" ? "[&>[data-slot=progress-indicator]]:bg-emerald-500" : ""}`}
+                        className={`w-36 ${a.status === "SUBMITTED" ? "[&>[data-slot=progress-indicator]]:bg-[var(--status-active)]" : ""}`}
                       />
                       <span className="text-xs tabular-nums text-muted-foreground" dir="ltr">
                         {nf(a.counted)}/{nf(a.total)}
@@ -492,7 +498,7 @@ export default function StocktakeMonitor() {
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="text-emerald-700"
+                            className="text-[var(--brand-whatsapp)]"
                             title="فتح واتساب برسالة تذكير جاهزة"
                             onClick={() => remind(a)}
                           >
@@ -576,7 +582,7 @@ export default function StocktakeMonitor() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          className="text-violet-700"
+                          className="text-[var(--status-done)]"
                           title="طلب إعادة عدّ لهذا المنتج (سبب إلزامي)"
                           onClick={() => {
                             setRecountReason("");

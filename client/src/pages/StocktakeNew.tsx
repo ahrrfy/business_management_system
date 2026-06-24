@@ -24,6 +24,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { PageHeader } from "@/components/PageHeader";
 import { formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -341,7 +342,7 @@ export default function StocktakeNew() {
         <span className="text-border">/</span>
         <span className="text-muted-foreground">جلسة جرد جديدة</span>
       </div>
-      <h1 className="text-2xl font-bold">جلسة جرد جديدة</h1>
+      <PageHeader title="جلسة جرد جديدة" />
 
       {/* مؤشر الخطوات */}
       <div className="flex items-center gap-2">
@@ -449,7 +450,7 @@ export default function StocktakeNew() {
                 {categoriesQ.isLoading ? (
                   <p className="text-xs text-muted-foreground">جارٍ تحميل الفئات…</p>
                 ) : categoryOptions.length === 0 ? (
-                  <p className="text-xs text-amber-700">لا فئات معرّفة في النظام — استعمل «منتجات مختارة يدوياً».</p>
+                  <p className="text-xs text-[var(--stock-low)]">لا فئات معرّفة في النظام — استعمل «منتجات مختارة يدوياً».</p>
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     {categoryOptions.map((c) => {
@@ -547,7 +548,7 @@ export default function StocktakeNew() {
                   )}
                 </div>
                 {unknownSelected.length > 0 && (
-                  <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  <p className="rounded-md px-3 py-2 text-xs badge-stock-low">
                     {nf(unknownSelected.length)} من المنتجات المختارة (إحالة مسبقة) غير ظاهرة في قائمة هذا الفرع —
                     تبقى ضمن النطاق ويتحقق الخادم منها عند الإنشاء.
                   </p>
@@ -563,10 +564,8 @@ export default function StocktakeNew() {
                 </span>
               ) : (
                 <span
-                  className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold ${
-                    scopeCount > 0
-                      ? "bg-blue-50 text-blue-700 border-blue-200"
-                      : "bg-rose-50 text-rose-700 border-rose-200"
+                  className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                    scopeCount > 0 ? "badge-status-pending" : "badge-stock-out"
                   }`}
                 >
                   {nf(scopeCount)} منتجاً
@@ -631,7 +630,7 @@ export default function StocktakeNew() {
                       />
                     </div>
                     <div className="mr-auto flex items-center gap-2 pb-1">
-                      <span className="inline-block rounded-full border bg-blue-50 px-2.5 py-0.5 text-xs font-semibold text-blue-700 border-blue-200">
+                      <span className="inline-block rounded-full px-2.5 py-0.5 text-xs font-semibold badge-status-pending">
                         {w.name.trim() === ""
                           ? "—"
                           : dist
@@ -670,7 +669,7 @@ export default function StocktakeNew() {
                       {usersQ.isLoading ? (
                         <p className="text-[11px] text-muted-foreground">جارٍ تحميل الحسابات…</p>
                       ) : usersQ.isError ? (
-                        <p className="text-[11px] text-amber-700">
+                        <p className="text-[11px] text-[var(--stock-low)]">
                           تعذّر تحميل قائمة الحسابات — أعد المحاولة، أو استعمل رابط PIN الخارجي بدل الحساب.
                         </p>
                       ) : null}
@@ -692,7 +691,7 @@ export default function StocktakeNew() {
               + إضافة عامل
             </Button>
             {scopeType !== "MANUAL" && validWorkers.length > 1 && (
-              <p className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-800">
+              <p className="rounded-md px-3 py-2 text-xs badge-status-pending">
                 نطاق «{SCOPE_TYPE_LABEL[scopeType]}» يحلّه الخادم لحظة الإنشاء ويوزّعه كتلاً متساوية على كل
                 العمّال تلقائياً.
               </p>
@@ -797,7 +796,7 @@ export default function StocktakeNew() {
                   </div>
                 </>
               ) : (
-                <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <p className="rounded-md px-3 py-2 text-xs badge-stock-low">
                   تعديل الحدود صلاحية مشرف فأعلى — تُطبَّق القيم الافتراضية المعتمدة (5٪ أو 25,000 د.ع للتسوية
                   المباشرة، و150,000 د.ع للتوقيعين).
                 </p>
@@ -955,7 +954,7 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
     <div className="mx-auto max-w-2xl space-y-4">
       <Card>
         <CardContent className="p-8 text-center">
-          <div className="mx-auto grid size-14 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+          <div className="mx-auto grid size-14 place-items-center rounded-full badge-status-active">
             <Check aria-hidden className="size-7" />
           </div>
           <h1 className="mt-3 text-xl font-bold">
@@ -971,7 +970,7 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
       <Card>
         <CardHeader>
           <p className="text-base font-semibold">روابط العدّ ورموز الدخول</p>
-          <p className="inline-flex items-start gap-1 text-xs text-amber-800">
+          <p className="inline-flex items-start gap-1 text-xs text-[var(--stock-low)]">
             <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
             <span>رموز PIN تظهر هنا مرة واحدة فقط — انسخها الآن. يمكن إعادة توليد رمز عامل من شاشة المتابعة.</span>
           </p>

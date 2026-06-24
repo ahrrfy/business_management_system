@@ -120,8 +120,8 @@ export default function Treasury() {
           <span
             className={
               row.original.direction === "IN"
-                ? "inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400"
-                : "inline-flex items-center gap-1 text-rose-700 dark:text-rose-400"
+                ? "inline-flex items-center gap-1 text-money-positive"
+                : "inline-flex items-center gap-1 text-money-negative"
             }
           >
             {row.original.direction === "IN" ? (
@@ -151,8 +151,8 @@ export default function Treasury() {
             <span
               className={
                 row.original.cashBucket === "DRAWER"
-                  ? "text-[11px] bg-emerald-100 text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-300 rounded px-1.5 py-0.5"
-                  : "text-[11px] bg-violet-100 text-violet-800 dark:bg-violet-950/40 dark:text-violet-300 rounded px-1.5 py-0.5"
+                  ? "text-[11px] badge-status-active rounded px-1.5 py-0.5"
+                  : "text-[11px] badge-status-done rounded px-1.5 py-0.5"
               }
             >
               {row.original.cashBucket === "DRAWER" ? "درج" : "خزينة"}

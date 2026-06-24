@@ -6,6 +6,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { Banknote, Check, CreditCard, Printer, Send, ShoppingCart, X } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
@@ -44,9 +45,9 @@ const CHANNELS: { v: string; label: string; icon: string; placeholder: string; d
 ];
 
 const PRIORITIES: { v: "LOW" | "NORMAL" | "URGENT"; label: string; cls: string }[] = [
-  { v: "LOW",     label: "منخفض",   cls: "bg-emerald-500/10 text-emerald-700 border-emerald-500/30" },
-  { v: "NORMAL",  label: "عادي",     cls: "bg-sky-500/10 text-sky-700 border-sky-500/30" },
-  { v: "URGENT",  label: "عاجل",     cls: "bg-destructive/10 text-destructive border-destructive/30" },
+  { v: "LOW",     label: "منخفض",   cls: "badge-status-active" },
+  { v: "NORMAL",  label: "عادي",     cls: "badge-status-pending" },
+  { v: "URGENT",  label: "عاجل",     cls: "badge-stock-out" },
 ];
 
 const DELIVERY_METHODS = ["استلام من المحل", "توصيل للعميل", "شحن سريع"];
@@ -394,13 +395,15 @@ export default function WorkOrderNew() {
 
   return (
     <div className="space-y-4 max-w-6xl">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold">طلب خدمة جديد</h1>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={exportImage}>تحميل/طباعة كصورة</Button>
-          <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع</Link>
-        </div>
-      </div>
+      <PageHeader
+        title="طلب خدمة جديد"
+        actions={
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={exportImage}>تحميل/طباعة كصورة</Button>
+            <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع</Link>
+          </div>
+        }
+      />
 
       {/* مَلّاحة سَريعة بِخُطوات النَموذَج — انقر للقَفز للقِسم */}
       <Card className="overflow-hidden">
@@ -794,15 +797,15 @@ export default function WorkOrderNew() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
             {/* بطاقة البيع المباشر */}
             <div className={cn("rounded-md border p-3 space-y-1", hasCart ? "bg-emerald-500/5 border-emerald-500/30" : "bg-muted/20 opacity-60")}>
-              <div className="flex items-center justify-between font-semibold"><span className="inline-flex items-center gap-1.5"><ShoppingCart aria-hidden className="size-4" /> بيع مباشر (جاهز)</span>{hasCart && <Badge variant="outline" className="text-emerald-700 border-emerald-500/40">فاتورة مستقلّة</Badge>}</div>
+              <div className="flex items-center justify-between font-semibold"><span className="inline-flex items-center gap-1.5"><ShoppingCart aria-hidden className="size-4" /> بيع مباشر (جاهز)</span>{hasCart && <Badge variant="outline" className="badge-status-active">فاتورة مستقلّة</Badge>}</div>
               <div className="flex justify-between"><span>إجمالي السلّة</span><span dir="ltr">{fmt(cartSubtotal.toFixed(2))} د.ع</span></div>
-              {discount.gt(0) && <div className="flex justify-between text-emerald-700"><span>− خصم</span><span dir="ltr">{fmt(discount.toFixed(2))} د.ع</span></div>}
+              {discount.gt(0) && <div className="flex justify-between text-money-positive"><span>− خصم</span><span dir="ltr">{fmt(discount.toFixed(2))} د.ع</span></div>}
               <div className="flex justify-between font-bold border-t pt-1"><span>يُدفع كاملاً الآن</span><span dir="ltr">{fmt(saleTotal.toFixed(2))} د.ع</span></div>
               {!shift && hasCart && <p className="text-[11px] text-destructive">يلزم وردية مفتوحة لبيع الأصناف الجاهزة.</p>}
             </div>
             {/* بطاقة أمر التخصيص */}
             <div className={cn("rounded-md border p-3 space-y-1", hasCustom ? "bg-violet-500/5 border-violet-500/30" : "bg-muted/20 opacity-60")}>
-              <div className="flex items-center justify-between font-semibold"><span className="inline-flex items-center gap-1.5"><Printer aria-hidden className="size-4" /> أمر تخصيص (مطبعة)</span>{hasCustom && <Badge variant="outline" className="text-violet-700 border-violet-500/40">طلب خدمة</Badge>}</div>
+              <div className="flex items-center justify-between font-semibold"><span className="inline-flex items-center gap-1.5"><Printer aria-hidden className="size-4" /> أمر تخصيص (مطبعة)</span>{hasCustom && <Badge variant="outline" className="badge-status-done">طلب خدمة</Badge>}</div>
               <div className="flex justify-between"><span>خدمة التخصيص ({quantity} × {fmt(salePrice || "0")})</span><span dir="ltr">{fmt(customizationTotal.toFixed(2))} د.ع</span></div>
               {hasDelivery && delivery.gt(0) && <div className="flex justify-between"><span>+ توصيل</span><span dir="ltr">{fmt(delivery.toFixed(2))} د.ع</span></div>}
               <div className="flex justify-between font-bold border-t pt-1"><span>سعر الأمر</span><span dir="ltr">{fmt(customTotal.toFixed(2))} د.ع</span></div>
