@@ -11,6 +11,10 @@
 -- الفُروع: مَعزولة per branchId (IDOR-safe per branchScopedProcedure).
 -- التَكَرار: UNIQUE(channel, channelHandle, branchId) ⇒ webhook مُكَرَّر لا يُنشئ سجلّاً ثانياً.
 -- dedup الرَسائل: UNIQUE(externalId) ⇒ retries مُزوّد لا تُكرّر رَسالة.
+--
+-- ملاحظة هَجرة (٢٤/٦): ملف يَدوي مُتعدّد العبارات يَجب أن يَفصِل كل عبارة بِفاصل عبارات
+--   drizzle، وإلّا يُرسلها المُطبِّق الإنتاجي (db:migrate:safe) كَاستعلام واحد فيَرفضها
+--   mysql2 (لا multipleStatements). تَجنّب كِتابة الفاصل حَرفياً داخل التَعليقات.
 
 CREATE TABLE `conversations` (
   `id` bigint AUTO_INCREMENT NOT NULL,
@@ -32,9 +36,11 @@ CREATE TABLE `conversations` (
   CONSTRAINT `conversations_customerId_customers_id_fk` FOREIGN KEY (`customerId`) REFERENCES `customers`(`id`),
   CONSTRAINT `conversations_linkedWorkOrderId_workOrders_id_fk` FOREIGN KEY (`linkedWorkOrderId`) REFERENCES `workOrders`(`id`)
 );
+--> statement-breakpoint
 CREATE INDEX `idx_conv_branch` ON `conversations` (`branchId`,`convStatus`,`lastMessageAt`);
+--> statement-breakpoint
 CREATE INDEX `idx_conv_customer` ON `conversations` (`customerId`);
-
+--> statement-breakpoint
 CREATE TABLE `conversationMessages` (
   `id` bigint AUTO_INCREMENT NOT NULL,
   `conversationId` bigint NOT NULL,
@@ -51,4 +57,5 @@ CREATE TABLE `conversationMessages` (
   CONSTRAINT `conversationMessages_conversationId_conversations_id_fk` FOREIGN KEY (`conversationId`) REFERENCES `conversations`(`id`) ON DELETE cascade,
   CONSTRAINT `conversationMessages_authorUserId_users_id_fk` FOREIGN KEY (`authorUserId`) REFERENCES `users`(`id`)
 );
+--> statement-breakpoint
 CREATE INDEX `idx_msg_conv` ON `conversationMessages` (`conversationId`,`createdAt`);
