@@ -120,10 +120,19 @@ export default function PrintPOS() {
   const customers = trpc.customers.list.useQuery();
 
   // الفئات (تبويبات) مشتقّة من الخدمات مع حفظ ترتيب أول ظهور.
+  // print-catalog: تبويب «أخرى» (id=0) للخدمات بلا فئة — وإلا تُحجَب من الشبكة كُلّياً
+  // (الفئة اختيارية في شاشة تعريف الخدمة، فلا يجوز أن تختفي خدمة صالحة).
   const cats = useMemo(() => {
     const seen = new Map<number, string>();
-    for (const s of services) if (s.categoryId != null && !seen.has(s.categoryId)) seen.set(s.categoryId, s.categoryName ?? "خدمات");
-    return Array.from(seen, ([id, name]) => ({ id, name }));
+    let hasUncategorized = false;
+    for (const s of services) {
+      if (s.categoryId != null) {
+        if (!seen.has(s.categoryId)) seen.set(s.categoryId, s.categoryName ?? "خدمات");
+      } else hasUncategorized = true;
+    }
+    const out = Array.from(seen, ([id, name]) => ({ id, name }));
+    if (hasUncategorized) out.push({ id: 0, name: "أخرى" });
+    return out;
   }, [services]);
 
   // ── حالة ──
@@ -504,7 +513,8 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
   const q = search.trim();
   const list = useMemo(() => {
     if (q) return services.filter((s) => s.productName.includes(q));
-    return services.filter((s) => s.categoryId === catId);
+    // print-catalog: catId=0 هو تبويب «أخرى» (الخدمات بلا فئة، categoryId == null).
+    return services.filter((s) => (catId === 0 ? s.categoryId == null : s.categoryId === catId));
   }, [services, q, catId]);
 
   return (
