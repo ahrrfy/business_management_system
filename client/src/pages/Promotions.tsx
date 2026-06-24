@@ -144,7 +144,7 @@ export default function Promotions() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
-                    <tr className="text-right">
+                    <tr>
                       <th className="p-2">الموظف</th>
                       <th className="p-2">من مسمّى</th>
                       <th className="p-2">إلى مسمّى</th>
@@ -212,7 +212,7 @@ export default function Promotions() {
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50">
-                      <tr className="text-right">
+                      <tr>
                         <th className="p-2">الموظف</th>
                         <th className="p-2">نوع الإنهاء</th>
                         <th className="p-2 text-center">آخر يوم عمل</th>

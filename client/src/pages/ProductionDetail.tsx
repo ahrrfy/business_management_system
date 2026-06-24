@@ -120,7 +120,7 @@ export default function ProductionDetail() {
         <CardHeader><CardTitle className="text-base">المدخلات (المُستهلَكة)</CardTitle></CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
-            <thead className="bg-muted/50"><tr className="text-right">
+            <thead className="bg-muted/50"><tr>
               <th className="p-2">المادة</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th><th className="p-2 text-left">كلفة الوحدة</th><th className="p-2 text-left">كلفة السطر</th>
             </tr></thead>
             <tbody>
@@ -142,7 +142,7 @@ export default function ProductionDetail() {
         <CardHeader><CardTitle className="text-base">المخرجات (المُنتَجة)</CardTitle></CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
-            <thead className="bg-muted/50"><tr className="text-right">
+            <thead className="bg-muted/50"><tr>
               <th className="p-2">المنتَج</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th><th className="p-2 text-left">كلفة الوحدة المحتسبة</th><th className="p-2 text-left">الكلفة المُمتصّة</th>
             </tr></thead>
             <tbody>

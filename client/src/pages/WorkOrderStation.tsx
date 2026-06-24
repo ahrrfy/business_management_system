@@ -289,7 +289,7 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
             <CardContent className="p-0">
               {d.materials && d.materials.length > 0 ? (
                 <table className="w-full text-sm">
-                  <thead className="bg-muted/50"><tr className="text-right">
+                  <thead className="bg-muted/50"><tr>
                     <th className="p-2">المادة</th><th className="p-2">SKU</th><th className="p-2 text-center">الكمية (أساس)</th>
                   </tr></thead>
                   <tbody>

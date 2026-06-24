@@ -120,13 +120,13 @@ export default function PurchaseReceive() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr>
                 <th className="p-2">المنتج</th>
                 <th className="p-2">الوحدة</th>
                 <th className="p-2 text-center">المطلوب (أساس)</th>
                 <th className="p-2 text-center">مُستلَم سابقاً</th>
                 <th className="p-2 text-center">المتبقّي</th>
-                <th className="p-2 w-32 text-center">استلام الآن</th>
+                <th className="p-2 w-32">استلام الآن</th>
               </tr>
             </thead>
             <tbody>

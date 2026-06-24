@@ -180,11 +180,11 @@ function DriftSection({
         {rows.length > 0 && (
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
+              <tr>
                 <th className="p-2">{idLabel}</th>
-                <th className="p-2 text-start">المتوقّع</th>
-                <th className="p-2 text-start">الفعلي</th>
-                <th className="p-2 text-start">الانحراف</th>
+                <th className="p-2 text-left">المتوقّع</th>
+                <th className="p-2 text-left">الفعلي</th>
+                <th className="p-2 text-left">الانحراف</th>
                 {link && <th className="p-2 text-center">إجراء</th>}
               </tr>
             </thead>

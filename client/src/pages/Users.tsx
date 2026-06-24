@@ -144,7 +144,7 @@ export default function Users() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
+              <tr>
                 <th className="p-2">الاسم</th>
                 <th className="p-2">معرّف الدخول</th>
                 <th className="p-2">الدور</th>

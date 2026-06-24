@@ -187,10 +187,10 @@ export default function Returns() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
-                <th className="p-2">رقم الفاتورة</th>
-                <th className="p-2 text-start">الإجمالي</th>
-                <th className="p-2">الحالة</th>
+              <tr>
+                <th className="p-2 text-start">رقم الفاتورة</th>
+                <th className="p-2 text-left">الإجمالي</th>
+                <th className="p-2 text-start">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>
@@ -259,14 +259,14 @@ export default function Returns() {
             <CardContent className="p-0">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
-                  <tr className="text-end">
-                    <th className="p-2">المنتج</th>
-                    <th className="p-2">الوحدة</th>
+                  <tr>
+                    <th className="p-2 text-start">المنتج</th>
+                    <th className="p-2 text-start">الوحدة</th>
                     <th className="p-2 text-center">المُباع (أساس)</th>
                     <th className="p-2 text-center">المُرتجع</th>
                     <th className="p-2 text-center">المتبقّي</th>
-                    <th className="p-2 text-start">السعر</th>
-                    <th className="p-2 w-32 text-center">إرجاع الآن (أساس)</th>
+                    <th className="p-2 text-left">السعر</th>
+                    <th className="p-2 w-32 text-start">إرجاع الآن (أساس)</th>
                   </tr>
                 </thead>
                 <tbody>
