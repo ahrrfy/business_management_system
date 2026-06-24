@@ -130,10 +130,10 @@ export default function ProductionReport() {
                     <th className="p-2.5 text-right font-medium">رقم المستند</th>
                     <th className="p-2.5 text-right font-medium">التاريخ</th>
                     <th className="p-2.5 text-right font-medium">الفرع</th>
-                    <th className="p-2.5 text-left font-medium">المواد</th>
-                    <th className="p-2.5 text-left font-medium">العمالة</th>
-                    <th className="p-2.5 text-left font-medium">الهدر</th>
-                    <th className="p-2.5 text-left font-medium">إجمالي التكلفة</th>
+                    <th className="p-2.5 text-right font-medium">المواد</th>
+                    <th className="p-2.5 text-right font-medium">العمالة</th>
+                    <th className="p-2.5 text-right font-medium">الهدر</th>
+                    <th className="p-2.5 text-right font-medium">إجمالي التكلفة</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -145,10 +145,10 @@ export default function ProductionReport() {
                         <td className="p-2.5 text-right">{r.docNumber ?? "—"}</td>
                         <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
                         <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
-                        <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.inputsCost)}</td>
-                        <td className="p-2.5 text-left tabular-nums" dir="ltr">{fmtAr(r.laborCost)}</td>
-                        <td className="p-2.5 text-left tabular-nums text-money-negative" dir="ltr">{fmtAr(r.wasteCost)}</td>
-                        <td className="p-2.5 text-left tabular-nums font-medium" dir="ltr">{fmtAr(r.totalCost)}</td>
+                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.inputsCost)}</td>
+                        <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.laborCost)}</td>
+                        <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{fmtAr(r.wasteCost)}</td>
+                        <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{fmtAr(r.totalCost)}</td>
                       </tr>
                     ))
                   )}

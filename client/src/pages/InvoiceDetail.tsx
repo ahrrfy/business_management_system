@@ -267,8 +267,8 @@ export default function InvoiceDetail() {
                   <th className="px-3 py-2 font-medium">المنتج</th>
                   <th className="px-3 py-2 font-medium">الوحدة</th>
                   <th className="px-3 py-2 font-medium text-center">الكمية</th>
-                  <th className="px-3 py-2 font-medium text-left">سعر الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-left">إجمالي السطر</th>
+                  <th className="px-3 py-2 font-medium text-right">سعر الوحدة</th>
+                  <th className="px-3 py-2 font-medium text-right">إجمالي السطر</th>
                   <th className="px-3 py-2 font-medium text-center">مرتجع</th>
                 </tr>
               </thead>
@@ -283,8 +283,8 @@ export default function InvoiceDetail() {
                       </td>
                       <td className="px-3 py-2 text-muted-foreground">{it.unitName ?? "—"}</td>
                       <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{it.quantity}</td>
-                      <td className="px-3 py-2 text-left tabular-nums"><CopyInline value={it.unitPrice} display={fmt(it.unitPrice)} /></td>
-                      <td className="px-3 py-2 text-left tabular-nums"><CopyInline value={it.total} display={fmt(it.total)} /></td>
+                      <td className="px-3 py-2 text-right tabular-nums"><CopyInline value={it.unitPrice} display={fmt(it.unitPrice)} /></td>
+                      <td className="px-3 py-2 text-right tabular-nums"><CopyInline value={it.total} display={fmt(it.total)} /></td>
                       <td className="px-3 py-2 text-center text-xs tabular-nums" dir="ltr">
                         <span className={returned ? "text-amber-600 font-medium" : "text-muted-foreground"}>
                           {it.returnedBaseQuantity}/{it.baseQuantity}
@@ -297,7 +297,7 @@ export default function InvoiceDetail() {
               <tfoot>
                 <tr className="border-t-2 bg-muted/40 font-semibold">
                   <td className="px-3 py-2" colSpan={4}>مجموع البنود</td>
-                  <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(data.subtotal)}</td>
+                  <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(data.subtotal)}</td>
                   <td className="px-3 py-2"></td>
                 </tr>
               </tfoot>
@@ -316,7 +316,7 @@ export default function InvoiceDetail() {
                   <th className="px-3 py-2 font-medium">التاريخ</th>
                   <th className="px-3 py-2 font-medium">الاتجاه</th>
                   <th className="px-3 py-2 font-medium">الطريقة</th>
-                  <th className="px-3 py-2 font-medium text-left">المبلغ</th>
+                  <th className="px-3 py-2 font-medium text-right">المبلغ</th>
                   <th className="px-3 py-2 font-medium">الحالة</th>
                 </tr>
               </thead>
@@ -333,7 +333,7 @@ export default function InvoiceDetail() {
                       </span>
                     </td>
                     <td className="px-3 py-2">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
-                    <td className="px-3 py-2 text-left tabular-nums"><CopyInline value={p.amount} display={fmt(p.amount)} /></td>
+                    <td className="px-3 py-2 text-right tabular-nums"><CopyInline value={p.amount} display={fmt(p.amount)} /></td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">{PAY_STATUS[p.status] ?? p.status}</td>
                   </tr>
                 ))}

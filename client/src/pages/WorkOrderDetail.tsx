@@ -240,8 +240,8 @@ export default function WorkOrderDetail() {
                   <th className="px-3 py-2 font-medium text-start">المادة</th>
                   <th className="px-3 py-2 font-medium text-start">SKU</th>
                   <th className="px-3 py-2 font-medium text-center">كمية (أساس)</th>
-                  <th className="px-3 py-2 font-medium text-left">كلفة الوحدة</th>
-                  <th className="px-3 py-2 font-medium text-left">كلفة السطر</th>
+                  <th className="px-3 py-2 font-medium text-right">كلفة الوحدة</th>
+                  <th className="px-3 py-2 font-medium text-right">كلفة السطر</th>
                 </tr>
               </thead>
               <tbody>
@@ -250,8 +250,8 @@ export default function WorkOrderDetail() {
                     <td className="px-3 py-2">{m.productName}{m.variantName ? ` — ${m.variantName}` : ""}</td>
                     <td className="px-3 py-2 font-mono text-xs" dir="ltr">{m.sku}</td>
                     <td className="px-3 py-2 text-center tabular-nums" dir="ltr">{m.baseQuantity}</td>
-                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>
-                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">{fmt(Number(m.unitCost) * m.baseQuantity)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(m.unitCost)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(Number(m.unitCost) * m.baseQuantity)}</td>
                   </tr>
                 ))}
                 {data.materials.length === 0 && (
@@ -262,7 +262,7 @@ export default function WorkOrderDetail() {
                 <tfoot>
                   <tr className="border-t-2 bg-muted/40 font-semibold">
                     <td className="px-3 py-2" colSpan={4}>إجمالي كلفة المواد</td>
-                    <td className="px-3 py-2 text-left tabular-nums" dir="ltr">
+                    <td className="px-3 py-2 text-right tabular-nums" dir="ltr">
                       {fmt(data.materials.reduce((s, m) => s + Number(m.unitCost) * m.baseQuantity, 0))}
                     </td>
                   </tr>

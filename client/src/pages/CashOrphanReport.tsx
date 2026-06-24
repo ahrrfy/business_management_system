@@ -213,7 +213,7 @@ export default function CashOrphanReport() {
                   <th className="p-3 text-right font-medium">النوع</th>
                   <th className="p-3 text-right font-medium">المستند</th>
                   <th className="p-3 text-right font-medium">الاتجاه</th>
-                  <th className="p-3 text-left font-medium">المبلغ</th>
+                  <th className="p-3 text-right font-medium">المبلغ</th>
                   <th className="p-3 text-right font-medium">الوصف</th>
                   <th className="p-3 text-right font-medium">أنشأها</th>
                   <th className="p-3 text-right font-medium">الدور</th>
@@ -252,7 +252,7 @@ export default function CashOrphanReport() {
                         </span>
                       </td>
                       <td
-                        className={`p-3 text-left tabular-nums ${
+                        className={`p-3 text-right tabular-nums ${
                           r.direction === "IN" ? "text-money-positive" : "text-money-negative"
                         }`}
                         dir="ltr"
@@ -281,7 +281,7 @@ export default function CashOrphanReport() {
                   <td colSpan={6} className="p-3 text-right">
                     الإجمالي ({co.count} معاملة)
                   </td>
-                  <td className="p-3 text-left tabular-nums" dir="ltr">
+                  <td className="p-3 text-right tabular-nums" dir="ltr">
                     خزينة: {fmtAr(co.netTreasury)} / يتيم: {fmtAr(co.netTrueOrphan)}
                   </td>
                   <td colSpan={3} />

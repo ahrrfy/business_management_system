@@ -103,7 +103,7 @@ export default function Production() {
                 <th className="p-2">رقم المستند</th>
                 <th className="p-2">الفرع</th>
                 <th className="p-2 text-center">كمية المخرجات</th>
-                <th className="p-2 text-left">الكلفة الكلية</th>
+                <th className="p-2 text-right">الكلفة الكلية</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2">التاريخ</th>
                 <th className="p-2 text-center">إجراء</th>
@@ -115,7 +115,7 @@ export default function Production() {
                   <td className="p-2 font-mono" dir="ltr">{r.docNumber}</td>
                   <td className="p-2 text-xs">{r.branchName}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(r.outputQty)}</td>
-                  <td className="p-2 text-left tabular-nums" dir="ltr">{fmt(r.totalCost)}</td>
+                  <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.totalCost)}</td>
                   <td className="p-2 text-center">
                     <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${r.status === "CANCELLED" ? "badge-status-cancelled" : "badge-status-active"}`}>
                       {r.status === "CANCELLED" ? "ملغى" : "مُرحَّل"}
