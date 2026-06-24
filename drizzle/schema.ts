@@ -1976,3 +1976,81 @@ export const yearEndSnapshots = mysqlTable(
 );
 export type YearEndSnapshot = typeof yearEndSnapshots.$inferSelect;
 export type InsertYearEndSnapshot = typeof yearEndSnapshots.$inferInsert;
+
+/* ============================ صَندوق الوارد المُوحَّد — قَنوات + محادثات + رَسائل (شَريحة #5) ============================
+ *
+ * المَنطق: كل قَناة (WhatsApp/Instagram/متجر/هاتف/حُضوري) تَصبّ في «محادثة» واحدة لِلعَميل.
+ * المُحادثة = مَوضوع مفتوح بَين خِدمة العُملاء وزَبون عبر قَناة مُحدَّدة. تَجمع رَسائل IN (مِن العَميل)
+ * و OUT (مِن مُوظَّفنا). تَدخل بَطريقَين:
+ *
+ *   ١) Webhook مِن مَنصّة القَناة (WhatsApp Business API/Instagram Graph/متجر) ⇒ يَكتب رِسالة IN جَديدة
+ *      أو يُحدّث محادثة قائمة (مُطابقة بـchannel + channelHandle).
+ *   ٢) إدخال يَدوي مِن مُوظَّف (اتصال هاتفي/حُضوري/مَلاحظات) ⇒ نَفس الجَدول، direction=IN/OUT/NOTE.
+ *
+ * الرَبط بِأَوامر الشَغل: محادثة قَد تُرتبط بِأَمر شَغل لِتَتبّع تَفاصيل العَمل تَحتها. مَن يَفتح مُحادثة
+ * عَميل في الاستقبال ويَختار «أمر شَغل» ⇒ نُسجّل linkedWorkOrderId.
+ */
+
+/** المحادثات — مَوضوع مفتوح مع عَميل عبر قَناة. */
+export const conversations = mysqlTable(
+  "conversations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    channel: mysqlEnum("convChannel", ["WHATSAPP", "INSTAGRAM", "TIKTOK", "STORE", "PHONE", "WALK_IN", "OTHER"]).notNull(),
+    // مُعَرّف العَميل على القَناة الأَصلية (رَقم هاتف لِواتساب، username لانستغرام، ...).
+    // فَريد لكل (channel + branch) لِمَنع تَكرار المحادثة لنفس الزَبون.
+    channelHandle: varchar("channelHandle", { length: 120 }).notNull(),
+    // رَبط للسجلّ العميل في نِظامنا (إن وُجد) — قد يَكون null لِرسالة أَولى مِن مَجهول.
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    // اسم مَعروض (مُلتَقَط مِن منصّة القَناة لو لم نَعرفه بَعد).
+    displayName: varchar("displayName", { length: 200 }),
+    // أَمر شَغل مَربوط (لو الزَبون يَسأل عن أمر جاري) — اِختياري.
+    linkedWorkOrderId: bigint("linkedWorkOrderId", { mode: "number" }).references(() => workOrders.id),
+    // عَدّاد غَير مَقروء + آخِر رِسالة لِفَرز الـinbox بِسُرعة بَلا scan رَسائل.
+    unreadCount: int("unreadCount").default(0).notNull(),
+    lastMessageAt: timestamp("lastMessageAt"),
+    lastMessagePreview: varchar("lastMessagePreview", { length: 280 }),
+    // OPEN = نَشِط، ARCHIVED = مُؤرشَف يَدوياً، CLOSED = بَعد تَسليم أَمر شَغل.
+    status: mysqlEnum("convStatus", ["OPEN", "ARCHIVED", "CLOSED"]).default("OPEN").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    branchIdx: index("idx_conv_branch").on(t.branchId, t.status, t.lastMessageAt),
+    customerIdx: index("idx_conv_customer").on(t.customerId),
+    // مُحادثة فَريدة لكل (قَناة + handle + فَرع) ⇒ webhook مُكَرّر لا يُكرّر السجلّ.
+    chHandleUq: unique("uq_conv_channel_handle").on(t.channel, t.channelHandle, t.branchId),
+  })
+);
+export type Conversation = typeof conversations.$inferSelect;
+export type InsertConversation = typeof conversations.$inferInsert;
+
+/** رَسائل المحادثة — IN مِن الزَبون، OUT مِن مُوظَّفنا، NOTE مُلاحظة داخِلية. */
+export const conversationMessages = mysqlTable(
+  "conversationMessages",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    conversationId: bigint("conversationId", { mode: "number" }).notNull().references(() => conversations.id, { onDelete: "cascade" }),
+    direction: mysqlEnum("msgDirection", ["IN", "OUT", "NOTE"]).notNull(),
+    // النَصّ الكامل (TEXT لاستيعاب رَسائل طَويلة + لو رَسالة مَيديا فقط = caption).
+    body: text("body"),
+    // URL لمَلف الوسائط (صورة/صوت/PDF) — لو الرَسالة وَسائط.
+    mediaUrl: text("mediaUrl"),
+    mediaType: varchar("mediaType", { length: 40 }), // image/jpeg، application/pdf، audio/ogg، ...
+    // مُعَرّف الرَسالة عند المُزوّد (لـwebhook dedup + إعادة الإرسال بَدل تَكرار).
+    externalId: varchar("externalId", { length: 200 }),
+    // مَن أَرسل OUT/NOTE — null لِـIN (مِن الزَبون).
+    authorUserId: int("authorUserId").references(() => users.id),
+    // حالة التَوصيل لِـOUT (لِواتساب: sent/delivered/read).
+    deliveryStatus: mysqlEnum("msgDelivery", ["PENDING", "SENT", "DELIVERED", "READ", "FAILED"]),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    convIdx: index("idx_msg_conv").on(t.conversationId, t.createdAt),
+    // مُعَرّف خارِجي فَريد لِمَنع كَتابة مُكَرَّرة عند webhook retries.
+    externalUq: unique("uq_msg_external").on(t.externalId),
+  })
+);
+export type ConversationMessage = typeof conversationMessages.$inferSelect;
+export type InsertConversationMessage = typeof conversationMessages.$inferInsert;

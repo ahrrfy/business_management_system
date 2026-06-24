@@ -66,6 +66,8 @@ const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
 const WorkOrderStation = lazy(() => import("@/pages/WorkOrderStation"));
 const WorkOrders = lazy(() => import("@/pages/WorkOrders"));
+// شَريحة #5 (٢٣/٦/٢٦): صَندوق الوارد المُوحَّد — WhatsApp/Instagram/متجر/يَدوي.
+const Inbox = lazy(() => import("@/pages/Inbox"));
 const Production = lazy(() => import("@/pages/Production"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -228,6 +230,8 @@ export default function App() {
       {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
       <Route path="/work-orders/reception"><Redirect to="/pos?mode=RECEPTION" /></Route>
       <Route path="/work-orders/station"><Shell><RequireRole roles={["admin","manager","print_operator","cashier"]}><WorkOrderStation /></RequireRole></Shell></Route>
+      {/* شَريحة #5: صَندوق الوارد المُوحَّد — كاشير/مدير/أدمن. */}
+      <Route path="/inbox"><Shell><RequireRole roles={["admin","manager","cashier"]}><Inbox /></RequireRole></Shell></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
       <Route path="/production"><Shell><Production /></Shell></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>

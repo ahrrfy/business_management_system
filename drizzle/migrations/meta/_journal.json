@@ -176,6 +176,13 @@
       "when": 1782260000000,
       "tag": "0024_work_order_timer",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "5",
+      "when": 1782280000000,
+      "tag": "0025_channels_inbox",
+      "breakpoints": true
     }
   ]
 }

@@ -22,6 +22,7 @@ import { serveStatic, setupVite } from "./vite";
 import { csrfGuard } from "./middleware/csrf";
 import { printRouter } from "./printRoute";
 import { backupRouter } from "./backupRoutes";
+import { channelWebhooksRouter } from "./routes/channelWebhooks";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -231,6 +232,12 @@ async function startServer() {
 
   // تنزيل النسخ الاحتياطية لجهاز المدير (GET stream، محمي بالمدير + مسار آمن).
   app.use("/api/backups", csrfGuard, backupRouter());
+
+  // Webhooks خارِجية لِلقَنوات (شَريحة #5): WhatsApp/Instagram/Store.
+  // ⚠️ لا csrfGuard هُنا — webhooks تَأتي مِن مُزوّدين خارِجيين بَلا كوكي/Origin.
+  // الأَمان يُطبَّق عبر HMAC verify داخل كل route (يَستعمل raw body).
+  // بَدون env vars (WHATSAPP_VERIFY_TOKEN, ...) كل route يُعيد 503 — لا كَتابة DB.
+  app.use("/api/webhooks", channelWebhooksRouter());
 
   const preferredPort = parseInt(process.env.PORT || "3000", 10);
   // HOST يضيّق واجهة الاستماع: على VPS خلف nginx اضبط HOST=127.0.0.1 فلا يُكشف المنفذ للإنترنت

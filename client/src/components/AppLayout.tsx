@@ -36,6 +36,7 @@ const NAV_GROUPS: NavGroup[] = [
     icon: ShoppingCart,
     items: [
       { href: "/pos", label: "نقطة البيع (موحَّدة — ٣ أوضاع)" },
+      { href: "/inbox", label: "صَندوق الوارد (القَنوات)", roles: ["admin", "manager", "cashier"] },
       { href: "/price-checker", label: "قارئ الأسعار (للمُوظَّف)" },
       { href: "/invoices", label: "فواتير المبيعات" },
       { href: "/quotations", label: "عروض الأسعار" },
