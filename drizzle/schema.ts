@@ -2054,3 +2054,50 @@ export const conversationMessages = mysqlTable(
 );
 export type ConversationMessage = typeof conversationMessages.$inferSelect;
 export type InsertConversationMessage = typeof conversationMessages.$inferInsert;
+
+/* ============================ تَكاملات القَنوات الخارِجية (شَريحة #6) ============================
+ *
+ * المَنطق: بَدل تَخزين secrets في .env (يَلزم SSH للسيرفر عند كل تَغيير)، نُخَزّنها مُشَفَّرة في DB.
+ * المُفتاح الرَئيسي وَحده في .env كـ INTEGRATIONS_ENCRYPTION_KEY (32 bytes hex/base64).
+ *
+ * التَشفير: AES-256-GCM (مَع 12-byte IV عَشوائي لكل قِيمة + 16-byte auth tag) ⇒
+ *   مَلف backup مَكشوف بَلا المُفتاح = صَفر مَعلومات (semantic security).
+ *
+ * RBAC: adminProcedure فَقط — لا الكاشير ولا المُدير يَرى/يُعَدّل tokens.
+ * Audit: كل upsert/delete/decrypt-for-use يُكتَب في auditLogs.
+ * Multi-branch: مُفتاح فَريد (branchId, channel) ⇒ WhatsApp مُختلف لكل فَرع.
+ */
+
+export const channelIntegrations = mysqlTable(
+  "channelIntegrations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    channel: mysqlEnum("intChannel", ["WHATSAPP", "INSTAGRAM", "STORE"]).notNull(),
+    // مَعلومات عامة (بَلا تَشفير، آمنة لِلعَرض).
+    displayName: varchar("displayName", { length: 120 }),
+    // phoneNumberId لِـWhatsApp (مَعلومة، ليست secret).
+    phoneNumberId: varchar("phoneNumberId", { length: 80 }),
+    // verifyToken لِـMeta webhook handshake — مُشَفَّر.
+    encryptedVerifyToken: text("encryptedVerifyToken"),
+    // appSecret لِـHMAC verify لِـwebhooks — مُشَفَّر.
+    encryptedAppSecret: text("encryptedAppSecret"),
+    // accessToken لإرسال رَسائل OUT (WhatsApp Cloud API) — مُشَفَّر.
+    encryptedAccessToken: text("encryptedAccessToken"),
+    // حالة الاتصال — يُحدّث عبر زر «تَحقّق».
+    status: mysqlEnum("intStatus", ["PENDING", "ACTIVE", "FAILED", "DISABLED"]).default("PENDING").notNull(),
+    lastVerifiedAt: timestamp("lastVerifiedAt"),
+    // نَتيجة آخر تَحقّق (إن فَشل): سَبب مَقروء لِلعَرض في الشاشة.
+    lastError: varchar("lastError", { length: 500 }),
+    updatedBy: int("updatedBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    // قَناة واحدة لكل فَرع — لا تَكرار. تَغيير tokens = تَحديث نَفس السجلّ.
+    branchChannelUq: unique("uq_int_branch_channel").on(t.branchId, t.channel),
+    statusIdx: index("idx_int_status").on(t.status),
+  })
+);
+export type ChannelIntegration = typeof channelIntegrations.$inferSelect;
+export type InsertChannelIntegration = typeof channelIntegrations.$inferInsert;

@@ -69,6 +69,8 @@ const WorkOrderStation = lazy(() => import("@/pages/WorkOrderStation"));
 const WorkOrders = lazy(() => import("@/pages/WorkOrders"));
 // شَريحة #5 (٢٣/٦/٢٦): صَندوق الوارد المُوحَّد — WhatsApp/Instagram/متجر/يَدوي.
 const Inbox = lazy(() => import("@/pages/Inbox"));
+// شَريحة #6 (٢٤/٦/٢٦): إدارة tokens التَكاملات في الواجهة بَدل .env.
+const IntegrationsSettings = lazy(() => import("@/pages/IntegrationsSettings"));
 const Production = lazy(() => import("@/pages/Production"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
@@ -234,6 +236,8 @@ export default function App() {
       <Route path="/work-orders/station"><Shell><RequireRole roles={["admin","manager","print_operator","cashier"]}><WorkOrderStation /></RequireRole></Shell></Route>
       {/* شَريحة #5: صَندوق الوارد المُوحَّد — كاشير/مدير/أدمن. */}
       <Route path="/inbox"><Shell><RequireRole roles={["admin","manager","cashier"]}><Inbox /></RequireRole></Shell></Route>
+      {/* شَريحة #6: إدارة tokens التَكاملات — أدمن فَقط. */}
+      <Route path="/settings/integrations"><Shell><RequireRole roles={["admin"]}><IntegrationsSettings /></RequireRole></Shell></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
       <Route path="/production"><Shell><Production /></Shell></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>

@@ -159,6 +159,7 @@ const NAV_GROUPS: NavGroup[] = [
       { href: "/roles", label: "الأدوار والصلاحيات", adminOnly: true },
       { href: "/kiosk-devices", label: "شاشات قارئ الأسعار (الأجهزة)", adminOnly: true },
       { href: "/audit", label: "سجلّ التدقيق", adminOnly: true },
+      { href: "/settings/integrations", label: "تَكاملات القَنوات (WhatsApp/Instagram/متجر)", adminOnly: true },
       { href: "/settings", label: "إعدادات النظام والنسخ الاحتياطي", adminOnly: true },
     ],
   },
