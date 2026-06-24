@@ -2,7 +2,7 @@ import { z } from "zod";
 import { asc } from "drizzle-orm";
 import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { assignBarcode, checkBarcodesTaken, createProduct, getProductForEdit, listForPos, listForPurchase, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
+import { assignBarcode, checkBarcodesTaken, createProduct, getProductForEdit, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
 import {
   createCategory,
@@ -139,6 +139,13 @@ export const catalogRouter = router({
         description: z.string().nullish(),
         categoryId: z.number().int().positive().optional(),
         isCustomizable: z.boolean().optional(),
+        // print-catalog: بَند خِدمي (لا مخزون) + توجيهه لنقطة بيع الطباعة + وصفة موادّه الخام.
+        isService: z.boolean().optional(),
+        printService: z.boolean().optional(),
+        recipe: z
+          .array(z.object({ inputVariantId: z.number().int().positive(), qtyPerOutputBase: z.string() }))
+          .max(50)
+          .optional(),
         variants: z.array(variantSchema).min(1),
         images: z.array(imageSchema).max(10).optional(),
       })
@@ -150,6 +157,11 @@ export const catalogRouter = router({
       await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
       return res;
     }),
+
+  // print-catalog: مواد خام لمنتقي وصفة الخدمة (يكشف الكلفة ⇒ مدير فأعلى).
+  materialsForRecipe: managerProcedure
+    .input(z.object({ query: z.string().optional(), limit: z.number().int().positive().max(200).default(100) }))
+    .query(({ input }) => listMaterialsForRecipe(input.query, input.limit)),
 
   /** v3-add-screens: صور منتج للعرض. */
   productImages: protectedProcedure

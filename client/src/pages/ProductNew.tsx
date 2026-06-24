@@ -5,7 +5,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
-import { AlertCircle, X } from "lucide-react";
+import { AlertCircle, Package, Wrench, X } from "lucide-react";
+import ServiceForm from "@/components/product/ServiceForm";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import {
@@ -364,6 +365,32 @@ export default function ProductNew() {
         <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
       </div>
 
+      {/* ── نوع البَند: سلعة مخزنية أو خِدمة (print-catalog) ── */}
+      <div className="inline-flex rounded-lg border bg-muted/40 p-1 gap-1">
+        {[
+          { v: false, label: "سلعة مخزنية", Icon: Package, hint: "بضاعة لها مخزون وباركود" },
+          { v: true, label: "خِدمة", Icon: Wrench, hint: "بلا مخزون — تصوير/تجليد/تصميم" },
+        ].map((t) => (
+          <button
+            key={String(t.v)}
+            type="button"
+            onClick={() => setIsService(t.v)}
+            className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors ${
+              isService === t.v ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+            }`}
+            title={t.hint}
+            aria-pressed={isService === t.v}
+          >
+            <t.Icon aria-hidden className="size-4" />
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {isService ? (
+        <ServiceForm />
+      ) : (
+      <>
       {/* ── اسم مركّب + معاينة الكاتالوج ── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
@@ -458,18 +485,12 @@ export default function ProductNew() {
           <Field label="سعر التكلفة (د.ع)" required hint="سعر شراء موحّد لكل الألوان.">
             <Input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} dir="ltr" placeholder="150" />
           </Field>
-          <Field label="الحد الأدنى الافتراضي" hint={isService ? "—" : "يُطبَّق على المتغيّرات الجديدة."}>
-            <Input value={defaultMin} onChange={(e) => setDefaultMin(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" disabled={isService} />
-          </Field>
-          <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً؛ الإيراد + التَكلفة تَدخلان كالعادة.">
-            <div className="flex items-center gap-2 h-9">
-              <Switch checked={isService} onCheckedChange={setIsService} />
-              <span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة مَلموسة"}</span>
-            </div>
+          <Field label="الحد الأدنى الافتراضي" hint="يُطبَّق على المتغيّرات الجديدة.">
+            <Input value={defaultMin} onChange={(e) => setDefaultMin(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" />
           </Field>
           <Field label="قابل للتخصيص">
             <div className="flex items-center gap-2 h-9">
-              <Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} />
+              <Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} />
               <span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span>
             </div>
           </Field>
@@ -637,6 +658,8 @@ export default function ProductNew() {
         baseName={composedName}
         baseRetail={baseRetail}
       />
+      </>
+      )}
     </div>
   );
 }

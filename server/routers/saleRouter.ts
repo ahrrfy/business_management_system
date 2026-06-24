@@ -163,9 +163,11 @@ type SalesListInput = z.infer<typeof salesListInput>;
 
 /** يبني شروط WHERE لقائمة المبيعات — مستخدم في list و listSummary معاً
  *  ⇒ يضمن تطابق الفلترة بينهما للأبد (نفس عزل الفرع ونفس الحدّ نصف المفتوح [from, to+يوم)). */
-export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null) {
+export function buildSalesListConds(input: SalesListInput, scopedBranchId: number | null, scopedOwnerId: number | null = null) {
   const conds = [];
   if (scopedBranchId) conds.push(eq(invoices.branchId, scopedBranchId));
+  // عزل الموظف: غير المرتفعين يرون فواتيرهم فقط (createdBy = هم). admin/manager = null = الكل.
+  if (scopedOwnerId != null) conds.push(eq(invoices.createdBy, scopedOwnerId));
   // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
   if (input?.from) conds.push(gte(invoices.invoiceDate, localDayStart(input.from)));
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
@@ -306,7 +308,7 @@ export const saleRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      const conds = buildSalesListConds(input, ctx.scopedBranchId);
+      const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
       return db
         .select({
           id: invoices.id,
@@ -333,7 +335,7 @@ export const saleRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return { count: 0, totalAmount: "0", paidAmount: "0", dueAmount: "0" };
-      const conds = buildSalesListConds(input, ctx.scopedBranchId);
+      const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
       const row = (
         await db
           .select({
