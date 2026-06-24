@@ -38,8 +38,12 @@ export const expenseRouter = router({
         .optional()
     )
     .query(async ({ input, ctx }) =>
-      // عزل الفرع: غير المدير يرى مصروفات فرعه فقط.
-      listExpenses({ ...(input ?? {}), ...(ctx.scopedBranchId ? { branchId: ctx.scopedBranchId } : {}) })
+      // عزل الفرع + عزل الموظف: غير المدير يرى مصروفات فرعه التي أنشأها هو فقط.
+      listExpenses({
+        ...(input ?? {}),
+        ...(ctx.scopedBranchId ? { branchId: ctx.scopedBranchId } : {}),
+        createdBy: ctx.scopedOwnerId,
+      })
     ),
 
   create: cashierProcedure

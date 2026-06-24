@@ -385,6 +385,8 @@ export interface ListExpensesInput {
   from?: string; // YYYY-MM-DD
   to?: string;
   limit?: number;
+  // عزل الموظف: غير المرتفعين يرون مصروفاتهم فقط (createdBy = هم). null/غياب = الكل.
+  createdBy?: number | null;
 }
 
 export async function listExpenses(input: ListExpensesInput = {}) {
@@ -392,6 +394,7 @@ export async function listExpenses(input: ListExpensesInput = {}) {
   if (!db) return { rows: [], totals: { active: "0.00", count: 0 } };
   const conds = [] as any[];
   if (input.branchId) conds.push(eq(expenses.branchId, input.branchId));
+  if (input.createdBy != null) conds.push(eq(expenses.createdBy, input.createdBy));
   if (input.category) conds.push(eq(expenses.category, input.category));
   if (input.status) conds.push(eq(expenses.status, input.status));
   // expenseDate عمود DATE ⇒ منتصف ليل محلي (UTC يستثني يوم from كاملاً على +03:00).

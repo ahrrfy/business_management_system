@@ -132,5 +132,10 @@ export const branchScopedProcedure = protectedProcedure.use(({ ctx, next }) => {
     throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
   }
   const scopedBranchId = elevated ? null : Number(ctx.user.branchId);
-  return next({ ctx: { ...ctx, scopedBranchId } });
+  // ─── عزل سجلّات الموظف («يرى ما يخصّه فقط») — سياسة المالك (٢٤/٦/٢٦) ───
+  // غير المرتفعين (كاشير/مندوب/فني…) يرون ما أنشأوه فقط في القوائم الترانزاكشنية
+  // (فواتير/عروض/مصروفات/حركات مخزون/أوامر شغل). admin|manager = null = كل بيانات الفرع.
+  // (نفس مجموعة elevated في عزل الفرع ⇒ اتّساق.) لا يشمل الكتالوج المشترك (منتجات/عملاء/موردون).
+  const scopedOwnerId = elevated ? null : Number(ctx.user.id);
+  return next({ ctx: { ...ctx, scopedBranchId, scopedOwnerId } });
 });

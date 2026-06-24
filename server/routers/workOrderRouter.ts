@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditLogs,
@@ -38,7 +38,14 @@ export const workOrderRouter = router({
       if (!db) return [];
       // إن كان للمستخدم نطاق فرع ⇒ نُجبره ولا نسمح بالمرور حوله. للمرتفعين يطبَّق الفلتر إن أُعطي.
       const effectiveBranchId = ctx.scopedBranchId ?? input?.branchId;
-      const whereCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
+      const branchCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
+      // عزل الموظف: غير المرتفعين يرون أوامرهم فقط — ما أنشأوه (الكاشير) أو المُسنَد إليهم (الفني).
+      // admin/manager (scopedOwnerId=null) يرون كل أوامر النطاق.
+      const ownerCond =
+        ctx.scopedOwnerId != null
+          ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
+          : undefined;
+      const whereCond = branchCond && ownerCond ? and(branchCond, ownerCond) : (ownerCond ?? branchCond);
       // لوحة الكانبان: نُرجع كل ما تحتاجه البطاقة (أولوية/قناة/مسؤول/هاتف العميل/عربون).
       const rows = await db
         .select({
