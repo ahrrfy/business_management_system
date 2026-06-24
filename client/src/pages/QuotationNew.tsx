@@ -16,6 +16,7 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { D } from "@/lib/money";
+import { PageHeader } from "@/components/PageHeader";
 
 import {
   InvoiceHeader,
@@ -249,25 +250,25 @@ export default function QuotationNew() {
   return (
     <div className="flex h-full flex-col gap-3">
       {/* شريط العنوان */}
-      <div className="flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          {(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
-          {typeInfo.label} جديد
-        </h1>
-        <Link
-          href="/quotations"
-          className="rounded-md border bg-card px-3 py-1.5 text-sm font-semibold text-muted-foreground hover:bg-muted"
-        >
-          ← رجوع للعروض
-        </Link>
-      </div>
+      <PageHeader
+        icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
+        title={`${typeInfo.label} جديد`}
+        actions={
+          <Link
+            href="/quotations"
+            className="rounded-md border bg-card px-3 py-1.5 text-sm font-semibold text-muted-foreground hover:bg-muted"
+          >
+            ← رجوع للعروض
+          </Link>
+        }
+      />
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط + «صالح حتى» يظهر تلقائياً للنوع QUOTATION) */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
 
       {/* تنبيه ناعم لبنود بسعر صفر/سالب */}
       {hasZeroPriceLine && (
-        <div className="flex items-center gap-2 rounded-md border border-amber-300/40 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">
+        <div className="badge-stock-low flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-semibold">
           <AlertTriangle aria-hidden className="size-4" />
           هناك بنود بسعر غير صالح — صحّحها قبل الحفظ.
         </div>

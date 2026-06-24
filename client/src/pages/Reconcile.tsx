@@ -1,3 +1,5 @@
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmt } from "@/lib/money";
@@ -38,43 +40,32 @@ export default function Reconcile() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-2">
-        <h1 className="text-2xl font-bold">تدقيق التوافق المالي</h1>
-        <div className="flex items-center gap-3">
-          {data && (
-            <span className="text-xs text-muted-foreground" dir="ltr">
-              آخر فحص: {new Date(data.runAt).toLocaleString("ar-IQ-u-nu-latn")}
-            </span>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={!isAdmin || recon.isFetching}
-            onClick={() => recon.refetch()}
-          >
-            {recon.isFetching ? "جارٍ الفحص…" : "إعادة الفحص"}
-          </Button>
-        </div>
-      </div>
+      <PageHeader
+        title="تدقيق التوافق المالي"
+        description="يكشف الانجراف الصامت بين الأرصدة المُشتقّة والمسجَّلة في ثلاثة محاور: ذمم العملاء، أرصدة المخزون، وقيود الأرباح في الدفتر. الأخضر = متوازن، الأحمر = انحراف يستوجب المراجعة. يُنصَح بتشغيله دورياً وقبل إقفال الفترات."
+        actions={
+          <div className="flex items-center gap-3">
+            {data && (
+              <span className="text-xs text-muted-foreground" dir="ltr">
+                آخر فحص: {new Date(data.runAt).toLocaleString("ar-IQ-u-nu-latn")}
+              </span>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!isAdmin || recon.isFetching}
+              onClick={() => recon.refetch()}
+            >
+              {recon.isFetching ? "جارٍ الفحص…" : "إعادة الفحص"}
+            </Button>
+          </div>
+        }
+      />
 
-      <p className="text-sm text-muted-foreground">
-        يكشف الانجراف الصامت بين الأرصدة المُشتقّة والمسجَّلة في ثلاثة محاور: ذمم العملاء، أرصدة
-        المخزون، وقيود الأرباح في الدفتر. الأخضر = متوازن، الأحمر = انحراف يستوجب المراجعة. يُنصَح
-        بتشغيله دورياً وقبل إقفال الفترات.
-      </p>
-
-      {loading && (
-        <Card>
-          <CardContent className="p-6 text-center text-muted-foreground">جارٍ التدقيق…</CardContent>
-        </Card>
-      )}
+      {loading && <LoadingState />}
 
       {recon.error && (
-        <Card>
-          <CardContent className="p-6 text-center text-rose-600">
-            تعذّر التدقيق: {recon.error.message}
-          </CardContent>
-        </Card>
+        <ErrorState message={`تعذّر التدقيق: ${recon.error.message}`} onRetry={() => recon.refetch()} />
       )}
 
       {data && !recon.error && (
@@ -82,7 +73,7 @@ export default function Reconcile() {
           <Card>
             <CardContent
               className={`p-6 text-center text-lg font-bold inline-flex items-center justify-center gap-2 w-full ${
-                total === 0 ? "text-emerald-700" : "text-rose-700"
+                total === 0 ? "badge-status-active" : "badge-stock-out"
               }`}
             >
               {total === 0 ? (
@@ -172,9 +163,7 @@ function DriftSection({
             {action}
             <span
               className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold inline-flex items-center gap-1 ${
-                rows.length === 0
-                  ? "bg-emerald-50 text-emerald-700"
-                  : "bg-rose-50 text-rose-700"
+                rows.length === 0 ? "badge-status-active" : "badge-stock-out"
               }`}
             >
               {rows.length === 0 ? (
@@ -212,7 +201,7 @@ function DriftSection({
                   <td className="p-2 text-left tabular-nums" dir="ltr">
                     {val(r.actual)}
                   </td>
-                  <td className="p-2 text-left font-semibold tabular-nums text-rose-700" dir="ltr">
+                  <td className="p-2 text-left font-semibold tabular-nums text-money-negative" dir="ltr">
                     {val(r.drift)}
                   </td>
                   {link && (

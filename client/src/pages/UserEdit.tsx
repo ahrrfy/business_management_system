@@ -7,6 +7,8 @@ import { PermissionMatrix } from "@/components/form/PermissionMatrix";
 import { CredentialsShare } from "@/components/form/CredentialsShare";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { UsagePanel } from "@/components/UsagePanel";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState } from "@/components/PageState";
 import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
@@ -242,7 +244,7 @@ export default function UserEdit() {
   const customCount = Object.keys(permsOverride).length;
 
   if (!userId) return <div className="p-6 text-center text-muted-foreground">معرّف مستخدم غير صالح.</div>;
-  if (detail.isLoading) return <div className="p-6 text-center text-muted-foreground">جارٍ تحميل بيانات المستخدم…</div>;
+  if (detail.isLoading) return <LoadingState message="جارٍ تحميل بيانات المستخدم…" />;
   if (!detail.data) return <div className="p-6 text-center text-muted-foreground">المستخدم غير موجود. <Link className="text-primary underline" href="/users">رجوع للقائمة</Link></div>;
 
   const u = detail.data;
@@ -250,10 +252,10 @@ export default function UserEdit() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">تعديل مستخدم</h1>
-        <Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
-      </div>
+      <PageHeader
+        title="تعديل مستخدم"
+        actions={<Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">بطاقة المستخدم</CardTitle></CardHeader>
@@ -263,14 +265,14 @@ export default function UserEdit() {
           <div><div className="text-muted-foreground text-xs">الدور الحالي</div><div>{ROLE_LABEL[u.role] ?? u.role}</div></div>
           <div>
             <div className="text-muted-foreground text-xs">الحالة</div>
-            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+            <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
               {isActive ? "مفعّل" : "معطّل"}
             </span>
           </div>
           {(u as any).mustChangePassword && (
             <div>
               <div className="text-muted-foreground text-xs">كلمة المرور</div>
-              <span className="text-xs text-amber-600 font-medium inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" />تغيير إلزامي</span>
+              <span className="text-xs text-[var(--stock-low)] font-medium inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" />تغيير إلزامي</span>
             </div>
           )}
           <div className="col-span-2 md:col-span-1 md:row-span-2 flex justify-center md:justify-end">
@@ -297,10 +299,10 @@ export default function UserEdit() {
               onChange={(e) => { setUsername(e.target.value); setUsernameChecked(false); setUsernameError(""); }}
               onBlur={() => void checkUsernameFn()}
               placeholder="مثال: marwa.ibrahim"
-              className={usernameError ? "border-destructive" : usernameChecked && !usernameError ? "border-emerald-500" : ""}
+              className={usernameError ? "border-destructive" : usernameChecked && !usernameError ? "border-[var(--status-active)]" : ""}
             />
             {usernameError && <p className="text-[11px] text-destructive">{usernameError}</p>}
-            {usernameChecked && !usernameError && username.trim() && <p className="text-[11px] text-emerald-600 inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />اسم المستخدم متاح</p>}
+            {usernameChecked && !usernameError && username.trim() && <p className="text-[11px] text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />اسم المستخدم متاح</p>}
           </div>
           <div className="space-y-1">
             <Label htmlFor="email">البريد الإلكتروني <span className="text-muted-foreground font-normal">(اختياري)</span></Label>
@@ -385,7 +387,7 @@ export default function UserEdit() {
       </Card>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-600">{done}</p>}
+      {done && <p className="text-sm text-money-positive">{done}</p>}
 
       <div className="flex flex-wrap gap-2">
         <Button onClick={submit} disabled={update.isPending}>
@@ -435,7 +437,7 @@ export default function UserEdit() {
             <input type="checkbox" id="mustChangeReset" className="size-4" checked={mustChangeOnReset} onChange={(e) => setMustChangeOnReset(e.target.checked)} />
             <Label htmlFor="mustChangeReset" className="font-normal cursor-pointer text-sm">إلزام تغيير الكلمة عند أول دخول (72 ساعة)</Label>
           </div>
-          {pwMsg && <p className={`text-sm ${resetPassword.isSuccess ? "text-emerald-600" : "text-destructive"}`}>{pwMsg}</p>}
+          {pwMsg && <p className={`text-sm ${resetPassword.isSuccess ? "text-money-positive" : "text-destructive"}`}>{pwMsg}</p>}
           {resetShare && (
             <CredentialsShare
               name={resetShare.name}

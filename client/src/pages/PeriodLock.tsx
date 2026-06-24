@@ -3,6 +3,8 @@
  * يعرض الـlock النشِط ويوفّر آلية إنشاء/فتح (admin فقط).
  */
 import { AlertTriangle } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
@@ -39,13 +41,13 @@ export default function PeriodLockPage() {
 
   return (
     <div className="container mx-auto p-4 space-y-4 max-w-3xl">
-      <h1 className="text-2xl font-bold">إقفال الفترات المالية</h1>
+      <PageHeader title="إقفال الفترات المالية" />
 
       <Card>
         <CardHeader className="font-semibold">القفل النشِط</CardHeader>
         <CardContent>
           {status.isLoading ? (
-            <p className="text-muted-foreground">جاري التحميل…</p>
+            <LoadingState />
           ) : lock ? (
             <div className="space-y-2">
               <div className="grid grid-cols-2 gap-2 text-sm">
@@ -56,7 +58,7 @@ export default function PeriodLockPage() {
                 <div className="text-muted-foreground">ملاحظات:</div>
                 <div>{lock.notes ?? "—"}</div>
               </div>
-              <p className="text-sm text-amber-700 bg-amber-50 rounded p-2 flex items-center gap-2">
+              <p className="text-sm badge-stock-low rounded p-2 flex items-center gap-2">
                 <AlertTriangle aria-hidden className="size-4" />
                 <span>أي قيد محاسبي بتاريخ ≤ {fmtDate(lock.cutoffDate)} سيُرفَض.</span>
               </p>

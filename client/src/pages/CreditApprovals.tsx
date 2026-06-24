@@ -2,6 +2,8 @@
  * موافقات الائتمان المُسبَقة — managerProcedure.
  * إنشاء موافقة (customer + maxAmount + ttl) ⇒ approvalId يستعمله الكاشير.
  */
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
@@ -41,10 +43,10 @@ export default function CreditApprovalsPage() {
 
   return (
     <div className="container mx-auto p-4 space-y-4 max-w-4xl">
-      <h1 className="text-2xl font-bold">موافقات الائتمان المُسبَقة</h1>
-      <p className="text-sm text-muted-foreground">
-        B5: لا تُقبل موافقة blanket في البيع. أنشئ صفّاً هنا ⇒ يحصل الكاشير على approvalId مرتبط بـ(عميل، مبلغ، انتهاء، single-use).
-      </p>
+      <PageHeader
+        title="موافقات الائتمان المُسبَقة"
+        description="B5: لا تُقبل موافقة blanket في البيع. أنشئ صفّاً هنا ⇒ يحصل الكاشير على approvalId مرتبط بـ(عميل، مبلغ، انتهاء، single-use)."
+      />
 
       <Card>
         <CardHeader className="font-semibold">إنشاء موافقة جديدة</CardHeader>
@@ -134,7 +136,7 @@ export default function CreditApprovalsPage() {
           </Button>
 
           {createdId && (
-            <div className="bg-green-50 text-green-900 p-3 rounded text-sm flex items-center gap-2">
+            <div className="badge-status-active p-3 rounded text-sm flex items-center gap-2">
               <Check aria-hidden className="size-4" />
               <span>approvalId = <span className="font-mono font-bold">{createdId}</span> — سلّم هذا الرقم للكاشير.</span>
             </div>
@@ -147,7 +149,7 @@ export default function CreditApprovalsPage() {
           <CardHeader className="font-semibold">الموافقات النشِطة لهذا العميل</CardHeader>
           <CardContent>
             {active.isLoading ? (
-              <p className="text-muted-foreground">جاري التحميل…</p>
+              <LoadingState />
             ) : (active.data?.rows.length ?? 0) === 0 ? (
               <p className="text-muted-foreground text-sm">لا موافقات نشِطة</p>
             ) : (

@@ -27,6 +27,7 @@ import { D, round2, toBase } from "@/lib/money";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
 import { AlertTriangle, Lock } from "lucide-react";
 import {
   Dialog,
@@ -338,30 +339,30 @@ export default function SalesInvoiceNew() {
   return (
     <div ref={containerRef} dir="rtl" className="flex h-full flex-col gap-3">
       {/* شريط العنوان */}
-      <div className="flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          {(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-6 text-primary" />; })()}
-          {typeInfo.label} متقدّمة
-        </h1>
-        <div className="flex items-center gap-3 text-xs">
-          <span className="hidden font-semibold text-muted-foreground sm:inline">
-            الإجمالي:{" "}
-            <span className="font-extrabold text-foreground" dir="ltr">{totals.grandTotal}</span> د.ع
-          </span>
-          <Link
-            href="/invoices"
-            className="rounded-md border bg-card px-3 py-1.5 text-sm font-semibold text-muted-foreground hover:bg-muted"
-          >
-            ← رجوع للفواتير
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        title={`${typeInfo.label} متقدّمة`}
+        icon={(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-6 text-primary" />; })()}
+        actions={
+          <div className="flex items-center gap-3 text-xs">
+            <span className="hidden font-semibold text-muted-foreground sm:inline">
+              الإجمالي:{" "}
+              <span className="font-extrabold text-foreground" dir="ltr">{totals.grandTotal}</span> د.ع
+            </span>
+            <Link
+              href="/invoices"
+              className="rounded-md border bg-card px-3 py-1.5 text-sm font-semibold text-muted-foreground hover:bg-muted"
+            >
+              ← رجوع للفواتير
+            </Link>
+          </div>
+        }
+      />
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط المالية) */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
 
       {hasZeroPriceLine && (
-        <div className="rounded-md border border-amber-300/40 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700 flex items-center gap-2">
+        <div className="badge-stock-low flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-semibold">
           <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
           <span>هناك بنود بسعر غير صالح — صحّحها قبل الحفظ.</span>
         </div>
@@ -419,7 +420,7 @@ export default function SalesInvoiceNew() {
       <Dialog open={!!creditPrompt} onOpenChange={(o) => { if (!o) setCreditPrompt(null); }}>
         <DialogContent dir="rtl" className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2 text-rose-600">
+            <DialogTitle className="flex items-center gap-2 text-destructive">
               <Lock aria-hidden className="size-5" />
               موافقة مدير مطلوبة
             </DialogTitle>
@@ -457,7 +458,7 @@ export default function SalesInvoiceNew() {
             </Button>
             <Button
               type="button"
-              className="bg-rose-600 text-white hover:bg-rose-700"
+              variant="destructive"
               disabled={create.isPending}
               onClick={handleApprove}
             >

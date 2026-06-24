@@ -1,5 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ListToolbar } from "@/components/list";
 import { fmtDate } from "@/lib/date";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
@@ -12,8 +14,8 @@ import { Link } from "wouter";
 export default function AssetDisposalLog() {
   const q = trpc.assets.disposalLog.useQuery();
 
-  if (q.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (q.error) return <div className="p-10 text-center text-destructive">تعذّر التحميل: {q.error.message}</div>;
+  if (q.isLoading) return <LoadingState />;
+  if (q.error) return <ErrorState message={q.error.message} onRetry={() => q.refetch()} />;
   const rows = q.data ?? [];
 
   const disposed = rows.filter((r) => r.status === "disposed");
@@ -23,10 +25,10 @@ export default function AssetDisposalLog() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold">سجلّ الاستبعاد والإخراج</h1>
-        <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
-      </div>
+      <PageHeader
+        title="سجلّ الاستبعاد والإخراج"
+        actions={<Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>}
+      />
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <StatCard label="مُستبعَد (بيع/خردة)" value={iqd(disposed.length)} icon={Archive} />
@@ -114,7 +116,7 @@ export default function AssetDisposalLog() {
                   <tr key={r.id} className="border-t hover:bg-accent/50">
                     <td className="p-2"><Link href={`/assets/${r.id}`} className="flex items-center gap-1.5 hover:text-primary"><CategoryIcon category={r.category} /><span><span className="font-medium">{r.name}</span> <span className="text-xs text-muted-foreground" dir="ltr">{r.code}</span><div className="text-xs text-muted-foreground">{assetCategoryLabel(r.category)}</div></span></Link></td>
                     <td className="p-2 text-center">
-                      <span className={`rounded-full px-2 py-0.5 text-xs ${r.status === "disposed" ? "bg-rose-100 text-rose-700 dark:bg-rose-950 dark:text-rose-300" : "bg-slate-200 text-slate-700 dark:bg-slate-800 dark:text-slate-300"}`}>{r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة"}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${r.status === "disposed" ? "badge-stock-out" : "badge-status-cancelled"}`}>{r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة"}</span>
                     </td>
                     <td className="p-2 text-xs" dir="ltr">{fmtDate(r.disposalDate)}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">{iqd(r.purchaseValue)}</td>
@@ -122,12 +124,12 @@ export default function AssetDisposalLog() {
                     <td className="p-2 text-left tabular-nums" dir="ltr">{r.proceeds != null ? iqd(r.proceeds) : "—"}</td>
                     <td className="p-2 text-left tabular-nums" dir="ltr">
                       {r.gain != null ? (
-                        <span className={Number(r.gain) >= 0 ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}>{Number(r.gain) >= 0 ? "+" : ""}{iqd(r.gain)}</span>
+                        <span className={Number(r.gain) >= 0 ? "text-money-positive" : "text-money-negative"}>{Number(r.gain) >= 0 ? "+" : ""}{iqd(r.gain)}</span>
                       ) : "—"}
                     </td>
                   </tr>
                 ))}
-                {rows.length === 0 && <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أصول مُستبعَدة أو خارج الخدمة.</td></tr>}
+                {rows.length === 0 && <TableEmptyRow colSpan={7} message="لا أصول مُستبعَدة أو خارج الخدمة." />}
               </tbody>
             </table>
           </div>

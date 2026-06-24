@@ -19,6 +19,7 @@ import { Download } from "lucide-react";
 import { confirm } from "@/lib/confirm";
 import { D, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
+import { PageHeader } from "@/components/PageHeader";
 import {
   ActionButtons,
   BulkPicker,
@@ -352,31 +353,34 @@ export default function PurchaseReturnNew() {
 
   return (
     <div className="flex h-full flex-col gap-3">
-      <div className="flex items-center justify-between">
-        <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          {(() => { const TIcon = typeInfo.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
-          {typeInfo.label} جديد
-        </h1>
-        <div className="flex items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            size="sm"
-            onClick={tryLoadFromReference}
-            disabled={!state.poReference && !state.refInvoice}
-            title="جلب بنود أمر الشراء المرجعي"
-          >
-            <Download aria-hidden className="size-4" />
-            استيراد من أمر الشراء
-          </Button>
-          <Link href="/purchases" className="text-sm text-muted-foreground hover:underline">
-            ← رجوع للمشتريات
-          </Link>
-        </div>
-      </div>
+      <PageHeader
+        title={`${typeInfo.label} جديد`}
+        icon={(() => {
+          const TIcon = typeInfo.icon;
+          return <TIcon aria-hidden className="size-5 text-primary" />;
+        })()}
+        actions={
+          <>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={tryLoadFromReference}
+              disabled={!state.poReference && !state.refInvoice}
+              title="جلب بنود أمر الشراء المرجعي"
+            >
+              <Download aria-hidden className="size-4" />
+              استيراد من أمر الشراء
+            </Button>
+            <Link href="/purchases" className="text-sm text-muted-foreground hover:underline">
+              ← رجوع للمشتريات
+            </Link>
+          </>
+        }
+      />
 
       {refLookupError && (
-        <div className="rounded-md border border-rose-300/40 bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700">
+        <div className="badge-stock-out rounded-md px-3 py-2 text-xs font-semibold">
           {refLookupError}
         </div>
       )}

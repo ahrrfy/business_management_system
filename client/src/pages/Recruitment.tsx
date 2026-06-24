@@ -14,6 +14,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { PageHeader } from "@/components/PageHeader";
+import { ErrorState } from "@/components/PageState";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -138,12 +140,10 @@ export default function Recruitment() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-bold">التوظيف</h1>
-        <p className="text-sm text-muted-foreground mt-1">
-          أعلِن الوظائف الشاغرة على المعرض العام، وتابِع المتقدّمين عبر مسار المراحل.
-        </p>
-      </div>
+      <PageHeader
+        title="التوظيف"
+        description="أعلِن الوظائف الشاغرة على المعرض العام، وتابِع المتقدّمين عبر مسار المراحل."
+      />
 
       <Tabs value={tab} onValueChange={setTab}>
         <TabsList>
@@ -249,9 +249,7 @@ export default function Recruitment() {
       </Card>
 
       {list.isError && (
-        <Card><CardContent className="py-4 text-center text-rose-600 text-sm">
-          تعذّر تحميل المتقدّمين. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button>
-        </CardContent></Card>
+        <ErrorState message="تعذّر تحميل المتقدّمين." onRetry={() => list.refetch()} />
       )}
 
       {/* مسار المتقدّمين (Kanban) */}
@@ -309,7 +307,7 @@ export default function Recruitment() {
                           <Button
                             size="sm"
                             variant="ghost"
-                            className="flex-1 h-6 text-[10px] text-rose-600 hover:text-rose-700"
+                            className="flex-1 h-6 text-[10px] text-destructive"
                             disabled={move.isPending}
                             onClick={async () => {
                               if (
@@ -421,7 +419,7 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
 
         <div className="grid sm:grid-cols-2 gap-3.5">
           <div className="space-y-1.5">
-            <Label>اسم المتقدّم <span className="text-rose-600">*</span></Label>
+            <Label>اسم المتقدّم <span className="text-destructive">*</span></Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الكامل" />
           </div>
           <div className="space-y-1.5">
@@ -593,9 +591,7 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
       </Card>
 
       {list.isError && (
-        <Card><CardContent className="py-4 text-center text-rose-600 text-sm">
-          تعذّر تحميل الوظائف. <button className="underline" onClick={() => list.refetch()}>إعادة المحاولة</button>
-        </CardContent></Card>
+        <ErrorState message="تعذّر تحميل الوظائف." onRetry={() => list.refetch()} />
       )}
 
       {!list.isLoading && rows.length === 0 && (
@@ -622,7 +618,7 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
                 <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent" />
                 <div className="relative z-10 p-3 w-full flex items-center justify-between">
                   {v.department && <Badge className="bg-black/40 text-white border-white/30">{v.department}</Badge>}
-                  <Badge variant={v.isPublished ? "default" : "secondary"} className={v.isPublished ? "bg-emerald-600" : ""}>
+                  <Badge variant={v.isPublished ? "default" : "secondary"} className={v.isPublished ? "badge-status-active border-transparent" : ""}>
                     {v.isPublished ? "منشورة" : "مخفية"}
                   </Badge>
                 </div>
@@ -659,7 +655,7 @@ function VacanciesTab({ publicUrl }: { publicUrl: string }) {
                     <Button
                       size="sm"
                       variant="ghost"
-                      className="h-7 px-2 text-rose-600 hover:text-rose-700"
+                      className="h-7 px-2 text-destructive"
                       disabled={del.isPending}
                       onClick={async () => {
                         if (
@@ -751,7 +747,7 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
 
         <div className="grid sm:grid-cols-2 gap-3.5">
           <div className="space-y-1.5 sm:col-span-2">
-            <Label>عنوان الوظيفة <span className="text-rose-600">*</span></Label>
+            <Label>عنوان الوظيفة <span className="text-destructive">*</span></Label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="مثال: مصمم جرافيك" />
           </div>
           <div className="space-y-1.5">

@@ -8,6 +8,7 @@ import { confirm as confirmDialog } from "@/lib/confirm";
 import { useState } from "react";
 import { useLocation } from "wouter";
 import { AlertTriangle } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { ROLE_LABEL } from "./Users";
 
 export default function Account() {
@@ -51,10 +52,10 @@ export default function Account() {
 
   return (
     <div className="space-y-4 max-w-xl">
-      <h1 className="text-2xl font-bold">حسابي</h1>
+      <PageHeader title="حسابي" />
 
       {mustChange && (
-        <div className="rounded-lg border border-amber-400 bg-amber-50 dark:bg-amber-950/30 p-4 text-sm text-amber-800 dark:text-amber-300 flex gap-3 items-start">
+        <div className="rounded-lg border border-[var(--stock-low)] badge-stock-low p-4 text-sm flex gap-3 items-start">
           <AlertTriangle aria-hidden className="size-5 mt-0.5 shrink-0" />
           <div>
             <p className="font-semibold mb-1">كلمة المرور مؤقتة — يجب تغييرها الآن</p>
@@ -89,7 +90,7 @@ export default function Account() {
           </div>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
-          {done && <p className="text-sm text-emerald-600">{done}</p>}
+          {done && <p className="text-sm text-money-positive">{done}</p>}
 
           <Button onClick={submit} disabled={change.isPending}>
             {change.isPending ? "جارٍ التغيير…" : "تغيير كلمة المرور"}

@@ -1,6 +1,8 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ListToolbar, RowActions } from "@/components/list";
+import { PageHeader } from "@/components/PageHeader";
+import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
@@ -100,10 +102,10 @@ export default function Users() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold">المستخدمون</h1>
-      <p className="text-sm text-muted-foreground">
-        إدارة مستخدمي النظام وأدوارهم وفروعهم: إضافة، تعديل، تعطيل/تفعيل، وإعادة تعيين كلمة المرور.
-      </p>
+      <PageHeader
+        title="المستخدمون"
+        description="إدارة مستخدمي النظام وأدوارهم وفروعهم: إضافة، تعديل، تعطيل/تفعيل، وإعادة تعيين كلمة المرور."
+      />
 
       {err && <p className="text-sm text-destructive">{err}</p>}
 
@@ -174,7 +176,7 @@ export default function Users() {
                     <td className="p-2 text-xs">{u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{fmtDate(u.lastSignedIn)}</td>
                     <td className="p-2 text-center">
-                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"}`}>
+                      <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
                         {isActive ? "مفعّل" : "معطّل"}
                       </span>
                     </td>
@@ -197,7 +199,7 @@ export default function Users() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا مستخدمين مطابقين.</td></tr>
+                <TableEmptyRow colSpan={7} message="لا مستخدمين مطابقين." />
               )}
             </tbody>
           </table>

@@ -3,6 +3,8 @@ import { confirm } from "@/lib/confirm";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
@@ -63,8 +65,8 @@ export default function PurchaseReceive() {
     onError: (e) => setError(e.message),
   });
 
-  if (po.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (!po.data) return <div className="p-10 text-center text-muted-foreground">أمر الشراء غير موجود.</div>;
+  if (po.isLoading) return <LoadingState />;
+  if (!po.data) return <ErrorState message="أمر الشراء غير موجود." onRetry={() => po.refetch()} />;
 
   const data = po.data;
   const closed = data.status === "RECEIVED" || data.status === "CANCELLED";
@@ -98,10 +100,10 @@ export default function PurchaseReceive() {
 
   return (
     <div className="space-y-4 max-w-4xl">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold">استلام أمر شراء</h1>
-        <Link href="/purchases" className="text-sm text-muted-foreground">← رجوع للمشتريات</Link>
-      </div>
+      <PageHeader
+        title="استلام أمر شراء"
+        actions={<Link href="/purchases" className="text-sm text-muted-foreground">← رجوع للمشتريات</Link>}
+      />
 
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات الأمر</CardTitle></CardHeader>
@@ -174,7 +176,7 @@ export default function PurchaseReceive() {
       )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
-      {done && <p className="text-sm text-emerald-600">{done}</p>}
+      {done && <p className="text-sm text-money-positive">{done}</p>}
       <div className="flex gap-2">
         {!closed && (
           <Button onClick={submit} disabled={receive.isPending}>{receive.isPending ? "جارٍ الاستلام…" : "تأكيد الاستلام"}</Button>

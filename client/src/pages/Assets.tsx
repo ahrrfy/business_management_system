@@ -1,4 +1,6 @@
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { trpc } from "@/lib/trpc";
@@ -11,20 +13,22 @@ export default function Assets() {
   const [, navigate] = useLocation();
   const dash = trpc.assets.dashboard.useQuery();
 
-  if (dash.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
-  if (dash.error) return <div className="p-10 text-center text-destructive">تعذّر تحميل لوحة الأصول: {dash.error.message}</div>;
+  if (dash.isLoading) return <LoadingState />;
+  if (dash.error) return <ErrorState message={`تعذّر تحميل لوحة الأصول: ${dash.error.message}`} onRetry={() => dash.refetch()} />;
   const d = dash.data!;
   const maxCat = Math.max(1, ...d.byCategory.map((c) => c.value));
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold">لوحة الأصول الثابتة</h1>
-        <div className="flex items-center gap-2">
-          <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
-          <Button size="sm" onClick={() => navigate("/assets/new")}>+ أصل جديد</Button>
-        </div>
-      </div>
+      <PageHeader
+        title="لوحة الأصول الثابتة"
+        actions={
+          <div className="flex items-center gap-2">
+            <Link href="/assets/register"><Button variant="outline" size="sm">سجلّ الأصول</Button></Link>
+            <Button size="sm" onClick={() => navigate("/assets/new")}>+ أصل جديد</Button>
+          </div>
+        }
+      />
 
       {/* المؤشّرات */}
       <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
@@ -56,7 +60,7 @@ export default function Assets() {
 
         {/* تحتاج إجراءً */}
         <Card>
-          <CardHeader><CardTitle className="text-base flex items-center gap-1.5"><AlertTriangle className="size-4 text-amber-500" />تحتاج إجراءً</CardTitle></CardHeader>
+          <CardHeader><CardTitle className="text-base flex items-center gap-1.5"><AlertTriangle className="size-4 text-[var(--stock-low)]" />تحتاج إجراءً</CardTitle></CardHeader>
           <CardContent className="space-y-2">
             {d.needsAction.length === 0 && <p className="text-sm text-muted-foreground inline-flex items-center gap-1.5">لا شيء يحتاج إجراءً الآن. <ThumbsUp aria-hidden className="size-4" /></p>}
             {d.needsAction.map((n) => (
@@ -93,7 +97,7 @@ export default function Assets() {
                   </tr>
                 ))}
                 {d.recentMaintenance.length === 0 && (
-                  <tr><td colSpan={4} className="p-6 text-center text-muted-foreground">لا عمليات صيانة بعد.</td></tr>
+                  <TableEmptyRow colSpan={4} message="لا عمليات صيانة بعد." />
                 )}
               </tbody>
             </table>

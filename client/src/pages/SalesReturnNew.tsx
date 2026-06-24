@@ -33,6 +33,7 @@ import {
   type InvoiceLine,
 } from "@/components/invoice";
 import { AlertTriangle } from "lucide-react";
+import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
@@ -312,15 +313,16 @@ export default function SalesReturnNew() {
   return (
     <div className="flex h-full min-h-0 flex-col gap-3" dir="rtl">
       {/* شريط العنوان */}
-      <div className="flex shrink-0 items-center justify-between">
-        <h1 className="flex items-center gap-2 text-xl font-extrabold">
-          {(() => { const TIcon = typeMeta.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
-          {typeMeta.label} جديد
-        </h1>
-        <Link href="/invoices" className="text-sm text-muted-foreground hover:text-foreground">
-          ← رجوع للفواتير
-        </Link>
-      </div>
+      <PageHeader
+        className="shrink-0"
+        icon={(() => { const TIcon = typeMeta.icon; return <TIcon aria-hidden className="size-5 text-primary" />; })()}
+        title={`${typeMeta.label} جديد`}
+        actions={
+          <Link href="/invoices" className="text-sm text-muted-foreground hover:text-foreground">
+            ← رجوع للفواتير
+          </Link>
+        }
+      />
 
       {/* رأس المحرّر — يحتوي حقل «رقم الفاتورة المرجعية» تلقائياً لـ SALE_RETURN. */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType="SALE_RETURN" />
@@ -383,7 +385,7 @@ export default function SalesReturnNew() {
             tier={state.tier}
           />
           {state.items.length > 0 && !hasRefLoaded && (
-            <div className="flex items-start gap-2 rounded-md border border-amber-300/60 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <div className="badge-stock-low flex items-start gap-2 rounded-md border px-3 py-2 text-xs">
               <AlertTriangle aria-hidden className="size-4 shrink-0" />
               <span>
                 هذه البنود ليست مرتبطة بفاتورة مصدر — لن يتمكّن الخادم من حفظ المرتجع.
