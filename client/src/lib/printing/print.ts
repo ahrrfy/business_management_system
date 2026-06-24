@@ -1,14 +1,15 @@
-import { EscPos } from "./escpos";
+import { EscPos, type Raster } from "./escpos";
 import { docToHtml, docToRaster, printHtml, type PrintDoc } from "./render";
 import { isPaired, sendBytes, tryReconnectPrinter, isWebUsbSupported } from "./thermal";
 import { isServerBridgeEnabled, sendRawToServer } from "./serverBridge";
 import { receiptToRaster } from "./receiptRaster";
 import { workOrderToRaster, type WorkOrderReceiptData } from "./workOrderRaster";
+import { shiftOpenToRaster, shiftCloseToRaster } from "./shiftRaster";
 import { buildLabelBytes, type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
 import { getLabelSize, type LabelSize } from "./labelSize";
 import {
   printBrowserReceipt, printBarcodeSheet, printBrowserWorkOrderReceipt,
-  printShiftOpenBrowser, printShiftCloseBrowser, shiftOpenDoc, shiftCloseDoc,
+  printShiftOpenBrowser, printShiftCloseBrowser,
   type ReceiptBrowserData, type ShiftOpenData, type ShiftCloseData,
 } from "./printTemplates";
 
@@ -186,12 +187,13 @@ export type { ShiftOpenData, ShiftCloseData };
 
 /**
  * طباعة إيصال الوردية (فتح/إغلاق) بنفس ترتيب أولوية إيصال الكاشير تماماً:
- *  ١) جسر الخادم  ٢) WebUSB (نقطية عبر docToRaster)  ٣) نافذة المتصفّح بالتصميم المُعلَّم (تطبع تلقائياً).
- * يعالج علّة «إيصالات الوردية لا تُطبع»: كانت تفتح نافذة متصفّح فقط بلا مسار حراري ولا طباعة تلقائية،
- * فلا تصل لطابعة الكاشير (المربوطة WinUSB عبر WebUSB) بينما الفواتير تطبع لأنها تمرّ بهذا المسار.
+ *  ١) جسر الخادم  ٢) WebUSB (نقطية التصميم المُعلَّم عبر shiftRaster)  ٣) نافذة المتصفّح بالتصميم المُعلَّم (تطبع تلقائياً).
+ * التصميم المُعلَّم نفسه على النواقل الثلاثة (raster على Canvas = قالب المتصفّح) ⇒ لا يتفاوت الشكل.
+ * يعالج علّة «إيصالات الوردية لا تُطبع»: كانت تفتح نافذة متصفّح فقط بلا مسار حراري، فلا تصل
+ * لطابعة الكاشير (المربوطة WinUSB عبر WebUSB) بينما الفواتير تطبع لأنها تمرّ بهذا المسار.
  */
-async function printShiftDoc(
-  doc: PrintDoc,
+async function printShiftRaster(
+  buildRaster: () => Promise<Raster | null>,
   browserFallback: () => void,
 ): Promise<{ via: "server" | "thermal" | "browser" }> {
   // إعادة ربط صامتة لطابعة الإيصالات إن لم تكن مربوطة (مطابق لـ printWorkOrderReceipt).
@@ -200,8 +202,9 @@ async function printShiftDoc(
   }
 
   if ((await isServerBridgeEnabled()) || isPaired()) {
-    const bytes = await buildReceiptBytes(doc);
-    if (bytes) {
+    const raster = await buildRaster();
+    if (raster) {
+      const bytes = new EscPos().init().raster(raster).feed(3).cut().bytes();
       if (await isServerBridgeEnabled()) {
         try { await sendRawToServer(bytes); return { via: "server" }; }
         catch (e) { console.warn("[print] فشل جسر الخادم (وردية)، نتراجع للبديل:", e); }
@@ -217,9 +220,9 @@ async function printShiftDoc(
 }
 
 export function printShiftOpen(d: ShiftOpenData): Promise<{ via: "server" | "thermal" | "browser" }> {
-  return printShiftDoc(shiftOpenDoc(d), () => printShiftOpenBrowser(d));
+  return printShiftRaster(() => shiftOpenToRaster(d), () => printShiftOpenBrowser(d));
 }
 
 export function printShiftClose(d: ShiftCloseData): Promise<{ via: "server" | "thermal" | "browser" }> {
-  return printShiftDoc(shiftCloseDoc(d), () => printShiftCloseBrowser(d));
+  return printShiftRaster(() => shiftCloseToRaster(d), () => printShiftCloseBrowser(d));
 }
