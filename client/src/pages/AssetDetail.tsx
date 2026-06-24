@@ -165,7 +165,7 @@ export default function AssetDetail() {
             <CardHeader><CardTitle className="text-base">جدول الإهلاك السنوي — {depreciationMethodLabel(a.depreciationMethod)}</CardTitle></CardHeader>
             <CardContent className="p-0">
               <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr className="text-right">
+                <thead className="bg-muted/50"><tr>
                   <th className="p-2">السنة</th>
                   <th className="p-2 text-left">القيمة أول المدة</th>
                   <th className="p-2 text-left">إهلاك السنة</th>
@@ -194,7 +194,7 @@ export default function AssetDetail() {
             </CardHeader>
             <CardContent className="p-0">
               <table className="w-full text-sm">
-                <thead className="bg-muted/50"><tr className="text-right">
+                <thead className="bg-muted/50"><tr>
                   <th className="p-2">التاريخ</th><th className="p-2">النوع</th><th className="p-2">المزوّد</th><th className="p-2">ملاحظات</th><th className="p-2 text-left">التكلفة</th>
                 </tr></thead>
                 <tbody>

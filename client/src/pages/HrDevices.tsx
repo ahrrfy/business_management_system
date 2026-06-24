@@ -148,14 +148,14 @@ export default function HrDevices() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
-                <tr className="text-right">
+                <tr>
                   <th className="p-2">الجهاز</th>
                   <th className="p-2">الموقع</th>
                   <th className="p-2">الفرع</th>
                   <th className="p-2 text-center">الحالة</th>
                   <th className="p-2">الخادم الحالي</th>
                   <th className="p-2 text-center">مُهاجَر؟</th>
-                  <th className="p-2"></th>
+                  <th className="p-2 text-left"></th>
                 </tr>
               </thead>
               <tbody>

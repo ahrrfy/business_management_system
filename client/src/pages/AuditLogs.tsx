@@ -205,7 +205,7 @@ export default function AuditLogs() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
+              <tr>
                 <th className="p-2">التاريخ والوقت</th>
                 <th className="p-2">المستخدم</th>
                 <th className="p-2">الفعل</th>

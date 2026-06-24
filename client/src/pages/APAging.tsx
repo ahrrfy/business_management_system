@@ -181,7 +181,7 @@ export default function APAging() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-end">
+              <tr>
                 <th className="p-2 w-8 text-center">
                   <input
                     type="checkbox"
@@ -192,13 +192,13 @@ export default function APAging() {
                 </th>
                 <th className="p-2">المورد</th>
                 <th className="p-2">الهاتف</th>
-                <th className="p-2 text-start">0–30</th>
-                <th className="p-2 text-start">31–60</th>
-                <th className="p-2 text-start">61–90</th>
-                <th className="p-2 text-start">+90</th>
-                <th className="p-2 text-start">إجمالي غير المدفوع</th>
-                <th className="p-2 text-start" title="الرصيد الجاري ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
-                <th className="p-2 text-start">الرصيد (له علينا)</th>
+                <th className="p-2 text-left">0–30</th>
+                <th className="p-2 text-left">31–60</th>
+                <th className="p-2 text-left">61–90</th>
+                <th className="p-2 text-left">+90</th>
+                <th className="p-2 text-left">إجمالي غير المدفوع</th>
+                <th className="p-2 text-left" title="الرصيد الجاري ناقص غير المدفوع — يشمل الرصيد الافتتاحي المستورد من النظام القديم">غير مفوتر/افتتاحي</th>
+                <th className="p-2 text-left">الرصيد (له علينا)</th>
                 <th className="p-2">أقدم أمر شراء</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>

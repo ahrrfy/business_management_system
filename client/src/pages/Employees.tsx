@@ -93,14 +93,14 @@ export default function Employees() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
-                <tr className="text-end">
-                  <th className="p-2">الموظف</th>
-                  <th className="p-2">القسم</th>
-                  <th className="p-2">الفرع</th>
-                  <th className="p-2">نوع الأجر</th>
-                  <th className="p-2">الهاتف</th>
+                <tr>
+                  <th className="p-2 text-start">الموظف</th>
+                  <th className="p-2 text-start">القسم</th>
+                  <th className="p-2 text-start">الفرع</th>
+                  <th className="p-2 text-start">نوع الأجر</th>
+                  <th className="p-2 text-start">الهاتف</th>
                   <th className="p-2 text-center">الحالة</th>
-                  <th className="p-2"></th>
+                  <th className="p-2 text-start"></th>
                 </tr>
               </thead>
               <tbody>

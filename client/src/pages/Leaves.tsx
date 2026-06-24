@@ -171,7 +171,7 @@ export default function Leaves() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
-                    <tr className="text-right">
+                    <tr>
                       <th className="p-2">الموظف</th>
                       <th className="p-2">النوع</th>
                       <th className="p-2">من</th>
@@ -254,7 +254,7 @@ export default function Leaves() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
-                    <tr className="text-right">
+                    <tr>
                       <th className="p-2">الموظف</th>
                       <th className="p-2">القسم</th>
                       <th className="p-2 text-center">سنوية</th>

@@ -102,7 +102,7 @@ export default function AssetDisposalLog() {
         <CardContent className="p-0">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-muted/50"><tr className="text-right">
+              <thead className="bg-muted/50"><tr>
                 <th className="p-2">الأصل</th>
                 <th className="p-2 text-center">النوع</th>
                 <th className="p-2">التاريخ</th>

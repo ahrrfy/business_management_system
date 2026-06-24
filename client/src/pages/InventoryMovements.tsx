@@ -454,15 +454,15 @@ export default function InventoryMovements() {
         <CardContent className="p-0">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
-              <tr className="text-right">
-                <th className="p-2">التاريخ والوقت</th>
-                <th className="p-2">المنتج / المتغيّر</th>
+              <tr>
+                <th className="p-2 text-start">التاريخ والوقت</th>
+                <th className="p-2 text-start">المنتج / المتغيّر</th>
                 <th className="p-2 text-center">النوع</th>
                 <th className="p-2 text-center">الكمية</th>
-                <th className="p-2">الفرع</th>
-                <th className="p-2">المرجع</th>
-                <th className="p-2">المستخدم</th>
-                <th className="p-2">الملاحظة</th>
+                <th className="p-2 text-start">الفرع</th>
+                <th className="p-2 text-start">المرجع</th>
+                <th className="p-2 text-start">المستخدم</th>
+                <th className="p-2 text-start">الملاحظة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
             </thead>

@@ -173,7 +173,7 @@ export default function Attendance() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
-                <tr className="text-right">
+                <tr>
                   <th className="p-2.5">الموظف</th>
                   <th className="p-2.5">اليوم</th>
                   <th className="p-2.5 text-center">التاريخ</th>

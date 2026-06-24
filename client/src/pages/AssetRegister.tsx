@@ -96,7 +96,7 @@ export default function AssetRegister() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
-                <tr className="text-right">
+                <tr>
                   <th className="p-2">الرمز</th>
                   <th className="p-2">الأصل</th>
                   <th className="p-2">الفرع / الموقع</th>
