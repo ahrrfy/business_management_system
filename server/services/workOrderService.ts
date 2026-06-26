@@ -167,6 +167,9 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
         direction: "IN",
         amount: toDbMoney(depositD),
         paymentMethod: depositMethod,
+        // cashBucket='DRAWER' للعربون النقدي ⇒ يَدخل تسوية الدرج/Z-report (مرآة دفعة التسليم/البيع).
+        // كان NULL ⇒ يُستثنى من computeExpectedCash (cashBucket='DRAWER') ⇒ فائضٌ زائف عند إقفال وردية الاستقبال.
+        cashBucket: depositMethod === "CASH" ? "DRAWER" : null,
         status: "COMPLETED",
         createdBy: actor.userId,
       });
@@ -559,6 +562,8 @@ export async function cancelWorkOrder(workOrderId: number, actor: Actor & { role
           direction: "OUT",
           amount: toDbMoney(refundAmt),
           paymentMethod: refundMethod,
+          // cashBucket='DRAWER' للاسترداد النقدي ⇒ يَخصم من تسوية الدرج/Z-report (مرآة العربون عند القبض).
+          cashBucket: refundMethod === "CASH" ? "DRAWER" : null,
           status: "COMPLETED",
           referenceNumber: `WO-CANCEL-REFUND-${workOrderId}`,
           createdBy: actor.userId,
