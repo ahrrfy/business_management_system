@@ -95,6 +95,16 @@ export default function WorkOrderDetail() {
     });
   }, [qs, wo.data]);
 
+  // تعبئة المتبقّي تلقائياً عند الجهوزية = سعر البيع − العربون المقبوض (لا طرح يدويّ).
+  useEffect(() => {
+    const d = wo.data;
+    if (d && d.status === "READY") {
+      const due = Math.max(0, Number(d.salePrice) - Number(d.deposit ?? 0));
+      setPayAmount(due > 0 ? String(due) : "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wo.data?.status, wo.data?.salePrice, wo.data?.deposit]);
+
   const refresh = async () => {
     await Promise.all([
       utils.workOrders.get.invalidate({ workOrderId }),
@@ -276,16 +286,23 @@ export default function WorkOrderDetail() {
       {data.status === "READY" && (
         <Card>
           <CardHeader><CardTitle className="text-base">دفعة عند التسليم (اختياري)</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-            <div className="space-y-1">
-              <Label>المبلغ</Label>
-              <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder={`أقل من ${data.salePrice} = آجل`} />
+          <CardContent className="space-y-4">
+            <div className="rounded-md border bg-muted/30 p-3 text-sm space-y-1">
+              <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(data.salePrice)} د.ع</span></div>
+              {Number(data.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(data.deposit)} د.ع</span></div>}
+              <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmt(String(Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0))))} د.ع</span></div>
             </div>
-            <div className="space-y-1">
-              <Label>طريقة الدفع</Label>
-              <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
-                {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
-              </select>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+              <div className="space-y-1">
+                <Label>المبلغ المدفوع الآن (الافتراضي = المستحق)</Label>
+                <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="الرصيد المستحق" />
+              </div>
+              <div className="space-y-1">
+                <Label>طريقة الدفع</Label>
+                <select className={selectCls} value={payMethod} onChange={(e) => setPayMethod(e.target.value as typeof payMethod)}>
+                  {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
+                </select>
+              </div>
             </div>
           </CardContent>
         </Card>

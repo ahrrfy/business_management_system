@@ -26,7 +26,7 @@ import {
 type WO = RouterOutputs["workOrders"]["list"][number];
 type Detail = NonNullable<RouterOutputs["workOrders"]["get"]>;
 type Status = "RECEIVED" | "IN_PROGRESS" | "READY" | "DELIVERED";
-type DeliverTarget = { id: number; orderNumber: string; title: string; salePrice: string };
+type DeliverTarget = { id: number; orderNumber: string; title: string; salePrice: string; deposit: string };
 
 // ── المراحل (أعمدة الكانبان) — مطابقة لحالات النظام الحقيقية ──
 const STATUSES: { key: Status; label: string; hint: string; hue: number }[] = [
@@ -315,9 +315,18 @@ const dlgInput = "h-9 w-full rounded-md border border-input bg-transparent px-3 
 function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverTarget | null; onClose: () => void; onConfirm: (payment?: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" }) => void; pending: boolean }) {
   const [amount, setAmount] = useState("");
   const [methodV, setMethodV] = useState<"CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET">("CASH");
-  useEffect(() => { if (order) { setAmount(""); setMethodV("CASH"); } }, [order?.id]); // eslint-disable-line
+  useEffect(() => {
+    if (order) {
+      // تعبئة المتبقّي تلقائياً = سعر البيع − العربون المقبوض (لا طرح يدويّ من الموظّف).
+      const dueInit = Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0));
+      setAmount(dueInit > 0 ? String(dueInit) : "");
+      setMethodV("CASH");
+    }
+  }, [order?.id]); // eslint-disable-line
   if (!order) return null;
   const amt = Number(amount);
+  const dep = Number(order.deposit ?? 0);
+  const due = Math.max(0, Number(order.salePrice) - dep);
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
@@ -329,9 +338,14 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
           </DialogDescription>
         </DialogHeader>
         <div className="grid gap-3 py-1">
+          <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
+            <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmtAr(order.salePrice)} د.ع</span></div>
+            {dep > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmtAr(dep)} د.ع</span></div>}
+            <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmtAr(due)} د.ع</span></div>
+          </div>
           <div className="space-y-1">
-            <label className="text-sm font-medium">المبلغ المدفوع الآن (اختياري — الباقي يُسجَّل آجلاً)</label>
-            <input dir="ltr" inputMode="decimal" className={dlgInput} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`0 – ${fmtAr(order.salePrice)}`} />
+            <label className="text-sm font-medium">المبلغ المدفوع الآن (الافتراضي = الرصيد المستحق؛ أقل = آجل)</label>
+            <input dir="ltr" inputMode="decimal" className={dlgInput} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`0 – ${fmtAr(due)}`} />
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">طريقة الدفع</label>
@@ -658,7 +672,7 @@ export default function WorkOrders() {
       if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: `وضع «${order.title}» (${order.orderNumber}) في حالة «جاهز للتسليم». متابعة؟`, confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
       optimisticMove(order.id, "READY"); markReady.mutate({ workOrderId: order.id });
     }
-    else if (to === "DELIVERED") { setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice }); }
+    else if (to === "DELIVERED") { setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice, deposit: order.deposit ?? "0" }); }
   }
 
   function hitCol(x: number, y: number): string | null {
@@ -823,7 +837,7 @@ export default function WorkOrders() {
               optimisticMove(id, "READY"); markReady.mutate({ workOrderId: id });
             }
           }}
-          onDeliver={(d) => setDeliverOrder({ id: d.id, orderNumber: d.orderNumber, title: d.title, salePrice: d.salePrice })}
+          onDeliver={(d) => setDeliverOrder({ id: d.id, orderNumber: d.orderNumber, title: d.title, salePrice: d.salePrice, deposit: d.deposit ?? "0" })}
           onCancel={onCancelOrder}
           onAssign={async (id, staffId) => {
             if (!(await confirm({ variant: "info", title: "تغيير إسناد الأمر", description: staffId ? "إسناد هذا الأمر إلى الموظف المحدّد. متابعة؟" : "إلغاء إسناد هذا الأمر (سيصبح غير مُسنَد). متابعة؟", confirmText: "تأكيد الإسناد", cancelText: "تراجع" }))) return;
