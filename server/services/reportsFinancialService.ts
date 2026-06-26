@@ -145,6 +145,18 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
     `),
   )[0] ?? { amount: "0" };
 
+  // delivery-cod: أجور التوصيل (DELIVERY_FEE، netting من التحصيل) + شطب عجز العهدة (DELIVERY_WRITEOFF،
+  // بلا نقد) — خسائر بالكلفة تَخفض صافي الربح. (DELIVERY_DISPATCH/REMIT حركات عهدة revenue=cost=0 ⇒ لا أثر.)
+  const dl = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType IN ('DELIVERY_FEE', 'DELIVERY_WRITEOFF')
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -174,6 +186,13 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
   if (depExpense.gt(0)) {
     expenseLines.push({ key: "DEPRECIATION", label: "إهلاك الأصول الثابتة", amount: toDbMoney(depExpense) });
     totalExpenses = totalExpenses.add(depExpense);
+  }
+
+  // delivery-cod: أجور توصيل وعجز مناديب — سطر مستقلّ يَخفض صافي الربح (وإلا يُبالَغ في الربح).
+  const deliveryLoss = money(dl.amount ?? 0);
+  if (deliveryLoss.gt(0)) {
+    expenseLines.push({ key: "DELIVERY_COST", label: "أجور توصيل وعجز مناديب", amount: toDbMoney(deliveryLoss) });
+    totalExpenses = totalExpenses.add(deliveryLoss);
   }
 
   // FA-02: أثر صافٍ على الربح — الخسارة مصروفٌ موجب يَرفع totalExpenses، والربح سالبٌ (دخل) يَخفضه؛
@@ -244,6 +263,7 @@ export interface GeneralLedgerResult {
 
 const LEDGER_ENTRY_TYPES = [
   "SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE",
+  "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF",
 ] as const;
 
 export async function getGeneralLedger(opts: {

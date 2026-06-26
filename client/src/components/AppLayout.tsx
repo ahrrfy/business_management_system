@@ -110,6 +110,8 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { href: "/treasury", label: "لوحة الخزينة", roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
       { href: "/treasury/transfers", label: "تحويلات نَقدية بين الفروع", managerOnly: true },
+      { href: "/delivery", label: "إدارة التوصيل (المناديب)", roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
+      { href: "/delivery/parties", label: "جهات التوصيل وذممها", roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
       { href: "/expenses", label: "المصروفات اليومية" },
       { href: "/vouchers", label: "سندات قبض وصرف" },
       { href: "/shifts", label: "سجلّ الورديات" },

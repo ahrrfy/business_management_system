@@ -126,6 +126,8 @@ const AbcAnalysis = lazy(() => import("@/pages/AbcAnalysis"));
 const Treasury = lazy(() => import("@/pages/Treasury"));
 const TreasuryTransfers = lazy(() => import("@/pages/TreasuryTransfers"));
 const TreasuryReport = lazy(() => import("@/pages/TreasuryReport"));
+const DeliveryHub = lazy(() => import("@/pages/DeliveryHub"));
+const DeliveryParties = lazy(() => import("@/pages/DeliveryParties"));
 const ExpensesReport = lazy(() => import("@/pages/ExpensesReport"));
 const CashOrphanReport = lazy(() => import("@/pages/CashOrphanReport"));
 const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
@@ -268,6 +270,8 @@ export default function App() {
       <Route path="/shifts"><Shell><Shifts /></Shell></Route>
       <Route path="/treasury"><Shell><Treasury /></Shell></Route>
       <Route path="/treasury/transfers"><Shell><TreasuryTransfers /></Shell></Route>
+      <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryHub /></RequireRole></Shell></Route>
+      <Route path="/delivery/parties"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryParties /></RequireRole></Shell></Route>
       <Route path="/reports"><Shell><ReportsCenter /></Shell></Route>
       <Route path="/reports/profit-loss"><Shell><RequireRole roles={["admin","manager"]}><ProfitLoss /></RequireRole></Shell></Route>
       <Route path="/reports/general-ledger"><Shell><RequireRole roles={["admin","manager"]}><GeneralLedger /></RequireRole></Shell></Route>
