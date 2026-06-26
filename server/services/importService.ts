@@ -687,8 +687,45 @@ export async function importProducts(
   const failures = new Map<number, string>(); // rowNumber → سبب الفشل
 
   // ١) التجميع: productName → variants(sku) → units(name) → prices(tier) — مع كشف تعارض الصفوف المكرّرة.
+  const { groups, skuOwner } = aggregateImportRows(rows, failures);
+
+  // ٢) افتراض isBaseUnit المشروط (sku بصفّ واحد بلا تحديد ⇒ وحدته هي الأساس).
+  applyBaseUnitDefaults(groups);
+
+  // ٣) التحقّق على مستوى المتغيّر/الوحدة + تكرار الباركود داخل الملف.
+  const batchBarcodes = validateProductGroups(groups, failures);
+
+  // ٤) كشف الموجود في القاعدة: SKU (متغيّر) + الباركود مع sku متغيّره المالك.
+  const { existingSkus, existingBarcodeOwner } = await detectExistingProducts(db, skuOwner, batchBarcodes);
+
+  // ٥) تصنيف كل مجموعة منتج: إنشاء / تخطّي / فشل.
+  const { results, toCreate } = classifyProductGroups(groups, existingSkus, existingBarcodeOwner, failures, onExisting);
+
+  const anyFailed = results.some((r) => r.status === "failed");
+  if (options.dryRun || (anyFailed && !skipFailed) || !toCreate.length) {
+    return finalize("PRODUCTS", rows.length, results, false, options, actor);
+  }
+
+  // ٦) التنفيذ: إنشاء التصنيفات الناقصة ثم شجرة كل منتج (+ مخزونه الافتتاحي) داخل معاملة واحدة.
+  try {
+    await withTx((tx) => persistProductsInTx(tx, toCreate, actor));
+  } catch (e) {
+    // الرسالة الخام تُسجَّل كاملة للتشخيص وتُعرَّب للواجهة (لا نصّ SQL/قيود/بيانات صفوف للمستخدم).
+    logger.error({ err: e }, "فشل كتابة دفعة استيراد المنتجات");
+    return finalize("PRODUCTS", rows.length, markWriteError(results, writeErrorMessage(e)), false, options, actor);
+  }
+  return finalize("PRODUCTS", rows.length, results, true, options, actor);
+}
+
+type SkuOwner = Map<string, { productName: string; rows: number[] }>;
+
+/** ① التجميع: productName → variants(sku) → units(name) → prices(tier) — مع كشف تعارض الصفوف المكرّرة. */
+function aggregateImportRows(
+  rows: ProductImportRow[],
+  failures: Map<number, string>,
+): { groups: Map<string, ProductAgg>; skuOwner: SkuOwner } {
   const groups = new Map<string, ProductAgg>();
-  const skuOwner = new Map<string, { productName: string; rows: number[] }>(); // sku → المالك الأول + صفوفه
+  const skuOwner: SkuOwner = new Map(); // sku → المالك الأول + صفوفه
   for (const r of rows) {
     const pName = r.productName.trim();
     let p = groups.get(pName);
@@ -769,10 +806,15 @@ export async function importProducts(
       else setUnitPrice(r.priceTier, r.price, r.rowNumber);
     }
   }
+  return { groups, skuOwner };
+}
 
-  // ٢) افتراض isBaseUnit المشروط (§٥.١ — بعد التجميع لا في zod، لأن التحقق الصفّي لا يرى سياق المجموعة):
-  // sku بصفّ واحد بلا تحديد ⇒ وحدته هي الأساس (ملف الأصناف: الكود فريد ١٠٠٪ ⇒ هذا هو المسار الفعلي).
-  // صفّان فأكثر كلاهما بلا تحديد ⇒ يفشلان برسالة «وحدة أساس واحدة بالضبط» أدناه — سلوك منصوص لا عرَضي.
+/**
+ * ② افتراض isBaseUnit المشروط (§٥.١ — بعد التجميع لا في zod، لأن التحقق الصفّي لا يرى سياق المجموعة):
+ * sku بصفّ واحد بلا تحديد ⇒ وحدته هي الأساس (ملف الأصناف: الكود فريد ١٠٠٪ ⇒ هذا هو المسار الفعلي).
+ * صفّان فأكثر كلاهما بلا تحديد ⇒ يفشلان برسالة «وحدة أساس واحدة بالضبط» — سلوك منصوص لا عرَضي.
+ */
+function applyBaseUnitDefaults(groups: Map<string, ProductAgg>): void {
   for (const p of Array.from(groups.values())) {
     for (const v of Array.from(p.variants.values())) {
       if (v.rowNumbers.length === 1) {
@@ -781,8 +823,13 @@ export async function importProducts(
       }
     }
   }
+}
 
-  // ٣) التحقّق على مستوى المتغيّر/الوحدة + تكرار الباركود داخل الملف.
+/** ③ التحقّق على مستوى المتغيّر/الوحدة + تكرار الباركود داخل الملف. يُعيد خريطة الباركود → صفوف مالكه. */
+function validateProductGroups(
+  groups: Map<string, ProductAgg>,
+  failures: Map<number, string>,
+): Map<string, number[]> {
   const batchBarcodes = new Map<string, number[]>(); // barcode → صفوف المتغيّر المالك
   for (const p of Array.from(groups.values())) {
     for (const v of Array.from(p.variants.values())) {
@@ -810,11 +857,20 @@ export async function importProducts(
       }
     }
   }
+  return batchBarcodes;
+}
 
-  // ٤) كشف الموجود في القاعدة: SKU (متغيّر) + الباركود مع sku متغيّره المالك —
-  // الباركود الموجود لمتغيّرٍ من المنتج نفسه ليس «تعارضاً» بل إعادةُ استيراد منتجٍ سبق إنشاؤه:
-  // ملف المالك بلا عمود SKU ⇒ sku=الباركود لكل صف، فبدون تمييز المالك كانت إعادة الاستيراد
-  // تُصنَّف «فاشل: باركود مُستخدَم» وتُوقف بقية الدفعات (نقيض «إعادة التشغيل آمنة» — §٤.٣.٤-د).
+/**
+ * ④ كشف الموجود في القاعدة: SKU (متغيّر) + الباركود مع sku متغيّره المالك —
+ * الباركود الموجود لمتغيّرٍ من المنتج نفسه ليس «تعارضاً» بل إعادةُ استيراد منتجٍ سبق إنشاؤه:
+ * ملف المالك بلا عمود SKU ⇒ sku=الباركود لكل صف، فبدون تمييز المالك كانت إعادة الاستيراد
+ * تُصنَّف «فاشل: باركود مُستخدَم» وتُوقف بقية الدفعات (نقيض «إعادة التشغيل آمنة» — §٤.٣.٤-د).
+ */
+async function detectExistingProducts(
+  db: ReturnType<typeof requireDb>,
+  skuOwner: SkuOwner,
+  batchBarcodes: Map<string, number[]>,
+): Promise<{ existingSkus: Set<string>; existingBarcodeOwner: Map<string, string> }> {
   const allSkus = Array.from(skuOwner.keys());
   const allBarcodes = Array.from(batchBarcodes.keys());
   const existingSkus = new Set<string>();
@@ -831,8 +887,17 @@ export async function importProducts(
       .where(inArray(productUnits.barcode, allBarcodes)))
       if (e.barcode) existingBarcodeOwner.set(e.barcode, e.sku);
   }
+  return { existingSkus, existingBarcodeOwner };
+}
 
-  // ٥) تصنيف كل مجموعة منتج: إنشاء / تخطّي / فشل.
+/** ⑤ تصنيف كل مجموعة منتج: إنشاء / تخطّي / فشل. يُعيد نتائج كل الصفوف + المجموعات الجاهزة للإنشاء. */
+function classifyProductGroups(
+  groups: Map<string, ProductAgg>,
+  existingSkus: Set<string>,
+  existingBarcodeOwner: Map<string, string>,
+  failures: Map<number, string>,
+  onExisting: string,
+): { results: ImportRowResult[]; toCreate: ProductAgg[] } {
   const results: ImportRowResult[] = [];
   const toCreate: ProductAgg[] = [];
   for (const p of Array.from(groups.values())) {
@@ -868,84 +933,73 @@ export async function importProducts(
     toCreate.push(p);
     for (const rn of p.rowNumbers) results.push({ rowNumber: rn, status: "created" });
   }
+  return { results, toCreate };
+}
 
-  const anyFailed = results.some((r) => r.status === "failed");
-  if (options.dryRun || (anyFailed && !skipFailed) || !toCreate.length) {
-    return finalize("PRODUCTS", rows.length, results, false, options, actor);
+/** ⑥ التنفيذ: إنشاء التصنيفات الناقصة ثم شجرة كل منتج (+ مخزونه الافتتاحي) داخل معاملة واحدة. */
+async function persistProductsInTx(tx: Tx, toCreate: ProductAgg[], actor: Actor): Promise<void> {
+  const catNames = uniq(toCreate.map((p) => p.categoryName));
+  const catMap = new Map<string, number>(); // المفتاح: الاسم بحالة موحّدة (تفادي تصادم «X»/«x» على القيد الفريد)
+  if (catNames.length) {
+    for (const c of await tx.select({ id: categories.id, name: categories.name }).from(categories).where(inArray(categories.name, catNames)))
+      catMap.set(c.name.trim().toLowerCase(), Number(c.id));
+    for (const name of catNames) {
+      const key = name.trim().toLowerCase();
+      if (!catMap.has(key)) {
+        const res = await tx.insert(categories).values({ name });
+        catMap.set(key, insertId(res));
+      }
+    }
   }
 
-  // ٦) التنفيذ: إنشاء التصنيفات الناقصة ثم شجرة كل منتج (+ مخزونه الافتتاحي) داخل معاملة واحدة.
-  try {
-    await withTx(async (tx) => {
-      const catNames = uniq(toCreate.map((p) => p.categoryName));
-      const catMap = new Map<string, number>(); // المفتاح: الاسم بحالة موحّدة (تفادي تصادم «X»/«x» على القيد الفريد)
-      if (catNames.length) {
-        for (const c of await tx.select({ id: categories.id, name: categories.name }).from(categories).where(inArray(categories.name, catNames)))
-          catMap.set(c.name.trim().toLowerCase(), Number(c.id));
-        for (const name of catNames) {
-          const key = name.trim().toLowerCase();
-          if (!catMap.has(key)) {
-            const res = await tx.insert(categories).values({ name });
-            catMap.set(key, insertId(res));
-          }
-        }
-      }
-
-      for (const p of toCreate) {
-        const pRes = await tx.insert(products).values({
-          name: p.productName,
-          categoryId: p.categoryName ? catMap.get(p.categoryName.trim().toLowerCase()) ?? null : null,
-          isCustomizable: p.isCustomizable,
-        });
-        const productId = insertId(pRes);
-
-        for (const v of Array.from(p.variants.values())) {
-          const vRes = await tx.insert(productVariants).values({
-            productId,
-            sku: v.sku,
-            variantName: v.variantName ?? null,
-            color: v.color ?? null,
-            size: v.size ?? null,
-            costPrice: toDbMoney(v.costPrice),
-          });
-          const variantId = insertId(vRes);
-
-          for (const u of Array.from(v.units.values())) {
-            const uRes = await tx.insert(productUnits).values({
-              variantId,
-              unitName: u.unitName,
-              conversionFactor: u.conversionFactor,
-              barcode: u.barcode ?? null,
-              isBaseUnit: !!u.isBaseUnit,
-            });
-            const productUnitId = insertId(uRes);
-            for (const [tier, price] of Array.from(u.prices)) {
-              await tx.insert(productPrices).values({
-                productUnitId,
-                priceTier: tier as z.infer<typeof priceTier>,
-                price: toDbMoney(price),
-              });
-            }
-          }
-
-          // المخزون الافتتاحي (§٥.٣): حركة تسوية بمرجع OPENING داخل نفس المعاملة — ذرّيةُ الشجرة ورصيدها معاً.
-          if (v.openingStock !== undefined && v.openingStock > 0) {
-            await setStock(tx, {
-              variantId,
-              branchId: actor.branchId,
-              targetQuantity: v.openingStock,
-              referenceType: "OPENING",
-              notes: "رصيد افتتاحي (استيراد)",
-              createdBy: actor.userId,
-            });
-          }
-        }
-      }
+  for (const p of toCreate) {
+    const pRes = await tx.insert(products).values({
+      name: p.productName,
+      categoryId: p.categoryName ? catMap.get(p.categoryName.trim().toLowerCase()) ?? null : null,
+      isCustomizable: p.isCustomizable,
     });
-  } catch (e) {
-    // الرسالة الخام تُسجَّل كاملة للتشخيص وتُعرَّب للواجهة (لا نصّ SQL/قيود/بيانات صفوف للمستخدم).
-    logger.error({ err: e }, "فشل كتابة دفعة استيراد المنتجات");
-    return finalize("PRODUCTS", rows.length, markWriteError(results, writeErrorMessage(e)), false, options, actor);
+    const productId = insertId(pRes);
+
+    for (const v of Array.from(p.variants.values())) {
+      const vRes = await tx.insert(productVariants).values({
+        productId,
+        sku: v.sku,
+        variantName: v.variantName ?? null,
+        color: v.color ?? null,
+        size: v.size ?? null,
+        costPrice: toDbMoney(v.costPrice),
+      });
+      const variantId = insertId(vRes);
+
+      for (const u of Array.from(v.units.values())) {
+        const uRes = await tx.insert(productUnits).values({
+          variantId,
+          unitName: u.unitName,
+          conversionFactor: u.conversionFactor,
+          barcode: u.barcode ?? null,
+          isBaseUnit: !!u.isBaseUnit,
+        });
+        const productUnitId = insertId(uRes);
+        for (const [tier, price] of Array.from(u.prices)) {
+          await tx.insert(productPrices).values({
+            productUnitId,
+            priceTier: tier as z.infer<typeof priceTier>,
+            price: toDbMoney(price),
+          });
+        }
+      }
+
+      // المخزون الافتتاحي (§٥.٣): حركة تسوية بمرجع OPENING داخل نفس المعاملة — ذرّيةُ الشجرة ورصيدها معاً.
+      if (v.openingStock !== undefined && v.openingStock > 0) {
+        await setStock(tx, {
+          variantId,
+          branchId: actor.branchId,
+          targetQuantity: v.openingStock,
+          referenceType: "OPENING",
+          notes: "رصيد افتتاحي (استيراد)",
+          createdBy: actor.userId,
+        });
+      }
+    }
   }
-  return finalize("PRODUCTS", rows.length, results, true, options, actor);
 }
