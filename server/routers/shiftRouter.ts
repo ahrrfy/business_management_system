@@ -67,7 +67,14 @@ export const shiftRouter = router({
     }),
 
   open: cashierProcedure
-    .input(z.object({ branchId: z.number().int().positive(), openingBalance: z.string().default("0") }))
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        openingBalance: z.string().default("0"),
+        // نوع الوردية: RETAIL (كاشير) أو RECEPTION (خدمة الزبائن). يُفتَح من شاشة الاستقبال بـRECEPTION.
+        shiftType: z.enum(["RETAIL", "RECEPTION"]).default("RETAIL"),
+      }),
+    )
     .mutation(async ({ input, ctx }) => {
       // G4 (تدقيق ١٤/٦/٢٦): قبل: `?? input.branchId` يسمح لكاشير بـbranchId=null بفتح وردية
       // على أي فرع. الآن: غير-elevated يُجبَر على فرعه (FORBIDDEN لو null)؛ admin/manager
@@ -81,7 +88,7 @@ export const shiftRouter = router({
         actorBranchId = Number(ctx.user.branchId);
       }
       const res = await openShift({ ...input, branchId: actorBranchId }, { userId: ctx.user.id, branchId: actorBranchId });
-      await logAudit(ctx, { action: "shift.open", entityType: "shift", entityId: (res as { id?: number })?.id, newValue: { openingBalance: input.openingBalance, branchId: actorBranchId } });
+      await logAudit(ctx, { action: "shift.open", entityType: "shift", entityId: (res as { id?: number })?.id, newValue: { openingBalance: input.openingBalance, branchId: actorBranchId, shiftType: input.shiftType } });
       return res;
     }),
 
@@ -158,9 +165,15 @@ export const shiftRouter = router({
   // §٧: الكاشير يبقى في فرعه؛ المرتفعون يجوز لهم تمرير branchId لأي فرع. ctx.scopedBranchId
   // أقوى من ctx.user.branchId (يغلق ثغرة إن كان branchId الخام null).
   current: branchScopedProcedure
-    .input(z.object({ branchId: z.number().int().positive() }))
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        // بوّابة الاستقبال تستعلم عن وردية RECEPTION صراحةً؛ بدونه يُرجَع أيّ وردية مفتوحة.
+        shiftType: z.enum(["RETAIL", "RECEPTION"]).optional(),
+      }),
+    )
     .query(({ input, ctx }) => {
       const effective = ctx.scopedBranchId ?? input.branchId;
-      return getOpenShift(ctx.user.id, effective);
+      return getOpenShift(ctx.user.id, effective, input.shiftType);
     }),
 });

@@ -7,16 +7,36 @@ import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
-/** Open a cashier shift. One open shift per user per branch. */
-export async function openShift(input: { branchId: number; openingBalance: string }, actor: Actor) {
+/** نوع الوردية: تجزئة (كاشير) أو استقبال (خدمة الزبائن — درج/عرابين مستقلّة). */
+export type ShiftType = "RETAIL" | "RECEPTION";
+
+/** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION). */
+export async function openShift(
+  input: { branchId: number; openingBalance: string; shiftType?: ShiftType },
+  actor: Actor,
+) {
+  const shiftType: ShiftType = input.shiftType ?? "RETAIL";
   return withTx(async (tx) => {
     const existing = await tx
       .select({ id: shifts.id })
       .from(shifts)
-      .where(and(eq(shifts.userId, actor.userId), eq(shifts.branchId, input.branchId), eq(shifts.status, "OPEN")))
+      .where(
+        and(
+          eq(shifts.userId, actor.userId),
+          eq(shifts.branchId, input.branchId),
+          eq(shifts.status, "OPEN"),
+          eq(shifts.shiftType, shiftType),
+        ),
+      )
       .limit(1);
     if (existing[0]) {
-      throw new TRPCError({ code: "CONFLICT", message: "لديك وردية مفتوحة بالفعل في هذا الفرع" });
+      throw new TRPCError({
+        code: "CONFLICT",
+        message:
+          shiftType === "RECEPTION"
+            ? "لديك وردية خدمة زبائن مفتوحة بالفعل في هذا الفرع"
+            : "لديك وردية مفتوحة بالفعل في هذا الفرع",
+      });
     }
     try {
       const res = await tx.insert(shifts).values({
@@ -24,7 +44,8 @@ export async function openShift(input: { branchId: number; openingBalance: strin
         userId: actor.userId,
         openingBalance: toDbMoney(input.openingBalance),
         status: "OPEN",
-        openGuard: `${actor.userId}:${input.branchId}`, // حارس ذرّي ضدّ الفتح المزدوج المتزامن
+        shiftType,
+        openGuard: `${actor.userId}:${input.branchId}:${shiftType}`, // حارس ذرّي ضدّ الفتح المزدوج المتزامن لنفس النوع
       });
       const shiftId = extractInsertId(res);
       return { shiftId };
@@ -178,14 +199,19 @@ export async function getShiftReport(shiftId: number) {
   };
 }
 
-/** The user's currently open shift in a branch, if any. */
-export async function getOpenShift(userId: number, branchId: number) {
+/**
+ * The user's currently open shift in a branch, if any. حين يُمرَّر shiftType يُفلتَر بدقّة عليه
+ * (بوّابة RECEPTION تَطلب وردية استقبال صراحةً)؛ بدونه يُرجِع أيّ وردية مفتوحة (توافق رجعي).
+ */
+export async function getOpenShift(userId: number, branchId: number, shiftType?: ShiftType) {
   const db = getDb();
   if (!db) return null;
+  const conds = [eq(shifts.userId, userId), eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")];
+  if (shiftType) conds.push(eq(shifts.shiftType, shiftType));
   const rows = await db
     .select()
     .from(shifts)
-    .where(and(eq(shifts.userId, userId), eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")))
+    .where(and(...conds))
     .limit(1);
   return rows[0] ?? null;
 }
@@ -200,14 +226,24 @@ export async function getOpenShift(userId: number, branchId: number) {
  * status='OPEN' تحت القفل. إن غُيِّر بعد القفل (closeShift سبَقَنا للالتزام) ⇒ نُرجع null
  * كما لو لم تكن وردية مفتوحة، فيرتفع PRECONDITION_FAILED في الطبقة العليا (سلوك مُحدَّد).
  */
-export async function openShiftIdTx(tx: Tx, userId: number, branchId: number): Promise<number | null> {
-  const rows = await tx
-    .select({ id: shifts.id })
+export async function openShiftIdTx(
+  tx: Tx,
+  userId: number,
+  branchId: number,
+  preferredType: ShiftType = "RETAIL",
+): Promise<number | null> {
+  // حلٌّ حتميّ صديقٌ للمشغّل الواحد (تدقيق ٢٦/٦/٢٦): قبل نوع الوردية كان `LIMIT 1` كافياً؛
+  // بعده قد يَملك الموظّف ورديتَين مفتوحتَين (تجزئة + استقبال) ⇒ `LIMIT 1` لاحتميّ يَنسب النقد
+  // لدرجٍ عشوائي. القاعدة: وردية واحدة مفتوحة ⇒ استعملها أيّاً كان نوعها (المشغّل الواحد بلا احتكاك)؛
+  // ورديتان ⇒ اختر بالنوع المفضّل للعملية (preferredType).
+  const open = await tx
+    .select({ id: shifts.id, shiftType: shifts.shiftType })
     .from(shifts)
-    .where(and(eq(shifts.userId, userId), eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")))
-    .limit(1);
-  if (!rows[0]) return null;
-  const id = Number(rows[0].id);
+    .where(and(eq(shifts.userId, userId), eq(shifts.branchId, branchId), eq(shifts.status, "OPEN")));
+  if (open.length === 0) return null;
+  const chosen = open.length === 1 ? open[0] : open.find((s) => s.shiftType === preferredType);
+  if (!chosen) return null;
+  const id = Number(chosen.id);
   // قفل صفّ الوردية ثم إعادة فحص الحالة: closeShift يأخذ نفس القفل، فلا تُصدَر receipts
   // على وردية أُغلقت في أثناء التسلسل. الـlock يُحَرَّر تلقائياً عند commit/rollback للـtx.
   const locked = await tx
@@ -235,8 +271,9 @@ export async function requireOpenShiftIdTx(
   userId: number,
   branchId: number,
   label: string = "معاملة نقدية",
+  preferredType: ShiftType = "RETAIL",
 ): Promise<number> {
-  const id = await openShiftIdTx(tx, userId, branchId);
+  const id = await openShiftIdTx(tx, userId, branchId, preferredType);
   if (id == null) {
     throw new TRPCError({
       code: "PRECONDITION_FAILED",
@@ -276,15 +313,16 @@ export async function shiftIdForCashTx(
   actor: { userId: number; branchId?: number; role?: string },
   branchId: number,
   label: string = "معاملة نقدية",
+  preferredType: ShiftType = "RETAIL",
 ): Promise<{ shiftId: number | null; cashBucket: "DRAWER" | "TREASURY" }> {
   const role = actor.role ?? (await resolveActorRoleTx(tx, actor.userId));
   if (role === "admin" || role === "manager") {
     // الأدوار الإدارية: إن وُجدت وردية مفتوحة (تغطية كاشير) ⇒ استَعملها (DRAWER)؛
     // وإلّا shiftId=null + bucket=TREASURY (مشروع، يَظهر في تقرير الخزينة الإدارية).
-    const sid = await openShiftIdTx(tx, actor.userId, branchId);
+    const sid = await openShiftIdTx(tx, actor.userId, branchId, preferredType);
     return sid ? { shiftId: sid, cashBucket: "DRAWER" } : { shiftId: null, cashBucket: "TREASURY" };
   }
   // cashier/warehouse/غيرهم: وردية إلزامية (حماية النقد اليتيم الحقيقي).
-  const sid = await requireOpenShiftIdTx(tx, actor.userId, branchId, label);
+  const sid = await requireOpenShiftIdTx(tx, actor.userId, branchId, label, preferredType);
   return { shiftId: sid, cashBucket: "DRAWER" };
 }

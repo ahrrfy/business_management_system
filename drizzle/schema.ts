@@ -399,8 +399,12 @@ export const shifts = mysqlTable(
     countedCash: decimal("countedCash", { precision: 15, scale: 2 }),
     variance: decimal("variance", { precision: 15, scale: 2 }),
     status: mysqlEnum("shiftStatus", ["OPEN", "CLOSED"]).default("OPEN").notNull(),
-    // حارس ذرّي: «userId:branchId» عند الفتح، NULL عند الإغلاق. UNIQUE يسمح بـNULL متعدّد
-    // ⇒ وردية مفتوحة واحدة لكل (موظّف×فرع)؛ فتحٌ متزامن ثانٍ يفشل بـER_DUP_ENTRY.
+    // نوع الوردية: RETAIL (كاشير المبيعات) أو RECEPTION (خدمة الزبائن — درج/رصيد افتتاحي/عرابين
+    // وZ-report مستقلّ). DEFAULT RETAIL ⇒ كل الورديات القائمة تجزئة. يدخل في openGuard ⇒ وردية
+    // مفتوحة واحدة لكل (موظّف×فرع×نوع)، فيُمكن لموظّفٍ حملُ وردية تجزئة ووردية استقبال معاً.
+    shiftType: mysqlEnum("shiftType", ["RETAIL", "RECEPTION"]).default("RETAIL").notNull(),
+    // حارس ذرّي: «userId:branchId:shiftType» عند الفتح، NULL عند الإغلاق. UNIQUE يسمح بـNULL متعدّد
+    // ⇒ وردية مفتوحة واحدة لكل (موظّف×فرع×نوع)؛ فتحٌ متزامن ثانٍ لنفس النوع يفشل بـER_DUP_ENTRY.
     openGuard: varchar("openGuard", { length: 64 }).unique("uq_shift_open_guard"),
     openedAt: timestamp("openedAt").defaultNow().notNull(),
     closedAt: timestamp("closedAt"),

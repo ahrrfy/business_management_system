@@ -154,7 +154,9 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
     const depositD = round2(money(input.deposit ?? "0"));
     if (depositD.gt(0)) {
       const depositMethod = input.paymentMethod ?? "CASH";
-      const shiftId = await openShiftIdTx(tx, actor.userId, input.branchId);
+      // نقد أوامر الشغل ينتمي لوردية خدمة الزبائن (RECEPTION) عند وجودها؛ الحلّ المرن يستعمل
+      // وردية المشغّل الواحد أيّاً كان نوعها، ويفاضل RECEPTION لو فُتحت وردِيتان.
+      const shiftId = await openShiftIdTx(tx, actor.userId, input.branchId, "RECEPTION");
       // عربون نقدي يدخل الدُرج ⇒ يلزم وردية مفتوحة لينعكس في تسوية الصندوق/Z-report (لا نقد «معلّق» بلا وردية).
       if (depositMethod === "CASH" && shiftId == null)
         throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لقبض عربون نقدي" });
@@ -470,8 +472,8 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
 
     // Optional payment receipt + PAYMENT_IN entry.
     if (paidNow.gt(0)) {
-      // انسب الدفع النقدي لوردية الموظّف المفتوحة (تسوية الصندوق/Z-report).
-      const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId));
+      // انسب الدفع النقدي لوردية الموظّف المفتوحة (تسوية الصندوق/Z-report) — تفضيل وردية الاستقبال.
+      const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
       if (input.payment!.method === "CASH" && shiftId == null)
         throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يَلزم وردية مفتوحة للدفع النقدي" });
       const rRes = await tx.insert(receipts).values({
@@ -547,7 +549,7 @@ export async function cancelWorkOrder(workOrderId: number, actor: Actor & { role
       if (depRcpt) {
         const refundAmt = round2(money(depRcpt.amount));
         const refundMethod = depRcpt.paymentMethod ?? "CASH";
-        const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId));
+        const shiftId = await openShiftIdTx(tx, actor.userId, Number(wo.branchId), "RECEPTION");
         if (refundMethod === "CASH" && shiftId == null)
           throw new TRPCError({ code: "CONFLICT", message: "افتح وردية أولاً لاسترداد العربون النقدي" });
         const rRes = await tx.insert(receipts).values({

@@ -197,6 +197,13 @@
       "when": 1782301000000,
       "tag": "0027_invoice_returned_restocked",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "5",
+      "when": 1782302000000,
+      "tag": "0028_shift_type",
+      "breakpoints": true
     }
   ]
 }

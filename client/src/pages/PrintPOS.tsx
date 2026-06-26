@@ -112,7 +112,8 @@ export default function PrintPOS() {
   const branchId = me.data?.branchId ?? 1;
   const utils = trpc.useUtils();
 
-  const shiftQ = trpc.shifts.current.useQuery({ branchId });
+  // قسم الطباعة: بيع فوري عبر درج التجزئة (RETAIL).
+  const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
   const shift = shiftQ.data;
 
   const servicesQ = trpc.printPos.services.useQuery({ tier: "RETAIL" });
@@ -355,7 +356,7 @@ export default function PrintPOS() {
           <input dir="ltr" value={opening} onChange={(e) => setOpening(e.target.value.replace(/[^0-9]/g, ""))}
             style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box", marginBottom: 16 }} />
           {message && <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : C.danger, marginBottom: 12 }}>{message.text}</div>}
-          <button disabled={openShift.isPending} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0" })}
+          <button disabled={openShift.isPending} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "RETAIL" })}
             style={{ width: "100%", height: 52, background: C.primary, color: C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: "pointer" }}>
             {openShift.isPending ? "جارٍ الفتح…" : "فتح الوردية"}
           </button>

@@ -41,6 +41,8 @@ import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { CashCounter } from "@/components/CashCounter";
+import { printShiftClose, printShiftOpen } from "@/lib/printing/print";
 
 /**
  * شاشة الاستقبال — نقطة بيع هجينة لخدمة العملاء.
@@ -94,9 +96,66 @@ export default function Reception() {
   const branchId = useMemo(() => Number(me.data?.branchId ?? 1), [me.data?.branchId]);
   const utils = trpc.useUtils();
 
-  // وردية مفتوحة لازمة لتسجيل البيع (saleRouter) ولقبض عربون نقدي.
-  const shiftQ = trpc.shifts.current.useQuery({ branchId });
+  // وردية خدمة الزبائن (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
+  const branchesQ = trpc.branches.list.useQuery();
+  const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
   const shift = shiftQ.data ?? null;
+  const [opening, setOpening] = useState("0");
+  const [openCounts, setOpenCounts] = useState<Record<number, number>>({});
+  const [closing, setClosing] = useState(false);
+  const [counted, setCounted] = useState("");
+  const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
+  const branchName = useMemo(
+    () => (branchesQ.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
+    [branchesQ.data, branchId],
+  );
+
+  const openShiftM = trpc.shifts.open.useMutation({
+    onSuccess: async (res) => {
+      await shiftQ.refetch();
+      void printShiftOpen({
+        shiftId: res.shiftId,
+        openingBalance: Number(opening || 0),
+        cashierName: me.data?.name ?? "موظف الخدمة",
+        branchName,
+        openedAt: new Date(),
+      });
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  // تقرير الوردية (Z) — يُحمَّل فقط عند فتح نافذة الإغلاق.
+  const reportQ = trpc.shifts.report.useQuery({ shiftId: shift?.id ?? 0 }, { enabled: closing && !!shift });
+
+  const closeShiftM = trpc.shifts.close.useMutation({
+    onSuccess: async (r) => {
+      const rep = reportQ.data;
+      void printShiftClose({
+        shiftId: r.shiftId,
+        openedAt: shift?.openedAt ?? null,
+        closedAt: new Date(),
+        cashierName: me.data?.name ?? "موظف الخدمة",
+        branchName,
+        openingBalance: r.openingBalance,
+        invoiceCount: rep?.invoiceCount ?? 0,
+        salesTotal: rep?.salesTotal ?? "0",
+        payments: (rep?.payments ?? []).map((p) => ({
+          method: p.method,
+          direction: p.direction as "IN" | "OUT",
+          count: Number(p.count),
+          total: p.total,
+        })),
+        expectedCash: r.expectedCash,
+        countedCash: r.countedCash,
+        variance: r.variance,
+      });
+      setClosing(false);
+      setCounted("");
+      setCloseCounts({});
+      await utils.shifts.current.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   // ───── الحالة ─────────────────────────────────────────────────────────────
   const [cart, setCart] = useState<CartLine[]>([]);
@@ -345,7 +404,7 @@ export default function Reception() {
   async function handleSubmit(opts: { quickFullPay: boolean }) {
     if (cart.length === 0) return;
     if (!shift) {
-      notify.err("لا توجد وردية مفتوحة — افتح الوردية من /pos أو /shifts");
+      notify.err("لا توجد وردية خدمة زبائن مفتوحة — افتح الوردية أولاً");
       return;
     }
     // P2: مرجع البطاقة إلزاميّ عند وجود مخصَّص (createWorkOrder يَرفض CARD بلا مرجع).
@@ -531,12 +590,150 @@ export default function Reception() {
   }, [showInbox, showDrop, showCustomization]);
 
   // اقتراح الكاشير: لا يبني الواجهة قبل توفّر الفرع.
-  if (me.isLoading) {
+  if (me.isLoading || shiftQ.isLoading) {
     return <div className="p-8 text-center text-muted-foreground">جارٍ التحميل…</div>;
   }
 
+  // بوّابة وردية خدمة الزبائن: لا عمل بلا وردية RECEPTION مفتوحة (درج/رصيد افتتاحي مستقلّ).
+  if (!shift) {
+    return (
+      <div className="flex h-full items-center justify-center bg-background p-4" dir="rtl">
+        <div className="w-full max-w-md rounded-2xl border bg-card p-7 shadow-lg">
+          <div className="mb-1 flex items-center gap-2">
+            <span className="grid size-9 place-items-center rounded-lg bg-violet-100 text-violet-700">
+              <Palette aria-hidden className="size-5" />
+            </span>
+            <h2 className="text-xl font-extrabold">افتح وردية خدمة الزبائن</h2>
+          </div>
+          <p className="mb-5 text-sm text-muted-foreground">
+            درجٌ ورصيدٌ افتتاحيٌّ مستقلّ لاستلام الطلبات وقبض العرابين. لا يمكن العمل بدون وردية مفتوحة.
+          </p>
+          <label className="mb-1.5 block text-sm font-bold">الرصيد الافتتاحي للصندوق (د.ع)</label>
+          <Input
+            dir="ltr"
+            inputMode="decimal"
+            value={opening}
+            onChange={(e) => setOpening(e.target.value)}
+            className="mb-3 h-12 text-end text-lg font-extrabold tabular-nums"
+          />
+          <div className="mb-4">
+            <CashCounter
+              value={openCounts}
+              onChange={(counts, total) => {
+                setOpenCounts(counts);
+                setOpening(total);
+              }}
+            />
+          </div>
+          <Button
+            className="h-12 w-full text-base font-bold"
+            disabled={openShiftM.isPending}
+            onClick={() => openShiftM.mutate({ branchId, openingBalance: opening || "0", shiftType: "RECEPTION" })}
+          >
+            {openShiftM.isPending ? "جارٍ الفتح…" : "فتح وردية خدمة الزبائن"}
+          </Button>
+          <Link href="/" className="mt-3 block text-center text-sm text-muted-foreground">← الرئيسية</Link>
+        </div>
+      </div>
+    );
+  }
+
+  // تسوية الصندوق (نافذة الإغلاق): المتوقَّع = الافتتاحي + نقد وارد − نقد صادر (DRAWER).
+  const recCashIn = (reportQ.data?.payments ?? [])
+    .filter((p) => p.method === "CASH" && p.direction === "IN")
+    .reduce((s, p) => s + Number(p.total), 0);
+  const recCashOut = (reportQ.data?.payments ?? [])
+    .filter((p) => p.method === "CASH" && p.direction === "OUT")
+    .reduce((s, p) => s + Number(p.total), 0);
+  const recExpected = Number(shift.openingBalance ?? 0) + recCashIn - recCashOut;
+  const recDiff = counted ? Number(counted) - recExpected : null;
+
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background" dir="rtl">
+      {/* نافذة إغلاق وردية خدمة الزبائن (Z-report مستقلّ) */}
+      {closing && (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/55 p-4"
+          dir="rtl"
+          onClick={() => setClosing(false)}
+        >
+          <div
+            className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl bg-card p-6 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="mb-1 text-lg font-extrabold">إغلاق وردية خدمة الزبائن #{shift.id}</h3>
+            <p className="mb-4 text-xs text-muted-foreground">
+              {new Date().toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+            </p>
+            {reportQ.isLoading ? (
+              <div className="py-6 text-center text-muted-foreground">جارٍ تحميل التقرير…</div>
+            ) : (
+              <>
+                {(
+                  [
+                    ["عدد الفواتير", `${reportQ.data?.invoiceCount ?? 0}`],
+                    ["إجمالي المبيعات", `${fmt(Number(reportQ.data?.salesTotal ?? 0))} د.ع`],
+                    ["الرصيد الافتتاحي", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
+                    ["النقد المتوقَّع بالصندوق", `${fmt(recExpected)} د.ع`],
+                  ] as [string, string][]
+                ).map(([l, v]) => (
+                  <div key={l} className="flex justify-between border-b py-2 text-sm">
+                    <span className="text-muted-foreground">{l}</span>
+                    <span className="font-bold tabular-nums" dir="ltr">{v}</span>
+                  </div>
+                ))}
+                <div className="my-4">
+                  <CashCounter
+                    value={closeCounts}
+                    onChange={(counts, total) => {
+                      setCloseCounts(counts);
+                      setCounted(total);
+                    }}
+                  />
+                </div>
+                <label className="mb-1.5 block text-sm font-bold">النقد المعدود في الصندوق (د.ع)</label>
+                <Input
+                  dir="ltr"
+                  inputMode="decimal"
+                  value={counted}
+                  onChange={(e) => setCounted(e.target.value)}
+                  className="h-11 text-end text-lg font-extrabold tabular-nums"
+                  placeholder="0"
+                />
+                {recDiff !== null && (
+                  <div
+                    className={cn(
+                      "mt-2 inline-flex flex-wrap items-center gap-1 text-sm font-bold",
+                      recDiff < 0 ? "text-destructive" : "text-emerald-600",
+                    )}
+                  >
+                    <span>الفرق: {recDiff >= 0 ? "+" : ""}{fmt(recDiff)} د.ع</span>
+                    {recDiff === 0 && (
+                      <span className="inline-flex items-center gap-1">
+                        <Check aria-hidden className="size-3.5" /> مطابق تماماً
+                      </span>
+                    )}
+                    {recDiff > 0 && <span>(زيادة)</span>}
+                    {recDiff < 0 && <span>(عجز)</span>}
+                  </div>
+                )}
+                <div className="mt-5 flex gap-2.5">
+                  <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
+                    إلغاء
+                  </Button>
+                  <Button
+                    className="flex-1"
+                    disabled={!counted || closeShiftM.isPending}
+                    onClick={() => closeShiftM.mutate({ shiftId: shift.id, countedCash: counted, countedBreakdown: closeCounts })}
+                  >
+                    {closeShiftM.isPending ? "جارٍ الإغلاق…" : "إغلاق وطباعة Z"}
+                  </Button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       {/* ─── شريط البحث + جسر الطباعة + الوارد ─── */}
       <div className="flex flex-shrink-0 items-center gap-3 border-b bg-card px-4 py-2.5">
         <div className="relative max-w-[640px] flex-1">
@@ -610,16 +807,13 @@ export default function Reception() {
         </div>
 
         <div className="ms-auto flex items-center gap-2">
-          {shift ? (
-            <div className="flex items-center gap-1.5 rounded-lg border border-emerald-500/25 bg-emerald-500/10 px-3 py-1.5 text-xs font-bold text-emerald-700">
-              <span className="size-2 animate-pulse rounded-full bg-emerald-500" />
-              وردية #{shift.id}
-            </div>
-          ) : (
-            <Button size="sm" variant="outline" asChild>
-              <Link href="/pos">افتح وردية أولاً</Link>
-            </Button>
-          )}
+          <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-1.5 text-xs font-bold text-violet-700">
+            <span className="size-2 animate-pulse rounded-full bg-violet-500" />
+            وردية خدمة الزبائن #{shift.id}
+          </div>
+          <Button size="sm" variant="outline" onClick={() => setClosing(true)}>
+            إغلاق الوردية
+          </Button>
           <button
             type="button"
             onClick={() => setShowInbox(true)}

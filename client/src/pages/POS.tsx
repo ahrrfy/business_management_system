@@ -235,7 +235,8 @@ export default function POS() {
   const branchId = me.data?.branchId ?? 1;
   const utils    = trpc.useUtils();
 
-  const shiftQ = trpc.shifts.current.useQuery({ branchId });
+  // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة الزبائن RECEPTION).
+  const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
   const shift  = shiftQ.data;
 
   // ── Multi-tab State ──────────────────────────────────────────────────────
@@ -731,7 +732,7 @@ export default function POS() {
           </div>
           <button
             disabled={openShift.isPending}
-            onClick={() => openShift.mutate({ branchId, openingBalance: opening })}
+            onClick={() => openShift.mutate({ branchId, openingBalance: opening, shiftType: "RETAIL" })}
             style={{ width: "100%", height: 52, background: C.primary, color: C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: "pointer" }}
           >
             {openShift.isPending ? "جارٍ الفتح…" : "فتح الوردية"}
