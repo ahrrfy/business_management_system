@@ -475,6 +475,66 @@ export function printCustomerStmt(d: CustomerStmtPrintData): void {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// كشف حساب جهة توصيل (COD) — A4: مدين=عهدة خرجت، دائن=مورَّد/مشطوب، + مستحقات الجهة (أجور)
+export interface DeliveryPartyStmtPrintData {
+  partyName: string;
+  partyType?: string | null;
+  partyPhone?: string | null;
+  fromDate?: string | null;
+  toDate?: string | null;
+  transactions: { date: string; ref: string; description: string; debit?: string | number | null; credit?: string | number | null; balance: string | number }[];
+  totalDispatched: string | number;
+  totalSettled: string | number;
+  totalFees: string | number;
+  closingBalance: string | number;
+}
+
+export function printDeliveryPartyStmt(d: DeliveryPartyStmtPrintData): void {
+  const cols = [
+    { key: 'date', label: 'التاريخ', width: '18mm', align: 'center' as const },
+    { key: 'ref', label: 'المرجع', width: '28mm' },
+    { key: 'desc', label: 'البيان' },
+    { key: 'debit', label: 'مدين (عهدة)', width: '22mm', align: 'left' as const },
+    { key: 'credit', label: 'دائن (مورَّد)', width: '22mm', align: 'left' as const },
+    { key: 'bal', label: 'العهدة', width: '22mm', align: 'left' as const, bold: true },
+  ];
+  const rows = d.transactions.map(t => ({
+    date: t.date, ref: t.ref, desc: t.description,
+    debit: t.debit ? fmt(t.debit) : '',
+    credit: t.credit ? fmt(t.credit) : '',
+    bal: fmt(t.balance),
+  }));
+  const partyFields = [
+    { label: 'الجهة', value: d.partyName },
+    ...(d.partyType ? [{ label: 'النوع', value: d.partyType }] : []),
+    ...(d.partyPhone ? [{ label: 'الهاتف', value: d.partyPhone }] : []),
+  ];
+  const summFields = [
+    { label: 'إجمالي العهدة (COD)', value: fmtC(d.totalDispatched) },
+    { label: 'إجمالي المورَّد/المشطوب', value: fmtC(d.totalSettled) },
+    { label: 'مستحقات الجهة (أجور)', value: fmtC(d.totalFees) },
+    { label: 'العهدة القائمة', value: fmtC(d.closingBalance) },
+  ];
+  const period = [d.fromDate, d.toDate].filter(Boolean).join(' — ');
+  const extraHeader = period ? [{ label: 'الفترة', value: period }] : [];
+  const summaryItems = [
+    { label: 'مستحقات الجهة (أجور توصيل)', value: fmtC(d.totalFees) },
+    { label: 'العهدة القائمة (مستحق المكتبة)', value: fmtC(d.closingBalance), bold: true, large: true },
+  ];
+  const body = [
+    docHeader('كشف حساب جهة توصيل', undefined, d.toDate ?? undefined, extraHeader),
+    docMeta([
+      { title: 'معلومات الجهة', fields: partyFields },
+      { title: 'ملخّص الحساب', fields: summFields },
+    ]),
+    docTable(cols, rows),
+    docSummary(summaryItems),
+    docFooter(),
+  ].join('');
+  openPrintWindow(wrapA4Doc(`كشف حساب — ${d.partyName}`, body));
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ٦. كشف حساب مورد — A4
 // ═══════════════════════════════════════════════════════════════════════════════
 

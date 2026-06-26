@@ -12,6 +12,7 @@ import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
 
@@ -34,6 +35,32 @@ export default function DeliveryParties() {
   const [showCreate, setShowCreate] = useState(false);
   const [settleFor, setSettleFor] = useState<Party | null>(null);
   const [writeOffFor, setWriteOffFor] = useState<Party | null>(null);
+
+  const printStatement = async (party: Party) => {
+    const data = await utils.delivery.partyStatement.fetch({ partyId: party.id });
+    if (!data) return;
+    let bal = 0, totDispatch = 0, totSettled = 0, totFees = 0;
+    const txs: { date: string; ref: string; description: string; debit: string | null; credit: string | null; balance: string }[] = [];
+    for (const e of data.entries) {
+      const amt = Number(e.amount);
+      const date = new Date(e.entryDate).toLocaleDateString("en-GB");
+      const ref = (e.notes ?? "").replace(/^.*?([CD][NR]-\S+).*$/, "$1") || "—";
+      if (e.type === "DELIVERY_DISPATCH") { bal += amt; totDispatch += amt; txs.push({ date, ref, description: "إرسالية (عهدة COD)", debit: e.amount, credit: null, balance: bal.toFixed(2) }); }
+      else if (e.type === "DELIVERY_REMIT") { bal -= amt; totSettled += amt; txs.push({ date, ref, description: "توريد/تسوية", debit: null, credit: e.amount, balance: bal.toFixed(2) }); }
+      else if (e.type === "DELIVERY_WRITEOFF") { bal -= amt; totSettled += amt; txs.push({ date, ref, description: "شطب عجز", debit: null, credit: e.amount, balance: bal.toFixed(2) }); }
+      else if (e.type === "DELIVERY_FEE") { totFees += amt; }
+    }
+    printDeliveryPartyStmt({
+      partyName: data.party.name,
+      partyType: data.party.partyType === "COMPANY" ? "شركة توصيل" : "مندوب",
+      partyPhone: data.party.phone ?? undefined,
+      transactions: txs,
+      totalDispatched: totDispatch.toFixed(2),
+      totalSettled: totSettled.toFixed(2),
+      totalFees: totFees.toFixed(2),
+      closingBalance: data.currentBalance,
+    });
+  };
 
   const kpis = useMemo(() => {
     const rows = list.data ?? [];
@@ -94,6 +121,7 @@ export default function DeliveryParties() {
                       <td className="p-3 text-center">{p.isActive ? <Badge variant="secondary">نشط</Badge> : <Badge variant="outline">معطّل</Badge>}</td>
                       <td className="p-3 text-center">
                         <div className="inline-flex gap-1.5">
+                          <Button size="sm" variant="ghost" onClick={() => printStatement(p)}>كشف</Button>
                           <Button size="sm" variant="outline" onClick={() => setSettleFor(p)} disabled={bal <= 0}>تسوية</Button>
                           {isManager && <Button size="sm" variant="outline" className="text-destructive" onClick={() => setWriteOffFor(p)} disabled={bal <= 0}>شطب</Button>}
                         </div>

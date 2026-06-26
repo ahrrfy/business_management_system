@@ -4,6 +4,7 @@ import {
   createDeliveryParty,
   dispatchToDelivery,
   getDeliveryParty,
+  getDeliveryPartyStatement,
   listConsignmentsForParty,
   listDeliveryParties,
   listOpenConsignments,
@@ -105,6 +106,10 @@ export const deliveryRouter = router({
   consignments: branchScopedProcedure
     .input(z.object({ partyId: z.number().int().positive(), openOnly: z.boolean().optional() }))
     .query(({ input }) => listConsignmentsForParty(input.partyId, input.openOnly ?? false)),
+
+  partyStatement: branchScopedProcedure
+    .input(z.object({ partyId: z.number().int().positive(), from: z.string().optional(), to: z.string().optional() }))
+    .query(({ input }) => getDeliveryPartyStatement(input.partyId, input.from, input.to)),
 
   // ─── التحوّلات ───
   // إرسال طلب جاهز عبر مندوب (يُصدر فاتورة COD + عهدة) — مالٌ/نقد ⇒ cashierProcedure.

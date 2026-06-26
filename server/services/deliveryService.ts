@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, desc, eq, isNull, like, or, sql } from "drizzle-orm";
 import {
+  accountingEntries,
   customers,
   deliveryConsignments,
   deliveryParties,
@@ -737,4 +738,34 @@ export async function listConsignmentsForParty(partyId: number, openOnly = false
   const conds = [eq(deliveryConsignments.partyId, partyId)];
   if (openOnly) conds.push(sql`${deliveryConsignments.status} IN ('DISPATCHED','PARTIAL')`);
   return db.select().from(deliveryConsignments).where(and(...conds)).orderBy(desc(deliveryConsignments.id)).limit(300);
+}
+
+/** كشف حساب جهة توصيل: قيود العهدة (DISPATCH مدين، REMIT/WRITEOFF دائن) + أجور (FEE). */
+export async function getDeliveryPartyStatement(partyId: number, from?: string, to?: string) {
+  const db = getDb();
+  if (!db) return null;
+  const party = (await db.select().from(deliveryParties).where(eq(deliveryParties.id, partyId)).limit(1))[0];
+  if (!party) return null;
+  const conds = [
+    eq(accountingEntries.deliveryPartyId, partyId),
+    sql`${accountingEntries.entryType} IN ('DELIVERY_DISPATCH','DELIVERY_REMIT','DELIVERY_WRITEOFF','DELIVERY_FEE')`,
+  ];
+  if (from) conds.push(sql`${accountingEntries.entryDate} >= ${from}`);
+  if (to) conds.push(sql`${accountingEntries.entryDate} <= ${to}`);
+  const entries = await db
+    .select({
+      id: accountingEntries.id,
+      type: accountingEntries.entryType,
+      amount: accountingEntries.amount,
+      entryDate: accountingEntries.entryDate,
+      notes: accountingEntries.notes,
+    })
+    .from(accountingEntries)
+    .where(and(...conds))
+    .orderBy(accountingEntries.id);
+  return {
+    party: { name: party.name, partyType: party.partyType, phone: party.phone },
+    currentBalance: party.currentBalance,
+    entries,
+  };
 }
