@@ -271,6 +271,8 @@ export async function createStocktakeSession(
   throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رمز الجلسة — أعد المحاولة" });
 }
 
+type StkScope = Awaited<ReturnType<typeof resolveScope>>;
+
 async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: StkActor): Promise<CreateStocktakeResult> {
   // الفرع موجود وفعّال.
   const br = (await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
@@ -283,7 +285,36 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   }
   const scopeSet = new Set(scope.variantIds);
 
-  // تحقّق التكليفات: USER يلزمه userId موجود وفعّال وغير مكرّر؛ أصناف التكليف ضمن النطاق وبلا ازدواج.
+  const claimed = await validateAssignmentsInTx(tx, input, scopeSet);
+  const { stockMap, costMap } = await snapshotStockCost(tx, input.branchId, scope.variantIds);
+  const { sessionId, code } = await insertSession(tx, input, scope, actor);
+  const { assignmentIds, assignmentPins } = await insertAssignments(tx, sessionId, input.assignments);
+  const perAssignmentCount = await distributeAndInsertItems(
+    tx, input, scope, sessionId, assignmentIds, claimed, stockMap, costMap,
+  );
+
+  return {
+    sessionId,
+    code,
+    itemCount: scope.variantIds.length,
+    assignments: input.assignments.map((a, idx) => ({
+      assignmentId: assignmentIds[idx],
+      name: a.name,
+      method: a.method,
+      zone: a.zone ?? null,
+      pin: assignmentPins[idx],
+      itemCount: perAssignmentCount[idx],
+    })),
+  };
+}
+
+/** تحقّق التكليفات: USER يلزمه userId موجود وفعّال وغير مكرّر؛ أصناف التكليف ضمن النطاق وبلا ازدواج.
+ *  يُعيد خريطة `variantId → فهرس التكليف` لما ادّعاه كل تكليف صراحةً. */
+async function validateAssignmentsInTx(
+  tx: Tx,
+  input: CreateStocktakeInput,
+  scopeSet: Set<number>,
+): Promise<Map<number, number>> {
   const userIds = input.assignments.filter((a) => a.method === "USER").map((a) => a.userId);
   if (userIds.some((u) => !u)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "تكليف بحساب داخلي بلا مستخدم محدد" });
@@ -313,15 +344,22 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
       claimed.set(v, idx);
     }
   });
+  return claimed;
+}
 
-  // لقطة الرصيد الدفتري + التكلفة (دفعات inArray ≤1000 — لا فصم للجلسة).
+/** لقطة الرصيد الدفتري + التكلفة لكل أصناف النطاق (دفعات inArray ≤1000 — لا فصم للجلسة). */
+async function snapshotStockCost(
+  tx: Tx,
+  branchId: number,
+  variantIds: number[],
+): Promise<{ stockMap: Map<number, number>; costMap: Map<number, string> }> {
   const stockMap = new Map<number, number>();
   const costMap = new Map<number, string>();
-  for (const part of chunk(scope.variantIds)) {
+  for (const part of chunk(variantIds)) {
     const stockRows = await tx
       .select({ variantId: branchStock.variantId, quantity: branchStock.quantity })
       .from(branchStock)
-      .where(and(eq(branchStock.branchId, input.branchId), inArray(branchStock.variantId, part)));
+      .where(and(eq(branchStock.branchId, branchId), inArray(branchStock.variantId, part)));
     for (const r of stockRows) stockMap.set(Number(r.variantId), r.quantity);
     const costRows = await tx
       .select({ id: productVariants.id, cost: productVariants.costPrice })
@@ -329,8 +367,16 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
       .where(inArray(productVariants.id, part));
     for (const r of costRows) costMap.set(Number(r.id), String(r.cost ?? "0"));
   }
+  return { stockMap, costMap };
+}
 
-  // الجلسة.
+/** إنشاء صفّ الجلسة (مع الحقول الاختيارية) ورمزها الفريد. */
+async function insertSession(
+  tx: Tx,
+  input: CreateStocktakeInput,
+  scope: StkScope,
+  actor: StkActor,
+): Promise<{ sessionId: number; code: string }> {
   const code = await nextSessionCode(tx);
   const sessionValues: typeof stocktakeSessions.$inferInsert = {
     code,
@@ -350,13 +396,19 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   if (input.waNotify !== undefined) sessionValues.waNotify = input.waNotify;
   if (input.dupPolicy !== undefined) sessionValues.dupPolicy = input.dupPolicy;
   const sRes = await tx.insert(stocktakeSessions).values(sessionValues);
-  const sessionId = extractInsertId(sRes);
+  return { sessionId: extractInsertId(sRes), code };
+}
 
-  // التكليفات: PIN فريد داخل الجلسة، يُخزَّن hash فقط ويُعاد النص مرة واحدة.
+/** التكليفات: PIN فريد داخل الجلسة، يُخزَّن hash فقط ويُعاد النص مرة واحدة. */
+async function insertAssignments(
+  tx: Tx,
+  sessionId: number,
+  assignments: CreateStocktakeInput["assignments"],
+): Promise<{ assignmentIds: number[]; assignmentPins: (string | undefined)[] }> {
   const usedPins = new Set<string>();
   const assignmentIds: number[] = [];
   const assignmentPins: (string | undefined)[] = [];
-  for (const a of input.assignments) {
+  for (const a of assignments) {
     let pin: string | undefined;
     let pinHash: string | null = null;
     if (a.method === "PIN") {
@@ -375,11 +427,26 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
     assignmentIds.push(extractInsertId(aRes));
     assignmentPins.push(pin);
   }
+  return { assignmentIds, assignmentPins };
+}
 
-  // توزيع الأصناف: المُدّعى لتكليفه يبقى له؛ وغير المُكلَّف بأي تكليف يُوزَّع كتلاً متتالية
-  // متساوية (±1) على كل التكليفات بترتيب variantId تصاعدياً (تكليف واحد ⇒ يستلم الكل =
-  // السلوك القديم نفسه). السبب: «الباقي للتكليف الأول» ينهار على جرد شامل حقيقي —
-  // الواجهة ترسل ≤1000 معرّف للتكليفات بينما النطاق قد يبلغ آلاف الأصناف فيُغرَق الأول بها كلها.
+/**
+ * توزيع الأصناف: المُدّعى لتكليفه يبقى له؛ وغير المُكلَّف بأي تكليف يُوزَّع كتلاً متتالية
+ * متساوية (±1) على كل التكليفات بترتيب variantId تصاعدياً (تكليف واحد ⇒ يستلم الكل =
+ * السلوك القديم نفسه). السبب: «الباقي للتكليف الأول» ينهار على جرد شامل حقيقي —
+ * الواجهة ترسل ≤1000 معرّف للتكليفات بينما النطاق قد يبلغ آلاف الأصناف فيُغرَق الأول بها كلها.
+ * يُدرج صفوف الأصناف على دفعات (≤1000) ويُعيد عدّاد أصناف كل تكليف.
+ */
+async function distributeAndInsertItems(
+  tx: Tx,
+  input: CreateStocktakeInput,
+  scope: StkScope,
+  sessionId: number,
+  assignmentIds: number[],
+  claimed: Map<number, number>,
+  stockMap: Map<number, number>,
+  costMap: Map<number, string>,
+): Promise<number[]> {
   const unclaimed = scope.variantIds.filter((v) => !claimed.has(v)).sort((a, b) => a - b);
   const blockBase = Math.floor(unclaimed.length / input.assignments.length);
   const blockExtra = unclaimed.length % input.assignments.length;
@@ -404,20 +471,7 @@ async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: Stk
   for (const part of chunk(itemRows, 1000)) {
     await tx.insert(stocktakeItems).values(part);
   }
-
-  return {
-    sessionId,
-    code,
-    itemCount: scope.variantIds.length,
-    assignments: input.assignments.map((a, idx) => ({
-      assignmentId: assignmentIds[idx],
-      name: a.name,
-      method: a.method,
-      zone: a.zone ?? null,
-      pin: assignmentPins[idx],
-      itemCount: perAssignmentCount[idx],
-    })),
-  };
+  return perAssignmentCount;
 }
 
 /* ============================ القائمة والترويسة والمتابعة ============================ */

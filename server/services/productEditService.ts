@@ -255,6 +255,8 @@ async function upsertVariantUnits(
   const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, variantId));
   const keep = new Set<number>();
   const override = (baseRetailOverride ?? "").trim();
+  // نَجمع كل صفوف الأسعار ثم نُدرجها دفعةً واحدة (بدل INSERT لكل سعر) — أقلّ ذهاباً للقاعدة.
+  const priceRows: { productUnitId: number; priceTier: PriceTier; price: string }[] = [];
   for (const t of template) {
     const name = t.unitName.trim();
     const barcode = (unitBarcodes[name] ?? "").trim() || null;
@@ -281,11 +283,13 @@ async function upsertVariantUnits(
     for (const pr of t.prices) {
       // سعر خاص لمفرد وحدة الأساس يَجُبّ سعر القالب لهذا المتغيّر.
       const price = t.isBaseUnit && pr.priceTier === "RETAIL" && override ? override : pr.price;
-      if (price.trim()) await tx.insert(productPrices).values({ productUnitId: unitId, priceTier: pr.priceTier, price: toDbMoney(price) });
+      if (price.trim()) priceRows.push({ productUnitId: unitId, priceTier: pr.priceTier, price: toDbMoney(price) });
     }
   }
-  // وحدات لم تعد في القالب ⇒ تعطيل (حفظ التاريخ، لا حذف).
-  for (const u of existing) if (!keep.has(Number(u.id))) await tx.update(productUnits).set({ isActive: false }).where(eq(productUnits.id, Number(u.id)));
+  if (priceRows.length) await tx.insert(productPrices).values(priceRows);
+  // وحدات لم تعد في القالب ⇒ تعطيل (حفظ التاريخ، لا حذف) — تحديث واحد بـinArray بدل تحديث لكلّ وحدة.
+  const drop = existing.filter((u) => !keep.has(Number(u.id))).map((u) => Number(u.id));
+  if (drop.length) await tx.update(productUnits).set({ isActive: false }).where(inArray(productUnits.id, drop));
 }
 
 /** تعديل منتج بنموذج المتغيّرات ضمن معاملة ذرّية. لا يحذف متغيّراً (تعطيل فقط) حفظاً للمخزون. */

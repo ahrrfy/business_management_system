@@ -10,7 +10,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
-import { Link } from "wouter";
+import { Link, useSearch } from "wouter";
 
 const INVOICE_STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -34,7 +34,14 @@ const selectCls =
 export default function Returns() {
   const utils = trpc.useUtils();
 
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const searchStr = useSearch();
+  const urlInvoiceId = useMemo(() => {
+    const p = new URLSearchParams(searchStr);
+    const v = p.get("invoiceId");
+    return v ? parseInt(v, 10) : null;
+  }, [searchStr]);
+
+  const [selectedId, setSelectedId] = useState<number | null>(urlInvoiceId);
   const [qty, setQty] = useState<Record<number, string>>({});
   const [restock, setRestock] = useState(true);
   const [refundAmount, setRefundAmount] = useState("");

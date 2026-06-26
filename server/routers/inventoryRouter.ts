@@ -279,7 +279,15 @@ export const inventoryRouter = router({
     }),
 
   stockByBranch: branchScopedProcedure
-    .input(z.object({ branchId: z.number().int().positive() }))
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        // ترقيم اختياري لتقييد الحجم عند الفروع الكبيرة. غير مُمرَّر ⇒ بلا حدّ (السلوك السابق محفوظ،
+        // فلا قطع صامت). الترتيب الثابت أدناه يجعل limit/offset حتمياً متى استُعملا.
+        limit: z.number().int().positive().max(5000).optional(),
+        offset: z.number().int().nonnegative().optional(),
+      }),
+    )
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
@@ -290,7 +298,13 @@ export const inventoryRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة مخزون فرع آخر" });
       }
       const branchId = ctx.scopedBranchId ?? input.branchId;
-      return db.select().from(branchStock).where(eq(branchStock.branchId, branchId));
+      const q = db
+        .select()
+        .from(branchStock)
+        .where(eq(branchStock.branchId, branchId))
+        .orderBy(asc(branchStock.variantId));
+      if (input.limit != null) return q.limit(input.limit).offset(input.offset ?? 0);
+      return q;
     }),
 
   movements: branchScopedProcedure
