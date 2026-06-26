@@ -149,7 +149,7 @@ export default function Invoices() {
               { key: "print", label: "طباعة A4", onSelect: () => void printA4(r.id) },
               { key: "duplicate", label: "نسخ لفاتورة جديدة", onSelect: () => void duplicateInvoice(r.id) },
               { key: "pay", label: "تسديد دفعة", href: `/invoices/${r.id}`, hidden: settled },
-              { key: "return", label: "إرجاع", href: "/returns", hidden: !returnable },
+              { key: "return", label: "إرجاع", href: `/returns?invoiceId=${r.id}`, hidden: !returnable },
             ]}
           />
         );
