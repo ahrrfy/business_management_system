@@ -42,6 +42,7 @@ import { treasuryRouter } from "./routers/treasuryRouter";
 import { cashTransfersRouter } from "./routers/cashTransfersRouter";
 import { conversationRouter } from "./routers/conversationRouter";
 import { integrationRouter } from "./routers/integrationRouter";
+import { deliveryRouter } from "./routers/deliveryRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -93,6 +94,8 @@ export const appRouter = router({
   conversations: conversationRouter,
   // شَريحة #6 (٢٤/٦/٢٦): إدارة tokens التَكاملات في الواجهة (بَدل .env).
   integrations: integrationRouter,
+  // delivery-cod (٢٦/٦/٢٦): التوصيل (COD) — جهات التوصيل/العهد/الترحيل.
+  delivery: deliveryRouter,
 });
 
 export type AppRouter = typeof appRouter;

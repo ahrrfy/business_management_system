@@ -3,6 +3,7 @@ import {
   accountingEntries,
   branchStock,
   customers,
+  deliveryParties,
   inventoryMovements,
   invoices,
   receipts,
@@ -195,6 +196,51 @@ export async function reconcileSupplierBalances(): Promise<ReconcileResult[]> {
     const drift = expected.minus(actual).abs();
     if (drift.greaterThan("0.01")) {
       issues.push({ entity: "supplier", id: supplierId, expected: expected.toFixed(2), actual: actual.toFixed(2), drift: drift.toFixed(2) });
+    }
+  }
+  return issues;
+}
+
+/**
+ * التحقّق من اتساق عهدة جهات التوصيل (COD float). النموذج: deliveryParties.currentBalance
+ * (موجب = الجهة مدينة بنقد COD غير مورَّد) يُحدَّث ذرّياً في كل عملية. المُتوقَّع من الدفتر:
+ *   float = Σ DELIVERY_DISPATCH − Σ DELIVERY_REMIT − Σ DELIVERY_WRITEOFF  (لكل جهة)
+ * (DELIVERY_FEE لا يَمسّ العهدة — مصروف منفصل؛ والإيراد مُعترَف به مرّة واحدة بقيد SALE.)
+ * يَكشف أي انحراف صامت في العهدة. ثابتٌ مكافئ: Σ currentBalance == Σ (codAmount−collectedAmount)
+ * للإرساليات DISPATCHED/PARTIAL (تُتحقَّق ضمنياً عبر هذه الصيغة لأن الخدمة تكتب الاثنين معاً).
+ */
+export async function reconcileDeliveryFloat(): Promise<ReconcileResult[]> {
+  const db = getDb();
+  if (!db) return [];
+
+  const entrySum = await db
+    .select({
+      partyId: accountingEntries.deliveryPartyId,
+      float: sql<string>`COALESCE(SUM(CASE
+        WHEN ${accountingEntries.entryType} = 'DELIVERY_DISPATCH' THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'DELIVERY_REMIT'    THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'DELIVERY_WRITEOFF' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        ELSE 0 END), 0)`,
+    })
+    .from(accountingEntries)
+    .where(sql`${accountingEntries.deliveryPartyId} IS NOT NULL`)
+    .groupBy(accountingEntries.deliveryPartyId);
+
+  const actuals = await db.select({ id: deliveryParties.id, balance: deliveryParties.currentBalance }).from(deliveryParties);
+  const floatMap = new Map(entrySum.map((r) => [Number(r.partyId), String(r.float ?? "0")]));
+  const actualMap = new Map(actuals.map((p) => [Number(p.id), String(p.balance ?? "0")]));
+
+  const seen = new Set<number>();
+  for (const r of entrySum) seen.add(Number(r.partyId));
+  for (const p of actuals) if (money(p.balance ?? "0").abs().gt(0)) seen.add(Number(p.id));
+
+  const issues: ReconcileResult[] = [];
+  for (const partyId of Array.from(seen)) {
+    const expected = money(floatMap.get(partyId) ?? "0");
+    const actual = money(actualMap.get(partyId) ?? "0");
+    const drift = expected.minus(actual).abs();
+    if (drift.greaterThan("0.01")) {
+      issues.push({ entity: "deliveryParty", id: partyId, expected: expected.toFixed(2), actual: actual.toFixed(2), drift: drift.toFixed(2) });
     }
   }
   return issues;

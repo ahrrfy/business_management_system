@@ -1,6 +1,6 @@
 import type Decimal from "decimal.js";
 import { eq, sql } from "drizzle-orm";
-import { accountingEntries, customers, suppliers } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryParties, suppliers } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { money, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
@@ -18,7 +18,12 @@ export type EntryType =
   // treasury-stage2: حركات نقد لا تَمسّ revenue/cost (يَجِب على تقارير الإيراد استثناءها).
   | "CASH_HANDOVER"     // تسليم وردية → خزينة (نقل بين دلوَين داخل نفس الفرع)
   | "CASH_TRANSFER_OUT" // تحويل نقدي بين الفروع — الإرسال
-  | "CASH_TRANSFER_IN"; // تحويل نقدي بين الفروع — الاستلام
+  | "CASH_TRANSFER_IN"  // تحويل نقدي بين الفروع — الاستلام
+  // delivery-cod: عهدة جهة التوصيل (COD). DISPATCH/REMIT حركات عهدة (revenue=cost=0، تُستثنى من الإيراد).
+  | "DELIVERY_DISPATCH" // إيقاف COD على عهدة الجهة عند الإرسال (+float)
+  | "DELIVERY_REMIT"    // خفض العهدة عند التوريد/التسوية/الإرجاع (−float)
+  | "DELIVERY_FEE"      // مصروف أجرة التوصيل (cost-only، خصم الأجرة وتوريد الصافي)
+  | "DELIVERY_WRITEOFF"; // شطب عجز عهدة كمصروف (cost-only، بلا نقد)
 
 export interface EntryInput {
   entryType: EntryType;
@@ -28,6 +33,7 @@ export interface EntryInput {
   receiptId?: number | null;
   customerId?: number | null;
   supplierId?: number | null;
+  deliveryPartyId?: number | null;
   revenue?: Decimal;
   cost?: Decimal;
   profit?: Decimal;
@@ -53,6 +59,7 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     receiptId: e.receiptId ?? null,
     customerId: e.customerId ?? null,
     supplierId: e.supplierId ?? null,
+    deliveryPartyId: e.deliveryPartyId ?? null,
     revenue: toDbMoney(e.revenue ?? 0),
     cost: toDbMoney(e.cost ?? 0),
     profit: toDbMoney(e.profit ?? 0),
@@ -79,6 +86,15 @@ export async function adjustSupplierBalance(tx: Tx, supplierId: number, delta: D
     .update(suppliers)
     .set({ currentBalance: sql`${suppliers.currentBalance} + ${toDbMoney(delta)}` })
     .where(eq(suppliers.id, supplierId));
+}
+
+/** عهدة جهة التوصيل (COD float): positive = الجهة مدينة للمتجر. تُطبَّق ذرّياً بزيادة SQL نسبية. */
+export async function adjustDeliveryBalance(tx: Tx, partyId: number, delta: Decimal): Promise<void> {
+  if (delta.isZero()) return;
+  await tx
+    .update(deliveryParties)
+    .set({ currentBalance: sql`${deliveryParties.currentBalance} + ${toDbMoney(delta)}` })
+    .where(eq(deliveryParties.id, partyId));
 }
 
 export function computeInvoiceStatus(total: string, paid: string): "PENDING" | "PARTIALLY_PAID" | "PAID" {

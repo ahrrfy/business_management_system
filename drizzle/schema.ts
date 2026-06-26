@@ -630,13 +630,20 @@ export const accountingEntries = mysqlTable(
     // production-slice: INTERNAL_USE = نثرية داخلية (مصروف بالكلفة)، WASTAGE = تلف/هدر (خسارة بالكلفة) — كلاهما بلا نقد.
     // treasury-stage2 (٢١/٦): CASH_HANDOVER = تسليم وردية → خزينة (نقل بين دلوَين)، CASH_TRANSFER_OUT/IN = تحويل نقدي بين الفروع.
     // كلها لا تَدخل revenue/cost/profit (cash movements) — تُستثنى من تقارير الإيراد/الأرباح.
-    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN"]).notNull(),
+    // delivery-cod (٢٦/٦): DELIVERY_DISPATCH = إيقاف COD على عهدة جهة التوصيل (+float)،
+    // DELIVERY_REMIT = خفض العهدة عند التوريد/التسوية/الإرجاع (−float)، DELIVERY_FEE = مصروف
+    // أجرة التوصيل (cost-only، خصم الأجرة وتوريد الصافي)، DELIVERY_WRITEOFF = شطب عجز كمصروف.
+    // DISPATCH/REMIT حركات عهدة لا تَمسّ revenue/cost (تُستثنى من تقارير الإيراد، كـCASH_*).
+    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }),
     receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
     customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
     supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
+    // delivery-cod: طرف جهة التوصيل لقيود العهدة DELIVERY_* — نظير customerId/supplierId
+    // (بلا .references مثل purchaseOrderId؛ الـFK يُضاف في الهجرة). يُمكّن مطابقة العهدة بـGROUP BY.
+    deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     revenue: decimal("revenue", { precision: 15, scale: 2 }).default("0").notNull(),
     cost: decimal("cost", { precision: 15, scale: 2 }).default("0").notNull(),
     profit: decimal("profit", { precision: 15, scale: 2 }).default("0").notNull(),
@@ -658,6 +665,7 @@ export const accountingEntries = mysqlTable(
     // G11 (١٩/٦/٢٦): فهرس branchId حرج — GL/P&L/الميزانية/كشوف الحساب تستعلم على branchId،
     // كان full scan على مليون قيد لكل تقرير.
     branchIdx: index("idx_entry_branch").on(table.branchId),
+    deliveryPartyIdx: index("idx_entry_delivery_party").on(table.deliveryPartyId),
   })
 );
 
@@ -2109,3 +2117,108 @@ export const channelIntegrations = mysqlTable(
 );
 export type ChannelIntegration = typeof channelIntegrations.$inferSelect;
 export type InsertChannelIntegration = typeof channelIntegrations.$inferInsert;
+
+/* ============================ التوصيل (COD) — جهات التوصيل والعهد والترحيل ============================ */
+
+/** جهة توصيل: مندوب فرد أو شركة توصيل. كيان بيانات (لا مستخدم نظام). currentBalance = عهدة COD القائمة. */
+export const deliveryParties = mysqlTable(
+  "deliveryParties",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    partyType: mysqlEnum("deliveryPartyKind", ["INDIVIDUAL", "COMPANY"]).default("INDIVIDUAL").notNull(),
+    name: varchar("name", { length: 255 }).notNull(),
+    phone: varchar("phone", { length: 20 }),
+    phone2: varchar("phone2", { length: 20 }),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    nationalId: varchar("nationalId", { length: 40 }),
+    vehicleInfo: varchar("vehicleInfo", { length: 120 }),
+    // أجرة توصيل افتراضية ثابتة لكل طلب (D7) — تُملأ في حوار التعيين ويُمكن تعديلها.
+    defaultFee: decimal("defaultFee", { precision: 15, scale: 2 }).default("0").notNull(),
+    // عهدة COD القائمة (موجب = الجهة مدينة بنقدٍ مطلوب تحصيله/تحصَّل ولم يُورَّد). نظير customers.currentBalance.
+    currentBalance: decimal("currentBalance", { precision: 15, scale: 2 }).default("0").notNull(),
+    floatLimit: decimal("floatLimit", { precision: 15, scale: 2 }),
+    notes: text("notes"),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    nameIdx: index("idx_delivery_party_name").on(table.name),
+    branchIdx: index("idx_delivery_party_branch").on(table.branchId),
+    activeIdx: index("idx_delivery_party_active").on(table.isActive),
+  }),
+);
+export type DeliveryParty = typeof deliveryParties.$inferSelect;
+export type InsertDeliveryParty = typeof deliveryParties.$inferInsert;
+
+/** دفعة ترحيل: تسوية تحصيلات جهة التوصيل (خصم الأجرة وتوريد الصافي — D8). */
+export const deliveryRemittances = mysqlTable(
+  "deliveryRemittances",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    remittanceNumber: varchar("remittanceNumber", { length: 50 }).notNull().unique(), // DR-{branch}-{YYYYMMDD}-{seq}
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    partyId: bigint("partyId", { mode: "number" }).notNull().references(() => deliveryParties.id),
+    // الوردية التي استلمت صافي النقد (RECEPTION/RETAIL) — يُحدَّد عبر shiftIdForCashTx.
+    shiftId: bigint("shiftId", { mode: "number" }).references(() => shifts.id),
+    collectedTotal: decimal("collectedTotal", { precision: 15, scale: 2 }).notNull(), // Σ المُحصَّل (COD)
+    feesTotal: decimal("feesTotal", { precision: 15, scale: 2 }).default("0").notNull(), // Σ الأجور (مستحقات الجهة)
+    netRemitted: decimal("netRemitted", { precision: 15, scale: 2 }).notNull(), // collectedTotal − feesTotal
+    shortfallTotal: decimal("shortfallTotal", { precision: 15, scale: 2 }).default("0").notNull(), // عجز يبقى عهدة (D4)
+    // إيصالا الدرج: IN=collectedTotal (نقد كامل) + OUT=feesTotal (مصروف توصيل) ⇒ صافي الدرج = netRemitted.
+    receiptInId: bigint("receiptInId", { mode: "number" }).references(() => receipts.id),
+    receiptOutId: bigint("receiptOutId", { mode: "number" }).references(() => receipts.id),
+    status: mysqlEnum("deliveryRemittanceStatus", ["BALANCED", "SHORT", "OVER"]).notNull(),
+    receivedBy: int("receivedBy").references(() => users.id),
+    receivedAt: timestamp("receivedAt").defaultNow().notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    numberIdx: index("idx_delivery_remit_number").on(table.remittanceNumber),
+    partyIdx: index("idx_delivery_remit_party").on(table.partyId),
+    branchIdx: index("idx_delivery_remit_branch").on(table.branchId),
+    shiftIdx: index("idx_delivery_remit_shift").on(table.shiftId),
+  }),
+);
+export type DeliveryRemittance = typeof deliveryRemittances.$inferSelect;
+export type InsertDeliveryRemittance = typeof deliveryRemittances.$inferInsert;
+
+/** إرسالية: طردٌ خرج مع جهة التوصيل بمبلغ COD. سطر العهدة الذي يربط الفاتورة↔الجهة↔الترحيل. */
+export const deliveryConsignments = mysqlTable(
+  "deliveryConsignments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    consignmentNumber: varchar("consignmentNumber", { length: 50 }).notNull().unique(), // CN-{branch}-{YYYYMMDD}-{seq}
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    partyId: bigint("partyId", { mode: "number" }).notNull().references(() => deliveryParties.id),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull().references(() => invoices.id),
+    workOrderId: bigint("workOrderId", { mode: "number" }),
+    // العميل النهائي (المستلم). الفاتورة نفسها customerId=NULL (الطرف المقابل = جهة التوصيل، عهدة لا AR).
+    endCustomerId: bigint("endCustomerId", { mode: "number" }).references(() => customers.id),
+    codAmount: decimal("codAmount", { precision: 15, scale: 2 }).notNull(), // المطلوب تحصيله = total − deposit
+    collectedAmount: decimal("collectedAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    deliveryFee: decimal("deliveryFee", { precision: 15, scale: 2 }).default("0").notNull(), // أجرة ثابتة لكل طلب (D7)
+    recipientName: varchar("recipientName", { length: 255 }),
+    recipientPhone: varchar("recipientPhone", { length: 20 }),
+    deliveryAddress: text("deliveryAddress"),
+    status: mysqlEnum("consignmentStatus", ["DISPATCHED", "DELIVERED", "PARTIAL", "RETURNED", "WRITTEN_OFF"]).default("DISPATCHED").notNull(),
+    remittanceId: bigint("remittanceId", { mode: "number" }).references(() => deliveryRemittances.id),
+    dispatchedBy: int("dispatchedBy").references(() => users.id),
+    dispatchedAt: timestamp("dispatchedAt").defaultNow().notNull(),
+    settledAt: timestamp("settledAt"),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    numberIdx: index("idx_consignment_number").on(table.consignmentNumber),
+    partyStatusIdx: index("idx_consignment_party_status").on(table.partyId, table.status),
+    branchIdx: index("idx_consignment_branch").on(table.branchId),
+    remittanceIdx: index("idx_consignment_remittance").on(table.remittanceId),
+    // حارس بنيوي: فاتورة واحدة ⇒ إرسالية واحدة (لا ازدواج عهدة على نفس البيع).
+    invoiceUq: unique("uq_consignment_invoice").on(table.invoiceId),
+  }),
+);
+export type DeliveryConsignment = typeof deliveryConsignments.$inferSelect;
+export type InsertDeliveryConsignment = typeof deliveryConsignments.$inferInsert;

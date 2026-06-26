@@ -9,4 +9,5 @@
 
 ALTER TABLE `shifts` ADD `shiftType` enum('RETAIL','RECEPTION') NOT NULL DEFAULT 'RETAIL';
 --> statement-breakpoint
-UPDATE `shifts` SET `openGuard` = CONCAT(`openGuard`, ':RETAIL') WHERE `status` = 'OPEN' AND `openGuard` IS NOT NULL;
+-- ملاحظة: عمود الحالة في DB اسمه `shiftStatus` (mysqlEnum أول معامل = اسم العمود) لا `status`.
+UPDATE `shifts` SET `openGuard` = CONCAT(`openGuard`, ':RETAIL') WHERE `shiftStatus` = 'OPEN' AND `openGuard` IS NOT NULL;

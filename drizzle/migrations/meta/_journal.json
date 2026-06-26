@@ -204,6 +204,13 @@
       "when": 1782302000000,
       "tag": "0028_shift_type",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "5",
+      "when": 1782303000000,
+      "tag": "0029_delivery_cod",
+      "breakpoints": true
     }
   ]
 }
