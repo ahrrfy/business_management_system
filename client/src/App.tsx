@@ -75,6 +75,10 @@ const Account = lazy(() => import("@/pages/Account"));
 const SalesReportsHub = lazy(() => import("@/pages/SalesReportsHub"));
 const AgingReportsHub = lazy(() => import("@/pages/AgingReportsHub"));
 const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
+const ReportsHub = lazy(() => import("@/pages/ReportsHub"));
+const CreditExposureReport = lazy(() => import("@/pages/CreditExposureReport"));
+const ProfitabilityReport = lazy(() => import("@/pages/ProfitabilityReport"));
+const InventoryOpsReport = lazy(() => import("@/pages/InventoryOpsReport"));
 const ProfitLoss = lazy(() => import("@/pages/ProfitLoss"));
 const GeneralLedger = lazy(() => import("@/pages/GeneralLedger"));
 const TrialBalance = lazy(() => import("@/pages/TrialBalance"));
@@ -232,7 +236,8 @@ export default function App() {
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>
       <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
-      <Route path="/reports"><Shell><ReportsCenter /></Shell></Route>
+      <Route path="/reports"><Shell><ReportsHub /></Shell></Route>
+      <Route path="/reports/credit-exposure"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]}><CreditExposureReport /></RequireRole></Shell></Route>
       <Route path="/reports/profit-loss"><Shell><RequireRole roles={["admin","manager"]}><ProfitLoss /></RequireRole></Shell></Route>
       <Route path="/reports/general-ledger"><Shell><RequireRole roles={["admin","manager"]}><GeneralLedger /></RequireRole></Shell></Route>
       <Route path="/reports/trial-balance"><Shell><RequireRole roles={["admin","manager"]}><TrialBalance /></RequireRole></Shell></Route>
@@ -240,11 +245,13 @@ export default function App() {
       <Route path="/reports/cash-flow"><Shell><RequireRole roles={["admin","manager"]}><CashFlow /></RequireRole></Shell></Route>
       <Route path="/reports/sales-register"><Shell><RequireRole roles={["admin","manager"]}><SalesRegister /></RequireRole></Shell></Route>
       <Route path="/reports/sales-by-dimension"><Shell><RequireRole roles={["admin","manager"]}><SalesByDimension /></RequireRole></Shell></Route>
+      <Route path="/reports/profitability"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]}><ProfitabilityReport /></RequireRole></Shell></Route>
       <Route path="/reports/purchases"><Shell><RequireRole roles={["admin","manager"]}><PurchasesReport /></RequireRole></Shell></Route>
       <Route path="/reports/purchase-register"><Shell><RequireRole roles={["admin","manager"]}><PurchaseRegister /></RequireRole></Shell></Route>
       <Route path="/reports/aging-detail"><Shell><RequireRole roles={["admin","manager"]}><ArApAgingDetail /></RequireRole></Shell></Route>
       <Route path="/reports/inventory-valuation"><Shell><RequireRole roles={["admin","manager"]}><InventoryValuation /></RequireRole></Shell></Route>
       <Route path="/reports/stock-status"><Shell><RequireRole roles={["admin","manager"]}><StockStatus /></RequireRole></Shell></Route>
+      <Route path="/reports/inventory-ops"><Shell><RequireRole roles={["admin","manager","warehouse","purchasing","auditor"]}><InventoryOpsReport /></RequireRole></Shell></Route>
       <Route path="/reports/item-ledger"><Shell><RequireRole roles={["admin","manager"]}><ItemLedger /></RequireRole></Shell></Route>
       <Route path="/reports/abc"><Shell><RequireRole roles={["admin","manager"]}><AbcAnalysis /></RequireRole></Shell></Route>
       <Route path="/reports/treasury"><Shell><RequireRole roles={["admin","manager"]}><TreasuryReport /></RequireRole></Shell></Route>

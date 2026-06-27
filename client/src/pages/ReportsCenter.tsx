@@ -17,6 +17,8 @@ import {
   Wallet, Printer, Briefcase, Server, ShieldCheck, Factory, FileStack,
   LayoutDashboard, Star, type LucideIcon,
 } from "lucide-react";
+import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import type { RoleKey } from "@shared/permissions";
 
 type Gate = "all" | "manager" | "admin";
 type Status = "ready" | "soon";
@@ -68,6 +70,7 @@ const SECTIONS: Section[] = [
       { title: "تقرير المبيعات (مُلخّص)", desc: "فواتير + أكثر مبيعاً + بطيئة + ربح حسب الفئة", href: "/sales-report", icon: Receipt, gate: "manager", status: "ready" },
       { title: "سجلّ المبيعات المفصّل", desc: "بمستوى بنود الفاتورة (drill-down)", href: "/reports/sales-register", icon: Search, gate: "manager", status: "ready" },
       { title: "المبيعات حسب البُعد", desc: "عميل/فرع/كاشير/طريقة دفع", href: "/reports/sales-by-dimension", icon: Ruler, gate: "manager", status: "ready" },
+      { title: "تحليل الربحية الحقيقي", desc: "ربح وهامش حسب منتج/فئة/عميل/فرع/كاشير + كشف تآكل الهامش", href: "/reports/profitability", icon: TrendingUp, gate: "manager", status: "ready" },
     ],
   },
   {
@@ -79,7 +82,7 @@ const SECTIONS: Section[] = [
       { title: "أعمار الذمم المُوحَّدة (مدينة/دائنة)", desc: "مَدينة ودائنة + مُلخَّص/تَفصيل في صَفحة واحدة", href: "/reports/aging-hub", icon: LayoutDashboard, gate: "manager", status: "ready" },
       { title: "أعمار الذمم المدينة (مُلخَّص)", desc: "0-30 / 31-60 / 61-90 / +90 يوم", href: "/ar-aging", icon: Hourglass, gate: "manager", status: "ready" },
       { title: "تفصيل أعمار الذمم (AR/AP)", desc: "مستندٌ بمستند مع المتبقّي والتأخّر", href: "/reports/aging-detail", icon: SearchCheck, gate: "manager", status: "ready" },
-      { title: "التعرّض الائتماني للعملاء", desc: "أرصدة ومخاطر التحصيل", href: "/reports/customer-balances", icon: CreditCard, gate: "manager", status: "soon" },
+      { title: "التعرّض الائتماني للعملاء", desc: "أرصدة ومخاطر التحصيل + تصنيف خطر + تذكير واتساب", href: "/reports/credit-exposure", icon: CreditCard, gate: "manager", status: "ready" },
     ],
   },
   {
@@ -102,6 +105,7 @@ const SECTIONS: Section[] = [
       { title: "الجرد والتسوية", desc: "محاضر الجرد ودقّة السجلّ", href: "/stocktakes", icon: ClipboardList, gate: "manager", status: "ready" },
       { title: "تقييم المخزون", desc: "كمية × كلفة بالفرع/الفئة", href: "/reports/inventory-valuation", icon: Wallet, gate: "manager", status: "ready" },
       { title: "حالة المخزون وإعادة الطلب", desc: "منخفض/نفد مقابل حدّ الطلب", href: "/reports/stock-status", icon: AlertTriangle, gate: "manager", status: "ready" },
+      { title: "المخزون التشغيلي (قرارات)", desc: "إعادة طلب · راكد عالي القيمة · خطر نفاد · فروقات جرد", href: "/reports/inventory-ops", icon: ClipboardList, gate: "manager", status: "ready" },
       { title: "بطاقة المنتج (Kardex)", desc: "حركة منتج زمنياً بالرصيد الحالي", href: "/reports/item-ledger", icon: FolderOpen, gate: "manager", status: "ready" },
       { title: "تحليل ABC", desc: "تصنيف المنتجات بالقيمة (باريتو)", href: "/reports/abc", icon: ListOrdered, gate: "manager", status: "ready" },
     ],
@@ -160,6 +164,32 @@ const SECTIONS: Section[] = [
   },
 ];
 
+// أدوار بنود «manager» حسب القسم — يحترم الأدوار العشرة (محاسب يرى المالية، أمين مخزن يرى المخزون،
+// مسؤول مشتريات يرى المشتريات…) بدل تبسيط manager/admin. الإنفاذ الأمني الحقيقي خادمي + RequireRole.
+const SECTION_ROLES: Record<string, RoleKey[]> = {
+  exec:       ["admin", "manager", "accountant", "auditor"],
+  financial:  ["admin", "manager", "accountant", "auditor"],
+  sales:      ["admin", "manager", "accountant", "auditor"],
+  ar:         ["admin", "manager", "accountant", "auditor"],
+  ap:         ["admin", "manager", "accountant", "purchasing", "auditor"],
+  inventory:  ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"],
+  treasury:   ["admin", "manager", "accountant", "auditor"],
+  production: ["admin", "manager", "auditor"],
+  hr:         ["admin", "manager", "auditor"],
+  assets:     ["admin", "manager", "accountant", "auditor"],
+  audit:      ["admin"],
+};
+
+/** يحوّل gate الخشن (all/manager/admin) + قسمه إلى RoleGate دقيق. all⇒مرئي للكل، admin⇒adminOnly. */
+function resolveGate(gate: Gate, sectionKey: string): RoleGate | undefined {
+  if (gate === "all") return undefined;
+  if (gate === "admin") return { adminOnly: true };
+  return { roles: SECTION_ROLES[sectionKey] ?? ["admin", "manager"] };
+}
+
+// قائمة مسطّحة بمفتاح القسم — تحفظ سياق القسم للمفضّلة (التي تفقده عند flatMap).
+const ALL_ITEMS = SECTIONS.flatMap((s) => s.items.map((it) => ({ ...it, sectionKey: s.key })));
+
 const FAV_KEY = "reports.favorites";
 
 function loadFavs(): Set<string> {
@@ -179,9 +209,7 @@ export default function ReportsCenter() {
   const [q, setQ] = useState("");
   const [favs, setFavs] = useState<Set<string>>(() => loadFavs());
 
-  const isAdmin = me.data?.role === "admin";
-  const isManager = isAdmin || me.data?.role === "manager";
-  const canSee = (g: Gate) => g === "all" || (g === "manager" && isManager) || (g === "admin" && isAdmin);
+  const role = me.data?.role;
 
   function toggleFav(href: string) {
     setFavs((prev) => {
@@ -201,16 +229,19 @@ export default function ReportsCenter() {
     () =>
       SECTIONS.map((s) => ({
         ...s,
-        items: s.items.filter((it) => canSee(it.gate) && match(it)),
+        items: s.items.filter((it) => canSeeGate(resolveGate(it.gate, s.key), role) && match(it)),
       })).filter((s) => s.items.length > 0),
-    [needle, isManager, isAdmin],
+    [needle, role],
   );
 
   // المفضّلة (الجاهزة فقط ومرئية)
-  const favItems = useMemo(() => {
-    const all = SECTIONS.flatMap((s) => s.items);
-    return all.filter((it) => favs.has(it.href) && canSee(it.gate) && it.status === "ready" && match(it));
-  }, [favs, needle, isManager, isAdmin]);
+  const favItems = useMemo(
+    () =>
+      ALL_ITEMS.filter(
+        (it) => favs.has(it.href) && canSeeGate(resolveGate(it.gate, it.sectionKey), role) && it.status === "ready" && match(it),
+      ),
+    [favs, needle, role],
+  );
 
   return (
     <div className="space-y-5">
@@ -270,9 +301,12 @@ export default function ReportsCenter() {
         const SectionIcon = s.icon;
         return (
           <section key={s.key} className="space-y-2">
-            <h2 className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-              <SectionIcon aria-hidden className="size-4 text-primary/70" />
+            <h2 className="flex items-center gap-2 border-b pb-1.5 text-sm font-semibold text-muted-foreground">
+              <span className="inline-flex size-6 items-center justify-center rounded-md bg-primary/10 text-primary">
+                <SectionIcon aria-hidden className="size-4" />
+              </span>
               <span>{s.label}</span>
+              <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] tabular-nums text-muted-foreground">{s.items.length}</span>
             </h2>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {s.items.map((it) => (
