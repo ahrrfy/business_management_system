@@ -29,6 +29,9 @@ import { getInventoryValuation, getStockStatus } from "../services/reportsInvent
 import { getItemLedger, getAbcAnalysis } from "../services/reportsInventoryAnalyticsService";
 import { getTreasurySummary, getExpensesReport, getCashOrphansReport } from "../services/reportsTreasuryService";
 import { getProductionReport, getWorkOrdersReport } from "../services/reportsProductionService";
+import { getCreditExposure } from "../services/reportsCreditExposureService";
+import { getManagementAlerts } from "../services/reportsAlertsService";
+import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
 import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
 import { adminProcedure, managerBranchScopedProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
@@ -58,6 +61,46 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getARAging({ branchId });
+    }),
+
+  /** مركز تنبيهات الإدارة — قلب الكوكبِت: قائمة متابعة مرتّبة بالخطورة (خطر + فعل). manager + عزل الفرع. */
+  managementAlerts: managerBranchScopedProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getManagementAlerts({ branchId, isAdmin: ctx.user.role === "admin" });
+    }),
+
+  /** التعرّض الائتماني للعملاء — أرصدة/متأخّر/حدّ ائتمان/تصنيف خطر. manager + عزل الفرع. */
+  creditExposure: managerBranchScopedProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getCreditExposure({ branchId });
+    }),
+
+  /** المخزون الراكد عالي القيمة — لا بيع منذ N يوماً، مرتّب بقيمة التجميد. manager + عزل الفرع. */
+  deadStockValue: managerBranchScopedProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional(), sinceDays: z.number().int().min(1).max(730).optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getDeadStockValue({ branchId, sinceDays: input?.sinceDays });
+    }),
+
+  /** خطر النفاد — مبيعات عالية + رصيد عند/تحت حدّ الطلب. manager + عزل الفرع. */
+  reorderRisk: managerBranchScopedProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional(), sinceDays: z.number().int().min(1).max(365).optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getReorderRisk({ branchId, sinceDays: input?.sinceDays });
+    }),
+
+  /** فروقات الجرد المعتمدة — حسب الفرع/التاريخ (stocktakeDecisions). manager + عزل الفرع. */
+  stocktakeVariance: managerBranchScopedProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional(), from: ymdStr.optional(), to: ymdStr.optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getStocktakeVariance({ branchId, from: input?.from, to: input?.to });
     }),
 
   /** WIP (Work-in-Progress) — قيمة المواد المُستهلَكة في أوامر شغل IN_PROGRESS/READY (لم تصل بعد إلى SALE.cost). */

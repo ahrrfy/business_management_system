@@ -128,11 +128,23 @@ export interface SalesByDimensionRow {
   revenue: string;
   paid: string;
   unpaid: string;
+  /** تكلفة المبيعات (SUM costTotal) — تحليل الربحية الحقيقي. */
+  cost: string;
+  /** الربح = الإيراد − التكلفة. */
+  profit: string;
+  /** هامش الربح % = الربح ÷ الإيراد × ١٠٠ (نصّ بمنزلتين). */
+  marginPct: string;
 }
 
 export interface SalesByDimensionResult {
   rows: SalesByDimensionRow[];
-  totals: { invoices: number; revenue: string; paid: string; unpaid: string };
+  totals: { invoices: number; revenue: string; paid: string; unpaid: string; cost: string; profit: string; marginPct: string };
+}
+
+/** هامش % decimal-safe (نصّ بمنزلتين)؛ "0.00" حين الإيراد صفر. */
+function marginOf(profit: ReturnType<typeof money>, revenue: ReturnType<typeof money>): string {
+  if (revenue.isZero()) return "0.00";
+  return profit.div(revenue).times(100).toDecimalPlaces(2).toString();
 }
 
 export async function getSalesByDimension(opts: {
@@ -142,7 +154,7 @@ export async function getSalesByDimension(opts: {
   dimension: SalesDimension;
 }): Promise<SalesByDimensionResult> {
   const db = getDb();
-  if (!db) return { rows: [], totals: { invoices: 0, revenue: "0", paid: "0", unpaid: "0" } };
+  if (!db) return { rows: [], totals: { invoices: 0, revenue: "0", paid: "0", unpaid: "0", cost: "0", profit: "0", marginPct: "0.00" } };
 
   // اختيار محور التجميع + التسمية + الانضمام المطلوب (إن وُجِد).
   // المفتاح key نصّي دائماً (للتمييز في الواجهة)؛ التسمية label معروضة (تتراجع للمفتاح عند NULL).
@@ -191,7 +203,8 @@ export async function getSalesByDimension(opts: {
         COUNT(*) AS invoices,
         CAST(COALESCE(SUM(i.total), 0) AS CHAR) AS revenue,
         CAST(COALESCE(SUM(i.paidAmount), 0) AS CHAR) AS paid,
-        CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaid
+        CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaid,
+        CAST(COALESCE(SUM(i.costTotal), 0) AS CHAR) AS cost
       FROM invoices i
       ${joinClause}
       WHERE ${where}
@@ -204,15 +217,19 @@ export async function getSalesByDimension(opts: {
   let revenue = money(0);
   let paid = money(0);
   let unpaid = money(0);
+  let cost = money(0);
   const out: SalesByDimensionRow[] = rows.map((r) => {
     const rev = money(r.revenue ?? 0);
     const pd = money(r.paid ?? 0);
     const up = money(r.unpaid ?? 0);
+    const cs = money(r.cost ?? 0);
+    const profit = rev.sub(cs);
     const cnt = Number(r.invoices ?? 0);
     invCount += cnt;
     revenue = revenue.add(rev);
     paid = paid.add(pd);
     unpaid = unpaid.add(up);
+    cost = cost.add(cs);
     return {
       key: String(r.key ?? ""),
       label: String(r.label ?? "—"),
@@ -220,9 +237,13 @@ export async function getSalesByDimension(opts: {
       revenue: toDbMoney(rev),
       paid: toDbMoney(pd),
       unpaid: toDbMoney(up),
+      cost: toDbMoney(cs),
+      profit: toDbMoney(profit),
+      marginPct: marginOf(profit, rev),
     };
   });
 
+  const totalProfit = revenue.sub(cost);
   return {
     rows: out,
     totals: {
@@ -230,6 +251,9 @@ export async function getSalesByDimension(opts: {
       revenue: toDbMoney(revenue),
       paid: toDbMoney(paid),
       unpaid: toDbMoney(unpaid),
+      cost: toDbMoney(cost),
+      profit: toDbMoney(totalProfit),
+      marginPct: marginOf(totalProfit, revenue),
     },
   };
 }
