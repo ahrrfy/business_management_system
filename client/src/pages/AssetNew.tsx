@@ -70,12 +70,13 @@ export default function AssetNew() {
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">إضافة أصل جديد</h1>
         <Link href="/assets/register" className="text-sm text-muted-foreground">← رجوع للسجلّ</Link>
       </div>
 
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
         <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -129,7 +130,7 @@ export default function AssetNew() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="lg:col-span-2">
         <CardHeader><CardTitle className="text-base">الإهلاك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1">
@@ -146,6 +147,7 @@ export default function AssetNew() {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

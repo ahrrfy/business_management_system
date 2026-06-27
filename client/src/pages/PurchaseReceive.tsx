@@ -99,7 +99,7 @@ export default function PurchaseReceive() {
   const fmt = fmtAr;
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <PageHeader
         title="استلام أمر شراء"
         actions={<Link href="/purchases" className="text-sm text-muted-foreground">← رجوع للمشتريات</Link>}
@@ -117,7 +117,7 @@ export default function PurchaseReceive() {
 
       <Card>
         <CardHeader><CardTitle className="text-base">المنتجات</CardTitle></CardHeader>
-        <CardContent className="p-0">
+        <CardContent className="p-0 overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -160,7 +160,7 @@ export default function PurchaseReceive() {
       {!closed && (
         <Card>
           <CardHeader><CardTitle className="text-base">دفعة للمورد (اختياري)</CardTitle></CardHeader>
-          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
             <div className="space-y-1">
               <Label>المبلغ المدفوع الآن</Label>
               <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="0" />

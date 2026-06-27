@@ -111,7 +111,7 @@ export default function Settings() {
   const list = backups.data?.backups ?? [];
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <PageHeader title="الإعدادات والنسخ الاحتياطي" description="معلومات النظام والنسخ الاحتياطي والاستعادة وإعدادات الطباعة." />
 
       {(info.isError || backups.isError) && (
@@ -124,7 +124,7 @@ export default function Settings() {
       {/* معلومات النظام */}
       <Card>
         <CardHeader><CardTitle className="text-base">معلومات النظام</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm">
+        <CardContent className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3 text-sm">
           <Stat label="القاعدة" value={info.data?.db.name ?? "…"} mono />
           <Stat label="الخادم" value={info.data?.db.host ?? "…"} mono />
           <Stat label="الفروع" value={c ? String(c.branches) : "…"} />
@@ -161,93 +161,101 @@ export default function Settings() {
           ) : list.length === 0 ? (
             <p className="text-sm text-muted-foreground">لا نسخ بعد — اضغط «نسخة الآن».</p>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="text-right">الملف</TableHead>
-                  <TableHead className="text-left">الحجم</TableHead>
-                  <TableHead className="text-left">التاريخ</TableHead>
-                  <TableHead className="text-center">إجراءات</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {list.map((b) => (
-                  <TableRow key={b.name}>
-                    <TableCell className="font-mono text-xs" dir="ltr">{b.name}</TableCell>
-                    <TableCell className="text-left tabular-nums">{fmtKb(b.sizeKb)}</TableCell>
-                    <TableCell className="text-left tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
-                    <TableCell className="text-center whitespace-nowrap">
-                      <Button size="sm" variant="ghost" onClick={() => downloadBackup(b.name)} className="inline-flex items-center gap-1"><Download aria-hidden className="size-4" />تنزيل</Button>
-                      <Button size="sm" variant="ghost" className="text-[var(--stock-low)] inline-flex items-center gap-1" onClick={() => setDanger({ kind: "restore-server", name: b.name })}><RotateCcw aria-hidden className="size-4" />استعادة</Button>
-                      <Button size="sm" variant="ghost" className="text-destructive inline-flex items-center gap-1"
-                        onClick={async () => {
-                          if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
-                          deleteBackup.mutate({ name: b.name });
-                        }}><Trash2 aria-hidden className="size-4" />حذف</Button>
-                    </TableCell>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="text-right">الملف</TableHead>
+                    <TableHead className="text-left">الحجم</TableHead>
+                    <TableHead className="text-left">التاريخ</TableHead>
+                    <TableHead className="text-center">إجراءات</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
+                </TableHeader>
+                <TableBody>
+                  {list.map((b) => (
+                    <TableRow key={b.name}>
+                      <TableCell className="font-mono text-xs" dir="ltr">{b.name}</TableCell>
+                      <TableCell className="text-left tabular-nums">{fmtKb(b.sizeKb)}</TableCell>
+                      <TableCell className="text-left tabular-nums" dir="ltr">{fmtDateTime(b.createdAt)}</TableCell>
+                      <TableCell className="text-center whitespace-nowrap">
+                        <Button size="sm" variant="ghost" onClick={() => downloadBackup(b.name)} className="inline-flex items-center gap-1"><Download aria-hidden className="size-4" />تنزيل</Button>
+                        <Button size="sm" variant="ghost" className="text-[var(--stock-low)] inline-flex items-center gap-1" onClick={() => setDanger({ kind: "restore-server", name: b.name })}><RotateCcw aria-hidden className="size-4" />استعادة</Button>
+                        <Button size="sm" variant="ghost" className="text-destructive inline-flex items-center gap-1"
+                          onClick={async () => {
+                            if (!(await confirmDelete({ description: `حذف النسخة الاحتياطية «${b.name}»؟ لا يمكن التراجع إلا باستعادة نسخة أخرى.` }))) return;
+                            deleteBackup.mutate({ name: b.name });
+                          }}><Trash2 aria-hidden className="size-4" />حذف</Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
           )}
         </CardContent>
       </Card>
 
-      {/* الاستعادة من ملف */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">الاستعادة من ملف</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-xs text-muted-foreground">
-            استعد قاعدة البيانات من ملف نسخة (.sql) على جهازك (مثل نسخة خارجية/USB). يُتحقَّق من الملف، وتُؤخذ نسخة أمان أولاً.
-          </p>
-          <input ref={fileRef} type="file" accept=".sql" onChange={onPickFile} className="hidden" />
-          <Button variant="outline" onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>
-        </CardContent>
-      </Card>
-
-      {/* الطباعة */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">الطباعة</CardTitle></CardHeader>
-        <CardContent className="space-y-2 text-sm">
-          <div className="flex items-center gap-2">
-            <span aria-hidden className={`inline-block size-2 rounded-full ${bridge.enabled ? "bg-[var(--status-active)]" : "bg-muted-foreground/40"}`} />
-            <span>جسر الطباعة الصامتة: <b>{bridge.enabled ? "مفعّل" : "غير مفعّل"}</b>{bridge.enabled ? ` (${bridge.description})` : ""}</span>
-            {bridge.enabled && (
-              <Button size="sm" variant="outline" className="ms-auto"
-                onClick={async () => { const r = await serverPrintTest(); r.ok ? notify.ok("أُرسلت تذكرة اختبار") : notify.err(r.error ?? "فشل الاختبار"); }}>
-                اختبار طباعة
-              </Button>
-            )}
-          </div>
-          {!bridge.enabled && (
+      {/* الاستعادة من ملف + الطباعة */}
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
+        {/* الاستعادة من ملف */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">الاستعادة من ملف</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
             <p className="text-xs text-muted-foreground">
-              للطباعة الصامتة اضبط <code dir="ltr" className="font-mono">PRINT_TARGET</code> في .env (مثل <code dir="ltr" className="font-mono">tcp://ip:9100</code> أو <code dir="ltr" className="font-mono">share://Name</code>).
+              استعد قاعدة البيانات من ملف نسخة (.sql) على جهازك (مثل نسخة خارجية/USB). يُتحقَّق من الملف، وتُؤخذ نسخة أمان أولاً.
             </p>
-          )}
-        </CardContent>
-      </Card>
+            <input ref={fileRef} type="file" accept=".sql" onChange={onPickFile} className="hidden" />
+            <Button variant="outline" onClick={() => fileRef.current?.click()}>اختر ملف .sql للاستعادة…</Button>
+          </CardContent>
+        </Card>
 
-      {/* منطقة الخطر — التصفير */}
-      <Card className="border-destructive/40">
-        <CardHeader><CardTitle className="text-base text-destructive">منطقة الخطر — تصفير النظام</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-xs text-muted-foreground">
-            يمسح كل البيانات المُدخلة (فواتير، مخزون، عملاء، منتجات…) ويُبقي المستخدمين والفروع فقط — للبدء من جديد بنظام فارغ.
-            عملية لا رجعة فيها؛ تتطلّب اسم القاعدة + كلمة المرور، وتُؤخذ نسخة أمان أولاً.
-          </p>
-          <Button variant="destructive" onClick={() => setDanger({ kind: "reset" })}>تصفير النظام…</Button>
-        </CardContent>
-      </Card>
+        {/* الطباعة */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">الطباعة</CardTitle></CardHeader>
+          <CardContent className="space-y-2 text-sm">
+            <div className="flex items-center gap-2">
+              <span aria-hidden className={`inline-block size-2 rounded-full ${bridge.enabled ? "bg-[var(--status-active)]" : "bg-muted-foreground/40"}`} />
+              <span>جسر الطباعة الصامتة: <b>{bridge.enabled ? "مفعّل" : "غير مفعّل"}</b>{bridge.enabled ? ` (${bridge.description})` : ""}</span>
+              {bridge.enabled && (
+                <Button size="sm" variant="outline" className="ms-auto"
+                  onClick={async () => { const r = await serverPrintTest(); r.ok ? notify.ok("أُرسلت تذكرة اختبار") : notify.err(r.error ?? "فشل الاختبار"); }}>
+                  اختبار طباعة
+                </Button>
+              )}
+            </div>
+            {!bridge.enabled && (
+              <p className="text-xs text-muted-foreground">
+                للطباعة الصامتة اضبط <code dir="ltr" className="font-mono">PRINT_TARGET</code> في .env (مثل <code dir="ltr" className="font-mono">tcp://ip:9100</code> أو <code dir="ltr" className="font-mono">share://Name</code>).
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
-      {/* الصيانة CLI */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">الصيانة (سطر الأوامر)</CardTitle></CardHeader>
-        <CardContent className="space-y-1 text-xs text-muted-foreground font-mono" dir="ltr">
-          <div>pnpm db:backup</div>
-          <div>pnpm db:restore &lt;file.sql&gt; --confirm RESTORE</div>
-          <div>pnpm db:reset --confirm RESET</div>
-        </CardContent>
-      </Card>
+      {/* منطقة الخطر — التصفير + الصيانة CLI */}
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
+        {/* منطقة الخطر — التصفير */}
+        <Card className="border-destructive/40">
+          <CardHeader><CardTitle className="text-base text-destructive">منطقة الخطر — تصفير النظام</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              يمسح كل البيانات المُدخلة (فواتير، مخزون، عملاء، منتجات…) ويُبقي المستخدمين والفروع فقط — للبدء من جديد بنظام فارغ.
+              عملية لا رجعة فيها؛ تتطلّب اسم القاعدة + كلمة المرور، وتُؤخذ نسخة أمان أولاً.
+            </p>
+            <Button variant="destructive" onClick={() => setDanger({ kind: "reset" })}>تصفير النظام…</Button>
+          </CardContent>
+        </Card>
+
+        {/* الصيانة CLI */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">الصيانة (سطر الأوامر)</CardTitle></CardHeader>
+          <CardContent className="space-y-1 text-xs text-muted-foreground font-mono" dir="ltr">
+            <div>pnpm db:backup</div>
+            <div>pnpm db:restore &lt;file.sql&gt; --confirm RESTORE</div>
+            <div>pnpm db:reset --confirm RESET</div>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* حوار التأكيد الموحّد للعمليات المدمّرة */}
       <DangerConfirmDialog

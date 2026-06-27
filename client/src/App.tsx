@@ -22,90 +22,56 @@ import { trpc } from "@/lib/trpc";
 import Login from "@/pages/Login";
 import { Redirect, Route, Switch } from "wouter";
 
-const APAging = lazy(() => import("@/pages/APAging"));
-const ARAging = lazy(() => import("@/pages/ARAging"));
-const BarcodeLabels = lazy(() => import("@/pages/BarcodeLabels"));
-const CustomerStatement = lazy(() => import("@/pages/CustomerStatement"));
-const Customers = lazy(() => import("@/pages/Customers"));
 const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
 const CustomerEdit = lazy(() => import("@/pages/CustomerEdit"));
-const SupplierStatement = lazy(() => import("@/pages/SupplierStatement"));
-const Suppliers = lazy(() => import("@/pages/Suppliers"));
 const SupplierNew = lazy(() => import("@/pages/SupplierNew"));
 const SupplierEdit = lazy(() => import("@/pages/SupplierEdit"));
+// صَفحات الوحدات بتبويبات ثانوية (hubs): تَجمع شاشات الوحدة في صفحة واحدة بشريط ?tab=،
+// وتُسطّح الشريط الجانبي إلى مَدخل واحد لكل وحدة. المسارات القَديمة للقوائم تُعيد التوجيه.
+const CustomersHub = lazy(() => import("@/pages/CustomersHub"));
+const SuppliersHub = lazy(() => import("@/pages/SuppliersHub"));
+const InventoryHub = lazy(() => import("@/pages/InventoryHub"));
+const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
+const SalesHub = lazy(() => import("@/pages/SalesHub"));
+const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
+const PrintHub = lazy(() => import("@/pages/PrintHub"));
+const AssetsHub = lazy(() => import("@/pages/AssetsHub"));
+const HrHub = lazy(() => import("@/pages/HrHub"));
+const DeliveryCenter = lazy(() => import("@/pages/DeliveryCenter"));
+const ClosingHub = lazy(() => import("@/pages/ClosingHub"));
+const AdminHub = lazy(() => import("@/pages/AdminHub"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
-const Expenses = lazy(() => import("@/pages/Expenses"));
-const Inventory = lazy(() => import("@/pages/Inventory"));
 const VoucherPaymentNew = lazy(() => import("@/pages/VoucherPaymentNew"));
 const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
-const Vouchers = lazy(() => import("@/pages/Vouchers"));
 const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
-const Invoices = lazy(() => import("@/pages/Invoices"));
 const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
-const KioskDevices = lazy(() => import("@/pages/KioskDevices"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
-const Products = lazy(() => import("@/pages/Products"));
-const Categories = lazy(() => import("@/pages/Categories"));
-const Purchases = lazy(() => import("@/pages/Purchases"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
-const Quotations = lazy(() => import("@/pages/Quotations"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
 const QuotationDetail = lazy(() => import("@/pages/QuotationDetail"));
 const Returns = lazy(() => import("@/pages/Returns"));
 const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
-const SalesReturns = lazy(() => import("@/pages/SalesReturns"));
 const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
-const PurchaseReturns = lazy(() => import("@/pages/PurchaseReturns"));
-const Transfers = lazy(() => import("@/pages/Transfers"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
-const WorkOrderStation = lazy(() => import("@/pages/WorkOrderStation"));
-const WorkOrders = lazy(() => import("@/pages/WorkOrders"));
-// شَريحة #5 (٢٣/٦/٢٦): صَندوق الوارد المُوحَّد — WhatsApp/Instagram/متجر/يَدوي.
-const Inbox = lazy(() => import("@/pages/Inbox"));
-// شَريحة #6 (٢٤/٦/٢٦): إدارة tokens التَكاملات في الواجهة بَدل .env.
-const IntegrationsSettings = lazy(() => import("@/pages/IntegrationsSettings"));
-const Production = lazy(() => import("@/pages/Production"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
-const ProductionRecipes = lazy(() => import("@/pages/ProductionRecipes"));
-const Assets = lazy(() => import("@/pages/Assets"));
-const AssetRegister = lazy(() => import("@/pages/AssetRegister"));
 const AssetDetail = lazy(() => import("@/pages/AssetDetail"));
 const AssetNew = lazy(() => import("@/pages/AssetNew"));
-const AssetCustodyReport = lazy(() => import("@/pages/AssetCustodyReport"));
-const AssetDisposalLog = lazy(() => import("@/pages/AssetDisposalLog"));
 const AssetEdit = lazy(() => import("@/pages/AssetEdit"));
-const Employees = lazy(() => import("@/pages/Employees"));
 const EmployeeNew = lazy(() => import("@/pages/EmployeeNew"));
 const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
-const Attendance = lazy(() => import("@/pages/Attendance"));
-const Payroll = lazy(() => import("@/pages/Payroll"));
-const Leaves = lazy(() => import("@/pages/Leaves"));
-const Recruitment = lazy(() => import("@/pages/Recruitment"));
-const HrDevices = lazy(() => import("@/pages/HrDevices"));
-const Promotions = lazy(() => import("@/pages/Promotions"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
-const Shifts = lazy(() => import("@/pages/Shifts"));
-const Users = lazy(() => import("@/pages/Users"));
 const UserNew = lazy(() => import("@/pages/UserNew"));
 const UserEdit = lazy(() => import("@/pages/UserEdit"));
-const Roles = lazy(() => import("@/pages/Roles"));
 const RoleEdit = lazy(() => import("@/pages/RoleEdit"));
 const Account = lazy(() => import("@/pages/Account"));
-const AuditLogs = lazy(() => import("@/pages/AuditLogs"));
-const PeriodLock = lazy(() => import("@/pages/PeriodLock"));
-const CreditApprovals = lazy(() => import("@/pages/CreditApprovals"));
-const YearEnd = lazy(() => import("@/pages/YearEnd"));
-const WIPReport = lazy(() => import("@/pages/WIPReport"));
-const InventoryMovements = lazy(() => import("@/pages/InventoryMovements"));
-const SalesReport = lazy(() => import("@/pages/SalesReport"));
 const SalesReportsHub = lazy(() => import("@/pages/SalesReportsHub"));
 const AgingReportsHub = lazy(() => import("@/pages/AgingReportsHub"));
 const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
@@ -123,11 +89,7 @@ const InventoryValuation = lazy(() => import("@/pages/InventoryValuation"));
 const StockStatus = lazy(() => import("@/pages/StockStatus"));
 const ItemLedger = lazy(() => import("@/pages/ItemLedger"));
 const AbcAnalysis = lazy(() => import("@/pages/AbcAnalysis"));
-const Treasury = lazy(() => import("@/pages/Treasury"));
-const TreasuryTransfers = lazy(() => import("@/pages/TreasuryTransfers"));
 const TreasuryReport = lazy(() => import("@/pages/TreasuryReport"));
-const DeliveryHub = lazy(() => import("@/pages/DeliveryHub"));
-const DeliveryParties = lazy(() => import("@/pages/DeliveryParties"));
 const ExpensesReport = lazy(() => import("@/pages/ExpensesReport"));
 const CashOrphanReport = lazy(() => import("@/pages/CashOrphanReport"));
 const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
@@ -137,9 +99,6 @@ const AttendanceReport = lazy(() => import("@/pages/AttendanceReport"));
 const LeaveReport = lazy(() => import("@/pages/LeaveReport"));
 const HrChangesReport = lazy(() => import("@/pages/HrChangesReport"));
 const ExecutiveDashboard = lazy(() => import("@/pages/ExecutiveDashboard"));
-const Reconcile = lazy(() => import("@/pages/Reconcile"));
-const Settings = lazy(() => import("@/pages/Settings"));
-const Stocktakes = lazy(() => import("@/pages/Stocktakes"));
 const StocktakeNew = lazy(() => import("@/pages/StocktakeNew"));
 const StocktakeMonitor = lazy(() => import("@/pages/StocktakeMonitor"));
 const StocktakeReview = lazy(() => import("@/pages/StocktakeReview"));
@@ -200,78 +159,79 @@ export default function App() {
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
       <Route path="/"><Shell><Dashboard /></Shell></Route>
-      <Route path="/products"><Shell><Products /></Shell></Route>
+      {/* أُدمجت في وحدة المخزون (InventoryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
+      <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
-      <Route path="/categories"><Shell><RequireRole roles={["admin","manager"]}><Categories /></RequireRole></Shell></Route>
-      <Route path="/barcode-labels"><Shell><BarcodeLabels /></Shell></Route>
-      <Route path="/invoices"><Shell><Invoices /></Shell></Route>
+      <Route path="/categories"><Redirect to="/inventory?tab=categories" /></Route>
+      <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
+      <Route path="/invoices"><Shell><SalesHub /></Shell></Route>
       <Route path="/sales/new"><Shell><SalesInvoiceNew /></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
-      <Route path="/quotations"><Shell><Quotations /></Shell></Route>
+      <Route path="/quotations"><Redirect to="/invoices?tab=quotations" /></Route>
       <Route path="/quotations/new"><Shell><QuotationNew /></Shell></Route>
       <Route path="/quotations/:id"><Shell><QuotationDetail /></Shell></Route>
-      <Route path="/customers"><Shell><Customers /></Shell></Route>
+      <Route path="/customers"><Shell><CustomersHub /></Shell></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
       <Route path="/sales-returns/new"><Shell><SalesReturnNew /></Shell></Route>
-      <Route path="/sales-returns"><Shell><SalesReturns /></Shell></Route>
+      <Route path="/sales-returns"><Redirect to="/invoices?tab=returns" /></Route>
       <Route path="/purchase-returns/new"><Shell><PurchaseReturnNew /></Shell></Route>
-      <Route path="/purchase-returns"><Shell><PurchaseReturns /></Shell></Route>
-      <Route path="/purchases"><Shell><Purchases /></Shell></Route>
+      <Route path="/purchase-returns"><Redirect to="/purchases?tab=returns" /></Route>
+      <Route path="/purchases"><Shell><PurchasesHub /></Shell></Route>
       <Route path="/purchases/new"><Shell><PurchaseNew /></Shell></Route>
       <Route path="/purchases/:id/receive"><Shell><PurchaseReceive /></Shell></Route>
-      <Route path="/inventory"><Shell><Inventory /></Shell></Route>
-      <Route path="/stocktakes"><Shell><Stocktakes /></Shell></Route>
+      <Route path="/inventory"><Shell><InventoryHub /></Shell></Route>
+      <Route path="/stocktakes"><Redirect to="/inventory?tab=stocktakes" /></Route>
       <Route path="/stocktakes/new"><Shell><StocktakeNew /></Shell></Route>
       <Route path="/stocktakes/:id/review"><Shell><StocktakeReview /></Shell></Route>
       <Route path="/stocktakes/:id/report"><Shell><StocktakeReport /></Shell></Route>
       <Route path="/stocktakes/:id/sheets"><Shell><StocktakeCountSheets /></Shell></Route>
       <Route path="/stocktakes/:id"><Shell><StocktakeMonitor /></Shell></Route>
-      <Route path="/inventory-movements"><Shell><InventoryMovements /></Shell></Route>
-      <Route path="/transfers"><Shell><Transfers /></Shell></Route>
-      <Route path="/work-orders"><Shell><WorkOrders /></Shell></Route>
+      <Route path="/inventory-movements"><Redirect to="/inventory?tab=movements" /></Route>
+      <Route path="/transfers"><Redirect to="/inventory?tab=transfers" /></Route>
+      <Route path="/work-orders"><Shell><PrintHub /></Shell></Route>
       <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
       {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
       <Route path="/work-orders/reception"><Redirect to="/pos?mode=RECEPTION" /></Route>
-      <Route path="/work-orders/station"><Shell><RequireRole roles={["admin","manager","print_operator","cashier"]}><WorkOrderStation /></RequireRole></Shell></Route>
-      {/* شَريحة #5: صَندوق الوارد المُوحَّد — كاشير/مدير/أدمن. */}
-      <Route path="/inbox"><Shell><RequireRole roles={["admin","manager","cashier"]}><Inbox /></RequireRole></Shell></Route>
-      {/* شَريحة #6: إدارة tokens التَكاملات — أدمن فَقط. */}
-      <Route path="/settings/integrations"><Shell><RequireRole roles={["admin"]}><IntegrationsSettings /></RequireRole></Shell></Route>
+      <Route path="/work-orders/station"><Redirect to="/work-orders?tab=station" /></Route>
+      <Route path="/inbox"><Redirect to="/invoices?tab=inbox" /></Route>
+      <Route path="/settings/integrations"><Redirect to="/settings?tab=integrations" /></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
-      <Route path="/production"><Shell><Production /></Shell></Route>
+      <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
-      <Route path="/production-recipes"><Shell><ProductionRecipes /></Shell></Route>
-      <Route path="/assets"><Shell><Assets /></Shell></Route>
+      <Route path="/production-recipes"><Redirect to="/work-orders?tab=recipes" /></Route>
+      <Route path="/assets"><Shell><RequireRole roles={["admin","manager"]}><AssetsHub /></RequireRole></Shell></Route>
       <Route path="/assets/new"><Shell><AssetNew /></Shell></Route>
-      <Route path="/assets/register"><Shell><AssetRegister /></Shell></Route>
-      <Route path="/assets/custody-report"><Shell><AssetCustodyReport /></Shell></Route>
-      <Route path="/assets/disposal-log"><Shell><AssetDisposalLog /></Shell></Route>
+      <Route path="/assets/register"><Redirect to="/assets?tab=register" /></Route>
+      <Route path="/assets/custody-report"><Redirect to="/assets?tab=custody" /></Route>
+      <Route path="/assets/disposal-log"><Redirect to="/assets?tab=disposal" /></Route>
       <Route path="/assets/:id/edit"><Shell><AssetEdit /></Shell></Route>
       <Route path="/assets/:id"><Shell><AssetDetail /></Shell></Route>
-      <Route path="/hr/employees"><Shell><Employees /></Shell></Route>
+      <Route path="/hr"><Shell><RequireRole roles={["admin","manager"]}><HrHub /></RequireRole></Shell></Route>
+      <Route path="/hr/employees"><Redirect to="/hr?tab=employees" /></Route>
       <Route path="/hr/employees/new"><Shell><EmployeeNew /></Shell></Route>
       <Route path="/hr/employees/:id/edit"><Shell><EmployeeNew /></Shell></Route>
       <Route path="/hr/employees/:id"><Shell><EmployeeDetail /></Shell></Route>
-      <Route path="/hr/attendance"><Shell><Attendance /></Shell></Route>
-      <Route path="/hr/payroll"><Shell><Payroll /></Shell></Route>
-      <Route path="/hr/leaves"><Shell><Leaves /></Shell></Route>
-      <Route path="/hr/recruitment"><Shell><Recruitment /></Shell></Route>
-      <Route path="/hr/devices"><Shell><HrDevices /></Shell></Route>
-      <Route path="/hr/promotions"><Shell><Promotions /></Shell></Route>
-      <Route path="/expenses"><Shell><Expenses /></Shell></Route>
+      <Route path="/hr/attendance"><Redirect to="/hr?tab=attendance" /></Route>
+      <Route path="/hr/payroll"><Redirect to="/hr?tab=payroll" /></Route>
+      <Route path="/hr/leaves"><Redirect to="/hr?tab=leaves" /></Route>
+      <Route path="/hr/recruitment"><Redirect to="/hr?tab=recruitment" /></Route>
+      <Route path="/hr/devices"><Redirect to="/hr?tab=devices" /></Route>
+      <Route path="/hr/promotions"><Redirect to="/hr?tab=promotions" /></Route>
+      {/* أُدمجت في وحدة الخزينة (TreasuryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
+      <Route path="/expenses"><Redirect to="/treasury?tab=expenses" /></Route>
       <Route path="/expenses/new"><Shell><ExpenseNew /></Shell></Route>
-      <Route path="/vouchers"><Shell><Vouchers /></Shell></Route>
+      <Route path="/vouchers"><Redirect to="/treasury?tab=vouchers" /></Route>
       <Route path="/vouchers/receipt/new"><Shell><VoucherReceiptNew /></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
-      <Route path="/shifts"><Shell><Shifts /></Shell></Route>
-      <Route path="/treasury"><Shell><Treasury /></Shell></Route>
-      <Route path="/treasury/transfers"><Shell><TreasuryTransfers /></Shell></Route>
-      <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryHub /></RequireRole></Shell></Route>
-      <Route path="/delivery/parties"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryParties /></RequireRole></Shell></Route>
+      <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
+      <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
+      <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
+      <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>
+      <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
       <Route path="/reports"><Shell><ReportsCenter /></Shell></Route>
       <Route path="/reports/profit-loss"><Shell><RequireRole roles={["admin","manager"]}><ProfitLoss /></RequireRole></Shell></Route>
       <Route path="/reports/general-ledger"><Shell><RequireRole roles={["admin","manager"]}><GeneralLedger /></RequireRole></Shell></Route>
@@ -297,31 +257,34 @@ export default function App() {
       <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager"]}><LeaveReport /></RequireRole></Shell></Route>
       <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager"]}><HrChangesReport /></RequireRole></Shell></Route>
       <Route path="/reports/executive"><Shell><RequireRole roles={["admin","manager"]}><ExecutiveDashboard /></RequireRole></Shell></Route>
-      <Route path="/sales-report"><Shell><SalesReport /></Shell></Route>
+      <Route path="/sales-report"><Redirect to="/invoices?tab=report" /></Route>
       <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager"]}><SalesReportsHub /></RequireRole></Shell></Route>
       <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager"]}><AgingReportsHub /></RequireRole></Shell></Route>
-      <Route path="/ar-aging"><Shell><ARAging /></Shell></Route>
-      <Route path="/customers-statement"><Shell><CustomerStatement /></Shell></Route>
-      <Route path="/suppliers"><Shell><Suppliers /></Shell></Route>
+      {/* أُدمجت في وحدة العملاء (CustomersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
+      <Route path="/ar-aging"><Redirect to="/customers?tab=aging" /></Route>
+      <Route path="/customers-statement"><Redirect to="/customers?tab=statement" /></Route>
+      <Route path="/suppliers"><Shell><SuppliersHub /></Shell></Route>
       <Route path="/suppliers/new"><Shell><SupplierNew /></Shell></Route>
       <Route path="/suppliers/:id/edit"><Shell><SupplierEdit /></Shell></Route>
-      <Route path="/ap-aging"><Shell><APAging /></Shell></Route>
-      <Route path="/suppliers-statement"><Shell><SupplierStatement /></Shell></Route>
-      <Route path="/kiosk-devices"><Shell><RequireRole roles={["admin","manager"]}><KioskDevices /></RequireRole></Shell></Route>
-      <Route path="/users"><Shell><RequireRole roles={["admin","manager"]}><Users /></RequireRole></Shell></Route>
+      {/* أُدمجت في وحدة الموردين (SuppliersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
+      <Route path="/ap-aging"><Redirect to="/suppliers?tab=aging" /></Route>
+      <Route path="/suppliers-statement"><Redirect to="/suppliers?tab=statement" /></Route>
+      <Route path="/kiosk-devices"><Redirect to="/settings?tab=devices" /></Route>
+      <Route path="/users"><Redirect to="/settings?tab=users" /></Route>
       <Route path="/users/new"><Shell><RequireRole roles={["admin","manager"]}><UserNew /></RequireRole></Shell></Route>
       <Route path="/users/:id/edit"><Shell><RequireRole roles={["admin","manager"]}><UserEdit /></RequireRole></Shell></Route>
-      <Route path="/roles"><Shell><RequireRole roles={["admin"]}><Roles /></RequireRole></Shell></Route>
+      <Route path="/roles"><Redirect to="/settings?tab=roles" /></Route>
       <Route path="/roles/new"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/account"><Shell><Account /></Shell></Route>
-      <Route path="/audit"><Shell><RequireRole roles={["admin","manager"]}><AuditLogs /></RequireRole></Shell></Route>
-      <Route path="/period-lock"><Shell><RequireRole roles={["admin"]}><PeriodLock /></RequireRole></Shell></Route>
-      <Route path="/credit-approvals"><Shell><RequireRole roles={["admin","manager"]}><CreditApprovals /></RequireRole></Shell></Route>
-      <Route path="/year-end"><Shell><RequireRole roles={["admin"]}><YearEnd /></RequireRole></Shell></Route>
-      <Route path="/wip-report"><Shell><RequireRole roles={["admin","manager"]}><WIPReport /></RequireRole></Shell></Route>
-      <Route path="/reconcile"><Shell><RequireRole roles={["admin","manager"]}><Reconcile /></RequireRole></Shell></Route>
-      <Route path="/settings"><Shell><RequireRole roles={["admin","manager"]}><Settings /></RequireRole></Shell></Route>
+      <Route path="/audit"><Redirect to="/settings?tab=audit" /></Route>
+      <Route path="/closing"><Shell><RequireRole roles={["admin","manager"]}><ClosingHub /></RequireRole></Shell></Route>
+      <Route path="/period-lock"><Redirect to="/closing?tab=period" /></Route>
+      <Route path="/credit-approvals"><Redirect to="/closing?tab=credit" /></Route>
+      <Route path="/year-end"><Redirect to="/closing?tab=yearend" /></Route>
+      <Route path="/wip-report"><Redirect to="/closing?tab=wip" /></Route>
+      <Route path="/reconcile"><Redirect to="/closing?tab=reconcile" /></Route>
+      <Route path="/settings"><Shell><RequireRole roles={["admin","manager"]}><AdminHub /></RequireRole></Shell></Route>
       <Route><Shell><NotFound /></Shell></Route>
     </Switch>
     </Suspense>

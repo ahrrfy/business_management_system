@@ -452,6 +452,7 @@ export default function InventoryMovements() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -541,6 +542,7 @@ export default function InventoryMovements() {
               )}
             </tbody>
           </table>
+          </div>
         </CardContent>
         <div className="flex items-center justify-between p-3 border-t">
           <span className="text-xs text-muted-foreground">
@@ -576,7 +578,7 @@ export default function InventoryMovements() {
           if (!v) resetDialog();
         }}
       >
-        <DialogContent className="sm:max-w-2xl" dir="rtl">
+        <DialogContent className="sm:max-w-3xl" dir="rtl">
           <DialogHeader>
             <DialogTitle>حركة مخزون يدوية</DialogTitle>
             <DialogDescription>
@@ -646,7 +648,7 @@ export default function InventoryMovements() {
             )}
 
             {/* Form grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
               <div className="space-y-1">
                 <Label>النوع *</Label>
                 <select
@@ -705,7 +707,7 @@ export default function InventoryMovements() {
                 </select>
               </div>
 
-              <div className="space-y-1 md:col-span-2">
+              <div className="space-y-1 md:col-span-2 lg:col-span-3">
                 <Label>ملاحظات (اختياري — حتى 500 حرف)</Label>
                 <Textarea
                   rows={2}

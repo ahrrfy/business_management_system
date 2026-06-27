@@ -394,7 +394,7 @@ export default function WorkOrderNew() {
   const customerNeedsPhone = customerSel.isNew && !customerSel.phone;
 
   return (
-    <div className="space-y-4 max-w-6xl">
+    <div className="space-y-4">
       <PageHeader
         title="طلب خدمة جديد"
         actions={
@@ -438,53 +438,56 @@ export default function WorkOrderNew() {
         </CardContent>
       </Card>
 
-      {/* ── (١) قناة الاستلام ─────────────────────────────────── */}
-      <Card id="sec-channel">
-        <CardHeader><CardTitle className="text-base">قناة الاستلام</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap gap-2">
-            {CHANNELS.map((c) => (
-              <button
-                key={c.v}
-                type="button"
-                onClick={() => setChannel(c.v)}
-                className={cn(
-                  "h-9 px-3 rounded-md border text-sm flex items-center gap-1.5 transition-colors",
-                  channel === c.v ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent"
+      {/* ── (١)+(٢) القناة + العميل — بطاقتان متجاورتان ──────── */}
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
+        {/* ── (١) قناة الاستلام ─────────────────────────────────── */}
+        <Card id="sec-channel">
+          <CardHeader><CardTitle className="text-base">قناة الاستلام</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              {CHANNELS.map((c) => (
+                <button
+                  key={c.v}
+                  type="button"
+                  onClick={() => setChannel(c.v)}
+                  className={cn(
+                    "h-9 px-3 rounded-md border text-sm flex items-center gap-1.5 transition-colors",
+                    channel === c.v ? "bg-primary text-primary-foreground border-primary" : "hover:bg-accent"
+                  )}
+                >
+                  <span>{c.icon}</span>
+                  <span>{c.label}</span>
+                </button>
+              ))}
+            </div>
+            {channel !== "WALK_IN" && (
+              <div className="space-y-1 max-w-md">
+                <Label htmlFor="handle">معرّف القناة</Label>
+                {(channel === "WHATSAPP" || channel === "PHONE") ? (
+                  <IntlPhoneInput id="handle" value={channelHandle} onChange={setChannelHandle} />
+                ) : (
+                  <Input id="handle" value={channelHandle} onChange={(e) => setChannelHandle(e.target.value)} placeholder={channelDef.placeholder} dir={channelDef.dir} />
                 )}
-              >
-                <span>{c.icon}</span>
-                <span>{c.label}</span>
-              </button>
-            ))}
-          </div>
-          {channel !== "WALK_IN" && (
-            <div className="space-y-1 max-w-md">
-              <Label htmlFor="handle">معرّف القناة</Label>
-              {(channel === "WHATSAPP" || channel === "PHONE") ? (
-                <IntlPhoneInput id="handle" value={channelHandle} onChange={setChannelHandle} />
-              ) : (
-                <Input id="handle" value={channelHandle} onChange={(e) => setChannelHandle(e.target.value)} placeholder={channelDef.placeholder} dir={channelDef.dir} />
-              )}
-            </div>
-          )}
-        </CardContent>
-      </Card>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
-      {/* ── (٢) العميل الذكي ─────────────────────────────────── */}
-      <Card id="sec-customer">
-        <CardHeader><CardTitle className="text-base">العميل</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <SmartCustomerInput value={customerSel} onChange={setCustomerSel} />
-          {customerNeedsPhone && (
-            <div className="space-y-1 max-w-md">
-              <Label htmlFor="newPh">رقم الهاتف للعميل الجديد</Label>
-              <IntlPhoneInput id="newPh" value={newCustomerPhone} onChange={setNewCustomerPhone} />
-              <p className="text-[11px] text-muted-foreground">سيُحفظ مع العميل الجديد تلقائياً عند حفظ الأمر.</p>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+        {/* ── (٢) العميل الذكي ─────────────────────────────────── */}
+        <Card id="sec-customer">
+          <CardHeader><CardTitle className="text-base">العميل</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <SmartCustomerInput value={customerSel} onChange={setCustomerSel} />
+            {customerNeedsPhone && (
+              <div className="space-y-1 max-w-md">
+                <Label htmlFor="newPh">رقم الهاتف للعميل الجديد</Label>
+                <IntlPhoneInput id="newPh" value={newCustomerPhone} onChange={setNewCustomerPhone} />
+                <p className="text-[11px] text-muted-foreground">سيُحفظ مع العميل الجديد تلقائياً عند حفظ الأمر.</p>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
 
       {/* ── (٣) المنتجات والخدمات — نقطة بيع مصغّرة ─────────── */}
       <Card id="sec-cart">
@@ -550,7 +553,7 @@ export default function WorkOrderNew() {
           </div>
 
           {cart.length > 0 && (
-            <div className="rounded-md border overflow-hidden">
+            <div className="rounded-md border overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
@@ -617,12 +620,12 @@ export default function WorkOrderNew() {
       {/* ── (٤) خدمة التخصيص ──────────────────────────────────── */}
       <Card id="sec-service">
         <CardHeader><CardTitle className="text-base">خدمة التخصيص (المطبعة/التعديل)</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1 md:col-span-2">
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          <div className="space-y-1 md:col-span-2 lg:col-span-3">
             <Label htmlFor="title">عنوان الأمر</Label>
             <Input id="title" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="مثال: درع تكريمي بشعار الشركة" />
           </div>
-          <div className="space-y-1 md:col-span-2">
+          <div className="space-y-1 md:col-span-2 lg:col-span-3">
             <Label htmlFor="custom">نصّ التخصيص / تفاصيل العمل</Label>
             <Textarea id="custom" rows={3} value={customizationText} onChange={(e) => setCustomizationText(e.target.value)} placeholder="مثال: الاسم، الشعار، تاريخ التكريم…" />
           </div>
@@ -689,42 +692,45 @@ export default function WorkOrderNew() {
         </CardContent>
       </Card>
 
-      {/* ── (٥) صور نموذج العمل ──────────────────────────────── */}
-      <Card id="sec-images">
-        <CardHeader><CardTitle className="text-base">صور نموذج العمل المطلوب</CardTitle></CardHeader>
-        <CardContent>
-          <ImageUploader
-            value={designImages}
-            onChange={setDesignImages}
-            maxItems={10}
-            maxSizeMB={2}
-            singlePrimary={false}
-            hint="صور مرجعيّة من العميل لإرشاد عمليّة التصميم/التنفيذ."
-          />
-        </CardContent>
-      </Card>
+      {/* ── (٥)+(٦) الصور + التوصيل — بطاقتان متجاورتان ──────── */}
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
+        {/* ── (٥) صور نموذج العمل ──────────────────────────────── */}
+        <Card id="sec-images">
+          <CardHeader><CardTitle className="text-base">صور نموذج العمل المطلوب</CardTitle></CardHeader>
+          <CardContent>
+            <ImageUploader
+              value={designImages}
+              onChange={setDesignImages}
+              maxItems={10}
+              maxSizeMB={2}
+              singlePrimary={false}
+              hint="صور مرجعيّة من العميل لإرشاد عمليّة التصميم/التنفيذ."
+            />
+          </CardContent>
+        </Card>
 
-      {/* ── (٦) التوصيل ──────────────────────────────────────── */}
-      <Card id="sec-delivery">
-        <CardHeader><CardTitle className="text-base">التوصيل</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex items-center gap-3">
-            <Switch checked={hasDelivery} onCheckedChange={setHasDelivery} id="delivery" />
-            <Label htmlFor="delivery" className="cursor-pointer">{hasDelivery ? "نعم — يحتاج توصيلاً" : "لا — استلام من المحل"}</Label>
-          </div>
-          <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4 transition-opacity", hasDelivery ? "opacity-100" : "opacity-50 pointer-events-none")}>
-            <div className="space-y-1 md:col-span-2">
-              <Label htmlFor="da">عنوان التوصيل</Label>
-              <Textarea id="da" rows={2} value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="بغداد، الكرادة، شارع …" />
+        {/* ── (٦) التوصيل ──────────────────────────────────────── */}
+        <Card id="sec-delivery">
+          <CardHeader><CardTitle className="text-base">التوصيل</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex items-center gap-3">
+              <Switch checked={hasDelivery} onCheckedChange={setHasDelivery} id="delivery" />
+              <Label htmlFor="delivery" className="cursor-pointer">{hasDelivery ? "نعم — يحتاج توصيلاً" : "لا — استلام من المحل"}</Label>
             </div>
-            <div className="space-y-1">
-              <Label htmlFor="dc">تكلفة خدمة التوصيل (د.ع)</Label>
-              <Input id="dc" dir="ltr" value={deliveryCost} onChange={(e) => setDeliveryCost(e.target.value)} placeholder="0" />
-              <p className="text-[11px] text-muted-foreground">تُضاف للإجمالي النهائي.</p>
+            <div className={cn("grid grid-cols-1 md:grid-cols-2 gap-4 transition-opacity", hasDelivery ? "opacity-100" : "opacity-50 pointer-events-none")}>
+              <div className="space-y-1 md:col-span-2">
+                <Label htmlFor="da">عنوان التوصيل</Label>
+                <Textarea id="da" rows={2} value={deliveryAddress} onChange={(e) => setDeliveryAddress(e.target.value)} placeholder="بغداد، الكرادة، شارع …" />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="dc">تكلفة خدمة التوصيل (د.ع)</Label>
+                <Input id="dc" dir="ltr" value={deliveryCost} onChange={(e) => setDeliveryCost(e.target.value)} placeholder="0" />
+                <p className="text-[11px] text-muted-foreground">تُضاف للإجمالي النهائي.</p>
+              </div>
             </div>
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      </div>
 
       {/* ── (٧) الدفع ────────────────────────────────────────── */}
       <Card id="sec-payment">

@@ -251,7 +251,7 @@ export default function UserEdit() {
   const isActive = !!u.isActive;
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <PageHeader
         title="تعديل مستخدم"
         actions={<Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
@@ -259,7 +259,7 @@ export default function UserEdit() {
 
       <Card>
         <CardHeader><CardTitle className="text-base">بطاقة المستخدم</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+        <CardContent className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">المعرّف</div><div className="font-mono" dir="ltr">#{Number(u.id)}</div></div>
           <div><div className="text-muted-foreground text-xs">اسم المستخدم</div><div className="font-mono" dir="ltr">{(u as { username?: string | null }).username || "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">الدور الحالي</div><div>{ROLE_LABEL[u.role] ?? u.role}</div></div>
@@ -285,6 +285,7 @@ export default function UserEdit() {
         </CardContent>
       </Card>
 
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
         <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -356,6 +357,7 @@ export default function UserEdit() {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       {/* الصلاحيات */}
       <Card>
@@ -412,6 +414,7 @@ export default function UserEdit() {
         <Link href="/users"><Button variant="ghost">رجوع</Button></Link>
       </div>
 
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       {/* إعادة تعيين كلمة المرور */}
       <Card>
         <CardHeader><CardTitle className="text-base">إعادة تعيين كلمة المرور</CardTitle></CardHeader>
@@ -470,6 +473,7 @@ export default function UserEdit() {
           </Button>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

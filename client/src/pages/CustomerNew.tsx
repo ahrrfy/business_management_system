@@ -91,12 +91,13 @@ export default function CustomerNew() {
   const wa = whatsappLink(phone);
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">إضافة عميل</h1>
         <Link href="/customers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
       </div>
 
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
         <CardHeader>
           <CardTitle className="text-base">البيانات الأساسية</CardTitle>
@@ -211,6 +212,7 @@ export default function CustomerNew() {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex gap-2">

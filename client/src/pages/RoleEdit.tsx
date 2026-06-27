@@ -95,7 +95,7 @@ export default function RoleEdit() {
   if (isEdit && detail.isLoading) return <div className="p-6 text-center text-muted-foreground">جارٍ تحميل الدور…</div>;
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">{isEdit ? "تعديل دور" : "إضافة دور مخصّص"}</h1>
         <Link href="/roles" className="text-sm text-muted-foreground">← رجوع للأدوار</Link>
@@ -103,7 +103,7 @@ export default function RoleEdit() {
 
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات الدور</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
           <div className="space-y-1">
             <Label htmlFor="label">اسم الدور *</Label>
             <Input id="label" value={label} onChange={(e) => setLabel(e.target.value)} placeholder="مثال: مشرف فرع، مسؤول تحصيل" />
@@ -117,7 +117,7 @@ export default function RoleEdit() {
               تحدّد البوّابات الخشنة ورؤية التكلفة{baseInfo?.canSeeCost ? " (يرى التكلفة)" : " (لا يرى التكلفة)"}. ابدأ من قالبها ثم خصّص.
             </p>
           </div>
-          <div className="space-y-1 md:col-span-2">
+          <div className="space-y-1">
             <Label htmlFor="desc">وصف (اختياري)</Label>
             <Input id="desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="وصف موجز لمهام هذا الدور" />
           </div>

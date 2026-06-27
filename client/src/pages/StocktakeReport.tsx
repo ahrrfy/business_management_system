@@ -233,7 +233,7 @@ export default function StocktakeReport() {
   ].filter(Boolean).join("\n");
 
   return (
-    <div className="space-y-4 max-w-5xl">
+    <div className="space-y-4">
       {/* شريط الإجراءات */}
       <PageHeader
         title={
@@ -294,7 +294,7 @@ export default function StocktakeReport() {
       )}
 
       {/* الوثيقة */}
-      <div className="mx-auto rounded-xl border bg-card p-8 shadow-sm">
+      <div className="mx-auto w-full max-w-6xl rounded-xl border bg-card p-6 shadow-sm sm:p-8">
         {/* ترويسة */}
         <div className="flex items-start justify-between border-b-2 border-foreground pb-4">
           <div className="flex items-center gap-3">
@@ -311,7 +311,7 @@ export default function StocktakeReport() {
         </div>
 
         {/* بيانات الجلسة */}
-        <dl className="mt-4 grid grid-cols-2 gap-x-8 gap-y-1.5 text-sm sm:grid-cols-3">
+        <dl className="mt-4 grid grid-cols-1 gap-x-8 gap-y-1.5 text-sm sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {[
             ["الجلسة", s.name],
             ["النطاق", scopeLabel],
@@ -348,7 +348,8 @@ export default function StocktakeReport() {
 
         {/* أولاً — الفروقات المُسوّاة */}
         <h3 className="mb-2 mt-6 text-sm font-bold">أولاً — الفروقات المُسوّاة ({fmtInt(calc.adjusted.length)})</h3>
-        <table className="w-full border-collapse text-sm">
+        <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] border-collapse text-sm">
           <thead>
             <tr className="border-y-2 border-foreground text-right text-xs">
               <th className="py-1.5 pl-2 font-bold">المنتج</th>
@@ -395,12 +396,14 @@ export default function StocktakeReport() {
             </tfoot>
           )}
         </table>
+        </div>
 
         {/* ثانياً — فروقات أُبقي رصيدها */}
         {calc.kept.length > 0 && (
           <>
             <h3 className="mb-2 mt-5 text-sm font-bold">ثانياً — فروقات أُبقي رصيدها الدفتري ({fmtInt(calc.kept.length)})</h3>
-            <table className="w-full border-collapse text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full min-w-[480px] border-collapse text-sm">
               <tbody>
                 {calc.kept.map((r) => (
                   <tr key={r.variantId} className="border-b">
@@ -413,6 +416,7 @@ export default function StocktakeReport() {
                 ))}
               </tbody>
             </table>
+            </div>
           </>
         )}
 
@@ -428,7 +432,8 @@ export default function StocktakeReport() {
         {calc.byReason.length > 0 && (
           <>
             <h3 className="mb-2 mt-6 text-sm font-bold">تحليل الفروقات حسب السبب (الانكماش)</h3>
-            <table className="w-full max-w-lg border-collapse text-sm">
+            <div className="overflow-x-auto">
+            <table className="w-full max-w-lg min-w-[420px] border-collapse text-sm">
               <thead>
                 <tr className="border-y-2 border-foreground text-right text-xs">
                   <th className="py-1.5 pl-2 font-bold">السبب</th>
@@ -448,6 +453,7 @@ export default function StocktakeReport() {
                 ))}
               </tbody>
             </table>
+            </div>
           </>
         )}
 

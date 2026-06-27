@@ -253,13 +253,14 @@ export default function EmployeeNew() {
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">{isEdit ? "تعديل موظف" : "إضافة موظف"}</h1>
         <Link href="/hr/employees" className="text-sm text-muted-foreground">← رجوع للموظفين</Link>
       </div>
 
-      <Card>
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
+      <Card className="lg:col-span-2">
         <CardHeader><CardTitle className="text-base">الاسم والصورة</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3 md:col-span-2">
@@ -312,7 +313,7 @@ export default function EmployeeNew() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="lg:col-span-2">
         <CardHeader><CardTitle className="text-base">الوظيفة والأجر</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
           <div className="space-y-1"><Label htmlFor="dept">القسم</Label>
@@ -354,7 +355,7 @@ export default function EmployeeNew() {
 
       {/* حساب النظام — admin فقط. وضع الإضافة: ٣ خيارات. */}
       {isAdmin && !isEdit && (
-        <Card>
+        <Card className="lg:col-span-2">
           <CardHeader><CardTitle className="text-base">حساب النظام</CardTitle></CardHeader>
           <CardContent className="space-y-4">
             <p className="text-xs text-muted-foreground">يستخدم بعض الموظفين النظام والبعض لا — اختر ما يناسب هذا الموظف.</p>
@@ -379,7 +380,7 @@ export default function EmployeeNew() {
 
       {/* حساب النظام — admin فقط. وضع التعديل: عرض/فكّ الربط أو ربط/إنشاء. */}
       {isAdmin && isEdit && (
-        <Card>
+        <Card className="lg:col-span-2">
           <CardHeader><CardTitle className="text-base">حساب النظام</CardTitle></CardHeader>
           <CardContent className="space-y-3">
             {existing.data?.linkedUser ? (
@@ -421,7 +422,7 @@ export default function EmployeeNew() {
         </Card>
       )}
 
-      <Card>
+      <Card className="lg:col-span-2">
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle className="text-base">المؤهلات الدراسية</CardTitle>
           <Button variant="outline" size="sm" onClick={addEdu}>+ إضافة مؤهل</Button>
@@ -452,6 +453,7 @@ export default function EmployeeNew() {
           <div className="space-y-1"><Label htmlFor="slb">رصيد الإجازة المرضية</Label><Input id="slb" dir="ltr" inputMode="numeric" value={form.sickLeaveBalance} onChange={(e) => set({ sickLeaveBalance: e.target.value.replace(/\D/g, "") })} /></div>
         </CardContent>
       </Card>
+      </div>
 
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

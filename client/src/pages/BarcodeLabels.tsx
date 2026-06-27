@@ -255,102 +255,120 @@ export default function BarcodeLabels() {
   const totalLabels = queue.reduce((s, q) => s + q.count, 0);
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    // عرض كامل ديناميكي (بلا max-w): الإعدادات والمعاينة جنباً إلى جنب على الشاشات الواسعة،
+    // وقائمة الطباعة بعرض كامل ⇒ توزيع أفقيّ يقلّل الطول والتمرير. يتراصف عمودياً على الموبايل.
+    <div className="space-y-4">
       <PageHeader
         title="طباعة ملصقات الباركود"
         description="ابحث عن منتج وأضفه. للمنتجات بلا باركود مصنّعي يُولَّد باركود داخلي (ALR…) — احفظه ليصبح قابلاً للمسح في الكاشير، ثم اطبع الملصقات."
         actions={<Link href="/products" className="text-sm text-muted-foreground">المنتجات ←</Link>}
       />
 
-      {/* مقاس الملصق + طابعة الملصقات */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">مقاس الملصق والطابعة</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label className="text-sm">المقاس (عرض الطابعة الأقصى 58مم)</Label>
-            <div className="flex flex-wrap gap-2">
-              {LABEL_PRESETS.map((p) => (
-                <Button
-                  key={p.id}
-                  type="button"
-                  variant={activePreset === p.id ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => applySize(p.size)}
-                >
-                  {p.label}
-                </Button>
-              ))}
-              <span className={`inline-flex items-center px-2 text-xs rounded-md border ${activePreset === "custom" ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>
-                مخصّص:
-              </span>
-              <div className="flex items-center gap-1" dir="ltr">
-                <Input className="h-8 w-16 text-center" inputMode="numeric" value={wStr}
-                  onChange={(e) => setWStr(e.target.value)} onBlur={commitCustom}
-                  onKeyDown={(e) => { if (e.key === "Enter") commitCustom(); }} aria-label="العرض مم" />
-                <span className="text-muted-foreground text-sm">×</span>
-                <Input className="h-8 w-16 text-center" inputMode="numeric" value={hStr}
-                  onChange={(e) => setHStr(e.target.value)} onBlur={commitCustom}
-                  onKeyDown={(e) => { if (e.key === "Enter") commitCustom(); }} aria-label="الارتفاع مم" />
-                <span className="text-muted-foreground text-sm">مم</span>
+      {/* الإعدادات | المعاينة — عمودان على ≥lg */}
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
+        {/* مقاس الملصق + خيارات المحتوى + الطابعة */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">مقاس الملصق والطابعة</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-2">
+              <Label className="text-sm">المقاس (عرض الطابعة الأقصى 58مم)</Label>
+              <div className="flex flex-wrap gap-2">
+                {LABEL_PRESETS.map((p) => (
+                  <Button
+                    key={p.id}
+                    type="button"
+                    variant={activePreset === p.id ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => applySize(p.size)}
+                  >
+                    {p.label}
+                  </Button>
+                ))}
+                <span className={`inline-flex items-center px-2 text-xs rounded-md border ${activePreset === "custom" ? "border-primary text-primary" : "border-transparent text-muted-foreground"}`}>
+                  مخصّص:
+                </span>
+                <div className="flex items-center gap-1" dir="ltr">
+                  <Input className="h-8 w-16 text-center" inputMode="numeric" value={wStr}
+                    onChange={(e) => setWStr(e.target.value)} onBlur={commitCustom}
+                    onKeyDown={(e) => { if (e.key === "Enter") commitCustom(); }} aria-label="العرض مم" />
+                  <span className="text-muted-foreground text-sm">×</span>
+                  <Input className="h-8 w-16 text-center" inputMode="numeric" value={hStr}
+                    onChange={(e) => setHStr(e.target.value)} onBlur={commitCustom}
+                    onKeyDown={(e) => { if (e.key === "Enter") commitCustom(); }} aria-label="الارتفاع مم" />
+                  <span className="text-muted-foreground text-sm">مم</span>
+                </div>
+              </div>
+              <p className="text-xs text-muted-foreground">المقاس الحالي: {size.widthMm} × {size.heightMm} مم (يُطبَّق في كل شاشات الطباعة).</p>
+            </div>
+
+            {/* خيارات محتوى الملصق (تتفاعل مع المعاينة) */}
+            <div className="flex flex-wrap gap-4 border-t pt-3 text-sm">
+              <label className="flex items-center gap-1"><input type="checkbox" checked={showName} onChange={(e) => setShowName(e.target.checked)} /> اسم المنتج</label>
+              <label className="flex items-center gap-1"><input type="checkbox" checked={showPrice} onChange={(e) => setShowPrice(e.target.checked)} /> السعر</label>
+            </div>
+
+            {/* طابعة الملصقات */}
+            <div className="border-t pt-3 space-y-2">
+              <div className="flex items-center gap-3 flex-wrap">
+                {!usbSupported ? (
+                  <span className="text-xs text-muted-foreground">المتصفّح لا يدعم الطباعة المباشرة (WebUSB) — ستُفتح نافذة الطباعة. استخدم Chrome/Edge للطباعة الصامتة.</span>
+                ) : labelPrinterReady ? (
+                  <>
+                    <span className="text-sm text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-4" />طابعة الملصقات مربوطة</span>
+                    <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>تغيير الطابعة</Button>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm text-muted-foreground">طابعة الملصقات غير مربوطة (ستُفتح نافذة الطباعة عبر تعريف Windows).</span>
+                    <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>ربط طابعة الملصقات</Button>
+                  </>
+                )}
+                <Button type="button" variant="ghost" size="sm" onClick={testPrint}>طباعة ملصق تجريبي</Button>
+              </div>
+              <p className="text-xs text-muted-foreground">
+                للملصقات المقصوصة (die-cut): الأفضل تركها <span className="font-medium">غير مربوطة</span> لتُطبع عبر تعريف Windows الذي يحاذي فجوات الملصقات تلقائياً. اربط الطابعة (WebUSB) للورق المتّصل (continuous) أو للطباعة الصامتة السريعة.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* معاينة حيّة بنفس تصميم الطباعة تماماً (HTML/SVG مباشر بلا تحويل لصورة) */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">معاينة حيّة</CardTitle></CardHeader>
+          <CardContent>
+            <div className="flex items-start gap-4 flex-wrap">
+              {/* dir="ltr" + position:relative ⇒ يُثبَّت iframe في الزاوية العليا اليسرى للحاوية حتى داخل
+                  مستندٍ RTL؛ بدونه كان iframe (block أضيق) يُحاذى لليمين فيُسرّب التكبير محتواه خارج
+                  الحدّ الأيمن وتُقَصّ المعاينة بصرياً. overflow:hidden احترازي على الحوافّ الكسرية. */}
+              <div
+                dir="ltr"
+                className="shrink-0 rounded bg-white relative overflow-hidden"
+                style={{ width: pxW * PREVIEW_ZOOM, height: pxH * PREVIEW_ZOOM, outline: "1px dashed var(--border)" }}
+              >
+                <iframe
+                  title="معاينة الملصق"
+                  srcDoc={previewHtml}
+                  scrolling="no"
+                  style={{
+                    width: pxW, height: pxH, border: 0, display: "block", background: "#fff",
+                    position: "absolute", top: 0, left: 0,
+                    transform: `scale(${PREVIEW_ZOOM})`, transformOrigin: "top left",
+                  }}
+                />
+              </div>
+              <div className="text-xs text-muted-foreground space-y-1 min-w-[12rem] flex-1">
+                <p className="font-medium text-foreground">معاينة فعلية بمقاس الملصق (مكبّرة ×{PREVIEW_ZOOM})</p>
+                <p>التصميم نفسه الذي يُطبع تماماً: اسمٌ يتكيّف مع طوله، قضبان تملأ العرض، وخطوط ثقيلة واضحة بلا خطوط رفيعة.</p>
+                <p>تُطبع مباشرةً (HTML/SVG) بلا تحويلٍ إلى صورة. عدّل المقاس أو خياري الاسم/السعر لتُحدَّث المعاينة فوراً.</p>
               </div>
             </div>
-            <p className="text-xs text-muted-foreground">المقاس الحالي: {size.widthMm} × {size.heightMm} مم (يُطبَّق في كل شاشات الطباعة).</p>
-          </div>
+          </CardContent>
+        </Card>
+      </div>
 
-          {/* معاينة حيّة بنفس تصميم الطباعة تماماً (HTML/SVG مباشر بلا تحويل لصورة) */}
-          <div className="flex items-start gap-4 flex-wrap border-t pt-3">
-            {/* dir="ltr" + position:relative ⇒ يُثبَّت iframe في الزاوية العليا اليسرى للحاوية حتى داخل
-                مستندٍ RTL؛ بدونه كان iframe (block أضيق) يُحاذى لليمين فيُسرّب التكبير محتواه خارج
-                الحدّ الأيمن وتُقَصّ المعاينة بصرياً. overflow:hidden احترازي على الحوافّ الكسرية. */}
-            <div
-              dir="ltr"
-              className="shrink-0 rounded bg-white relative overflow-hidden"
-              style={{ width: pxW * PREVIEW_ZOOM, height: pxH * PREVIEW_ZOOM, outline: "1px dashed var(--border)" }}
-            >
-              <iframe
-                title="معاينة الملصق"
-                srcDoc={previewHtml}
-                scrolling="no"
-                style={{
-                  width: pxW, height: pxH, border: 0, display: "block", background: "#fff",
-                  position: "absolute", top: 0, left: 0,
-                  transform: `scale(${PREVIEW_ZOOM})`, transformOrigin: "top left",
-                }}
-              />
-            </div>
-            <div className="text-xs text-muted-foreground space-y-1 min-w-[12rem] flex-1">
-              <p className="font-medium text-foreground">معاينة فعلية بمقاس الملصق (مكبّرة ×{PREVIEW_ZOOM})</p>
-              <p>التصميم نفسه الذي يُطبع تماماً: اسمٌ يتكيّف مع طوله، قضبان تملأ العرض، وخطوط ثقيلة واضحة بلا خطوط رفيعة.</p>
-              <p>تُطبع مباشرةً (HTML/SVG) بلا تحويلٍ إلى صورة. عدّل المقاس أو خياري الاسم/السعر لتُحدَّث المعاينة فوراً.</p>
-            </div>
-          </div>
-
-          <div className="border-t pt-3 space-y-2">
-            <div className="flex items-center gap-3 flex-wrap">
-              {!usbSupported ? (
-                <span className="text-xs text-muted-foreground">المتصفّح لا يدعم الطباعة المباشرة (WebUSB) — ستُفتح نافذة الطباعة. استخدم Chrome/Edge للطباعة الصامتة.</span>
-              ) : labelPrinterReady ? (
-                <>
-                  <span className="text-sm text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-4" />طابعة الملصقات مربوطة</span>
-                  <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>تغيير الطابعة</Button>
-                </>
-              ) : (
-                <>
-                  <span className="text-sm text-muted-foreground">طابعة الملصقات غير مربوطة (ستُفتح نافذة الطباعة عبر تعريف Windows).</span>
-                  <Button type="button" variant="outline" size="sm" onClick={pairLabelPrinter}>ربط طابعة الملصقات</Button>
-                </>
-              )}
-              <Button type="button" variant="ghost" size="sm" onClick={testPrint}>طباعة ملصق تجريبي</Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              للملصقات المقصوصة (die-cut): الأفضل تركها <span className="font-medium">غير مربوطة</span> لتُطبع عبر تعريف Windows الذي يحاذي فجوات الملصقات تلقائياً. اربط الطابعة (WebUSB) للورق المتّصل (continuous) أو للطباعة الصامتة السريعة.
-            </p>
-          </div>
-        </CardContent>
-      </Card>
-
+      {/* منطقة العمل: بحث + قائمة الطباعة — بعرض كامل */}
       <Card>
-        <CardHeader><CardTitle className="text-base">إضافة منتجات</CardTitle></CardHeader>
+        <CardHeader><CardTitle className="text-base">قائمة الطباعة ({totalLabels} ملصق)</CardTitle></CardHeader>
         <CardContent className="space-y-3">
           <div className="relative">
             <Input
@@ -396,90 +414,82 @@ export default function BarcodeLabels() {
             )}
           </div>
 
-          <div className="flex gap-4 text-sm">
-            <label className="flex items-center gap-1"><input type="checkbox" checked={showName} onChange={(e) => setShowName(e.target.checked)} /> اسم المنتج</label>
-            <label className="flex items-center gap-1"><input type="checkbox" checked={showPrice} onChange={(e) => setShowPrice(e.target.checked)} /> السعر</label>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50">
+                <tr>
+                  <th className="p-2 text-right">المنتج</th>
+                  <th className="p-2 text-right">الباركود</th>
+                  <th className="p-2 text-right">السعر</th>
+                  <th className="p-2 text-right w-24">عدد الملصقات</th>
+                  <th className="p-2 text-center">معاينة</th>
+                  <th className="p-2 w-10 text-center"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {queue.map((q) => {
+                  let preview = "";
+                  try {
+                    preview = code128Svg(q.barcode, { moduleWidth: 1.4, height: 34, showText: false }).svg;
+                  } catch {
+                    preview = "";
+                  }
+                  return (
+                    <tr key={q.key} className="border-t align-middle">
+                      <td className="p-2">{q.productName}<span className="text-muted-foreground"> — {q.unitName}</span></td>
+                      <td className="p-2">
+                        <div className="flex items-center gap-2">
+                          <CopyInline value={q.barcode} />
+                          {!q.saved && (
+                            <Button variant="outline" size="sm" disabled={assign.isPending} onClick={() => saveBarcode(q)}>
+                              حفظ الباركود
+                            </Button>
+                          )}
+                          {q.saved && <span className="text-xs text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />محفوظ</span>}
+                        </div>
+                      </td>
+                      <td className="p-2 text-right tabular-nums" dir="ltr">{q.price != null ? money(q.price) : "—"}</td>
+                      <td className="p-2">
+                        <Input dir="ltr" inputMode="numeric" className="h-8 text-center"
+                          value={countDraft[q.key] ?? String(q.count)}
+                          onChange={(e) => setCountDraft((d) => ({ ...d, [q.key]: e.target.value }))}
+                          onBlur={() => commitCount(q.key)}
+                          onKeyDown={(e) => { if (e.key === "Enter") commitCount(q.key); }} />
+                      </td>
+                      <td className="p-2 text-center" dangerouslySetInnerHTML={{ __html: preview }} />
+                      <td className="p-2 text-center"><Button variant="ghost" size="sm" onClick={() => remove(q.key)} aria-label="حذف"><X aria-hidden className="size-4" /></Button></td>
+                    </tr>
+                  );
+                })}
+                {queue.length === 0 && (
+                  <TableEmptyRow colSpan={6} message="ابحث أعلاه لإضافة منتجات للطباعة." />
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          {info && <p className="text-sm text-money-positive">{info}</p>}
+          <div className="flex flex-wrap gap-2 border-t pt-3">
+            <Button onClick={printLabels} disabled={queue.length === 0}>طباعة {totalLabels} ملصق</Button>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!(await confirm({
+                  variant: "warning",
+                  title: "تفريغ قائمة الطباعة",
+                  description: `تفريغ كل قائمة الطباعة (${queue.length} منتج / ${totalLabels} ملصق)؟`,
+                  confirmText: "تفريغ القائمة",
+                }))) return;
+                setQueue([]);
+              }}
+              disabled={queue.length === 0}
+            >
+              تفريغ القائمة
+            </Button>
           </div>
         </CardContent>
       </Card>
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">قائمة الطباعة ({totalLabels} ملصق)</CardTitle></CardHeader>
-        <CardContent className="p-0">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50">
-              <tr>
-                <th className="p-2">المنتج</th>
-                <th className="p-2">الباركود</th>
-                <th className="p-2 text-right">السعر</th>
-                <th className="p-2 w-24">عدد الملصقات</th>
-                <th className="p-2 text-center">معاينة</th>
-                <th className="p-2 w-10 text-center"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {queue.map((q) => {
-                let preview = "";
-                try {
-                  preview = code128Svg(q.barcode, { moduleWidth: 1.4, height: 34, showText: false }).svg;
-                } catch {
-                  preview = "";
-                }
-                return (
-                  <tr key={q.key} className="border-t align-middle">
-                    <td className="p-2">{q.productName}<span className="text-muted-foreground"> — {q.unitName}</span></td>
-                    <td className="p-2">
-                      <div className="flex items-center gap-2">
-                        <CopyInline value={q.barcode} />
-                        {!q.saved && (
-                          <Button variant="outline" size="sm" disabled={assign.isPending} onClick={() => saveBarcode(q)}>
-                            حفظ الباركود
-                          </Button>
-                        )}
-                        {q.saved && <span className="text-xs text-money-positive inline-flex items-center gap-1"><Check aria-hidden className="size-3.5" />محفوظ</span>}
-                      </div>
-                    </td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{q.price != null ? money(q.price) : "—"}</td>
-                    <td className="p-2">
-                      <Input dir="ltr" inputMode="numeric" className="h-8 text-center"
-                        value={countDraft[q.key] ?? String(q.count)}
-                        onChange={(e) => setCountDraft((d) => ({ ...d, [q.key]: e.target.value }))}
-                        onBlur={() => commitCount(q.key)}
-                        onKeyDown={(e) => { if (e.key === "Enter") commitCount(q.key); }} />
-                    </td>
-                    <td className="p-2 text-center" dangerouslySetInnerHTML={{ __html: preview }} />
-                    <td className="p-2 text-center"><Button variant="ghost" size="sm" onClick={() => remove(q.key)} aria-label="حذف"><X aria-hidden className="size-4" /></Button></td>
-                  </tr>
-                );
-              })}
-              {queue.length === 0 && (
-                <TableEmptyRow colSpan={6} message="ابحث أعلاه لإضافة منتجات للطباعة." />
-              )}
-            </tbody>
-          </table>
-        </CardContent>
-      </Card>
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      {info && <p className="text-sm text-money-positive">{info}</p>}
-      <div className="flex gap-2">
-        <Button onClick={printLabels} disabled={queue.length === 0}>طباعة {totalLabels} ملصق</Button>
-        <Button
-          variant="outline"
-          onClick={async () => {
-            if (!(await confirm({
-              variant: "warning",
-              title: "تفريغ قائمة الطباعة",
-              description: `تفريغ كل قائمة الطباعة (${queue.length} منتج / ${totalLabels} ملصق)؟`,
-              confirmText: "تفريغ القائمة",
-            }))) return;
-            setQueue([]);
-          }}
-          disabled={queue.length === 0}
-        >
-          تفريغ القائمة
-        </Button>
-      </div>
     </div>
   );
 }

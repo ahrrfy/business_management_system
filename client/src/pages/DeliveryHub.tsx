@@ -214,19 +214,25 @@ function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
       <div className="w-full max-w-md rounded-2xl bg-card p-6 shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <h3 className="mb-1 text-lg font-extrabold">تسليم «{order.title}» لمندوب</h3>
         <p className="mb-4 text-xs text-muted-foreground">{order.orderNumber} — {order.customerName ?? "عميل نقدي"}</p>
-        <label className="mb-1.5 block text-sm font-bold">جهة التوصيل</label>
-        <select
-          className="mb-3 h-11 w-full rounded-md border bg-transparent px-3 text-sm"
-          value={partyId}
-          onChange={(e) => pickParty(e.target.value)}
-        >
-          <option value="">— اختر —</option>
-          {parties.map((p) => (
-            <option key={p.id} value={p.id}>{p.name} ({p.partyType === "COMPANY" ? "شركة" : "مندوب"})</option>
-          ))}
-        </select>
-        <label className="mb-1.5 block text-sm font-bold">أجرة التوصيل (د.ع)</label>
-        <Input dir="ltr" inputMode="decimal" value={fee} onChange={(e) => setFee(e.target.value)} className="mb-3 h-11 text-end tabular-nums" />
+        <div className="mb-3 grid gap-3 sm:grid-cols-2">
+          <div>
+            <label className="mb-1.5 block text-sm font-bold">جهة التوصيل</label>
+            <select
+              className="h-11 w-full rounded-md border bg-transparent px-3 text-sm"
+              value={partyId}
+              onChange={(e) => pickParty(e.target.value)}
+            >
+              <option value="">— اختر —</option>
+              {parties.map((p) => (
+                <option key={p.id} value={p.id}>{p.name} ({p.partyType === "COMPANY" ? "شركة" : "مندوب"})</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="mb-1.5 block text-sm font-bold">أجرة التوصيل (د.ع)</label>
+            <Input dir="ltr" inputMode="decimal" value={fee} onChange={(e) => setFee(e.target.value)} className="h-11 text-end tabular-nums" />
+          </div>
+        </div>
         <div className="mb-4 space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
           <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmt(order.salePrice)} د.ع</span></div>
           {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(order.deposit)} د.ع</span></div>}

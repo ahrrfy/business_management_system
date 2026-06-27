@@ -150,13 +150,14 @@ export default function Returns() {
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <PageHeader
         title="المرتجعات"
         description="اختر فاتورة، حدّد كميات الإرجاع (بالوحدة الأساس)، ثم أكّد. يُعاد للمخزون اختيارياً ويُسجَّل الاسترداد."
         actions={<Link href="/invoices" className="text-sm text-muted-foreground">← رجوع للمبيعات</Link>}
       />
 
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
         <CardHeader>
           <ListToolbar
@@ -192,6 +193,7 @@ export default function Returns() {
           />
         </CardHeader>
         <CardContent className="p-0">
+          <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -238,9 +240,16 @@ export default function Returns() {
               )}
             </tbody>
           </table>
+          </div>
         </CardContent>
       </Card>
 
+      <div className="space-y-4">
+      {!selectedId && (
+        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+          اختر فاتورة من القائمة لعرض بنودها وتسجيل المرتجع.
+        </div>
+      )}
       {selectedId && detail.isLoading && (
         <LoadingState message="جارٍ تحميل بنود الفاتورة…" />
       )}
@@ -252,7 +261,7 @@ export default function Returns() {
         <>
           <Card>
             <CardHeader><CardTitle className="text-base">بيانات الفاتورة</CardTitle></CardHeader>
-            <CardContent className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+            <CardContent className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3 text-sm">
               <div><div className="text-muted-foreground text-xs">رقم الفاتورة</div><div className="font-mono" dir="ltr">{detail.data.invoiceNumber}</div></div>
               <div><div className="text-muted-foreground text-xs">العميل</div><div>{detail.data.customerName ?? "نقدي"}</div></div>
               <div><div className="text-muted-foreground text-xs">الحالة</div><div>{INVOICE_STATUS[detail.data.status] ?? detail.data.status}</div></div>
@@ -264,6 +273,7 @@ export default function Returns() {
           <Card>
             <CardHeader><CardTitle className="text-base">البنود</CardTitle></CardHeader>
             <CardContent className="p-0">
+              <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
@@ -299,6 +309,7 @@ export default function Returns() {
                   ))}
                 </tbody>
               </table>
+              </div>
             </CardContent>
           </Card>
 
@@ -347,6 +358,8 @@ export default function Returns() {
           </div>
         </>
       )}
+      </div>
+      </div>
     </div>
   );
 }

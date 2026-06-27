@@ -189,7 +189,7 @@ export default function ExpenseNew() {
   }
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4">
       <PageHeader
         title="مصروف جديد"
         actions={<Link href="/expenses" className="text-sm text-muted-foreground">← رجوع للمصروفات</Link>}
@@ -197,7 +197,7 @@ export default function ExpenseNew() {
 
       {/* مصدر الصرف: نقدي أو صرف من المخزون (نثرية/تلف) */}
       <Card>
-        <CardContent className="pt-4 space-y-2">
+        <CardContent className="pt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-wrap gap-2">
             {SOURCE_TABS.map((t) => (
               <button
@@ -216,8 +216,8 @@ export default function ExpenseNew() {
 
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات المصروف</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 items-start">
+          <div className="space-y-1 md:col-span-2 lg:col-span-1">
             <Label>الفرع *</Label>
             <select className={selectCls} value={effectiveBranch} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
               {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
@@ -277,7 +277,7 @@ export default function ExpenseNew() {
             <Label>رقم مرجعي (اختياري)</Label>
             <Input dir="ltr" value={referenceNumber} onChange={(e) => setReferenceNumber(e.target.value)} placeholder="فاتورة/إيصال" />
           </div>
-          <div className="space-y-1 md:col-span-2">
+          <div className="space-y-1 md:col-span-2 lg:col-span-3">
             <Label>الوصف{category === "OTHER" ? " *" : " (اختياري)"}</Label>
             <Textarea rows={2} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="تفصيل المصروف…" />
           </div>
@@ -319,7 +319,8 @@ export default function ExpenseNew() {
         </Card>
       )}
 
-      {!isStock && (<>
+      {!isStock && (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
       <Card>
         <CardHeader><CardTitle className="text-base">جهة الصرف ومركز التكلفة</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -358,7 +359,8 @@ export default function ExpenseNew() {
           </div>
         </CardContent>
       </Card>
-      </>)}
+      </div>
+      )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {(() => {

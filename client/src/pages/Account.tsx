@@ -51,7 +51,7 @@ export default function Account() {
   }
 
   return (
-    <div className="space-y-4 max-w-xl">
+    <div className="space-y-4">
       <PageHeader title="حسابي" />
 
       {mustChange && (
@@ -66,49 +66,53 @@ export default function Account() {
 
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات الحساب</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 gap-3 text-sm">
+        <CardContent className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
           <div><div className="text-muted-foreground text-xs">الاسم</div><div>{me.data?.name ?? "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">البريد</div><div className="font-mono" dir="ltr">{me.data?.email ?? "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">الدور</div><div>{me.data ? (ROLE_LABEL[me.data.role] ?? me.data.role) : "—"}</div></div>
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">تغيير كلمة المرور</CardTitle></CardHeader>
-        <CardContent className="space-y-3">
-          <div className="space-y-1">
-            <Label htmlFor="old">كلمة المرور الحالية</Label>
-            <Input id="old" type="password" dir="ltr" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="new">كلمة المرور الجديدة</Label>
-            <Input id="new" type="password" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="٨ أحرف على الأقل، حرف ورقم" />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="confirm">تأكيد كلمة المرور</Label>
-            <Input id="confirm" type="password" dir="ltr" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
-          </div>
+      <div className="grid gap-4 items-start lg:grid-cols-2">
+        <Card>
+          <CardHeader><CardTitle className="text-base">تغيير كلمة المرور</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1">
+                <Label htmlFor="old">كلمة المرور الحالية</Label>
+                <Input id="old" type="password" dir="ltr" value={oldPassword} onChange={(e) => setOldPassword(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="new">كلمة المرور الجديدة</Label>
+                <Input id="new" type="password" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="٨ أحرف على الأقل، حرف ورقم" />
+              </div>
+              <div className="space-y-1 sm:col-span-2">
+                <Label htmlFor="confirm">تأكيد كلمة المرور</Label>
+                <Input id="confirm" type="password" dir="ltr" value={confirm} onChange={(e) => setConfirm(e.target.value)} />
+              </div>
+            </div>
 
-          {error && <p className="text-sm text-destructive">{error}</p>}
-          {done && <p className="text-sm text-money-positive">{done}</p>}
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            {done && <p className="text-sm text-money-positive">{done}</p>}
 
-          <Button onClick={submit} disabled={change.isPending}>
-            {change.isPending ? "جارٍ التغيير…" : "تغيير كلمة المرور"}
-          </Button>
-        </CardContent>
-      </Card>
+            <Button onClick={submit} disabled={change.isPending}>
+              {change.isPending ? "جارٍ التغيير…" : "تغيير كلمة المرور"}
+            </Button>
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">الأمان</CardTitle></CardHeader>
-        <CardContent className="space-y-2">
-          <p className="text-xs text-muted-foreground">
-            إنهاء كل الجلسات النشطة على جميع الأجهزة. ستحتاج لتسجيل الدخول من جديد.
-          </p>
-          <Button variant="outline" onClick={async () => { if (!(await confirmDialog({ variant: "danger", title: "إنهاء كل الجلسات", description: "سيُسجَّل خروجك من كل الأجهزة فوراً وتحتاج للدخول من جديد. اكتب «إنهاء» للتأكيد.", confirmText: "إنهاء الجلسات", requireText: "إنهاء" }))) return; revoke.mutate(); }} disabled={revoke.isPending}>
-            {revoke.isPending ? "…" : "تسجيل الخروج من كل الأجهزة"}
-          </Button>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader><CardTitle className="text-base">الأمان</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            <p className="text-xs text-muted-foreground">
+              إنهاء كل الجلسات النشطة على جميع الأجهزة. ستحتاج لتسجيل الدخول من جديد.
+            </p>
+            <Button variant="outline" onClick={async () => { if (!(await confirmDialog({ variant: "danger", title: "إنهاء كل الجلسات", description: "سيُسجَّل خروجك من كل الأجهزة فوراً وتحتاج للدخول من جديد. اكتب «إنهاء» للتأكيد.", confirmText: "إنهاء الجلسات", requireText: "إنهاء" }))) return; revoke.mutate(); }} disabled={revoke.isPending}>
+              {revoke.isPending ? "…" : "تسجيل الخروج من كل الأجهزة"}
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }

@@ -183,7 +183,7 @@ export default function TreasuryTransfers() {
   );
 
   return (
-    <div className="space-y-4 max-w-[1400px] mx-auto" dir="rtl">
+    <div className="space-y-4" dir="rtl">
       {/* Header */}
       <PageHeader
         icon={<Send className="h-5 w-5 text-primary" />}
@@ -234,14 +234,16 @@ export default function TreasuryTransfers() {
 
       {/* Table */}
       <Card className="p-4">
-        <DataTable
-          data={(list.data ?? []) as TransferRow[]}
-          columns={cols}
-          loading={list.isLoading}
-          emptyText={tab === "incoming" ? "لا تحويلات واردة." : tab === "outgoing" ? "لا تحويلات صادرة." : "لا تحويلات."}
-          showFilter={false}
-          pageSize={20}
-        />
+        <div className="overflow-x-auto">
+          <DataTable
+            data={(list.data ?? []) as TransferRow[]}
+            columns={cols}
+            loading={list.isLoading}
+            emptyText={tab === "incoming" ? "لا تحويلات واردة." : tab === "outgoing" ? "لا تحويلات صادرة." : "لا تحويلات."}
+            showFilter={false}
+            pageSize={20}
+          />
+        </div>
       </Card>
 
       {/* Send Dialog */}
@@ -374,10 +376,10 @@ function SendDialog({
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" dir="rtl">
-      <Card className="w-full max-w-md p-5">
+      <Card className="w-full max-w-2xl p-5">
         <h3 className="text-lg font-semibold mb-3">إرسال تحويل نقدي جديد</h3>
 
-        <div className="space-y-3">
+        <div className="grid gap-4 sm:grid-cols-2 items-start">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">من فرع</label>
             <select

@@ -100,12 +100,13 @@ export default function SupplierNew() {
   const wa = whatsappLink(phone);
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4">
       <PageHeader
         title="إضافة مورّد"
         actions={<Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
       />
 
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
         <CardHeader>
           <CardTitle className="text-base">البيانات الأساسية</CardTitle>
@@ -160,20 +161,20 @@ export default function SupplierNew() {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="lg:col-span-2">
         <CardHeader>
           <CardTitle className="text-base">العنوان والنشاط</CardTitle>
         </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <div className="space-y-1">
             <Label htmlFor="city">المدينة</Label>
             <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} placeholder="بغداد" />
           </div>
-          <div className="space-y-1">
+          <div className="space-y-1 lg:col-span-2">
             <Label htmlFor="prods">أنواع المنتجات</Label>
             <Input id="prods" value={productTypes} onChange={(e) => setProductTypes(e.target.value)} placeholder="مثال: ورق، أحبار، أدوات قرطاسية" />
           </div>
-          <div className="space-y-1 md:col-span-2">
+          <div className="space-y-1 md:col-span-2 lg:col-span-3">
             <Label htmlFor="address">العنوان التفصيلي</Label>
             <Textarea id="address" value={address} onChange={(e) => setAddress(e.target.value)} rows={2} placeholder="شارع/بناية/علامة" />
           </div>
@@ -245,6 +246,7 @@ export default function SupplierNew() {
           </div>
         </CardContent>
       </Card>
+      </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       <div className="flex gap-2">

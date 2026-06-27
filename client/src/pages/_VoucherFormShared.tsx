@@ -103,7 +103,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   }
 
   return (
-    <div className="space-y-4 max-w-2xl">
+    <div className="space-y-4">
       <PageHeader
         title={isReceipt ? "سند قبض جديد" : "سند صرف جديد"}
         description={isReceipt
@@ -116,6 +116,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         }
       />
 
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
         <CardHeader><CardTitle className="text-base">البيانات الرئيسية</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -199,7 +200,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
         </CardContent>
       </Card>
 
-      <Card>
+      <Card className="lg:col-span-2">
         <CardHeader><CardTitle className="text-base">الوصف</CardTitle></CardHeader>
         <CardContent>
           <Textarea
@@ -210,6 +211,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
           />
         </CardContent>
       </Card>
+      </div>
 
       {err && (
         <div className="rounded-md border badge-stock-out text-sm p-3">{err}</div>
