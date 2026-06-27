@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo } from "react";
 import { Link, useLocation, useSearch } from "wouter";
-import { ShoppingCart, Printer, Palette, Lock } from "lucide-react";
+import { ShoppingCart, Printer, Palette, Lock, Home } from "lucide-react";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -159,8 +159,18 @@ export default function PointOfSale() {
             );
           })}
         </div>
-        <div className="ms-auto hidden text-[11px] text-muted-foreground sm:block">
-          Ctrl+1/2/3 لتَبديل الوَضع
+        <div className="ms-auto flex items-center gap-3">
+          <span className="hidden text-[11px] text-muted-foreground sm:block">
+            Ctrl+1/2/3 لتَبديل الوَضع
+          </span>
+          <Link
+            href="/"
+            className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+            title="العودة إلى الرئيسية"
+          >
+            <Home aria-hidden className="size-4" />
+            <span>الرئيسية</span>
+          </Link>
         </div>
       </div>
 
