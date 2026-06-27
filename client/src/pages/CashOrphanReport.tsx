@@ -204,6 +204,7 @@ export default function CashOrphanReport() {
                 : "لا معاملات خارج وردية الكاشير."}
             </p>
           ) : (
+            <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs text-muted-foreground bg-muted/30">
@@ -288,6 +289,7 @@ export default function CashOrphanReport() {
                 </tr>
               </tfoot>
             </table>
+            </div>
           )}
         </CardContent>
       </Card>

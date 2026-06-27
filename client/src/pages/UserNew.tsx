@@ -114,7 +114,7 @@ export default function UserNew() {
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">إضافة مستخدم</h1>
         <Link href="/users" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>

@@ -79,40 +79,42 @@ export default function SupplierEdit() {
   if (!detail.data) return <ErrorState message={<>المورّد غير موجود. <Link href="/suppliers" className="text-primary">← القائمة</Link></>} />;
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4">
       <PageHeader
         title="تعديل مورّد"
         description={<>الرصيد الحالي: <span className="tabular-nums" dir="ltr">{fmt(detail.data.currentBalance)}</span> دينار</>}
         actions={<Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
       />
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1"><Label htmlFor="name">اسم المورّد *</Label><Input id="name" value={name} onChange={(e) => setName(e.target.value)} /></div>
-          <div className="space-y-1"><Label htmlFor="phone">الهاتف</Label><Input id="phone" dir="ltr" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
-          <div className="space-y-1"><Label htmlFor="whatsapp">واتساب</Label><Input id="whatsapp" dir="ltr" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} /></div>
-          <div className="space-y-1"><Label htmlFor="email">البريد الإلكتروني</Label><Input id="email" dir="ltr" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
-        </CardContent>
-      </Card>
+      <div className="grid gap-4 lg:grid-cols-3 items-start">
+        <Card>
+          <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1"><Label htmlFor="name">اسم المورّد *</Label><Input id="name" value={name} onChange={(e) => setName(e.target.value)} /></div>
+            <div className="space-y-1"><Label htmlFor="phone">الهاتف</Label><Input id="phone" dir="ltr" value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+            <div className="space-y-1"><Label htmlFor="whatsapp">واتساب</Label><Input id="whatsapp" dir="ltr" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} /></div>
+            <div className="space-y-1"><Label htmlFor="email">البريد الإلكتروني</Label><Input id="email" dir="ltr" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">العنوان والنشاط</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1"><Label htmlFor="city">المدينة</Label><Input id="city" value={city} onChange={(e) => setCity(e.target.value)} /></div>
-          <div className="space-y-1"><Label htmlFor="taxId">الرقم الضريبي</Label><Input id="taxId" dir="ltr" value={taxId} onChange={(e) => setTaxId(e.target.value)} /></div>
-          <div className="space-y-1 md:col-span-2"><Label htmlFor="address">العنوان التفصيلي</Label><Input id="address" value={address} onChange={(e) => setAddress(e.target.value)} /></div>
-          <div className="space-y-1 md:col-span-2"><Label htmlFor="ptypes">أنواع المنتجات المورَّدة</Label><Input id="ptypes" value={productTypes} onChange={(e) => setProductTypes(e.target.value)} /></div>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader><CardTitle className="text-base">العنوان والنشاط</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1"><Label htmlFor="city">المدينة</Label><Input id="city" value={city} onChange={(e) => setCity(e.target.value)} /></div>
+            <div className="space-y-1"><Label htmlFor="taxId">الرقم الضريبي</Label><Input id="taxId" dir="ltr" value={taxId} onChange={(e) => setTaxId(e.target.value)} /></div>
+            <div className="space-y-1 sm:col-span-2"><Label htmlFor="address">العنوان التفصيلي</Label><Input id="address" value={address} onChange={(e) => setAddress(e.target.value)} /></div>
+            <div className="space-y-1 sm:col-span-2"><Label htmlFor="ptypes">أنواع المنتجات المورَّدة</Label><Input id="ptypes" value={productTypes} onChange={(e) => setProductTypes(e.target.value)} /></div>
+          </CardContent>
+        </Card>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">شروط التعامل</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1"><Label htmlFor="terms">شروط الدفع</Label><Input id="terms" value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)} /></div>
-          <div className="space-y-1 md:col-span-2"><Label htmlFor="notes">ملاحظات</Label><Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
-        </CardContent>
-      </Card>
+        <Card>
+          <CardHeader><CardTitle className="text-base">شروط التعامل</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1 sm:col-span-2"><Label htmlFor="terms">شروط الدفع</Label><Input id="terms" value={paymentTerms} onChange={(e) => setPaymentTerms(e.target.value)} /></div>
+            <div className="space-y-1 sm:col-span-2"><Label htmlFor="notes">ملاحظات</Label><Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+          </CardContent>
+        </Card>
+      </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {done && <p className="badge-status-active inline-block rounded-md px-2 py-1 text-sm">{done}</p>}

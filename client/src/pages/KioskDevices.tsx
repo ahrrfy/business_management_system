@@ -80,7 +80,7 @@ export default function KioskDevices() {
   }
 
   return (
-    <div className="space-y-4 max-w-4xl">
+    <div className="space-y-4">
       <PageHeader
         title="شاشات قارئ الأسعار (الأجهزة الخارجية)"
         description={
@@ -105,23 +105,25 @@ export default function KioskDevices() {
               احفظ الرمز/المُشغّل الآن — لن يظهر الرمز ثانيةً. إن فقدته استعمل «تدوير الرمز».
             </div>
 
-            <div className="space-y-1">
-              <Label className="text-xs">رمز الجهاز</Label>
-              <div className="flex gap-2">
-                <Input readOnly dir="ltr" value={reveal.rawToken} className="font-mono text-xs" />
-                <Button variant="outline" size="sm" onClick={() => copy(reveal.rawToken, "نُسخ الرمز")}>نسخ</Button>
+            <div className="grid gap-3 lg:grid-cols-2 items-start">
+              <div className="space-y-1">
+                <Label className="text-xs">رمز الجهاز</Label>
+                <div className="flex gap-2">
+                  <Input readOnly dir="ltr" value={reveal.rawToken} className="font-mono text-xs" />
+                  <Button variant="outline" size="sm" onClick={() => copy(reveal.rawToken, "نُسخ الرمز")}>نسخ</Button>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <Label className="text-xs">رابط الكشك (يحوي الرمز)</Label>
+                <div className="flex gap-2">
+                  <Input readOnly dir="ltr" value={kioskUrl(origin, reveal.rawToken)} className="font-mono text-xs" />
+                  <Button variant="outline" size="sm" onClick={() => copy(kioskUrl(origin, reveal.rawToken), "نُسخ الرابط")}>نسخ</Button>
+                </div>
               </div>
             </div>
 
-            <div className="space-y-1">
-              <Label className="text-xs">رابط الكشك (يحوي الرمز)</Label>
-              <div className="flex gap-2">
-                <Input readOnly dir="ltr" value={kioskUrl(origin, reveal.rawToken)} className="font-mono text-xs" />
-                <Button variant="outline" size="sm" onClick={() => copy(kioskUrl(origin, reveal.rawToken), "نُسخ الرابط")}>نسخ</Button>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2 pt-1">
+            <div className="flex flex-wrap items-center gap-2 pt-1">
               <Button className="inline-flex items-center gap-1.5" onClick={() => downloadLauncherCmd({ origin, token: reveal.rawToken, label: reveal.label, branchName: reveal.branchName, deviceId: reveal.deviceId })}>
                 <Download aria-hidden className="size-4" />تنزيل المُشغّل (.cmd)
               </Button>

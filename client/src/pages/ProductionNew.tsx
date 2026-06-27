@@ -404,38 +404,42 @@ export default function ProductionNew() {
         </div>
       ) : (
         // ───────── الوضع اليدوي ─────────
-        <div className="space-y-4 max-w-4xl">
-          <Card>
-            <CardHeader><CardTitle className="text-base">الفرع</CardTitle></CardHeader>
-            <CardContent>
-              <select className={selectCls} value={effectiveBranch} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-                {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>)}
-              </select>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader><CardTitle className="text-base">المدخلات (المُستهلَكة)</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <ProductSearchPicker branchId={effectiveBranch} placeholder="ابحث عن منتج مدخل…" onPick={(v, u) => setInputs((p) => [...p, mkLine(v, u)])} />
-              {inputs.length > 0 ? renderLines(inputs, setInputs, "in") : <p className="text-xs text-muted-foreground">لم تُضف مدخلات بعد.</p>}
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader><CardTitle className="text-base">عمالة/تشغيل (اختياري)</CardTitle></CardHeader>
-            <CardContent>
-              <div className="space-y-1 max-w-xs">
-                <Label>كلفة العمالة الكلية</Label>
-                <Input dir="ltr" value={mLabor} onChange={(e) => setMLabor(e.target.value)} placeholder="0" />
-              </div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader><CardTitle className="text-base">المخرجات (المُنتَجة)</CardTitle></CardHeader>
-            <CardContent className="space-y-3">
-              <ProductSearchPicker branchId={effectiveBranch} placeholder="ابحث عن المنتج الناتج…" onPick={(v, u) => setOutputs((p) => [...p, mkLine(v, u)])} />
-              {outputs.length > 0 ? renderLines(outputs, setOutputs, "out") : <p className="text-xs text-muted-foreground">لم تُضف مخرجات بعد.</p>}
-            </CardContent>
-          </Card>
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 items-start">
+            <Card>
+              <CardHeader><CardTitle className="text-base">الفرع</CardTitle></CardHeader>
+              <CardContent>
+                <select className={selectCls} value={effectiveBranch} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+                  {(branches.data ?? []).map((b) => <option key={Number(b.id)} value={Number(b.id)}>{b.name}</option>)}
+                </select>
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle className="text-base">عمالة/تشغيل (اختياري)</CardTitle></CardHeader>
+              <CardContent>
+                <div className="space-y-1">
+                  <Label>كلفة العمالة الكلية</Label>
+                  <Input dir="ltr" value={mLabor} onChange={(e) => setMLabor(e.target.value)} placeholder="0" />
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
+            <Card>
+              <CardHeader><CardTitle className="text-base">المدخلات (المُستهلَكة)</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                <ProductSearchPicker branchId={effectiveBranch} placeholder="ابحث عن منتج مدخل…" onPick={(v, u) => setInputs((p) => [...p, mkLine(v, u)])} />
+                {inputs.length > 0 ? renderLines(inputs, setInputs, "in") : <p className="text-xs text-muted-foreground">لم تُضف مدخلات بعد.</p>}
+              </CardContent>
+            </Card>
+            <Card>
+              <CardHeader><CardTitle className="text-base">المخرجات (المُنتَجة)</CardTitle></CardHeader>
+              <CardContent className="space-y-3">
+                <ProductSearchPicker branchId={effectiveBranch} placeholder="ابحث عن المنتج الناتج…" onPick={(v, u) => setOutputs((p) => [...p, mkLine(v, u)])} />
+                {outputs.length > 0 ? renderLines(outputs, setOutputs, "out") : <p className="text-xs text-muted-foreground">لم تُضف مخرجات بعد.</p>}
+              </CardContent>
+            </Card>
+          </div>
           <Card>
             <CardHeader><CardTitle className="text-base">الإجماليات</CardTitle></CardHeader>
             <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">

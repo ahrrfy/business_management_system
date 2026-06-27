@@ -257,7 +257,7 @@ export default function ReportsCenter() {
             <Star aria-hidden className="size-4 fill-amber-400 text-amber-500" />
             <span>المفضّلة</span>
           </h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
             {favItems.map((it) => (
               <ReportCard key={`fav-${it.href}`} item={it} fav onToggleFav={toggleFav} />
             ))}
@@ -274,7 +274,7 @@ export default function ReportsCenter() {
               <SectionIcon aria-hidden className="size-4 text-primary/70" />
               <span>{s.label}</span>
             </h2>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
               {s.items.map((it) => (
                 <ReportCard key={it.href} item={it} fav={favs.has(it.href)} onToggleFav={toggleFav} />
               ))}

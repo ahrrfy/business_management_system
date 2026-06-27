@@ -129,7 +129,7 @@ export default function CustomerEdit() {
   const isActive = !!c.isActive;
 
   return (
-    <div className="space-y-4 max-w-3xl">
+    <div className="space-y-4">
       <PageHeader
         title="تعديل عميل"
         actions={<Link href="/customers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
@@ -150,88 +150,90 @@ export default function CustomerEdit() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <Label htmlFor="name">اسم العميل *</Label>
-            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="type">النوع</Label>
-            <select id="type" className={selectCls} value={customerType} onChange={(e) => setCustomerType(e.target.value as any)}>
-              {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="phone">الهاتف</Label>
-            <Input id="phone" dir="ltr" value={phone} onChange={(e) => setPhone(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="whatsapp">واتساب</Label>
-            <Input id="whatsapp" dir="ltr" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">العنوان</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <Label htmlFor="city">المدينة</Label>
-            <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="district">المنطقة</Label>
-            <Input id="district" value={district} onChange={(e) => setDistrict(e.target.value)} />
-          </div>
-          <div className="space-y-1 md:col-span-2">
-            <Label htmlFor="address">العنوان التفصيلي</Label>
-            <Input id="address" value={address} onChange={(e) => setAddress(e.target.value)} />
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader><CardTitle className="text-base">التسعير والائتمان</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <div className="space-y-1">
-            <Label htmlFor="tier">فئة السعر الافتراضية</Label>
-            <select id="tier" className={selectCls} value={defaultPriceTier} onChange={(e) => setDefaultPriceTier(e.target.value as any)}>
-              <option value="RETAIL">مفرد</option>
-              <option value="WHOLESALE">جملة</option>
-              <option value="GOVERNMENT">حكومي</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label htmlFor="credit">سقف الائتمان (د.ع)</Label>
-            <Input id="credit" dir="ltr" value={creditLimit} onChange={(e) => setCreditLimit(e.target.value)} />
-          </div>
-          <div className="space-y-1 md:col-span-2">
-            <Label htmlFor="notes">ملاحظات</Label>
-            <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* بطاقة QR العميل — تُمسح في POS لتحديده تلقائياً */}
-      {detail.data?.qrPayload && (
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
         <Card>
-          <CardHeader><CardTitle className="text-base">بطاقة العميل</CardTitle></CardHeader>
-          <CardContent className="flex flex-col items-center gap-3 py-4">
-            <BarcodeDisplay
-              barcodeSet={{
-                barcode128: `CUST-${String(customerId).padStart(5, "0")}`,
-                qrPayload: detail.data.qrPayload,
-                displayLabel: `${name}\nCUST-${String(customerId).padStart(5, "0")}`,
-              }}
-              size="md"
-              showCode128={false}
-            />
-            <p className="text-xs text-muted-foreground text-center">امسح هذا الـ QR في نقطة البيع لتحديد العميل تلقائياً</p>
+          <CardHeader><CardTitle className="text-base">البيانات الأساسية</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="name">اسم العميل *</Label>
+              <Input id="name" value={name} onChange={(e) => setName(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="type">النوع</Label>
+              <select id="type" className={selectCls} value={customerType} onChange={(e) => setCustomerType(e.target.value as any)}>
+                {TYPE_OPTIONS.map((t) => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="phone">الهاتف</Label>
+              <Input id="phone" dir="ltr" value={phone} onChange={(e) => setPhone(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="whatsapp">واتساب</Label>
+              <Input id="whatsapp" dir="ltr" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} />
+            </div>
           </CardContent>
         </Card>
-      )}
+
+        <Card>
+          <CardHeader><CardTitle className="text-base">العنوان</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="city">المدينة</Label>
+              <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="district">المنطقة</Label>
+              <Input id="district" value={district} onChange={(e) => setDistrict(e.target.value)} />
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label htmlFor="address">العنوان التفصيلي</Label>
+              <Input id="address" value={address} onChange={(e) => setAddress(e.target.value)} />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader><CardTitle className="text-base">التسعير والائتمان</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="tier">فئة السعر الافتراضية</Label>
+              <select id="tier" className={selectCls} value={defaultPriceTier} onChange={(e) => setDefaultPriceTier(e.target.value as any)}>
+                <option value="RETAIL">مفرد</option>
+                <option value="WHOLESALE">جملة</option>
+                <option value="GOVERNMENT">حكومي</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="credit">سقف الائتمان (د.ع)</Label>
+              <Input id="credit" dir="ltr" value={creditLimit} onChange={(e) => setCreditLimit(e.target.value)} />
+            </div>
+            <div className="space-y-1 md:col-span-2">
+              <Label htmlFor="notes">ملاحظات</Label>
+              <Input id="notes" value={notes} onChange={(e) => setNotes(e.target.value)} />
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* بطاقة QR العميل — تُمسح في POS لتحديده تلقائياً */}
+        {detail.data?.qrPayload && (
+          <Card>
+            <CardHeader><CardTitle className="text-base">بطاقة العميل</CardTitle></CardHeader>
+            <CardContent className="flex flex-col items-center gap-3 py-4">
+              <BarcodeDisplay
+                barcodeSet={{
+                  barcode128: `CUST-${String(customerId).padStart(5, "0")}`,
+                  qrPayload: detail.data.qrPayload,
+                  displayLabel: `${name}\nCUST-${String(customerId).padStart(5, "0")}`,
+                }}
+                size="md"
+                showCode128={false}
+              />
+              <p className="text-xs text-muted-foreground text-center">امسح هذا الـ QR في نقطة البيع لتحديد العميل تلقائياً</p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {done && <p className="text-sm text-money-positive">{done}</p>}

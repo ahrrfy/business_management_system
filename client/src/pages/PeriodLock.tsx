@@ -40,9 +40,10 @@ export default function PeriodLockPage() {
   const lock = status.data?.lock;
 
   return (
-    <div className="container mx-auto p-4 space-y-4 max-w-3xl">
+    <div className="container mx-auto p-4 space-y-4">
       <PageHeader title="إقفال الفترات المالية" />
 
+      <div className="grid gap-4 lg:grid-cols-2 items-start">
       <Card>
         <CardHeader className="font-semibold">القفل النشِط</CardHeader>
         <CardContent>
@@ -83,6 +84,7 @@ export default function PeriodLockPage() {
       <Card>
         <CardHeader className="font-semibold">إنشاء قفل جديد</CardHeader>
         <CardContent className="space-y-3">
+          <div className="grid gap-3 md:grid-cols-2">
           <div className="grid gap-2">
             <label className="text-sm font-medium">تاريخ الإقفال (cutoff)</label>
             <input
@@ -103,6 +105,7 @@ export default function PeriodLockPage() {
               placeholder="مثل: إقفال شهر يناير ٢٠٢٦"
               className="h-9 px-3 rounded-md border bg-transparent text-sm"
             />
+          </div>
           </div>
           <Button
             onClick={async () => {
@@ -127,6 +130,7 @@ export default function PeriodLockPage() {
           </Button>
         </CardContent>
       </Card>
+      </div>
     </div>
   );
 }

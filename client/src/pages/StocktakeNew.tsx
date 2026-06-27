@@ -333,7 +333,7 @@ export default function StocktakeNew() {
   const steps = ["النطاق والفرع", "عمّال الجرد وتقسيم المناطق", "إعدادات التدقيق والتأكيد"];
 
   return (
-    <div className="mx-auto max-w-3xl space-y-4">
+    <div className="space-y-4">
       {/* شريط الرجوع */}
       <div className="flex items-center gap-2 text-sm">
         <Link href="/stocktakes" className="font-semibold text-primary hover:underline">
@@ -401,7 +401,7 @@ export default function StocktakeNew() {
             <div className="space-y-1.5">
               <Label>نطاق الجرد</Label>
               <p className="text-xs text-muted-foreground">يُلتقط الرصيد الدفتري لحظة بدء الجلسة كأساس للمقارنة.</p>
-              <div className="grid gap-2 sm:grid-cols-2">
+              <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
                 {(
                   [
                     ["FULL", "جرد شامل للفرع", "كل منتجات الفرع — مناسب للجرد الدوري الكبير", false],
@@ -705,78 +705,78 @@ export default function StocktakeNew() {
         <div className="space-y-4">
           <Card>
             <CardContent className="space-y-5 p-5">
-              {/* جرد أعمى — مُثبَّت دائماً (قرار معتمد) */}
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm font-bold">
-                    جرد أعمى (موصى به){" "}
-                    <span className="mr-1 inline-block rounded-full border bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
-                      مُثبَّت دائماً
-                    </span>
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    يُخفي الرصيد الدفتري عن عامل الجرد — يكشف الفروقات الحقيقية ويمنع نسخ الرقم الدفتري.
-                  </p>
+              <div className="grid gap-4 lg:grid-cols-3 items-start">
+                {/* جرد أعمى — مُثبَّت دائماً (قرار معتمد) */}
+                <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                  <div>
+                    <p className="text-sm font-bold">
+                      جرد أعمى (موصى به){" "}
+                      <span className="mr-1 inline-block rounded-full border bg-muted px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                        مُثبَّت دائماً
+                      </span>
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      يُخفي الرصيد الدفتري عن عامل الجرد — يكشف الفروقات الحقيقية ويمنع نسخ الرقم الدفتري.
+                    </p>
+                  </div>
+                  <Switch checked disabled aria-label="جرد أعمى" />
                 </div>
-                <Switch checked disabled aria-label="جرد أعمى" />
-              </div>
 
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm font-bold">تسوية مباشرة للفروقات ضمن الحدّ</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    الفروقات الصغيرة تُعلَّم للاعتماد تلقائياً، وما يتجاوز الحدّ يستوجب قرار مشرف صراحةً.
-                  </p>
+                <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                  <div>
+                    <p className="text-sm font-bold">تسوية مباشرة للفروقات ضمن الحدّ</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      الفروقات الصغيرة تُعلَّم للاعتماد تلقائياً، وما يتجاوز الحدّ يستوجب قرار مشرف صراحةً.
+                    </p>
+                  </div>
+                  <Switch checked={directUnderThreshold} onCheckedChange={setDirectUnderThreshold} />
                 </div>
-                <Switch checked={directUnderThreshold} onCheckedChange={setDirectUnderThreshold} />
-              </div>
 
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <p className="text-sm font-bold">إشعارات واتساب</p>
-                  <p className="mt-0.5 text-xs text-muted-foreground">
-                    للمسؤول عند تسليم العدّ واكتمال الجلسة، وللعامل عند طلب إعادة العدّ — عبر أزرار wa.me.
-                  </p>
+                <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
+                  <div>
+                    <p className="text-sm font-bold">إشعارات واتساب</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      للمسؤول عند تسليم العدّ واكتمال الجلسة، وللعامل عند طلب إعادة العدّ — عبر أزرار wa.me.
+                    </p>
+                  </div>
+                  <Switch checked={waNotify} onCheckedChange={setWaNotify} />
                 </div>
-                <Switch checked={waNotify} onCheckedChange={setWaNotify} />
               </div>
 
               {/* الحدود الثلاثة — تظهر وتُعدَّل للمدير+ فقط */}
               {isManagerPlus ? (
-                <>
-                  <div className={`grid gap-4 sm:grid-cols-2 ${!directUnderThreshold ? "pointer-events-none opacity-40" : ""}`}>
-                    <div className="space-y-1.5">
-                      <Label>حدّ النسبة</Label>
-                      <div className="flex items-center gap-2">
-                        <Input
-                          value={thresholdPct}
-                          onChange={(e) => setThresholdPct(e.target.value)}
-                          className="w-24 text-center"
-                          dir="ltr"
-                          inputMode="decimal"
-                        />
-                        <span className="text-sm text-muted-foreground">٪</span>
-                      </div>
-                      <p className="text-[11px] text-muted-foreground">
-                        فرق أعلى من هذه النسبة من الرصيد الدفتري = يتجاوز الحدّ
-                      </p>
+                <div className={`grid gap-4 sm:grid-cols-2 lg:grid-cols-3 ${!directUnderThreshold ? "pointer-events-none opacity-40" : ""}`}>
+                  <div className="space-y-1.5">
+                    <Label>حدّ النسبة</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={thresholdPct}
+                        onChange={(e) => setThresholdPct(e.target.value)}
+                        className="w-24 text-center"
+                        dir="ltr"
+                        inputMode="decimal"
+                      />
+                      <span className="text-sm text-muted-foreground">٪</span>
                     </div>
-                    <div className="space-y-1.5">
-                      <Label>حدّ القيمة</Label>
-                      <div className="flex items-center gap-2">
-                        <Input
-                          value={thresholdValue}
-                          onChange={(e) => setThresholdValue(e.target.value)}
-                          className="w-32 text-center"
-                          dir="ltr"
-                          inputMode="decimal"
-                        />
-                        <span className="text-sm text-muted-foreground">د.ع</span>
-                      </div>
-                      <p className="text-[11px] text-muted-foreground">
-                        فرق قيمته بالتكلفة أعلى من هذا المبلغ = يتجاوز الحدّ
-                      </p>
+                    <p className="text-[11px] text-muted-foreground">
+                      فرق أعلى من هذه النسبة من الرصيد الدفتري = يتجاوز الحدّ
+                    </p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>حدّ القيمة</Label>
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={thresholdValue}
+                        onChange={(e) => setThresholdValue(e.target.value)}
+                        className="w-32 text-center"
+                        dir="ltr"
+                        inputMode="decimal"
+                      />
+                      <span className="text-sm text-muted-foreground">د.ع</span>
                     </div>
+                    <p className="text-[11px] text-muted-foreground">
+                      فرق قيمته بالتكلفة أعلى من هذا المبلغ = يتجاوز الحدّ
+                    </p>
                   </div>
                   <div className="space-y-1.5">
                     <Label>حدّ الاعتماد المزدوج (توقيعان)</Label>
@@ -794,7 +794,7 @@ export default function StocktakeNew() {
                       فرق تتجاوز قيمته هذا المبلغ يستوجب توقيع مسؤولَين مختلفَين قبل التنفيذ — حماية للجميع
                     </p>
                   </div>
-                </>
+                </div>
               ) : (
                 <p className="rounded-md px-3 py-2 text-xs badge-stock-low">
                   تعديل الحدود صلاحية مشرف فأعلى — تُطبَّق القيم الافتراضية المعتمدة (5٪ أو 25,000 د.ع للتسوية
@@ -951,7 +951,7 @@ function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; s
   }
 
   return (
-    <div className="mx-auto max-w-2xl space-y-4">
+    <div className="mx-auto max-w-4xl space-y-4">
       <Card>
         <CardContent className="p-8 text-center">
           <div className="mx-auto grid size-14 place-items-center rounded-full badge-status-active">

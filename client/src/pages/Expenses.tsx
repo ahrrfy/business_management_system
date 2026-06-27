@@ -127,60 +127,62 @@ export default function Expenses() {
         }
       />
 
-      <Card>
-        <CardContent className="grid grid-cols-1 md:grid-cols-5 gap-3 pt-6">
-          <div className="space-y-1">
-            <Label className="text-xs">الفرع</Label>
-            <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
-              <option value="">— كل الفروع —</option>
-              {(branches.data ?? []).map((b) => (
-                <option key={b.id} value={b.id}>{b.name}</option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">الفئة</Label>
-            <select className={selectCls} value={category} onChange={(e) => setCategory(e.target.value)}>
-              <option value="">— كل الفئات —</option>
-              {Object.entries(CATEGORY_LABEL).map(([k, v]) => (
-                <option key={k} value={k}>{v}</option>
-              ))}
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">الحالة</Label>
-            <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)}>
-              <option value="">— الكل —</option>
-              <option value="ACTIVE">نافذ</option>
-              <option value="CANCELLED">مُلغى</option>
-            </select>
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">من تاريخ</Label>
-            <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">إلى تاريخ</Label>
-            <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
-          </div>
-        </CardContent>
-      </Card>
+      <div className="grid gap-4 lg:grid-cols-3 items-start">
+        <Card className="lg:col-span-2">
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 pt-6">
+            <div className="space-y-1">
+              <Label className="text-xs">الفرع</Label>
+              <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
+                <option value="">— كل الفروع —</option>
+                {(branches.data ?? []).map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">الفئة</Label>
+              <select className={selectCls} value={category} onChange={(e) => setCategory(e.target.value)}>
+                <option value="">— كل الفئات —</option>
+                {Object.entries(CATEGORY_LABEL).map(([k, v]) => (
+                  <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">الحالة</Label>
+              <select className={selectCls} value={status} onChange={(e) => setStatus(e.target.value)}>
+                <option value="">— الكل —</option>
+                <option value="ACTIVE">نافذ</option>
+                <option value="CANCELLED">مُلغى</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">من تاريخ</Label>
+              <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">إلى تاريخ</Label>
+              <Input type="date" dir="ltr" value={to} onChange={(e) => setTo(e.target.value)} />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardContent className="pt-6 grid grid-cols-2 gap-3 text-sm">
+            <div>
+              <div className="text-muted-foreground">عدد السطور</div>
+              <div className="text-lg font-semibold">{list.data?.totals.count ?? 0}</div>
+            </div>
+            <div>
+              <div className="text-muted-foreground">إجمالي النافذ</div>
+              <div className="text-lg font-semibold tabular-nums" dir="ltr">{fmt(list.data?.totals.active ?? "0")}</div>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
 
       <Card>
-        <CardContent className="pt-6 grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-          <div>
-            <div className="text-muted-foreground">عدد السطور</div>
-            <div className="text-lg font-semibold">{list.data?.totals.count ?? 0}</div>
-          </div>
-          <div>
-            <div className="text-muted-foreground">إجمالي النافذ</div>
-            <div className="text-lg font-semibold tabular-nums" dir="ltr">{fmt(list.data?.totals.active ?? "0")}</div>
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardContent className="p-0">
+        <CardContent className="p-0 overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>

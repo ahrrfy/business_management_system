@@ -412,12 +412,12 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="sm:max-w-xl" dir="rtl">
+      <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto" dir="rtl">
         <DialogHeader>
           <DialogTitle>إدخال استمارة ورقية إلى النظام</DialogTitle>
         </DialogHeader>
 
-        <div className="grid sm:grid-cols-2 gap-3.5">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
           <div className="space-y-1.5">
             <Label>اسم المتقدّم <span className="text-destructive">*</span></Label>
             <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="الاسم الكامل" />
@@ -458,7 +458,7 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
               {APPLICANT_STAGES.map((s) => <option key={s.key} value={s.key}>{s.label}</option>)}
             </select>
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
+          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label>التقييم المبدئي</Label>
             <div className="flex items-center gap-1">
               {[1, 2, 3, 4, 5].map((n) => (
@@ -479,7 +479,7 @@ function PaperDialog({ open, onClose, onSaved }: { open: boolean; onClose: () =>
               )}
             </div>
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
+          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label>ملاحظات الموظف المختص</Label>
             <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={3} placeholder="خبرات سابقة، مهارات…" />
           </div>
@@ -740,13 +740,13 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
 
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
-      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto" dir="rtl">
+      <DialogContent className="sm:max-w-3xl max-h-[90vh] overflow-y-auto" dir="rtl">
         <DialogHeader>
           <DialogTitle>{isEdit ? "تعديل وظيفة" : "وظيفة شاغرة جديدة"}</DialogTitle>
         </DialogHeader>
 
-        <div className="grid sm:grid-cols-2 gap-3.5">
-          <div className="space-y-1.5 sm:col-span-2">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label>عنوان الوظيفة <span className="text-destructive">*</span></Label>
             <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="مثال: مصمم جرافيك" />
           </div>
@@ -771,19 +771,19 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
             <Label>عدد الشواغر</Label>
             <Input type="number" min={1} value={openings} onChange={(e) => setOpenings(e.target.value)} dir="ltr" className="text-right" />
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
+          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label>سطر تشويقي (يظهر على البطاقة)</Label>
             <Input value={summary} onChange={(e) => setSummary(e.target.value)} placeholder="جملة قصيرة جذّابة تلخّص الوظيفة" maxLength={200} />
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
+          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label>الوصف</Label>
             <Textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={3} placeholder="مهام الوظيفة وتفاصيلها…" />
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
+          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label>المتطلّبات</Label>
             <Textarea value={requirements} onChange={(e) => setRequirements(e.target.value)} rows={3} placeholder="الخبرة والمهارات والمؤهلات المطلوبة…" />
           </div>
-          <div className="space-y-1.5 sm:col-span-2">
+          <div className="space-y-1.5 sm:col-span-2 lg:col-span-3">
             <Label className="flex items-center gap-1.5"><ImageIcon className="size-4" /> صورة الوظيفة (اختيارية)</Label>
             <ImageUploader
               value={images}
@@ -793,7 +793,7 @@ function VacancyDialog({ vacancy, onClose, onSaved }: { vacancy: Vacancy | null;
               hint="صورة واحدة تظهر أعلى بطاقة الوظيفة (بيئة العمل/القسم) — تُضغط تلقائياً"
             />
           </div>
-          <div className="sm:col-span-2 flex items-center justify-between rounded-lg border p-3 bg-muted/30">
+          <div className="sm:col-span-2 lg:col-span-3 flex items-center justify-between rounded-lg border p-3 bg-muted/30">
             <div>
               <div className="text-sm font-medium">نشر في المعرض العام</div>
               <div className="text-xs text-muted-foreground">عند التفعيل تظهر الوظيفة للزوّار في صفحة /apply</div>

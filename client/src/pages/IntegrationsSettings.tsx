@@ -194,53 +194,55 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
             تَفاصيل + tokens
           </summary>
           <div className="space-y-3 mt-3 pt-3 border-t">
-            <div className="space-y-1">
-              <label className="text-xs font-medium">اسم العَرض (اختياري)</label>
-              <input
-                type="text"
-                value={draft.displayName}
-                onChange={(e) => setDraft({ ...draft, displayName: e.target.value })}
-                placeholder={`${ch.label} — ${integ.branchName ?? ""}`}
-                className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
-            </div>
-            {integ.channel === "WHATSAPP" && (
+            <div className="grid gap-3 md:grid-cols-2 items-start">
               <div className="space-y-1">
-                <label className="text-xs font-medium">Phone Number ID</label>
-                <div className="text-[11px] text-muted-foreground">مِن WhatsApp Manager → Phone numbers → API setup</div>
+                <label className="text-xs font-medium">اسم العَرض (اختياري)</label>
                 <input
                   type="text"
-                  value={draft.phoneNumberId}
-                  onChange={(e) => setDraft({ ...draft, phoneNumberId: e.target.value })}
-                  placeholder="مَثلاً: 123456789012345"
-                  dir="ltr"
+                  value={draft.displayName}
+                  onChange={(e) => setDraft({ ...draft, displayName: e.target.value })}
+                  placeholder={`${ch.label} — ${integ.branchName ?? ""}`}
                   className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 />
               </div>
-            )}
-            <SecretField
-              label="Verify Token"
-              hint="كَلمة سِرّية تَختارها أَنت — اَلصقها في Meta عند تَسجيل webhook."
-              masked={integ.verifyTokenMasked}
-              value={draft.verifyToken}
-              onChange={(v) => setDraft({ ...draft, verifyToken: v })}
-            />
-            <SecretField
-              label="App Secret"
-              hint={integ.channel === "STORE" ? "Webhook secret مِن مَنصّة المتجر." : "App Secret مِن Meta → App Dashboard → Settings → Basic."}
-              masked={integ.appSecretMasked}
-              value={draft.appSecret}
-              onChange={(v) => setDraft({ ...draft, appSecret: v })}
-            />
-            {integ.channel !== "STORE" && (
+              {integ.channel === "WHATSAPP" && (
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">Phone Number ID</label>
+                  <div className="text-[11px] text-muted-foreground">مِن WhatsApp Manager → Phone numbers → API setup</div>
+                  <input
+                    type="text"
+                    value={draft.phoneNumberId}
+                    onChange={(e) => setDraft({ ...draft, phoneNumberId: e.target.value })}
+                    placeholder="مَثلاً: 123456789012345"
+                    dir="ltr"
+                    className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                </div>
+              )}
               <SecretField
-                label="Access Token (System User)"
-                hint="مِن Meta → Business Settings → System Users → Generate New Token (مَع صَلاحية whatsapp_business_messaging)."
-                masked={integ.accessTokenMasked}
-                value={draft.accessToken}
-                onChange={(v) => setDraft({ ...draft, accessToken: v })}
+                label="Verify Token"
+                hint="كَلمة سِرّية تَختارها أَنت — اَلصقها في Meta عند تَسجيل webhook."
+                masked={integ.verifyTokenMasked}
+                value={draft.verifyToken}
+                onChange={(v) => setDraft({ ...draft, verifyToken: v })}
               />
-            )}
+              <SecretField
+                label="App Secret"
+                hint={integ.channel === "STORE" ? "Webhook secret مِن مَنصّة المتجر." : "App Secret مِن Meta → App Dashboard → Settings → Basic."}
+                masked={integ.appSecretMasked}
+                value={draft.appSecret}
+                onChange={(v) => setDraft({ ...draft, appSecret: v })}
+              />
+              {integ.channel !== "STORE" && (
+                <SecretField
+                  label="Access Token (System User)"
+                  hint="مِن Meta → Business Settings → System Users → Generate New Token (مَع صَلاحية whatsapp_business_messaging)."
+                  masked={integ.accessTokenMasked}
+                  value={draft.accessToken}
+                  onChange={(v) => setDraft({ ...draft, accessToken: v })}
+                />
+              )}
+            </div>
 
             <div className="flex gap-2 flex-wrap pt-2">
               <Button onClick={save} disabled={upsert.isPending}>
@@ -309,27 +311,29 @@ function NewIntegrationDialog({ onCreated, onClose, branches }: {
           <CardTitle className="text-base">إضافة تَكامل جَديد</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div>
-            <label className="text-xs text-muted-foreground">الفَرع</label>
-            <select
-              value={branchId}
-              onChange={(e) => setBranchId(Number(e.target.value))}
-              className="w-full h-9 border rounded-md px-2 text-sm bg-background mt-1"
-            >
-              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </select>
-          </div>
-          <div>
-            <label className="text-xs text-muted-foreground">القَناة</label>
-            <select
-              value={channel}
-              onChange={(e) => setChannel(e.target.value as Channel)}
-              className="w-full h-9 border rounded-md px-2 text-sm bg-background mt-1"
-            >
-              <option value="WHATSAPP">{CHANNEL_META.WHATSAPP.label}</option>
-              <option value="INSTAGRAM">{CHANNEL_META.INSTAGRAM.label}</option>
-              <option value="STORE">{CHANNEL_META.STORE.label}</option>
-            </select>
+          <div className="grid gap-3 sm:grid-cols-2 items-start">
+            <div>
+              <label className="text-xs text-muted-foreground">الفَرع</label>
+              <select
+                value={branchId}
+                onChange={(e) => setBranchId(Number(e.target.value))}
+                className="w-full h-9 border rounded-md px-2 text-sm bg-background mt-1"
+              >
+                {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground">القَناة</label>
+              <select
+                value={channel}
+                onChange={(e) => setChannel(e.target.value as Channel)}
+                className="w-full h-9 border rounded-md px-2 text-sm bg-background mt-1"
+              >
+                <option value="WHATSAPP">{CHANNEL_META.WHATSAPP.label}</option>
+                <option value="INSTAGRAM">{CHANNEL_META.INSTAGRAM.label}</option>
+                <option value="STORE">{CHANNEL_META.STORE.label}</option>
+              </select>
+            </div>
           </div>
           <div className="text-xs text-muted-foreground rounded-md bg-muted/30 border p-2.5">
             بَعد الإنشاء، اِضغط البَطاقة لِلَصق الـtokens، ثم زر «تَحقّق» يَضرب Meta API فِعلياً لِلتَأكّد.
