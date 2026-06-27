@@ -12,13 +12,11 @@ import { exportRows } from "@/lib/export";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
+import { Search, X as XIcon } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
-
-const selectCls =
-  "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 /** تاريخ محلي YYYY-MM-DD — لا toISOString: بغداد UTC+3 فينزاح اليوم قرب منتصف الليل. */
 const ymd = (d: Date) =>
@@ -241,14 +239,11 @@ export default function CustomerStatement() {
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="space-y-1 md:col-span-2">
             <Label className="text-xs">العميل</Label>
-            <select className={selectCls} value={customerId} onChange={(e) => setCustomerId(Number(e.target.value))}>
-              <option value={0}>— اختر عميلاً —</option>
-              {(index.data ?? []).map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} {c.phone ? `· ${c.phone}` : ""}
-                </option>
-              ))}
-            </select>
+            <CustomerSearchPicker
+              customers={index.data ?? []}
+              value={customerId}
+              onChange={setCustomerId}
+            />
           </div>
           <div className="space-y-1">
             <Label className="text-xs">من تاريخ</Label>
@@ -449,6 +444,123 @@ function StatBalance({ label, value }: { label: string; value: string | number }
       <div className={`text-xs font-semibold mt-0.5 ${num > 0 ? "text-money-positive" : num < 0 ? "text-money-negative" : "text-muted-foreground"}`}>
         {num > 0 ? "لنا عليه" : num < 0 ? "له علينا" : "لا ذمم"}
       </div>
+    </div>
+  );
+}
+
+/** منتقي عميل قابل للبحث بالكتابة (اسم/هاتف) — يَستبدل native select الذي لا يَدعم filter حيّاً مع 300+ عميل. */
+function CustomerSearchPicker({
+  customers,
+  value,
+  onChange,
+}: {
+  customers: { id: number; name: string; phone?: string | null }[];
+  value: number;
+  onChange: (id: number) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [highlight, setHighlight] = useState(0);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const selected = useMemo(() => customers.find((c) => c.id === value) ?? null, [customers, value]);
+
+  // النص المعروض في الحقل: اسم العميل المختار حين الإغلاق، أو نص البحث حين الفتح.
+  const display = open ? q : selected ? `${selected.name}${selected.phone ? ` · ${selected.phone}` : ""}` : "";
+
+  const filtered = useMemo(() => {
+    const needle = q.trim();
+    if (!needle) return customers.slice(0, 50);
+    const lower = needle.toLowerCase();
+    return customers
+      .filter((c) => c.name.toLowerCase().includes(lower) || (c.phone ?? "").toLowerCase().includes(lower))
+      .slice(0, 50);
+  }, [customers, q]);
+
+  useEffect(() => { setHighlight(0); }, [q, open]);
+
+  // إغلاق عند النقر خارج المركّب.
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (!wrapRef.current) return;
+      if (!wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  function pick(id: number) {
+    onChange(id);
+    setQ("");
+    setOpen(false);
+    inputRef.current?.blur();
+  }
+
+  function onKey(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key === "ArrowDown") { e.preventDefault(); setOpen(true); setHighlight((h) => Math.min(h + 1, filtered.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
+    else if (e.key === "Enter" && open && filtered[highlight]) { e.preventDefault(); pick(filtered[highlight].id); }
+    else if (e.key === "Escape") { setOpen(false); setQ(""); }
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <div className="relative">
+        <Search aria-hidden className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-muted-foreground pointer-events-none" />
+        <Input
+          ref={inputRef}
+          value={display}
+          onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onKeyDown={onKey}
+          placeholder="ابحث بالاسم أو الهاتف…"
+          className="pr-9 pl-9"
+          role="combobox"
+          aria-expanded={open}
+          aria-autocomplete="list"
+        />
+        {(selected || q) && (
+          <button
+            type="button"
+            onClick={() => { onChange(0); setQ(""); inputRef.current?.focus(); }}
+            aria-label="مسح"
+            className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground p-1"
+          >
+            <XIcon aria-hidden className="size-3.5" />
+          </button>
+        )}
+      </div>
+      {open && (
+        <div
+          role="listbox"
+          className="absolute z-50 mt-1 w-full max-h-72 overflow-y-auto rounded-md border bg-popover text-popover-foreground shadow-md"
+        >
+          {filtered.length === 0 ? (
+            <div className="px-3 py-4 text-sm text-muted-foreground text-center">لا نتائج لـ«{q}»</div>
+          ) : (
+            filtered.map((c, i) => (
+              <button
+                type="button"
+                key={c.id}
+                role="option"
+                aria-selected={c.id === value}
+                onMouseEnter={() => setHighlight(i)}
+                onClick={() => pick(c.id)}
+                className={`w-full text-right px-3 py-2 text-sm hover:bg-accent ${i === highlight ? "bg-accent" : ""} ${c.id === value ? "font-bold" : ""}`}
+              >
+                <div>{c.name}</div>
+                {c.phone && <div className="text-xs text-muted-foreground" dir="ltr">{c.phone}</div>}
+              </button>
+            ))
+          )}
+          {customers.length > filtered.length && q.trim() === "" && (
+            <div className="px-3 py-2 text-xs text-muted-foreground border-t bg-muted/30 text-center">
+              يَعرض ٥٠ من أصل {customers.length} — اكتب للبحث
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -48,7 +48,15 @@ export type SelectionBarProps = {
   className?: string;
 };
 
-/** شريط عائم يظهر عند تحديد صفوف — تصدير/طباعة المحدَّد + إجراءات إضافية اختيارية. */
+/**
+ * شريط عائم يظهر عند تحديد صفوف — تصدير/طباعة المحدَّد + إجراءات إضافية اختيارية.
+ *
+ * positioning: `fixed bottom-4` بدل `sticky bottom-3` — يَضمن الظهور بصرياً في كل الحالات
+ * (محتوى قصير، scroll containers متشعّبة، صفحات بـpagination ذيلي). كان قبلها يَضيع
+ * كقرص شبه شفّاف عند أسفل المحتوى عند بعض الحالات (٢٧/٦).
+ *
+ * ألوان مُتباينة + ظلّ قوي + شارة عدّاد بارزة + slide-in animation ⇒ لا يَفوت العين.
+ */
 export function SelectionBar({
   count,
   onClear,
@@ -62,29 +70,53 @@ export function SelectionBar({
   if (count <= 0) return null;
   return (
     <div
+      role="region"
+      aria-label="شريط إجراءات التحديد"
       className={cn(
-        "sticky bottom-3 z-20 mx-auto flex w-fit items-center gap-2 rounded-full border bg-background/95 px-3 py-1.5 shadow-lg backdrop-blur",
+        // fixed: ثابت على viewport bottom ⇒ يَظهر دائماً مهما كان طول المحتوى/الـscroll.
+        "fixed bottom-4 z-50",
+        // RTL-aware centering: عمل left-1/2 -translate-x-1/2 يَعمل في الاتجاهين.
+        "left-1/2 -translate-x-1/2",
+        // تَخطيط داخلي: gap + padding مُريح + حدود حادّة
+        "flex items-center gap-2 rounded-2xl px-3 py-2",
+        // ألوان متباينة بقوّة: خلفية بطاقة + إطار primary + ظلّ ضخم.
+        "border-2 border-primary bg-card shadow-2xl",
+        // backdrop-blur للحفاظ على قراءة الجدول خلفه عند الشفافية الجزئية.
+        "backdrop-blur supports-[backdrop-filter]:bg-card/95",
+        // حركة دخول لطيفة ⇒ تَشدّ الانتباه عند ظهور الشريط.
+        "animate-in fade-in slide-in-from-bottom-4 duration-200",
         className,
       )}
     >
-      <span className="text-sm font-medium">
-        المحدَّد: {count.toLocaleString("ar-IQ-u-nu-latn")}
-      </span>
-      <div className="h-4 w-px bg-border" />
+      {/* شارة العدّاد البارزة — لون primary مُعكوس ⇒ يَلفت النظر فوراً. */}
+      <div className="flex items-center gap-2 rounded-xl bg-primary px-3 py-1 text-primary-foreground">
+        <span className="text-lg font-extrabold tabular-nums" dir="ltr">
+          {count.toLocaleString("ar-IQ-u-nu-latn")}
+        </span>
+        <span className="text-xs font-bold">محدَّد</span>
+      </div>
+      <div className="h-6 w-px bg-border" />
       {actions}
       {onExport && (
-        <Button variant="outline" size="sm" onClick={onExport}>
+        <Button variant="outline" size="sm" onClick={onExport} className="gap-1.5">
           <Download className="size-4" />
           {exportLabel}
         </Button>
       )}
       {onPrint && (
-        <Button variant="outline" size="sm" onClick={onPrint}>
+        <Button variant="outline" size="sm" onClick={onPrint} className="gap-1.5">
           <Printer className="size-4" />
           {printLabel}
         </Button>
       )}
-      <Button variant="ghost" size="icon-sm" onClick={onClear} aria-label="إلغاء التحديد">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        onClick={onClear}
+        aria-label="إلغاء التحديد"
+        title="إلغاء التحديد"
+        className="text-muted-foreground hover:text-foreground"
+      >
         <X />
       </Button>
     </div>
