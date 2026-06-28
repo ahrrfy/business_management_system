@@ -5,6 +5,7 @@ import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
+import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { useClipboard } from "@/hooks/useClipboard";
@@ -15,7 +16,7 @@ import type { CustomerImportRow } from "@/lib/importTypes";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
 const TIER_LABEL: Record<string, string> = {
@@ -44,6 +45,12 @@ export default function Customers() {
   const [importOpen, setImportOpen] = useState(false);
   const importMut = trpc.imports.customers.useMutation();
   const limit = 50;
+
+  // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُحمِّل العميل) ثمّ نُبرز صفّه.
+  const { seedQuery, rowProps } = useFocusHighlight();
+  useEffect(() => {
+    if (seedQuery) { setQ(seedQuery); setPage(0); }
+  }, [seedQuery]);
 
   const input = useMemo(
     () => ({
@@ -283,8 +290,9 @@ export default function Customers() {
               {rows.map((c) => {
                 const id = Number(c.id);
                 const isActive = !!c.isActive;
+                const fr = rowProps(id);
                 return (
-                  <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
+                  <tr key={id} ref={fr.ref} className={`border-t ${isActive ? "" : "opacity-60"} ${fr.className}`}>
                     <td className="p-2 text-center">
                       <input
                         type="checkbox"

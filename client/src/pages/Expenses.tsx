@@ -1,5 +1,6 @@
 import { RowActions } from "@/components/list";
 import { matchQuery } from "@/components/search/filter";
+import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -85,6 +86,8 @@ export default function Expenses() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [query, setQuery] = useState("");
+  // إبراز المصروف القادم من البحث الشامل (?focus=) — القائمة تُحمَّل أحدث ٣٠٠، فالأقرب زمنياً يُبرَز.
+  const { rowProps } = useFocusHighlight();
 
   const list = trpc.expenses.list.useQuery({
     branchId: branchId ? Number(branchId) : undefined,
@@ -219,8 +222,10 @@ export default function Expenses() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
-                <tr key={r.id} className="border-t">
+              {rows.map((r) => {
+                const fr = rowProps(r.id);
+                return (
+                <tr key={r.id} ref={fr.ref} className={`border-t ${fr.className}`}>
                   <td className="p-2 text-xs" dir="ltr">{r.expenseDate ? new Date(r.expenseDate as any).toISOString().slice(0, 10) : "—"}</td>
                   <td className="p-2">{r.branchName ?? "—"}</td>
                   <td className="p-2">{CATEGORY_LABEL[r.category] ?? r.category}</td>
@@ -263,7 +268,8 @@ export default function Expenses() {
                     />
                   </td>
                 </tr>
-              ))}
+                );
+              })}
               {list.data && rows.length === 0 && (
                 <TableEmptyRow colSpan={8} message={query ? "لا مصروفات مطابقة للبحث." : "لا مصروفات لهذا الفلتر."} />
               )}
