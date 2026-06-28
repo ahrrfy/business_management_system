@@ -1,5 +1,6 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { ListToolbar, RowActions } from "@/components/list";
+import { matchQuery } from "@/components/search/filter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -25,6 +26,7 @@ export default function PurchaseReturns() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
+  const [query, setQuery] = useState("");
 
   const suppliers = trpc.suppliers.list.useQuery();
   const branches = trpc.branches.list.useQuery();
@@ -55,6 +57,13 @@ export default function PurchaseReturns() {
   const noteText = (n: string | null | undefined) =>
     n && !n.startsWith("purchaseReturn:") ? n : "—";
 
+  // بحث نصّي يُصفّي الصفحة المحمّلة (مورد/فرع/رقم قيد/أمر شراء/ملاحظة) — للبحث الشامل عبر
+  // كل الموردين استعمل القائمة المنسدلة أعلاه. القائمة مُصفّحة خادمياً (٥٠/صفحة).
+  const visibleRows = useMemo(
+    () => rows.filter((r) => matchQuery(query, [supplierName(r.supplierId), branchName(r.branchId), String(r.id), r.purchaseOrderId, noteText(r.notes)])),
+    [rows, query, supplierName, branchName],
+  );
+
   const setFilter = (fn: (v: number | "") => void, v: number | "") => {
     fn(v);
     setPage(0);
@@ -79,6 +88,7 @@ export default function PurchaseReturns() {
             title="المرتجعات"
             count={total}
             loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "بحث في الصفحة (مورد/قيد/ملاحظة)…" }}
             filters={
               <>
                 <select
@@ -110,7 +120,7 @@ export default function PurchaseReturns() {
             }
             exportSpec={{
               filename: "مرتجعات-المشتريات",
-              rows,
+              rows: visibleRows,
               columns: [
                 { key: "id", header: "رقم القيد" },
                 { key: "entryDate", header: "التاريخ" },
@@ -139,7 +149,7 @@ export default function PurchaseReturns() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((r) => (
+              {visibleRows.map((r) => (
                 <tr key={r.id} className="border-t">
                   <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
                   <td className="p-2 text-xs" dir="ltr">
@@ -172,12 +182,14 @@ export default function PurchaseReturns() {
                   </td>
                 </tr>
               ))}
-              {!list.isLoading && rows.length === 0 && (
+              {!list.isLoading && visibleRows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="p-6 text-center text-muted-foreground">
-                    {total === 0 && !supplierId && !branchId && !dateFrom && !dateTo
-                      ? "لا مرتجعات مشتريات بعد."
-                      : "لا مرتجعات مطابقة. غيّر الفلتر."}
+                    {query && rows.length > 0
+                      ? "لا مرتجعات مطابقة للبحث في هذه الصفحة."
+                      : total === 0 && !supplierId && !branchId && !dateFrom && !dateTo
+                        ? "لا مرتجعات مشتريات بعد."
+                        : "لا مرتجعات مطابقة. غيّر الفلتر."}
                   </td>
                 </tr>
               )}

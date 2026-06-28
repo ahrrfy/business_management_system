@@ -1,4 +1,5 @@
 import { RowActions } from "@/components/list";
+import { matchQuery } from "@/components/search/filter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -10,7 +11,8 @@ import { exportRows } from "@/lib/export";
 import { fmt } from "@/lib/money";
 import { printDoc } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useState } from "react";
+import { Search } from "lucide-react";
+import { useMemo, useState } from "react";
 import { Link } from "wouter";
 
 const selectCls =
@@ -82,6 +84,7 @@ export default function Expenses() {
   const [status, setStatus] = useState<string>("ACTIVE");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
+  const [query, setQuery] = useState("");
 
   const list = trpc.expenses.list.useQuery({
     branchId: branchId ? Number(branchId) : undefined,
@@ -91,6 +94,13 @@ export default function Expenses() {
     to: to || undefined,
     limit: 300,
   });
+
+  // بحث نصّي فوري على الصفوف المحمّلة (بيان/مستفيد/فئة/مرجع/مبلغ) — يُكمّل فلاتر الخادم.
+  const allRows = list.data?.rows ?? [];
+  const rows = useMemo(
+    () => allRows.filter((r) => matchQuery(query, [r.description, CATEGORY_LABEL[r.category] ?? r.category, r.referenceNumber, String(r.amount)])),
+    [allRows, query],
+  );
 
   const cancel = trpc.expenses.cancel.useMutation({
     onSuccess: async () => {
@@ -108,8 +118,8 @@ export default function Expenses() {
           <div className="flex gap-2">
             <Button
               variant="outline"
-              disabled={!list.data?.rows?.length}
-              onClick={() => exportRows(list.data?.rows ?? [], {
+              disabled={!rows.length}
+              onClick={() => exportRows(rows, {
                 filename: "المصروفات",
                 columns: [
                   { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ-u-nu-latn") : "" },
@@ -130,6 +140,18 @@ export default function Expenses() {
       <div className="grid gap-4 lg:grid-cols-3 items-start">
         <Card className="lg:col-span-2">
           <CardContent className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 pt-6">
+            <div className="space-y-1 sm:col-span-2 xl:col-span-5">
+              <Label className="text-xs">بحث</Label>
+              <div className="relative">
+                <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                  placeholder="ابحث في البيان أو المستفيد أو المرجع أو المبلغ…"
+                  className="pr-8"
+                />
+              </div>
+            </div>
             <div className="space-y-1">
               <Label className="text-xs">الفرع</Label>
               <select className={selectCls} value={branchId} onChange={(e) => setBranchId(e.target.value ? Number(e.target.value) : "")}>
@@ -197,7 +219,7 @@ export default function Expenses() {
               </tr>
             </thead>
             <tbody>
-              {(list.data?.rows ?? []).map((r) => (
+              {rows.map((r) => (
                 <tr key={r.id} className="border-t">
                   <td className="p-2 text-xs" dir="ltr">{r.expenseDate ? new Date(r.expenseDate as any).toISOString().slice(0, 10) : "—"}</td>
                   <td className="p-2">{r.branchName ?? "—"}</td>
@@ -242,8 +264,8 @@ export default function Expenses() {
                   </td>
                 </tr>
               ))}
-              {list.data && list.data.rows.length === 0 && (
-                <TableEmptyRow colSpan={8} message="لا مصروفات لهذا الفلتر." />
+              {list.data && rows.length === 0 && (
+                <TableEmptyRow colSpan={8} message={query ? "لا مصروفات مطابقة للبحث." : "لا مصروفات لهذا الفلتر."} />
               )}
             </tbody>
           </table>
