@@ -24,8 +24,23 @@ import {
   Boxes, Contact, FileText, Inbox as InboxIcon, LayoutDashboard, Package, Receipt, RotateCcw, ScanLine, ShoppingCart, Truck, UserCog, Users, Wallet, Wrench,
 } from "lucide-react";
 import { CameraScanner } from "@/components/scan/CameraScanner";
+import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
+
+/**
+ * المسارات التي تملك ماسح باركود محلياً (POS/الاستقبال/بوابة العدّ/الكشك/تبويب الملصقات)
+ * — يُعطَّل الماسح العالمي فيها كي لا يُلتقَط المسح مرّتين (تعارض). يطابق أماكن
+ * useBarcodeScanner المحلية: POS.tsx، Reception.tsx (كلاهما /pos)، CountPortal.tsx (/count)،
+ * BarcodeLabels (تبويب /inventory?tab=barcodes).
+ */
+function hasLocalScanner(pathname: string): boolean {
+  if (/^\/(pos|count|kiosk|price-checker|login|stocktakes)(\/|$)/.test(pathname)) return true;
+  if (pathname.startsWith("/inventory")) {
+    if (new URLSearchParams(window.location.search).get("tab") === "barcodes") return true;
+  }
+  return false;
+}
 
 type SearchResult = RouterOutputs["globalSearch"]["search"][number];
 type EntityType = SearchResult["type"];
@@ -111,8 +126,20 @@ export function CommandPalette() {
   const [scanOpen, setScanOpen] = useState(false);
   const [q, setQ] = useState("");
   const debouncedQ = useDebouncedValue(q, 200);
-  const [, navigate] = useLocation();
+  const [loc, navigate] = useLocation();
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // ── مسح الباركود العالمي (خارج POS) ──────────────────────────────
+  // ماسح ليزري على أيّ شاشة تصفّح ⇒ يفتح البحث الشامل مملوءاً بالكود، فيُحلّ فوراً
+  // (٨–١٤ رقماً = باركود بتطابق دقيق على productUnits.barcode) ⇒ نقرة للانتقال للصنف/الوثيقة.
+  // معطّل حين يكون البحث مفتوحاً (حقله يلتقط المسح بنفسه) أو على مسار يملك ماسحه المحلّي.
+  const scanToSearch = useCallback((raw: string) => {
+    const code = raw.trim();
+    if (!code) return;
+    setQ(code);
+    setOpen(true);
+  }, []);
+  useBarcodeScanner(scanToSearch, { enabled: !open && !hasLocalScanner(loc) });
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {

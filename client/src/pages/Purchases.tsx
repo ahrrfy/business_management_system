@@ -3,12 +3,13 @@ import { CopyInline } from "@/components/CopyButton";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
+import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printPO } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسودّة",
@@ -29,6 +30,12 @@ export default function Purchases() {
   const [to, setTo] = useState("");
   const [supplierId, setSupplierId] = useState<number | "">("");
   const [status, setStatus] = useState("");
+
+  // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُصفّي للأمر) ثمّ نُبرز صفّه.
+  const { seedQuery, rowProps } = useFocusHighlight();
+  useEffect(() => {
+    if (seedQuery) setQ(seedQuery);
+  }, [seedQuery]);
 
   const suppliers = trpc.suppliers.list.useQuery();
   const query = trpc.purchases.list.useQuery({
@@ -167,8 +174,9 @@ export default function Purchases() {
             <tbody>
               {rows.map((p) => {
                 const terminal = p.status === "RECEIVED" || p.status === "CANCELLED";
+                const fr = rowProps(p.id);
                 return (
-                  <tr key={p.id} className="border-t">
+                  <tr key={p.id} ref={fr.ref} className={`border-t ${fr.className}`}>
                     <td className="p-2"><CopyInline value={p.poNumber} /></td>
                     <td className="p-2">{p.supplierName ?? "—"}</td>
                     <td className="p-2">{new Date(p.orderDate).toLocaleString("ar-IQ-u-nu-latn")}</td>

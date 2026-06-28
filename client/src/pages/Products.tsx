@@ -5,6 +5,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
+import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
@@ -26,7 +27,7 @@ import { TableEmptyRow } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
 
@@ -54,6 +55,12 @@ export default function Products() {
   const categoriesQ = trpc.catalog.categories.useQuery();
   const dq = useDebouncedValue(q, 200);
   const sel = useRowSelection<string>();
+
+  // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُحمِّل الصنف) ثمّ نُبرز صفّه.
+  const { seedQuery, rowProps } = useFocusHighlight();
+  useEffect(() => {
+    if (seedQuery) { setQ(seedQuery); setPage(0); }
+  }, [seedQuery]);
 
   const list = trpc.catalog.adminList.useQuery({
     branchId,
@@ -267,10 +274,12 @@ export default function Products() {
               {rows.map((r: Row) => {
                 const dimmed = !r.productIsActive || r.variantIsActive === false || r.unitIsActive === false;
                 const key = rowKey(r);
+                const fr = rowProps(r.productId);
                 return (
                   <tr
                     key={key}
-                    className={`border-t ${dimmed ? "opacity-60" : ""}`}
+                    ref={fr.ref}
+                    className={`border-t ${dimmed ? "opacity-60" : ""} ${fr.className}`}
                   >
                     <td className="p-2">
                       <input

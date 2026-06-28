@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ListToolbar } from "@/components/list";
+import { matchQuery } from "@/components/search/filter";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
@@ -62,6 +63,7 @@ export default function Attendance() {
   const [employeeId, setEmployeeId] = useState("");
   const [period, setPeriod] = useState(currentMonth());
   const [source, setSource] = useState("");
+  const [query, setQuery] = useState("");
 
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(emptyForm());
@@ -79,11 +81,20 @@ export default function Attendance() {
   const list = trpc.attendance.list.useQuery(input);
   const rows = list.data ?? [];
 
+  // المؤشرات أعلى الشاشة على كامل الشهر؛ البحث النصّي يُصفّي الجدول فقط (اسم/يوم/تاريخ/مصدر).
+  const visibleRows = useMemo(
+    () => rows.filter((r) => matchQuery(query, [r.employeeName, r.dayName, String(r.attendanceDate ?? ""), r.source === "fingerprint" ? "بصمة" : "يدوي"])),
+    [rows, query],
+  );
+
   // المجاميع عبر decimal (لا جمع float على المبالغ — §5)؛ ثمّ تُعرَض عبر iqd()/toFixed.
   const totalHours = rows.reduce((s, r) => s.plus(D(r.hours ?? 0)), D(0));
   const totalAmount = rows.reduce((s, r) => s.plus(D(r.amount ?? 0)), D(0));
   const fingerprintCount = rows.filter((r) => r.source === "fingerprint").length;
   const manualCount = rows.filter((r) => r.source !== "fingerprint").length;
+  // مجاميع ذيل الجدول تتبع المعروض (المُصفّى) كي يتطابق التذييل مع الصفوف الظاهرة.
+  const visHours = visibleRows.reduce((s, r) => s.plus(D(r.hours ?? 0)), D(0));
+  const visAmount = visibleRows.reduce((s, r) => s.plus(D(r.amount ?? 0)), D(0));
 
   const record = trpc.attendance.record.useMutation({
     onSuccess: async () => {
@@ -135,8 +146,9 @@ export default function Attendance() {
         <CardHeader>
           <ListToolbar
             title="سجل الحضور"
-            count={rows.length}
+            count={visibleRows.length}
             loading={list.isLoading}
+            search={{ value: query, onChange: setQuery, placeholder: "بحث باسم الموظف أو اليوم…" }}
             filters={
               <>
                 <select className={selectCls} value={employeeId} onChange={(e) => setEmployeeId(e.target.value)} aria-label="الموظف">
@@ -155,7 +167,7 @@ export default function Attendance() {
             }
             exportSpec={{
               filename: `الحضور-${period}`,
-              rows,
+              rows: visibleRows,
               columns: [
                 { key: "employeeName", header: "الموظف", map: (r) => r.employeeName ?? "" },
                 { key: "dayName", header: "اليوم", map: (r) => r.dayName ?? "" },
@@ -186,7 +198,7 @@ export default function Attendance() {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
+                {visibleRows.map((r) => {
                   const weekend = r.dayName === "الجمعة" || r.dayName === "السبت";
                   return (
                     <tr key={r.id} className="border-t hover:bg-accent/40">
@@ -219,15 +231,15 @@ export default function Attendance() {
                 {list.isError && (
                   <tr><td colSpan={9}><ErrorState message="تعذّر تحميل سجلّات الحضور." onRetry={() => list.refetch()} /></td></tr>
                 )}
-                {!list.isLoading && !list.isError && rows.length === 0 && (
-                  <TableEmptyRow colSpan={9} message="لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً." />
+                {!list.isLoading && !list.isError && visibleRows.length === 0 && (
+                  <TableEmptyRow colSpan={9} message={query ? "لا سجلات مطابقة للبحث." : "لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً."} />
                 )}
-                {rows.length > 0 && (
+                {visibleRows.length > 0 && (
                   <tr className="border-t-2 border-border bg-muted/40 font-bold">
                     <td className="p-2.5" colSpan={5}>الإجمالي</td>
-                    <td className="p-2.5 text-center tabular-nums">{totalHours.toNumber().toLocaleString("en-US")}</td>
+                    <td className="p-2.5 text-center tabular-nums">{visHours.toNumber().toLocaleString("en-US")}</td>
                     <td></td>
-                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totalAmount.toFixed(2))}</td>
+                    <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(visAmount.toFixed(2))}</td>
                     <td></td>
                   </tr>
                 )}

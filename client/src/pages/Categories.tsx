@@ -19,8 +19,9 @@ import { RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
+import { matchQuery } from "@/components/search/filter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Plus } from "lucide-react";
+import { Plus, Search } from "lucide-react";
 import { useMemo, useState } from "react";
 
 type CategoryRow = RouterOutputs["catalog"]["categoriesAdmin"][number];
@@ -32,6 +33,13 @@ export default function Categories() {
   const list = trpc.catalog.categoriesAdmin.useQuery();
   const rows = list.data ?? [];
   const sel = useRowSelection<number>();
+
+  // بحث نصّي فوري (تصفية على العميل — القائمة كاملة محمّلة) على الاسم/الوصف.
+  const [query, setQuery] = useState("");
+  const filtered = useMemo(
+    () => rows.filter((c) => matchQuery(query, [c.name, c.description])),
+    [rows, query],
+  );
 
   // ── نموذج الإضافة/التعديل ──
   const [formOpen, setFormOpen] = useState(false);
@@ -126,7 +134,18 @@ export default function Categories() {
 
       <Card>
         <CardHeader className="flex flex-row items-center justify-between gap-2">
-          <div className="text-sm text-muted-foreground">{list.isLoading ? "" : `${num(rows.length)} فئة`}</div>
+          <div className="text-sm text-muted-foreground">
+            {list.isLoading ? "" : query ? `${num(filtered.length)} / ${num(rows.length)} فئة` : `${num(rows.length)} فئة`}
+          </div>
+          <div className="relative">
+            <Search className="pointer-events-none absolute top-1/2 right-2 size-4 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="بحث بالاسم أو الوصف…"
+              className="h-8 w-56 pr-8"
+            />
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <table className="w-full text-sm">
@@ -137,8 +156,8 @@ export default function Categories() {
                     type="checkbox"
                     className="size-4"
                     aria-label="تحديد كل الفئات"
-                    checked={rows.length > 0 && rows.every((r) => sel.isSelected(r.id))}
-                    onChange={(e) => sel.setMany(rows.map((r) => r.id), e.target.checked)}
+                    checked={filtered.length > 0 && filtered.every((r) => sel.isSelected(r.id))}
+                    onChange={(e) => sel.setMany(filtered.map((r) => r.id), e.target.checked)}
                   />
                 </th>
                 <th className="p-2">الفئة</th>
@@ -149,7 +168,7 @@ export default function Categories() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((c) => (
+              {filtered.map((c) => (
                 <tr key={c.id} className={`border-t ${c.isActive ? "" : "opacity-60"}`}>
                   <td className="p-2">
                     <input
@@ -182,8 +201,8 @@ export default function Categories() {
               {list.isLoading && (
                 <tr><td colSpan={6}><LoadingState /></td></tr>
               )}
-              {!list.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={6} message="لا فئات بعد — أضِف أوّل فئة." />
+              {!list.isLoading && filtered.length === 0 && (
+                <TableEmptyRow colSpan={6} message={query ? "لا فئات مطابقة للبحث." : "لا فئات بعد — أضِف أوّل فئة."} />
               )}
             </tbody>
           </table>

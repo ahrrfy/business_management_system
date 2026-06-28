@@ -334,7 +334,8 @@ async function searchProducts(
       title: r.variantName ? `${r.productName} — ${r.variantName}` : r.productName,
       subtitle: `${r.sku} · ${r.unitName}`,
       meta: r.barcode,
-      route: `/products?focus=${r.productId}`,
+      // وجهة الـhub مع q (يُحمِّل الصفّ في القائمة الخادمية) + focus (يُبرزه ويمرّر إليه).
+      route: `/inventory?tab=products&q=${encodeURIComponent(query)}&focus=${r.productId}`,
       rank: 0,
     }));
   }
@@ -368,7 +369,7 @@ async function searchProducts(
       title: r.name,
       subtitle: r.sku ?? null,
       meta: null,
-      route: `/products?focus=${r.id}`,
+      route: `/inventory?tab=products&q=${encodeURIComponent(query)}&focus=${r.id}`,
       rank: r.name.toLowerCase().startsWith(query.toLowerCase()) ? 1 : 2,
     });
   }
@@ -418,7 +419,7 @@ async function searchCustomers(
     title: r.name,
     subtitle: [r.phone, r.city].filter(Boolean).join(" · ") || null,
     meta: r.legacyCode ? `قديم: ${r.legacyCode}` : null,
-    route: `/customers?focus=${r.id}`,
+    route: `/customers?tab=list&q=${encodeURIComponent(query)}&focus=${r.id}`,
     rank: r.name.toLowerCase().startsWith(query.toLowerCase()) ? 1 : 2,
   }));
 }
@@ -657,8 +658,8 @@ async function searchPurchaseOrders(
     title: r.poNumber,
     subtitle: r.supplierName ?? "—",
     meta: `${r.total} د.ع · ${r.status}`,
-    // لا صفحة تفاصيل مستقلّة بعد ⇒ نُمرّر للقائمة مع فلتر التركيز.
-    route: `/purchases?focus=${r.id}`,
+    // لا صفحة تفاصيل مستقلّة بعد ⇒ القائمة مع q=رقم الأمر (يُصفّيها إليه) + focus (يُبرزه).
+    route: `/purchases?tab=orders&q=${encodeURIComponent(r.poNumber)}&focus=${r.id}`,
     rank: r.poNumber === query ? 0 : 1,
   }));
 }
@@ -705,7 +706,7 @@ async function searchExpenses(
     title: r.description?.slice(0, 80) || r.payee || `مصروف #${r.id}`,
     subtitle: [r.payee, r.referenceNumber].filter(Boolean).join(" · ") || r.category,
     meta: `${r.amount} د.ع · ${r.expenseDate}`,
-    route: `/expenses?focus=${r.id}`,
+    route: `/treasury?tab=expenses&focus=${r.id}`,
     rank: 2,
   }));
 }
