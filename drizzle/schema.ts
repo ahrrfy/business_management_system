@@ -613,6 +613,9 @@ export const receipts = mysqlTable(
     partyIdx: index("idx_receipt_party").on(table.partyType, table.partyId),
     // G11 (١٩/٦/٢٦): فهرس shiftId حرج — Z-report لكل إغلاق وردية كان full scan على آلاف الإيصالات يومياً.
     shiftIdx: index("idx_receipt_shift").on(table.shiftId),
+    // S0 (٢٩/٦/٢٦): فهرس أُنشئ في 0013 على عمود `bucketId` ثم أسقطه 0017 (حذف نظام دلاء النقد) ⇒ بقي مفقوداً.
+    // يُعاد على `cashBucket` عبر هجرة 0030 اليدوية. (snapshot مجمَّد عند 0019 ⇒ لا db:generate — توثيق فقط.)
+    bucketStatusIdx: index("idx_receipt_bucket_status").on(table.cashBucket, table.status),
   })
 );
 

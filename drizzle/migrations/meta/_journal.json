@@ -211,6 +211,13 @@
       "when": 1782303000000,
       "tag": "0029_delivery_cod",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "5",
+      "when": 1782304000000,
+      "tag": "0030_fix_receipt_bucket_status_index",
+      "breakpoints": true
     }
   ]
 }
