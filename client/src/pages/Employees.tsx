@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar } from "@/components/list";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -106,7 +107,7 @@ export default function Employees() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
@@ -144,7 +145,7 @@ export default function Employees() {
                 )}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

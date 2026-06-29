@@ -2,6 +2,7 @@ import { balanceOptionText } from "@/components/BalanceBadge";
 import { ListToolbar, RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Input } from "@/components/ui/input";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D, fmt } from "@/lib/money";
@@ -137,6 +138,7 @@ export default function SalesReturns() {
           />
         </CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -195,6 +197,7 @@ export default function SalesReturns() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

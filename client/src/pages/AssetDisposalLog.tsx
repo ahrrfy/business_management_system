@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ListToolbar } from "@/components/list";
@@ -100,7 +101,7 @@ export default function AssetDisposalLog() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50"><tr>
                 <th className="p-2">الأصل</th>
@@ -132,7 +133,7 @@ export default function AssetDisposalLog() {
                 {rows.length === 0 && <TableEmptyRow colSpan={7} message="لا أصول مُستبعَدة أو خارج الخدمة." />}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
         </CardContent>
       </Card>
     </div>

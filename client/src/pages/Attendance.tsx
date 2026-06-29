@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ListToolbar } from "@/components/list";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { matchQuery } from "@/components/search/filter";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
@@ -182,7 +183,7 @@ export default function Attendance() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
@@ -245,7 +246,7 @@ export default function Attendance() {
                 )}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

@@ -10,6 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { trpc } from "@/lib/trpc";
 import { downloadLauncherCmd, kioskUrl } from "@/lib/kioskLauncher";
 import { confirm, confirmDelete } from "@/lib/confirm";
@@ -167,7 +168,7 @@ export default function KioskDevices() {
           {devicesQ.isLoading ? (
             <LoadingState />
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-right text-muted-foreground">
@@ -230,7 +231,7 @@ export default function KioskDevices() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

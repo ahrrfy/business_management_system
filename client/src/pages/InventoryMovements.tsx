@@ -15,6 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -475,7 +476,7 @@ export default function InventoryMovements() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -565,7 +566,7 @@ export default function InventoryMovements() {
               )}
             </tbody>
           </table>
-          </div>
+          </ScrollTableShell>
         </CardContent>
         <div className="flex items-center justify-between p-3 border-t">
           <span className="text-xs text-muted-foreground">

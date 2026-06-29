@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
@@ -145,7 +146,7 @@ export default function HrDevices() {
       <Card>
         <CardHeader><CardTitle className="text-base">الأجهزة ({total})</CardTitle></CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
@@ -225,7 +226,7 @@ export default function HrDevices() {
                 )}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

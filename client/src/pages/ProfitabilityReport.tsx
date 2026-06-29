@@ -9,6 +9,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtAr, formatIqd, fmtInt, D } from "@/lib/money";
@@ -186,7 +187,7 @@ export default function ProfitabilityReport() {
           {loading ? (
             <LoadingState />
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
@@ -225,7 +226,7 @@ export default function ProfitabilityReport() {
                   })}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

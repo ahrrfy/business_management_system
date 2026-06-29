@@ -5,15 +5,18 @@ import {
   flexRender,
   getCoreRowModel,
   getFilteredRowModel,
+  getPaginationRowModel,
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
   type SortingState,
 } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
-import { ChevronUp, ChevronDown, ArrowUpDown } from "lucide-react";
+import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight, ArrowUpDown } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
 import { TableSkeleton } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -55,7 +58,27 @@ type DataTableProps<T, K = string> = {
   getRowId?: (row: T) => K; // مُلزِم لو selection مُعَطاة
   // نَقرة الصَفّ تُغَيِّر التَحديد (افتِراضياً: false — فقط Shift+Click أَو الـcheckbox)
   rowClickSelects?: boolean;
+  /** حجم الصفحة لِلتَرقيم (افتِراضياً ٥٠). مَرِّر Infinity لِتَعطيل التَرقيم (عَرض الكُل). */
+  pageSize?: number;
+  /** حَبس الجَدول في حاوية بِحَجم الشاشة (ترويسة لاصقة + تَمرير داخِلي). افتِراضياً true. */
+  bounded?: boolean;
+  /** صنف الارتِفاع الأقصى لِلحاوية المَحبوسة (يُمَرَّر لِـScrollTableShell). */
+  maxHeightClass?: string;
 };
+
+/** يَختار حاوية الجَدول: محبوسة بِحَجم الشاشة (ترويسة لاصقة) أَو تَمرير أُفُقي بَسيط. */
+function TableShell({
+  bounded,
+  maxHeightClass,
+  children,
+}: {
+  bounded: boolean;
+  maxHeightClass?: string;
+  children: React.ReactNode;
+}) {
+  if (bounded) return <ScrollTableShell maxHeightClass={maxHeightClass}>{children}</ScrollTableShell>;
+  return <div className="rounded-md border overflow-x-auto">{children}</div>;
+}
 
 export function DataTable<T, K = string>({
   columns,
@@ -68,11 +91,15 @@ export function DataTable<T, K = string>({
   selection,
   getRowId,
   rowClickSelects = false,
+  pageSize = 50,
+  bounded = true,
+  maxHeightClass,
 }: DataTableProps<T, K>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [lastIndex, setLastIndex] = useState<number | null>(null);
 
+  const paginated = Number.isFinite(pageSize);
   const table = useReactTable({
     data,
     columns,
@@ -82,6 +109,8 @@ export function DataTable<T, K = string>({
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
+    ...(paginated ? { getPaginationRowModel: getPaginationRowModel() } : {}),
+    initialState: paginated ? { pagination: { pageSize } } : undefined,
   });
 
   const selectionEnabled = !!selection && !!getRowId;
@@ -167,7 +196,7 @@ export function DataTable<T, K = string>({
           {toolbar}
         </div>
       )}
-      <div className="rounded-md border overflow-x-auto">
+      <TableShell bounded={bounded} maxHeightClass={maxHeightClass}>
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             {table.getHeaderGroups().map((hg) => (
@@ -273,14 +302,46 @@ export function DataTable<T, K = string>({
             )}
           </tbody>
         </table>
-      </div>
+      </TableShell>
       {data.length > 0 && (
-        <p className="text-xs text-muted-foreground">
-          {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} من {data.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ
-          {selectionEnabled && selection!.count > 0 && (
-            <> · مُحَدَّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}</>
+        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+          <span>
+            {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} من {data.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ
+            {selectionEnabled && selection!.count > 0 && (
+              <> · مُحَدَّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}</>
+            )}
+          </span>
+          {paginated && table.getPageCount() > 1 && (
+            <div className="flex items-center gap-2">
+              <span>
+                صفحة {(table.getState().pagination.pageIndex + 1).toLocaleString("ar-IQ-u-nu-latn")} من{" "}
+                {table.getPageCount().toLocaleString("ar-IQ-u-nu-latn")}
+              </span>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  onClick={() => table.previousPage()}
+                  disabled={!table.getCanPreviousPage()}
+                  aria-label="الصفحة السابقة"
+                >
+                  <ChevronRight aria-hidden className="size-4" />
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  onClick={() => table.nextPage()}
+                  disabled={!table.getCanNextPage()}
+                  aria-label="الصفحة التالية"
+                >
+                  <ChevronLeft aria-hidden className="size-4" />
+                </Button>
+              </div>
+            </div>
           )}
-        </p>
+        </div>
       )}
     </div>
   );

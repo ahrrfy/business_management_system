@@ -19,7 +19,32 @@ import "./index.css";
 import "./lib/theme/tokens.css";
 import "./sentry"; // مراقبة أخطاء العميل (لا أثر دون VITE_SENTRY_DSN_CLIENT)
 
-const queryClient = new QueryClient();
+// إعدادات عامة لكل استعلامات النظام (كانت `new QueryClient()` الخام ⇒ افتراضات v5:
+// staleTime=0 + refetchOnWindowFocus + retry=3 بتراجع أُسّي). على VPS مشترك ببيانات
+// حقيقية كان ذلك يُنتج «ثقلاً» وسبينر «جاري التحميل» متكرّراً عند كل عودة تركيز/تنقّل،
+// و~٧ث تعليقاً على أخطاء الصلاحيات/التحقّق قبل ظهورها. الضبط أدناه يخدم التنقّل من الكاش
+// ويُلغي عاصفة إعادة الجلب، بلا لمس أي صفحة (الصفحات التي تضبط خياراتها محلياً تبقى كما هي).
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // طازج لدقيقة ⇒ التنقّل بين الشاشات والعودة إليها لا يُعيد الجلب من الصفر.
+      staleTime: 60_000,
+      // لا تُعِد الجلب لمجرّد عودة التركيز للنافذة (تبديل تبويب/رجوع من واتساب/إيصال).
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      // لا تُعِد المحاولة على أخطاء 4xx (صلاحيات/تحقّق/مدخلات) — عقيمة وتُعلّق المستخدم؛
+      // غيرها: محاولتان كحدّ أقصى بتراجع أُسّي مقصوص.
+      retry: (count, err) => {
+        if (err instanceof TRPCClientError) {
+          const status = (err.data as { httpStatus?: number } | null | undefined)?.httpStatus;
+          if (typeof status === "number" && status >= 400 && status < 500) return false;
+        }
+        return count < 2;
+      },
+      retryDelay: (attempt) => Math.min(1000 * 2 ** attempt, 15_000),
+    },
+  },
+});
 
 function handleUnauthorized(error: unknown) {
   if (!(error instanceof TRPCClientError)) return;

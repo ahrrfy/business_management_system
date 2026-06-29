@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { printCustodyAck } from "@/lib/assets/print";
 import { exportRows } from "@/lib/export";
@@ -73,6 +74,7 @@ export default function AssetCustodyReport() {
       <Card>
         <CardHeader><CardTitle className="text-base">العهد حسب الموظف</CardTitle></CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50"><tr>
               <th className="p-2 w-8"></th>
@@ -116,6 +118,7 @@ export default function AssetCustodyReport() {
               {d.byEmployee.length === 0 && <tr><td colSpan={5} className="p-6 text-center text-muted-foreground">لا عهد مُسندة حالياً.</td></tr>}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 
@@ -123,6 +126,7 @@ export default function AssetCustodyReport() {
         <Card>
           <CardHeader><CardTitle className="text-base">أصول بلا عهدة ({d.unassigned.length})</CardTitle></CardHeader>
           <CardContent className="p-0">
+            <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50"><tr><th className="p-2">الأصل</th><th className="p-2">الرمز</th><th className="p-2">الفرع</th><th className="p-2 text-right">القيمة الدفترية</th></tr></thead>
               <tbody>
@@ -136,6 +140,7 @@ export default function AssetCustodyReport() {
                 ))}
               </tbody>
             </table>
+            </ScrollTableShell>
           </CardContent>
         </Card>
       )}

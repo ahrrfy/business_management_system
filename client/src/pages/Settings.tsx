@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { DangerConfirmDialog } from "@/components/DangerConfirmDialog";
@@ -161,7 +162,7 @@ export default function Settings() {
           ) : list.length === 0 ? (
             <p className="text-sm text-muted-foreground">لا نسخ بعد — اضغط «نسخة الآن».</p>
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -190,7 +191,7 @@ export default function Settings() {
                   ))}
                 </TableBody>
               </Table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

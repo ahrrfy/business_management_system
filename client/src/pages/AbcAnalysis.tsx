@@ -9,6 +9,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 
 type Row = RouterOutputs["reports"]["abcAnalysis"]["rows"][number];
 
@@ -141,7 +142,7 @@ export default function AbcAnalysis() {
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مبيعات في هذا النطاق.</p>
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
@@ -168,7 +169,7 @@ export default function AbcAnalysis() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

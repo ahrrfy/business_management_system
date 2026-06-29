@@ -1,6 +1,7 @@
 import { CopyInline } from "@/components/CopyButton";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -414,7 +415,7 @@ export default function BarcodeLabels() {
             )}
           </div>
 
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
@@ -466,7 +467,7 @@ export default function BarcodeLabels() {
                 )}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
 
           {error && <p className="text-sm text-destructive">{error}</p>}
           {info && <p className="text-sm text-money-positive">{info}</p>}

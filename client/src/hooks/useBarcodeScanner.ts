@@ -34,6 +34,10 @@ export function useBarcodeScanner(
     let lastKeyTime = 0;
     let timer: ReturnType<typeof setTimeout>;
 
+    const reset = () => {
+      buf = "";
+    };
+
     const flush = () => {
       const captured = buf;
       buf = "";
@@ -46,14 +50,16 @@ export function useBarcodeScanner(
       const now = Date.now();
       const inField = INPUT_TAGS.has((e.target as HTMLElement).tagName);
 
-      // Enter: إنهاء المسح دائماً إن كان هناك محتوى مُجمَّع
+      // Enter: لا نبتلع Enter (e.preventDefault) إلا إذا كان التسلسل الحالي ماسحاً آلياً
+      // مؤكَّداً: طول كافٍ + آخر حرف وصل للتوّ (الماسح يُرسل آخر رقم ثم Enter خلال <80ms).
+      // الإنسان يفرغ من الكتابة ثم يتوقّف ثم يضغط Enter لإرسال نموذج ⇒ الفاصل أكبر فلا يُسرَق.
       if (e.key === "Enter") {
         clearTimeout(timer);
-        if (buf.length >= minLength) {
+        if (buf.length >= minLength && now - lastKeyTime < thresholdMs * 2) {
           e.preventDefault();
           flush();
         } else {
-          buf = "";
+          reset();
         }
         return;
       }
@@ -61,7 +67,7 @@ export function useBarcodeScanner(
       // تجاهل مفاتيح التحكم والوظائف والاختصارات
       if (e.key.length !== 1 || e.ctrlKey || e.altKey || e.metaKey) return;
 
-      // إن كانت الكتابة في حقل نص والمسح لم يبدأ بعد → اتركها للحقل
+      // إن كانت الكتابة في حقل نص والمسح لم يبدأ بعد → اتركها للحقل (لا تراكم داخل الحقول).
       if (inField && buf.length === 0) return;
 
       const gap = now - lastKeyTime;
@@ -79,8 +85,12 @@ export function useBarcodeScanner(
     };
 
     document.addEventListener("keydown", handler);
+    // أي تغيّر تركيز (نقر/Tab إلى حقل أو زر) يُنهي أي تسلسل جارٍ ⇒ يمنع حمل buf المُجمَّع
+    // على body عبر تغيّر التركيز فيُسرَق Enter داخل حقل/زر (انحدار «النماذج لا تُرسَل»).
+    document.addEventListener("focusin", reset);
     return () => {
       document.removeEventListener("keydown", handler);
+      document.removeEventListener("focusin", reset);
       clearTimeout(timer);
     };
   }, [enabled, minLength, thresholdMs, stableOnScan]);

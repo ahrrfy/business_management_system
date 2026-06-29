@@ -3,6 +3,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportRows } from "@/lib/export";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDateTime } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
@@ -230,6 +231,7 @@ export default function AuditLogs() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -275,6 +277,7 @@ export default function AuditLogs() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

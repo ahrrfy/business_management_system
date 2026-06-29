@@ -6,6 +6,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -154,7 +155,7 @@ export default function SalesRegister() {
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مبيعات في هذا النطاق.</p>
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
@@ -187,7 +188,7 @@ export default function SalesRegister() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

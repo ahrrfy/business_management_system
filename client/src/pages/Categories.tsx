@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/dialog";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { RowActions } from "@/components/list";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
@@ -148,6 +149,7 @@ export default function Categories() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -206,6 +208,7 @@ export default function Categories() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

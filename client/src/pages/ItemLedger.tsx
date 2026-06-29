@@ -11,6 +11,7 @@ import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 type LedgerRow = RouterOutputs["reports"]["itemLedger"]["rows"][number];
@@ -269,7 +270,7 @@ export default function ItemLedger() {
           ) : ledger.isLoading ? (
             <LoadingState />
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
@@ -311,7 +312,7 @@ export default function ItemLedger() {
                   </tfoot>
                 )}
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>
