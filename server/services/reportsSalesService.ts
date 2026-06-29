@@ -3,7 +3,7 @@
 //
 // ⚠️ نمط SQL الخام (يطابق reportsFinancialService): db.execute(sql`…`) + rowsOf لفكّ نتيجة mysql2،
 //    CAST(col AS CHAR) لكل مبلغ ثم money()/toDbMoney للجمع (لا parseFloat/Number على المال — §٥)،
-//    DATE(invoices.invoiceDate) لمقارنة التاريخ (حدّان شاملان YYYY-MM-DD).
+//    نطاق التاريخ قابل للفهرسة (sargable): invoiceDate >= from 00:00 AND < nextDay(to) 00:00 (S2 ٢٩/٦).
 //    أسماء الأعمدة بأسماء DB: invoices.status ⇒ العمود invoiceStatus.
 //
 // تعريف الربح للسطر = الإجمالي − (الكمية الأساس بعد طرح المُعاد للمخزون) × تكلفة الوحدة،
@@ -17,6 +17,12 @@ import { money, toDbMoney } from "./money";
 function rowsOf(res: unknown): any[] {
   const data = (res as any)?.[0] ?? res;
   return Array.isArray(data) ? data : [];
+}
+
+/** اليوم التالي لتاريخ YYYY-MM-DD (UTC) — لحدّ نطاق علوي سليم [from، nextDay(to)) بلا حِيَل 23:59:59.
+ *  مطابق reportsService.nextDayStr. ضروري لجعل فلتر التاريخ قابلاً للفهرسة (sargable). */
+function nextDayStr(ymd: string): string {
+  return new Date(new Date(`${ymd}T00:00:00Z`).getTime() + 86_400_000).toISOString().slice(0, 10);
 }
 
 /* ============================ سجلّ المبيعات المفصّل (سطر-سطر) ============================ */
@@ -56,8 +62,10 @@ export async function getSalesRegister(opts: {
 
   const branchCond = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
   // الفلتر المشترك: نطاق التاريخ + استبعاد الملغاة + الفرع (اختياري).
+  // S2 (٢٩/٦/٢٦): نطاق قابل للفهرسة [from، nextDay(to)) بدل DATE(i.invoiceDate) (غير قابل للفهرسة كان
+  // يفرض مسح كل الفواتير). يحتاج فهرساً مُغطّياً بترتيب (التاريخ ثم الحالة) — هجرة 0032. نفس نتيجة الحدّين الشاملين.
   const where = sql`
-    DATE(i.invoiceDate) >= ${opts.from} AND DATE(i.invoiceDate) <= ${opts.to}
+    i.invoiceDate >= ${`${opts.from} 00:00:00`} AND i.invoiceDate < ${`${nextDayStr(opts.to)} 00:00:00`}
     AND i.invoiceStatus NOT IN ('CANCELLED')
     ${branchCond}
   `;
@@ -188,8 +196,10 @@ export async function getSalesByDimension(opts: {
   }
 
   const branchCond = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  // S2 (٢٩/٦/٢٦): نطاق قابل للفهرسة [from، nextDay(to)) بدل DATE(i.invoiceDate) (غير قابل للفهرسة كان
+  // يفرض مسح كل الفواتير). يحتاج فهرساً مُغطّياً بترتيب (التاريخ ثم الحالة) — هجرة 0032. نفس نتيجة الحدّين الشاملين.
   const where = sql`
-    DATE(i.invoiceDate) >= ${opts.from} AND DATE(i.invoiceDate) <= ${opts.to}
+    i.invoiceDate >= ${`${opts.from} 00:00:00`} AND i.invoiceDate < ${`${nextDayStr(opts.to)} 00:00:00`}
     AND i.invoiceStatus NOT IN ('CANCELLED')
     ${branchCond}
   `;

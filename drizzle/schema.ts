@@ -480,6 +480,10 @@ export const invoices = mysqlTable(
     // S1 (٢٩/٦/٢٦): أعمار الذمم/المبيعات اليومية لكل (فرع+حالة+تاريخ) + تعرّض الائتمان لكل (عميل+استحقاق+حالة). هجرة 0031.
     branchStatusDateIdx: index("idx_invoice_branch_status_date").on(table.branchId, table.status, table.invoiceDate),
     customerDueIdx: index("idx_invoice_customer_due").on(table.customerId, table.dueDate, table.status),
+    // S2 (٢٩/٦/٢٦): فهارس مُغطّية بترتيب (التاريخ ثم الحالة) لتقارير المبيعات — مُثبَتة بالقياس (هجرة 0032).
+    // الترتيب حاسم: invoiceStatus NOT IN نفيٌ غير-مساواة يكسر البادئة، فالتاريخ يجب أن يسبق الحالة.
+    dateStatusIdx: index("idx_invoice_date_status").on(table.invoiceDate, table.status),
+    branchDateStatusIdx: index("idx_invoice_branch_date_status").on(table.branchId, table.invoiceDate, table.status),
     sourceUq: unique("uq_invoice_source").on(table.sourceType, table.sourceId),
   })
 );

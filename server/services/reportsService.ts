@@ -603,7 +603,8 @@ export async function getDashboardMetrics(
       CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS t
     FROM invoices i
     WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
-      AND DATEDIFF(NOW(), i.invoiceDate) > 30
+      -- S2 (٢٩/٦/٢٦): مطابق DATEDIFF(NOW(),invoiceDate)>30 تماماً (DATEDIFF يتجاهل الوقت، TZ=UTC) لكنه قابل للفهرسة.
+      AND i.invoiceDate < DATE_SUB(UTC_DATE(), INTERVAL 30 DAY)
       ${branchFilterInv}
   `);
   const arData = (arRows as any)[0] ?? arRows;
