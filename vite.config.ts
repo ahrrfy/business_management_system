@@ -9,14 +9,24 @@ export default defineConfig({
     react(),
     tailwindcss(),
     VitePWA({
-      // حوكمة التحديث: 'prompt' بدل 'autoUpdate' — لا تَستبدل SW صامتاً (ناقل هجوم لو سُمّمت الحزمة).
-      // المستخدم يَرى شارة «إصدار جديد، اضغط للتحديث» ويُقرّر هو متى يُطبّق.
-      registerType: "prompt",
+      // حوكمة التحديث: 'autoUpdate' (كان 'prompt'). السبب (٢٩/٦): استراتيجية 'prompt' كانت
+      // تُبقي المتصفّح على SW قديم بعد كل نشر حتى يضغط المستخدم «تحديث» يدوياً — لكنّ الـSW
+      // القديم يقدّم index.html قديماً يشير إلى حُزَم (chunks) بمعرّفات لم تعد على الخادم ⇒
+      // حُزَم الصفحات تفشل ⇒ «جار التحميل» للأبد (تعطّل إنتاجي بعد كل نشر، والمستخدم عالقٌ
+      // قبل أن يرى زرّ التحديث أصلاً). 'autoUpdate' (مع skipWaiting/clientsClaim/تنظيف الكاش
+      // القديم) يجعل الـSW الجديد يَنشط فوراً ويُنظّف الحُزَم الميّتة ⇒ لا تعليق بعد النشر.
+      // (المقايضة: قد تُعاد تحميل صفحة مفتوحة مرّة عند اكتشاف نشر جديد ⇒ انشُر خارج ساعات الذروة.)
+      registerType: "autoUpdate",
       includeAssets: ["favicon.png", "apple-touch-icon.png", "icon-192.png", "icon-512.png"],
       // لا تُعطّل API: التنقّل يرجع لـindex.html، و/api لا يُخبّأ إطلاقاً (شبكة فقط).
       workbox: {
         // حزمة التطبيق أكبر من 2MiB ⇒ ارفع حدّ precache كي يُخبّأ التطبيق كاملاً (عمل دون اتصال).
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        // فعّل الـSW الجديد فوراً وتولَّ التحكّم بكل الألسنة المفتوحة، وامسح precache القديم
+        // ⇒ لا تبقى حُزَم/index قديمة تشير لملفّات حُذِفت بالنشر الجديد (جذر علّة «جار التحميل»).
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
         navigateFallback: "/index.html",
         // الشاشات الحسّاسة لا تَرجع لـindex.html المُخبّأ + /api شبكة فقط.
         navigateFallbackDenylist: [
