@@ -352,11 +352,21 @@ export default function POS() {
   }, [tabs, activeId, branchId, draftRestored]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
+  // S5 (٢٩/٦): العميل المختار = قراءة فورية من القائمة المحمَّلة (الشائع ≤٥٠٠ ⇒ بلا وميض تسعير)،
+  // مع fallback إلى customers.get للعميل خارج أوّل ٥٠٠ (يُختار عبر باركود/بحث/مسودّة). يصلح علّة صحّة
+  // عند ١٠٠×: قبلُ كان selectedCustomer=null لغير المحمَّل ⇒ تسعير RETAIL خاطئ + فقدان الرصيد.
+  // (تحويل القائمة المنسدلة نفسها لبحث شريحة لاحقة يُلغي تحميل ٥٠٠ عند الإقلاع.)
   const customers = trpc.customers.list.useQuery();
-  const selectedCustomer = useMemo(
+  const fromList = useMemo(
     () => (customers.data ?? []).find((c) => c.id === activeTab.customerId) ?? null,
     [customers.data, activeTab.customerId]
   );
+  const needFetch = activeTab.customerId != null && !fromList;
+  const fetchedCustomer = trpc.customers.get.useQuery(
+    { customerId: activeTab.customerId ?? 0 },
+    { enabled: needFetch, staleTime: 60_000 },
+  );
+  const selectedCustomer = fromList ?? fetchedCustomer.data ?? null;
   const effectiveTier: Tier =
     activeTab.tierOverride ??
     (selectedCustomer?.defaultPriceTier as Tier | undefined) ??
@@ -1111,7 +1121,10 @@ interface CartPanelProps {
   removeRow: (id: number) => void;
   numMode: NumMode; setNumMode: (m: NumMode) => void;
   customerId: number | null;
-  selectedCustomer: RouterOutputs["customers"]["list"][number] | null;
+  selectedCustomer:
+    | RouterOutputs["customers"]["list"][number]
+    | NonNullable<RouterOutputs["customers"]["get"]>
+    | null;
   tierOverride: Tier | null; effectiveTier: Tier;
   setTierOvr: (v: Tier | null) => void;
   setCustId: (id: number | null) => void;
