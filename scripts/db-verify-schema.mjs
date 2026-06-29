@@ -62,7 +62,41 @@ try {
     process.exit(1);
   }
 
+  // ── تحقّق الفهارس الحرجة (سدّ ثغرة F7، ٢٩/٦): db:verify كان يفحص الأعمدة لا الفهارس ⇒ فشل فهرس
+  //    0013 الصامت (idx_receipt_bucket_status على عمود bucketId محذوف) بقي غير مرئي حتى أُكتشف بالتدقيق.
+  //    هنا نؤكّد وجود الفهارس التي يكسر غيابُها الأداء/التقارير إنتاجياً (أُضيفت في 0030/0031/0032).
+  const CRITICAL_INDEXES = [
+    ["receipts", "idx_receipt_bucket_status"], // F1: أُسقط مع bucketId في 0017، أُعيد في 0030
+    ["receipts", "idx_receipt_shift_date"], // Z-report
+    ["invoices", "idx_invoice_branch_status_date"], // S1: أعمار الذمم
+    ["invoices", "idx_invoice_date_status"], // S2: تقارير المبيعات (مُغطٍّ)
+    ["invoices", "idx_invoice_branch_date_status"], // S2: تقارير المبيعات بفرع (مُغطٍّ)
+    ["accountingEntries", "idx_entry_branch_type_date"], // GL/P&L
+    ["accountingEntries", "idx_entry_customer_date"],
+    ["accountingEntries", "idx_entry_supplier_date"],
+    ["inventoryMovements", "idx_move_branch_date"],
+    ["inventoryMovements", "idx_move_branch_variant_type"],
+    ["auditLogs", "idx_audit_user_action_date"],
+    ["auditLogs", "idx_audit_entity"],
+    ["branchStock", "idx_stock_branch_qty"],
+  ];
+  const [idxRows] = await conn.query(
+    "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? GROUP BY TABLE_NAME, INDEX_NAME",
+    [dbName],
+  );
+  const haveIdx = new Set(idxRows.map((r) => `${r.TABLE_NAME}.${r.INDEX_NAME}`));
+  const missingIdx = CRITICAL_INDEXES.filter(([t, i]) => !haveIdx.has(`${t}.${i}`)).map(([t, i]) => `${t}.${i}`);
+  if (missingIdx.length) {
+    console.error("⛔ تحقّق الفهارس فشل — فهارس حرجة مفقودة (خطر مسح جداول كاملة أو علّة صامتة كـ0013):");
+    console.error("   " + missingIdx.join(", "));
+    console.error("   السبب الأرجح: هجرة فهرس لم تُطبَّق، أو أُسقط الفهرس مع عمود محذوف، أو خطأ اسم عمود في الهجرة.");
+    console.error("   عالِج: راجع الهجرة المعنيّة وأعد إنشاء الفهرس (نمط idempotent كـ0030/0031/0032).");
+    await conn.end();
+    process.exit(1);
+  }
+
   console.log(`✓ تحقّق المخطط: ${Object.keys(expected).length} جدولاً مطابقة لـ snapshot (${snapFiles[snapFiles.length - 1]}).`);
+  console.log(`✓ تحقّق الفهارس: ${CRITICAL_INDEXES.length} فهرساً حرجاً موجودة.`);
   await conn.end();
 } catch (e) {
   await conn.end().catch(() => {});
