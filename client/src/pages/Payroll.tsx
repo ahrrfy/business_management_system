@@ -10,6 +10,7 @@
 import { Button } from "@/components/ui/button";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
@@ -201,7 +202,7 @@ export default function Payroll() {
           <CardTitle>{run ? `مسيّر رواتب ${run.period} — ${items.length} موظف` : "مسيّر الرواتب"}</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
@@ -277,7 +278,7 @@ export default function Payroll() {
                 )}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

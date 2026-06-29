@@ -2,6 +2,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, Check, ClipboardList } from "lucide-react";
@@ -178,6 +179,7 @@ function DriftSection({
           </div>
         </div>
         {rows.length > 0 && (
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -217,6 +219,7 @@ function DriftSection({
               ))}
             </tbody>
           </table>
+          </ScrollTableShell>
         )}
       </CardContent>
     </Card>

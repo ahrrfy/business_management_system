@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { fmt, fmtInt } from "@/lib/money";
@@ -97,6 +98,7 @@ export default function Production() {
           <Button variant="outline" size="sm" disabled={filtered.length === 0} onClick={exportAll}>تصدير Excel</Button>
         </CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -130,6 +132,7 @@ export default function Production() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
     </div>

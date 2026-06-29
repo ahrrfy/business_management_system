@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
@@ -141,7 +142,7 @@ export default function Promotions() {
         <TabsContent value="promotions">
           <Card>
             <CardContent className="p-0">
-              <div className="overflow-x-auto">
+              <ScrollTableShell bordered={false}>
                 <table className="w-full text-sm">
                   <thead className="bg-muted/50">
                     <tr>
@@ -190,7 +191,7 @@ export default function Promotions() {
                     )}
                   </tbody>
                 </table>
-              </div>
+              </ScrollTableShell>
             </CardContent>
           </Card>
         </TabsContent>
@@ -209,7 +210,7 @@ export default function Promotions() {
           ) : (
             <Card>
               <CardContent className="p-0">
-                <div className="overflow-x-auto">
+                <ScrollTableShell bordered={false}>
                   <table className="w-full text-sm">
                     <thead className="bg-muted/50">
                       <tr>
@@ -245,7 +246,7 @@ export default function Promotions() {
                       ))}
                     </tbody>
                   </table>
-                </div>
+                </ScrollTableShell>
               </CardContent>
             </Card>
           )}

@@ -5,6 +5,7 @@ import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -126,7 +127,7 @@ export default function StockStatus() {
           {q.isLoading ? (
             <LoadingState />
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
@@ -157,7 +158,7 @@ export default function StockStatus() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

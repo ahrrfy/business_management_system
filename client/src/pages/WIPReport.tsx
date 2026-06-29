@@ -3,6 +3,7 @@
  * managerBranchScopedProcedure.
  */
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { trpc } from "@/lib/trpc";
 import { useState } from "react";
 import { fmtDate } from "@/lib/date";
@@ -56,7 +57,7 @@ export default function WIPReportPage() {
                 <div><span className="text-muted-foreground">قيمة WIP الإجمالية:</span> <span className="font-bold">{formatIqd(wip.data?.totalMaterialsCost)}</span></div>
               </div>
 
-              <div className="overflow-auto">
+              <ScrollTableShell bordered={false}>
                 <table className="w-full text-sm border-collapse">
                   <thead className="bg-muted">
                     <tr>
@@ -83,7 +84,7 @@ export default function WIPReportPage() {
                     )}
                   </tbody>
                 </table>
-              </div>
+              </ScrollTableShell>
             </>
           )}
         </CardContent>

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -193,7 +194,7 @@ export default function Returns() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -240,7 +241,7 @@ export default function Returns() {
               )}
             </tbody>
           </table>
-          </div>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

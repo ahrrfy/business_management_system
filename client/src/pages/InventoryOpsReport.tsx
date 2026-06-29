@@ -8,6 +8,7 @@ import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtInt, fmtAr, formatIqd } from "@/lib/money";
@@ -365,11 +366,11 @@ function ViewTable({
 
 function Table({ head, children, empty, colSpan, emptyMsg }: { head: React.ReactNode; children: React.ReactNode; empty: boolean; colSpan: number; emptyMsg: string }) {
   return (
-    <div className="overflow-x-auto">
+    <ScrollTableShell bordered={false}>
       <table className="w-full text-sm">
         <thead><tr className="border-b text-xs text-muted-foreground">{head}</tr></thead>
         <tbody>{empty ? <TableEmptyRow colSpan={colSpan} message={emptyMsg} /> : children}</tbody>
       </table>
-    </div>
+    </ScrollTableShell>
   );
 }

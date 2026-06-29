@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { CashCounter } from "@/components/CashCounter";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
@@ -119,7 +120,7 @@ function DispatchTab() {
       ) : rows.length === 0 ? (
         <EmptyState icon={Truck} title="لا طلبات جاهزة" description="لا توجد طلبات بحالة «جاهز» للإرسال حالياً." />
       ) : (
-        <div className="overflow-x-auto">
+        <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
               <tr>
@@ -151,7 +152,7 @@ function DispatchTab() {
               })}
             </tbody>
           </table>
-        </div>
+        </ScrollTableShell>
       )}
       <DispatchDialog
         order={target}
@@ -325,7 +326,7 @@ function SettleTab() {
         <EmptyState icon={Truck} title="لا شحنات مفتوحة" description="لا توجد إرساليات قيد التحصيل لهذه الجهة." />
       ) : (
         <>
-          <div className="overflow-x-auto rounded-xl border bg-card">
+          <ScrollTableShell className="bg-card">
             <table className="w-full text-sm">
               <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
                 <tr>
@@ -377,7 +378,7 @@ function SettleTab() {
                 })}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
 
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl border bg-card p-4 text-sm">

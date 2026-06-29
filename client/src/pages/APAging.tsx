@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { Label } from "@/components/ui/label";
 import { printAPAging } from "@/lib/printing/printTemplates";
@@ -179,6 +180,7 @@ export default function APAging() {
 
       <Card>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -236,6 +238,7 @@ export default function APAging() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

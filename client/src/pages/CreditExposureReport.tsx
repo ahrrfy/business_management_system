@@ -8,6 +8,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { openWhatsApp } from "@/lib/whatsapp";
@@ -169,7 +170,7 @@ export default function CreditExposureReport() {
           {q.isLoading ? (
             <LoadingState />
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
@@ -228,7 +229,7 @@ export default function CreditExposureReport() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
 import { exportRows } from "@/lib/export";
@@ -314,6 +315,7 @@ export default function CustomerStatement() {
           <Card>
             <CardContent className="p-0">
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">الفواتير</div>
+              <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
@@ -369,12 +371,14 @@ export default function CustomerStatement() {
                   )}
                 </tbody>
               </table>
+              </ScrollTableShell>
             </CardContent>
           </Card>
 
           <Card>
             <CardContent className="p-0">
               <div className="p-3 border-b bg-muted/30 text-sm font-medium">الدفعات والاستردادات</div>
+              <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead className="bg-muted/50">
                   <tr>
@@ -416,6 +420,7 @@ export default function CustomerStatement() {
                   )}
                 </tbody>
               </table>
+              </ScrollTableShell>
             </CardContent>
           </Card>
         </>

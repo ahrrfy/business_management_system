@@ -5,6 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { formatIqd } from "@/lib/money";
@@ -87,7 +88,7 @@ export default function YearEndPage() {
           {list.isLoading ? (
             <LoadingState />
           ) : (
-            <div className="overflow-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm border-collapse">
                 <thead className="bg-muted">
                   <tr>
@@ -129,7 +130,7 @@ export default function YearEndPage() {
                   )}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

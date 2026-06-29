@@ -24,6 +24,7 @@ import type { ProductImportRow } from "@/lib/importTypes";
 import { notify } from "@/lib/notify";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -247,6 +248,7 @@ export default function Products() {
           />
         </CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -350,6 +352,7 @@ export default function Products() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

@@ -5,6 +5,7 @@ import { BalanceCell } from "@/components/BalanceBadge";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
@@ -259,6 +260,7 @@ export default function Customers() {
           />
         </CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -346,6 +348,7 @@ export default function Customers() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

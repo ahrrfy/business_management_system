@@ -1,6 +1,7 @@
 import { RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
@@ -172,6 +173,7 @@ export default function Inventory() {
           </div>
         </CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -270,12 +272,14 @@ export default function Inventory() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 
       <Card>
         <CardHeader><CardTitle className="text-base">آخر الحركات</CardTitle></CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/50">
               <tr>
@@ -301,6 +305,7 @@ export default function Inventory() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
     </div>

@@ -1,5 +1,6 @@
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { confirm } from "@/lib/confirm";
@@ -37,6 +38,7 @@ export default function Roles() {
       <Card>
         <CardHeader><CardTitle className="text-base">الأدوار المخصّصة</CardTitle></CardHeader>
         <CardContent className="p-0">
+          <ScrollTableShell bordered={false}>
           <table className="w-full text-sm">
             <thead className="bg-muted/40">
               <tr>
@@ -88,6 +90,7 @@ export default function Roles() {
               )}
             </tbody>
           </table>
+          </ScrollTableShell>
         </CardContent>
       </Card>
 

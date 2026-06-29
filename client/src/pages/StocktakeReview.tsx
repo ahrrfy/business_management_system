@@ -11,6 +11,7 @@
  */
 import { Button } from "@/components/ui/button";
 import { Card, CardHeader, CardTitle } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
@@ -658,7 +659,7 @@ export default function StocktakeReview() {
           </span>
         </div>
 
-        <div className="overflow-x-auto">
+        <ScrollTableShell bordered={false}>
           <table className="w-full min-w-[1100px] text-sm">
             <thead className="bg-muted/60">
               <tr className="text-end text-xs text-muted-foreground">
@@ -1009,7 +1010,7 @@ export default function StocktakeReview() {
               )}
             </tbody>
           </table>
-        </div>
+        </ScrollTableShell>
         {filtered.length > shown.length && (
           <div className="border-t p-3 text-center">
             <Button variant="outline" size="sm" onClick={() => setVisible((v) => v + PAGE)}>

@@ -11,6 +11,7 @@ import {
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { type ExportColumn, exportRows } from "@/lib/export";
 import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
 
@@ -82,7 +83,7 @@ export function DataTable<T extends object>({
         </div>
       )}
 
-      <div className="overflow-x-auto rounded-md border">
+      <ScrollTableShell>
         <table className="w-full text-sm">
           <thead className="bg-muted/50">
             {table.getHeaderGroups().map((hg) => (
@@ -133,7 +134,7 @@ export function DataTable<T extends object>({
             )}
           </tbody>
         </table>
-      </div>
+      </ScrollTableShell>
 
       {table.getPageCount() > 1 && (
         <div className="flex items-center justify-between text-sm text-muted-foreground">

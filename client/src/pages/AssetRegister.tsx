@@ -1,4 +1,5 @@
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar } from "@/components/list";
 import { trpc } from "@/lib/trpc";
 import { AssetStatusBadge, CategoryIcon, iqd } from "@/lib/assets/ui";
@@ -93,7 +94,7 @@ export default function AssetRegister() {
           />
         </CardHeader>
         <CardContent className="p-0">
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="bg-muted/50">
                 <tr>
@@ -148,7 +149,7 @@ export default function AssetRegister() {
                 )}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
         </CardContent>
       </Card>
     </div>

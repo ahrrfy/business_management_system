@@ -12,6 +12,7 @@ import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { printDeliveryPartyStmt } from "@/lib/printing/printTemplates";
 
 type Party = RouterOutputs["delivery"]["listParties"][number];
@@ -95,7 +96,7 @@ export default function DeliveryParties() {
         ) : rows.length === 0 ? (
           <EmptyState icon={Truck} title="لا جهات توصيل" description="أضِف مندوباً أو شركة توصيل للبدء." actionLabel={isManager ? "+ جهة جديدة" : undefined} onAction={() => setShowCreate(true)} />
         ) : (
-          <div className="overflow-x-auto">
+          <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead className="border-b bg-muted/40 text-xs text-muted-foreground">
                 <tr>
@@ -131,7 +132,7 @@ export default function DeliveryParties() {
                 })}
               </tbody>
             </table>
-          </div>
+          </ScrollTableShell>
         )}
       </div>
 

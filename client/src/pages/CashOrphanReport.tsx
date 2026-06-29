@@ -13,6 +13,7 @@ import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 
 type CO = RouterOutputs["reports"]["cashOrphans"];
 type Tab = "all" | "TREASURY" | "TRUE_ORPHAN";
@@ -204,7 +205,7 @@ export default function CashOrphanReport() {
                 : "لا معاملات خارج وردية الكاشير."}
             </p>
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b text-xs text-muted-foreground bg-muted/30">
@@ -289,7 +290,7 @@ export default function CashOrphanReport() {
                 </tr>
               </tfoot>
             </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>

@@ -7,6 +7,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtAr, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -122,7 +123,7 @@ export default function PurchaseRegister() {
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا بنود مشتريات في هذا النطاق.</p>
           ) : (
-            <div className="overflow-x-auto">
+            <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b text-xs text-muted-foreground">
@@ -153,7 +154,7 @@ export default function PurchaseRegister() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </ScrollTableShell>
           )}
         </CardContent>
       </Card>
