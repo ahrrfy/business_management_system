@@ -34,6 +34,10 @@ module.exports = {
         NODE_ENV: "production",
         // منطقة العملية UTC لتطابق جلسة القاعدة (UTC) ⇒ فلترة التواريخ حتمية مستقلّة عن منطقة المضيف.
         TZ: "UTC",
+        // ارفع threadpool الافتراضي (٤) كي تتحمّل عملية Node دفعات طلبات الأصول المتزامنة:
+        // express.static (fs.readFile) و compression (gzip) يتشاركان نفس الـpool، فدفعة ٨٠+
+        // طلب أصل عند فتح صفحة كانت تُشبع الخيوط الأربعة وتُعلّق الطلبات على «جار التحميل».
+        UV_THREADPOOL_SIZE: "16",
         PORT: process.env.PORT || 3000,
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,

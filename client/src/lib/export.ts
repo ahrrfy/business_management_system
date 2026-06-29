@@ -11,7 +11,10 @@
 //     { key: "total", header: "الإجمالي", money: true, map: (r) => Number(r.total) },
 //   ], totalsRow: { invoiceNumber: "الإجمالي", total: 1000 }});
 //   exportSheets("التقرير-الشهري", [{ sheetName: "أرباح", columns, rows }, ...]);  // متعدّد الأوراق
-import ExcelJS from "exceljs";
+// نوع فقط (يُمحى عند الترجمة) — مكتبة exceljs (~936KB) تُحمَّل **ديناميكياً** عند التصدير فقط
+// (انظر exportRows/exportSheets). كانت import استاتيكية ⇒ كل صفحة تستورد هذا الملف (وكثيرٌ منها
+// عبر ListToolbar/DataTable) تجلب 936KB eager بلا داعٍ — مساهمٌ كبير في بطء فتح الصفحات.
+import type ExcelJS from "exceljs";
 
 export type ExportColumn<T> = {
   key: keyof T | string;
@@ -178,18 +181,12 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
   ws.headerFooter = { oddFooter: "&C&P / &N", evenFooter: "&C&P / &N" };
 }
 
-function downloadWorkbook(wb: ExcelJS.Workbook, filename: string): void {
-  void (async () => {
-    try {
-      const buf = await wb.xlsx.writeBuffer();
-      downloadBlob(
-        new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-        filename,
-      );
-    } catch (e) {
-      console.error("[export.xlsx] failed:", e);
-    }
-  })();
+async function downloadWorkbook(wb: ExcelJS.Workbook, filename: string): Promise<void> {
+  const buf = await wb.xlsx.writeBuffer();
+  downloadBlob(
+    new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+    filename,
+  );
 }
 
 /** يُصدّر صفوفاً إلى Excel (منسّق) أو CSV. void (لا Promise) للحفاظ على عقد المستدعين القائمين. */
@@ -202,18 +199,34 @@ export function exportRows<T>(rows: T[], opts: ExportOptions<T>): void {
     return;
   }
 
-  const wb = new ExcelJS.Workbook();
-  buildSheet(wb, { ...opts, rows });
-  downloadWorkbook(wb, `${opts.filename}-${stamp}.xlsx`);
+  // تحميل exceljs ديناميكياً عند التصدير فقط (حُزمة منفصلة لا تُثقل فتح الصفحات).
+  void (async () => {
+    try {
+      const { default: ExcelJS } = await import("exceljs");
+      const wb = new ExcelJS.Workbook();
+      buildSheet(wb, { ...opts, rows });
+      await downloadWorkbook(wb, `${opts.filename}-${stamp}.xlsx`);
+    } catch (e) {
+      console.error("[export.xlsx] failed:", e);
+    }
+  })();
 }
 
 /** يُصدّر عدّة أوراق في مصنّف واحد (حزمة المحاسب الشهرية). كل عنصر ورقة منسّقة مستقلّة. */
 export function exportSheets(filename: string, sheets: SheetSpec[]): void {
   const stamp = new Date().toISOString().slice(0, 10);
-  const wb = new ExcelJS.Workbook();
-  if (!sheets.length) wb.addWorksheet("فارغة");
-  for (const sheet of sheets) buildSheet(wb, sheet);
-  downloadWorkbook(wb, `${filename}-${stamp}.xlsx`);
+  // تحميل exceljs ديناميكياً عند التصدير فقط.
+  void (async () => {
+    try {
+      const { default: ExcelJS } = await import("exceljs");
+      const wb = new ExcelJS.Workbook();
+      if (!sheets.length) wb.addWorksheet("فارغة");
+      for (const sheet of sheets) buildSheet(wb, sheet);
+      await downloadWorkbook(wb, `${filename}-${stamp}.xlsx`);
+    } catch (e) {
+      console.error("[export.xlsx] failed:", e);
+    }
+  })();
 }
 
 function downloadBlob(blob: Blob, filename: string): void {

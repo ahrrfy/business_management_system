@@ -116,6 +116,9 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       message: { error: "محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة." },
+      // لا تَعُدّ الأصول الساكنة المُجزّأة (immutable، تُخبَّأ في المتصفّح) ضمن الحدّ:
+      // فتح أي صفحة يجلب عشرات حُزَم الأصول دفعةً ⇒ كان يستنزف حدّ المعدّل ويُعلّق التحميل.
+      skip: (req) => req.path.startsWith("/assets/"),
     })
   );
 
