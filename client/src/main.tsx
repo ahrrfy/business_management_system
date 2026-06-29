@@ -91,23 +91,14 @@ createRoot(document.getElementById("root")!).render(
   </trpc.Provider>
 );
 
-// حوكمة تحديث PWA: registerType:'prompt' لا يُطبّق SW الجديد صامتاً.
-// نَعرض شارة «إصدار جديد» للمستخدم، وهو يَختار وقت التحديث ⇒ يَمنع استبدال الحزمة في وسط معاملة حسّاسة.
+// حوكمة تحديث PWA: registerType:'autoUpdate' (انظر vite.config.ts). الـSW الجديد يَنشط فوراً
+// (skipWaiting/clientsClaim) ويُنظّف الحُزَم القديمة، فيُعيد vite-plugin-pwa تحميل الصفحة تلقائياً
+// عند اكتشاف نشر جديد ⇒ لا تبقى نسخة قديمة عالقة على «جار التحميل» بعد النشر. (كانت 'prompt'
+// تُبقي المستخدم عالقاً قبل ظهور زرّ التحديث أصلاً.)
 if (typeof window !== "undefined" && "serviceWorker" in navigator) {
   void import("virtual:pwa-register").then(({ registerSW }) => {
-    const updateSW = registerSW({
-      onNeedRefresh() {
-        toast.info("يَتوفّر إصدار جديد من النظام", {
-          description: "اضغط «تحديث» لتطبيق آخر إصدار. عملك الحالي سيُحفظ ثم تُعاد الواجهة.",
-          duration: Infinity,
-          action: {
-            label: "تحديث",
-            onClick: () => {
-              void updateSW(true);
-            },
-          },
-        });
-      },
+    registerSW({
+      immediate: true,
       onOfflineReady() {
         toast.success("النظام جاهز للعمل دون اتصال");
       },
