@@ -218,6 +218,13 @@
       "when": 1782304000000,
       "tag": "0030_fix_receipt_bucket_status_index",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "5",
+      "when": 1782305000000,
+      "tag": "0031_scale_composite_indexes",
+      "breakpoints": true
     }
   ]
 }
