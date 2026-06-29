@@ -7,12 +7,16 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { SUPPLIER_FIELDS, SUPPLIER_IMPORT_META } from "@/lib/importFields";
 import type { SupplierImportRow } from "@/lib/importTypes";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
+
+/** نوع صفّ المورّد صريحاً — يتجنّب فشل استدلال T بسبب اتحاد تقنيع التكلفة (maskSupplierSensitive). */
+type Row = RouterOutputs["suppliers"]["search"]["rows"][number];
 
 /** الرقم القديم (legacyCode) من صف القائمة — null إن فارغاً (العمود يظهر فقط حين توجد قيم).
  *  select القائمة في supplierService يعيده ويُدخله البحث (شريحة تكامل الاستيراد). */
@@ -128,6 +132,15 @@ export default function Suppliers() {
             exportSpec={{
               filename: "الموردون",
               rows,
+              // تصدير شامل: يجلب كل النتائج المطابقة للفلاتر الحالية (لا الصفحة المعروضة فقط).
+              fetchAll: () =>
+                fetchAllPaged<Row>(
+                  (offset, lim) =>
+                    utils.suppliers.search
+                      .fetch({ q: q.trim() || undefined, includeInactive, limit: lim, offset })
+                      .then((r) => ({ rows: r.rows, total: r.total })),
+                  { pageSize: 500 },
+                ),
               columns: [
                 { key: "name", header: "الاسم" },
                 { key: "legacyCode", header: "الرقم القديم", map: (r) => legacyCodeOf(r) ?? "" },

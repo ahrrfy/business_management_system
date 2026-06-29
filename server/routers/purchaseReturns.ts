@@ -87,6 +87,7 @@ export const purchaseReturnsRouter = router({
           branchId: z.number().int().positive().optional(),
           from: ymd.optional(),
           to: ymd.optional(),
+          q: z.string().trim().min(1).optional(),
           limit: z.number().int().positive().max(200).optional(),
           offset: z.number().int().nonnegative().optional(),
         })

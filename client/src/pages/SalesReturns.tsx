@@ -3,10 +3,14 @@ import { ListToolbar, RowActions } from "@/components/list";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D, fmt } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
+
+// حسم النوع صراحةً: returns.list يُعيد {rows,total} ⇒ صفّ الجدول/التصدير = عنصر rows.
+type Row = RouterOutputs["returns"]["list"]["rows"][number];
 
 /* ═══════════ سجلّ مرتجعات البيع ═══════════
    يستهلك returns.list (managerProcedure): قيود RETURN ذات فاتورة بلا مورد.
@@ -26,13 +30,18 @@ export default function SalesReturns() {
   const [dateTo, setDateTo] = useState("");
   const [page, setPage] = useState(0);
 
+  const utils = trpc.useUtils();
   const customers = trpc.customers.list.useQuery();
   const branches = trpc.branches.list.useQuery();
-  const list = trpc.returns.list.useQuery({
+  // مدخلات الفلترة بلا limit/offset — مشتركة بين الاستعلام الصفحي وتصدير الكل.
+  const filterInput = {
     customerId: customerId ? Number(customerId) : undefined,
     branchId: branchId ? Number(branchId) : undefined,
     from: dateFrom || undefined,
     to: dateTo || undefined,
+  };
+  const list = trpc.returns.list.useQuery({
+    ...filterInput,
     limit: PAGE,
     offset: page * PAGE,
   });
@@ -107,6 +116,15 @@ export default function SalesReturns() {
             exportSpec={{
               filename: "مرتجعات-البيع",
               rows,
+              // تصدير كل النتائج المطابقة للفلاتر الحالية (لا الصفحة وحدها) — ترقيم خادمي offset حتى تنضب.
+              fetchAll: () =>
+                fetchAllPaged<Row>(
+                  (offset, limit) =>
+                    utils.returns.list
+                      .fetch({ ...filterInput, limit, offset })
+                      .then((r) => ({ rows: (r.rows ?? []) as Row[], total: r.total })),
+                  { pageSize: 200 }
+                ),
               columns: [
                 { key: "entryDate", header: "التاريخ" },
                 { key: "invoiceNumber", header: "رقم الفاتورة", map: (r) => r.invoiceNumber ?? "" },

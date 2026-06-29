@@ -11,6 +11,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 
 type Row = RouterOutputs["reports"]["generalLedger"]["rows"][number];
 type EntryType = "SALE" | "PURCHASE" | "PAYMENT_IN" | "PAYMENT_OUT" | "RETURN" | "ADJUST" | "OPENING" | "INTERNAL_USE" | "WASTAGE";
@@ -38,17 +39,23 @@ function refLabel(r: Row): { text: string; href?: string } {
 }
 
 export default function GeneralLedger() {
+  const utils = trpc.useUtils();
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
   const [entryType, setEntryType] = useState("");
   const [page, setPage] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
   const branches = trpc.branches.list.useQuery();
-  const q = trpc.reports.generalLedger.useQuery({
+  // مدخلات الفلترة الحالية بلا limit/offset — تُعاد استعمالها للاستعلام والتصدير الشامل.
+  const filterInput = {
     from: period.from,
     to: period.to,
     branchId: branchId ? Number(branchId) : undefined,
     entryTypes: entryType ? [entryType as EntryType] : undefined,
+  };
+  const q = trpc.reports.generalLedger.useQuery({
+    ...filterInput,
     limit: PAGE,
     offset: page * PAGE,
   });
@@ -72,10 +79,21 @@ export default function GeneralLedger() {
   // إعادة ضبط الصفحة عند تغيّر الفلاتر.
   function changePeriod(p: PeriodValue) { setPeriod(p); setPage(0); }
 
-  function onExport() {
-    exportRows(rows, {
-      filename: `دفتر-الأستاذ-${period.from}-${period.to}`,
-      columns: [
+  async function onExport() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      // جلب كل القيود المطابقة للفلاتر الحالية (لا الصفحة المعروضة فقط).
+      const allRows = await fetchAllPaged<Row>(
+        (offset, limit) =>
+          utils.reports.generalLedger
+            .fetch({ ...filterInput, limit, offset })
+            .then((r) => ({ rows: r.rows, total: r.total })),
+        { pageSize: 500 },
+      );
+      exportRows(allRows, {
+        filename: `دفتر-الأستاذ-${period.from}-${period.to}`,
+        columns: [
         { key: "entryDate", header: "التاريخ" },
         { key: "entryType", header: "النوع", map: (r) => TYPE_LABEL[r.entryType] ?? r.entryType },
         { key: "partyName", header: "الطرف", map: (r) => r.partyName ?? "" },
@@ -85,8 +103,11 @@ export default function GeneralLedger() {
         { key: "profit", header: "الربح", map: (r) => Number(r.profit) },
         { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
         { key: "ref", header: "المرجع", map: (r) => refLabel(r).text },
-      ],
-    });
+        ],
+      });
+    } finally {
+      setExporting(false);
+    }
   }
 
   function onPrint() {
@@ -132,7 +153,7 @@ export default function GeneralLedger() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!rows.length}
+      exportDisabled={!rows.length || exporting}
       printDisabled={!rows.length}
       filters={
         <div className="flex flex-wrap items-end gap-3">

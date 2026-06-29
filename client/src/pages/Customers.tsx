@@ -15,8 +15,12 @@ import { CUSTOMER_FIELDS, CUSTOMER_IMPORT_META } from "@/lib/importFields";
 import type { CustomerImportRow } from "@/lib/importTypes";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
+
+// صفّ نتيجة البحث — صريح لأنّ الإجراء يُعيد اتحاداً (تقنيع التكلفة) يُفشل استدلال T في fetchAllPaged.
+type CustomerRow = RouterOutputs["customers"]["search"]["rows"][number];
 
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
 const TIER_LABEL: Record<string, string> = {
@@ -241,6 +245,23 @@ export default function Customers() {
             exportSpec={{
               filename: "العملاء",
               rows,
+              // تصدير شامل: يجلب كل النتائج المطابقة للفلاتر الحالية (لا الصفحة المعروضة فقط).
+              // نفس مدخلات الاستعلام بدون limit/offset — يُمرّرهما fetchAllPaged.
+              fetchAll: () =>
+                fetchAllPaged<CustomerRow>(
+                  (offset, limit) =>
+                    utils.customers.search
+                      .fetch({
+                        q: q.trim() || undefined,
+                        customerType: customerType || undefined,
+                        priceTier: priceTier || undefined,
+                        includeInactive,
+                        limit,
+                        offset,
+                      })
+                      .then((r) => ({ rows: (r.rows ?? []) as CustomerRow[], total: r.total })),
+                  { pageSize: 500 },
+                ),
               columns: [
                 { key: "name", header: "الاسم" },
                 { key: "legacyCode", header: "الرقم القديم", map: (r) => legacyCodeOf(r) ?? "" },

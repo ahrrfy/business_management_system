@@ -8,8 +8,9 @@ import { confirm } from "@/lib/confirm";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printQuotation } from "@/lib/printing/printTemplates";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 const STATUS: Record<string, string> = {
   DRAFT: "مسودّة",
@@ -39,23 +40,16 @@ export default function Quotations() {
   const [to, setTo] = useState("");
   const [status, setStatus] = useState("");
 
-  const rows = trpc.quotations.list.useQuery({
-    limit: 200,
+  // البحث خادمي الآن (q ممهَّل): رقم العرض/اسم العميل/الملاحظات عبر كل النتائج لا المُحمَّل فقط.
+  const dq = useDebouncedValue(q, 250);
+  const listInput = {
     from: from || undefined,
     to: to || undefined,
     status: (status || undefined) as "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED" | undefined,
-  });
-
-  const filtered = useMemo(() => {
-    const all = rows.data ?? [];
-    const needle = q.trim().toLowerCase();
-    if (!needle) return all;
-    return all.filter((r) =>
-      [r.quoteNumber, r.customerName, STATUS[r.status] ?? r.status]
-        .filter(Boolean)
-        .some((v) => String(v).toLowerCase().includes(needle)),
-    );
-  }, [rows.data, q]);
+    q: dq.trim() || undefined,
+  };
+  const rows = trpc.quotations.list.useQuery({ ...listInput, limit: 200 });
+  const items = rows.data ?? [];
 
   // «وضع مُرسَل» من القائمة مباشرة (DRAFT → SENT فقط؛ بقية الانتقالات من شاشة العرض).
   const setStatusMut = trpc.quotations.setStatus.useMutation({
@@ -101,12 +95,12 @@ export default function Quotations() {
         <CardHeader>
           <ListToolbar
             title="القائمة"
-            count={filtered.length}
+            count={items.length}
             loading={rows.isLoading}
             search={{
               value: q,
               onChange: setQ,
-              placeholder: "بحث (رقم العرض/العميل/الحالة)",
+              placeholder: "بحث (رقم العرض/العميل/ملاحظات)",
             }}
             filters={
               <>
@@ -122,7 +116,8 @@ export default function Quotations() {
             }
             exportSpec={{
               filename: "عروض الأسعار",
-              rows: filtered,
+              rows: items,
+              fetchAll: () => utils.quotations.list.fetch({ ...listInput, limit: 100000 }).then((arr) => arr ?? []),
               columns: [
                 { key: "quoteNumber", header: "رقم العرض" },
                 { key: "customerName", header: "العميل" },
@@ -149,7 +144,7 @@ export default function Quotations() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((qr) => (
+              {items.map((qr) => (
                 <tr key={qr.id} className="border-t">
                   <td className="p-2"><CopyInline value={qr.quoteNumber} /></td>
                   <td className="p-2">{qr.customerName ?? "—"}</td>
@@ -187,7 +182,7 @@ export default function Quotations() {
                   </td>
                 </tr>
               ))}
-              {!rows.isLoading && filtered.length === 0 && (
+              {!rows.isLoading && items.length === 0 && (
                 <TableEmptyRow colSpan={7} message="لا عروض أسعار مطابقة." />
               )}
             </tbody>

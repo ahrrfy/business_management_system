@@ -4,7 +4,7 @@
 //     exportSpec={{ filename: "العملاء", rows, columns: [...] }}
 //     onImport={() => setImportOpen(true)} add={{ href: "/customers/new", label: "عميل جديد" }} />
 import * as React from "react";
-import { FileSpreadsheet, Plus, Printer, Search, Upload } from "lucide-react";
+import { FileSpreadsheet, Loader2, Plus, Printer, Search, Upload } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +15,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { exportRows, type ExportColumn } from "@/lib/export";
+import { notify } from "@/lib/notify";
 
 export type ExportSpec<T> = {
   filename: string;
@@ -24,6 +25,12 @@ export type ExportSpec<T> = {
   sheetName?: string;
   /** افتراضي ["xlsx"]؛ إن أُضيف "csv" تظهر قائمة منسدلة للاختيار. */
   formats?: Array<"xlsx" | "csv">;
+  /**
+   * اختياري: يجلب **كل** الصفوف المطابقة للفلاتر (لا الصفحة المعروضة فقط) قبل التصدير.
+   * إن وُجد، يُصدّر الزرّ المجموعة الكاملة (مع مؤشّر تحضير)؛ وإلّا يُصدّر `rows` (الصفحة الحالية).
+   * تستعمله القوائم المُصفّحة خادمياً عبر fetchAllPaged (@/lib/fetchAllRows).
+   */
+  fetchAll?: () => Promise<T[]>;
 };
 
 type AddSpec = { label?: string } & ({ href: string } | { onClick: () => void });
@@ -58,11 +65,30 @@ export function ListToolbar<T>({
   children,
 }: ListToolbarProps<T>) {
   const formats = exportSpec?.formats ?? ["xlsx"];
-  const exportDisabled = !exportSpec || exportSpec.rows.length === 0;
+  const [exporting, setExporting] = React.useState(false);
+  // مع fetchAll نُتيح التصدير حتى لو كانت الصفحة الحالية فارغة (قد توجد نتائج في صفحات أخرى).
+  const exportDisabled =
+    !exportSpec || exporting || (!exportSpec.fetchAll && exportSpec.rows.length === 0);
 
-  function doExport(format: "xlsx" | "csv") {
+  async function doExport(format: "xlsx" | "csv") {
     if (!exportSpec) return;
-    exportRows(exportSpec.rows, {
+    let rows = exportSpec.rows;
+    if (exportSpec.fetchAll) {
+      setExporting(true);
+      try {
+        rows = await exportSpec.fetchAll();
+      } catch (e) {
+        notify.err(e);
+        setExporting(false);
+        return;
+      }
+      setExporting(false);
+    }
+    if (rows.length === 0) {
+      notify.err("لا بيانات للتصدير");
+      return;
+    }
+    exportRows(rows, {
       filename: exportSpec.filename,
       columns: exportSpec.columns,
       sheetName: exportSpec.sheetName,
@@ -108,16 +134,16 @@ export function ListToolbar<T>({
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="outline" size="sm" disabled={exportDisabled}>
-                  <FileSpreadsheet className="size-4" />
-                  تصدير
+                  {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
+                  {exporting ? "جارٍ التحضير…" : "تصدير"}
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 {formats.includes("xlsx") && (
-                  <DropdownMenuItem onSelect={() => doExport("xlsx")}>Excel (.xlsx)</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void doExport("xlsx")}>Excel (.xlsx)</DropdownMenuItem>
                 )}
                 {formats.includes("csv") && (
-                  <DropdownMenuItem onSelect={() => doExport("csv")}>CSV (.csv)</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => void doExport("csv")}>CSV (.csv)</DropdownMenuItem>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -126,10 +152,10 @@ export function ListToolbar<T>({
               variant="outline"
               size="sm"
               disabled={exportDisabled}
-              onClick={() => doExport(formats[0])}
+              onClick={() => void doExport(formats[0])}
             >
-              <FileSpreadsheet className="size-4" />
-              تصدير Excel
+              {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
+              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
           ))}
 

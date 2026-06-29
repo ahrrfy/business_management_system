@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import {
   accountingEntries,
   inventoryMovements,
@@ -8,7 +8,9 @@ import {
   purchaseOrderItems,
   purchaseOrders,
   receipts,
+  suppliers,
 } from "../../drizzle/schema";
+import { escLike } from "../lib/sqlLike";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
@@ -285,6 +287,8 @@ export interface ListPurchaseReturnsInput {
   /** فترة على entryDate (YYYY-MM-DD) — عمود DATE بلا وقت ⇒ gte/lte شاملان مباشرة. */
   from?: string;
   to?: string;
+  /** بحث نصّي خادمي: ملاحظات/رقم القيد/أمر الشراء/اسم المورد. */
+  q?: string;
   limit?: number;
   offset?: number;
 }
@@ -305,6 +309,18 @@ export async function listPurchaseReturns(input: ListPurchaseReturnsInput = {}) 
   if (input.to) where.push(lte(accountingEntries.entryDate, localDayStart(input.to)));
   // فقط قيود الشراء (لها supplierId غير null) — تمييزها عن مرتجعات البيع.
   where.push(sql`${accountingEntries.supplierId} IS NOT NULL` as any);
+  // بحث نصّي آمن (escLike + ESCAPE '!'): ملاحظات/رقم القيد/أمر الشراء/اسم المورد (عبر join).
+  if (input.q) {
+    const pat = `%${escLike(input.q.trim())}%`;
+    where.push(
+      or(
+        sql`${accountingEntries.notes} LIKE ${pat} ESCAPE '!'`,
+        sql`CAST(${accountingEntries.id} AS CHAR) LIKE ${pat} ESCAPE '!'`,
+        sql`CAST(${accountingEntries.purchaseOrderId} AS CHAR) LIKE ${pat} ESCAPE '!'`,
+        sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
+      ) as any,
+    );
+  }
 
   const rows = await db
     .select({
@@ -317,6 +333,7 @@ export async function listPurchaseReturns(input: ListPurchaseReturnsInput = {}) 
       notes: accountingEntries.notes,
     })
     .from(accountingEntries)
+    .leftJoin(suppliers, eq(accountingEntries.supplierId, suppliers.id))
     .where(and(...where))
     .orderBy(sql`${accountingEntries.id} DESC`)
     .limit(limit)
@@ -325,6 +342,7 @@ export async function listPurchaseReturns(input: ListPurchaseReturnsInput = {}) 
   const totalRow = await db
     .select({ c: sql<number>`COUNT(*)` })
     .from(accountingEntries)
+    .leftJoin(suppliers, eq(accountingEntries.supplierId, suppliers.id))
     .where(and(...where));
 
   return { rows, total: Number(totalRow[0]?.c ?? 0) };

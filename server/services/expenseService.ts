@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
 import { branches, expenseStockItems, expenses, productVariants, receipts, shifts, users } from "../../drizzle/schema";
 import { localDayStart } from "./dateRange";
 import { getDb } from "../db";
+import { escLike } from "../lib/sqlLike";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
@@ -384,7 +385,11 @@ export interface ListExpensesInput {
   status?: "ACTIVE" | "CANCELLED";
   from?: string; // YYYY-MM-DD
   to?: string;
+  /** بحث نصّي خادمي: البيان/المرجع/المستفيد (أعمدة expenses فقط ⇒ بلا join في المجاميع). */
+  q?: string;
   limit?: number;
+  /** إزاحة للتصفّح/التصدير الشامل (fetchAllPaged) — totals تبقى على كامل المطابق. */
+  offset?: number;
   // عزل الموظف: غير المرتفعين يرون مصروفاتهم فقط (createdBy = هم). null/غياب = الكل.
   createdBy?: number | null;
 }
@@ -400,6 +405,17 @@ export async function listExpenses(input: ListExpensesInput = {}) {
   // expenseDate عمود DATE ⇒ منتصف ليل محلي (UTC يستثني يوم from كاملاً على +03:00).
   if (input.from) conds.push(gte(expenses.expenseDate, localDayStart(input.from)));
   if (input.to) conds.push(lte(expenses.expenseDate, localDayStart(input.to)));
+  // بحث نصّي آمن (escLike + ESCAPE '!') على أعمدة expenses فقط (يَطابق استعلام المجاميع بلا join).
+  if (input.q) {
+    const pat = `%${escLike(input.q.trim())}%`;
+    conds.push(
+      or(
+        sql`${expenses.description} LIKE ${pat} ESCAPE '!'`,
+        sql`${expenses.referenceNumber} LIKE ${pat} ESCAPE '!'`,
+        sql`${expenses.payee} LIKE ${pat} ESCAPE '!'`,
+      ),
+    );
+  }
   const where = conds.length ? and(...conds) : undefined;
 
   const rows = await db
@@ -423,7 +439,8 @@ export async function listExpenses(input: ListExpensesInput = {}) {
     .leftJoin(branches, eq(expenses.branchId, branches.id))
     .where(where as any)
     .orderBy(desc(expenses.id))
-    .limit(input.limit ?? 200);
+    .limit(input.limit ?? 200)
+    .offset(input.offset ?? 0);
 
   const totalsRow = (
     await db
