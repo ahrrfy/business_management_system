@@ -93,6 +93,18 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, "dist/public"),
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          // كل أيقونات lucide في حُزمة واحدة بدل ~٨٠ ملفاً صغيراً. كان كل أيقونة حُزمةً
+          // منفصلة ⇒ كل صفحة تطلب عشرات ملفات الأصول دفعةً واحدة، فتُشبع خادم الأصول
+          // (Express + compression على threadpool ٤ خيوط) وتتعلّق الطلبات على «جار التحميل».
+          if (id.includes("node_modules/lucide-react")) return "icons";
+          // حزمة Excel ضخمة (~936KB) ومطلوبة فقط عند التصدير ⇒ افصلها كي لا تُثقل أي صفحة أخرى.
+          if (id.includes("node_modules/exceljs")) return "exceljs";
+        },
+      },
+    },
   },
   server: {
     host: true,

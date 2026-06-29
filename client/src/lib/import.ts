@@ -5,7 +5,8 @@
 // استُبدل xlsx@0.18.5 المهجور (CVE-2023-30533: Prototype Pollution + ReDoS) بـexceljs المُصان +
 // papaparse للـCSV (مسار CSV يحفظ النصّ كما هو بلا تحويلات تاريخية أمريكية تكسر الـISO).
 import Decimal from "decimal.js";
-import ExcelJS from "exceljs";
+// exceljs (~936KB) تُحمَّل ديناميكياً داخل parseXlsxBuffer (عند استيراد ملف xlsx فقط) — لا eager
+// على صفحات الاستيراد (المنتجات/العملاء/الموردون) التي تستورد هذا الملف عبر importFields.
 import Papa from "papaparse";
 
 export type ImportFieldType =
@@ -374,6 +375,7 @@ function normalizeXlsxCell(v: unknown): unknown {
 }
 
 async function parseXlsxBuffer(buf: ArrayBuffer): Promise<ImportParseResult> {
+  const { default: ExcelJS } = await import("exceljs");
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buf);
   const ws = wb.worksheets[0];
