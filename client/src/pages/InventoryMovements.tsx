@@ -19,6 +19,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -165,6 +166,7 @@ export default function InventoryMovements() {
   const [mNotes, setMNotes] = useState("");
   const [mError, setMError] = useState("");
   const [pageMsg, setPageMsg] = useState("");
+  const [exporting, setExporting] = useState(false);
 
   // For manual movement: warehouse user is locked to own branch; admin/manager use picked branch (or own if none picked).
   const manualBranchId = canPickBranch ? (branchId ?? myBranch) : myBranch;
@@ -253,9 +255,22 @@ export default function InventoryMovements() {
   }
 
   /* ----- export ----- */
-  function exportAll() {
-    if (rows.length === 0) return;
-    exportRows(rows, {
+  // تصدير كل النتائج المطابقة للفلاتر (لا الصفحة المعروضة): يكرّر offset عبر movementsRich
+  // (شكلها {rows,total}) حتى تنضب. النوع محسوم صراحةً بـRichRow لتفادي فشل استدلال T.
+  async function exportAll() {
+    if (total === 0 || exporting) return;
+    setExporting(true);
+    try {
+      const { limit: _limit, offset: _offset, ...filterInput } = queryInput;
+      const all = await fetchAllPaged<RichRow>(
+        (off, lim) =>
+          utils.inventory.movementsRich
+            .fetch({ ...filterInput, limit: lim, offset: off })
+            .then((r) => ({ rows: r.rows, total: r.total })),
+        { pageSize: 500 }
+      );
+      if (all.length === 0) return;
+      exportRows(all, {
       filename: "حركات المخزون",
       columns: [
         { key: "createdAt", header: "التاريخ والوقت", map: (r) => fmtDateTime(r.createdAt) },
@@ -276,7 +291,10 @@ export default function InventoryMovements() {
         { key: "createdByName", header: "المستخدم", map: (r) => r.createdByName ?? "" },
         { key: "notes", header: "الملاحظة", map: (r) => r.notes ?? "" },
       ],
-    });
+      });
+    } finally {
+      setExporting(false);
+    }
   }
 
   /* ----- render ----- */
@@ -447,8 +465,13 @@ export default function InventoryMovements() {
             >
               طباعة / PDF
             </Button>
-            <Button variant="outline" size="sm" disabled={rows.length === 0} onClick={exportAll}>
-              تصدير Excel
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={total === 0 || exporting}
+              onClick={() => void exportAll()}
+            >
+              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
           </div>
         </CardHeader>

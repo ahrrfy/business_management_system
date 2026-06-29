@@ -2,7 +2,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar } from "@/components/list";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { EmpAvatar, EmploymentStatusBadge } from "@/lib/hr/ui";
 import { CopyInline } from "@/components/CopyButton";
 import { EMPLOYMENT_STATUSES, HR_DEPARTMENTS, employmentStatusLabel, fullEmployeeName, payTypeLabel } from "@shared/hr";
@@ -13,8 +14,12 @@ import { useLocation } from "wouter";
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
+// حسم النوع صراحةً (employees.list يُعيد {rows,total}) لتفادي فشل استدلال T في fetchAllPaged.
+type Row = RouterOutputs["employees"]["list"]["rows"][number];
+
 export default function Employees() {
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const [q, setQ] = useState("");
   const [department, setDepartment] = useState("");
   const [branchId, setBranchId] = useState("");
@@ -24,17 +29,20 @@ export default function Employees() {
   const limit = 50;
 
   const opts = trpc.employees.formOptions.useQuery();
-  const input = useMemo(
+  // مدخلات الفلترة فقط (بلا limit/offset) — تُعاد استعمالها في التصدير الشامل.
+  const filterInput = useMemo(
     () => ({
       q: q.trim() || undefined,
       department: department || undefined,
       branchId: branchId ? Number(branchId) : undefined,
       status: (status || undefined) as never,
       includeInactive,
-      limit,
-      offset: page * limit,
     }),
-    [q, department, branchId, status, includeInactive, page],
+    [q, department, branchId, status, includeInactive],
+  );
+  const input = useMemo(
+    () => ({ ...filterInput, limit, offset: page * limit }),
+    [filterInput, page],
   );
   const list = trpc.employees.list.useQuery(input);
 
@@ -76,6 +84,14 @@ export default function Employees() {
             exportSpec={{
               filename: "الموظفون",
               rows,
+              fetchAll: () =>
+                fetchAllPaged<Row>(
+                  (offset, limit) =>
+                    utils.employees.list
+                      .fetch({ ...filterInput, limit, offset })
+                      .then((r) => ({ rows: r.rows as Row[], total: r.total })),
+                  { pageSize: 200 },
+                ),
               columns: [
                 { key: "fullName", header: "الاسم", map: (r) => r.fullName || fullEmployeeName(r) },
                 { key: "position", header: "المسمى الوظيفي", map: (r) => r.position ?? "" },

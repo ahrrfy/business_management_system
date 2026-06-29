@@ -48,6 +48,17 @@ const TOTALS_FILL = "FFF1F5F9"; // رمادي فاتح — صفّ المجامي
 const META_TEXT = "FF64748B";
 const MONEY_FMT = "#,##0";
 
+// ── طباعة A4 + خطّ واضح كبير نسبياً (خصوصاً للتقارير والكشوفات) ──
+// خطّ Arial: واضح ويدعم العربية في Excel على كل الأنظمة (Cairo غير مضمون التثبيت لدى المستلِم).
+const BASE_FONT = "Arial";
+const BODY_SIZE = 12; // جسم الجدول — أكبر من افتراضي Excel (11) لوضوح أعلى عند الطباعة
+const HEADER_SIZE = 12; // رأس العناوين
+const TITLE_SIZE = 16; // عنوان التقرير
+const META_SIZE = 11; // أسطر الفلاتر/الفترة
+const GRID = "FFCBD5E1"; // حدّ رمادي فاتح — شبكة الجدول المطبوع
+const thin = { style: "thin" as const, color: { argb: GRID } };
+const cellBorder = { top: thin, left: thin, bottom: thin, right: thin };
+
 function cellValue<T>(row: T, col: ExportColumn<T>): string | number {
   const raw = col.map ? col.map(row) : (row as Record<string, unknown>)[col.key as string];
   if (raw === null || raw === undefined) return "";
@@ -80,15 +91,16 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
     ws.mergeCells(r, 1, r, cols.length);
     const c = ws.getCell(r, 1);
     c.value = spec.title;
-    c.font = { bold: true, size: 14 };
+    c.font = { name: BASE_FONT, bold: true, size: TITLE_SIZE };
     c.alignment = { horizontal: "right" };
+    ws.getRow(r).height = 26;
     r++;
   }
   for (const m of spec.meta ?? []) {
     ws.mergeCells(r, 1, r, cols.length);
     const c = ws.getCell(r, 1);
     c.value = `${m.label}: ${m.value}`;
-    c.font = { size: 10, color: { argb: META_TEXT } };
+    c.font = { name: BASE_FONT, size: META_SIZE, color: { argb: META_TEXT } };
     c.alignment = { horizontal: "right" };
     r++;
   }
@@ -99,24 +111,26 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
   const hr = ws.getRow(r);
   hr.values = cols.map((c) => c.header);
   hr.eachCell((cell) => {
-    cell.font = { bold: true, color: { argb: HEADER_TEXT } };
+    cell.font = { name: BASE_FONT, bold: true, size: HEADER_SIZE, color: { argb: HEADER_TEXT } };
     cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: HEADER_FILL } };
-    cell.alignment = { horizontal: "right", vertical: "middle" };
+    cell.alignment = { horizontal: "right", vertical: "middle", wrapText: true };
+    cell.border = cellBorder;
   });
-  hr.height = 20;
+  hr.height = 24;
   r++;
 
-  // الصفوف
+  // الصفوف — خطّ واضح + حدود شبكة + التفاف النصّ الطويل (يُبقي الأعمدة ضيّقة فيكبر الخط على A4).
   for (const row of spec.rows) {
     const xr = ws.getRow(r);
     xr.values = cols.map((c) => cellValue(row, c));
     cols.forEach((c, i) => {
       const cell = xr.getCell(i + 1);
-      if (c.money) {
-        cell.numFmt = MONEY_FMT;
-        cell.alignment = { horizontal: "left" };
-      }
+      cell.font = { name: BASE_FONT, size: BODY_SIZE };
+      cell.border = cellBorder;
+      cell.alignment = { vertical: "middle", horizontal: c.money ? "left" : "right", wrapText: true };
+      if (c.money) cell.numFmt = MONEY_FMT;
     });
+    xr.height = 20;
     r++;
   }
 
@@ -125,14 +139,17 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
     const tr = ws.getRow(r);
     tr.values = cols.map((c) => spec.totalsRow![c.key as string] ?? "");
     tr.eachCell((cell, i) => {
-      cell.font = { bold: true };
+      cell.font = { name: BASE_FONT, bold: true, size: BODY_SIZE };
       cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: TOTALS_FILL } };
-      if (cols[i - 1]?.money) { cell.numFmt = MONEY_FMT; cell.alignment = { horizontal: "left" }; }
+      cell.border = cellBorder;
+      cell.alignment = { vertical: "middle", horizontal: cols[i - 1]?.money ? "left" : "right" };
+      if (cols[i - 1]?.money) cell.numFmt = MONEY_FMT;
     });
+    tr.height = 22;
     r++;
   }
 
-  // عرض الأعمدة (تلقائي بحسب أطول محتوى، بحدود معقولة)
+  // عرض الأعمدة (تلقائي بحسب أطول محتوى، بحدّ أعلى أضيق ٣٢ ⇒ يبقى الخطّ كبيراً عند ضبط A4).
   cols.forEach((c, i) => {
     let max = c.header.length;
     for (const row of spec.rows) {
@@ -140,11 +157,25 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
       const len = (typeof v === "number" ? v.toLocaleString() : v).length;
       if (len > max) max = len;
     }
-    ws.getColumn(i + 1).width = Math.min(Math.max(max + 2, 10), 40);
+    ws.getColumn(i + 1).width = Math.min(Math.max(max + 2, 12), 32);
   });
 
   // تجميد الرأس
   ws.views = [{ state: "frozen", ySplit: headerRowIdx, rightToLeft: true }];
+
+  // ── ضبط الطباعة A4: عمودي للجداول الضيّقة وأفقي للعريضة (>٦ أعمدة) ليتّسع على A4،
+  // ملاءمة العرض لصفحة واحدة، تكرار صفّ الرأس على كل صفحة مطبوعة، وترقيم الصفحات في التذييل.
+  ws.pageSetup = {
+    paperSize: 9, // A4
+    orientation: cols.length > 6 ? "landscape" : "portrait",
+    fitToPage: true,
+    fitToWidth: 1,
+    fitToHeight: 0,
+    horizontalCentered: true,
+    margins: { left: 0.4, right: 0.4, top: 0.6, bottom: 0.6, header: 0.3, footer: 0.3 },
+    printTitlesRow: `${headerRowIdx}:${headerRowIdx}`,
+  };
+  ws.headerFooter = { oddFooter: "&C&P / &N", evenFooter: "&C&P / &N" };
 }
 
 function downloadWorkbook(wb: ExcelJS.Workbook, filename: string): void {

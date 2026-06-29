@@ -9,6 +9,7 @@ import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState"
 import { RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printDoc } from "@/lib/printing/print";
@@ -43,18 +44,27 @@ export default function Vouchers() {
   const [to, setTo] = useState("");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
+  const [exporting, setExporting] = useState(false);
   const limit = 100;
 
-  const input = useMemo(
+  // مدخلات الفلترة الخادمية بلا limit/offset — تُستعمل للاستعلام المُصفَّح وللتصدير الشامل.
+  const filterInput = useMemo(
     () => ({
       voucherType: voucherType || undefined,
       partyType: partyType || undefined,
       from: from || undefined,
       to: to || undefined,
+    }),
+    [voucherType, partyType, from, to],
+  );
+
+  const input = useMemo(
+    () => ({
+      ...filterInput,
       limit,
       offset: page * limit,
     }),
-    [voucherType, partyType, from, to, page],
+    [filterInput, page],
   );
   const list = trpc.vouchers.list.useQuery(input);
   const all = list.data ?? [];
@@ -103,6 +113,47 @@ export default function Vouchers() {
     }
     return { inn, out, net: inn - out };
   }, [rows]);
+
+  // تصدير شامل: يجلب كل السندات المطابقة للفلاتر الخادمية (لا الصفحة المعروضة فقط)
+  // عبر صفحات offset، ثم يطبّق نفس فلتر البحث المحلّي (رقم/وصف) قبل التصدير.
+  async function exportAll() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const fetched = await fetchAllPaged<VoucherRow>(
+        (offset, lim) =>
+          utils.vouchers.list
+            .fetch({ ...filterInput, limit: lim, offset })
+            .then((arr) => ({ rows: (arr ?? []) as VoucherRow[] })),
+        { pageSize: 200 },
+      );
+      const needle = q.trim().toLowerCase();
+      const exportData = needle
+        ? fetched.filter(
+            (r) =>
+              String(r.voucherNumber ?? "").toLowerCase().includes(needle) ||
+              String(r.description ?? "").toLowerCase().includes(needle),
+          )
+        : fetched;
+      exportRows(exportData, {
+        filename: "السندات",
+        columns: [
+          { key: "voucherNumber", header: "رقم السند" },
+          { key: "createdAt", header: "التاريخ", map: (r) => fmtDate(r.createdAt as any) },
+          { key: "direction", header: "النوع", map: (r) => TYPE_LABEL[r.direction] ?? r.direction },
+          { key: "partyType", header: "الطرف", map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—" },
+          { key: "description", header: "الوصف" },
+          { key: "amount", header: "المبلغ", map: (r) => Number(r.amount ?? 0) },
+          { key: "paymentMethod", header: "الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
+          { key: "status", header: "الحالة", map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل") },
+        ],
+      });
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setExporting(false);
+    }
+  }
 
   // طباعة السند عبر printDoc العام (جسر الخادم ← WebUSB ← المتصفح) — عنوان حسب النوع.
   async function printVoucher(r: VoucherRow) {
@@ -215,24 +266,10 @@ export default function Vouchers() {
             <Button
               variant="outline"
               size="sm"
-              disabled={rows.length === 0}
-              onClick={() =>
-                exportRows(rows, {
-                  filename: "السندات",
-                  columns: [
-                    { key: "voucherNumber", header: "رقم السند" },
-                    { key: "createdAt", header: "التاريخ", map: (r) => fmtDate(r.createdAt as any) },
-                    { key: "direction", header: "النوع", map: (r) => TYPE_LABEL[r.direction] ?? r.direction },
-                    { key: "partyType", header: "الطرف", map: (r) => PARTY_LABEL[r.partyType ?? "OTHER"] ?? "—" },
-                    { key: "description", header: "الوصف" },
-                    { key: "amount", header: "المبلغ", map: (r) => Number(r.amount ?? 0) },
-                    { key: "paymentMethod", header: "الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
-                    { key: "status", header: "الحالة", map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل") },
-                  ],
-                })
-              }
+              disabled={rows.length === 0 || exporting}
+              onClick={() => void exportAll()}
             >
-              تصدير Excel
+              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
           </div>
         </CardHeader>

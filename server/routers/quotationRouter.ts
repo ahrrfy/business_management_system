@@ -28,6 +28,7 @@ export const quotationRouter = router({
           to: ymd.optional(),
           branchId: z.number().int().positive().optional(),
           status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "CONVERTED", "EXPIRED"]).optional(),
+          q: z.string().trim().min(1).optional(),
         })
         .optional()
     )

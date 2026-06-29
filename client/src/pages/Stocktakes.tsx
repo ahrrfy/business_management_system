@@ -20,7 +20,8 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar } from "@/components/list";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { fmt, fmtInt } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Check, AlertTriangle } from "lucide-react";
@@ -142,8 +143,12 @@ function Stat({ label, value, sub, tone }: { label: string; value: string; sub?:
 
 /* ───────────────────────── الصفحة ───────────────────────── */
 
+/** نوع صفّ القائمة من مخرجات الإجراء صراحةً (stocktakes.list يُعيد مصفوفة) — يطابق SessionRow. */
+type ListRow = RouterOutputs["stocktakes"]["list"][number];
+
 export default function Stocktakes() {
   const [, navigate] = useLocation();
+  const utils = trpc.useUtils();
   const [status, setStatus] = useState<"" | StStatus>("");
   const [branchId, setBranchId] = useState<number>(0);
   const [page, setPage] = useState(0);
@@ -305,6 +310,20 @@ export default function Stocktakes() {
             exportSpec={{
               filename: "جلسات الجرد",
               rows,
+              // تصدير شامل: يجلب كل الجلسات المطابقة للفلاتر عبر التصفّح بالـoffset (الإجراء يُعيد مصفوفة، سقف الخادم 200).
+              fetchAll: () =>
+                fetchAllPaged<ListRow>(
+                  (offset, limit) =>
+                    utils.stocktakes.list
+                      .fetch({
+                        status: status || undefined,
+                        branchId: branchId || undefined,
+                        limit,
+                        offset,
+                      })
+                      .then((arr) => ({ rows: (arr ?? []) as ListRow[] })),
+                  { pageSize: 200 }
+                ).then((all) => all as SessionRow[]),
               columns: [
                 { key: "code", header: "الرقم" },
                 { key: "name", header: "الجلسة" },

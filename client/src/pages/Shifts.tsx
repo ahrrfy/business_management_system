@@ -10,7 +10,8 @@ import { formatZReportAsText } from "@/lib/copy/formatters";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printShiftClose } from "@/lib/printing/print";
-import { trpc } from "@/lib/trpc";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Copy, Printer } from "lucide-react";
 import { useMemo, useState } from "react";
 
@@ -31,6 +32,9 @@ const STATUS_CLS: Record<string, string> = {
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
   d ? new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" }) : "—";
+
+// نوع الصفّ صريحاً (الإجراء يُعيد {rows,total}) — حسمٌ يُجنّب فشل استدلال T في fetchAllPaged.
+type Row = RouterOutputs["shifts"]["list"]["rows"][number];
 
 export default function Shifts() {
   const [branchId, setBranchId] = useState<number | "">("");
@@ -209,6 +213,22 @@ export default function Shifts() {
             exportSpec={{
               filename: "سجلّ-الورديات",
               rows,
+              // تصدير كل النتائج المطابقة للفلاتر الحالية (لا الصفحة المعروضة فقط) — pageSize=200 (سقف الخادم).
+              fetchAll: () =>
+                fetchAllPaged<Row>(
+                  (offset, limit) =>
+                    utils.shifts.list
+                      .fetch({
+                        branchId: branchId ? Number(branchId) : undefined,
+                        status: status || undefined,
+                        from: dateFrom || undefined,
+                        to: dateTo || undefined,
+                        limit,
+                        offset,
+                      })
+                      .then((r) => ({ rows: (r.rows ?? []) as Row[], total: r.total })),
+                  { pageSize: 200 },
+                ),
               columns: [
                 { key: "id", header: "رقم الوردية" },
                 { key: "userName", header: "الموظف", map: (r) => r.userName ?? `#${r.userId}` },

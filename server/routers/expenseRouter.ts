@@ -33,7 +33,9 @@ export const expenseRouter = router({
           status: status.optional(),
           from: ymdDate.optional(),
           to: ymdDate.optional(),
+          q: z.string().trim().min(1).optional(),
           limit: z.number().int().positive().max(1000).default(200),
+          offset: z.number().int().nonnegative().optional(),
         })
         .optional()
     )
