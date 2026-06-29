@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type Row = RouterOutputs["reports"]["salesRegister"]["rows"][number];
@@ -18,9 +19,11 @@ const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function SalesRegister() {
+  const utils = trpc.useUtils();
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
   const [page, setPage] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.salesRegister.useQuery({
@@ -50,21 +53,39 @@ export default function SalesRegister() {
   // إعادة ضبط الصفحة عند تغيّر الفلاتر.
   function changePeriod(p: PeriodValue) { setPeriod(p); setPage(0); }
 
-  function onExport() {
-    exportRows(rows, {
-      filename: `سجلّ-المبيعات-${period.from}-${period.to}`,
-      columns: [
-        { key: "invoiceDate", header: "التاريخ" },
-        { key: "invoiceNumber", header: "الفاتورة" },
-        { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
-        { key: "productName", header: "المنتج" },
-        { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity) },
-        { key: "unitPrice", header: "سعر الوحدة", map: (r) => Number(r.unitPrice) },
-        { key: "unitCost", header: "تكلفة الوحدة", map: (r) => Number(r.unitCost) },
-        { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
-        { key: "profit", header: "الربح", map: (r) => Number(r.profit) },
-      ],
-    });
+  async function onExport() {
+    setExporting(true);
+    try {
+      // فلتر الاستعلام الحالي (بلا limit/offset) — يُكرَّر عبر offset لجلب كامل المطابق لا الصفحة فقط.
+      const filterInput = {
+        from: period.from,
+        to: period.to,
+        branchId: branchId ? Number(branchId) : undefined,
+      };
+      const all = await fetchAllPaged<Row>(
+        (offset, limit) =>
+          utils.reports.salesRegister
+            .fetch({ ...filterInput, limit, offset })
+            .then((r) => ({ rows: r.rows, total: r.total })),
+        { pageSize: 500 },
+      );
+      exportRows(all, {
+        filename: `سجلّ-المبيعات-${period.from}-${period.to}`,
+        columns: [
+          { key: "invoiceDate", header: "التاريخ" },
+          { key: "invoiceNumber", header: "الفاتورة" },
+          { key: "customerName", header: "العميل", map: (r) => r.customerName ?? "" },
+          { key: "productName", header: "المنتج" },
+          { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity) },
+          { key: "unitPrice", header: "سعر الوحدة", map: (r) => Number(r.unitPrice) },
+          { key: "unitCost", header: "تكلفة الوحدة", map: (r) => Number(r.unitCost) },
+          { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+          { key: "profit", header: "الربح", map: (r) => Number(r.profit) },
+        ],
+      });
+    } finally {
+      setExporting(false);
+    }
   }
 
   function onPrint() {
@@ -111,7 +132,7 @@ export default function SalesRegister() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!rows.length}
+      exportDisabled={!rows.length || exporting}
       printDisabled={!rows.length}
       filters={
         <div className="flex flex-wrap items-end gap-3">

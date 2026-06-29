@@ -43,6 +43,9 @@ export default function Invoices() {
   // تَحديد مُتَعَدِّد لِلصُفوف (نَسخ/تَصدير المُحَدَّد فَقَط).
   const sel = useRowSelection<number>();
 
+  // حالة تحضير تصدير «الكل» (جلب كامل النتائج المطابقة للفلتر، لا الصفحة المعروضة).
+  const [exporting, setExporting] = useState(false);
+
   const rows = trpc.sales.list.useQuery({
     limit: 200,
     from: from || undefined,
@@ -117,6 +120,37 @@ export default function Invoices() {
       navigate("/sales/new");
     } catch (e) {
       notify.err(e);
+    }
+  }
+
+  // تصدير «الكل»: sales.list سقفٌ صلب بلا offset حقيقي للتصدير ⇒ جلبٌ واحد كبير
+  // بنفس فلاتر القائمة (بدون limit/offset الصفحة) ثم exportRows. لا يمسّ تصدير المُحَدَّد.
+  async function exportAll() {
+    setExporting(true);
+    try {
+      const all = await utils.sales.list.fetch({
+        from: from || undefined,
+        to: to || undefined,
+        status: (status || undefined) as Row["status"] | undefined,
+        limit: 100000,
+      });
+      const allRows = (all ?? []) as Row[];
+      exportRows(allRows, {
+        filename: "المبيعات",
+        columns: [
+          { key: "invoiceNumber", header: "رقم الفاتورة" },
+          { key: "invoiceDate", header: "التاريخ", map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn") },
+          { key: "customerName", header: "العميل" },
+          { key: "sourceType", header: "المصدر" },
+          { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+          { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+          { key: "status", header: "الحالة" },
+        ],
+      });
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setExporting(false);
     }
   }
 
@@ -238,22 +272,9 @@ export default function Invoices() {
         selection={sel}
         getRowId={(r) => r.id}
         toolbar={
-          <Button variant="outline" size="sm" disabled={!data.length}
-            onClick={() =>
-              exportRows(data, {
-                filename: "المبيعات",
-                columns: [
-                  { key: "invoiceNumber", header: "رقم الفاتورة" },
-                  { key: "invoiceDate", header: "التاريخ", map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn") },
-                  { key: "customerName", header: "العميل" },
-                  { key: "sourceType", header: "المصدر" },
-                  { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
-                  { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-                  { key: "status", header: "الحالة" },
-                ],
-              })
-            }>
-            تصدير Excel
+          <Button variant="outline" size="sm" disabled={!data.length || exporting}
+            onClick={() => void exportAll()}>
+            {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
           </Button>
         }
       />

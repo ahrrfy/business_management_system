@@ -4,12 +4,17 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printPO } from "@/lib/printing/printTemplates";
-import { trpc } from "@/lib/trpc";
-import { useEffect, useMemo, useState } from "react";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useEffect, useState } from "react";
+
+// نوع صفّ أمر الشراء (يوحّد فرعَي الإخراج: المُقنَّع cost=null وغير المُقنَّع).
+type PurchaseRow = RouterOutputs["purchases"]["list"][number];
 
 const PO_STATUS: Record<string, string> = {
   DRAFT: "مسودّة",
@@ -37,15 +42,20 @@ export default function Purchases() {
     if (seedQuery) setQ(seedQuery);
   }, [seedQuery]);
 
-  const suppliers = trpc.suppliers.list.useQuery();
-  const query = trpc.purchases.list.useQuery({
-    limit: 200,
+  // البحث خادمي الآن (q ممهَّل) ⇒ يطابق رقم الأمر/اسم المورد/الملاحظات عبر كل النتائج لا الصفحة فقط.
+  const dq = useDebouncedValue(q, 250);
+  const statusArg = (status || undefined) as "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED" | undefined;
+  const listInput = {
     from: from || undefined,
     to: to || undefined,
     supplierId: supplierId ? Number(supplierId) : undefined,
-    status: (status || undefined) as "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED" | undefined,
-  });
-  const all = query.data ?? [];
+    status: statusArg,
+    q: dq.trim() || undefined,
+  };
+
+  const suppliers = trpc.suppliers.list.useQuery();
+  const query = trpc.purchases.list.useQuery({ ...listInput, limit: 200 });
+  const rows: PurchaseRow[] = query.data ?? [];
 
   const cancelMut = trpc.purchases.cancel.useMutation({
     onSuccess: async () => {
@@ -67,15 +77,6 @@ export default function Purchases() {
     if (!ok) return;
     cancelMut.mutate({ purchaseOrderId: p.id });
   }
-
-  const rows = useMemo(() => {
-    const term = q.trim().toLowerCase();
-    if (!term) return all;
-    return all.filter((p) => {
-      const hay = `${p.poNumber ?? ""} ${p.supplierName ?? ""} ${PO_STATUS[p.status] ?? p.status ?? ""}`.toLowerCase();
-      return hay.includes(term);
-    });
-  }, [all, q]);
 
   // طباعة أمر الشراء من القائمة: نجلب التفاصيل (purchases.get) ثم نطبع بقالب printPO المُعلَّم.
   async function printOrder(purchaseOrderId: number) {
@@ -116,7 +117,7 @@ export default function Purchases() {
             search={{
               value: q,
               onChange: setQ,
-              placeholder: "بحث (رقم الأمر/المورد/الحالة)",
+              placeholder: "بحث (رقم الأمر/المورد/ملاحظات)",
             }}
             filters={
               <>
@@ -146,6 +147,14 @@ export default function Purchases() {
             exportSpec={{
               filename: "المشتريات",
               rows,
+              fetchAll: () =>
+                fetchAllPaged<PurchaseRow>(
+                  (offset, limit) =>
+                    utils.purchases.list
+                      .fetch({ ...listInput, limit, offset })
+                      .then((arr) => ({ rows: (arr ?? []) as PurchaseRow[] })),
+                  { pageSize: 500 },
+                ),
               columns: [
                 { key: "poNumber", header: "رقم الأمر" },
                 { key: "supplierName", header: "المورد" },

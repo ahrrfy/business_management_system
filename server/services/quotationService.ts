@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, like, lt } from "drizzle-orm";
+import { and, desc, eq, gte, like, lt, or, sql } from "drizzle-orm";
 import {
   customers,
   productUnits,
@@ -10,6 +10,7 @@ import {
 } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { getDb } from "../db";
+import { escLike } from "../lib/sqlLike";
 import { computeInvoiceTotals, computeLineTotal } from "./billing";
 import { localDayStart, localNextDayStart } from "./dateRange";
 import { convertToBaseQuantity } from "./inventoryService";
@@ -247,6 +248,8 @@ export interface ListQuotationsInput {
   status?: "DRAFT" | "SENT" | "ACCEPTED" | "REJECTED" | "CONVERTED" | "EXPIRED";
   /** عزل الفرع (تدقيق ١٤/٦/٢٦): غير المرتفعين يُجبَرون على فرعهم. */
   branchId?: number | null;
+  /** بحث نصّي خادمي: رقم العرض/اسم العميل/الملاحظات. */
+  q?: string;
 }
 
 
@@ -259,6 +262,17 @@ export async function listQuotations(input: ListQuotationsInput = {}) {
   if (input.to) conds.push(lt(quotations.createdAt, localNextDayStart(input.to)));
   if (input.status) conds.push(eq(quotations.status, input.status));
   if (input.branchId != null) conds.push(eq(quotations.branchId, input.branchId));
+  // بحث نصّي آمن (escLike + ESCAPE '!'): رقم العرض/اسم العميل/الملاحظات.
+  if (input.q) {
+    const pat = `%${escLike(input.q.trim())}%`;
+    conds.push(
+      or(
+        sql`${quotations.quoteNumber} LIKE ${pat} ESCAPE '!'`,
+        sql`${customers.name} LIKE ${pat} ESCAPE '!'`,
+        sql`${quotations.notes} LIKE ${pat} ESCAPE '!'`,
+      ) as any,
+    );
+  }
   return db
     .select({
       id: quotations.id,

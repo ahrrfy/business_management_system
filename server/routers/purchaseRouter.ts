@@ -1,8 +1,9 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, lt } from "drizzle-orm";
+import { and, desc, eq, gte, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { escLike } from "../lib/sqlLike";
 import { maskCostFields } from "../lib/redact";
 import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
@@ -112,6 +113,8 @@ export const purchaseRouter = router({
           supplierId: z.number().int().positive().optional(),
           branchId: z.number().int().positive().optional(),
           status: z.enum(["DRAFT", "SENT", "CONFIRMED", "RECEIVED", "CANCELLED"]).optional(),
+          // بحث نصّي خادمي: رقم الأمر/اسم المورد/الملاحظات (يستبدل الفلترة المحلّية على الصفحة).
+          q: z.string().trim().min(1).optional(),
         })
         .optional()
     )
@@ -128,6 +131,17 @@ export const purchaseRouter = router({
       // admin/manager يحترمان input.branchId إن مُرِّر (تقارير عبر-الفروع).
       const branchId = ctx.scopedBranchId != null ? ctx.scopedBranchId : input?.branchId;
       if (branchId != null) conds.push(eq(purchaseOrders.branchId, branchId));
+      // بحث نصّي آمن (escLike + ESCAPE '!') عبر رقم الأمر/اسم المورد/الملاحظات.
+      if (input?.q) {
+        const pat = `%${escLike(input.q)}%`;
+        conds.push(
+          or(
+            sql`${purchaseOrders.poNumber} LIKE ${pat} ESCAPE '!'`,
+            sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
+            sql`${purchaseOrders.notes} LIKE ${pat} ESCAPE '!'`,
+          ),
+        );
+      }
       const rows = await db
         .select({
           id: purchaseOrders.id,

@@ -1,9 +1,10 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { ListToolbar, RowActions } from "@/components/list";
-import { matchQuery } from "@/components/search/filter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D, fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -20,6 +21,7 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 export default function PurchaseReturns() {
+  const utils = trpc.useUtils();
   const [supplierId, setSupplierId] = useState<number | "">("");
   const [branchId, setBranchId] = useState<number | "">("");
   // فلتر الفترة خادمي (entryDate) — أسماء dateFrom/dateTo لتفادي تصادم from/to الترقيم أدناه.
@@ -28,16 +30,19 @@ export default function PurchaseReturns() {
   const [page, setPage] = useState(0);
   const [query, setQuery] = useState("");
 
-  const suppliers = trpc.suppliers.list.useQuery();
-  const branches = trpc.branches.list.useQuery();
-  const list = trpc.purchaseReturns.list.useQuery({
+  // البحث خادمي الآن (q ممهَّل): مورد/ملاحظة/رقم قيد/أمر شراء عبر كل النتائج لا الصفحة فقط.
+  const dq = useDebouncedValue(query, 250);
+  const listInput = {
     supplierId: supplierId ? Number(supplierId) : undefined,
     branchId: branchId ? Number(branchId) : undefined,
     from: dateFrom || undefined,
     to: dateTo || undefined,
-    limit: PAGE,
-    offset: page * PAGE,
-  });
+    q: dq.trim() || undefined,
+  };
+
+  const suppliers = trpc.suppliers.list.useQuery();
+  const branches = trpc.branches.list.useQuery();
+  const list = trpc.purchaseReturns.list.useQuery({ ...listInput, limit: PAGE, offset: page * PAGE });
 
   const supplierName = useMemo(() => {
     const m = new Map((suppliers.data ?? []).map((s) => [Number(s.id), s.name]));
@@ -57,12 +62,8 @@ export default function PurchaseReturns() {
   const noteText = (n: string | null | undefined) =>
     n && !n.startsWith("purchaseReturn:") ? n : "—";
 
-  // بحث نصّي يُصفّي الصفحة المحمّلة (مورد/فرع/رقم قيد/أمر شراء/ملاحظة) — للبحث الشامل عبر
-  // كل الموردين استعمل القائمة المنسدلة أعلاه. القائمة مُصفّحة خادمياً (٥٠/صفحة).
-  const visibleRows = useMemo(
-    () => rows.filter((r) => matchQuery(query, [supplierName(r.supplierId), branchName(r.branchId), String(r.id), r.purchaseOrderId, noteText(r.notes)])),
-    [rows, query, supplierName, branchName],
-  );
+  // البحث خادمي ⇒ الصفوف المعروضة هي نتائج الخادم مباشرةً (لا تصفية محلّية تُخفي صفحات أخرى).
+  const visibleRows = rows;
 
   const setFilter = (fn: (v: number | "") => void, v: number | "") => {
     fn(v);
@@ -88,7 +89,7 @@ export default function PurchaseReturns() {
             title="المرتجعات"
             count={total}
             loading={list.isLoading}
-            search={{ value: query, onChange: setQuery, placeholder: "بحث في الصفحة (مورد/قيد/ملاحظة)…" }}
+            search={{ value: query, onChange: (v) => { setQuery(v); setPage(0); }, placeholder: "بحث (مورد/رقم قيد/أمر شراء/ملاحظة)…" }}
             filters={
               <>
                 <select
@@ -121,6 +122,12 @@ export default function PurchaseReturns() {
             exportSpec={{
               filename: "مرتجعات-المشتريات",
               rows: visibleRows,
+              fetchAll: () =>
+                fetchAllPaged(
+                  (offset, limit) =>
+                    utils.purchaseReturns.list.fetch({ ...listInput, limit, offset }).then((r) => ({ rows: r.rows, total: r.total })),
+                  { pageSize: 200 },
+                ),
               columns: [
                 { key: "id", header: "رقم القيد" },
                 { key: "entryDate", header: "التاريخ" },
@@ -185,11 +192,9 @@ export default function PurchaseReturns() {
               {!list.isLoading && visibleRows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="p-6 text-center text-muted-foreground">
-                    {query && rows.length > 0
-                      ? "لا مرتجعات مطابقة للبحث في هذه الصفحة."
-                      : total === 0 && !supplierId && !branchId && !dateFrom && !dateTo
-                        ? "لا مرتجعات مشتريات بعد."
-                        : "لا مرتجعات مطابقة. غيّر الفلتر."}
+                    {total === 0 && !supplierId && !branchId && !dateFrom && !dateTo && !dq.trim()
+                      ? "لا مرتجعات مشتريات بعد."
+                      : "لا مرتجعات مطابقة. غيّر البحث أو الفلتر."}
                   </td>
                 </tr>
               )}

@@ -3,10 +3,13 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportRows } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDateTime } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
+
+type AuditRow = RouterOutputs["audit"]["list"]["rows"][number];
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -76,6 +79,20 @@ function actionLabel(a: string): string {
   return ACTION_AR[a] ?? a;
 }
 
+// أعمدة تصدير Excel — مشتركة بين زرّ التصدير (تُغذّى بكل النتائج المطابقة للفلاتر).
+function exportColumns() {
+  return [
+    { key: "createdAt", header: "التاريخ والوقت", map: (r: AuditRow) => dt(r.createdAt as unknown as string) },
+    { key: "userName", header: "المستخدم", map: (r: AuditRow) => r.userName ?? (r.userId ? `#${r.userId}` : "") },
+    { key: "action", header: "الفعل", map: (r: AuditRow) => actionLabel(r.action) },
+    { key: "entityType", header: "الكيان" },
+    { key: "entityId", header: "المعرّف", map: (r: AuditRow) => r.entityId ?? "" },
+    { key: "oldValue", header: "القيمة القديمة", map: (r: AuditRow) => jsonStr(r.oldValue) },
+    { key: "newValue", header: "القيمة الجديدة", map: (r: AuditRow) => jsonStr(r.newValue) },
+    { key: "ipAddress", header: "IP", map: (r: AuditRow) => r.ipAddress ?? "" },
+  ];
+}
+
 function dt(d: string | Date | null | undefined): string {
   return fmtDateTime(d);
 }
@@ -109,19 +126,26 @@ export default function AuditLogs() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [page, setPage] = useState(0);
+  const [exporting, setExporting] = useState(false);
   const limit = 50;
 
-  const input = useMemo(
+  const utils = trpc.useUtils();
+
+  // مدخلات الفلترة المشتركة (بلا limit/offset) — للاستعلام وللتصدير الشامل.
+  const filterInput = useMemo(
     () => ({
       action: action.trim() || undefined,
       entityType: entityType || undefined,
       userId: userId === "" ? undefined : Number(userId),
       from: from || undefined,
       to: to || undefined,
-      limit,
-      offset: page * limit,
     }),
-    [action, entityType, userId, from, to, page],
+    [action, entityType, userId, from, to],
+  );
+
+  const input = useMemo(
+    () => ({ ...filterInput, limit, offset: page * limit }),
+    [filterInput, page],
   );
 
   const facets = trpc.audit.facets.useQuery();
@@ -181,24 +205,27 @@ export default function AuditLogs() {
             <Button
               variant="outline"
               size="sm"
-              disabled={!rows.length}
-              onClick={() =>
-                exportRows(rows, {
-                  filename: `سجلّ-التدقيق${from ? `-${from}` : ""}${to ? `-${to}` : ""}`,
-                  columns: [
-                    { key: "createdAt", header: "التاريخ والوقت", map: (r) => dt(r.createdAt as unknown as string) },
-                    { key: "userName", header: "المستخدم", map: (r) => r.userName ?? (r.userId ? `#${r.userId}` : "") },
-                    { key: "action", header: "الفعل", map: (r) => actionLabel(r.action) },
-                    { key: "entityType", header: "الكيان" },
-                    { key: "entityId", header: "المعرّف", map: (r) => r.entityId ?? "" },
-                    { key: "oldValue", header: "القيمة القديمة", map: (r) => jsonStr(r.oldValue) },
-                    { key: "newValue", header: "القيمة الجديدة", map: (r) => jsonStr(r.newValue) },
-                    { key: "ipAddress", header: "IP", map: (r) => r.ipAddress ?? "" },
-                  ],
-                })
-              }
+              disabled={!total || exporting}
+              onClick={async () => {
+                setExporting(true);
+                try {
+                  const all = await fetchAllPaged<AuditRow>(
+                    (offset, l) =>
+                      utils.audit.list
+                        .fetch({ ...filterInput, limit: l, offset })
+                        .then((r) => ({ rows: (r.rows ?? []) as AuditRow[], total: r.total })),
+                    { pageSize: 200 },
+                  );
+                  exportRows(all, {
+                    filename: `سجلّ-التدقيق${from ? `-${from}` : ""}${to ? `-${to}` : ""}`,
+                    columns: exportColumns(),
+                  });
+                } finally {
+                  setExporting(false);
+                }
+              }}
             >
-              تصدير Excel
+              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
             </Button>
           </div>
         </CardHeader>

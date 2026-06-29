@@ -9,6 +9,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { fmtAr, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type Row = RouterOutputs["reports"]["purchaseRegister"]["rows"][number];
@@ -20,7 +21,9 @@ export default function PurchaseRegister() {
   const [period, setPeriod] = useState<PeriodValue>(DEFAULT_PERIOD);
   const [branchId, setBranchId] = useState<number | "">("");
   const [page, setPage] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
+  const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
   const q = trpc.reports.purchaseRegister.useQuery({
     from: period.from,
@@ -47,19 +50,38 @@ export default function PurchaseRegister() {
   // إعادة ضبط الصفحة عند تغيّر الفلاتر.
   function changePeriod(p: PeriodValue) { setPeriod(p); setPage(0); }
 
-  function onExport() {
-    exportRows(rows, {
-      filename: `سجلّ-المشتريات-${period.from}-${period.to}`,
-      columns: [
-        { key: "orderDate", header: "التاريخ" },
-        { key: "poNumber", header: "أمر الشراء", map: (r) => r.poNumber ?? `#${r.poId}` },
-        { key: "supplierName", header: "المورّد", map: (r) => r.supplierName ?? "" },
-        { key: "productName", header: "المنتج", map: (r) => r.productName ?? "" },
-        { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity) },
-        { key: "unitPrice", header: "سعر الوحدة", map: (r) => Number(r.unitPrice) },
-        { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
-      ],
-    });
+  async function onExport() {
+    setExporting(true);
+    try {
+      // جلب كل البنود المطابقة للفلاتر الحالية (لا الصفحة المعروضة فقط).
+      const all = await fetchAllPaged<Row>(
+        (offset, limit) =>
+          utils.reports.purchaseRegister
+            .fetch({
+              from: period.from,
+              to: period.to,
+              branchId: branchId ? Number(branchId) : undefined,
+              limit,
+              offset,
+            })
+            .then((r) => ({ rows: (r.rows ?? []) as Row[], total: r.total })),
+        { pageSize: 500 },
+      );
+      exportRows(all, {
+        filename: `سجلّ-المشتريات-${period.from}-${period.to}`,
+        columns: [
+          { key: "orderDate", header: "التاريخ" },
+          { key: "poNumber", header: "أمر الشراء", map: (r) => r.poNumber ?? `#${r.poId}` },
+          { key: "supplierName", header: "المورّد", map: (r) => r.supplierName ?? "" },
+          { key: "productName", header: "المنتج", map: (r) => r.productName ?? "" },
+          { key: "quantity", header: "الكمية", map: (r) => Number(r.quantity) },
+          { key: "unitPrice", header: "سعر الوحدة", map: (r) => Number(r.unitPrice) },
+          { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+        ],
+      });
+    } finally {
+      setExporting(false);
+    }
   }
 
   function onPrint() {
@@ -100,7 +122,7 @@ export default function PurchaseRegister() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!rows.length}
+      exportDisabled={!total || exporting}
       printDisabled={!rows.length}
       filters={
         <div className="flex flex-wrap items-end gap-3">

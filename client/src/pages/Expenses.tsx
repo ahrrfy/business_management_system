@@ -1,6 +1,6 @@
 import { RowActions } from "@/components/list";
-import { matchQuery } from "@/components/search/filter";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -8,12 +8,14 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
-import { exportRows } from "@/lib/export";
+import { exportRows, type ExportColumn } from "@/lib/export";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { printDoc } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Search } from "lucide-react";
-import { useMemo, useState } from "react";
+import { Loader2, Search } from "lucide-react";
+import { useState } from "react";
 import { Link } from "wouter";
 
 const selectCls =
@@ -86,24 +88,51 @@ export default function Expenses() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [query, setQuery] = useState("");
+  const [exporting, setExporting] = useState(false);
   // إبراز المصروف القادم من البحث الشامل (?focus=) — القائمة تُحمَّل أحدث ٣٠٠، فالأقرب زمنياً يُبرَز.
   const { rowProps } = useFocusHighlight();
 
-  const list = trpc.expenses.list.useQuery({
+  // البحث خادمي الآن (q ممهَّل): البيان/المرجع/المستفيد عبر كل النتائج لا المُحمَّل فقط.
+  const dq = useDebouncedValue(query, 250);
+  const listInput = {
     branchId: branchId ? Number(branchId) : undefined,
     category: (category || undefined) as any,
     status: (status || undefined) as any,
     from: from || undefined,
     to: to || undefined,
-    limit: 300,
-  });
+    q: dq.trim() || undefined,
+  };
+  const list = trpc.expenses.list.useQuery({ ...listInput, limit: 300 });
+  const rows = list.data?.rows ?? [];
 
-  // بحث نصّي فوري على الصفوف المحمّلة (بيان/مستفيد/فئة/مرجع/مبلغ) — يُكمّل فلاتر الخادم.
-  const allRows = list.data?.rows ?? [];
-  const rows = useMemo(
-    () => allRows.filter((r) => matchQuery(query, [r.description, CATEGORY_LABEL[r.category] ?? r.category, r.referenceNumber, String(r.amount)])),
-    [allRows, query],
-  );
+  // أعمدة التصدير (مشتركة بين زرّ التصدير وجلب-الكل).
+  const exportColumns: ExportColumn<ExpenseRow>[] = [
+    { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ-u-nu-latn") : "" },
+    { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
+    { key: "category", header: "الفئة", map: (r) => CATEGORY_LABEL[r.category] ?? r.category },
+    { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
+    { key: "paymentMethod", header: "طريقة الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
+    { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
+    { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
+  ];
+
+  // تصدير كل النتائج المطابقة (لا الصفحة المحمَّلة): يكرّر عبر offset حتى تنضب (بلا اقتطاع).
+  async function exportAll() {
+    setExporting(true);
+    try {
+      const all = await fetchAllPaged<ExpenseRow>(
+        (offset, limit) =>
+          utils.expenses.list.fetch({ ...listInput, limit, offset }).then((res) => ({ rows: res.rows ?? [], total: res.totals.count })),
+        { pageSize: 1000 },
+      );
+      if (!all.length) { notify.err("لا بيانات للتصدير"); return; }
+      exportRows(all, { filename: "المصروفات", columns: exportColumns });
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const cancel = trpc.expenses.cancel.useMutation({
     onSuccess: async () => {
@@ -121,20 +150,12 @@ export default function Expenses() {
           <div className="flex gap-2">
             <Button
               variant="outline"
-              disabled={!rows.length}
-              onClick={() => exportRows(rows, {
-                filename: "المصروفات",
-                columns: [
-                  { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ-u-nu-latn") : "" },
-                  { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
-                  { key: "category", header: "الفئة", map: (r) => CATEGORY_LABEL[r.category] ?? r.category },
-                  { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
-                  { key: "paymentMethod", header: "طريقة الدفع", map: (r) => METHOD_LABEL[r.paymentMethod] ?? r.paymentMethod },
-                  { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
-                  { key: "status", header: "الحالة", map: (r) => STATUS_LABEL[r.status] ?? r.status },
-                ],
-              })}
-            >تصدير Excel</Button>
+              disabled={exporting || (list.data?.totals.count ?? 0) === 0}
+              onClick={() => void exportAll()}
+            >
+              {exporting ? <Loader2 className="size-4 animate-spin" /> : null}
+              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
+            </Button>
             <Link href="/expenses/new"><Button>+ مصروف جديد</Button></Link>
           </div>
         }

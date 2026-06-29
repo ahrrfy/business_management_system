@@ -27,6 +27,7 @@ import { TableEmptyRow } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { printLabel } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { useEffect, useState } from "react";
 
 type Row = RouterOutputs["catalog"]["adminList"]["rows"][number];
@@ -231,6 +232,23 @@ export default function Products() {
             exportSpec={{
               filename: "المنتجات",
               rows,
+              // تصدير شامل لكل النتائج المطابقة للفلاتر (لا الصفحة المعروضة فقط).
+              // adminList يُعيد {rows,total} مع offset؛ سقف الخادم 500 ⇒ ~١٩ صفحة لـ٩٤١٣ صنفاً.
+              fetchAll: () =>
+                fetchAllPaged<Row>(
+                  (offset, fetchLimit) =>
+                    utils.catalog.adminList
+                      .fetch({
+                        branchId,
+                        q: dq.trim() || undefined,
+                        includeInactive,
+                        categoryId: categoryFilter === "" ? undefined : Number(categoryFilter),
+                        limit: fetchLimit,
+                        offset,
+                      })
+                      .then((r) => ({ rows: r.rows, total: r.total })),
+                  { pageSize: 500 },
+                ),
               columns: [
                 { key: "productName", header: "المنتج" },
                 { key: "variantName", header: "المتغيّر", map: (r) => r.variantName ?? r.color ?? r.sku ?? "" },
