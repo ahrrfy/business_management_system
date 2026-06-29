@@ -225,6 +225,13 @@
       "when": 1782305000000,
       "tag": "0031_scale_composite_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "5",
+      "when": 1782306000000,
+      "tag": "0032_invoice_covering_indexes",
+      "breakpoints": true
     }
   ]
 }
