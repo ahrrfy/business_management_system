@@ -351,6 +351,9 @@ export const branchStock = mysqlTable(
   (table) => ({
     variantBranchUq: unique("uq_stock_variant_branch").on(table.variantId, table.branchId),
     branchIdx: index("idx_stock_branch").on(table.branchId),
+    // S1 (٢٩/٦/٢٦): تنبيهات نقص المخزون (branchId+quantity) وكشف الجرد المتقادم (branchId+lastCountedAt). هجرة 0031.
+    branchQtyIdx: index("idx_stock_branch_qty").on(table.branchId, table.quantity),
+    branchCountedIdx: index("idx_stock_branch_counted").on(table.branchId, table.lastCountedAt),
   })
 );
 
@@ -380,6 +383,9 @@ export const inventoryMovements = mysqlTable(
     typeIdx: index("idx_move_type").on(table.movementType),
     refIdx: index("idx_move_ref").on(table.referenceType, table.referenceId),
     dateIdx: index("idx_move_date").on(table.createdAt),
+    // S1 (٢٩/٦/٢٦): حركات الفرع بالتاريخ (كاردكس/إعادة طلب) + تسوية الجرد لكل صنف. هجرة 0031.
+    branchDateIdx: index("idx_move_branch_date").on(table.branchId, table.createdAt),
+    branchVariantTypeIdx: index("idx_move_branch_variant_type").on(table.branchId, table.variantId, table.movementType),
   })
 );
 
@@ -471,6 +477,9 @@ export const invoices = mysqlTable(
     // G11 (١٩/٦/٢٦): composite indexes للتقارير الأكثر استعمالاً — AR aging و Daily Sales.
     statusCustomerIdx: index("idx_invoice_status_customer").on(table.status, table.customerId),
     branchDateIdx: index("idx_invoice_branch_date").on(table.branchId, table.invoiceDate),
+    // S1 (٢٩/٦/٢٦): أعمار الذمم/المبيعات اليومية لكل (فرع+حالة+تاريخ) + تعرّض الائتمان لكل (عميل+استحقاق+حالة). هجرة 0031.
+    branchStatusDateIdx: index("idx_invoice_branch_status_date").on(table.branchId, table.status, table.invoiceDate),
+    customerDueIdx: index("idx_invoice_customer_due").on(table.customerId, table.dueDate, table.status),
     sourceUq: unique("uq_invoice_source").on(table.sourceType, table.sourceId),
   })
 );
@@ -505,6 +514,8 @@ export const invoiceItems = mysqlTable(
     invoiceIdx: index("idx_item_invoice").on(table.invoiceId),
     variantIdx: index("idx_item_variant").on(table.variantId),
     productUnitIdx: index("idx_item_productUnit").on(table.productUnitId),
+    // S1 (٢٩/٦/٢٦): مطابقة المرتجعات/COGS المتمحورة حول الصنف (variantId+invoiceId). هجرة 0031.
+    variantInvoiceIdx: index("idx_item_variant_invoice").on(table.variantId, table.invoiceId),
   })
 );
 
@@ -616,6 +627,11 @@ export const receipts = mysqlTable(
     // S0 (٢٩/٦/٢٦): فهرس أُنشئ في 0013 على عمود `bucketId` ثم أسقطه 0017 (حذف نظام دلاء النقد) ⇒ بقي مفقوداً.
     // يُعاد على `cashBucket` عبر هجرة 0030 اليدوية. (snapshot مجمَّد عند 0019 ⇒ لا db:generate — توثيق فقط.)
     bucketStatusIdx: index("idx_receipt_bucket_status").on(table.cashBucket, table.status),
+    // S1 (٢٩/٦/٢٦): إغلاق Z-report (shiftId+تاريخ)، تسوية الخزينة لكل (فرع+دلو+تاريخ)، تتبّع دفعات الفاتورة. هجرة 0031.
+    shiftDateIdx: index("idx_receipt_shift_date").on(table.shiftId, table.createdAt),
+    bucketDateIdx: index("idx_receipt_bucket_date").on(table.cashBucket, table.createdAt),
+    invoiceStatusIdx: index("idx_receipt_invoice_status").on(table.invoiceId, table.status),
+    branchBucketDateIdx: index("idx_receipt_branch_bucket_date").on(table.branchId, table.cashBucket, table.createdAt),
   })
 );
 
@@ -669,6 +685,10 @@ export const accountingEntries = mysqlTable(
     // كان full scan على مليون قيد لكل تقرير.
     branchIdx: index("idx_entry_branch").on(table.branchId),
     deliveryPartyIdx: index("idx_entry_delivery_party").on(table.deliveryPartyId),
+    // S1 (٢٩/٦/٢٦): شريان GL/P&L — (فرع+نوع+تاريخ)؛ وكشوف حساب العميل/المورّد بالتاريخ. هجرة 0031.
+    branchTypeDateIdx: index("idx_entry_branch_type_date").on(table.branchId, table.entryType, table.entryDate),
+    customerDateIdx: index("idx_entry_customer_date").on(table.customerId, table.entryDate),
+    supplierDateIdx: index("idx_entry_supplier_date").on(table.supplierId, table.entryDate),
   })
 );
 
@@ -1227,6 +1247,9 @@ export const auditLogs = mysqlTable(
     branchIdx: index("idx_audit_branch").on(table.branchId),
     actionIdx: index("idx_audit_action").on(table.action),
     dateIdx: index("idx_audit_date").on(table.createdAt),
+    // S1 (٢٩/٦/٢٦): تتبّع نشاط المستخدم (userId+action+تاريخ) وسجلّ تغيّر الكيان (entityType+entityId+تاريخ). هجرة 0031.
+    userActionDateIdx: index("idx_audit_user_action_date").on(table.userId, table.action, table.createdAt),
+    entityIdx: index("idx_audit_entity").on(table.entityType, table.entityId, table.createdAt),
   })
 );
 
@@ -1363,6 +1386,8 @@ export const stocktakeCounts = mysqlTable(
   (table) => ({
     sessionVariantIdx: index("idx_stkcount_session_variant").on(table.sessionId, table.variantId),
     assignmentIdx: index("idx_stkcount_assignment").on(table.assignmentId),
+    // S1 (٢٩/٦/٢٦): تحليل جولات الجرد لكل (جلسة+نوع العدّة+وقت العدّ). هجرة 0031.
+    sessionKindDateIdx: index("idx_stkcount_session_kind_date").on(table.sessionId, table.kind, table.countedAt),
     requestUq: unique("uq_stkcount_request").on(table.sessionId, table.clientRequestId),
   })
 );
