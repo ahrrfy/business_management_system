@@ -342,12 +342,14 @@ export const inventoryRouter = router({
           referenceType: z.string().max(24).optional(),
           limit: z.number().int().positive().max(500).default(200),
           offset: z.number().int().min(0).default(0),
+          // S3 (٣٠/٦): cursor (id) اختياري لـkeyset — يُتجاوز COUNT الكامل عند تمريره.
+          cursor: z.number().int().positive().optional(),
         })
         .optional()
     )
     .query(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db) return { rows: [], total: 0 };
+      if (!db) return { rows: [], total: 0, hasMore: false, nextCursor: null as number | null };
       const i = input ?? { limit: 200, offset: 0 };
 
       // عزل (تَدقيق ٢٣/٦/٢٦): مدير الفرع يُقيَّد بفرعه على movementsRich (كاردكس عبر-فرعي = تَسريب).
@@ -385,11 +387,16 @@ export const inventoryRouter = router({
 
       // alias من mysql-core للفرع المرتبط (TRANSFER) — يحفظ استدلال النوع لـ Drizzle.
       const relatedBranches = alias(branches, "rb");
+      // S3 (٣٠/٦): cursor عند تَمريره يَفرض `id < cursor` ⇒ يَستفيد من المفتاح الأساس بـO(log n).
+      if ((i as any).cursor != null) conds.push(lt(inventoryMovements.id, (i as any).cursor));
       const whereExpr = conds.length ? and(...conds) : sql`1=1`;
 
       // variantId/branchId NOT NULL على inventoryMovements (FK) ⇒ INNER JOIN آمن وأدقّ نوعاً.
       // relatedBranchId/createdBy nullable ⇒ LEFT JOIN.
-      const rows = await db
+      // S4 (٣٠/٦): limit+1 ⇒ hasMore بلا COUNT ثانٍ عند keyset؛ COUNT يَبقى لـoffset التَوافقي.
+      const usingCursor = (i as any).cursor != null;
+      const fetchLimit = usingCursor ? i.limit + 1 : i.limit;
+      const rawRows = await db
         .select({
           id: inventoryMovements.id,
           createdAt: inventoryMovements.createdAt,
@@ -418,19 +425,26 @@ export const inventoryRouter = router({
         .leftJoin(relatedBranches, eq(relatedBranches.id, inventoryMovements.relatedBranchId))
         .leftJoin(users, eq(users.id, inventoryMovements.createdBy))
         .where(whereExpr)
-        .orderBy(desc(inventoryMovements.createdAt), desc(inventoryMovements.id))
-        .limit(i.limit)
-        .offset(i.offset);
+        .orderBy(desc(inventoryMovements.id))
+        .limit(fetchLimit)
+        .offset(usingCursor ? 0 : i.offset);
+      const hasMore = usingCursor ? rawRows.length > i.limit : rawRows.length === i.limit;
+      const rows = usingCursor && hasMore ? rawRows.slice(0, i.limit) : rawRows;
+      const nextCursor = hasMore && rows.length ? rows[rows.length - 1].id : null;
 
-      // count يستعمل نفس مجموعة الـ JOINs لتفادي اختلاف العدّ عن الصفوف.
-      const countRows = await db
-        .select({ c: sql<number>`count(*)` })
-        .from(inventoryMovements)
-        .innerJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
-        .innerJoin(products, eq(products.id, productVariants.productId))
-        .innerJoin(branches, eq(branches.id, inventoryMovements.branchId))
-        .where(whereExpr);
-      const total = Number(countRows[0]?.c ?? 0);
+      // COUNT الكامل (مسحٌ ثانٍ) يَتدهور خطّياً عند الملايين ⇒ نَتجاوزه عند keyset.
+      // عند offset التوافقي، نَحسبه (الواجهات القديمة تَستهلكه لعداد الصفحات).
+      let total = 0;
+      if (!usingCursor) {
+        const countRows = await db
+          .select({ c: sql<number>`count(*)` })
+          .from(inventoryMovements)
+          .innerJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
+          .innerJoin(products, eq(products.id, productVariants.productId))
+          .innerJoin(branches, eq(branches.id, inventoryMovements.branchId))
+          .where(whereExpr);
+        total = Number(countRows[0]?.c ?? 0);
+      }
 
       return {
         rows: rows.map((r) => ({
@@ -442,6 +456,8 @@ export const inventoryRouter = router({
           createdBy: r.createdBy == null ? null : Number(r.createdBy),
         })),
         total,
+        hasMore,
+        nextCursor,
       };
     }),
 

@@ -107,6 +107,8 @@ export const purchaseRouter = router({
         .object({
           limit: z.number().default(50),
           offset: z.number().default(0),
+          // S3 (٣٠/٦): cursor اختياري لـkeyset — `WHERE id < cursor` بدل OFFSET للعمق العميق.
+          cursor: z.number().int().positive().optional(),
           // فلترة خادمية بالفترة (orderDate) والمورد والحالة.
           from: ymd.optional(),
           to: ymd.optional(),
@@ -142,6 +144,7 @@ export const purchaseRouter = router({
           ),
         );
       }
+      if (input?.cursor != null) conds.push(lt(purchaseOrders.id, input.cursor));
       const rows = await db
         .select({
           id: purchaseOrders.id,
@@ -159,7 +162,7 @@ export const purchaseRouter = router({
         .where(conds.length ? and(...conds) : undefined)
         .orderBy(desc(purchaseOrders.id))
         .limit(input?.limit ?? 50)
-        .offset(input?.offset ?? 0);
+        .offset(input?.cursor != null ? 0 : (input?.offset ?? 0));
       // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
       if (!canSeeCost(ctx.user.role)) {
         return rows.map((row) => ({ ...row, total: null, paidAmount: null }));

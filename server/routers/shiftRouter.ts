@@ -24,12 +24,14 @@ export const shiftRouter = router({
           to: ymd.optional(),
           limit: z.number().int().positive().max(200).default(50),
           offset: z.number().int().min(0).default(0),
+          // S3 (٣٠/٦): cursor (id) لـkeyset — يَتجاوز COUNT الكامل عند تَمريره.
+          cursor: z.number().int().positive().optional(),
         })
         .optional()
     )
     .query(async ({ input, ctx }) => {
       const db = getDb();
-      if (!db) return { rows: [], total: 0 };
+      if (!db) return { rows: [], total: 0, hasMore: false, nextCursor: null as number | null };
       const i = input ?? ({} as NonNullable<typeof input>);
       const conds = [];
       const effectiveBranchId = ctx.scopedBranchId ?? i.branchId;
@@ -39,8 +41,16 @@ export const shiftRouter = router({
       // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
       if (i.from) conds.push(gte(shifts.openedAt, localDayStart(i.from)));
       if (i.to) conds.push(lt(shifts.openedAt, localNextDayStart(i.to)));
+      const baseWhere = conds.length ? and(...conds) : undefined;
+
+      // S3 (٣٠/٦): keyset عند cursor — `id < cursor` ⇒ O(log n) عبر المفتاح الأساس.
+      const usingCursor = i.cursor != null;
+      if (usingCursor) conds.push(lt(shifts.id, i.cursor!));
       const where = conds.length ? and(...conds) : undefined;
-      const rows = await db
+      const limit = i.limit ?? 50;
+
+      // S4 (٣٠/٦): limit+1 عند keyset ⇒ hasMore بلا COUNT ثانٍ كامل.
+      const raw = await db
         .select({
           id: shifts.id,
           branchId: shifts.branchId,
@@ -60,10 +70,18 @@ export const shiftRouter = router({
         .leftJoin(branches, eq(shifts.branchId, branches.id))
         .where(where)
         .orderBy(desc(shifts.id))
-        .limit(i.limit ?? 50)
-        .offset(i.offset ?? 0);
-      const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(shifts).where(where))[0];
-      return { rows, total: Number(totalRow?.n ?? 0) };
+        .limit(usingCursor ? limit + 1 : limit)
+        .offset(usingCursor ? 0 : (i.offset ?? 0));
+      const hasMore = usingCursor ? raw.length > limit : raw.length === limit;
+      const rows = usingCursor && hasMore ? raw.slice(0, limit) : raw;
+      const nextCursor = hasMore && rows.length ? rows[rows.length - 1].id : null;
+
+      let total = 0;
+      if (!usingCursor) {
+        const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(shifts).where(baseWhere))[0];
+        total = Number(totalRow?.n ?? 0);
+      }
+      return { rows, total, hasMore, nextCursor };
     }),
 
   open: cashierProcedure
