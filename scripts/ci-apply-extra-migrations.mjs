@@ -26,7 +26,11 @@ if (!url) {
   process.exit(1);
 }
 
-const conn = await createConnection({ uri: url, multipleStatements: false });
+// multipleStatements: true لأن الكَتلة الواحدة بَين breakpoints قد تَحتوي على عدّة أوامر
+// (SET @var؛ PREPARE؛ EXECUTE؛ DEALLOCATE) — كلها تَستعمل مُتغيّر مُستخدم مُشترَك فيَجب
+// تَنفيذها على نَفس الاتصال بَالتَتابع. هذا سكريبت إعداد لا يَستقبل مُدخلات مُستخدم،
+// فلا خطر SQL injection من تَفعيل الخاصية.
+const conn = await createConnection({ uri: url, multipleStatements: true });
 
 try {
   for (const path of EXTRA_MIGRATIONS) {
