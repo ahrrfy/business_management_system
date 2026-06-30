@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { paginateKeyset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -136,33 +137,40 @@ export const purchaseRouter = router({
       // بحث نصّي آمن (escLike + ESCAPE '!') عبر رقم الأمر/اسم المورد/الملاحظات.
       if (input?.q) {
         const pat = `%${escLike(input.q)}%`;
-        conds.push(
-          or(
-            sql`${purchaseOrders.poNumber} LIKE ${pat} ESCAPE '!'`,
-            sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
-            sql`${purchaseOrders.notes} LIKE ${pat} ESCAPE '!'`,
-          ),
+        const cond = or(
+          sql`${purchaseOrders.poNumber} LIKE ${pat} ESCAPE '!'`,
+          sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
+          sql`${purchaseOrders.notes} LIKE ${pat} ESCAPE '!'`,
         );
+        if (cond) conds.push(cond);
       }
-      if (input?.cursor != null) conds.push(lt(purchaseOrders.id, input.cursor));
-      const rows = await db
-        .select({
-          id: purchaseOrders.id,
-          poNumber: purchaseOrders.poNumber,
-          orderDate: purchaseOrders.orderDate,
-          // supplierId مطلوب لإجراءات الصف (كشف حساب المورد) في شاشة المشتريات.
-          supplierId: purchaseOrders.supplierId,
-          total: purchaseOrders.total,
-          paidAmount: purchaseOrders.paidAmount,
-          status: purchaseOrders.status,
-          supplierName: suppliers.name,
-        })
-        .from(purchaseOrders)
-        .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
-        .where(conds.length ? and(...conds) : undefined)
-        .orderBy(desc(purchaseOrders.id))
-        .limit(input?.limit ?? 50)
-        .offset(input?.cursor != null ? 0 : (input?.offset ?? 0));
+      // /simplify ٣٠/٦: paginateKeyset يُدير cursor/limit/offset/hasMore بدل التَكرار اليَدوي.
+      const { rows } = await paginateKeyset({
+        cursor: input?.cursor,
+        limit: input?.limit,
+        offset: input?.offset,
+        defaultLimit: 50,
+        idCol: purchaseOrders.id,
+        baseConds: conds,
+        runQuery: (where, lim, off) => db
+          .select({
+            id: purchaseOrders.id,
+            poNumber: purchaseOrders.poNumber,
+            orderDate: purchaseOrders.orderDate,
+            // supplierId مطلوب لإجراءات الصف (كشف حساب المورد) في شاشة المشتريات.
+            supplierId: purchaseOrders.supplierId,
+            total: purchaseOrders.total,
+            paidAmount: purchaseOrders.paidAmount,
+            status: purchaseOrders.status,
+            supplierName: suppliers.name,
+          })
+          .from(purchaseOrders)
+          .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+          .where(where)
+          .orderBy(desc(purchaseOrders.id))
+          .limit(lim)
+          .offset(off),
+      });
       // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
       if (!canSeeCost(ctx.user.role)) {
         return rows.map((row) => ({ ...row, total: null, paidAmount: null }));

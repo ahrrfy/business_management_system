@@ -5,7 +5,7 @@ import { Label } from "@/components/ui/label";
 import { D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import Decimal from "decimal.js";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
@@ -68,7 +68,9 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
     { q: trimmed, limit: 8 },
     { enabled, staleTime: 30_000 },
   );
-  const suggestions = useMemo(() => summary.data ?? [], [summary.data]);
+  // /simplify ٣٠/٦: `?? []` ينشئ مَصفوفة فقط عند null؛ React لا يَهتمّ بهوية suggestions هنا
+  // (لا dependency listener) ⇒ useMemo كان نَفقاً صَامتاً.
+  const suggestions = summary.data ?? [];
 
   // «إضافة جديد» منبثق (يَبقى كما كان).
   const [showNew, setShowNew] = useState(false);
