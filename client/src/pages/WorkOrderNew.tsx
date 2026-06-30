@@ -77,6 +77,8 @@ type CartItem = {
   unitPrice: string;
   // الكمية بالوحدة الأساس (لإرسالها للـ materials في الـAPI الحالي).
   baseQuantityPerUnit: number;
+  // المخزون المُتاح بالوحدة الأساس عند الإضافة — لإظهار شَارة «نافذ» وعمود المخزون في السلة.
+  stockBase?: number;
 };
 
 export default function WorkOrderNew() {
@@ -157,9 +159,24 @@ export default function WorkOrderNew() {
         quantity: 1,
         unitPrice: r.price || "0",
         baseQuantityPerUnit: Math.max(1, Math.trunc(Number(r.conversionFactor || "1"))),
+        stockBase: r.stockBase,
       }];
     });
   }
+
+  // حالة المخزون (نمط POS/Reception): الطلب الكلّي للصنف عبر كل وحداته في السلّة.
+  const stockState = (c: CartItem) => {
+    const convFactor = Math.max(1, Math.trunc(Number(c.conversionFactor || "1")));
+    const availBase = c.stockBase ?? 0;
+    let reqBase = 0;
+    for (const x of cart) if (x.variantId === c.variantId) {
+      reqBase += x.quantity * Math.max(1, Math.trunc(Number(x.conversionFactor || "1")));
+    }
+    const isOut = availBase <= 0;
+    const isShort = !isOut && reqBase > availBase;
+    const availInUnit = Math.floor(availBase / convFactor);
+    return { isOut, isShort, availInUnit };
+  };
 
   function updateQty(key: number, delta: number) {
     setCart((prev) => prev.map((c) => c.key === key ? { ...c, quantity: Math.max(1, c.quantity + delta) } : c));
@@ -558,6 +575,7 @@ export default function WorkOrderNew() {
                 <thead className="bg-muted/50">
                   <tr>
                     <th className="text-right px-3 py-1.5 text-xs text-muted-foreground">المنتج</th>
+                    <th className="text-center px-2 py-1.5 text-xs text-muted-foreground w-20">المخزون</th>
                     <th className="text-center px-2 py-1.5 text-xs text-muted-foreground w-32">الكمية</th>
                     <th className="text-center px-2 py-1.5 text-xs text-muted-foreground w-28">السعر</th>
                     <th className="text-center px-2 py-1.5 text-xs text-muted-foreground w-28">الإجمالي</th>
@@ -565,11 +583,41 @@ export default function WorkOrderNew() {
                   </tr>
                 </thead>
                 <tbody>
-                  {cart.map((c) => (
-                    <tr key={c.key} className="border-t">
+                  {cart.map((c) => {
+                    const stock = stockState(c);
+                    return (
+                    <tr
+                      key={c.key}
+                      className={cn(
+                        "border-t",
+                        stock.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",
+                        !stock.isOut && stock.isShort && "border-s-[3px] border-s-amber-500 bg-amber-50",
+                      )}
+                    >
                       <td className="px-3 py-1.5">
-                        <div>{c.productName}</div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="font-bold">{c.productName}</span>
+                          {stock.isOut && (
+                            <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
+                              نافذ — لا مخزون
+                            </span>
+                          )}
+                          {!stock.isOut && stock.isShort && (
+                            <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
+                              {stock.availInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${stock.availInUnit} فقط`}
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[11px] text-muted-foreground" dir="ltr">{c.sku} · {c.unitName}</div>
+                      </td>
+                      <td
+                        className={cn(
+                          "px-2 py-1.5 text-center text-xs font-extrabold tabular-nums",
+                          stock.isOut ? "text-destructive" : stock.isShort ? "text-amber-600" : "text-muted-foreground",
+                        )}
+                        dir="ltr"
+                      >
+                        {stock.availInUnit}
                       </td>
                       <td className="px-2 py-1.5">
                         <div className="flex items-center justify-center gap-1">
@@ -598,7 +646,8 @@ export default function WorkOrderNew() {
                         <Button type="button" variant="ghost" size="sm" className="h-7 w-7 p-0 text-destructive" onClick={() => removeRow(c.key)} aria-label="إزالة"><X aria-hidden className="size-3.5" /></Button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
