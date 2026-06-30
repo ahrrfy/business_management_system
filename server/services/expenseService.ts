@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, lte, or, sql } from "drizzle-orm";
 import { branches, expenseStockItems, expenses, productVariants, receipts, shifts, users } from "../../drizzle/schema";
 import { localDayStart } from "./dateRange";
 import { getDb } from "../db";
@@ -392,11 +392,13 @@ export interface ListExpensesInput {
   offset?: number;
   // عزل الموظف: غير المرتفعين يرون مصروفاتهم فقط (createdBy = هم). null/غياب = الكل.
   createdBy?: number | null;
+  // S3 (٣٠/٦): cursor (id) لـkeyset — يَتجاوز COUNT/SUM الكامل في الـtotals.
+  cursor?: number;
 }
 
 export async function listExpenses(input: ListExpensesInput = {}) {
   const db = getDb();
-  if (!db) return { rows: [], totals: { active: "0.00", count: 0 } };
+  if (!db) return { rows: [], totals: { active: "0.00", count: 0 }, hasMore: false, nextCursor: null as number | null };
   const conds = [] as any[];
   if (input.branchId) conds.push(eq(expenses.branchId, input.branchId));
   if (input.createdBy != null) conds.push(eq(expenses.createdBy, input.createdBy));
@@ -416,9 +418,15 @@ export async function listExpenses(input: ListExpensesInput = {}) {
       ),
     );
   }
-  const where = conds.length ? and(...conds) : undefined;
+  // S3 (٣٠/٦): cursor (id) ⇒ keyset لـrows فقط؛ totals تَبقى على كامل المطابق دائماً.
+  const baseWhere = conds.length ? and(...conds) : undefined;
+  const limit = input.limit ?? 200;
+  const usingCursor = input.cursor != null;
+  const rowConds = usingCursor ? [...conds, lt(expenses.id, input.cursor!)] : conds;
+  const rowWhere = rowConds.length ? and(...rowConds) : undefined;
 
-  const rows = await db
+  // S4 (٣٠/٦): limit+1 عند keyset ⇒ hasMore بلا COUNT ثانٍ.
+  const raw = await db
     .select({
       id: expenses.id,
       branchId: expenses.branchId,
@@ -437,11 +445,15 @@ export async function listExpenses(input: ListExpensesInput = {}) {
     })
     .from(expenses)
     .leftJoin(branches, eq(expenses.branchId, branches.id))
-    .where(where as any)
+    .where(rowWhere as any)
     .orderBy(desc(expenses.id))
-    .limit(input.limit ?? 200)
-    .offset(input.offset ?? 0);
+    .limit(usingCursor ? limit + 1 : limit)
+    .offset(usingCursor ? 0 : (input.offset ?? 0));
+  const hasMore = usingCursor ? raw.length > limit : raw.length === limit;
+  const rows = usingCursor && hasMore ? raw.slice(0, limit) : raw;
+  const nextCursor = hasMore && rows.length ? rows[rows.length - 1].id : null;
 
+  // المجاميع المالية تَبقى على كامل المطابق (لا يَستفيد كاشف مجاميع من keyset) — مسحٌ ضروري.
   const totalsRow = (
     await db
       .select({
@@ -449,7 +461,7 @@ export async function listExpenses(input: ListExpensesInput = {}) {
         count: sql<number>`COUNT(*)`,
       })
       .from(expenses)
-      .where(where as any)
+      .where(baseWhere as any)
   )[0];
 
   return {
@@ -458,5 +470,7 @@ export async function listExpenses(input: ListExpensesInput = {}) {
       active: totalsRow?.active ?? "0.00",
       count: Number(totalsRow?.count ?? 0),
     },
+    hasMore,
+    nextCursor,
   };
 }

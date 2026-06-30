@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import {
   customers,
@@ -147,10 +147,13 @@ const lineSchema = z.object({
 });
 
 // مخطط فلترة قائمة المبيعات — مشترك بين list و listSummary (نفس الفلاتر حتماً).
+// S3 (٣٠/٦): cursor اختياري للترقيم keyset — عمق O(log n) بدل OFFSET الأُسّي.
+// إن مُرّر cursor، يُقيَّد `id < cursor` ويُتجاهل offset؛ وإلّا يبقى OFFSET للتوافق.
 const salesListInput = z
   .object({
     limit: z.number().default(50),
     offset: z.number().default(0),
+    cursor: z.number().int().positive().optional(),
     // فلترة خادمية بالفترة (invoiceDate) والحالة والعميل.
     from: ymd.optional(),
     to: ymd.optional(),
@@ -303,12 +306,16 @@ export const saleRouter = router({
     }),
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
+  // S3 (٣٠/٦): keyset عند تمرير cursor — `WHERE id < cursor` يَستعمل المفتاح الأساس مباشرةً
+  // (O(log n))، فلا يَتدهور مع عمق الصفحة عند الملايين. توافق عكسي محفوظ: بلا cursor ⇒ OFFSET.
   list: branchScopedProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
       const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
+      if (input?.cursor != null) conds.push(lt(invoices.id, input.cursor));
+      // عند keyset: offset=0 (الـwhere id<cursor يَضبط البداية) ⇒ نُبقي البناء حتمياً يَحفظ الأنواع.
       return db
         .select({
           id: invoices.id,
@@ -325,7 +332,40 @@ export const saleRouter = router({
         .where(conds.length ? and(...conds) : undefined)
         .orderBy(desc(invoices.id))
         .limit(input?.limit ?? 50)
-        .offset(input?.offset ?? 0);
+        .offset(input?.cursor != null ? 0 : (input?.offset ?? 0));
+    }),
+
+  // S3+S4 (٣٠/٦): listPage — صياغة keyset رسمية تُعيد `{rows, nextCursor, hasMore}`.
+  // يَجلب limit+1 صفّاً ⇒ hasMore بلا COUNT (مسحٌ ثانٍ كامل أُلغي للصفحات العميقة).
+  // الواجهة الجديدة تَستهلكه عبر `useInfiniteQuery({getNextPageParam})`.
+  listPage: branchScopedProcedure
+    .input(salesListInput)
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return { rows: [], nextCursor: null as number | null, hasMore: false };
+      const limit = input?.limit ?? 50;
+      const conds = buildSalesListConds(input, ctx.scopedBranchId, ctx.scopedOwnerId);
+      if (input?.cursor != null) conds.push(lt(invoices.id, input.cursor));
+      const rows = await db
+        .select({
+          id: invoices.id,
+          invoiceNumber: invoices.invoiceNumber,
+          sourceType: invoices.sourceType,
+          invoiceDate: invoices.invoiceDate,
+          total: invoices.total,
+          paidAmount: invoices.paidAmount,
+          status: invoices.status,
+          customerName: customers.name,
+        })
+        .from(invoices)
+        .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .where(conds.length ? and(...conds) : undefined)
+        .orderBy(desc(invoices.id))
+        .limit(limit + 1);
+      const hasMore = rows.length > limit;
+      const page = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore ? (page[page.length - 1]?.id ?? null) : null;
+      return { rows: page, nextCursor, hasMore };
     }),
 
   // مجاميع كل النتائج المطابقة للفلتر (لا الصفحة المعروضة فقط) — نفس شروط list حتماً

@@ -36,6 +36,8 @@ export const expenseRouter = router({
           q: z.string().trim().min(1).optional(),
           limit: z.number().int().positive().max(1000).default(200),
           offset: z.number().int().nonnegative().optional(),
+          // S3 (٣٠/٦): cursor (id) اختياري لـkeyset — يتجاوز COUNT الكامل.
+          cursor: z.number().int().positive().optional(),
         })
         .optional()
     )
