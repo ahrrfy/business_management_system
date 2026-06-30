@@ -157,6 +157,29 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
     `),
   )[0] ?? { amount: "0" };
 
+  // exchange-house: عمولات الصيرفة (EXCHANGE_FEE، cost) — مصروف تشغيليّ يَخفض صافي الربح.
+  const xf = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'EXCHANGE_FEE'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
+  // exchange-house: فرق صرف محقَّق (EXCHANGE_FX_DIFF، amount موقَّع: موجب=مكسب/سالب=خسارة) — بند غير تشغيليّ.
+  // معزول عن إيراد البيع (SALE/RETURN فقط)، لكنه يُؤثّر في صافي الربح (مكسب/خسارة مالية حقيقية).
+  const xfx = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.amount), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'EXCHANGE_FX_DIFF'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -201,6 +224,21 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
   if (!disposalPL.isZero()) {
     const expenseEffect = disposalPL.neg();
     expenseLines.push({ key: "ASSET_DISPOSAL_PL", label: "صافي ربح/خسارة بيع أصول", amount: toDbMoney(expenseEffect) });
+    totalExpenses = totalExpenses.add(expenseEffect);
+  }
+
+  // exchange-house: عمولات صيرفة — سطر مصروف مستقلّ.
+  const exchangeFee = money(xf.amount ?? 0);
+  if (exchangeFee.gt(0)) {
+    expenseLines.push({ key: "EXCHANGE_FEE", label: "عمولات صيرفة", amount: toDbMoney(exchangeFee) });
+    totalExpenses = totalExpenses.add(exchangeFee);
+  }
+
+  // exchange-house: صافي فرق صرف العملات — موجب=مكسب (دخل يَخفض المصروفات)، سالب=خسارة (يَرفعها). نمط ASSET_DISP_PL.
+  const exchangeFx = money(xfx.amount ?? 0); // موجب=مكسب
+  if (!exchangeFx.isZero()) {
+    const expenseEffect = exchangeFx.neg();
+    expenseLines.push({ key: "EXCHANGE_FX_DIFF", label: "صافي فرق صرف العملات", amount: toDbMoney(expenseEffect) });
     totalExpenses = totalExpenses.add(expenseEffect);
   }
 
@@ -264,6 +302,7 @@ export interface GeneralLedgerResult {
 const LEDGER_ENTRY_TYPES = [
   "SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE",
   "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF",
+  "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF",
 ] as const;
 
 export async function getGeneralLedger(opts: {
@@ -357,6 +396,9 @@ export interface FinancialPosition {
   // FIN-05: سُلف العملاء على أوامر الشغل غير المُسلَّمة (عرابين مقبوضة نقداً لكن الإيراد لم يُعترف به بعد) —
   // التزامٌ على الشركة (خدمةٌ لم تُنجَز)، يقابل النقدَ الداخل فلا تتضخّم حقوق الملكية.
   customerAdvances: string;
+  // exchange-house: صافي رصيدنا لدى الصرّافين (دينار + دولار×متوسط الكلفة) — موجب=أصل، سالب=خصم.
+  exchangeDebit: string;
+  exchangeCredit: string;
   totalAssets: string;
   totalLiabilities: string;
   equity: string;
@@ -377,6 +419,7 @@ export async function getFinancialPosition(
   const empty: FinancialPosition = {
     cash: zero, arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
     apCredit: zero, apDebit: zero, customerAdvances: zero,
+    exchangeDebit: zero, exchangeCredit: zero,
     totalAssets: zero, totalLiabilities: zero, equity: zero,
     branchScoped: !!opts.branchId,
     arReconciled: true, apReconciled: true, arDriftCount: 0, apDriftCount: 0,
@@ -431,6 +474,15 @@ export async function getFinancialPosition(
       ${bId ? sql`AND branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 
+  // exchange-house: صافي أرصدتنا لدى الصرّافين على مستوى الشركة (دينار + دولار مُقيَّماً بمتوسط الكلفة).
+  // موجب لكل صيرفة ⇒ أصل (أموالنا لديها)، سالب ⇒ خصم (نَدين لها). نظير AR/AP — بلا عزل فرع.
+  const ex = rowsOf(await db.execute(sql`
+    SELECT
+      CAST(COALESCE(SUM(CASE WHEN net > 0 THEN net ELSE 0 END), 0) AS CHAR) AS d,
+      CAST(COALESCE(SUM(CASE WHEN net < 0 THEN -net ELSE 0 END), 0) AS CHAR) AS c
+    FROM (SELECT (balanceIqd + balanceUsd * usdCostRate) AS net FROM exchangeHouses WHERE isActive = TRUE) t
+  `))[0] ?? { d: "0", c: "0" };
+
   const cash = money(cashRow.v ?? 0);
   const arDebit = money(ar.d ?? 0);
   const arCredit = money(ar.c ?? 0);
@@ -439,11 +491,13 @@ export async function getFinancialPosition(
   const apCredit = money(ap.c ?? 0);
   const apDebit = money(ap.d ?? 0);
   const customerAdvances = money(wa.v ?? 0); // FIN-05: عرابين أوامر الشغل غير المُسلَّمة (التزام).
+  const exchangeDebit = money(ex.d ?? 0); // أموالنا لدى الصرّافين (أصل).
+  const exchangeCredit = money(ex.c ?? 0); // ما نَدين به للصرّافين (خصم).
 
-  // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة.
-  const totalAssets = cash.add(arDebit).add(apDebit).add(inventory).add(fixedAssets);
-  // الخصوم = دائنون + سُلف العملاء على الذمم (دفعوا زيادة) + سُلف عملاء عرابين أوامر الشغل (FIN-05).
-  const totalLiabilities = apCredit.add(arCredit).add(customerAdvances);
+  // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين.
+  const totalAssets = cash.add(arDebit).add(apDebit).add(inventory).add(fixedAssets).add(exchangeDebit);
+  // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين.
+  const totalLiabilities = apCredit.add(arCredit).add(customerAdvances).add(exchangeCredit);
   const equity = totalAssets.sub(totalLiabilities);
 
   // FI-02: حارس انحراف مرئي (قراءة فقط). الأرقام أعلاه تبقى من currentBalance؛ هذه إشارةٌ فقط.
@@ -465,6 +519,8 @@ export async function getFinancialPosition(
     apCredit: toDbMoney(apCredit),
     apDebit: toDbMoney(apDebit),
     customerAdvances: toDbMoney(customerAdvances),
+    exchangeDebit: toDbMoney(exchangeDebit),
+    exchangeCredit: toDbMoney(exchangeCredit),
     totalAssets: toDbMoney(totalAssets),
     totalLiabilities: toDbMoney(totalLiabilities),
     equity: toDbMoney(equity),

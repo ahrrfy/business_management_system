@@ -56,7 +56,9 @@ async function computeYearTotals(tx: Tx, year: number, branchId: number | null):
       COALESCE(SUM(CASE WHEN entryType IN ('SALE','RETURN') THEN CAST(revenue AS DECIMAL(15,2)) ELSE 0 END), 0) AS revenue,
       COALESCE(SUM(CASE WHEN entryType IN ('SALE','RETURN') THEN CAST(cost AS DECIMAL(15,2)) ELSE 0 END), 0) AS cogs,
       COALESCE(SUM(CASE WHEN entryType = 'PAYMENT_OUT' AND invoiceId IS NULL AND supplierId IS NULL THEN CAST(amount AS DECIMAL(15,2)) ELSE 0 END), 0) AS cashExpenses,
-      COALESCE(SUM(CASE WHEN entryType IN ('INTERNAL_USE','WASTAGE') THEN CAST(cost AS DECIMAL(15,2)) ELSE 0 END), 0) AS stockExpenses
+      COALESCE(SUM(CASE WHEN entryType IN ('INTERNAL_USE','WASTAGE') THEN CAST(cost AS DECIMAL(15,2)) ELSE 0 END), 0) AS stockExpenses,
+      COALESCE(SUM(CASE WHEN entryType = 'EXCHANGE_FEE' THEN CAST(cost AS DECIMAL(15,2)) ELSE 0 END), 0) AS exchangeFee,
+      COALESCE(SUM(CASE WHEN entryType = 'EXCHANGE_FX_DIFF' THEN CAST(amount AS DECIMAL(15,2)) ELSE 0 END), 0) AS exchangeFx
     FROM accountingEntries
     WHERE entryDate >= ${start}
       AND entryDate <= ${end}
@@ -67,7 +69,11 @@ async function computeYearTotals(tx: Tx, year: number, branchId: number | null):
   return {
     revenue: money(String(r.revenue ?? "0")),
     cogs: money(String(r.cogs ?? "0")),
-    expenses: money(String(r.cashExpenses ?? "0")).plus(money(String(r.stockExpenses ?? "0"))),
+    // exchange-house: + عمولات الصيرفة (مصروف) − صافي فرق الصرف (مكسب يَخفض المصروف/خسارة تَرفعه).
+    expenses: money(String(r.cashExpenses ?? "0"))
+      .plus(money(String(r.stockExpenses ?? "0")))
+      .plus(money(String(r.exchangeFee ?? "0")))
+      .minus(money(String(r.exchangeFx ?? "0"))),
   };
 }
 

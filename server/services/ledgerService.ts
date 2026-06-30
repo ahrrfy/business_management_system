@@ -1,6 +1,6 @@
 import type Decimal from "decimal.js";
 import { eq, sql } from "drizzle-orm";
-import { accountingEntries, customers, deliveryParties, suppliers } from "../../drizzle/schema";
+import { accountingEntries, customers, deliveryParties, exchangeHouses, suppliers } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { money, toDbMoney } from "./money";
 import { assertPeriodOpen } from "./periodLockService";
@@ -23,7 +23,14 @@ export type EntryType =
   | "DELIVERY_DISPATCH" // إيقاف COD على عهدة الجهة عند الإرسال (+float)
   | "DELIVERY_REMIT"    // خفض العهدة عند التوريد/التسوية/الإرجاع (−float)
   | "DELIVERY_FEE"      // مصروف أجرة التوصيل (cost-only، خصم الأجرة وتوريد الصافي)
-  | "DELIVERY_WRITEOFF"; // شطب عجز عهدة كمصروف (cost-only، بلا نقد)
+  | "DELIVERY_WRITEOFF" // شطب عجز عهدة كمصروف (cost-only، بلا نقد)
+  // exchange-house (٣٠/٦): حركات الصيرفة. DEPOSIT/WITHDRAW/FX_BUY/SETTLE = حركات أصل (revenue=cost=profit=0).
+  | "EXCHANGE_DEPOSIT" // إيداع نقد (دينار) من الخزينة → محفظة الصيرفة
+  | "EXCHANGE_WITHDRAW" // سحب نقد (دينار) من محفظة الصيرفة → الخزينة
+  | "EXCHANGE_FX_BUY" // شراء دولار: تحويل دينار→دولار داخل الصيرفة (يُحدّث WAVG)
+  | "EXCHANGE_SETTLE" // تسديد ذمّة مورد عبر الصيرفة (يخفض المحفظة ودين المورد)
+  | "EXCHANGE_FEE" // عمولة الصيرفة (مصروف P&L، cost=amount)
+  | "EXCHANGE_FX_DIFF"; // فرق صرف محقَّق عند التسديد (amount موقَّع، معزول عن إيراد البيع)
 
 export interface EntryInput {
   entryType: EntryType;
@@ -34,6 +41,7 @@ export interface EntryInput {
   customerId?: number | null;
   supplierId?: number | null;
   deliveryPartyId?: number | null;
+  exchangeHouseId?: number | null;
   revenue?: Decimal;
   cost?: Decimal;
   profit?: Decimal;
@@ -60,6 +68,7 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     customerId: e.customerId ?? null,
     supplierId: e.supplierId ?? null,
     deliveryPartyId: e.deliveryPartyId ?? null,
+    exchangeHouseId: e.exchangeHouseId ?? null,
     revenue: toDbMoney(e.revenue ?? 0),
     cost: toDbMoney(e.cost ?? 0),
     profit: toDbMoney(e.profit ?? 0),
@@ -95,6 +104,25 @@ export async function adjustDeliveryBalance(tx: Tx, partyId: number, delta: Deci
     .update(deliveryParties)
     .set({ currentBalance: sql`${deliveryParties.currentBalance} + ${toDbMoney(delta)}` })
     .where(eq(deliveryParties.id, partyId));
+}
+
+/** محفظة الدينار للصيرفة (exchange-house): positive = الصيرفة مدينة لنا. تُطبَّق ذرّياً بزيادة SQL نسبية.
+ *  ⚠️ يجب أن يسبقها قفل صفّ الصيرفة (.for("update")) في الخدمة لمنع سباق الخصم. */
+export async function adjustExchangeBalanceIqd(tx: Tx, exchangeHouseId: number, delta: Decimal): Promise<void> {
+  if (delta.isZero()) return;
+  await tx
+    .update(exchangeHouses)
+    .set({ balanceIqd: sql`${exchangeHouses.balanceIqd} + ${toDbMoney(delta)}` })
+    .where(eq(exchangeHouses.id, exchangeHouseId));
+}
+
+/** محفظة الدولار للصيرفة (exchange-house): positive = الصيرفة مدينة لنا بالدولار. تُطبَّق ذرّياً تحت قفل الصفّ. */
+export async function adjustExchangeBalanceUsd(tx: Tx, exchangeHouseId: number, delta: Decimal): Promise<void> {
+  if (delta.isZero()) return;
+  await tx
+    .update(exchangeHouses)
+    .set({ balanceUsd: sql`${exchangeHouses.balanceUsd} + ${toDbMoney(delta)}` })
+    .where(eq(exchangeHouses.id, exchangeHouseId));
 }
 
 export function computeInvoiceStatus(total: string, paid: string): "PENDING" | "PARTIALLY_PAID" | "PAID" {

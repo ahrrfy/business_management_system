@@ -43,6 +43,7 @@ import { cashTransfersRouter } from "./routers/cashTransfersRouter";
 import { conversationRouter } from "./routers/conversationRouter";
 import { integrationRouter } from "./routers/integrationRouter";
 import { deliveryRouter } from "./routers/deliveryRouter";
+import { exchangeRouter } from "./routers/exchangeRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -97,6 +98,8 @@ export const appRouter = router({
   integrations: integrationRouter,
   // delivery-cod (٢٦/٦/٢٦): التوصيل (COD) — جهات التوصيل/العهد/الترحيل.
   delivery: deliveryRouter,
+  // exchange-house (٣٠/٦/٢٦): الصيرفة (الصرّاف) — محفظتان دينار/دولار + تسديد موردين + كشف/مطابقة.
+  exchange: exchangeRouter,
 });
 
 export type AppRouter = typeof appRouter;

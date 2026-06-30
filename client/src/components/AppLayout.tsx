@@ -7,7 +7,7 @@ import { openSearch } from "@/lib/searchEvents";
 import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
-  Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2,
+  Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -34,6 +34,7 @@ const NAV_LINKS: NavLink[] = [
   { href: "/assets", label: "الأصول الثابتة", icon: Server, managerOnly: true },
   { href: "/hr", label: "الموارد البشرية", icon: Briefcase, managerOnly: true },
   { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet },
+  { href: "/exchange", label: "الصيرفة", icon: DollarSign, managerOnly: true },
   { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
   { href: "/customers", label: "العملاء", icon: Users },
   { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },

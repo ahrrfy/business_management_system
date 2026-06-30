@@ -157,8 +157,10 @@ export async function reconcileCustomerBalances(): Promise<ReconcileResult[]> {
 /**
  * التحقّق من اتساق ذمم الموردين (AP). النموذج: suppliers.currentBalance (موجب = ندين للمورد)
  * يُحدَّث بزيادة نسبية ذرّية في كل عملية. المُتوقَّع المُشتقّ من قيود الدفتر للمورد:
- *   AP = Σ PURCHASE.amount − Σ PAYMENT_OUT.amount + Σ PAYMENT_IN.amount + Σ RETURN.amount
+ *   AP = Σ PURCHASE.amount − Σ PAYMENT_OUT.amount − Σ EXCHANGE_SETTLE.amount + Σ PAYMENT_IN.amount + Σ RETURN.amount
  *      + Σ OPENING.amount (قيد ترسيخ الرصيد الافتتاحي المستورد — import-integration)
+ *   (EXCHANGE_SETTLE = تسديد مورد عبر الصيرفة يَخفض AP كـPAYMENT_OUT؛ EXCHANGE_FEE/FX_DIFF تَحملان
+ *    supplierId للتقرير لكنهما لا يَمسّان currentBalance فتَسقطان في ELSE 0 بلا انحراف.)
  *   (RETURN.amount مخزَّن سالباً ⇒ يَطرح المرتجع؛ PAYMENT_IN = استرداد نقدي من المورد يَزيد AP العاكس).
  * يكشف أي انحراف صامت في AP (الذي لم يكن مُتحقَّقاً منه آلياً قبل هذا).
  */
@@ -175,6 +177,7 @@ export async function reconcileSupplierBalances(): Promise<ReconcileResult[]> {
         WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'RETURN'      THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         WHEN ${accountingEntries.entryType} = 'OPENING'     THEN CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'EXCHANGE_SETTLE' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         ELSE 0 END), 0)`,
     })
     .from(accountingEntries)
