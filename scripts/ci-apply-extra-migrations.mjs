@@ -17,7 +17,7 @@ import { resolve } from "node:path";
 // قائمة الهَجرات اليَدوية التي يُطبِّقها هذا السكريبت (بَعد db:push). تُضاف هُنا فقط
 // الهَجرات التي drizzle-kit يَعجز عن تَمثيلها (GENERATED columns، FULLTEXT indexes، إلخ).
 const EXTRA_MIGRATIONS = [
-  "drizzle/migrations/0034_search_norm_products.sql",
+  "drizzle/migrations/0035_search_norm_products.sql",
 ];
 
 const url = process.env.DATABASE_URL;
