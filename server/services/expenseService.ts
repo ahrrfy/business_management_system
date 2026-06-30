@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, inArray, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, or, sql } from "drizzle-orm";
+import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { branches, expenseStockItems, expenses, productVariants, receipts, shifts, users } from "../../drizzle/schema";
 import { localDayStart } from "./dateRange";
 import { getDb } from "../db";
@@ -418,59 +419,58 @@ export async function listExpenses(input: ListExpensesInput = {}) {
       ),
     );
   }
-  // S3 (٣٠/٦): cursor (id) ⇒ keyset لـrows فقط؛ totals تَبقى على كامل المطابق دائماً.
+  // /simplify ٣٠/٦: paginateKeyset + Promise.all (rows + totals بالتَوازي — يَقطع زمن الجدار).
   const baseWhere = conds.length ? and(...conds) : undefined;
-  const limit = input.limit ?? 200;
-  const usingCursor = input.cursor != null;
-  const rowConds = usingCursor ? [...conds, lt(expenses.id, input.cursor!)] : conds;
-  const rowWhere = rowConds.length ? and(...rowConds) : undefined;
-
-  // S4 (٣٠/٦): limit+1 عند keyset ⇒ hasMore بلا COUNT ثانٍ.
-  const raw = await db
-    .select({
-      id: expenses.id,
-      branchId: expenses.branchId,
-      branchName: branches.name,
-      expenseDate: expenses.expenseDate,
-      category: expenses.category,
-      amount: expenses.amount,
-      paymentMethod: expenses.paymentMethod,
-      source: expenses.source,
-      stockReason: expenses.stockReason,
-      description: expenses.description,
-      referenceNumber: expenses.referenceNumber,
-      status: expenses.status,
-      shiftId: expenses.shiftId,
-      createdAt: expenses.createdAt,
-    })
-    .from(expenses)
-    .leftJoin(branches, eq(expenses.branchId, branches.id))
-    .where(rowWhere as any)
-    .orderBy(desc(expenses.id))
-    .limit(usingCursor ? limit + 1 : limit)
-    .offset(usingCursor ? 0 : (input.offset ?? 0));
-  const hasMore = usingCursor ? raw.length > limit : raw.length === limit;
-  const rows = usingCursor && hasMore ? raw.slice(0, limit) : raw;
-  const nextCursor = hasMore && rows.length ? rows[rows.length - 1].id : null;
-
-  // المجاميع المالية تَبقى على كامل المطابق (لا يَستفيد كاشف مجاميع من keyset) — مسحٌ ضروري.
-  const totalsRow = (
-    await db
+  const [pageResult, totalsRow] = await Promise.all([
+    paginateKeyset({
+      cursor: input.cursor,
+      limit: input.limit,
+      offset: input.offset,
+      defaultLimit: 200,
+      idCol: expenses.id,
+      baseConds: conds,
+      runQuery: (where, lim, off) => db
+        .select({
+          id: expenses.id,
+          branchId: expenses.branchId,
+          branchName: branches.name,
+          expenseDate: expenses.expenseDate,
+          category: expenses.category,
+          amount: expenses.amount,
+          paymentMethod: expenses.paymentMethod,
+          source: expenses.source,
+          stockReason: expenses.stockReason,
+          description: expenses.description,
+          referenceNumber: expenses.referenceNumber,
+          status: expenses.status,
+          shiftId: expenses.shiftId,
+          createdAt: expenses.createdAt,
+        })
+        .from(expenses)
+        .leftJoin(branches, eq(expenses.branchId, branches.id))
+        .where(where)
+        .orderBy(desc(expenses.id))
+        .limit(lim)
+        .offset(off),
+    }),
+    // المجاميع المالية على كامل المطابق (لا تَستفيد من keyset) — تُشغَّل بالتَوازي.
+    db
       .select({
         active: sql<string>`COALESCE(SUM(CASE WHEN ${expenses.status} = 'ACTIVE' THEN ${expenses.amount} ELSE 0 END), 0)`,
         count: sql<number>`COUNT(*)`,
       })
       .from(expenses)
-      .where(baseWhere as any)
-  )[0];
+      .where(baseWhere)
+      .then((rows) => rows[0]),
+  ]);
 
   return {
-    rows,
+    rows: pageResult.rows,
     totals: {
       active: totalsRow?.active ?? "0.00",
       count: Number(totalsRow?.count ?? 0),
     },
-    hasMore,
-    nextCursor,
+    hasMore: pageResult.hasMore,
+    nextCursor: pageResult.nextCursor,
   };
 }

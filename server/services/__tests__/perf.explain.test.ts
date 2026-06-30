@@ -49,15 +49,12 @@ interface ExplainRow {
   Extra: string | null;
 }
 
+// /simplify ٣٠/٦: اتصال واحد مَفتوح طوال الـsuite (٦ TCP handshakes ⇒ ١).
+let sharedConn: mysql.Connection | null = null;
 async function explain(sql: string): Promise<ExplainRow[]> {
-  const url = process.env.DATABASE_URL!;
-  const conn = await mysql.createConnection(url);
-  try {
-    const [rows] = await conn.execute(`EXPLAIN ${sql}`);
-    return rows as ExplainRow[];
-  } finally {
-    await conn.end();
-  }
+  if (!sharedConn) sharedConn = await mysql.createConnection(process.env.DATABASE_URL!);
+  const [rows] = await sharedConn.execute(`EXPLAIN ${sql}`);
+  return rows as ExplainRow[];
 }
 
 async function seedBulk() {
@@ -139,6 +136,10 @@ describe("حارس انحدار الأداء — EXPLAIN على استعلاما
   afterAll(async () => {
     // تَنظيف صَريح كي لا تَتسرَّب الحالة لاختبارات تالية تَفترض جداول users/customers/branches
     // فارغة وتَبذرها بنفسها. truncate شامل (FK_CHECKS=0) ثم closeDb لإفراغ pool drizzle.
+    if (sharedConn) {
+      await sharedConn.end().catch(() => {});
+      sharedConn = null;
+    }
     await truncateTables(TABLES);
     await closeDb();
   });

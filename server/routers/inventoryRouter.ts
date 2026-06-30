@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { alias } from "drizzle-orm/mysql-core";
 
 // استخدام ! كحرف هروب بـ ESCAPE '!' — بديل آمن عن \ (لا يُصاب بـNO_BACKSLASH_ESCAPES MySQL mode).
@@ -387,64 +388,62 @@ export const inventoryRouter = router({
 
       // alias من mysql-core للفرع المرتبط (TRANSFER) — يحفظ استدلال النوع لـ Drizzle.
       const relatedBranches = alias(branches, "rb");
-      // S3 (٣٠/٦): cursor عند تَمريره يَفرض `id < cursor` ⇒ يَستفيد من المفتاح الأساس بـO(log n).
-      if ((i as any).cursor != null) conds.push(lt(inventoryMovements.id, (i as any).cursor));
-      const whereExpr = conds.length ? and(...conds) : sql`1=1`;
 
+      // /simplify ٣٠/٦: paginateKeyset + countIfOffset يَستبدلان ~٣٠ سطر مَنطق مُكرَّر.
       // variantId/branchId NOT NULL على inventoryMovements (FK) ⇒ INNER JOIN آمن وأدقّ نوعاً.
-      // relatedBranchId/createdBy nullable ⇒ LEFT JOIN.
-      // S4 (٣٠/٦): limit+1 ⇒ hasMore بلا COUNT ثانٍ عند keyset؛ COUNT يَبقى لـoffset التَوافقي.
-      const usingCursor = (i as any).cursor != null;
-      const fetchLimit = usingCursor ? i.limit + 1 : i.limit;
-      const rawRows = await db
-        .select({
-          id: inventoryMovements.id,
-          createdAt: inventoryMovements.createdAt,
-          movementType: inventoryMovements.movementType,
-          quantity: inventoryMovements.quantity,
-          variantId: inventoryMovements.variantId,
-          productName: products.name,
-          variantName: productVariants.variantName,
-          color: productVariants.color,
-          size: productVariants.size,
-          sku: productVariants.sku,
-          branchId: inventoryMovements.branchId,
-          branchName: branches.name,
-          relatedBranchId: inventoryMovements.relatedBranchId,
-          relatedBranchName: relatedBranches.name,
-          referenceType: inventoryMovements.referenceType,
-          referenceId: inventoryMovements.referenceId,
-          notes: inventoryMovements.notes,
-          createdBy: inventoryMovements.createdBy,
-          createdByName: users.name,
-        })
-        .from(inventoryMovements)
-        .innerJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
-        .innerJoin(products, eq(products.id, productVariants.productId))
-        .innerJoin(branches, eq(branches.id, inventoryMovements.branchId))
-        .leftJoin(relatedBranches, eq(relatedBranches.id, inventoryMovements.relatedBranchId))
-        .leftJoin(users, eq(users.id, inventoryMovements.createdBy))
-        .where(whereExpr)
-        .orderBy(desc(inventoryMovements.id))
-        .limit(fetchLimit)
-        .offset(usingCursor ? 0 : i.offset);
-      const hasMore = usingCursor ? rawRows.length > i.limit : rawRows.length === i.limit;
-      const rows = usingCursor && hasMore ? rawRows.slice(0, i.limit) : rawRows;
-      const nextCursor = hasMore && rows.length ? rows[rows.length - 1].id : null;
+      const { rows, hasMore, nextCursor, usingCursor } = await paginateKeyset({
+        cursor: i.cursor,
+        limit: i.limit,
+        offset: i.offset,
+        defaultLimit: 200,
+        idCol: inventoryMovements.id,
+        baseConds: conds,
+        runQuery: (where, lim, off) => db
+          .select({
+            id: inventoryMovements.id,
+            createdAt: inventoryMovements.createdAt,
+            movementType: inventoryMovements.movementType,
+            quantity: inventoryMovements.quantity,
+            variantId: inventoryMovements.variantId,
+            productName: products.name,
+            variantName: productVariants.variantName,
+            color: productVariants.color,
+            size: productVariants.size,
+            sku: productVariants.sku,
+            branchId: inventoryMovements.branchId,
+            branchName: branches.name,
+            relatedBranchId: inventoryMovements.relatedBranchId,
+            relatedBranchName: relatedBranches.name,
+            referenceType: inventoryMovements.referenceType,
+            referenceId: inventoryMovements.referenceId,
+            notes: inventoryMovements.notes,
+            createdBy: inventoryMovements.createdBy,
+            createdByName: users.name,
+          })
+          .from(inventoryMovements)
+          .innerJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
+          .innerJoin(products, eq(products.id, productVariants.productId))
+          .innerJoin(branches, eq(branches.id, inventoryMovements.branchId))
+          .leftJoin(relatedBranches, eq(relatedBranches.id, inventoryMovements.relatedBranchId))
+          .leftJoin(users, eq(users.id, inventoryMovements.createdBy))
+          .where(where ?? sql`1=1`)
+          .orderBy(desc(inventoryMovements.id))
+          .limit(lim)
+          .offset(off),
+      });
 
-      // COUNT الكامل (مسحٌ ثانٍ) يَتدهور خطّياً عند الملايين ⇒ نَتجاوزه عند keyset.
-      // عند offset التوافقي، نَحسبه (الواجهات القديمة تَستهلكه لعداد الصفحات).
-      let total = 0;
-      if (!usingCursor) {
+      // COUNT الكامل (مَسحٌ ثانٍ) يَتدهور خطّياً عند الملايين ⇒ نَتجاوزه عند keyset.
+      const total = await countIfOffset(usingCursor, async () => {
+        const baseWhere = conds.length ? and(...conds) : sql`1=1`;
         const countRows = await db
           .select({ c: sql<number>`count(*)` })
           .from(inventoryMovements)
           .innerJoin(productVariants, eq(productVariants.id, inventoryMovements.variantId))
           .innerJoin(products, eq(products.id, productVariants.productId))
           .innerJoin(branches, eq(branches.id, inventoryMovements.branchId))
-          .where(whereExpr);
-        total = Number(countRows[0]?.c ?? 0);
-      }
+          .where(baseWhere);
+        return Number(countRows[0]?.c ?? 0);
+      });
 
       return {
         rows: rows.map((r) => ({

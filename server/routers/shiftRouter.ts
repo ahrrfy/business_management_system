@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gte, lt, sql, type SQL } from "drizzle-orm";
+import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import { branches, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -33,7 +34,7 @@ export const shiftRouter = router({
       const db = getDb();
       if (!db) return { rows: [], total: 0, hasMore: false, nextCursor: null as number | null };
       const i = input ?? ({} as NonNullable<typeof input>);
-      const conds = [];
+      const conds: SQL[] = [];
       const effectiveBranchId = ctx.scopedBranchId ?? i.branchId;
       if (effectiveBranchId != null) conds.push(eq(shifts.branchId, effectiveBranchId));
       if (i.status) conds.push(eq(shifts.status, i.status));
@@ -41,46 +42,42 @@ export const shiftRouter = router({
       // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
       if (i.from) conds.push(gte(shifts.openedAt, localDayStart(i.from)));
       if (i.to) conds.push(lt(shifts.openedAt, localNextDayStart(i.to)));
-      const baseWhere = conds.length ? and(...conds) : undefined;
-
-      // S3 (٣٠/٦): keyset عند cursor — `id < cursor` ⇒ O(log n) عبر المفتاح الأساس.
-      const usingCursor = i.cursor != null;
-      if (usingCursor) conds.push(lt(shifts.id, i.cursor!));
-      const where = conds.length ? and(...conds) : undefined;
-      const limit = i.limit ?? 50;
-
-      // S4 (٣٠/٦): limit+1 عند keyset ⇒ hasMore بلا COUNT ثانٍ كامل.
-      const raw = await db
-        .select({
-          id: shifts.id,
-          branchId: shifts.branchId,
-          branchName: branches.name,
-          userId: shifts.userId,
-          userName: users.name,
-          openingBalance: shifts.openingBalance,
-          expectedCash: shifts.expectedCash,
-          countedCash: shifts.countedCash,
-          variance: shifts.variance,
-          status: shifts.status,
-          openedAt: shifts.openedAt,
-          closedAt: shifts.closedAt,
-        })
-        .from(shifts)
-        .leftJoin(users, eq(shifts.userId, users.id))
-        .leftJoin(branches, eq(shifts.branchId, branches.id))
-        .where(where)
-        .orderBy(desc(shifts.id))
-        .limit(usingCursor ? limit + 1 : limit)
-        .offset(usingCursor ? 0 : (i.offset ?? 0));
-      const hasMore = usingCursor ? raw.length > limit : raw.length === limit;
-      const rows = usingCursor && hasMore ? raw.slice(0, limit) : raw;
-      const nextCursor = hasMore && rows.length ? rows[rows.length - 1].id : null;
-
-      let total = 0;
-      if (!usingCursor) {
+      // /simplify ٣٠/٦: paginateKeyset + countIfOffset.
+      const { rows, hasMore, nextCursor, usingCursor } = await paginateKeyset({
+        cursor: i.cursor,
+        limit: i.limit,
+        offset: i.offset,
+        defaultLimit: 50,
+        idCol: shifts.id,
+        baseConds: conds,
+        runQuery: (where, lim, off) => db
+          .select({
+            id: shifts.id,
+            branchId: shifts.branchId,
+            branchName: branches.name,
+            userId: shifts.userId,
+            userName: users.name,
+            openingBalance: shifts.openingBalance,
+            expectedCash: shifts.expectedCash,
+            countedCash: shifts.countedCash,
+            variance: shifts.variance,
+            status: shifts.status,
+            openedAt: shifts.openedAt,
+            closedAt: shifts.closedAt,
+          })
+          .from(shifts)
+          .leftJoin(users, eq(shifts.userId, users.id))
+          .leftJoin(branches, eq(shifts.branchId, branches.id))
+          .where(where)
+          .orderBy(desc(shifts.id))
+          .limit(lim)
+          .offset(off),
+      });
+      const total = await countIfOffset(usingCursor, async () => {
+        const baseWhere = conds.length ? and(...conds) : undefined;
         const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(shifts).where(baseWhere))[0];
-        total = Number(totalRow?.n ?? 0);
-      }
+        return Number(totalRow?.n ?? 0);
+      });
       return { rows, total, hasMore, nextCursor };
     }),
 
