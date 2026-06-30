@@ -276,11 +276,15 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
   const limit = Math.min(Math.max(input.limit ?? 6, 1), 20);
 
   const like_ = `%${escLike(q)}%`;
+  // S5 (٣٠/٦): إضافة defaultPriceTier + currentBalance — حقلان رخيصان من نفس صفّ العملاء
+  // يُمكّنان CustomerPicker الكاشير من البحث الخادمي بدل تحميل ٥٠٠ عميل عند الإقلاع.
   const matched = await db
     .select({
       id: customers.id,
       name: customers.name,
       phone: customers.phone,
+      defaultPriceTier: customers.defaultPriceTier,
+      currentBalance: customers.currentBalance,
     })
     .from(customers)
     .where(and(
@@ -345,6 +349,9 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
       id: m.id,
       name: m.name,
       phone: m.phone,
+      // S5 (٣٠/٦): فئة السعر + الذمة الجارية لاستهلاك CustomerPicker الكاشير.
+      defaultPriceTier: m.defaultPriceTier,
+      currentBalance: m.currentBalance,
       orderCount,
       lastOrderAt,
       totalSpent: inv?.total ?? "0",

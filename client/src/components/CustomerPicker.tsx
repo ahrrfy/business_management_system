@@ -5,7 +5,8 @@ import { Label } from "@/components/ui/label";
 import { D } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import Decimal from "decimal.js";
-import { useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { X } from "lucide-react";
 
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 
@@ -32,10 +33,44 @@ export interface CustomerPickerProps {
   balance?: string | null;
 }
 
-/** اختيار عميل من القائمة + إضافة سريعة. لا يفرض شيئاً عند غياب العميل (يعني عميل نقدي). */
+/**
+ * اختيار عميل بـ«بحث خادمي» (S5 ٣٠/٦) بدل تحميل ٥٠٠ عميل عند الإقلاع.
+ * - فارغ ⇒ «عميل نقدي» (الافتراضي). اكتب حرفين ⇒ اقتراحات حيّة من smartSearch.
+ * - اختر ⇒ يُثبَّت اسم العميل + شارة الذمة + زرّ مسح (X).
+ * - زرّ + لإضافة عميل جديد كما كان.
+ */
 export default function CustomerPicker({ customerId, onCustomerChange, balance }: CustomerPickerProps) {
   const utils = trpc.useUtils();
-  const customers = trpc.customers.list.useQuery();
+
+  // اسم/هاتف للعميل المختار: نَجلبه عبر `customers.get` (تنفيذ واحد بـid، رخيص جداً، cached ٦٠ث).
+  const fetchedCustomer = trpc.customers.get.useQuery(
+    { customerId: customerId ?? 0 },
+    { enabled: customerId != null, staleTime: 60_000 },
+  );
+
+  // البحث الخادمي — debounced ٢٠٠ms عبر TanStack Query (المفتاح يتغيّر مع q).
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  // إغلاق عند نقرة خارج المركّب.
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (!wrapRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
+
+  const trimmed = q.trim();
+  const enabled = trimmed.length >= 2 && customerId == null;
+  const summary = trpc.customers.smartSearch.useQuery(
+    { q: trimmed, limit: 8 },
+    { enabled, staleTime: 30_000 },
+  );
+  const suggestions = useMemo(() => summary.data ?? [], [summary.data]);
+
+  // «إضافة جديد» منبثق (يَبقى كما كان).
   const [showNew, setShowNew] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
@@ -44,19 +79,35 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
 
   const create = trpc.customers.create.useMutation({
     onSuccess: async (r) => {
-      await utils.customers.list.invalidate();
+      await utils.customers.smartSearch.invalidate();
+      await utils.customers.get.invalidate();
       onCustomerChange(r.id);
       setShowNew(false);
       setName("");
       setPhone("");
       setTier("RETAIL");
       setErr("");
+      setQ("");
     },
     onError: (e) => setErr(e.message),
   });
 
+  function pickSuggestion(id: number) {
+    onCustomerChange(id);
+    setQ("");
+    setOpen(false);
+  }
+
+  function clearPick() {
+    onCustomerChange(null);
+    setQ("");
+  }
+
+  const selectedName = fetchedCustomer.data?.name ?? null;
+  const selectedTier = (fetchedCustomer.data?.defaultPriceTier ?? "RETAIL") as Tier;
+
   return (
-    <div className="space-y-1">
+    <div className="space-y-1" ref={wrapRef}>
       <div className="flex items-center justify-between">
         <Label>العميل (اختياري — مطلوب للبيع الآجل)</Label>
         {customerId != null && balance != null && (
@@ -71,24 +122,79 @@ export default function CustomerPicker({ customerId, onCustomerChange, balance }
           </span>
         )}
       </div>
-      <div className="flex gap-2">
-        <select
-          className={selectCls + " flex-1"}
-          value={customerId ?? ""}
-          onChange={(e) => onCustomerChange(e.target.value ? Number(e.target.value) : null)}
-        >
-          <option value="">— عميل نقدي —</option>
-          {(customers.data ?? []).map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name} ({TIER_LABEL[c.defaultPriceTier as Tier]})
-              {balanceOptionText((c as { currentBalance?: string | null }).currentBalance, "customer")}
-            </option>
-          ))}
-        </select>
-        <Button type="button" variant="outline" size="sm" onClick={() => setShowNew((v) => !v)}>
-          {showNew ? "إلغاء" : "+"}
-        </Button>
-      </div>
+
+      {customerId != null ? (
+        // الحالة: عميل مختار ⇒ بطاقة مَختصرة + زرّ مسح + زرّ +.
+        <div className="flex gap-2">
+          <div className="flex-1 flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 h-9 text-sm">
+            <span className="truncate">
+              {selectedName ?? `#${customerId}`} <span className="text-muted-foreground">({TIER_LABEL[selectedTier]})</span>
+            </span>
+            <button
+              type="button"
+              onClick={clearPick}
+              className="text-xs text-muted-foreground hover:text-destructive shrink-0"
+              aria-label="إلغاء اختيار العميل (عميل نقدي)"
+            >
+              <X aria-hidden className="size-4" />
+            </button>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={() => setShowNew((v) => !v)}>
+            {showNew ? "إلغاء" : "+"}
+          </Button>
+        </div>
+      ) : (
+        // الحالة: بلا اختيار ⇒ بحث خادمي. الإقلاع بلا أيّ جَلب (حتى يُكتب حَرفان).
+        <div className="relative flex gap-2">
+          <Input
+            className="flex-1"
+            value={q}
+            onChange={(e) => {
+              setQ(e.target.value);
+              setOpen(true);
+            }}
+            onFocus={() => setOpen(true)}
+            placeholder="عميل نقدي — أو ابحث (اسم/هاتف) للبيع الآجل"
+            aria-autocomplete="list"
+            aria-expanded={open}
+          />
+          <Button type="button" variant="outline" size="sm" onClick={() => setShowNew((v) => !v)}>
+            {showNew ? "إلغاء" : "+"}
+          </Button>
+
+          {open && enabled && (
+            <div className="absolute z-20 top-full mt-1 right-0 w-[calc(100%-2.5rem)] rounded-md border bg-popover shadow-md max-h-72 overflow-auto">
+              {summary.isLoading && <div className="px-3 py-2 text-sm text-muted-foreground">جارٍ البحث…</div>}
+              {!summary.isLoading && suggestions.length === 0 && (
+                <div className="px-3 py-2 text-sm text-muted-foreground">لا نتائج — اكتب اسماً/هاتفاً مختلفاً أو أضِف جديداً.</div>
+              )}
+              {!summary.isLoading && suggestions.length > 0 && (
+                <ul className="py-1">
+                  {suggestions.map((s) => {
+                    const tierKey = (s.defaultPriceTier ?? "RETAIL") as Tier;
+                    return (
+                      <li key={s.id}>
+                        <button
+                          type="button"
+                          onClick={() => pickSuggestion(s.id)}
+                          className="w-full text-right px-3 py-2 hover:bg-accent flex items-center justify-between gap-2"
+                        >
+                          <span className="truncate">
+                            {s.name} ({TIER_LABEL[tierKey]})
+                            {balanceOptionText(s.currentBalance, "customer")}
+                          </span>
+                          {s.phone && <span className="text-[11px] text-muted-foreground shrink-0" dir="ltr">{s.phone}</span>}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {showNew && (
         // container query (@container/customer-form): التخطيط responsive لعرض الحاوية لا viewport
         // ⇒ في منبثقة الكاشير الضيّقة (٣٤٠px) عمودٌ واحد، وفي أي حاوية أوسع مستقبلاً ٣ أعمدة
