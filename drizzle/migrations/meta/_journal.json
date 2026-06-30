@@ -246,6 +246,13 @@
       "when": 1782825230054,
       "tag": "0034_curly_mentor",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "5",
+      "when": 1782826000000,
+      "tag": "0035_search_norm_products",
+      "breakpoints": true
     }
   ]
 }

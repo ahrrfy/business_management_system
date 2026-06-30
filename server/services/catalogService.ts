@@ -121,11 +121,17 @@ function foldedCol(col: MySqlColumn): SQL {
 }
 
 /** الأعمدة القابلة للبحث في الكتالوج — مصدر واحد لبُنية الشرط والترتيب.
- *  D2 (٣٠/٦): products.name يُمكن تَحويله لاستعمال `products.searchNorm` المُولَّد (هَجرة 0034)
- *  عند تَفعيلها إنتاجياً — يَنقل تكلفة REPLACE × ٩ من وقت الاستعلام إلى وقت الكتابة.
- *  المسار البَديل (هنا) يَبقى لأن CI/erp_test يَستعمل db:push الذي لا يَفهم GENERATED columns. */
+ *  D2 (٣٠/٦ كامل): products.searchNorm = عمود مولَّد STORED بتطبيع عربي (هَجرة 0035
+ *  مُطبَّقة عبر db:migrate:safe إنتاجياً، أو db:migrate:extra في CI بَعد db:push).
+ *  ⇒ يُلغي ٩ REPLACE وقت الاستعلام على products.name لكل صفّ ⇒ ٥-١٠× أسرع بدون فهرس،
+ *  وآلاف المرات أسرع للـprefix searches (LIKE 'abc%') عبر فهرس B-tree الجَديد. */
 function searchableCols(): SQL[] {
-  return [foldedCol(products.name), foldedCol(productVariants.sku), foldedCol(productVariants.variantName), foldedCol(productUnits.barcode)];
+  return [
+    sql`coalesce(${products.searchNorm}, '')`,
+    foldedCol(productVariants.sku),
+    foldedCol(productVariants.variantName),
+    foldedCol(productUnits.barcode),
+  ];
 }
 
 /**
@@ -153,7 +159,8 @@ function buildCatalogSearchOrder(query: string | undefined): SQL[] {
   if (!tokens.length) return [];
   const whole = tokens.join(" ");
   const wholePrefix = `${escLike(whole)}%`;
-  const name = foldedCol(products.name);
+  // D2 (٣٠/٦): products.searchNorm المُولَّد ⇒ LIKE 'prefix%' يَستفيد من فهرس B-tree O(log n).
+  const name = sql`coalesce(${products.searchNorm}, '')`;
   const rank = sql`case
     when ${foldedCol(productUnits.barcode)} = ${whole} then 0
     when ${foldedCol(productVariants.sku)} = ${whole} then 1

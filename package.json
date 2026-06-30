@@ -21,6 +21,7 @@
     "db:backup": "node scripts/backup.mjs",
     "db:migrate:safe": "node scripts/db-migrate-safe.mjs",
     "db:migrate:apply": "node scripts/db-migrate-apply.mjs",
+    "db:migrate:extra": "node scripts/ci-apply-extra-migrations.mjs",
     "db:verify": "node scripts/db-verify-schema.mjs",
     "prod:deploy": "node scripts/deploy.mjs",
     "db:reset": "node scripts/reset.mjs",
