@@ -12,7 +12,11 @@ if (!url) {
   process.exit(1);
 }
 
-const conn = await createConnection(url);
+// multipleStatements:true — هَجرات يَدوية مُعَيَّنة (مَثل 0035) تَحوي كَتل SET @var؛ PREPARE؛
+// EXECUTE؛ DEALLOCATE بَين breakpoints. drizzle migrator يَنفّذ كل كَتلة كَquery واحد فيَفشل
+// مَع multipleStatements:false (mysql2 يَرفض الكَتلة). الـconnection مَحلّي للإعداد فقط
+// (لا يَستقبل input مُستخدم) ⇒ تَفعيل multipleStatements آمن. (نَفس نَهج ci-apply-extra-migrations.mjs.)
+const conn = await createConnection({ uri: url, multipleStatements: true });
 const db = drizzle(conn);
 
 try {
