@@ -666,7 +666,9 @@ export const accountingEntries = mysqlTable(
     // DELIVERY_REMIT = خفض العهدة عند التوريد/التسوية/الإرجاع (−float)، DELIVERY_FEE = مصروف
     // أجرة التوصيل (cost-only، خصم الأجرة وتوريد الصافي)، DELIVERY_WRITEOFF = شطب عجز كمصروف.
     // DISPATCH/REMIT حركات عهدة لا تَمسّ revenue/cost (تُستثنى من تقارير الإيراد، كـCASH_*).
-    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF"]).notNull(),
+    // exchange-house (٣٠/٦): قيود الصيرفة — DEPOSIT/WITHDRAW/FX_BUY/SETTLE حركات أصل (revenue=cost=profit=0)؛
+    // EXCHANGE_FEE = عمولة (مصروف P&L)؛ EXCHANGE_FX_DIFF = فرق صرف محقَّق (amount موقَّع، معزول عن إيراد البيع).
+    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF", "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }),
@@ -676,6 +678,8 @@ export const accountingEntries = mysqlTable(
     // delivery-cod: طرف جهة التوصيل لقيود العهدة DELIVERY_* — نظير customerId/supplierId
     // (بلا .references مثل purchaseOrderId؛ الـFK يُضاف في الهجرة). يُمكّن مطابقة العهدة بـGROUP BY.
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
+    // exchange-house: طرف الصيرفة لقيود EXCHANGE_* — نظير supplierId/deliveryPartyId. الـFK يُضاف في الهجرة 0037.
+    exchangeHouseId: bigint("exchangeHouseId", { mode: "number" }),
     revenue: decimal("revenue", { precision: 15, scale: 2 }).default("0").notNull(),
     cost: decimal("cost", { precision: 15, scale: 2 }).default("0").notNull(),
     profit: decimal("profit", { precision: 15, scale: 2 }).default("0").notNull(),
@@ -698,6 +702,9 @@ export const accountingEntries = mysqlTable(
     // كان full scan على مليون قيد لكل تقرير.
     branchIdx: index("idx_entry_branch").on(table.branchId),
     deliveryPartyIdx: index("idx_entry_delivery_party").on(table.deliveryPartyId),
+    // exchange-house: كشف حساب الصيرفة + تقارير العمولة/فرق الصرف لكل صيرفة بالتاريخ.
+    exchangeIdx: index("idx_entry_exchange").on(table.exchangeHouseId),
+    exchangeDateIdx: index("idx_entry_exchange_date").on(table.exchangeHouseId, table.entryDate),
     // S1 (٢٩/٦/٢٦): شريان GL/P&L — (فرع+نوع+تاريخ)؛ وكشوف حساب العميل/المورّد بالتاريخ. هجرة 0031.
     branchTypeDateIdx: index("idx_entry_branch_type_date").on(table.branchId, table.entryType, table.entryDate),
     customerDateIdx: index("idx_entry_customer_date").on(table.customerId, table.entryDate),
@@ -2191,6 +2198,77 @@ export const deliveryParties = mysqlTable(
 );
 export type DeliveryParty = typeof deliveryParties.$inferSelect;
 export type InsertDeliveryParty = typeof deliveryParties.$inferInsert;
+
+/* ============================ الصيرفة (الصرّاف / مكتب التحويل) — exchange-house (٣٠/٦) ============================
+ * طرف مالي وسيط: نُودِع لديه نقداً، ونُسدّد عبره الموردين، ونحفظ رصيداً لنا — بمحفظتين (دينار + دولار).
+ * اتفاقية الإشارة: موجب = الصيرفة مدينة لنا (أموالنا محفوظة لديها) — نظير deliveryParties (عهدة)،
+ * **معاكسة عمداً** لاتفاقية suppliers (موجب = نحن مدينون). كل تغيير رصيد عبر adjustExchangeBalance* حصراً،
+ * تحت قفل صفّ FOR UPDATE. محفظة الدولار تُقيَّم بمتوسط كلفة مرجّح (usdCostRate, WAVG) = أساس فرق الصرف المحقَّق.
+ */
+export const exchangeHouses = mysqlTable(
+  "exchangeHouses",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    phone: varchar("phone", { length: 20 }),
+    phone2: varchar("phone2", { length: 20 }),
+    // محفظتان مستقلّتان (موجب = لنا عندها). تُحدَّثان ذرّياً تحت قفل صفّ FOR UPDATE.
+    balanceIqd: decimal("balanceIqd", { precision: 15, scale: 2 }).default("0").notNull(),
+    balanceUsd: decimal("balanceUsd", { precision: 15, scale: 2 }).default("0").notNull(),
+    // متوسط كلفة الدينار للدولار الواحد (WAVG) — يُحدَّث عند شراء الدولار؛ أساس تقييم المحفظة وفرق الصرف.
+    usdCostRate: decimal("usdCostRate", { precision: 15, scale: 4 }).default("0").notNull(),
+    legacyCode: varchar("legacyCode", { length: 40 }),
+    notes: text("notes"),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    nameIdx: index("idx_exchange_name").on(table.name),
+    activeIdx: index("idx_exchange_active").on(table.isActive),
+    legacyUq: unique("uq_exchange_legacy").on(table.legacyCode),
+  }),
+);
+export type ExchangeHouse = typeof exchangeHouses.$inferSelect;
+export type InsertExchangeHouse = typeof exchangeHouses.$inferInsert;
+
+/** سجلّ عمليات الصيرفة (إيداع/سحب/شراء دولار/تسديد مورد/افتتاحي) — نظير cashTransfers/deliveryConsignments.
+ *  مصدر تفصيل العملية ثنائية العملة وكشف الحساب؛ الرصيد الحقيقي في exchangeHouses، والقيد المحاسبي (IQD) في accountingEntries. */
+export const exchangeTransactions = mysqlTable(
+  "exchangeTransactions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    txnNumber: varchar("txnNumber", { length: 50 }).notNull().unique(), // EX-{branch}-{YYYYMMDD}-{seq}
+    exchangeHouseId: bigint("exchangeHouseId", { mode: "number" }).notNull().references(() => exchangeHouses.id),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    type: mysqlEnum("exchangeTxnType", ["DEPOSIT", "WITHDRAW", "FX_BUY", "SETTLE", "OPENING"]).notNull(),
+    currency: mysqlEnum("exchangeTxnCurrency", ["IQD", "USD"]).default("IQD").notNull(),
+    // مبلغ الدينار (إيداع/سحب/الدين المُسوّى) ومبلغ الدولار (شراء/تسديد بالدولار) — كلٌّ بعملته.
+    iqdAmount: decimal("iqdAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    usdAmount: decimal("usdAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    exchangeRate: decimal("exchangeRate", { precision: 15, scale: 4 }).default("0").notNull(),
+    commission: decimal("commission", { precision: 15, scale: 2 }).default("0").notNull(), // بعملة المحفظة
+    commissionIqd: decimal("commissionIqd", { precision: 15, scale: 2 }).default("0").notNull(),
+    fxDiff: decimal("fxDiff", { precision: 15, scale: 2 }).default("0").notNull(), // مكسب(+)/خسارة(−) صرف محقَّق
+    supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
+    // لقطة الرصيد بعد العملية (تدقيق + رصيد جارٍ في كشف الحساب).
+    balanceIqdAfter: decimal("balanceIqdAfter", { precision: 15, scale: 2 }).default("0").notNull(),
+    balanceUsdAfter: decimal("balanceUsdAfter", { precision: 15, scale: 2 }).default("0").notNull(),
+    receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
+    status: mysqlEnum("exchangeTxnStatus", ["ACTIVE", "REVERSED"]).default("ACTIVE").notNull(),
+    notes: text("notes"),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    numberIdx: index("idx_exchange_txn_number").on(table.txnNumber),
+    houseIdx: index("idx_exchange_txn_house").on(table.exchangeHouseId, table.createdAt),
+    supplierIdx: index("idx_exchange_txn_supplier").on(table.supplierId),
+    typeIdx: index("idx_exchange_txn_type").on(table.type),
+  }),
+);
+export type ExchangeTransaction = typeof exchangeTransactions.$inferSelect;
+export type InsertExchangeTransaction = typeof exchangeTransactions.$inferInsert;
 
 /** دفعة ترحيل: تسوية تحصيلات جهة التوصيل (خصم الأجرة وتوريد الصافي — D8). */
 export const deliveryRemittances = mysqlTable(

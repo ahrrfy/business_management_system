@@ -33,6 +33,7 @@ const CustomersHub = lazy(() => import("@/pages/CustomersHub"));
 const SuppliersHub = lazy(() => import("@/pages/SuppliersHub"));
 const InventoryHub = lazy(() => import("@/pages/InventoryHub"));
 const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
+const ExchangeHub = lazy(() => import("@/pages/ExchangeHub"));
 const SalesHub = lazy(() => import("@/pages/SalesHub"));
 const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
 const PrintHub = lazy(() => import("@/pages/PrintHub"));
@@ -234,6 +235,7 @@ export default function App() {
       <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
+      <Route path="/exchange"><Shell><RequireRole roles={["admin","manager"]}><ExchangeHub /></RequireRole></Shell></Route>
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>
       <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
