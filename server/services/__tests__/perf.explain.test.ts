@@ -99,7 +99,7 @@ async function seedBulk() {
         ]);
       }
       await conn.query(
-        "INSERT INTO invoices (invoiceNumber, sourceType, branchId, customerId, priceTier, invoiceDate, subtotal, taxAmount, total, paidAmount, returnedTotal, `status`) VALUES ?",
+        "INSERT INTO invoices (invoiceNumber, sourceType, branchId, customerId, priceTier, invoiceDate, subtotal, taxAmount, total, paidAmount, returnedTotal, invoiceStatus) VALUES ?",
         [rows],
       );
     }
@@ -124,6 +124,9 @@ describe("حارس انحدار الأداء — EXPLAIN على استعلاما
   });
 
   afterAll(async () => {
+    // تَنظيف صَريح كي لا تَتسرَّب الحالة لاختبارات تالية تَفترض جداول users/customers/branches
+    // فارغة وتَبذرها بنفسها. truncate شامل (FK_CHECKS=0) ثم closeDb لإفراغ pool drizzle.
+    await truncateTables(TABLES);
     await closeDb();
   });
 
@@ -143,7 +146,7 @@ describe("حارس انحدار الأداء — EXPLAIN على استعلاما
   it("AR aging (status-first IN) يَستعمل فهرساً يَحتوي على status", async () => {
     // S1 (٢٩/٦): IN ⇒ status-first أسرع بـ٥× (مَقيس).
     const rows = await explain(
-      "SELECT * FROM invoices WHERE branchId=1 AND `status` IN ('PENDING','PARTIALLY_PAID') AND invoiceDate >= '2026-01-01'"
+      "SELECT * FROM invoices WHERE branchId=1 AND invoiceStatus IN ('PENDING','PARTIALLY_PAID') AND invoiceDate >= '2026-01-01'"
     );
     const inv = rows.find((r) => r.table === "invoices");
     expect(inv).toBeTruthy();
