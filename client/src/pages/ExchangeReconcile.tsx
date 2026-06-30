@@ -10,7 +10,7 @@ import { StatCard } from "@/components/StatCard";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
-import { isMoneyStr, selectCls, type ExchangeRow } from "@/components/exchange/shared";
+import { isSignedMoneyStr, selectCls, type ExchangeRow } from "@/components/exchange/shared";
 
 const TYPE_AR: Record<string, string> = {
   DEPOSIT: "إيداع", WITHDRAW: "سحب", FX_BUY: "شراء دولار", SETTLE: "تسديد مورد", OPENING: "رصيد افتتاحي",
@@ -31,7 +31,7 @@ export default function ExchangeReconcile() {
 
   const run = () => {
     if (!houseId) { notify.err("اختر صيرفة"); return; }
-    if (!isMoneyStr(statedIqd || "0") || !isMoneyStr(statedUsd || "0")) { notify.err("أدخل أرصدة صحيحة"); return; }
+    if (!isSignedMoneyStr(statedIqd || "0") || !isSignedMoneyStr(statedUsd || "0")) { notify.err("أدخل أرصدة صحيحة (يُقبل السالب حين نَدين للصيرفة)"); return; }
     setParams({
       exchangeHouseId: houseId,
       statedBalanceIqd: statedIqd || "0",

@@ -23,6 +23,8 @@ import {
   settleSupplierViaExchange,
   withdrawFromExchange,
 } from "../exchangeHouseService";
+import { getFinancialPosition, getProfitAndLoss } from "../reportsFinancialService";
+import { reconcileSupplierBalances } from "../reconcileService";
 
 const TABLES = [
   "accountingEntries",
@@ -218,5 +220,81 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     const rec2 = await reconcileExchange({ exchangeHouseId: id, statedBalanceIqd: "250000", statedBalanceUsd: "500" });
     expect(rec2?.matched).toBe(false);
     expect(rec2?.diffIqd).toBe("50000.00"); // رصيدنا أعلى بـ50,000 (بند معلّق لديهم)
+  });
+});
+
+describe("exchange-house — تكامل التقارير والمطابقة (إصلاحات مراجعة Codex)", () => {
+  beforeEach(async () => {
+    await reset();
+    await seed();
+  });
+
+  it("الإيداع لا يُغيّر حقوق الملكية (نقل أصل: الخزينة↓ يقابله رصيد الصيرفة↑)", async () => {
+    const before = await getFinancialPosition({ verify: false });
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
+    const after = await getFinancialPosition({ verify: false });
+    expect(after.equity).toBe(before.equity); // الإيداع لا يَخلق/يُفني قيمة
+    expect(after.exchangeDebit).toBe("2000000.00"); // الأصل يَظهر في الميزانية
+  });
+
+  it("تسديد مورد عبر الصيرفة لا يُحدث انحراف AP في reconcileSupplierBalances", async () => {
+    // أساس متّسق: قيد OPENING للمورد يطابق رصيده المبذور (2,000,000).
+    await db().insert(s.accountingEntries).values({
+      entryType: "OPENING", supplierId: 1, branchId: 1,
+      amount: "2000000.00", entryDate: new Date("2026-01-01"),
+      dedupeKey: "OPENING:SUPPLIER:1",
+    });
+    expect(await reconcileSupplierBalances()).toEqual([]); // الأساس نظيف
+
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor);
+    await settleSupplierViaExchange(
+      { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "USD", walletAmount: "900", settledIqd: "1300000", commission: "10" },
+      actor,
+    );
+    // EXCHANGE_SETTLE مُدرَج في صيغة المطابقة ⇒ لا انحراف رغم خفض رصيد المورد.
+    expect(await reconcileSupplierBalances()).toEqual([]);
+  });
+
+  it("العمولة وفرق الصرف يظهران في قائمة الأرباح والخسائر", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor);
+    await settleSupplierViaExchange(
+      { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "USD", walletAmount: "900", settledIqd: "1300000", commission: "10" },
+      actor,
+    );
+    const pl = await getProfitAndLoss({ from: "2020-01-01", to: "2099-12-31" });
+    const keys = pl.current.expenseLines.map((l) => l.key);
+    expect(keys).toContain("EXCHANGE_FEE"); // عمولة 14,000 (10$ × 1400)
+    expect(keys).toContain("EXCHANGE_FX_DIFF"); // مكسب صرف 40,000 (سطر سالب يَخفض المصروف)
+    const fee = pl.current.expenseLines.find((l) => l.key === "EXCHANGE_FEE");
+    expect(fee?.amount).toBe("14000.00");
+  });
+
+  it("admin بلا فرع يُنشئ صيرفة برصيد افتتاحي (branchId=null لا 0)", async () => {
+    const adminNoBranch = { userId: 1, branchId: 0, role: "admin" } as const;
+    const { id } = await createExchangeHouse({ name: "صيرفة admin", openingBalanceIqd: "500000" }, adminNoBranch);
+    const h = await getExchangeHouse(id);
+    expect(h?.balanceIqd).toBe("500000.00"); // لم يَفشل بـFK على فرع 0 غير موجود
+  });
+
+  it("تسديد بالدينار: تباين المسحوب والمُسوّى مرفوض، والتساوي يُخزّن المُسوّى", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
+    await expect(
+      settleSupplierViaExchange(
+        { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "IQD", walletAmount: "1000000", settledIqd: "900000" },
+        actor,
+      ),
+    ).rejects.toThrow();
+    await settleSupplierViaExchange(
+      { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "IQD", walletAmount: "1000000", settledIqd: "1000000" },
+      actor,
+    );
+    const st = await getExchangeStatement({ exchangeHouseId: id });
+    expect(st?.summary.totalSettledIqd).toBe("1000000.00"); // iqdAmount = المُسوّى لا المسحوب
   });
 });

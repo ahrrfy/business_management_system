@@ -119,7 +119,7 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
       await tx.insert(exchangeTransactions).values({
         txnNumber,
         exchangeHouseId: id,
-        branchId: actor.branchId ?? null,
+        branchId: actor.branchId || null,
         type: "OPENING",
         currency: "IQD",
         iqdAmount: toDbMoney(openIqd),
@@ -136,7 +136,7 @@ export async function createExchangeHouse(input: CreateExchangeInput, actor: Act
       const openingIqdValue = openIqd.plus(openUsd.times(openRate));
       await postEntry(tx, {
         entryType: "OPENING",
-        branchId: actor.branchId ?? null,
+        branchId: actor.branchId || null,
         exchangeHouseId: id,
         amount: round2(openingIqdValue),
         entryDate: new Date(),
@@ -174,21 +174,22 @@ export async function updateExchangeHouse(input: UpdateExchangeInput, _actor: Ac
 }
 
 export async function setExchangeActive(id: number, isActive: boolean, _actor: Actor): Promise<{ id: number }> {
-  const db = getDb();
-  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB" });
-  if (!isActive) {
-    // حماية: لا تُعطَّل صيرفة برصيد ≠ صفر (مال معلّق لدى/على الطرف).
-    const h = (await db.select().from(exchangeHouses).where(eq(exchangeHouses.id, id)).limit(1))[0];
+  // قفل الصفّ ثم الفحص ثم التحديث في معاملة واحدة (TOCTOU): إيداع متزامن بين فحصٍ غير مقفول والتحديث
+  // كان قد يُعطّل محفظةً صارت غير صفرية. الآن FOR UPDATE يُسلسل العملية.
+  return withTx(async (tx) => {
+    const rows = await tx.select().from(exchangeHouses).where(eq(exchangeHouses.id, id)).for("update").limit(1);
+    const h = rows[0];
     if (!h) throw new TRPCError({ code: "NOT_FOUND", message: "الصيرفة غير موجودة" });
-    if (!money(h.balanceIqd).isZero() || !money(h.balanceUsd).isZero()) {
+    // حماية: لا تُعطَّل صيرفة برصيد ≠ صفر (مال معلّق لدى/على الطرف).
+    if (!isActive && (!money(h.balanceIqd).isZero() || !money(h.balanceUsd).isZero())) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
         message: "لا يمكن تعطيل صيرفة برصيد غير صفري — سوِّ الرصيد أولاً",
       });
     }
-  }
-  await db.update(exchangeHouses).set({ isActive }).where(eq(exchangeHouses.id, id));
-  return { id };
+    await tx.update(exchangeHouses).set({ isActive }).where(eq(exchangeHouses.id, id));
+    return { id };
+  });
 }
 
 export async function getExchangeHouse(id: number) {
@@ -544,6 +545,11 @@ export async function settleSupplierViaExchange(
       await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, totalUsdOut.negated());
       usdAmountCol = walletAmount;
     } else {
+      // بالدينار لا صرف عملة ⇒ المسحوب من المحفظة = الدين المُسوّى. حارس ضدّ تباين يُنتج fxDiff وهمياً
+      // ويُفسد إجمالي «المُسدَّد» في الكشف (الكشف يجمع iqdAmount لصفوف SETTLE). الواجهة تُرسلهما متساويَين.
+      if (!walletAmount.eq(settledIqd)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "للتسديد بالدينار يجب تساوي المبلغ المسحوب والدين المُسوّى" });
+      }
       walletCostIqd = walletAmount;
       commissionIqd = commission;
       const totalIqdOut = walletAmount.plus(commission);
@@ -555,7 +561,7 @@ export async function settleSupplierViaExchange(
         });
       }
       await adjustExchangeBalanceIqd(tx, input.exchangeHouseId, totalIqdOut.negated());
-      iqdAmountCol = walletAmount;
+      // iqdAmountCol يبقى = settledIqd (= walletAmount) ⇒ إجمالي الكشف صحيح بلا fxDiff وهميّ.
     }
 
     // فرق الصرف المحقَّق = الدين المُطفأ − كلفة ما خرج من المحفظة (بلا العمولة).

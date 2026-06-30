@@ -38,11 +38,11 @@ export default function ExchangeSettle() {
   const effBranch = isAdmin ? branchId : (me.data?.branchId ?? branchId);
 
   // معاينة فرق الصرف = الدين المُسوّى − كلفة ما خرج من المحفظة.
+  // فرق الصرف يَنشأ بالدولار فقط (بالدينار: المسحوب = المُسوّى ⇒ صفر دائماً).
   const fxPreview = useMemo(() => {
-    if (!walletAmount || !settledIqd) return null;
+    if (currency !== "USD" || !walletAmount || !settledIqd) return null;
     try {
-      const costRate = currency === "USD" ? D(house?.usdCostRate ?? 0) : D(1);
-      const walletCostIqd = D(walletAmount).times(costRate);
+      const walletCostIqd = D(walletAmount).times(D(house?.usdCostRate ?? 0));
       return D(settledIqd).minus(walletCostIqd).toFixed(2);
     } catch { return null; }
   }, [walletAmount, settledIqd, currency, house]);
@@ -66,7 +66,9 @@ export default function ExchangeSettle() {
     if (!supplierId) { notify.err("اختر مورّداً"); return; }
     if (!effBranch) { notify.err("اختر الفرع"); return; }
     if (!isMoneyStr(walletAmount)) { notify.err("أدخل مبلغ السحب من المحفظة"); return; }
-    if (!isMoneyStr(settledIqd)) { notify.err("أدخل الدين المُسوّى بالدينار"); return; }
+    // بالدينار: المسحوب من المحفظة = الدين المُسوّى (لا صرف عملة). بالدولار: حقلان مستقلّان.
+    const effSettledIqd = currency === "IQD" ? walletAmount : settledIqd;
+    if (!isMoneyStr(effSettledIqd)) { notify.err("أدخل الدين المُسوّى بالدينار"); return; }
     if (commission && !isMoneyStr(commission)) { notify.err("عمولة غير صالحة"); return; }
     if (currency === "USD" && rate && !isRateStr(rate)) { notify.err("سعر صرف غير صالح"); return; }
     settle.mutate({
@@ -75,7 +77,7 @@ export default function ExchangeSettle() {
       supplierId,
       currency,
       walletAmount,
-      settledIqd,
+      settledIqd: effSettledIqd,
       commission: commission || undefined,
       exchangeRate: currency === "USD" ? (rate || undefined) : undefined,
       confirmNegative,
@@ -139,10 +141,12 @@ export default function ExchangeSettle() {
             <label className="text-xs text-muted-foreground mb-1 block">المسحوب من المحفظة ({currency === "USD" ? "$" : "د.ع"})</label>
             <Input value={walletAmount} onChange={(e) => setWalletAmount(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
           </div>
-          <div>
-            <label className="text-xs text-muted-foreground mb-1 block">الدين المُسوّى من المورد (د.ع)</label>
-            <Input value={settledIqd} onChange={(e) => setSettledIqd(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
-          </div>
+          {currency === "USD" && (
+            <div>
+              <label className="text-xs text-muted-foreground mb-1 block">الدين المُسوّى من المورد (د.ع)</label>
+              <Input value={settledIqd} onChange={(e) => setSettledIqd(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+            </div>
+          )}
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">العمولة ({currency === "USD" ? "$" : "د.ع"}) — اختياري</label>
             <Input value={commission} onChange={(e) => setCommission(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />

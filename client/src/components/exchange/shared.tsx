@@ -35,4 +35,6 @@ export function newClientRequestId(prefix: string): string {
 }
 
 export const isMoneyStr = (s: string) => /^\d+(\.\d{1,2})?$/.test(s);
+/** مبلغ موقَّع (يقبل السالب) — لأرصدة المطابقة حين نَدين للصيرفة. */
+export const isSignedMoneyStr = (s: string) => /^-?\d+(\.\d{1,2})?$/.test(s);
 export const isRateStr = (s: string) => /^\d+(\.\d{1,4})?$/.test(s);
