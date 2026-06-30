@@ -45,6 +45,7 @@ const Dashboard = lazy(() => import("@/pages/Dashboard"));
 const ExpenseNew = lazy(() => import("@/pages/ExpenseNew"));
 const VoucherPaymentNew = lazy(() => import("@/pages/VoucherPaymentNew"));
 const VoucherReceiptNew = lazy(() => import("@/pages/VoucherReceiptNew"));
+const VoucherCategories = lazy(() => import("@/pages/VoucherCategories"));
 const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
 const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
@@ -232,6 +233,7 @@ export default function App() {
       <Route path="/vouchers"><Redirect to="/treasury?tab=vouchers" /></Route>
       <Route path="/vouchers/receipt/new"><Shell><VoucherReceiptNew /></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
+      <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager"]}><VoucherCategories /></RequireRole></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>

@@ -18,6 +18,9 @@ import { resolve } from "node:path";
 // الهَجرات التي drizzle-kit يَعجز عن تَمثيلها (GENERATED columns، FULLTEXT indexes، إلخ).
 const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0035_search_norm_products.sql",
+  // 0036 يُضيف voucherCategories + أعمدة receipts. درizzle-kit يَفهم الجداول العادية لكن
+  // مَيلُه إسقاط بَعض الـFK/UNIQUE صامتاً ⇒ نُكرّر التَطبيق هنا idempotently كَدفاع متعمّق.
+  "drizzle/migrations/0036_vouchers_pro.sql",
 ];
 
 const url = process.env.DATABASE_URL;

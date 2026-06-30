@@ -276,7 +276,7 @@ export default function TreasuryTransfers() {
 
       {/* Cancel dialog */}
       {cancellingId !== null && (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+        <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <Card className="w-full max-w-md p-5">
             <h3 className="text-lg font-semibold mb-2">إلغاء التحويل</h3>
             <p className="text-sm text-muted-foreground mb-3">
@@ -375,7 +375,7 @@ function SendDialog({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" dir="rtl">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" dir="rtl">
       <Card className="w-full max-w-2xl p-5">
         <h3 className="text-lg font-semibold mb-3">إرسال تحويل نقدي جديد</h3>
 
@@ -503,7 +503,7 @@ function ConfirmDialog({
   variant?: "default" | "destructive";
 }) {
   return (
-    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" dir="rtl">
+    <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4" dir="rtl">
       <Card className="w-full max-w-sm p-5">
         <h3 className="text-lg font-semibold mb-2">{title}</h3>
         <p className="text-sm text-muted-foreground mb-4">{message}</p>
