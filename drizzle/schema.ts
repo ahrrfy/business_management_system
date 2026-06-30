@@ -254,9 +254,11 @@ export const products = mysqlTable(
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
-    // D2 (٣٠/٦): العمود المولَّد STORED `searchNorm` يُنشَأ عبر هَجرة 0034 إنتاجياً.
-    // لا يُعَرَّف هنا لأنّ drizzle-kit يَتعامل معه كعمود عادي ⇒ يَكسر db:push (CI).
-    // catalogService يَستعمله عبر SQL خام عند تَوفّره (المسار البَديل يَبقى مَتاحاً).
+    // D2 (٣٠/٦): عمود مولَّد STORED بتطبيع عربي. يُنشَأ عبر هَجرة 0035 (GENERATED ALWAYS AS).
+    // في CI: db:push يَكتب الجداول من schema.ts (هنا يَراه varchar عادي ⇒ يَكتبه عادياً)،
+    // ثمَ db:migrate:extra يُسقطه ويُعيد كتابته كَـGENERATED. في الإنتاج: db:migrate:safe
+    // يُطبّق 0035 مُباشرةً. drizzle لا يَلمسه (read-only من JS) — مُعرَّف هنا للأنواع فقط.
+    searchNorm: varchar("searchNorm", { length: 512 }),
   },
   (table) => ({
     nameIdx: index("idx_product_name").on(table.name),
