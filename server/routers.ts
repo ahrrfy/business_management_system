@@ -20,7 +20,7 @@ import { roleRouter } from "./routers/roleRouter";
 import { auditRouter } from "./routers/auditRouter";
 import { barcodeRouter } from "./routers/barcodeRouter";
 import { importRouter } from "./routers/imports";
-import { voucherRouter } from "./routers/voucherRouter";
+import { voucherRouter, voucherCategoryRouter } from "./routers/voucherRouter";
 import { stocktakeRouter } from "./routers/stocktakeRouter";
 import { countPortalRouter } from "./routers/countPortalRouter";
 import { kioskRouter } from "./routers/kioskRouter";
@@ -70,6 +70,7 @@ export const appRouter = router({
   barcode: barcodeRouter,
   imports: importRouter,
   vouchers: voucherRouter,
+  voucherCategories: voucherCategoryRouter,
   stocktakes: stocktakeRouter,
   count: countPortalRouter,
   kiosk: kioskRouter,

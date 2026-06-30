@@ -253,6 +253,13 @@
       "when": 1782826000000,
       "tag": "0035_search_norm_products",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "5",
+      "when": 1782900000000,
+      "tag": "0036_vouchers_pro",
+      "breakpoints": true
     }
   ]
 }
