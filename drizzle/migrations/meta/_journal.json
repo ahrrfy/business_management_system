@@ -239,6 +239,13 @@
       "when": 1782307000000,
       "tag": "0033_drop_redundant_invoice_index",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "5",
+      "when": 1782825230054,
+      "tag": "0034_curly_mentor",
+      "breakpoints": true
     }
   ]
 }

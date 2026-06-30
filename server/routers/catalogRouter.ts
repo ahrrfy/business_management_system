@@ -79,8 +79,8 @@ const imageSchema = z.object({
 
 export const catalogRouter = router({
   posList: protectedProcedure
-    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200) }))
-    .query(({ input }) => listForPos(input.branchId, input.tier, input.query, input.limit)),
+    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional() }))
+    .query(({ input }) => listForPos(input.branchId, input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices })),
 
   // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
   // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
@@ -142,6 +142,7 @@ export const catalogRouter = router({
         // print-catalog: بَند خِدمي (لا مخزون) + توجيهه لنقطة بيع الطباعة + وصفة موادّه الخام.
         isService: z.boolean().optional(),
         printService: z.boolean().optional(),
+        showInReception: z.boolean().optional(),
         recipe: z
           .array(z.object({ inputVariantId: z.number().int().positive(), qtyPerOutputBase: z.string() }))
           .max(50)

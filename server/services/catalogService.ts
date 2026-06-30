@@ -32,6 +32,8 @@ export interface PosRow {
   isService: boolean; // مُنتج خِدمي: لا مَخزون، POS يَتجاوز فَحص نَقص المَخزون.
   // شاشة الاستقبال الهجينة: المنتج المخصّص يفتح نافذة التخصيص بدل الإضافة المباشرة للسلّة.
   isCustomizable: boolean;
+  // خدمة طباعة (productType=PRINT_SERVICE): تُباع عبر مسار createPrintSale (خصم مواد + COGS) لا sales.create.
+  isPrintService: boolean;
 }
 
 function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number, tier: PriceTier) {
@@ -53,6 +55,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       stockBase: branchStock.quantity,
       isService: products.isService,
       isCustomizable: products.isCustomizable,
+      productType: products.productType,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -77,6 +80,7 @@ function normalize(rows: any[]): PosRow[] {
     stockBase: r.stockBase ?? 0,
     isService: !!r.isService,
     isCustomizable: !!r.isCustomizable,
+    isPrintService: r.productType === PRINT_SERVICE_TYPE,
   }));
 }
 
@@ -89,6 +93,17 @@ const activeOnly = and(
   eq(productUnits.isActive, true),
   notPrintService
 );
+
+// رؤية كاشير الاستقبال: كالعادي + خدمات الطباعة المفعَّل عليها showInReception (تُباع عبر createPrintSale).
+const receptionVisible = sql`(${products.productType} IS NULL OR ${products.productType} <> ${PRINT_SERVICE_TYPE} OR ${products.showInReception} = TRUE)`;
+function posVisibility(includeReceptionServices: boolean) {
+  return and(
+    eq(products.isActive, true),
+    eq(productVariants.isActive, true),
+    eq(productUnits.isActive, true),
+    includeReceptionServices ? receptionVisible : notPrintService,
+  );
+}
 
 /* ============================ البحث الذكي (مشترك بين البيع والشراء) ============================ */
 
@@ -158,12 +173,20 @@ export async function lookupByBarcode(barcode: string, branchId: number, tier: P
   return normalize(rows)[0] ?? null;
 }
 
-/** List sellable rows for the POS, optionally filtered by a text query. */
-export async function listForPos(branchId: number, tier: PriceTier, query?: string, limit = 200): Promise<PosRow[]> {
+/** List sellable rows for the POS, optionally filtered by a text query.
+ *  includeReceptionServices=true يُظهر خدمات الطباعة المفعَّل عليها showInReception (كاشير الاستقبال). */
+export async function listForPos(
+  branchId: number,
+  tier: PriceTier,
+  query?: string,
+  limit = 200,
+  opts?: { includeReceptionServices?: boolean },
+): Promise<PosRow[]> {
   const db = getDb();
   if (!db) return [];
+  const active = posVisibility(!!opts?.includeReceptionServices);
   const search = buildCatalogSearchWhere(query);
-  const where = search ? and(activeOnly, search) : activeOnly;
+  const where = search ? and(active, search) : active;
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await baseSelect(db, branchId, tier).where(where).orderBy(...order).limit(limit);
   return normalize(rows);
@@ -462,6 +485,8 @@ export interface CreateProductInput {
   // print-catalog: توجيه البَند لنقطة بَيع الطباعة (productType=PRINT_SERVICE) ⇒ يَظهر في شاشة
   // خدمات الطباعة ويُباع عبر printSaleService (لا مخزون ذاتي؛ يَخصم المواد عبر الوصفة أدناه).
   printService?: boolean;
+  // توجيه الخدمة لكاشير خدمة العملاء (الاستقبال) أيضاً — يَظهر هناك ويُباع عبر createPrintSale.
+  showInReception?: boolean;
   // print-catalog: وصفة المواد الخام التي تَستهلكها الخدمة (ورق/حبر…). تُربَط بمتغيّر البَند الأوّل
   // (الخدمات أحاديّة المتغيّر). اختيارية: خدمة بلا مواد (إلكترونية/تصميم) تُترَك بلا وصفة.
   recipe?: Array<{ inputVariantId: number; qtyPerOutputBase: string }>;
@@ -783,6 +808,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       categoryId: input.categoryId ?? null,
       isCustomizable: input.isCustomizable ?? false,
       isService,
+      showInReception: !!input.showInReception,
     });
     const productId = extractInsertId(pRes);
 

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, Plus, Printer, ShoppingCart, X } from "lucide-react";
+import { AlertCircle, Plus, Printer, ShoppingCart, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -41,6 +41,7 @@ export default function ServiceForm() {
   const [government, setGovernment] = useState("");
   const [directCost, setDirectCost] = useState("");
   const [showInPrintPos, setShowInPrintPos] = useState(true);
+  const [showInReception, setShowInReception] = useState(false);
   const [consumesMaterials, setConsumesMaterials] = useState(false);
   const [lineSeq, setLineSeq] = useState(2);
   const [lines, setLines] = useState<RecipeLine[]>([{ key: 1, variantId: "", qty: "1" }]);
@@ -124,6 +125,7 @@ export default function ServiceForm() {
       categoryId: categoryId === "" ? undefined : Number(categoryId),
       isService: true,
       printService: showInPrintPos,
+      showInReception,
       recipe,
       variants: [
         {
@@ -174,7 +176,7 @@ export default function ServiceForm() {
       {/* ── توجيه العرض ── */}
       <Card>
         <CardHeader><CardTitle className="text-base">توجيه العرض (أين تُباع الخدمة؟)</CardTitle></CardHeader>
-        <CardContent>
+        <CardContent className="space-y-2">
           <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
             <Switch checked={showInPrintPos} onCheckedChange={setShowInPrintPos} className="mt-0.5" />
             <span className="flex items-center gap-2 text-sm">
@@ -185,6 +187,20 @@ export default function ServiceForm() {
                   {showInPrintPos
                     ? "تَظهر هذه الخدمة في شبكة «خدمات طباعة» وتُباع عبر كاشير الطباعة."
                     : "خِدمة عامّة بلا مخزون — لن تَظهر في شبكة خدمات الطباعة."}
+                </span>
+              </span>
+            </span>
+          </label>
+          <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
+            <Switch checked={showInReception} onCheckedChange={setShowInReception} className="mt-0.5" />
+            <span className="flex items-center gap-2 text-sm">
+              <Users aria-hidden className="size-4 text-violet-600" />
+              <span>
+                <b>خدمة العملاء (الاستقبال)</b>
+                <span className="block text-xs text-muted-foreground">
+                  {showInReception
+                    ? "تَظهر أيضاً في كاشير الاستقبال وتُباع عبره — تُخصَم موادها كما في الطباعة تماماً."
+                    : "لن تَظهر في كاشير الاستقبال."}
                 </span>
               </span>
             </span>

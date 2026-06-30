@@ -248,6 +248,9 @@ export const products = mysqlTable(
     // branchStock ولا يَكتب inventoryMovements (يُتجاوَز في inventoryService.applyMovement).
     // التَحويل بين الفُروع مَمنوع. الإيراد يَدخل كَالعَادة، التَكلفة من productVariants.cost.
     isService: boolean("isService").default(false).notNull(),
+    // توجيه الخدمة لنقطة خدمة العملاء (الاستقبال): خدمة طباعة (productType=PRINT_SERVICE) مفعَّلة هنا
+    // تَظهر أيضاً في كاشير الاستقبال وتُباع عبر مسار createPrintSale المدقَّق (خصم المواد + COGS).
+    showInReception: boolean("showInReception").default(false).notNull(),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
