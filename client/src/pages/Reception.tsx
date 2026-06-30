@@ -91,6 +91,29 @@ function customLineGrand(line: CartLine): number {
   return lineTotal(line) + delivery;
 }
 
+/** حالة المخزون للأصناف الجاهزة (المخصَّصة لا مَخزون لها — إنتاج). يَحسب الطلب الكلّي للصنف
+ *  عبر كل وحداته في السلّة (رصيد الفرع مُشترك بين القطعة/الدرزن/الكرتون). نَمط مُطابق POS.tsx. */
+function buildStockState(cart: CartLine[]) {
+  const demandByVariant = new Map<number, number>();
+  for (const l of cart) {
+    if (l.custom) continue;
+    const f = Number(l.row.conversionFactor) || 1;
+    demandByVariant.set(l.row.variantId, (demandByVariant.get(l.row.variantId) ?? 0) + l.qty * f);
+  }
+  return (line: CartLine) => {
+    if (line.custom || line.row.isService) {
+      return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
+    }
+    const convFactor = Number(line.row.conversionFactor) || 1;
+    const availBase = line.row.stockBase ?? 0;
+    const reqBase = demandByVariant.get(line.row.variantId) ?? line.qty * convFactor;
+    const isOut = availBase <= 0;
+    const isShort = !isOut && reqBase > availBase;
+    const availInUnit = Math.floor(availBase / convFactor);
+    return { isOut, isShort, availInUnit };
+  };
+}
+
 export default function Reception() {
   const me = trpc.auth.me.useQuery();
   const branchId = useMemo(() => Number(me.data?.branchId ?? 1), [me.data?.branchId]);
@@ -894,16 +917,20 @@ export default function Reception() {
                     <th className="px-2 py-2 text-right font-bold">المنتج</th>
                     <th className="w-14 px-1 py-2 text-center font-bold">الوحدة</th>
                     <th className="w-24 px-1 py-2 text-center font-bold">السعر</th>
+                    <th className="w-16 px-1 py-2 text-center font-bold">المخزون</th>
                     <th className="w-32 px-1 py-2 text-center font-bold">الكمية</th>
                     <th className="w-24 px-1 py-2 text-center font-bold">الإجمالي</th>
                     <th className="w-8 px-1 py-2" />
                   </tr>
                 </thead>
                 <tbody>
-                  {cart.map((l, idx) => {
+                  {(() => {
+                    const stockState = buildStockState(cart);
+                    return cart.map((l, idx) => {
                     const isCustom = isCustomKind(l);
                     const total = isCustom ? customLineGrand(l) : lineTotal(l);
                     const selected = selKey === l.key;
+                    const stock = stockState(l);
                     return (
                       <tr
                         key={l.key}
@@ -915,7 +942,11 @@ export default function Reception() {
                           "cursor-pointer border-b align-top",
                           isCustom
                             ? "border-s-[3px] border-s-violet-500"
-                            : "border-s-[3px] border-s-emerald-500",
+                            : stock.isOut
+                              ? "border-s-[3px] border-s-destructive bg-destructive/5"
+                              : stock.isShort
+                                ? "border-s-[3px] border-s-amber-500 bg-amber-50"
+                                : "border-s-[3px] border-s-emerald-500",
                           selected && "bg-primary/5",
                         )}
                       >
@@ -934,6 +965,18 @@ export default function Reception() {
                               {isCustom ? l.custom!.title : l.row.productName}
                             </span>
                             <span className="text-[10px] text-muted-foreground" dir="ltr">{l.row.sku}</span>
+                            {!isCustom && stock.isOut && (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
+                                نافذ — لا مخزون
+                              </span>
+                            )}
+                            {!isCustom && stock.isShort && (
+                              <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
+                                {stock.availInUnit === 0
+                                  ? "لا يكفي لوحدة"
+                                  : `المتاح ${stock.availInUnit} فقط`}
+                              </span>
+                            )}
                           </div>
                           {isCustom && (
                             <div className="mt-2 rounded-lg border border-violet-200 bg-violet-50/50 p-2.5">
@@ -1002,6 +1045,15 @@ export default function Reception() {
                           {fmt(effectivePrice(l))}
                           {l.disc ? <div className="text-[10px] text-amber-600">−{l.disc}%</div> : null}
                         </td>
+                        <td
+                          className={cn(
+                            "px-1 py-2.5 text-center text-xs font-bold tabular-nums",
+                            isCustom ? "text-muted-foreground" : stock.isOut ? "text-destructive" : stock.isShort ? "text-amber-600" : "text-muted-foreground",
+                          )}
+                          dir="ltr"
+                        >
+                          {isCustom ? "—" : l.row.isService ? "∞" : stock.availInUnit}
+                        </td>
                         <td className="px-1 py-1.5">
                           <div className="flex items-center justify-center gap-1">
                             <button
@@ -1047,7 +1099,8 @@ export default function Reception() {
                         </td>
                       </tr>
                     );
-                  })}
+                  });
+                  })()}
                 </tbody>
               </table>
             )}

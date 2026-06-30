@@ -122,6 +122,26 @@ export function ProductTable({
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
 
+  // حالة المخزون لكل صنف (مَشابهة POS/Reception). الـPurchase لا تَنطبق عليه دلالياً.
+  // الطلب الكلّي لكل variant عبر كل وحداته في السلّة (رصيد الفرع مُشترك بين القطعة/الدرزن/الكرتون).
+  const demandByVariant = new Map<number, number>();
+  if (!isPurchase) {
+    for (const it of items) {
+      const f = Number(it.conversionFactor) || 1;
+      demandByVariant.set(it.variantId, (demandByVariant.get(it.variantId) ?? 0) + (Number(it.qty) || 0) * f);
+    }
+  }
+  const stockState = (it: InvoiceLine) => {
+    if (isPurchase) return { isOut: false, isShort: false, availInUnit: Number.POSITIVE_INFINITY };
+    const convFactor = Number(it.conversionFactor) || 1;
+    const availBase = Number(it.stockBase) || 0;
+    const reqBase = demandByVariant.get(it.variantId) ?? (Number(it.qty) || 0) * convFactor;
+    const isOut = availBase <= 0;
+    const isShort = !isOut && reqBase > availBase;
+    const availInUnit = Math.floor(availBase / convFactor);
+    return { isOut, isShort, availInUnit };
+  };
+
   const th = "sticky top-0 z-[2] whitespace-nowrap border-b-2 bg-muted px-2 py-2.5 text-center text-xs font-bold text-muted-foreground";
   const td = "px-2 py-2.5 text-center text-sm align-middle";
 
@@ -204,27 +224,49 @@ export function ProductTable({
             {items.map((item, idx) => {
               const lineTotal = calcLineTotal(item);
               const margin = calcMargin(item);
-              const lowStock = item.stockBase < 5;
               const marginNum = Number(margin);
+              const stock = stockState(item);
               return (
-                <tr key={`${item.productUnitId}-${idx}`} className="border-b transition hover:bg-muted/50">
+                <tr
+                  key={`${item.productUnitId}-${idx}`}
+                  className={cn(
+                    "border-b transition hover:bg-muted/50",
+                    stock.isOut && "border-s-[3px] border-s-destructive bg-destructive/5",
+                    !stock.isOut && stock.isShort && "border-s-[3px] border-s-amber-500 bg-amber-50",
+                  )}
+                >
                   <td className={cn(td, "font-semibold text-muted-foreground")}>{idx + 1}</td>
                   <td className={cn(td, "font-mono text-[11px] text-muted-foreground")} dir="ltr">
                     {item.barcode?.slice(-6) ?? "—"}
                   </td>
                   <td className={cn(td, "text-right")}>
-                    <div className="text-sm font-bold text-foreground">{item.name}</div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-sm font-bold text-foreground">{item.name}</span>
+                      {stock.isOut && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-destructive px-2 py-0.5 text-[10px] font-extrabold text-destructive-foreground">
+                          نافذ — لا مخزون
+                        </span>
+                      )}
+                      {!stock.isOut && stock.isShort && (
+                        <span className="inline-flex items-center gap-1 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-extrabold text-amber-50">
+                          {stock.availInUnit === 0 ? "لا يكفي لوحدة" : `المتاح ${stock.availInUnit} فقط`}
+                        </span>
+                      )}
+                    </div>
                     <div className="mt-0.5 text-[11px] text-muted-foreground">{item.sku}</div>
                   </td>
                   <td className={cn(td, "text-xs text-muted-foreground")}>{item.unit}</td>
                   <td className={td}>
                     <span
                       className={cn(
-                        "rounded px-1.5 py-0.5 text-xs font-bold",
-                        lowStock ? "bg-rose-100 text-rose-700" : "text-muted-foreground"
+                        "rounded px-1.5 py-0.5 text-xs font-extrabold tabular-nums",
+                        stock.isOut ? "bg-destructive text-destructive-foreground"
+                          : stock.isShort ? "bg-amber-100 text-amber-700"
+                          : "text-muted-foreground",
                       )}
+                      dir="ltr"
                     >
-                      {fmtNum(item.stockBase)}
+                      {isPurchase ? fmtNum(item.stockBase) : stock.availInUnit}
                     </span>
                   </td>
                   {showCostCol && (

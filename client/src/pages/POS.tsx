@@ -1254,6 +1254,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
               <th style={{ ...TH, textAlign: "right" }}>المنتج</th>
               <th style={{ ...TH, width: 64 }}>الوحدة</th>
               <th style={{ ...TH, width: 110 }}>السعر</th>
+              <th style={{ ...TH, width: 80 }}>المخزون</th>
               <th style={{ ...TH, width: 150 }}>الكمية</th>
               <th style={{ ...TH, width: 115 }}>الإجمالي</th>
               <th style={{ ...TH, width: 40 }}></th>
@@ -1262,7 +1263,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
           <tbody>
             {cart.length === 0 && (
               <tr>
-                <td colSpan={7} style={{ padding: "56px 0", textAlign: "center", color: C.mutedFg }}>
+                <td colSpan={8} style={{ padding: "56px 0", textAlign: "center", color: C.mutedFg }}>
                   <div style={{ marginBottom: 10, display: "flex", justifyContent: "center", opacity: 0.55 }}>
                     <ShoppingCart size={42} strokeWidth={1.5} aria-hidden />
                   </div>
@@ -1316,6 +1317,10 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                         </>
                       : fmt(ep)
                     }
+                  </td>
+                  {/* عمود المخزون: ∞ للخدمات، رقم بلون أحمر/أصفر/طبيعي حسب الحالة. */}
+                  <td style={{ ...TD, direction: "ltr", fontWeight: 700, color: isOut ? C.danger : isShort ? C.amber : C.mutedFg }}>
+                    {c.row.isService ? "∞" : fmt(availInUnit)}
                   </td>
                   <td style={{ ...TD, padding: "6px 6px" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
