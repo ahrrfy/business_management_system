@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { customers, invoiceItems, invoices, productVariants, receipts, shifts } from "../../drizzle/schema";
 import {
   computeInvoiceCost,
@@ -163,15 +163,30 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
 
     // 4. Price/cost/convert each line.
+    // D1 (٣٠/٦): حلّ N+1 — قراءة كل المتغيّرات بـinArray دفعةً واحدةً قبل الحلقة بدل
+    // round-trip لكل سطر. لا قفل (.for("update")) هنا (نقرأ تكلفة + isActive فقط — متغيّرات
+    // الأسعار/التفعيل لا تتعارض مع البيع؛ الأقفال الفعليّة للمخزون لاحقاً عبر applyMovement).
+    // قبل: ٢٠ سطر = ٢٠ استعلاماً متسلسلاً. بعد: استعلام واحد ⇒ زمن المعاملة ينخفض دراماتيكياً
+    // ونافذة الأقفال على shifts/customers تَنكمش (انكماش هذه النافذة = أقلّ تنافس عند الذروة).
+    const uniqueVariantIds = Array.from(new Set(input.lines.map((l) => l.variantId)));
+    const variantRows = await tx
+      .select({
+        id: productVariants.id,
+        costPrice: productVariants.costPrice,
+        isActive: productVariants.isActive,
+      })
+      .from(productVariants)
+      .where(inArray(productVariants.id, uniqueVariantIds));
+    const variantById = new Map<number, { costPrice: string; isActive: boolean | null }>();
+    for (const r of variantRows) {
+      variantById.set(Number(r.id), { costPrice: String(r.costPrice), isActive: r.isActive });
+    }
+
     const computed = [];
     for (const l of input.lines) {
-      const v = await tx
-        .select({ costPrice: productVariants.costPrice, isActive: productVariants.isActive })
-        .from(productVariants)
-        .where(eq(productVariants.id, l.variantId))
-        .limit(1);
-      if (!v[0]) throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${l.variantId} غير موجود` });
-      if (v[0].isActive === false) {
+      const v = variantById.get(l.variantId);
+      if (!v) throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${l.variantId} غير موجود` });
+      if (v.isActive === false) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${l.variantId} معطّل` });
       }
 
@@ -180,7 +195,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)
           : await getUnitPrice(tx, l.productUnitId, tier);
-      const unitCost = snapshotUnitCost(v[0].costPrice);
+      const unitCost = snapshotUnitCost(v.costPrice);
       const lineRes = computeLineTotal({
         unitPrice,
         quantity: money(l.quantity),
