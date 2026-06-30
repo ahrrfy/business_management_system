@@ -232,6 +232,13 @@
       "when": 1782306000000,
       "tag": "0032_invoice_covering_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "5",
+      "when": 1782307000000,
+      "tag": "0033_drop_redundant_invoice_index",
+      "breakpoints": true
     }
   ]
 }
