@@ -257,6 +257,13 @@
     {
       "idx": 36,
       "version": "5",
+      "when": 1782890000000,
+      "tag": "0036_vouchers_pro",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "5",
       "when": 1782900000000,
       "tag": "0037_exchange_houses",
       "breakpoints": true

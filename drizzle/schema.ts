@@ -627,6 +627,16 @@ export const receipts = mysqlTable(
     description: text("description"), // وصف الغرض من السند
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
+    // vouchers-pro (٣٠/٦/٢٦): تَعزيزات تَدقيقية ومحاسبية للسندات المُستقلّة.
+    voucherCategoryId: bigint("voucherCategoryId", { mode: "number" }),     // FK → voucherCategories (هَجرة 0036)
+    counterpartyName: varchar("counterpartyName", { length: 200 }),         // اسم الطرف الحُرّ لسندات «أخرى» (راتب الموظف فلان…)
+    voucherDate: date("voucherDate"),                                       // تاريخ السند الفعلي (قد يَختلف عن createdAt)
+    attachmentUrl: text("attachmentUrl"),                                   // مَسار/URL مُستند مَرجعي (إيصال إيجار…)
+    internalNote: text("internalNote"),                                     // مُلاحظة داخلية للتدقيق (لا تُطبع)
+    signatureHash: varchar("signatureHash", { length: 64 }),                // SHA-256 hex لخَتم السند بَعد الاعتماد (سَلامة سجل تَدقيقي)
+    approvalStatus: mysqlEnum("receiptApprovalStatus", ["APPROVED", "PENDING_APPROVAL", "REJECTED"]).default("APPROVED").notNull(),
+    approvedBy: int("approvedBy"),                                          // FK → users (هَجرة 0036)؛ NULL إن لم يَستلزم موافقة
+    approvedAt: timestamp("approvedAt"),                                    // وقت الاعتماد
   },
   (table) => ({
     invoiceIdx: index("idx_receipt_invoice").on(table.invoiceId),
@@ -650,6 +660,31 @@ export const receipts = mysqlTable(
 
 export type Receipt = typeof receipts.$inferSelect;
 export type InsertReceipt = typeof receipts.$inferInsert;
+
+/* ============================ فئات السندات (vouchers-pro ٣٠/٦) ============================
+ * قائمة قابلة للإدارة من الواجهة (admin) — تُربط بـreceipts.voucherCategoryId.
+ * direction يُحدّد قابلية الاستعمال: IN لسندات القبض فقط، OUT لسندات الصرف فقط، BOTH لكليهما.
+ * لا تُحذف بل تُعطَّل (isActive=false) للحفاظ على ربط السندات التاريخية بفئاتها.
+ */
+export const voucherCategories = mysqlTable(
+  "voucherCategories",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 100 }).notNull().unique(),
+    direction: mysqlEnum("voucherCategoryDirection", ["IN", "OUT", "BOTH"]).default("BOTH").notNull(),
+    description: varchar("description", { length: 300 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    activeIdx: index("idx_vchcat_active").on(table.isActive),
+    dirIdx: index("idx_vchcat_dir").on(table.direction),
+  })
+);
+
+export type VoucherCategory = typeof voucherCategories.$inferSelect;
+export type InsertVoucherCategory = typeof voucherCategories.$inferInsert;
 
 /* ============================ الدفتر المحاسبي المبسّط ============================ */
 
