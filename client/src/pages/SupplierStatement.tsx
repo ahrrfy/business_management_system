@@ -11,8 +11,8 @@ import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "wouter";
+import { useMemo, useState } from "react";
+import { Link, useLocation, useSearch } from "wouter";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
 import { PageHeader } from "@/components/PageHeader";
@@ -63,14 +63,17 @@ const PO_STATUS_CLS: Record<string, string> = {
 };
 
 export default function SupplierStatement() {
-  // wouter's useLocation() strips the query string, so read it from window.location directly.
-  const initial = useMemo(() => {
-    const id = new URLSearchParams(window.location.search).get("id");
-    return id ? Number(id) : 0;
-  }, []);
-
-  const [supplierId, setSupplierId] = useState<number>(initial);
-  useEffect(() => { if (initial && initial !== supplierId) setSupplierId(initial); }, [initial]); // eslint-disable-line
+  // الـURL مصدر الحقيقة لهوية المورد ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
+  const [loc, navigate] = useLocation();
+  const search = useSearch();
+  const supplierId = useMemo(() => Number(new URLSearchParams(search).get("id")) || 0, [search]);
+  // اختيار المورد يكتب المعرّف في الـURL (مع حفظ بقية المعاملات مثل tab) فيبقى الكشف مشاركاً ومستقلاً.
+  const selectSupplier = (id: number) => {
+    const p = new URLSearchParams(search);
+    if (id) p.set("id", String(id)); else p.delete("id");
+    const qs = p.toString();
+    navigate(qs ? `${loc}?${qs}` : loc, { replace: true });
+  };
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
@@ -241,7 +244,7 @@ export default function SupplierStatement() {
         <CardContent className="pt-6 grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="space-y-1 md:col-span-2">
             <Label className="text-xs">المورد</Label>
-            <select className={selectCls} value={supplierId} onChange={(e) => setSupplierId(Number(e.target.value))}>
+            <select className={selectCls} value={supplierId} onChange={(e) => selectSupplier(Number(e.target.value))}>
               <option value={0}>— اختر مورداً —</option>
               {(index.data ?? []).map((s) => (
                 <option key={s.id} value={s.id}>

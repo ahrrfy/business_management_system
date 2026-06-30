@@ -21,6 +21,7 @@ import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import Login from "@/pages/Login";
 import { Redirect, Route, Switch } from "wouter";
+import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 
 const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
 const CustomerEdit = lazy(() => import("@/pages/CustomerEdit"));
@@ -193,7 +194,7 @@ export default function App() {
       <Route path="/stocktakes/:id/report"><Shell><StocktakeReport /></Shell></Route>
       <Route path="/stocktakes/:id/sheets"><Shell><StocktakeCountSheets /></Shell></Route>
       <Route path="/stocktakes/:id"><Shell><StocktakeMonitor /></Shell></Route>
-      <Route path="/inventory-movements"><Redirect to="/inventory?tab=movements" /></Route>
+      <Route path="/inventory-movements"><RedirectKeepQuery to="/inventory?tab=movements" /></Route>
       <Route path="/transfers"><Redirect to="/inventory?tab=transfers" /></Route>
       <Route path="/work-orders"><Shell><PrintHub /></Shell></Route>
       <Route path="/work-orders/new"><Shell><WorkOrderNew /></Shell></Route>
@@ -269,13 +270,13 @@ export default function App() {
       <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager"]}><AgingReportsHub /></RequireRole></Shell></Route>
       {/* أُدمجت في وحدة العملاء (CustomersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/ar-aging"><Redirect to="/customers?tab=aging" /></Route>
-      <Route path="/customers-statement"><Redirect to="/customers?tab=statement" /></Route>
+      <Route path="/customers-statement"><RedirectKeepQuery to="/customers?tab=statement" /></Route>
       <Route path="/suppliers"><Shell><SuppliersHub /></Shell></Route>
       <Route path="/suppliers/new"><Shell><SupplierNew /></Shell></Route>
       <Route path="/suppliers/:id/edit"><Shell><SupplierEdit /></Shell></Route>
       {/* أُدمجت في وحدة الموردين (SuppliersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/ap-aging"><Redirect to="/suppliers?tab=aging" /></Route>
-      <Route path="/suppliers-statement"><Redirect to="/suppliers?tab=statement" /></Route>
+      <Route path="/suppliers-statement"><RedirectKeepQuery to="/suppliers?tab=statement" /></Route>
       <Route path="/kiosk-devices"><Redirect to="/settings?tab=devices" /></Route>
       <Route path="/users"><Redirect to="/settings?tab=users" /></Route>
       <Route path="/users/new"><Shell><RequireRole roles={["admin","manager"]}><UserNew /></RequireRole></Shell></Route>
