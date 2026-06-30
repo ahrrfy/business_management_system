@@ -231,7 +231,7 @@ function NewConversationDialog({ onCreated, onClose }: { onCreated: (id: number)
     onError: (e) => notify.err(e),
   });
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 grid place-items-center p-4" onClick={onClose}>
+    <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm grid place-items-center p-4" onClick={onClose}>
       <Card className="w-full max-w-md" onClick={(e) => e.stopPropagation()}>
         <CardHeader>
           <CardTitle className="text-base">محادثة جَديدة</CardTitle>
