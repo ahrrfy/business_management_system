@@ -105,7 +105,10 @@ function foldedCol(col: MySqlColumn): SQL {
   return expr;
 }
 
-/** الأعمدة القابلة للبحث في الكتالوج — مصدر واحد لبُنية الشرط والترتيب. */
+/** الأعمدة القابلة للبحث في الكتالوج — مصدر واحد لبُنية الشرط والترتيب.
+ *  D2 (٣٠/٦): products.name يُمكن تَحويله لاستعمال `products.searchNorm` المُولَّد (هَجرة 0034)
+ *  عند تَفعيلها إنتاجياً — يَنقل تكلفة REPLACE × ٩ من وقت الاستعلام إلى وقت الكتابة.
+ *  المسار البَديل (هنا) يَبقى لأن CI/erp_test يَستعمل db:push الذي لا يَفهم GENERATED columns. */
 function searchableCols(): SQL[] {
   return [foldedCol(products.name), foldedCol(productVariants.sku), foldedCol(productVariants.variantName), foldedCol(productUnits.barcode)];
 }

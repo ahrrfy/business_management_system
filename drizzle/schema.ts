@@ -251,6 +251,9 @@ export const products = mysqlTable(
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    // D2 (٣٠/٦): العمود المولَّد STORED `searchNorm` يُنشَأ عبر هَجرة 0034 إنتاجياً.
+    // لا يُعَرَّف هنا لأنّ drizzle-kit يَتعامل معه كعمود عادي ⇒ يَكسر db:push (CI).
+    // catalogService يَستعمله عبر SQL خام عند تَوفّره (المسار البَديل يَبقى مَتاحاً).
   },
   (table) => ({
     nameIdx: index("idx_product_name").on(table.name),
