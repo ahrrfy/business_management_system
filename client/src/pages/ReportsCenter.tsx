@@ -308,7 +308,7 @@ export default function ReportsCenter() {
               <span>{s.label}</span>
               <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] tabular-nums text-muted-foreground">{s.items.length}</span>
             </h2>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
               {s.items.map((it) => (
                 <ReportCard key={it.href} item={it} fav={favs.has(it.href)} onToggleFav={toggleFav} />
               ))}
@@ -338,33 +338,44 @@ function ReportCard({
   const body = (
     <Card
       className={cn(
-        "h-full transition",
-        soon ? "opacity-60" : "hover:border-primary/50 hover:shadow-sm cursor-pointer",
+        // أكثف وأخفّ: نُلغي حشوة Card الافتراضية (py-6/gap-6) ⇒ الارتفاع من CardContent p-3 وحده.
+        // حركة ناعمة بالـtransform فقط (تحترم reduced-motion)، وارتفاع موحَّد.
+        "group relative h-full gap-0 overflow-hidden py-0 transition-all duration-200 ease-out motion-reduce:transition-none",
+        soon
+          ? "opacity-55"
+          : "cursor-pointer hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md motion-reduce:hover:translate-y-0",
       )}
     >
-      <CardContent className="flex items-start gap-3 p-4">
-        <span className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-primary/8 text-primary">
-          <ItemIcon aria-hidden className="size-5" />
+      {/* اللمسة الإبداعية: شريط لوني على الحافة الأمامية (يمين RTL) يتوهّج عند المرور — يميّز البطاقة بلا صخب */}
+      {!soon && (
+        <span
+          aria-hidden
+          className="absolute inset-y-0 start-0 w-[3px] bg-primary/0 transition-colors duration-200 group-hover:bg-primary/60"
+        />
+      )}
+      <CardContent className="flex items-center gap-2.5 p-3">
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary/15 to-primary/5 text-primary ring-1 ring-inset ring-primary/10 transition-transform duration-200 group-hover:scale-[1.04] motion-reduce:group-hover:scale-100">
+          <ItemIcon aria-hidden className="size-[18px]" />
         </span>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold">{item.title}</span>
-            {soon && <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">قريباً</span>}
+          <div className="flex items-center gap-1.5">
+            <span className="truncate text-sm font-semibold leading-tight" title={item.title}>{item.title}</span>
+            {soon && <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">قريباً</span>}
           </div>
-          <p className="mt-0.5 text-xs text-muted-foreground line-clamp-2">{item.desc}</p>
+          <p className="mt-0.5 line-clamp-1 text-xs leading-snug text-muted-foreground" title={item.desc}>{item.desc}</p>
         </div>
         {!soon && (
           <button
             type="button"
             onClick={(e) => { e.preventDefault(); e.stopPropagation(); onToggleFav(item.href); }}
             className={cn(
-              "inline-flex size-11 shrink-0 items-center justify-center transition",
-              fav ? "text-amber-500" : "text-muted-foreground/40 hover:text-amber-500",
+              "inline-flex size-7 shrink-0 items-center justify-center rounded-md transition-colors",
+              fav ? "text-amber-500" : "text-muted-foreground/30 hover:text-amber-500",
             )}
             aria-label={fav ? "إزالة من المفضّلة" : "إضافة للمفضّلة"}
             title={fav ? "إزالة من المفضّلة" : "إضافة للمفضّلة"}
           >
-            <Star aria-hidden className={cn("size-[18px]", fav && "fill-current")} />
+            <Star aria-hidden className={cn("size-3.5", fav && "fill-current")} />
           </button>
         )}
       </CardContent>
