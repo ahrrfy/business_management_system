@@ -14,7 +14,7 @@ import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 import { Search, X as XIcon } from "lucide-react";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatStatementAsWhatsApp, formatTableAsTSV } from "@/lib/copy/formatters";
@@ -66,14 +66,18 @@ const METHOD_LABEL: Record<string, string> = {
 };
 
 export default function CustomerStatement() {
-  // wouter's useLocation() strips the query string, so read it from window.location directly.
-  const initial = useMemo(() => {
-    const id = new URLSearchParams(window.location.search).get("id");
-    return id ? Number(id) : 0;
-  }, []);
-
-  const [customerId, setCustomerId] = useState<number>(initial);
-  useEffect(() => { if (initial && initial !== customerId) setCustomerId(initial); }, [initial]); // eslint-disable-line
+  // الـURL مصدر الحقيقة لهوية العميل ⇒ رابط مستقلّ قابل للمشاركة + يتحدّث فوراً عند تغيّر ?id=
+  // (يُصلح فقدان الاستقلالية: كان يُقرأ مرّة واحدة عند التركيب فلا يتبع تغيّر الرابط داخل الـhub).
+  const [loc, navigate] = useLocation();
+  const search = useSearch();
+  const customerId = useMemo(() => Number(new URLSearchParams(search).get("id")) || 0, [search]);
+  // اختيار العميل يكتب المعرّف في الـURL (مع حفظ بقية المعاملات مثل tab) فيبقى الكشف مشاركاً ومستقلاً.
+  const selectCustomer = (id: number) => {
+    const p = new URLSearchParams(search);
+    if (id) p.set("id", String(id)); else p.delete("id");
+    const qs = p.toString();
+    navigate(qs ? `${loc}?${qs}` : loc, { replace: true });
+  };
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
 
@@ -243,7 +247,7 @@ export default function CustomerStatement() {
             <CustomerSearchPicker
               customers={index.data ?? []}
               value={customerId}
-              onChange={setCustomerId}
+              onChange={selectCustomer}
             />
           </div>
           <div className="space-y-1">

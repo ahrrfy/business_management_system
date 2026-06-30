@@ -10,7 +10,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useSearch } from "wouter";
 
 const INVOICE_STATUS: Record<string, string> = {
@@ -43,6 +43,10 @@ export default function Returns() {
   }, [searchStr]);
 
   const [selectedId, setSelectedId] = useState<number | null>(urlInvoiceId);
+  // الـURL مصدر الحقيقة: مزامنة الفاتورة المختارة عند الوصول بـ?invoiceId= (رابط مستقلّ من تفاصيل الفاتورة).
+  useEffect(() => {
+    if (urlInvoiceId != null && urlInvoiceId !== selectedId) setSelectedId(urlInvoiceId);
+  }, [urlInvoiceId]); // eslint-disable-line
   const [qty, setQty] = useState<Record<number, string>>({});
   const [restock, setRestock] = useState(true);
   const [refundAmount, setRefundAmount] = useState("");
