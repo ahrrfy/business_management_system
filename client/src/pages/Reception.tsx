@@ -213,7 +213,7 @@ export default function Reception() {
   // ───── البحث ──────────────────────────────────────────────────────────────
   const debounced = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId, tier: "RETAIL", query: debounced, limit: 15 },
+    { branchId, tier: "RETAIL", query: debounced, limit: 15, includeReceptionServices: true },
     { enabled: debounced.trim().length >= 2, placeholderData: keepPreviousData, staleTime: 15_000 },
   );
   const results = searchResults.data ?? [];
@@ -400,6 +400,8 @@ export default function Reception() {
   // ───── الإرسال (هجين) ─────────────────────────────────────────────────────
   const saleM = trpc.sales.create.useMutation();
   const woM = trpc.workOrders.create.useMutation();
+  // خدمات الطباعة المُوجَّهة للاستقبال تُباع عبر مسار createPrintSale المدقَّق (خصم مواد + COGS).
+  const printSaleM = trpc.printPos.createSale.useMutation();
 
   async function handleSubmit(opts: { quickFullPay: boolean }) {
     if (cart.length === 0) return;
@@ -419,6 +421,9 @@ export default function Reception() {
     }
 
     const directLines = cart.filter((c) => !isCustomKind(c));
+    // فصل خدمات الطباعة (تُباع عبر createPrintSale) عن البيع العادي (sales.create).
+    const regularLines = directLines.filter((c) => !c.row.isPrintService);
+    const printLines = directLines.filter((c) => c.row.isPrintService);
     const customItems = cart.filter(isCustomKind);
 
     // عربون كل صنف مخصّص: Quick = كامل سعر الصنف+التوصيل؛ غير ذلك = ما حفظه في النافذة.
@@ -463,9 +468,9 @@ export default function Reception() {
       let invoiceId: number | null = null;
       const createdWoIds: number[] = [];
 
-      // ١) فاتورة البيع المباشر (إن وُجدت).
-      if (directLines.length > 0) {
-        const lines = directLines.map((c) => {
+      // ١) فاتورة البيع المباشر للأصناف العادية (إن وُجدت).
+      if (regularLines.length > 0) {
+        const lines = regularLines.map((c) => {
           const base: any = {
             variantId: c.row.variantId,
             productUnitId: c.row.productUnitId,
@@ -474,7 +479,7 @@ export default function Reception() {
           if (c.disc != null && c.disc > 0) base.discountPercent = String(c.disc);
           return base;
         });
-        const saleAmount = round2(sumDirectD).toFixed(2);
+        const saleAmount = round2(regularLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
         const res = await saleM.mutateAsync({
           branchId,
           shiftId: shift.id,
@@ -485,6 +490,27 @@ export default function Reception() {
           clientRequestId: `${reqIdRef.current}-sale`,
         });
         invoiceId = res.invoiceId ?? null;
+      }
+
+      // ١.ب) فاتورة خدمات الطباعة (الاستقبال): createPrintSale يَخصم وصفة المواد ويُسجّل COGS
+      //       (sales.create لا يَفعل ذلك). السعر اليدوي = السعر الفعّال المعروض في السلّة (بعد الخصم).
+      if (printLines.length > 0) {
+        const lines = printLines.map((c) => ({
+          variantId: c.row.variantId,
+          productUnitId: c.row.productUnitId,
+          quantity: String(c.qty),
+          unitPriceOverride: round2(D(effectivePrice(c))).toFixed(2),
+        }));
+        const printAmount = round2(printLines.reduce((s, c) => s.plus(D(lineTotal(c))), D(0))).toFixed(2);
+        const res = await printSaleM.mutateAsync({
+          branchId,
+          shiftId: shift.id,
+          customerId: customerId ?? undefined,
+          lines,
+          payment: { amount: printAmount, method },
+          clientRequestId: `${reqIdRef.current}-print`,
+        });
+        if (invoiceId == null) invoiceId = (res as { invoiceId?: number }).invoiceId ?? null;
       }
 
       // ٢) أمر شغل لكل صنف مخصّص.
