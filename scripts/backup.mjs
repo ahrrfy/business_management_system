@@ -2,10 +2,13 @@
 // الاستخدام:
 //   pnpm db:backup                        # نسخة + تدوير + تشفير gpg مرافق (إن ضُبطت العبارة) + نسخة خارجية
 //   node scripts/backup.mjs --no-rotate   # نسخة فقط (نسخ أمان داخلية قبل reset/restore) — بلا تدوير ولا تشفير
+//   node scripts/backup.mjs --all-companies [--no-rotate]
+//                                         # تعدد الشركات: نسخة منفصلة لكل شركة فعّالة (من erp_control)،
+//                                         # عبر استدعاء هذا السكربت نفسه لكل شركة بـBACKUP_TARGET_URL مختلف.
 //
 // المتغيّرات (‎.env): DB_CONTAINER, DB_NAME, DB_ROOT_PW, BACKUP_DIR, BACKUP_OFFSITE_DIR, BACKUP_GPG_PASSPHRASE
-// BACKUP_TARGET_URL (يضبطه reset/restore/systemRouter): انسخ بالضبط قاعدة DATABASE_URL على مضيفها
-//   ⇒ هدف النسخة = هدف الحذف/الاستعادة دائماً (يمنع نسخ خادم خاطئ ثم تصفير الخادم الحقيقي).
+// BACKUP_TARGET_URL (يضبطه reset/restore/systemRouter/‎--all-companies): انسخ بالضبط قاعدة DATABASE_URL
+//   على مضيفها ⇒ هدف النسخة = هدف الحذف/الاستعادة دائماً (يمنع نسخ خادم خاطئ ثم تصفير الخادم الحقيقي).
 //
 // العقد مع المستهلكين (maintenanceService.runBackup / reset / restore / cron):
 //   النجاح = رمز خروج 0 + ملف `<db>-<ts>.sql` جديد في BACKUP_DIR. لا أحد يحلّل stdout.
@@ -17,7 +20,49 @@
 import "dotenv/config";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { createWriteStream, mkdirSync, statSync, readdirSync, unlinkSync, existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+
+// ─── وضع تعدّد الشركات: نسخة منفصلة لكل شركة فعّالة، ثم خروج (لا يُكمل لمنطق قاعدة واحدة) ───
+if (process.argv.includes("--all-companies")) {
+  const thisScript = fileURLToPath(import.meta.url);
+  const passthroughArgs = process.argv.slice(2).filter((a) => a !== "--all-companies");
+
+  let companies;
+  try {
+    const out = execFileSync("pnpm", ["exec", "tsx", "server/tenancy/cli/listCompanyConnections.ts"], {
+      encoding: "utf8",
+      shell: process.platform === "win32",
+    });
+    const lastLine = out.trim().split("\n").filter(Boolean).pop();
+    companies = JSON.parse(lastLine);
+  } catch (e) {
+    console.error("✗ فشل جلب قائمة الشركات من erp_control:", e?.message ?? e);
+    process.exit(1);
+  }
+
+  if (companies.length === 0) {
+    console.log("• لا شركات فعّالة في erp_control — لا نسخ لتنفيذها.");
+    process.exit(0);
+  }
+
+  let failedCodes = [];
+  for (const company of companies) {
+    console.log(`\n— نسخة الشركة «${company.code}» —`);
+    const result = spawnSync(process.execPath, [thisScript, ...passthroughArgs], {
+      stdio: "inherit",
+      env: { ...process.env, BACKUP_TARGET_URL: company.connectionUrl },
+    });
+    if (result.status !== 0) failedCodes.push(company.code);
+  }
+
+  if (failedCodes.length > 0) {
+    console.error(`\n✗ فشلت نسخة ${failedCodes.length} شركة/شركات: ${failedCodes.join(", ")}`);
+    process.exit(1);
+  }
+  console.log(`\n✓ نسخ احتياطي لكل الشركات الفعّالة (${companies.length}) اكتمل بنجاح.`);
+  process.exit(0);
+}
 
 const container = process.env.DB_CONTAINER ?? "erp-mysql";
 const pw = process.env.DB_ROOT_PW ?? "erp_root_pw";
@@ -25,8 +70,12 @@ const backupDir = process.env.BACKUP_DIR ?? "backups";
 const noRotate = process.argv.includes("--no-rotate");
 
 // --source-data=2 يكتب موضع binlog وقت اللقطة كتعليق ⇒ نقطة بداية دقيقة للاستعادة النقطية-الزمنية.
-// متاح في مسارات root فقط (يتطلّب امتياز RELOAD) — كل مساراتنا تعمل بـroot.
-const COMMON_DUMP = ["--single-transaction", "--routines", "--events", "--source-data=2"];
+// يتطلّب امتياز RELOAD (عام على الخادم كله، لا يُمنَح لكل قاعدة على حدة) — متاح لمسارات root
+// فقط. مستخدمو الشركات المخصّصون (تعدد الشركات — أقلّ امتياز عمداً: هذه القاعدة فقط) لا
+// يملكونه، فنُسقطه حين المستخدم ليس root بدل فشل النسخة كلّها (تبقى النسخة صحيحة ومستعادة
+// بالكامل، فقط بلا نقطة بداية binlog دقيقة كتعليق).
+const COMMON_DUMP = ["--single-transaction", "--routines", "--events"];
+const SOURCE_DATA_FLAG = "--source-data=2";
 const LOCAL_HOSTS = new Set(["127.0.0.1", "localhost", "::1", "0.0.0.0"]);
 
 function parseMysqlUrl(u) {
@@ -47,15 +96,19 @@ if (targetUrl) {
   const t = parseMysqlUrl(targetUrl);
   if (!t) { console.error("✗ BACKUP_TARGET_URL غير صالح (متوقّع mysql://user:pass@host:port/db)."); process.exit(1); }
   db = t.db;
+  // مستخدم الاتصال الفعلي من العنوان — root في النشر الحالي، أو مستخدم شركة مخصّص أقلّ
+  // امتيازاً (تعدد الشركات). --source-data=2 يتطلّب RELOAD (عام لا يُمنَح لمستخدم شركة).
+  const dumpFlags = t.user === "root" ? [...COMMON_DUMP, SOURCE_DATA_FLAG] : COMMON_DUMP;
   if (hasLocalMysqldump()) {
     // mysqldump محلي ⇒ نضرب القاعدة الهدف مباشرةً (يعمل لأي مضيف: Docker مربوط، خدمة أصلية، أو بعيد).
     dumpCmd = "mysqldump";
-    dumpArgs = ["-h", t.host, "-P", t.port, `-u${t.user}`, "--databases", t.db, ...COMMON_DUMP];
+    dumpArgs = ["-h", t.host, "-P", t.port, `-u${t.user}`, "--databases", t.db, ...dumpFlags];
     dumpPw = t.pass || undefined;
   } else if (LOCAL_HOSTS.has(t.host)) {
     // لا mysqldump محلي لكن المضيف محلي = نفس نسخة Docker المربوطة على المنفذ ⇒ docker exec يصيب الخادم نفسه.
+    // -u${t.user} (لا "root" ثابتاً) — تعدد الشركات يستعمل مستخدماً مخصّصاً لكل شركة.
     dumpCmd = "docker";
-    dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", "-uroot", "--databases", t.db, ...COMMON_DUMP];
+    dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", `-u${t.user}`, "--databases", t.db, ...dumpFlags];
     dumpPw = t.pass || pw;
   } else {
     console.error(`✗ تعذّر ضمان نسخة آمنة للقاعدة «${t.db}» على المضيف «${t.host}»: لا mysqldump محلي والمضيف ليس Docker محلياً.`);
@@ -63,10 +116,11 @@ if (targetUrl) {
     process.exit(1);
   }
 } else {
-  // السلوك الافتراضي (db:backup المستقل / المهمة المجدولة) عبر Docker بمتغيّرات .env.
+  // السلوك الافتراضي (db:backup المستقل / المهمة المجدولة) عبر Docker بمتغيّرات .env — root
+  // دائماً هنا (لا BACKUP_TARGET_URL) ⇒ --source-data=2 متاح كسلوك المشروع الأصلي بلا تغيير.
   db = process.env.DB_NAME ?? "erp";
   dumpCmd = "docker";
-  dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", "-uroot", "--databases", db, ...COMMON_DUMP];
+  dumpArgs = ["exec", "-e", "MYSQL_PWD", container, "mysqldump", "-uroot", "--databases", db, ...COMMON_DUMP, SOURCE_DATA_FLAG];
   dumpPw = pw;
 }
 

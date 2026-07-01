@@ -189,8 +189,9 @@ export default function SalesInvoiceNew() {
       })),
       // خصم إجمالي كمبلغ (calcTotals يحوّل النسبة إلى مبلغ). يُرسَل فقط إن كان موجباً.
       invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
-      // العراق VAT=0% افتراضياً — لا ضريبة على مستوى الفاتورة (وعمود ضريبة السطر مخفيّ في شاشة البيع).
-      taxRatePercent: "0",
+      // العراق VAT=0% افتراضياً — الضريبة اختيارية على مستوى الفاتورة، تُطبَّق فقط عند تفعيلها
+      // صراحةً من «تطبيق ضريبة» في ملخّص المبالغ (لعملاء/دوائر تتطلّب فاتورة ضريبية).
+      taxRatePercent: state.taxEnabled ? round2(D(state.taxRatePercent || "0")).toFixed(2) : "0",
       payment: hasPayment ? { amount: paidStr, method: state.paymentMethod } : undefined,
       // تاريخ الاستحقاق للبيع الآجل/الأقساط فقط (يُحفظ على invoices.dueDate ⇒ أعمار الذمم
       // تُعمِّر من موعد الاستحقاق لا تاريخ الفاتورة). الحقل يظهر في الترويسة لهذين النوعين فقط.
@@ -220,6 +221,9 @@ export default function SalesInvoiceNew() {
     if (remaining.gt(0) && !state.entityId)
       return "هناك مبلغ آجل (ذمة) — اختر عميلاً لتسجيل الذمة عليه.";
     if (D(totals.grandTotal).lt(0)) return "الإجمالي النهائي لا يمكن أن يكون سالباً.";
+    // سياسة #14: لا نسبة ضريبة سالبة (الخادم يرفضها أيضاً — نمنعها هنا برسالة أوضح).
+    if (state.taxEnabled && D(state.taxRatePercent || "0").lt(0))
+      return "نسبة الضريبة لا يصحّ أن تكون سالبة.";
     return null;
   }
 
@@ -403,6 +407,7 @@ export default function SalesInvoiceNew() {
             dispatch={dispatch}
             showShipping={false}
             showOtherExpenses={false}
+            showTaxToggle
           />
           <ActionButtons
             invoiceType={INVOICE_TYPE}

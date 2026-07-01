@@ -67,6 +67,10 @@ export interface InvoiceState {
   shipping: string;
   otherExpenses: string;
   paidAmount: string;
+  /** تفعيل ضريبة على مستوى الفاتورة (اختياري — العراق VAT=0% افتراضياً). */
+  taxEnabled: boolean;
+  /** نسبة الضريبة% تُطبَّق على (المجموع الفرعي − الخصومات) عند تفعيل taxEnabled. */
+  taxRatePercent: string;
   items: InvoiceLine[];
 }
 

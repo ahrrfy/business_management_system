@@ -1,4 +1,7 @@
 export const COOKIE_NAME = "app_session_id";
+/** كوكي جلسة مدير المنصّة — منفصل تماماً عن جلسة مستخدمي الشركات (COOKIE_NAME أعلاه)،
+ *  كي لا يتداخلا أبداً على نفس المتصفّح (مدير منصّة قد يتصفّح شاشة شركة في تبويب آخر). */
+export const PLATFORM_ADMIN_COOKIE_NAME = "platform_admin_session_id";
 export const ONE_YEAR_MS = 1000 * 60 * 60 * 24 * 365;
 
 /** مدّة الجلسة الافتراضية: ١٢ ساعة (يوم عمل) — لا سنة. */

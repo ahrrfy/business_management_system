@@ -72,8 +72,13 @@ export function computeSessionFingerprint(req: Request | { ip?: string; headers?
  * `iat` (وقت الإصدار، بالثواني) يُستعمل لإبطال الجلسات عبر `users.sessionsValidFrom`.
  * `fp` (بصمة الجهاز) يُقارَن بالطلب الحالي عبر `getUserFromRequest` ⇒ توكن مسروق
  * من جهاز آخر يَفشل verifyToken (fp لا يتطابق) ⇒ re-login إجباري.
+ *
+ * `companyId` (اختياري): هوية الشركة في وضع تعدّد الشركات — يُستخرَج من التوكن مبكراً
+ * (server/index.ts، قبل إنشاء سياق tRPC) لتحديد قاعدة الاتصال قبل أي استعلام. تبقى
+ * اختيارية عمداً كي لا ينكسر أي نشر أحادي الشركة (لا CONTROL_DATABASE_URL مضبوطاً)
+ * — تلك التوكنات تُصدَر وتُتحقَّق بلا هذا الحقل تماماً كسلوك المشروع الحالي.
  */
-export type SessionPayload = { uid: number; iat: number; fp?: string };
+export type SessionPayload = { uid: number; iat: number; fp?: string; companyId?: number };
 
 /**
  * Sign a session JWT for a local user.
@@ -89,7 +94,8 @@ export async function signSession(
   uid: number,
   expiresInMs: number = SESSION_DEFAULT_MS,
   req?: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null,
-  iatSec?: number
+  iatSec?: number,
+  companyId?: number
 ): Promise<string> {
   const issuedAtSeconds =
     typeof iatSec === "number" && Number.isInteger(iatSec) && iatSec > 0
@@ -101,6 +107,10 @@ export async function signSession(
   // توكناً بلا fp — ويعامله verifySession كـlegacy (لا مقارنة) لكي لا تنكسر.
   if (req) {
     claims.fp = computeSessionFingerprint(req);
+  }
+  // اختياري (وضع تعدّد الشركات فقط) — راجع تعليق SessionPayload.
+  if (typeof companyId === "number" && Number.isInteger(companyId) && companyId > 0) {
+    claims.companyId = companyId;
   }
   return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
@@ -140,6 +150,12 @@ export async function verifySession(
     if (iat > nowSec + 60) return null;
 
     const fp = typeof payload.fp === "string" ? payload.fp : undefined;
+    // اختياري — توكنات أُصدرت قبل تعدّد الشركات (أو في نشر أحادي الشركة) لا تحمله؛
+    // getDb() (server/db.ts) يتعامل مع غيابه بسقوط لمسار DATABASE_URL في وضع غير متعدّد.
+    const companyId =
+      typeof payload.companyId === "number" && Number.isInteger(payload.companyId) && payload.companyId > 0
+        ? payload.companyId
+        : undefined;
 
     // إن وُجد طلب يحمل بصمةً قابلةً للحساب (UA أو IP): ألزم تطابق fp ⇒ يحبط إعادة
     // استعمال التوكن من جهاز آخر. الطلب الذي لا يحمل UA ولا IP (سياق اختبار/داخلي)
@@ -155,7 +171,7 @@ export async function verifySession(
       }
     }
 
-    return { uid, iat, fp };
+    return { uid, iat, fp, companyId };
   } catch {
     return null;
   }

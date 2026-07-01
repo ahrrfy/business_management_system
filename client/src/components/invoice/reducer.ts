@@ -40,6 +40,8 @@ export function createInitialState(type: InvoiceType, branchId = 1): InvoiceStat
     shipping: "",
     otherExpenses: "",
     paidAmount: "",
+    taxEnabled: false,
+    taxRatePercent: "0",
     items: [],
   };
 }
