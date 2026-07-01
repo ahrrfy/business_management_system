@@ -28,3 +28,23 @@ export const companies = mysqlTable("companies", {
 
 export type Company = typeof companies.$inferSelect;
 export type InsertCompany = typeof companies.$inferInsert;
+
+/**
+ * مدراء المنصّة — منفصلون تماماً عن `users` (أدوار أي شركة). حساب هنا لا ينتمي لأي
+ * شركة، ولا يُنشأ من الواجهة (بوّابة بيضة-ودجاجة) بل عبر `scripts/platform-admin-new.mjs`
+ * فقط. جلستهم كوكي/JWT منفصلان تماماً عن جلسة مستخدمي الشركات (راجع
+ * `server/tenancy/platformAuth.ts`) — تسجيل الدخول كمدير منصّة لا يمنح أي وصول لبيانات
+ * أي شركة، فقط لعرض/تفعيل/تعطيل سجلّاتها في قاعدة التحكّم.
+ */
+export const platformAdmins = mysqlTable("platformAdmins", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  email: varchar("email", { length: 320 }).notNull().unique(),
+  passwordHash: varchar("passwordHash", { length: 255 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+
+export type PlatformAdmin = typeof platformAdmins.$inferSelect;
+export type InsertPlatformAdmin = typeof platformAdmins.$inferInsert;

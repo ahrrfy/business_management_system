@@ -175,6 +175,21 @@ async function startServer() {
     })
   );
 
+  // حدّ صارم على دخول مدير المنصّة (تعدد الشركات) — إجراء مُميَّز (تفعيل/تعطيل أي شركة)
+  // كان بلا أي حدّ خاص (مراجعة عدائية حسمت هذا — الحدّ العام ١٠٠٠/١٥د فقط لا يكفي لصدّ
+  // credential stuffing على نقطة دخول مُميَّزة).
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.PLATFORM_ADMIN_RATE_LIMIT_MAX ?? 10),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("platformAdmin.login"),
+      message: { error: "محاولات دخول كثيرة، انتظر ١٥ دقيقة." },
+    })
+  );
+
   // حدّ صارم على تفعيل جهاز الكشك الخارجي (تخمين رمز الجهاز) — رغم أنّ الرمز عشوائي 24 بايت.
   app.use(
     "/api/trpc",
@@ -208,11 +223,11 @@ async function startServer() {
   // حدّ صلب فوقي على الدفعات (tRPC batch link): يرفض الطلب إن حوى أكثر من حدّ تصاعدي على
   // إجراء عام واحد قبل وصوله للراوتر، فيقفل نمط تضخيم تجاوز حدّ المعدّل (نمط جذري ٥):
   // كان rateLimit يَعدّ HTTP requests لا الإجراءات؛ batch link يحشو عشرات النداءات في طلب واحد
-  // فيسمح بـ٥٠ محاولة auth.login/count.auth/kiosk.deviceLogin/recruitment.submit ضمن طلب واحد
-  // قبل اصطدامه بحدّ المعدّل. الحدّ التالي للنقاط العامة الحرجة لا يسمح بأكثر من نداء واحد لكلّ طلب
-  // HTTP، فحدّ المعدّل القائم يعمل بدقّته الحقيقية بلا تمييع.
+  // فيسمح بـ٥٠ محاولة auth.login/count.auth/kiosk.deviceLogin/recruitment.submit/platformAdmin.login
+  // ضمن طلب واحد قبل اصطدامه بحدّ المعدّل. الحدّ التالي للنقاط العامة الحرجة لا يسمح بأكثر من
+  // نداء واحد لكلّ طلب HTTP، فحدّ المعدّل القائم يعمل بدقّته الحقيقية بلا تمييع.
   app.use("/api/trpc", (req, res, next) => {
-    const PUBLIC_SENSITIVE = ["auth.login", "count.auth", "kiosk.deviceLogin", "recruitment.submit"];
+    const PUBLIC_SENSITIVE = ["auth.login", "count.auth", "kiosk.deviceLogin", "recruitment.submit", "platformAdmin.login"];
     // مسار البَتش يبدأ بـ"/api/trpc/x," مع فاصلة بين أسماء الإجراءات الموحَّدة.
     const path = req.path || "";
     if (path.includes(",")) {

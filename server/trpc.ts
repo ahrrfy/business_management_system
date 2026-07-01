@@ -50,6 +50,14 @@ const requireAdmin = t.middleware(async ({ ctx, next }) => {
 
 export const adminProcedure = t.procedure.use(requireAdmin);
 
+// ─── مدير المنصّة (تعدّد الشركات) — منفصل تماماً عن أدوار أي شركة ──────────
+const requirePlatformAdmin = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.platformAdmin) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  return next({ ctx: { ...ctx, platformAdmin: ctx.platformAdmin } });
+});
+
+export const platformAdminProcedure = t.procedure.use(requirePlatformAdmin);
+
 // ─── تفويض الأدوار (RBAC) ───────────────────────────────────────────────
 const FORBIDDEN_MSG = "صلاحيات غير كافية لهذا الإجراء.";
 

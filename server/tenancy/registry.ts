@@ -105,3 +105,27 @@ export async function createCompanyRecord(input: CreateCompanyInput): Promise<nu
   });
   return extractInsertId(result);
 }
+
+/** يُفعّل/يُعطّل شركة (شاشة إدارة المنصّة). يُفرِغ الذاكرة المؤقتة فوراً لتلك الشركة —
+ *  تعطيل دخول جديد يسري فوراً بدل انتظار ٣٠ث (الجلسات القائمة تبقى سارية حتى انتهاء
+ *  الكوكي — راجع server/tenancy/registry.ts توثيق الحدّ المعروف في تعليق أعلى الملف). */
+export async function setCompanyActive(id: number, isActive: boolean): Promise<void> {
+  const db = getControlDb();
+  if (!db) throw new Error("CONTROL_DATABASE_URL غير مضبوط.");
+  await db.update(companies).set({ isActive }).where(eq(companies.id, id));
+  idCache.delete(id);
+  for (const [code, hit] of Array.from(codeCache.entries())) {
+    if (hit.value?.id === id) codeCache.delete(code);
+  }
+}
+
+/**
+ * ⚠️ للاستعمال من سكربتات التشغيل الموثوقة فقط (النسخ الاحتياطي/النشر) — تُعيد كلمات
+ * مرور مفكوكة التشفير. لا تُستدعى أبداً من أي مسار يصل إليه طلب HTTP/tRPC.
+ */
+export async function listActiveCompanyConnections(): Promise<ResolvedCompany[]> {
+  const db = getControlDb();
+  if (!db) return [];
+  const rows = await db.select().from(companies).where(eq(companies.isActive, true));
+  return rows.map(toResolved);
+}

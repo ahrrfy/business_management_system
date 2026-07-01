@@ -3,6 +3,8 @@ import { diffFromTemplate, type PermissionMap, type RoleKey } from "@shared/perm
 import type { User } from "../drizzle/schema";
 import { getUserFromRequest } from "./auth/session";
 import { loadActiveCustomRole } from "./services/roleService";
+import { getPlatformAdminFromRequest } from "./tenancy/platformAuth";
+import type { PlatformAdmin } from "./tenancy/controlSchema";
 
 /** المستخدم المُحلّل: صفّ users + (للأدوار المخصّصة) تسمية/مفتاح الدور للعرض. */
 export type AuthUser = User & {
@@ -14,6 +16,8 @@ export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
   user: AuthUser | null;
+  /** مدير منصّة (تعدّد الشركات) — منفصل تماماً عن `user` (لا ينتمي لأي شركة). */
+  platformAdmin: PlatformAdmin | null;
 };
 
 /**
@@ -43,5 +47,14 @@ export async function createContext(
   } catch {
     user = null;
   }
-  return { req: opts.req, res: opts.res, user };
+  // مدير المنصّة: كوكي/JWT منفصلان تماماً (platformAuth.ts) — لا علاقة بجلسة الشركة أعلاه.
+  // معظم الطلبات لا تحمل كوكي مدير المنصّة إطلاقاً ⇒ verifyPlatformSession يعود null فوراً
+  // بلا لمس قاعدة التحكّم (تكلفة مهملة على المسار الشائع).
+  let platformAdmin: PlatformAdmin | null = null;
+  try {
+    platformAdmin = await getPlatformAdminFromRequest(opts.req);
+  } catch {
+    platformAdmin = null;
+  }
+  return { req: opts.req, res: opts.res, user, platformAdmin };
 }

@@ -57,6 +57,19 @@ try {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
   console.log("✓ جدول companies جاهز.");
+
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS platformAdmins (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      email VARCHAR(320) NOT NULL UNIQUE,
+      passwordHash VARCHAR(255) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      isActive TINYINT(1) NOT NULL DEFAULT 1,
+      createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+  console.log("✓ جدول platformAdmins جاهز.");
 } finally {
   await conn.end();
 }

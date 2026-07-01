@@ -105,6 +105,12 @@ runWithEnv("pnpm", ["db:push"], { DATABASE_URL: dbUrl, ALLOW_BARE_PUSH: "1", NOD
 console.log("• تطبيق الهجرات الإضافية (GENERATED columns وما شابه لا يفهمها db:push)…");
 runWithEnv("pnpm", ["db:migrate:extra"], { DATABASE_URL: dbUrl });
 
+// تأسيس journal الهجرات (baseline): بلا هذا، أوّل db:migrate:safe/all-companies لاحق
+// على هذه الشركة يظنّها فارغة تماماً ويحاول تنفيذ كل هجرة من 0000 فيفشل بـ"الجدول
+// موجود سلفاً" (db:push لا يسجّل في __drizzle_migrations — تأكَّد فعلياً أثناء البناء).
+console.log("• تأسيس journal الهجرات (كي تعمل بوّابة db:migrate:safe لاحقاً على هذه الشركة)…");
+runWithEnv("node", ["scripts/baseline-migrations.mjs"], { DATABASE_URL: dbUrl });
+
 console.log(`• بذرة ${hasFlag("--demo") ? "عيّنة (تجريبية)" : "إنتاج نظيفة"}…`);
 runWithEnv("pnpm", ["seed"], {
   DATABASE_URL: dbUrl,
