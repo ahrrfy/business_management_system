@@ -2,6 +2,8 @@ import { TRPCError } from "@trpc/server";
 import { and, eq } from "drizzle-orm";
 import { branches, channelIntegrations } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { getCurrentCompanyId } from "../tenancy/context";
+import { resolveCompanyById } from "../tenancy/registry";
 import { decryptSecret, encryptSecret, isCryptoReady, maskSecret } from "./cryptoService";
 import { withTx } from "./tx";
 
@@ -52,13 +54,27 @@ export interface IntegrationDisplay {
   webhookUrl: string;
 }
 
-/** يَحسب webhook URL لِكل قَناة بَناءً على APP_URL أو request origin. */
-function webhookUrlFor(channel: IntegrationChannel): string {
+/**
+ * يَحسب webhook URL لِكل قَناة بَناءً على APP_URL أو request origin.
+ *
+ * تَعدّد الشركات: المَسار غَير المُقيَّد (`/api/webhooks/<channel>`) لا سِياق شَركة لَه إطلاقاً
+ * (لا كوكي جَلسة يَصِل مِن مُزوّد خارِجي) — إن كُنّا داخِل سِياق شَركة حالياً (`getCurrentCompanyId`،
+ * أَي وَضع تَعدّد الشركات مُفَعَّل) نَبني المَسار المُقيَّد بِرَمز الشركة تَحديداً
+ * (`/api/webhooks/company/<code>/<channel>`) — هو الوَحيد الذي يَعمَل فِعلياً لِهذه الشركة (راجِع
+ * `companyChannelWebhooksRouter` في server/routes/channelWebhooks.ts). بلا سِياق شَركة (نَشر
+ * أُحادي): المَسار القَديم تَماماً كَما كان، بَلا أَي تَغيير.
+ */
+async function webhookUrlFor(channel: IntegrationChannel): Promise<string> {
   const base = (process.env.APP_URL ?? "").replace(/\/$/, "");
-  const path = channel === "WHATSAPP" ? "/api/webhooks/whatsapp"
-    : channel === "INSTAGRAM" ? "/api/webhooks/instagram"
-    : "/api/webhooks/store";
-  return base ? `${base}${path}` : path;
+  const channelSegment = channel === "WHATSAPP" ? "whatsapp" : channel === "INSTAGRAM" ? "instagram" : "store";
+  const companyId = getCurrentCompanyId();
+  if (companyId != null) {
+    const company = await resolveCompanyById(companyId);
+    if (company) {
+      return `${base}/api/webhooks/company/${company.code}/${channelSegment}`;
+    }
+  }
+  return `${base}/api/webhooks/${channelSegment}`;
 }
 
 /** يَجلب التَكاملات للعَرض في الواجهة (مُقَنَّعة secrets). branchId=undefined = كل الفُروع. */
@@ -84,7 +100,7 @@ export async function listIntegrations(branchId?: number): Promise<IntegrationDi
     .leftJoin(branches, eq(channelIntegrations.branchId, branches.id))
     .where(branchId != null ? eq(channelIntegrations.branchId, branchId) : undefined)
     .orderBy(channelIntegrations.branchId, channelIntegrations.channel);
-  return rows.map((r): IntegrationDisplay => ({
+  return Promise.all(rows.map(async (r): Promise<IntegrationDisplay> => ({
     id: Number(r.id),
     branchId: Number(r.branchId),
     branchName: r.branchName,
@@ -98,8 +114,8 @@ export async function listIntegrations(branchId?: number): Promise<IntegrationDi
     status: r.status as IntegrationDisplay["status"],
     lastVerifiedAt: r.lastVerifiedAt,
     lastError: r.lastError,
-    webhookUrl: webhookUrlFor(r.channel as IntegrationChannel),
-  }));
+    webhookUrl: await webhookUrlFor(r.channel as IntegrationChannel),
+  })));
 }
 
 /** decrypt آمن: تُعيد null لو ciphertext مُتَلاعَب به (لا throw يَكسر العَرض). */

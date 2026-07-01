@@ -55,12 +55,12 @@ describe("currentDbName", () => {
   const saved = process.env.DATABASE_URL;
   afterAll(() => { process.env.DATABASE_URL = saved; });
 
-  it("يستخرج اسم القاعدة من DATABASE_URL", () => {
+  it("يستخرج اسم القاعدة من DATABASE_URL", async () => {
     process.env.DATABASE_URL = "mysql://root:pw@127.0.0.1:3306/erp_prod";
-    expect(currentDbName()).toBe("erp_prod");
+    expect(await currentDbName()).toBe("erp_prod");
   });
-  it("يعمل مع query string", () => {
+  it("يعمل مع query string", async () => {
     process.env.DATABASE_URL = "mysql://root:pw@127.0.0.1:3306/erp?ssl=true";
-    expect(currentDbName()).toBe("erp");
+    expect(await currentDbName()).toBe("erp");
   });
 });
