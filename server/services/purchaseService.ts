@@ -26,7 +26,14 @@ export interface CreatePurchaseOrderInput {
   items: PurchaseLineInput[];
   notes?: string | null;
   clientRequestId?: string;
+  /** usd-po-reconcile: مطابقة سعر الشراء بالدولار (إعلامي بحت — لا يمسّ total/paidAmount الديناريَين). */
+  agreedCurrency?: "IQD" | "USD";
+  /** مبلغ فاتورة المورد الفعلية بالدولار — إلزامي فقط حين agreedCurrency=USD. */
+  usdTotal?: string | null;
 }
+
+/** تسلسل سعر ضمني لعمود decimal(15,4) — نظير toDbRate في exchangeHouseService. */
+const toDbRate = (x: Decimal): string => x.toDecimalPlaces(4, Decimal.ROUND_HALF_UP).toFixed(4);
 
 export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor: Actor) {
   return withTx(async (tx) => {
@@ -64,6 +71,19 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     const tax = round2(subtotal.times(taxRate).dividedBy(100));
     const total = round2(subtotal.plus(tax));
 
+    // usd-po-reconcile: usdTotal إلزامي وموجب حين agreedCurrency=USD؛ agreedRate ضمني = total/usdTotal
+    // (سعر الصرف الذي يجعل الإجمالي الديناري المُدخَل مساوياً لفاتورة المورّد الدولارية الفعلية).
+    const agreedCurrency = input.agreedCurrency ?? "IQD";
+    let usdTotalVal: Decimal | null = null;
+    let agreedRateVal: Decimal | null = null;
+    if (agreedCurrency === "USD") {
+      usdTotalVal = money(input.usdTotal ?? 0);
+      if (usdTotalVal.lte(0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ بالدولار (فاتورة المورد) يجب أن يكون موجباً" });
+      }
+      agreedRateVal = total.dividedBy(usdTotalVal);
+    }
+
     const ymd = toDateStr().replace(/-/g, "");
     const prefix = `PO-${input.branchId}-${ymd}-`;
     const lastRows = await tx
@@ -84,6 +104,9 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       taxAmount: tax.toFixed(2),
       total: total.toFixed(2),
       status: input.status ?? "CONFIRMED",
+      agreedCurrency,
+      usdTotal: usdTotalVal ? usdTotalVal.toFixed(2) : null,
+      agreedRate: agreedRateVal ? toDbRate(agreedRateVal) : null,
       notes: input.notes ?? null,
       createdBy: actor.userId,
     });

@@ -53,6 +53,8 @@ export interface InvoiceState {
   paymentMethod: PaymentMethod;
   dueDate: string;
   currency: Currency;
+  /** usd-po-reconcile: مبلغ فاتورة المورد الفعلية بالدولار (PURCHASE فقط، حين currency=USD). */
+  usdTotal: string;
   salesRepId: number | "";
   refInvoice: string;
   poReference: string;

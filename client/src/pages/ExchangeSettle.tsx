@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { HandCoins } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -139,22 +139,22 @@ export default function ExchangeSettle() {
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">المسحوب من المحفظة ({currency === "USD" ? "$" : "د.ع"})</label>
-            <Input value={walletAmount} onChange={(e) => setWalletAmount(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+            <MoneyInput value={walletAmount} onChange={setWalletAmount} placeholder="0.00" />
           </div>
           {currency === "USD" && (
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">الدين المُسوّى من المورد (د.ع)</label>
-              <Input value={settledIqd} onChange={(e) => setSettledIqd(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+              <MoneyInput value={settledIqd} onChange={setSettledIqd} placeholder="0.00" />
             </div>
           )}
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">العمولة ({currency === "USD" ? "$" : "د.ع"}) — اختياري</label>
-            <Input value={commission} onChange={(e) => setCommission(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+            <MoneyInput value={commission} onChange={setCommission} placeholder="0.00" />
           </div>
           {currency === "USD" && (
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">سعر صرف التسديد (للتدقيق) — اختياري</label>
-              <Input value={rate} onChange={(e) => setRate(e.target.value)} dir="ltr" inputMode="decimal" placeholder="1450" className="tabular-nums" />
+              <MoneyInput value={rate} onChange={setRate} decimals={4} placeholder="1450" />
             </div>
           )}
         </div>

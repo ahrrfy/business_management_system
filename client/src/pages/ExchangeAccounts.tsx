@@ -5,6 +5,7 @@ import { Building2, Plus, Pencil, Power, DollarSign } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { DataTable } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
@@ -219,16 +220,16 @@ function ExchangeFormDialog({
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">رصيد دينار افتتاحي</label>
-                <Input value={openIqd} onChange={(e) => setOpenIqd(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+                <MoneyInput value={openIqd} onChange={setOpenIqd} allowNegative placeholder="0.00" />
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">رصيد دولار افتتاحي</label>
-                  <Input value={openUsd} onChange={(e) => setOpenUsd(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+                  <MoneyInput value={openUsd} onChange={setOpenUsd} allowNegative placeholder="0.00" />
                 </div>
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">سعر كلفة الدولار</label>
-                  <Input value={openRate} onChange={(e) => setOpenRate(e.target.value)} dir="ltr" inputMode="decimal" placeholder="1450" className="tabular-nums" />
+                  <MoneyInput value={openRate} onChange={setOpenRate} decimals={4} placeholder="1450" />
                 </div>
               </div>
             </>

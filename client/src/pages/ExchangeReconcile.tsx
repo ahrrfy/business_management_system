@@ -5,6 +5,7 @@ import { Scale as ScaleIcon, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { trpc } from "@/lib/trpc";
@@ -61,11 +62,11 @@ export default function ExchangeReconcile() {
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">رصيد كشفهم (دينار)</label>
-            <Input value={statedIqd} onChange={(e) => setStatedIqd(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+            <MoneyInput value={statedIqd} onChange={setStatedIqd} allowNegative placeholder="0.00" />
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">رصيد كشفهم (دولار)</label>
-            <Input value={statedUsd} onChange={(e) => setStatedUsd(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+            <MoneyInput value={statedUsd} onChange={setStatedUsd} allowNegative placeholder="0.00" />
           </div>
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">حتى تاريخ (اختياري)</label>

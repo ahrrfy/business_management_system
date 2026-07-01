@@ -103,7 +103,8 @@ export default function ExchangeStatement() {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
           <StatCard label="الرصيد الحالي (دينار)" value={fmtAr(sum.currentBalanceIqd)} tone={D(sum.currentBalanceIqd).isNegative() ? "negative" : "positive"} />
           <StatCard label="الرصيد الحالي (دولار)" value={fmtAr(sum.currentBalanceUsd)} sub="$" tone={D(sum.currentBalanceUsd).isNegative() ? "negative" : "positive"} />
-          <StatCard label="إجمالي الإيداعات" value={fmtAr(sum.totalDepositIqd)} sub="د.ع" />
+          <StatCard label="إجمالي الإيداعات (دينار)" value={fmtAr(sum.totalDepositIqd)} sub="د.ع" />
+          <StatCard label="إجمالي الإيداعات (دولار)" value={fmtAr(sum.totalDepositUsd)} sub="$" />
           <StatCard label="إجمالي التسديدات" value={fmtAr(sum.totalSettledIqd)} sub="د.ع" />
           <StatCard label="إجمالي العمولات" value={fmtAr(sum.totalFeesIqd)} sub="د.ع" tone="warning" />
           <StatCard label="صافي فروق الصرف" value={fmtAr(sum.totalFxDiff)} sub="د.ع" tone={D(sum.totalFxDiff).isNegative() ? "negative" : "positive"} />

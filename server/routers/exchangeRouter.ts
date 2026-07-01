@@ -104,6 +104,8 @@ export const exchangeRouter = router({
         exchangeHouseId: z.number().int().positive(),
         branchId: z.number().int().positive().optional(),
         amount: moneyStr,
+        currency: z.enum(["IQD", "USD"]).default("IQD"),
+        exchangeRate: rateStr.nullish(),
         notes: z.string().max(500).nullish(),
         clientRequestId: z.string().min(1).max(80).optional(),
       }),
@@ -113,7 +115,7 @@ export const exchangeRouter = router({
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await depositToExchange({ ...input, branchId }, actorOf(ctx, branchId));
-          await logAudit(ctx, { action: "exchange.deposit", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, amount: input.amount } });
+          await logAudit(ctx, { action: "exchange.deposit", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, amount: input.amount, currency: input.currency } });
           return res;
         } catch (e: any) {
           if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
@@ -129,6 +131,7 @@ export const exchangeRouter = router({
         exchangeHouseId: z.number().int().positive(),
         branchId: z.number().int().positive().optional(),
         amount: moneyStr,
+        currency: z.enum(["IQD", "USD"]).default("IQD"),
         notes: z.string().max(500).nullish(),
         clientRequestId: z.string().min(1).max(80).optional(),
         confirmNegative: z.boolean().optional(),
@@ -139,7 +142,7 @@ export const exchangeRouter = router({
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await withdrawFromExchange({ ...input, branchId }, actorOf(ctx, branchId));
-          await logAudit(ctx, { action: "exchange.withdraw", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, amount: input.amount } });
+          await logAudit(ctx, { action: "exchange.withdraw", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, amount: input.amount, currency: input.currency } });
           return res;
         } catch (e: any) {
           if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
