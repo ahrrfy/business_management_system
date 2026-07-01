@@ -239,12 +239,18 @@ export async function listExchangeHouses(input: ListExchangeInput = {}) {
 export interface DepositInput {
   exchangeHouseId: number;
   branchId: number;
-  amount: string; // دينار
+  amount: string; // بعملة `currency`
+  /** IQD (افتراضي) = نقد دينار حقيقي يغادر خزينة الفرع. USD = دولار مباشر (مصدره خارج خزينة الفرع
+   *  الدينارية — لا خزينة دولارية رسمية بعد) ⇒ بلا receipt، ويتطلّب سعراً مرجعياً لتحديث WAVG. */
+  currency?: "IQD" | "USD";
+  /** سعر مرجعي (دينار/دولار) — إلزامي لإيداع الدولار فقط (يُحدّث متوسط كلفة المحفظة WAVG). */
+  exchangeRate?: string | null;
   notes?: string | null;
   clientRequestId?: string | null;
 }
 
-/** إيداع نقد (دينار) من خزينة الفرع → محفظة الصيرفة (نقل أصل، 0/0/0). */
+/** إيداع نقد (دينار) من خزينة الفرع → محفظة الصيرفة، أو إيداع دولار مباشر لمحفظتها الدولارية
+ *  (معزولتان تماماً — كلٌّ بعمليّاته الخاصّة، بلا أثر على الأخرى). نقل أصل (0/0/0 دينارياً). */
 export async function depositToExchange(input: DepositInput, actor: Actor): Promise<{ txnId: number; txnNumber: string }> {
   return withTx(async (tx) => {
     if (input.clientRequestId) {
@@ -258,6 +264,53 @@ export async function depositToExchange(input: DepositInput, actor: Actor): Prom
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
 
     const house = await lockHouse(tx, input.exchangeHouseId);
+
+    if (input.currency === "USD") {
+      const rate = money(input.exchangeRate ?? 0);
+      if (rate.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "يلزم سعر صرف مرجعي موجب لإيداع الدولار" });
+
+      // متوسط كلفة مرجّح جديد (نظير buyUsd) — الدينار لا يتأثّر إطلاقاً (محفظتان معزولتان).
+      const oldUsd = money(house.balanceUsd);
+      const oldRate = money(house.usdCostRate);
+      const newUsd = oldUsd.plus(amount);
+      const newCostBasis = oldUsd.times(oldRate).plus(amount.times(rate));
+      const newRate = newUsd.isZero() ? new Decimal(0) : newCostBasis.div(newUsd);
+
+      await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, amount);
+      await tx.update(exchangeHouses).set({ usdCostRate: toDbRate(newRate) }).where(eq(exchangeHouses.id, input.exchangeHouseId));
+
+      const txnNumber = await nextTxnNumber(tx, input.branchId);
+      const txRes = await tx.insert(exchangeTransactions).values({
+        txnNumber,
+        exchangeHouseId: input.exchangeHouseId,
+        branchId: input.branchId,
+        type: "DEPOSIT",
+        currency: "USD",
+        usdAmount: toDbMoney(amount),
+        exchangeRate: toDbRate(rate),
+        balanceIqdAfter: toDbMoney(money(house.balanceIqd)),
+        balanceUsdAfter: toDbMoney(newUsd),
+        status: "ACTIVE",
+        notes: input.notes ?? null,
+        createdBy: actor.userId,
+      });
+      const txnId = extractInsertId(txRes);
+
+      // لا حركة نقد دينارية حقيقية ⇒ قيمة دينارية معادِلة إعلامية فقط (نظير قيد الرصيد الافتتاحي).
+      await postEntry(tx, {
+        entryType: "EXCHANGE_DEPOSIT",
+        branchId: input.branchId,
+        exchangeHouseId: input.exchangeHouseId,
+        amount: round2(amount.times(rate)),
+        dedupeKey: `EXDEP:${txnNumber}`,
+        notes: input.notes ?? "إيداع دولار مباشر",
+      });
+
+      if (input.clientRequestId) {
+        await recordIdempotencyKey(tx, "exchange.deposit", input.clientRequestId, txnId);
+      }
+      return { txnId, txnNumber };
+    }
 
     // receipt OUT TREASURY — نقد فعلي يغادر خزينة الفرع.
     const recRes = await tx.insert(receipts).values({
@@ -315,13 +368,17 @@ export async function depositToExchange(input: DepositInput, actor: Actor): Prom
 export interface WithdrawInput {
   exchangeHouseId: number;
   branchId: number;
-  amount: string; // دينار
+  amount: string; // بعملة `currency`
+  /** IQD (افتراضي) = نقد دينار يعود لخزينة الفرع. USD = سحب دولار مباشر (بلا receipt، بلا أثر
+   *  على الدينار — محفظتان معزولتان تماماً). متوسط الكلفة WAVG لا يتغيّر عند السحب. */
+  currency?: "IQD" | "USD";
   notes?: string | null;
   clientRequestId?: string | null;
   confirmNegative?: boolean;
 }
 
-/** سحب نقد (دينار) من محفظة الصيرفة → خزينة الفرع (عكس الإيداع، 0/0/0). */
+/** سحب نقد (دينار) من محفظة الصيرفة → خزينة الفرع، أو سحب دولار مباشر من محفظتها الدولارية
+ *  (عكس الإيداع بكلتا العملتين، كلٌّ بمعزل عن الآخر). */
 export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): Promise<{ txnId: number; txnNumber: string }> {
   return withTx(async (tx) => {
     if (input.clientRequestId) {
@@ -335,6 +392,52 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
 
     const house = await lockHouse(tx, input.exchangeHouseId);
+
+    if (input.currency === "USD") {
+      const availUsd = money(house.balanceUsd);
+      if (amount.gt(availUsd) && !input.confirmNegative) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `رصيد الدولار لدى الصيرفة ${availUsd.toFixed(2)}$ أقلّ من المطلوب ${amount.toFixed(2)}$. أرسل confirmNegative=true للتجاوز.`,
+        });
+      }
+
+      await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, amount.negated());
+      const balUsdAfter = availUsd.minus(amount);
+      const rate = money(house.usdCostRate);
+
+      const txnNumber = await nextTxnNumber(tx, input.branchId);
+      const txRes = await tx.insert(exchangeTransactions).values({
+        txnNumber,
+        exchangeHouseId: input.exchangeHouseId,
+        branchId: input.branchId,
+        type: "WITHDRAW",
+        currency: "USD",
+        usdAmount: toDbMoney(amount),
+        exchangeRate: toDbRate(rate),
+        balanceIqdAfter: toDbMoney(money(house.balanceIqd)),
+        balanceUsdAfter: toDbMoney(balUsdAfter),
+        status: "ACTIVE",
+        notes: input.notes ?? null,
+        createdBy: actor.userId,
+      });
+      const txnId = extractInsertId(txRes);
+
+      await postEntry(tx, {
+        entryType: "EXCHANGE_WITHDRAW",
+        branchId: input.branchId,
+        exchangeHouseId: input.exchangeHouseId,
+        amount: round2(amount.times(rate)),
+        dedupeKey: `EXWD:${txnNumber}`,
+        notes: input.notes ?? "سحب دولار مباشر",
+      });
+
+      if (input.clientRequestId) {
+        await recordIdempotencyKey(tx, "exchange.withdraw", input.clientRequestId, txnId);
+      }
+      return { txnId, txnNumber };
+    }
+
     const availIqd = money(house.balanceIqd);
     if (amount.gt(availIqd) && !input.confirmNegative) {
       throw new TRPCError({
@@ -667,13 +770,22 @@ export async function getExchangeStatement(input: StatementInput) {
 
   let totalDepositIqd = new Decimal(0);
   let totalWithdrawIqd = new Decimal(0);
+  let totalDepositUsd = new Decimal(0);
+  let totalWithdrawUsd = new Decimal(0);
   let totalSettledIqd = new Decimal(0);
   let totalFeesIqd = new Decimal(0);
   let totalFxDiff = new Decimal(0);
   let totalUsdBought = new Decimal(0);
   for (const t of txns) {
-    if (t.type === "DEPOSIT") totalDepositIqd = totalDepositIqd.plus(money(t.iqdAmount));
-    if (t.type === "WITHDRAW") totalWithdrawIqd = totalWithdrawIqd.plus(money(t.iqdAmount));
+    // إيداع/سحب دولار مباشر: iqdAmount=0 دائماً (محفظتان معزولتان) ⇒ مجموع IQD لا يتأثّر.
+    if (t.type === "DEPOSIT") {
+      totalDepositIqd = totalDepositIqd.plus(money(t.iqdAmount));
+      if (t.currency === "USD") totalDepositUsd = totalDepositUsd.plus(money(t.usdAmount));
+    }
+    if (t.type === "WITHDRAW") {
+      totalWithdrawIqd = totalWithdrawIqd.plus(money(t.iqdAmount));
+      if (t.currency === "USD") totalWithdrawUsd = totalWithdrawUsd.plus(money(t.usdAmount));
+    }
     if (t.type === "FX_BUY") totalUsdBought = totalUsdBought.plus(money(t.usdAmount));
     if (t.type === "SETTLE") totalSettledIqd = totalSettledIqd.plus(money(t.iqdAmount));
     totalFeesIqd = totalFeesIqd.plus(money(t.commissionIqd));
@@ -709,6 +821,8 @@ export async function getExchangeStatement(input: StatementInput) {
     summary: {
       totalDepositIqd: toDbMoney(totalDepositIqd),
       totalWithdrawIqd: toDbMoney(totalWithdrawIqd),
+      totalDepositUsd: toDbMoney(totalDepositUsd),
+      totalWithdrawUsd: toDbMoney(totalWithdrawUsd),
       totalSettledIqd: toDbMoney(totalSettledIqd),
       totalFeesIqd: toDbMoney(totalFeesIqd),
       totalFxDiff: toDbMoney(totalFxDiff),

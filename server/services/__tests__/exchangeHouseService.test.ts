@@ -221,6 +221,78 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     expect(rec2?.matched).toBe(false);
     expect(rec2?.diffIqd).toBe("50000.00"); // رصيدنا أعلى بـ50,000 (بند معلّق لديهم)
   });
+
+  it("رصيد افتتاحي سالب (علينا للصيرفة): المحفظتان تُقبلان السالب ومعزولتان تماماً", async () => {
+    const { id } = await createExchangeHouse(
+      { name: "عبد القادر العبيدي", openingBalanceIqd: "-2500000", openingBalanceUsd: "-1000", openingUsdRate: "1550" },
+      actor,
+    );
+    const h = await getExchangeHouse(id);
+    expect(h?.balanceIqd).toBe("-2500000.00");
+    expect(h?.balanceUsd).toBe("-1000.00");
+    expect(h?.usdCostRate).toBe("1550.0000");
+    // قيمة معادِلة: -2,500,000 + (-1000×1550) = -4,050,000.
+    expect(await ledgerAmount("OPENING", id)).toBe("-4050000.00");
+  });
+
+  it("إيداع دولار مباشر: يحدّث WAVG ولا يمسّ الدينار إطلاقاً (بلا receipt خزينة)", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    const treasuryBefore = await treasuryBalance(1);
+
+    const res = await depositToExchange(
+      { exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" },
+      actor,
+    );
+    let h = await getExchangeHouse(id);
+    expect(h?.balanceUsd).toBe("1000.00");
+    expect(h?.balanceIqd).toBe("0.00"); // معزول — لم يتأثّر
+    expect(h?.usdCostRate).toBe("1500.0000");
+    // بلا حركة نقد حقيقية ⇒ لا receipt جديد، الخزينة كما هي.
+    expect(await treasuryBalance(1)).toBe(treasuryBefore);
+    // قيمة معادِلة إعلامية في الدفتر = 1000×1500.
+    expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("1500000.00");
+
+    // إيداع دولار إضافي بسعر مختلف ⇒ WAVG = (1000×1500 + 500×1600)/1500 = 2,300,000/1500 ≈ 1533.3333.
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "500", currency: "USD", exchangeRate: "1600" }, actor);
+    h = await getExchangeHouse(id);
+    expect(h?.balanceUsd).toBe("1500.00");
+    expect(h?.usdCostRate).toBe("1533.3333");
+    expect(res.txnNumber).toMatch(/^EX-1-\d{8}-\d{5}$/);
+  });
+
+  it("سحب دولار مباشر: يخفض المحفظة فقط بلا تغيير WAVG ولا أثر دينار، ويُمنع المكشوف بتحذير", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" }, actor);
+    const treasuryBefore = await treasuryBalance(1);
+
+    await withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "300", currency: "USD" }, actor);
+    let h = await getExchangeHouse(id);
+    expect(h?.balanceUsd).toBe("700.00");
+    expect(h?.usdCostRate).toBe("1500.0000"); // WAVG لا يتغيّر بالسحب
+    expect(h?.balanceIqd).toBe("0.00");
+    expect(await treasuryBalance(1)).toBe(treasuryBefore); // بلا receipt
+
+    // سحب يتجاوز الرصيد الدولاري يُرفض بلا confirmNegative، ويُقبل معه.
+    await expect(
+      withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "800", currency: "USD" }, actor),
+    ).rejects.toThrow();
+    await withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "800", currency: "USD", confirmNegative: true }, actor);
+    h = await getExchangeHouse(id);
+    expect(h?.balanceUsd).toBe("-100.00");
+  });
+
+  it("كشف الحساب: إجمالي الإيداع/السحب الدولاري المباشر لا يُخلط مع الديناري", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "500000" }, actor); // IQD
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" }, actor);
+    await withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "200", currency: "USD" }, actor);
+
+    const st = await getExchangeStatement({ exchangeHouseId: id });
+    expect(st?.summary.totalDepositIqd).toBe("500000.00");
+    expect(st?.summary.totalDepositUsd).toBe("1000.00");
+    expect(st?.summary.totalWithdrawUsd).toBe("200.00");
+    expect(st?.summary.totalWithdrawIqd).toBe("0.00");
+  });
 });
 
 describe("exchange-house — تكامل التقارير والمطابقة (إصلاحات مراجعة Codex)", () => {

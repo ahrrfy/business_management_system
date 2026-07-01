@@ -112,6 +112,15 @@ export default function PurchaseReceive() {
           <div><div className="text-muted-foreground text-xs">المورد</div><div>{data.supplierName ?? "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">الحالة</div><div>{PO_STATUS[data.status] ?? data.status}</div></div>
           <div><div className="text-muted-foreground text-xs">الإجمالي / المدفوع</div><div dir="ltr">{fmt(data.total)} / {fmt(data.paidAmount)}</div></div>
+          {data.agreedCurrency === "USD" && data.usdTotal && (
+            <>
+              <div><div className="text-muted-foreground text-xs">فاتورة المورد (دولار)</div><div dir="ltr" className="font-medium">${fmt(data.usdTotal)}</div></div>
+              <div>
+                <div className="text-muted-foreground text-xs">السعر الضمني (د.ع/$)</div>
+                <div dir="ltr">{data.agreedRate ? fmt(data.agreedRate) : "—"}</div>
+              </div>
+            </>
+          )}
         </CardContent>
       </Card>
 

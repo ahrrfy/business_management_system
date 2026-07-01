@@ -28,6 +28,7 @@ export function createInitialState(type: InvoiceType, branchId = 1): InvoiceStat
     paymentMethod: "CASH",
     dueDate: "",
     currency: "IQD",
+    usdTotal: "",
     salesRepId: "",
     refInvoice: "",
     poReference: "",

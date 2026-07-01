@@ -5,6 +5,7 @@ import { ArrowDownToLine, ArrowUpFromLine, DollarSign, Wallet } from "lucide-rea
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -12,6 +13,7 @@ import { D, fmtAr, formatIqd } from "@/lib/money";
 import { BalanceTag, isMoneyStr, isRateStr, newClientRequestId, selectCls, type ExchangeRow } from "@/components/exchange/shared";
 
 type Action = "deposit" | "withdraw" | "buyUsd";
+type Currency = "IQD" | "USD";
 
 export default function ExchangeOperations() {
   const utils = trpc.useUtils();
@@ -22,7 +24,10 @@ export default function ExchangeOperations() {
   const [houseId, setHouseId] = useState<number>(0);
   const [action, setAction] = useState<Action>("deposit");
   const [branchId, setBranchId] = useState<number>(0);
+  // إيداع/سحب دولار مباشر (معزول تماماً عن الدينار) — مستقلّ عن شراء الدولار (تحويل داخلي).
+  const [currency, setCurrency] = useState<Currency>("IQD");
   const [amount, setAmount] = useState("");
+  const [depositRate, setDepositRate] = useState(""); // سعر مرجعي لإيداع الدولار (يُحدّث WAVG)
   const [usdAmount, setUsdAmount] = useState("");
   const [rate, setRate] = useState("");
   const [notes, setNotes] = useState("");
@@ -41,7 +46,7 @@ export default function ExchangeOperations() {
     }
     notify.err(e.message);
   };
-  const reset = () => { setAmount(""); setUsdAmount(""); setRate(""); setNotes(""); setWarn(null); };
+  const reset = () => { setAmount(""); setDepositRate(""); setUsdAmount(""); setRate(""); setNotes(""); setWarn(null); };
   const afterOk = (msg: string) => {
     notify.ok(msg);
     reset();
@@ -60,12 +65,21 @@ export default function ExchangeOperations() {
   const doDeposit = () => {
     if (!guard()) return;
     if (!isMoneyStr(amount)) { notify.err("أدخل مبلغاً صحيحاً"); return; }
-    deposit.mutate({ exchangeHouseId: houseId, branchId: effBranch, amount, notes: notes || undefined, clientRequestId: newClientRequestId("exdep") });
+    if (currency === "USD" && !isRateStr(depositRate)) { notify.err("أدخل سعراً مرجعياً صحيحاً لإيداع الدولار"); return; }
+    deposit.mutate({
+      exchangeHouseId: houseId,
+      branchId: effBranch,
+      amount,
+      currency,
+      exchangeRate: currency === "USD" ? depositRate : undefined,
+      notes: notes || undefined,
+      clientRequestId: newClientRequestId("exdep"),
+    });
   };
   const doWithdraw = (confirmNegative = false) => {
     if (!guard()) return;
     if (!isMoneyStr(amount)) { notify.err("أدخل مبلغاً صحيحاً"); return; }
-    withdraw.mutate({ exchangeHouseId: houseId, branchId: effBranch, amount, notes: notes || undefined, confirmNegative, clientRequestId: newClientRequestId("exwd") });
+    withdraw.mutate({ exchangeHouseId: houseId, branchId: effBranch, amount, currency, notes: notes || undefined, confirmNegative, clientRequestId: newClientRequestId("exwd") });
   };
   const doBuyUsd = (confirmNegative = false) => {
     if (!guard()) return;
@@ -124,7 +138,7 @@ export default function ExchangeOperations() {
           ] as const).map(([a, lbl, Icon]) => (
             <button
               key={a}
-              onClick={() => { setAction(a); setWarn(null); }}
+              onClick={() => { setAction(a); setCurrency("IQD"); reset(); }}
               className={action === a ? "px-3 py-1.5 rounded-sm bg-primary text-primary-foreground text-sm flex items-center gap-1.5" : "px-3 py-1.5 rounded-sm text-muted-foreground hover:text-foreground text-sm flex items-center gap-1.5"}
             >
               <Icon className="h-3.5 w-3.5" />{lbl}
@@ -132,22 +146,51 @@ export default function ExchangeOperations() {
           ))}
         </div>
 
+        {/* اختيار العملة — إيداع/سحب دولار مباشر معزول تماماً عن الدينار (رصيدان مستقلّان). */}
+        {(action === "deposit" || action === "withdraw") && (
+          <div className="flex gap-1 rounded-md border bg-background p-0.5 w-fit">
+            {(["IQD", "USD"] as const).map((c) => (
+              <button key={c} onClick={() => { setCurrency(c); setWarn(null); }}
+                className={currency === c ? "px-4 py-1.5 rounded-sm bg-primary text-primary-foreground text-sm" : "px-4 py-1.5 rounded-sm text-muted-foreground hover:text-foreground text-sm"}>
+                {c === "IQD" ? "بالدينار" : "بالدولار"}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* النماذج */}
         {action === "deposit" && (
           <div className="grid gap-4 sm:grid-cols-2 items-end">
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">مبلغ الإيداع (د.ع)</label>
-              <Input value={amount} onChange={(e) => setAmount(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+              <label className="text-xs text-muted-foreground mb-1 block">مبلغ الإيداع ({currency === "USD" ? "$" : "د.ع"})</label>
+              <MoneyInput value={amount} onChange={setAmount} placeholder="0.00" />
             </div>
-            <div>
-              <label className="text-xs text-muted-foreground mb-1 block">ملاحظات</label>
-              <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
-            </div>
+            {currency === "USD" ? (
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">سعر مرجعي (دينار/دولار)</label>
+                <MoneyInput value={depositRate} onChange={setDepositRate} decimals={4} placeholder="1450" />
+              </div>
+            ) : (
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">ملاحظات</label>
+                <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </div>
+            )}
+            {currency === "USD" && (
+              <div className="sm:col-span-2">
+                <label className="text-xs text-muted-foreground mb-1 block">ملاحظات</label>
+                <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
+              </div>
+            )}
             <div className="sm:col-span-2">
               <Button onClick={doDeposit} disabled={pending} className="gap-1.5">
                 <ArrowDownToLine className="h-4 w-4" />{pending ? "جارٍ…" : "تنفيذ الإيداع"}
               </Button>
-              <p className="text-[11px] text-muted-foreground mt-1.5">يخرج النقد من خزينة الفرع ويصبح رصيداً لنا لدى الصيرفة (نقل أصل).</p>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                {currency === "USD"
+                  ? "دولار مباشر لمحفظة الصيرفة الدولارية (لا يمسّ رصيدنا الديناري إطلاقاً). السعر المرجعي يُحدّث متوسط كلفة المحفظة (WAVG)."
+                  : "يخرج النقد من خزينة الفرع ويصبح رصيداً لنا لدى الصيرفة (نقل أصل)."}
+              </p>
             </div>
           </div>
         )}
@@ -155,8 +198,8 @@ export default function ExchangeOperations() {
         {action === "withdraw" && (
           <div className="grid gap-4 sm:grid-cols-2 items-end">
             <div>
-              <label className="text-xs text-muted-foreground mb-1 block">مبلغ السحب (د.ع)</label>
-              <Input value={amount} onChange={(e) => setAmount(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+              <label className="text-xs text-muted-foreground mb-1 block">مبلغ السحب ({currency === "USD" ? "$" : "د.ع"})</label>
+              <MoneyInput value={amount} onChange={setAmount} placeholder="0.00" />
             </div>
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">ملاحظات</label>
@@ -166,7 +209,11 @@ export default function ExchangeOperations() {
               <Button onClick={() => doWithdraw(false)} disabled={pending} className="gap-1.5">
                 <ArrowUpFromLine className="h-4 w-4" />{pending ? "جارٍ…" : "تنفيذ السحب"}
               </Button>
-              <p className="text-[11px] text-muted-foreground mt-1.5">يعود النقد من رصيدنا لدى الصيرفة إلى خزينة الفرع.</p>
+              <p className="text-[11px] text-muted-foreground mt-1.5">
+                {currency === "USD"
+                  ? "دولار مباشر من محفظة الصيرفة الدولارية (لا يمسّ رصيدنا الديناري إطلاقاً)."
+                  : "يعود النقد من رصيدنا لدى الصيرفة إلى خزينة الفرع."}
+              </p>
             </div>
           </div>
         )}
@@ -175,11 +222,11 @@ export default function ExchangeOperations() {
           <div className="grid gap-4 sm:grid-cols-3 items-end">
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">مبلغ الدولار ($)</label>
-              <Input value={usdAmount} onChange={(e) => setUsdAmount(e.target.value)} dir="ltr" inputMode="decimal" placeholder="0.00" className="tabular-nums" />
+              <MoneyInput value={usdAmount} onChange={setUsdAmount} placeholder="0.00" />
             </div>
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">سعر الصرف (دينار/دولار)</label>
-              <Input value={rate} onChange={(e) => setRate(e.target.value)} dir="ltr" inputMode="decimal" placeholder="1450" className="tabular-nums" />
+              <MoneyInput value={rate} onChange={setRate} decimals={4} placeholder="1450" />
             </div>
             <div>
               <label className="text-xs text-muted-foreground mb-1 block">الكلفة بالدينار</label>

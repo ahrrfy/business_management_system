@@ -1014,6 +1014,13 @@ export const purchaseOrders = mysqlTable(
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     status: mysqlEnum("poStatus", ["DRAFT", "SENT", "CONFIRMED", "RECEIVED", "CANCELLED"]).default("DRAFT").notNull(),
+    // usd-po-reconcile: مطابقة سعر الشراء بالدولار (اختياري، إعلامي بحت — لا يمسّ total/paidAmount
+    // الديناريَين ولا محرّك الحسابات). agreedCurrency=USD ⇒ usdTotal (كما في فاتورة المورد الفعلية)
+    // + agreedRate (= total/usdTotal، سعر ضمني محسوب عند الإنشاء) يُخزَّنان للمقارنة لاحقاً بسعر
+    // التسديد الفعلي عبر الصيرفة (لا ربط آلي — مطابقة بصرية بين شاشتَي أمر الشراء وكشف الصيرفة).
+    agreedCurrency: mysqlEnum("poCurrency", ["IQD", "USD"]).default("IQD").notNull(),
+    usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
+    agreedRate: decimal("agreedRate", { precision: 15, scale: 4 }),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

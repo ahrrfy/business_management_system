@@ -94,6 +94,10 @@ export default function PurchaseNew() {
       if (!base.isInteger())
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
     }
+    // usd-po-reconcile: عند اختيار الدولار، مبلغ فاتورة المورد الفعلية إلزامي وموجب.
+    if (state.currency === "USD" && !(D(state.usdTotal).gt(0))) {
+      return "أدخل مبلغ فاتورة المورد بالدولار.";
+    }
     return null;
   }
 
@@ -110,6 +114,9 @@ export default function PurchaseNew() {
       taxRatePercent: "0",
       status: "CONFIRMED",
       notes: state.notes.trim() || undefined,
+      // usd-po-reconcile: مبلغ فاتورة المورد الفعلية بالدولار (إعلامي — لا يمسّ الإجمالي الديناري).
+      agreedCurrency: state.currency,
+      usdTotal: state.currency === "USD" ? round2(D(state.usdTotal)).toFixed(2) : undefined,
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,

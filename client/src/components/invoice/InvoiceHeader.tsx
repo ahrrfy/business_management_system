@@ -5,6 +5,7 @@
  */
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import {
   Select,
   SelectContent,
@@ -218,6 +219,18 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
               </SelectContent>
             </Select>
           </FieldGroup>
+
+          {/* usd-po-reconcile: أمر الشراء فقط — مبلغ فاتورة المورد الفعلية بالدولار، للمطابقة
+              لاحقاً بسعر التسديد الفعلي عبر الصيرفة (إعلامي بحت — الإجمالي الديناري لا يتغيّر). */}
+          {isPurchase && state.currency === "USD" && (
+            <FieldGroup label="مبلغ فاتورة المورد ($)" icon={DollarSign} required>
+              <MoneyInput
+                value={state.usdTotal}
+                onChange={(v) => dispatch({ type: "SET_FIELD", field: "usdTotal", value: v })}
+                placeholder="0.00"
+              />
+            </FieldGroup>
+          )}
 
           {isSale && !isReturn && salesReps && salesReps.length > 0 && (
             <FieldGroup label="مندوب المبيعات" icon={UserCheck}>
