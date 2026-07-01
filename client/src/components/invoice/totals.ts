@@ -73,6 +73,13 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
       : gdRaw;
   const afterGlobalDisc = afterItemDisc.minus(globalDiscAmt);
 
+  // ضريبة مستوى الفاتورة (اختيارية) — على (المجموع الفرعي − كل الخصومات)، مطابقة تماماً
+  // لـcomputeInvoiceTotals الخادمية (سياسة #14: لا تُطبَّق إلا بتفعيل صريح من المستخدم).
+  if (state.taxEnabled) {
+    const invoiceTaxRate = safeD(state.taxRatePercent ?? "0");
+    totalTax = totalTax.plus(afterGlobalDisc.times(invoiceTaxRate).dividedBy(100));
+  }
+
   const shipping = safeD(state.shipping);
   const otherExpenses = safeD(state.otherExpenses);
   const grandTotal = afterGlobalDisc.plus(totalTax).plus(shipping).plus(otherExpenses);

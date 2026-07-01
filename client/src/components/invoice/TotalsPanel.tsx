@@ -3,9 +3,10 @@
  * Ported from `_design-bundle/project/invoice-footer.jsx#TotalsPanel`.
  */
 import type { Dispatch } from "react";
-import { Calculator, CreditCard, Lock, Package, Truck } from "lucide-react";
+import { Calculator, CreditCard, Lock, Package, Percent, Truck } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { calcTotals, fmtNum } from "./totals";
 import { PAYMENT_METHODS, type InvoiceAction, type InvoiceLine, type InvoiceState, type PaymentMethod } from "./types";
@@ -18,6 +19,8 @@ export interface TotalsPanelProps {
   showShipping?: boolean;
   /** false = hide the other-expenses input (backend doesn't persist it). Default true. */
   showOtherExpenses?: boolean;
+  /** true = show the invoice-level tax toggle + rate field (e.g. SALE for customers needing a tax invoice). Default false to preserve existing screens. */
+  showTaxToggle?: boolean;
 }
 
 export function TotalsPanel({
@@ -26,6 +29,7 @@ export function TotalsPanel({
   dispatch,
   showShipping = true,
   showOtherExpenses = true,
+  showTaxToggle = false,
 }: TotalsPanelProps) {
   const t = calcTotals(items, state);
   const currSym = state.currency === "USD" ? "$" : "د.ع";
@@ -94,10 +98,38 @@ export function TotalsPanel({
           )}
         </div>
 
+        {/* Invoice-level tax toggle (optional — applied on (subtotal − discounts) عند الحاجة) */}
+        {showTaxToggle && (
+          <div className={cn(rowCls, "border-b border-dashed pb-2")}>
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={state.taxEnabled}
+                onCheckedChange={(v) => dispatch({ type: "SET_FIELD", field: "taxEnabled", value: v })}
+                aria-label="تطبيق ضريبة على الفاتورة"
+              />
+              <span className={cn(labelCls, "inline-flex items-center gap-1.5")}>
+                <Percent aria-hidden className="size-3.5" /> تطبيق ضريبة
+              </span>
+            </div>
+            {state.taxEnabled && (
+              <div className="flex items-center gap-1">
+                <Input
+                  dir="ltr"
+                  value={state.taxRatePercent}
+                  onChange={(e) => dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: e.target.value })}
+                  className="h-7 w-14 text-center text-xs font-bold"
+                  aria-label="نسبة الضريبة"
+                />
+                <span className="text-xs font-bold text-muted-foreground">%</span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Tax */}
         {Number(t.totalTax) > 0 && (
           <div className={rowCls}>
-            <span className={labelCls}>الضريبة (+)</span>
+            <span className={labelCls}>الضريبة{showTaxToggle && state.taxEnabled ? ` (${fmtNum(state.taxRatePercent)}%)` : ""} (+)</span>
             <span className={valueCls} dir="ltr">{fmtNum(t.totalTax)}</span>
           </div>
         )}
