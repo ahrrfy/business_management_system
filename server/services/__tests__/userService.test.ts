@@ -9,6 +9,7 @@ import {
   getUser,
   listUsers,
   resetUserPassword,
+  revokeUserSessions,
   setUserActive,
   updateUser,
 } from "../userService";
@@ -184,6 +185,23 @@ describe("userService.resetUserPassword", () => {
   it("يرفض كلمة مرور ضعيفة", async () => {
     const { userId } = await createUser({ name: "ز", email: "z3@a.local", password: "Pass1234!Aaa" }, actor);
     await expect(resetUserPassword(userId, "weak", actor)).rejects.toThrow();
+  });
+});
+
+describe("userService.revokeUserSessions", () => {
+  it("يُبطل الجلسات (sessionsValidFrom يتقدّم) بلا مساس بكلمة المرور", async () => {
+    const { userId } = await createUser({ name: "ط", email: "t@a.local", password: "Pass1234!Aaa" }, actor);
+    const before = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
+    await new Promise((r) => setTimeout(r, 5)); // فرق زمني مضمون بين before/after
+    const res = await revokeUserSessions(userId, actor);
+    expect(res.userId).toBe(userId);
+    const after = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
+    expect(new Date(after.sessionsValidFrom).getTime()).toBeGreaterThan(new Date(before.sessionsValidFrom).getTime());
+    expect(verifyPassword("Pass1234!Aaa", after.passwordHash)).toBe(true); // كلمة المرور لم تتغيّر
+  });
+
+  it("رفض: مستخدم غير موجود ⇒ NOT_FOUND", async () => {
+    await expect(revokeUserSessions(999999, actor)).rejects.toThrow(/المستخدم غير موجود/);
   });
 });
 

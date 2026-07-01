@@ -11,6 +11,7 @@ import {
   getUser,
   listUsers,
   resetUserPassword,
+  revokeUserSessions,
   setUserActive,
   suggestUsername,
   updateUser,
@@ -203,6 +204,20 @@ export const userRouter = router({
         entityType: "user",
         entityId: input.userId,
         newValue: { mustChangePassword: input.mustChangePassword },
+      });
+      return res;
+    }),
+
+  /** إبطال كل جلسات مستخدم فوراً بلا تغيير كلمة مروره (جهاز مفقود/موظف مطرود). */
+  revokeSessions: adminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await revokeUserSessions(input.userId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "user.revokeSessions",
+        entityType: "user",
+        entityId: input.userId,
+        newValue: { revokedAt: res.revokedAt },
       });
       return res;
     }),

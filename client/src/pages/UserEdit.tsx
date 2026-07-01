@@ -95,6 +95,7 @@ export default function UserEdit() {
   const [pwMsg, setPwMsg] = useState("");
   const [mustChangeOnReset, setMustChangeOnReset] = useState(true);
   const [resetShare, setResetShare] = useState<{ password: string; email: string; username?: string; name: string; phone?: string } | null>(null);
+  const [revokeMsg, setRevokeMsg] = useState("");
 
   useEffect(() => {
     if (detail.data && !loaded) {
@@ -142,6 +143,10 @@ export default function UserEdit() {
       setNewPassword("");
     },
     onError: (e) => setPwMsg(e.message),
+  });
+  const revokeSessions = trpc.users.revokeSessions.useMutation({
+    onSuccess: () => setRevokeMsg("أُبطِلت كل جلسات المستخدم — سيُطلَب منه الدخول من جديد."),
+    onError: (e) => setRevokeMsg(e.message),
   });
   const resolvedPerms = useMemo(
     () => resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
@@ -225,6 +230,17 @@ export default function UserEdit() {
       confirmText: "إعادة التعيين",
     }))) return;
     resetPassword.mutate({ userId, newPassword, mustChangePassword: mustChangeOnReset });
+  }
+
+  async function doRevokeSessions() {
+    setRevokeMsg("");
+    if (!(await confirm({
+      variant: "warning",
+      title: "إبطال الجلسات النشطة",
+      description: `سيُطرَد «${name || u?.email || `#${userId}`}» من كل جلساته الحالية فوراً بلا تغيير كلمة مروره — يحتاج دخولاً جديداً. هل تتابع؟`,
+      confirmText: "إبطال الجلسات",
+    }))) return;
+    revokeSessions.mutate({ userId });
   }
 
   async function handleDelete() {
@@ -451,6 +467,21 @@ export default function UserEdit() {
               onClose={() => setResetShare(null)}
             />
           )}
+        </CardContent>
+      </Card>
+
+      {/* إبطال الجلسات النشطة */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">إبطال الجلسات النشطة</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-xs text-muted-foreground">
+            يَطرد المستخدم من كل جلساته الحالية فوراً (جهاز مفقود/موظف مطرود) بلا تغيير كلمة مروره —
+            بديل أخفّ من «إعادة تعيين كلمة المرور» عندما لا داعي لكلمة مرور جديدة.
+          </p>
+          <Button variant="outline" onClick={() => void doRevokeSessions()} disabled={revokeSessions.isPending}>
+            {revokeSessions.isPending ? "…" : "إبطال كل الجلسات"}
+          </Button>
+          {revokeMsg && <p className={`text-sm ${revokeSessions.isSuccess ? "text-money-positive" : "text-destructive"}`}>{revokeMsg}</p>}
         </CardContent>
       </Card>
 
