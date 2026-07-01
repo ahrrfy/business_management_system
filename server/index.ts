@@ -15,7 +15,7 @@ import { nanoid } from "nanoid";
 import { createServer } from "http";
 import net from "net";
 import { createContext } from "./context";
-import { getDb, closeDb } from "./db";
+import { getDb, closeDb, ensureTenantDb, isMultiTenantModeActive } from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
@@ -23,6 +23,10 @@ import { csrfGuard } from "./middleware/csrf";
 import { printRouter } from "./printRoute";
 import { backupRouter } from "./backupRoutes";
 import { channelWebhooksRouter } from "./routes/channelWebhooks";
+import { parse as parseCookie } from "cookie";
+import { COOKIE_NAME } from "@shared/const";
+import { verifySession } from "./auth/session";
+import { runWithCompany } from "./tenancy/context";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -224,6 +228,37 @@ async function startServer() {
     }
     next();
   });
+  // تحديد الشركة الحالية (تعدّد الشركات) — قبل إنشاء سياق tRPC مباشرة. يفكّ الجلسة (JWT
+  // فقط، بلا فحص بصمة هنا — يحدث لاحقاً بالكامل داخل getUserFromRequest عبر createContext)
+  // لاستخراج companyId مبكراً، يُحضّر اتصال قاعدة تلك الشركة (ensureTenantDb) ثم يُغلّف بقية
+  // معالجة الطلب بسياقها (runWithCompany) — فيُوجَّه كل getDb() لاحق (بما فيه داخل
+  // createContext/authRouter) تلقائياً لقاعدتها الصحيحة بلا أي تعديل في تلك الطبقات.
+  //
+  // بلا CONTROL_DATABASE_URL (نشر أحادي الشركة): تمريرة شفّافة تماماً — سلوك المشروع كما
+  // كان قبل تعدد الشركات، بلا أي تغيير. طلب تسجيل الدخول نفسه (لا كوكي بعد) يُحلّ شركته من
+  // حقل companyCode داخل authRouter.login مباشرة، لا من هذا الوسيط.
+  //
+  // ⚠️ نطاق هذه المرحلة: هذا الوسيط مُفعَّل على /api/trpc فقط. مسارات /api/print
+  // و/api/backups و/api/webhooks لا تحمل سياق شركة بعد (خارج نطاق هذه المرحلة عمداً) —
+  // ستحتاج تصميماً مستقلاً (مثلاً مسار ويب-هوك لكل شركة) قبل تفعيل تعدد الشركات فعلياً في
+  // إنتاج يستعملها.
+  app.use("/api/trpc", async (req, _res, next) => {
+    if (!isMultiTenantModeActive()) return next();
+    const cookies = parseCookie(req.headers.cookie ?? "");
+    const session = await verifySession(cookies[COOKIE_NAME]).catch(() => null);
+    if (!session?.companyId) return next();
+    try {
+      const db = await ensureTenantDb(session.companyId);
+      runWithCompany(session.companyId, db, () => next());
+    } catch (e) {
+      // شركة غير موجودة/معطّلة بعد إصدار التوكن ⇒ تابع بلا سياق؛ createContext يمتصّ فشل
+      // getDb() اللاحق (try/catch مبني فيه) فيصبح ctx.user=null — يُعامَل كغير مسجَّل دخول
+      // (لا 500 خام)، لا تسريباً صامتاً على قاعدة خاطئة.
+      logger.warn({ err: e, companyId: session.companyId }, "tenancy.middleware.company_unavailable");
+      next();
+    }
+  });
+
   // maxBatchSize: يحدّ حجم دفعة tRPC الواحدة ⇒ سطح هجوم batch محدّد. خفّضناه من 50 إلى 20
   // لأن الواجهة الفعلية لا تتجاوز ~10 نداءات متوازية، والـ20 احتياطٌ مريح.
   app.use("/api/trpc", createExpressMiddleware({ router: appRouter, createContext, maxBatchSize: 20 }));
