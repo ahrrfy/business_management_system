@@ -62,4 +62,12 @@ describe("الموردون CRUD", () => {
     expect((await listSuppliers({})).total).toBe(0);
     expect((await listSuppliers({ includeInactive: true })).total).toBe(1);
   });
+
+  it("D2 (١/٧): البحث بالاسم يتجاوز الهمزات/التاء المربوطة عبر searchNorm", async () => {
+    await createSupplier({ name: "شركة الأمانة للتجارة" }, actor);
+    await createSupplier({ name: "مكتبة الرشيد" }, actor);
+    const noHamza = await listSuppliers({ q: "الامانه" });
+    expect(noHamza.total).toBe(1);
+    expect(noHamza.rows[0].name).toBe("شركة الأمانة للتجارة");
+  });
 });

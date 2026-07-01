@@ -8,6 +8,7 @@ import {
   deactivateCustomer,
   getCustomer,
   listCustomers,
+  smartSearchCustomers,
   updateCustomer,
 } from "../customerService";
 
@@ -278,6 +279,19 @@ describe("customerService.listCustomers", () => {
     expect(byPhone.rows[0].name).toBe("علي حسن");
   });
 
+  it("D2 (١/٧): البحث بالاسم يتجاوز الهمزات/التاء المربوطة عبر searchNorm", async () => {
+    await createCustomer({ name: "أحمد التجارة" }, actor);
+    await createCustomer({ name: "علي حسن" }, actor);
+    // «احمد» بلا همزة يجد «أحمد» بالهمزة.
+    const noHamza = await listCustomers({ q: "احمد" });
+    expect(noHamza.rows).toHaveLength(1);
+    expect(noHamza.rows[0].name).toBe("أحمد التجارة");
+    // «التجاره» بهاء عادية يجد «التجارة» بتاء مربوطة.
+    const taMarbuta = await listCustomers({ q: "التجاره" });
+    expect(taMarbuta.rows).toHaveLength(1);
+    expect(taMarbuta.rows[0].name).toBe("أحمد التجارة");
+  });
+
   it("يفلتر بنوع العميل وفئة السعر", async () => {
     await createCustomer({ name: "ت١", customerType: "تاجر", defaultPriceTier: "WHOLESALE" }, actor);
     await createCustomer({ name: "ف١", customerType: "فرد", defaultPriceTier: "RETAIL" }, actor);
@@ -298,6 +312,17 @@ describe("customerService.listCustomers", () => {
     expect(page2.total).toBe(5);
     const page3 = await listCustomers({ limit: 2, offset: 4 });
     expect(page3.rows).toHaveLength(1);
+  });
+});
+
+describe("customerService.smartSearchCustomers", () => {
+  it("D2 (١/٧): يتجاوز الهمزات عبر searchNorm ويستثني غير المفعَّلين", async () => {
+    const a = await createCustomer({ name: "أحمد التاجر" }, actor);
+    await deactivateCustomer(a.customerId, actor);
+    await createCustomer({ name: "أنس التاجر" }, actor);
+    const r = await smartSearchCustomers({ q: "انس" });
+    expect(r).toHaveLength(1);
+    expect(r[0].name).toBe("أنس التاجر");
   });
 });
 

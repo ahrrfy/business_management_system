@@ -21,6 +21,8 @@ const EXTRA_MIGRATIONS = [
   // 0036 يُضيف voucherCategories + أعمدة receipts. درizzle-kit يَفهم الجداول العادية لكن
   // مَيلُه إسقاط بَعض الـFK/UNIQUE صامتاً ⇒ نُكرّر التَطبيق هنا idempotently كَدفاع متعمّق.
   "drizzle/migrations/0036_vouchers_pro.sql",
+  // 0039 توسعة D2: نفس نمط 0035 (GENERATED STORED) على customers.searchNorm/suppliers.searchNorm.
+  "drizzle/migrations/0039_search_norm_customers_suppliers.sql",
 ];
 
 const url = process.env.DATABASE_URL;
