@@ -3,6 +3,7 @@ import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import { customers, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { escLike } from "../../lib/sqlLike";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 import type { SearchKind, SearchResult } from "./types";
 
 // ────────────────────────────── المنتجات + الوحدات + الباركود ──────────────────────────────
@@ -92,10 +93,12 @@ async function searchCustomers(
   if (kind === "DOC_NUMBER" && !/^\d+$/.test(query)) return []; // مُعرّف وثيقة كامل ⇒ ليس عميلاً
 
   const like_ = `%${escLike(query)}%`;
+  // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط شاشة العملاء).
+  const likeFolded = `%${escLike(normalizeSearchText(query))}%`;
   const conds = [
     eq(customers.isActive, true),
     or(
-      sql`${customers.name} LIKE ${like_} ESCAPE '!'`,
+      sql`coalesce(${customers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'`,
       sql`${customers.phone} LIKE ${like_} ESCAPE '!'`,
       sql`${customers.phone2} LIKE ${like_} ESCAPE '!'`,
       sql`${customers.phone3} LIKE ${like_} ESCAPE '!'`,
@@ -140,6 +143,8 @@ async function searchSuppliers(
   if (kind === "DOC_NUMBER" && !/^\d+$/.test(query)) return [];
 
   const like_ = `%${escLike(query)}%`;
+  // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط شاشة الموردين).
+  const likeFolded = `%${escLike(normalizeSearchText(query))}%`;
   const rows = await db
     .select({
       id: suppliers.id,
@@ -152,7 +157,7 @@ async function searchSuppliers(
     .where(and(
       eq(suppliers.isActive, true),
       or(
-        sql`${suppliers.name} LIKE ${like_} ESCAPE '!'`,
+        sql`coalesce(${suppliers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'`,
         sql`${suppliers.phone} LIKE ${like_} ESCAPE '!'`,
         sql`${suppliers.phone2} LIKE ${like_} ESCAPE '!'`,
         sql`${suppliers.phone3} LIKE ${like_} ESCAPE '!'`,

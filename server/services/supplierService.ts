@@ -3,6 +3,7 @@ import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
 import { purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escapeLike } from "../lib/sqlLike";
+import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -190,10 +191,13 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
   if (!input.includeInactive) conds.push(eq(suppliers.isActive, true));
   if (input.q?.trim()) {
     const q = `%${escapeLike(input.q.trim())}%`;
+    // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط المنتجات/العملاء) — «ازرق»
+    // يجد «أزرق». بقية الحقول تبقى مطابقة خام (لا معنى للتطبيع العربي على أرقام/تصنيف إنجليزي).
+    const qFolded = `%${escapeLike(normalizeSearchText(input.q.trim()))}%`;
     // v3-add-screens: البحث يشمل هواتف المورّد الثلاثة + المدينة + التصنيف.
     // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
     conds.push(or(
-      like(suppliers.name, q),
+      sql`coalesce(${suppliers.searchNorm}, '') LIKE ${qFolded}`,
       like(suppliers.phone, q),
       like(suppliers.phone2, q),
       like(suppliers.phone3, q),

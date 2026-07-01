@@ -211,6 +211,14 @@ describe("globalSearch — توجيه حسب النمط", () => {
     expect(wos.some((r) => r.type === "WORK_ORDER")).toBe(true);
   });
 
+  it("D2 (١/٧): TEXT يتجاوز الهمزات عند مطابقة عميل/مورّد عبر searchNorm", async () => {
+    const custs = await globalSearch({ query: "احمد", branchId: refs.branchMain, role: "admin" });
+    expect(custs.some((r) => r.type === "CUSTOMER" && r.title === "أحمد علي")).toBe(true);
+
+    const sups = await globalSearch({ query: "الجامعه", branchId: refs.branchMain, role: "manager" });
+    expect(sups.some((r) => r.type === "SUPPLIER" && r.title === "مكتبة الجامعة")).toBe(true);
+  });
+
   it("استعلام فارغ ⇒ لا نتائج (لا تصفّح من البحث الشامل)", async () => {
     const out = await globalSearch({ query: "  ", branchId: refs.branchMain, role: "admin" });
     expect(out).toHaveLength(0);

@@ -162,6 +162,9 @@ export const customers = mysqlTable(
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    // توسعة D2 (١/٧): عمود مولَّد STORED بتطبيع عربي، نفس نمط products.searchNorm (هَجرة 0039).
+    // drizzle لا يَلمسه (read-only من JS) — مُعرَّف هنا للأنواع فقط.
+    searchNorm: varchar("searchNorm", { length: 512 }),
   },
   (table) => ({
     nameIdx: index("idx_customer_name").on(table.name),
@@ -205,6 +208,9 @@ export const suppliers = mysqlTable(
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+    // توسعة D2 (١/٧): عمود مولَّد STORED بتطبيع عربي، نفس نمط products.searchNorm (هَجرة 0039).
+    // drizzle لا يَلمسه (read-only من JS) — مُعرَّف هنا للأنواع فقط.
+    searchNorm: varchar("searchNorm", { length: 512 }),
   },
   (table) => ({
     nameIdx: index("idx_supplier_name").on(table.name),
