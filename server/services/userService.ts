@@ -389,6 +389,21 @@ export async function changePassword(userId: number, oldPassword: string, newPas
   });
 }
 
+/**
+ * إبطال كل جلسات مستخدم فوراً بلا مساس بكلمة مروره (مكمِّل لـresetUserPassword الذي يُبطل
+ * الجلسات كأثر جانبي لتغيير الكلمة — هذا الإجراء مستقلّ: إبطال فقط، لا تغيير كلمة مرور).
+ * يُستعمَل عند الشكّ بتسريب جلسة (جهاز مفقود/موظف مطرود) بلا الحاجة لتوليد كلمة مرور جديدة.
+ */
+export async function revokeUserSessions(userId: number, _actor: Actor) {
+  return withTx(async (tx) => {
+    const u = (await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("update").limit(1))[0];
+    if (!u) throw new TRPCError({ code: "NOT_FOUND", message: "المستخدم غير موجود" });
+    const revokedAt = new Date();
+    await tx.update(users).set({ sessionsValidFrom: revokedAt }).where(eq(users.id, userId));
+    return { userId, revokedAt };
+  });
+}
+
 /** فحص توفّر البريد الإلكتروني (لحظياً عند الكتابة). */
 export async function checkEmailAvailable(email: string, excludeUserId?: number): Promise<boolean> {
   const db = getDb();

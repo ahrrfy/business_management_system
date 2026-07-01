@@ -112,6 +112,17 @@ describe("تدقيق أحداث الهوية/المصادقة", () => {
     expect(JSON.stringify(reset)).not.toContain("Reset123!Bbb");
   });
 
+  it("user.revokeSessions يُسجَّل عبر الراوتر (adminProcedure) بلا مساس بكلمة المرور", async () => {
+    const admin = await seedAdmin();
+    const { userId } = await createUser({ name: "غ", email: "gh@test.local", password: "Pass1234!Aaa" }, { userId: 1, branchId: 1 });
+    const caller = appRouter.createCaller(makeCtx(admin));
+    await caller.users.revokeSessions({ userId });
+    const row = await lastAudit("user.revokeSessions");
+    expect(row).toBeTruthy();
+    expect(Number(row.entityId)).toBe(userId);
+    expect(Number(row.userId)).toBe(1); // الفاعل = المدير
+  });
+
   it("auth.changePassword يُسجَّل", async () => {
     await seedAdmin();
     const { userId } = await createUser({ name: "س", email: "s@test.local", password: "OldPass1!Aaa" }, { userId: 1, branchId: 1 });
