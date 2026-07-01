@@ -3,10 +3,12 @@ import { and, eq, not } from "drizzle-orm";
 import express, { type Request, type Response, type Router } from "express";
 import pino from "pino";
 import { channelIntegrations } from "../../drizzle/schema";
-import { getDb } from "../db";
+import { getDb, isMultiTenantModeActive } from "../db";
 import { decryptSecret } from "../services/cryptoService";
 import { addMessage, upsertConversation } from "../services/conversationService";
 import { findIntegrationByVerifyToken } from "../services/integrationService";
+import { getCurrentCompanyId } from "../tenancy/context";
+import { companyCodeTenancyMiddleware } from "../tenancy/expressMiddleware";
 
 /**
  * Webhook routes لِلقَنوات الخارِجية — شَريحة #5، مُحَدَّثة لِشَريحة #6.
@@ -91,9 +93,31 @@ function verifyStoreSignature(rawBody: Buffer, sig: string, secret: string): boo
   return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
 }
 
+/**
+ * ⛔ حارِس تَعدّد الشركات: `channelWebhooksRouter()` يُستَعمَل بِطَريقَتين — مَسار مُطلَق
+ * `/api/webhooks/*` (بَلا سِياق شَركة إطلاقاً؛ لا كوكي جَلسة يَصِل مِن مُزوّد خارِجي) وَمَسار
+ * مُقيَّد بِرَمز شَركة `/api/webhooks/company/:code/*` (سِياق الشَركة مَضبوط سَلَفاً عبر
+ * `companyCodeTenancyMiddleware` قَبل الوُصول هُنا). في وَضع تَعدّد الشركات، أَي مُعالِج
+ * أَدناه يَستَدعي `getDb()` بَلا سِياق شَركة سَيَرمي (تَصميم `db.ts` المُتَعمَّد) داخِل دالّة
+ * async — رَفض غَير مُلتَقَط هُناك يُصبِح `unhandledRejection` يُسقِط العَملية كامِلةً
+ * (Express 4 لا يَلتَقِط رَفض مُعالِج async تِلقائياً). نَرفُض هُنا بِوُضوح **قَبل** الوُصول
+ * لِأَي مُعالِج، فَلا يَتَحقَّق ذلِك السَيناريو إطلاقاً: بِحُلول وَقت أَي مُعالِج، إمّا نَشر
+ * أُحادي (`getDb` لا يَرمي لِغِياب السِياق) أَو تَعدّد شركات بِسِياق شَركة مَضبوط فِعلاً.
+ * مُصَدَّرة (لا داخِلية) كَي تُختَبَر مُباشَرةً بِلا الحاجة لِتَشغيل خادِم Express كامِل.
+ */
+export function webhookTenancyGuard(req: Request, res: Response, next: () => void): void {
+  if (isMultiTenantModeActive() && getCurrentCompanyId() == null) {
+    res.status(404).send("not found");
+    return;
+  }
+  next();
+}
+
 export function channelWebhooksRouter(): Router {
   const r = express.Router();
   const rawJson = express.raw({ type: "application/json", limit: "1mb" });
+
+  r.use(webhookTenancyGuard);
 
   /**
    * WhatsApp Business Cloud API — verify (GET) + receive (POST).
@@ -226,5 +250,21 @@ export function channelWebhooksRouter(): Router {
     }
   });
 
+  return r;
+}
+
+/**
+ * نَفس مَسارات `channelWebhooksRouter()` (whatsapp/instagram/store)، لَكِن مُقيَّدة بِسِياق
+ * شَركة مُحدَّدة صَراحةً مِن رَمزها في مَسار الرابط (`/api/webhooks/company/:companyCode/...`)
+ * — تُسجَّل هذه الرَوابط لَدى مُزوّد كل شَركة عَلى حِدة في وَضع تَعدّد الشركات، بَدَل الرابط
+ * غَير المُقيَّد (يَبقى ذاك يَعمَل كَما كان لِلنَشر الأُحادي أَو لِلشَركة الأُولى تَوافُقياً).
+ *
+ * `mergeParams: true` ضَروري كَي يَرى وَسيط `companyCodeTenancyMiddleware` أَسفَله
+ * `req.params.companyCode` القادِم مِن مَسار التَركيب الأَب في server/index.ts.
+ */
+export function companyChannelWebhooksRouter(): Router {
+  const r = express.Router({ mergeParams: true });
+  r.use(companyCodeTenancyMiddleware());
+  r.use(channelWebhooksRouter());
   return r;
 }

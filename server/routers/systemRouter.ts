@@ -6,7 +6,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { adminProcedure, publicProcedure, router } from "../trpc";
 import type { TrpcContext } from "../context";
-import { getDb } from "../db";
+import { getDb, isMultiTenantModeActive } from "../db";
 import { branches, users, products, customers, invoices } from "../../drizzle/schema";
 import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
@@ -21,16 +21,29 @@ function assertPassword(ctx: TrpcContext, password: string) {
 }
 
 /** يتحقّق أن رمز التأكيد يطابق اسم القاعدة بالضبط. */
-function assertConfirm(confirm: string) {
-  const db = maint.currentDbName();
+async function assertConfirm(confirm: string) {
+  const db = await maint.currentDbName();
   if (!confirm || confirm.trim() !== db) {
     throw new TRPCError({ code: "BAD_REQUEST", message: `رمز التأكيد يجب أن يطابق اسم القاعدة «${db}».` });
   }
 }
 
-function dbHost(): string {
-  const m = String(process.env.DATABASE_URL ?? "").match(/@([^:/]+):(\d+)/);
-  return m ? `${m[1]}:${m[2]}` : "—";
+/**
+ * ⛔ يمنع استعادة/تصفير القاعدة كاملةً في وضع تعدّد الشركات — راجع التوثيق المُفصَّل أعلى
+ * `runRestore`/`runReset` في maintenanceService.ts لسبب هذا القيد المعماري (لا نقص مؤجَّل).
+ * النسخ/القائمة/الحذف/التنزيل تبقى متاحة، مقيَّدة تلقائياً بملفات الشركة الحالية فقط.
+ */
+function assertSingleTenantOnly(action: string) {
+  if (isMultiTenantModeActive()) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        `${action} غير متاح في وضع تعدّد الشركات — عمليات استعادة/تصفير القاعدة كاملةً معطّلة ` +
+        "حفاظاً على عزل بيانات الشركات (لا يمكن لأدوات النسخ الحالية ضمان بقاء العملية داخل حدود " +
+        "قاعدة شركتك وحدها). النسخ الاحتياطي والتنزيل والحذف لملفاتك تبقى متاحة كما هي. للاستعادة " +
+        "الفعلية تواصل مع فريق تشغيل المنصّة.",
+    });
+  }
 }
 
 export const systemRouter = router({
@@ -51,8 +64,9 @@ export const systemRouter = router({
       counts = { branches: b[0].n, users: u[0].n, products: p[0].n, customers: c[0].n, invoices: i[0].n };
     }
     const target = getConfiguredTarget();
+    const [dbName, dbHostVal] = await Promise.all([maint.currentDbName(), maint.currentDbHost()]);
     return {
-      db: { name: maint.currentDbName(), host: dbHost() },
+      db: { name: dbName, host: dbHostVal },
       counts,
       backups: { ...(await maint.backupsStats()), dir: process.env.BACKUP_DIR ?? "backups" },
       printer: { enabled: target != null, description: describeTarget(target) },
@@ -60,7 +74,7 @@ export const systemRouter = router({
         dailyAt: "02:00",
         offsiteConfigured: !!(process.env.BACKUP_OFFSITE_DIR && process.env.BACKUP_OFFSITE_DIR.trim()),
       },
-      confirmToken: maint.currentDbName(),
+      confirmToken: dbName,
     };
   }),
 
@@ -89,8 +103,9 @@ export const systemRouter = router({
   restoreBackup: adminProcedure
     .input(z.object({ name: z.string(), confirm: z.string(), password: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
+      assertSingleTenantOnly("استعادة نسخة");
       assertPassword(ctx, input.password);
-      assertConfirm(input.confirm);
+      await assertConfirm(input.confirm);
       const abs = await maint.resolveBackupFile(input.name);
       if (!abs) throw new TRPCError({ code: "NOT_FOUND", message: "النسخة غير موجودة." });
       await logAudit(ctx, { action: "system.restore.begin", entityType: "system", entityId: input.name });
@@ -103,8 +118,9 @@ export const systemRouter = router({
   restoreUpload: adminProcedure
     .input(z.object({ fileName: z.string(), fileB64: z.string(), confirm: z.string(), password: z.string().min(1) }))
     .mutation(async ({ ctx, input }) => {
+      assertSingleTenantOnly("استعادة ملف مرفوع");
       assertPassword(ctx, input.password);
-      assertConfirm(input.confirm);
+      await assertConfirm(input.confirm);
       const tmp = await maint.quarantineUpload(input.fileB64);
       try {
         await logAudit(ctx, { action: "system.restore.upload.begin", entityType: "system", entityId: input.fileName });
@@ -120,8 +136,9 @@ export const systemRouter = router({
   resetSystem: adminProcedure
     .input(z.object({ confirm: z.string(), password: z.string().min(1), seed: z.boolean().optional() }))
     .mutation(async ({ ctx, input }) => {
+      assertSingleTenantOnly("تصفير النظام");
       assertPassword(ctx, input.password);
-      assertConfirm(input.confirm);
+      await assertConfirm(input.confirm);
       await logAudit(ctx, { action: "system.reset.begin", entityType: "system", entityId: null });
       await maint.runReset(!!input.seed);
       await logAudit(ctx, { action: "system.reset", entityType: "system", entityId: input.seed ? "seeded" : "empty" });

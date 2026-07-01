@@ -8,6 +8,10 @@ export interface ResolvedCompany {
   id: number;
   code: string;
   name: string;
+  /** اسم قاعدة الشركة الفعلي (بلا حاجة لتفكيك connectionUrl) — يُستعمَل لفلترة ملفات النسخ الاحتياطية الخاصة بها. */
+  dbName: string;
+  dbHost: string;
+  dbPort: number;
   /** عنوان اتصال Drizzle/mysql2 كامل (مع كلمة المرور مفكوكة التشفير) — لا يُسجَّل أبداً في السجلّات. */
   connectionUrl: string;
 }
@@ -23,7 +27,15 @@ function toResolved(row: Company): ResolvedCompany {
   if (!password) {
     throw new Error(`تعذّر فكّ تشفير كلمة مرور قاعدة الشركة «${row.code}» — تحقّق من INTEGRATIONS_ENCRYPTION_KEY.`);
   }
-  return { id: row.id, code: row.code, name: row.name, connectionUrl: buildConnectionUrl(row, password) };
+  return {
+    id: row.id,
+    code: row.code,
+    name: row.name,
+    dbName: row.dbName,
+    dbHost: row.dbHost,
+    dbPort: row.dbPort,
+    connectionUrl: buildConnectionUrl(row, password),
+  };
 }
 
 // ذاكرة تخزين مؤقت قصيرة (٣٠ث) — تُريح قاعدة التحكّم من استعلام على كل محاولة دخول

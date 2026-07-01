@@ -7,16 +7,45 @@ import { readdir, stat, writeFile, unlink } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { TRPCError } from "@trpc/server";
+import { getCurrentCompanyId } from "../tenancy/context";
+import { resolveCompanyById } from "../tenancy/registry";
 
 const execFileP = promisify(execFile);
 
 const scriptsDir = () => path.resolve(process.cwd(), "scripts");
 export const backupsDir = () => path.resolve(process.cwd(), process.env.BACKUP_DIR ?? "backups");
 
-/** اسم القاعدة الحالية من DATABASE_URL (للعرض ولرمز التأكيد). */
-export function currentDbName(): string {
+/**
+ * بَيانات اتّصال الشَركة الحالية (تَعدّد الشركات) إن وُجِد سِياق `runWithCompany` — و`null`
+ * في النَشر الأُحادي (لا `CONTROL_DATABASE_URL`) فَتَستمرّ كل الدَوال أَدناه بِسُلوكها القَديم
+ * تَماماً (قِراءة `DATABASE_URL` مُباشَرةً). مُخزَّن مُؤقَّتاً ٣٠ث داخِل registry.ts نَفسها.
+ */
+async function currentCompanyInfo() {
+  const companyId = getCurrentCompanyId();
+  if (companyId == null) return null;
+  return resolveCompanyById(companyId);
+}
+
+/** اسم القاعدة الحالية (شركة السِياق الحالي، أو DATABASE_URL في النَشر الأُحادي). */
+export async function currentDbName(): Promise<string> {
+  const company = await currentCompanyInfo();
+  if (company) return company.dbName;
   const m = String(process.env.DATABASE_URL ?? "").match(/\/([^/?]+)(\?.*)?$/);
   return m ? decodeURIComponent(m[1]) : "";
+}
+
+/** مضيف:منفذ القاعدة الحالية (للعرض في لوحة معلومات النظام). */
+export async function currentDbHost(): Promise<string> {
+  const company = await currentCompanyInfo();
+  if (company) return `${company.dbHost}:${company.dbPort}`;
+  const m = String(process.env.DATABASE_URL ?? "").match(/@([^:/]+):(\d+)/);
+  return m ? `${m[1]}:${m[2]}` : "—";
+}
+
+/** بادِئة اسم ملفّات نَسخ الشَركة الحالية (`<dbName>-...sql`) — `null` = بلا فِلترة (نَشر أُحادي). */
+async function backupFilePrefix(): Promise<string | null> {
+  const company = await currentCompanyInfo();
+  return company ? `${company.dbName}-` : null;
 }
 
 export type BackupFile = { name: string; sizeKb: number; createdAt: string };
@@ -28,8 +57,11 @@ export async function listBackupFiles(): Promise<BackupFile[]> {
   } catch {
     return []; // المجلّد غير موجود بعد
   }
+  // تَعدّد الشركات: كل شَركة تَرى ملَفّاتها فَقط (بادِئة اسم قاعدتها — backup.mjs يُسمّي
+  // الملَفّ `<dbName>-<ts>.sql`) — لا تَسريب أَسماء/أَحجام نُسَخ شَركات أُخرى عَبر هذه القائمة.
+  const prefix = await backupFilePrefix();
   const out: BackupFile[] = [];
-  for (const name of entries.filter((f) => f.endsWith(".sql"))) {
+  for (const name of entries.filter((f) => f.endsWith(".sql") && (!prefix || f.startsWith(prefix)))) {
     try {
       const s = await stat(path.join(backupsDir(), name));
       out.push({ name, sizeKb: Math.round(s.size / 1024), createdAt: s.mtime.toISOString() });
@@ -59,6 +91,10 @@ export async function resolveBackupFile(name: string): Promise<string | null> {
   if (!name || name.includes("..") || !/^[A-Za-z0-9._-]+\.sql$/.test(name)) {
     return null;
   }
+  // تَعدّد الشركات: مَلَفّ لا يَحمِل بادِئة قاعدة الشَركة الحالية ⇒ كَأَنّه غَير مَوجود (لا
+  // كَشف وُجود اسم مَلَفّ شَركة أُخرى، ولا حَذف/تَنزيل/استعادة عَبر تَخمين الاسم).
+  const prefix = await backupFilePrefix();
+  if (prefix && !name.startsWith(prefix)) return null;
   const abs = path.join(backupsDir(), path.basename(name));
   if (path.dirname(abs) !== backupsDir()) return null;
   try {
@@ -77,18 +113,34 @@ export async function deleteBackup(name: string): Promise<boolean> {
   return true;
 }
 
-/** نسخة احتياطية الآن (تطابق DATABASE_URL عبر BACKUP_TARGET_URL). يعيد الملف المُنشأ. */
+/** نسخة احتياطية الآن (شركة السِياق الحالي، أو DATABASE_URL في النَشر الأُحادي). يعيد الملف المُنشأ. */
 export async function runBackup(): Promise<BackupFile | null> {
   const before = new Set((await listBackupFiles()).map((b) => b.name));
+  const company = await currentCompanyInfo();
   await execFileP(process.execPath, [path.join(scriptsDir(), "backup.mjs")], {
-    env: { ...process.env, BACKUP_TARGET_URL: process.env.DATABASE_URL },
+    env: { ...process.env, BACKUP_TARGET_URL: company ? company.connectionUrl : process.env.DATABASE_URL },
     maxBuffer: 1024 * 1024 * 64,
   });
   const after = await listBackupFiles();
   return after.find((b) => !before.has(b.name)) ?? after[0] ?? null;
 }
 
-/** استعادة من ملف مطلق (restore.mjs يأخذ نسخة أمان أولاً + يتحقّق من الملف). */
+/**
+ * ⛔ مُعطَّلتان بِالكامِل في وَضع تَعدّد الشركات (`isMultiTenantModeActive()`) — يُتحقَّق مِن
+ * هذا عِند حَدّ التَصريح (`systemRouter.ts`) قَبل الوُصول لهاتين الدالّتين أَصلاً، لا هُنا.
+ *
+ * السَبب: `restore.mjs`/`reset.mjs` يُنفّذان عَبر `docker exec ... mysql -uroot` (صَلاحية
+ * كامِلة عَلى كُل قَواعِد الخادِم، لا مُقيَّدة بِقاعِدة الشَركة) واستِعادة `restoreUpload`
+ * تَحديداً تُنفّذ SQL خام يَحمِل عِبارات `CREATE DATABASE`/`USE` **مِن داخِل الملَفّ نَفسه** لا
+ * مِن رابِط الاتّصال المُتوقَّع — أَي مَلَفّ (مَرفوع أَو حَتى نُسخة شَركة أُخرى مَحفوظة سَلَفاً)
+ * يُمكِن أَن يَكتُب فِعلياً في قاعِدة شَركة أُخرى عَلى نَفس خادِم MySQL المُشترَك. تَطويق هذا
+ * بِفحص اسم مَلَفّ فَقط غَير كافٍ (لا يَضمَن مُحتوى المَلَفّ)، وإصلاحه الحَقيقي (تَبديل
+ * المُستخدَم الجَذري بِمُستخدَم الشَركة الأَقلّ امتيازاً عَبر كامِل السِلسِلة، بِما فيها
+ * إعادة البَذرة الفَرعية داخِل reset.mjs --seed) خارِج نِطاق هذه المَرحلة — قَرار مَعماري
+ * واعٍ لا نَقص مُؤجَّل: عَمَليات إعادة الكِتابة الكامِلة لِقاعِدة بَيانات لا تُناسِب الخِدمة
+ * الذاتية في نِظام مُتعدِّد المُستأجِرين أَصلاً؛ تَبقى مُتاحة عَبر أَدوات المُشغِّل المُباشِرة
+ * (`pnpm db:backup:all-companies` + استِعادة يَدوية مَوجَّهة لِقاعِدة الشَركة تَحديداً).
+ */
 export async function runRestore(absFile: string): Promise<void> {
   await execFileP(process.execPath, [path.join(scriptsDir(), "restore.mjs"), absFile, "--confirm", "RESTORE"], {
     env: { ...process.env },
@@ -96,7 +148,7 @@ export async function runRestore(absFile: string): Promise<void> {
   });
 }
 
-/** تصفير «نظام فارغ» (reset.mjs يأخذ نسخة أمان أولاً). */
+/** تصفير «نظام فارغ» (reset.mjs يأخذ نسخة أمان أولاً). ⛔ راجع تحذير runRestore أعلاه — نفس القيد. */
 export async function runReset(seed: boolean): Promise<void> {
   const args = [path.join(scriptsDir(), "reset.mjs"), "--confirm", "RESET"];
   if (seed) args.push("--seed");
