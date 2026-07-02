@@ -158,7 +158,11 @@ export const inventoryRouter = router({
         }
         const out: Array<{ variantId: number }> = [];
         let firstMovementId = 0;
-        for (const it of input.items) {
+        // LOCK-ORDER (تدقيق ٢/٧): ترتيب الأصناف حسب variantId قبل القفل ⇒ سندان متزامنان متداخلان
+        // يقفلان صفوف branchStock بالترتيب نفسه فلا deadlock من انعكاس الترتيب. (retryOnDup ليس هنا،
+        // لكن الترتيب الحتمي يمنع سبب الـdeadlock أصلاً.)
+        const sortedItems = [...input.items].sort((a, b) => a.variantId - b.variantId);
+        for (const it of sortedItems) {
           const res = await transferBetweenBranches(tx, {
             variantId: it.variantId,
             fromBranchId,
