@@ -118,32 +118,42 @@ async function supplierOpeningBalance(supplierId: number, from?: string) {
   let opening = money(openRow[0]?.v ?? 0);
   if (!from) return opening;
 
-  // AP-OPENING (تدقيق ٢/٧): كان الرصيد المُرحَّل يُبنى من purchaseOrders.total لأوامر CONFIRMED/RECEIVED
-  // ⇒ (١) أمر مؤكَّد لم يُستلَم بعد يُحتسَب بكامل قيمته بينما AP الفعلي (currentBalance) لا يلتزم إلا
-  // عند الاستلام؛ (٢) أمر مُستلَم جزئياً يُحتسَب بكامله لا بالمستلَم؛ (٣) تسديدات الصيرفة EXCHANGE_SETTLE
-  // مُغفَلة ⇒ الكشف لا يتّزن مع الرصيد الجاري. الحلّ: نبني الالتزام من **قيود الدفتر** حرفياً كما يفعل
-  // reconcileSupplierBalances (المصدر الأصحّ): PURCHASE (بالقيمة المُستلَمة فعلاً، PO-linked واليتيمة معاً)
-  // − PAYMENT_OUT + PAYMENT_IN + RETURN (سالب) − EXCHANGE_SETTLE. لا purchaseOrders ⇒ لا تضخيم بأوامر
-  // غير مستلمة، ولا ازدواج (PURCHASE يُقيَّد عند الاستلام لا عند التأكيد).
+  const poRow = await db
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${purchaseOrders.total} AS DECIMAL(15,2))), 0)` })
+    .from(purchaseOrders)
+    .where(
+      and(
+        eq(purchaseOrders.supplierId, supplierId),
+        inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
+        sql`${purchaseOrders.orderDate} < ${`${from} 00:00:00`}`
+      )
+    );
+  // صافي تأثير القيود قبل الفترة على AP (مرآة reconcileSupplierBalances):
+  //   PAYMENT_OUT يطرح، PAYMENT_IN يضيف (استرداد من مورد)، RETURN.amount مخزَّن سالباً فيطرح المرتجع.
+  // كان نظير العميل (customerOpeningBalance) يضمّ الاتجاهين بصحّة، بينما المورد كان PAYMENT_OUT فقط
+  // ⇒ كشف حساب لا يتّزن عند استرداد من مورد أو مرتجع شراء.
+  // FI-01 (تكامل الأصول↔كشف المورد، تحقيق عدائي ٢٠/٦): اقتناء أصل على ذمّة المورد يُقيَّد PURCHASE
+  // (بلا purchaseOrderId) ويَرفع currentBalance؛ كان الكشف يُعيد بناء AP من أوامر الشراء + الدفعات
+  // فقط ⇒ شراء الأصل يَغيب فلا يتّزن الرصيد. نُدرج PURCHASE اليتيمة (purchaseOrderId IS NULL) موجبةً
+  // على AP (شراء الأصول عبر PO تُحتسَب من purchaseOrders.total ⇒ لا ازدواج).
   const entriesRow = await db
     .select({
       v: sql<string>`COALESCE(SUM(CASE
-        WHEN ${accountingEntries.entryType} = 'PURCHASE'        THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT'     THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'RETURN'          THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'EXCHANGE_SETTLE' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'RETURN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PURCHASE'    THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         ELSE 0 END), 0)`,
     })
     .from(accountingEntries)
     .where(
       and(
-        inArray(accountingEntries.entryType, ["PURCHASE", "PAYMENT_OUT", "PAYMENT_IN", "RETURN", "EXCHANGE_SETTLE"]),
+        sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
         eq(accountingEntries.supplierId, supplierId),
         sql`${accountingEntries.entryDate} < ${from}`
       )
     );
-  return opening.plus(money(entriesRow[0]?.v ?? 0));
+  return opening.plus(money(poRow[0]?.v ?? 0)).plus(money(entriesRow[0]?.v ?? 0));
 }
 
 /** كشف حساب مورد: أوامر شراء + دفعات (من accountingEntries.PAYMENT_OUT) + ملخّص.

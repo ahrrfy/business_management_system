@@ -1,8 +1,7 @@
 // تعديل بيانات أصل قائم (لا يشمل العهدة/الحالة/الاستبعاد — لها مساراتها).
-import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { fixedAssets } from "../../../drizzle/schema";
-import { money, toDbMoney } from "../money";
+import { toDbMoney } from "../money";
 import { withTx } from "../tx";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
@@ -30,24 +29,6 @@ export async function updateAsset(id: number, input: UpdateAssetInput) {
   await withTx(async (tx) => {
     const a = await loadForUpdate(tx, id);
     if (a.status === "disposed") throw new Error("لا يمكن تعديل أصل مُستبعَد");
-
-    // ASSET-EDIT (تدقيق ٢/٧): قيمة الشراء والمورّد مُرحَّلان محاسبياً عند الإنشاء (قيد PURCHASE +AP
-    // أو PAYMENT_OUT، بمفتاح ASSET_ACQ:<id>) ويُغذّيان حساب الإهلاك. كان تعديلهما هنا يُعيد الكتابة
-    // بلا قيدٍ تعويضي ولا تعديلٍ لرصيد المورد ⇒ (١) إهلاك يُحسب على قيمة لم تُرسمَل في الدفتر؛
-    // (٢) الدين وقيد PURCHASE يبقيان على المورّد القديم عند تبديل المورّد. لا نسمح بتغييرهما عبر
-    // شاشة التعديل — التصحيح الصحيح يكون باستبعاد الأصل وإعادة اقتنائه (مسارٌ يكتب القيود التعويضية).
-    if (!money(a.purchaseValue ?? "0").eq(money(input.purchaseValue))) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "لا يمكن تعديل قيمة شراء الأصل بعد اقتنائه (مُرحَّلة محاسبياً) — استبعِد الأصل وأعِد اقتناءه للتصحيح.",
-      });
-    }
-    if ((a.supplierId ?? null) !== (input.supplierId ?? null)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "لا يمكن تغيير مورّد الأصل بعد اقتنائه (الدين مُقيَّد على المورّد الأصلي) — استبعِد الأصل وأعِد اقتناءه.",
-      });
-    }
     await tx
       .update(fixedAssets)
       .set({

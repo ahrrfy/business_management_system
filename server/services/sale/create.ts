@@ -75,10 +75,13 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         const requestedKeys = input.lines
           .map((l) => lineKey(l.variantId, l.productUnitId, l.quantity))
           .sort();
-        if (
-          existingKeys.length !== requestedKeys.length ||
-          existingKeys.some((k, i) => k !== requestedKeys[i])
-        ) {
+        if (existingKeys.length !== requestedKeys.length) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمَل لبيع بعدد أصناف مختلف",
+          });
+        }
+        if (existingKeys.some((k, i) => k !== requestedKeys[i])) {
           throw new TRPCError({
             code: "CONFLICT",
             message: "تعارض idempotency: المفتاح مستعمَل لبيع بأصناف أو كميات مختلفة",

@@ -132,7 +132,10 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
           .map((i) => lineKey(Number(i.variantId), i.productUnitId == null ? null : Number(i.productUnitId), i.quantity))
           .sort();
         const requestedKeys = input.lines.map((l) => lineKey(l.variantId, l.productUnitId, l.quantity)).sort();
-        if (existingKeys.length !== requestedKeys.length || existingKeys.some((k, i) => k !== requestedKeys[i])) {
+        if (existingKeys.length !== requestedKeys.length) {
+          throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمَل لبيع بعدد أصناف مختلف" });
+        }
+        if (existingKeys.some((k, i) => k !== requestedKeys[i])) {
           throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمَل لبيع بأصناف أو كميات مختلفة" });
         }
         return {
