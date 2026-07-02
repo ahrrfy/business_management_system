@@ -225,3 +225,14 @@ export const workordersReadProcedure = branchScopedProcedure.use(requireModule("
 export const workordersCashierProcedure = cashierProcedure.use(requireModule("workorders", "FULL"));
 export const workordersExecProcedure = workOrderExecProcedure.use(requireModule("workorders", "FULL"));
 export const workordersManagerProcedure = managerProcedure.use(requireModule("workorders", "FULL"));
+
+// ─── F7 (تدقيق ٢/٧): إكمال بوّابات الوحدة المالية «treasury» ────────────────────
+// تكملة F2: الوحدات المالية للكتابة (السندات/التحويلات النقدية/الصيرفة/الورديات) كانت مبوَّبة
+// بالدور الأساس فقط ⇒ دور مخصّص manager بـtreasury=NONE ينفّذ صرف نقد/تحويل/صيرفة رغم الخريطة.
+// نُركّب requireModule("treasury",…) فوق البوّابة الخشنة (voucher/cashTransfers/exchange = manager؛
+// الورديات = cashier). **الورديات بمستوى READ** لأن قالب cashier treasury=READ (فتح/إغلاق الوردية
+// سلوك كاشير قائم) — التقييد الفعليّ يُغلق دور treasury=NONE بلا حجب الكاشير القالبي.
+export const treasuryManagerProcedure = managerProcedure.use(requireModule("treasury", "FULL"));
+export const treasuryManagerReadProcedure = managerProcedure.use(requireModule("treasury", "READ"));
+export const treasuryReadProcedure = branchScopedProcedure.use(requireModule("treasury", "READ"));
+export const treasuryCashierProcedure = cashierProcedure.use(requireModule("treasury", "READ"));

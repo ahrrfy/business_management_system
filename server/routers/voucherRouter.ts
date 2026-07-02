@@ -13,7 +13,7 @@ import {
   recentVouchersForParty,
   rejectVoucher,
 } from "../services/voucherService";
-import { adminProcedure, managerProcedure, router } from "../trpc";
+import { adminProcedure, router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { withTx } from "../services/tx";
 
@@ -28,12 +28,12 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 
 export const voucherRouter = router({
   /** عَتبات النظام (للتعرّض في الواجهة: تَلميحات «هذا المبلغ يَحتاج اعتماد/مرفق»). */
-  thresholds: managerProcedure.query(() => ({
+  thresholds: treasuryManagerReadProcedure.query(() => ({
     approval: getApprovalThreshold(),
     attachment: getAttachmentThreshold(),
   })),
 
-  create: managerProcedure
+  create: treasuryManagerProcedure
     .input(
       z.object({
         voucherType,
@@ -87,7 +87,7 @@ export const voucherRouter = router({
     }),
 
   /** اعتماد سند مُعلَّق (Maker-Checker) — مدير ثانٍ غير المُنشئ. */
-  approve: managerProcedure
+  approve: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null) {
@@ -108,7 +108,7 @@ export const voucherRouter = router({
     }),
 
   /** رفض سند مُعلَّق — يَبقى في السجل ولا أثَر مالي (لم يُسجَّل أصلاً). */
-  reject: managerProcedure
+  reject: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive(), reason: z.string().min(1).max(500) }))
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null) {
@@ -129,7 +129,7 @@ export const voucherRouter = router({
     }),
 
   // إلغاء سند مستقلّ: الأصل REVERSED + إيصال تعويضي معاكس + قيد معاكس + عكس رصيد الطرف.
-  cancel: managerProcedure
+  cancel: treasuryManagerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null) {
@@ -149,7 +149,7 @@ export const voucherRouter = router({
       return res;
     }),
 
-  list: managerProcedure
+  list: treasuryManagerReadProcedure
     .input(
       z
         .object({
@@ -177,7 +177,7 @@ export const voucherRouter = router({
       return listVouchers(scoped);
     }),
 
-  get: managerProcedure
+  get: treasuryManagerReadProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const voucher = await getVoucher(input.receiptId);
@@ -188,7 +188,7 @@ export const voucherRouter = router({
     }),
 
   /** السندات الأخيرة لنفس الطرف خلال نافذة (افتراضي ٧ أيام، ٥ سندات) — للتحذير من الازدواج. */
-  recentForParty: managerProcedure
+  recentForParty: treasuryManagerReadProcedure
     .input(z.object({
       partyType,
       partyId: z.number().int().positive().nullish(),
@@ -213,7 +213,7 @@ import { receipts, voucherCategories } from "../../drizzle/schema";
 import { getDb } from "../db";
 
 export const voucherCategoryRouter = router({
-  list: managerProcedure
+  list: treasuryManagerReadProcedure
     .input(z.object({ includeInactive: z.boolean().default(false) }).optional())
     .query(async ({ input }) => {
       const db = getDb();

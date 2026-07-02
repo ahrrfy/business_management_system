@@ -34,6 +34,12 @@ function effectiveBranch(ctx: { user: { role?: string; branchId?: number | null 
   const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
   return elevated ? (requested ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : 0)) : Number(ctx.user.branchId);
 }
+// نطاق فرع الفاعل لفحص الملكية (مثيل ctx.scopedBranchId لكن على cashierProcedure الذي لا يوفّره):
+// المرتفعون (admin/manager) عابرو الفروع ⇒ null؛ غيرهم مقيَّدون بفرعهم (requireOwnBranch يضمن branchId).
+function scopedBranchOf(ctx: { user: { role?: string; branchId?: number | null } }): number | null {
+  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+  return elevated ? null : (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+}
 
 // IDOR (تدقيق ٢/٧): قراءات جهة التوصيل بالمعرّف (getParty/consignments/partyStatement) كانت تمرّر
 // partyId بلا التحقّق أن الجهة تخصّ فرع القارئ ⇒ تسريب بيانات جهات فروع أخرى. نتحقّق من الملكية:
@@ -151,6 +157,8 @@ export const deliveryRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      // IDOR كتابة (F7 تدقيق ٢/٧): كاشير فرعٍ لا يُرسِل على جهة فرعٍ آخر (نظير حارس القراءات).
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم الإرسالية يعتمد قيداً فريداً كحارس أخير — نعيد المحاولة على التصادم.
       const res = await retryOnDup(() => dispatchToDelivery(input, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.dispatch", entityType: "deliveryConsignment", entityId: res.consignmentId, newValue: { workOrderId: input.workOrderId, partyId: input.partyId, codAmount: res.codAmount } });
@@ -169,6 +177,8 @@ export const deliveryRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      // IDOR كتابة (F7): كاشير فرعٍ لا يُوَرِّد على جهة فرعٍ آخر.
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       const res = await retryOnDup(() =>
         recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
@@ -199,6 +209,8 @@ export const deliveryRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
+      // IDOR كتابة (F7): كاشير فرعٍ لا يُسوّي عهدة جهة فرعٍ آخر (وإلا يُحوّل نقدها لدرجه ويصفّر عهدتها).
+      await assertPartyInScope(input.partyId, scopedBranchOf(ctx));
       const branchId = effectiveBranch(ctx, input.branchId);
       const res = await settleDeliveryBalance({ branchId, partyId: input.partyId, amount: input.amount, shiftType: input.shiftType, notes: input.notes, clientRequestId: input.clientRequestId }, actorOf(ctx));
       await logAudit(ctx, { action: "delivery.settle", entityType: "deliveryParty", entityId: input.partyId, newValue: { amount: input.amount } });
