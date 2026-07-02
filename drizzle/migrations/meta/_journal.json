@@ -288,6 +288,13 @@
       "when": 1782940000000,
       "tag": "0040_accounting_entries_fk",
       "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "5",
+      "when": 1782950000000,
+      "tag": "0041_reconcile_schema_drift",
+      "breakpoints": true
     }
   ]
 }
