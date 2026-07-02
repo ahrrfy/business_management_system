@@ -18,7 +18,7 @@ import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
-import { branchScopedProcedure, canSeeCostForUser, cashierProcedure, router } from "../trpc";
+import { canSeeCostForUser, router, salesCashierProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -182,7 +182,7 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
 }
 
 export const saleRouter = router({
-  create: cashierProcedure
+  create: salesCashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -268,7 +268,7 @@ export const saleRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
     }),
 
-  pay: cashierProcedure
+  pay: salesCashierProcedure
     .input(z.object({
       // SALES-04: المبلغ مُقيّد موجباً بـ٢ منازل (كان z.string() ⇒ يَقبل أُسّاً/أكثر من منزلتين).
       invoiceId: z.number().int().positive(), amount: positiveMoneyString, method, shiftId: z.number().int().positive().optional(),
@@ -314,7 +314,7 @@ export const saleRouter = router({
 
   // عزل الفرع: غير المدير يرى فواتير فرعه فقط (منع IDOR).
   // /simplify ٣٠/٦: list = listPage().rows ⇒ كاتب واحد للاستعلام، صفر تَكرار.
-  list: branchScopedProcedure
+  list: salesReadProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -350,7 +350,7 @@ export const saleRouter = router({
 
   // S3+S4 (٣٠/٦): listPage — صياغة keyset رسمية تُعيد `{rows, nextCursor, hasMore}`.
   // للواجهات الجَديدة (useInfiniteQuery({getNextPageParam})).
-  listPage: branchScopedProcedure
+  listPage: salesReadProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -386,7 +386,7 @@ export const saleRouter = router({
 
   // مجاميع كل النتائج المطابقة للفلتر (لا الصفحة المعروضة فقط) — نفس شروط list حتماً
   // عبر buildSalesListConds. الأموال نصّية كما تعيدها mysql2 (SUM على decimal) — لا parseFloat.
-  listSummary: branchScopedProcedure
+  listSummary: salesReadProcedure
     .input(salesListInput)
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -414,7 +414,7 @@ export const saleRouter = router({
       };
     }),
 
-  get: branchScopedProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  get: salesReadProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (

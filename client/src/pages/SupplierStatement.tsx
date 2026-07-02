@@ -93,13 +93,30 @@ export default function SupplierStatement() {
       ref: p.poNumber, description: "أمر شراء",
       debit: null as string | null, credit: p.total as string | null,
     }));
-    const payTxs = d.payments.map((p) => ({
-      t: new Date(p.entryDate).getTime(),
-      date: fmtDate(p.entryDate),
-      ref: "دفعة",
-      description: p.purchaseOrderId ? "دفعة للمورد" : "دفعة مستقلة للمورد",
-      debit: p.amount as string | null, credit: null as string | null,
-    }));
+    // F7 (تدقيق ٢/٧): إشارة الأثر على AP لكل نوع قيد (مطابقة reconcileSupplierBalances):
+    //  PAYMENT_OUT/EXCHANGE_SETTLE ⇒ يخفض AP (−amount) = مدين؛ PAYMENT_IN/PURCHASE (يتيم) ⇒ يزيد (+amount) = دائن؛
+    //  RETURN ⇒ amount مخزَّن سالباً فأثره يخفض AP = مدين. كان الكود السابق يضع كل الدفعات مديناً بلا نظر للنوع
+    //  ⇒ مرتجع الشراء/الاسترداد/الشراء اليتيم بإشارة معكوسة والرصيد الجاري لا يتّزن مع currentBalance.
+    const payTxs = d.payments.map((p) => {
+      const amt = D(p.amount);
+      const reducesAP = p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE";
+      // signed = أثر AP الموقَّع (موجب=يزيد، سالب=يخفض). RETURN وحده amount سالب أصلاً ⇒ نستعمله كما هو.
+      const signed = p.entryType === "RETURN" ? amt : (reducesAP ? amt.neg() : amt);
+      const description =
+        p.entryType === "RETURN" ? "مرتجع شراء"
+        : p.entryType === "PAYMENT_IN" ? "استرداد من المورد"
+        : p.entryType === "EXCHANGE_SETTLE" ? "تسوية عبر صيرفة"
+        : p.entryType === "PURCHASE" ? "شراء (بلا أمر)"
+        : (p.purchaseOrderId ? "دفعة للمورد" : "دفعة مستقلة للمورد");
+      return {
+        t: new Date(p.entryDate).getTime(),
+        date: fmtDate(p.entryDate),
+        ref: "دفعة",
+        description,
+        debit: signed.isNegative() ? signed.neg().toFixed(2) : (null as string | null),
+        credit: signed.isPositive() ? signed.toFixed(2) : (null as string | null),
+      };
+    });
     // الفرز على طابع زمني خام — فرز نصّي على dd/mm/yyyy يخلط الشهور.
     const merged = [...poTxs, ...payTxs].sort((a, b) => a.t - b.t);
     // §٥: AP بـDecimal (دائن − مدين)، يبدأ من الرصيد المُرحَّل عند تقييد الفترة.

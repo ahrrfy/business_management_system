@@ -129,7 +129,8 @@ function customerPaymentLink(customerId: number) {
  * الرصيد المُرحَّل لعميل:
  *  - دائماً: مجموع قيود OPENING (ترسيخ الرصيد الافتتاحي المستورد — import-integration).
  *  - مع from: + مجموع فواتيره الملتزمة قبل from (CANCELLED مُستثناة — التزامها أُلغي، كما في reconcile)
- *             − صافي دفعاته قبل from (IN ينقص ذمته، OUT يزيدها؛ COMPLETED فقط — REVERSED أثره معكوس).
+ *             − صافي دفعاته قبل from (IN ينقص ذمته، OUT يزيدها؛ فقط الإيصالات التي أثّرت على الرصيد:
+ *               approvalStatus=APPROVED و status ∈ {COMPLETED، REVERSED} — انظر payRow/F5).
  * كل الجمع بدقّة decimal (§٥).
  */
 async function customerOpeningBalance(customerId: number, from?: string) {
@@ -161,7 +162,12 @@ async function customerOpeningBalance(customerId: number, from?: string) {
     .where(
       and(
         customerPaymentLink(customerId),
-        eq(receipts.status, "COMPLETED"),
+        // F5 (تدقيق ٢/٧): الإيصالات التي أثّرت فعلاً على currentBalance (مرّت عبر adjustCustomerBalance) =
+        //   approvalStatus=APPROVED و status ∈ (COMPLETED للنشطة + REVERSED للأصل المُعتمَد ثم الملغى، ليوازن
+        //   تعويضَه COMPLETED فيصير أثر السند الملغى صفراً). المعلّق/المرفوض (approvalStatus≠APPROVED) لم يمسّ
+        //   الرصيد ⇒ يُستبعَد. (سابقاً: COMPLETED فقط ⇒ الأصل REVERSED يُستبعَد بينما تعويضه يُحتسَب = ساق واحدة.)
+        sql`${receipts.status} IN ('COMPLETED','REVERSED')`,
+        eq(receipts.approvalStatus, "APPROVED"),
         sql`${receipts.createdAt} < ${fromTs}`
       )
     );

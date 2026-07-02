@@ -2,10 +2,10 @@ import { PLATFORM_ADMIN_COOKIE_NAME } from "@shared/const";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { getSessionCookieOptions } from "../cookies";
-import { logger } from "../logger";
 import { listCompanies, setCompanyActive } from "../tenancy/registry";
 import { signPlatformSession } from "../tenancy/platformAuth";
 import { verifyPlatformAdminCredentials } from "../tenancy/platformAdminService";
+import { logPlatformAudit } from "../tenancy/platformAudit";
 import { platformAdminProcedure, publicProcedure, router } from "../trpc";
 
 /**
@@ -20,6 +20,8 @@ export const platformAdminRouter = router({
     .mutation(async ({ input, ctx }) => {
       const admin = await verifyPlatformAdminCredentials(input.email, input.password);
       if (!admin) {
+        // F4: محاولة دخول فاشلة تُسجَّل أيضاً (لا معرّف — البريد المُدخَل دليل من حاول).
+        await logPlatformAudit(ctx, { action: "login", success: false, actorEmail: input.email.trim().toLowerCase() });
         throw new TRPCError({ code: "UNAUTHORIZED", message: "البريد أو كلمة المرور غير صحيحة" });
       }
       const token = await signPlatformSession(admin.id);
@@ -27,7 +29,7 @@ export const platformAdminRouter = router({
         ...getSessionCookieOptions(ctx.req),
         maxAge: 1000 * 60 * 60 * 8,
       });
-      logger.info({ platformAdminId: admin.id }, "platform_admin.login");
+      await logPlatformAudit(ctx, { action: "login", success: true, platformAdminId: admin.id, actorEmail: admin.email });
       return { id: admin.id, email: admin.email, name: admin.name };
     }),
 
@@ -37,7 +39,11 @@ export const platformAdminRouter = router({
     return safe;
   }),
 
-  logout: publicProcedure.mutation(({ ctx }) => {
+  logout: publicProcedure.mutation(async ({ ctx }) => {
+    // F4: نُسجّل قبل مسح الكوكي (الهوية محلولة على السياق). كوكي منتهٍ ⇒ لا فاعل معلوم ⇒ نتخطّى.
+    if (ctx.platformAdmin) {
+      await logPlatformAudit(ctx, { action: "logout", success: true, platformAdminId: ctx.platformAdmin.id, actorEmail: ctx.platformAdmin.email });
+    }
     ctx.res.clearCookie(PLATFORM_ADMIN_COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
     return { success: true } as const;
   }),
@@ -49,10 +55,14 @@ export const platformAdminRouter = router({
       .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
       .mutation(async ({ input, ctx }) => {
         await setCompanyActive(input.id, input.isActive);
-        logger.info(
-          { platformAdminId: ctx.platformAdmin.id, companyId: input.id, isActive: input.isActive },
-          "platform_admin.company.setActive"
-        );
+        await logPlatformAudit(ctx, {
+          action: "company.setActive",
+          success: true,
+          platformAdminId: ctx.platformAdmin.id,
+          actorEmail: ctx.platformAdmin.email,
+          companyId: input.id,
+          details: { isActive: input.isActive },
+        });
         return { success: true } as const;
       }),
   }),

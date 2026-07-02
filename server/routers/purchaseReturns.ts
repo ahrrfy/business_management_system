@@ -3,7 +3,7 @@ import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import { createPurchaseReturn, listPurchaseReturns } from "../services/purchaseReturnsService";
 import { nonNegMoneyString, positiveQtyString } from "../lib/schemas";
-import { managerProcedure, router } from "../trpc";
+import { purchasesManagerProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -18,7 +18,7 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
  *  - مدير فأعلى (تكلفة + ذمم + نقد).
  */
 export const purchaseReturnsRouter = router({
-  create: managerProcedure
+  create: purchasesManagerProcedure
     .input(
       z.object({
         clientRequestId: z.string().min(1).max(80).optional(),
@@ -80,7 +80,7 @@ export const purchaseReturnsRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إتمام مرتجع الشراء (تكرار)" });
     }),
 
-  list: managerProcedure
+  list: purchasesManagerProcedure
     .input(
       z
         .object({

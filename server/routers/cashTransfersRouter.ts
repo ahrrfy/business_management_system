@@ -8,7 +8,7 @@ import {
   receiveTransfer,
   sendTransfer,
 } from "../services/cashTransferService";
-import { managerProcedure, router } from "../trpc";
+import { router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const moneyStr = z
@@ -17,7 +17,7 @@ const moneyStr = z
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 export const cashTransfersRouter = router({
-  send: managerProcedure
+  send: treasuryManagerProcedure
     .input(
       z.object({
         fromBranchId: z.number().int().positive(),
@@ -60,7 +60,7 @@ export const cashTransfersRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إرسال التحويل (تكرار)" });
     }),
 
-  receive: managerProcedure
+  receive: treasuryManagerProcedure
     .input(z.object({ transferId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await receiveTransfer(input.transferId, {
@@ -76,7 +76,7 @@ export const cashTransfersRouter = router({
       return res;
     }),
 
-  cancel: managerProcedure
+  cancel: treasuryManagerProcedure
     .input(
       z.object({
         transferId: z.number().int().positive(),
@@ -98,7 +98,7 @@ export const cashTransfersRouter = router({
       return res;
     }),
 
-  list: managerProcedure
+  list: treasuryManagerReadProcedure
     .input(
       z
         .object({

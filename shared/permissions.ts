@@ -96,7 +96,10 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   cashier: {
     assets: "NONE",
     hr: "NONE",
-    pos: "FULL", sales: "FULL", purchases: "NONE", inventory: "READ", workorders: "READ", channels: "FULL", treasury: "READ",
+    // F2 (تدقيق ٢/٧): workorders READ→FULL — الكاشير ينشئ ويُسلّم أوامر الشغل فعلاً في نظام
+    // الاستقبال الهجين (workOrders.create/deliver على cashierProcedure)؛ كان القالب READ سهواً
+    // فبعد ربط requireModule("workorders","FULL") كان سيُحجب الكاشير القالبي عن سلوكه القائم.
+    pos: "FULL", sales: "FULL", purchases: "NONE", inventory: "READ", workorders: "FULL", channels: "FULL", treasury: "READ",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "FULL", reports: "NONE",
     users: "NONE", settings: "NONE",
   },

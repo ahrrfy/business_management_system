@@ -7,7 +7,7 @@ import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
-import { branchScopedProcedure, cashierProcedure, router } from "../trpc";
+import { router, treasuryCashierProcedure, treasuryReadProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
@@ -16,7 +16,7 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 export const shiftRouter = router({
   // سجلّ الورديات — قائمة مُصفّحة branch-scoped (IDOR كـreport): الكاشير يرى ورديات فرعه فقط،
   // المرتفعون يرون الكل أو يفلترون بفرع. تُغذّي شاشة /shifts وإعادة طباعة Z-report.
-  list: branchScopedProcedure
+  list: treasuryReadProcedure
     .input(
       z
         .object({
@@ -82,7 +82,7 @@ export const shiftRouter = router({
       return { rows, total, hasMore, nextCursor };
     }),
 
-  open: cashierProcedure
+  open: treasuryCashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -109,7 +109,7 @@ export const shiftRouter = router({
       return res;
     }),
 
-  close: cashierProcedure
+  close: treasuryCashierProcedure
     .input(
       z.object({
         shiftId: z.number().int().positive(),
@@ -171,7 +171,7 @@ export const shiftRouter = router({
 
   // §٧ IDOR: كان كاشير من فرع A يستطيع `report` لوردية فرع B بمعرفة shiftId.
   // الآن نفرض ctx.scopedBranchId: إن كانت الوردية في فرع آخر ⇒ FORBIDDEN لغير المرتفعين.
-  report: branchScopedProcedure
+  report: treasuryReadProcedure
     .input(z.object({ shiftId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const report = await getShiftReport(input.shiftId);
@@ -187,7 +187,7 @@ export const shiftRouter = router({
 
   // §٧: الكاشير يبقى في فرعه؛ المرتفعون يجوز لهم تمرير branchId لأي فرع. ctx.scopedBranchId
   // أقوى من ctx.user.branchId (يغلق ثغرة إن كان branchId الخام null).
-  current: branchScopedProcedure
+  current: treasuryReadProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),

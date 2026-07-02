@@ -5,7 +5,7 @@ import { logAudit } from "../services/auditService";
 import { listPrintServices } from "../services/catalogService";
 import { createPrintSale } from "../services/printSaleService";
 import { verifyManagerApproval } from "./saleRouter";
-import { cashierProcedure, router } from "../trpc";
+import { posCashierProcedure, router } from "../trpc";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -22,12 +22,12 @@ const lineSchema = z.object({
 
 export const printPosRouter = router({
   /** بلاطات الخدمات (مبوّبة بالفئة) — للكاشير فأعلى، بلا كلفة/مواد. */
-  services: cashierProcedure
+  services: posCashierProcedure
     .input(z.object({ tier: tier.default("RETAIL") }).optional())
     .query(({ input }) => listPrintServices(input?.tier ?? "RETAIL")),
 
   /** بيع خدمات الطباعة: فاتورة + خصم مواد بصمت + قيد + ذمم — ذرّياً (createPrintSale). */
-  createSale: cashierProcedure
+  createSale: posCashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),

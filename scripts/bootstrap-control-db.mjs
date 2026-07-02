@@ -70,6 +70,25 @@ try {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
   console.log("✓ جدول platformAdmins جاهز.");
+
+  // F4 (تدقيق ٢/٧): سجلّ تدقيق مدير المنصّة (append-only). يطابق تعريف Drizzle في controlSchema.ts.
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS platformAuditLogs (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      platformAdminId BIGINT NULL,
+      actorEmail VARCHAR(320) NULL,
+      action VARCHAR(64) NOT NULL,
+      success TINYINT(1) NOT NULL DEFAULT 1,
+      companyId BIGINT NULL,
+      details JSON NULL,
+      ipAddress VARCHAR(64) NULL,
+      createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      INDEX idx_platform_audit_admin (platformAdminId, createdAt),
+      INDEX idx_platform_audit_action (action, createdAt),
+      INDEX idx_platform_audit_company (companyId, createdAt)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+  console.log("✓ جدول platformAuditLogs جاهز.");
 } finally {
   await conn.end();
 }

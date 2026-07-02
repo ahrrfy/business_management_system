@@ -15,7 +15,7 @@ import {
   updateExchangeHouse,
   withdrawFromExchange,
 } from "../services/exchangeHouseService";
-import { managerProcedure, router } from "../trpc";
+import { router, treasuryManagerProcedure, treasuryManagerReadProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان كحدّ أقصى)");
@@ -37,7 +37,7 @@ function actorOf(ctx: any, branchId: number) {
 }
 
 export const exchangeRouter = router({
-  list: managerProcedure
+  list: treasuryManagerReadProcedure
     .input(
       z
         .object({
@@ -50,11 +50,11 @@ export const exchangeRouter = router({
     )
     .query(async ({ input }) => listExchangeHouses(input ?? {})),
 
-  get: managerProcedure
+  get: treasuryManagerReadProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ input }) => getExchangeHouse(input.id)),
 
-  create: managerProcedure
+  create: treasuryManagerProcedure
     .input(
       z.object({
         name: z.string().min(1).max(255),
@@ -74,7 +74,7 @@ export const exchangeRouter = router({
       return res;
     }),
 
-  update: managerProcedure
+  update: treasuryManagerProcedure
     .input(
       z.object({
         id: z.number().int().positive(),
@@ -104,7 +104,7 @@ export const exchangeRouter = router({
       return res;
     }),
 
-  setActive: managerProcedure
+  setActive: treasuryManagerProcedure
     .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const res = await setExchangeActive(input.id, input.isActive, actorOf(ctx, 0));
@@ -112,7 +112,7 @@ export const exchangeRouter = router({
       return res;
     }),
 
-  deposit: managerProcedure
+  deposit: treasuryManagerProcedure
     .input(
       z.object({
         exchangeHouseId: z.number().int().positive(),
@@ -139,7 +139,7 @@ export const exchangeRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر تسجيل الإيداع (تكرار)" });
     }),
 
-  withdraw: managerProcedure
+  withdraw: treasuryManagerProcedure
     .input(
       z.object({
         exchangeHouseId: z.number().int().positive(),
@@ -166,7 +166,7 @@ export const exchangeRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر تسجيل السحب (تكرار)" });
     }),
 
-  buyUsd: managerProcedure
+  buyUsd: treasuryManagerProcedure
     .input(
       z.object({
         exchangeHouseId: z.number().int().positive(),
@@ -193,7 +193,7 @@ export const exchangeRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر تسجيل شراء الدولار (تكرار)" });
     }),
 
-  settle: managerProcedure
+  settle: treasuryManagerProcedure
     .input(
       z.object({
         exchangeHouseId: z.number().int().positive(),
@@ -229,11 +229,11 @@ export const exchangeRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر تسجيل التسديد (تكرار)" });
     }),
 
-  statement: managerProcedure
+  statement: treasuryManagerReadProcedure
     .input(z.object({ exchangeHouseId: z.number().int().positive(), from: ymd.optional(), to: ymd.optional() }))
     .query(async ({ input }) => getExchangeStatement(input)),
 
-  reconcile: managerProcedure
+  reconcile: treasuryManagerReadProcedure
     .input(
       z.object({
         exchangeHouseId: z.number().int().positive(),

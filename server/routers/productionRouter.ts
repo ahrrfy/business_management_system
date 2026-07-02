@@ -1,7 +1,7 @@
 /**
  * productionRouter — الإنتاج/التحويل + الوصفات.
- *  - list/get/create/cancel: managerProcedure (مُكلِّف، يحرّك مخزوناً).
- *  - recipes.*: managerProcedure — تعريف/معاينة وصفات الإنتاج المتكرّرة.
+ *  - list/get/create/cancel: inventoryManagerProcedure (مُكلِّف، يحرّك مخزوناً).
+ *  - recipes.*: inventoryManagerProcedure — تعريف/معاينة وصفات الإنتاج المتكرّرة.
  * كل المسارات مدير فأعلى (الوحدة إشرافية)؛ تدقيق على كل كتابة.
  */
 import { TRPCError } from "@trpc/server";
@@ -23,7 +23,7 @@ import {
   updateRecipe,
 } from "../services/recipeService";
 import { logAudit } from "../services/auditService";
-import { managerProcedure, router } from "../trpc";
+import { inventoryManagerProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const lineInput = z.object({
@@ -59,7 +59,7 @@ const runInput = z.object({
 });
 
 export const productionRouter = router({
-  list: managerProcedure
+  list: inventoryManagerProcedure
     .input(
       z
         .object({
@@ -74,14 +74,14 @@ export const productionRouter = router({
       return listProductions({ branchId, status: input?.status, limit: input?.limit });
     }),
 
-  get: managerProcedure
+  get: inventoryManagerProcedure
     .input(z.object({ productionOrderId: z.number().int().positive() }))
     .query(({ input, ctx }) =>
       getProduction(input.productionOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role })
     ),
 
   /** معاينة «تشغيل بوصفة» حيّةً (بلا حركة): أشرطة المخزون + تفريق الهدر + أثر WAVG. */
-  runPreview: managerProcedure
+  runPreview: inventoryManagerProcedure
     .input(
       z.object({
         recipeId: z.number().int().positive(),
@@ -93,7 +93,7 @@ export const productionRouter = router({
     )
     .query(({ input }) => runPreview(input)),
 
-  create: managerProcedure
+  create: inventoryManagerProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -143,7 +143,7 @@ export const productionRouter = router({
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر إنشاء مستند الإنتاج" });
     }),
 
-  cancel: managerProcedure
+  cancel: inventoryManagerProcedure
     .input(z.object({ productionOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await cancelProduction(input.productionOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
@@ -153,13 +153,13 @@ export const productionRouter = router({
 
   // ───────────────────────── الوصفات ─────────────────────────
   recipes: router({
-    list: managerProcedure
+    list: inventoryManagerProcedure
       .input(z.object({ activeOnly: z.boolean().optional() }).optional())
       .query(({ input }) => listRecipes({ activeOnly: input?.activeOnly })),
 
-    get: managerProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getRecipe(input.id)),
+    get: inventoryManagerProcedure.input(z.object({ id: z.number().int().positive() })).query(({ input }) => getRecipe(input.id)),
 
-    create: managerProcedure.input(recipeInput).mutation(async ({ input, ctx }) => {
+    create: inventoryManagerProcedure.input(recipeInput).mutation(async ({ input, ctx }) => {
       try {
         const res = await createRecipe(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
         await logAudit(ctx, { action: "production.recipe.create", entityType: "productionRecipe", entityId: res.recipeId, newValue: { name: input.name } });
@@ -170,7 +170,7 @@ export const productionRouter = router({
       }
     }),
 
-    update: managerProcedure.input(recipeInput.extend({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+    update: inventoryManagerProcedure.input(recipeInput.extend({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
       try {
         const res = await updateRecipe(id, rest);
@@ -182,7 +182,7 @@ export const productionRouter = router({
       }
     }),
 
-    setActive: managerProcedure
+    setActive: inventoryManagerProcedure
       .input(z.object({ id: z.number().int().positive(), active: z.boolean() }))
       .mutation(async ({ input, ctx }) => {
         const res = await setRecipeActive(input.id, input.active);
@@ -190,14 +190,14 @@ export const productionRouter = router({
         return res;
       }),
 
-    remove: managerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
+    remove: inventoryManagerProcedure.input(z.object({ id: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
       const res = await deleteRecipe(input.id);
       await logAudit(ctx, { action: "production.recipe.delete", entityType: "productionRecipe", entityId: input.id });
       return res;
     }),
 
     /** معاينة وصفة لكمية ناتج ⇒ أسطر جاهزة للنموذج (بلا حركة مخزون). */
-    preview: managerProcedure
+    preview: inventoryManagerProcedure
       .input(z.object({ recipeId: z.number().int().positive(), outputQuantity: z.string(), branchId: z.number().int().positive().nullish() }))
       .query(({ input }) => recipePreview({ recipeId: input.recipeId, outputQuantity: input.outputQuantity, branchId: input.branchId ?? null })),
   }),

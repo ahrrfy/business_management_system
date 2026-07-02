@@ -15,7 +15,7 @@ import { withTx } from "../services/tx";
 import { postEntry } from "../services/ledgerService";
 import { money } from "../services/money";
 import { retryOnDup } from "../lib/retryDup";
-import { branchScopedProcedure, protectedProcedure, router, warehouseProcedure } from "../trpc";
+import { inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
 
 /** تسميات عربية لأسباب الحركة اليدوية — تكتب في notes. */
 const REASON_LABELS = {
@@ -45,7 +45,7 @@ type TransferReason = keyof typeof TRANSFER_REASONS;
 const TRANSFER_REASON_KEYS = Object.keys(TRANSFER_REASONS) as [TransferReason, ...TransferReason[]];
 
 export const inventoryRouter = router({
-  transfer: warehouseProcedure
+  transfer: inventoryWarehouseProcedure
     .input(
       z.object({
         variantId: z.number().int().positive(),
@@ -97,7 +97,7 @@ export const inventoryRouter = router({
    * لا شيء). يعيد استخدام transferBetweenBranches (قفل ثنائي تصاعدي لكل متغيّر) بلا قيد محاسبي.
    * عزل الفرع: warehouse يُجبَر على فرعه مصدراً؛ admin/manager يحوّلان بين أي فرعين.
    */
-  transferBatch: warehouseProcedure
+  transferBatch: inventoryWarehouseProcedure
     .input(
       z.object({
         fromBranchId: z.number().int().positive(),
@@ -200,7 +200,7 @@ export const inventoryRouter = router({
       return { lines, idempotentReplay };
     }),
 
-  adjust: warehouseProcedure
+  adjust: inventoryWarehouseProcedure
     .input(
       z.object({
         variantId: z.number().int().positive(),
@@ -251,7 +251,7 @@ export const inventoryRouter = router({
    * عزل الفرع: الكاشير/المخزن يُقيَّدان بفرعهما؛ المدير/الأدمن يختاران (افتراضي فرعهما).
    * لا تُعاد التكلفة (لا تسريب هامش الربح).
    */
-  onHand: branchScopedProcedure
+  onHand: inventoryReadProcedure
     .input(
       z
         .object({
@@ -311,7 +311,7 @@ export const inventoryRouter = router({
       }));
     }),
 
-  stockByBranch: branchScopedProcedure
+  stockByBranch: inventoryReadProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -324,7 +324,7 @@ export const inventoryRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      // عزل (تَدقيق ٢٣/٦/٢٦): branchScopedProcedure يُعامل المدير كـelevated (scope=null) ⇒
+      // عزل (تَدقيق ٢٣/٦/٢٦): inventoryReadProcedure يُعامل المدير كـelevated (scope=null) ⇒
       // مدير ف١ كان يَقرأ مخزون ف٢ بلا حسيب. الـadmin يَبقى cross-branch (سلطة عليا)، والمدير
       // يُحَدّ في فرعه. الكاشير/المخزن مُجبَران سلفاً عبر scopedBranchId.
       if (ctx.user.role === "manager" && input.branchId !== Number(ctx.user.branchId)) {
@@ -340,7 +340,7 @@ export const inventoryRouter = router({
       return q;
     }),
 
-  movements: branchScopedProcedure
+  movements: inventoryReadProcedure
     .input(z.object({ variantId: z.number().int().positive().optional(), branchId: z.number().int().positive().optional(), limit: z.number().default(100) }))
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -362,7 +362,7 @@ export const inventoryRouter = router({
    * فلاتر: نوع، فرع (مع عزل صارم لغير المدير)، متغيّر، بحث نصّي، نطاق تاريخ، نوع المرجع.
    * يُعيد إجمالي الصفوف للترقيم.
    */
-  movementsRich: branchScopedProcedure
+  movementsRich: inventoryReadProcedure
     .input(
       z
         .object({
@@ -499,7 +499,7 @@ export const inventoryRouter = router({
    * - يحوّل الكمية إلى الوحدة الأساس ثم يُمرّرها لـ applyMovement داخل tx ذرّية.
    * - يكتب سطر تدقيق بعد النجاح (best-effort).
    */
-  createManualMovement: warehouseProcedure
+  createManualMovement: inventoryWarehouseProcedure
     .input(
       z.object({
         variantId: z.number().int().positive(),

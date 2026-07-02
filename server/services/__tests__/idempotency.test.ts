@@ -5,12 +5,14 @@ import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { returnSale } from "../returnService";
 import { createSale, processPayment } from "../saleService";
+import { createQuotation } from "../quotationService";
 
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
   "idempotencyKeys",
   "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
+  "quotationItems", "quotations",
   "purchaseOrderItems", "purchaseOrders",
   "branchStock", "productPrices", "productUnits", "productVariants", "products",
   "shifts", "workOrderMaterials", "workOrders", "customers", "suppliers", "branches", "users",
@@ -156,5 +158,35 @@ describe("Idempotency — النقر المزدوج لا يُنشئ عمليات
     expect(receipts).toHaveLength(2);
     const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(cust.currentBalance).toBe("15.00"); // 30 − 10 − 5
+  });
+
+  it("createQuotation: نفس clientRequestId لا يُنشئ عرضين (F3)", async () => {
+    const input = {
+      branchId: 1,
+      priceTier: "RETAIL" as const,
+      lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }],
+      clientRequestId: "quo-req-001",
+    };
+    const r1 = await createQuotation(input, actor);
+    const r2 = await createQuotation(input, actor);
+    expect((r2 as any).idempotentReplay).toBe(true);
+    expect(r2.quotationId).toBe(r1.quotationId);
+    expect(r2.quoteNumber).toBe(r1.quoteNumber);
+
+    // عرض واحد فقط + بند واحد (لا تكرار).
+    expect(await db().select().from(s.quotations)).toHaveLength(1);
+    expect(await db().select().from(s.quotationItems)).toHaveLength(1);
+
+    // مفتاح idempotency واحد مسجّل للعملية.
+    const keys = await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.operation, "quotation.create"));
+    expect(keys).toHaveLength(1);
+    expect(Number(keys[0].refId)).toBe(r1.quotationId);
+  });
+
+  it("createQuotation: مفاتيح مختلفة ⇒ عرضان (تأكيد عدم الإفراط في التطبيق)", async () => {
+    const base = { branchId: 1, priceTier: "RETAIL" as const, lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] };
+    await createQuotation({ ...base, clientRequestId: "quo-A" }, actor);
+    await createQuotation({ ...base, clientRequestId: "quo-B" }, actor);
+    expect(await db().select().from(s.quotations)).toHaveLength(2);
   });
 });
