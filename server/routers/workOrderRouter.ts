@@ -21,7 +21,7 @@ import {
   startWorkOrder,
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
-import { branchScopedProcedure, canSeeCost, cashierProcedure, managerProcedure, protectedProcedure, router, workOrderExecProcedure } from "../trpc";
+import { branchScopedProcedure, canSeeCostForUser, cashierProcedure, managerProcedure, protectedProcedure, router, workOrderExecProcedure } from "../trpc";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
@@ -161,7 +161,7 @@ export const workOrderRouter = router({
     }).qrPayload;
     // §٧ تكلفة: نُخفي materialsCost/laborCost/unitCost عن غير المرتفعين (defense-in-depth).
     // نُبقي شكل الـtype ثابتاً (null بدلاً من حذف الحقول) لئلا تنكسر شاشة التفاصيل.
-    if (!canSeeCost(ctx.user.role)) {
+    if (!canSeeCostForUser(ctx.user)) {
       const safeMaterials = materials.map((m) => ({ ...m, unitCost: null as unknown as string }));
       return {
         ...wo,

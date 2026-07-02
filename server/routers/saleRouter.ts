@@ -18,7 +18,7 @@ import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
-import { branchScopedProcedure, canSeeCost, cashierProcedure, router } from "../trpc";
+import { branchScopedProcedure, canSeeCostForUser, cashierProcedure, router } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -490,7 +490,7 @@ export const saleRouter = router({
     }).qrPayload;
 
     // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
-    if (!canSeeCost(ctx.user.role)) {
+    if (!canSeeCostForUser(ctx.user)) {
       const { costTotal: _c, ...invNoCost } = inv;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
       return { ...invNoCost, items: itemsNoCost, payments, qrPayload };

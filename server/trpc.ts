@@ -129,6 +129,20 @@ export const workOrderExecProcedure = t.procedure
 /** هل يُسمح لهذا الدور برؤية التكلفة/هامش الربح؟ (يشمل المحاسب الآن). */
 export const canSeeCost = (role: string) => _canSeeCost(role);
 
+/**
+ * RBAC-COST (تدقيق ٢/٧): رؤية التكلفة/الربح لمستخدمٍ بعينه — تحترم خريطة الدور المخصّص لا القالب فقط.
+ * كان canSeeCost(role) يتبع baseRole ⇒ دور مخصّص أساسه manager يرى التكلفة رغم تقييد خريطته. الآن:
+ * القالب لا يرى ⇒ لا (كما هو)، وإن كان دوراً مخصّصاً (له override) فالرؤية مشروطة بأن صلاحية «التقارير»
+ * (نطاق التكلفة/الربح) ليست NONE. الأدوار القالبية (بلا override) بلا تغيير.
+ */
+export function canSeeCostForUser(user: { role: string; permissionsOverride?: unknown }): boolean {
+  if (!_canSeeCost(user.role)) return false;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (!override) return true;
+  const map = resolvePermissions(user.role as RoleKey, override);
+  return (map.reports ?? "NONE") !== "NONE";
+}
+
 // ─── عزل الفروع (منع IDOR عبر branchId) ─────────────────────────────────
 // F1 (تدقيق ١٤/٦/٢٦): استُبدِل magic value `-1` برميٍ صريح لـFORBIDDEN حين يحاول
 // مستخدم غير-elevated الوصول وهو بلا فرع مُسنَد. كان `-1` يجعل الاستعلامات تُرجع

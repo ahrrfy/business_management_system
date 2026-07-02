@@ -32,7 +32,7 @@ import {
   requestStocktakeRecount,
   resolveStocktakeConflict,
 } from "../services/stocktakeService";
-import { adminProcedure, canSeeCost, managerProcedure, router, warehouseProcedure } from "../trpc";
+import { adminProcedure, canSeeCostForUser, managerProcedure, router, warehouseProcedure } from "../trpc";
 
 /** مبلغ نصي بنمط purchaseRouter — الأموال نصوص تمرّ عبر decimal.js (لا parseFloat). */
 const moneyStr = z.string().regex(/^\d{1,13}(\.\d{1,2})?$/, "قيمة مالية غير صالحة");
@@ -290,7 +290,7 @@ export const stocktakeRouter = router({
       const restricted = restrictedBranchOf(ctx);
       const rows = await getCycleSuggestions({ branchId: restricted ?? input?.branchId ?? null });
       // القيمة السنوية (تكلفة×استهلاك) للمدير فأعلى فقط — تُحجب خادمياً عن دور warehouse.
-      if (canSeeCost(ctx.user.role)) return rows;
+      if (canSeeCostForUser(ctx.user)) return rows;
       return rows.map(({ annualValue: _hidden, ...safe }) => safe);
     }),
 

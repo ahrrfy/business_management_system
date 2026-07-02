@@ -10,7 +10,7 @@ import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyStrin
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../services/purchaseService";
-import { branchScopedProcedure, canSeeCost, managerProcedure, router, warehouseProcedure } from "../trpc";
+import { branchScopedProcedure, canSeeCostForUser, managerProcedure, router, warehouseProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -187,7 +187,7 @@ export const purchaseRouter = router({
           .offset(off),
       });
       // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
-      if (!canSeeCost(ctx.user.role)) {
+      if (!canSeeCostForUser(ctx.user)) {
         return rows.map((row) => ({ ...row, total: null, paidAmount: null }));
       }
       return rows;
@@ -245,7 +245,7 @@ export const purchaseRouter = router({
       .leftJoin(productUnits, eq(purchaseOrderItems.productUnitId, productUnits.id))
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
-    if (!canSeeCost(ctx.user.role)) {
+    if (!canSeeCostForUser(ctx.user)) {
       const poMasked = { ...po, subtotal: null, taxAmount: null, total: null, paidAmount: null, usdTotal: null, agreedRate: null };
       const itemsMasked = items.map((row) => maskCostFields(row, ctx.user.role));
       return { ...poMasked, items: itemsMasked };
