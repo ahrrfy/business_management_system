@@ -21,7 +21,7 @@ import {
   startWorkOrder,
 } from "../services/workOrderService";
 import { logAudit } from "../services/auditService";
-import { branchScopedProcedure, canSeeCostForUser, cashierProcedure, managerProcedure, protectedProcedure, router, workOrderExecProcedure } from "../trpc";
+import { canSeeCostForUser, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
@@ -32,7 +32,7 @@ const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 export const workOrderRouter = router({
   // §٧ IDOR: الكاشير لا يجب أن يرى أوامر فروع أخرى. branchScopedProcedure يحقن
   // scopedBranchId=null للمدير/admin، ورقم الفرع لغيرهما.
-  list: branchScopedProcedure
+  list: workordersReadProcedure
     .input(z.object({ limit: z.number().default(100), branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       const db = getDb();
@@ -90,7 +90,7 @@ export const workOrderRouter = router({
       return rows.map((r) => ({ ...r, thumbnailUrl: thumbs.get(Number(r.id)) ?? null }));
     }),
 
-  get: branchScopedProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  get: workordersReadProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const wo = (
@@ -180,7 +180,7 @@ export const workOrderRouter = router({
    * cashierProcedure: الكاشير ينشئ أوامر الشغل ويحتاج اختيار المنفّذ؛ القائمة أسماء فقط (لا بيانات حسّاسة).
    * إعادة الإسناد نفسها (mutation `assign`) تبقى managerProcedure — قرار إشرافي.
    */
-  assignableStaff: cashierProcedure.query(async () => {
+  assignableStaff: workordersCashierProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
     // عزل (تَدقيق ٢٣/٦/٢٦): القائمة كانت تَكشف admin/manager للكاشير ⇒ تَسريب هياكل المنظّمة.
@@ -197,7 +197,7 @@ export const workOrderRouter = router({
   }),
 
   /** إسناد/إعادة إسناد المنفّذ المسؤول عن طلب الخدمة (null = إلغاء الإسناد). مدير فأعلى + تدقيق. */
-  assign: managerProcedure
+  assign: workordersManagerProcedure
     .input(z.object({ workOrderId: z.number().int().positive(), assignedTo: z.number().int().positive().nullable() }))
     .mutation(async ({ input, ctx }) => {
       const db = getDb();
@@ -226,7 +226,7 @@ export const workOrderRouter = router({
    * الخط الزمني للأمر — أحداث حقيقية من سجلّ التدقيق (استلام/بدء/جاهز/تسليم/إلغاء/إسناد).
    * شفافية: من فعل ماذا ومتى. branch-scoped (IDOR) كـget.
    */
-  timeline: branchScopedProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  timeline: workordersReadProcedure.input(z.object({ workOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return [];
     const wo = (
@@ -249,7 +249,7 @@ export const workOrderRouter = router({
     return rows;
   }),
 
-  create: cashierProcedure
+  create: workordersCashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -346,7 +346,7 @@ export const workOrderRouter = router({
    * السحب الذاتي للفني (محطة التنفيذ): يُسنِد الأمر الوارد لنفسه ليظهر في «أوامري».
    * workOrderExecProcedure = كاشير/مدير/فني مطبعة + فرع مُسنَد. الخدمة تمنع سحب أمر زميل.
    */
-  claim: workOrderExecProcedure
+  claim: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await claimWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
@@ -361,7 +361,7 @@ export const workOrderRouter = router({
 
   // التنفيذ (بدء/تجهيز) متاح لفني المطبعة على أوامره المسحوبة + الكاشير/المدير. التسليم/الفوترة
   // يبقيان cashierProcedure (مالٌ ونقد) — لا يُسلّم الفني ولا يُصدر فاتورة.
-  start: workOrderExecProcedure
+  start: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await startWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
@@ -369,7 +369,7 @@ export const workOrderRouter = router({
       return res;
     }),
 
-  markReady: workOrderExecProcedure
+  markReady: workordersExecProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await markWorkOrderReady(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
@@ -377,7 +377,7 @@ export const workOrderRouter = router({
       return res;
     }),
 
-  deliver: cashierProcedure
+  deliver: workordersCashierProcedure
     .input(
       z.object({
         workOrderId: z.number().int().positive(),
@@ -402,7 +402,7 @@ export const workOrderRouter = router({
     }),
 
   // الإلغاء يعكس مخزوناً/قيوداً ⇒ مدير فأعلى.
-  cancel: managerProcedure
+  cancel: workordersManagerProcedure
     .input(z.object({ workOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await cancelWorkOrder(input.workOrderId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });

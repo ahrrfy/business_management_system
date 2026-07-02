@@ -181,3 +181,47 @@ export const branchScopedProcedure = protectedProcedure.use(({ ctx, next }) => {
   const scopedOwnerId = elevated ? null : Number(ctx.user.id);
   return next({ ctx: { ...ctx, scopedBranchId, scopedOwnerId } });
 });
+
+// ─── F2 (تدقيق ٢/٧): إجراءات module-gated للوحدات غير المالية ──────────────────
+// المشكلة: البوّابات الخشنة (managerProcedure/cashierProcedure/warehouseProcedure/…) تفحص الدور
+// الأساس (baseRole) فقط عبر requireRole ⇒ دور مخصّص أساسه manager بخريطةٍ تُقيّد وحدةً (مثلاً
+// inventory=NONE) كان يتجاوز القيد على تلك الوحدة (الخريطة وهم). الحلّ: نُركّب requireModule فوق
+// البوّابة الخشنة القائمة (تحافظ على requireOwnBranch/عزل الفرع/عزل الموظف) فتُنفَّذ خريطة الدور
+// المخصّص (القالب + override) لا الأساس فقط. admin يعبُر requireModule داخلياً. الأدوار القالبية
+// (بلا override) بلا انحدار: resolvePermissions(role,null)=القالب يمنح المستوى (تُحقِّق منه §٤ في
+// docs/audit-followups-2026-07-02.md). السابقة المعتمدة: conversationRouter (channels).
+// الاصطلاح: query ⇒ READ، mutation ⇒ FULL.
+
+// pos (نقطة بيع خدمات الطباعة — printPos)
+export const posCashierProcedure = cashierProcedure.use(requireModule("pos", "FULL"));
+// sales
+export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
+export const salesCashierProcedure = cashierProcedure.use(requireModule("sales", "FULL"));
+export const salesManagerProcedure = managerProcedure.use(requireModule("sales", "FULL"));
+// purchases
+export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));
+export const purchasesManagerProcedure = managerProcedure.use(requireModule("purchases", "FULL"));
+export const purchasesWarehouseProcedure = warehouseProcedure.use(requireModule("purchases", "FULL"));
+// inventory (يشمل production/stocktake — كلاهما يُحرّك المخزون)
+export const inventoryReadProcedure = branchScopedProcedure.use(requireModule("inventory", "READ"));
+export const inventoryWarehouseProcedure = warehouseProcedure.use(requireModule("inventory", "FULL"));
+export const inventoryManagerProcedure = managerProcedure.use(requireModule("inventory", "FULL"));
+// customers
+export const customersReadProcedure = protectedProcedure.use(requireModule("customers", "READ"));
+export const customersCashierProcedure = cashierProcedure.use(requireModule("customers", "FULL"));
+export const customersManagerProcedure = managerProcedure.use(requireModule("customers", "FULL"));
+// suppliers (أساسها managerProcedure — لا تُوسَّع لأدوار أدنى ضمن F2)
+export const suppliersReadProcedure = managerProcedure.use(requireModule("suppliers", "READ"));
+export const suppliersManagerProcedure = managerProcedure.use(requireModule("suppliers", "FULL"));
+// products (catalog)
+export const productsReadProcedure = protectedProcedure.use(requireModule("products", "READ"));
+export const productsManagerProcedure = managerProcedure.use(requireModule("products", "FULL"));
+// expenses
+export const expensesReadProcedure = branchScopedProcedure.use(requireModule("expenses", "READ"));
+export const expensesCashierProcedure = cashierProcedure.use(requireModule("expenses", "FULL"));
+export const expensesManagerProcedure = managerProcedure.use(requireModule("expenses", "FULL"));
+// workorders (خدمة العملاء)
+export const workordersReadProcedure = branchScopedProcedure.use(requireModule("workorders", "READ"));
+export const workordersCashierProcedure = cashierProcedure.use(requireModule("workorders", "FULL"));
+export const workordersExecProcedure = workOrderExecProcedure.use(requireModule("workorders", "FULL"));
+export const workordersManagerProcedure = managerProcedure.use(requireModule("workorders", "FULL"));

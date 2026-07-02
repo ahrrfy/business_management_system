@@ -9,7 +9,7 @@ import {
   listSuppliers,
   updateSupplier,
 } from "../services/supplierService";
-import { managerProcedure, protectedProcedure, router } from "../trpc";
+import { protectedProcedure, router, suppliersManagerProcedure, suppliersReadProcedure } from "../trpc";
 
 /**
  * الموردون — شريحة كاملة.
@@ -18,12 +18,12 @@ import { managerProcedure, protectedProcedure, router } from "../trpc";
  */
 export const supplierRouter = router({
   /** قائمة بسيطة سريعة — لشاشة المشتريات والقوائم (مدير/أدمن فقط). */
-  list: managerProcedure.query(async ({ ctx }) => {
+  list: suppliersReadProcedure.query(async ({ ctx }) => {
     const { rows } = await listSuppliers({ includeInactive: false, limit: 500 });
     return rows.map((r) => maskSupplierSensitive(r, ctx.user.role));
   }),
 
-  search: managerProcedure
+  search: suppliersReadProcedure
     .input(
       z
         .object({
@@ -40,14 +40,14 @@ export const supplierRouter = router({
       return { ...res, rows: res.rows.map((r) => maskSupplierSensitive(r, ctx.user.role)) };
     }),
 
-  get: managerProcedure
+  get: suppliersReadProcedure
     .input(z.object({ supplierId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const row = await getSupplier(input.supplierId);
       return maskBankFields(maskSupplierSensitive(row, ctx.user.role), ctx.user.role);
     }),
 
-  create: managerProcedure
+  create: suppliersManagerProcedure
     .input(
       z.object({
         name: z.string().min(1).max(255),
@@ -76,7 +76,7 @@ export const supplierRouter = router({
       return r;
     }),
 
-  update: managerProcedure
+  update: suppliersManagerProcedure
     .input(
       z.object({
         supplierId: z.number().int().positive(),
@@ -120,7 +120,7 @@ export const supplierRouter = router({
       return res;
     }),
 
-  deactivate: managerProcedure
+  deactivate: suppliersManagerProcedure
     .input(z.object({ supplierId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await deactivateSupplier(input.supplierId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -128,7 +128,7 @@ export const supplierRouter = router({
       return res;
     }),
 
-  activate: managerProcedure
+  activate: suppliersManagerProcedure
     .input(z.object({ supplierId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await activateSupplier(input.supplierId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });

@@ -11,7 +11,7 @@ import {
 import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive } from "../lib/redact";
-import { cashierProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
+import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, router } from "../trpc";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
@@ -28,13 +28,13 @@ const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "ح
  */
 export const customerRouter = router({
   /** قائمة بسيطة سريعة — يحتاجها الكاشير وأوامر الشغل والبيع الآجل. */
-  list: protectedProcedure.query(async ({ ctx }) => {
+  list: customersReadProcedure.query(async ({ ctx }) => {
     const { rows } = await listCustomers({ includeInactive: false, limit: 500 });
     return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
   }),
 
   /** قائمة كاملة مع بحث وفلاتر وتقسيم صفحات — لشاشة الإدارة. */
-  search: protectedProcedure
+  search: customersReadProcedure
     .input(
       z
         .object({
@@ -54,7 +54,7 @@ export const customerRouter = router({
     }),
 
   /** بحث ذكي بإحصاءات — لإدخال أمر شغل سريع. */
-  smartSearch: protectedProcedure
+  smartSearch: customersReadProcedure
     .input(z.object({
       q: z.string().min(1).max(120),
       limit: z.number().int().min(1).max(20).optional(),
@@ -66,7 +66,7 @@ export const customerRouter = router({
       return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
     }),
 
-  get: protectedProcedure
+  get: customersReadProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const c = await getCustomer(input.customerId);
@@ -76,7 +76,7 @@ export const customerRouter = router({
       return { ...masked, qrPayload };
     }),
 
-  create: cashierProcedure
+  create: customersCashierProcedure
     .input(
       z.object({
         name: z.string().min(1).max(255),
@@ -104,7 +104,7 @@ export const customerRouter = router({
       return { id: r.customerId, customerId: r.customerId };
     }),
 
-  update: managerProcedure
+  update: customersManagerProcedure
     .input(
       z.object({
         customerId: z.number().int().positive(),
@@ -146,7 +146,7 @@ export const customerRouter = router({
       return res;
     }),
 
-  deactivate: managerProcedure
+  deactivate: customersManagerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await deactivateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -154,7 +154,7 @@ export const customerRouter = router({
       return res;
     }),
 
-  activate: managerProcedure
+  activate: customersManagerProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await activateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });

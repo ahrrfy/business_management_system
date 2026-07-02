@@ -42,7 +42,18 @@
 - **التحقّق:** `pnpm db:verify` أخضر + صفر أيتام + محاولة إدراج قيدٍ بمعرّفٍ وهميّ تُرفَض.
 - **DoD:** الـFK موجودان في `information_schema.KEY_COLUMN_USAGE` + النشر لم يتعطّل.
 
-## F2 — إنفاذ الأدوار المخصّصة على الوحدات غير المالية  ‏`[ ]`
+## F2 — إنفاذ الأدوار المخصّصة على الوحدات غير المالية  ‏`[x]` ✅ (٢/٧/٢٦)
+> **أُنجِز:** أُضيفت ٢٤ إجراءً module-gated في `server/trpc.ts` (تركيب `requireModule` فوق البوّابات الخشنة القائمة — يحافظ على
+> requireOwnBranch/عزل الفرع/عزل الموظف) ثم بُدِّل مرجع الإجراء في ١٣ راوتراً للوحدات التسعة + `production→inventory` +
+> `quotation→sales`. **تصحيح انحدار واحد:** قالب cashier `workorders` READ→FULL في `shared/permissions.ts` (الكاشير ينشئ/يُسلّم
+> أوامر شغل فعلاً في الاستقبال الهجين — القالب كان READ سهواً). **تحقّق DB:** اختبار جديد `f2ModuleEnforce.test.ts` (١٧/١٧):
+> دور مخصّص manager+{module:NONE} يُرفَض على ٨ وحدات (الفجوة مُغلقة) + مدير قالبيّ يمرّ (لا انحدار) + بوّابة الطفرات + تصحيح
+> cashier + إنفاذ القوالب (purchasing→customers، accountant→products يُحجبان). صفر انحدار: RBAC ٩٨/٩٨ + تدفّقات ٢١١/٢١١ +
+> `pnpm check` أخضر.
+> **نطاق مؤجَّل موثّق (بحرّاس role قائمة كافية مؤقّتاً):** `stocktakeRouter` (warehouse/manager/admin + تقييد فرع + حجب قيمة —
+> ربطه بـinventory يحتاج تصنيف قراءة/كتابة لـ٢٠ نقطة)، و`exchangeRouter/cashTransfersRouter/shiftRouter/deliveryRouter` (مالية/
+> خزينة بلا مفتاح وحدة مستقل — موجة إكمال البوّابات المالية). **موصى قبل الإنتاج:** جولة بصرية للشاشات المشتركة
+> (`customers.list`/`catalog.categories`/`catalog.posList`) لكل دور قالبيّ غير-admin.
 - **الخطورة:** متوسط · **المصدر:** بقية C10 · **الملفات:** `server/trpc.ts` + كل الراوترات
 - **المشكلة:** خريطة صلاحية الدور المخصّص مُنفَذة على السطح المالي الحسّاس فقط (reports/treasury/hr/assets/channels + cost).
   الوحدات `sales/purchases/inventory/customers/suppliers/products/expenses/pos/workorders` تُبوَّب بالدور الأساس
@@ -103,7 +114,7 @@
 
 ## سجل الإنجاز (شطب عند الاكتمال في البيئة الحقيقية)
 - [x] F1 — هجرة FK ✅ (٢/٧/٢٦)
-- [ ] F2 — إنفاذ الأدوار على الوحدات غير المالية
+- [x] F2 — إنفاذ الأدوار على الوحدات غير المالية ✅ (٢/٧/٢٦)
 - [ ] F3 — idempotency عروض الأسعار
 - [ ] F4 — تدقيق طبقة المنصّة
 - [ ] F5 — حافتا تحقيب كشف العميل

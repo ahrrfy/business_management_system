@@ -8,7 +8,7 @@ import {
   setQuotationStatus,
 } from "../services/quotationService";
 import { logAudit } from "../services/auditService";
-import { branchScopedProcedure, managerProcedure, router } from "../trpc";
+import { router, salesManagerProcedure, salesReadProcedure } from "../trpc";
 import { positiveMoneyString } from "../lib/schemas";
 import { retryOnDup } from "../lib/retryDup";
 
@@ -19,7 +19,7 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 
 export const quotationRouter = router({
   // عزل الفرع (تدقيق ١٤/٦/٢٦): غير المرتفعين يرون عروض فرعهم فقط (كان protectedProcedure ⇒ IDOR قراءة).
-  list: branchScopedProcedure
+  list: salesReadProcedure
     .input(
       z
         .object({
@@ -39,7 +39,7 @@ export const quotationRouter = router({
       return listQuotations({ ...(input ?? {}), branchId });
     }),
 
-  get: branchScopedProcedure
+  get: salesReadProcedure
     .input(z.object({ quotationId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const q = await getQuotation(input.quotationId);
@@ -50,7 +50,7 @@ export const quotationRouter = router({
 
   // §٧ RBAC: عرض السعر التزام تسعيري يربط الشركة بمبلغ مستقبلاً ⇒ مدير فأعلى (كان protected
   // وسمح للكاشير بإصدار عروض، مغيّراً المسؤولية التسعيرية بلا حسيب).
-  create: managerProcedure
+  create: salesManagerProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -92,7 +92,7 @@ export const quotationRouter = router({
 
   // Q1 (تدقيق ١٤/٦/٢٦): عزل فرع صارم — admin فقط يعدّل حالة عرض فرع آخر (manager محصور بفرعه).
   // عرض السعر التزام سعري؛ التعديل في فرع آخر = تجاوز سلطة تسعيرية.
-  setStatus: managerProcedure
+  setStatus: salesManagerProcedure
     .input(z.object({ quotationId: z.number().int().positive(), status: z.enum(["DRAFT", "SENT", "ACCEPTED", "REJECTED", "EXPIRED"]) }))
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null && ctx.user.role !== "admin") {
@@ -108,7 +108,7 @@ export const quotationRouter = router({
     }),
 
   // Q1 (تدقيق ١٤/٦/٢٦): التحويل = إنشاء فاتورة تُلزم الشركة. admin فقط يعبُر الفروع.
-  convert: managerProcedure
+  convert: salesManagerProcedure
     .input(
       z.object({
         quotationId: z.number().int().positive(),

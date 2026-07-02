@@ -10,7 +10,7 @@ import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyStrin
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../services/purchaseService";
-import { branchScopedProcedure, canSeeCostForUser, managerProcedure, router, warehouseProcedure } from "../trpc";
+import { canSeeCostForUser, purchasesManagerProcedure, purchasesReadProcedure, purchasesWarehouseProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -19,7 +19,7 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 
 // المشتريات تحمل التكلفة (unitPrice = سعر الشراء) ⇒ مدير فأعلى للإنشاء والعرض، والمخزن للاستلام.
 export const purchaseRouter = router({
-  createOrder: managerProcedure
+  createOrder: purchasesManagerProcedure
     .input(
       z.object({
         supplierId: z.number().int().positive(),
@@ -55,7 +55,7 @@ export const purchaseRouter = router({
       return res;
     }),
 
-  receive: warehouseProcedure
+  receive: purchasesWarehouseProcedure
     .input(
       z.object({
         purchaseOrderId: z.number().int().positive(),
@@ -66,7 +66,7 @@ export const purchaseRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // G3: warehouseProcedure يضمن branchId لغير-المدير عبر requireOwnBranch.
+      // G3: purchasesWarehouseProcedure يضمن branchId لغير-المدير عبر requireOwnBranch.
       // المدير/الأدمن قد يصل بلا فرع (شرعي)، لكن الاستلام نفسه يحتاج فرعاً.
       if (ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن استلام بضاعة" });
@@ -98,7 +98,7 @@ export const purchaseRouter = router({
     }),
 
   // إلغاء أمر شراء لم يُستلم منه شيء (قلب حالة خالص — الحارس المالي/المخزني في الخدمة).
-  cancel: managerProcedure
+  cancel: purchasesManagerProcedure
     .input(z.object({ purchaseOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       // G3: لا إلغاء بلا فرع — assertBranchOwnership داخل الخدمة يحتاج actor.branchId صحيحاً.
@@ -117,7 +117,7 @@ export const purchaseRouter = router({
 
   // F3 (تدقيق ١٤/٦/٢٦): list/get تحوّلتا إلى branchScopedProcedure — قبل ذلك كان مدير
   // فرع SALES يستطيع قراءة أوامر شراء فرع MAIN عبر استدعاء API مباشر (IDOR قراءة).
-  list: branchScopedProcedure
+  list: purchasesReadProcedure
     .input(
       z
         .object({
@@ -193,7 +193,7 @@ export const purchaseRouter = router({
       return rows;
     }),
 
-  get: branchScopedProcedure.input(z.object({ purchaseOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  get: purchasesReadProcedure.input(z.object({ purchaseOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const po = (

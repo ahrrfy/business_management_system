@@ -5,7 +5,7 @@ import { customers, invoiceItems, invoices, productUnits, productVariants, produ
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { listSalesReturns, returnSale } from "../services/returnService";
-import { managerProcedure, router } from "../trpc";
+import { router, salesManagerProcedure } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -14,7 +14,7 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 
 // المرتجعات تعكس مخزوناً ونقداً ⇒ مدير فأعلى.
 export const returnRouter = router({
-  create: managerProcedure
+  create: salesManagerProcedure
     .input(
       z.object({
         invoiceId: z.number().int().positive(),
@@ -47,7 +47,7 @@ export const returnRouter = router({
     }),
 
   /** سجلّ مرتجعات البيع (قيود RETURN ذات فاتورة بلا مورد) — فلاتر عميل/فرع/فترة + ترقيم خادمي. */
-  list: managerProcedure
+  list: salesManagerProcedure
     .input(
       z
         .object({
@@ -74,7 +74,7 @@ export const returnRouter = router({
       return listSalesReturns({ ...(input ?? {}), branchId });
     }),
 
-  getInvoice: managerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
+  getInvoice: salesManagerProcedure.input(z.object({ invoiceId: z.number().int().positive() })).query(async ({ input, ctx }) => {
     const db = getDb();
     if (!db) return null;
     const inv = (

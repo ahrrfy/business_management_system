@@ -7,7 +7,7 @@ import {
 } from "../services/expenseService";
 import { logAudit } from "../services/auditService";
 import { ymdDate } from "../lib/schemas";
-import { branchScopedProcedure, cashierProcedure, managerProcedure, router } from "../trpc";
+import { expensesCashierProcedure, expensesManagerProcedure, expensesReadProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const category = z.enum([
@@ -25,7 +25,7 @@ const status = z.enum(["ACTIVE", "CANCELLED"]);
 const recurringFreq = z.enum(["DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "YEARLY"]);
 
 export const expenseRouter = router({
-  list: branchScopedProcedure
+  list: expensesReadProcedure
     .input(
       z
         .object({
@@ -51,7 +51,7 @@ export const expenseRouter = router({
       })
     ),
 
-  create: cashierProcedure
+  create: expensesCashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -115,7 +115,7 @@ export const expenseRouter = router({
     }),
 
   // إلغاء مصروف يعكس نقداً ⇒ مدير فأعلى.
-  cancel: managerProcedure
+  cancel: expensesManagerProcedure
     .input(z.object({ expenseId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       if (ctx.user.branchId == null) {

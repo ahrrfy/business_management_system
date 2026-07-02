@@ -13,7 +13,7 @@ import {
   updateCategory,
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
-import { managerProcedure, protectedProcedure, router } from "../trpc";
+import { productsManagerProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
@@ -87,13 +87,13 @@ const imageSchema = z.object({
 });
 
 export const catalogRouter = router({
-  posList: protectedProcedure
+  posList: productsReadProcedure
     .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional() }))
     .query(({ input, ctx }) => listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices })),
 
   // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
   // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
-  adminList: protectedProcedure
+  adminList: productsReadProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -108,7 +108,7 @@ export const catalogRouter = router({
     .query(({ input, ctx }) => listProductsAdmin({ ...input, branchId: scopeBranch(ctx, input.branchId) })),
 
   // تفعيل/تعطيل منتج — مدير فأعلى (يغيّر ما يراه الكاشير في البيع).
-  setProductActive: managerProcedure
+  setProductActive: productsManagerProcedure
     .input(z.object({ productId: z.number().int().positive(), isActive: z.boolean() }))
     .mutation(async ({ input, ctx }) => {
       const res = await setProductActive(input.productId, input.isActive, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -121,23 +121,23 @@ export const catalogRouter = router({
       return res;
     }),
 
-  byBarcode: protectedProcedure
+  byBarcode: productsReadProcedure
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier }))
     .query(({ input, ctx }) => lookupByBarcode(input.barcode, scopeBranch(ctx, input.branchId), input.tier)),
 
   // product-variants: تحقّق مسبق من تكرار الباركود قبل الحفظ — `productUnits.barcode` فريد (UNIQUE)
   // فالحفظ يفشل عند التكرار؛ هذا يُظهر تحذيراً لحظياً بأي منتج يحجز الباركود (بدل رحلة حفظ فاشلة).
   // مدير فأعلى (شاشة الإضافة/التعديل manager) ولا يكشف تكلفة.
-  checkBarcodes: managerProcedure
+  checkBarcodes: productsManagerProcedure
     .input(z.object({ codes: z.array(z.string().min(1)).max(2000) }))
     .query(({ input }) => checkBarcodesTaken(input.codes)),
 
   // Purchase-side product search: carries COST (not a sell price). مدير فأعلى (يكشف التكلفة).
-  forPurchase: managerProcedure
+  forPurchase: productsManagerProcedure
     .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().default(50) }))
     .query(({ input }) => listForPurchase(input.branchId, input.query, input.limit)),
 
-  createProduct: managerProcedure
+  createProduct: productsManagerProcedure
     .input(
       z.object({
         // v3-add-screens: نسمح بـname قديم أو أجزاء جديدة. الخدمة تركّب الاسم النهائي.
@@ -169,23 +169,23 @@ export const catalogRouter = router({
     }),
 
   // print-catalog: مواد خام لمنتقي وصفة الخدمة (يكشف الكلفة ⇒ مدير فأعلى).
-  materialsForRecipe: managerProcedure
+  materialsForRecipe: productsManagerProcedure
     .input(z.object({ query: z.string().optional(), limit: z.number().int().positive().max(200).default(100) }))
     .query(({ input }) => listMaterialsForRecipe(input.query, input.limit)),
 
   /** v3-add-screens: صور منتج للعرض. */
-  productImages: protectedProcedure
+  productImages: productsReadProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => listProductImages(input.productId)),
 
   // شاشة التعديل تكشف costPrice ⇒ مدير فأعلى.
-  getForEdit: managerProcedure
+  getForEdit: productsManagerProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => getProductForEdit(input.productId)),
 
   // §٧ (RBAC): updateProduct يكشف costPrice ويعدّل أسعاراً ⇒ مدير فأعلى (كان protectedProcedure
   // وسمح للكاشير بتعديل التكاليف).
-  updateProduct: managerProcedure
+  updateProduct: productsManagerProcedure
     .input(
       z.object({
         productId: z.number().int().positive(),
@@ -267,12 +267,12 @@ export const catalogRouter = router({
     }),
 
   // product-variants: قراءة منتج بكامل متغيّراته للتعديل (يكشف costPrice ⇒ مدير فأعلى).
-  getForVariantEdit: managerProcedure
+  getForVariantEdit: productsManagerProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => getProductForVariantEdit(input.productId)),
 
   // product-variants: تعديل منتج بنموذج المتغيّرات (تحديث/إضافة/تعطيل) ⇒ مدير فأعلى.
-  updateProductVariants: managerProcedure
+  updateProductVariants: productsManagerProcedure
     .input(
       z.object({
         productId: z.number().int().positive(),
@@ -306,7 +306,7 @@ export const catalogRouter = router({
       return res;
     }),
 
-  assignBarcode: managerProcedure
+  assignBarcode: productsManagerProcedure
     .input(z.object({ productUnitId: z.number().int().positive(), barcode: z.string().min(1) }))
     .mutation(async ({ input, ctx }) => {
       const res = await assignBarcode(input.productUnitId, input.barcode);
@@ -315,7 +315,7 @@ export const catalogRouter = router({
     }),
 
   /** قائمة الفئات (لمنتقي الفئة في شاشات المنتج ونطاق الجرد «حسب الفئة»). */
-  categories: protectedProcedure.query(async () => {
+  categories: productsReadProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
     return db
@@ -327,9 +327,9 @@ export const catalogRouter = router({
   /* ============================ إدارة الفئات (categories CRUD + دمج + نقل) ============================ */
 
   /** قائمة الفئات بعدد منتجاتها لشاشة الإدارة (يكشف عدّاً فقط ⇒ مدير فأعلى). */
-  categoriesAdmin: managerProcedure.query(() => listCategoriesAdmin()),
+  categoriesAdmin: productsManagerProcedure.query(() => listCategoriesAdmin()),
 
-  createCategory: managerProcedure
+  createCategory: productsManagerProcedure
     .input(z.object({ name: z.string().min(1).max(255), description: z.string().max(1000).nullish() }))
     .mutation(async ({ input, ctx }) => {
       const res = await createCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -337,7 +337,7 @@ export const catalogRouter = router({
       return res;
     }),
 
-  updateCategory: managerProcedure
+  updateCategory: productsManagerProcedure
     .input(
       z.object({
         id: z.number().int().positive(),
@@ -357,7 +357,7 @@ export const catalogRouter = router({
       return res;
     }),
 
-  deleteCategory: managerProcedure
+  deleteCategory: productsManagerProcedure
     .input(z.object({ id: z.number().int().positive(), reassignToId: z.number().int().positive().nullish() }))
     .mutation(async ({ input, ctx }) => {
       const res = await deleteCategory(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -370,7 +370,7 @@ export const catalogRouter = router({
       return res;
     }),
 
-  mergeCategories: managerProcedure
+  mergeCategories: productsManagerProcedure
     .input(z.object({ sourceIds: z.array(z.number().int().positive()).min(1), targetId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
       const res = await mergeCategories(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
@@ -385,7 +385,7 @@ export const catalogRouter = router({
     }),
 
   /** نقل منتجات محدّدة إلى فئة (categoryId=null ⇒ بلا فئة) — للنقل الجماعي من قائمة المنتجات. */
-  reassignProducts: managerProcedure
+  reassignProducts: productsManagerProcedure
     .input(z.object({ productIds: z.array(z.number().int().positive()).min(1).max(2000), categoryId: z.number().int().positive().nullable() }))
     .mutation(async ({ input, ctx }) => {
       const res = await reassignProducts(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
