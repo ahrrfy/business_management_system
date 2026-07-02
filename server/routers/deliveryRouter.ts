@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { branchScopedProcedure, cashierProcedure, managerProcedure, router } from "../trpc";
 import {
@@ -33,6 +34,17 @@ function effectiveBranch(ctx: { user: { role?: string; branchId?: number | null 
   return elevated ? (requested ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : 0)) : Number(ctx.user.branchId);
 }
 
+// IDOR (تدقيق ٢/٧): قراءات جهة التوصيل بالمعرّف (getParty/consignments/partyStatement) كانت تمرّر
+// partyId بلا التحقّق أن الجهة تخصّ فرع القارئ ⇒ تسريب بيانات جهات فروع أخرى. نتحقّق من الملكية:
+// غير المرتفعين (scopedBranchId != null) لا يقرؤون جهة فرعٍ آخر (الجهات ذات الفرع null مشتركة ⇒ مسموحة).
+async function assertPartyInScope(partyId: number, scopedBranchId: number | null) {
+  if (scopedBranchId == null) return; // admin/manager عابرو الفروع
+  const party = await getDeliveryParty(partyId);
+  if (party && party.branchId != null && Number(party.branchId) !== scopedBranchId) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "جهة التوصيل تخصّ فرعاً آخر" });
+  }
+}
+
 export const deliveryRouter = router({
   // قائمة جهات التوصيل + عهدتها (branch-scoped: غير المرتفعين يَرون فرعهم فقط).
   listParties: branchScopedProcedure
@@ -43,7 +55,10 @@ export const deliveryRouter = router({
 
   getParty: branchScopedProcedure
     .input(z.object({ id: z.number().int().positive() }))
-    .query(({ input }) => getDeliveryParty(input.id)),
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.id, ctx.scopedBranchId);
+      return getDeliveryParty(input.id);
+    }),
 
   createParty: managerProcedure
     .input(
@@ -101,15 +116,24 @@ export const deliveryRouter = router({
 
   openConsignments: branchScopedProcedure
     .input(z.object({ partyId: z.number().int().positive() }))
-    .query(({ input }) => listOpenConsignments(input.partyId)),
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return listOpenConsignments(input.partyId);
+    }),
 
   consignments: branchScopedProcedure
     .input(z.object({ partyId: z.number().int().positive(), openOnly: z.boolean().optional() }))
-    .query(({ input }) => listConsignmentsForParty(input.partyId, input.openOnly ?? false)),
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return listConsignmentsForParty(input.partyId, input.openOnly ?? false);
+    }),
 
   partyStatement: branchScopedProcedure
     .input(z.object({ partyId: z.number().int().positive(), from: z.string().optional(), to: z.string().optional() }))
-    .query(({ input }) => getDeliveryPartyStatement(input.partyId, input.from, input.to)),
+    .query(async ({ input, ctx }) => {
+      await assertPartyInScope(input.partyId, ctx.scopedBranchId);
+      return getDeliveryPartyStatement(input.partyId, input.from, input.to);
+    }),
 
   // ─── التحوّلات ───
   // إرسال طلب جاهز عبر مندوب (يُصدر فاتورة COD + عهدة) — مالٌ/نقد ⇒ cashierProcedure.

@@ -167,7 +167,14 @@ export const voucherRouter = router({
         })
         .optional(),
     )
-    .query(async ({ input }) => listVouchers(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      // IDOR (تدقيق ٢/٧): list كان يمرّر branchId العميل بلا عزل ⇒ مدير فرع يقرأ سندات كل الفروع
+      // (بخلاف get الذي يفرض العزل). نُقيّد المدير المُسنَد لفرع بفرعه؛ الأدمن ومدير بلا فرع (عابر
+      // الفروع) يمرّان كما هما — مطابقٌ لمنطق get.
+      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const scoped = restrict ? { ...(input ?? {}), branchId: Number(ctx.user.branchId) } : (input ?? {});
+      return listVouchers(scoped);
+    }),
 
   get: managerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
