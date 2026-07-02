@@ -102,15 +102,44 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
         .where(eq(invoices.sourceId, input.clientRequestId))
         .limit(1);
       if (existing[0]) {
+        const ex = existing[0];
         // SALES-03 (قناة الطباعة): عزل الفرع — مفتاح idempotency لفرع آخر لا يَكشف فاتورته.
-        if (Number(existing[0].branchId) !== input.branchId) {
+        if (Number(ex.branchId) !== input.branchId) {
           throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لبيع فرع آخر" });
         }
+        // SALES-04b (تدقيق ٢/٧): قناة الطباعة كانت تُرجِع الفاتورة القديمة بلا أي فحص محتوى ⇒ إعادة
+        // استعمال المفتاح ببيع مختلف تُصادَر بصمت. الآن نتحقّق من (العميل + طريقة الدفع + محتوى الأسطر).
+        const requestedCustomerId = input.customerId ?? null;
+        const storedCustomerId = ex.customerId != null ? Number(ex.customerId) : null;
+        if (storedCustomerId !== requestedCustomerId) {
+          throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمَل لبيع عميل مختلف" });
+        }
+        const requestedMethod = input.payment?.method ?? null;
+        if ((ex.paymentMethod ?? null) !== requestedMethod) {
+          throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمَل لبيع بطريقة دفع مختلفة" });
+        }
+        const existingItems = await tx
+          .select({
+            variantId: invoiceItems.variantId,
+            productUnitId: invoiceItems.productUnitId,
+            quantity: invoiceItems.quantity,
+          })
+          .from(invoiceItems)
+          .where(eq(invoiceItems.invoiceId, ex.id));
+        const lineKey = (variantId: number | null, unitId: number | null, quantity: string) =>
+          `${Number(variantId)}:${unitId == null ? "" : Number(unitId)}:${money(quantity).toFixed(3)}`;
+        const existingKeys = existingItems
+          .map((i) => lineKey(Number(i.variantId), i.productUnitId == null ? null : Number(i.productUnitId), i.quantity))
+          .sort();
+        const requestedKeys = input.lines.map((l) => lineKey(l.variantId, l.productUnitId, l.quantity)).sort();
+        if (existingKeys.length !== requestedKeys.length || existingKeys.some((k, i) => k !== requestedKeys[i])) {
+          throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: المفتاح مستعمَل لبيع بأصناف أو كميات مختلفة" });
+        }
         return {
-          invoiceId: Number(existing[0].id),
-          invoiceNumber: existing[0].invoiceNumber,
-          total: existing[0].total,
-          status: existing[0].status as CreatePrintSaleResult["status"],
+          invoiceId: Number(ex.id),
+          invoiceNumber: ex.invoiceNumber,
+          total: ex.total,
+          status: ex.status as CreatePrintSaleResult["status"],
           idempotentReplay: true,
         };
       }
@@ -125,6 +154,12 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       const s = await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1);
       if (!s[0] || s[0].status !== "OPEN" || Number(s[0].branchId) !== input.branchId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
+      }
+      // SHIFT-OWN (تدقيق ٢/٧): فرض ملكية الوردية — نفس حارس processBanner/createSale. غيابه كان
+      // يُتيح نسب نقد الطباعة لدرج زميل. المدير/الأدمن معفيان.
+      const role = actor.role;
+      if (role !== "admin" && role !== "manager" && Number(s[0].userId) !== Number(actor.userId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
     }
 
@@ -265,7 +300,10 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     const grandTotalD = money(totals.total);
     const effectiveTotalD = roundCash ? roundCashIQD(grandTotalD) : grandTotalD;
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD);
-    const paidNow = roundCash ? effectiveTotalD : money(input.payment?.amount ?? "0");
+    const tendered = money(input.payment?.amount ?? "0");
+    // SALES-05 (تدقيق ٢/٧): كنفس إصلاح saleService — التقريب على الإجمالي دائماً، لكن paidNow=الإجمالي
+    // المقرّب فقط عند دفعٍ كامل فعلاً؛ الدفعة الجزئية تُسجَّل بالمبلغ المُسلَّم والباقي ذمّة.
+    const paidNow = roundCash && tendered.gte(grandTotalD) ? effectiveTotalD : tendered;
     const unpaid = effectiveTotalD.minus(paidNow);
     if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });
@@ -406,6 +444,10 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
         invoiceId,
         branchId: input.branchId,
         shiftId: input.shiftId ?? null,
+        // CASH-BUCKET (تدقيق ٢/٧، حرج): كان هذا الإيصال يُدرَج **بلا cashBucket** بينما إغلاق الوردية
+        // يحسب النقد المتوقَّع بفلتر cashBucket='DRAWER' ⇒ كل نقد مبيعات الطباعة يختفي من تسوية الصندوق
+        // ومن رصيد الخزينة (منفذ اختلاس + عجز/فائض مزوّر). الآن مطابق تماماً لمسار البيع العادي.
+        cashBucket: input.payment!.method === "CASH" ? "DRAWER" : null,
         direction: "IN",
         amount: toDbMoney(paidNow),
         paymentMethod: input.payment!.method,

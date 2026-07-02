@@ -25,6 +25,7 @@ import { branchScopedProcedure, canSeeCost, cashierProcedure, managerProcedure, 
 import { workOrderBarcodeSet } from "../services/barcodeService";
 import { positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
@@ -333,7 +334,7 @@ export const workOrderRouter = router({
           }
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء طلب الخدمة" });
         }
@@ -392,7 +393,7 @@ export const workOrderRouter = router({
           await logAudit(ctx, { action: "workOrder.deliver", entityType: "workOrder", entityId: input.workOrderId });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تسليم طلب الخدمة" });
         }

@@ -24,6 +24,7 @@ import {
 } from "../services/recipeService";
 import { logAudit } from "../services/auditService";
 import { managerProcedure, router } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const lineInput = z.object({
   variantId: z.number().int().positive(),
@@ -134,7 +135,7 @@ export const productionRouter = router({
           }
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء مستند الإنتاج" });
         }
@@ -164,7 +165,7 @@ export const productionRouter = router({
         await logAudit(ctx, { action: "production.recipe.create", entityType: "productionRecipe", entityId: res.recipeId, newValue: { name: input.name } });
         return res;
       } catch (e: any) {
-        if (e?.code === "ER_DUP_ENTRY") throw new TRPCError({ code: "CONFLICT", message: "اسم الوصفة مستعمل سلفاً" });
+        if (isDupEntry(e)) throw new TRPCError({ code: "CONFLICT", message: "اسم الوصفة مستعمل سلفاً" });
         throw e;
       }
     }),
@@ -176,7 +177,7 @@ export const productionRouter = router({
         await logAudit(ctx, { action: "production.recipe.update", entityType: "productionRecipe", entityId: id, newValue: { name: input.name } });
         return res;
       } catch (e: any) {
-        if (e?.code === "ER_DUP_ENTRY") throw new TRPCError({ code: "CONFLICT", message: "اسم الوصفة مستعمل سلفاً" });
+        if (isDupEntry(e)) throw new TRPCError({ code: "CONFLICT", message: "اسم الوصفة مستعمل سلفاً" });
         throw e;
       }
     }),

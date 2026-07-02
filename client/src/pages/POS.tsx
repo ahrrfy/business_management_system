@@ -122,6 +122,25 @@ const effectivePrice = (item: CartItem) => {
 
 const itemTotal = (item: CartItem) => effectivePrice(item) * item.qty;
 
+// POS-ROUND (تدقيق ٢/٧): يبني سطر البيع للخادم بسعر وحدةٍ صحيح (دينار) مطابق تماماً لِما يعرضه
+// ويحصّله الكاشير، مع تمرير الخصم كمبلغٍ صريح. كان العميل يرسل discountPercent فقط بينما يقرّب سعر
+// الوحدة لدينار كامل، والخادم يحسب الخصم على إجمالي السطر بدقّة 2dp ⇒ invoices.total يخالف المبلغ
+// المحصَّل (رفض بيع بطاقة/تحويل كامل، أو فرق درج في Z-report). بتثبيت unitPriceOverride=سعر القائمة
+// الصحيح + discountAmount=(القائمة−الفعلي)×الكمية يصبح total الخادم = effectivePrice×qty حرفياً،
+// ويبقى الخصم مسجَّلاً على بند الفاتورة.
+const buildSaleLine = (c: CartItem) => {
+  const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4 /* HALF_UP */);
+  const eff = D(effectivePrice(c));
+  const discAmt = listWhole.minus(eff).times(c.qty);
+  return {
+    variantId: c.row.variantId,
+    productUnitId: c.row.productUnitId,
+    quantity: String(c.qty),
+    unitPriceOverride: listWhole.toFixed(2),
+    ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+  };
+};
+
 const createTab = (id: number, label?: string): POSTab => ({
   id, label: label ?? `طلب ${id}`,
   cart: [], payInput: "", method: "CASH",
@@ -610,12 +629,7 @@ export default function POS() {
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
-      lines: cart.map((c) => ({
-        variantId: c.row.variantId,
-        productUnitId: c.row.productUnitId,
-        quantity: String(c.qty),
-        ...(c.disc != null ? { discountPercent: String(c.disc) } : {}),
-      })),
+      lines: cart.map(buildSaleLine),
       payment: { amount: payAmount, method: activeTab.method },
       ...(cashFull ? { cashRoundIQD: true } : {}),
       ...(approval ? { managerApproval: approval } : {}),
@@ -631,12 +645,7 @@ export default function POS() {
       branchId, shiftId: shift.id, sourceType: "POS", clientRequestId: activeTab.clientRequestId, cashRoundIQD: true,
       customerId: activeTab.customerId ?? undefined,
       priceTier: effectiveTier,
-      lines: cart.map((c) => ({
-        variantId: c.row.variantId,
-        productUnitId: c.row.productUnitId,
-        quantity: String(c.qty),
-        ...(c.disc != null ? { discountPercent: String(c.disc) } : {}),
-      })),
+      lines: cart.map(buildSaleLine),
       payment: { amount: payAmount, method: "CASH" },
     });
   }

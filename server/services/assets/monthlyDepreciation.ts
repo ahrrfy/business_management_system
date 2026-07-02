@@ -7,6 +7,7 @@ import { money, toDbMoney } from "../money";
 import { type Actor, requireDb, withTx } from "../tx";
 import { computeDepreciation } from "./depreciation";
 import { loadForUpdate } from "./helpers";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 export interface DepreciationRunResult {
   period: string; // YYYY-MM
@@ -70,7 +71,7 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
       return monthDep;
     }).catch((e: any) => {
       // idempotency ثانوي: الشهر مُرحَّل سابقاً ⇒ القيد الفريد على dedupeKey يَرفض ⇒ تخطٍّ آمن.
-      if (e?.code === "ER_DUP_ENTRY") return new Decimal(0);
+      if (isDupEntry(e)) return new Decimal(0);
       throw e;
     });
     if (dep.gt(0)) {

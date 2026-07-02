@@ -165,7 +165,26 @@ async function customerOpeningBalance(customerId: number, from?: string) {
         sql`${receipts.createdAt} < ${fromTs}`
       )
     );
-  return opening.plus(money(invRow[0]?.v ?? 0)).minus(money(payRow[0]?.v ?? 0));
+  // AR-OPENING-RETURN (تدقيق ٢/٧): الرصيد المُرحَّل كان يجمع كامل total الفاتورة (الفاتورة المُرتجَعة
+  // كلياً تبقى status='RETURNED' لا CANCELLED) وينقص الدفعات فقط — دون طرح المرتجعات ⇒ رصيد مُرحَّل
+  // منفوخ بمقدار كل مرتجع سابق للفترة (يُطالَب العميل بدينٍ أسقطه مرتجعٌ موثَّق، ولا يتّزن الكشف مع
+  // currentBalance). قيد RETURN يُخزَّن بمبلغ سالب (=returnedTotal الكامل)؛ الاسترداد النقدي مُلتقَط
+  // أصلاً في payRow (receipt OUT مربوط بالفاتورة) فلا ازدواج — نُضيف مبلغ المرتجعات (سالباً) هنا.
+  const retRow = await db
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+    .from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.entryType, "RETURN"),
+        eq(accountingEntries.customerId, customerId),
+        isNull(accountingEntries.supplierId),
+        sql`${accountingEntries.entryDate} < ${from}`
+      )
+    );
+  return opening
+    .plus(money(invRow[0]?.v ?? 0))
+    .minus(money(payRow[0]?.v ?? 0))
+    .plus(money(retRow[0]?.v ?? 0));
 }
 
 /** Customer account statement: invoices + payments + running summary.

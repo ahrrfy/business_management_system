@@ -78,6 +78,10 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
         CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS cogs
       FROM accountingEntries ae
       WHERE ae.entryType IN ('SALE','RETURN')
+        -- PURCHASE-RETURN (تدقيق ٢/٧): مرتجع الشراء يُقيَّد أيضاً بنوع RETURN لكن بـsupplierId (لا
+        -- invoiceId/customerId)، وقيمته على cost سالبة ⇒ كان يُخفِّض COGS ويَنفخ الربح بلا أي بيع.
+        -- COGS = تكلفة المُباع فقط ⇒ نستثني مرتجعات الشراء (supplierId NOT NULL) ونُبقي مرتجعات البيع.
+        AND (ae.entryType <> 'RETURN' OR ae.supplierId IS NULL)
         AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
         ${branchAe}
     `),
@@ -180,6 +184,30 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
     `),
   )[0] ?? { amount: "0" };
 
+  // STOCKTAKE (تدقيق ٢/٧): فروقات الجرد تُقيَّد ADJUST بمفتاح STOCKTAKE:%، profit موقَّع
+  // (سالب=عجز/خسارة، موجب=زيادة/مكسب). كانت مُغفَلة كلياً من قائمة الدخل ⇒ خسائر الجرد لا تُخفض الربح.
+  const stk = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.profit), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'STOCKTAKE:%'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
+  // IQD-ROUND (تدقيق ٢/٧): تقريب النقد العراقي يُقيَّد ADJUST بمفتاح ADJUST:IQD:%، profit موقَّع
+  // (موجب=مكسب تقريب لأعلى، سالب=تنازل عند التقريب لأسفل). كان مُغفَلاً ⇒ الإيراد/الربح ينحرفان بمجموع التقريب.
+  const iqd = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.profit), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'ADJUST:IQD:%'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -239,6 +267,23 @@ async function plSnapshot(from: string, to: string, branchId?: number): Promise<
   if (!exchangeFx.isZero()) {
     const expenseEffect = exchangeFx.neg();
     expenseLines.push({ key: "EXCHANGE_FX_DIFF", label: "صافي فرق صرف العملات", amount: toDbMoney(expenseEffect) });
+    totalExpenses = totalExpenses.add(expenseEffect);
+  }
+
+  // STOCKTAKE: أثر فروقات الجرد على الربح — profit موقَّع (سالب=عجز)؛ التأثير كمصروف = −profit
+  // (عجز ⇒ مصروف موجب يَخفض الربح، زيادة ⇒ مصروف سالب يَرفعه). نمط ASSET_DISP_PL/EXCHANGE_FX.
+  const stocktakePL = money(stk.amount ?? 0);
+  if (!stocktakePL.isZero()) {
+    const expenseEffect = stocktakePL.neg();
+    expenseLines.push({ key: "STOCKTAKE_ADJUST", label: "تسويات الجرد (عجز/زيادة)", amount: toDbMoney(expenseEffect) });
+    totalExpenses = totalExpenses.add(expenseEffect);
+  }
+
+  // IQD-ROUND: أثر تقريب النقد على الربح — profit موقَّع؛ التأثير كمصروف = −profit.
+  const iqdRoundPL = money(iqd.amount ?? 0);
+  if (!iqdRoundPL.isZero()) {
+    const expenseEffect = iqdRoundPL.neg();
+    expenseLines.push({ key: "IQD_ROUNDING", label: "تقريب النقد العراقي", amount: toDbMoney(expenseEffect) });
     totalExpenses = totalExpenses.add(expenseEffect);
   }
 

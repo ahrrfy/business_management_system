@@ -16,6 +16,7 @@ import {
   withdrawFromExchange,
 } from "../services/exchangeHouseService";
 import { managerProcedure, router } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان كحدّ أقصى)");
 const signedMoneyStr = z.string().regex(/^-?\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -118,7 +119,7 @@ export const exchangeRouter = router({
           await logAudit(ctx, { action: "exchange.deposit", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, amount: input.amount, currency: input.currency } });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }
@@ -145,7 +146,7 @@ export const exchangeRouter = router({
           await logAudit(ctx, { action: "exchange.withdraw", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, amount: input.amount, currency: input.currency } });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }
@@ -172,7 +173,7 @@ export const exchangeRouter = router({
           await logAudit(ctx, { action: "exchange.buyUsd", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, usdAmount: input.usdAmount, exchangeRate: input.exchangeRate } });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }
@@ -208,7 +209,7 @@ export const exchangeRouter = router({
           });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }

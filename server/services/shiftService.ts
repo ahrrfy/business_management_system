@@ -6,6 +6,7 @@ import { money, toDbMoney } from "./money";
 import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 /** نوع الوردية: تجزئة (كاشير) أو استقبال (خدمة الزبائن — درج/عرابين مستقلّة). */
 export type ShiftType = "RETAIL" | "RECEPTION";
@@ -50,7 +51,7 @@ export async function openShift(
       const shiftId = extractInsertId(res);
       return { shiftId };
     } catch (e: any) {
-      if (e?.code === "ER_DUP_ENTRY") {
+      if (isDupEntry(e)) {
         throw new TRPCError({ code: "CONFLICT", message: "لديك وردية مفتوحة بالفعل في هذا الفرع" });
       }
       throw e;

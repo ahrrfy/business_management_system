@@ -55,16 +55,33 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
             message: "تعارض idempotency: المفتاح مستعمَل لبيع بطريقة دفع مختلفة",
           });
         }
-        // عدد الأسطر إشارة رخيصة قوية (لا نُجبر الفاتورة بأكملها على الحفظ مرّتين، لكن نَحرس أن
-        // طلباً بأسطر مغايرة لا يُصادَر بفاتورة قديمة بصمت).
+        // SALES-04b (تدقيق ٢/٧): البصمة كانت تقارن «عدد» الأسطر فقط ⇒ بيع مختلف بنفس عدد الأصناف
+        // يُصادَر بفاتورة قديمة بصمت (منفذ سرقة نقد: النقد يُقبض ولا يُسجَّل). الآن نقارن **محتوى**
+        // الأسطر (الصنف + الوحدة + الكمية) كمجموعة مرتّبة. لا نقارن السعر/الخصم عمداً كي لا نُطلق
+        // تعارضاً زائفاً عند إعادة محاولة نفس البيع بعد تغيّر تسعيرة — الصنف+الوحدة+الكمية بصمة كافية.
         const existingItems = await tx
-          .select({ id: invoiceItems.id })
+          .select({
+            variantId: invoiceItems.variantId,
+            productUnitId: invoiceItems.productUnitId,
+            quantity: invoiceItems.quantity,
+          })
           .from(invoiceItems)
           .where(eq(invoiceItems.invoiceId, ex.id));
-        if (existingItems.length !== input.lines.length) {
+        const lineKey = (variantId: number | null, unitId: number | null, quantity: string) =>
+          `${Number(variantId)}:${unitId == null ? "" : Number(unitId)}:${money(quantity).toFixed(3)}`;
+        const existingKeys = existingItems
+          .map((i) => lineKey(Number(i.variantId), i.productUnitId == null ? null : Number(i.productUnitId), i.quantity))
+          .sort();
+        const requestedKeys = input.lines
+          .map((l) => lineKey(l.variantId, l.productUnitId, l.quantity))
+          .sort();
+        if (
+          existingKeys.length !== requestedKeys.length ||
+          existingKeys.some((k, i) => k !== requestedKeys[i])
+        ) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لبيع بعدد أصناف مختلف",
+            message: "تعارض idempotency: المفتاح مستعمَل لبيع بأصناف أو كميات مختلفة",
           });
         }
         return {
@@ -100,6 +117,13 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         .limit(1);
       if (!s[0] || s[0].status !== "OPEN" || Number(s[0].branchId) !== input.branchId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
+      }
+      // SHIFT-OWN (تدقيق ٢/٧): فرض ملكية الوردية — كما في processPayment. غياب هذا الفحص كان
+      // يُتيح لكاشير تمرير shiftId لوردية زميلٍ في نفس الفرع فيُنسَب نقده لدرج الزميل (عجز مزوّر عند
+      // إغلاق الضحية + غطاء اختلاس). المدير/الأدمن معفيان (يسجّلون على أي وردية للتسوية).
+      const role = actor.role;
+      if (role !== "admin" && role !== "manager" && Number(s[0].userId) !== Number(actor.userId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع التسجيل على وردية مستخدم آخر" });
       }
     }
 
@@ -196,7 +220,13 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     const grandTotalD = money(totals.total);
     const effectiveTotalD = roundCash ? roundCashIQD(grandTotalD) : grandTotalD;
     const cashRoundingAdj = effectiveTotalD.minus(grandTotalD); // ± (صفر إن لا تقريب)
-    const paidNow = roundCash ? effectiveTotalD : money(input.payment?.amount ?? "0");
+    const tendered = money(input.payment?.amount ?? "0");
+    // SALES-05 (تدقيق ٢/٧): كان paidNow يُفرَض = الإجمالي المقرّب عند roundCash متجاهلاً المبلغ
+    // المُسلَّم ⇒ بيع آجل جزئي بعلم cashRoundIQD=true يُسجَّل «مدفوعاً بالكامل» فتُمحى ذمة العميل
+    // (والنقد الوهمي يظهر عجزاً بدرج الكاشير). الآن: التقريب يطبَّق على الإجمالي دائماً، لكن نعامل
+    // البيع كمدفوعٍ بالكامل (paidNow = الإجمالي المقرّب) فقط إذا كان المُسلَّم يغطّي الإجمالي فعلاً؛
+    // وإلا فهي دفعة جزئية ⇒ paidNow = المُسلَّم بالضبط والباقي ذمّة على العميل.
+    const paidNow = roundCash && tendered.gte(grandTotalD) ? effectiveTotalD : tendered;
     const unpaid = effectiveTotalD.minus(paidNow);
     if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });

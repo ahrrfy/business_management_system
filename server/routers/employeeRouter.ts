@@ -18,6 +18,7 @@ import * as svc from "../services/employeeService";
 import type { CreateUserInput } from "../services/userService";
 import { getEmployeeUsage } from "../services/entityUsage";
 import { adminProcedure, protectedProcedure, requireModule, router } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -121,7 +122,7 @@ export const employeeRouter = router({
       await logAudit(ctx, { action: "employee.create", entityType: "employee", entityId: e?.id, newValue: { name: e?.fullName, department: input.department ?? null } });
       return e;
     } catch (err: any) {
-      if (err?.code === "ER_DUP_ENTRY") throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم لموظف آخر" });
+      if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم لموظف آخر" });
       throw err;
     }
   }),
@@ -159,7 +160,7 @@ export const employeeRouter = router({
           : null;
         return { employee: e, credentials };
       } catch (err: any) {
-        if (err?.code === "ER_DUP_ENTRY") throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم لموظف آخر" });
+        if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم لموظف آخر" });
         throw err;
       }
     }),
@@ -194,7 +195,7 @@ export const employeeRouter = router({
         const credentials = { userId, email: input.email ?? null, username: input.username ?? null, password: input.password, role: input.role, customRoleId: input.customRoleId ?? null, mustChangePassword: input.mustChangePassword };
         return { employee, credentials };
       } catch (err: any) {
-        if (err?.code === "ER_DUP_ENTRY") throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم لموظف آخر" });
+        if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم لموظف آخر" });
         throw err;
       }
     }),
@@ -213,7 +214,7 @@ export const employeeRouter = router({
         await logAudit(ctx, { action: "employee.update", entityType: "employee", entityId: id, newValue: { name: e?.fullName } });
         return e;
       } catch (err: any) {
-        if (err?.code === "ER_DUP_ENTRY") throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم لموظف آخر" });
+        if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: "البريد الإلكتروني مستخدم لموظف آخر" });
         throw err;
       }
     }),

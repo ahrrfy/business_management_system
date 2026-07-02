@@ -287,6 +287,11 @@ export async function reconcileLedgerProfit(): Promise<ReconcileResult[]> {
     .from(accountingEntries)
     .where(
       and(
+        // LEDGER-PROFIT (تدقيق ٢/٧): الثابت profit=revenue−cost لا يصحّ إلا لقيود البيع (SALE) ومرتجع
+        // البيع (RETURN بلا supplierId) — وهي وحدها تحمل ثلاثية P&L متّسقة. قيود PURCHASE ومرتجع الشراء
+        // تُعبّئ cost فقط (revenue/profit=0 افتراضاً) فكانت تُفلَّق كانحرافٍ زائف يُغرِق التقرير بالضجيج.
+        inArray(accountingEntries.entryType, ["SALE", "RETURN"]),
+        sql`(${accountingEntries.entryType} <> 'RETURN' OR ${accountingEntries.supplierId} IS NULL)`,
         sql`${accountingEntries.revenue} IS NOT NULL`,
         sql`${accountingEntries.cost} IS NOT NULL`,
         sql`${accountingEntries.profit} IS NOT NULL`

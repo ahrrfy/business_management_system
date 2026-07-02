@@ -14,6 +14,7 @@ import {
   rejectVoucher,
 } from "../services/voucherService";
 import { adminProcedure, managerProcedure, router } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -76,7 +77,7 @@ export const voucherRouter = router({
           });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء السند" });
         }
@@ -238,7 +239,7 @@ export const voucherCategoryRouter = router({
         await logAudit(ctx, { action: "voucherCategory.create", entityType: "voucherCategory", entityId: Number(id), newValue: input });
         return { id: Number(id) };
       } catch (e: any) {
-        if (e?.code === "ER_DUP_ENTRY") {
+        if (isDupEntry(e)) {
           throw new TRPCError({ code: "CONFLICT", message: "اسم الفئة مُكرَّر" });
         }
         throw e;
@@ -267,7 +268,7 @@ export const voucherCategoryRouter = router({
         await logAudit(ctx, { action: "voucherCategory.update", entityType: "voucherCategory", entityId: input.id, newValue: patch });
         return { ok: true };
       } catch (e: any) {
-        if (e?.code === "ER_DUP_ENTRY") {
+        if (isDupEntry(e)) {
           throw new TRPCError({ code: "CONFLICT", message: "اسم الفئة مُكرَّر" });
         }
         throw e;

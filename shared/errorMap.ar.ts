@@ -76,6 +76,29 @@ export function mysqlCodeFrom(err: unknown): string | null {
   return null;
 }
 
+/**
+ * هل الخطأ انتهاك قيد فريد (Duplicate entry)؟
+ *
+ * ⚠️ **الفحص الآمن الوحيد:** Drizzle 0.45.x يلفّ خطأ mysql2 داخل `DrizzleQueryError`،
+ * فيصبح `e.code` على المستوى الأعلى `undefined` والرمز الحقيقي على `e.cause.code`
+ * (أو أعمق). الفحص العاري `e?.code === "ER_DUP_ENTRY"` **لا يلتقطه أبداً** ⇒ تموت
+ * شبكة إعادة المحاولة. استعمل هذه الدالة (تمشي على سلسلة `cause`) لا الفحص المباشر.
+ */
+export function isDupEntry(err: unknown): boolean {
+  return mysqlCodeFrom(err) === "ER_DUP_ENTRY";
+}
+
+/** هل الخطأ deadlock أو انتظار قفل انتهت مهلته؟ (قابل لإعادة المحاولة، عبر سلسلة cause). */
+export function isDeadlock(err: unknown): boolean {
+  const code = mysqlCodeFrom(err);
+  return code === "ER_LOCK_DEADLOCK" || code === "ER_LOCK_WAIT_TIMEOUT";
+}
+
+/** أخطاء قاعدة البيانات القابلة لإعادة المحاولة الآمنة (تكرار مفتاح أو تعارض قفل مؤقّت). */
+export function isRetryableDbError(err: unknown): boolean {
+  return isDupEntry(err) || isDeadlock(err);
+}
+
 /** يحوّل أي خطأ إلى رسالة عربية. الأولوية: رسالة الأعمال الصريحة ← MySQL ← كود tRPC ← عام. */
 export function toArabicMessage(opts: {
   trpcCode?: string;
