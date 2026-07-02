@@ -10,6 +10,7 @@ import {
 import { logAudit } from "../services/auditService";
 import { branchScopedProcedure, managerProcedure, router } from "../trpc";
 import { positiveMoneyString } from "../lib/schemas";
+import { retryOnDup } from "../lib/retryDup";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -80,7 +81,11 @@ export const quotationRouter = router({
       if (ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء عرض سعر" });
       }
-      const res = await createQuotation(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) });
+      // NUMBERING-RACE (تدقيق ٢/٧): ترقيم العرض (QUO) يحرّر GET_LOCK قبل الالتزام ⇒ عرضان متزامنان
+      // قد يحسبان نفس الرقم؛ القيد الفريد يرفض الثاني. نعيد المحاولة على التصادم (createQuotation ذرّية).
+      const res = await retryOnDup(() =>
+        createQuotation(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) }),
+      );
       await logAudit(ctx, { action: "quotation.create", entityType: "quotation", entityId: (res as { quotationId?: number })?.quotationId, newValue: { lines: input.lines.length, customerId: input.customerId } });
       return res;
     }),

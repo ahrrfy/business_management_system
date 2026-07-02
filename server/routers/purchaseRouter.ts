@@ -75,7 +75,18 @@ export const purchaseRouter = router({
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await receivePurchase(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
-          await logAudit(ctx, { action: "purchase.receive", entityType: "purchaseOrder", entityId: input.purchaseOrderId, newValue: { lines: input.lines.length } });
+          // AUDIT-DETAIL (تدقيق ٢/٧): كان يسجّل «عدد الأسطر» فقط — لا الكميات المستلمة ولا مبلغ دفعة
+          // المورد ⇒ لا يميّز استلام قطعة عن ألف مع دفعة ملايين. الآن نلتقط الكميات والدفعة.
+          await logAudit(ctx, {
+            action: "purchase.receive",
+            entityType: "purchaseOrder",
+            entityId: input.purchaseOrderId,
+            newValue: {
+              lines: input.lines.map((l) => ({ purchaseOrderItemId: l.purchaseOrderItemId, receivedBaseQuantity: l.receivedBaseQuantity })),
+              totalReceivedBaseQuantity: input.lines.reduce((s, l) => s + l.receivedBaseQuantity, 0),
+              payment: input.payment ? { amount: input.payment.amount, method: input.payment.method } : null,
+            },
+          });
           return res;
         } catch (e: any) {
           if (isDupEntry(e) && attempt < 2) continue;

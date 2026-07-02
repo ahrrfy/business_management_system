@@ -87,7 +87,20 @@ export const exchangeRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const res = await updateExchangeHouse(input, actorOf(ctx, 0));
-      await logAudit(ctx, { action: "exchange.update", entityType: "exchangeHouse", entityId: input.id });
+      // AUDIT-DETAIL (تدقيق ٢/٧): كان سطر التدقيق فارغاً تماماً من القيم رغم تغيير name/phone/legacyCode.
+      // نلتقط الحقول المُرسَلة للتعديل (الموجودة في الحمولة) فيصبح السطر كاشفاً لِما تغيّر فعلاً.
+      await logAudit(ctx, {
+        action: "exchange.update",
+        entityType: "exchangeHouse",
+        entityId: input.id,
+        newValue: {
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.phone !== undefined ? { phone: input.phone } : {}),
+          ...(input.phone2 !== undefined ? { phone2: input.phone2 } : {}),
+          ...(input.legacyCode !== undefined ? { legacyCode: input.legacyCode } : {}),
+          ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        },
+      });
       return res;
     }),
 
