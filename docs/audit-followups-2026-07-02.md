@@ -77,7 +77,15 @@
 - **التحقّق:** نقر مزدوج/إعادة شبكة بنفس المفتاح ⇒ عرض واحد (idempotentReplay).
 - **DoD:** اختبار idempotency للعرض + الواجهة ترسل مفتاحاً ثابتاً يُجدَّد بعد النجاح.
 
-## F4 — تدقيق طبقة إدارة المنصّة  ‏`[ ]`
+## F4 — تدقيق طبقة إدارة المنصّة  ‏`[x]` ✅ (٢/٧/٢٦)
+> **أُنجِز:** جدول `platformAuditLogs` في قاعدة التحكّم (`server/tenancy/controlSchema.ts` + كتلة `CREATE TABLE IF NOT
+> EXISTS` idempotent في `scripts/bootstrap-control-db.mjs` بفهارس admin/action/company) + دالة مساعدة جديدة
+> `server/tenancy/platformAudit.ts::logPlatformAudit` (best-effort عبر `getControlDb()`، لا ترمي؛ بلا CONTROL_DATABASE_URL
+> ⇒ تتخطّى بصمت فلا انحدار على النشر الأحادي) + ربطها في `platformAdminRouter` بالمسارات: **login نجاحاً وفشلاً**
+> (الفشل بلا معرّف + البريد المُدخَل)، **logout**، **companies.setActive** (companyId + details{isActive}). أُزيل logger.info.
+> **تحقّق DB (وضع تعدّد الشركات على erp-test-db@3310):** bootstrap ينشئ الجدول؛ سكربت تحقّق يستدعي المسارات الأربعة
+> عبر appRouter ⇒ ٤ سجلّات بالحقول الصحيحة (adminId/email/companyId/details/ip) — ٥/٥ تأكيدات. tenancy 4/4 + `pnpm check` أخضر.
+> **نشر:** الجدول يُنشأ بـ`pnpm control:bootstrap` يدوياً على الخادم (خارج prod:deploy — قاعدة التحكّم خارج نظام هجرات الشركة).
 - **الخطورة:** متوسط · **المصدر:** ملاحظة #29 · **الملف:** `server/routers/platformAdminRouter.ts` + قاعدة التحكّم
 - **المشكلة:** أفعال مدير المنصّة (تعطيل شركة، دخول/خروج) مُسجَّلة عبر `logger.info` فقط، لا في جدول تدقيق قابل للاستعلام.
   (`auditLogs` مُخصَّص لكل شركة ⇒ لا يناسب أفعالاً عبر-الشركات.)
@@ -137,7 +145,7 @@
 - [x] F1 — هجرة FK ✅ (٢/٧/٢٦)
 - [x] F2 — إنفاذ الأدوار على الوحدات غير المالية ✅ (٢/٧/٢٦)
 - [x] F3 — idempotency عروض الأسعار ✅ (٢/٧/٢٦)
-- [ ] F4 — تدقيق طبقة المنصّة
+- [x] F4 — تدقيق طبقة المنصّة ✅ (٢/٧/٢٦)
 - [x] F5 — حافتا تحقيب كشف العميل ✅ (٢/٧/٢٦)
 - [x] F6 — اختبار توصيف تقريب IQD ✅ (٢/٧/٢٦)
 - [ ] F7 — إكمال التدقيق العدائي الأصلي

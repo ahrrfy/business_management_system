@@ -1,4 +1,4 @@
-import { bigint, boolean, int, mysqlTable, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { bigint, boolean, int, json, mysqlTable, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * مخطّط قاعدة التحكّم (erp_control) — سجلّ الشركات لتعدّد الشركات بعزل قاعدة فعلي.
@@ -48,3 +48,32 @@ export const platformAdmins = mysqlTable("platformAdmins", {
 
 export type PlatformAdmin = typeof platformAdmins.$inferSelect;
 export type InsertPlatformAdmin = typeof platformAdmins.$inferInsert;
+
+/**
+ * F4 (تدقيق ٢/٧) — سجلّ تدقيق مدير المنصّة: «من فعل ماذا، متى، على أي شركة، بأي نتيجة، من أين».
+ * يعيش في قاعدة التحكّم (erp_control) لا في قاعدة أي شركة، لأن أفعاله عبر-الشركات (تعطيل شركة) والفاعل
+ * مدير منصّة لا ينتمي لأي شركة (auditLogs مُخصَّص لكل شركة فلا يناسب). append-only يُكتب عبر
+ * getControlDb() (لا getDb()). **تطابق يدويّ مزدوج:** أي تعديل عمود يُطبَّق هنا وفي
+ * scripts/bootstrap-control-db.mjs معاً (لا مولّد يربطهما — وضع مخطّط التحكّم المقصود).
+ */
+export const platformAuditLogs = mysqlTable("platformAuditLogs", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  // معرّف المدير الفاعل — nullable: محاولة دخول فاشلة ببريدٍ غير مطابق لا معرّف لها.
+  platformAdminId: bigint("platformAdminId", { mode: "number" }),
+  // البريد كما وصل الطلب (خصوصاً للدخول الفاشل) — لقطة نصية لا FK.
+  actorEmail: varchar("actorEmail", { length: 320 }),
+  // "login" | "logout" | "company.setActive" (نطاق platform_admin ضمنيّ).
+  action: varchar("action", { length: 64 }).notNull(),
+  // نتيجة الفعل — يميّز محاولة الدخول الناجحة من الفاشلة في نفس الجدول.
+  success: boolean("success").default(true).notNull(),
+  // الشركة المتأثّرة (لأفعال companies.* فقط) — يشير لـcompanies.id بلا FK كي لا يمنع حذف شركة طمسَ أثرها.
+  companyId: bigint("companyId", { mode: "number" }),
+  // تفاصيل بنيوية إضافية (مثل { isActive:false } لـsetActive).
+  details: json("details"),
+  // IP إن توفّر (أول x-forwarded-for، وإلا req.ip) — قد يكون null.
+  ipAddress: varchar("ipAddress", { length: 64 }),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type PlatformAuditLog = typeof platformAuditLogs.$inferSelect;
+export type InsertPlatformAuditLog = typeof platformAuditLogs.$inferInsert;
