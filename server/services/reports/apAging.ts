@@ -136,19 +136,23 @@ async function supplierOpeningBalance(supplierId: number, from?: string) {
   // (بلا purchaseOrderId) ويَرفع currentBalance؛ كان الكشف يُعيد بناء AP من أوامر الشراء + الدفعات
   // فقط ⇒ شراء الأصل يَغيب فلا يتّزن الرصيد. نُدرج PURCHASE اليتيمة (purchaseOrderId IS NULL) موجبةً
   // على AP (شراء الأصول عبر PO تُحتسَب من purchaseOrders.total ⇒ لا ازدواج).
+  // EXCHANGE-SETTLE (تدقيق ٢/٧): تسديد ذمّة المورد عبر بيت صيرفة يُقيَّد EXCHANGE_SETTLE ويخفّض AP
+  // (مرآة reconcileSupplierBalances السطر ١٨٠). كان مُغفَلاً من المُرحَّل ⇒ الكشف لا يتّزن مع الرصيد
+  // الجاري عند وجود تسديد صيرفة. نُدرجه بإشارة سالبة هنا وفي حركة الفترة أدناه (متماثلاً فلا انحراف).
   const entriesRow = await db
     .select({
       v: sql<string>`COALESCE(SUM(CASE
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'  THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'RETURN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
-        WHEN ${accountingEntries.entryType} = 'PURCHASE'    THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_OUT'     THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PAYMENT_IN'      THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'RETURN'          THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'PURCHASE'        THEN  CAST(${accountingEntries.amount} AS DECIMAL(15,2))
+        WHEN ${accountingEntries.entryType} = 'EXCHANGE_SETTLE' THEN -CAST(${accountingEntries.amount} AS DECIMAL(15,2))
         ELSE 0 END), 0)`,
     })
     .from(accountingEntries)
     .where(
       and(
-        sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
+        sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
         eq(accountingEntries.supplierId, supplierId),
         sql`${accountingEntries.entryDate} < ${from}`
       )
@@ -193,8 +197,9 @@ export async function getSupplierStatement(
   // نفسه: حركة داخل الفترة على أمر أقدم تظهر (الدلالة المحاسبية).
   // FI-01: تشمل الحركة شراء الأصول اليتيم (PURCHASE بلا purchaseOrderId) ليَظهر في الكشف ويتّزن
   // الرصيد مع currentBalance؛ شراء PO يُعرَض من purchaseOrders أعلاه ⇒ نَستثنيه هنا (لا ازدواج).
+  // EXCHANGE-SETTLE (تدقيق ٢/٧): تسديد الصيرفة يظهر ضمن حركة الفترة أيضاً (متماثلاً مع المُرحَّل).
   const payConds = [
-    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
+    sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
     eq(accountingEntries.supplierId, supplierId),
   ];
   if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);

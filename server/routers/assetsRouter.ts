@@ -140,7 +140,7 @@ export const assetsRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { id, ...patch } = input;
-      const a = await svc.updateAsset(id, patch);
+      const a = await svc.updateAsset(id, patch, { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role });
       await logAudit(ctx, {
         action: "asset.update",
         entityType: "fixedAsset",
