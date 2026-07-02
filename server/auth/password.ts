@@ -5,22 +5,47 @@ const SCRYPT_OPTIONS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 } as con
 
 /**
  * Password hashing using Node's built-in scrypt (no external dependency).
- * Stored format: "<saltHex>:<hashHex>".
- * TODO: الـformat الحالي لا يخزّن N/r/p؛ التجزّئات القديمة تُجدَّد طبيعياً عند تغيير
- * كلمة المرور التالي (changePassword) لأنّ hashPassword يكتب بالإعدادات الجديدة.
+ * Stored format: "<N>:<r>:<p>:<keylen>:<saltHex>:<hashHex>" (يحمل إعدادات scrypt
+ * نفسها) — يسمح بتغيير SCRYPT_OPTIONS مستقبلاً دون كسر التحقّق من التجزّئات القديمة.
+ * التنسيق القديم "<saltHex>:<hashHex>" (بلا إعدادات) لا يزال يُتحقَّق منه بإعدادات
+ * SCRYPT_OPTIONS الحالية للتوافق الرجعي.
  */
 export function hashPassword(plain: string): string {
   const salt = randomBytes(16).toString("hex");
   const hash = scryptSync(plain, salt, SCRYPT_KEYLEN, SCRYPT_OPTIONS).toString("hex");
-  return `${salt}:${hash}`;
+  const { N, r, p } = SCRYPT_OPTIONS;
+  return `${N}:${r}:${p}:${SCRYPT_KEYLEN}:${salt}:${hash}`;
 }
 
 export function verifyPassword(plain: string, stored: string | null | undefined): boolean {
   if (!stored) return false;
-  const [salt, hash] = stored.split(":");
+  const parts = stored.split(":");
+
+  let salt: string, hash: string, N: number, r: number, p: number, keylen: number;
+  if (parts.length === 6) {
+    [N, r, p, keylen, salt, hash] = [
+      Number(parts[0]),
+      Number(parts[1]),
+      Number(parts[2]),
+      Number(parts[3]),
+      parts[4],
+      parts[5],
+    ];
+    if (!Number.isFinite(N) || !Number.isFinite(r) || !Number.isFinite(p) || !Number.isFinite(keylen)) {
+      return false;
+    }
+  } else if (parts.length === 2) {
+    // تنسيق قديم بلا إعدادات مخزَّنة — رجوعاً للإعدادات الحالية.
+    [salt, hash] = parts;
+    ({ N, r, p } = SCRYPT_OPTIONS);
+    keylen = SCRYPT_KEYLEN;
+  } else {
+    return false;
+  }
   if (!salt || !hash) return false;
+
   const hashBuf = Buffer.from(hash, "hex");
-  const testBuf = scryptSync(plain, salt, SCRYPT_KEYLEN, SCRYPT_OPTIONS);
+  const testBuf = scryptSync(plain, salt, keylen, { N, r, p, maxmem: SCRYPT_OPTIONS.maxmem });
   // كل تجزّئات الإنتاج 64 بايت ثابتة؛ فحص الطول حارس ضدّ رمي timingSafeEqual فقط.
   return hashBuf.length === testBuf.length && timingSafeEqual(hashBuf, testBuf);
 }
