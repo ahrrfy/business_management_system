@@ -113,6 +113,36 @@ export const roles = mysqlTable(
 export type Role = typeof roles.$inferSelect;
 export type InsertRole = typeof roles.$inferInsert;
 
+/**
+ * تتبّع الجلسات الفردية (لكل تسجيل دخول) — مكمِّل لا بديل لـ`users.sessionsValidFrom`
+ * (الإبطال الجماعي القائم لكل الأجهزة). كل توكن JWT جديد (بعد هذه الميزة) يحمل `sid`
+ * يشير لسطرٍ هنا؛ إبطال سطرٍ واحد (`revokedAt`) يطرد ذلك الجهاز تحديداً بلا مسّ البقية.
+ * التوكنات الأقدم (بلا `sid`) تستمرّ بالعمل عبر الإبطال الجماعي فقط (بلا صفّ لها هنا —
+ * انتقالٌ بلا انحدار، لن تظهر في شاشة العرض حتى يُعاد تسجيل دخولها).
+ * شاشة العرض تُصفّي `createdAt >= users.sessionsValidFrom` فتُخفي جلسات ما قبل آخر إبطال
+ * جماعي تلقائياً بلا حاجة لكتابة إضافية على مسارات تسجيل الخروج/تغيير كلمة المرور القائمة.
+ */
+export const userSessions = mysqlTable(
+  "userSessions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull().references(() => users.id),
+    userAgent: varchar("userAgent", { length: 255 }),
+    ipAddress: varchar("ipAddress", { length: 45 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    lastSeenAt: timestamp("lastSeenAt").defaultNow().notNull(),
+    expiresAt: timestamp("expiresAt").notNull(),
+    revokedAt: timestamp("revokedAt"),
+  },
+  (table) => ({
+    userIdx: index("idx_user_sessions_user").on(table.userId),
+    activeIdx: index("idx_user_sessions_active").on(table.userId, table.revokedAt, table.expiresAt),
+  })
+);
+
+export type UserSession = typeof userSessions.$inferSelect;
+export type InsertUserSession = typeof userSessions.$inferInsert;
+
 /* ============================ الفروع ============================ */
 
 export const branches = mysqlTable(

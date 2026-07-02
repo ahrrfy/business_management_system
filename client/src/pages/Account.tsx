@@ -5,9 +5,11 @@ import { Label } from "@/components/ui/label";
 import { PASSWORD_MIN_LEN, isStrongPassword } from "@shared/const";
 import { trpc } from "@/lib/trpc";
 import { confirm as confirmDialog } from "@/lib/confirm";
+import { fmtDateTime } from "@/lib/date";
+import { describeUserAgent } from "@/lib/userAgent";
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Monitor } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { ROLE_LABEL } from "./Users";
 
@@ -38,6 +40,11 @@ export default function Account() {
 
   const revoke = trpc.auth.revokeMySessions.useMutation({
     onSuccess: async () => { await utils.auth.me.invalidate(); navigate("/login"); },
+  });
+
+  const sessions = trpc.auth.mySessions.useQuery();
+  const revokeOne = trpc.auth.revokeSession.useMutation({
+    onSuccess: async () => { await utils.auth.mySessions.invalidate(); },
   });
 
   function submit() {
@@ -113,6 +120,58 @@ export default function Account() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader><CardTitle className="text-base">الجلسات النشطة</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            الأجهزة المسجَّل دخولها حالياً بحسابك. جلسات ما قبل آخر تسجيل خروج جماعي لا تظهر هنا.
+          </p>
+          {sessions.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+          {!sessions.isLoading && (sessions.data?.length ?? 0) === 0 && (
+            <p className="text-sm text-muted-foreground">لا جلسات مسجَّلة (ربما دخلتَ قبل تفعيل هذه الميزة).</p>
+          )}
+          <div className="space-y-2">
+            {sessions.data?.map((s) => (
+              <div key={s.id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
+                <div className="flex items-start gap-3 min-w-0">
+                  <Monitor aria-hidden className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0">
+                    <div className="font-medium flex items-center gap-2">
+                      {describeUserAgent(s.userAgent)}
+                      {s.isCurrent && (
+                        <span className="text-xs rounded-full bg-money-positive/15 text-money-positive px-2 py-0.5">هذا الجهاز</span>
+                      )}
+                    </div>
+                    <div className="text-xs text-muted-foreground" dir="ltr">
+                      {s.ipAddress ?? "—"} · آخر نشاط: {fmtDateTime(s.lastSeenAt)} · دخول: {fmtDateTime(s.createdAt)}
+                    </div>
+                  </div>
+                </div>
+                {!s.isCurrent && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    disabled={revokeOne.isPending}
+                    onClick={async () => {
+                      if (!(await confirmDialog({
+                        variant: "danger",
+                        title: "إنهاء هذه الجلسة",
+                        description: "سيُسجَّل خروج هذا الجهاز فوراً. هل تتابع؟",
+                        confirmText: "إنهاء الجلسة",
+                      }))) return;
+                      revokeOne.mutate({ sessionId: s.id });
+                    }}
+                  >
+                    إنهاء
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
