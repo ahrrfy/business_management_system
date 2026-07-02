@@ -159,9 +159,11 @@ function ExchangeFormDialog({
   const [phone, setPhone] = useState(editing?.phone ?? "");
   const [legacyCode, setLegacyCode] = useState(editing?.legacyCode ?? "");
   const [notes, setNotes] = useState(editing?.notes ?? "");
-  // الرصيد الافتتاحي (إنشاء فقط).
+  // الرصيد الافتتاحي (إنشاء فقط) — المستخدم يُدخل مقداراً موجباً دائماً، والإشارة تُحدَّد عبر مفتاح لنا/علينا صريح.
   const [openIqd, setOpenIqd] = useState("");
+  const [signIqd, setSignIqd] = useState<1 | -1>(1);
   const [openUsd, setOpenUsd] = useState("");
+  const [signUsd, setSignUsd] = useState<1 | -1>(1);
   const [openRate, setOpenRate] = useState("");
 
   const create = trpc.exchange.create.useMutation({
@@ -183,8 +185,8 @@ function ExchangeFormDialog({
         phone: phone || null,
         legacyCode: legacyCode || null,
         notes: notes || null,
-        openingBalanceIqd: openIqd || null,
-        openingBalanceUsd: openUsd || null,
+        openingBalanceIqd: openIqd ? (signIqd < 0 ? `-${openIqd}` : openIqd) : null,
+        openingBalanceUsd: openUsd ? (signUsd < 0 ? `-${openUsd}` : openUsd) : null,
         openingUsdRate: openRate || null,
       });
     }
@@ -216,16 +218,22 @@ function ExchangeFormDialog({
           {!isEdit && (
             <>
               <div className="sm:col-span-2 mt-1 text-xs font-semibold text-muted-foreground border-t pt-2">
-                رصيد افتتاحي (اختياري — موجب = لنا عندهم)
+                رصيد افتتاحي (اختياري) — حدّد الاتجاه: «لنا» أموالنا لدى الصيرفة، «علينا» نحن مدينون لها
               </div>
               <div>
                 <label className="text-xs text-muted-foreground mb-1 block">رصيد دينار افتتاحي</label>
-                <MoneyInput value={openIqd} onChange={setOpenIqd} allowNegative placeholder="0.00" />
+                <div className="flex gap-2">
+                  <MoneyInput value={openIqd} onChange={setOpenIqd} placeholder="0.00" className="flex-1" />
+                  <SignToggle value={signIqd} onChange={setSignIqd} />
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">رصيد دولار افتتاحي</label>
-                  <MoneyInput value={openUsd} onChange={setOpenUsd} allowNegative placeholder="0.00" />
+                  <div className="flex gap-2">
+                    <MoneyInput value={openUsd} onChange={setOpenUsd} placeholder="0.00" className="flex-1" />
+                    <SignToggle value={signUsd} onChange={setSignUsd} />
+                  </div>
                 </div>
                 <div>
                   <label className="text-xs text-muted-foreground mb-1 block">سعر كلفة الدولار</label>
@@ -241,6 +249,28 @@ function ExchangeFormDialog({
           <Button onClick={submit} disabled={pending}>{pending ? "جارٍ…" : isEdit ? "حفظ" : "إضافة"}</Button>
         </div>
       </Card>
+    </div>
+  );
+}
+
+/** مفتاح ثنائي صريح لاتجاه الرصيد الافتتاحي — لنا (أخضر) أو علينا (أحمر)، بدل الاعتماد على إشارة سالبة مكتومة. */
+function SignToggle({ value, onChange }: { value: 1 | -1; onChange: (v: 1 | -1) => void }) {
+  return (
+    <div className="flex shrink-0 rounded-md border border-input overflow-hidden text-xs">
+      <button
+        type="button"
+        onClick={() => onChange(1)}
+        className={`px-2.5 font-medium transition-colors ${value === 1 ? "bg-money-positive/15 text-money-positive" : "text-muted-foreground hover:bg-muted"}`}
+      >
+        لنا
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange(-1)}
+        className={`px-2.5 font-medium border-r border-input transition-colors ${value === -1 ? "bg-money-negative/15 text-money-negative" : "text-muted-foreground hover:bg-muted"}`}
+      >
+        علينا
+      </button>
     </div>
   );
 }
