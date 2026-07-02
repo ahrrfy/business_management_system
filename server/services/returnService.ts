@@ -329,7 +329,11 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     const paidMinusRefund = money(inv.paidAmount).minus(cashRefund);
     const newPaid = paidMinusRefund.lt(0) ? money(0) : paidMinusRefund;
     const newReturnedTotal = money(inv.returnedTotal ?? "0").plus(returnedTotal);
-    const status = fullyReturned ? "RETURNED" : computeInvoiceStatus(inv.total, toDbMoney(newPaid));
+    // INVOICE-STATUS (تدقيق ٢/٧): الحالة على الصافي بعد المرتجعات ⇒ فاتورة مُرتجَعة جزئياً وسُدّد
+    // صافيها تصبح PAID لا PARTIALLY_PAID الأبدية.
+    const status = fullyReturned
+      ? "RETURNED"
+      : computeInvoiceStatus(inv.total, toDbMoney(newPaid), toDbMoney(newReturnedTotal));
     await tx
       .update(invoices)
       .set({
