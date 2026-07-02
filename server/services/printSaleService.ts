@@ -152,6 +152,13 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إنشاء فاتورة بلا خدمات" });
     }
 
+    // PRINT-CASH-SHIFT (تدقيق ٢/٧): بيع طباعة نقديّ بلا shiftId كان يكتب نقداً «يتيماً» لا يدخل تسوية
+    // أي وردية (بعكس createSale الذي يشترط وردية للنقد). نفرض نفس البوّابة.
+    const isCashPayment = input.payment?.method === "CASH" && money(input.payment?.amount ?? "0").gt(0);
+    if (isCashPayment && input.shiftId == null) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "يَلزم وردية مفتوحة للبيع النقدي" });
+    }
+
     // ٢. الوردية مفتوحة وتخصّ الفرع (قفل صفّ الوردية يُسلسِل البيع مع إغلاق الوردية).
     if (input.shiftId) {
       const s = await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1);

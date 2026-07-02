@@ -34,15 +34,13 @@ import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
 import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
-import { adminProcedure, managerBranchScopedProcedure, managerProcedure, protectedProcedure, requireModule, router } from "../trpc";
+import { adminProcedure, protectedProcedure, reportViewerProcedure, router } from "../trpc";
 
-// RBAC-CUSTOM-ROLE (تدقيق ٢/٧): كل تقارير هذا الراوتر (أرباح، دفتر أستاذ، أعمار ذمم، كشوف حساب،
-// تقارير المبيعات) قراءةٌ حسّاسة يجب أن تَخضع لخريطة صلاحيات الدور المخصّص لا لدور القالب فقط. كان
-// managerProcedure/managerBranchScopedProcedure يفحص baseRole فقط ⇒ دور مخصّص أساسه manager بخريطة
-// reports=NONE يقرأ أرباح الشركة رغم المنع. الآن نضيف requireModule("reports","READ") فوق البوّابة:
-// أدوار القوالب (manager/accountant) خرائطها تمنح reports فتمرّ بلا انحدار، والدور المخصّص المُقيَّد يُمنَع.
-const reportsBranchScoped = managerBranchScopedProcedure.use(requireModule("reports", "READ"));
-const reportsProcedure = managerProcedure.use(requireModule("reports", "READ"));
+// RBAC-REPORTS (تدقيق ٢/٧): كل تقارير هذا الراوتر (أرباح، دفتر أستاذ، أعمار ذمم، كشوف حساب، مبيعات)
+// قراءةٌ حسّاسة تَخضع لخريطة صلاحية «reports» عبر reportViewerProcedure (manager/accountant/auditor
+// + أدوار مخصّصة أساسها أحدها، كلٌّ حسب خريطته). العزل الفرعي مفروض داخل كل معالِج بـscopedBranchId.
+const reportsBranchScoped = reportViewerProcedure;
+const reportsProcedure = reportViewerProcedure;
 
 /** تاريخ فترة كشف الحساب YYYY-MM-DD — نصّ صريح لا Date (يُمرَّر كما هو لمقارنات SQL). */
 const ymdStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD");

@@ -59,17 +59,16 @@ async function fetchDailySparkline(
       GROUP BY DATE(r.createdAt) ORDER BY day ASC
     `;
   } else {
-    // expenses
-    const branchExp = branchFilter; // expenses tablefilter already aliased r → adjust by replacing alias.
+    // expenses — KPI-SPARK-BRANCH (تدقيق ٢/٧): كان يُمرَّر فلتر فرعٍ فارغ ⇒ مخطّط المصروفات يعرض كل
+    // الفروع بينما الرقم الرئيس بجانبه مفلتر. الآن نستقبل الفلتر المُؤلَّف على alias e ونطبّقه.
     q = sql`
       SELECT e.expenseDate AS day, CAST(COALESCE(SUM(e.amount), 0) AS CHAR) AS amount
       FROM expenses e
       WHERE e.expenseStatus = 'ACTIVE'
         AND e.expenseDate >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
+        ${branchFilter}
       GROUP BY e.expenseDate ORDER BY day ASC
     `;
-    // ملاحظة: branchFilter/bucketFilter لـreceipts بـalias r — لا تنطبق على expenses. نطبّقها يدوياً أدناه.
-    void branchExp;
   }
 
   const rows = rowsOf(await db.execute(q));
@@ -201,7 +200,7 @@ export async function getKpiTrends(
 
   // sparklines (7 نقاط).
   const inflowSpark = await fetchDailySparkline(db, "receipts_in", branchFilterR, bucketFilterR);
-  const outflowSpark = await fetchDailySparkline(db, "expenses", sql``, sql``);
+  const outflowSpark = await fetchDailySparkline(db, "expenses", branchFilterE, sql``);
 
   const todayRecCur = toDbMoney(money(todayInRow[0]?.amount ?? 0));
   const todayRecPrev = toDbMoney(money(yesterdayInRow[0]?.amount ?? 0));

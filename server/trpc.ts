@@ -87,6 +87,15 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
 
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));
+
+/**
+ * RBAC-REPORTS (تدقيق ٢/٧): التقارير كانت مقفلة بـmanagerProcedure حصراً ⇒ دورا «محاسب» و«مدقّق»
+ * المعلَنان (قالبهما reports=FULL/READ) لا يصلان أي تقرير — الدور بلا فائدة. نسمح لهذه الأدوار الثلاثة
+ * ثم نُنفِذ خريطة الصلاحية (requireModule) — فالمحاسب/المدقّق (والدور المخصّص أساسه أحدها) يصل حسب خريطته.
+ */
+export const reportViewerProcedure = t.procedure
+  .use(requireRole("manager", "accountant", "auditor"))
+  .use(requireModule("reports", "READ"));
 export const managerBranchScopedProcedure = managerProcedure.use(async ({ ctx, getRawInput, next }) => {
   if (ctx.user.role === "admin") return next({ ctx });
   // G7 (تدقيق ٢٣/٦/٢٦): `input` في middleware يَأتي parsed بعد `.input()` فقط. هذا middleware

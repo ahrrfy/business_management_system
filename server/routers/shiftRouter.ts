@@ -86,7 +86,8 @@ export const shiftRouter = router({
     .input(
       z.object({
         branchId: z.number().int().positive(),
-        openingBalance: z.string().default("0"),
+        // SHIFT-VALIDATE (تدقيق ٢/٧): الرصيد الافتتاحي مالٌ غير سالب (كان z.string() يقبل السالب).
+        openingBalance: z.string().regex(/^\d+(\.\d{1,2})?$/, "الرصيد الافتتاحي مبلغ غير سالب").default("0"),
         // نوع الوردية: RETAIL (كاشير) أو RECEPTION (خدمة الزبائن). يُفتَح من شاشة الاستقبال بـRECEPTION.
         shiftType: z.enum(["RETAIL", "RECEPTION"]).default("RETAIL"),
       }),
@@ -112,7 +113,8 @@ export const shiftRouter = router({
     .input(
       z.object({
         shiftId: z.number().int().positive(),
-        countedCash: z.string(),
+        // SHIFT-VALIDATE (تدقيق ٢/٧): النقد المعدود مالٌ غير سالب.
+        countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود مبلغ غير سالب"),
         // treasury-stage2: snapshot عدّاد الفئات (اختياري).
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
         // treasury-stage2: تسليم نقد للخزينة (اختياري).

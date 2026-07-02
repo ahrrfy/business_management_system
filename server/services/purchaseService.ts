@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like, sql } from "drizzle-orm";
-import { branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, users } from "../../drizzle/schema";
+import { branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../drizzle/schema";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
@@ -416,10 +416,14 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     // Optional payment to supplier.
     const paidNow = money(input.payment?.amount ?? "0");
     if (paidNow.gt(0)) {
-      // PROC-05: الدفعة لا تتجاوز المتبقّي على أمر الشراء (يَمنع دفعاً غير محدود ⇒ AP سالبة/تسريب نقد).
-      const outstandingPo = money(po.total).minus(money(po.paidAmount));
-      if (paidNow.gt(outstandingPo)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز المتبقّي على أمر الشراء (${outstandingPo.toFixed(2)})` });
+      // PROC-05 (تدقيق ٢/٧): السقف الصحيح لمنع AP سالبة هو **رصيد المورد الفعلي** بعد إضافة المستلَم
+      // الآن (adjustSupplierBalance أعلاه رفعه بـreceivedTotal)، لا إجمالي أمر الشراء الذي يشمل بضاعة
+      // لم تُستلَم — فالدفع بحدّ PO الكامل عند استلام جزئي كان يُنشئ رصيداً سالباً (دفعٌ مقابل ما لم يُستلَم).
+      const supAfter = money(
+        (await tx.select({ b: suppliers.currentBalance }).from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).limit(1))[0]?.b ?? "0",
+      );
+      if (paidNow.gt(supAfter)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})` });
       }
       // G14 (١٩/٦/٢٦): دفع نقدي للمورد يَلزم وردية مفتوحة — كان receipts.shiftId=null دائماً
       // ⇒ نقد يَخرج من الصندوق بلا تسوية Z-report ⇒ عجز وهمي عند الإغلاق.

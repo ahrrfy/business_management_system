@@ -15,6 +15,7 @@ import {
 } from "../services/voucherService";
 import { adminProcedure, managerProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { withTx } from "../services/tx";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -307,10 +308,12 @@ export const voucherCategoryRouter = router({
       }
       const db = getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير مهيّأة" });
-      // نَقل السندات
-      await db.update(receipts).set({ voucherCategoryId: input.toId }).where(eq(receipts.voucherCategoryId, input.fromId));
-      // تَعطيل المصدر (لا حَذف ⇒ نُحافظ على المرجع التاريخي)
-      await db.update(voucherCategories).set({ isActive: false }).where(eq(voucherCategories.id, input.fromId));
+      // MERGE-TX (تدقيق ٢/٧): الكتابتان (نقل السندات + تعطيل الفئة) مترابطتان — كانتا على db الخام
+      // بلا معاملة ⇒ فشلٌ بينهما يترك سندات منقولة وفئةً ما تزال مفعَّلة. نلفّهما في withTx ذرّية.
+      await withTx(async (tx) => {
+        await tx.update(receipts).set({ voucherCategoryId: input.toId }).where(eq(receipts.voucherCategoryId, input.fromId));
+        await tx.update(voucherCategories).set({ isActive: false }).where(eq(voucherCategories.id, input.fromId));
+      });
       await logAudit(ctx, {
         action: "voucherCategory.merge",
         entityType: "voucherCategory",

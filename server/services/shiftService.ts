@@ -69,7 +69,9 @@ async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: stri
     .from(receipts)
     // فلتر cashBucket='DRAWER' دفاعي: يَمنع إدراج سندات TREASURY (shiftId=null عادةً)
     // في حالة انتقلت إليها shiftId بطريق غير متوقّع.
-    .where(and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER")));
+    // SHIFT-EXPECTED (تدقيق ٢/٧): + receiptStatus='COMPLETED' لاستبعاد المعكوس/الملغى (REVERSED)
+    // فتتطابق هذه الصيغة تماماً مع بطاقات الورديات الحيّة (openShifts/dashboard) وتُحسب على المكتمل فقط.
+    .where(and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER"), eq(receipts.status, "COMPLETED")));
   const cashIn = money(rows[0]?.cashIn ?? "0");
   const cashOut = money(rows[0]?.cashOut ?? "0");
   return money(openingBalance).plus(cashIn).minus(cashOut);

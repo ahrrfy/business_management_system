@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { branchScopedProcedure, cashierProcedure, managerProcedure, router } from "../trpc";
+import { retryOnDup } from "../lib/retryDup";
 import {
   createDeliveryParty,
   dispatchToDelivery,
@@ -150,7 +151,8 @@ export const deliveryRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const res = await dispatchToDelivery(input, actorOf(ctx));
+      // NUMBERING-RACE (تدقيق ٢/٧): ترقيم الإرسالية يعتمد قيداً فريداً كحارس أخير — نعيد المحاولة على التصادم.
+      const res = await retryOnDup(() => dispatchToDelivery(input, actorOf(ctx)));
       await logAudit(ctx, { action: "delivery.dispatch", entityType: "deliveryConsignment", entityId: res.consignmentId, newValue: { workOrderId: input.workOrderId, partyId: input.partyId, codAmount: res.codAmount } });
       return res;
     }),
@@ -168,7 +170,9 @@ export const deliveryRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const branchId = effectiveBranch(ctx, input.branchId);
-      const res = await recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx));
+      const res = await retryOnDup(() =>
+        recordDeliveryRemittance({ branchId, partyId: input.partyId, lines: input.lines, shiftType: input.shiftType, clientRequestId: input.clientRequestId }, actorOf(ctx)),
+      );
       await logAudit(ctx, { action: "delivery.remit", entityType: "deliveryRemittance", entityId: res.remittanceId, newValue: { partyId: input.partyId, collectedTotal: res.collectedTotal, feesTotal: res.feesTotal, netRemitted: res.netRemitted, shortfallTotal: res.shortfallTotal } });
       return res;
     }),

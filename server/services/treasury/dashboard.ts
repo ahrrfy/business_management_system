@@ -69,7 +69,7 @@ export async function getDashboard(
         CAST(COALESCE((
           SELECT SUM(r.amount)
           FROM receipts r
-          WHERE r.paymentMethod = 'CASH'
+          WHERE r.cashBucket = 'DRAWER'
             AND r.direction = 'IN'
             AND r.receiptStatus = 'COMPLETED'
             AND r.shiftId IN (
@@ -80,7 +80,7 @@ export async function getDashboard(
         CAST(COALESCE((
           SELECT SUM(r.amount)
           FROM receipts r
-          WHERE r.paymentMethod = 'CASH'
+          WHERE r.cashBucket = 'DRAWER'
             AND r.direction = 'OUT'
             AND r.receiptStatus = 'COMPLETED'
             AND r.shiftId IN (
