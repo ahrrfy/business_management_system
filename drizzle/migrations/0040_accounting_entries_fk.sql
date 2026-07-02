@@ -9,13 +9,28 @@
 --   (٢) إضافة القيد فقط إن لم يكن موجوداً (فحص information_schema) ⇒ آمن للتطبيق المتكرّر.
 -- اسم القيد يطابق اصطلاح drizzle ({table}_{col}_{refTable}_id_fk) ليتّسق مع db:push (مسار CI).
 -- المسار الإنتاجي: drizzle-orm migrator (multipleStatements:true). مسار CI: db:push من schema.ts.
+--
+-- ⚠️ تعديل (٢/٧ مساءً — بعد فشل النشر الإنتاجي عند UPDATE الأيتام): الـUPDATE بـLEFT JOIN
+-- على جدول حيّ يكتب فيه الخادم القديم أثناء الهجرة قد يختار المُحسِّن مسحاً كاملاً (إحصاءات
+-- باردة بعد ALTER السابق مباشرة) فيُقفل كل صفوف accountingEntries ويتصادم مع حركة التطبيق
+-- (قفل/جمود). الحلّ: عدّ الأيتام أولاً بـSELECT خالص (قراءة متّسقة بلا أقفال صفوف)، وتنفيذ
+-- الـUPDATE **فقط** إن وُجد أيتام فعلاً — على الإنتاج كلاهما صفر حتماً (exchangeHouseId عمود
+-- وليد بالهجرة 0037 كله NULL، وأوامر الشراء لا تُحذف حذفاً صلباً) ⇒ تخطٍّ فوري بلا أي قفل.
 
 -- ══════════════ purchaseOrderId ══════════════
 
-UPDATE accountingEntries ae
+SET @orphans_po = (
+  SELECT COUNT(*) FROM accountingEntries ae
   LEFT JOIN purchaseOrders po ON ae.purchaseOrderId = po.id
-  SET ae.purchaseOrderId = NULL
-  WHERE ae.purchaseOrderId IS NOT NULL AND po.id IS NULL;
+  WHERE ae.purchaseOrderId IS NOT NULL AND po.id IS NULL
+);
+SET @sql = IF(@orphans_po > 0,
+  'UPDATE accountingEntries ae LEFT JOIN purchaseOrders po ON ae.purchaseOrderId = po.id SET ae.purchaseOrderId = NULL WHERE ae.purchaseOrderId IS NOT NULL AND po.id IS NULL',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
 SET @fk_po_exists = (
@@ -35,10 +50,18 @@ DEALLOCATE PREPARE stmt;
 
 -- ══════════════ exchangeHouseId ══════════════
 
-UPDATE accountingEntries ae
+SET @orphans_ex = (
+  SELECT COUNT(*) FROM accountingEntries ae
   LEFT JOIN exchangeHouses x ON ae.exchangeHouseId = x.id
-  SET ae.exchangeHouseId = NULL
-  WHERE ae.exchangeHouseId IS NOT NULL AND x.id IS NULL;
+  WHERE ae.exchangeHouseId IS NOT NULL AND x.id IS NULL
+);
+SET @sql = IF(@orphans_ex > 0,
+  'UPDATE accountingEntries ae LEFT JOIN exchangeHouses x ON ae.exchangeHouseId = x.id SET ae.exchangeHouseId = NULL WHERE ae.exchangeHouseId IS NOT NULL AND x.id IS NULL',
+  'SELECT 1'
+);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
 --> statement-breakpoint
 
 SET @fk_ex_exists = (
