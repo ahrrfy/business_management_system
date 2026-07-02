@@ -35,6 +35,7 @@ export const treasuryRouter = router({
       return getDashboard(input ?? {}, {
         scopedBranchId: (ctx as { scopedBranchId: number | null }).scopedBranchId,
         role: ctx.user.role,
+        userId: ctx.user.id,
       });
     }),
 
@@ -102,6 +103,7 @@ export const treasuryRouter = router({
       return getKpiTrends(input ?? {}, {
         scopedBranchId: (ctx as { scopedBranchId: number | null }).scopedBranchId,
         role: ctx.user.role,
+        userId: ctx.user.id,
       });
     }),
 
@@ -123,6 +125,7 @@ export const treasuryRouter = router({
       return getOpenShifts(input ?? {}, {
         scopedBranchId,
         role: ctx.user.role,
+        userId: ctx.user.id,
       });
     }),
 });

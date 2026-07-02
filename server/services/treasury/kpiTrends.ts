@@ -91,9 +91,10 @@ async function fetchDailySparkline(
   return out;
 }
 
+// scope يحمل userId لتمريره لـgetDashboard (عزل درج الكاشير).
 export async function getKpiTrends(
   input: { branchId?: number },
-  scope: { scopedBranchId: number | null; role: string },
+  scope: { scopedBranchId: number | null; role: string; userId: number },
 ): Promise<KpiTrends> {
   const db = getDb();
   const empty: KpiTrendPoint = { current: "0.00", previous: "0.00", deltaPct: 0, sparkline: [0, 0, 0, 0, 0, 0, 0] };
