@@ -34,7 +34,13 @@ import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
 import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
-import { adminProcedure, managerBranchScopedProcedure, managerProcedure, protectedProcedure, router } from "../trpc";
+import { adminProcedure, protectedProcedure, reportViewerProcedure, router } from "../trpc";
+
+// RBAC-REPORTS (تدقيق ٢/٧): كل تقارير هذا الراوتر (أرباح، دفتر أستاذ، أعمار ذمم، كشوف حساب، مبيعات)
+// قراءةٌ حسّاسة تَخضع لخريطة صلاحية «reports» عبر reportViewerProcedure (manager/accountant/auditor
+// + أدوار مخصّصة أساسها أحدها، كلٌّ حسب خريطته). العزل الفرعي مفروض داخل كل معالِج بـscopedBranchId.
+const reportsBranchScoped = reportViewerProcedure;
+const reportsProcedure = reportViewerProcedure;
 
 /** تاريخ فترة كشف الحساب YYYY-MM-DD — نصّ صريح لا Date (يُمرَّر كما هو لمقارنات SQL). */
 const ymdStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD");
@@ -56,7 +62,7 @@ function scopedBranchId(
 }
 
 export const reportsRouter = router({
-  arAging: managerBranchScopedProcedure
+  arAging: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
@@ -64,7 +70,7 @@ export const reportsRouter = router({
     }),
 
   /** مركز تنبيهات الإدارة — قلب الكوكبِت: قائمة متابعة مرتّبة بالخطورة (خطر + فعل). manager + عزل الفرع. */
-  managementAlerts: managerBranchScopedProcedure
+  managementAlerts: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
@@ -72,7 +78,7 @@ export const reportsRouter = router({
     }),
 
   /** التعرّض الائتماني للعملاء — أرصدة/متأخّر/حدّ ائتمان/تصنيف خطر. manager + عزل الفرع. */
-  creditExposure: managerBranchScopedProcedure
+  creditExposure: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
@@ -80,7 +86,7 @@ export const reportsRouter = router({
     }),
 
   /** المخزون الراكد عالي القيمة — لا بيع منذ N يوماً، مرتّب بقيمة التجميد. manager + عزل الفرع. */
-  deadStockValue: managerBranchScopedProcedure
+  deadStockValue: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional(), sinceDays: z.number().int().min(1).max(730).optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
@@ -88,7 +94,7 @@ export const reportsRouter = router({
     }),
 
   /** خطر النفاد — مبيعات عالية + رصيد عند/تحت حدّ الطلب. manager + عزل الفرع. */
-  reorderRisk: managerBranchScopedProcedure
+  reorderRisk: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional(), sinceDays: z.number().int().min(1).max(365).optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
@@ -96,7 +102,7 @@ export const reportsRouter = router({
     }),
 
   /** فروقات الجرد المعتمدة — حسب الفرع/التاريخ (stocktakeDecisions). manager + عزل الفرع. */
-  stocktakeVariance: managerBranchScopedProcedure
+  stocktakeVariance: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional(), from: ymdStr.optional(), to: ymdStr.optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
@@ -104,14 +110,14 @@ export const reportsRouter = router({
     }),
 
   /** WIP (Work-in-Progress) — قيمة المواد المُستهلَكة في أوامر شغل IN_PROGRESS/READY (لم تصل بعد إلى SALE.cost). */
-  wipReport: managerBranchScopedProcedure
+  wipReport: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional(), limit: z.number().int().positive().max(1000).optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getWIPReport({ branchId, limit: input?.limit });
     }),
 
-  customerStatement: managerBranchScopedProcedure
+  customerStatement: reportsBranchScoped
     .input(z.object({ customerId: z.number().int().positive(), from: ymdStr.optional(), to: ymdStr.optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = ctx.user.role === "admin" ? undefined : Number(ctx.user.branchId ?? 0) || undefined;
@@ -119,7 +125,7 @@ export const reportsRouter = router({
     }),
 
   /** Lightweight customer index for the statement picker. */
-  customersIndex: managerProcedure.query(async () => {
+  customersIndex: reportsProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
     return db
@@ -132,14 +138,14 @@ export const reportsRouter = router({
       .orderBy(asc(customers.name));
   }),
 
-  apAging: managerBranchScopedProcedure
+  apAging: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getAPAging({ branchId });
     }),
 
-  supplierStatement: managerBranchScopedProcedure
+  supplierStatement: reportsBranchScoped
     .input(z.object({ supplierId: z.number().int().positive(), from: ymdStr.optional(), to: ymdStr.optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = ctx.user.role === "admin" ? undefined : Number(ctx.user.branchId ?? 0) || undefined;
@@ -147,7 +153,7 @@ export const reportsRouter = router({
     }),
 
   /** Lightweight supplier index for the statement picker. */
-  suppliersIndex: managerProcedure.query(async () => {
+  suppliersIndex: reportsProcedure.query(async () => {
     const db = getDb();
     if (!db) return [];
     return db
@@ -164,7 +170,7 @@ export const reportsRouter = router({
    * تقرير المبيعات التفصيلي — نطاق زمني اختياري + فلاتر.
    * يُعيد قائمة الفواتير مع ملخّص الإجماليات في النهاية.
    */
-  salesReport: managerBranchScopedProcedure
+  salesReport: reportsBranchScoped
     .input(
       z.object({
         // ymdStr يرفض صيغاً غير YYYY-MM-DD برسالة عربية بدل localDayStart("abc") = Invalid Date
@@ -325,10 +331,10 @@ export const reportsRouter = router({
    *
    * **عزل الفرع (تدقيق ٢٣/٦/٢٦):** كانت managerProcedure تُسرّب هامش الربح وقائمة منتجات
    * فرعٍ آخر إلى مدير الفرع الحالي ⇒ كَسر حاجز السلطة المالية بين الفروع. الآن
-   * managerBranchScopedProcedure تَرفض branchId مختلف عن فرع المدير، و scopedBranchId
+   * reportsBranchScoped تَرفض branchId مختلف عن فرع المدير، و scopedBranchId
    * تَفرض الفرع عند التجميع حتى لو حُذف branchId من الإدخال.
    */
-  topProducts: managerBranchScopedProcedure
+  topProducts: reportsBranchScoped
     .input(
       z
         .object({
@@ -347,7 +353,7 @@ export const reportsRouter = router({
 
   /** بطيئات الحركة — منتجات بمخزون موجب بلا بيع في النافذة. عزل الفرع: مدير الفرع لا يَرى
    *  حركة فرعٍ آخر (انظر شرح topProducts). */
-  slowMovers: managerBranchScopedProcedure
+  slowMovers: reportsBranchScoped
     .input(
       z
         .object({
@@ -364,7 +370,7 @@ export const reportsRouter = router({
 
   /** ربح حسب الفئة — تجميع revenue/cost/profit/margin على categoryId.
    *  عزل الفرع: مدير الفرع لا يَرى ربح فرعٍ آخر (انظر شرح topProducts). */
-  profitByCategory: managerBranchScopedProcedure
+  profitByCategory: reportsBranchScoped
     .input(
       z
         .object({
@@ -383,7 +389,7 @@ export const reportsRouter = router({
    * قائمة الأرباح والخسائر المبسّطة — إيراد صافٍ − تكلفة المبيعات − مصروفات تشغيلية.
    * تكشف التكلفة/الربح ⇒ manager فأعلى + عزل الفرع. مقارنة فترة اختيارية (compareFrom/To).
    */
-  profitAndLoss: managerBranchScopedProcedure
+  profitAndLoss: reportsBranchScoped
     .input(
       z.object({
         from: ymdStr,
@@ -408,7 +414,7 @@ export const reportsRouter = router({
    * دفتر اليومية / الأستاذ — تصفّح قيود accountingEntries بفلاتر (تاريخ/فرع/نوع) + إجماليات.
    * يكشف الإيراد/التكلفة/الربح ⇒ manager فأعلى + عزل الفرع.
    */
-  generalLedger: managerBranchScopedProcedure
+  generalLedger: reportsBranchScoped
     .input(
       z.object({
         from: ymdStr,
@@ -441,7 +447,7 @@ export const reportsRouter = router({
    * المركز المالي (لقطة) — يُغذّي ميزان المراجعة والميزانية العمومية المبسّطة.
    * يكشف الأرصدة/المخزون ⇒ manager فأعلى + عزل الفرع (النقد/المخزون حسب الفرع؛ الذمم على مستوى الشركة).
    */
-  financialPosition: managerBranchScopedProcedure
+  financialPosition: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
@@ -449,7 +455,7 @@ export const reportsRouter = router({
     }),
 
   /** التدفّق النقدي (أساس نقدي مباشر) — صافي المقبوضات حسب اتّجاه/طريقة الدفع. manager + عزل الفرع. */
-  cashFlow: managerBranchScopedProcedure
+  cashFlow: reportsBranchScoped
     .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
@@ -457,7 +463,7 @@ export const reportsRouter = router({
     }),
 
   /** سجلّ المبيعات المفصّل — بنود الفواتير سطر-سطر + إجماليات + ترقيم. manager + عزل الفرع. */
-  salesRegister: managerBranchScopedProcedure
+  salesRegister: reportsBranchScoped
     .input(z.object({
       from: ymdStr, to: ymdStr,
       branchId: z.number().int().positive().optional(),
@@ -470,7 +476,7 @@ export const reportsRouter = router({
     }),
 
   /** المبيعات حسب بُعد (عميل/فرع/طريقة دفع/كاشير) + إجماليات. manager + عزل الفرع. */
-  salesByDimension: managerBranchScopedProcedure
+  salesByDimension: reportsBranchScoped
     .input(z.object({
       from: ymdStr, to: ymdStr,
       branchId: z.number().int().positive().optional(),
@@ -482,7 +488,7 @@ export const reportsRouter = router({
     }),
 
   /** تقرير المشتريات — ملخّص حسب المورّد (أوامر مؤكَّدة/مستلَمة). manager + عزل الفرع. */
-  purchasesReport: managerBranchScopedProcedure
+  purchasesReport: reportsBranchScoped
     .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
@@ -490,7 +496,7 @@ export const reportsRouter = router({
     }),
 
   /** سجلّ المشتريات — تفصيل بنود أوامر الشراء (عدا الملغاة) + ترقيم. manager + عزل الفرع. */
-  purchaseRegister: managerBranchScopedProcedure
+  purchaseRegister: reportsBranchScoped
     .input(z.object({
       from: ymdStr, to: ymdStr,
       branchId: z.number().int().positive().optional(),
@@ -503,7 +509,7 @@ export const reportsRouter = router({
     }),
 
   /** تفصيل أعمار الذمم — مستندٌ بمستند (AR فواتير / AP أوامر شراء). manager + عزل الفرع. */
-  arApAgingDetail: managerBranchScopedProcedure
+  arApAgingDetail: reportsBranchScoped
     .input(z.object({ side: z.enum(["AR", "AP"]), branchId: z.number().int().positive().optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
@@ -511,7 +517,7 @@ export const reportsRouter = router({
     }),
 
   /** تقييم المخزون بالتكلفة حسب الفئة (لقطة). manager + عزل الفرع. */
-  inventoryValuation: managerBranchScopedProcedure
+  inventoryValuation: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
@@ -519,7 +525,7 @@ export const reportsRouter = router({
     }),
 
   /** حالة المخزون / إعادة الطلب — رصيد كل صنف مقابل minStock. manager + عزل الفرع. */
-  stockStatus: managerBranchScopedProcedure
+  stockStatus: reportsBranchScoped
     .input(z.object({ branchId: z.number().int().positive().optional(), onlyAlerts: z.boolean().optional(), limit: z.number().int().positive().max(5000).optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
@@ -527,7 +533,7 @@ export const reportsRouter = router({
     }),
 
   /** بطاقة الصنف (Kardex) — حركات متغيّر واحد زمنياً برصيد متحرّك. manager + عزل الفرع. */
-  itemLedger: managerBranchScopedProcedure
+  itemLedger: reportsBranchScoped
     .input(z.object({
       variantId: z.number().int().positive(),
       branchId: z.number().int().positive().optional(),
@@ -539,7 +545,7 @@ export const reportsRouter = router({
     }),
 
   /** تحليل ABC — تصنيف المنتجات حسب الإيراد (باريتو). manager + عزل الفرع. */
-  abcAnalysis: managerBranchScopedProcedure
+  abcAnalysis: reportsBranchScoped
     .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
@@ -547,7 +553,7 @@ export const reportsRouter = router({
     }),
 
   /** ملخّص الخزينة — مقبوضات/مدفوعات حسب طريقة الدفع + فروقات الورديات. manager + عزل الفرع. */
-  treasurySummary: managerBranchScopedProcedure
+  treasurySummary: reportsBranchScoped
     .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
@@ -555,7 +561,7 @@ export const reportsRouter = router({
     }),
 
   /** تقرير المصروفات — مصنّفةً حسب الفئة + أكبر جهات الصرف. manager + عزل الفرع. */
-  expensesReport: managerBranchScopedProcedure
+  expensesReport: reportsBranchScoped
     .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
@@ -569,7 +575,7 @@ export const reportsRouter = router({
    * ويسوّيها يدوياً. بعد تفعيل إنفاذ الوردية للمعاملات النقدية، لن تُكتب أي معاملة جديدة في
    * هذه الحالة (الخدمات ترمي PRECONDITION_FAILED قبل الكتابة). manager + عزل الفرع.
    */
-  cashOrphans: managerBranchScopedProcedure
+  cashOrphans: reportsBranchScoped
     .input(
       z
         .object({
@@ -593,7 +599,7 @@ export const reportsRouter = router({
     }),
 
   /** تقرير الإنتاج — مستندات الإنتاج المؤكَّدة + تفصيل الكلفة. manager + عزل الفرع. */
-  productionReport: managerBranchScopedProcedure
+  productionReport: reportsBranchScoped
     .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
@@ -601,7 +607,7 @@ export const reportsRouter = router({
     }),
 
   /** تقرير أوامر الشغل — توزيع الحالات + القنوات + ربحية المُسلَّم. manager + عزل الفرع. */
-  workOrdersReport: managerBranchScopedProcedure
+  workOrdersReport: reportsBranchScoped
     .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);

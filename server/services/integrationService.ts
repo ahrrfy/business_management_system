@@ -1,4 +1,5 @@
 import { TRPCError } from "@trpc/server";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { branches, channelIntegrations } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -243,9 +244,19 @@ export async function findIntegrationByVerifyToken(channel: IntegrationChannel, 
   for (const r of rows) {
     if (r.status === "DISABLED") continue;
     const dec = safeDecrypt(r.enc);
-    if (dec === verifyToken) return { branchId: Number(r.branchId) };
+    // WEBHOOK-TIMING (تدقيق ٢/٧): كانت المقارنة `===` غير ثابتة الزمن ⇒ قناة جانبية توقيتية تُمكّن
+    // تخمين verify_token حرفاً بحرف. نقارن ثابت الزمن عبر تلخيص SHA-256 للطرفين ثم timingSafeEqual
+    // (يتجنّب أيضاً تسريب الطول لأن الموجزات متساوية الطول).
+    if (dec != null && constantTimeStrEqual(dec, verifyToken)) return { branchId: Number(r.branchId) };
   }
   return null;
+}
+
+/** مقارنة نصّين بزمنٍ ثابت (لا تتأثر بموضع أول اختلاف ولا بالطول) — لتوكنات الـwebhook والأسرار. */
+function constantTimeStrEqual(a: string, b: string): boolean {
+  const ha = createHash("sha256").update(a, "utf8").digest();
+  const hb = createHash("sha256").update(b, "utf8").digest();
+  return timingSafeEqual(ha, hb);
 }
 
 /** نَتيجة verifyConnection — مَلائمة لِحَفظ status. */

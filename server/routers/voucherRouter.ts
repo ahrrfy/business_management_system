@@ -14,6 +14,8 @@ import {
   rejectVoucher,
 } from "../services/voucherService";
 import { adminProcedure, managerProcedure, router } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
+import { withTx } from "../services/tx";
 
 const partyType = z.enum(["CUSTOMER", "SUPPLIER", "OTHER"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -76,7 +78,7 @@ export const voucherRouter = router({
           });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إنشاء السند" });
         }
@@ -166,7 +168,14 @@ export const voucherRouter = router({
         })
         .optional(),
     )
-    .query(async ({ input }) => listVouchers(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      // IDOR (تدقيق ٢/٧): list كان يمرّر branchId العميل بلا عزل ⇒ مدير فرع يقرأ سندات كل الفروع
+      // (بخلاف get الذي يفرض العزل). نُقيّد المدير المُسنَد لفرع بفرعه؛ الأدمن ومدير بلا فرع (عابر
+      // الفروع) يمرّان كما هما — مطابقٌ لمنطق get.
+      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const scoped = restrict ? { ...(input ?? {}), branchId: Number(ctx.user.branchId) } : (input ?? {});
+      return listVouchers(scoped);
+    }),
 
   get: managerProcedure
     .input(z.object({ receiptId: z.number().int().positive() }))
@@ -238,7 +247,7 @@ export const voucherCategoryRouter = router({
         await logAudit(ctx, { action: "voucherCategory.create", entityType: "voucherCategory", entityId: Number(id), newValue: input });
         return { id: Number(id) };
       } catch (e: any) {
-        if (e?.code === "ER_DUP_ENTRY") {
+        if (isDupEntry(e)) {
           throw new TRPCError({ code: "CONFLICT", message: "اسم الفئة مُكرَّر" });
         }
         throw e;
@@ -267,7 +276,7 @@ export const voucherCategoryRouter = router({
         await logAudit(ctx, { action: "voucherCategory.update", entityType: "voucherCategory", entityId: input.id, newValue: patch });
         return { ok: true };
       } catch (e: any) {
-        if (e?.code === "ER_DUP_ENTRY") {
+        if (isDupEntry(e)) {
           throw new TRPCError({ code: "CONFLICT", message: "اسم الفئة مُكرَّر" });
         }
         throw e;
@@ -299,10 +308,12 @@ export const voucherCategoryRouter = router({
       }
       const db = getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "DB غير مهيّأة" });
-      // نَقل السندات
-      await db.update(receipts).set({ voucherCategoryId: input.toId }).where(eq(receipts.voucherCategoryId, input.fromId));
-      // تَعطيل المصدر (لا حَذف ⇒ نُحافظ على المرجع التاريخي)
-      await db.update(voucherCategories).set({ isActive: false }).where(eq(voucherCategories.id, input.fromId));
+      // MERGE-TX (تدقيق ٢/٧): الكتابتان (نقل السندات + تعطيل الفئة) مترابطتان — كانتا على db الخام
+      // بلا معاملة ⇒ فشلٌ بينهما يترك سندات منقولة وفئةً ما تزال مفعَّلة. نلفّهما في withTx ذرّية.
+      await withTx(async (tx) => {
+        await tx.update(receipts).set({ voucherCategoryId: input.toId }).where(eq(receipts.voucherCategoryId, input.fromId));
+        await tx.update(voucherCategories).set({ isActive: false }).where(eq(voucherCategories.id, input.fromId));
+      });
       await logAudit(ctx, {
         action: "voucherCategory.merge",
         entityType: "voucherCategory",

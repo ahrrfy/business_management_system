@@ -8,7 +8,7 @@
  * ========================================================================== */
 import { desc, eq } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { employeePromotions, employees, employeeTerminations } from "../../drizzle/schema";
+import { employeePromotions, employees, employeeTerminations, receipts } from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
@@ -189,7 +189,7 @@ async function getTermination(id: number) {
  * (employmentStatus=terminated، isActive=false، terminationDate=lastDay، terminationReason=reason).
  * يعكس employeeService.setEmploymentStatus.
  */
-export async function completeTermination(id: number, _actor: Actor) {
+export async function completeTermination(id: number, actor: Actor) {
   return withTx(async (tx) => {
     const [t] = await tx.select().from(employeeTerminations).where(eq(employeeTerminations.id, id)).for("update").limit(1);
     if (!t) throw new Error("سجل إنهاء الخدمة غير موجود");
@@ -220,9 +220,25 @@ export async function completeTermination(id: number, _actor: Actor) {
     // بفرع الموظف، بمفتاح dedupe فريد TERMINATION:<id> ⇒ يمنع ازدواج الصرف عند إعادة المحاولة.
     const settlement = money(t.settlement ?? 0);
     if (settlement.gt(0)) {
+      // TREASURY-OUT (تدقيق ٢/٧): تسوية نهاية الخدمة تُخرج نقداً من الخزينة فعلاً ⇒ إيصال OUT/TREASURY
+      // (كان القيد يُرحَّل بلا receipt فلا ينقص رصيد الخزينة المعروض). dedupeKey على القيد يمنع الازدواج.
+      const rRes = await tx.insert(receipts).values({
+        invoiceId: null,
+        branchId: emp.branchId ?? null,
+        shiftId: null,
+        cashBucket: "TREASURY",
+        direction: "OUT",
+        amount: toDbMoney(settlement),
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        partyType: "OTHER",
+        description: `تسوية نهاية خدمة — ${t.terminationType}`,
+        createdBy: actor.userId,
+      });
       await postEntry(tx, {
         entryType: "PAYMENT_OUT",
         branchId: emp.branchId ?? null,
+        receiptId: extractInsertId(rRes),
         amount: settlement,
         entryDate: new Date(`${t.lastDay}T00:00:00Z`),
         dedupeKey: `TERMINATION:${id}`,

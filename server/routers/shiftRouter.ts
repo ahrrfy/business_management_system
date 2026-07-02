@@ -8,6 +8,7 @@ import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { branchScopedProcedure, cashierProcedure, router } from "../trpc";
+import { retryOnDup } from "../lib/retryDup";
 
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
@@ -85,7 +86,8 @@ export const shiftRouter = router({
     .input(
       z.object({
         branchId: z.number().int().positive(),
-        openingBalance: z.string().default("0"),
+        // SHIFT-VALIDATE (تدقيق ٢/٧): الرصيد الافتتاحي مالٌ غير سالب (كان z.string() يقبل السالب).
+        openingBalance: z.string().regex(/^\d+(\.\d{1,2})?$/, "الرصيد الافتتاحي مبلغ غير سالب").default("0"),
         // نوع الوردية: RETAIL (كاشير) أو RECEPTION (خدمة الزبائن). يُفتَح من شاشة الاستقبال بـRECEPTION.
         shiftType: z.enum(["RETAIL", "RECEPTION"]).default("RETAIL"),
       }),
@@ -111,7 +113,8 @@ export const shiftRouter = router({
     .input(
       z.object({
         shiftId: z.number().int().positive(),
-        countedCash: z.string(),
+        // SHIFT-VALIDATE (تدقيق ٢/٧): النقد المعدود مالٌ غير سالب.
+        countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود مبلغ غير سالب"),
         // treasury-stage2: snapshot عدّاد الفئات (اختياري).
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
         // treasury-stage2: تسليم نقد للخزينة (اختياري).
@@ -132,11 +135,16 @@ export const shiftRouter = router({
       if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
-      const res = await closeShift(input, {
-        userId: ctx.user.id,
-        branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
-        role: ctx.user.role,
-      });
+      // NUMBERING-RACE (تدقيق ٢/٧): ترقيم سند التسليم (CH) يحرّر GET_LOCK قبل الالتزام ⇒ إغلاقان
+      // متزامنان لنفس الفرع/اليوم قد يحسبان نفس الرقم؛ القيد الفريد يرفض الثاني. نعيد المحاولة على
+      // التصادم (closeShift ذرّية داخل withTx فتتراجع المحاولة الفاشلة كاملةً).
+      const res = await retryOnDup(() =>
+        closeShift(input, {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+          role: ctx.user.role,
+        }),
+      );
       // M (تدقيق ٢٣/٦/٢٦): سجلّ إغلاق الوردية كان «countedCash» فقط — بلا expectedCash ولا
       // variance ولا handover. تحقيق الفروقات اللاحق لا يَعرف من قَبَض ولا كَم سُلِّم. الآن نَلتقط
       // الناتج الكامل من closeShift ⇒ سجلٌّ كاشف لحظة الإقفال (Z-report snapshot في audit).

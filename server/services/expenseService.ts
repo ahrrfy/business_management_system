@@ -224,6 +224,13 @@ export async function createExpense(input: CreateExpenseInput, actor: Actor) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تسجيل مصروف على وردية مغلقة" });
       if (Number(s.branchId) !== input.branchId)
         throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية لا تطابق الفرع" });
+      // SHIFT-OWN (تدقيق ٢/٧): shiftId مُمرَّر صراحةً لا يُفحَص ملكيته ⇒ كاشير يخصم مصروفاً من درج
+      // زميله (عجز مُلفَّق عليه). المدير/الأدمن معفيان؛ المسار المُشتَقّ آلياً (shiftIdForCashTx) يعيد
+      // وردية الفاعل نفسه فيمرّ دائماً.
+      const role = actor.role;
+      if (role !== "admin" && role !== "manager" && Number(s.userId) !== Number(actor.userId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا تَستطيع تسجيل مصروف على وردية مستخدم آخر" });
+      }
     }
 
     const rRes = await tx.insert(receipts).values({

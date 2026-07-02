@@ -264,6 +264,14 @@ export const authRouter = router({
 
   logout: publicProcedure.mutation(async ({ ctx }) => {
     if (ctx.user) {
+      // AUTH-LOGOUT (تدقيق ٢/٧): مسح الكوكي وحده لا يُبطل التوكن — JWT مسروق يبقى صالحاً حتى انتهائه
+      // (حتى ٣٠ يوماً). نرفع sessionsValidFrom=now فيُرفض أي توكن أُصدر قبل الآن (session.ts:199).
+      // ملاحظة: بلا معرّف جلسة لكل توكن، الإبطال على مستوى المستخدم (يُنهي جلساته على كل الأجهزة) —
+      // وهو السلوك الأأمن، ومقبولٌ لعدد مستخدمي المتجر المحدود.
+      const db = getDb();
+      if (db) {
+        await db.update(users).set({ sessionsValidFrom: new Date() }).where(eq(users.id, ctx.user.id));
+      }
       await logAudit(ctx, { action: "auth.logout", entityType: "user", entityId: ctx.user.id });
     }
     ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });

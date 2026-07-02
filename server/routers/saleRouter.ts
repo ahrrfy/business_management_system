@@ -18,9 +18,10 @@ import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
-import { branchScopedProcedure, canSeeCost, cashierProcedure, router } from "../trpc";
+import { branchScopedProcedure, canSeeCostForUser, cashierProcedure, router } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 // تحصين verifyManagerApproval ضدّ تخمين كلمة المرور:
 // (١) حدّ معدّل بالبريد المُحاوَل: ≤ ٥ محاولات / ٦٠ ثانية.
@@ -217,7 +218,8 @@ export const saleRouter = router({
         }
         effectiveBranchId = Number(ctx.user.branchId);
       }
-      const actor = { userId: ctx.user.id, branchId: effectiveBranchId };
+      // role إلزامي: خدمة البيع تفحص ملكية الوردية (SHIFT-OWN) وتُعفي admin/manager — بدونه يُحجب الجميع.
+      const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
@@ -236,13 +238,17 @@ export const saleRouter = router({
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await createSale(effectiveInput, actor);
-          await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy } });
-          if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
-          // SALES-01/02: أثر تدقيقي صريح للبيع تحت التكلفة (لا يُكتفى بعدّ الأسطر).
-          if (res.priceOverride) await logAudit(ctx, { action: "sale.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
+          // AUDIT-REPLAY (تدقيق ٢/٧): إعادة التشغيل الـidempotent لا تُنشئ بيعاً جديداً ⇒ لا نكتب سطر
+          // تدقيق مكرَّراً في كل مرة (كان يضخّم السجلّ بأحداث «بيع» وهميّة لعملية واحدة).
+          if (!res.idempotentReplay) {
+            await logAudit(ctx, { action: "sale.create", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { lines: input.lines.length, creditApprovedBy: approvedBy } });
+            if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
+            // SALES-01/02: أثر تدقيقي صريح للبيع تحت التكلفة (لا يُكتفى بعدّ الأسطر).
+            if (res.priceOverride) await logAudit(ctx, { action: "sale.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
+          }
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           // لا نبتلع السبب الجذري: نُسجّله كاملاً (رسالة + كود SQL + الاستعلام) قبل
           // إرجاع رسالة عامة للواجهة — وإلا صار تشخيص أعطال الإنتاج تخميناً (درس ١٢/٦:
@@ -294,11 +300,11 @@ export const saleRouter = router({
       }
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: actorBranchId });
+          const res = await processPayment({ ...input, enforceBranchId }, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
           await logAudit(ctx, { action: "sale.pay", entityType: "invoice", entityId: input.invoiceId, newValue: { amount: input.amount, method: input.method } });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام الدفعة" });
         }
@@ -488,7 +494,7 @@ export const saleRouter = router({
     }).qrPayload;
 
     // حجب التكلفة عن غير المدير (منع كشف هامش الربح).
-    if (!canSeeCost(ctx.user.role)) {
+    if (!canSeeCostForUser(ctx.user)) {
       const { costTotal: _c, ...invNoCost } = inv;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
       return { ...invNoCost, items: itemsNoCost, payments, qrPayload };

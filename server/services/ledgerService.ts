@@ -125,10 +125,18 @@ export async function adjustExchangeBalanceUsd(tx: Tx, exchangeHouseId: number, 
     .where(eq(exchangeHouses.id, exchangeHouseId));
 }
 
-export function computeInvoiceStatus(total: string, paid: string): "PENDING" | "PARTIALLY_PAID" | "PAID" {
-  const t = money(total);
+export function computeInvoiceStatus(
+  total: string,
+  paid: string,
+  returnedTotal: string = "0",
+): "PENDING" | "PARTIALLY_PAID" | "PAID" {
+  // INVOICE-STATUS (تدقيق ٢/٧): الحالة تُحسب على **الصافي بعد المرتجعات** (total − returnedTotal)
+  // لا الإجمالي الخام. فاتورة مُرتجَعة جزئياً وسُدّد صافيها كان يبقى «PARTIALLY_PAID» (مستحقّة) أبداً
+  // لأن paid < total الخام. الافتراضي returnedTotal="0" ⇒ سلوك متطابق للفواتير بلا مرتجعات.
+  const net = money(total).minus(money(returnedTotal));
   const p = money(paid);
+  if (net.lte(0)) return "PAID"; // الصافي المستحقّ صفر أو أقل (عُوّض بالمرتجعات) — الإرجاع الكامل يضبط RETURNED في مساره
   if (p.lte(0)) return "PENDING";
-  if (p.gte(t)) return "PAID";
+  if (p.gte(net)) return "PAID";
   return "PARTIALLY_PAID";
 }

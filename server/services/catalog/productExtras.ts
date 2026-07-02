@@ -25,8 +25,10 @@ export async function listMaterialsForRecipe(query?: string, limit = 100): Promi
   ];
   const q = (query ?? "").trim();
   if (q) {
+    // LIKE-ESCAPE (تدقيق ٢/٧): escLike يهرّب بـ«!» لكن العبارة كانت بلا ESCAPE '!' ⇒ الهروب مُعطَّل
+    // (أحرف البدل %/_ تُفسَّر، وحرف «!» يُطابَق حرفياً فيكسر البحث). نضيف ESCAPE '!' كباقي الاستعلامات.
     const like = `%${escLike(q)}%`;
-    conds.push(or(sql`${products.name} LIKE ${like}`, sql`${productVariants.sku} LIKE ${like}`)!);
+    conds.push(or(sql`${products.name} LIKE ${like} ESCAPE '!'`, sql`${productVariants.sku} LIKE ${like} ESCAPE '!'`)!);
   }
   const rows = await db
     .select({

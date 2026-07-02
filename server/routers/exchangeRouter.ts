@@ -16,6 +16,7 @@ import {
   withdrawFromExchange,
 } from "../services/exchangeHouseService";
 import { managerProcedure, router } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح (موجب، منزلتان كحدّ أقصى)");
 const signedMoneyStr = z.string().regex(/^-?\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -86,7 +87,20 @@ export const exchangeRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const res = await updateExchangeHouse(input, actorOf(ctx, 0));
-      await logAudit(ctx, { action: "exchange.update", entityType: "exchangeHouse", entityId: input.id });
+      // AUDIT-DETAIL (تدقيق ٢/٧): كان سطر التدقيق فارغاً تماماً من القيم رغم تغيير name/phone/legacyCode.
+      // نلتقط الحقول المُرسَلة للتعديل (الموجودة في الحمولة) فيصبح السطر كاشفاً لِما تغيّر فعلاً.
+      await logAudit(ctx, {
+        action: "exchange.update",
+        entityType: "exchangeHouse",
+        entityId: input.id,
+        newValue: {
+          ...(input.name !== undefined ? { name: input.name } : {}),
+          ...(input.phone !== undefined ? { phone: input.phone } : {}),
+          ...(input.phone2 !== undefined ? { phone2: input.phone2 } : {}),
+          ...(input.legacyCode !== undefined ? { legacyCode: input.legacyCode } : {}),
+          ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        },
+      });
       return res;
     }),
 
@@ -118,7 +132,7 @@ export const exchangeRouter = router({
           await logAudit(ctx, { action: "exchange.deposit", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, amount: input.amount, currency: input.currency } });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }
@@ -145,7 +159,7 @@ export const exchangeRouter = router({
           await logAudit(ctx, { action: "exchange.withdraw", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, amount: input.amount, currency: input.currency } });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }
@@ -172,7 +186,7 @@ export const exchangeRouter = router({
           await logAudit(ctx, { action: "exchange.buyUsd", entityType: "exchangeTransaction", entityId: res.txnId, newValue: { exchangeHouseId: input.exchangeHouseId, usdAmount: input.usdAmount, exchangeRate: input.exchangeRate } });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }
@@ -208,7 +222,7 @@ export const exchangeRouter = router({
           });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }

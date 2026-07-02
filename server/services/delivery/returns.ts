@@ -27,6 +27,9 @@ export async function returnConsignment(consignmentId: number, actor: DeliveryTx
 
     const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, Number(cn.invoiceId)));
     // إعادة المخزون (حركة IN) لكل بند له صنف.
+    // ملاحظة (تدقيق ٢/٧): تمييز «البند الذي خُصم مخزونه فعلاً» عن «منتج مُخصَّص لم يُخصَم» ليس
+    // بمجرّد workOrderId (بند أمر شغل بـbaseVariant يُخصَم فعلاً) — يحتاج فحص «هل جرت حركة OUT
+    // للصنف على هذه الفاتورة». مؤجَّل لتفادي منع إعادة تخزينٍ مشروع (أمسك CI الحارس الفجّ).
     for (const it of items) {
       await applyMovement(tx, {
         variantId: Number(it.variantId), branchId: Number(cn.branchId), baseQuantity: Number(it.baseQuantity),

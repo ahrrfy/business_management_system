@@ -9,6 +9,7 @@ import { logAudit } from "../services/auditService";
 import * as svc from "../services/payrollService";
 import { getPayrollSummary } from "../services/reportsHrService";
 import { protectedProcedure, requireModule, router } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
 const hrWrite = protectedProcedure.use(requireModule("hr", "FULL"));
@@ -42,7 +43,7 @@ export const payrollRouter = router({
         return run;
       } catch (err: any) {
         // القيد الفريد على الشهر يحمي من سباق توليد مزدوج.
-        if (err?.code === "ER_DUP_ENTRY") throw new TRPCError({ code: "CONFLICT", message: `يوجد مسيّر رواتب لشهر ${input.period} بالفعل` });
+        if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: `يوجد مسيّر رواتب لشهر ${input.period} بالفعل` });
         throw err;
       }
     }),

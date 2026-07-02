@@ -59,7 +59,12 @@ export const customerRouter = router({
       q: z.string().min(1).max(120),
       limit: z.number().int().min(1).max(20).optional(),
     }))
-    .query(({ input }) => smartSearchCustomers(input)),
+    // IDOR-REDACT (تدقيق ٢/٧): smartSearch كان يُعيد currentBalance خاماً لكل الأدوار متجاوزاً
+    // maskCustomerSensitive المطبَّق في list/get ⇒ تسريب رصيد العميل للكاشير. نطبّق نفس الحجب.
+    .query(async ({ input, ctx }) => {
+      const rows = await smartSearchCustomers(input);
+      return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
+    }),
 
   get: protectedProcedure
     .input(z.object({ customerId: z.number().int().positive() }))

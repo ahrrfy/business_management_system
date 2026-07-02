@@ -159,6 +159,31 @@ describe("assetsService — updateAsset (DB)", () => {
     expect(up!.custodianId).toBe(1); // العهدة لها مسارها (handover) ولا تتغيّر بالتعديل
   });
 
+  it("ASSET-REVAL: تعديل قيمة أصلٍ على ذمّة مورّد يُصحّح رصيد المورد بالفرق (قيد تعويضي)", async () => {
+    const a = await mkAsset({
+      name: "طابعة", category: "computers", purchaseDate: "2023-01-01",
+      purchaseValue: "1000000", salvageValue: "0", usefulLifeYears: 5,
+      depreciationMethod: "sl", branchId: 1, supplierId: 1,
+    });
+    // الاقتناء الآجل رفع ذمّة المورد (AP) إلى 1,000,000.
+    let sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    expect(Number(sup.currentBalance)).toBe(1000000);
+    // تعديل القيمة إلى 1,200,000 ⇒ قيدٌ تعويضيّ يجعل AP = 1,200,000 (فرق +200,000).
+    await updateAsset(
+      a!.id,
+      {
+        name: "طابعة", category: "computers", purchaseDate: "2023-01-01",
+        purchaseValue: "1200000", salvageValue: "0", usefulLifeYears: 5,
+        depreciationMethod: "sl", branchId: 1, supplierId: 1,
+      },
+      ACTOR,
+    );
+    sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    expect(Number(sup.currentBalance)).toBe(1200000);
+    // القيمة المُرسمَلة الجديدة تُغذّي الإهلاك.
+    expect(Number((await getAsset(a!.id))!.purchaseValue)).toBe(1200000);
+  });
+
   it("يرفض تعديل أصل مُستبعَد", async () => {
     const a = await mkAsset({ name: "قديم", category: "computers", purchaseDate: "2020-01-01", purchaseValue: "500000", salvageValue: "50000", usefulLifeYears: 4, depreciationMethod: "sl" });
     await disposeAsset(a!.id, { kind: "disposed", date: "2024-01-01", reason: "خردة", value: "0" }, ACTOR);

@@ -70,6 +70,8 @@ export interface ApplyMovementArgs {
 export interface ApplyMovementResult {
   movementId: number;
   newQuantity: number;
+  /** فرق التسوية (target − current) — يملؤه setStock فقط ليُمكّن المستدعي من ترحيل قيدٍ محاسبيّ بقيمة الفرق. */
+  delta?: number;
 }
 
 /** Read current stock under a row lock, then write a movement + the new branchStock. */
@@ -196,7 +198,7 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
   }
   // مُنتج خِدمي: لا تَسوية مَخزون لـ«ما لا مَخزون له». نَتجاهل بِنَتيجة اصطناعية.
   if (await isServiceVariant(tx, a.variantId)) {
-    return { movementId: 0, newQuantity: 0 };
+    return { movementId: 0, newQuantity: 0, delta: 0 };
   }
   // اضمن وجود الصفّ قبل القفل (نفس علّة FOR UPDATE على صفّ غير موجود).
   await tx
@@ -231,7 +233,7 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
     .insert(branchStock)
     .values({ variantId: a.variantId, branchId: a.branchId, quantity: a.targetQuantity })
     .onDuplicateKeyUpdate({ set: { quantity: a.targetQuantity } });
-  return { movementId: extractInsertId(res), newQuantity: a.targetQuantity };
+  return { movementId: extractInsertId(res), newQuantity: a.targetQuantity, delta };
 }
 
 export interface TransferArgs {

@@ -55,6 +55,9 @@ export default function Transfers() {
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
   const [trf, setTrf] = useState(() => genTrf());
+  // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت للسند الحالي (يُجدَّد بعد النجاح) ⇒ النقر المزدوج/إعادة
+  // الشبكة يُعاد كـreplay على الخادم بدل نقل المخزون بين الفروع مرّتين.
+  const [reqId, setReqId] = useState(() => crypto.randomUUID());
   const searchRef = useRef<HTMLInputElement>(null);
 
   // فروع افتراضية بعد التحميل: المصدر = فرع المستخدم أو الأول، الوجهة = أول فرع مختلف.
@@ -124,7 +127,7 @@ export default function Transfers() {
     onSuccess: async (res) => {
       setDone(`تمّ تنفيذ سند التحويل (${res.lines} صنف) من ${fromName} إلى ${toName}.`);
       setError("");
-      setCart([]); setNotes(""); setTrf(genTrf());
+      setCart([]); setNotes(""); setTrf(genTrf()); setReqId(crypto.randomUUID());
       await Promise.all([
         utils.catalog.forPurchase.invalidate(),
         utils.inventory.movements.invalidate(),
@@ -167,6 +170,7 @@ export default function Transfers() {
       toBranchId: Number(effectiveTo),
       reason: reason as any,
       notes: notes.trim() || undefined,
+      clientRequestId: reqId,
       items: cart.map((l) => ({ variantId: l.variantId, baseQuantity: Math.trunc(Number(l.qty)) })),
     });
   }

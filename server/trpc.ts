@@ -87,6 +87,26 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
 
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));
+
+/**
+ * RBAC-REPORTS (تدقيق ٢/٧): التقارير كانت مقفلة بـmanagerProcedure حصراً ⇒ دورا «محاسب» و«مدقّق»
+ * المعلَنان (قالبهما reports=FULL/READ) لا يصلان أي تقرير — الدور بلا فائدة. نسمح لهذه الأدوار الثلاثة
+ * ثم نُنفِذ خريطة الصلاحية (requireModule) — فالمحاسب/المدقّق (والدور المخصّص أساسه أحدها) يصل حسب خريطته.
+ */
+export const reportViewerProcedure = t.procedure
+  .use(requireRole("manager", "accountant", "auditor"))
+  .use(requireModule("reports", "READ"))
+  .use(async ({ ctx, getRawInput, next }) => {
+    // عزل الفرع: admin يعبُر أي فرع؛ غير الأدمن يُرفَض إن طلب فرعاً غير فرعه (أثر forensic صريح
+    // بدل قصٍّ صامت) — مرآةٌ لِمنطق managerBranchScopedProcedure الذي كان يحرس هذه التقارير.
+    if (!ctx.user || ctx.user.role === "admin") return next({ ctx });
+    const raw = (await getRawInput()) as { branchId?: number | string } | undefined;
+    const requestedBranch = raw?.branchId;
+    if (requestedBranch !== undefined && Number(requestedBranch) !== Number(ctx.user.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة بيانات فرع آخر" });
+    }
+    return next({ ctx });
+  });
 export const managerBranchScopedProcedure = managerProcedure.use(async ({ ctx, getRawInput, next }) => {
   if (ctx.user.role === "admin") return next({ ctx });
   // G7 (تدقيق ٢٣/٦/٢٦): `input` في middleware يَأتي parsed بعد `.input()` فقط. هذا middleware
@@ -128,6 +148,20 @@ export const workOrderExecProcedure = t.procedure
 
 /** هل يُسمح لهذا الدور برؤية التكلفة/هامش الربح؟ (يشمل المحاسب الآن). */
 export const canSeeCost = (role: string) => _canSeeCost(role);
+
+/**
+ * RBAC-COST (تدقيق ٢/٧): رؤية التكلفة/الربح لمستخدمٍ بعينه — تحترم خريطة الدور المخصّص لا القالب فقط.
+ * كان canSeeCost(role) يتبع baseRole ⇒ دور مخصّص أساسه manager يرى التكلفة رغم تقييد خريطته. الآن:
+ * القالب لا يرى ⇒ لا (كما هو)، وإن كان دوراً مخصّصاً (له override) فالرؤية مشروطة بأن صلاحية «التقارير»
+ * (نطاق التكلفة/الربح) ليست NONE. الأدوار القالبية (بلا override) بلا تغيير.
+ */
+export function canSeeCostForUser(user: { role: string; permissionsOverride?: unknown }): boolean {
+  if (!_canSeeCost(user.role)) return false;
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  if (!override) return true;
+  const map = resolvePermissions(user.role as RoleKey, override);
+  return (map.reports ?? "NONE") !== "NONE";
+}
 
 // ─── عزل الفروع (منع IDOR عبر branchId) ─────────────────────────────────
 // F1 (تدقيق ١٤/٦/٢٦): استُبدِل magic value `-1` برميٍ صريح لـFORBIDDEN حين يحاول

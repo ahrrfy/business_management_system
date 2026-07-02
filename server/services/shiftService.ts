@@ -6,6 +6,7 @@ import { money, toDbMoney } from "./money";
 import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 /** نوع الوردية: تجزئة (كاشير) أو استقبال (خدمة الزبائن — درج/عرابين مستقلّة). */
 export type ShiftType = "RETAIL" | "RECEPTION";
@@ -50,7 +51,7 @@ export async function openShift(
       const shiftId = extractInsertId(res);
       return { shiftId };
     } catch (e: any) {
-      if (e?.code === "ER_DUP_ENTRY") {
+      if (isDupEntry(e)) {
         throw new TRPCError({ code: "CONFLICT", message: "لديك وردية مفتوحة بالفعل في هذا الفرع" });
       }
       throw e;
@@ -68,6 +69,9 @@ async function computeExpectedCash(tx: Tx, shiftId: number, openingBalance: stri
     .from(receipts)
     // فلتر cashBucket='DRAWER' دفاعي: يَمنع إدراج سندات TREASURY (shiftId=null عادةً)
     // في حالة انتقلت إليها shiftId بطريق غير متوقّع.
+    // SHIFT-EXPECTED (تدقيق ٢/٧): لا نفلتر بـreceiptStatus — الإلغاء يَعكس بنمط «وسم الأصل REVERSED +
+    // إيصال تعويضيّ IN مكتمل»، فحصْر المكتمل يَحذف الأصل ويُبقي التعويض ⇒ عكسٌ مزدوج. جمع كل حالات
+    // DRAWER يُصافر الزوج (الأصل + تعويضه) صحيحاً. البطاقات الحيّة تتبع الصيغة نفسها (بلا فلتر حالة).
     .where(and(eq(receipts.shiftId, shiftId), eq(receipts.cashBucket, "DRAWER")));
   const cashIn = money(rows[0]?.cashIn ?? "0");
   const cashOut = money(rows[0]?.cashOut ?? "0");

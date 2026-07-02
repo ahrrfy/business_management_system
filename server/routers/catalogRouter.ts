@@ -18,6 +18,15 @@ import { assertValidImageDataUrl } from "../lib/imageValidation";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
 
+// IDOR (تدقيق ٢/٧): posList/adminList/byBarcode كانت تثق بـbranchId العميل ⇒ أي مستخدم مصادَق
+// يقرأ مخزون أي فرع بتمرير معرّفه. نُقيّد غير المرتفعين (كاشير/مخزن/…) بفرعهم المُسنَد؛ المدير/الأدمن
+// يعبُران الفروع (شرعيّ). المنتجات/الأسعار مشتركة على مستوى الشركة؛ المحجوب هو كمية مخزون الفرع.
+function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
+  const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+  if (elevated) return requested;
+  return ctx.user.branchId != null ? Number(ctx.user.branchId) : requested;
+}
+
 const priceSchema = z.object({ priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]), price: z.string() });
 const unitSchema = z.object({
   unitName: z.string().min(1),
@@ -80,7 +89,7 @@ const imageSchema = z.object({
 export const catalogRouter = router({
   posList: protectedProcedure
     .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional() }))
-    .query(({ input }) => listForPos(input.branchId, input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices })),
+    .query(({ input, ctx }) => listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices })),
 
   // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
   // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
@@ -96,7 +105,7 @@ export const catalogRouter = router({
         offset: z.number().int().min(0).default(0),
       })
     )
-    .query(({ input }) => listProductsAdmin(input)),
+    .query(({ input, ctx }) => listProductsAdmin({ ...input, branchId: scopeBranch(ctx, input.branchId) })),
 
   // تفعيل/تعطيل منتج — مدير فأعلى (يغيّر ما يراه الكاشير في البيع).
   setProductActive: managerProcedure
@@ -114,7 +123,7 @@ export const catalogRouter = router({
 
   byBarcode: protectedProcedure
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier }))
-    .query(({ input }) => lookupByBarcode(input.barcode, input.branchId, input.tier)),
+    .query(({ input, ctx }) => lookupByBarcode(input.barcode, scopeBranch(ctx, input.branchId), input.tier)),
 
   // product-variants: تحقّق مسبق من تكرار الباركود قبل الحفظ — `productUnits.barcode` فريد (UNIQUE)
   // فالحفظ يفشل عند التكرار؛ هذا يُظهر تحذيراً لحظياً بأي منتج يحجز الباركود (بدل رحلة حفظ فاشلة).

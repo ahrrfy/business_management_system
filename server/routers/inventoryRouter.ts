@@ -12,6 +12,9 @@ import { logAudit } from "../services/auditService";
 import { applyMovement, convertToBaseQuantity, setStock, transferBetweenBranches } from "../services/inventoryService";
 import { findIdempotentRefId, recordIdempotencyKey } from "../services/idempotency";
 import { withTx } from "../services/tx";
+import { postEntry } from "../services/ledgerService";
+import { money } from "../services/money";
+import { retryOnDup } from "../lib/retryDup";
 import { branchScopedProcedure, protectedProcedure, router, warehouseProcedure } from "../trpc";
 
 /** تسميات عربية لأسباب الحركة اليدوية — تكتب في notes. */
@@ -66,7 +69,11 @@ export const inventoryRouter = router({
         }
         fromBranchId = Number(ctx.user.branchId);
       }
-      const res = await withTx((tx) => transferBetweenBranches(tx, { ...input, fromBranchId, createdBy: ctx.user.id }));
+      // DEADLOCK-RETRY (تدقيق ٢/٧): التحويل يقفل صفّي مخزون بترتيب branchId تصاعدي (آمن للفرعين)،
+      // لكن تحويلان متزامنان قد يتعارضان على قفل قاعدة عام؛ نعيد المحاولة على deadlock (العملية ذرّية).
+      const res = await retryOnDup(() =>
+        withTx((tx) => transferBetweenBranches(tx, { ...input, fromBranchId, createdBy: ctx.user.id })),
+      );
       // entityType='transfer' لأن العملية تُعدّل صفّي مخزون (out+in) ومرجعها منطقياً «حدث نقل»
       // لا صفّ stock مفرد؛ المفاتيح بصيغة كاملة (fromBranchId/toBranchId) لاتساق سجلّ التدقيق
       // مع بقية الراوترات (sale/purchase). الكمية في الوحدة الأساس (baseQuantity).
@@ -151,7 +158,11 @@ export const inventoryRouter = router({
         }
         const out: Array<{ variantId: number }> = [];
         let firstMovementId = 0;
-        for (const it of input.items) {
+        // LOCK-ORDER (تدقيق ٢/٧): ترتيب الأصناف حسب variantId قبل القفل ⇒ سندان متزامنان متداخلان
+        // يقفلان صفوف branchStock بالترتيب نفسه فلا deadlock من انعكاس الترتيب. (retryOnDup ليس هنا،
+        // لكن الترتيب الحتمي يمنع سبب الـdeadlock أصلاً.)
+        const sortedItems = [...input.items].sort((a, b) => a.variantId - b.variantId);
+        for (const it of sortedItems) {
           const res = await transferBetweenBranches(tx, {
             variantId: it.variantId,
             fromBranchId,
@@ -209,8 +220,29 @@ export const inventoryRouter = router({
         }
         branchId = Number(ctx.user.branchId);
       }
-      const res = await withTx((tx) => setStock(tx, { ...input, branchId, createdBy: ctx.user.id }));
-      await logAudit(ctx, { action: "inventory.adjust", entityType: "stock", entityId: input.variantId, newValue: { branchId, target: input.targetQuantity } });
+      const res = await withTx(async (tx) => {
+        const r = await setStock(tx, { ...input, branchId, createdBy: ctx.user.id });
+        // INV-ADJUST-LEDGER (تدقيق ٢/٧): التسوية اليدوية كانت تغيّر قيمة المخزون بلا أي قيد ⇒ الشطب/
+        // الزيادة لا يظهران في الدفتر ولا P&L. نُرحّل قيد ADJUST بقيمة الفرق × التكلفة (نمط الجرد تماماً:
+        // نقص ⇒ cost موجب/profit سالب؛ زيادة ⇒ العكس). dedupeKey على معرّف الحركة يمنع الازدواج.
+        if (r.delta && r.delta !== 0) {
+          const v = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1))[0];
+          const adjustValue = money(v?.costPrice ?? "0").times(r.delta); // موقَّع: موجب=زيادة قيمة
+          if (!adjustValue.isZero()) {
+            await postEntry(tx, {
+              entryType: "ADJUST",
+              branchId,
+              cost: adjustValue.neg(),
+              profit: adjustValue,
+              amount: money(0),
+              dedupeKey: `INV_ADJUST:${r.movementId}`,
+              notes: `تسوية مخزون يدوية${input.notes ? ` — ${input.notes}` : ""}`,
+            });
+          }
+        }
+        return r;
+      });
+      await logAudit(ctx, { action: "inventory.adjust", entityType: "stock", entityId: input.variantId, newValue: { branchId, target: input.targetQuantity, delta: res.delta } });
       return res;
     }),
 
@@ -507,6 +539,23 @@ export const inventoryRouter = router({
           notes: notesLine,
           createdBy: ctx.user.id,
         });
+        // INV-MANUAL-LEDGER (تدقيق ٢/٧): حركة مخزون يدوية (بلا شراء/بيع) تغيّر قيمة المخزون بلا قيد ⇒
+        // نُرحّل قيد ADJUST بقيمة الفرق × التكلفة. IN/RETURN ترفع القيمة (cost سالب/profit موجب)،
+        // OUT يخفضها (خسارة: cost موجب/profit سالب). dedupeKey على معرّف الحركة يمنع الازدواج.
+        const signedDelta = input.movementType === "OUT" ? -conv.baseQuantity : conv.baseQuantity;
+        const v = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1))[0];
+        const adjustValue = money(v?.costPrice ?? "0").times(signedDelta);
+        if (!adjustValue.isZero()) {
+          await postEntry(tx, {
+            entryType: "ADJUST",
+            branchId,
+            cost: adjustValue.neg(),
+            profit: adjustValue,
+            amount: money(0),
+            dedupeKey: `INV_MANUAL:${res.movementId}`,
+            notes: `حركة مخزون يدوية (${input.movementType}) — ${notesLine}`,
+          });
+        }
         return { result: res, baseQty: conv.baseQuantity };
       });
 

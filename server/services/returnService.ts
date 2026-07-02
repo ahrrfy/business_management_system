@@ -112,6 +112,20 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     const restock = inv.sourceType === "WORKORDER" ? false : input.restock !== false;
     if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا أصناف للإرجاع" });
 
+    // RETURN-DEDUP (تدقيق ٢/٧): منع تكرار invoiceItemId في أسطر المرتجع. كان الفحص يقارن كل سطر
+    // بـremaining من لقطةٍ ثابتة، فسطران بنفس البند [{6},{6}] يمرّان كلاهما ⇒ إعادة تخزين مضاعفة
+    // (applyMovement مرّتين) وقيمة مرتجع تتجاوز الفاتورة (returnedTotal > total) وذمّة/نقد مسرَّبان.
+    const seenItemIds = new Set<number>();
+    for (const l of input.lines) {
+      if (seenItemIds.has(l.invoiceItemId)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `البند ${l.invoiceItemId} مكرّر في أسطر المرتجع — ادمج الكميات في سطرٍ واحد`,
+        });
+      }
+      seenItemIds.add(l.invoiceItemId);
+    }
+
     const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, input.invoiceId));
     const itemById = new Map(items.map((i) => [Number(i.id), i]));
 
@@ -315,7 +329,11 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     const paidMinusRefund = money(inv.paidAmount).minus(cashRefund);
     const newPaid = paidMinusRefund.lt(0) ? money(0) : paidMinusRefund;
     const newReturnedTotal = money(inv.returnedTotal ?? "0").plus(returnedTotal);
-    const status = fullyReturned ? "RETURNED" : computeInvoiceStatus(inv.total, toDbMoney(newPaid));
+    // INVOICE-STATUS (تدقيق ٢/٧): الحالة على الصافي بعد المرتجعات ⇒ فاتورة مُرتجَعة جزئياً وسُدّد
+    // صافيها تصبح PAID لا PARTIALLY_PAID الأبدية.
+    const status = fullyReturned
+      ? "RETURNED"
+      : computeInvoiceStatus(inv.total, toDbMoney(newPaid), toDbMoney(newReturnedTotal));
     await tx
       .update(invoices)
       .set({

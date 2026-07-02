@@ -23,7 +23,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { accountingEntries, attendance, employees, payrollItems, payrollRuns } from "../../drizzle/schema";
+import { accountingEntries, attendance, employees, payrollItems, payrollRuns, receipts } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
@@ -317,11 +317,30 @@ export async function payRun(id: number, actor: Actor) {
       const net = money(it.net);
       // قيد بصافر/سالب لا يُجمّل الدفتر — نتخطّاه (لا قيد نقدي بقيمة غير موجبة).
       if (net.lte(0)) continue;
+      const empBranchId = it.empBranchId ?? run.branchId ?? null;
+      // TREASURY-OUT (تدقيق ٢/٧): كان الدفع يكتب قيد PAYMENT_OUT بلا أي receipt ⇒ رصيد الخزينة
+      // (مجموع receipts بـcashBucket='TREASURY') لا ينقص عند صرف الرواتب فينحرف تراكمياً بحجم
+      // إجمالي الرواتب. الآن نُخرج نقداً فعلياً من الخزينة بإيصال OUT/TREASURY مربوط بالقيد.
+      const rRes = await tx.insert(receipts).values({
+        invoiceId: null,
+        branchId: empBranchId,
+        shiftId: null,
+        cashBucket: "TREASURY",
+        direction: "OUT",
+        amount: toDbMoney(net),
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        partyType: "OTHER",
+        description: `راتب — مسيّر ${run.period}`,
+        createdBy: actor.userId,
+      });
+      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_OUT",
         // إسناد فرعي بفرع الموظف نفسه (لا فرع المُولِّد) ⇒ ربحية كل فرع دقيقة؛ يسقط لفرع المسيّر
         // إن لم يكن للموظف فرع. المسيّر مركزي على مستوى الشركة لكن القيد يُنسَب لفرع كل موظف.
-        branchId: it.empBranchId ?? run.branchId ?? null,
+        branchId: empBranchId,
+        receiptId,
         amount: net,
         revenue: new Decimal(0),
         entryDate,
@@ -377,9 +396,27 @@ export async function cancelRun(id: number, actor: Actor) {
     for (const it of items) {
       const net = money(it.net);
       if (net.lte(0)) continue;
+      const empBranchId = it.empBranchId ?? run.branchId ?? null;
+      // TREASURY-OUT (تدقيق ٢/٧): عكس الدفع يُعيد النقد للخزينة بإيصال IN/TREASURY (المبلغ موجب،
+      // الاتجاه IN — قيد CHECK يمنع مبلغاً سالباً) ⇒ يتصافر رصيد الخزينة تماماً بعد العكس.
+      const rRes = await tx.insert(receipts).values({
+        invoiceId: null,
+        branchId: empBranchId,
+        shiftId: null,
+        cashBucket: "TREASURY",
+        direction: "IN",
+        amount: toDbMoney(net),
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        partyType: "OTHER",
+        description: `عكس راتب — مسيّر ${run.period}`,
+        createdBy: actor.userId,
+      });
+      const receiptId = extractInsertId(rRes);
       await postEntry(tx, {
         entryType: "PAYMENT_OUT",
-        branchId: it.empBranchId ?? run.branchId ?? null,
+        branchId: empBranchId,
+        receiptId,
         amount: net.neg(),
         revenue: new Decimal(0),
         entryDate,

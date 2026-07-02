@@ -10,7 +10,8 @@ import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyStrin
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../services/purchaseService";
-import { branchScopedProcedure, canSeeCost, managerProcedure, router, warehouseProcedure } from "../trpc";
+import { branchScopedProcedure, canSeeCostForUser, managerProcedure, router, warehouseProcedure } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على orderDate).
@@ -74,10 +75,21 @@ export const purchaseRouter = router({
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
           const res = await receivePurchase(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
-          await logAudit(ctx, { action: "purchase.receive", entityType: "purchaseOrder", entityId: input.purchaseOrderId, newValue: { lines: input.lines.length } });
+          // AUDIT-DETAIL (تدقيق ٢/٧): كان يسجّل «عدد الأسطر» فقط — لا الكميات المستلمة ولا مبلغ دفعة
+          // المورد ⇒ لا يميّز استلام قطعة عن ألف مع دفعة ملايين. الآن نلتقط الكميات والدفعة.
+          await logAudit(ctx, {
+            action: "purchase.receive",
+            entityType: "purchaseOrder",
+            entityId: input.purchaseOrderId,
+            newValue: {
+              lines: input.lines.map((l) => ({ purchaseOrderItemId: l.purchaseOrderItemId, receivedBaseQuantity: l.receivedBaseQuantity })),
+              totalReceivedBaseQuantity: input.lines.reduce((s, l) => s + l.receivedBaseQuantity, 0),
+              payment: input.payment ? { amount: input.payment.amount, method: input.payment.method } : null,
+            },
+          });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام الاستلام" });
         }
@@ -175,7 +187,7 @@ export const purchaseRouter = router({
           .offset(off),
       });
       // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
-      if (!canSeeCost(ctx.user.role)) {
+      if (!canSeeCostForUser(ctx.user)) {
         return rows.map((row) => ({ ...row, total: null, paidAmount: null }));
       }
       return rows;
@@ -233,7 +245,7 @@ export const purchaseRouter = router({
       .leftJoin(productUnits, eq(purchaseOrderItems.productUnitId, productUnits.id))
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
-    if (!canSeeCost(ctx.user.role)) {
+    if (!canSeeCostForUser(ctx.user)) {
       const poMasked = { ...po, subtotal: null, taxAmount: null, total: null, paidAmount: null, usdTotal: null, agreedRate: null };
       const itemsMasked = items.map((row) => maskCostFields(row, ctx.user.role));
       return { ...poMasked, items: itemsMasked };

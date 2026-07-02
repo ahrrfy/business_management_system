@@ -34,7 +34,7 @@ export interface DashboardOutput {
 
 export async function getDashboard(
   input: { branchId?: number },
-  scope: { scopedBranchId: number | null; role: string },
+  scope: { scopedBranchId: number | null; role: string; userId: number },
 ): Promise<DashboardOutput> {
   const db = getDb();
   const base: DashboardOutput = {
@@ -52,6 +52,12 @@ export async function getDashboard(
   const effectiveBranch = scope.scopedBranchId ?? input.branchId ?? null;
   const branchFilter = effectiveBranch != null ? sql`AND b.id = ${effectiveBranch}` : sql``;
 
+  // DRAWER-ISOLATION (تدقيق ٢/٧): الكاشير يصل الداشبورد (branchScopedProcedure) وكان يرى مجموع أدراج
+  // كل زملائه في فرعه لحظياً. الآن نقصر تجميع الأدراج على ورديته هو (userId) — المدير/الأدمن يرون الكل.
+  const cashierOwn = isCashier(scope.role);
+  const drawerUserJoin = cashierOwn ? sql`AND s.userId = ${scope.userId}` : sql``;
+  const drawerUserSub = cashierOwn ? sql`AND s2.userId = ${scope.userId}` : sql``;
+
   // ── (أ) DRAWER لكل فرع: مجموع الورديات المفتوحة (opening + cashIn − cashOut) ──
   const drawerRows = rowsOf(
     await db.execute(sql`
@@ -63,27 +69,25 @@ export async function getDashboard(
         CAST(COALESCE((
           SELECT SUM(r.amount)
           FROM receipts r
-          WHERE r.paymentMethod = 'CASH'
+          WHERE r.cashBucket = 'DRAWER'
             AND r.direction = 'IN'
-            AND r.receiptStatus = 'COMPLETED'
             AND r.shiftId IN (
               SELECT s2.id FROM shifts s2
-              WHERE s2.branchId = b.id AND s2.shiftStatus = 'OPEN'
+              WHERE s2.branchId = b.id AND s2.shiftStatus = 'OPEN' ${drawerUserSub}
             )
         ), 0) AS CHAR) AS cashIn,
         CAST(COALESCE((
           SELECT SUM(r.amount)
           FROM receipts r
-          WHERE r.paymentMethod = 'CASH'
+          WHERE r.cashBucket = 'DRAWER'
             AND r.direction = 'OUT'
-            AND r.receiptStatus = 'COMPLETED'
             AND r.shiftId IN (
               SELECT s2.id FROM shifts s2
-              WHERE s2.branchId = b.id AND s2.shiftStatus = 'OPEN'
+              WHERE s2.branchId = b.id AND s2.shiftStatus = 'OPEN' ${drawerUserSub}
             )
         ), 0) AS CHAR) AS cashOut
       FROM branches b
-      LEFT JOIN shifts s ON s.branchId = b.id AND s.shiftStatus = 'OPEN'
+      LEFT JOIN shifts s ON s.branchId = b.id AND s.shiftStatus = 'OPEN' ${drawerUserJoin}
       WHERE b.isActive = TRUE
         ${branchFilter}
       GROUP BY b.id, b.name

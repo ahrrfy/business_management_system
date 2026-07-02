@@ -130,7 +130,7 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     if (input.clientRequestId) await recordIdempotencyKey(tx, "sale.pay", input.clientRequestId, receiptId);
 
     const newPaid = money(inv.paidAmount).plus(amount);
-    const status = computeInvoiceStatus(inv.total, toDbMoney(newPaid));
+    const status = computeInvoiceStatus(inv.total, toDbMoney(newPaid), inv.returnedTotal ?? "0");
     await tx
       .update(invoices)
       .set({ paidAmount: toDbMoney(newPaid), status, paymentDate: new Date(), paymentMethod: input.method })

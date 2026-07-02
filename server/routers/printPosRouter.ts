@@ -7,6 +7,7 @@ import { createPrintSale } from "../services/printSaleService";
 import { verifyManagerApproval } from "./saleRouter";
 import { cashierProcedure, router } from "../trpc";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -50,7 +51,8 @@ export const printPosRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا الكاشير" });
       }
       const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
-      const actor = { userId: ctx.user.id, branchId: effectiveBranchId };
+      // role إلزامي: createPrintSale تفحص ملكية الوردية (SHIFT-OWN) وتُعفي admin/manager.
+      const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
       let approvedBy: number | null = null;
       const { managerApproval, ...saleInput } = input;
       // AUTHZ-1: مرّر effectiveBranchId لـverifyManagerApproval ⇒ مدير فرع آخر لا يَعتمد بيع هذا الفرع
@@ -75,7 +77,7 @@ export const printPosRouter = router({
           if (res.priceOverride) await logAudit(ctx, { action: "printPos.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
           return res;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           if (e instanceof TRPCError) throw e;
           // لا نبتلع السبب الجذري — نُسجّله كاملاً قبل رسالة عامة (درس ١٢/٦).
           logger.error(

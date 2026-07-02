@@ -13,6 +13,7 @@ import { logAudit } from "../services/auditService";
 import * as svc from "../services/assetsService";
 import { money } from "../services/money";
 import { protectedProcedure, requireModule, router } from "../trpc";
+import { isDupEntry } from "@shared/errorMap.ar";
 
 const assetRead = protectedProcedure.use(requireModule("assets", "READ"));
 const assetWrite = protectedProcedure.use(requireModule("assets", "FULL"));
@@ -86,7 +87,7 @@ export const assetsRouter = router({
           });
           return a;
         } catch (e: any) {
-          if (e?.code === "ER_DUP_ENTRY" && attempt < 2) continue;
+          if (isDupEntry(e) && attempt < 2) continue;
           throw e;
         }
       }
@@ -139,7 +140,7 @@ export const assetsRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { id, ...patch } = input;
-      const a = await svc.updateAsset(id, patch);
+      const a = await svc.updateAsset(id, patch, { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role });
       await logAudit(ctx, {
         action: "asset.update",
         entityType: "fixedAsset",

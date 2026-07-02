@@ -19,16 +19,16 @@ export interface OpenShiftCard {
 
 export async function getOpenShifts(
   input: { branchId?: number },
-  scope: { scopedBranchId: number | null; role: string },
+  scope: { scopedBranchId: number | null; role: string; userId: number },
 ): Promise<OpenShiftCard[]> {
   const db = getDb();
   if (!db) return [];
   const effectiveBranch = scope.scopedBranchId ?? input.branchId ?? null;
   const branchFilter = effectiveBranch != null ? sql`AND s.branchId = ${effectiveBranch}` : sql``;
-  // الكاشير يَرى ورديته فقط (لا ورديات زملائه).
-  const userFilter = isCashier(scope.role) ? sql`AND s.userId = ${scope.scopedBranchId == null ? 0 : "n/a"}` : sql``;
-  // ⚠️ تعديل: الكاشير لا يَملك useId مباشرةً — نَنقله من ctx.user.id؛ تَمرّر عبر input في الراوتر.
-  void userFilter;
+  // DRAWER-ISOLATION (تدقيق ٢/٧): كان هذا الفلتر كوداً ميتاً (void) ⇒ الكاشير يَرى النقد المتوقَّع في
+  // أدراج زملائه لحظياً (معلومة تُمكّن استهداف السرقة وتخالف عزل الأدراج المُعلَن). الآن يُنفَّذ فعلاً:
+  // الكاشير/المستودعي/مشغّل الطباعة يَرى ورديته هو فقط (userId=هو)؛ المدير/الأدمن يَرَون الكل.
+  const userFilter = isCashier(scope.role) ? sql`AND s.userId = ${scope.userId}` : sql``;
 
   const rows = rowsOf(
     await db.execute(sql`
@@ -42,17 +42,18 @@ export async function getOpenShifts(
         s.openedAt AS openedAt,
         CAST(COALESCE((
           SELECT SUM(r.amount) FROM receipts r
-          WHERE r.shiftId = s.id AND r.paymentMethod = 'CASH' AND r.direction = 'IN' AND r.receiptStatus = 'COMPLETED'
+          WHERE r.shiftId = s.id AND r.cashBucket = 'DRAWER' AND r.direction = 'IN'
         ), 0) AS CHAR) AS cashIn,
         CAST(COALESCE((
           SELECT SUM(r.amount) FROM receipts r
-          WHERE r.shiftId = s.id AND r.paymentMethod = 'CASH' AND r.direction = 'OUT' AND r.receiptStatus = 'COMPLETED'
+          WHERE r.shiftId = s.id AND r.cashBucket = 'DRAWER' AND r.direction = 'OUT'
         ), 0) AS CHAR) AS cashOut
       FROM shifts s
       LEFT JOIN branches b ON b.id = s.branchId
       LEFT JOIN users u ON u.id = s.userId
       WHERE s.shiftStatus = 'OPEN'
         ${branchFilter}
+        ${userFilter}
       ORDER BY s.openedAt DESC
       LIMIT 50
     `),
