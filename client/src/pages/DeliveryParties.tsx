@@ -183,6 +183,9 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
 
 function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () => void; onDone: () => void }) {
   const [amount, setAmount] = useState(String(Number(party.currentBalance ?? 0)));
+  // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت لكل جلسة حوار (لا UUID جديد لكل نقرة) ⇒ النقر المزدوج
+  // يُعاد كـreplay على الخادم بدل تسجيل تسويتين نقديّتين.
+  const [reqId] = useState(() => crypto.randomUUID());
   const m = trpc.delivery.settle.useMutation({ onSuccess: () => { notify.ok("سُجِّلت التسوية"); onDone(); }, onError: (e) => notify.err(e) });
   return (
     <Modal title={`تسوية عهدة «${party.name}»`} onClose={onClose}>
@@ -191,7 +194,7 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
       <Input dir="ltr" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} className="mb-4 h-11 text-end text-lg font-bold tabular-nums" />
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => m.mutate({ partyId: party.id, amount, clientRequestId: crypto.randomUUID() })}>{m.isPending ? "جارٍ…" : "تسجيل التسوية"}</Button>
+        <Button className="flex-1" disabled={m.isPending || !/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0} onClick={() => m.mutate({ partyId: party.id, amount, clientRequestId: reqId })}>{m.isPending ? "جارٍ…" : "تسجيل التسوية"}</Button>
       </div>
     </Modal>
   );
@@ -200,10 +203,12 @@ function SettleDialog({ party, onClose, onDone }: { party: Party; onClose: () =>
 function WriteOffDialog({ party, onClose, onDone }: { party: Party; onClose: () => void; onDone: () => void }) {
   const [amount, setAmount] = useState(String(Number(party.currentBalance ?? 0)));
   const [reason, setReason] = useState("");
+  // IDEMPOTENCY (تدقيق ٢/٧): مفتاح ثابت لكل جلسة حوار — النقر المزدوج لا يشطب العجز مرّتين.
+  const [reqId] = useState(() => crypto.randomUUID());
   const m = trpc.delivery.writeOff.useMutation({ onSuccess: () => { notify.ok("شُطِب العجز"); onDone(); }, onError: (e) => notify.err(e) });
   const submit = async () => {
     const ok = await confirm({ variant: "danger", title: "شطب عجز عهدة", description: `سيُشطب ${fmt(amount)} د.ع من عهدة «${party.name}» كمصروف (خسارة) لا رجعة فيه.`, confirmText: "شطب", requireText: party.name });
-    if (ok) m.mutate({ partyId: party.id, amount, reason: reason.trim(), clientRequestId: crypto.randomUUID() });
+    if (ok) m.mutate({ partyId: party.id, amount, reason: reason.trim(), clientRequestId: reqId });
   };
   return (
     <Modal title={`شطب عجز «${party.name}»`} onClose={onClose}>

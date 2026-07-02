@@ -113,6 +113,9 @@ export default function PurchaseNew() {
       // الضريبة في العراق 0% افتراضياً — لا حقل ضريبة في الواجهة الجديدة، نعتمد الافتراضي.
       taxRatePercent: "0",
       status: "CONFIRMED",
+      // IDEMPOTENCY (تدقيق ٢/٧): كان المفتاح يُولَّد ويُعلَّق في DOM مخفيّ فقط ولا يُرسَل ⇒ النقر
+      // المزدوج يُنشئ أمرَي شراء. الآن نمرّره في الحمولة فيَحرس الخادم من الازدواج.
+      clientRequestId,
       notes: state.notes.trim() || undefined,
       // usd-po-reconcile: مبلغ فاتورة المورد الفعلية بالدولار (إعلامي — لا يمسّ الإجمالي الديناري).
       agreedCurrency: state.currency,
