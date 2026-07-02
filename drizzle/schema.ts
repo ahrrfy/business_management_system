@@ -712,15 +712,16 @@ export const accountingEntries = mysqlTable(
     entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF", "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
-    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }),
+    // F1 (تدقيق ٢/٧): أُضيف FK ⇒ purchaseOrderId يشير لأمر شراء موجود (تكامل مرجعيّ). الهجرة 0040.
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).references(() => purchaseOrders.id),
     receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
     customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
     supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
-    // delivery-cod: طرف جهة التوصيل لقيود العهدة DELIVERY_* — نظير customerId/supplierId
-    // (بلا .references مثل purchaseOrderId؛ الـFK يُضاف في الهجرة). يُمكّن مطابقة العهدة بـGROUP BY.
+    // delivery-cod: طرف جهة التوصيل لقيود العهدة DELIVERY_* — نظير customerId/supplierId.
+    // يبقى بلا .references (طرف التوصيل قد يكون عميلاً أو مندوباً خارجياً — لا جدول أمّ وحيد). يُمكّن مطابقة العهدة بـGROUP BY.
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
-    // exchange-house: طرف الصيرفة لقيود EXCHANGE_* — نظير supplierId/deliveryPartyId. الـFK يُضاف في الهجرة 0037.
-    exchangeHouseId: bigint("exchangeHouseId", { mode: "number" }),
+    // exchange-house: طرف الصيرفة لقيود EXCHANGE_*. F1 (تدقيق ٢/٧): أُضيف FK ⇒ يشير لصيرفة موجودة. الهجرة 0040.
+    exchangeHouseId: bigint("exchangeHouseId", { mode: "number" }).references(() => exchangeHouses.id),
     revenue: decimal("revenue", { precision: 15, scale: 2 }).default("0").notNull(),
     cost: decimal("cost", { precision: 15, scale: 2 }).default("0").notNull(),
     profit: decimal("profit", { precision: 15, scale: 2 }).default("0").notNull(),

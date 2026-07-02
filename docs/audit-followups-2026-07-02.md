@@ -18,7 +18,12 @@
 
 ---
 
-## F1 — هجرة مفاتيح أجنبية مفقودة  ‏`[ ]`
+## F1 — هجرة مفاتيح أجنبية مفقودة  ‏`[x]` ✅ (٢/٧/٢٦)
+> **أُنجِز:** أُضيف `.references()` لـ`purchaseOrderId`→`purchaseOrders.id` و`exchangeHouseId`→`exchangeHouses.id` في `schema.ts` +
+> هجرة يدوية idempotent ذاتيّة الشفاء `drizzle/migrations/0040_accounting_entries_fk.sql` (تُصفّر الأيتام أولاً ثم تُضيف القيد
+> بفحص `information_schema` — لا db:generate لأن snapshot مُجمَّد؛ نمط 0039) + قيد journal 40. **تحقّق فعليّ على DB:** مسار CI
+> (`db:push`) ومسار الإنتاج (migrator كامل ٤١ هجرة) كلاهما يُنشئ القيدين بأسماء اصطلاح drizzle؛ إدراج مرجع وهميّ يُرفَض (1452)؛
+> re-apply لا يُكرّر (idempotent)؛ تصفير الأيتام يعمل؛ `pnpm check`+`db:verify` أخضر؛ اختبارات الصيرفة/المشتريات ٣٧/٣٧.
 - **الخطورة:** منخفض · **المصدر:** ملاحظة #18 · **الملف:** `drizzle/schema.ts` (`accountingEntries`)
 - **المشكلة:** `accountingEntries.exchangeHouseId` و`accountingEntries.purchaseOrderId` بلا `FOREIGN KEY`
   (تعليق المخطط يدّعي أن الـFK «يُضاف في الهجرة» ولم يُضَف). لا حارس تكامل مرجعيّ.
@@ -97,7 +102,7 @@
 ---
 
 ## سجل الإنجاز (شطب عند الاكتمال في البيئة الحقيقية)
-- [ ] F1 — هجرة FK
+- [x] F1 — هجرة FK ✅ (٢/٧/٢٦)
 - [ ] F2 — إنفاذ الأدوار على الوحدات غير المالية
 - [ ] F3 — idempotency عروض الأسعار
 - [ ] F4 — تدقيق طبقة المنصّة
