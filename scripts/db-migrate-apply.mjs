@@ -27,6 +27,13 @@ try {
 } catch (e) {
   await conn.end().catch(() => {});
   console.error("✗ فشلت هجرة:", e?.message ?? e);
-  if (e?.sqlMessage) console.error("   SQL:", e.sqlMessage);
+  // DrizzleQueryError يلفّ خطأ MySQL الحقيقي في cause — بدونه تظهر عبارة SQL بلا سبب الفشل
+  // (حصل فعلياً في نشر ٢/٧: فشل UPDATE في 0040 بلا أي سبب ظاهر فتعذّر التشخيص عن بُعد).
+  const cause = e?.cause;
+  if (cause) {
+    console.error(`   السبب: ${cause.code ?? "?"} (errno ${cause.errno ?? "?"}) — ${cause.sqlMessage ?? cause.message ?? String(cause)}`);
+  } else if (e?.sqlMessage) {
+    console.error("   SQL:", e.sqlMessage);
+  }
   process.exit(1);
 }
