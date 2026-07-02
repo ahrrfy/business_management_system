@@ -17,6 +17,7 @@ import { convertToBaseQuantity } from "./inventoryService";
 import { money, toDateStr } from "./money";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { createSale } from "./saleService";
+import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
@@ -40,6 +41,8 @@ export interface CreateQuotationInput {
   invoiceDiscount?: string | null;
   taxRatePercent?: string | null;
   notes?: string | null;
+  /** idempotency (F3): نفس المفتاح يُعيد عرض الإنشاء الأول (النقر المزدوج لا يُنشئ عرضين). */
+  clientRequestId?: string | null;
 }
 
 async function nextQuoteNumber(tx: Tx, branchId: number): Promise<string> {
@@ -61,6 +64,28 @@ async function nextQuoteNumber(tx: Tx, branchId: number): Promise<string> {
 export async function createQuotation(input: CreateQuotationInput, actor: Actor) {
   return withTx(async (tx) => {
     if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا أصناف" });
+
+    // idempotency (F3): طلبٌ بنفس المفتاح يُعيد عرض الإنشاء الأول بلا إنشاء مكرّر. القيد الفريد
+    // على (operation, key) يمنع سباق طلبَين متزامنين (الثاني يتلقّى ER_DUP_ENTRY فيُعيد الراوتر
+    // المحاولة عبر retryOnDup ⇒ يجد المفتاح هنا فيُعيد الأول).
+    if (input.clientRequestId) {
+      const existingId = await findIdempotentRefId(tx, "quotation.create", input.clientRequestId);
+      if (existingId != null) {
+        const prev = (
+          await tx
+            .select({ quoteNumber: quotations.quoteNumber, total: quotations.total })
+            .from(quotations)
+            .where(eq(quotations.id, existingId))
+            .limit(1)
+        )[0];
+        return {
+          quotationId: existingId,
+          quoteNumber: prev?.quoteNumber ?? "",
+          total: prev?.total ?? "0",
+          idempotentReplay: true as const,
+        };
+      }
+    }
 
     // فئة السعر من العميل أو التجاوز اليدوي.
     let customerTier: PriceTier | null = null;
@@ -129,6 +154,10 @@ export async function createQuotation(input: CreateQuotationInput, actor: Actor)
         discountAmount: c.discountAmount,
         total: c.total,
       });
+    }
+    // سجّل مفتاح الـidempotency بعد نجاح الكتابة (refId = معرّف العرض).
+    if (input.clientRequestId) {
+      await recordIdempotencyKey(tx, "quotation.create", input.clientRequestId, quotationId);
     }
     return { quotationId, quoteNumber, total: totals.total };
   });

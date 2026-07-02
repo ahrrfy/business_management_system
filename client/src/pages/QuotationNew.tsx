@@ -59,10 +59,9 @@ export default function QuotationNew() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.data?.branchId]);
 
-  // idempotency: مفتاح ثابت لكل محاولة إنشاء (يُجدَّد بعد كل حفظ ناجح).
+  // idempotency (F3): مفتاح ثابت لكل محاولة إنشاء يُرسَل ضمن الحمولة ⇒ النقر المزدوج/إعادة
+  // الشبكة لا تُنشئ عرضين (الراوتر/الخدمة يُعيدان الأول). يُجدَّد بعد كل حفظ ناجح/تفريغ.
   const [clientRequestId, setClientRequestId] = useState<string>(() => crypto.randomUUID());
-  // نعيد توليده ضمنياً عند RESET أيضاً عبر زيادة seq (لإجبار المفتاح على التغيّر).
-  void clientRequestId; // (المفتاح يُستهلك ضمن payload لاحقاً بعد إضافته للراوتر؛ نحتفظ به للتطوير المستقبلي)
 
   const [bulkOpen, setBulkOpen] = useState(false);
   const [savedQuotationId, setSavedQuotationId] = useState<number | null>(null);
@@ -100,6 +99,7 @@ export default function QuotationNew() {
       priceTier: state.tier,
       validUntil: state.validUntil || undefined,
       notes: state.notes?.trim() || undefined,
+      clientRequestId,
       lines: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
