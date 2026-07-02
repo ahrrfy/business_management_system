@@ -95,8 +95,35 @@ try {
     process.exit(1);
   }
 
+  // ── تحقّق كائنات ما بعد snapshot 0034 (سدّ النقطة العمياء، ٢/٧): الـsnapshot مُجمَّد عند 0034 ⇒
+  //    فحص الأعمدة أعلاه أعمى عن كل ما أضافته الهجرات 0035-0040 (searchNorm/الصيرفة/السندات/USD).
+  //    طريقة قديمة (drizzle-kit migrate) كانت تُسجّل هجراتٍ «مُطبَّقة» دون تنفيذ SQL فعلاً ⇒ انحراف
+  //    صامت (كائن غائب رغم تسجيل الهجرة) لم يكن db:verify يمسكه ⇒ ثقة كاذبة. نفحصها صراحةً هنا.
+  //    (هجرة 0041 المصالحة تُعيد إنشاء أي مفقود idempotently.)
+  const CRITICAL_TABLES = ["voucherCategories", "exchangeHouses", "exchangeTransactions"];
+  const CRITICAL_COLUMNS = [
+    ["products", "searchNorm"], ["customers", "searchNorm"], ["suppliers", "searchNorm"], // 0035/0039
+    ["receipts", "voucherCategoryId"], ["receipts", "counterpartyName"], ["receipts", "voucherDate"], // 0036
+    ["receipts", "attachmentUrl"], ["receipts", "internalNote"], ["receipts", "signatureHash"],
+    ["receipts", "receiptApprovalStatus"], ["receipts", "approvedBy"], ["receipts", "approvedAt"],
+    ["accountingEntries", "exchangeHouseId"], // 0037
+    ["purchaseOrders", "poCurrency"], ["purchaseOrders", "usdTotal"], ["purchaseOrders", "agreedRate"], // 0038
+  ];
+  const missingCritTables = CRITICAL_TABLES.filter((t) => !actual[t]);
+  const missingCritCols = CRITICAL_COLUMNS.filter(([t, c]) => !actual[t] || !actual[t].has(c)).map(([t, c]) => `${t}.${c}`);
+  if (missingCritTables.length || missingCritCols.length) {
+    console.error("⛔ تحقّق كائنات ما بعد snapshot 0034 فشل — انحراف صامت (كائنات هجرات 0035-0040 مسجَّلة «مُطبَّقة» لكنها غائبة فعلاً):");
+    if (missingCritTables.length) console.error("   جداول مفقودة:", missingCritTables.join(", "));
+    if (missingCritCols.length) console.error("   أعمدة مفقودة:", missingCritCols.join(", "));
+    console.error("   السبب الأرجح: هجرة طُبِّقت بطريقة تفشل صامتاً سابقاً (drizzle-kit migrate) ⇒ سُجِّلت دون تنفيذ.");
+    console.error("   عالِج: pnpm db:backup && pnpm db:migrate:safe (هجرة 0041 المصالحة تُعيد إنشاءها idempotently).");
+    await conn.end();
+    process.exit(1);
+  }
+
   console.log(`✓ تحقّق المخطط: ${Object.keys(expected).length} جدولاً مطابقة لـ snapshot (${snapFiles[snapFiles.length - 1]}).`);
   console.log(`✓ تحقّق الفهارس: ${CRITICAL_INDEXES.length} فهرساً حرجاً موجودة.`);
+  console.log(`✓ تحقّق كائنات ما بعد 0034: ${CRITICAL_TABLES.length} جدولاً + ${CRITICAL_COLUMNS.length} عموداً (سدّ النقطة العمياء).`);
   await conn.end();
 } catch (e) {
   await conn.end().catch(() => {});
