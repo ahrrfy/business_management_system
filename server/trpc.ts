@@ -95,7 +95,18 @@ export const managerProcedure = t.procedure.use(requireRole("manager"));
  */
 export const reportViewerProcedure = t.procedure
   .use(requireRole("manager", "accountant", "auditor"))
-  .use(requireModule("reports", "READ"));
+  .use(requireModule("reports", "READ"))
+  .use(async ({ ctx, getRawInput, next }) => {
+    // عزل الفرع: admin يعبُر أي فرع؛ غير الأدمن يُرفَض إن طلب فرعاً غير فرعه (أثر forensic صريح
+    // بدل قصٍّ صامت) — مرآةٌ لِمنطق managerBranchScopedProcedure الذي كان يحرس هذه التقارير.
+    if (!ctx.user || ctx.user.role === "admin") return next({ ctx });
+    const raw = (await getRawInput()) as { branchId?: number | string } | undefined;
+    const requestedBranch = raw?.branchId;
+    if (requestedBranch !== undefined && Number(requestedBranch) !== Number(ctx.user.branchId)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة بيانات فرع آخر" });
+    }
+    return next({ ctx });
+  });
 export const managerBranchScopedProcedure = managerProcedure.use(async ({ ctx, getRawInput, next }) => {
   if (ctx.user.role === "admin") return next({ ctx });
   // G7 (تدقيق ٢٣/٦/٢٦): `input` في middleware يَأتي parsed بعد `.input()` فقط. هذا middleware

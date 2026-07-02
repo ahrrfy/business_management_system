@@ -26,11 +26,11 @@ export async function returnConsignment(consignmentId: number, actor: DeliveryTx
     if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الإرسالية غير موجودة" });
 
     const items = await tx.select().from(invoiceItems).where(eq(invoiceItems.invoiceId, Number(cn.invoiceId)));
-    // PHANTOM-STOCK (تدقيق ٢/٧): كان يُعيد للمخزون كلّ بند بلا شرط — لكن بنود أوامر الشغل (منتجٌ
-    // مُخصَّص، workOrderId مضبوط) لم يُخصَم مخزونها أصلاً عند البيع (استُهلكت موادها الخام عند الإنتاج)
-    // ⇒ إعادتها تخلق مخزوناً وهمياً لمنتج مُخصَّص. نُعيد فقط بنود المخزون الحقيقية (بلا workOrderId).
+    // إعادة المخزون (حركة IN) لكل بند له صنف.
+    // ملاحظة (تدقيق ٢/٧): تمييز «البند الذي خُصم مخزونه فعلاً» عن «منتج مُخصَّص لم يُخصَم» ليس
+    // بمجرّد workOrderId (بند أمر شغل بـbaseVariant يُخصَم فعلاً) — يحتاج فحص «هل جرت حركة OUT
+    // للصنف على هذه الفاتورة». مؤجَّل لتفادي منع إعادة تخزينٍ مشروع (أمسك CI الحارس الفجّ).
     for (const it of items) {
-      if (it.workOrderId != null) continue;
       await applyMovement(tx, {
         variantId: Number(it.variantId), branchId: Number(cn.branchId), baseQuantity: Number(it.baseQuantity),
         movementType: "IN", referenceType: "DELIVERY_RETURN", referenceId: consignmentId, createdBy: actor.userId,

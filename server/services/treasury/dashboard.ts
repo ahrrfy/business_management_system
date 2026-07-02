@@ -71,7 +71,6 @@ export async function getDashboard(
           FROM receipts r
           WHERE r.cashBucket = 'DRAWER'
             AND r.direction = 'IN'
-            AND r.receiptStatus = 'COMPLETED'
             AND r.shiftId IN (
               SELECT s2.id FROM shifts s2
               WHERE s2.branchId = b.id AND s2.shiftStatus = 'OPEN' ${drawerUserSub}
@@ -82,7 +81,6 @@ export async function getDashboard(
           FROM receipts r
           WHERE r.cashBucket = 'DRAWER'
             AND r.direction = 'OUT'
-            AND r.receiptStatus = 'COMPLETED'
             AND r.shiftId IN (
               SELECT s2.id FROM shifts s2
               WHERE s2.branchId = b.id AND s2.shiftStatus = 'OPEN' ${drawerUserSub}

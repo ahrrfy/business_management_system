@@ -42,11 +42,11 @@ export async function getOpenShifts(
         s.openedAt AS openedAt,
         CAST(COALESCE((
           SELECT SUM(r.amount) FROM receipts r
-          WHERE r.shiftId = s.id AND r.cashBucket = 'DRAWER' AND r.direction = 'IN' AND r.receiptStatus = 'COMPLETED'
+          WHERE r.shiftId = s.id AND r.cashBucket = 'DRAWER' AND r.direction = 'IN'
         ), 0) AS CHAR) AS cashIn,
         CAST(COALESCE((
           SELECT SUM(r.amount) FROM receipts r
-          WHERE r.shiftId = s.id AND r.cashBucket = 'DRAWER' AND r.direction = 'OUT' AND r.receiptStatus = 'COMPLETED'
+          WHERE r.shiftId = s.id AND r.cashBucket = 'DRAWER' AND r.direction = 'OUT'
         ), 0) AS CHAR) AS cashOut
       FROM shifts s
       LEFT JOIN branches b ON b.id = s.branchId
