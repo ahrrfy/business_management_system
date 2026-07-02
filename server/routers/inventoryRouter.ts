@@ -14,6 +14,7 @@ import { findIdempotentRefId, recordIdempotencyKey } from "../services/idempoten
 import { withTx } from "../services/tx";
 import { postEntry } from "../services/ledgerService";
 import { money } from "../services/money";
+import { retryOnDup } from "../lib/retryDup";
 import { branchScopedProcedure, protectedProcedure, router, warehouseProcedure } from "../trpc";
 
 /** تسميات عربية لأسباب الحركة اليدوية — تكتب في notes. */
@@ -68,7 +69,11 @@ export const inventoryRouter = router({
         }
         fromBranchId = Number(ctx.user.branchId);
       }
-      const res = await withTx((tx) => transferBetweenBranches(tx, { ...input, fromBranchId, createdBy: ctx.user.id }));
+      // DEADLOCK-RETRY (تدقيق ٢/٧): التحويل يقفل صفّي مخزون بترتيب branchId تصاعدي (آمن للفرعين)،
+      // لكن تحويلان متزامنان قد يتعارضان على قفل قاعدة عام؛ نعيد المحاولة على deadlock (العملية ذرّية).
+      const res = await retryOnDup(() =>
+        withTx((tx) => transferBetweenBranches(tx, { ...input, fromBranchId, createdBy: ctx.user.id })),
+      );
       // entityType='transfer' لأن العملية تُعدّل صفّي مخزون (out+in) ومرجعها منطقياً «حدث نقل»
       // لا صفّ stock مفرد؛ المفاتيح بصيغة كاملة (fromBranchId/toBranchId) لاتساق سجلّ التدقيق
       // مع بقية الراوترات (sale/purchase). الكمية في الوحدة الأساس (baseQuantity).
