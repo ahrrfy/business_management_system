@@ -18,7 +18,13 @@ import { ensureTenantDb, getDb, isMultiTenantModeActive } from "../db";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
 import { ALL_ROLES, type RoleKey } from "@shared/permissions";
-import { changePassword as changePasswordSvc, createUser } from "../services/userService";
+import {
+  changePassword as changePasswordSvc,
+  createUser,
+  createUserSessionRecord,
+  listUserSessions,
+  revokeUserSessionRow,
+} from "../services/userService";
 import { withTx } from "../services/tx";
 import { getCurrentCompanyId, runWithCompany } from "../tenancy/context";
 import { resolveCompanyByCode } from "../tenancy/registry";
@@ -48,6 +54,13 @@ setInterval(() => {
 function getClientIp(req: unknown): string {
   const r = req as { ip?: string; socket?: { remoteAddress?: string } } | undefined;
   return r?.ip ?? r?.socket?.remoteAddress ?? "unknown";
+}
+
+/** يستخرج User-Agent الخام لعرضه في شاشة «الجلسات النشطة» — null إن غاب. */
+function getClientUserAgent(req: unknown): string | null {
+  const r = req as { headers?: Record<string, unknown> } | undefined;
+  const ua = r?.headers?.["user-agent"];
+  return typeof ua === "string" ? ua : null;
 }
 
 /** هاش ٦ بايت (١٢ خانة hex) محايد للهوية — يربط الأحداث بلا كشف القيمة الخام. */
@@ -225,10 +238,18 @@ export const authRouter = router({
         }
 
         const expiry = input.remember ? SESSION_REMEMBER_MAX_MS : SESSION_DEFAULT_MS;
+        // سطر جلسة فردية (AUTH-03) — قبل التوقيع كي يُضمَّن معرّفه (sid) في الـJWT، فيتيح
+        // لاحقاً إبطال هذا الجهاز تحديداً من شاشة «الجلسات النشطة» بلا مسّ بقية الأجهزة.
+        const sessionId = await createUserSessionRecord({
+          userId: user.id,
+          userAgent: getClientUserAgent(ctx.req),
+          ipAddress: ip,
+          expiresAt: new Date(Date.now() + expiry),
+        });
         // نمرّر ctx.req ⇒ يُضمَّن fp (بصمة الجهاز) في الـJWT ⇒ توكن مسروق من جهاز آخر يُرفض.
         // نمرّر companyId (إن وُجد) ⇒ الطلبات اللاحقة تُوجَّه لقاعدة هذه الشركة تلقائياً
         // (وسيط server/index.ts يستخرجه من الكوكي قبل إنشاء سياق tRPC).
-        const token = await signSession(user.id, expiry, ctx.req, undefined, companyId);
+        const token = await signSession(user.id, expiry, ctx.req, undefined, companyId, sessionId);
         ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: expiry });
 
         // نجاح: حدّث آخر دخول وصفّر القفل — دون إفشال الدخول إن تعثّر التحديث.
@@ -301,6 +322,18 @@ export const authRouter = router({
       // validFromSec المخزَّن ثانيةً واحدةً للأعلى مقابل floor(validFrom). لذا نضيف +2 (لا +1)
       // كي يبقى iat أكبر تماماً حتى بعد التقريب لأعلى (أمانٌ حاسمٌ ضدّ طرد صاحب الجلسة).
       const reissueIatSec = Math.floor(validFrom.getTime() / 1000) + 2;
+      // سطر جلسة فردية جديد (AUTH-03) — createdAt صريح = نفس هامش +٢ث المستعمَل لـreissueIatSec
+      // (راجع تعليق CreateUserSessionInput.createdAt: قراءتا `new Date()` مستقلّتان في نفس
+      // الطلب قد ينعكس ترتيبهما بعد تقريب TIMESTAMP فيسقط السطر الجديد من الشاشة خطأً بلا هذا).
+      // تظهر فوراً في شاشة «الجلسات النشطة»؛ الصفوف القديمة تختفي منها تلقائياً (بلا كتابة
+      // عليها) لأن listUserSessions يُصفّي createdAt >= sessionsValidFrom.
+      const sessionId = await createUserSessionRecord({
+        userId: ctx.user.id,
+        userAgent: getClientUserAgent(ctx.req),
+        ipAddress: getClientIp(ctx.req),
+        expiresAt: new Date(Date.now() + SESSION_DEFAULT_MS),
+        createdAt: new Date(validFrom.getTime() + 2000),
+      });
       // نمرّر companyId الحالي (إن وُجد) ⇒ الكوكي المُعاد إصداره يحمل نفس هوية الشركة، وإلا
       // فسيَفقد الوسيط في server/index.ts سياق الشركة في الطلب التالي (مراجعة عدائية حسمت هذا).
       const token = await signSession(
@@ -308,7 +341,8 @@ export const authRouter = router({
         SESSION_DEFAULT_MS,
         ctx.req,
         reissueIatSec,
-        getCurrentCompanyId() ?? undefined
+        getCurrentCompanyId() ?? undefined,
+        sessionId
       );
       ctx.res.cookie(COOKIE_NAME, token, {
         ...getSessionCookieOptions(ctx.req),
@@ -335,6 +369,37 @@ export const authRouter = router({
     ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
     return { success: true };
   }),
+
+  /** يسرد جلسات المستخدم الحالي الفعّالة (جهاز/IP/آخر نشاط) — تُمكِّن شاشة «حسابي» من
+   *  عرض/إبطال جهازٍ واحدٍ بعينه دون طرد بقية الأجهزة (راجع revokeSession أدناه). */
+  mySessions: protectedProcedure.query(async ({ ctx }) => {
+    const rows = await listUserSessions(ctx.user.id);
+    return rows.map((r) => ({
+      id: r.id,
+      userAgent: r.userAgent,
+      ipAddress: r.ipAddress,
+      createdAt: r.createdAt,
+      lastSeenAt: r.lastSeenAt,
+      isCurrent: ctx.sessionId != null && r.id === ctx.sessionId,
+    }));
+  }),
+
+  /** يُبطل جهازاً واحداً بعينه من جلسات المستخدم الحالي — لا يمسّ بقية الأجهزة. إن كانت
+   *  الجلسة المُبطَلة هي الحالية، تُمسَح كوكي المتصفّح أيضاً (خروج فوري من هذا الجهاز). */
+  revokeSession: protectedProcedure
+    .input(z.object({ sessionId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      await revokeUserSessionRow(input.sessionId, ctx.user.id);
+      await logAudit(ctx, {
+        action: "auth.revokeSession",
+        entityType: "userSession",
+        entityId: input.sessionId,
+      });
+      if (ctx.sessionId != null && input.sessionId === ctx.sessionId) {
+        ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+      }
+      return { success: true };
+    }),
 
   /** إنشاء مستخدم جديد. للمدير فقط؛ أوّل مدير يُنشئه سكربت seed. */
   register: adminProcedure

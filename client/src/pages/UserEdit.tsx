@@ -12,7 +12,9 @@ import { LoadingState } from "@/components/PageState";
 import { isStrongPassword, PASSWORD_POLICY_MSG, USERNAME_POLICY_MSG, USERNAME_REGEX } from "@shared/const";
 import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
-import { AlertTriangle, Check, Zap } from "lucide-react";
+import { fmtDateTime } from "@/lib/date";
+import { describeUserAgent } from "@/lib/userAgent";
+import { AlertTriangle, Check, Monitor, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_OPTIONS, ROLE_LABEL } from "./Users";
@@ -147,6 +149,10 @@ export default function UserEdit() {
   const revokeSessions = trpc.users.revokeSessions.useMutation({
     onSuccess: () => setRevokeMsg("أُبطِلت كل جلسات المستخدم — سيُطلَب منه الدخول من جديد."),
     onError: (e) => setRevokeMsg(e.message),
+  });
+  const userSessions = trpc.users.sessions.useQuery({ userId }, { enabled: userId > 0 });
+  const revokeOneSession = trpc.users.revokeSession.useMutation({
+    onSuccess: async () => { await utils.users.sessions.invalidate({ userId }); },
   });
   const resolvedPerms = useMemo(
     () => resolvePermissions(role, Object.keys(permsOverride).length ? permsOverride : null),
@@ -482,6 +488,52 @@ export default function UserEdit() {
             {revokeSessions.isPending ? "…" : "إبطال كل الجلسات"}
           </Button>
           {revokeMsg && <p className={`text-sm ${revokeSessions.isSuccess ? "text-money-positive" : "text-destructive"}`}>{revokeMsg}</p>}
+        </CardContent>
+      </Card>
+
+      {/* الجلسات النشطة (فردياً) */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">الجلسات النشطة</CardTitle></CardHeader>
+        <CardContent className="space-y-2">
+          <p className="text-xs text-muted-foreground">
+            أجهزة هذا المستخدم المسجَّل دخولها حالياً — يمكن إنهاء جهازٍ واحدٍ بعينه بدل كل الأجهزة.
+          </p>
+          {userSessions.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+          {!userSessions.isLoading && (userSessions.data?.length ?? 0) === 0 && (
+            <p className="text-sm text-muted-foreground">لا جلسات مسجَّلة (ربما دخل قبل تفعيل هذه الميزة).</p>
+          )}
+          <div className="space-y-2">
+            {userSessions.data?.map((s) => (
+              <div key={s.id} className="flex items-center justify-between gap-3 rounded-lg border p-3 text-sm">
+                <div className="flex items-start gap-3 min-w-0">
+                  <Monitor aria-hidden className="size-4 mt-0.5 shrink-0 text-muted-foreground" />
+                  <div className="min-w-0">
+                    <div className="font-medium">{describeUserAgent(s.userAgent)}</div>
+                    <div className="text-xs text-muted-foreground" dir="ltr">
+                      {s.ipAddress ?? "—"} · آخر نشاط: {fmtDateTime(s.lastSeenAt)} · دخول: {fmtDateTime(s.createdAt)}
+                    </div>
+                  </div>
+                </div>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  disabled={revokeOneSession.isPending}
+                  onClick={async () => {
+                    if (!(await confirm({
+                      variant: "danger",
+                      title: "إنهاء هذه الجلسة",
+                      description: `سيُطرَد «${name || u?.email || `#${userId}`}» من هذا الجهاز تحديداً فوراً. هل تتابع؟`,
+                      confirmText: "إنهاء الجلسة",
+                    }))) return;
+                    revokeOneSession.mutate({ userId, sessionId: s.id });
+                  }}
+                >
+                  إنهاء
+                </Button>
+              </div>
+            ))}
+          </div>
         </CardContent>
       </Card>
 

@@ -9,8 +9,10 @@ import {
   deleteUser,
   generateStrongPassword,
   getUser,
+  listUserSessions,
   listUsers,
   resetUserPassword,
+  revokeUserSessionRow,
   revokeUserSessions,
   setUserActive,
   suggestUsername,
@@ -220,6 +222,26 @@ export const userRouter = router({
         newValue: { revokedAt: res.revokedAt },
       });
       return res;
+    }),
+
+  /** يسرد جلسات مستخدمٍ الفعّالة (جهاز/IP/آخر نشاط) — تُمكِّن شاشة تعديل المستخدم من
+   *  عرض/إبطال جهازٍ واحدٍ بعينه، مكمِّلاً لـrevokeSessions أعلاه (الإبطال الجماعي). */
+  sessions: adminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .query(({ input }) => listUserSessions(input.userId)),
+
+  /** يُبطل جهازاً واحداً بعينه من جلسات مستخدمٍ آخر (بدل إبطال كل أجهزته). */
+  revokeSession: adminProcedure
+    .input(z.object({ userId: z.number().int().positive(), sessionId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      await revokeUserSessionRow(input.sessionId, input.userId);
+      await logAudit(ctx, {
+        action: "user.revokeSession",
+        entityType: "userSession",
+        entityId: input.sessionId,
+        newValue: { userId: input.userId },
+      });
+      return { success: true };
     }),
 
   /** تغيير كلمة المرور بواسطة المستخدم نفسه (من شاشة «حسابي»). */

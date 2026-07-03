@@ -1,7 +1,7 @@
 import type { CreateExpressContextOptions } from "@trpc/server/adapters/express";
 import { diffFromTemplate, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { User } from "../drizzle/schema";
-import { getUserFromRequest } from "./auth/session";
+import { getSessionContext } from "./auth/session";
 import { loadActiveCustomRole } from "./services/roleService";
 import { getPlatformAdminFromRequest } from "./tenancy/platformAuth";
 import type { PlatformAdmin } from "./tenancy/controlSchema";
@@ -16,6 +16,9 @@ export type TrpcContext = {
   req: CreateExpressContextOptions["req"];
   res: CreateExpressContextOptions["res"];
   user: AuthUser | null;
+  /** معرّف سطر الجلسة الفردية الحالية (userSessions.id) — null لتوكنات legacy بلا sid
+   *  أو حين لا مستخدم. يُستعمل لتمييز «الجلسة الحالية» في شاشة عرض الجلسات ولإبطالها. */
+  sessionId: number | null;
   /** مدير منصّة (تعدّد الشركات) — منفصل تماماً عن `user` (لا ينتمي لأي شركة). */
   platformAdmin: PlatformAdmin | null;
 };
@@ -41,11 +44,15 @@ export async function createContext(
   opts: CreateExpressContextOptions
 ): Promise<TrpcContext> {
   let user: AuthUser | null = null;
+  let sessionId: number | null = null;
   try {
-    user = (await getUserFromRequest(opts.req)) as AuthUser | null;
+    const sessionCtx = await getSessionContext(opts.req);
+    user = sessionCtx.user as AuthUser | null;
+    sessionId = sessionCtx.sessionId;
     if (user) await resolveCustomRole(user);
   } catch {
     user = null;
+    sessionId = null;
   }
   // مدير المنصّة: كوكي/JWT منفصلان تماماً (platformAuth.ts) — لا علاقة بجلسة الشركة أعلاه.
   // معظم الطلبات لا تحمل كوكي مدير المنصّة إطلاقاً ⇒ verifyPlatformSession يعود null فوراً
@@ -56,5 +63,5 @@ export async function createContext(
   } catch {
     platformAdmin = null;
   }
-  return { req: opts.req, res: opts.res, user, platformAdmin };
+  return { req: opts.req, res: opts.res, user, sessionId, platformAdmin };
 }

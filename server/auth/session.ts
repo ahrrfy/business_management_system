@@ -4,8 +4,12 @@ import { eq } from "drizzle-orm";
 import type { Request } from "express";
 import { SignJWT, jwtVerify } from "jose";
 import { createHash } from "node:crypto";
-import { users, type User } from "../../drizzle/schema";
+import { userSessions, users, type User, type UserSession } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { logger } from "../logger";
+
+/** لا كتابة على كل طلب — نحدّث `lastSeenAt` فقط إن كانت أقدم من هذه المهلة. */
+const LAST_SEEN_TOUCH_MS = 5 * 60 * 1000;
 
 function getSecret(): Uint8Array {
   const secret = process.env.JWT_SECRET;
@@ -78,7 +82,10 @@ export function computeSessionFingerprint(req: Request | { ip?: string; headers?
  * اختيارية عمداً كي لا ينكسر أي نشر أحادي الشركة (لا CONTROL_DATABASE_URL مضبوطاً)
  * — تلك التوكنات تُصدَر وتُتحقَّق بلا هذا الحقل تماماً كسلوك المشروع الحالي.
  */
-export type SessionPayload = { uid: number; iat: number; fp?: string; companyId?: number };
+// `sid` (اختياري): معرّف سطر userSessions — يتيح إبطال جهاز واحد بعينه (راجع تعليق
+// userSessions في drizzle/schema.ts). توكنات ما قبل هذه الميزة لا تحمله ⇒ تستمرّ
+// بالعمل عبر sessionsValidFrom الجماعي فقط (بلا تحقّق فردي، بلا انحدار).
+export type SessionPayload = { uid: number; iat: number; fp?: string; companyId?: number; sid?: number };
 
 /**
  * Sign a session JWT for a local user.
@@ -95,7 +102,8 @@ export async function signSession(
   expiresInMs: number = SESSION_DEFAULT_MS,
   req?: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null,
   iatSec?: number,
-  companyId?: number
+  companyId?: number,
+  sid?: number
 ): Promise<string> {
   const issuedAtSeconds =
     typeof iatSec === "number" && Number.isInteger(iatSec) && iatSec > 0
@@ -111,6 +119,11 @@ export async function signSession(
   // اختياري (وضع تعدّد الشركات فقط) — راجع تعليق SessionPayload.
   if (typeof companyId === "number" && Number.isInteger(companyId) && companyId > 0) {
     claims.companyId = companyId;
+  }
+  // اختياري — معرّف سطر userSessions (راجع تعليق SessionPayload). الاستدعاءات بلا sid
+  // (اختبارات وحدة/مسارات لا تُنشئ سطر جلسة) تُصدر توكناً بلا تتبّع فردي، سلوك legacy.
+  if (typeof sid === "number" && Number.isInteger(sid) && sid > 0) {
+    claims.sid = sid;
   }
   return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256", typ: "JWT" })
@@ -156,6 +169,11 @@ export async function verifySession(
       typeof payload.companyId === "number" && Number.isInteger(payload.companyId) && payload.companyId > 0
         ? payload.companyId
         : undefined;
+    // اختياري — راجع تعليق SessionPayload.sid. توكنات قبل هذه الميزة تعود بلا sid.
+    const sid =
+      typeof payload.sid === "number" && Number.isInteger(payload.sid) && payload.sid > 0
+        ? payload.sid
+        : undefined;
 
     // إن وُجد طلب يحمل بصمةً قابلةً للحساب (UA أو IP): ألزم تطابق fp ⇒ يحبط إعادة
     // استعمال التوكن من جهاز آخر. الطلب الذي لا يحمل UA ولا IP (سياق اختبار/داخلي)
@@ -171,30 +189,41 @@ export async function verifySession(
       }
     }
 
-    return { uid, iat, fp, companyId };
+    return { uid, iat, fp, companyId, sid };
   } catch {
     return null;
   }
 }
 
-/** Resolve the authenticated user from the request session cookie, or null. */
-export async function getUserFromRequest(req: Request): Promise<User | null> {
+/** ناتج تحليل جلسة الطلب: المستخدم (أو null) + معرّف سطر الجلسة الفردية (أو null إن كان
+ *  التوكن legacy بلا sid، أو لا مستخدم). راجع تعليق userSessions في drizzle/schema.ts. */
+export type SessionContext = { user: User | null; sessionId: number | null };
+
+/** يحلّل جلسة الطلب كاملةً: المستخدم + معرّف الجلسة الفردية (إن وُجد). المصدر الموحّد
+ *  الذي يبنى عليه getUserFromRequest (للمسارات التي لا تحتاج sessionId). */
+export async function getSessionContext(req: Request): Promise<SessionContext> {
   const cookies = parseCookie(req.headers.cookie ?? "");
   // نمرّر req ⇒ verifySession يُلزم تطابق بصمة الجهاز مع التوكن.
   const session = await verifySession(cookies[COOKIE_NAME], req);
-  if (!session) return null;
+  if (!session) return { user: null, sessionId: null };
 
   const db = getDb();
-  if (!db) return null;
+  if (!db) return { user: null, sessionId: null };
 
-  const rows = await db
-    .select()
-    .from(users)
-    .where(eq(users.id, session.uid))
-    .limit(1);
+  // uid وsid (إن وُجد) كلاهما معروفان فور فكّ الـJWT أعلاه — لا تبعية بيانات فعلية بين
+  // استعلامَي users وuserSessions ⇒ نُطلقهما معاً (مراجعة أداء ٣/٧: كانا متسلسلين فيضاعفان
+  // جولة DB على كل طلبٍ مُصادَق، وهو المسار الأسخن في كامل النظام). توكن legacy بلا sid
+  // لا يُطلق الاستعلام الثاني إطلاقاً (لا صفّ يخصّه أساساً).
+  const hasSid = typeof session.sid === "number";
+  const [rows, srows] = await Promise.all([
+    db.select().from(users).where(eq(users.id, session.uid)).limit(1),
+    hasSid
+      ? db.select().from(userSessions).where(eq(userSessions.id, session.sid as number)).limit(1)
+      : Promise.resolve([] as UserSession[]),
+  ]);
 
   const user = rows[0];
-  if (!user || !user.isActive) return null;
+  if (!user || !user.isActive) return { user: null, sessionId: null };
 
   // إبطال الجلسات (AUTH-02): أيّ توكن iat <= sessionsValidFrom (بالثواني) يُرفض —
   // بما فيه ما صُكّ في **نفس ثانية** الإبطال (يسدّ النافذة العمياء دون الثانية). صاحب
@@ -202,7 +231,32 @@ export async function getUserFromRequest(req: Request): Promise<User | null> {
   const validFromSec = user.sessionsValidFrom
     ? Math.floor(new Date(user.sessionsValidFrom).getTime() / 1000)
     : 0;
-  if (session.iat <= validFromSec) return null;
+  if (session.iat <= validFromSec) return { user: null, sessionId: null };
 
-  return user;
+  // إبطال فردي (AUTH-03): توكن يحمل sid ⇒ يجب أن يقابل سطراً حيّاً (غير مُبطَل/منتهٍ)
+  // في userSessions. مكمِّل لا بديل لفحص sessionsValidFrom أعلاه — يتيح طرد جهازٍ واحدٍ
+  // بعينه (revokeSession) بلا مسّ بقية جلسات المستخدم.
+  let sessionId: number | null = null;
+  if (hasSid) {
+    const srow = srows[0];
+    const expired = !srow || srow.revokedAt != null || srow.expiresAt.getTime() < Date.now();
+    if (!srow || srow.userId !== user.id || expired) {
+      return { user: null, sessionId: null };
+    }
+    sessionId = srow.id;
+    // لمسة last-seen مُلطَّفة (best-effort، لا تُعطِّل الطلب إن فشلت) — لا كتابة على كل طلب.
+    if (Date.now() - srow.lastSeenAt.getTime() > LAST_SEEN_TOUCH_MS) {
+      db.update(userSessions)
+        .set({ lastSeenAt: new Date() })
+        .where(eq(userSessions.id, srow.id))
+        .catch((e: unknown) => logger.warn({ err: e, sessionId: srow.id }, "session.touch_last_seen_failed"));
+    }
+  }
+
+  return { user, sessionId };
+}
+
+/** Resolve the authenticated user from the request session cookie, or null. */
+export async function getUserFromRequest(req: Request): Promise<User | null> {
+  return (await getSessionContext(req)).user;
 }

@@ -10,9 +10,9 @@ import {
 } from "@shared/const";
 import { ALL_ROLES } from "@shared/permissions";
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { roles, users } from "../../drizzle/schema";
+import { roles, userSessions, users, type UserSession } from "../../drizzle/schema";
 import { getDb, type Tx } from "../db";
 import { hashPassword, verifyPassword } from "../auth/password";
 import { escapeLike } from "../lib/sqlLike";
@@ -401,6 +401,89 @@ export async function revokeUserSessions(userId: number, _actor: Actor) {
     const revokedAt = new Date();
     await tx.update(users).set({ sessionsValidFrom: revokedAt }).where(eq(users.id, userId));
     return { userId, revokedAt };
+  });
+}
+
+/* ============================ الجلسات الفردية (userSessions) ============================ */
+// تتبّع سطر لكل تسجيل دخول — مكمِّل لـsessionsValidFrom أعلاه (الإبطال الجماعي). راجع
+// تعليق جدول userSessions في drizzle/schema.ts للتصميم الكامل.
+
+export type CreateUserSessionInput = {
+  userId: number;
+  userAgent: string | null;
+  ipAddress: string | null;
+  expiresAt: Date;
+  /**
+   * تجاوز صريح لوقت الإنشاء — **إلزامي** عند إنشاء السطر في نفس طلبٍ يرفع فيه
+   * `sessionsValidFrom` (إعادة إصدار تغيير كلمة المرور): عمود TIMESTAMP **يُقرِّب**
+   * (لا يُقصّ) أجزاء الثانية عند التخزين ⇒ قراءتا `new Date()` المستقلّتان (بضع مللي
+   * ثانية فرقاً) قد تنعكس ترتيبهما بعد التقريب فيسقط `createdAt >= sessionsValidFrom`
+   * (نفس علّة AUTH-02 التي عولجت بـ`+2` على iat). مرّر `validFrom.getTime()+2000`
+   * لضمان **الأكبرية القطعية** بلا اعتماد على ضبط الساعة.
+   */
+  createdAt?: Date;
+};
+
+/** يُنشئ سطر جلسة فردية عند تسجيل الدخول (أو إعادة إصدار الكوكي عند تغيير كلمة المرور)
+ *  ويُعيد معرّفه — يُضمَّن كـ`sid` في الـJWT (راجع authRouter.ts). */
+export async function createUserSessionRecord(input: CreateUserSessionInput): Promise<number> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const result = await db.insert(userSessions).values({
+    userId: input.userId,
+    ...(input.createdAt ? { createdAt: input.createdAt, lastSeenAt: input.createdAt } : {}),
+    userAgent: input.userAgent ? input.userAgent.slice(0, 255) : null,
+    ipAddress: input.ipAddress ? input.ipAddress.slice(0, 45) : null,
+    expiresAt: input.expiresAt,
+  });
+  return extractInsertId(result);
+}
+
+/**
+ * يسرد جلسات مستخدمٍ **الفعّالة** فقط: غير مُبطَلة صراحةً، غير منتهية، **و**لاحقة لآخر
+ * إبطالٍ جماعي (`createdAt >= users.sessionsValidFrom`) — هذا الشرط الأخير يُخفي تلقائياً
+ * أيّ جلسة سبقت تسجيل خروج/تغيير كلمة مرور/إبطالاً جماعياً بلا حاجة لكتابة إضافية على تلك
+ * المسارات القائمة (logout/changePassword/revokeUserSessions لا تُعدَّل). الأحدث نشاطاً أولاً.
+ */
+export async function listUserSessions(userId: number): Promise<UserSession[]> {
+  const db = getDb();
+  if (!db) return [];
+  const u = (
+    await db.select({ sessionsValidFrom: users.sessionsValidFrom }).from(users).where(eq(users.id, userId)).limit(1)
+  )[0];
+  const validFrom = u?.sessionsValidFrom ?? new Date(0);
+  return db
+    .select()
+    .from(userSessions)
+    .where(
+      and(
+        eq(userSessions.userId, userId),
+        isNull(userSessions.revokedAt),
+        gt(userSessions.expiresAt, new Date()),
+        gte(userSessions.createdAt, validFrom)
+      )
+    )
+    .orderBy(desc(userSessions.lastSeenAt));
+}
+
+/**
+ * يُبطل جلسةً واحدة بعينها — يفحص أنّها تخصّ `expectedUserId` (يمنع IDOR: مستخدم يُبطل
+ * جلسة مستخدمٍ آخر عبر تخمين معرّف). يخدم كلا المسارين: الذات (`ctx.user.id`) والمدير
+ * (`input.userId` من شاشة تعديل المستخدم) بفحص ملكية واحد مشترك.
+ */
+export async function revokeUserSessionRow(sessionId: number, expectedUserId: number): Promise<UserSession> {
+  return withTx(async (tx) => {
+    const row = (
+      await tx.select().from(userSessions).where(eq(userSessions.id, sessionId)).for("update").limit(1)
+    )[0];
+    if (!row || row.userId !== expectedUserId) {
+      throw new TRPCError({ code: "NOT_FOUND", message: "الجلسة غير موجودة" });
+    }
+    const revokedAt = row.revokedAt ?? new Date();
+    if (!row.revokedAt) {
+      await tx.update(userSessions).set({ revokedAt }).where(eq(userSessions.id, sessionId));
+    }
+    return { ...row, revokedAt };
   });
 }
 

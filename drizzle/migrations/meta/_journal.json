@@ -295,6 +295,13 @@
       "when": 1782950000000,
       "tag": "0041_reconcile_schema_drift",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "5",
+      "when": 1782960000000,
+      "tag": "0042_user_sessions",
+      "breakpoints": true
     }
   ]
 }
