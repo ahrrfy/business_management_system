@@ -18,3 +18,14 @@ export function extractInsertId(result: unknown): number {
   }
   return id;
 }
+
+/** نفس شكل النتيجة أعلاه (ResultSetHeader مباشر أو tuple) لكن لـ`affectedRows` — تُستعمل
+ *  للتحقّق من نجاح UPDATE شرطي (مثلاً `WHERE status='PENDING'` لمطالبة صفّ ذرّياً). */
+export function extractAffectedRows(result: unknown): number {
+  const direct = (result as { affectedRows?: unknown } | null | undefined)?.affectedRows;
+  const fromTuple = Array.isArray(result)
+    ? (result[0] as { affectedRows?: unknown } | undefined)?.affectedRows
+    : undefined;
+  const rows = direct ?? fromTuple;
+  return typeof rows === "number" && Number.isFinite(rows) ? rows : 0;
+}

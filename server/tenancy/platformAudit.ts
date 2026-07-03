@@ -8,7 +8,7 @@ import { platformAuditLogs } from "./controlSchema";
 import { logger } from "../logger";
 
 export type PlatformAuditData = {
-  action: "login" | "logout" | "company.setActive";
+  action: "login" | "logout" | "company.setActive" | "company.requestCreate";
   success: boolean;
   platformAdminId?: number | null;
   actorEmail?: string | null;

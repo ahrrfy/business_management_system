@@ -72,9 +72,23 @@ async function seed() {
       // AUTH-02: حدّ الإبطال أقدم بثانيتين من الإنشاء كي لا يُرفَض دخولٌ في نفس الثانية
       // (٢٠٠٠ms لتجاوز تقريب عمود TIMESTAMP لأقرب ثانية).
       sessionsValidFrom: new Date(Date.now() - 2000),
+      // توفير شركة عبر الويب (company-provision-worker.mjs) يولّد كلمة مرور عشوائية
+      // ويُلزم تغييرها عند أول دخول — نفس نمط createUser/resetUserPassword في userService.ts.
+      // اختياري (افتراضي بلا إلزام) كي لا يتغيّر سلوك pnpm company:new اليدوي الحالي.
+      mustChangePassword: process.env.ADMIN_MUST_CHANGE_PASSWORD === "1",
     });
     admin = (await db.select().from(users).where(eq(users.email, email)).limit(1))[0];
     console.log(`✓ seeded admin user: ${email}`);
+  } else if (process.env.ADMIN_MUST_CHANGE_PASSWORD === "1") {
+    // مراجعة عدائية (٣/٧): توفير شركة عبر الويب قد يُعاد بعد فشل جزئي (هذه الخطوة
+    // (seed) نجحت فعلاً، لكن خطوة لاحقة — تسجيل الشركة في قاعدة التحكّم — فشلت). طلب
+    // إعادة المحاولة يولّد كلمة مرور مؤقّتة **جديدة** ويعرضها للمشغّل، بينما هذا الفرع
+    // كان يتخطّى admin الموجود صامتاً فتبقى كلمة مروره الفعلية هي الأولى القديمة — لا
+    // تطابق ما عُرض. نُزامن كلمة المرور دائماً في هذا المسار (توفير الويب فقط، لا
+    // `pnpm seed`/`company:new` اليدوي العادي — العلَم اختياري افتراضه معطَّل) كي تبقى
+    // الكلمة المعروضة صحيحة دائماً.
+    await db.update(users).set({ passwordHash: hashPassword(password), mustChangePassword: true }).where(eq(users.id, admin.id));
+    console.log(`• admin ${email} already exists — synced password (إعادة محاولة توفير)`);
   } else {
     console.log(`• admin ${email} already exists, skipping`);
   }
