@@ -2,29 +2,12 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { translateLoginError } from "@/lib/loginErrors";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 
 const LAST_COMPANY_CODE_KEY = "erp.lastCompanyCode";
-
-/**
- * ترجمة أخطاء العميل التقنية (إنجليزية غامضة) لرسائل عربية قابلة للفهم والتصرّف.
- * «Unable to transform response from server» = استجابة غير tRPC وصلت للعميل (خادم
- * قديم لم يُحدَّث بعد، أو صفحة خطأ من nginx) — كانت علّة تعذّر الدخول من متصفح اللوحي.
- */
-function translateLoginError(message: string): string {
-  if (message === "Unable to transform response from server") {
-    return "رُفض الطلب قبل وصوله للنظام (غالباً تجاوز حدّ محاولات الدخول — انتظر ١٥ دقيقة، أو المتصفح يحجب ترويسة المصدر). حدّث الصفحة وأعد المحاولة.";
-  }
-  if (/failed to fetch|networkerror|load failed/i.test(message)) {
-    return "تعذّر الاتصال بالخادم — تحقّق من اتصال الإنترنت ثم أعد المحاولة.";
-  }
-  if (/unexpected token|not valid json|json parse/i.test(message)) {
-    return "الخادم غير متاح مؤقتاً — أعد المحاولة بعد قليل.";
-  }
-  return message;
-}
 
 export default function Login() {
   const [, navigate] = useLocation();

@@ -29,7 +29,11 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
 
   const origin = req.headers["origin"];
   const referer = req.headers["referer"];
-  const source = origin ?? referer ?? "";
+  // «null» الحرفية (أصل مبهم: webview/sandbox/أوضاع خصوصية) تعامَل كغياب الترويسة —
+  // كانت تسقط في new URL("null") فتُرفض برسالة «غير صالح» دون استشارة Sec-Fetch-Site.
+  // آمن: صفحة مهاجمة بأصل مبهم تحمل sec-fetch-site: cross-site فتُرفض هناك.
+  const raw = origin ?? referer ?? "";
+  const source = raw === "null" ? "" : raw;
 
   if (!source) {
     // بعض متصفحات اللوحي/الجوال (أوضاع الخصوصية/توفير البيانات) تحجب Origin وReferer

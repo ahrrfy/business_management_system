@@ -20,7 +20,7 @@ import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
 import { csrfGuard } from "./middleware/csrf";
-import { sendTrpcError } from "./middleware/trpcError";
+import { isTrpcSurface, sendTrpcError, trpcAwareRateLimitHandler } from "./middleware/trpcError";
 import { printRouter } from "./printRoute";
 import { backupRouter } from "./backupRoutes";
 import { channelWebhooksRouter, companyChannelWebhooksRouter } from "./routes/channelWebhooks";
@@ -119,13 +119,7 @@ async function startServer() {
   // ردّ 429 موحَّد لكل محدِّدات المعدّل: على /api/trpc بغلاف tRPC الذي يفهمه العميل
   // (وإلا رمى «Unable to transform response from server» فحجب السبب الحقيقي عن
   // المستخدم — علّة دخول اللوحي ٤/٧)، وعلى بقية الأسطح `{error}` كما كانت.
-  const rateLimitHandler = (message: string) => (req: Request, res: Response) => {
-    if (req.baseUrl.startsWith("/api/trpc") || req.path.startsWith("/api/trpc")) {
-      sendTrpcError(res, { httpStatus: 429, code: "TOO_MANY_REQUESTS", message });
-    } else {
-      res.status(429).json({ error: message });
-    }
-  };
+  const rateLimitHandler = trpcAwareRateLimitHandler;
 
   // حدّ عام للطلبات (حماية من الإغراق).
   app.use(
@@ -355,10 +349,27 @@ async function startServer() {
   }
 
   // معالج أخطاء عام — يلتقط أي استثناء وصل للـExpress بدل إغراق السجلّ أو تعطّل الخادم.
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  // على /api/trpc يرسل غلاف tRPC (وإلا رمى العميل «Unable to transform response from
+  // server» — نفس فئة علّة دخول اللوحي): أخطاء body-parser تمرّ من هنا، وأقربها للواقع
+  // جسم يتجاوز حدّ ١mb (صورة منتج base64) ⇒ 413 برسالة عربية بدل 500 غامض.
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     logger.error({ err }, "unhandled express error");
-    if (!res.headersSent) {
-      res.status(500).json({ error: "خطأ داخلي في الخادم" });
+    if (res.headersSent) return;
+    const rawStatus = (err as { status?: unknown; statusCode?: unknown } | null);
+    const status =
+      typeof rawStatus?.status === "number" ? rawStatus.status
+      : typeof rawStatus?.statusCode === "number" ? rawStatus.statusCode
+      : 500;
+    const mapped =
+      status === 413
+        ? { httpStatus: 413, code: "PAYLOAD_TOO_LARGE" as const, message: "حجم الطلب كبير جداً — صغّر المرفق/الصورة ثم أعد المحاولة." }
+        : status >= 400 && status < 500
+          ? { httpStatus: status, code: "BAD_REQUEST" as const, message: "طلب غير صالح." }
+          : { httpStatus: 500, code: "INTERNAL_SERVER_ERROR" as const, message: "خطأ داخلي في الخادم" };
+    if (isTrpcSurface(req)) {
+      sendTrpcError(res, mapped);
+    } else {
+      res.status(mapped.httpStatus).json({ error: mapped.message });
     }
   });
 }
