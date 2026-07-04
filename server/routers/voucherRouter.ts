@@ -197,14 +197,21 @@ export const voucherRouter = router({
       windowDays: z.number().int().positive().max(90).default(7),
       limit: z.number().int().positive().max(20).default(5),
     }))
-    .query(async ({ input, ctx }) => recentVouchersForParty({
-      partyType: input.partyType,
-      partyId: input.partyId ?? null,
-      counterpartyName: input.counterpartyName ?? null,
-      branchId: input.branchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null),
-      windowDays: input.windowDays,
-      limit: input.limit,
-    })),
+    .query(async ({ input, ctx }) => {
+      // IDOR (مراجعة أمنية): كان يمرّر input.branchId بلا عزل ⇒ مدير فرع يقرأ سندات فرع آخر
+      // (بخلاف list/get اللذين يفرضان العزل). نُطبّق نفس منطق list: نُقيّد المدير المُسنَد لفرع
+      // بفرعه (نتجاهل input.branchId)؛ الأدمن ومدير بلا فرع (عابر الفروع) يمرّان كما هما.
+      const restrict = ctx.user.role !== "admin" && ctx.user.branchId != null;
+      const branchId = restrict ? Number(ctx.user.branchId) : (input.branchId ?? null);
+      return recentVouchersForParty({
+        partyType: input.partyType,
+        partyId: input.partyId ?? null,
+        counterpartyName: input.counterpartyName ?? null,
+        branchId,
+        windowDays: input.windowDays,
+        limit: input.limit,
+      });
+    }),
 });
 
 /* ============================ فئات السندات (admin CRUD) ============================ */
