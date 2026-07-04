@@ -2,6 +2,11 @@
  * Decimal-safe totals calculator for the invoice editor.
  * Ported from `_design-bundle/project/invoice-footer.jsx#calcTotals` but uses
  * decimal.js (round HALF_UP) per the project's money rules — NO parseFloat.
+ *
+ * §١٤ (سياسة المشروع): ضريبة على مستوى الفاتورة فقط (`state.taxEnabled` + `state.taxRatePercent`).
+ * لا ضريبة قابلة للتحرير لكل سطر — البنود لا تحمل نسبة ضريبة خاصّة بها؛ الحصّة تُوزَّع حسابياً
+ * للعرض فقط عبر `allocateLineTax` (تفصيل بصري، لا يُحفظ في قاعدة البيانات — تُطابق سطر الضريبة
+ * الظاهر في `TotalsPanel` وحقل `invoices.taxAmount` الذي يحسبه `computeInvoiceTotals` خادمياً).
  */
 import Decimal from "decimal.js";
 import { D, round2 } from "@/lib/money";
@@ -16,7 +21,7 @@ export interface InvoiceTotals {
   globalDiscAmt: string;
   /** subtotal − line discounts − global discount, 2dp string. */
   afterDiscount: string;
-  /** sum of per-line tax (applied to post-line-discount base), 2dp string. */
+  /** ضريبة الفاتورة الكلّية (على المستوى الفاتوريّ لا السطريّ)، 2dp. */
   totalTax: string;
   shipping: string;
   otherExpenses: string;
@@ -30,8 +35,8 @@ Decimal.set({ rounding: Decimal.ROUND_HALF_UP });
 
 /**
  * decimal.js يرمي خطأً على نصّ غير صالح (مثل «12a» أو «1.2.3») وهو ما يحدث طبيعياً
- * أثناء كتابة المستخدم في حقول المبالغ (المدفوع/الخصم/الشحن/ضريبة السطر). هذا الغلاف
- * يُرجع 0 بدل الرمي حتى لا ينهار محرّر الفاتورة أثناء الرسم — التحقّق الصارم يبقى عند الحفظ.
+ * أثناء كتابة المستخدم في حقول المبالغ (المدفوع/الخصم/الشحن). هذا الغلاف يُرجع 0 بدل
+ * الرمي حتى لا ينهار محرّر الفاتورة أثناء الرسم — التحقّق الصارم يبقى عند الحفظ.
  */
 function safeD(v: string | number): Decimal {
   try {
@@ -44,7 +49,6 @@ function safeD(v: string | number): Decimal {
 export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTotals {
   let subtotal = new Decimal(0);
   let totalDiscount = new Decimal(0);
-  let totalTax = new Decimal(0);
 
   for (const item of items) {
     const price = safeD(item.price);
@@ -58,11 +62,6 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
         ? lineBase.times(discRaw).dividedBy(100)
         : discRaw;
     totalDiscount = totalDiscount.plus(disc);
-
-    const afterDisc = lineBase.minus(disc);
-    const taxPct = safeD(item.tax);
-    const tax = afterDisc.times(taxPct).dividedBy(100);
-    totalTax = totalTax.plus(tax);
   }
 
   const afterItemDisc = subtotal.minus(totalDiscount);
@@ -75,9 +74,10 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
 
   // ضريبة مستوى الفاتورة (اختيارية) — على (المجموع الفرعي − كل الخصومات)، مطابقة تماماً
   // لـcomputeInvoiceTotals الخادمية (سياسة #14: لا تُطبَّق إلا بتفعيل صريح من المستخدم).
+  let totalTax = new Decimal(0);
   if (state.taxEnabled) {
     const invoiceTaxRate = safeD(state.taxRatePercent ?? "0");
-    totalTax = totalTax.plus(afterGlobalDisc.times(invoiceTaxRate).dividedBy(100));
+    totalTax = afterGlobalDisc.times(invoiceTaxRate).dividedBy(100);
   }
 
   const shipping = safeD(state.shipping);
@@ -99,7 +99,7 @@ export function calcTotals(items: InvoiceLine[], state: InvoiceState): InvoiceTo
   };
 }
 
-/** Per-line total (after discount + tax) — 2dp string. */
+/** Per-line total (after discount, pre-tax) — 2dp string. الضريبة على مستوى الفاتورة لا السطر. */
 export function calcLineTotal(item: InvoiceLine): string {
   const price = safeD(item.price);
   const qty = safeD(item.qty);
@@ -109,10 +109,7 @@ export function calcLineTotal(item: InvoiceLine): string {
     item.discountType === "percent"
       ? lineBase.times(discRaw).dividedBy(100)
       : discRaw;
-  const afterDisc = lineBase.minus(disc);
-  const taxPct = safeD(item.tax);
-  const tax = afterDisc.times(taxPct).dividedBy(100);
-  return round2(afterDisc.plus(tax)).toFixed(2);
+  return round2(lineBase.minus(disc)).toFixed(2);
 }
 
 /** Per-line margin percent (price-vs-costBase). Returns 2dp string (e.g. "23.45"), or "0" when no cost. */
@@ -121,6 +118,47 @@ export function calcMargin(item: InvoiceLine): string {
   const price = safeD(item.price);
   if (cost.lessThanOrEqualTo(0) || price.lessThanOrEqualTo(0)) return "0";
   return round2(price.minus(cost).dividedBy(cost).times(100)).toFixed(2);
+}
+
+/**
+ * توزيع ضريبة الفاتورة الكلّية على السطور تناسبياً مع حصّة كلّ سطر من `taxableBase`
+ * (المجموع الفرعي بعد كل الخصومات). خوارزمية «آخر سطر ذي مبلغ يمتصّ فرق التقريب»
+ * تضمن ثابتاً صارماً: **مجموع الحصص = totalTax بالضبط دائماً** (لا انجراف سنتات، حتى مع
+ * تقريب HALF_UP وتوزيعات غير مُتقاسِمة). للعرض فقط — لا يُحفظ لكل سطر في قاعدة البيانات.
+ *
+ * حالات حدّية: 0 سطور ⇒ []؛ totalTax≤0 أو taxableBase≤0 ⇒ كل الحصص "0.00"؛ لا سطور
+ * ذات total>0 مع ضريبة موجبة ⇒ تُعاد الحصص "0.00" (لا يوجد سطر يستحقّ التخصيص).
+ */
+export function allocateLineTax(
+  lines: { total: string }[],
+  totalTax: string,
+  taxableBase: string,
+): string[] {
+  const n = lines.length;
+  if (n === 0) return [];
+  const T = safeD(totalTax);
+  const B = safeD(taxableBase);
+  const zeros = () => Array<string>(n).fill("0.00");
+  if (T.lte(0) || B.lte(0)) return zeros();
+
+  const shares: string[] = new Array(n).fill("0.00");
+  let running = new Decimal(0);
+  let lastNonZero = -1;
+  for (let i = 0; i < n; i++) {
+    const lineTotal = safeD(lines[i].total);
+    if (lineTotal.lte(0)) continue;
+    lastNonZero = i;
+    const share = round2(lineTotal.times(T).dividedBy(B));
+    shares[i] = share.toFixed(2);
+    running = running.plus(share);
+  }
+
+  if (lastNonZero < 0) return zeros(); // لا سطر يستحقّ التخصيص
+  const diff = round2(T.minus(running));
+  if (!diff.isZero()) {
+    shares[lastNonZero] = round2(safeD(shares[lastNonZero]).plus(diff)).toFixed(2);
+  }
+  return shares;
 }
 
 /** Pretty-format a decimal-string amount for Arabic UI (en-US digits, currency suffix).

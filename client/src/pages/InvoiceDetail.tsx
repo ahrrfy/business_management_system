@@ -11,6 +11,7 @@ import { formatInvoiceAsWhatsApp } from "@/lib/copy/formatters";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
 import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
+import { allocateLineTax } from "@/components/invoice";
 import { D, fmt, round2 } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
@@ -190,18 +191,35 @@ export default function InvoiceDetail() {
               remaining: remaining.toFixed(2),
             })}
           />
-          <Button variant="outline" size="sm" onClick={async () => printInvoiceA4({
-            invoiceNumber: data.invoiceNumber,
-            invoiceDate: data.invoiceDate,
-            customerName: data.customerName,
-            companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
-            subtotal: data.subtotal,
-            discountAmount: data.discountAmount,
-            taxAmount: data.taxAmount,
-            total: data.total,
-            paidAmount: data.paidAmount,
-            items: data.items.map((it) => ({ productName: it.productName ?? "", unitName: it.unitName, quantity: it.quantity, unitPrice: it.unitPrice, total: it.total })),
-          })}>طباعة A4 / حفظ PDF</Button>
+          <Button variant="outline" size="sm" onClick={async () => {
+            // توزيع ضريبة الفاتورة على السطور لعمود «الضريبة» في A4 (نفس خوارزمية شاشة التحرير:
+            // آخر سطر يمتصّ فرق التقريب ⇒ Σ الحصص = data.taxAmount بلا انجراف).
+            const afterDisc = round2(D(data.subtotal).minus(D(data.discountAmount ?? "0"))).toFixed(2);
+            const shares = allocateLineTax(
+              data.items.map((it) => ({ total: String(it.total) })),
+              String(data.taxAmount ?? "0"),
+              afterDisc,
+            );
+            printInvoiceA4({
+              invoiceNumber: data.invoiceNumber,
+              invoiceDate: data.invoiceDate,
+              customerName: data.customerName,
+              companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
+              subtotal: data.subtotal,
+              discountAmount: data.discountAmount,
+              taxAmount: data.taxAmount,
+              total: data.total,
+              paidAmount: data.paidAmount,
+              items: data.items.map((it, i) => ({
+                productName: it.productName ?? "",
+                unitName: it.unitName,
+                quantity: it.quantity,
+                unitPrice: it.unitPrice,
+                total: it.total,
+                taxAmount: shares[i] ?? "0",
+              })),
+            });
+          }}>طباعة A4 / حفظ PDF</Button>
           <Link href="/invoices" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمبيعات</Link>
         </div>
       </div>

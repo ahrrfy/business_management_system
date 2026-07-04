@@ -49,6 +49,8 @@ import {
   invoiceReducer,
   createInitialState,
   calcTotals,
+  calcLineTotal,
+  allocateLineTax,
   INVOICE_TYPES,
   type InvoiceActionKind,
   type InvoiceLine,
@@ -140,6 +142,22 @@ export default function SalesInvoiceNew() {
   const showCost = role === "manager" || role === "admin";
 
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
+  /**
+   * حصص ضريبة الفاتورة الموزَّعة تناسبياً على السطور (عرض فقط، سنت حصريّ = totals.totalTax
+   * بالضبط بفضل خوارزمية «آخر سطر يمتصّ التقريب»). تُمرَّر إلى `ProductTable` كعمود «حصة
+   * الضريبة» وإلى `printInvoiceA4` كحقل `taxAmount` لكل بند — نفس القيم في الشاشة والطباعة.
+   */
+  const taxShares = useMemo(
+    () =>
+      state.taxEnabled
+        ? allocateLineTax(
+            state.items.map((item) => ({ total: calcLineTotal(item) })),
+            totals.totalTax,
+            totals.afterDiscount,
+          )
+        : null,
+    [state.taxEnabled, state.items, totals.totalTax, totals.afterDiscount],
+  );
 
   /* ─── mutation ─────────────────────────────────────────────────── */
   const create = trpc.sales.create.useMutation({
@@ -397,8 +415,8 @@ export default function SalesInvoiceNew() {
             tier={state.tier}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
-            /* العراق VAT=0% والخادم لا يحفظ ضريبة السطر ⇒ نُخفي العمود لتفادي تفاوت معروض/محفوظ. */
-            showTax={false}
+            /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
+            taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
             onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
           />

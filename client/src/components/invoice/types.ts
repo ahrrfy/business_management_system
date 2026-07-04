@@ -38,8 +38,6 @@ export interface InvoiceLine {
   /** Per-line discount, percent (0-100) or absolute amount (in invoice currency). */
   discount: string;
   discountType: DiscountType;
-  /** Per-line tax percent (0-100). Default 0 in IQ. */
-  tax: string;
   note: string;
 }
 
