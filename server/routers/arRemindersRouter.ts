@@ -64,6 +64,8 @@ export const arRemindersRouter = router({
         oldestInvoiceDate: ymd,
         daysOverdue: z.number().int().nonnegative(),
         skipReason: z.string().min(1).max(255),
+        // اختياري: إن مُلئ ⇒ العميل يعود لقائمة اليوم يوم الوعد (يتخطّى تبريد ٧ أيام).
+        promisedDate: ymd.optional().nullable(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -78,6 +80,7 @@ export const arRemindersRouter = router({
         newValue: {
           customerId: input.customerId,
           skipReason: input.skipReason,
+          promisedDate: input.promisedDate ?? null,
         },
       });
       return r;

@@ -33,6 +33,16 @@ export interface ReminderQueueRow {
   lastReminderAt: string | null;
   /** حالة آخر تذكير (SENT/SKIPPED)، nullable إن لم يُذكَّر من قبل. */
   lastReminderStatus: "SENT" | "SKIPPED" | null;
+  /**
+   * تاريخ وعد الدفع المُسجَّل في آخر تخطٍّ (YYYY-MM-DD، nullable).
+   * وجودُه ⇒ الظهور اليوم بسبب استحقاق وعدٍ لا بسبب انتهاء تبريد ⇒ الواجهة تُبرز شارة «موعود».
+   */
+  promisedDate: string | null;
+  /**
+   * `true` حين الظهور اليوم بسبب تجاوز تاريخ الوعد (promisedDate ≤ اليوم) — يتخطّى تبريد ٧ أيام.
+   * يعطي الواجهة إشارة واضحة لترتيب هؤلاء أعلى القائمة (متابعة استحقاق وعد ⇒ أهمّ من عميل عادي).
+   */
+  isPromiseDue: boolean;
 }
 
 /** حساب أيام التأخّر بين تاريخين UTC نقيّاً (لا Date، لا مناطق زمنية). */
@@ -72,39 +82,57 @@ export async function getReminderQueue(opts: { branchId: number }): Promise<Remi
 
   if (eligible.length === 0) return [];
 
-  // آخر تذكير لكل عميل من العملاء المؤهَّلين (نافذة التبريد + سياق البصر). استعلام واحد مُجمَّع
-  // بدل استعلام لكل عميل — أفضل بكثير من N+1 على قوائم قد تصل مئات العملاء.
+  // آخر تذكير لكل عميل مع تاريخ الوعد (لكل عميل، ONLY latest row) — استعلام subquery داخلي
+  // بأحدث id لكل customerId (id = AUTO_INCREMENT ⇒ ترتيب زمني موثوق أدقّ من MAX(createdAt)
+  // مع تعادل الثانية)، ثم JOIN لجلب `promisedDate` من نفس الصفّ. استعلام واحد لا N+1.
   const customerIds = eligible.map((x) => x.row.customerId);
   const lastRows = await db
     .select({
       customerId: arReminders.customerId,
-      lastAt: sql<Date>`MAX(${arReminders.createdAt})`.as("lastAt"),
-      lastStatus: sql<"SENT" | "SKIPPED">`SUBSTRING_INDEX(GROUP_CONCAT(${arReminders.status} ORDER BY ${arReminders.createdAt} DESC), ',', 1)`.as("lastStatus"),
+      lastAt: arReminders.createdAt,
+      lastStatus: arReminders.status,
+      lastPromisedDate: arReminders.promisedDate,
     })
     .from(arReminders)
     .where(
       and(
         sql`${arReminders.customerId} IN (${sql.join(customerIds.map((id) => sql`${id}`), sql`, `)})`,
         eq(arReminders.branchId, opts.branchId),
+        sql`${arReminders.id} = (
+          SELECT MAX(inner_r.id) FROM ${arReminders} AS inner_r
+          WHERE inner_r.customerId = ${arReminders.customerId}
+            AND inner_r.branchId = ${arReminders.branchId}
+        )`,
       ),
-    )
-    .groupBy(arReminders.customerId);
+    );
 
-  const lastByCustomer = new Map<number, { at: Date; status: "SENT" | "SKIPPED" }>();
+  const lastByCustomer = new Map<
+    number,
+    { at: Date; status: "SENT" | "SKIPPED"; promisedDate: string | null }
+  >();
   for (const r of lastRows) {
     lastByCustomer.set(Number(r.customerId), {
       at: new Date(r.lastAt),
       status: r.lastStatus,
+      promisedDate: r.lastPromisedDate ?? null,
     });
   }
 
-  // فحص التبريد: يوم UTC حالي − آخر تذكير < REMINDER_COOLDOWN_DAYS ⇒ استبعاد.
+  // فحص التبريد + استثناء الوعد المستحقّ اليوم:
+  //  - تبريد ٧ أيام يمنع إغراق العميل (يستبعد من القائمة).
+  //  - إن كان تخطٍّ سابق بتاريخ وعد ≤ اليوم ⇒ نتخطّى التبريد ونُعيد إظهاره (استحقاق متابعة).
+  //  - وعد المستقبل (promisedDate > اليوم) لا يظهر بعد — نحترم قرار الموظف بتأجيل المتابعة.
   const nowMs = Date.now();
   const cooldownMs = REMINDER_COOLDOWN_DAYS * 86_400_000;
   const queue: ReminderQueueRow[] = [];
   for (const { row, daysOverdue } of eligible) {
     const last = lastByCustomer.get(row.customerId);
-    if (last && nowMs - last.at.getTime() < cooldownMs) continue;
+    const isPromiseDue = !!(last && last.promisedDate && last.promisedDate <= today);
+    const isFuturePromise = !!(last && last.promisedDate && last.promisedDate > today);
+    // وعد المستقبل ⇒ استبعاد فوري (متابعة مؤجَّلة بقرار موظف).
+    if (isFuturePromise) continue;
+    // ليس وعداً مستحقّاً + في نافذة التبريد ⇒ استبعاد اعتيادي.
+    if (!isPromiseDue && last && nowMs - last.at.getTime() < cooldownMs) continue;
     queue.push({
       customerId: row.customerId,
       customerName: row.customerName,
@@ -114,11 +142,16 @@ export async function getReminderQueue(opts: { branchId: number }): Promise<Remi
       daysOverdue,
       lastReminderAt: last ? last.at.toISOString() : null,
       lastReminderStatus: last ? last.status : null,
+      promisedDate: last?.promisedDate ?? null,
+      isPromiseDue,
     });
   }
 
-  // ترتيب: الأكثر تأخّراً أولاً ⇒ أهمّ أولاً في المراجعة اليدوية.
-  queue.sort((a, b) => b.daysOverdue - a.daysOverdue);
+  // ترتيب: (١) الوعود المستحقّة أوّلاً (متابعة استحقاق وعد ⇒ أهمّ) ثم (٢) الأقدم تأخّراً.
+  queue.sort((a, b) => {
+    if (a.isPromiseDue !== b.isPromiseDue) return a.isPromiseDue ? -1 : 1;
+    return b.daysOverdue - a.daysOverdue;
+  });
   return queue;
 }
 
@@ -193,6 +226,9 @@ export interface SkipReminderInput {
   oldestInvoiceDate: string;
   daysOverdue: number;
   skipReason: string;
+  /** تاريخ وعد الدفع الاختياري (YYYY-MM-DD، ≥ اليوم). إن مُلئ ⇒ العميل يعود لقائمة اليوم يوم الوعد
+   *  متجاوزاً تبريد ٧ أيام. الترك فارغاً ⇒ تخطٍّ عاديّ (يخضع لتبريد ٧ أيام مثل باقي التذكيرات). */
+  promisedDate?: string | null;
 }
 
 /** تسجيل تخطٍّ لتذكير عميل — يمنع ظهوره في القائمة اليومية بقية أيام التبريد. */
@@ -212,6 +248,16 @@ export async function logReminderSkipped(
   if (input.daysOverdue < 0) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "أيام التأخّر لا تصحّ أن تكون سالبة." });
   }
+  const promisedDate = input.promisedDate?.trim() || null;
+  if (promisedDate) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(promisedDate)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الوعد غير صالح." });
+    }
+    // وعد في الماضي = لا معنى له (المتابعة يجب أن تكون مستقبلاً).
+    if (promisedDate < todayUTC()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الوعد يجب ألّا يكون في الماضي." });
+    }
+  }
   await assertCustomerHasBranchInvoice(input.customerId, actor.branchId);
 
   const db = requireDb();
@@ -224,6 +270,7 @@ export async function logReminderSkipped(
     messageBody: "",
     status: "SKIPPED",
     skipReason: input.skipReason.trim(),
+    promisedDate,
     createdBy: actor.userId,
   });
   const id = (res as unknown as [{ insertId: number }])[0].insertId;
@@ -239,6 +286,8 @@ export interface ReminderHistoryRow {
   daysOverdue: number;
   status: "SENT" | "SKIPPED";
   skipReason: string | null;
+  /** تاريخ الوعد المُسجَّل مع التخطّي (nullable — يظهر في السجلّ كسياق للمتابعة اللاحقة). */
+  promisedDate: string | null;
   createdBy: number;
   createdAt: string;
 }
@@ -261,6 +310,7 @@ export async function getReminderHistory(opts: {
       daysOverdue: arReminders.daysOverdue,
       status: arReminders.status,
       skipReason: arReminders.skipReason,
+      promisedDate: arReminders.promisedDate,
       createdBy: arReminders.createdBy,
       createdAt: arReminders.createdAt,
     })
@@ -280,6 +330,7 @@ export async function getReminderHistory(opts: {
     daysOverdue: r.daysOverdue,
     status: r.status,
     skipReason: r.skipReason,
+    promisedDate: r.promisedDate ?? null,
     createdBy: r.createdBy,
     createdAt: r.createdAt.toISOString(),
   }));

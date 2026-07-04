@@ -2484,6 +2484,10 @@ export const arReminders = mysqlTable(
     status: mysqlEnum("arReminderStatus", ["SENT", "SKIPPED"]).notNull(),
     /** سبب التخطّي (nullable — يُملأ فقط عند status='SKIPPED'، مثل «العميل وعد يوم الأحد»). */
     skipReason: varchar("skipReason", { length: 255 }),
+    /** تاريخ وعد العميل بالدفع (اختياري، YYYY-MM-DD). حين مُلئ يوم التخطّي ⇒ العميل يُعاد
+     *  إظهاره في القائمة يوم الوعد نفسه (يتخطّى تبريد ٧ أيام) بشارة «موعود اليوم»، حتى لو
+     *  كان تذكيره الأخير ضمن نافذة التبريد الاعتيادية — يمكن أن يفوّت الموظفُ متابعة الوعد. */
+    promisedDate: date("promisedDate", { mode: "string" }),
     createdBy: int("createdBy").notNull().references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },

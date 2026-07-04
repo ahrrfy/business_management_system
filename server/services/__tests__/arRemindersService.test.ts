@@ -64,6 +64,18 @@ function daysAgo(n: number): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
+/** تاريخ بعد N يوماً من اليوم (YYYY-MM-DD)، UTC. للتحقّق من وعود المستقبل. */
+function daysAhead(n: number): string {
+  const d = new Date(Date.now() + n * 86_400_000);
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
+/** «اليوم» بصيغة YYYY-MM-DD UTC — يطابق منطق الخدمة (`todayUTC`). */
+function today(): string {
+  const d = new Date();
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
+}
+
 beforeEach(async () => {
   const d = db();
   await d.insert(s.branches).values([
@@ -193,6 +205,142 @@ describe("arRemindersService - getReminderQueue", () => {
     // القائمة بعد الإرسال — العميل مستبعَد (تبريد ٧ أيام).
     queue = await getReminderQueue({ branchId: 1 });
     expect(queue).toEqual([]);
+  });
+});
+
+describe("arRemindersService - وعد الدفع (promise tracking)", () => {
+  beforeEach(async () => {
+    await makeCustomerWithOverdueInvoice({
+      customerId: 300,
+      customerName: "عميل وَعَد",
+      invoiceId: 3000,
+      invoiceNumber: "INV-3000",
+      dueDate: daysAgo(20),
+      total: "500000",
+    });
+  });
+
+  it("تخطٍّ بوعد مستقبلي ⇒ العميل يختفي من القائمة حتى يوم الوعد (يتخطّى العرض العاديّ)", async () => {
+    // قبل التخطّي، العميل ظاهر
+    let queue = await getReminderQueue({ branchId: 1 });
+    expect(queue.map((r) => r.customerId)).toEqual([300]);
+
+    // خطَّ بوعد بعد ٣ أيام (مستقبل)
+    await logReminderSkipped(
+      {
+        customerId: 300,
+        totalUnpaidSnapshot: "500000",
+        oldestInvoiceDate: daysAgo(20),
+        daysOverdue: 20,
+        skipReason: "العميل وعد بالدفع",
+        promisedDate: daysAhead(3),
+      },
+      { userId: 1, branchId: 1 },
+    );
+
+    // القائمة الآن فارغة (وعد مستقبلي = متابعة مؤجَّلة)
+    queue = await getReminderQueue({ branchId: 1 });
+    expect(queue).toEqual([]);
+  });
+
+  it("تخطٍّ بوعد اليوم ⇒ العميل يعود فوراً بشارة isPromiseDue (يتخطّى التبريد)", async () => {
+    // خطَّ بوعد اليوم نفسه (استحقاق فوري)
+    await logReminderSkipped(
+      {
+        customerId: 300,
+        totalUnpaidSnapshot: "500000",
+        oldestInvoiceDate: daysAgo(20),
+        daysOverdue: 20,
+        skipReason: "وعد يدفع اليوم بعد الظهر",
+        promisedDate: today(),
+      },
+      { userId: 1, branchId: 1 },
+    );
+
+    // العميل يعود للقائمة رغم أن تبريد ٧ أيام لم ينتهِ (استحقاق وعد أقوى من التبريد)
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue).toHaveLength(1);
+    expect(queue[0].isPromiseDue).toBe(true);
+    expect(queue[0].promisedDate).toBe(today());
+    expect(queue[0].lastReminderStatus).toBe("SKIPPED");
+  });
+
+  it("الوعود المستحقّة تُرتَّب أعلى القائمة (أولوية على تأخّر الفواتير)", async () => {
+    // عميل ثانٍ متأخّر ٩٠ يوماً بلا وعد (كان سيتصدّر بالترتيب العاديّ)
+    await makeCustomerWithOverdueInvoice({
+      customerId: 301,
+      customerName: "متأخّر ٩٠ بلا وعد",
+      invoiceId: 3001,
+      invoiceNumber: "INV-3001",
+      dueDate: daysAgo(90),
+      total: "100000",
+    });
+    // خطَّ العميل الأوّل (٢٠ يوماً) بوعد اليوم — يجب أن يتصدّر رغم أن الثاني أكثر تأخّراً
+    await logReminderSkipped(
+      {
+        customerId: 300,
+        totalUnpaidSnapshot: "500000",
+        oldestInvoiceDate: daysAgo(20),
+        daysOverdue: 20,
+        skipReason: "وعد اليوم",
+        promisedDate: today(),
+      },
+      { userId: 1, branchId: 1 },
+    );
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue.map((r) => r.customerId)).toEqual([300, 301]);
+    expect(queue[0].isPromiseDue).toBe(true);
+    expect(queue[1].isPromiseDue).toBe(false);
+  });
+
+  it("رفض وعد في الماضي (المتابعة يجب أن تكون مستقبلاً)", async () => {
+    await expect(
+      logReminderSkipped(
+        {
+          customerId: 300,
+          totalUnpaidSnapshot: "500000",
+          oldestInvoiceDate: daysAgo(20),
+          daysOverdue: 20,
+          skipReason: "وعد ماضٍ خاطئ",
+          promisedDate: daysAgo(1),
+        },
+        { userId: 1, branchId: 1 },
+      ),
+    ).rejects.toThrow(/الماضي/);
+  });
+
+  it("تخطٍّ بلا وعد ⇒ يتصرّف كتخطٍّ عاديّ (يخضع للتبريد)", async () => {
+    await logReminderSkipped(
+      {
+        customerId: 300,
+        totalUnpaidSnapshot: "500000",
+        oldestInvoiceDate: daysAgo(20),
+        daysOverdue: 20,
+        skipReason: "قرار مؤقّت",
+        // بلا promisedDate
+      },
+      { userId: 1, branchId: 1 },
+    );
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue).toEqual([]); // مستبعَد بتبريد ٧ أيام
+  });
+
+  it("promisedDate يظهر في السجلّ التاريخي للسياق", async () => {
+    await logReminderSkipped(
+      {
+        customerId: 300,
+        totalUnpaidSnapshot: "500000",
+        oldestInvoiceDate: daysAgo(20),
+        daysOverdue: 20,
+        skipReason: "وعد بعد أسبوع",
+        promisedDate: daysAhead(7),
+      },
+      { userId: 1, branchId: 1 },
+    );
+    const history = await getReminderHistory({ branchId: 1 });
+    expect(history).toHaveLength(1);
+    expect(history[0].promisedDate).toBe(daysAhead(7));
+    expect(history[0].skipReason).toBe("وعد بعد أسبوع");
   });
 });
 
