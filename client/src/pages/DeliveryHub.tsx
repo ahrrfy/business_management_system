@@ -197,16 +197,11 @@ function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
     if (p) setFee(String(Number(p.defaultFee ?? 0)));
   };
 
-  const submit = async () => {
+  // النافذة نفسها هي حوار التأكيد (تعرض الجهة والمبالغ و«لا رجعة» صراحةً) ⇒ لا نفتح حوار تأكيد
+  // ثانياً فوقها. (كان حوار confirm الثاني بـz-50 يُفتح خلف هذه النافذة اليدوية z-[100] فيتجمّد
+  // العرض — عولج جذرياً برفع طبقة حوار التأكيد، وبسّطنا هنا التدفّق إلى تأكيد واحد واضح.)
+  const submit = () => {
     if (!partyId) { notify.err("اختر جهة التوصيل"); return; }
-    const ok = await confirm({
-      variant: "danger",
-      title: "تأكيد التسليم للمندوب",
-      description: `سيُصدر فاتورة بقيمة ${fmt(order.salePrice)} د.ع وتُسجَّل ${fmt(String(cod))} د.ع ذمّةً على «${selectedParty?.name}». لا رجعة.`,
-      confirmText: "تسليم",
-      requireText: "تسليم",
-    });
-    if (!ok) return;
     onConfirm(Number(partyId), fee || "0");
   };
 
@@ -239,9 +234,13 @@ function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
           {Number(order.deposit ?? 0) > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmt(order.deposit)} د.ع</span></div>}
           <div className="flex justify-between border-t pt-1 font-bold"><span>مبلغ التحصيل (COD)</span><span dir="ltr" className="tabular-nums">{fmt(String(cod))} د.ع</span></div>
         </div>
+        <p className="mb-4 flex items-start gap-1.5 text-xs text-destructive">
+          <AlertTriangle aria-hidden className="mt-0.5 size-3.5 shrink-0" />
+          <span>ستُصدَر فاتورة وتُسجَّل {fmt(String(cod))} د.ع ذمّةً على «{selectedParty?.name ?? "المندوب"}». لا رجعة.</span>
+        </p>
         <div className="flex gap-2.5">
           <Button variant="outline" className="flex-1" onClick={onClose} disabled={pending}>إلغاء</Button>
-          <Button className="flex-1" onClick={submit} disabled={pending || !partyId}>{pending ? "جارٍ…" : "تأكيد التسليم للمندوب"}</Button>
+          <Button variant="destructive" className="flex-1" onClick={submit} disabled={pending || !partyId}>{pending ? "جارٍ…" : "تأكيد التسليم للمندوب"}</Button>
         </div>
       </div>
     </div>
