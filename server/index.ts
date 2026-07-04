@@ -60,7 +60,13 @@ async function startServer() {
   //   - TRUST_PROXY=1 ⇒ فلاج صريح للحالات غير القياسية (مثل تشغيل خلف بروكسي بمنفذ علني).
   // غير ذلك (واجهات عامة أو localhost للتطوير) ⇒ نُلغيها كي لا يُزوّر مهاجمٌ IP عبر X-Forwarded-For
   // فيُلتفّ على حدود المعدّل المبنية على IP في authRouter (recordIpFailure).
-  const trustProxy = process.env.TRUST_PROXY === "1" || process.env.HOST === "127.0.0.1";
+  //
+  // ⚠️ عدد القفزات = 1 (لا القيمة المنطقية true): مع `true` يأخذ Express **أقصى يسار**
+  // X-Forwarded-For (يتحكم بها العميل) كـreq.ip، فيتجاوز مهاجمٌ حدودَ المعدّل المبنية على IP
+  // (count.auth PIN، auth.login، platformAdmin.login) بتدوير الترويسة في كل طلب — و
+  // express-rate-limit يفهرس بـreq.ip. مع `1` يُطابق nginx واحداً ⇒ req.ip = IP العميل الحقيقي
+  // كما يسجّله البروكسي ويُتجاهَل أي XFF محقون. (كانت 1 ثم صارت true بالخطأ في b757623.)
+  const trustProxy = process.env.TRUST_PROXY === "1" || process.env.HOST === "127.0.0.1" ? 1 : false;
   app.set("trust proxy", trustProxy);
 
   // تسجيل بنيوي + معرّف لكل طلب (req.id) يُستعمل للربط في الأخطاء.
