@@ -4,7 +4,7 @@
 import { count } from "drizzle-orm";
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { adminProcedure, publicProcedure, router } from "../trpc";
+import { adminProcedure, protectedProcedure, publicProcedure, router } from "../trpc";
 import type { TrpcContext } from "../context";
 import { getDb, isMultiTenantModeActive } from "../db";
 import { branches, users, products, customers, invoices } from "../../drizzle/schema";
@@ -12,6 +12,7 @@ import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
 import { getConfiguredTarget, describeTarget } from "../services/printService";
 import * as maint from "../services/maintenanceService";
+import { getTaxSettings, updateTaxSettings } from "../services/taxSettingsService";
 
 /** يتحقّق من كلمة مرور المدير الحالية (دفاع ضد النقر الخاطئ/جلسة مسروقة). */
 function assertPassword(ctx: TrpcContext, password: string) {
@@ -143,5 +144,30 @@ export const systemRouter = router({
       await maint.runReset(!!input.seed);
       await logAudit(ctx, { action: "system.reset", entityType: "system", entityId: input.seed ? "seeded" : "empty" });
       return { ok: true as const };
+    }),
+
+  /** إعدادات الضريبة الحالية (أيّ مستخدم مُصادَق — تحتاجها شاشات البيع/الشراء الجديدة لتهيئة الافتراضي). */
+  getTaxSettings: protectedProcedure.query(() => getTaxSettings()),
+
+  /** تحديث إعدادات الضريبة (للمدير فقط). */
+  updateTaxSettings: adminProcedure
+    .input(
+      z.object({
+        enabledByDefault: z.boolean(),
+        defaultTaxRatePercent: z.string().min(1),
+        taxRegistrationNumber: z.string().trim().max(50).optional().nullable(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const before = await getTaxSettings();
+      const settings = await updateTaxSettings(input, { userId: ctx.user.id });
+      await logAudit(ctx, {
+        action: "system.taxSettings.update",
+        entityType: "system",
+        entityId: null,
+        oldValue: before,
+        newValue: settings,
+      });
+      return { ok: true as const, settings };
     }),
 });

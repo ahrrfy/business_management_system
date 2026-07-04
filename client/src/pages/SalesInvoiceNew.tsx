@@ -107,6 +107,18 @@ export default function SalesInvoiceNew() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.data?.branchId]);
 
+  // تهيئة تفعيل/نسبة الضريبة من إعدادات النظام (مرّة واحدة فقط، فاتورة جديدة) — يبقى المستخدم
+  // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم).
+  const taxDefaultsAppliedRef = useRef(false);
+  const taxSettingsQuery = trpc.system.getTaxSettings.useQuery();
+  useEffect(() => {
+    if (!taxDefaultsAppliedRef.current && taxSettingsQuery.data) {
+      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: taxSettingsQuery.data.enabledByDefault });
+      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: taxSettingsQuery.data.defaultTaxRatePercent });
+      taxDefaultsAppliedRef.current = true;
+    }
+  }, [taxSettingsQuery.data]);
+
   // وردية مفتوحة للفرع (إن وُجدت) ⇒ تُسجَّل الدفعة النقدية في صندوق الوردية.
   const currentShift = trpc.shifts.current.useQuery(
     { branchId: state.branchId },
@@ -250,6 +262,9 @@ export default function SalesInvoiceNew() {
   function handleReset() {
     dispatch({ type: "RESET", invoiceType: INVOICE_TYPE });
     setClientRequestId(crypto.randomUUID());
+    // RESET يُعيد taxEnabled/taxRatePercent للافتراضي المُدرَج في createInitialState (false/"0") —
+    // نُعيد تفعيل تطبيق إعدادات الضريبة الفعلية على الفاتورة التالية في نفس الجلسة.
+    taxDefaultsAppliedRef.current = false;
   }
 
   function handleApprove() {

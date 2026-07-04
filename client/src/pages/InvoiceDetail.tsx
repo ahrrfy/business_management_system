@@ -89,6 +89,8 @@ export default function InvoiceDetail() {
   const invoiceId = Number(params.id);
   const utils = trpc.useUtils();
   const inv = trpc.sales.get.useQuery({ invoiceId }, { enabled: Number.isFinite(invoiceId) });
+  // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على الفاتورة بجانب رقم العميل الضريبي إن وُجد.
+  const taxSettings = trpc.system.getTaxSettings.useQuery();
 
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
@@ -192,6 +194,7 @@ export default function InvoiceDetail() {
             invoiceNumber: data.invoiceNumber,
             invoiceDate: data.invoiceDate,
             customerName: data.customerName,
+            companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
             subtotal: data.subtotal,
             discountAmount: data.discountAmount,
             taxAmount: data.taxAmount,

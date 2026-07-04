@@ -24,6 +24,8 @@ export interface InvoicePrintData {
   customerPhone?: string | null;
   customerAddress?: string | null;
   customerTaxId?: string | null;
+  /** الرقم الضريبي **للشركة** (من إعدادات النظام) — يُطبع في «معلومات ضريبية» بجانب رقم العميل. */
+  companyTaxId?: string | null;
   paymentMethod?: string | null;
   notes?: string | null;
   items: {
@@ -76,7 +78,8 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     ...(d.customerPhone ? [{ label: 'الهاتف', value: d.customerPhone }] : []),
   ];
   const taxFields = [
-    ...(d.customerTaxId ? [{ label: 'الرقم الضريبي', value: d.customerTaxId }] : []),
+    ...(d.companyTaxId ? [{ label: 'الرقم الضريبي للشركة', value: d.companyTaxId }] : []),
+    ...(d.customerTaxId ? [{ label: 'الرقم الضريبي للعميل', value: d.customerTaxId }] : []),
     { label: 'رقم الفاتورة', value: d.invoiceNumber },
     { label: 'التاريخ', value: date },
     ...(d.paymentMethod ? [{ label: 'طريقة الدفع', value: d.paymentMethod }] : []),

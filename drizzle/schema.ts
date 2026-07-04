@@ -2448,3 +2448,17 @@ export const deliveryConsignments = mysqlTable(
 );
 export type DeliveryConsignment = typeof deliveryConsignments.$inferSelect;
 export type InsertDeliveryConsignment = typeof deliveryConsignments.$inferInsert;
+
+/** إعدادات الضريبة (صفّ singleton واحد id=1): افتراضي تفعيل الضريبة على الفاتورة الجديدة +
+ *  نسبتها + الرقم الضريبي للشركة (يُطبَع على الفاتورة). العراق VAT=0% افتراضياً — enabledByDefault
+ *  يبقى false ما لم يُفعِّله المدير صراحةً. يُنشَأ الصفّ كسولاً (get-or-create) عند أول قراءة. */
+export const taxSettings = mysqlTable("taxSettings", {
+  id: int("id").autoincrement().primaryKey(),
+  enabledByDefault: boolean("enabledByDefault").default(false).notNull(),
+  defaultTaxRatePercent: decimal("defaultTaxRatePercent", { precision: 5, scale: 2 }).default("0").notNull(),
+  taxRegistrationNumber: varchar("taxRegistrationNumber", { length: 50 }),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type TaxSettings = typeof taxSettings.$inferSelect;
+export type InsertTaxSettings = typeof taxSettings.$inferInsert;

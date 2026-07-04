@@ -61,6 +61,18 @@ export default function PurchaseNew() {
     }
   }, [me.data, state.branchId]);
 
+  // تهيئة تفعيل/نسبة الضريبة من إعدادات النظام (مرّة واحدة فقط، أمر شراء جديد) — يبقى المستخدم
+  // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم).
+  const taxDefaultsAppliedRef = useRef(false);
+  const taxSettingsQuery = trpc.system.getTaxSettings.useQuery();
+  useEffect(() => {
+    if (!taxDefaultsAppliedRef.current && taxSettingsQuery.data) {
+      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: taxSettingsQuery.data.enabledByDefault });
+      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: taxSettingsQuery.data.defaultTaxRatePercent });
+      taxDefaultsAppliedRef.current = true;
+    }
+  }, [taxSettingsQuery.data]);
+
   /* ─── client-side idempotency token ────────────────────────────── */
   // معرّف العميل للطلب — جاهز للمستقبل (الراوتر الحالي لا يستهلكه؛ يُحفظ في memory للجلسة).
   const [clientRequestId] = useState(() => crypto.randomUUID());
@@ -189,6 +201,9 @@ export default function PurchaseNew() {
       if (e.key === "F12") {
         e.preventDefault();
         dispatch({ type: "RESET", invoiceType: INVOICE_TYPE });
+        // RESET يُعيد taxEnabled/taxRatePercent للافتراضي المُدرَج في createInitialState (false/"0")
+        // — نُعيد تفعيل تطبيق إعدادات الضريبة الفعلية على أمر الشراء التالي في نفس الجلسة.
+        taxDefaultsAppliedRef.current = false;
         return;
       }
       // Esc ⇒ إغلاق Bulk Picker إن كان مفتوحاً
