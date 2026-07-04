@@ -1,9 +1,7 @@
 // دلالات الرصيد الافتتاحي المشتركة بين العملاء والموردين (§٥.٢) + مفتاح التكرار داخل الدفعة.
-import { accountingEntries } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { localTodayDate } from "../dateRange";
 import { money, round2, toDbMoney } from "../money";
-import { assertPeriodOpen } from "../periodLockService";
+import { postOpeningEntry as postOpeningEntryShared } from "../openingBalance";
 import type { ImportOptions } from "./types";
 import { norm } from "./helpers";
 
@@ -30,29 +28,15 @@ function storedOpeningBalance(r: PartyBalanceFields, options: ImportOptions): st
 
 /** قيد دفتر مرجعي يرسّخ الرصيد الافتتاحي المستورد (قرار التحكيم §٩):
  *  بدونه يَعُدّ reconcile كل مستورد برصيدٍ «انحرافاً» زائفاً دائماً من يوم الاستيراد.
- *  dedupeKey فريد على مستوى القاعدة ⇒ ازدواج القيد مستحيل بنيوياً مهما تكرّر الاستيراد. */
+ *  يفوّض للآلية المشتركة (server/services/openingBalance.ts) بملاحظة الاستيراد —
+ *  نفس القيد/المفتاح الذي يستعمله الإدخال اليدوي (مصدر حقيقة واحد). */
 async function postOpeningEntry(
   tx: Tx,
   party: "CUSTOMER" | "SUPPLIER",
   partyId: number,
   amount: string,
 ): Promise<void> {
-  await assertPeriodOpen(tx, localTodayDate());
-  await tx.insert(accountingEntries).values({
-    entryType: "OPENING",
-    customerId: party === "CUSTOMER" ? partyId : null,
-    supplierId: party === "SUPPLIER" ? partyId : null,
-    revenue: toDbMoney("0"),
-    cost: toDbMoney("0"),
-    profit: toDbMoney("0"),
-    taxAmount: toDbMoney("0"),
-    amount,
-    // localTodayDate() يَمنع انزياح OPENING ليوم سابق عند الاستيراد بعد منتصف الليل
-    // (new Date() خام تَستخدم UTC؛ على عمود DATE على بغداد +٠٣:٠٠ يَنزاح يوماً واحداً).
-    entryDate: localTodayDate(),
-    notes: "رصيد افتتاحي (استيراد من النظام القديم)",
-    dedupeKey: `OPENING:${party}:${partyId}`,
-  });
+  await postOpeningEntryShared(tx, party, partyId, amount, "رصيد افتتاحي (استيراد من النظام القديم)");
 }
 
 // مفتاح التكرار داخل الدفعة (§٥.٢/§٤.٣.٤-ب): legacyCode إن وُجد ← (الهاتف+الاسم) ← الاسم.

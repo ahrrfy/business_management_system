@@ -91,15 +91,18 @@ export const customerRouter = router({
         defaultPriceTier: priceTier.default("RETAIL"),
         creditLimit: z.string().nullish(),
         notes: z.string().nullish(),
+        // رصيد افتتاحي (حقل مالي مدير فقط — يُجرّد للكاشير أدناه).
+        openingBalance: z.string().nullish(),
+        openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // AUTHZ-3: حدّ الائتمان حقل مدير (محجوب عن الكاشير قراءةً عبر maskCustomerSensitive) ⇒ لا يَضبطه
-      // الكاشير كتابةً. نُهمله لغير المدير/الأدمن (المدير يَضبطه لاحقاً عبر update = managerProcedure).
+      // AUTHZ-3: حدّ الائتمان + الرصيد الافتتاحي حقلان ماليّان للمدير (محجوبان عن الكاشير) ⇒ لا يَضبطهما
+      // الكاشير كتابةً. للكاشير نُثبّت الائتمان "0" (نقدي فقط) ونُجرّد الرصيد الافتتاحي (null ⇒ لا قيد).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      const safeInput = elevated ? input : { ...input, creditLimit: null };
+      const safeInput = elevated ? input : { ...input, creditLimit: "0", openingBalance: null };
       const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null } });
+      await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: elevated && !!input.openingBalance } });
       // التوافق: المستهلكون القدامى يقرؤون `.id` (مثل WorkOrderNew)؛ نُبقي الكليهما.
       return { id: r.customerId, customerId: r.customerId };
     }),

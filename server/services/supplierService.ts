@@ -7,6 +7,7 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
 
 export interface CreateSupplierInput {
   name: string;
@@ -29,6 +30,9 @@ export interface CreateSupplierInput {
   rating?: number | null;
   iban?: string | null;
   bankName?: string | null;
+  // رصيد افتتاحي اختياري (مبلغ غير سالب) + اتجاه الدين. يُنشئ قيد OPENING مرجعياً.
+  openingBalance?: string | null;
+  openingBalanceDirection?: OpeningDirection;
 }
 export interface UpdateSupplierInput extends Partial<CreateSupplierInput> {
   supplierId: number;
@@ -66,6 +70,12 @@ export async function createSupplier(input: CreateSupplierInput, _actor: Actor) 
     const minOrder = input.minOrderAmount?.trim();
     if (minOrder && !/^\d+(\.\d{1,2})?$/.test(minOrder))
       throw new TRPCError({ code: "BAD_REQUEST", message: "الحد الأدنى للطلب غير صالح" });
+    // رصيد افتتاحي موقَّع (المورّد: موجب = «علينا له»). "0.00" حين لا رصيد.
+    const openingBalance = signedOpeningBalance(
+      "SUPPLIER",
+      input.openingBalance,
+      input.openingBalanceDirection ?? "OWED_BY_US",
+    );
     const res = await tx.insert(suppliers).values({
       name,
       phone,
@@ -84,10 +94,15 @@ export async function createSupplier(input: CreateSupplierInput, _actor: Actor) 
       rating,
       iban: norm(input.iban),
       bankName: norm(input.bankName),
+      currentBalance: openingBalance,
       notes: norm(input.notes),
       isActive: true,
     });
     const supplierId = extractInsertId(res);
+    // قيد OPENING المرجعي داخل نفس المعاملة (ذرّي مع إنشاء المورّد).
+    if (!money(openingBalance).isZero()) {
+      await postOpeningEntry(tx, "SUPPLIER", supplierId, openingBalance);
+    }
     return { supplierId, id: supplierId };
   });
 }

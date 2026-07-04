@@ -110,7 +110,10 @@ export default function CustomerEdit() {
       district: district.trim() || null,
       customerType,
       defaultPriceTier,
-      creditLimit: creditLimit.trim() || null,
+      // فارغ ⇒ "0" (نقدي فقط) لا null (بلا حدّ). شاشة التعديل لا تملك بعد وضع «بلا سقف»
+      // الصريح (نظير CustomerNew) — إرسال null هنا كان سيقلب العميل صامتاً إلى ائتمان غير
+      // محدود بعد إصلاح دلالة سقف الائتمان في customerService. (توحيد الوضع الثلاثي في التعديل = عمل لاحق.)
+      creditLimit: creditLimit.trim() || "0",
       notes: notes.trim() || null,
     });
   }
