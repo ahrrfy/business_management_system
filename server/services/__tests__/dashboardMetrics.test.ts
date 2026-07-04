@@ -8,6 +8,8 @@ import { getDashboardMetrics } from "../reportsService";
 const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
+  "arReminders",
+  "workOrders",
   "accountingEntries",
   "receipts",
   "inventoryMovements",
@@ -126,5 +128,119 @@ describe("getDashboardMetrics", () => {
     const m = await getDashboardMetrics({ branchId: 1 });
     expect(m.overdueAR.count).toBe(1);
     expect(m.overdueAR.total).toBe("240.00");
+  });
+
+  it("(ج) morningBrief.arRemindersDue = عدد العملاء المؤهَّلين اليوم (≥٧ أيام + خارج التبريد)", async () => {
+    const d = db();
+    await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
+    await d.insert(s.customers).values([
+      { id: 1, name: "متأخّر ١٥ يوماً", phone: "07901234567", defaultPriceTier: "RETAIL", currentBalance: "0" },
+      { id: 2, name: "متأخّر ٥ أيام (تحت الحدّ)", phone: "07907654321", defaultPriceTier: "RETAIL", currentBalance: "0" },
+    ]);
+    const overdue = await createSale(
+      { branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] },
+      actor,
+    );
+    await d.execute(sql`
+      UPDATE invoices SET dueDate = DATE_SUB(UTC_DATE(), INTERVAL 15 DAY)
+      WHERE id = ${overdue.invoiceId}
+    `);
+    const recent = await createSale(
+      { branchId: 1, customerId: 2, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] },
+      actor,
+    );
+    await d.execute(sql`
+      UPDATE invoices SET dueDate = DATE_SUB(UTC_DATE(), INTERVAL 5 DAY)
+      WHERE id = ${recent.invoiceId}
+    `);
+
+    const m = await getDashboardMetrics({ branchId: 1 });
+    expect(m.morningBrief.arRemindersDue).toBe(1); // فقط العميل ١
+    expect(m.morningBrief.promisedToday).toBe(0);
+  });
+
+  it("(د) morningBrief.promisedToday يعدّ العملاء الموعودين اليوم بالضبط", async () => {
+    const d = db();
+    await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100 });
+    await d.insert(s.customers).values({
+      id: 1,
+      name: "موعود اليوم",
+      phone: "07901234567",
+      defaultPriceTier: "RETAIL",
+      currentBalance: "0",
+    });
+    const sale = await createSale(
+      { branchId: 1, customerId: 1, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 2, quantity: "1" }] },
+      actor,
+    );
+    await d.execute(sql`
+      UPDATE invoices SET dueDate = DATE_SUB(UTC_DATE(), INTERVAL 20 DAY)
+      WHERE id = ${sale.invoiceId}
+    `);
+    // تخطٍّ سابق بوعد اليوم ⇒ isPromiseDue=true
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    await d.insert(s.arReminders).values({
+      customerId: 1,
+      branchId: 1,
+      totalUnpaidSnapshot: "120.00",
+      oldestInvoiceDate: todayYmd,
+      daysOverdue: 20,
+      messageBody: "",
+      status: "SKIPPED",
+      skipReason: "وعد اليوم",
+      promisedDate: todayYmd,
+      createdBy: 1,
+    });
+
+    const m = await getDashboardMetrics({ branchId: 1 });
+    expect(m.morningBrief.arRemindersDue).toBe(1);
+    expect(m.morningBrief.promisedToday).toBe(1);
+  });
+
+  it("(هـ) morningBrief.overdueWorkOrders يعدّ أوامر متجاوزة dueDate وحالتها غير مُسلَّمة/ملغاة", async () => {
+    const d = db();
+    await d.insert(s.customers).values({ id: 1, name: "عميل ورشة", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    // ٤ أوامر شغل:
+    //   1: IN_PROGRESS، dueDate = أمس ⇒ متأخّر ✓
+    //   2: READY، dueDate = قبل ٥ أيام ⇒ متأخّر ✓
+    //   3: DELIVERED، dueDate = قبل ١٠ أيام ⇒ يُستثنى (مُسلَّم)
+    //   4: IN_PROGRESS، dueDate = بعد ٣ أيام ⇒ يُستثنى (لم يتأخّر بعد)
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const past5 = new Date(Date.now() - 5 * 86_400_000).toISOString().slice(0, 10);
+    const past10 = new Date(Date.now() - 10 * 86_400_000).toISOString().slice(0, 10);
+    const future3 = new Date(Date.now() + 3 * 86_400_000).toISOString().slice(0, 10);
+    await d.insert(s.workOrders).values([
+      { id: 1, orderNumber: "WO-001", branchId: 1, customerId: 1, status: "IN_PROGRESS", dueDate: yesterday, title: "طلبية اختبار", subtotal: "100", total: "100" },
+      { id: 2, orderNumber: "WO-002", branchId: 1, customerId: 1, status: "READY", dueDate: past5, title: "طلبية اختبار", subtotal: "100", total: "100" },
+      { id: 3, orderNumber: "WO-003", branchId: 1, customerId: 1, status: "DELIVERED", dueDate: past10, title: "طلبية اختبار", subtotal: "100", total: "100" },
+      { id: 4, orderNumber: "WO-004", branchId: 1, customerId: 1, status: "IN_PROGRESS", dueDate: future3, title: "طلبية اختبار", subtotal: "100", total: "100" },
+    ]);
+
+    const m = await getDashboardMetrics({ branchId: 1 });
+    expect(m.morningBrief.overdueWorkOrders).toBe(2);
+  });
+
+  it("(و) عزل الفرع: أوامر فرع آخر متأخّرة لا تُحسَب في فرعي", async () => {
+    const d = db();
+    await d.insert(s.customers).values({ id: 1, name: "ع", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    await d.insert(s.workOrders).values([
+      { id: 10, orderNumber: "WO-B1", branchId: 1, customerId: 1, status: "IN_PROGRESS", dueDate: yesterday, title: "طلبية اختبار", subtotal: "100", total: "100" },
+      { id: 11, orderNumber: "WO-B2", branchId: 2, customerId: 1, status: "IN_PROGRESS", dueDate: yesterday, title: "طلبية اختبار", subtotal: "100", total: "100" },
+    ]);
+    const m1 = await getDashboardMetrics({ branchId: 1 });
+    const m2 = await getDashboardMetrics({ branchId: 2 });
+    expect(m1.morningBrief.overdueWorkOrders).toBe(1);
+    expect(m2.morningBrief.overdueWorkOrders).toBe(1);
+    // بلا فلتر فرع ⇒ يجمع الاثنين
+    const mAll = await getDashboardMetrics({});
+    expect(mAll.morningBrief.overdueWorkOrders).toBe(2);
+  });
+
+  it("(ز) قاعدة فارغة ⇒ كل الحقول صفر (لا انهيار)", async () => {
+    const m = await getDashboardMetrics({ branchId: 1 });
+    expect(m.morningBrief.arRemindersDue).toBe(0);
+    expect(m.morningBrief.promisedToday).toBe(0);
+    expect(m.morningBrief.overdueWorkOrders).toBe(0);
   });
 });
