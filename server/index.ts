@@ -20,6 +20,7 @@ import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
 import { csrfGuard } from "./middleware/csrf";
+import { sendTrpcError } from "./middleware/trpcError";
 import { printRouter } from "./printRoute";
 import { backupRouter } from "./backupRoutes";
 import { channelWebhooksRouter, companyChannelWebhooksRouter } from "./routes/channelWebhooks";
@@ -115,6 +116,17 @@ async function startServer() {
     app.use(cors({ origin: origins, credentials: true }));
   }
 
+  // ردّ 429 موحَّد لكل محدِّدات المعدّل: على /api/trpc بغلاف tRPC الذي يفهمه العميل
+  // (وإلا رمى «Unable to transform response from server» فحجب السبب الحقيقي عن
+  // المستخدم — علّة دخول اللوحي ٤/٧)، وعلى بقية الأسطح `{error}` كما كانت.
+  const rateLimitHandler = (message: string) => (req: Request, res: Response) => {
+    if (req.baseUrl.startsWith("/api/trpc") || req.path.startsWith("/api/trpc")) {
+      sendTrpcError(res, { httpStatus: 429, code: "TOO_MANY_REQUESTS", message });
+    } else {
+      res.status(429).json({ error: message });
+    }
+  };
+
   // حدّ عام للطلبات (حماية من الإغراق).
   app.use(
     rateLimit({
@@ -122,7 +134,7 @@ async function startServer() {
       limit: Number(process.env.RATE_LIMIT_MAX ?? 1000),
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      message: { error: "محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة." },
+      handler: rateLimitHandler("محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة."),
       // لا تَعُدّ الأصول الساكنة المُجزّأة (immutable، تُخبَّأ في المتصفّح) ضمن الحدّ:
       // فتح أي صفحة يجلب عشرات حُزَم الأصول دفعةً ⇒ كان يستنزف حدّ المعدّل ويُعلّق التحميل.
       skip: (req) => req.path.startsWith("/assets/"),
@@ -161,7 +173,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("auth.login"),
-      message: { error: "محاولات دخول كثيرة، انتظر ١٥ دقيقة." },
+      handler: rateLimitHandler("محاولات دخول كثيرة، انتظر ١٥ دقيقة ثم أعد المحاولة."),
     })
   );
 
@@ -174,7 +186,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("count.auth"),
-      message: { error: "محاولات دخول كثيرة لبوابة العدّ، انتظر ١٥ دقيقة." },
+      handler: rateLimitHandler("محاولات دخول كثيرة لبوابة العدّ، انتظر ١٥ دقيقة."),
     })
   );
 
@@ -189,7 +201,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("platformAdmin.login"),
-      message: { error: "محاولات دخول كثيرة، انتظر ١٥ دقيقة." },
+      handler: rateLimitHandler("محاولات دخول كثيرة، انتظر ١٥ دقيقة."),
     })
   );
 
@@ -202,7 +214,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("kiosk.deviceLogin"),
-      message: { error: "محاولات كثيرة لتفعيل جهاز الكشك، انتظر قليلاً." },
+      handler: rateLimitHandler("محاولات كثيرة لتفعيل جهاز الكشك، انتظر قليلاً."),
     })
   );
 
@@ -216,7 +228,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("recruitment.submit"),
-      message: { error: "طلبات تقديم كثيرة، انتظر قليلاً ثم أعد المحاولة." },
+      handler: rateLimitHandler("طلبات تقديم كثيرة، انتظر قليلاً ثم أعد المحاولة."),
     })
   );
 
@@ -240,7 +252,11 @@ async function startServer() {
         if (PUBLIC_SENSITIVE.some((s) => p.includes(s))) count++;
       }
       if (count > 1) {
-        res.status(429).json({ error: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة." });
+        sendTrpcError(res, {
+          httpStatus: 429,
+          code: "TOO_MANY_REQUESTS",
+          message: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة.",
+        });
         return;
       }
     }
