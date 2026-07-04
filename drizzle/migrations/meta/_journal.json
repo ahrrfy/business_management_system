@@ -302,6 +302,13 @@
       "when": 1782960000000,
       "tag": "0042_user_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "5",
+      "when": 1783161970655,
+      "tag": "0043_customer_notes",
+      "breakpoints": true
     }
   ]
 }

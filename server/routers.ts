@@ -12,6 +12,7 @@ import { supplierRouter } from "./routers/supplierRouter";
 import { branchRouter } from "./routers/branchRouter";
 import { workOrderRouter } from "./routers/workOrderRouter";
 import { customerRouter } from "./routers/customerRouter";
+import { customerNoteRouter } from "./routers/customerNoteRouter";
 import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
@@ -65,6 +66,7 @@ export const appRouter = router({
   branches: branchRouter,
   workOrders: workOrderRouter,
   customers: customerRouter,
+  customerNotes: customerNoteRouter,
   expenses: expenseRouter,
   reports: reportsRouter,
   quotations: quotationRouter,

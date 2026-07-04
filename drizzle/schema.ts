@@ -206,6 +206,34 @@ export const customers = mysqlTable(
 export type Customer = typeof customers.$inferSelect;
 export type InsertCustomer = typeof customers.$inferInsert;
 
+/**
+ * ملاحظات متابعة العملاء — سجلّ حرّ (مكالمة/وعد بالدفع/متابعة تسليم) لكل عميل، مع تاريخ
+ * متابعة اختياري وحالة إنجاز. ليست جزءاً من الدفتر المالي (لا قيد محاسبي) — أداة عمل يومية
+ * لفريق المبيعات/الكاشير. `followUpDate,isResolved` فهرس مركّب يخدم استعلام «تذكيرات اليوم»
+ * (كل الفروع، غير مُنجَزة، تاريخ ≤ اليوم) بلا مسح جدولي.
+ */
+export const customerNotes = mysqlTable(
+  "customerNotes",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
+    note: text("note").notNull(),
+    followUpDate: date("followUpDate", { mode: "string" }),
+    isResolved: boolean("isResolved").default(false).notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    customerIdx: index("idx_customer_notes_customer").on(table.customerId),
+    followUpIdx: index("idx_customer_notes_followup").on(table.followUpDate, table.isResolved),
+  })
+);
+
+export type CustomerNote = typeof customerNotes.$inferSelect;
+export type InsertCustomerNote = typeof customerNotes.$inferInsert;
+
 export const suppliers = mysqlTable(
   "suppliers",
   {
