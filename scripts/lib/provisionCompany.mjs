@@ -85,12 +85,25 @@ export async function provisionCompany(opts) {
 
   const dbUrl = `mysql://${encodeURIComponent(dbUser)}:${encodeURIComponent(dbPassword)}@${opts.dbHost}:${opts.dbPort}/${dbName}`;
 
+  // مراجعة حيّة (٤/٧): db:push/db:migrate:extra/baseline-migrations/seed يجب أن تعمل كلها في
+  // وضع "شركة واحدة عادية" على قاعدة الشركة الجديدة الفارغة — لا معنى لتعدّد الشركات هنا (لا
+  // سياق AsyncLocalStorage يغلّفها، هي عمليات خام مستقلّة). لكن CONTROL_DATABASE_URL غالباً
+  // مضبوط في env هذه العملية نفسها (مطلوب لاستدعاء company-new.mjs/العامل ولتسجيل الشركة لاحقاً)
+  // — تسرّبه بالخطأ لهذه العمليات الفرعية يجعل getDb() (server/db.ts) يظنّ تعدّد الشركات مفعّلاً
+  // فيرفض العمل بلا سياق شركة (seed.ts لا يملك أي سياق) فيفشل seed دائماً.
+  // ⚠️ حذف المفتاح من الكائن **لا يكفي**: server/seed.ts نفسه يستورد dotenv/config، وdotenv
+  // بشكل افتراضي "يملأ الفراغ" لأي مفتاح **غائب** من process.env بقراءته مباشرةً من ملف .env
+  // على القرص — فيُعاد تسريب القيمة من الملف حتى لو حُذفت من كائن env هنا. الحلّ: تعيينه
+  // صراحةً لسلسلة فارغة (قيمة "موجودة" فعلاً ⇒ dotenv يتخطّاها ولا يقرأ الملف؛ وفارغة ⇒
+  // isMultiTenantModeActive() تُقيِّمها false تماماً كغيابها). اكتُشفت فعلياً بتشغيل توفير حيّ.
+  const cleanEnv = { ...process.env, CONTROL_DATABASE_URL: "" };
+
   function runWithEnv(cmd, args, extraEnv) {
     execFileSync(cmd, args, {
       cwd: root,
       stdio: "inherit",
       shell: process.platform === "win32",
-      env: { ...process.env, ...extraEnv },
+      env: { ...cleanEnv, ...extraEnv },
     });
   }
 
