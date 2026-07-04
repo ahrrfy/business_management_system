@@ -71,6 +71,7 @@ export default function SupplierNew() {
   });
 
   function submit() {
+    if (create.isPending) return; // يمنع الإرسال المزدوج عبر Ctrl+S/تكرار المفتاح (لا idempotency خادمية بعد).
     setError("");
     if (!name.trim()) {
       setError("اسم المورّد مطلوب.");

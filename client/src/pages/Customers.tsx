@@ -42,6 +42,10 @@ function legacyCodeOf(r: { legacyCode?: string | null }): string | null {
 
 export default function Customers() {
   const utils = trpc.useUtils();
+  // للكاشير يُحجب سقف الائتمان خادمياً (maskCustomerSensitive ⇒ null) — فـnull عنده ليس «بلا حدّ»
+  // بل «مخفي»؛ لذا لا نعرض «بلا حدّ» إلا للمدير/الإدمن حيث null=ائتمان غير محدود فعلاً.
+  const me = trpc.auth.me.useQuery();
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
   const [q, setQ] = useState("");
   const [customerType, setCustomerType] = useState<"" | (typeof TYPE_OPTIONS)[number]>("");
   const [priceTier, setPriceTier] = useState<"" | "RETAIL" | "WHOLESALE" | "GOVERNMENT">("");
@@ -125,7 +129,8 @@ export default function Customers() {
       "الهاتف": r.phone ?? "",
       "المدينة/المنطقة": [r.city, r.district].filter(Boolean).join(" / "),
       "فئة السعر": TIER_LABEL[r.defaultPriceTier] ?? r.defaultPriceTier ?? "",
-      "سقف الائتمان": Number(r.creditLimit ?? 0),
+      // للمدير null=«بلا حدّ» (لا يُعرَض كصفر)؛ للكاشير null=محجوب فيبقى كالسابق.
+      "سقف الائتمان": isElevated && r.creditLimit == null ? "بلا حدّ" : Number(r.creditLimit ?? 0),
       "الرصيد الحالي": Number(r.currentBalance ?? 0),
       "نشط": r.isActive ? "نعم" : "لا",
     }));
@@ -270,7 +275,7 @@ export default function Customers() {
                 { key: "phone", header: "الهاتف" },
                 { key: "city", header: "المدينة", map: (r) => [r.city, r.district].filter(Boolean).join(" / ") || "" },
                 { key: "defaultPriceTier", header: "فئة السعر" },
-                { key: "creditLimit", header: "سقف الائتمان", map: (r) => Number(r.creditLimit ?? 0) },
+                { key: "creditLimit", header: "سقف الائتمان", map: (r) => (isElevated && r.creditLimit == null ? "بلا حدّ" : Number(r.creditLimit ?? 0)) },
                 { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance ?? 0) },
                 { key: "isActive", header: "نشط", map: (r) => (r.isActive ? "نعم" : "لا") },
               ],
@@ -335,7 +340,7 @@ export default function Customers() {
                     <td className="p-2"><CopyInline value={c.phone} /></td>
                     <td className="p-2 text-xs">{[c.city, c.district].filter(Boolean).join(" / ") || "—"}</td>
                     <td className="p-2 text-xs">{TIER_LABEL[c.defaultPriceTier] ?? c.defaultPriceTier}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(c.creditLimit)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{isElevated && c.creditLimit == null ? "بلا حدّ" : fmt(c.creditLimit)}</td>
                     <td className="p-2 text-start">
                       <BalanceCell amount={c.currentBalance} entityType="customer" />
                     </td>

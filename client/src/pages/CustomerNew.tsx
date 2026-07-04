@@ -100,6 +100,7 @@ export default function CustomerNew() {
     tierTouched && defaultPriceTier !== suggestedTier(customerType);
 
   function submit() {
+    if (create.isPending) return; // يمنع الإرسال المزدوج عبر Ctrl+S/تكرار المفتاح (لا idempotency خادمية بعد).
     setError("");
     if (!name.trim()) {
       setError("اسم العميل مطلوب.");
