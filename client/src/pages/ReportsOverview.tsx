@@ -257,8 +257,8 @@ export default function ReportsOverview() {
           icon={Users}
           rows={topAr}
           empty="لا ذمم مدينة متأخّرة."
-          href="/reports/credit-exposure"
-          hrefLabel="التعرّض الائتماني"
+          href="/reports/ar-reminders"
+          hrefLabel="تذكيرات الذمم"
           render={(x) => ({ name: x.customerName, amount: x.unpaidTotal, sub: x.oldestInvoiceDate ? `أقدم: ${x.oldestInvoiceDate}` : "" })}
         />
         <Leaderboard
