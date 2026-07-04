@@ -89,6 +89,43 @@ try {
     ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
   `);
   console.log("✓ جدول platformAuditLogs جاهز.");
+
+  // طلبات توفير شركة عبر الويب — طابور بين /platform-admin (بلا صلاحيات مرتفعة) وعامل
+  // منفصل (company-provision-worker.mjs بصلاحيات docker+root). يطابق تعريف Drizzle في
+  // controlSchema.ts (تطابق يدويّ مزدوج — راجع تعليق الملف).
+  //
+  // مراجعة عدائية (٣/٧): فحص تفرّد الرمز في createProvisionRequest (SELECT ثم INSERT) كان
+  // عرضة لسباق TOCTOU حقيقي — طلبان متزامنان بنفس الرمز يمرّان الفحص معاً فيُنشئان صفّين
+  // PENDING، فيُنفَّذ التوفير مرّتين ويُعاد تعيين كلمة مرور قاعدة الشركة الحيّة من المحاولة
+  // الثانية (ALTER USER) بعد أن سُجّلت الأولى بكلمة مرور مختلفة ⇒ عطل حقيقي على تلك الشركة.
+  // الإصلاح: عمود مولَّد STORED = الرمز فقط أثناء PENDING/PROCESSING (NULL غير ذلك) + فهرس
+  // فريد عليه — MySQL يستثني NULL من قيود UNIQUE، فيُسمح بعدّة صفوف FAILED/DONE بنفس الرمز
+  // (نمط إعادة المحاولة القائم) لكن **يستحيل** وجود أكثر من صفّ PENDING/PROCESSING واحد بنفس
+  // الرمز في آن — قيد DB حقيقي لا فحص تطبيقي قابل للسباق (نفس نمط searchNorm GENERATED STORED).
+  await conn.query(`
+    CREATE TABLE IF NOT EXISTS companyProvisionRequests (
+      id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      code VARCHAR(40) NOT NULL,
+      name VARCHAR(255) NOT NULL,
+      adminEmail VARCHAR(320) NOT NULL,
+      adminUsername VARCHAR(64) NOT NULL,
+      demo TINYINT(1) NOT NULL DEFAULT 0,
+      tempPasswordEncrypted VARCHAR(500) NULL,
+      status ENUM('PENDING','PROCESSING','DONE','FAILED') NOT NULL DEFAULT 'PENDING',
+      resultCompanyId BIGINT NULL,
+      errorMessage TEXT NULL,
+      requestedByAdminId BIGINT NOT NULL,
+      createdAt TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      startedAt TIMESTAMP NULL,
+      completedAt TIMESTAMP NULL,
+      activeCode VARCHAR(40) GENERATED ALWAYS AS (
+        CASE WHEN status IN ('PENDING','PROCESSING') THEN code ELSE NULL END
+      ) STORED,
+      INDEX idx_provision_status (status, createdAt),
+      UNIQUE KEY uq_provision_active_code (activeCode)
+    ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+  `);
+  console.log("✓ جدول companyProvisionRequests جاهز.");
 } finally {
   await conn.end();
 }

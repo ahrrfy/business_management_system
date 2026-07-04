@@ -11,6 +11,13 @@
 // تلميح: إن عطل Docker Desktop، تأكّد أن erp-mysql يعمل أولاً.
 //   docker start erp-mysql  (يدوياً عند الحاجة)
 //   أو شغّل scripts\docker-watchdog.mjs كمهمة ساعية في Task Scheduler.
+//
+// ⚠️ erp-provision-worker (تعدّد الشركات فقط — لا يُفعَّل بلا CONTROL_DATABASE_URL):
+// عملية **منفصلة تماماً** عن erp-server، بصلاحيات مرتفعة (docker exec + كلمة سرّ MySQL
+// الجذر) لا يملكها خادم الويب أبداً — راجع تعليق companyProvisionRequests في
+// server/tenancy/controlSchema.ts. **لا تنسخ متغيّرات env هذا التطبيق إلى erp-server أبداً**
+// (يُلغي كامل الفصل الأمني الذي بُني من أجله). يتطلّب DB_CONTAINER/DB_ROOT_PW/
+// INTEGRATIONS_ENCRYPTION_KEY في `.env` (أو env هذا القسم مباشرة) — غير مضبوطة افتراضياً.
 
 require("dotenv").config();
 
@@ -41,11 +48,37 @@ module.exports = {
         PORT: process.env.PORT || 3000,
         DATABASE_URL: process.env.DATABASE_URL,
         JWT_SECRET: process.env.JWT_SECRET,
+        // عمداً بلا CONTROL_DATABASE_URL/DB_ROOT_PW/docker — خادم الويب لا يوفّر شركات أبداً.
       },
       // التقاط السجلّات إلى ملفات دوّارة (يحتاج pm2-logrotate).
       log_date_format: "YYYY-MM-DD HH:mm:ss",
       error_file: "logs/erp-error.log",
       out_file: "logs/erp-out.log",
+      merge_logs: true,
+    },
+    {
+      name: "erp-provision-worker",
+      script: "scripts/company-provision-worker.mjs",
+      cwd: __dirname,
+      instances: 1,
+      exec_mode: "fork",
+      watch: false,
+      // single-shot: يعالج كل الطلبات المعلَّقة ثم يخرج — لا daemon مستمرّ. cron_restart
+      // يُعيد تشغيله دورياً بدل حلقة داخلية (أبسط: لا حالة معلّقة بين التشغيلات).
+      autorestart: false,
+      cron_restart: "*/2 * * * *", // كل دقيقتين — التوفير عملية نادرة، لا حاجة لأسرع.
+      env: {
+        NODE_ENV: "production",
+        TZ: "UTC",
+        CONTROL_DATABASE_URL: process.env.CONTROL_DATABASE_URL,
+        INTEGRATIONS_ENCRYPTION_KEY: process.env.INTEGRATIONS_ENCRYPTION_KEY,
+        DB_CONTAINER: process.env.DB_CONTAINER || "erp-mysql",
+        DB_ROOT_PW: process.env.DB_ROOT_PW,
+        DATABASE_URL: process.env.DATABASE_URL, // يُستعمَل فقط لاستنتاج host/port الافتراضيَّين لقواعد الشركات الجديدة.
+      },
+      log_date_format: "YYYY-MM-DD HH:mm:ss",
+      error_file: "logs/provision-worker-error.log",
+      out_file: "logs/provision-worker-out.log",
       merge_logs: true,
     },
   ],

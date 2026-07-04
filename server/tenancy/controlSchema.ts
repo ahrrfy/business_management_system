@@ -1,4 +1,4 @@
-import { bigint, boolean, int, json, mysqlTable, timestamp, varchar } from "drizzle-orm/mysql-core";
+import { bigint, boolean, int, json, mysqlEnum, mysqlTable, text, timestamp, varchar } from "drizzle-orm/mysql-core";
 
 /**
  * مخطّط قاعدة التحكّم (erp_control) — سجلّ الشركات لتعدّد الشركات بعزل قاعدة فعلي.
@@ -62,7 +62,7 @@ export const platformAuditLogs = mysqlTable("platformAuditLogs", {
   platformAdminId: bigint("platformAdminId", { mode: "number" }),
   // البريد كما وصل الطلب (خصوصاً للدخول الفاشل) — لقطة نصية لا FK.
   actorEmail: varchar("actorEmail", { length: 320 }),
-  // "login" | "logout" | "company.setActive" (نطاق platform_admin ضمنيّ).
+  // "login" | "logout" | "company.setActive" | "company.requestCreate" (نطاق platform_admin ضمنيّ).
   action: varchar("action", { length: 64 }).notNull(),
   // نتيجة الفعل — يميّز محاولة الدخول الناجحة من الفاشلة في نفس الجدول.
   success: boolean("success").default(true).notNull(),
@@ -77,3 +77,46 @@ export const platformAuditLogs = mysqlTable("platformAuditLogs", {
 
 export type PlatformAuditLog = typeof platformAuditLogs.$inferSelect;
 export type InsertPlatformAuditLog = typeof platformAuditLogs.$inferInsert;
+
+/**
+ * طلبات توفير شركة جديدة عبر الويب — طابور بين شاشة `/platform-admin` (تكتب طلباً
+ * فقط، صلاحيات محدودة) و`scripts/company-provision-worker.mjs` (عملية منفصلة تماماً
+ * بصلاحيات مرتفعة: docker exec + كلمة سرّ MySQL الجذر + تشغيل عمليات فرعية) — راجع
+ * تعليق أعلى platformAdminRouter.ts. **خادم الويب الحيّ لا ينفّذ التوفير الفعلي أبداً.**
+ *
+ * `tempPasswordEncrypted`: كلمة مرور مدير الشركة الحالية، تُولَّد عشوائياً وتُشفَّر فور
+ * إنشاء الطلب (نفس مفتاح `INTEGRATIONS_ENCRYPTION_KEY`) وتُعرَض للمشغّل **مرّة واحدة** في
+ * استجابة الطلب — العامل يفكّ تشفيرها عند التنفيذ ثم **يمسحها فوراً** (NULL) بعد النجاح.
+ * إعادة محاولة بعد فشل = **طلب جديد** بكلمة مرور جديدة كلياً (لا إعادة استعمال الصفّ
+ * الفاشل) — `server/seed.ts` (`ADMIN_MUST_CHANGE_PASSWORD`) يُزامن كلمة مرور المدير
+ * الموجود فعلاً إلى القيمة الجديدة إن كانت المحاولة السابقة قد أنشأته جزئياً قبل الفشل
+ * (مراجعة عدائية ٣/٧: بلا هذه المزامنة، كلمة المرور المعروضة للمشغّل بعد نجاح إعادة
+ * المحاولة لا تطابق الفعلية أبداً — قفل مدير الشركة خارج حسابه).
+ *
+ * `activeCode`: عمود مولَّد STORED (bootstrap-control-db.mjs) = الرمز فقط أثناء
+ * PENDING/PROCESSING، NULL غير ذلك — فهرس فريد عليه يمنع **بقيدٍ حقيقي في DB** (لا فحصٍ
+ * تطبيقيّ قابل للسباق) وجود أكثر من طلبٍ نشطٍ واحد بنفس الرمز في آنٍ واحد (مراجعة عدائية
+ * ٣/٧: كانت createProvisionRequest عرضة لسباق TOCTOU حقيقي أدّى لتوفير مزدوج قد يُفسد
+ * كلمة مرور قاعدة شركة حيّة). لا تُدخِله عند الإدراج — القاعدة تحسبه تلقائياً.
+ */
+export const companyProvisionRequests = mysqlTable("companyProvisionRequests", {
+  id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+  code: varchar("code", { length: 40 }).notNull(),
+  name: varchar("name", { length: 255 }).notNull(),
+  adminEmail: varchar("adminEmail", { length: 320 }).notNull(),
+  adminUsername: varchar("adminUsername", { length: 64 }).notNull(),
+  demo: boolean("demo").default(false).notNull(),
+  tempPasswordEncrypted: varchar("tempPasswordEncrypted", { length: 500 }),
+  status: mysqlEnum("status", ["PENDING", "PROCESSING", "DONE", "FAILED"]).default("PENDING").notNull(),
+  resultCompanyId: bigint("resultCompanyId", { mode: "number" }),
+  errorMessage: text("errorMessage"),
+  requestedByAdminId: bigint("requestedByAdminId", { mode: "number" }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+  startedAt: timestamp("startedAt"),
+  completedAt: timestamp("completedAt"),
+  // مولَّد بالكامل من DB (راجع التعليق أعلاه) — لا يُكتَب من التطبيق أبداً.
+  activeCode: varchar("activeCode", { length: 40 }),
+});
+
+export type CompanyProvisionRequest = typeof companyProvisionRequests.$inferSelect;
+export type InsertCompanyProvisionRequest = typeof companyProvisionRequests.$inferInsert;
