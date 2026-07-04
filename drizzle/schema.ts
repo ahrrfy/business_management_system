@@ -2462,3 +2462,36 @@ export const taxSettings = mysqlTable("taxSettings", {
 });
 export type TaxSettings = typeof taxSettings.$inferSelect;
 export type InsertTaxSettings = typeof taxSettings.$inferInsert;
+
+/** سجلّ تذكيرات الذمم الآجلة (AR reminders) — كل صفّ = تذكير أُرسِل أو أُخطِّي.
+ *  يُملأ حصراً بعد فعل المستخدم في شاشة `/ar-reminders` (لا cron، لا إرسال آلي).
+ *  يمنع تكرار التذكير على نفس العميل خلال ٧ أيام (استعلام queue يستبعد من ذُكّر مؤخراً).
+ *  snapshots اللحظية (المبلغ + أقدم فاتورة + أيام التأخّر + نص الرسالة) للتدقيق التاريخي. */
+export const arReminders = mysqlTable(
+  "arReminders",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    /** الرصيد الآجل الفعلي (إجمالي غير المسدّد عبر كل الفواتير >٧ أيام) وقت التذكير. */
+    totalUnpaidSnapshot: decimal("totalUnpaidSnapshot", { precision: 15, scale: 2 }).notNull(),
+    /** أقدم فاتورة غير مدفوعة (DATE، YYYY-MM-DD كنصّ). لحساب أيام التأخّر تاريخياً. */
+    oldestInvoiceDate: date("oldestInvoiceDate", { mode: "string" }).notNull(),
+    /** عدد أيام تأخّر أقدم فاتورة وقت التذكير (لَـmetadata، لا يُعاد حسابها). */
+    daysOverdue: int("daysOverdue").notNull(),
+    /** نصّ رسالة الواتساب المرسَلة (بعد sanitizeForWhatsApp) — snapshot للتدقيق. */
+    messageBody: text("messageBody").notNull(),
+    status: mysqlEnum("arReminderStatus", ["SENT", "SKIPPED"]).notNull(),
+    /** سبب التخطّي (nullable — يُملأ فقط عند status='SKIPPED'، مثل «العميل وعد يوم الأحد»). */
+    skipReason: varchar("skipReason", { length: 255 }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    // استعلام queue: «آخر تذكير على customerId في آخر ٧ أيام» + عزل فرع.
+    customerCreatedIdx: index("idx_ar_reminders_customer_created").on(table.customerId, table.createdAt),
+    branchCreatedIdx: index("idx_ar_reminders_branch_created").on(table.branchId, table.createdAt),
+  }),
+);
+export type ArReminder = typeof arReminders.$inferSelect;
+export type InsertArReminder = typeof arReminders.$inferInsert;
