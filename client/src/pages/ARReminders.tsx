@@ -4,7 +4,7 @@
 // كل تذكير مُرسَل يُسجَّل في `arReminders` مع snapshots اللحظية (مبلغ + أقدم فاتورة + نصّ الرسالة).
 // نافذة التبريد ٧ أيام تمنع تكرار العميل في القائمة قبل استحقاق تذكير جديد.
 import { useMemo, useState } from "react";
-import { Send, SkipForward, Clock, Search, RotateCcw, History } from "lucide-react";
+import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { openWhatsApp, sanitizeForWhatsApp } from "@/lib/whatsapp";
@@ -95,6 +95,7 @@ export default function ARReminders() {
       await utils.arReminders.history.invalidate();
       setSkipTarget(null);
       setSkipReason("");
+      setPromisedDate("");
     },
     onError: (e) => notify.err(e.message || "تعذّر تسجيل التخطّي"),
   });
@@ -102,6 +103,7 @@ export default function ARReminders() {
   const [search, setSearch] = useState("");
   const [skipTarget, setSkipTarget] = useState<QueueRow | null>(null);
   const [skipReason, setSkipReason] = useState("");
+  const [promisedDate, setPromisedDate] = useState("");
 
   const filteredQueue = useMemo(() => {
     const list = queue.data ?? [];
@@ -142,12 +144,22 @@ export default function ARReminders() {
       notify.err("سبب التخطّي مطلوب");
       return;
     }
+    // منتقي التاريخ HTML يعيد نصّاً YYYY-MM-DD أو فراغاً — الفارغ يعني «بلا وعد» ⇒ تخطٍّ عاديّ.
+    const promise = promisedDate.trim();
+    if (promise) {
+      const todayYmd = new Date().toISOString().slice(0, 10);
+      if (promise < todayYmd) {
+        notify.err("تاريخ الوعد يجب ألّا يكون في الماضي");
+        return;
+      }
+    }
     logSkipped.mutate({
       customerId: skipTarget.customerId,
       totalUnpaidSnapshot: skipTarget.totalUnpaid,
       oldestInvoiceDate: skipTarget.oldestInvoiceDate,
       daysOverdue: skipTarget.daysOverdue,
       skipReason: skipReason.trim(),
+      promisedDate: promise || null,
     });
   }
 
@@ -223,35 +235,57 @@ export default function ARReminders() {
       )}
 
       {/* حوار التخطّي */}
-      <Dialog open={skipTarget != null} onOpenChange={(o) => { if (!o) { setSkipTarget(null); setSkipReason(""); } }}>
+      <Dialog open={skipTarget != null} onOpenChange={(o) => { if (!o) { setSkipTarget(null); setSkipReason(""); setPromisedDate(""); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>تخطّي تذكير — {skipTarget?.customerName}</DialogTitle>
             <DialogDescription>
-              سيُسجَّل التخطّي في السجلّ ولن يظهر هذا العميل في قائمة اليوم مجدداً لمدّة ٧ أيام.
+              سيُسجَّل التخطّي في السجلّ. بلا وعد: يختفي ٧ أيام. مع تاريخ وعد: يعود يوم الوعد نفسه بشارة «موعود» ليُذكَّرك بالمتابعة.
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
-            <label className="block text-sm font-medium">
-              سبب التخطّي
-              <span className="text-destructive"> *</span>
-            </label>
-            <Textarea
-              value={skipReason}
-              onChange={(e) => setSkipReason(e.target.value)}
-              placeholder="مثال: العميل وعد بالدفع يوم الأحد"
-              maxLength={255}
-              rows={3}
-              autoFocus
-            />
-            <div className="text-xs text-muted-foreground">
-              {skipReason.length}/255 حرفاً
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="block text-sm font-medium">
+                سبب التخطّي
+                <span className="text-destructive"> *</span>
+              </label>
+              <Textarea
+                value={skipReason}
+                onChange={(e) => setSkipReason(e.target.value)}
+                placeholder="مثال: العميل وعد بالدفع، أو خارج البلد هذا الأسبوع"
+                maxLength={255}
+                rows={3}
+                autoFocus
+              />
+              <div className="text-xs text-muted-foreground">
+                {skipReason.length}/255 حرفاً
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="block text-sm font-medium inline-flex items-center gap-1.5">
+                <CalendarClock className="size-4 text-muted-foreground" aria-hidden />
+                تاريخ الوعد بالدفع
+                <span className="text-xs font-normal text-muted-foreground">(اختياري)</span>
+              </label>
+              <Input
+                type="date"
+                value={promisedDate}
+                min={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => setPromisedDate(e.target.value)}
+                className="max-w-[220px]"
+                dir="ltr"
+              />
+              <p className="text-xs text-muted-foreground">
+                {promisedDate
+                  ? `سيعود العميل لقائمة اليوم بتاريخ ${promisedDate} بشارة «موعود»، متجاوزاً تبريد ٧ أيام.`
+                  : "اترك فارغاً لتخطٍّ عاديّ (يخضع لتبريد ٧ أيام)."}
+              </p>
             </div>
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setSkipTarget(null)}>إلغاء</Button>
             <Button onClick={handleSkipConfirm} disabled={logSkipped.isPending || !skipReason.trim()}>
-              {logSkipped.isPending ? "جارٍ…" : "تخطَّ الآن"}
+              {logSkipped.isPending ? "جارٍ…" : (promisedDate ? "تخطَّ + سجِّل الوعد" : "تخطَّ الآن")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -337,8 +371,18 @@ function QueueTab({
                 </TableRow>
               ) : (
                 filtered.map((row) => (
-                  <TableRow key={row.customerId}>
-                    <TableCell className="font-medium">{row.customerName}</TableCell>
+                  <TableRow key={row.customerId} className={row.isPromiseDue ? "bg-amber-50/60" : ""}>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span>{row.customerName}</span>
+                        {row.isPromiseDue && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                            <CalendarClock className="size-3" aria-hidden />
+                            موعود{row.promisedDate ? ` (${row.promisedDate})` : ""}
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
                     <TableCell dir="ltr" className="text-xs text-muted-foreground tabular-nums">{row.phone ?? "—"}</TableCell>
                     <TableCell className="text-left font-bold tabular-nums text-money-negative" dir="ltr">
                       {fmtAmount(row.totalUnpaid)}
@@ -435,11 +479,21 @@ function HistoryTab({
                   <TableCell className="text-left tabular-nums" dir="ltr">{fmtAmount(r.totalUnpaidSnapshot)}</TableCell>
                   <TableCell className="text-center tabular-nums">{r.daysOverdue}</TableCell>
                   <TableCell className="text-center">
-                    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs ${r.status === "SENT" ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground"}`}>
-                      {r.status === "SENT" ? "أُرسل" : "تُخطّي"}
+                    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs ${r.status === "SENT" ? "bg-emerald-100 text-emerald-700" : r.promisedDate ? "bg-amber-500/15 text-amber-800" : "bg-muted text-muted-foreground"}`}>
+                      {r.status === "SENT" ? "أُرسل" : r.promisedDate ? "وعد" : "تُخطّي"}
                     </span>
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{r.skipReason ?? (r.status === "SENT" ? "رسالة واتساب" : "—")}</TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    <div className="flex flex-col gap-0.5">
+                      <span>{r.skipReason ?? (r.status === "SENT" ? "رسالة واتساب" : "—")}</span>
+                      {r.promisedDate && (
+                        <span className="text-[11px] text-amber-800 inline-flex items-center gap-1">
+                          <CalendarClock className="size-3" aria-hidden />
+                          موعود بالدفع: <span dir="ltr" className="tabular-nums">{r.promisedDate}</span>
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

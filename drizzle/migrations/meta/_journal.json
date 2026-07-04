@@ -323,6 +323,13 @@
       "when": 1783189470409,
       "tag": "0045_outgoing_wraith",
       "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "5",
+      "when": 1783191777015,
+      "tag": "0046_wandering_khan",
+      "breakpoints": true
     }
   ]
 }
