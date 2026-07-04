@@ -119,6 +119,33 @@ describe("customerService.createCustomer", () => {
       createCustomer({ name: "س", creditLimit: "abc" }, actor),
     ).rejects.toThrow();
   });
+
+  // إصلاح H4: فصل «بلا حدّ» (null) عن «حظر آجل» ("0"). قبل الإصلاح كان `creditLimit || "0"`
+  // يطمس null إلى "0" فيستحيل التعبير عن عميل بلا سقف من الواجهة.
+  it("creditLimit=null صريح ⇒ يُخزَّن null (بلا حدّ) لا '0'", async () => {
+    const { customerId } = await createCustomer({ name: "بلا حدّ", creditLimit: null }, actor);
+    const c = await getCustomer(customerId);
+    expect(c?.creditLimit).toBeNull();
+  });
+
+  it("creditLimit غير مُمرَّر ⇒ الافتراض التحفّظي '0' (حظر آجل = نقدي فقط)", async () => {
+    const { customerId } = await createCustomer({ name: "نقدي فقط" }, actor);
+    const c = await getCustomer(customerId);
+    expect(c?.creditLimit).toBe("0.00");
+  });
+
+  it("creditLimit='0' صريح ⇒ يبقى '0' (حظر آجل)", async () => {
+    const { customerId } = await createCustomer({ name: "صفر صريح", creditLimit: "0" }, actor);
+    const c = await getCustomer(customerId);
+    expect(c?.creditLimit).toBe("0.00");
+  });
+
+  it("updateCustomer: null صريح ⇒ يرفع الحدّ إلى «بلا حدّ» (null)", async () => {
+    const { customerId } = await createCustomer({ name: "ترقية", creditLimit: "500000" }, actor);
+    await updateCustomer({ customerId, creditLimit: null }, actor);
+    const c = await getCustomer(customerId);
+    expect(c?.creditLimit).toBeNull();
+  });
 });
 
 describe("customerService.updateCustomer", () => {

@@ -68,11 +68,14 @@ export const supplierRouter = router({
         iban: z.string().max(64).nullish(),
         bankName: z.string().max(120).nullish(),
         notes: z.string().nullish(),
+        // رصيد افتتاحي اختياري + اتجاه الدين (المورّد: موجب افتراضاً = «علينا له»).
+        openingBalance: z.string().nullish(),
+        openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       const r = await createSupplier(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "supplier.create", entityType: "supplier", entityId: r.supplierId, newValue: { name: input.name } });
+      await logAudit(ctx, { action: "supplier.create", entityType: "supplier", entityId: r.supplierId, newValue: { name: input.name, openingBalanceSet: !!input.openingBalance } });
       return r;
     }),
 

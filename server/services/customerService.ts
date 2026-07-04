@@ -7,6 +7,7 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type CustomerType = "فرد" | "تاجر" | "مؤسسة" | "شركة" | "حكومي";
@@ -25,6 +26,9 @@ export interface CreateCustomerInput {
   defaultPriceTier?: PriceTier;
   creditLimit?: string | null;
   notes?: string | null;
+  // رصيد افتتاحي اختياري (مبلغ غير سالب) + اتجاه الدين. يُنشئ قيد OPENING مرجعياً.
+  openingBalance?: string | null;
+  openingBalanceDirection?: OpeningDirection;
 }
 
 export interface UpdateCustomerInput extends Partial<CreateCustomerInput> {
@@ -44,6 +48,24 @@ function normPhone(s: string | null | undefined): string | null {
   if (!s) return null;
   const t = s.trim();
   return t || null;
+}
+
+/**
+ * تطبيع سقف الائتمان مع الحفاظ على دلالة credit.ts الثلاثية (إصلاح H4):
+ *  - `null` صريح ⇒ يُخزَّن `null` = **بلا حدّ** (سماح كامل بالآجل). لا يُقسَر إلى "0".
+ *  - `undefined` أو نصّ فارغ ⇒ الافتراض التحفّظي "0" = **حظر آجل** (نقدي فقط).
+ *  - نصّ رقمي موجب ⇒ يُتحقَّق منه ويُخزَّن كما هو.
+ *
+ * ⚠️ قبل هذا الإصلاح كان `creditLimit || "0"` يطمس فرق «بلا حدّ» عن «حظر»، فيستحيل
+ * التعبير عن عميل بلا سقف من الواجهة. مسار الكاشير يمرّر "0" صراحةً (لا null) لضمان
+ * ألّا يصير عميلٌ ينشئه الكاشير «بلا حدّ» بغير قصد.
+ */
+function normalizeCreditLimit(input: string | null | undefined): string | null {
+  if (input === null) return null; // صريح: بلا حدّ.
+  const c = input?.trim();
+  if (c && !/^\d+(\.\d{1,2})?$/.test(c))
+    throw new TRPCError({ code: "BAD_REQUEST", message: "سقف الائتمان غير صالح" });
+  return c || "0"; // غير محدّد/فارغ ⇒ حظر آجل تحفّظياً.
 }
 
 async function assertUniquePhone(db: any, phone: string | null, excludeId?: number) {
@@ -69,9 +91,13 @@ export async function createCustomer(input: CreateCustomerInput, _actor: Actor) 
     const phone = normPhone(input.phone);
     await assertUniquePhone(tx, phone);
 
-    const creditLimit = input.creditLimit?.trim();
-    if (creditLimit && !/^\d+(\.\d{1,2})?$/.test(creditLimit))
-      throw new TRPCError({ code: "BAD_REQUEST", message: "سقف الائتمان غير صالح" });
+    const creditLimit = normalizeCreditLimit(input.creditLimit);
+    // رصيد افتتاحي موقَّع (العميل: موجب = «لنا عليه»). "0.00" حين لا رصيد.
+    const openingBalance = signedOpeningBalance(
+      "CUSTOMER",
+      input.openingBalance,
+      input.openingBalanceDirection ?? "OWED_TO_US",
+    );
 
     const res = await tx.insert(customers).values({
       name,
@@ -84,11 +110,16 @@ export async function createCustomer(input: CreateCustomerInput, _actor: Actor) 
       district: input.district?.trim() || null,
       customerType: input.customerType ?? "فرد",
       defaultPriceTier: input.defaultPriceTier ?? "RETAIL",
-      creditLimit: creditLimit || "0",
+      creditLimit,
+      currentBalance: openingBalance,
       notes: input.notes?.trim() || null,
       isActive: true,
     });
     const customerId = extractInsertId(res);
+    // قيد OPENING المرجعي داخل نفس المعاملة (ذرّي مع إنشاء العميل).
+    if (!money(openingBalance).isZero()) {
+      await postOpeningEntry(tx, "CUSTOMER", customerId, openingBalance);
+    }
     return { customerId };
   });
 }
@@ -124,10 +155,8 @@ export async function updateCustomer(input: UpdateCustomerInput, _actor: Actor) 
     if (input.defaultPriceTier !== undefined) patch.defaultPriceTier = input.defaultPriceTier;
     if (input.notes !== undefined) patch.notes = input.notes?.trim() || null;
     if (input.creditLimit !== undefined) {
-      const c = input.creditLimit?.trim();
-      if (c && !/^\d+(\.\d{1,2})?$/.test(c))
-        throw new TRPCError({ code: "BAD_REQUEST", message: "سقف الائتمان غير صالح" });
-      patch.creditLimit = c || "0";
+      // نفس دلالة الإنشاء: null صريح ⇒ بلا حدّ؛ فارغ ⇒ "0" حظر؛ رقم ⇒ يُتحقَّق.
+      patch.creditLimit = normalizeCreditLimit(input.creditLimit);
     }
 
     if (Object.keys(patch).length === 0) return { customerId: input.customerId, changed: false };

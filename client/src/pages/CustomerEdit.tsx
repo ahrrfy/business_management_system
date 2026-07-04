@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { BarcodeDisplay } from "@/components/BarcodeDisplay";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
@@ -12,6 +13,7 @@ import { useEffect, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
+type CreditMode = "none" | "limit" | "unlimited";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -33,6 +35,7 @@ export default function CustomerEdit() {
   const [district, setDistrict] = useState("");
   const [address, setAddress] = useState("");
   const [creditLimit, setCreditLimit] = useState("");
+  const [creditMode, setCreditMode] = useState<CreditMode>("none");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -49,7 +52,10 @@ export default function CustomerEdit() {
       setCity(c.city ?? "");
       setDistrict(c.district ?? "");
       setAddress(c.address ?? "");
-      setCreditLimit(c.creditLimit ? String(c.creditLimit) : "");
+      // دلالة سقف الائتمان: null=بلا حدّ، "0"=نقدي فقط، >0=سقف محدّد — نشتقّ الوضع للحفاظ عليها عند الحفظ.
+      if (c.creditLimit == null) { setCreditMode("unlimited"); setCreditLimit(""); }
+      else if (Number(c.creditLimit) === 0) { setCreditMode("none"); setCreditLimit(""); }
+      else { setCreditMode("limit"); setCreditLimit(String(c.creditLimit)); }
       setNotes(c.notes ?? "");
       setLoaded(true);
     }
@@ -90,15 +96,25 @@ export default function CustomerEdit() {
   });
 
   function submit() {
+    if (update.isPending) return; // يمنع الإرسال المزدوج.
     setError("");
     setDone("");
     if (!name.trim()) {
       setError("اسم العميل مطلوب.");
       return;
     }
-    if (creditLimit.trim() && !/^\d+(\.\d{1,2})?$/.test(creditLimit.trim())) {
-      setError("سقف الائتمان يجب أن يكون رقماً.");
-      return;
+    // الوضع الصريح يحفظ «بلا حدّ» (null) بدل قلبه صامتاً إلى "0" (كان انحداراً عند تفريغ الحقل).
+    let creditLimitPayload: string | null;
+    if (creditMode === "unlimited") creditLimitPayload = null;
+    else if (creditMode === "limit") {
+      const cc = creditLimit.trim();
+      if (!cc || !/^\d+(\.\d{1,2})?$/.test(cc)) {
+        setError("أدخل سقف ائتمان صحيحاً (مثال: 500000) أو اختر «نقدي فقط»/«بلا سقف».");
+        return;
+      }
+      creditLimitPayload = cc;
+    } else {
+      creditLimitPayload = "0"; // نقدي فقط.
     }
     update.mutate({
       customerId,
@@ -110,7 +126,7 @@ export default function CustomerEdit() {
       district: district.trim() || null,
       customerType,
       defaultPriceTier,
-      creditLimit: creditLimit.trim() || null,
+      creditLimit: creditLimitPayload,
       notes: notes.trim() || null,
     });
   }
@@ -140,7 +156,7 @@ export default function CustomerEdit() {
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">المعرّف</div><div className="font-mono" dir="ltr">#{Number(c.id)}</div></div>
           <div><div className="text-muted-foreground text-xs">الرصيد الحالي</div><div dir="ltr">{fmt(c.currentBalance)}</div></div>
-          <div><div className="text-muted-foreground text-xs">سقف الائتمان</div><div dir="ltr">{fmt(c.creditLimit)}</div></div>
+          <div><div className="text-muted-foreground text-xs">سقف الائتمان</div><div dir="ltr">{c.creditLimit == null ? "بلا حدّ" : fmt(c.creditLimit)}</div></div>
           <div>
             <div className="text-muted-foreground text-xs">الحالة</div>
             <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
@@ -205,8 +221,15 @@ export default function CustomerEdit() {
               </select>
             </div>
             <div className="space-y-1">
-              <Label htmlFor="credit">سقف الائتمان (د.ع)</Label>
-              <Input id="credit" dir="ltr" value={creditLimit} onChange={(e) => setCreditLimit(e.target.value)} />
+              <Label htmlFor="creditMode">سقف الائتمان (البيع الآجل)</Label>
+              <select id="creditMode" className={selectCls} value={creditMode} onChange={(e) => setCreditMode(e.target.value as CreditMode)}>
+                <option value="none">نقدي فقط (بلا بيع آجل)</option>
+                <option value="limit">سقف محدّد…</option>
+                <option value="unlimited">بلا سقف (بيع آجل مسموح دائماً)</option>
+              </select>
+              {creditMode === "limit" && (
+                <MoneyInput id="credit" value={creditLimit} onChange={setCreditLimit} placeholder="500000" ariaLabel="سقف الائتمان بالدينار" />
+              )}
             </div>
             <div className="space-y-1 md:col-span-2">
               <Label htmlFor="notes">ملاحظات</Label>

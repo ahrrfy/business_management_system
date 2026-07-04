@@ -10,6 +10,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { FormError } from "@/components/form/FormError";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printVoucherReceipt, printVoucherA4 } from "@/lib/printing/voucherPrint";
@@ -337,13 +339,12 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
             </div>
             <div className="space-y-1">
               <Label>المبلغ * (IQD)</Label>
-              <Input
+              <MoneyInput
                 value={amount}
-                onChange={(e) => setAmount(e.target.value)}
+                onChange={setAmount}
                 placeholder="50000"
-                inputMode="decimal"
-                dir="ltr"
-                className="tabular-nums text-right"
+                ariaLabel="مبلغ السند بالدينار"
+                className="text-right"
               />
               {(needsApproval || needsAttachment) && amountNum > 0 && (
                 <div className="text-[11px] space-y-0.5 mt-1">
@@ -585,9 +586,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
       </div>
 
       {/* تَنبيهات النَظام */}
-      {err && (
-        <div className="rounded-md border badge-stock-out text-sm p-3">{err}</div>
-      )}
+      <FormError message={err} />
       {hardBlock && (
         <div className="rounded-md border badge-stock-low text-sm p-3 flex items-start gap-2">
           <AlertTriangle aria-hidden className="size-4 shrink-0 mt-0.5" />

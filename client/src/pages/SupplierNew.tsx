@@ -4,23 +4,27 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
+import { MoneyInput } from "@/components/form/MoneyInput";
+import { FormError } from "@/components/form/FormError";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { whatsappLink } from "@/lib/intlPhone";
+import { fmt } from "@/lib/money";
+import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Star } from "lucide-react";
 
 /**
- * إضافة مورّد — v3 add-screens.
+ * إضافة مورّد — v3 add-screens (+ تحسينات الأولوية العليا ٤/٧).
  *
  * تصميم:
- *  - ٣ أرقام هاتف دولية (E.164). لا بريد إلكتروني.
- *  - تصنيف المورّد + مدّة التوريد + حد أدنى للطلب.
- *  - تقييم بـ٥ نجوم تفاعلية.
+ *  - ٣ أرقام هاتف دولية (E.164). لا بريد إلكتروني. معاينة رقم الواتساب الفعلي.
+ *  - تصنيف المورّد + مدّة التوريد + حد أدنى للطلب (MoneyInput).
+ *  - تقييم بـ٥ نجوم تفاعلية (radiogroup لقارئ الشاشة).
  *  - بيانات بنكية (IBAN + اسم البنك) — اختياريّة.
+ *  - اختصارات: Ctrl+S حفظ، Esc إلغاء. شريط أزرار ثابت أسفل الشاشة.
  */
 
 const CATEGORIES = ["محلي", "إقليمي", "دولي"] as const;
@@ -48,6 +52,8 @@ export default function SupplierNew() {
   const [rating, setRating] = useState(0);
   const [iban, setIban] = useState("");
   const [bankName, setBankName] = useState("");
+  const [openingAmount, setOpeningAmount] = useState("");
+  const [openingDir, setOpeningDir] = useState<"OWED_TO_US" | "OWED_BY_US">("OWED_BY_US");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
@@ -58,10 +64,14 @@ export default function SupplierNew() {
       utils.suppliers.list.invalidate();
       navigate("/suppliers");
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => {
+      setError(e.message);
+      notify.err(e);
+    },
   });
 
   function submit() {
+    if (create.isPending) return; // يمنع الإرسال المزدوج عبر Ctrl+S/تكرار المفتاح (لا idempotency خادمية بعد).
     setError("");
     if (!name.trim()) {
       setError("اسم المورّد مطلوب.");
@@ -93,9 +103,28 @@ export default function SupplierNew() {
       rating: rating > 0 ? rating : null,
       iban: iban.trim() || null,
       bankName: bankName.trim() || null,
+      openingBalance: openingAmount.trim() || null,
+      openingBalanceDirection: openingDir,
       notes: notes.trim() || null,
     });
   }
+
+  // اختصارات: Ctrl+S حفظ، Esc إلغاء (نظير نموذج السند).
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        navigate("/suppliers");
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        submit();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [name, phone, phone2, phone3, address, city, supplierCategory, productTypes, taxId, paymentTerms, leadTimeDays, minOrderAmount, rating, iban, bankName, openingAmount, openingDir, notes]);
 
   const wa = whatsappLink(phone);
 
@@ -103,6 +132,7 @@ export default function SupplierNew() {
     <div className="space-y-4">
       <PageHeader
         title="إضافة مورّد"
+        description="سجّل مورّداً جديداً ببياناته وشروط تعامله وتقييمه."
         actions={<Link href="/suppliers" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>}
       />
 
@@ -113,8 +143,16 @@ export default function SupplierNew() {
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1 md:col-span-2">
-            <Label htmlFor="name">اسم المورّد *</Label>
-            <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="مثال: مكتبة الرشيد للورق" />
+            <Label htmlFor="name">اسم المورّد <span className="text-destructive">*</span></Label>
+            <Input
+              id="name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="مثال: مكتبة الرشيد للورق"
+              maxLength={255}
+              autoFocus
+              aria-required="true"
+            />
           </div>
           <div className="space-y-1">
             <Label htmlFor="cat">تصنيف المورّد</Label>
@@ -126,7 +164,7 @@ export default function SupplierNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="taxId">الرقم الضريبي</Label>
-            <Input id="taxId" dir="ltr" value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="—" />
+            <Input id="taxId" dir="ltr" value={taxId} onChange={(e) => setTaxId(e.target.value)} placeholder="—" maxLength={50} />
           </div>
         </CardContent>
       </Card>
@@ -145,7 +183,10 @@ export default function SupplierNew() {
               <IntlPhoneInput id="ph1" value={phone} onChange={setPhone} />
               {wa && (
                 <p className="text-[11px] text-muted-foreground">
-                  واتساب: <a href={wa} target="_blank" rel="noreferrer" className="text-primary underline" dir="ltr">جاهز</a>
+                  واتساب:{" "}
+                  <a href={wa} target="_blank" rel="noreferrer" className="text-primary underline" dir="ltr">
+                    {displayE164(phone)}
+                  </a>
                 </p>
               )}
             </div>
@@ -168,7 +209,7 @@ export default function SupplierNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           <div className="space-y-1">
             <Label htmlFor="city">المدينة</Label>
-            <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} placeholder="بغداد" />
+            <Input id="city" value={city} onChange={(e) => setCity(e.target.value)} placeholder="بغداد" maxLength={100} />
           </div>
           <div className="space-y-1 lg:col-span-2">
             <Label htmlFor="prods">أنواع المنتجات</Label>
@@ -195,20 +236,23 @@ export default function SupplierNew() {
           </div>
           <div className="space-y-1">
             <Label htmlFor="lead">مدة التوريد (يوم)</Label>
-            <Input id="lead" dir="ltr" inputMode="numeric" value={leadTimeDays}
+            <Input id="lead" dir="ltr" inputMode="numeric" maxLength={3} value={leadTimeDays}
               onChange={(e) => setLeadTimeDays(e.target.value.replace(/\D/g, ""))} placeholder="7" />
+            <p className="text-[11px] text-muted-foreground">بين 0 و365 يوماً.</p>
           </div>
           <div className="space-y-1">
             <Label htmlFor="moq">الحد الأدنى للطلب (د.ع)</Label>
-            <Input id="moq" dir="ltr" value={minOrderAmount} onChange={(e) => setMinOrderAmount(e.target.value)} placeholder="100000" />
+            <MoneyInput id="moq" value={minOrderAmount} onChange={setMinOrderAmount} placeholder="100000" ariaLabel="الحد الأدنى للطلب بالدينار" />
           </div>
           <div className="space-y-1">
             <Label>تقييم المورّد</Label>
-            <div className="flex items-center gap-1.5 h-9">
+            <div className="flex items-center gap-1.5 h-9" role="radiogroup" aria-label="تقييم المورّد">
               {[1, 2, 3, 4, 5].map((n) => (
                 <button
                   key={n}
                   type="button"
+                  role="radio"
+                  aria-checked={n === rating}
                   onClick={() => setRating(rating === n ? 0 : n)}
                   aria-label={`${n} نجوم`}
                   className={cn(
@@ -234,11 +278,11 @@ export default function SupplierNew() {
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div className="space-y-1">
             <Label htmlFor="bank">اسم البنك</Label>
-            <Input id="bank" value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="مثال: مصرف الرافدين" />
+            <Input id="bank" value={bankName} onChange={(e) => setBankName(e.target.value)} placeholder="مثال: مصرف الرافدين" maxLength={120} />
           </div>
           <div className="space-y-1">
             <Label htmlFor="iban">IBAN / رقم الحساب</Label>
-            <Input id="iban" dir="ltr" value={iban} onChange={(e) => setIban(e.target.value)} placeholder="IQ00 ...." />
+            <Input id="iban" dir="ltr" value={iban} onChange={(e) => setIban(e.target.value)} placeholder="IQ00 ...." maxLength={64} />
           </div>
           <div className="space-y-1 md:col-span-2">
             <Label htmlFor="notes">ملاحظات</Label>
@@ -246,14 +290,59 @@ export default function SupplierNew() {
           </div>
         </CardContent>
       </Card>
+
+      <Card className="lg:col-span-2">
+        <CardHeader>
+          <CardTitle className="text-base">الرصيد الافتتاحي (اختياري)</CardTitle>
+        </CardHeader>
+        <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <Label htmlFor="openDir">اتجاه الرصيد</Label>
+            <select
+              id="openDir"
+              className={selectCls}
+              value={openingDir}
+              onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
+            >
+              <option value="OWED_BY_US">علينا للمورّد (مستحق له)</option>
+              <option value="OWED_TO_US">لنا على المورّد (دفعة مقدّمة لنا)</option>
+            </select>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="openAmt">المبلغ (د.ع)</Label>
+            <MoneyInput
+              id="openAmt"
+              value={openingAmount}
+              onChange={setOpeningAmount}
+              placeholder="0"
+              ariaLabel="مبلغ الرصيد الافتتاحي"
+            />
+          </div>
+          <div className="md:col-span-2">
+            {openingAmount.trim() && Number(openingAmount) > 0 ? (
+              <p className="text-[11px] text-amber-700">
+                سيُسجَّل قيد رصيد افتتاحي:{" "}
+                {openingDir === "OWED_BY_US"
+                  ? `«علينا للمورّد» ${fmt(openingAmount)} د.ع (يبدأ رصيده مستحقاً له).`
+                  : `«لنا على المورّد» ${fmt(openingAmount)} د.ع (يبدأ رصيده مديناً لنا — كدفعة مقدّمة).`}{" "}
+                يظهر فوراً في كشف حساب المورّد والأعمار.
+              </p>
+            ) : (
+              <p className="text-[11px] text-muted-foreground">
+                اتركه فارغاً إن لم يكن للمورّد رصيد سابق. يُنشئ قيد افتتاحي مرجعياً (لا يتكرّر).
+              </p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
       </div>
 
-      {error && <p className="text-sm text-destructive">{error}</p>}
-      <div className="flex gap-2">
-        <Button onClick={submit} disabled={create.isPending}>
+      <FormError message={error} />
+      <div className="sticky bottom-0 z-10 flex flex-wrap items-center gap-2 border-t bg-background/95 py-3 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <Button onClick={submit} disabled={create.isPending} title="Ctrl+S">
           {create.isPending ? "جارٍ الحفظ…" : "حفظ المورّد"}
         </Button>
-        <Link href="/suppliers"><Button variant="outline">إلغاء</Button></Link>
+        <Link href="/suppliers"><Button variant="outline" title="Esc">إلغاء</Button></Link>
       </div>
     </div>
   );
