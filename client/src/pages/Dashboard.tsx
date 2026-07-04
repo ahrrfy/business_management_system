@@ -805,6 +805,183 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
   );
 }
 
+/* ═══════════ MORNING BRIEF ═══════════
+   قسم «برنامج اليوم» فوق الوحدات: ٣ بطاقات فعل (تذكيرات AR + وعود اليوم + أوامر شغل متأخّرة).
+   يظهر للمدير/الأدمن فقط (بيانات إشرافية عبر الفرع)؛ كاشير/موظف ميداني لا يحتاجه.
+   عند «كل الأصفار» يختفي القسم كلياً (لا نُشتت الشاشة بلوحة فارغة). */
+
+function BriefCard({
+  href, label, count, sub, accent, iconBg, icon,
+}: {
+  href: string;
+  label: string;
+  count: number;
+  sub: string;
+  accent: string;
+  iconBg: string;
+  icon: React.ReactNode;
+}) {
+  const T = useT();
+  return (
+    <Link
+      href={href}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        padding: "12px 14px",
+        borderRadius: 10,
+        background: T.cardBg,
+        border: `1px solid ${T.cardBord}`,
+        borderRight: `3px solid ${accent}`,
+        cursor: "pointer",
+        transition: "box-shadow 0.15s, transform 0.15s",
+        color: T.text,
+        textDecoration: "none",
+        minWidth: 0,
+      }}
+      onMouseEnter={(e) => {
+        (e.currentTarget as HTMLAnchorElement).style.boxShadow = `0 4px 14px ${accent.replace(")", " / 0.18)")}`;
+        (e.currentTarget as HTMLAnchorElement).style.transform = "translateY(-1px)";
+      }}
+      onMouseLeave={(e) => {
+        (e.currentTarget as HTMLAnchorElement).style.boxShadow = "none";
+        (e.currentTarget as HTMLAnchorElement).style.transform = "none";
+      }}
+    >
+      <div
+        style={{
+          width: 40,
+          height: 40,
+          borderRadius: 10,
+          background: iconBg,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          flexShrink: 0,
+        }}
+        aria-hidden
+      >
+        {icon}
+      </div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 12, color: T.sub, marginBottom: 2 }}>{label}</div>
+        <div style={{ fontSize: 22, fontWeight: 900, color: accent, lineHeight: 1, marginBottom: 2 }}>
+          <span dir="ltr" style={{ fontVariantNumeric: "tabular-nums" }}>{fmtAr(count)}</span>
+        </div>
+        <div style={{ fontSize: 11, color: T.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{sub}</div>
+      </div>
+    </Link>
+  );
+}
+
+function MorningBrief() {
+  const T = useT();
+  const me = trpc.auth.me.useQuery();
+  const role = me.data?.role ?? "";
+  const elevated = role === "admin" || role === "manager";
+  const myBranch = me.data?.branchId ?? 1;
+  const branchScope = elevated ? undefined : myBranch;
+  const metrics = trpc.reports.dashboardMetrics.useQuery({ branchId: branchScope });
+
+  // القسم للمدير/الأدمن حصراً — الموظّف الميداني لا يحتاج نظرة إشرافية.
+  if (!elevated) return null;
+  if (metrics.isLoading || !metrics.data) return null;
+  const brief = metrics.data.morningBrief;
+  const total = brief.arRemindersDue + brief.promisedToday + brief.overdueWorkOrders;
+  // كل الأصفار ⇒ لا حاجة لبانر «برنامج اليوم» — تنظيف بصريّ حين لا شيء يستحقّ الفعل.
+  if (total === 0) return null;
+
+  const dt = new Date();
+  const dateLabel = dt.toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", day: "numeric", month: "long" });
+
+  return (
+    <section
+      style={{
+        padding: "16px 24px 4px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 10,
+      }}
+      aria-label="برنامج اليوم"
+    >
+      <header style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: 8, flexWrap: "wrap" }}>
+        <h2 style={{ fontSize: 15, fontWeight: 800, color: T.text, margin: 0 }}>
+          برنامج اليوم
+        </h2>
+        <span style={{ fontSize: 12, color: T.sub }}>{dateLabel} — {fmtAr(total)} بند{total === 1 ? "" : "ود"} للمتابعة</span>
+      </header>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: 10,
+        }}
+      >
+        {brief.promisedToday > 0 && (
+          <BriefCard
+            href="/reports/ar-reminders"
+            label="عملاء موعودون اليوم"
+            count={brief.promisedToday}
+            sub="راجع الوعود المستحقّة قبل نهاية اليوم"
+            accent="oklch(0.65 0.20 60)"
+            iconBg="oklch(0.65 0.20 60 / 0.15)"
+            icon={<PromiseIco color="oklch(0.55 0.22 55)" />}
+          />
+        )}
+        {brief.arRemindersDue > 0 && (
+          <BriefCard
+            href="/reports/ar-reminders"
+            label="تذكيرات ذمم مستحقّة"
+            count={brief.arRemindersDue}
+            sub="عملاء متأخّرون ≥٧ أيام يحتاجون رسالة"
+            accent="oklch(0.58 0.20 178)"
+            iconBg="oklch(0.58 0.20 178 / 0.15)"
+            icon={<ARIco color="oklch(0.48 0.22 178)" />}
+          />
+        )}
+        {brief.overdueWorkOrders > 0 && (
+          <BriefCard
+            href="/work-orders"
+            label="أوامر شغل متأخّرة"
+            count={brief.overdueWorkOrders}
+            sub="تجاوزت التاريخ المتوقّع للتسليم"
+            accent="oklch(0.60 0.22 22)"
+            iconBg="oklch(0.60 0.22 22 / 0.15)"
+            icon={<WOIco color="oklch(0.50 0.24 22)" />}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
+const PromiseIco = ({ color }: { color: string }) => (
+  <svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+    <rect x="3" y="4" width="14" height="13" rx="2" stroke={color} strokeWidth="1.6" />
+    <path d="M3 8h14" stroke={color} strokeWidth="1.6" />
+    <path d="M7 2v3M13 2v3" stroke={color} strokeWidth="1.6" strokeLinecap="round" />
+    <path d="M7.5 12.5l1.5 1.5 3.5-3.5" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
+const ARIco = ({ color }: { color: string }) => (
+  <svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+    <path d="M2.5 10c0-4 3.5-7 7.5-7s7.5 3 7.5 7-3.5 7-7.5 7c-1.4 0-2.7-.3-3.8-.9l-3.7 1 1-3.5C2.8 12.6 2.5 11.3 2.5 10z" stroke={color} strokeWidth="1.6" strokeLinejoin="round" />
+    <circle cx="7" cy="10" r="0.9" fill={color} />
+    <circle cx="10" cy="10" r="0.9" fill={color} />
+    <circle cx="13" cy="10" r="0.9" fill={color} />
+  </svg>
+);
+
+const WOIco = ({ color }: { color: string }) => (
+  <svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+    <path d="M5 2h7l4 4v11a1 1 0 01-1 1H5a1 1 0 01-1-1V3a1 1 0 011-1z" stroke={color} strokeWidth="1.6" strokeLinejoin="round" />
+    <path d="M12 2v4h4" stroke={color} strokeWidth="1.6" strokeLinejoin="round" />
+    <path d="M7.5 11.5l1.5 1.5 3.5-3.5" stroke={color} strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>
+);
+
 /* ═══════════ DASHBOARD ═══════════ */
 
 export default function Dashboard() {
@@ -819,6 +996,7 @@ export default function Dashboard() {
       }}
     >
       <MetricsBar />
+      <MorningBrief />
       <div
         style={{
           padding: "18px 24px 32px",
