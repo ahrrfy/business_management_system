@@ -163,7 +163,6 @@ export default function PurchaseReturnNew() {
             costBase: D(it.unitPrice).toFixed(2),
             discount: "0",
             discountType: "percent",
-            tax: "0",
             note: "",
           };
         });

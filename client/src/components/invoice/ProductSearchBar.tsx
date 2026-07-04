@@ -142,7 +142,6 @@ export function ProductSearchBar({ invoiceType, branchId, tier, onAddProduct, on
       costBase: r.costBase || "0",
       discount: "0",
       discountType: "percent",
-      tax: "0",
       note: "",
     };
     onAddProduct(line);

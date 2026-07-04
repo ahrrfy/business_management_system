@@ -24,6 +24,8 @@ export interface InvoicePrintData {
   customerPhone?: string | null;
   customerAddress?: string | null;
   customerTaxId?: string | null;
+  /** الرقم الضريبي **للشركة** (من إعدادات النظام) — يُطبع في «معلومات ضريبية» بجانب رقم العميل. */
+  companyTaxId?: string | null;
   paymentMethod?: string | null;
   notes?: string | null;
   items: {
@@ -32,6 +34,9 @@ export interface InvoicePrintData {
     quantity: string | number;
     unitPrice: string | number;
     total: string | number;
+    /** حصة السطر من ضريبة الفاتورة (اختياري، decimal-string 2dp). عند وجود قيمة موجبة واحدة
+     *  على الأقلّ بين البنود، يُدرَج عمود «الضريبة» في جدول العناصر بجانب «المبلغ». */
+    taxAmount?: string | number | null;
   }[];
   subtotal: string | number;
   discountAmount?: string | number | null;
@@ -55,12 +60,20 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
 
   const qrSvg = await qrCodeSvg(qrPayload, { size: 88, margin: 1 }).catch(() => '');
 
+  // عمود «الضريبة» يظهر فقط حين ضريبة الفاتورة > 0 وعندما يمرِّر المستدعي قيماً لكل سطر
+  // (نفس منطق التوزيع في محرّر الفاتورة عبر `allocateLineTax`، ⇒ مجموع الأعمدة = taxAmount).
+  const showLineTaxCol =
+    Number(d.taxAmount ?? 0) > 0 &&
+    d.items.some((it) => Number(it.taxAmount ?? 0) > 0);
   const cols = [
     { key: 'name', label: 'المنتج' },
     { key: 'unit', label: 'الوحدة', width: '14mm', align: 'center' as const },
     { key: 'qty', label: 'الكمية', width: '14mm', align: 'center' as const },
     { key: 'price', label: 'سعر الوحدة', width: '22mm', align: 'left' as const },
-    { key: 'amount', label: 'المبلغ', width: '24mm', align: 'left' as const, bold: true },
+    { key: 'amount', label: 'المبلغ', width: showLineTaxCol ? '20mm' : '24mm', align: 'left' as const, bold: true },
+    ...(showLineTaxCol
+      ? [{ key: 'lineTax', label: 'الضريبة', width: '18mm', align: 'left' as const }]
+      : []),
   ];
   const rows = d.items.map(it => ({
     name: it.productName,
@@ -68,6 +81,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     qty: fmt(it.quantity),
     price: fmt(it.unitPrice),
     amount: fmt(it.total),
+    ...(showLineTaxCol ? { lineTax: fmt(it.taxAmount ?? 0) } : {}),
   }));
 
   const custFields = [
@@ -76,7 +90,8 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     ...(d.customerPhone ? [{ label: 'الهاتف', value: d.customerPhone }] : []),
   ];
   const taxFields = [
-    ...(d.customerTaxId ? [{ label: 'الرقم الضريبي', value: d.customerTaxId }] : []),
+    ...(d.companyTaxId ? [{ label: 'الرقم الضريبي للشركة', value: d.companyTaxId }] : []),
+    ...(d.customerTaxId ? [{ label: 'الرقم الضريبي للعميل', value: d.customerTaxId }] : []),
     { label: 'رقم الفاتورة', value: d.invoiceNumber },
     { label: 'التاريخ', value: date },
     ...(d.paymentMethod ? [{ label: 'طريقة الدفع', value: d.paymentMethod }] : []),

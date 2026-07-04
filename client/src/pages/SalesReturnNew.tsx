@@ -132,7 +132,6 @@ export default function SalesReturnNew() {
         costBase: "0",
         discount: "0",
         discountType: "percent",
-        tax: "0",
         note: `بند #${it.invoiceItemId}`,
       };
       lines.push(line);

@@ -28,7 +28,7 @@ export {
 } from "./types";
 
 export { invoiceReducer, createInitialState } from "./reducer";
-export { calcTotals, calcLineTotal, calcMargin, fmtMoney, fmtNum, type InvoiceTotals } from "./totals";
+export { calcTotals, calcLineTotal, calcMargin, allocateLineTax, fmtMoney, fmtNum, type InvoiceTotals } from "./totals";
 
 export { InvoiceTypeTabs, type InvoiceTypeTabsProps } from "./InvoiceTypeTabs";
 export { InvoiceHeader, type InvoiceHeaderProps } from "./InvoiceHeader";

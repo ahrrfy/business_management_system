@@ -125,7 +125,6 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
         costBase: r.costBase || "0",
         discount: "0",
         discountType: "percent",
-        tax: "0",
         note: "",
       }));
     onAddItems(lines);

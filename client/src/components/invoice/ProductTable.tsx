@@ -3,6 +3,10 @@
  * Ported from `_design-bundle/project/invoice-table.jsx#ProductTable`.
  *
  * `showCost` is controlled by RBAC at the page level (cashier → false; manager → true).
+ *
+ * الضريبة على مستوى الفاتورة لا السطر (§١٤): لا يُحرَّر معدّل الضريبة لكل بند. إن مرَّرَ الأب
+ * `taxShares` (مصفوفة نصوص decimal بطول items وناتجة من `allocateLineTax`)، ظهر عمود عرض
+ * فقط باسم «حصة الضريبة» بجانب «الإجمالي»؛ خلاف ذلك يُخفى العمود تماماً.
  */
 import type { Dispatch } from "react";
 import { Package, ShoppingCart, X } from "lucide-react";
@@ -21,9 +25,13 @@ export interface ProductTableProps {
   invoiceType: InvoiceType;
   /** false = hide cost & margin columns (cashier role). */
   showCost: boolean;
-  /** false = hide the per-line tax column (e.g. SALE in a 0%-VAT market where the backend
-   *  stores no per-line tax). Default true to preserve existing screens. */
-  showTax?: boolean;
+  /**
+   * حصص الضريبة الموزَّعة لكل سطر (عرض فقط). مصفوفة نصوص decimal 2dp بطول `items` بالضبط
+   * (يحسبها الأب عبر `allocateLineTax(items.map(i => ({total: calcLineTotal(i)})), totals.totalTax,
+   * totals.afterDiscount)` ⇒ مجموع الحصص = totals.totalTax بلا انجراف). عمود «حصة الضريبة»
+   * يظهر فقط حين taxShares مصفوفة بنفس طول items وفيها قيمة موجبة على الأقلّ. أُهمِل ⇒ لا عمود.
+   */
+  taxShares?: string[] | null;
   onOpenBulkPicker: () => void;
   /** Toast hook. */
   onNotify?: (msg: string, kind: "error" | "info") => void;
@@ -110,14 +118,19 @@ export function ProductTable({
   tier,
   invoiceType,
   showCost,
-  showTax = true,
+  taxShares,
   onOpenBulkPicker,
   onNotify,
 }: ProductTableProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
   const showCostCol = showCost && !isPurchase;
-  const showTaxCol = showTax;
-  // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (ضريبة).
+  // عمود «حصة الضريبة» يظهر فقط حين يمرِّر الأبُ حصصاً بطول items وفيها قيمة موجبة واحدة على
+  // الأقلّ (لا نُظهر عموداً كامل الأصفار حين تكون الضريبة غير مفعَّلة أو صفريّة).
+  const showTaxCol =
+    Array.isArray(taxShares) &&
+    taxShares.length === items.length &&
+    taxShares.some((s) => Number(s) > 0);
+  // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (حصة ضريبة).
   const colCount = 10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0);
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
@@ -205,7 +218,7 @@ export function ProductTable({
               <th className={cn(th, "w-24")}>{isPurchase ? "سعر الشراء" : "السعر"}</th>
               <th className={cn(th, "w-32")}>الكمية</th>
               <th className={cn(th, "w-20")}>خصم %</th>
-              {showTaxCol && <th className={cn(th, "w-16")}>ضريبة %</th>}
+              {showTaxCol && <th className={cn(th, "w-24")}>حصة الضريبة</th>}
               {showCostCol && <th className={cn(th, "w-16")}>هامش%</th>}
               <th className={cn(th, "w-28")}>الإجمالي</th>
               <th className={cn(th, "w-10")} aria-label="حذف" />
@@ -304,14 +317,8 @@ export function ProductTable({
                     />
                   </td>
                   {showTaxCol && (
-                    <td className={td}>
-                      <InlineNumberInput
-                        value={item.tax}
-                        width="w-12"
-                        max={100}
-                        suffix="%"
-                        onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "tax", value: v })}
-                      />
+                    <td className={cn(td, "text-xs font-semibold text-muted-foreground")} dir="ltr">
+                      {fmtNum(taxShares![idx])}
                     </td>
                   )}
                   {showCostCol && (

@@ -12,6 +12,8 @@ import { exportRows } from "@/lib/export";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
+import { allocateLineTax } from "@/components/invoice";
+import { round2 } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useMemo, useState } from "react";
@@ -46,6 +48,9 @@ export default function Invoices() {
   // حالة تحضير تصدير «الكل» (جلب كامل النتائج المطابقة للفلتر، لا الصفحة المعروضة).
   const [exporting, setExporting] = useState(false);
 
+  // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
+  const taxSettings = trpc.system.getTaxSettings.useQuery();
+
   const rows = trpc.sales.list.useQuery({
     limit: 200,
     from: from || undefined,
@@ -66,16 +71,32 @@ export default function Invoices() {
     try {
       const d = await utils.sales.get.fetch({ invoiceId });
       if (!d) { notify.err("تعذّر جلب الفاتورة"); return; }
+      // توزيع ضريبة الفاتورة تناسبياً على السطور لعمود «الضريبة» في A4 (نفس خوارزمية محرّر
+      // الفاتورة والـInvoiceDetail: آخر سطر يمتصّ التقريب ⇒ Σ الحصص = d.taxAmount بلا انجراف).
+      const afterDisc = round2(D(d.subtotal).minus(D(d.discountAmount ?? "0"))).toFixed(2);
+      const shares = allocateLineTax(
+        d.items.map((it) => ({ total: String(it.total) })),
+        String(d.taxAmount ?? "0"),
+        afterDisc,
+      );
       await printInvoiceA4({
         invoiceNumber: d.invoiceNumber,
         invoiceDate: d.invoiceDate,
         customerName: d.customerName,
+        companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
         subtotal: d.subtotal,
         discountAmount: d.discountAmount,
         taxAmount: d.taxAmount,
         total: d.total,
         paidAmount: d.paidAmount,
-        items: d.items.map((it) => ({ productName: it.productName ?? "", unitName: it.unitName, quantity: it.quantity, unitPrice: it.unitPrice, total: it.total })),
+        items: d.items.map((it, i) => ({
+          productName: it.productName ?? "",
+          unitName: it.unitName,
+          quantity: it.quantity,
+          unitPrice: it.unitPrice,
+          total: it.total,
+          taxAmount: shares[i] ?? "0",
+        })),
       });
     } catch (e) {
       notify.err(e);
@@ -112,7 +133,6 @@ export default function Invoices() {
             // خصم السطر المحفوظ مبلغٌ مطلق ⇒ يُنسخ كنوع "amount".
             discount: D(it.discountAmount ?? 0).gt(0) ? String(it.discountAmount) : "0",
             discountType: "amount",
-            tax: "0",
             note: "",
           })),
         })

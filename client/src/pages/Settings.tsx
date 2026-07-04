@@ -5,6 +5,9 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { DangerConfirmDialog } from "@/components/DangerConfirmDialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -40,6 +43,8 @@ type DangerAction =
 
 export default function Settings() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const isAdmin = me.data?.role === "admin";
   const info = trpc.system.systemInfo.useQuery();
   const backups = trpc.system.listBackups.useQuery();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -47,6 +52,43 @@ export default function Settings() {
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
 
   useEffect(() => { getServerBridgeStatus().then(setBridge).catch(() => {}); }, []);
+
+  /* ─── إعدادات الضريبة ──────────────────────────────────────────── */
+  const taxSettings = trpc.system.getTaxSettings.useQuery();
+  const [taxEnabled, setTaxEnabled] = useState(false);
+  const [taxRate, setTaxRate] = useState("0");
+  const [taxRegNo, setTaxRegNo] = useState("");
+  const taxLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!taxLoadedRef.current && taxSettings.data) {
+      setTaxEnabled(taxSettings.data.enabledByDefault);
+      setTaxRate(taxSettings.data.defaultTaxRatePercent);
+      setTaxRegNo(taxSettings.data.taxRegistrationNumber ?? "");
+      taxLoadedRef.current = true;
+    }
+  }, [taxSettings.data]);
+  const updateTax = trpc.system.updateTaxSettings.useMutation({
+    onSuccess: async (r) => {
+      notify.ok("حُفظت إعدادات الضريبة");
+      setTaxEnabled(r.settings.enabledByDefault);
+      setTaxRate(r.settings.defaultTaxRatePercent);
+      setTaxRegNo(r.settings.taxRegistrationNumber ?? "");
+      await utils.system.getTaxSettings.invalidate();
+    },
+    onError: (e) => notify.err(e.message || "تعذّر حفظ إعدادات الضريبة"),
+  });
+  function saveTaxSettings() {
+    const rateNum = Number(taxRate);
+    if (!Number.isFinite(rateNum) || rateNum < 0 || rateNum > 100) {
+      notify.err("نسبة الضريبة يجب أن تكون رقماً بين 0 و100");
+      return;
+    }
+    updateTax.mutate({
+      enabledByDefault: taxEnabled,
+      defaultTaxRatePercent: taxRate || "0",
+      taxRegistrationNumber: taxRegNo.trim() || null,
+    });
+  }
 
   const refresh = async () => {
     await Promise.all([utils.system.systemInfo.invalidate(), utils.system.listBackups.invalidate()]);
@@ -232,6 +274,71 @@ export default function Settings() {
           </CardContent>
         </Card>
       </div>
+
+      {/* إعدادات الضريبة */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">إعدادات الضريبة</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            القيم هنا تُهيّئ فاتورة البيع/الشراء الجديدة افتراضياً فقط (يبقى بإمكان المستخدم تعديل الضريبة يدوياً
+            على كل فاتورة). السوق العراقي بلا ضريبة قيمة مضافة افتراضياً (معدّل 0%).
+          </p>
+          {taxSettings.isLoading ? (
+            <LoadingState />
+          ) : taxSettings.isError ? (
+            <ErrorState message="تعذّر تحميل إعدادات الضريبة." onRetry={() => taxSettings.refetch()} />
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="flex items-center justify-between gap-3 rounded-lg border p-3 sm:col-span-1">
+                <div>
+                  <Label htmlFor="tax-enabled" className="text-sm font-bold">تفعيل الضريبة افتراضياً</Label>
+                  <p className="mt-0.5 text-xs text-muted-foreground">للفواتير الجديدة فقط</p>
+                </div>
+                <Switch
+                  id="tax-enabled"
+                  checked={taxEnabled}
+                  disabled={!isAdmin}
+                  onCheckedChange={setTaxEnabled}
+                  aria-label="تفعيل الضريبة افتراضياً"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tax-rate" className="text-sm">نسبة الضريبة الافتراضية %</Label>
+                <Input
+                  id="tax-rate"
+                  dir="ltr"
+                  inputMode="decimal"
+                  value={taxRate}
+                  disabled={!isAdmin}
+                  onChange={(e) => setTaxRate(e.target.value)}
+                  placeholder="0"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="tax-reg-no" className="text-sm">الرقم الضريبي للشركة</Label>
+                <Input
+                  id="tax-reg-no"
+                  dir="ltr"
+                  value={taxRegNo}
+                  disabled={!isAdmin}
+                  onChange={(e) => setTaxRegNo(e.target.value)}
+                  placeholder="اختياري — يُطبع على الفاتورة"
+                  maxLength={50}
+                />
+              </div>
+            </div>
+          )}
+          {isAdmin ? (
+            <Button onClick={saveTaxSettings} disabled={updateTax.isPending || taxSettings.isLoading}>
+              {updateTax.isPending ? "جارٍ الحفظ…" : "حفظ إعدادات الضريبة"}
+            </Button>
+          ) : (
+            <p className="text-xs text-muted-foreground">هذه الإعدادات للمدير فقط — للاطّلاع لديك صلاحية عرض فقط.</p>
+          )}
+        </CardContent>
+      </Card>
 
       {/* منطقة الخطر — التصفير + الصيانة CLI */}
       <div className="grid gap-4 lg:grid-cols-2 items-start">

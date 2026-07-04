@@ -49,6 +49,8 @@ import {
   invoiceReducer,
   createInitialState,
   calcTotals,
+  calcLineTotal,
+  allocateLineTax,
   INVOICE_TYPES,
   type InvoiceActionKind,
   type InvoiceLine,
@@ -107,6 +109,18 @@ export default function SalesInvoiceNew() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [me.data?.branchId]);
 
+  // تهيئة تفعيل/نسبة الضريبة من إعدادات النظام (مرّة واحدة فقط، فاتورة جديدة) — يبقى المستخدم
+  // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم).
+  const taxDefaultsAppliedRef = useRef(false);
+  const taxSettingsQuery = trpc.system.getTaxSettings.useQuery();
+  useEffect(() => {
+    if (!taxDefaultsAppliedRef.current && taxSettingsQuery.data) {
+      dispatch({ type: "SET_FIELD", field: "taxEnabled", value: taxSettingsQuery.data.enabledByDefault });
+      dispatch({ type: "SET_FIELD", field: "taxRatePercent", value: taxSettingsQuery.data.defaultTaxRatePercent });
+      taxDefaultsAppliedRef.current = true;
+    }
+  }, [taxSettingsQuery.data]);
+
   // وردية مفتوحة للفرع (إن وُجدت) ⇒ تُسجَّل الدفعة النقدية في صندوق الوردية.
   const currentShift = trpc.shifts.current.useQuery(
     { branchId: state.branchId },
@@ -128,6 +142,22 @@ export default function SalesInvoiceNew() {
   const showCost = role === "manager" || role === "admin";
 
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
+  /**
+   * حصص ضريبة الفاتورة الموزَّعة تناسبياً على السطور (عرض فقط، سنت حصريّ = totals.totalTax
+   * بالضبط بفضل خوارزمية «آخر سطر يمتصّ التقريب»). تُمرَّر إلى `ProductTable` كعمود «حصة
+   * الضريبة» وإلى `printInvoiceA4` كحقل `taxAmount` لكل بند — نفس القيم في الشاشة والطباعة.
+   */
+  const taxShares = useMemo(
+    () =>
+      state.taxEnabled
+        ? allocateLineTax(
+            state.items.map((item) => ({ total: calcLineTotal(item) })),
+            totals.totalTax,
+            totals.afterDiscount,
+          )
+        : null,
+    [state.taxEnabled, state.items, totals.totalTax, totals.afterDiscount],
+  );
 
   /* ─── mutation ─────────────────────────────────────────────────── */
   const create = trpc.sales.create.useMutation({
@@ -250,6 +280,9 @@ export default function SalesInvoiceNew() {
   function handleReset() {
     dispatch({ type: "RESET", invoiceType: INVOICE_TYPE });
     setClientRequestId(crypto.randomUUID());
+    // RESET يُعيد taxEnabled/taxRatePercent للافتراضي المُدرَج في createInitialState (false/"0") —
+    // نُعيد تفعيل تطبيق إعدادات الضريبة الفعلية على الفاتورة التالية في نفس الجلسة.
+    taxDefaultsAppliedRef.current = false;
   }
 
   function handleApprove() {
@@ -382,8 +415,8 @@ export default function SalesInvoiceNew() {
             tier={state.tier}
             invoiceType={INVOICE_TYPE}
             showCost={showCost}
-            /* العراق VAT=0% والخادم لا يحفظ ضريبة السطر ⇒ نُخفي العمود لتفادي تفاوت معروض/محفوظ. */
-            showTax={false}
+            /* حصص ضريبة الفاتورة (توزيع تناسبي، عرض فقط) — تظهر كعمود حين taxEnabled=true. */
+            taxShares={taxShares}
             onOpenBulkPicker={() => setBulkOpen(true)}
             onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
           />
