@@ -28,7 +28,10 @@ const savedControlUrl = process.env.CONTROL_DATABASE_URL;
 const savedEncKey = process.env.INTEGRATIONS_ENCRYPTION_KEY;
 
 beforeAll(() => {
-  process.env.CONTROL_DATABASE_URL = "mysql://root:testpw@127.0.0.1:3310/erp_control_test";
+  // مثل TEST_DATABASE_URL في vitest.config.ts — قابل للتجاوز (CI يشير لخدمة mysql على
+  // 3306 لا 3310 المحلّي؛ راجع .github/workflows/ci.yml خطوة «تهيئة قاعدة التحكّم»).
+  process.env.CONTROL_DATABASE_URL =
+    process.env.TEST_CONTROL_DATABASE_URL ?? "mysql://root:testpw@127.0.0.1:3310/erp_control_test";
   process.env.INTEGRATIONS_ENCRYPTION_KEY = "1".repeat(64); // 64 hex chars = 32 bytes صالحة للاختبار فقط
   __resetKeyCacheForTests();
 });
