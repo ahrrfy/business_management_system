@@ -52,25 +52,67 @@ function scopedBranch(
   return own;
 }
 
-export const arRemindersRouter = router({
-  /** قائمة اليوم: عملاء بذمّة >٠ متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام. admin يعبُر بـbranchId صريح. */
-  queue: customersManagerProcedure
-    .input(z.object({ branchId: optionalBranch }).optional())
-    .query(({ ctx, input }) => getReminderQueue({ branchId: scopedBranch(ctx, input?.branchId) })),
+/** فرع كتابة تذكير مدين افتتاحي (نطاق «الرصيد الافتتاحي») — **للأدمن حصراً** (مطابقٌ لقراءة النطاق).
+ *  الفرع هنا لتجميع التبريد فقط لا للعزل: التحقّق الأمني = `assertOpeningBalanceDebtor` (قيد OPENING)،
+ *  والقراءة تجمع كل الفروع ⇒ لا IDOR فرعيّ. لذا نقبل فرع الطلب ← فرع المستخدم، وإلا FORBIDDEN صريح.
+ *  ⚠️ لا تُسقِط هذا إلى `?? 1` (سابقة G3 — عودة النمط المحظور بالضبط): معرّفات الفروع ليست مضمونة
+ *  ١/٢ (تنجرف مع auto_increment في أي قاعدة حيّة/اختبار)، فأيّ رقم حرفيّ ثابت هنا قد يشير لفرع غير
+ *  موجود فيَفشل الإدراج بخرق قيد FK بدل رسالة واضحة — أو أسوأ، يشير صدفةً لفرع خاطئ فعلاً. */
+function openingWriteBranch(
+  ctx: { user: { role: string; branchId?: number | null } },
+  inputBranchId?: number,
+): number {
+  if (ctx.user.role !== "admin") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+  }
+  const resolved = inputBranchId ?? (ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+  if (resolved == null) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: "حدّد الفرع (branchId) — لا فرع مُسنَد لحسابك.",
+    });
+  }
+  return resolved;
+}
 
-  /** سجلّ آخر ٣٠ يوماً من التذكيرات في فرع المستخدم (admin يعبُر بـbranchId صريح). */
+export const arRemindersRouter = router({
+  /** قائمة اليوم: عملاء بذمّة >٠ متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام. admin يعبُر بـbranchId صريح.
+   *  `openingScope` (أدمن حصراً) ⇒ **مدينو الرصيد الافتتاحي فقط** مجمَّعين عبر الفروع (نطاق مستقلّ). */
+  queue: customersManagerProcedure
+    .input(z.object({ branchId: optionalBranch, openingScope: z.boolean().optional() }).optional())
+    .query(({ ctx, input }) => {
+      if (input?.openingScope) {
+        if (ctx.user.role !== "admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+        }
+        return getReminderQueue({ branchId: null, openingOnly: true });
+      }
+      return getReminderQueue({ branchId: scopedBranch(ctx, input?.branchId) });
+    }),
+
+  /** سجلّ آخر ٣٠ يوماً من التذكيرات في فرع المستخدم (admin يعبُر بـbranchId صريح).
+   *  `openingScope` (أدمن حصراً) ⇒ سجلّ مجمَّع عبر كل الفروع — مرآة queue.openingScope. لا عمود
+   *  يُميِّز صفوف الرصيد الافتتاحي في `arReminders` (تُكتَب بفرع حقيقي عبر openingWriteBranch)،
+   *  فالتجميع الكامل هو أصدق تمثيل متاح لسياق «مراجعة مدينِي الافتتاحي» دون تضليل بفرع واحد فقط. */
   history: customersManagerProcedure
     .input(
       z
         .object({
           limit: z.number().int().positive().max(1000).optional(),
           branchId: optionalBranch,
+          openingScope: z.boolean().optional(),
         })
         .optional(),
     )
-    .query(({ ctx, input }) =>
-      getReminderHistory({ branchId: scopedBranch(ctx, input?.branchId), limit: input?.limit }),
-    ),
+    .query(({ ctx, input }) => {
+      if (input?.openingScope) {
+        if (ctx.user.role !== "admin") {
+          throw new TRPCError({ code: "FORBIDDEN", message: "مدينو الرصيد الافتتاحي متاحون للأدمن فقط." });
+        }
+        return getReminderHistory({ branchId: null, limit: input?.limit });
+      }
+      return getReminderHistory({ branchId: scopedBranch(ctx, input?.branchId), limit: input?.limit });
+    }),
 
   /** تسجيل تذكير أُرسِل — يستدعيه الزبون فور عودة المستخدم من فتح wa.me وتأكيده الإرسال. */
   logSent: customersManagerProcedure
@@ -81,6 +123,7 @@ export const arRemindersRouter = router({
         oldestInvoiceDate: ymd,
         daysOverdue: z.number().int().nonnegative(),
         messageBody: z.string().min(1).max(4000),
+        isOpeningBalance: z.boolean().optional(),
         branchId: optionalBranch,
       }),
     )
@@ -88,7 +131,9 @@ export const arRemindersRouter = router({
       const { branchId: requestedBranchId, ...payload } = input;
       const r = await logReminderSent(payload, {
         userId: ctx.user.id,
-        branchId: scopedBranch(ctx, requestedBranchId),
+        branchId: input.isOpeningBalance
+          ? openingWriteBranch(ctx, requestedBranchId)
+          : scopedBranch(ctx, requestedBranchId),
       });
       await logAudit(ctx, {
         action: "arReminder.sent",
@@ -114,6 +159,7 @@ export const arRemindersRouter = router({
         skipReason: z.string().min(1).max(255),
         // اختياري: إن مُلئ ⇒ العميل يعود لقائمة اليوم يوم الوعد (يتخطّى تبريد ٧ أيام).
         promisedDate: ymd.optional().nullable(),
+        isOpeningBalance: z.boolean().optional(),
         branchId: optionalBranch,
       }),
     )
@@ -121,7 +167,9 @@ export const arRemindersRouter = router({
       const { branchId: requestedBranchId, ...payload } = input;
       const r = await logReminderSkipped(payload, {
         userId: ctx.user.id,
-        branchId: scopedBranch(ctx, requestedBranchId),
+        branchId: input.isOpeningBalance
+          ? openingWriteBranch(ctx, requestedBranchId)
+          : scopedBranch(ctx, requestedBranchId),
       });
       await logAudit(ctx, {
         action: "arReminder.skipped",

@@ -619,3 +619,199 @@ describe("arRemindersService - logReminderSent / logReminderSkipped", () => {
     expect(history[0].customerName).toBe("عميل اختبار");
   });
 });
+
+/** عميل بذمّة من قيد OPENING فقط (بلا أي فاتورة نظام) — يحاكي أحد الـ٣٢٥ عميلاً المستوردين. */
+async function makeOpeningBalanceOnlyCustomer(opts: {
+  customerId: number;
+  customerName: string;
+  phone?: string;
+  currentBalance: string;
+  openedOn: string; // YYYY-MM-DD
+}): Promise<void> {
+  const d = db();
+  await d.insert(s.customers).values({
+    id: opts.customerId,
+    name: opts.customerName,
+    phone: opts.phone ?? "07901234567",
+    customerType: "فرد",
+    currentBalance: opts.currentBalance,
+    isActive: true,
+  });
+  await d.insert(s.accountingEntries).values({
+    entryType: "OPENING",
+    customerId: opts.customerId,
+    amount: opts.currentBalance,
+    entryDate: opts.openedOn,
+    dedupeKey: `OPENING:CUSTOMER:${opts.customerId}`,
+  });
+}
+
+describe("arRemindersService - مدينو الرصيد الافتتاحي فقط (قرار مالك ٥/٧)", () => {
+  it("يُدرَج في النطاق المجمَّع (openingOnly) مؤرَّخاً من قيد OPENING، بشارة isOpeningBalance ومبلغ = الرصيد كاملاً", async () => {
+    await makeOpeningBalanceOnlyCustomer({
+      customerId: 500,
+      customerName: "مستورد بلا فواتير",
+      currentBalance: "750000",
+      openedOn: daysAgo(30),
+    });
+    const queue = await getReminderQueue({ branchId: null, openingOnly: true });
+    expect(queue).toHaveLength(1);
+    expect(queue[0].customerId).toBe(500);
+    expect(queue[0].isOpeningBalance).toBe(true);
+    expect(queue[0].totalUnpaid).toBe("750000.00");
+    expect(queue[0].oldestInvoiceDate).toBe(daysAgo(30));
+    expect(queue[0].daysOverdue).toBe(30);
+  });
+
+  it("لا يظهر في طابور فرع محدَّد (بلا انتماء فرعيّ) — عزل الفرع يبقى سليماً", async () => {
+    await makeOpeningBalanceOnlyCustomer({
+      customerId: 501,
+      customerName: "مستورد فرع محدَّد",
+      currentBalance: "300000",
+      openedOn: daysAgo(30),
+    });
+    expect(await getReminderQueue({ branchId: 1 })).toEqual([]);
+    expect(await getReminderQueue({ branchId: 2 })).toEqual([]);
+  });
+
+  it("لا يظهر في التجميع العادي (branchId=null بلا openingOnly صريح) — يمنع تسرّبه لـdashboard.ts", async () => {
+    await makeOpeningBalanceOnlyCustomer({
+      customerId: 502,
+      customerName: "مستورد نطاق عادي",
+      currentBalance: "300000",
+      openedOn: daysAgo(30),
+    });
+    // مرآة استدعاء dashboard.ts (getReminderQueue({branchId}) بلا openingOnly، وbranchId=null
+    // لأي مدير مرتفع لا الأدمن حصراً — راجع reportsRouter.ts). تحقّق عدائي (٥/٧) كشف أن هذا كان
+    // يُسرِّب مدينِي الافتتاحي إلى «برنامج اليوم» لكل مدير رغم أن الراوتر يمنعه صراحةً من رؤيتهم
+    // عبر queue({openingScope:true}) (أدمن حصراً). الآن: نطاق مستقلّ لا يتفعّل إلا بـopeningOnly صريح.
+    const queueAll = await getReminderQueue({ branchId: null });
+    expect(queueAll.find((r) => r.customerId === 502)).toBeUndefined();
+    // لكنه يظهر صحيحاً عبر النطاق الصريح.
+    const openingOnly = await getReminderQueue({ branchId: null, openingOnly: true });
+    expect(openingOnly.map((r) => r.customerId)).toContain(502);
+  });
+
+  it("متأخّر أقلّ من ٧ أيام من تاريخ الافتتاح ⇒ لا يظهر بعد", async () => {
+    await makeOpeningBalanceOnlyCustomer({
+      customerId: 503,
+      customerName: "مستورد حديث",
+      currentBalance: "100000",
+      openedOn: daysAgo(3),
+    });
+    expect(await getReminderQueue({ branchId: null, openingOnly: true })).toEqual([]);
+  });
+
+  it("رصيد صفري (سُدِّد بالكامل) ⇒ لا يظهر رغم وجود قيد OPENING", async () => {
+    await makeOpeningBalanceOnlyCustomer({
+      customerId: 504,
+      customerName: "مستورد سدَّد بالكامل",
+      currentBalance: "0",
+      openedOn: daysAgo(30),
+    });
+    expect(await getReminderQueue({ branchId: null, openingOnly: true })).toEqual([]);
+  });
+
+  it("رصيد دائن (سالب) بلا فواتير ⇒ لا يظهر", async () => {
+    await makeOpeningBalanceOnlyCustomer({
+      customerId: 505,
+      customerName: "مستورد دائن",
+      currentBalance: "-50000",
+      openedOn: daysAgo(30),
+    });
+    expect(await getReminderQueue({ branchId: null, openingOnly: true })).toEqual([]);
+  });
+
+  it("عميل له قيد OPENING **و** فاتورة نظام معاً ⇒ يُعامَل كعميل فواتير (isOpeningBalance=false)، لا مسار الافتتاحي", async () => {
+    const d = db();
+    // عميل واحد بقيد OPENING (تاريخ قديم) **و** فاتورة نظام متأخّرة لاحقاً — oldestInvoiceDate
+    // من الفاتورة (لا null) ⇒ يُصنَّف عبر مسار الفواتير لا مسار «الافتتاحي البحت».
+    await d.insert(s.customers).values({
+      id: 506,
+      name: "مستورد له فاتورة لاحقاً",
+      phone: "07901234567",
+      customerType: "فرد",
+      currentBalance: "900000",
+      isActive: true,
+    });
+    await d.insert(s.accountingEntries).values({
+      entryType: "OPENING",
+      customerId: 506,
+      amount: "700000",
+      entryDate: daysAgo(60),
+      dedupeKey: "OPENING:CUSTOMER:506",
+    });
+    await d.insert(s.invoices).values({
+      id: 5060,
+      invoiceNumber: "INV-5060",
+      sourceType: "POS",
+      sourceId: "test-5060",
+      branchId: 1,
+      customerId: 506,
+      priceTier: "RETAIL",
+      dueDate: daysAgo(20),
+      subtotal: "200000",
+      total: "200000",
+      paidAmount: "0",
+      status: "PENDING",
+    });
+    const queue = await getReminderQueue({ branchId: null, openingOnly: true });
+    // لا يظهر في نطاق «الافتتاحي فقط» (له فاتورة ⇒ ليس بحتاً افتتاحياً).
+    expect(queue.find((r) => r.customerId === 506)).toBeUndefined();
+    const invoiceQueue = await getReminderQueue({ branchId: 1 });
+    const row = invoiceQueue.find((r) => r.customerId === 506);
+    expect(row?.isOpeningBalance).toBe(false);
+  });
+
+  it("logReminderSent لمدين افتتاحي بحت ينجح عبر assertOpeningBalanceDebtor (لا فاتورة فرعيّة مطلوبة)", async () => {
+    await makeOpeningBalanceOnlyCustomer({
+      customerId: 507,
+      customerName: "مستورد للإرسال",
+      currentBalance: "400000",
+      openedOn: daysAgo(30),
+    });
+    const r = await logReminderSent(
+      {
+        customerId: 507,
+        totalUnpaidSnapshot: "400000",
+        oldestInvoiceDate: daysAgo(30),
+        daysOverdue: 30,
+        messageBody: "تذكير برصيد سابق",
+        isOpeningBalance: true,
+      },
+      { userId: 1, branchId: 1 },
+    );
+    expect(r.id).toBeGreaterThan(0);
+    const rows = await db().select().from(s.arReminders);
+    expect(rows[0].status).toBe("SENT");
+  });
+
+  it("logReminderSent لعميل بلا رصيد افتتاحي موجب (وبلا فاتورة) ⇒ NOT_FOUND", async () => {
+    await makePlainCustomer(508, "عميل بلا ذمّة");
+    await expect(
+      logReminderSent(
+        {
+          customerId: 508,
+          totalUnpaidSnapshot: "100000",
+          oldestInvoiceDate: daysAgo(30),
+          daysOverdue: 30,
+          messageBody: "محاولة خاطئة",
+          isOpeningBalance: true,
+        },
+        { userId: 1, branchId: 1 },
+      ),
+    ).rejects.toThrow(/لا رصيد افتتاحيّ/);
+  });
+});
+
+/** عميل عاديّ بلا أي ذمّة (لا فاتورة، لا قيد OPENING) — لاختبار رفض تذكير الافتتاحي عليه. */
+async function makePlainCustomer(id: number, name: string): Promise<void> {
+  await db().insert(s.customers).values({
+    id,
+    name,
+    phone: "07900000000",
+    customerType: "فرد",
+    currentBalance: "0",
+    isActive: true,
+  });
+}
