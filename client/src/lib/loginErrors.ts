@@ -14,7 +14,9 @@ export function translateLoginError(message: string): string {
   if (/failed to fetch|networkerror|load failed/i.test(message)) {
     return "تعذّر الاتصال بالخادم — تحقّق من اتصال الإنترنت ثم أعد المحاولة.";
   }
-  if (/unexpected token|not valid json|json parse/i.test(message)) {
+  // الصيغ الثلاث: Chrome «Unexpected token … is not valid JSON»، Safari «JSON Parse
+  // error»، Firefox «JSON.parse: unexpected character at line 1 column 1 …».
+  if (/unexpected token|not valid json|json.parse|unexpected character/i.test(message)) {
     return "الخادم غير متاح مؤقتاً — أعد المحاولة بعد قليل.";
   }
   return message;
