@@ -35,6 +35,13 @@ export interface VoucherPrintData {
   cashBucket?: "DRAWER" | "TREASURY" | null;
   signatureHash?: string | null;
   attachmentUrl?: string | null;
+  /** attachment-upload (٥/٧): رقم الفاتورة المرتبطة بسند العميل (اختياري). */
+  relatedInvoiceNumber?: string | null;
+}
+
+/** attachment-upload (٥/٧): هل المُرفق صورة data URL مُضمَّنة (لا رابط/مَسار نصّي قصير)؟ */
+function isImageDataUrl(s?: string | null): boolean {
+  return !!s && /^data:image\//.test(s);
 }
 
 const STATUS_LABEL: Record<VoucherPrintData["approvalStatus"], string> = {
@@ -66,6 +73,7 @@ export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "
   if (d.categoryName) meta.push(`الفئة: ${d.categoryName}`);
   meta.push(`الطرف: ${d.partyTypeLabel} — ${d.partyName}`);
   if (d.partyBalance) meta.push(`رصيد الطرف: ${d.partyBalance}`);
+  if (d.relatedInvoiceNumber) meta.push(`الفاتورة المرتبطة: ${d.relatedInvoiceNumber}`);
   if (d.counterpartyName && d.counterpartyName !== d.partyName) {
     meta.push(`اسم المُستفيد: ${d.counterpartyName}`);
   }
@@ -144,6 +152,10 @@ export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
         <div style="font-size:9.5px;color:${BRAND.textMuted};margin-top:1mm;">
           الفئة: <span style="color:#000;font-weight:700;">${esc(d.categoryName)}</span>
         </div>` : ""}
+      ${d.relatedInvoiceNumber ? `
+        <div style="font-size:9.5px;color:${BRAND.textMuted};margin-top:1mm;">
+          الفاتورة المرتبطة: <span style="color:#000;font-weight:700;">${esc(d.relatedInvoiceNumber)}</span>
+        </div>` : ""}
     </div>`;
 
   const paymentLines: string[] = [
@@ -215,10 +227,24 @@ export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
     }
   } catch { /* تَدهور سَلِس */ }
 
+  // attachment-upload (٥/٧): إصلاح — المُرفق أصبح data URL صورة (قد يَبلغ ~٩٣٣ك حرفاً)، فطَبعه نصّاً خاماً
+  // كما كان سابقاً (`مُرفَق: ${esc(url)}`) كان سيَطبع سطراً هائلاً من base64 مُشوَّهاً على الورقة الرسمية.
+  // الآن: صورة صغيرة (thumbnail) مُضمَّنة للـdata URL، أو نصّ قصير كما كان لأي رابط تاريخي غير data:.
+  const attachmentBlock = d.attachmentUrl
+    ? isImageDataUrl(d.attachmentUrl)
+      ? `<div style="margin-top:3mm;text-align:center;">
+          <div style="font-size:8px;color:${BRAND.textMuted};margin-bottom:1mm;">صورة المُرفَق المُرتبط بالسند</div>
+          <img src="${esc(d.attachmentUrl)}" alt="مُرفَق السند"
+            style="max-width:45mm;max-height:45mm;border:1px solid ${BRAND.border};border-radius:4px;object-fit:contain;" />
+        </div>`
+      : `<div style="margin-top:2mm;font-size:8px;color:${BRAND.textMuted};text-align:center;">
+          مُرفَق: ${esc(d.attachmentUrl)}
+        </div>`
+    : "";
   const customFooterNotes = `<div style="margin-top:3mm;padding:2mm 3mm;background:${BRAND.bg};
     border:1px dashed ${BRAND.border};border-radius:4px;font-size:8px;color:${BRAND.textMuted};text-align:center;line-height:1.5;">
     هذا السند مُتولَّد آلياً من نظام إدارة أعمال ${esc(CO.name)} — بَصمة SHA-256 مَختومة لمَنع التَلاعب.
-    ${d.attachmentUrl ? `<br>مُرفَق: ${esc(d.attachmentUrl)}` : ""}
+    ${attachmentBlock}
   </div>`;
   const footer = customFooterNotes + docFooter();
 

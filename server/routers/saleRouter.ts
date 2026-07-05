@@ -480,6 +480,9 @@ export const saleRouter = router({
         paymentMethod: receipts.paymentMethod,
         status: receipts.status,
         createdAt: receipts.createdAt,
+        // attachment-upload (٥/٧): سند مربوط بهذه الفاتورة (اختياري) — رقمه + مرفقه إن وُجدا.
+        voucherNumber: receipts.voucherNumber,
+        attachmentUrl: receipts.attachmentUrl,
       })
       .from(receipts)
       .where(eq(receipts.invoiceId, input.invoiceId))

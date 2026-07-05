@@ -695,7 +695,9 @@ export const receipts = mysqlTable(
     voucherCategoryId: bigint("voucherCategoryId", { mode: "number" }),     // FK → voucherCategories (هَجرة 0036)
     counterpartyName: varchar("counterpartyName", { length: 200 }),         // اسم الطرف الحُرّ لسندات «أخرى» (راتب الموظف فلان…)
     voucherDate: date("voucherDate"),                                       // تاريخ السند الفعلي (قد يَختلف عن createdAt)
-    attachmentUrl: text("attachmentUrl"),                                   // مَسار/URL مُستند مَرجعي (إيصال إيجار…)
+    // attachment-upload (٥/٧): MEDIUMTEXT — كانت TEXT (64KB) تكسر data URLs لصور المُرفق المضغوطة
+    // (نمط productImages/workOrderImages). الهجرة 0047.
+    attachmentUrl: mediumtext("attachmentUrl"),                             // data URL صورة مُرفق مضغوطة (إيصال/فاتورة/كَشف بنك)
     internalNote: text("internalNote"),                                     // مُلاحظة داخلية للتدقيق (لا تُطبع)
     signatureHash: varchar("signatureHash", { length: 64 }),                // SHA-256 hex لخَتم السند بَعد الاعتماد (سَلامة سجل تَدقيقي)
     approvalStatus: mysqlEnum("receiptApprovalStatus", ["APPROVED", "PENDING_APPROVAL", "REJECTED"]).default("APPROVED").notNull(),
@@ -2499,3 +2501,37 @@ export const arReminders = mysqlTable(
 );
 export type ArReminder = typeof arReminders.$inferSelect;
 export type InsertArReminder = typeof arReminders.$inferInsert;
+
+/** تذكيرات الذمم الدائنة (AP reminders) — مرآة `arReminders`: مراجعة يومية لموردين ندين لهم منذ ≥٧ أيام
+ *  → إرسال واتساب يدوي (تنسيق سداد/طلب كشف) أو تخطٍّ موثَّق. لا يمسّ الدفتر ولا الأموال — سجلّ فعلٍ فقط.
+ *  التبريد ٧ أيام + تاريخ وعدنا بالسداد نظير AR تماماً. snapshots لحظية للتدقيق التاريخي. */
+export const apReminders = mysqlTable(
+  "apReminders",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierId: bigint("supplierId", { mode: "number" }).notNull().references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    /** الرصيد الدائن الفعلي (المستحقّ للمورد علينا) وقت التذكير. */
+    totalUnpaidSnapshot: decimal("totalUnpaidSnapshot", { precision: 15, scale: 2 }).notNull(),
+    /** أقدم أمر شراء غير مسدَّد (DATE، YYYY-MM-DD كنصّ). لحساب أيام التأخّر تاريخياً. */
+    oldestPoDate: date("oldestPoDate", { mode: "string" }).notNull(),
+    /** عدد أيام تأخّر أقدم أمر شراء وقت التذكير (metadata، لا يُعاد حسابها). */
+    daysOverdue: int("daysOverdue").notNull(),
+    /** نصّ رسالة الواتساب المرسَلة (بعد sanitizeForWhatsApp) — snapshot للتدقيق. */
+    messageBody: text("messageBody").notNull(),
+    status: mysqlEnum("apReminderStatus", ["SENT", "SKIPPED"]).notNull(),
+    /** سبب التخطّي (nullable — يُملأ فقط عند status='SKIPPED'). */
+    skipReason: varchar("skipReason", { length: 255 }),
+    /** تاريخ وعدنا بالسداد (اختياري، YYYY-MM-DD). حين مُلئ يوم التخطّي ⇒ المورد يُعاد إظهاره
+     *  في القائمة يوم الوعد نفسه (يتخطّى تبريد ٧ أيام) بشارة «موعود اليوم» لمتابعة السداد. */
+    promisedDate: date("promisedDate", { mode: "string" }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    supplierCreatedIdx: index("idx_ap_reminders_supplier_created").on(table.supplierId, table.createdAt),
+    branchCreatedIdx: index("idx_ap_reminders_branch_created").on(table.branchId, table.createdAt),
+  }),
+);
+export type ApReminder = typeof apReminders.$inferSelect;
+export type InsertApReminder = typeof apReminders.$inferInsert;

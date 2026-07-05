@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
+import { Paperclip } from "lucide-react";
 
 const STATUS: Record<string, string> = {
   PENDING: "معلّقة",
@@ -339,6 +340,7 @@ export default function InvoiceDetail() {
                   <th className="px-3 py-2 font-medium">الطريقة</th>
                   <th className="px-3 py-2 font-medium text-right">المبلغ</th>
                   <th className="px-3 py-2 font-medium">الحالة</th>
+                  <th className="px-3 py-2 font-medium">سند/مرفق</th>
                 </tr>
               </thead>
               <tbody>
@@ -356,10 +358,19 @@ export default function InvoiceDetail() {
                     <td className="px-3 py-2">{METHOD_LABEL[p.paymentMethod] ?? p.paymentMethod}</td>
                     <td className="px-3 py-2 text-right tabular-nums"><CopyInline value={p.amount} display={fmt(p.amount)} /></td>
                     <td className="px-3 py-2 text-xs text-muted-foreground">{PAY_STATUS[p.status] ?? p.status}</td>
+                    <td className="px-3 py-2 text-xs">
+                      {p.voucherNumber && <span className="text-muted-foreground">{p.voucherNumber}</span>}
+                      {p.attachmentUrl && (
+                        <a href={p.attachmentUrl} target="_blank" rel="noreferrer" title="فتح المُرفق" className="ms-1 inline-block">
+                          <Paperclip aria-hidden className="size-3.5 text-emerald-700 inline" />
+                        </a>
+                      )}
+                      {!p.voucherNumber && !p.attachmentUrl && "—"}
+                    </td>
                   </tr>
                 ))}
                 {(data.payments ?? []).length === 0 && (
-                  <tr><td colSpan={5} className="p-4 text-center text-muted-foreground">لا دفعات بعد.</td></tr>
+                  <tr><td colSpan={6} className="p-4 text-center text-muted-foreground">لا دفعات بعد.</td></tr>
                 )}
               </tbody>
             </table>

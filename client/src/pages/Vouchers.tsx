@@ -16,7 +16,7 @@ import { printVoucherReceipt, printVoucherA4, type VoucherPrintData } from "@/li
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { CheckCircle2, XCircle, Paperclip, ShieldQuestion } from "lucide-react";
+import { CheckCircle2, XCircle, Paperclip, ShieldQuestion, Link2 } from "lucide-react";
 
 type VoucherRow = RouterOutputs["vouchers"]["list"][number];
 
@@ -212,7 +212,10 @@ export default function Vouchers() {
           { key: "cardLastFour", header: "آخر ٤ بطاقة" },
           { key: "approvalStatus", header: "حالة الاعتماد", map: (r) => APPROVAL_LABEL[r.approvalStatus ?? "APPROVED"] ?? "—" },
           { key: "status", header: "الحالة", map: (r) => (r.status === "REVERSED" ? "مُلغى" : "مكتمل") },
-          { key: "attachmentUrl", header: "المُرفَق" },
+          // attachment-upload (٥/٧): المُرفق أصبح data URL صورة (~٩٣٣ك حرفاً) — تصديره خاماً يُفسد
+          // الخلية (حدّ Excel ~٣٢،٧٦٧ حرفاً) ⇒ نعم/لا فقط؛ المُلَفّ نفسه يُفتَح من الشاشة مباشرةً.
+          { key: "attachmentUrl", header: "مُرفَق؟", map: (r) => (r.attachmentUrl ? "نعم" : "لا") },
+          { key: "invoiceNumber", header: "الفاتورة المرتبطة", map: (r) => r.invoiceNumber ?? "—" },
           { key: "signatureHash", header: "بَصمة", map: (r) => shortHash(r.signatureHash) },
           { key: "cashBucket", header: "نوع النَقد", map: (r) => (r.cashBucket === "DRAWER" ? "درج كاشير" : r.cashBucket === "TREASURY" ? "خزينة إدارية" : "—") },
         ],
@@ -255,6 +258,7 @@ export default function Vouchers() {
         cashBucket: v.cashBucket as "DRAWER" | "TREASURY" | null,
         signatureHash: v.signatureHash,
         attachmentUrl: v.attachmentUrl,
+        relatedInvoiceNumber: v.invoiceNumber ?? null,
       };
       if (mode === "a4") await printVoucherA4(payload);
       else await printVoucherReceipt(payload);
@@ -465,6 +469,9 @@ export default function Vouchers() {
                         {r.partyType !== "OTHER" && r.counterpartyName && (
                           <div className="text-[10px] text-muted-foreground">{r.counterpartyName}</div>
                         )}
+                        {r.invoiceNumber && (
+                          <div className="text-[10px] text-muted-foreground inline-flex items-center gap-1"><Link2 aria-hidden className="size-3" /> فاتورة #{r.invoiceNumber}</div>
+                        )}
                       </td>
                       <td className="p-2 text-xs">
                         {r.voucherCategoryId ? (categoryMap.get(Number(r.voucherCategoryId)) ?? "—") : "—"}
@@ -486,7 +493,7 @@ export default function Vouchers() {
                       </td>
                       <td className="p-2 text-center">
                         {r.attachmentUrl ? (
-                          <a href={r.attachmentUrl} target="_blank" rel="noreferrer" title={r.attachmentUrl}>
+                          <a href={r.attachmentUrl} target="_blank" rel="noreferrer" title="فتح المُرفق">
                             <Paperclip aria-hidden className="size-4 text-emerald-700 inline" />
                           </a>
                         ) : (

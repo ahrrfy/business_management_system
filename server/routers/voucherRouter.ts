@@ -50,8 +50,12 @@ export const voucherRouter = router({
         voucherCategoryId: z.number().int().positive().nullish(),
         counterpartyName: z.string().max(200).nullish(),
         voucherDate: ymd.nullish(),
-        attachmentUrl: z.string().max(1000).nullish(),
+        // حدّ zod أعلى من سقف assertValidImageDataUrl (٢م بايت مُفكّكة ≈ ٢.٧م نصّاً) عمداً —
+        // كي تكون رسالة الخطأ الودودة (PAYLOAD_TOO_LARGE بالعربية) هي ما يَظهر، لا خطأ zod الخام.
+        attachmentUrl: z.string().max(4_000_000).nullish(),
         internalNote: z.string().max(2000).nullish(),
+        // attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (اختياري).
+        invoiceId: z.number().int().positive().nullish(),
         clientRequestId: z.string().min(1).max(80).optional(),
       }),
     )
@@ -74,6 +78,7 @@ export const voucherRouter = router({
               partyId: input.partyId ?? null,
               approvalStatus: res.approvalStatus,
               voucherCategoryId: input.voucherCategoryId ?? null,
+              invoiceId: input.invoiceId ?? null,
             },
           });
           return res;

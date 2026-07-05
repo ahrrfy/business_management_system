@@ -1,6 +1,6 @@
 // قراءات السندات: القائمة المفلترة، سند منفرد موسَّع، والسندات الأخيرة لنفس الطرف (تحذير الازدواج).
 import { and, desc, eq, gte, isNotNull, lt, ne } from "drizzle-orm";
-import { customers, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
+import { customers, invoices, receipts, suppliers, users, voucherCategories } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { localDayStart, localNextDayStart } from "../dateRange";
 import type { PartyType, PaymentMethod } from "./types";
@@ -66,8 +66,12 @@ export async function listVouchers(input: ListVouchersInput = {}) {
       approvedAt: receipts.approvedAt,
       signatureHash: receipts.signatureHash,
       cashBucket: receipts.cashBucket,
+      // attachment-upload (٥/٧): ربط الفاتورة — رقم الفاتورة للعرض (بلا استعلام إضافي بالواجهة).
+      invoiceId: receipts.invoiceId,
+      invoiceNumber: invoices.invoiceNumber,
     })
     .from(receipts)
+    .leftJoin(invoices, eq(receipts.invoiceId, invoices.id))
     .where(and(...wheres))
     .orderBy(desc(receipts.id))
     .limit(input.limit ?? 100)
@@ -85,6 +89,7 @@ export async function getVoucher(receiptId: number) {
   let approvedByName: string | null = null;
   let categoryName: string | null = null;
   let partyName: string | null = null;
+  let invoiceNumber: string | null = null;
   if (r.createdBy != null) {
     const u = (await db.select({ name: users.name }).from(users).where(eq(users.id, Number(r.createdBy))).limit(1))[0];
     createdByName = u?.name ?? null;
@@ -107,7 +112,12 @@ export async function getVoucher(receiptId: number) {
   } else if (r.partyType === "OTHER") {
     partyName = r.counterpartyName ?? null;
   }
-  return { ...r, createdByName, approvedByName, categoryName, partyName };
+  if (r.invoiceId != null) {
+    const inv = (await db.select({ invoiceNumber: invoices.invoiceNumber })
+      .from(invoices).where(eq(invoices.id, Number(r.invoiceId))).limit(1))[0];
+    invoiceNumber = inv?.invoiceNumber ?? null;
+  }
+  return { ...r, createdByName, approvedByName, categoryName, partyName, invoiceNumber };
 }
 
 /** يَجلب السندات الأخيرة لنفس الطرف خلال نافذة أيام محدّدة — للتحذير من الازدواج (دفعة مكرّرة).

@@ -21,6 +21,8 @@ export interface VoucherInput {
   voucherDate?: string | null;       // YYYY-MM-DD (الافتراضي = اليوم المحلي)
   attachmentUrl?: string | null;
   internalNote?: string | null;
+  /** attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (تظهر في سجلّ دفعات الفاتورة). partyType=CUSTOMER فقط. */
+  invoiceId?: number | null;
   /** Idempotency: نفس المفتاح ⇒ سند واحد (لا صرف/قبض نقدي مزدوج عند النقر المزدوج/إعادة الشبكة). */
   clientRequestId?: string | null;
 }
