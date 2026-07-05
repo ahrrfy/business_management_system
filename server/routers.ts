@@ -14,6 +14,7 @@ import { workOrderRouter } from "./routers/workOrderRouter";
 import { customerRouter } from "./routers/customerRouter";
 import { customerNoteRouter } from "./routers/customerNoteRouter";
 import { arRemindersRouter } from "./routers/arRemindersRouter";
+import { apRemindersRouter } from "./routers/apRemindersRouter";
 import { expenseRouter } from "./routers/expenseRouter";
 import { reportsRouter } from "./routers/reportsRouter";
 import { quotationRouter } from "./routers/quotationRouter";
@@ -69,6 +70,7 @@ export const appRouter = router({
   customers: customerRouter,
   customerNotes: customerNoteRouter,
   arReminders: arRemindersRouter,
+  apReminders: apRemindersRouter,
   expenses: expenseRouter,
   reports: reportsRouter,
   quotations: quotationRouter,
