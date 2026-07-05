@@ -101,6 +101,7 @@ export default function CustomerEdit() {
     setDone("");
     if (!name.trim()) {
       setError("اسم العميل مطلوب.");
+      document.getElementById("name")?.focus(); // WCAG focus-management: التركيز لأوّل حقل خاطئ.
       return;
     }
     // الوضع الصريح يحفظ «بلا حدّ» (null) بدل قلبه صامتاً إلى "0" (كان انحداراً عند تفريغ الحقل).
@@ -110,6 +111,7 @@ export default function CustomerEdit() {
       const cc = creditLimit.trim();
       if (!cc || !/^\d+(\.\d{1,2})?$/.test(cc)) {
         setError("أدخل سقف ائتمان صحيحاً (مثال: 500000) أو اختر «نقدي فقط»/«بلا سقف».");
+        document.getElementById("credit")?.focus();
         return;
       }
       creditLimitPayload = cc;
