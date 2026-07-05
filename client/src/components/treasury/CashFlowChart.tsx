@@ -57,6 +57,15 @@ export function CashFlowChart({ data, loading, height = 300 }: CashFlowChartProp
     [data],
   );
 
+  // ملخّص نصّي للقارئ الشاشي (WCAG: بديل نصّي للرسم) — إجماليات الفترة.
+  const totals = useMemo(
+    () => chartData.reduce(
+      (a, d) => ({ inflow: a.inflow + d.inflow, outflow: a.outflow + d.outflow, net: a.net + d.net }),
+      { inflow: 0, outflow: 0, net: 0 },
+    ),
+    [chartData],
+  );
+
   if (loading) {
     return (
       <div className="rounded-md border p-4 animate-pulse">
@@ -101,16 +110,24 @@ export function CashFlowChart({ data, loading, height = 300 }: CashFlowChartProp
           لا حركات نقدية في الفترة المعروضة.
         </div>
       ) : (
+        <div role="img" aria-label={`رسم التدفّق النقدي لـ${data.length} يوماً. إجمالي المقبوضات ${fmtAr(totals.inflow)} دينار، إجمالي المدفوعات ${fmtAr(totals.outflow)} دينار، الصافي ${fmtAr(totals.net)} دينار.`}>
         <ResponsiveContainer width="100%" height={height}>
           {variant === "bar" ? (
             <BarChart data={chartData} margin={{ top: 5, right: 8, left: -8, bottom: 0 }}>
+              {/* تمييز غير لوني (WCAG pattern-texture): المدفوعات بتظليل مائل + المقبوضات صلبة — لعمى الألوان أحمر/أخضر. */}
+              <defs>
+                <pattern id="cashHatchOut" patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+                  <rect width="6" height="6" fill="var(--money-negative)" opacity="0.2" />
+                  <line x1="0" y1="0" x2="0" y2="6" stroke="var(--money-negative)" strokeWidth="3" />
+                </pattern>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" className="stroke-border/40" />
               <XAxis dataKey="day" reversed tick={{ fontSize: 11 }} />
               <YAxis tickFormatter={abbreviateNumber} tick={{ fontSize: 11 }} />
               <Tooltip content={<FmtTooltip />} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Bar dataKey="inflow" name="مقبوضات" fill="var(--money-positive)" radius={[4, 4, 0, 0]} />
-              <Bar dataKey="outflow" name="مدفوعات" fill="var(--money-negative)" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="outflow" name="مدفوعات" fill="url(#cashHatchOut)" stroke="var(--money-negative)" radius={[4, 4, 0, 0]} />
             </BarChart>
           ) : variant === "line" ? (
             <LineChart data={chartData} margin={{ top: 5, right: 8, left: -8, bottom: 0 }}>
@@ -120,7 +137,7 @@ export function CashFlowChart({ data, loading, height = 300 }: CashFlowChartProp
               <Tooltip content={<FmtTooltip />} />
               <Legend wrapperStyle={{ fontSize: 12 }} />
               <Line type="monotone" dataKey="inflow" name="مقبوضات" stroke="var(--money-positive)" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="outflow" name="مدفوعات" stroke="var(--money-negative)" strokeWidth={2} dot={false} />
+              <Line type="monotone" dataKey="outflow" name="مدفوعات" stroke="var(--money-negative)" strokeWidth={2} strokeDasharray="5 4" dot={false} />
             </LineChart>
           ) : (
             <AreaChart data={chartData} margin={{ top: 5, right: 8, left: -8, bottom: 0 }}>
@@ -153,11 +170,13 @@ export function CashFlowChart({ data, loading, height = 300 }: CashFlowChartProp
                 name="مدفوعات"
                 stroke="var(--money-negative)"
                 strokeWidth={2}
+                strokeDasharray="5 4"
                 fill="url(#gradOut)"
               />
             </AreaChart>
           )}
         </ResponsiveContainer>
+        </div>
       )}
     </div>
   );

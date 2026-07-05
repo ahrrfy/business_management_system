@@ -7,14 +7,16 @@
  */
 
 :root {
-  --money-positive: oklch(0.55 0.13 155); /* أخضر هادئ */
+  /* WCAG AA (الوضع الفاتح): أُظلِمت قِيَم L لتصمد الألوان كنصّ (≥٤.٥) وكشارات (نصّ ملوّن على تظليل ≥٤.٥).
+   * كانت تفشل: stock-low نصّ ٢.٧٣/شارة ٢.٤٢، stock-ok شارة ٤.٠٣، status-pending شارة ٤.٢٥، money-positive نصّ ٤.٥٦ (شعرة). */
+  --money-positive: oklch(0.52 0.13 155); /* أخضر هادئ */
   --money-negative: oklch(0.55 0.17 25); /* أحمر طوبيّ */
   --money-neutral: var(--muted-foreground);
-  --stock-ok: oklch(0.55 0.13 155);
-  --stock-low: oklch(0.70 0.15 75); /* كهرماني */
+  --stock-ok: oklch(0.50 0.13 155);
+  --stock-low: oklch(0.52 0.15 75); /* كهرماني غامق */
   --stock-out: oklch(0.55 0.20 25); /* أحمر */
-  --status-pending: oklch(0.55 0.08 250); /* أزرق رمادي */
-  --status-active: oklch(0.55 0.13 155);
+  --status-pending: oklch(0.50 0.08 250); /* أزرق رمادي */
+  --status-active: oklch(0.50 0.13 155);
   --status-done: oklch(0.50 0.10 200);
   --status-cancelled: var(--muted-foreground);
   /* علامات تجارية و قراءة مُعزَّزة (P1 من تَدقيق CSS العَدائي) */

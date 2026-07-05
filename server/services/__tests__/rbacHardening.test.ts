@@ -261,4 +261,62 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
       expect(out).toBeDefined();
     });
   });
+
+  // مراجعة ٥/٧/٢٦: عودة نمط `?? 1` (سابقة G3) في arRemindersRouter — مدير بلا فرع مُسنَد كان
+  // يقرأ/يكتب صامتاً على الفرع ١ (يمرّ حتى فحص IDOR لأن assertCustomerHasBranchInvoice يجري
+  // على الفرع ١ نفسه). الآن: قاعدة واحدة للقراءة والكتابة (scopedBranch): FORBIDDEN صريح بلا
+  // فرع، وadmin يعبُر الفروع بـinput.branchId **صريح** فقط — لا قراءة مجمَّعة من الراوتر لأن
+  // كتابةً بلا فرعِ صفٍّ تجعل القائمة غير قابلة للتنفيذ (تحقّق عدائي ٥/٧).
+  describe("arReminders — لا `?? 1`: عزل فرع صريح موحَّد قراءةً وكتابةً (سابقة G3)", () => {
+    it("queue: مدير بلا فرع ⇒ FORBIDDEN (كان يقرأ الفرع ١ صامتاً)", () =>
+      expectForbidden(caller("manager", null).arReminders.queue())
+    );
+    it("history: مدير بلا فرع ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("manager", null).arReminders.history())
+    );
+    it("logSent: مدير بلا فرع ⇒ FORBIDDEN (كان يكتب على الفرع ١ صامتاً)", () =>
+      expectForbidden(
+        caller("manager", null).arReminders.logSent({
+          customerId: 1,
+          totalUnpaidSnapshot: "1000",
+          oldestInvoiceDate: "2026-01-01",
+          daysOverdue: 10,
+          messageBody: "x",
+        })
+      )
+    );
+    it("logSkipped: admin بلا فرع وبلا branchId ⇒ FORBIDDEN صريح (الكتابة تتطلّب فرعاً محدَّداً)", () =>
+      expectForbidden(
+        caller("admin", null).arReminders.logSkipped({
+          customerId: 1,
+          totalUnpaidSnapshot: "1000",
+          oldestInvoiceDate: "2026-01-01",
+          daysOverdue: 10,
+          skipReason: "x",
+        })
+      )
+    );
+    it("queue: مدير فرع ٢ يطلب فرع ١ ⇒ FORBIDDEN forensic (لا قصّ صامت)", () =>
+      expectForbidden(caller("manager", 2).arReminders.queue({ branchId: 1 }))
+    );
+    it("queue: admin بلا فرع وبلا branchId ⇒ FORBIDDEN (نطاق القراءة = نطاق الكتابة — لا قائمة غير قابلة للتنفيذ)", () =>
+      expectForbidden(caller("admin", null).arReminders.queue())
+    );
+    it("queue: admin فرعه ١ يطلب فرع ٢ صراحةً ⇒ مسموح (منفذ عبور الفروع بمرآة arAging)", async () => {
+      const out = await caller("admin", 1).arReminders.queue({ branchId: 2 });
+      expect(Array.isArray(out)).toBe(true);
+    });
+    it("logSent: admin بفرع صريح ⇒ يمرّ عزل الفرع ويصل لفحص فاتورة العميل (NOT_FOUND لا FORBIDDEN)", async () => {
+      await expect(
+        caller("admin", 1).arReminders.logSent({
+          customerId: 999999,
+          totalUnpaidSnapshot: "1000",
+          oldestInvoiceDate: "2026-01-01",
+          daysOverdue: 10,
+          messageBody: "x",
+          branchId: 2,
+        })
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+  });
 });

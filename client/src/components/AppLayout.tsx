@@ -11,7 +11,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 
 type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
@@ -21,23 +21,33 @@ type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
 //  - لوحة التحكم تَبقى رابطاً مُستقلّاً أعلى القائمة.
 //  - نقطة البيع وقارئ الأسعار أدواتٌ ملء‑شاشة (روابط مُباشرة).
 //  - بقية الوَحدات صَفحات hub بتبويبات ?tab= (المبيعات/المشتريات/المطبعة/الأصول/الموارد/الإقفال/الإدارة...).
-//  - القيود: managerOnly (الأصول/الموارد/الإقفال/الإدارة) و roles (التوصيل)؛ والتبويبات الحسّاسة
-//    داخل كل hub مُقيَّدة إضافةً (admin‑فقط للتكاملات/الأدوار/إقفال الفترات...).
+//  - القيود: managerOnly (الأصول/الموارد/الصيرفة/الإقفال/الإدارة) و roles (التوصيل)؛ والتبويبات
+//    الحسّاسة داخل كل hub مُقيَّدة إضافةً (admin‑فقط للتكاملات/الأدوار/إقفال الفترات...).
+//
+// ⚙️ ترتيب القائمة = بحسب الاستعمال اليومي والأهمية (الأكثر استخداماً أولاً) لنشاط مطبعة+قرطاسية:
+//   ‏(أ) تشغيل يومي دائم على المنضدة: نقطة البيع ← قارئ الأسعار ← المطبعة والإنتاج ← العملاء ← المبيعات.
+//   ‏(ب) يومي مالي/تشغيلي: الخزينة ← التوصيل ← المخزون.
+//   ‏(ج) دوري (أسبوعي/عند الحاجة): المشتريات ← الموردون ← التقارير.
+//   ‏(د) متخصّص/نادر: الصيرفة ← الأصول ← الموارد ← الإقفال ← الإدارة والإعدادات (في الأسفل دائماً).
 const NAV_LINKS: NavLink[] = [
+  // (أ) الأكثر استعمالاً يومياً — تشغيل الواجهة الأمامية
   { href: "/pos", label: "نقطة البيع", icon: ShoppingCart },
   { href: "/price-checker", label: "قارئ الأسعار", icon: ScanLine },
+  { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer },
+  { href: "/customers", label: "العملاء", icon: Users },
   { href: "/invoices", label: "المبيعات", icon: Receipt },
+  // (ب) يومي مالي/تشغيلي
+  { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet },
+  { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
+  { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
+  // (ج) دوري — أسبوعي/عند الحاجة
   { href: "/purchases", label: "المشتريات", icon: Package },
   { href: "/suppliers", label: "الموردون", icon: Building2 },
-  { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
-  { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer },
+  { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
+  // (د) متخصّص/نادر — الإعدادات في الأسفل دائماً
+  { href: "/exchange", label: "الصيرفة", icon: DollarSign, managerOnly: true },
   { href: "/assets", label: "الأصول الثابتة", icon: Server, managerOnly: true },
   { href: "/hr", label: "الموارد البشرية", icon: Briefcase, managerOnly: true },
-  { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet },
-  { href: "/exchange", label: "الصيرفة", icon: DollarSign, managerOnly: true },
-  { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
-  { href: "/customers", label: "العملاء", icon: Users },
-  { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
   { href: "/closing", label: "الإقفال والرَقابة", icon: Lock, managerOnly: true },
   { href: "/settings", label: "الإدارة والإعدادات", icon: Settings, managerOnly: true },
 ];
@@ -61,8 +71,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   // درج التنقّل للأجهزة اللوحية/الأصغر (<lg) — يُغلق تلقائياً عند تغيّر المسار.
   const [navOpen, setNavOpen] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
   useEffect(() => {
     setNavOpen(false);
+    // عند تغيّر المسار: صفّر تمرير المحتوى وانقل التركيز إليه (WCAG focus-on-route-change) —
+    // فلا تبقى الصفحة الجديدة مُمرَّرة لموضع سابق، ويُعلن قارئ الشاشة الانتقال بدل إبقاء التركيز على الرابط.
+    mainRef.current?.scrollTo({ top: 0 });
+    mainRef.current?.focus();
   }, [loc]);
 
   const role = me.data?.role;
@@ -86,6 +101,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {/* لوحة التحكم — رابط مستقلّ */}
           <Link
             href="/"
+            aria-current={loc === "/" ? "page" : undefined}
             className={cn(
               "flex items-center gap-2 rounded-md mx-2 px-3 py-2 min-h-[40px] text-sm transition",
               loc === "/" ? "bg-primary text-primary-foreground font-semibold" : "hover:bg-accent",
@@ -106,6 +122,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 key={m.href}
                 href={m.href}
                 title={m.label}
+                aria-current={active ? "page" : undefined}
                 className={cn(
                   "flex items-center gap-2 rounded-md mx-2 mb-0.5 px-3 py-2 min-h-[40px] text-sm transition",
                   active ? "bg-primary text-primary-foreground font-semibold" : "text-foreground/90 hover:bg-accent",
@@ -180,7 +197,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      <main className="flex-1 p-3 md:p-6 overflow-auto">{children}</main>
+      <main ref={mainRef} tabIndex={-1} className="flex-1 p-3 md:p-6 overflow-auto outline-none">{children}</main>
     </div>
   );
 }

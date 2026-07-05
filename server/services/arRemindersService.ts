@@ -14,7 +14,7 @@ import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
 import { arReminders, customers, invoices } from "../../drizzle/schema";
 import { requireDb } from "./tx";
 import { getARAging } from "./reports/arAging";
-import { money } from "./money";
+import { money, toDbMoney } from "./money";
 
 /** حدّ الأيام لأوّل تذكير (يوم من الاستحقاق). قرار المالك. */
 export const REMINDER_MIN_DAYS_OVERDUE = 7;
@@ -26,6 +26,9 @@ export interface ReminderQueueRow {
   customerId: number;
   customerName: string;
   phone: string | null;
+  /** المبلغ المُطالَب به في التذكير = min(متبقّي الفواتير المتأخّرة، الرصيد الجاري) بدقّة decimal.
+   *  الذمم الحاكمة = customers.currentBalance (§٥): سند القبض المستقلّ يخفّضها دون مسّ
+   *  invoices.paidAmount ⇒ متبقّي الفواتير وحده قد يطالب عميلاً سدّد «على الحساب». */
   totalUnpaid: string;
   oldestInvoiceDate: string;
   daysOverdue: number;
@@ -63,21 +66,36 @@ function todayUTC(): string {
   return `${y}-${m}-${day}`;
 }
 
-/** قائمة اليوم المؤهَّلة للتذكير: عملاء بذمّة >0 وأقدم فاتورة متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام. */
-export async function getReminderQueue(opts: { branchId: number }): Promise<ReminderQueueRow[]> {
+/** قائمة اليوم المؤهَّلة للتذكير: عملاء بذمّة >0 وأقدم فاتورة متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام.
+ *  branchId=null ⇒ تجميع كل الفروع (لوحة المرتفعين/برنامج اليوم — مرآة getDashboardMetrics)؛
+ *  التبريد/الوعد يُقرآن عندئذٍ من آخر تذكير للعميل في أي فرع. */
+export async function getReminderQueue(opts: { branchId: number | null }): Promise<ReminderQueueRow[]> {
   const db = requireDb();
-  const aging = await getARAging({ branchId: opts.branchId });
+  const aging = await getARAging(opts.branchId != null ? { branchId: opts.branchId } : {});
   const today = todayUTC();
 
-  // العملاء المؤهَّلون قبل فحص التبريد: unpaidTotal > 0 + oldestInvoiceDate يعطي ≥REMINDER_MIN_DAYS_OVERDUE
+  // العملاء المؤهَّلون قبل فحص التبريد: ذمّة فعلية >0 + oldestInvoiceDate يعطي ≥REMINDER_MIN_DAYS_OVERDUE
   // يوماً من التأخّر. `getARAging` قد تُرجع عملاء رصيدهم فقط من OPENING (unbucketed) ⇒ نتجاهلهم
   // (لا فاتورة فعلية للتذكير بها). النتيجة عبارة عن قائمة صغيرة عادةً (عشرات) فالتصفية في الذاكرة كافية.
+  //
+  // مراجعة ٥/٧: متبقّي الفواتير (unpaidTotal) وحده لا يحكم المطالبة — سند القبض المستقلّ
+  // («دفعة على الحساب») يخفّض customers.currentBalance دون أن يمسّ invoices.paidAmount، والرصيد
+  // الافتتاحي الدائن (PR #125) يجعل currentBalance ≤ 0 رغم بقاء فواتير PENDING. الذمم الحاكمة =
+  // currentBalance (§٥) ⇒ يُستبعَد كل عميل currentBalance ≤ 0 (سدّد أو دائن — لا مطالبة)، والمبلغ
+  // المعروض/المُرسَل = min(unpaidTotal, currentBalance) — لا نطالب بأكثر من الذمّة الجارية.
   const eligible = aging
-    .filter((r) => money(r.unpaidTotal).gt(0) && r.oldestInvoiceDate)
-    .map((r) => ({
-      row: r,
-      daysOverdue: daysBetween(r.oldestInvoiceDate!, today),
-    }))
+    .filter(
+      (r) => money(r.unpaidTotal).gt(0) && money(r.currentBalance).gt(0) && r.oldestInvoiceDate,
+    )
+    .map((r) => {
+      const unpaid = money(r.unpaidTotal);
+      const balance = money(r.currentBalance);
+      return {
+        row: r,
+        dueAmount: toDbMoney(unpaid.lt(balance) ? unpaid : balance),
+        daysOverdue: daysBetween(r.oldestInvoiceDate!, today),
+      };
+    })
     .filter((x) => x.daysOverdue >= REMINDER_MIN_DAYS_OVERDUE);
 
   if (eligible.length === 0) return [];
@@ -86,6 +104,9 @@ export async function getReminderQueue(opts: { branchId: number }): Promise<Remi
   // بأحدث id لكل customerId (id = AUTO_INCREMENT ⇒ ترتيب زمني موثوق أدقّ من MAX(createdAt)
   // مع تعادل الثانية)، ثم JOIN لجلب `promisedDate` من نفس الصفّ. استعلام واحد لا N+1.
   const customerIds = eligible.map((x) => x.row.customerId);
+  // عند فرع محدَّد: آخر تذكير للعميل **في هذا الفرع** (التبريد فرعيّ — عميل مشترك بين فرعين قد
+  // يُذكَّر من كليهما في نفس اليوم؛ سلوك سابق للتغيير، توحيده قرار متابعة). عند null (تجميع):
+  // آخر تذكير له في **أي** فرع — تبريد/وعد موحَّدان عبر الفروع في القراءة المجمَّعة.
   const lastRows = await db
     .select({
       customerId: arReminders.customerId,
@@ -97,12 +118,17 @@ export async function getReminderQueue(opts: { branchId: number }): Promise<Remi
     .where(
       and(
         sql`${arReminders.customerId} IN (${sql.join(customerIds.map((id) => sql`${id}`), sql`, `)})`,
-        eq(arReminders.branchId, opts.branchId),
-        sql`${arReminders.id} = (
-          SELECT MAX(inner_r.id) FROM ${arReminders} AS inner_r
-          WHERE inner_r.customerId = ${arReminders.customerId}
-            AND inner_r.branchId = ${arReminders.branchId}
-        )`,
+        ...(opts.branchId != null ? [eq(arReminders.branchId, opts.branchId)] : []),
+        opts.branchId != null
+          ? sql`${arReminders.id} = (
+              SELECT MAX(inner_r.id) FROM ${arReminders} AS inner_r
+              WHERE inner_r.customerId = ${arReminders.customerId}
+                AND inner_r.branchId = ${arReminders.branchId}
+            )`
+          : sql`${arReminders.id} = (
+              SELECT MAX(inner_r.id) FROM ${arReminders} AS inner_r
+              WHERE inner_r.customerId = ${arReminders.customerId}
+            )`,
       ),
     );
 
@@ -125,7 +151,7 @@ export async function getReminderQueue(opts: { branchId: number }): Promise<Remi
   const nowMs = Date.now();
   const cooldownMs = REMINDER_COOLDOWN_DAYS * 86_400_000;
   const queue: ReminderQueueRow[] = [];
-  for (const { row, daysOverdue } of eligible) {
+  for (const { row, dueAmount, daysOverdue } of eligible) {
     const last = lastByCustomer.get(row.customerId);
     const isPromiseDue = !!(last && last.promisedDate && last.promisedDate <= today);
     const isFuturePromise = !!(last && last.promisedDate && last.promisedDate > today);
@@ -137,7 +163,7 @@ export async function getReminderQueue(opts: { branchId: number }): Promise<Remi
       customerId: row.customerId,
       customerName: row.customerName,
       phone: row.phone,
-      totalUnpaid: row.unpaidTotal,
+      totalUnpaid: dueAmount,
       oldestInvoiceDate: row.oldestInvoiceDate!,
       daysOverdue,
       lastReminderAt: last ? last.at.toISOString() : null,
@@ -292,9 +318,10 @@ export interface ReminderHistoryRow {
   createdAt: string;
 }
 
-/** سجلّ آخر ٣٠ يوماً من التذكيرات في الفرع (أو حدود مخصَّصة). للتدقيق والمتابعة. */
+/** سجلّ آخر ٣٠ يوماً من التذكيرات في الفرع (أو حدود مخصَّصة). للتدقيق والمتابعة.
+ *  branchId=null ⇒ سجلّ كل الفروع (قراءة الأدمن المجمَّعة — مرآة getReminderQueue). */
 export async function getReminderHistory(opts: {
-  branchId: number;
+  branchId: number | null;
   limit?: number;
 }): Promise<ReminderHistoryRow[]> {
   const db = requireDb();
@@ -316,7 +343,12 @@ export async function getReminderHistory(opts: {
     })
     .from(arReminders)
     .innerJoin(customers, eq(customers.id, arReminders.customerId))
-    .where(and(eq(arReminders.branchId, opts.branchId), gte(arReminders.createdAt, thirtyDaysAgo)))
+    .where(
+      and(
+        ...(opts.branchId != null ? [eq(arReminders.branchId, opts.branchId)] : []),
+        gte(arReminders.createdAt, thirtyDaysAgo),
+      ),
+    )
     // ترتيب ثابت حتى للتذكيرات في نفس الثانية (TIMESTAMP دقّة ثانية على MySQL 5.7 الافتراضية):
     // id فاصلٌ زمنيّاً مطابق لِـcreatedAt (AUTO_INCREMENT) ⇒ الأحدث دائماً على القمّة.
     .orderBy(desc(arReminders.createdAt), desc(arReminders.id))

@@ -40,7 +40,19 @@ export function StatCard({ label, value, sub, icon: Icon, tone = "default", onCl
     <Card
       className={cn(interactive && "cursor-pointer transition-colors hover:bg-accent/50", className)}
       onClick={onClick}
-      {...(interactive ? { role: "button", tabIndex: 0 } : {})}
+      {...(interactive
+        ? {
+            role: "button" as const,
+            tabIndex: 0,
+            onKeyDown: (e: React.KeyboardEvent) => {
+              // WCAG 2.1.1: role=button يجب أن يُفعَّل بلوحة المفاتيح (Enter/Space) لا بالفأرة فقط.
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onClick!();
+              }
+            },
+          }
+        : {})}
     >
       <CardContent className="p-4">
         <div className="mb-1.5 flex items-center gap-1.5 text-xs text-muted-foreground">

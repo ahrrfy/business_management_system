@@ -237,6 +237,45 @@ describe("getDashboardMetrics", () => {
     expect(mAll.morningBrief.overdueWorkOrders).toBe(2);
   });
 
+  it("(ح) morningBrief.arRemindersDue/promisedToday يجمعان كل الفروع حين لا فلتر (مراجعة ٥/٧: كان `?? 1` يثبّتهما على الفرع ١)", async () => {
+    const d = db();
+    const past15 = new Date(Date.now() - 15 * 86_400_000).toISOString().slice(0, 10);
+    const todayYmd = new Date().toISOString().slice(0, 10);
+    await d.insert(s.customers).values([
+      { id: 1, name: "متأخّر فرع ١", phone: "07901111111", defaultPriceTier: "RETAIL", currentBalance: "120000" },
+      { id: 2, name: "متأخّر فرع ٢", phone: "07902222222", defaultPriceTier: "RETAIL", currentBalance: "90000" },
+    ]);
+    // فاتورتان آجلتان متأخّرتان ١٥ يوماً في فرعين مختلفين (إدراج مباشر — لا يلزم مخزون).
+    await d.insert(s.invoices).values([
+      { id: 501, invoiceNumber: "INV-B1", sourceType: "ORDER", sourceId: "t-501", branchId: 1, customerId: 1, priceTier: "RETAIL", dueDate: past15, subtotal: "120000", total: "120000", paidAmount: "0", status: "PENDING" },
+      { id: 502, invoiceNumber: "INV-B2", sourceType: "ORDER", sourceId: "t-502", branchId: 2, customerId: 2, priceTier: "RETAIL", dueDate: past15, subtotal: "90000", total: "90000", paidAmount: "0", status: "PENDING" },
+    ]);
+    // وعد اليوم لعميل الفرع ٢ — يجب أن يظهر في promisedToday المجمَّع لا في فرع ١.
+    await d.insert(s.arReminders).values({
+      customerId: 2,
+      branchId: 2,
+      totalUnpaidSnapshot: "90000.00",
+      oldestInvoiceDate: past15,
+      daysOverdue: 15,
+      messageBody: "",
+      status: "SKIPPED",
+      skipReason: "وعد اليوم",
+      promisedDate: todayYmd,
+      createdBy: 1,
+    });
+
+    const m1 = await getDashboardMetrics({ branchId: 1 });
+    const m2 = await getDashboardMetrics({ branchId: 2 });
+    const mAll = await getDashboardMetrics({});
+    expect(m1.morningBrief.arRemindersDue).toBe(1);
+    expect(m1.morningBrief.promisedToday).toBe(0);
+    expect(m2.morningBrief.arRemindersDue).toBe(1);
+    expect(m2.morningBrief.promisedToday).toBe(1);
+    // ← هذان تحديداً كانا يفشلان مع `?? 1` (يعيدان أرقام الفرع ١ فقط).
+    expect(mAll.morningBrief.arRemindersDue).toBe(2);
+    expect(mAll.morningBrief.promisedToday).toBe(1);
+  });
+
   it("(ز) قاعدة فارغة ⇒ كل الحقول صفر (لا انهيار)", async () => {
     const m = await getDashboardMetrics({ branchId: 1 });
     expect(m.morningBrief.arRemindersDue).toBe(0);

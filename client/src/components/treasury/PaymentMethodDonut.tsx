@@ -72,7 +72,7 @@ export function PaymentMethodDonut({
         </div>
       ) : (
         <>
-          <div className="relative" style={{ height }}>
+          <div className="relative" style={{ height }} role="img" aria-label={`${direction === "in" ? "المقبوضات" : "المدفوعات"} بطرق الدفع — الإجمالي ${fmtAr(total)} دينار. التفصيل في القائمة أدناه.`}>
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie

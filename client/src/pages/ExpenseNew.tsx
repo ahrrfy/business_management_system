@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -154,7 +155,7 @@ export default function ExpenseNew() {
     }
 
     // نقدي (CASH).
-    if (!amount.trim() || D(amount).lte(0)) return setError("المبلغ مطلوب وموجب.");
+    if (!amount.trim() || D(amount).lte(0)) { document.getElementById("expense-amount")?.focus(); return setError("المبلغ مطلوب وموجب."); }
     if (category === "OTHER" && !description.trim()) return setError("وصف المصروف مطلوب لفئة «أخرى».");
 
     // cash-treasury-mode: مدير/مسؤول يسجّل مصروفاً نقدياً بلا وردية مفتوحة ⇒ يُكتب في الخزينة الإدارية.
@@ -268,8 +269,8 @@ export default function ExpenseNew() {
                 </select>
               </div>
               <div className="space-y-1">
-                <Label>المبلغ *</Label>
-                <Input dir="ltr" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="0" />
+                <Label htmlFor="expense-amount">المبلغ *</Label>
+                <MoneyInput id="expense-amount" value={amount} onChange={setAmount} placeholder="0" />
               </div>
             </>
           )}
