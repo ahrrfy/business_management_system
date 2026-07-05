@@ -82,6 +82,7 @@ const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
 const ReportsHub = lazy(() => import("@/pages/ReportsHub"));
 const CreditExposureReport = lazy(() => import("@/pages/CreditExposureReport"));
 const ARReminders = lazy(() => import("@/pages/ARReminders"));
+const APReminders = lazy(() => import("@/pages/APReminders"));
 const ProfitabilityReport = lazy(() => import("@/pages/ProfitabilityReport"));
 const InventoryOpsReport = lazy(() => import("@/pages/InventoryOpsReport"));
 const ProfitLoss = lazy(() => import("@/pages/ProfitLoss"));
@@ -276,6 +277,7 @@ export default function App() {
       <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager"]}><SalesReportsHub /></RequireRole></Shell></Route>
       <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager"]}><AgingReportsHub /></RequireRole></Shell></Route>
       <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager"]}><ARReminders /></RequireRole></Shell></Route>
+      <Route path="/reports/ap-reminders"><Shell><RequireRole roles={["admin","manager"]}><APReminders /></RequireRole></Shell></Route>
       {/* أُدمجت في وحدة العملاء (CustomersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/ar-aging"><Redirect to="/customers?tab=aging" /></Route>
       <Route path="/customers-statement"><RedirectKeepQuery to="/customers?tab=statement" /></Route>

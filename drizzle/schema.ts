@@ -2501,3 +2501,37 @@ export const arReminders = mysqlTable(
 );
 export type ArReminder = typeof arReminders.$inferSelect;
 export type InsertArReminder = typeof arReminders.$inferInsert;
+
+/** تذكيرات الذمم الدائنة (AP reminders) — مرآة `arReminders`: مراجعة يومية لموردين ندين لهم منذ ≥٧ أيام
+ *  → إرسال واتساب يدوي (تنسيق سداد/طلب كشف) أو تخطٍّ موثَّق. لا يمسّ الدفتر ولا الأموال — سجلّ فعلٍ فقط.
+ *  التبريد ٧ أيام + تاريخ وعدنا بالسداد نظير AR تماماً. snapshots لحظية للتدقيق التاريخي. */
+export const apReminders = mysqlTable(
+  "apReminders",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    supplierId: bigint("supplierId", { mode: "number" }).notNull().references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    /** الرصيد الدائن الفعلي (المستحقّ للمورد علينا) وقت التذكير. */
+    totalUnpaidSnapshot: decimal("totalUnpaidSnapshot", { precision: 15, scale: 2 }).notNull(),
+    /** أقدم أمر شراء غير مسدَّد (DATE، YYYY-MM-DD كنصّ). لحساب أيام التأخّر تاريخياً. */
+    oldestPoDate: date("oldestPoDate", { mode: "string" }).notNull(),
+    /** عدد أيام تأخّر أقدم أمر شراء وقت التذكير (metadata، لا يُعاد حسابها). */
+    daysOverdue: int("daysOverdue").notNull(),
+    /** نصّ رسالة الواتساب المرسَلة (بعد sanitizeForWhatsApp) — snapshot للتدقيق. */
+    messageBody: text("messageBody").notNull(),
+    status: mysqlEnum("apReminderStatus", ["SENT", "SKIPPED"]).notNull(),
+    /** سبب التخطّي (nullable — يُملأ فقط عند status='SKIPPED'). */
+    skipReason: varchar("skipReason", { length: 255 }),
+    /** تاريخ وعدنا بالسداد (اختياري، YYYY-MM-DD). حين مُلئ يوم التخطّي ⇒ المورد يُعاد إظهاره
+     *  في القائمة يوم الوعد نفسه (يتخطّى تبريد ٧ أيام) بشارة «موعود اليوم» لمتابعة السداد. */
+    promisedDate: date("promisedDate", { mode: "string" }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    supplierCreatedIdx: index("idx_ap_reminders_supplier_created").on(table.supplierId, table.createdAt),
+    branchCreatedIdx: index("idx_ap_reminders_branch_created").on(table.branchId, table.createdAt),
+  }),
+);
+export type ApReminder = typeof apReminders.$inferSelect;
+export type InsertApReminder = typeof apReminders.$inferInsert;

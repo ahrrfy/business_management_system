@@ -1,0 +1,500 @@
+// شاشة «تذكيرات الذمم الدائنة» — مراجعة يومية للموردين الذين ندين لهم ≥٧ أيام + إرسال واتساب يدوي.
+// مرآة ARReminders (supplier/PO بدل customer/invoice). مراجعة يدوية ⇒ إرسال يدوي — لا cron ولا أوتوماتيك.
+// كل تذكير مُرسَل/مُتخطّى يُسجَّل في `apReminders` مع snapshots لحظية. تبريد ٧ أيام يمنع تكرار المورد.
+import { useMemo, useState } from "react";
+import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock } from "lucide-react";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { notify } from "@/lib/notify";
+import { openWhatsApp, sanitizeForWhatsApp } from "@/lib/whatsapp";
+import { PageHeader } from "@/components/PageHeader";
+import { LoadingState, ErrorState } from "@/components/PageState";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { fmtDateTime } from "@/lib/date";
+
+const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
+
+/** رسالة تنسيق سداد ودّية بالعربية — من منظور الدافع (نحن ندين للمورد)، مركّزة على المبلغ + أقدم أمر شراء. */
+function buildReminderMessage(row: {
+  supplierName: string;
+  totalUnpaid: string;
+  oldestPoDate: string;
+  daysOverdue: number;
+}): string {
+  const amount = Number(row.totalUnpaid).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+  const lines: string[] = [
+    `السلام عليكم ${row.supplierName}،`,
+    `بخصوص حسابنا معكم لدى ${COMPANY_NAME}.`,
+    "",
+    // «المستحقّ لكم علينا عن أوامر الشراء المتأخّرة» — القيمة = min(متبقّي أوامر الشراء، الرصيد الجاري).
+    `الرصيد المستحقّ لكم علينا عن أوامر الشراء المتأخّرة:`,
+    `*${amount} د.ع.*`,
+    "",
+    `أقدم أمر شراء غير مسدَّد: ${row.oldestPoDate} (${row.daysOverdue} يوماً)`,
+    "",
+    "نعمل على تسوية المستحقّات وسنوافيكم بموعد السداد قريباً.",
+    "إن كان لديكم كشف حساب محدَّث أو أيّ فرق، يرجى مشاركته معنا.",
+    "",
+    "شكراً لتعاملكم معنا.",
+    COMPANY_NAME,
+  ];
+  return sanitizeForWhatsApp(lines.join("\n"));
+}
+
+function fmtAmount(v: string | number): string {
+  return Number(v).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+}
+
+function daysBadgeCls(days: number): string {
+  if (days >= 90) return "bg-destructive/15 text-destructive font-semibold";
+  if (days >= 60) return "bg-amber-500/15 text-amber-700 font-semibold";
+  if (days >= 30) return "bg-orange-500/15 text-orange-700";
+  return "bg-muted text-muted-foreground";
+}
+
+type QueueRow = RouterOutputs["apReminders"]["queue"][number];
+type HistoryRow = RouterOutputs["apReminders"]["history"][number];
+
+type Tab = "queue" | "history";
+
+export default function APReminders() {
+  const [tab, setTab] = useState<Tab>("queue");
+  const utils = trpc.useUtils();
+
+  const queue = trpc.apReminders.queue.useQuery(undefined, { staleTime: 30_000 });
+  const history = trpc.apReminders.history.useQuery(undefined, {
+    enabled: tab === "history",
+    staleTime: 30_000,
+  });
+
+  const logSent = trpc.apReminders.logSent.useMutation({
+    onSuccess: async () => {
+      notify.ok("سُجِّل التذكير في القائمة");
+      await utils.apReminders.queue.invalidate();
+      await utils.apReminders.history.invalidate();
+    },
+    onError: (e) => notify.err(e.message || "تعذّر تسجيل التذكير"),
+  });
+  const logSkipped = trpc.apReminders.logSkipped.useMutation({
+    onSuccess: async () => {
+      notify.ok("تمّ التخطّي");
+      await utils.apReminders.queue.invalidate();
+      await utils.apReminders.history.invalidate();
+      setSkipTarget(null);
+      setSkipReason("");
+      setPromisedDate("");
+    },
+    onError: (e) => notify.err(e.message || "تعذّر تسجيل التخطّي"),
+  });
+
+  const [search, setSearch] = useState("");
+  const [skipTarget, setSkipTarget] = useState<QueueRow | null>(null);
+  const [skipReason, setSkipReason] = useState("");
+  const [promisedDate, setPromisedDate] = useState("");
+
+  const filteredQueue = useMemo(() => {
+    const list = queue.data ?? [];
+    if (!search.trim()) return list;
+    const s = search.trim().toLowerCase();
+    return list.filter(
+      (r) => r.supplierName.toLowerCase().includes(s) || (r.phone ?? "").includes(s),
+    );
+  }, [queue.data, search]);
+
+  const totalUnpaidSum = useMemo(
+    () => (queue.data ?? []).reduce((a, r) => a + Number(r.totalUnpaid), 0),
+    [queue.data],
+  );
+
+  function handleSend(row: QueueRow) {
+    if (!row.phone) {
+      notify.err("لا رقم هاتف مسجَّل لهذا المورد — أضف الهاتف من صفحة المورد أولاً.");
+      return;
+    }
+    const message = buildReminderMessage(row);
+    openWhatsApp(row.phone, message);
+    logSent.mutate({
+      supplierId: row.supplierId,
+      totalUnpaidSnapshot: row.totalUnpaid,
+      oldestPoDate: row.oldestPoDate,
+      daysOverdue: row.daysOverdue,
+      messageBody: message,
+    });
+  }
+
+  function handleSkipConfirm() {
+    if (!skipTarget) return;
+    if (!skipReason.trim()) {
+      notify.err("سبب التخطّي مطلوب");
+      return;
+    }
+    const promise = promisedDate.trim();
+    if (promise) {
+      const todayYmd = new Date().toISOString().slice(0, 10);
+      if (promise < todayYmd) {
+        notify.err("تاريخ الوعد يجب ألّا يكون في الماضي");
+        return;
+      }
+    }
+    logSkipped.mutate({
+      supplierId: skipTarget.supplierId,
+      totalUnpaidSnapshot: skipTarget.totalUnpaid,
+      oldestPoDate: skipTarget.oldestPoDate,
+      daysOverdue: skipTarget.daysOverdue,
+      skipReason: skipReason.trim(),
+      promisedDate: promise || null,
+    });
+  }
+
+  return (
+    <div className="space-y-4 p-4">
+      <PageHeader
+        title="تذكيرات الذمم الدائنة"
+        description="قائمة الموردين الذين ندين لهم منذ ≥٧ أيام. راجع، ثم نسّق السداد عبر واتساب أو تخطَّ برأي مُوثَّق."
+      />
+
+      {/* شريط الملخّص */}
+      {tab === "queue" && queue.data && queue.data.length > 0 && (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <Card>
+            <CardContent className="flex items-center justify-between p-4">
+              <span className="text-sm text-muted-foreground">موردون بحاجة متابعة</span>
+              <span className="text-xl font-bold tabular-nums">{queue.data.length}</span>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="flex items-center justify-between p-4">
+              <span className="text-sm text-muted-foreground">إجمالي المستحقّات علينا</span>
+              <span className="text-xl font-bold tabular-nums text-money-negative" dir="ltr">{fmtAmount(totalUnpaidSum)} د.ع</span>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="flex items-center justify-between p-4">
+              <span className="text-sm text-muted-foreground">أقدم تأخّر</span>
+              <span className="text-xl font-bold tabular-nums">{queue.data[0]?.daysOverdue ?? 0} يوماً</span>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* تبويبات */}
+      <div className="flex gap-1 rounded-lg border p-1 bg-muted/30 w-fit">
+        <button
+          type="button"
+          onClick={() => setTab("queue")}
+          className={tab === "queue" ? "px-4 py-1.5 text-sm font-bold rounded-md bg-background shadow-sm" : "px-4 py-1.5 text-sm text-muted-foreground"}
+        >
+          قائمة اليوم
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("history")}
+          className={tab === "history" ? "px-4 py-1.5 text-sm font-bold rounded-md bg-background shadow-sm inline-flex items-center gap-1" : "px-4 py-1.5 text-sm text-muted-foreground inline-flex items-center gap-1"}
+        >
+          <History className="size-3.5" aria-hidden /> السجلّ (٣٠ يوماً)
+        </button>
+      </div>
+
+      {tab === "queue" ? (
+        <QueueTab
+          data={queue.data ?? []}
+          isLoading={queue.isLoading}
+          isError={queue.isError}
+          refetch={() => queue.refetch()}
+          filtered={filteredQueue}
+          search={search}
+          setSearch={setSearch}
+          onSend={handleSend}
+          onSkip={setSkipTarget}
+          sendingId={logSent.isPending ? logSent.variables?.supplierId ?? null : null}
+        />
+      ) : (
+        <HistoryTab
+          data={history.data ?? []}
+          isLoading={history.isLoading}
+          isError={history.isError}
+          refetch={() => history.refetch()}
+        />
+      )}
+
+      {/* حوار التخطّي */}
+      <Dialog open={skipTarget != null} onOpenChange={(o) => { if (!o) { setSkipTarget(null); setSkipReason(""); setPromisedDate(""); } }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>تخطّي تذكير — {skipTarget?.supplierName}</DialogTitle>
+            <DialogDescription>
+              سيُسجَّل التخطّي في السجلّ. بلا وعد: يختفي ٧ أيام. مع تاريخ وعد بالسداد: يعود يوم الوعد نفسه بشارة «موعود» ليُذكَّرك بالمتابعة.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <label className="block text-sm font-medium">
+                سبب التخطّي
+                <span className="text-destructive"> *</span>
+              </label>
+              <Textarea
+                value={skipReason}
+                onChange={(e) => setSkipReason(e.target.value)}
+                placeholder="مثال: بانتظار كشف الحساب، أو السداد مجدوَل نهاية الشهر"
+                maxLength={255}
+                rows={3}
+                autoFocus
+              />
+              <div className="text-xs text-muted-foreground">
+                {skipReason.length}/255 حرفاً
+              </div>
+            </div>
+            <div className="space-y-2">
+              <label className="block text-sm font-medium inline-flex items-center gap-1.5">
+                <CalendarClock className="size-4 text-muted-foreground" aria-hidden />
+                تاريخ وعدنا بالسداد
+                <span className="text-xs font-normal text-muted-foreground">(اختياري)</span>
+              </label>
+              <Input
+                type="date"
+                value={promisedDate}
+                min={new Date().toISOString().slice(0, 10)}
+                onChange={(e) => setPromisedDate(e.target.value)}
+                className="max-w-[220px]"
+                dir="ltr"
+              />
+              <p className="text-xs text-muted-foreground">
+                {promisedDate
+                  ? `سيعود المورد لقائمة اليوم بتاريخ ${promisedDate} بشارة «موعود»، متجاوزاً تبريد ٧ أيام.`
+                  : "اترك فارغاً لتخطٍّ عاديّ (يخضع لتبريد ٧ أيام)."}
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setSkipTarget(null)}>إلغاء</Button>
+            <Button onClick={handleSkipConfirm} disabled={logSkipped.isPending || !skipReason.trim()}>
+              {logSkipped.isPending ? "جارٍ…" : (promisedDate ? "تخطَّ + سجِّل الوعد" : "تخطَّ الآن")}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function QueueTab({
+  data,
+  isLoading,
+  isError,
+  refetch,
+  filtered,
+  search,
+  setSearch,
+  onSend,
+  onSkip,
+  sendingId,
+}: {
+  data: QueueRow[];
+  isLoading: boolean;
+  isError: boolean;
+  refetch: () => void;
+  filtered: QueueRow[];
+  search: string;
+  setSearch: (v: string) => void;
+  onSend: (row: QueueRow) => void;
+  onSkip: (row: QueueRow) => void;
+  sendingId: number | null;
+}) {
+  if (isLoading) return <LoadingState />;
+  if (isError) {
+    return <ErrorState message="تعذّر تحميل قائمة التذكيرات." onRetry={refetch} />;
+  }
+  if (data.length === 0) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
+          <Clock className="size-10 text-muted-foreground" aria-hidden />
+          <p className="text-lg font-semibold">لا تذكيرات مستحقّة اليوم</p>
+          <p className="text-sm text-muted-foreground">جميع الذمم الدائنة إمّا حديثة (&lt;٧ أيام) أو تُوبعت مؤخّراً.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <div className="flex items-center gap-2 border-b p-3">
+          <div className="relative flex-1 max-w-md">
+            <span aria-hidden className="pointer-events-none absolute end-3 top-1/2 -translate-y-1/2 text-muted-foreground">
+              <Search className="size-4" />
+            </span>
+            <Input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="ابحث بالاسم أو الهاتف…"
+              className="h-9 pe-9"
+            />
+          </div>
+          <Button variant="outline" size="sm" onClick={refetch} className="gap-1.5">
+            <RotateCcw className="size-3.5" aria-hidden /> تحديث
+          </Button>
+        </div>
+        <ScrollTableShell bordered={false}>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-right">المورد</TableHead>
+                <TableHead className="text-right">الهاتف</TableHead>
+                <TableHead className="text-left">المستحقّ علينا</TableHead>
+                <TableHead className="text-center">أقدم أمر شراء</TableHead>
+                <TableHead className="text-center">أيام التأخّر</TableHead>
+                <TableHead className="text-center">آخر تذكير</TableHead>
+                <TableHead className="text-center">إجراءات</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={7} className="py-8 text-center text-muted-foreground">لا نتائج للبحث «{search}»</TableCell>
+                </TableRow>
+              ) : (
+                filtered.map((row) => (
+                  <TableRow key={row.supplierId} className={row.isPromiseDue ? "bg-amber-50/60" : ""}>
+                    <TableCell className="font-medium">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span>{row.supplierName}</span>
+                        {row.isPromiseDue && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-800">
+                            <CalendarClock className="size-3" aria-hidden />
+                            موعود{row.promisedDate ? ` (${row.promisedDate})` : ""}
+                          </span>
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell dir="ltr" className="text-xs text-muted-foreground tabular-nums">{row.phone ?? "—"}</TableCell>
+                    <TableCell className="text-left font-bold tabular-nums text-money-negative" dir="ltr">
+                      {fmtAmount(row.totalUnpaid)}
+                    </TableCell>
+                    <TableCell className="text-center text-xs tabular-nums" dir="ltr">{row.oldestPoDate}</TableCell>
+                    <TableCell className="text-center">
+                      <span className={`inline-flex items-center rounded-md px-2.5 py-1 text-xs tabular-nums ${daysBadgeCls(row.daysOverdue)}`}>
+                        {row.daysOverdue}
+                      </span>
+                    </TableCell>
+                    <TableCell className="text-center text-xs text-muted-foreground">
+                      {row.lastReminderAt ? fmtDateTime(row.lastReminderAt) : "—"}
+                    </TableCell>
+                    <TableCell className="text-center whitespace-nowrap">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!row.phone || sendingId === row.supplierId}
+                        onClick={() => onSend(row)}
+                        className="me-1 inline-flex items-center gap-1"
+                        title={!row.phone ? "لا رقم هاتف مسجَّل" : "فتح واتساب مع الرسالة جاهزة + تسجيل الإرسال"}
+                      >
+                        <Send className="size-3.5" aria-hidden />
+                        أرسل
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => onSkip(row)}
+                        className="inline-flex items-center gap-1 text-muted-foreground"
+                      >
+                        <SkipForward className="size-3.5" aria-hidden />
+                        تخطَّ
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </ScrollTableShell>
+      </CardContent>
+    </Card>
+  );
+}
+
+function HistoryTab({
+  data,
+  isLoading,
+  isError,
+  refetch,
+}: {
+  data: HistoryRow[];
+  isLoading: boolean;
+  isError: boolean;
+  refetch: () => void;
+}) {
+  if (isLoading) return <LoadingState />;
+  if (isError) {
+    return <ErrorState message="تعذّر تحميل السجلّ." onRetry={refetch} />;
+  }
+  const rows = data;
+  if (rows.length === 0) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
+          <History className="size-10 text-muted-foreground" aria-hidden />
+          <p className="text-lg font-semibold">لا تذكيرات في آخر ٣٠ يوماً</p>
+          <p className="text-sm text-muted-foreground">سيظهر هنا كل تذكير أُرسل أو تُخطّي فور تسجيله.</p>
+        </CardContent>
+      </Card>
+    );
+  }
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <ScrollTableShell bordered={false}>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="text-right">التاريخ</TableHead>
+                <TableHead className="text-right">المورد</TableHead>
+                <TableHead className="text-left">الرصيد وقت التذكير</TableHead>
+                <TableHead className="text-center">أيام التأخّر</TableHead>
+                <TableHead className="text-center">الحالة</TableHead>
+                <TableHead className="text-right">السبب/الملاحظة</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((r) => (
+                <TableRow key={r.id}>
+                  <TableCell className="text-xs text-muted-foreground tabular-nums" dir="ltr">{fmtDateTime(r.createdAt)}</TableCell>
+                  <TableCell className="font-medium">{r.supplierName}</TableCell>
+                  <TableCell className="text-left tabular-nums" dir="ltr">{fmtAmount(r.totalUnpaidSnapshot)}</TableCell>
+                  <TableCell className="text-center tabular-nums">{r.daysOverdue}</TableCell>
+                  <TableCell className="text-center">
+                    <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs ${r.status === "SENT" ? "bg-emerald-100 text-emerald-700" : r.promisedDate ? "bg-amber-500/15 text-amber-800" : "bg-muted text-muted-foreground"}`}>
+                      {r.status === "SENT" ? "أُرسل" : r.promisedDate ? "وعد" : "تُخطّي"}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    <div className="flex flex-col gap-0.5">
+                      <span>{r.skipReason ?? (r.status === "SENT" ? "رسالة واتساب" : "—")}</span>
+                      {r.promisedDate && (
+                        <span className="text-[11px] text-amber-800 inline-flex items-center gap-1">
+                          <CalendarClock className="size-3" aria-hidden />
+                          موعود بالسداد: <span dir="ltr" className="tabular-nums">{r.promisedDate}</span>
+                        </span>
+                      )}
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </ScrollTableShell>
+      </CardContent>
+    </Card>
+  );
+}
