@@ -1,11 +1,10 @@
-// شاشة «تذكيرات الذمم الدائنة» — مراجعة يومية للموردين الذين ندين لهم ≥٧ أيام + إرسال واتساب يدوي.
-// مرآة ARReminders (supplier/PO بدل customer/invoice). مراجعة يدوية ⇒ إرسال يدوي — لا cron ولا أوتوماتيك.
-// كل تذكير مُرسَل/مُتخطّى يُسجَّل في `apReminders` مع snapshots لحظية. تبريد ٧ أيام يمنع تكرار المورد.
+// شاشة «متابعة الذمم الدائنة» — قائمة داخلية بحتة للموردين الذين ندين لهم ≥٧ أيام (بلا مراسلة للمورد).
+// الموظف يسجّل «تمّت المتابعة» (يُخفيه ٧ أيام) أو يؤجّل بتاريخ وعد سداد. كل فعل يُسجَّل في `apReminders`
+// مع snapshots لحظية للتدقيق. تبريد ٧ أيام يمنع تكرار المورد. لا cron ولا أيّ مراسلة خارجية.
 import { useMemo, useState } from "react";
-import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock } from "lucide-react";
+import { CheckCircle2, SkipForward, Clock, Search, RotateCcw, History, CalendarClock } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
-import { openWhatsApp, sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
@@ -23,35 +22,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { fmtDateTime } from "@/lib/date";
-
-const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
-
-/** رسالة تنسيق سداد ودّية بالعربية — من منظور الدافع (نحن ندين للمورد)، مركّزة على المبلغ + أقدم أمر شراء. */
-function buildReminderMessage(row: {
-  supplierName: string;
-  totalUnpaid: string;
-  oldestPoDate: string;
-  daysOverdue: number;
-}): string {
-  const amount = Number(row.totalUnpaid).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
-  const lines: string[] = [
-    `السلام عليكم ${row.supplierName}،`,
-    `بخصوص حسابنا معكم لدى ${COMPANY_NAME}.`,
-    "",
-    // «المستحقّ لكم علينا عن أوامر الشراء المتأخّرة» — القيمة = min(متبقّي أوامر الشراء، الرصيد الجاري).
-    `الرصيد المستحقّ لكم علينا عن أوامر الشراء المتأخّرة:`,
-    `*${amount} د.ع.*`,
-    "",
-    `أقدم أمر شراء غير مسدَّد: ${row.oldestPoDate} (${row.daysOverdue} يوماً)`,
-    "",
-    "نعمل على تسوية المستحقّات وسنوافيكم بموعد السداد قريباً.",
-    "إن كان لديكم كشف حساب محدَّث أو أيّ فرق، يرجى مشاركته معنا.",
-    "",
-    "شكراً لتعاملكم معنا.",
-    COMPANY_NAME,
-  ];
-  return sanitizeForWhatsApp(lines.join("\n"));
-}
 
 function fmtAmount(v: string | number): string {
   return Number(v).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
@@ -81,11 +51,11 @@ export default function APReminders() {
 
   const logSent = trpc.apReminders.logSent.useMutation({
     onSuccess: async () => {
-      notify.ok("سُجِّل التذكير في القائمة");
+      notify.ok("سُجِّلت المتابعة");
       await utils.apReminders.queue.invalidate();
       await utils.apReminders.history.invalidate();
     },
-    onError: (e) => notify.err(e.message || "تعذّر تسجيل التذكير"),
+    onError: (e) => notify.err(e.message || "تعذّر تسجيل المتابعة"),
   });
   const logSkipped = trpc.apReminders.logSkipped.useMutation({
     onSuccess: async () => {
@@ -118,19 +88,14 @@ export default function APReminders() {
     [queue.data],
   );
 
-  function handleSend(row: QueueRow) {
-    if (!row.phone) {
-      notify.err("لا رقم هاتف مسجَّل لهذا المورد — أضف الهاتف من صفحة المورد أولاً.");
-      return;
-    }
-    const message = buildReminderMessage(row);
-    openWhatsApp(row.phone, message);
+  function handleFollowUp(row: QueueRow) {
+    // قائمة داخلية بحتة: نسجّل «تمّت المتابعة» فقط (يُطبّق تبريد ٧ أيام) — بلا أيّ مراسلة للمورد.
     logSent.mutate({
       supplierId: row.supplierId,
       totalUnpaidSnapshot: row.totalUnpaid,
       oldestPoDate: row.oldestPoDate,
       daysOverdue: row.daysOverdue,
-      messageBody: message,
+      messageBody: "متابعة داخلية (بلا مراسلة للمورد)",
     });
   }
 
@@ -161,8 +126,8 @@ export default function APReminders() {
   return (
     <div className="space-y-4 p-4">
       <PageHeader
-        title="تذكيرات الذمم الدائنة"
-        description="قائمة الموردين الذين ندين لهم منذ ≥٧ أيام. راجع، ثم نسّق السداد عبر واتساب أو تخطَّ برأي مُوثَّق."
+        title="متابعة الذمم الدائنة"
+        description="قائمة داخلية للموردين الذين ندين لهم منذ ≥٧ أيام. سجّل «تمّت المتابعة» أو حدّد موعد سداد — بلا مراسلة للمورد."
       />
 
       {/* شريط الملخّص */}
@@ -216,7 +181,7 @@ export default function APReminders() {
           filtered={filteredQueue}
           search={search}
           setSearch={setSearch}
-          onSend={handleSend}
+          onSend={handleFollowUp}
           onSkip={setSkipTarget}
           sendingId={logSent.isPending ? logSent.variables?.supplierId ?? null : null}
         />
@@ -233,7 +198,7 @@ export default function APReminders() {
       <Dialog open={skipTarget != null} onOpenChange={(o) => { if (!o) { setSkipTarget(null); setSkipReason(""); setPromisedDate(""); } }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>تخطّي تذكير — {skipTarget?.supplierName}</DialogTitle>
+            <DialogTitle>تأجيل متابعة — {skipTarget?.supplierName}</DialogTitle>
             <DialogDescription>
               سيُسجَّل التخطّي في السجلّ. بلا وعد: يختفي ٧ أيام. مع تاريخ وعد بالسداد: يعود يوم الوعد نفسه بشارة «موعود» ليُذكَّرك بالمتابعة.
             </DialogDescription>
@@ -280,7 +245,7 @@ export default function APReminders() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setSkipTarget(null)}>إلغاء</Button>
             <Button onClick={handleSkipConfirm} disabled={logSkipped.isPending || !skipReason.trim()}>
-              {logSkipped.isPending ? "جارٍ…" : (promisedDate ? "تخطَّ + سجِّل الوعد" : "تخطَّ الآن")}
+              {logSkipped.isPending ? "جارٍ…" : (promisedDate ? "أجّل + سجِّل الوعد" : "أجّل الآن")}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -314,14 +279,14 @@ function QueueTab({
 }) {
   if (isLoading) return <LoadingState />;
   if (isError) {
-    return <ErrorState message="تعذّر تحميل قائمة التذكيرات." onRetry={refetch} />;
+    return <ErrorState message="تعذّر تحميل القائمة." onRetry={refetch} />;
   }
   if (data.length === 0) {
     return (
       <Card>
         <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
           <Clock className="size-10 text-muted-foreground" aria-hidden />
-          <p className="text-lg font-semibold">لا تذكيرات مستحقّة اليوم</p>
+          <p className="text-lg font-semibold">لا متابعات مستحقّة اليوم</p>
           <p className="text-sm text-muted-foreground">جميع الذمم الدائنة إمّا حديثة (&lt;٧ أيام) أو تُوبعت مؤخّراً.</p>
         </CardContent>
       </Card>
@@ -355,7 +320,7 @@ function QueueTab({
                 <TableHead className="text-left">المستحقّ علينا</TableHead>
                 <TableHead className="text-center">أقدم أمر شراء</TableHead>
                 <TableHead className="text-center">أيام التأخّر</TableHead>
-                <TableHead className="text-center">آخر تذكير</TableHead>
+                <TableHead className="text-center">آخر متابعة</TableHead>
                 <TableHead className="text-center">إجراءات</TableHead>
               </TableRow>
             </TableHeader>
@@ -395,13 +360,13 @@ function QueueTab({
                       <Button
                         size="sm"
                         variant="outline"
-                        disabled={!row.phone || sendingId === row.supplierId}
+                        disabled={sendingId === row.supplierId}
                         onClick={() => onSend(row)}
                         className="me-1 inline-flex items-center gap-1"
-                        title={!row.phone ? "لا رقم هاتف مسجَّل" : "فتح واتساب مع الرسالة جاهزة + تسجيل الإرسال"}
+                        title="تسجيل متابعة داخلية — يُخفي المورد ٧ أيام"
                       >
-                        <Send className="size-3.5" aria-hidden />
-                        أرسل
+                        <CheckCircle2 className="size-3.5" aria-hidden />
+                        تمّت المتابعة
                       </Button>
                       <Button
                         size="sm"
@@ -410,7 +375,7 @@ function QueueTab({
                         className="inline-flex items-center gap-1 text-muted-foreground"
                       >
                         <SkipForward className="size-3.5" aria-hidden />
-                        تخطَّ
+                        أجّل
                       </Button>
                     </TableCell>
                   </TableRow>
@@ -445,8 +410,8 @@ function HistoryTab({
       <Card>
         <CardContent className="flex flex-col items-center gap-2 py-12 text-center">
           <History className="size-10 text-muted-foreground" aria-hidden />
-          <p className="text-lg font-semibold">لا تذكيرات في آخر ٣٠ يوماً</p>
-          <p className="text-sm text-muted-foreground">سيظهر هنا كل تذكير أُرسل أو تُخطّي فور تسجيله.</p>
+          <p className="text-lg font-semibold">لا متابعات في آخر ٣٠ يوماً</p>
+          <p className="text-sm text-muted-foreground">سيظهر هنا كل متابعة أو تأجيل فور تسجيله.</p>
         </CardContent>
       </Card>
     );
@@ -460,7 +425,7 @@ function HistoryTab({
               <TableRow>
                 <TableHead className="text-right">التاريخ</TableHead>
                 <TableHead className="text-right">المورد</TableHead>
-                <TableHead className="text-left">الرصيد وقت التذكير</TableHead>
+                <TableHead className="text-left">الرصيد وقت المتابعة</TableHead>
                 <TableHead className="text-center">أيام التأخّر</TableHead>
                 <TableHead className="text-center">الحالة</TableHead>
                 <TableHead className="text-right">السبب/الملاحظة</TableHead>
@@ -475,12 +440,12 @@ function HistoryTab({
                   <TableCell className="text-center tabular-nums">{r.daysOverdue}</TableCell>
                   <TableCell className="text-center">
                     <span className={`inline-flex items-center rounded-md px-2 py-0.5 text-xs ${r.status === "SENT" ? "bg-emerald-100 text-emerald-700" : r.promisedDate ? "bg-amber-500/15 text-amber-800" : "bg-muted text-muted-foreground"}`}>
-                      {r.status === "SENT" ? "أُرسل" : r.promisedDate ? "وعد" : "تُخطّي"}
+                      {r.status === "SENT" ? "متابَع" : r.promisedDate ? "وعد" : "تأجيل"}
                     </span>
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     <div className="flex flex-col gap-0.5">
-                      <span>{r.skipReason ?? (r.status === "SENT" ? "رسالة واتساب" : "—")}</span>
+                      <span>{r.skipReason ?? (r.status === "SENT" ? "متابعة داخلية" : "—")}</span>
                       {r.promisedDate && (
                         <span className="text-[11px] text-amber-800 inline-flex items-center gap-1">
                           <CalendarClock className="size-3" aria-hidden />
