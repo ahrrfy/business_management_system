@@ -222,7 +222,10 @@ export function DataTable<T, K = string>({
                     <th
                       key={h.id}
                       className={`p-2 ${sortable ? "cursor-pointer select-none hover:bg-muted" : ""}`}
+                      aria-sort={sortable ? (dir === "asc" ? "ascending" : dir === "desc" ? "descending" : "none") : undefined}
+                      {...(sortable ? { role: "button" as const, tabIndex: 0 } : {})}
                       onClick={sortable ? h.column.getToggleSortingHandler() : undefined}
+                      onKeyDown={sortable ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); h.column.getToggleSortingHandler()?.(e); } } : undefined}
                     >
                       {h.isPlaceholder ? null : (
                         <span className="inline-flex items-center gap-1">

@@ -63,13 +63,15 @@
   --secondary: oklch(0.97 0.005 247.858);
   --secondary-foreground: oklch(0.4 0.015 65);
   --muted: oklch(0.96 0.005 247.858);
-  --muted-foreground: oklch(0.552 0.016 285.938);
+  /* WCAG AA: كان 0.552 (٤.٦٣ على الأبيض، يهبط ٤.٣٠ على أي سطح مُلوَّن). أُظلِم ليصمد ≥٤.٥ على bg-muted/accent. */
+  --muted-foreground: oklch(0.50 0.016 285.938);
   --accent: oklch(0.96 0.005 247.858);
   --accent-foreground: oklch(0.141 0.005 285.823);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
   --border: oklch(0.922 0.004 247.858);
-  --input: oklch(0.922 0.004 247.858);
+  /* WCAG 1.4.11 (حدود عناصر التحكم ≥٣:١): كان 0.922 (١.٢١:١، الحقل الفارغ شبه مخفيّ). حدّ الإدخال أُظلِم لـ≈٣.٥:١؛ حدّ البطاقات/الفواصل (--border) يبقى أنعم. */
+  --input: oklch(0.62 0.004 247.858);
   --ring: oklch(0.488 0.243 264.376);
   --sidebar: oklch(0.978 0.004 247.858);
   --sidebar-foreground: oklch(0.235 0.015 65);
@@ -80,9 +82,10 @@
 }
 
 .dark {
-  --primary: oklch(0.623 0.214 264.376);
+  /* WCAG AA: كان 0.623 (نصّ الزرّ الأبيض ٣.٦٥:١). أُظلِم لـ٤.٨٨:١ — يشمل كل زرّ primary وعنصر التنقّل النشِط في الوضع الداكن. */
+  --primary: oklch(0.55 0.214 264.376);
   --primary-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.623 0.214 264.376);
+  --sidebar-primary: oklch(0.55 0.214 264.376);
   --sidebar-primary-foreground: oklch(0.985 0 0);
   --background: oklch(0.141 0.005 285.823);
   --foreground: oklch(0.85 0.005 65);

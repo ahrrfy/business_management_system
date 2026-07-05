@@ -62,7 +62,7 @@ export function CashCounter({ value, onChange, disabled }: CashCounterProps) {
                 value={n || ""}
                 disabled={disabled}
                 onChange={(e) => handleSet(denom, e.target.value)}
-                className="col-span-3 h-8 text-sm text-center tabular-nums"
+                className="col-span-3 h-11 text-base text-center tabular-nums"
                 placeholder="0"
               />
               <div className="col-span-1 text-center text-muted-foreground">=</div>
