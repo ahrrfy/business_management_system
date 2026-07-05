@@ -812,6 +812,7 @@ export default function POS() {
           cartLen={cart.length} selId={activeTab.selId}
           isPending={sale.isPending}
           canPay={canPay}
+          hasCustomer={selectedCustomer != null}
         />
 
         {/* Cart Panel */}
@@ -1345,7 +1346,7 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                   <td style={{ ...TD, padding: "6px" }}>
                     <button onClick={(e) => { e.stopPropagation(); removeRow(c.row.productUnitId); }}
                       aria-label="حذف السطر"
-                      style={{ width: 36, height: 36, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={17} /></button>
+                      style={{ width: 44, height: 44, background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex", alignItems: "center", justifyContent: "center" }}><X aria-hidden size={18} /></button>
                   </td>
                 </tr>
               );
@@ -1392,11 +1393,11 @@ interface PaymentPanelProps {
   numPress: (k: string) => void;
   onPay: () => void; onQuickPay: () => void;
   cartLen: number; selId: number | null;
-  isPending: boolean; canPay: boolean;
+  isPending: boolean; canPay: boolean; hasCustomer: boolean;
   stacked: boolean;
 }
 
-function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, stacked }: PaymentPanelProps) {
+function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, stacked }: PaymentPanelProps) {
 
   const modeStyle = (active: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
@@ -1464,13 +1465,13 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         <div style={{ padding: "3px 11px 2px", display: "flex", gap: 3, flexWrap: "wrap", flexShrink: 0 }}>
           {QUICK_AMTS.map((a) => (
             <button key={a} onClick={() => setPayInput(String(a))}
-              style={{ height: 28, padding: "0 7px", background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 7, cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: C.fg, fontFamily: "inherit" }}>
+              style={{ height: 40, padding: "0 10px", background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.fg, fontFamily: "inherit" }}>
               {fmt(a)}
             </button>
           ))}
           {cartLen > 0 && (
             <button onClick={() => setPayInput(String(total))}
-              style={{ height: 28, padding: "0 7px", background: C.card, border: `1.5px solid ${C.primary}`, borderRadius: 7, cursor: "pointer", fontSize: 11.5, fontWeight: 700, color: C.primary, fontFamily: "inherit" }}>
+              style={{ height: 40, padding: "0 10px", background: C.card, border: `1.5px solid ${C.primary}`, borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 700, color: C.primary, fontFamily: "inherit" }}>
               = الكل
             </button>
           )}
@@ -1546,7 +1547,9 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
         )}
       </div>
 
-      {/* Quick pay */}
+      {/* Quick pay — يُخفى عند اختيار عميل أو إدخال دفعة جزئية (نيّة غير «نقدي كامل») ⇒ يبقى CTA أساسي واحد
+          فيمتنع الضغط الخاطئ الذي كان يُسجّل عميل الآجل «مدفوعاً نقداً بالكامل». الزرّ الأخضر يؤدّي الدفع الكامل أصلاً. */}
+      {!hasCustomer && !isOwing && (<>
       <div style={{ padding: "4px 11px 2px", flexShrink: 0 }}>
         <button
           disabled={!cartLen || isPending}
@@ -1567,6 +1570,7 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
       </div>
 
       <div style={{ margin: "3px 11px", borderTop: `1.5px dashed ${C.border}` }} />
+      </>)}
 
       {/* Regular pay */}
       <div style={{ padding: "2px 11px 10px", flexShrink: 0 }}>

@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { type ExportColumn, exportRows } from "@/lib/export";
 import { ChevronUp, ChevronDown, ChevronLeft, ChevronRight } from "lucide-react";
+import { TableSkeleton } from "@/components/PageState";
 
 type DataTableProps<T extends object> = {
   data: T[];
@@ -84,37 +85,40 @@ export function DataTable<T extends object>({
       )}
 
       <ScrollTableShell>
-        <table className="w-full text-sm">
+        <table className="w-full text-sm tabular-nums">
           <thead className="bg-muted/50">
             {table.getHeaderGroups().map((hg) => (
               <tr key={hg.id} className="text-right">
-                {hg.headers.map((header) => (
+                {hg.headers.map((header) => {
+                  const canSort = header.column.getCanSort();
+                  const sorted = header.column.getIsSorted();
+                  return (
                   <th
                     key={header.id}
                     className="p-2 font-medium whitespace-nowrap"
+                    aria-sort={canSort ? (sorted === "asc" ? "ascending" : sorted === "desc" ? "descending" : "none") : undefined}
+                    {...(canSort ? { role: "button" as const, tabIndex: 0 } : {})}
                     onClick={header.column.getToggleSortingHandler()}
-                    style={{ cursor: header.column.getCanSort() ? "pointer" : "default" }}
+                    onKeyDown={canSort ? (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); header.column.getToggleSortingHandler()?.(e); } } : undefined}
+                    style={{ cursor: canSort ? "pointer" : "default" }}
                   >
                     <span className="inline-flex items-center gap-1">
                       {flexRender(header.column.columnDef.header, header.getContext())}
-                      {header.column.getIsSorted() === "asc"
+                      {sorted === "asc"
                         ? <ChevronUp aria-hidden className="size-3.5" />
-                        : header.column.getIsSorted() === "desc"
+                        : sorted === "desc"
                           ? <ChevronDown aria-hidden className="size-3.5" />
                           : null}
                     </span>
                   </th>
-                ))}
+                  );
+                })}
               </tr>
             ))}
           </thead>
           <tbody>
             {loading ? (
-              <tr>
-                <td colSpan={columns.length} className="p-6 text-center text-muted-foreground">
-                  جارٍ التحميل…
-                </td>
-              </tr>
+              <TableSkeleton rows={6} cols={columns.length} />
             ) : table.getRowModel().rows.length === 0 ? (
               <tr>
                 <td colSpan={columns.length} className="p-6 text-center text-muted-foreground">

@@ -11,7 +11,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 
 type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
@@ -71,8 +71,13 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
 
   // درج التنقّل للأجهزة اللوحية/الأصغر (<lg) — يُغلق تلقائياً عند تغيّر المسار.
   const [navOpen, setNavOpen] = useState(false);
+  const mainRef = useRef<HTMLElement>(null);
   useEffect(() => {
     setNavOpen(false);
+    // عند تغيّر المسار: صفّر تمرير المحتوى وانقل التركيز إليه (WCAG focus-on-route-change) —
+    // فلا تبقى الصفحة الجديدة مُمرَّرة لموضع سابق، ويُعلن قارئ الشاشة الانتقال بدل إبقاء التركيز على الرابط.
+    mainRef.current?.scrollTo({ top: 0 });
+    mainRef.current?.focus();
   }, [loc]);
 
   const role = me.data?.role;
@@ -96,6 +101,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           {/* لوحة التحكم — رابط مستقلّ */}
           <Link
             href="/"
+            aria-current={loc === "/" ? "page" : undefined}
             className={cn(
               "flex items-center gap-2 rounded-md mx-2 px-3 py-2 min-h-[40px] text-sm transition",
               loc === "/" ? "bg-primary text-primary-foreground font-semibold" : "hover:bg-accent",
@@ -116,6 +122,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 key={m.href}
                 href={m.href}
                 title={m.label}
+                aria-current={active ? "page" : undefined}
                 className={cn(
                   "flex items-center gap-2 rounded-md mx-2 mb-0.5 px-3 py-2 min-h-[40px] text-sm transition",
                   active ? "bg-primary text-primary-foreground font-semibold" : "text-foreground/90 hover:bg-accent",
@@ -190,7 +197,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </SheetContent>
       </Sheet>
 
-      <main className="flex-1 p-3 md:p-6 overflow-auto">{children}</main>
+      <main ref={mainRef} tabIndex={-1} className="flex-1 p-3 md:p-6 overflow-auto outline-none">{children}</main>
     </div>
   );
 }

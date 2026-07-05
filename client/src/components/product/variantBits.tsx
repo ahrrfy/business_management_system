@@ -2,7 +2,7 @@
  * variantBits.tsx — قطع عرض صغيرة لشاشة «إضافة منتج بمتغيّرات».
  * كلها رقيقة وتعتمد منطق `lib/variants.ts` النقيّ المُختبَر.
  */
-import { useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useRef, useState, useId, cloneElement, isValidElement, type ChangeEvent, type ReactNode, type ReactElement } from "react";
 import { cn } from "@/lib/utils";
 import { code128Svg } from "@/lib/printing/barcode";
 import { compressImageDataUrl } from "@/components/form/ImageUploader";
@@ -86,13 +86,25 @@ export function Field({
   children: ReactNode;
   className?: string;
 }) {
+  // اربط التسمية بعنصر التحكّم برمجياً (WCAG 1.3.1/4.1.2): احقن id في الابن (إن لم يكن له id)
+  // واستعمله في htmlFor + اربط التلميح عبر aria-describedby ⇒ نقر التسمية يُركّز، وقارئ الشاشة يُعلن الاسم.
+  const autoId = useId();
+  const hintId = hint ? `${autoId}-hint` : undefined;
+  const el = isValidElement(children) ? (children as ReactElement<any>) : null;
+  const controlId = el ? (el.props.id ?? autoId) : undefined;
+  const control = el
+    ? cloneElement(el, {
+        id: controlId,
+        "aria-describedby": [el.props["aria-describedby"], hintId].filter(Boolean).join(" ") || undefined,
+      })
+    : children;
   return (
     <div className={cn("space-y-1.5", className)}>
-      <label className="text-sm font-medium leading-none text-foreground/90">
+      <label htmlFor={controlId} className="text-sm font-medium leading-none text-foreground/90">
         {label} {required && <span className="text-destructive">*</span>}
       </label>
-      {children}
-      {hint && <p className="text-[11px] text-muted-foreground leading-snug">{hint}</p>}
+      {control}
+      {hint && <p id={hintId} className="text-[11px] text-muted-foreground leading-snug">{hint}</p>}
     </div>
   );
 }
