@@ -39,6 +39,29 @@ const COMPANY_SETTINGS = {
   chamberLicense: CO.chamberLicense,
 };
 
+/**
+ * يستنتج نوع الحركة وشارتها اللونية في كشف الحساب المفصّل **من نصّ البيان نفسه** لا من إشارة
+ * مدين/دائن وحدها. كشف حالها القديم كان يصنِّف كل صفٍّ مدين «فاتورة» — خطأ فادح لحركات مدينة
+ * أخرى تماماً (سند صرف مستقل، استرداد من المورّد، مرتجع) تُنتج تصنيفاً متناقضاً كـ«فاتورة — استرداد».
+ * الترتيب أهمّ: أخصّ الكلمات المفتاحية أولاً (مرتجع/استرداد قبل فاتورة/سند العامّين).
+ */
+function inferStatementTypeLabel(description: string, debit: string | number | null | undefined): { label: string; color: string } {
+  const s = description ?? '';
+  if (s.includes('مرتجع')) return { label: 'مرتجع', color: B.orange };
+  if (s.includes('استرداد')) return { label: 'استرداد', color: B.orange };
+  if (s.includes('تسوية')) return { label: 'تسوية', color: B.green };
+  if (s.includes('سند قبض')) return { label: 'سند قبض', color: B.green };
+  if (s.includes('سند صرف') || s.includes('سند دفع')) return { label: 'سند دفع', color: B.green };
+  if (s.includes('فاتورة مبيعات')) return { label: 'فاتورة مبيعات', color: '#8A1F11' };
+  if (s.includes('فاتورة مشتريات')) return { label: 'فاتورة مشتريات', color: '#8A1F11' };
+  if (s.includes('فاتورة')) return { label: 'فاتورة', color: '#8A1F11' };
+  if (s.includes('أمر شراء')) return { label: 'أمر شراء', color: '#8A1F11' };
+  if (s.includes('شراء')) return { label: 'شراء', color: '#8A1F11' };
+  if (s.includes('دفعة')) return { label: 'دفعة', color: B.green };
+  // fallback: السلوك القديم لبيانات لا تحمل كلمات مفتاحية معروفة.
+  return Number(debit ?? 0) > 0 ? { label: 'فاتورة', color: '#8A1F11' } : { label: 'سند', color: B.green };
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // ١. فاتورة مبيعات ضريبية — A4 + QR Code
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -164,8 +187,10 @@ export function printQuotation(d: QuotationPrintData): void {
     contactPerson: d.contactPerson,
     customerPhone: d.customerPhone,
     items: d.items.map((it) => ({
-      productName: [it.productName, it.variantName].filter(Boolean).join(' — '),
-      unitName: it.description ?? it.unitName ?? null,
+      // الوصف يُلحَق باسم المنتج (لا يستولي على عمود الوحدة). عمود «الوحدة» يبقى للوحدة الفعلية
+      // (قطعة/كرتون/…) — كسر الفصل بين العمودين كان يُظهر نصاً طويلاً محلّ الوحدة.
+      productName: [it.productName, it.variantName, it.description].filter(Boolean).join(' — '),
+      unitName: it.unitName ?? null,
       quantity: it.quantity,
       unitPrice: it.unitPrice,
       total: it.total,
@@ -302,6 +327,7 @@ export function printWorkOrder(d: WorkOrderPrintData): void {
   const statusColor = WO_STATUS_COLOR[d.status ?? ''] ?? '#92400E';
   printWorkOrderV2({
     woNumber: d.woNumber,
+    woDate: d.woDate,
     dueDate: d.dueDate,
     statusLabel: statusLabel || null,
     statusColor,
@@ -358,17 +384,20 @@ export function printCustomerStmt(d: CustomerStmtPrintData): void {
     periodLabel,
     openingBalance: d.openingBalance ?? 0,
     transactionsCount: d.transactions.length,
-    transactions: d.transactions.map((t) => ({
-      date: t.date,
-      ref: t.ref,
-      description: t.description,
-      debit: t.debit ?? null,
-      credit: t.credit ?? null,
-      balance: t.balance,
-      typeLabel: Number(t.debit ?? 0) > 0 ? 'فاتورة' : 'سند',
-      typeColor: Number(t.debit ?? 0) > 0 ? '#8A1F11' : '#0D6B52',
-      details: t.description,
-    })),
+    transactions: d.transactions.map((t) => {
+      const { label, color } = inferStatementTypeLabel(t.description, t.debit);
+      return {
+        date: t.date,
+        ref: t.ref,
+        description: t.description,
+        debit: t.debit ?? null,
+        credit: t.credit ?? null,
+        balance: t.balance,
+        typeLabel: label,
+        typeColor: color,
+        details: t.description,
+      };
+    }),
     totalDebit: d.totalDebit,
     totalCredit: d.totalCredit,
     closingBalance: d.closingBalance,
@@ -462,29 +491,39 @@ export interface SupplierStmtPrintData {
 }
 
 export function printSupplierStmt(d: SupplierStmtPrintData): void {
-  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (النوع = "supplier"، الرصيد الختامي «علينا»).
+  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (النوع = "supplier").
+  // ⚠️ الرصيد المُمرَّر هنا (openingBalance/balance/closingBalance) موقَّع فعلاً بنفس اصطلاح
+  // suppliers.currentBalance (موجب="علينا له")، مطابقاً لبناء ledger في SupplierStatement.tsx
+  // (bal = bal.plus(credit).minus(debit)). لا نُطبِّق Math.abs هنا — printStatementV2 يحسب
+  // الاتجاه (لنا/علينا) من الإشارة نفسها ويَعرض القيمة المطلقة بجانبه، فتُحفَظ دلالة رصيد
+  // دائن/تسديد زائد للمورّد (سالب ⇒ «لنا») بدل ابتلاعها بقيمة مطلقة صامتة.
   const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
   printStatementV2({
     partyKind: 'supplier',
     partyName: d.supplierName,
     partyPhone: d.supplierPhone,
     periodLabel,
-    openingBalance: Math.abs(Number(d.openingBalance ?? 0)),
+    openingBalance: Number(d.openingBalance ?? 0),
     transactionsCount: d.transactions.length,
-    transactions: d.transactions.map((t) => ({
-      date: t.date,
-      ref: t.ref,
-      description: t.description,
-      debit: t.debit ?? null,
-      credit: t.credit ?? null,
-      balance: Math.abs(Number(t.balance)),
-      typeLabel: Number(t.credit ?? 0) > 0 ? 'فاتورة مشتريات' : 'سند دفع',
-      typeColor: Number(t.credit ?? 0) > 0 ? '#8A1F11' : '#0D6B52',
-      details: t.description,
-    })),
+    transactions: d.transactions.map((t) => {
+      // ملاحظة: للمورّد الدائن هو ما يزيد الذمة (اتجاه معاكس للعميل) — نمرّر debit كإشارة fallback
+      // متّسقة (نفس القيمة المطلقة المستعملة في fallback الدالة، فقط نعكس أيّهما "الزيادة").
+      const { label, color } = inferStatementTypeLabel(t.description, t.credit);
+      return {
+        date: t.date,
+        ref: t.ref,
+        description: t.description,
+        debit: t.debit ?? null,
+        credit: t.credit ?? null,
+        balance: Number(t.balance),
+        typeLabel: label,
+        typeColor: color,
+        details: t.description,
+      };
+    }),
     totalDebit: d.totalDebit,
     totalCredit: d.totalCredit,
-    closingBalance: Math.abs(Number(d.closingBalance)),
+    closingBalance: Number(d.closingBalance),
     settings: COMPANY_SETTINGS,
   });
 }

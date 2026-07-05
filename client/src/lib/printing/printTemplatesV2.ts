@@ -29,17 +29,35 @@ import { formatArabicMoneyWords } from './tafqit';
 
 // ─── مساعدات مشتركة ──────────────────────────────────────────────────────────
 
-/** تحويل ISO/Date إلى `dd/mm/yyyy` (بأرقام لاتينية داخل خانة اتجاه LTR في التصميم). */
+/**
+ * تحويل ISO/Date إلى `dd/mm/yyyy` (بأرقام لاتينية داخل خانة اتجاه LTR في التصميم).
+ * ⚠️ تاريخ نصّي بصيغة YYYY-MM-DD يُعامَل كتاريخ يوميّ محلّي **لا** UTC — `new Date('2026-07-05')`
+ *   يفسّر السلسلة كمنتصف ليل UTC فيُظهرها في المتصفّحات غرب UTC بيومٍ أسبق. المرجع الرسمي
+ *   للسندات/الفواتير هو يوم التقويم في العراق، فنُنسّق مباشرةً بلا مرور بـDate.
+ */
 function fmtDate(d?: string | Date | null): string {
   if (!d) return new Date().toLocaleDateString('en-GB');
+  if (typeof d === 'string') {
+    const m = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(d);
+    if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  }
   const date = typeof d === 'string' ? new Date(d) : d;
   if (Number.isNaN(date.getTime())) return String(d);
   return date.toLocaleDateString('en-GB');
 }
 
-/** أرقام IQD بلا كسور — الفلوس لا تُتداول. */
+/** أرقام IQD بلا كسور — الفلوس لا تُتداول. للمبالغ فقط لا الكميات. */
 function fmtIQD(n: string | number | null | undefined): string {
   return fmt(Math.round(Number(n ?? 0)));
+}
+
+/** كميات — تحتفظ بالكسور (البيع يقبل حتى ٣ منازل). عرض «١.٥» كما هو لا «٢». */
+function fmtQty(n: string | number | null | undefined): string {
+  if (n == null || n === '') return '—';
+  const num = Number(n);
+  if (Number.isNaN(num)) return String(n);
+  // تجميل: بلا كسور زائدة (1.500 ⇒ 1.5) لكن 1.5 يبقى كما هو.
+  return num.toLocaleString('en-US', { maximumFractionDigits: 3 });
 }
 
 /** اتّجاه رصيد العميل (الموجب = لنا عليه). */
@@ -144,7 +162,7 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
   const rows = d.items.map((it) => ({
     name: it.productName,
     unit: it.unitName ?? '',
-    qty:  fmtIQD(it.quantity),
+    qty:  fmtQty(it.quantity),
     price: fmtIQD(it.unitPrice),
     tax:  Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
     total: fmtIQD(it.total),
@@ -278,7 +296,7 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
   const rows = d.items.map((it) => ({
     name: it.productName,
     unit: it.unitName ?? '',
-    qty: fmtIQD(it.quantity),
+    qty: fmtQty(it.quantity),
     price: fmtIQD(it.unitPrice),
     tax: Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
     total: fmtIQD(it.total),
@@ -511,7 +529,7 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
   const rows = d.items.map((it) => ({
     name: it.productName,
     unit: it.unitName ?? '',
-    qty: fmtIQD(it.quantity),
+    qty: fmtQty(it.quantity),
     price: fmtIQD(it.unitPrice),
     tax: Number(it.taxAmount ?? 0) > 0 ? fmtIQD(it.taxAmount) : '—',
     total: fmtIQD(it.total),
@@ -553,6 +571,8 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
 
 export interface WorkOrderV2Data {
   woNumber: string;
+  /** تاريخ إصدار الطلب (اليوم الذي استُلم فيه العمل). يظهر «تاريخ الإصدار» في الترويسة. */
+  woDate?: string | Date | null;
   dueDate?: string | null;
   statusLabel?: string | null;
   statusColor?: string | null;
@@ -582,6 +602,7 @@ export function printWorkOrderV2(d: WorkOrderV2Data): boolean {
     title: 'طلب خدمة',
     fields: [
       { label: 'رقم الطلب', value: d.woNumber },
+      ...(d.woDate ? [{ label: 'تاريخ الإصدار', value: fmtDate(d.woDate) }] : []),
       ...(d.dueDate ? [{ label: 'تاريخ التسليم', value: d.dueDate }] : []),
     ],
     badge: d.statusLabel ? { label: d.statusLabel, color: d.statusColor ?? B.orange } : null,
@@ -616,7 +637,7 @@ export function printWorkOrderV2(d: WorkOrderV2Data): boolean {
   const rows = d.items.map((it) => ({
     name: it.name,
     unit: it.unit ?? '',
-    qty: fmtIQD(it.quantity),
+    qty: fmtQty(it.quantity),
     price: fmtIQD(it.unitPrice),
     total: fmtIQD(it.total),
   }));
@@ -767,9 +788,14 @@ export function printStatementV2(d: StatementV2Data): boolean {
     </table>
   </div>`;
 
-  // شريط الرصيد الختامي
+  // شريط الرصيد الختامي — الاتّجاه يُحسَب من إشارة الرصيد + نوع الطرف (عميل موجب=«لنا»، مورّد موجب=«علينا»).
+  // القيمة تُعرَض بالقيمة المطلقة والاتّجاه بجانبها ⇒ لا تلغى دلالة الائتمان/الدين عند سالبية الرصيد
+  // (مورّد ذو رصيد سالب = دفعنا زيادةً، «لنا عليه» — تظهر بوضوح بدل الابتلاع بـabs الصامت).
+  const closingSigned = Number(d.closingBalance);
+  const closingAbs = Math.abs(closingSigned);
+  const closingDir = isCustomer ? balanceDirCustomer(closingSigned) : balanceDirSupplier(closingSigned);
   const closingBar = `<div style="display:flex;justify-content:flex-end;margin-top:10px">
-    <div style="width:290px">${grandTotalBar('الرصيد الختامي المستحق', fmtIQD(d.closingBalance)).replace('margin-top:16px;', 'margin-top:0;')}</div>
+    <div style="width:290px">${grandTotalBar(`الرصيد الختامي المستحق (${closingDir})`, fmtIQD(closingAbs)).replace('margin-top:16px;', 'margin-top:0;')}</div>
   </div>`;
 
   const sig = `<div style="display:flex;justify-content:flex-start;margin-top:26px">
@@ -817,6 +843,12 @@ export interface VoucherV2Data {
   qrCaption?: string | null;
   /** بَصمة SHA-256 مختصرة تُعرَض في يمين التذييل: `HASH 9F3C-…`. */
   signatureShortHash?: string | null;
+
+  /**
+   * مُرفَق السند كصورة (data: URL أو رابط مباشر) — يُطبَع كصورة مصغَّرة أسفل التوقيعات في نسخة A4
+   * الرسمية (لا يُطبَع نصّاً خاماً؛ روابط data: الطويلة كانت ستُفسِد الصفحة قبل هذا التعديل).
+   */
+  attachmentImageUrl?: string | null;
 
   settings?: CompanySettings;
 }
@@ -881,6 +913,14 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
     ],
   });
 
+  const attachmentBlock = d.attachmentImageUrl
+    ? `<div style="margin-top:10px;text-align:center">
+        <div style="font-size:8.5px;color:${B.textFaint};margin-bottom:3px">صورة المُرفَق المُرتبط بالسند</div>
+        <img src="${esc(d.attachmentImageUrl)}" alt="مُرفَق السند"
+          style="max-width:170px;max-height:170px;border:1px solid ${B.border};border-radius:4px;object-fit:contain" />
+      </div>`
+    : '';
+
   const footerRef = d.signatureShortHash ? `HASH ${d.signatureShortHash}` : `REF ${d.voucherNumber}`;
   const footerLeft = 'سند مرقّم تسلسلياً ومؤرشف إلكترونياً — لا يُعتمد بلا توقيع مستلم';
 
@@ -893,6 +933,6 @@ export function printVoucherV2(d: VoucherV2Data): boolean {
     </div>
   </div>`;
 
-  const body = `${pageBodyOpen()}${header}${cards}${descBox}${amountBar}${tafqit}${sig}${pageBodyClose()}${customFooter}`;
+  const body = `${pageBodyOpen()}${header}${cards}${descBox}${amountBar}${tafqit}${sig}${attachmentBlock}${pageBodyClose()}${customFooter}`;
   return openPrintWindow(wrapA4Doc(`${title} ${d.voucherNumber}`, body));
 }

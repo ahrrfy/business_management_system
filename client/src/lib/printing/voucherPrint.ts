@@ -148,6 +148,13 @@ export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
     qrSvg = await qrCodeSvg(qrPayload, { size: 90, margin: 1 });
   } catch { /* تَدهور سَلِس ⇒ placeholder افتراضي */ }
 
+  // attachment-upload (٥/٧): مُرفَق صورة فعلي (data: URL) يُطبَع كمصغَّرة أسفل التوقيعات في نسخة A4 —
+  // كان قد سقط بالكامل عند التحويل لـV2 (لا حقل مُرفَق في القالب الجديد آنذاك)، فتُفقَد صورة الإثبات
+  // من النسخة الرسمية المؤرشَفة. روابط قديمة غير data: (نادرة) لا تُطبَع كصورة لتفادي طلب شبكي فاشل صامت.
+  const attachmentImageUrl = d.attachmentUrl && /^data:image\//.test(d.attachmentUrl)
+    ? d.attachmentUrl
+    : null;
+
   return printVoucherV2({
     direction: d.direction,
     voucherNumber: d.voucherNumber,
@@ -163,6 +170,7 @@ export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
     amount: d.amount.replace(/[^\d.-]/g, ''), // «50,000» ⇒ «50000» ⇒ يُنسَّق داخل V2 بلا كسور
     qrSvg,
     signatureShortHash: d.signatureHash ? shortHash(d.signatureHash) : null,
+    attachmentImageUrl,
     settings: {
       taxId: CO.taxId,
       commercialRegistry: CO.commercialRegistry,

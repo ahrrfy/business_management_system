@@ -35,16 +35,22 @@ ${CAIRO_FONT}
   html,body{font-family:'Cairo',sans-serif;background:#fff;color:#000;direction:rtl}
   @page{size:A4;margin:0}
   body{margin:0;padding:0;font-family:'Cairo',sans-serif}
-  .page{width:${PAGE_W}px;height:${PAGE_H}px;background:#fff;position:relative;overflow:hidden;
-    margin:0 auto;font-family:'Cairo',sans-serif;color:#000;direction:rtl;font-size:11.5px;line-height:1.55;}
-  .page-inset{position:absolute;inset:${SAFETY_INSET}px;border:1px solid ${B.borderMist};pointer-events:none;z-index:2;}
-  .page-body{position:relative;z-index:1;padding:32px 42px 0;}
-  .page-footer{position:absolute;bottom:0;right:0;left:0;padding:14px 42px 24px;z-index:1;}
+  .page{width:${PAGE_W}px;min-height:${PAGE_H}px;background:#fff;position:relative;
+    margin:0 auto;font-family:'Cairo',sans-serif;color:#000;direction:rtl;font-size:11.5px;line-height:1.55;
+    display:flex;flex-direction:column;}
+  /* إطار الزخرفة الداخلي على بعد 24px من حواف الصفحة. على الشاشة يظهر كإطار واحد؛ على الطباعة
+     يُخفى لأن position:absolute مع inset لا يتعامل جيداً مع الصفحات المتعدّدة (يمتدّ سطرياً بين
+     الصفحات). في الطباعة يعوّض الإطار بهامش الأمان الطبيعي عبر @page margin. */
+  .page-inset{position:absolute;top:${SAFETY_INSET}px;right:${SAFETY_INSET}px;bottom:${SAFETY_INSET}px;left:${SAFETY_INSET}px;border:1px solid ${B.borderMist};pointer-events:none;z-index:2;}
+  .page-body{position:relative;z-index:1;padding:32px 42px 0;flex:1 0 auto;}
+  /* التذييل يدفعه margin-top:auto لأسفل .page (flex column) ⇒ يبقى ملتصقاً بالحافة السفلى للصفحة
+     الأولى للمستند ذي الصفحة الواحدة، ويتدفّق مع نهاية آخر صفحة للمستندات الطويلة (كشف/تقرير). */
+  .page-footer{margin-top:auto;padding:14px 42px 24px;z-index:1;position:relative;}
   table{border-collapse:collapse}
   thead{display:table-header-group} tfoot{display:table-footer-group}
   tr,td,th{page-break-inside:avoid;break-inside:avoid}
-  /* على الورق الفعلي: لا ظلال، الحواف كما هي (التصميم مبنيّ عليها). */
-  @media print { *{box-shadow:none !important} body{background:#fff} }
+  /* على الورق الفعلي: لا ظلال، إطار الزخرفة يُلغى (السبب أعلاه)، الحواف كما هي (التصميم مبنيّ عليها). */
+  @media print { *{box-shadow:none !important} body{background:#fff} .page-inset{display:none !important} }
 </style>
 </head>
 <body>
@@ -549,12 +555,18 @@ export function docTable(columns: TableCol[], rows: Record<string, string>[], sh
 
 /** توافق خلفي — صندوق الملخّص القديم كسطور بسيطة. الأخير = شريط الإجمالي الأخضر. */
 export interface SummaryItem { label: string; value: string; bold?: boolean; large?: boolean }
+/** يزيل لاحقة « د.ع» من نصّ مالي مُنسَّق (fmtC)، لأن `totalsBox`/`grandTotalBar` يضيفانها ⇒ نتفادى التكرار. */
+function stripIQDSuffix(v: string): string {
+  return v.replace(/\s*د\.ع\s*$/, '');
+}
 export function docSummary(items: SummaryItem[], qrSvg?: string): string {
   const last = items[items.length - 1];
-  const lines = items.slice(0, -1).map((it) => ({ label: it.label, value: it.value }));
+  // المتّصلون القدامى (PO/production/تقارير) يُنسّقون القيم عبر fmtC فتحوي « د.ع» لاحقةً.
+  // نسحبها هنا قبل تسليمها لـtotalsBox الجديد الذي يضيفها في شريط الإجمالي الأخضر تلقائياً ⇒ يتفادى «د.ع د.ع».
+  const lines = items.slice(0, -1).map((it) => ({ label: it.label, value: stripIQDSuffix(it.value) }));
   const box = totalsBox({
     lines,
-    grandTotal: { label: last?.label ?? 'الإجمالي', value: last?.value ?? '' },
+    grandTotal: { label: last?.label ?? 'الإجمالي', value: stripIQDSuffix(last?.value ?? '') },
   });
   if (!qrSvg) return box;
   // اذا اُمرَر QR، نضعه على أقصى اليمين تحت الجدول.
