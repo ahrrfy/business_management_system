@@ -1,17 +1,43 @@
 /**
- * قوالب طباعة مكتبة العربية — 10 قوالب كاملة
- * كل وظيفة تُولّد HTML وتفتح نافذة طباعة.
+ * قوالب طباعة مكتبة العربية.
+ * الثمانية الرَسميّة (فاتورتان، تقرير مبيعات، عرض سعر، طلب خدمة، كشف حساب، سندَا قبض/دفع) تُنفَّذ
+ * بالتصميم عالي الدقة في printTemplatesV2.ts (تسليم ٥/٧/٢٦). دوال هذا الملف بأسمائها القديمة تُحوَّل
+ * صراحةً إلى نظرائها V2 (adapter بسيط) حتى لا تتأثّر شاشات النظام. القوالب المتبقّية (aging، production،
+ * receipts، shift، barcode labels) خارج نطاق التسليم وتُبقى بتصميمها السابق (يستفيد كل الطباعة من ألوان
+ * وخطّ التذييل الجديدة عبر brand.ts + docHtml.ts).
  */
 import { BRAND as B, CO, RECEIPT_PHONES, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
 import {
   wrapA4Doc, wrapReceiptDoc,
   docHeader, docMeta, docTable, docSummary, docFooter, agingSummaryBars,
 } from './docHtml';
+import {
+  printSalesInvoiceV2, printPurchaseInvoiceV2,
+  printQuotationV2, printWorkOrderV2, printStatementV2,
+  printSalesReportV2,
+} from './printTemplatesV2';
+
+/** إعادة تصدير قوالب V2 الرَسميّة للاستخدام المباشر (فاتورة مشتريات + تقرير مبيعات جديدان بلا نظير قديم). */
+export {
+  printSalesInvoiceV2, printPurchaseInvoiceV2, printQuotationV2,
+  printWorkOrderV2, printStatementV2, printSalesReportV2,
+} from './printTemplatesV2';
+export type {
+  SalesInvoiceV2Data, PurchaseInvoiceV2Data, QuotationV2Data,
+  WorkOrderV2Data, StatementV2Data, SalesReportV2Data, VoucherV2Data,
+} from './printTemplatesV2';
 import { qrCodeSvg } from './qr';
 import { code128Svg } from './barcode';
 import { type LabelRenderItem, type LabelRenderOpts } from './labelRaster';
 import { getLabelSize, type LabelSize } from './labelSize';
 import { labelDocHtml } from './labelDesign';
+
+// ─── إعدادات الشركة المشتركة (تُقرأ من settings مستقبلاً — الآن ثابتات brand.ts) ──
+const COMPANY_SETTINGS = {
+  taxId: CO.taxId,
+  commercialRegistry: CO.commercialRegistry,
+  chamberLicense: CO.chamberLicense,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // ١. فاتورة مبيعات ضريبية — A4 + QR Code
@@ -47,8 +73,10 @@ export interface InvoicePrintData {
 }
 
 export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
+  // hifi-redesign (٥/٧/٢٦): ينفَّذ عبر printSalesInvoiceV2 بالتصميم المرجعي. الحقول الوصفية (customerTaxId/
+  // companyTaxId/notes) لم تعُد تظهر بالترويسة الجديدة (الأرقام القانونية تُقرأ من إعدادات الشركة).
   const date = d.invoiceDate
-    ? new Date(d.invoiceDate as string).toLocaleDateString('en-GB').replace(/\//g, '/')
+    ? new Date(d.invoiceDate as string).toLocaleDateString('en-GB')
     : new Date().toLocaleDateString('en-GB');
 
   const qrPayload = [
@@ -57,85 +85,45 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     `التاريخ: ${date}`,
     `الإجمالي: ${fmtC(d.total)}`,
   ].join('\n');
-
   const qrSvg = await qrCodeSvg(qrPayload, { size: 88, margin: 1 }).catch(() => '');
 
-  // عمود «الضريبة» يظهر فقط حين ضريبة الفاتورة > 0 وعندما يمرِّر المستدعي قيماً لكل سطر
-  // (نفس منطق التوزيع في محرّر الفاتورة عبر `allocateLineTax`، ⇒ مجموع الأعمدة = taxAmount).
-  const showLineTaxCol =
-    Number(d.taxAmount ?? 0) > 0 &&
-    d.items.some((it) => Number(it.taxAmount ?? 0) > 0);
-  const cols = [
-    { key: 'name', label: 'المنتج' },
-    { key: 'unit', label: 'الوحدة', width: '14mm', align: 'center' as const },
-    { key: 'qty', label: 'الكمية', width: '14mm', align: 'center' as const },
-    { key: 'price', label: 'سعر الوحدة', width: '22mm', align: 'left' as const },
-    { key: 'amount', label: 'المبلغ', width: showLineTaxCol ? '20mm' : '24mm', align: 'left' as const, bold: true },
-    ...(showLineTaxCol
-      ? [{ key: 'lineTax', label: 'الضريبة', width: '18mm', align: 'left' as const }]
-      : []),
-  ];
-  const rows = d.items.map(it => ({
-    name: it.productName,
-    unit: it.unitName ?? '',
-    qty: fmt(it.quantity),
-    price: fmt(it.unitPrice),
-    amount: fmt(it.total),
-    ...(showLineTaxCol ? { lineTax: fmt(it.taxAmount ?? 0) } : {}),
-  }));
+  const remainingNum = Math.max(Number(d.total) - Number(d.paidAmount ?? 0), 0);
+  const statusLabel = remainingNum <= 0.001
+    ? 'مدفوعة'
+    : (Number(d.paidAmount ?? 0) > 0 ? 'مدفوعة جزئياً' : 'آجلة');
+  const statusColor = remainingNum <= 0.001 ? '#0D6B52' : (Number(d.paidAmount ?? 0) > 0 ? '#92400E' : '#8A1F11');
 
-  const custFields = [
-    { label: 'الاسم', value: d.customerName ?? 'عميل نقدي' },
-    ...(d.customerAddress ? [{ label: 'العنوان', value: d.customerAddress }] : []),
-    ...(d.customerPhone ? [{ label: 'الهاتف', value: d.customerPhone }] : []),
-  ];
-  const taxFields = [
-    ...(d.companyTaxId ? [{ label: 'الرقم الضريبي للشركة', value: d.companyTaxId }] : []),
-    ...(d.customerTaxId ? [{ label: 'الرقم الضريبي للعميل', value: d.customerTaxId }] : []),
-    { label: 'رقم الفاتورة', value: d.invoiceNumber },
-    { label: 'التاريخ', value: date },
-    ...(d.paymentMethod ? [{ label: 'طريقة الدفع', value: d.paymentMethod }] : []),
-  ];
-
-  const summaryItems = [
-    { label: 'المجموع الفرعي', value: fmtC(d.subtotal) },
-    ...(Number(d.discountAmount ?? 0) > 0
-      ? [{ label: 'الخصم', value: fmtC(d.discountAmount) }]
-      : []),
-    ...(Number(d.taxAmount ?? 0) > 0
-      ? [{ label: `ضريبة القيمة المضافة${d.taxRate ? ` (${d.taxRate}%)` : ''}`, value: fmtC(d.taxAmount) }]
-      : []),
-    { label: 'الإجمالي المستحق', value: fmtC(d.total), bold: true, large: true },
-  ];
-
-  const paidAmount = Number(d.paidAmount ?? 0);
-  const remaining = Number(d.total) - paidAmount;
-  const remainingHtml = paidAmount > 0
-    ? `<div style="text-align:left;font-size:9.5px;color:#555;margin-bottom:4mm;">
-        المدفوع: <strong>${fmtC(paidAmount)}</strong> &nbsp;|&nbsp;
-        المتبقّي: <strong style="color:${remaining > 0.01 ? '#DC2626' : '#059669'};">${fmtC(Math.max(remaining, 0))}</strong>
-      </div>`
-    : '';
-
-  const notesHtml = d.notes
-    ? `<div style="background:${B.bg};border:1px solid ${B.border};border-radius:4px;padding:3mm;margin-bottom:4mm;font-size:9.5px;">
-        <strong>ملاحظات: </strong>${esc(d.notes)}</div>`
-    : '';
-
-  const body = [
-    docHeader('فاتورة مبيعات ضريبية', d.invoiceNumber, date),
-    docMeta([
-      { title: 'معلومات العميل', fields: custFields },
-      { title: 'معلومات ضريبية', fields: taxFields },
-    ]),
-    docTable(cols, rows),
-    docSummary(summaryItems, qrSvg || undefined),
-    remainingHtml,
-    notesHtml,
-    docFooter(),
-  ].join('');
-
-  openPrintWindow(wrapA4Doc(`فاتورة ${d.invoiceNumber}`, body));
+  printSalesInvoiceV2({
+    invoiceNumber: d.invoiceNumber,
+    invoiceDate: d.invoiceDate,
+    statusLabel,
+    statusColor,
+    customerName: d.customerName,
+    customerAddress: d.customerAddress,
+    customerPhone: d.customerPhone,
+    paymentMethod: d.paymentMethod,
+    items: d.items.map((it) => ({
+      productName: it.productName,
+      unitName: it.unitName,
+      quantity: it.quantity,
+      unitPrice: it.unitPrice,
+      taxAmount: it.taxAmount ?? null,
+      total: it.total,
+    })),
+    subtotal: d.subtotal,
+    discountAmount: d.discountAmount ?? null,
+    taxAmount: d.taxAmount ?? null,
+    taxRate: d.taxRate ?? null,
+    total: d.total,
+    paidAmount: d.paidAmount ?? null,
+    qrSvg: qrSvg || null,
+    settings: {
+      taxId: d.companyTaxId ?? COMPANY_SETTINGS.taxId,
+      commercialRegistry: COMPANY_SETTINGS.commercialRegistry,
+      chamberLicense: COMPANY_SETTINGS.chamberLicense,
+    },
+  });
+  return;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -166,66 +154,28 @@ export interface QuotationPrintData {
 }
 
 export function printQuotation(d: QuotationPrintData): void {
-  const cols = [
-    { key: 'name', label: 'المنتج' },
-    { key: 'desc', label: 'الوصف', width: '30mm' },
-    { key: 'qty', label: 'الكمية', width: '14mm', align: 'center' as const },
-    { key: 'price', label: 'سعر الوحدة', width: '20mm', align: 'left' as const },
-    { key: 'amount', label: 'المبلغ', width: '24mm', align: 'left' as const, bold: true },
-  ];
-  const rows = d.items.map(it => ({
-    name: [it.productName, it.variantName].filter(Boolean).join(' — '),
-    desc: it.description ?? (it.unitName ?? ''),
-    qty: fmt(it.quantity),
-    price: fmt(it.unitPrice),
-    amount: fmt(it.total),
-  }));
-
-  const custFields = [
-    { label: 'الاسم', value: d.customerName ?? '—' },
-    ...(d.customerAddress ? [{ label: 'العنوان', value: d.customerAddress }] : []),
-    ...(d.contactPerson ? [{ label: 'شخص التواصل', value: d.contactPerson }] : []),
-    ...(d.customerPhone ? [{ label: 'الهاتف', value: d.customerPhone }] : []),
-  ];
-  const offerFields = [
-    { label: 'رقم العرض', value: d.quoteNumber },
-    ...(d.quoteDate ? [{ label: 'تاريخ الإصدار', value: d.quoteDate }] : []),
-    ...(d.validUntil ? [{ label: 'صالح حتى', value: d.validUntil }] : []),
-  ];
-
-  const summaryItems = [
-    { label: 'المجموع الفرعي', value: fmtC(d.subtotal) },
-    ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: 'ضريبة القيمة المضافة', value: fmtC(d.taxAmount) }] : []),
-    { label: 'الإجمالي', value: fmtC(d.total), bold: true, large: true },
-  ];
-
-  const extraHeader = d.validUntil ? [{ label: 'صالح حتى', value: d.validUntil }] : [];
-
-  const terms = `<div style="background:${B.orangeLight};border:1px solid ${B.orange};border-radius:4px;
-    padding:3mm;margin-bottom:4mm;font-size:9.5px;color:${B.orangeDark};">
-    <strong>الشروط والأحكام:</strong>
-    <span> • الأسعار لا تشمل التوصيل خارج بغداد • العرض صالح لمدة 5 يوم من تاريخ الإصدار • الأسعار قابلة للتغيير بعد انتهاء صلاحية العرض</span>
-  </div>`;
-
-  const notesHtml = d.notes
-    ? `<div style="background:${B.bg};border:1px solid ${B.border};border-radius:4px;padding:3mm;margin-bottom:4mm;font-size:9.5px;">
-        <strong>ملاحظات: </strong>${esc(d.notes)}</div>`
-    : '';
-
-  const body = [
-    docHeader('عرض سعر', d.quoteNumber, d.quoteDate ?? undefined, extraHeader),
-    docMeta([
-      { title: 'معلومات العميل', fields: custFields },
-      { title: 'تفاصيل العرض', fields: offerFields },
-    ]),
-    docTable(cols, rows),
-    docSummary(summaryItems),
-    terms,
-    notesHtml,
-    docFooter(),
-  ].join('');
-
-  openPrintWindow(wrapA4Doc(`عرض سعر ${d.quoteNumber}`, body));
+  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printQuotationV2 بالتصميم المرجعي (٦ أعمدة صنف/وحدة/كمية/سعر/ضريبة/إجمالي،
+  // شروط في صندوق أخضر داخلي، توقيعا العميل والممثّل التجاري). description القديم يُلحَق باسم المنتج.
+  printQuotationV2({
+    quoteNumber: d.quoteNumber,
+    quoteDate: d.quoteDate,
+    validUntil: d.validUntil,
+    customerName: d.customerName,
+    contactPerson: d.contactPerson,
+    customerPhone: d.customerPhone,
+    items: d.items.map((it) => ({
+      productName: [it.productName, it.variantName].filter(Boolean).join(' — '),
+      unitName: it.description ?? it.unitName ?? null,
+      quantity: it.quantity,
+      unitPrice: it.unitPrice,
+      total: it.total,
+    })),
+    subtotal: d.subtotal,
+    taxAmount: d.taxAmount ?? null,
+    total: d.total,
+    terms: d.notes ?? null,
+    settings: COMPANY_SETTINGS,
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -346,70 +296,30 @@ const WO_STATUS_AR: Record<string, string> = {
 };
 
 export function printWorkOrder(d: WorkOrderPrintData): void {
-  const cols = [
-    { key: 'name', label: 'البند' },
-    { key: 'unit', label: 'الوحدة', width: '14mm', align: 'center' as const },
-    { key: 'qty', label: 'الكمية', width: '14mm', align: 'center' as const },
-    { key: 'price', label: 'سعر الوحدة', width: '20mm', align: 'left' as const },
-    { key: 'amount', label: 'المبلغ', width: '24mm', align: 'left' as const, bold: true },
-  ];
-  const rows = d.items.map(it => ({
-    name: it.name, unit: it.unit ?? '',
-    qty: fmt(it.quantity), price: fmt(it.unitPrice), amount: fmt(it.total),
-  }));
-
-  const statusColor = WO_STATUS_COLOR[d.status ?? ''] ?? '#6B7280';
+  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printWorkOrderV2 بالتصميم المرجعي (بلا عمود ضريبة، توقيعا الفني والعميل،
+  // شارة الحالة الملوّنة أعلى الترويسة). notes القديم = ملاحظات التشغيل الجديدة.
   const statusLabel = WO_STATUS_AR[d.status ?? ''] ?? (d.status ?? '');
-
-  const custCard = `<div style="flex:1;background:${B.greenPale};border:1px solid ${B.greenLight};border-radius:4px;padding:3mm;">
-    <div style="font-size:10px;font-weight:700;color:${B.green};margin-bottom:2mm;">معلومات العميل</div>
-    <div style="font-size:9px;margin-bottom:1mm;"><span style="color:${B.textMuted};">الاسم: </span><strong>${esc(d.customerName ?? '—')}</strong></div>
-    ${d.contactPerson ? `<div style="font-size:9px;margin-bottom:1mm;"><span style="color:${B.textMuted};">التواصل: </span><strong>${esc(d.contactPerson)}</strong></div>` : ''}
-    ${d.customerPhone ? `<div style="font-size:9px;"><span style="color:${B.textMuted};">الهاتف: </span><strong>${esc(d.customerPhone)}</strong></div>` : ''}
-  </div>`;
-
-  const jobCard = `<div style="flex:1;background:${B.orangeLight};border:1px solid ${B.orange}40;border-radius:4px;padding:3mm;">
-    <div style="font-size:10px;font-weight:700;color:${B.orangeDark};margin-bottom:2mm;">تفاصيل العمل</div>
-    ${d.jobType ? `<div style="font-size:9px;margin-bottom:1mm;"><span style="color:${B.textMuted};">نوع العمل: </span><strong>${esc(d.jobType)}</strong></div>` : ''}
-    ${d.specs ? `<div style="font-size:9px;margin-bottom:1mm;"><span style="color:${B.textMuted};">المواصفات: </span><strong>${esc(d.specs)}</strong></div>` : ''}
-    <div style="font-size:9px;display:flex;align-items:center;gap:2mm;">
-      <span style="color:${B.textMuted};">الحالة: </span>
-      <span style="background:${statusColor};color:#fff;padding:0.5mm 3mm;border-radius:10px;font-size:8.5px;font-weight:600;">${esc(statusLabel)}</span>
-    </div>
-  </div>`;
-
-  const summaryItems = [
-    { label: 'المجموع الفرعي', value: fmtC(d.subtotal) },
-    ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: 'ضريبة القيمة المضافة', value: fmtC(d.taxAmount) }] : []),
-    { label: 'الإجمالي', value: fmtC(d.total), bold: true, large: true },
-  ];
-
-  const notesHtml = d.notes
-    ? `<div style="background:${B.bg};border:1px solid ${B.border};border-radius:4px;
-        padding:3mm;margin-bottom:4mm;font-size:9px;white-space:pre-line;">
-        <strong>ملاحظات: </strong>${esc(d.notes)}</div>`
-    : '';
-
-  const signatures = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12mm;margin-top:8mm;margin-bottom:5mm;">
-    <div style="text-align:center;border-top:1px solid ${B.borderDk};padding-top:2mm;">
-      <div style="font-size:9px;color:${B.textMuted};">توقيع المسؤول</div></div>
-    <div style="text-align:center;border-top:1px solid ${B.borderDk};padding-top:2mm;">
-      <div style="font-size:9px;color:${B.textMuted};">توقيع العميل</div></div>
-  </div>`;
-
-  const extraHeader = d.dueDate ? [{ label: 'تاريخ التسليم', value: d.dueDate }] : [];
-
-  const body = [
-    docHeader('طلب خدمة', d.woNumber, d.woDate ?? undefined, extraHeader),
-    `<div style="display:flex;gap:3mm;margin-bottom:4mm;">${custCard}${jobCard}</div>`,
-    docTable(cols, rows),
-    docSummary(summaryItems),
-    notesHtml,
-    signatures,
-    docFooter(),
-  ].join('');
-
-  openPrintWindow(wrapA4Doc(`طلب خدمة ${d.woNumber}`, body));
+  const statusColor = WO_STATUS_COLOR[d.status ?? ''] ?? '#92400E';
+  printWorkOrderV2({
+    woNumber: d.woNumber,
+    dueDate: d.dueDate,
+    statusLabel: statusLabel || null,
+    statusColor,
+    customerName: d.customerName,
+    customerPhone: d.customerPhone,
+    jobType: d.jobType,
+    jobSpecs: d.specs,
+    items: d.items.map((it) => ({
+      name: it.name,
+      unit: it.unit ?? null,
+      quantity: it.quantity,
+      unitPrice: it.unitPrice,
+      total: it.total,
+    })),
+    total: d.total,
+    operationNotes: d.notes,
+    settings: COMPANY_SETTINGS,
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -438,55 +348,32 @@ export interface CustomerStmtPrintData {
 }
 
 export function printCustomerStmt(d: CustomerStmtPrintData): void {
-  const cols = [
-    { key: 'date', label: 'التاريخ', width: '18mm', align: 'center' as const },
-    { key: 'ref', label: 'المرجع', width: '24mm' },
-    { key: 'desc', label: 'البيان' },
-    { key: 'debit', label: 'مدين', width: '20mm', align: 'left' as const },
-    { key: 'credit', label: 'دائن', width: '20mm', align: 'left' as const },
-    { key: 'bal', label: 'الرصيد', width: '22mm', align: 'left' as const, bold: true },
-  ];
-  const rows = d.transactions.map(t => ({
-    date: t.date, ref: t.ref, desc: t.description,
-    debit: t.debit ? fmt(t.debit) : '',
-    credit: t.credit ? fmt(t.credit) : '',
-    bal: fmt(t.balance),
-  }));
-
-  const custFields = [
-    { label: 'الاسم', value: d.customerName },
-    ...(d.customerCode ? [{ label: 'كود العميل', value: d.customerCode }] : []),
-    ...(d.customerAddress ? [{ label: 'العنوان', value: d.customerAddress }] : []),
-    ...(d.customerPhone ? [{ label: 'الهاتف', value: d.customerPhone }] : []),
-  ];
-  const summFields = [
-    ...(d.openingBalance != null ? [{ label: 'الرصيد الافتتاحي', value: fmtC(d.openingBalance) }] : []),
-    { label: 'إجمالي المدين', value: fmtC(d.totalDebit) },
-    { label: 'إجمالي الدائن', value: fmtC(d.totalCredit) },
-    { label: 'الرصيد الختامي', value: fmtC(d.closingBalance) },
-  ];
-
-  const period = [d.fromDate, d.toDate].filter(Boolean).join(' — ');
-  const extraHeader = period ? [{ label: 'الفترة', value: period }] : [];
-
-  const summaryItems = [
-    { label: 'إجمالي المدين', value: fmtC(d.totalDebit) },
-    { label: 'إجمالي الدائن', value: fmtC(d.totalCredit) },
-    { label: 'الرصيد الختامي', value: fmtC(d.closingBalance), bold: true, large: true },
-  ];
-
-  const body = [
-    docHeader('كشف حساب عميل', undefined, d.toDate ?? undefined, extraHeader),
-    docMeta([
-      { title: 'معلومات العميل', fields: custFields },
-      { title: 'ملخّص الحساب', fields: summFields },
-    ]),
-    docTable(cols, rows),
-    docSummary(summaryItems),
-    docFooter(),
-  ].join('');
-
-  openPrintWindow(wrapA4Doc(`كشف حساب — ${d.customerName}`, body));
+  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (كشف مفصّل). صف تفاصيل تحت كل حركة يشرح
+  // محتوى الفاتورة/السند. النوع = "customer".
+  const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
+  printStatementV2({
+    partyKind: 'customer',
+    partyName: d.customerName,
+    partyPhone: d.customerPhone,
+    periodLabel,
+    openingBalance: d.openingBalance ?? 0,
+    transactionsCount: d.transactions.length,
+    transactions: d.transactions.map((t) => ({
+      date: t.date,
+      ref: t.ref,
+      description: t.description,
+      debit: t.debit ?? null,
+      credit: t.credit ?? null,
+      balance: t.balance,
+      typeLabel: Number(t.debit ?? 0) > 0 ? 'فاتورة' : 'سند',
+      typeColor: Number(t.debit ?? 0) > 0 ? '#8A1F11' : '#0D6B52',
+      details: t.description,
+    })),
+    totalDebit: d.totalDebit,
+    totalCredit: d.totalCredit,
+    closingBalance: d.closingBalance,
+    settings: COMPANY_SETTINGS,
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -575,57 +462,31 @@ export interface SupplierStmtPrintData {
 }
 
 export function printSupplierStmt(d: SupplierStmtPrintData): void {
-  const cols = [
-    { key: 'date', label: 'التاريخ', width: '18mm', align: 'center' as const },
-    { key: 'ref', label: 'المرجع', width: '24mm' },
-    { key: 'desc', label: 'البيان' },
-    { key: 'debit', label: 'مدين', width: '20mm', align: 'left' as const },
-    { key: 'credit', label: 'دائن', width: '20mm', align: 'left' as const },
-    { key: 'bal', label: 'الرصيد', width: '22mm', align: 'left' as const, bold: true },
-  ];
-  const rows = d.transactions.map(t => ({
-    date: t.date, ref: t.ref, desc: t.description,
-    debit: t.debit ? fmt(t.debit) : '',
-    credit: t.credit ? fmt(t.credit) : '',
-    bal: `${fmt(Math.abs(Number(t.balance)))} (دائن)`,
-  }));
-
-  const suppFields = [
-    { label: 'الاسم', value: d.supplierName },
-    ...(d.supplierCode ? [{ label: 'كود المورد', value: d.supplierCode }] : []),
-    ...(d.supplierAddress ? [{ label: 'العنوان', value: d.supplierAddress }] : []),
-    ...(d.supplierPhone ? [{ label: 'الهاتف', value: d.supplierPhone }] : []),
-  ];
-  const summFields = [
-    ...(d.openingBalance != null
-      ? [{ label: 'الرصيد الافتتاحي', value: `${fmtC(Math.abs(Number(d.openingBalance)))} (دائن)` }]
-      : []),
-    { label: 'إجمالي المدين', value: fmtC(d.totalDebit) },
-    { label: 'إجمالي الدائن', value: fmtC(d.totalCredit) },
-    { label: 'الرصيد الختامي', value: `${fmtC(Math.abs(Number(d.closingBalance)))} (دائن)` },
-  ];
-
-  const period = [d.fromDate, d.toDate].filter(Boolean).join(' — ');
-  const extraHeader = period ? [{ label: 'الفترة', value: period }] : [];
-
-  const summaryItems = [
-    { label: 'إجمالي المدين', value: fmtC(d.totalDebit) },
-    { label: 'إجمالي الدائن', value: fmtC(d.totalCredit) },
-    { label: 'الرصيد الختامي (مستحق للمورد)', value: fmtC(Math.abs(Number(d.closingBalance))), bold: true, large: true },
-  ];
-
-  const body = [
-    docHeader('كشف حساب مورد', undefined, d.toDate ?? undefined, extraHeader),
-    docMeta([
-      { title: 'معلومات المورد', fields: suppFields },
-      { title: 'ملخّص الحساب', fields: summFields },
-    ]),
-    docTable(cols, rows),
-    docSummary(summaryItems),
-    docFooter(),
-  ].join('');
-
-  openPrintWindow(wrapA4Doc(`كشف حساب — ${d.supplierName}`, body));
+  // hifi-redesign (٥/٧/٢٦): يحوَّل إلى printStatementV2 (النوع = "supplier"، الرصيد الختامي «علينا»).
+  const periodLabel = [d.fromDate, d.toDate].filter(Boolean).join(' — ') || '—';
+  printStatementV2({
+    partyKind: 'supplier',
+    partyName: d.supplierName,
+    partyPhone: d.supplierPhone,
+    periodLabel,
+    openingBalance: Math.abs(Number(d.openingBalance ?? 0)),
+    transactionsCount: d.transactions.length,
+    transactions: d.transactions.map((t) => ({
+      date: t.date,
+      ref: t.ref,
+      description: t.description,
+      debit: t.debit ?? null,
+      credit: t.credit ?? null,
+      balance: Math.abs(Number(t.balance)),
+      typeLabel: Number(t.credit ?? 0) > 0 ? 'فاتورة مشتريات' : 'سند دفع',
+      typeColor: Number(t.credit ?? 0) > 0 ? '#8A1F11' : '#0D6B52',
+      details: t.description,
+    })),
+    totalDebit: d.totalDebit,
+    totalCredit: d.totalCredit,
+    closingBalance: Math.abs(Number(d.closingBalance)),
+    settings: COMPANY_SETTINGS,
+  });
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
