@@ -404,6 +404,15 @@ function MetricsBar() {
 
   // نص النسخ موحَّد: «التسمية: القيمة الوحدة» — يفيد المالك عند لصق رقم في واتساب/مراسلة.
   // أثناء التحميل ("...") أو الحالات النصّية بلا قيمة (مثل «لا وردية») = لا نسخ (CopyButton يُعطَّل تلقائياً على الفارغ).
+  // نبض المبيعات (خلفية) — مبيعات أمس مقابل معدّل ٧ أيام + اتجاه بلون/سهم.
+  const pulse = metrics.data?.salesPulse;
+  const pulseColor =
+    pulse?.direction === "up" ? "oklch(0.58 0.20 155)" // أخضر — أعلى من المعدّل
+    : pulse?.direction === "down" ? "oklch(0.58 0.22 25)" // أحمر — أدنى
+    : "oklch(0.62 0.03 260)"; // رمادي — قرب المعدّل
+  const pulseArrow = pulse?.direction === "up" ? "↑" : pulse?.direction === "down" ? "↓" : "=";
+  const hasBaseline = !!pulse && Number(pulse.avg7d) > 0;
+
   const stats = [
     {
       label: "مبيعات اليوم",
@@ -420,6 +429,20 @@ function MetricsBar() {
       copyText: `فواتير اليوم: ${todays.length} فاتورة`,
       ico: <TrendIco color="oklch(0.60 0.22 155)" />,
       iBg: "oklch(0.60 0.22 155 / 0.15)",
+    },
+    {
+      label: "مبيعات أمس مقابل المعدّل",
+      value: metrics.isLoading ? "..." : fmtAr(Number(pulse?.yesterday ?? 0)),
+      unit: metrics.isLoading
+        ? "د.ع"
+        : hasBaseline
+          ? `${pulseArrow} ${fmtAr(Math.abs(pulse!.changePct))}٪ عن المعدّل`
+          : "لا مبيعات سابقة",
+      copyText: metrics.isLoading || !pulse
+        ? ""
+        : `مبيعات أمس: ${fmtAr(Number(pulse.yesterday))} د.ع (${pulseArrow}${fmtAr(Math.abs(pulse.changePct))}٪ عن معدّل ٧ أيام = ${fmtAr(Number(pulse.avg7d))} د.ع)`,
+      ico: <TrendIco color={pulseColor} />,
+      iBg: pulseColor.replace(")", " / 0.15)"),
     },
     {
       label: "الوردية الحالية",

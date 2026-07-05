@@ -63,6 +63,12 @@ async function seedBase() {
   ]);
 }
 
+/** تاريخ ظهرَ UTC قبل N يوماً — لإدراج فواتير ضمن نافذة نبض المبيعات بلا انزياح حدّ اليوم. */
+function dayNoonUTC(daysAgo: number): Date {
+  const d = new Date(Date.now() - daysAgo * 86_400_000);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12, 0, 0));
+}
+
 beforeEach(async () => {
   await reset();
   await seedBase();
@@ -281,5 +287,40 @@ describe("getDashboardMetrics", () => {
     expect(m.morningBrief.arRemindersDue).toBe(0);
     expect(m.morningBrief.promisedToday).toBe(0);
     expect(m.morningBrief.overdueWorkOrders).toBe(0);
+    // نبض المبيعات على قاعدة فارغة ⇒ صفر/flat بلا انهيار.
+    expect(m.salesPulse.yesterday).toBe("0.00");
+    expect(m.salesPulse.direction).toBe("flat");
+    expect(m.salesPulse.changePct).toBe(0);
+  });
+
+  it("(ط) salesPulse: مبيعات أمس ضعف المعدّل ⇒ direction=up + changePct=100", async () => {
+    const d = db();
+    // أمس (D-1) 200000 + يوم سابق (D-2) 500000 ⇒ مجموع النافذة 700000، المعدّل = 700000/7 = 100000.
+    // أمس (200000) = ضعف المعدّل (100000) ⇒ +100٪ صعوداً.
+    await d.insert(s.invoices).values([
+      { id: 601, invoiceNumber: "INV-Y", sourceType: "ORDER", sourceId: "t-601", branchId: 1, priceTier: "RETAIL", subtotal: "200000", total: "200000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(1) },
+      { id: 602, invoiceNumber: "INV-P", sourceType: "ORDER", sourceId: "t-602", branchId: 1, priceTier: "RETAIL", subtotal: "500000", total: "500000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(2) },
+    ]);
+    const m = await getDashboardMetrics({ branchId: 1 });
+    expect(m.salesPulse.yesterday).toBe("200000.00");
+    expect(m.salesPulse.avg7d).toBe("100000.00");
+    expect(m.salesPulse.direction).toBe("up");
+    expect(m.salesPulse.changePct).toBe(100);
+  });
+
+  it("(ي) salesPulse: مساواة المعدّل ⇒ flat + changePct=0؛ واليوم الجاري لا يُحتسَب", async () => {
+    const d = db();
+    // أمس (D-1) 100000 + سابق (D-2) 600000 ⇒ مجموع 700000، معدّل 100000 = أمس بالضبط ⇒ flat.
+    // + فاتورة اليوم (D-0) ضخمة يجب أن تُستبعَد (النافذة < UTC_DATE()).
+    await d.insert(s.invoices).values([
+      { id: 701, invoiceNumber: "INV-FY", sourceType: "ORDER", sourceId: "t-701", branchId: 1, priceTier: "RETAIL", subtotal: "100000", total: "100000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(1) },
+      { id: 702, invoiceNumber: "INV-FP", sourceType: "ORDER", sourceId: "t-702", branchId: 1, priceTier: "RETAIL", subtotal: "600000", total: "600000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(2) },
+      { id: 703, invoiceNumber: "INV-TODAY", sourceType: "ORDER", sourceId: "t-703", branchId: 1, priceTier: "RETAIL", subtotal: "9000000", total: "9000000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(0) },
+    ]);
+    const m = await getDashboardMetrics({ branchId: 1 });
+    expect(m.salesPulse.yesterday).toBe("100000.00");
+    expect(m.salesPulse.avg7d).toBe("100000.00");
+    expect(m.salesPulse.direction).toBe("flat");
+    expect(m.salesPulse.changePct).toBe(0);
   });
 });
