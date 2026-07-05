@@ -20,6 +20,7 @@ import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
 import { csrfGuard } from "./middleware/csrf";
+import { isTrpcSurface, sendTrpcError, trpcAwareRateLimitHandler } from "./middleware/trpcError";
 import { printRouter } from "./printRoute";
 import { backupRouter } from "./backupRoutes";
 import { channelWebhooksRouter, companyChannelWebhooksRouter } from "./routes/channelWebhooks";
@@ -115,6 +116,11 @@ async function startServer() {
     app.use(cors({ origin: origins, credentials: true }));
   }
 
+  // ردّ 429 موحَّد لكل محدِّدات المعدّل: على /api/trpc بغلاف tRPC الذي يفهمه العميل
+  // (وإلا رمى «Unable to transform response from server» فحجب السبب الحقيقي عن
+  // المستخدم — علّة دخول اللوحي ٤/٧)، وعلى بقية الأسطح `{error}` كما كانت.
+  const rateLimitHandler = trpcAwareRateLimitHandler;
+
   // حدّ عام للطلبات (حماية من الإغراق).
   app.use(
     rateLimit({
@@ -122,7 +128,7 @@ async function startServer() {
       limit: Number(process.env.RATE_LIMIT_MAX ?? 1000),
       standardHeaders: "draft-7",
       legacyHeaders: false,
-      message: { error: "محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة." },
+      handler: rateLimitHandler("محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة."),
       // لا تَعُدّ الأصول الساكنة المُجزّأة (immutable، تُخبَّأ في المتصفّح) ضمن الحدّ:
       // فتح أي صفحة يجلب عشرات حُزَم الأصول دفعةً ⇒ كان يستنزف حدّ المعدّل ويُعلّق التحميل.
       skip: (req) => req.path.startsWith("/assets/"),
@@ -161,7 +167,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("auth.login"),
-      message: { error: "محاولات دخول كثيرة، انتظر ١٥ دقيقة." },
+      handler: rateLimitHandler("محاولات دخول كثيرة، انتظر ١٥ دقيقة ثم أعد المحاولة."),
     })
   );
 
@@ -174,7 +180,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("count.auth"),
-      message: { error: "محاولات دخول كثيرة لبوابة العدّ، انتظر ١٥ دقيقة." },
+      handler: rateLimitHandler("محاولات دخول كثيرة لبوابة العدّ، انتظر ١٥ دقيقة."),
     })
   );
 
@@ -189,7 +195,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("platformAdmin.login"),
-      message: { error: "محاولات دخول كثيرة، انتظر ١٥ دقيقة." },
+      handler: rateLimitHandler("محاولات دخول كثيرة، انتظر ١٥ دقيقة."),
     })
   );
 
@@ -202,7 +208,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("kiosk.deviceLogin"),
-      message: { error: "محاولات كثيرة لتفعيل جهاز الكشك، انتظر قليلاً." },
+      handler: rateLimitHandler("محاولات كثيرة لتفعيل جهاز الكشك، انتظر قليلاً."),
     })
   );
 
@@ -216,7 +222,7 @@ async function startServer() {
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("recruitment.submit"),
-      message: { error: "طلبات تقديم كثيرة، انتظر قليلاً ثم أعد المحاولة." },
+      handler: rateLimitHandler("طلبات تقديم كثيرة، انتظر قليلاً ثم أعد المحاولة."),
     })
   );
 
@@ -240,7 +246,11 @@ async function startServer() {
         if (PUBLIC_SENSITIVE.some((s) => p.includes(s))) count++;
       }
       if (count > 1) {
-        res.status(429).json({ error: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة." });
+        sendTrpcError(res, {
+          httpStatus: 429,
+          code: "TOO_MANY_REQUESTS",
+          message: "لا يُسمح بحشو نقاط عامّة حسّاسة في دفعة واحدة.",
+        });
         return;
       }
     }
@@ -339,10 +349,27 @@ async function startServer() {
   }
 
   // معالج أخطاء عام — يلتقط أي استثناء وصل للـExpress بدل إغراق السجلّ أو تعطّل الخادم.
-  app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  // على /api/trpc يرسل غلاف tRPC (وإلا رمى العميل «Unable to transform response from
+  // server» — نفس فئة علّة دخول اللوحي): أخطاء body-parser تمرّ من هنا، وأقربها للواقع
+  // جسم يتجاوز حدّ ١mb (صورة منتج base64) ⇒ 413 برسالة عربية بدل 500 غامض.
+  app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
     logger.error({ err }, "unhandled express error");
-    if (!res.headersSent) {
-      res.status(500).json({ error: "خطأ داخلي في الخادم" });
+    if (res.headersSent) return;
+    const rawStatus = (err as { status?: unknown; statusCode?: unknown } | null);
+    const status =
+      typeof rawStatus?.status === "number" ? rawStatus.status
+      : typeof rawStatus?.statusCode === "number" ? rawStatus.statusCode
+      : 500;
+    const mapped =
+      status === 413
+        ? { httpStatus: 413, code: "PAYLOAD_TOO_LARGE" as const, message: "حجم الطلب كبير جداً — صغّر المرفق/الصورة ثم أعد المحاولة." }
+        : status >= 400 && status < 500
+          ? { httpStatus: status, code: "BAD_REQUEST" as const, message: "طلب غير صالح." }
+          : { httpStatus: 500, code: "INTERNAL_SERVER_ERROR" as const, message: "خطأ داخلي في الخادم" };
+    if (isTrpcSurface(req)) {
+      sendTrpcError(res, mapped);
+    } else {
+      res.status(mapped.httpStatus).json({ error: mapped.message });
     }
   });
 }

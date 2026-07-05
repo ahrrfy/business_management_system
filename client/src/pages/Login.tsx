@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { translateLoginError } from "@/lib/loginErrors";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -44,7 +45,7 @@ export default function Login() {
         navigate("/");
       }
     },
-    onError: (e) => setError(e.message),
+    onError: (e) => setError(translateLoginError(e.message)),
   });
 
   return (
