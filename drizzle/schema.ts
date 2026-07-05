@@ -695,7 +695,9 @@ export const receipts = mysqlTable(
     voucherCategoryId: bigint("voucherCategoryId", { mode: "number" }),     // FK → voucherCategories (هَجرة 0036)
     counterpartyName: varchar("counterpartyName", { length: 200 }),         // اسم الطرف الحُرّ لسندات «أخرى» (راتب الموظف فلان…)
     voucherDate: date("voucherDate"),                                       // تاريخ السند الفعلي (قد يَختلف عن createdAt)
-    attachmentUrl: text("attachmentUrl"),                                   // مَسار/URL مُستند مَرجعي (إيصال إيجار…)
+    // attachment-upload (٥/٧): MEDIUMTEXT — كانت TEXT (64KB) تكسر data URLs لصور المُرفق المضغوطة
+    // (نمط productImages/workOrderImages). الهجرة 0047.
+    attachmentUrl: mediumtext("attachmentUrl"),                             // data URL صورة مُرفق مضغوطة (إيصال/فاتورة/كَشف بنك)
     internalNote: text("internalNote"),                                     // مُلاحظة داخلية للتدقيق (لا تُطبع)
     signatureHash: varchar("signatureHash", { length: 64 }),                // SHA-256 hex لخَتم السند بَعد الاعتماد (سَلامة سجل تَدقيقي)
     approvalStatus: mysqlEnum("receiptApprovalStatus", ["APPROVED", "PENDING_APPROVAL", "REJECTED"]).default("APPROVED").notNull(),

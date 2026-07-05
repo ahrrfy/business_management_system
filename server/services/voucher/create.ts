@@ -1,7 +1,7 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { customers, receipts, suppliers } from "../../../drizzle/schema";
+import { customers, invoices, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
@@ -30,15 +30,18 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
         }
         const storedPartyId = r.partyId != null ? Number(r.partyId) : null;
         const requestedPartyId = input.partyType === "OTHER" ? null : (input.partyId ?? null);
+        const storedInvoiceId = r.invoiceId != null ? Number(r.invoiceId) : null;
+        const requestedInvoiceId = input.invoiceId ?? null;
         if (
           Number(r.branchId) !== Number(input.branchId) ||
           (r.partyType ?? null) !== (input.partyType ?? null) ||
           storedPartyId !== requestedPartyId ||
+          storedInvoiceId !== requestedInvoiceId ||
           money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)
         ) {
           throw new TRPCError({
             code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لسند بطرف/فرع/مبلغ مختلف",
+            message: "تعارض idempotency: المفتاح مستعمَل لسند بطرف/فرع/مبلغ/فاتورة مختلفة",
           });
         }
         return {
@@ -76,12 +79,21 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
         message: `المُرفق إلزامي للمبالغ ${getAttachmentThreshold().toLocaleString("ar-IQ-u-nu-latn")} د.ع فما فوق (إيصال/فاتورة/صورة المُستند الأصلي)`,
       });
     }
+    // attachment-upload (٥/٧): المُرفق إمّا data URL صورة مضغوطة (رفع من الواجهة الجديدة) أو رابط/مَسار
+    // نصّي كما كان سابقاً (اختبارات vouchers-pro القائمة تُرسل روابط https:// عادية عمداً — تبقى صالحة).
+    // لا فرض صيغة صورة هنا؛ الطباعة/العرض يُميّزان data:image بأنفسهما (voucherPrint.ts، Vouchers.tsx).
 
     const direction: "IN" | "OUT" = input.voucherType === "RECEIPT" ? "IN" : "OUT";
 
     // تَحقّق الفئة (إن مُرّرت) — الاتجاه يَجب أن يَتسق مع نوع السند.
     if (input.voucherCategoryId != null) {
       await validateCategory(tx, input.voucherCategoryId, direction);
+    }
+
+    // attachment-upload (٥/٧): ربط سند بفاتورة — العميل فقط (السندات receipts.invoiceId يُشير لـinvoices
+    // وهي فواتير بيع دائماً؛ المشتريات/الموردون تُدار عبر أوامر الشراء بلا عمود مماثل بعد).
+    if (input.invoiceId != null && input.partyType !== "CUSTOMER") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "ربط السند بفاتورة مُتاح لسندات العميل فقط" });
     }
 
     // تَحقّق الطرف: يَجب أن يَكون نشطاً.
@@ -91,6 +103,16 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
       if (!c.isActive) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إصدار سند لعميل مُعطَّل" });
+      }
+      if (input.invoiceId != null) {
+        const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
+        if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة المرتبطة غير موجودة" });
+        if (Number(inv.customerId) !== Number(input.partyId)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة المرتبطة لا تخصّ هذا العميل" });
+        }
+        if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الربط بفاتورة ملغاة أو مرتجعة" });
+        }
       }
     } else if (input.partyType === "SUPPLIER") {
       if (!input.partyId) throw new TRPCError({ code: "BAD_REQUEST", message: "المورد مطلوب لسند مرتبط بمورد" });
@@ -125,6 +147,7 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
 
     const rRes = await tx.insert(receipts).values({
       branchId: input.branchId,
+      invoiceId: input.partyType === "CUSTOMER" ? (input.invoiceId ?? null) : null,
       shiftId,
       cashBucket,
       direction,

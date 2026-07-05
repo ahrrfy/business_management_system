@@ -142,6 +142,15 @@ async function startServer() {
   // الاستثناء الوحيد: /api/print/raw يرفع لـ١٠mb لأن العميل يرسل raster ESC/POS كبير
   // (نقطية الإيصال العربي مُولَّدة على Canvas) — لا حدّ ١mb لأنه يقطع الطباعة الفعلية.
   app.use("/api/print/raw", express.json({ limit: "10mb" }));
+  // attachment-upload (٥/٧): سند بمرفق صورة (data URL مضغوطة حتى ٧٠٠ك ⇒ ~٩٣٣ك نصاً) قد يُقارب/يتجاوز
+  // ١mb مع بقية حمولة السند. استثناء مماثل لـ/api/print/raw أعلاه — لكن بفحص substring لا مسار ثابت
+  // (batch tRPC قد يُجمِّع عدّة إجراءات في مسار واحد ك"vouchers.create,other").
+  app.use("/api/trpc", (req, res, next) => {
+    if (req.path.includes("vouchers.create")) {
+      return express.json({ limit: "3mb" })(req, res, next);
+    }
+    next();
+  });
   app.use(express.json({ limit: "1mb" }));
   app.use(express.urlencoded({ limit: "1mb", extended: true }));
 

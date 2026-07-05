@@ -330,6 +330,13 @@
       "when": 1783191777015,
       "tag": "0046_wandering_khan",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "5",
+      "when": 1783251863409,
+      "tag": "0047_receipt_attachment_mediumtext",
+      "breakpoints": true
     }
   ]
 }
