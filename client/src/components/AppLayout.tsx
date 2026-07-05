@@ -21,23 +21,33 @@ type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
 //  - لوحة التحكم تَبقى رابطاً مُستقلّاً أعلى القائمة.
 //  - نقطة البيع وقارئ الأسعار أدواتٌ ملء‑شاشة (روابط مُباشرة).
 //  - بقية الوَحدات صَفحات hub بتبويبات ?tab= (المبيعات/المشتريات/المطبعة/الأصول/الموارد/الإقفال/الإدارة...).
-//  - القيود: managerOnly (الأصول/الموارد/الإقفال/الإدارة) و roles (التوصيل)؛ والتبويبات الحسّاسة
-//    داخل كل hub مُقيَّدة إضافةً (admin‑فقط للتكاملات/الأدوار/إقفال الفترات...).
+//  - القيود: managerOnly (الأصول/الموارد/الصيرفة/الإقفال/الإدارة) و roles (التوصيل)؛ والتبويبات
+//    الحسّاسة داخل كل hub مُقيَّدة إضافةً (admin‑فقط للتكاملات/الأدوار/إقفال الفترات...).
+//
+// ⚙️ ترتيب القائمة = بحسب الاستعمال اليومي والأهمية (الأكثر استخداماً أولاً) لنشاط مطبعة+قرطاسية:
+//   ‏(أ) تشغيل يومي دائم على المنضدة: نقطة البيع ← قارئ الأسعار ← المطبعة والإنتاج ← العملاء ← المبيعات.
+//   ‏(ب) يومي مالي/تشغيلي: الخزينة ← التوصيل ← المخزون.
+//   ‏(ج) دوري (أسبوعي/عند الحاجة): المشتريات ← الموردون ← التقارير.
+//   ‏(د) متخصّص/نادر: الصيرفة ← الأصول ← الموارد ← الإقفال ← الإدارة والإعدادات (في الأسفل دائماً).
 const NAV_LINKS: NavLink[] = [
+  // (أ) الأكثر استعمالاً يومياً — تشغيل الواجهة الأمامية
   { href: "/pos", label: "نقطة البيع", icon: ShoppingCart },
   { href: "/price-checker", label: "قارئ الأسعار", icon: ScanLine },
+  { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer },
+  { href: "/customers", label: "العملاء", icon: Users },
   { href: "/invoices", label: "المبيعات", icon: Receipt },
+  // (ب) يومي مالي/تشغيلي
+  { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet },
+  { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
+  { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
+  // (ج) دوري — أسبوعي/عند الحاجة
   { href: "/purchases", label: "المشتريات", icon: Package },
   { href: "/suppliers", label: "الموردون", icon: Building2 },
-  { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
-  { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer },
+  { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
+  // (د) متخصّص/نادر — الإعدادات في الأسفل دائماً
+  { href: "/exchange", label: "الصيرفة", icon: DollarSign, managerOnly: true },
   { href: "/assets", label: "الأصول الثابتة", icon: Server, managerOnly: true },
   { href: "/hr", label: "الموارد البشرية", icon: Briefcase, managerOnly: true },
-  { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet },
-  { href: "/exchange", label: "الصيرفة", icon: DollarSign, managerOnly: true },
-  { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
-  { href: "/customers", label: "العملاء", icon: Users },
-  { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
   { href: "/closing", label: "الإقفال والرَقابة", icon: Lock, managerOnly: true },
   { href: "/settings", label: "الإدارة والإعدادات", icon: Settings, managerOnly: true },
 ];
