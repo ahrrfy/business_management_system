@@ -111,6 +111,7 @@ export function BranchComparisonChart({
           لا أرصدة لعرضها.
         </div>
       ) : (
+        <div role="img" aria-label={`مقارنة أرصدة الفروع: ${chartData.map((d) => `${d.name} ${fmtAr(d.درج + d.خزينة)}`).join("، ")} دينار.`}>
         <ResponsiveContainer width="100%" height={height}>
           <BarChart data={chartData} margin={{ top: 5, right: 8, left: -8, bottom: 0 }}>
             <CartesianGrid strokeDasharray="3 3" className="stroke-border/40" />
@@ -122,6 +123,7 @@ export function BranchComparisonChart({
             {showTreasury && <Bar dataKey="خزينة" stackId="bal" fill="var(--chart-check)" radius={[4, 4, 0, 0]} />}
           </BarChart>
         </ResponsiveContainer>
+        </div>
       )}
     </div>
   );

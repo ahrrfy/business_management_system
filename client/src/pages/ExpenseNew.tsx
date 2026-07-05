@@ -155,7 +155,7 @@ export default function ExpenseNew() {
     }
 
     // نقدي (CASH).
-    if (!amount.trim() || D(amount).lte(0)) return setError("المبلغ مطلوب وموجب.");
+    if (!amount.trim() || D(amount).lte(0)) { document.getElementById("expense-amount")?.focus(); return setError("المبلغ مطلوب وموجب."); }
     if (category === "OTHER" && !description.trim()) return setError("وصف المصروف مطلوب لفئة «أخرى».");
 
     // cash-treasury-mode: مدير/مسؤول يسجّل مصروفاً نقدياً بلا وردية مفتوحة ⇒ يُكتب في الخزينة الإدارية.

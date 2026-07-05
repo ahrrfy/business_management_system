@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -483,7 +484,7 @@ export default function ProductNew() {
         <CardHeader><CardTitle className="text-base">التسعير والمخزون · مشترك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Field label="سعر التكلفة (د.ع)" required hint="سعر شراء موحّد لكل الألوان.">
-            <Input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} dir="ltr" placeholder="150" />
+            <MoneyInput value={costPrice} onChange={setCostPrice} placeholder="150" />
           </Field>
           <Field label="الحد الأدنى الافتراضي" hint="يُطبَّق على المتغيّرات الجديدة.">
             <Input value={defaultMin} onChange={(e) => setDefaultMin(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" />
@@ -530,8 +531,8 @@ export default function ProductNew() {
               <div key={u.id} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-center border-t pt-2 md:border-0 md:pt-0">
                 <Input className="md:col-span-3 h-8 text-sm" value={u.name} onChange={(e) => patchUnit(u.id, { name: e.target.value })} placeholder="قطعة / درزن / كرتون" />
                 <Input className="md:col-span-2 h-8 text-sm" dir="ltr" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(e) => patchUnit(u.id, { factor: e.target.value })} placeholder="12" />
-                <Input className="md:col-span-2 h-8 text-sm" dir="ltr" value={u.retail} onChange={(e) => patchUnit(u.id, { retail: e.target.value })} placeholder="مفرد" />
-                <Input className="md:col-span-2 h-8 text-sm" dir="ltr" value={u.wholesale} onChange={(e) => patchUnit(u.id, { wholesale: e.target.value })} placeholder="جملة" />
+                <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
+                <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" />
                 <div className="md:col-span-2"><MarginBadge cost={unitCost} sell={u.retail} /></div>
                 <div className="md:col-span-1 flex items-center justify-center gap-2">
                   <input type="radio" name="baseUnit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} title="الوحدة الأساس" aria-label="الوحدة الأساس" />

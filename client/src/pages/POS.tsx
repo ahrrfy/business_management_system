@@ -274,6 +274,8 @@ export default function POS() {
   const [search,         setSearch]         = useState("");
   const [showDrop,       setShowDrop]       = useState(false);
   const [receipt,        setReceipt]        = useState<Receipt | null>(null);
+  // خطأ بيع حرِج ثابت (نقص مخزون/رفض) — بديلٌ دائم عن toast العابر: يبقى في لوحة الدفع حتى يبدأ الكاشير محاولة جديدة أو يُغلقه.
+  const [saleError,      setSaleError]      = useState<string | null>(null);
   const [lastInv,        setLastInv]        = useState<{ num: string; total: number } | null>(null);
   const [shifting,       setShifting]       = useState(false);
   const [opening,        setOpening]        = useState("0");
@@ -580,13 +582,13 @@ export default function POS() {
         utils.customers.list.invalidate(),
         shiftQ.refetch(),
       ]);
-      setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
+      setCreditPrompt(null); setMgrEmail(""); setMgrPwd(""); setSaleError(null);
     },
     onError: (e) => {
       if ((e.data as unknown as { code?: string })?.code === "PRECONDITION_FAILED")
         setCreditPrompt(e.message);
       // خطأ بيع حرج (نقص مخزون/رفض) ⇒ تنبيه بارز أكبر وأوضح يلتقطه الكاشير فوراً.
-      else notify.errBig(e);
+      else { notify.errBig(e); setSaleError(e.message); }
     },
   });
 
@@ -615,6 +617,7 @@ export default function POS() {
   }
 
   function submitSale(approval?: { email: string; password: string }) {
+    setSaleError(null);
     if (!shift || !cart.length) return;
     if (isCredit && activeTab.customerId == null) {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
@@ -637,6 +640,7 @@ export default function POS() {
   }
 
   function quickPay() {
+    setSaleError(null);
     if (!shift || !cart.length) return;
     // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
     saleCtxRef.current = captureSaleCtx();
@@ -813,6 +817,8 @@ export default function POS() {
           isPending={sale.isPending}
           canPay={canPay}
           hasCustomer={selectedCustomer != null}
+          saleError={saleError}
+          onDismissError={() => setSaleError(null)}
         />
 
         {/* Cart Panel */}
@@ -1394,10 +1400,11 @@ interface PaymentPanelProps {
   onPay: () => void; onQuickPay: () => void;
   cartLen: number; selId: number | null;
   isPending: boolean; canPay: boolean; hasCustomer: boolean;
+  saleError: string | null; onDismissError: () => void;
   stacked: boolean;
 }
 
-function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, stacked }: PaymentPanelProps) {
+function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked }: PaymentPanelProps) {
 
   const modeStyle = (active: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
@@ -1438,6 +1445,15 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
 
   return (
     <div style={{ width: stacked ? "100%" : 420, maxWidth: "100%", flexShrink: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 10, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+
+      {/* خطأ بيع حرِج ثابت (بديل toast العابر) — يبقى ظاهراً حتى محاولة جديدة/إغلاق يدوي */}
+      {saleError && (
+        <div role="alert" style={{ display: "flex", alignItems: "flex-start", gap: 6, padding: "8px 12px", background: C.dangerSoft, borderBottom: `1px solid ${C.danger}`, color: C.danger, fontSize: 12.5, fontWeight: 700, flexShrink: 0 }}>
+          <AlertTriangle aria-hidden size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+          <span style={{ flex: 1, lineHeight: 1.4 }}>{saleError}</span>
+          <button onClick={onDismissError} aria-label="إغلاق التنبيه" style={{ background: "none", border: "none", cursor: "pointer", color: C.danger, lineHeight: 1, padding: 0, display: "inline-flex", flexShrink: 0 }}><X aria-hidden size={15} /></button>
+        </div>
+      )}
 
       {/* Total */}
       <div style={{ padding: "8px 13px", background: C.muted, borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
@@ -1610,11 +1626,37 @@ interface ReceiptOverlayProps {
   onPrint: () => void;
 }
 
+// فخّ تركيز موحّد للنوافذ اليدوية (position:fixed): يُركّز أوّل عنصر عند الفتح، يحبس Tab داخلها،
+// ويعيد التركيز للعنصر السابق عند الإغلاق (WCAG 2.4.3 focus-trap). النوافذ تُركَّب فقط وهي مفتوحة.
+function useModalFocus<T extends HTMLElement>() {
+  const ref = useRef<T>(null);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const prev = document.activeElement as HTMLElement | null;
+    const SEL = 'a[href],button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled]),[tabindex]:not([tabindex="-1"])';
+    const list = () => Array.from(node.querySelectorAll<HTMLElement>(SEL)).filter((el) => el.offsetParent !== null);
+    list()[0]?.focus();
+    function onKey(e: KeyboardEvent) {
+      if (e.key !== "Tab") return;
+      const items = list();
+      if (!items.length) return;
+      const first = items[0], last = items[items.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+    node.addEventListener("keydown", onKey);
+    return () => { node.removeEventListener("keydown", onKey); prev?.focus?.(); };
+  }, []);
+  return ref;
+}
+
 function ReceiptOverlay({ C, receipt, onDismiss, onPrint }: ReceiptOverlayProps) {
+  const modalRef = useModalFocus<HTMLDivElement>();
   return (
     <div onClick={onDismiss}
       style={{ position: "fixed", inset: 0, zIndex: 100, background: C.overlay, display: "flex", alignItems: "center", justifyContent: "center", animation: "fadeIn .2s ease", cursor: "pointer" }}>
-      <div onClick={(e) => e.stopPropagation()}
+      <div onClick={(e) => e.stopPropagation()} ref={modalRef} role="dialog" aria-modal="true" aria-label="تم الدفع بنجاح"
         style={{ background: C.card, borderRadius: 20, padding: "36px 44px 30px", width: 480, maxWidth: "92vw", boxShadow: "0 28px 72px rgb(0 0 0/.42)", animation: "popIn .22s ease", cursor: "default", textAlign: "center", direction: "rtl" }}>
 
         <div style={{ width: 76, height: 76, borderRadius: "50%", background: C.success, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 18px", animation: "pulse 1.2s ease-out", color: "#fff" }}>
@@ -1707,6 +1749,7 @@ interface ShiftCloseDialogProps {
 }
 
 function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches }: ShiftCloseDialogProps) {
+  const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
   const utils = trpc.useUtils();
 
@@ -1762,7 +1805,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   return (
     <div onClick={onClose}
       style={{ position: "fixed", inset: 0, background: "rgb(0 0 0/.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-      <div onClick={(e) => e.stopPropagation()}
+      <div onClick={(e) => e.stopPropagation()} ref={modalRef} role="dialog" aria-modal="true" aria-label="إغلاق الوردية"
         style={{ background: C.card, borderRadius: 18, padding: "26px 30px", width: 440, boxShadow: "0 24px 64px rgb(0 0 0/.32)", animation: "popIn .2s ease", maxHeight: "90vh", overflowY: "auto" }}>
 
         <div style={{ fontWeight: 900, fontSize: 19, marginBottom: 4, color: C.fg }}>إغلاق الوردية #{shift?.id}</div>
@@ -1851,10 +1894,11 @@ interface CreditApprovalDialogProps {
 }
 
 function CreditApprovalDialog({ C, message, mgrEmail, setMgrEmail, mgrPwd, setMgrPwd, isPending, onApprove, onCancel }: CreditApprovalDialogProps) {
+  const modalRef = useModalFocus<HTMLDivElement>();
   return (
     <div onClick={onCancel}
       style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgb(0 0 0/.45)", display: "flex", alignItems: "center", justifyContent: "center", direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
-      <div onClick={(e) => e.stopPropagation()}
+      <div onClick={(e) => e.stopPropagation()} ref={modalRef} role="dialog" aria-modal="true" aria-label="موافقة مدير مطلوبة"
         style={{ background: C.card, borderRadius: 16, padding: "24px 28px", width: 380, boxShadow: "0 20px 56px rgb(0 0 0/.3)", animation: "popIn .2s ease" }}>
         <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 4, color: C.amber, display: "inline-flex", alignItems: "center", gap: 6 }}><AlertTriangle aria-hidden size={18} /> موافقة مدير مطلوبة</div>
         <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 18 }}>{message}</div>
