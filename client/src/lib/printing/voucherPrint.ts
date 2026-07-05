@@ -6,8 +6,8 @@
 //   • A4 (printVoucherA4) — صَفحة كاملة بهوية الشركة + توقيعَين (صاحب الصرف + المُستلم) +
 //     شارة اعتماد + بَصمة مُختصَرة + QR للتَحقّق ⇒ مَلفّ تَدقيقي رَسمي.
 import { printDoc } from "./print";
-import { openPrintWindow, BRAND, CO, esc, logoUrl } from "./brand";
-import { wrapA4Doc, docHeader, docFooter, docSummary, type SummaryItem } from "./docHtml";
+import { BRAND, CO } from "./brand";
+import { printVoucherV2 } from "./printTemplatesV2";
 import { qrCodeSvg } from "./qr";
 
 export interface VoucherPrintData {
@@ -37,11 +37,6 @@ export interface VoucherPrintData {
   attachmentUrl?: string | null;
   /** attachment-upload (٥/٧): رقم الفاتورة المرتبطة بسند العميل (اختياري). */
   relatedInvoiceNumber?: string | null;
-}
-
-/** attachment-upload (٥/٧): هل المُرفق صورة data URL مُضمَّنة (لا رابط/مَسار نصّي قصير)؟ */
-function isImageDataUrl(s?: string | null): boolean {
-  return !!s && /^data:image\//.test(s);
 }
 
 const STATUS_LABEL: Record<VoucherPrintData["approvalStatus"], string> = {
@@ -104,153 +99,84 @@ export async function printVoucherReceipt(d: VoucherPrintData): Promise<{ via: "
   });
 }
 
-/** بَناء HTML سندٍ بحَجم A4 (هوية الشركة كاملة) — يَفتح نافذة طباعة المتصفّح. */
+/**
+ * بَناء HTML سندٍ بحَجم A4 (هوية الشركة كاملة) — يَفتح نافذة طباعة المتصفّح.
+ * hifi-redesign (٥/٧/٢٦): يَحوَّل إلى printVoucherV2 (التصميم المرجعي: طرف بخطّ سميك يَحوي الرصيد
+ * قبل السند بلُنا/علينا، شريط أخضر كبير للمبلغ، تفقيط، QR + ٣ توقيعات، تذييل بـHASH). المُرفَق
+ * والحقول الإضافية (بَصمة/فئة/مُستفيد/رقم الفاتورة المرتبطة) تُضاف كسطور «الوصف/الغرض» لأن التصميم
+ * الجديد يَحصر البطاقات في اثنتين فقط (طرف مقابل + تفاصيل دفع).
+ */
 export async function printVoucherA4(d: VoucherPrintData): Promise<boolean> {
-  const titleAr = d.direction === "IN" ? "سَند قَبض" : "سَند صَرف";
-  const headerExtra = [
-    { label: "تاريخ السند:", value: d.voucherDate },
-    ...(d.branchName ? [{ label: "الفرع:", value: d.branchName }] : []),
-    ...(d.cashBucket ? [{ label: "نَوع النَقد:", value: bucketLabel(d.cashBucket) ?? "—" }] : []),
-  ];
-  const head = docHeader(titleAr, d.voucherNumber, d.voucherDate, headerExtra);
+  // الرقم المرجعي الظاهر ضمن «تفاصيل الدفع»: أولوية referenceNumber ← checkNumber ← البطاقة.
+  const refNumber = d.referenceNumber
+    || (d.checkNumber ? `CHQ-${d.checkNumber}` : null)
+    || (d.cardLastFour ? `xxxx ${d.cardLastFour}` : null);
 
-  // شارة الحالة (لون حسب الحالة)
-  const statusColor = d.approvalStatus === "APPROVED" ? BRAND.green
-    : d.approvalStatus === "PENDING_APPROVAL" ? BRAND.orange
-    : "#b91c1c";
-  const statusBg = d.approvalStatus === "APPROVED" ? BRAND.greenPale
-    : d.approvalStatus === "PENDING_APPROVAL" ? BRAND.orangePale
-    : "#fef2f2";
+  // الوَصف المُوسَّع: الوصف الأصلي + الحقول التي كانت في البطاقة القديمة (فئة/مُستفيد/فاتورة مرتبطة/مُنشئ/معتمِد).
+  const parts: string[] = [d.description];
+  if (d.categoryName) parts.push(`الفئة: ${d.categoryName}`);
+  if (d.counterpartyName && d.counterpartyName !== d.partyName) parts.push(`المُستفيد: ${d.counterpartyName}`);
+  if (d.relatedInvoiceNumber) parts.push(`الفاتورة المرتبطة: ${d.relatedInvoiceNumber}`);
+  if (d.cashBucket) parts.push(`نوع النقد: ${bucketLabel(d.cashBucket) ?? '—'}`);
+  if (d.branchName) parts.push(`الفرع: ${d.branchName}`);
+  if (d.createdByName) parts.push(`المُنشئ: ${d.createdByName}`);
+  if (d.approvedByName) parts.push(`المُعتمِد: ${d.approvedByName}`);
+  const description = parts.filter(Boolean).join(' · ');
 
-  const statusBadge = `
-    <div style="display:flex;justify-content:space-between;align-items:center;
-      margin:0 0 5mm 0;padding:3mm 4mm;background:${statusBg};
-      border:1.5px solid ${statusColor};border-radius:6px;">
-      <div>
-        <span style="font-size:13px;font-weight:900;color:${statusColor};">${esc(STATUS_LABEL[d.approvalStatus])}</span>
-        ${d.approvedByName ? `<span style="font-size:9px;color:${BRAND.textMuted};margin-right:3mm;">
-          (اعتمده: ${esc(d.approvedByName)}${d.approvedAt ? ` — ${esc(d.approvedAt)}` : ""})</span>` : ""}
-      </div>
-      ${d.signatureHash ? `<div style="font-size:9px;color:${BRAND.textMuted};">
-        بَصمة: <span style="font-family:monospace;color:#000;font-weight:700;">${esc(shortHash(d.signatureHash))}</span></div>` : ""}
-    </div>`;
+  // شارة الحالة تُلوَّن حسب approvalStatus.
+  const statusLabel = d.approvalStatus === 'APPROVED' ? '✓ معتمَد'
+    : d.approvalStatus === 'PENDING_APPROVAL' ? '⏳ بانتظار الاعتماد'
+    : '✗ مرفوض';
+  const statusColor = d.approvalStatus === 'APPROVED' ? BRAND.green
+    : d.approvalStatus === 'PENDING_APPROVAL' ? BRAND.orange
+    : '#b91c1c';
 
-  // بطاقة طَرف + بطاقة دَفع جنباً إلى جنب
-  const partyCard = `
-    <div style="background:${BRAND.greenPale};border:1px solid ${BRAND.greenLight};
-      border-radius:6px;padding:3mm 4mm;border-right:3px solid ${BRAND.green};">
-      <div style="font-size:9px;color:${BRAND.greenDark};font-weight:700;margin-bottom:1mm;">الطرف المُقابل</div>
-      <div style="font-size:13px;font-weight:900;color:#000;line-height:1.5;">${esc(d.partyName)}</div>
-      <div style="font-size:9.5px;color:${BRAND.textMuted};margin-top:1mm;">
-        ${esc(d.partyTypeLabel)}${d.partyBalance ? ` — رصيد: ${esc(d.partyBalance)}` : ""}
-      </div>
-      ${d.counterpartyName && d.counterpartyName !== d.partyName ? `
-        <div style="font-size:9.5px;color:${BRAND.textMuted};margin-top:1mm;">
-          المُستفيد: <span style="color:#000;font-weight:700;">${esc(d.counterpartyName)}</span>
-        </div>` : ""}
-      ${d.categoryName ? `
-        <div style="font-size:9.5px;color:${BRAND.textMuted};margin-top:1mm;">
-          الفئة: <span style="color:#000;font-weight:700;">${esc(d.categoryName)}</span>
-        </div>` : ""}
-      ${d.relatedInvoiceNumber ? `
-        <div style="font-size:9.5px;color:${BRAND.textMuted};margin-top:1mm;">
-          الفاتورة المرتبطة: <span style="color:#000;font-weight:700;">${esc(d.relatedInvoiceNumber)}</span>
-        </div>` : ""}
-    </div>`;
+  // رصيد الطرف قبل السند (المُمرَّر نصّاً «250,000 (لنا)») → نستخرج الجزء الرقمي فقط ليعرضه القالب الجديد بإشارة موحّدة.
+  let balBefore: number | null = null;
+  if (d.partyBalance) {
+    const m = /-?[\d,]+/.exec(d.partyBalance);
+    if (m) balBefore = Number(m[0].replace(/,/g, ''));
+    // إذا احتوى النَص «(لنا)» / «(علينا)» فذلك يحدّد الاتجاه (لكن direction=IN/OUT يكفي لتحديده).
+  }
 
-  const paymentLines: string[] = [
-    `<div><span style="color:${BRAND.textMuted};">الطريقة:</span> <strong>${esc(d.paymentMethodLabel)}</strong></div>`,
-  ];
-  if (d.referenceNumber) paymentLines.push(`<div><span style="color:${BRAND.textMuted};">الرقم المرجعي:</span> <strong style="font-family:monospace;">${esc(d.referenceNumber)}</strong></div>`);
-  if (d.checkNumber) paymentLines.push(`<div><span style="color:${BRAND.textMuted};">رقم الصكّ:</span> <strong style="font-family:monospace;">${esc(d.checkNumber)}</strong></div>`);
-  if (d.cardLastFour) paymentLines.push(`<div><span style="color:${BRAND.textMuted};">البطاقة:</span> <strong style="font-family:monospace;">xxxx ${esc(d.cardLastFour)}</strong></div>`);
-
-  const paymentCard = `
-    <div style="background:${BRAND.orangePale};border:1px solid ${BRAND.orangeLight};
-      border-radius:6px;padding:3mm 4mm;border-right:3px solid ${BRAND.orange};">
-      <div style="font-size:9px;color:${BRAND.orangeDark};font-weight:700;margin-bottom:1mm;">تفاصيل الدفع</div>
-      <div style="font-size:10px;line-height:1.8;color:#000;">${paymentLines.join("")}</div>
-    </div>`;
-
-  const twoCards = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:4mm;margin-bottom:5mm;">
-    ${partyCard}${paymentCard}</div>`;
-
-  // الوصف بصندوق واضح
-  const descBox = `<div style="margin-bottom:5mm;padding:3mm 4mm;background:#fafafa;
-    border:1px solid ${BRAND.border};border-radius:6px;">
-    <div style="font-size:9px;color:${BRAND.textMuted};font-weight:700;margin-bottom:1mm;">الوَصف / الغَرض</div>
-    <div style="font-size:11px;line-height:1.7;color:#000;">${esc(d.description)}</div>
-  </div>`;
-
-  // صندوق الملخّص (المبلغ كبير)
-  const summary: SummaryItem[] = [
-    { label: "طريقة الدفع", value: d.paymentMethodLabel },
-    { label: d.direction === "IN" ? "المبلغ المَستلَم" : "المبلغ المَدفوع", value: `${d.amount} د.ع`, large: true, bold: true },
-  ];
-  const summaryHtml = docSummary(summary);
-
-  // مَنطقة التوقيعات
-  const sigBlock = `<div class="signatures-box" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6mm;
-    margin-top:8mm;padding:5mm 0;border-top:1px dashed ${BRAND.border};">
-    <div style="text-align:center;">
-      <div style="font-size:9px;color:${BRAND.textMuted};margin-bottom:8mm;">المُنشِئ / المُحاسب</div>
-      <div style="border-top:1px solid #000;padding-top:1mm;font-size:9px;color:${BRAND.textMuted};">
-        ${esc(d.createdByName ?? "—")}
-      </div>
-    </div>
-    <div style="text-align:center;">
-      <div style="font-size:9px;color:${BRAND.textMuted};margin-bottom:8mm;">المُعتمِد</div>
-      <div style="border-top:1px solid #000;padding-top:1mm;font-size:9px;color:${BRAND.textMuted};">
-        ${esc(d.approvedByName ?? (d.approvalStatus === "APPROVED" ? "—" : "(بانتظار الاعتماد)"))}
-      </div>
-    </div>
-    <div style="text-align:center;">
-      <div style="font-size:9px;color:${BRAND.textMuted};margin-bottom:8mm;">
-        ${d.direction === "IN" ? "المُستلم نقداً" : "المُستلم المُستفيد"}
-      </div>
-      <div style="border-top:1px solid #000;padding-top:1mm;font-size:9px;color:${BRAND.textMuted};">
-        ${esc(d.counterpartyName ?? d.partyName)}
-      </div>
-    </div>
-  </div>`;
-
-  // QR للتَحقّق (يَحوي رقم السند + بَصمة)
-  let qrBlock = "";
+  // QR: نستعمل رقم السند + بَصمة إن وُجدت (تدهور سَلِس عند الفشل).
+  let qrSvg: string | null = null;
   try {
-    if (d.signatureHash) {
-      const qrPayload = `VCH:${d.voucherNumber}|H:${shortHash(d.signatureHash)}`;
-      const qr = await qrCodeSvg(qrPayload, { size: 90, margin: 1 });
-      qrBlock = `<div style="position:absolute;left:14mm;bottom:18mm;text-align:center;">
-        <div style="display:inline-block;padding:2mm;background:#fff;border:1px solid ${BRAND.border};border-radius:4px;">${qr}</div>
-        <div style="font-size:7.5px;color:${BRAND.textMuted};margin-top:1mm;font-family:monospace;">${esc(shortHash(d.signatureHash))}</div>
-      </div>`;
-    }
-  } catch { /* تَدهور سَلِس */ }
+    const qrPayload = d.signatureHash
+      ? `VCH:${d.voucherNumber}|H:${shortHash(d.signatureHash)}`
+      : `VCH:${d.voucherNumber}`;
+    qrSvg = await qrCodeSvg(qrPayload, { size: 90, margin: 1 });
+  } catch { /* تَدهور سَلِس ⇒ placeholder افتراضي */ }
 
-  // attachment-upload (٥/٧): إصلاح — المُرفق أصبح data URL صورة (قد يَبلغ ~٩٣٣ك حرفاً)، فطَبعه نصّاً خاماً
-  // كما كان سابقاً (`مُرفَق: ${esc(url)}`) كان سيَطبع سطراً هائلاً من base64 مُشوَّهاً على الورقة الرسمية.
-  // الآن: صورة صغيرة (thumbnail) مُضمَّنة للـdata URL، أو نصّ قصير كما كان لأي رابط تاريخي غير data:.
-  const attachmentBlock = d.attachmentUrl
-    ? isImageDataUrl(d.attachmentUrl)
-      ? `<div style="margin-top:3mm;text-align:center;">
-          <div style="font-size:8px;color:${BRAND.textMuted};margin-bottom:1mm;">صورة المُرفَق المُرتبط بالسند</div>
-          <img src="${esc(d.attachmentUrl)}" alt="مُرفَق السند"
-            style="max-width:45mm;max-height:45mm;border:1px solid ${BRAND.border};border-radius:4px;object-fit:contain;" />
-        </div>`
-      : `<div style="margin-top:2mm;font-size:8px;color:${BRAND.textMuted};text-align:center;">
-          مُرفَق: ${esc(d.attachmentUrl)}
-        </div>`
-    : "";
-  const customFooterNotes = `<div style="margin-top:3mm;padding:2mm 3mm;background:${BRAND.bg};
-    border:1px dashed ${BRAND.border};border-radius:4px;font-size:8px;color:${BRAND.textMuted};text-align:center;line-height:1.5;">
-    هذا السند مُتولَّد آلياً من نظام إدارة أعمال ${esc(CO.name)} — بَصمة SHA-256 مَختومة لمَنع التَلاعب.
-    ${attachmentBlock}
-  </div>`;
-  const footer = customFooterNotes + docFooter();
+  // attachment-upload (٥/٧): مُرفَق صورة فعلي (data: URL) يُطبَع كمصغَّرة أسفل التوقيعات في نسخة A4 —
+  // كان قد سقط بالكامل عند التحويل لـV2 (لا حقل مُرفَق في القالب الجديد آنذاك)، فتُفقَد صورة الإثبات
+  // من النسخة الرسمية المؤرشَفة. روابط قديمة غير data: (نادرة) لا تُطبَع كصورة لتفادي طلب شبكي فاشل صامت.
+  const attachmentImageUrl = d.attachmentUrl && /^data:image\//.test(d.attachmentUrl)
+    ? d.attachmentUrl
+    : null;
 
-  const body = `${head}${statusBadge}${twoCards}${descBox}${summaryHtml}${sigBlock}${qrBlock}${footer}`;
-  const html = wrapA4Doc(titleAr + " " + d.voucherNumber, body);
-  return openPrintWindow(html);
+  return printVoucherV2({
+    direction: d.direction,
+    voucherNumber: d.voucherNumber,
+    voucherDate: d.voucherDate,
+    statusLabel,
+    statusColor,
+    partyName: d.partyName,
+    partyTypeLabel: d.partyTypeLabel,
+    partyBalanceBefore: balBefore,
+    paymentMethodLabel: d.paymentMethodLabel,
+    referenceNumber: refNumber,
+    description,
+    amount: d.amount.replace(/[^\d.-]/g, ''), // «50,000» ⇒ «50000» ⇒ يُنسَّق داخل V2 بلا كسور
+    qrSvg,
+    signatureShortHash: d.signatureHash ? shortHash(d.signatureHash) : null,
+    attachmentImageUrl,
+    settings: {
+      taxId: CO.taxId,
+      commercialRegistry: CO.commercialRegistry,
+      chamberLicense: CO.chamberLicense,
+    },
+  });
 }
 
 /** اختيار المسار حسب الرَغبة: thermal (الافتراضي للمَنفذ) أو A4 (للأرشَفة). */
