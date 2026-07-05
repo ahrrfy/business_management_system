@@ -319,4 +319,67 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
       ).rejects.toMatchObject({ code: "NOT_FOUND" });
     });
   });
+
+  // مراجعة ٥/٧/٢٦ (قرار مالك): مدينو الرصيد الافتتاحي فقط (بلا فاتورة) — نطاق مجمَّع مستقلّ
+  // openingScope، **للأدمن حصراً** (لا انتماء فرعيّ لهؤلاء العملاء ⇒ لا معنى لعزل فرع مدير عليهم).
+  describe("arReminders — نطاق «مدينو الرصيد الافتتاحي» (openingScope): أدمن حصراً", () => {
+    it("queue({openingScope:true}): مدير ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("manager", 1).arReminders.queue({ openingScope: true }))
+    );
+    it("queue({openingScope:true}): كاشير ⇒ FORBIDDEN (customersManagerProcedure أصلاً)", () =>
+      expectForbidden(caller("cashier", 1).arReminders.queue({ openingScope: true }))
+    );
+    it("queue({openingScope:true}): admin ⇒ مسموح (تجميع كل الفروع)", async () => {
+      const out = await caller("admin", 1).arReminders.queue({ openingScope: true });
+      expect(Array.isArray(out)).toBe(true);
+    });
+    // history تحمل نفس نطاق queue (سدّ فجوة: تبويب السجلّ كان يسقط صامتاً لفرع خاطئ عند نطاق
+    // «الافتتاحي» — تحقّق عدائي ٥/٧).
+    it("history({openingScope:true}): مدير ⇒ FORBIDDEN", () =>
+      expectForbidden(caller("manager", 1).arReminders.history({ openingScope: true }))
+    );
+    it("history({openingScope:true}): admin ⇒ مسموح (تجميع كل الفروع)", async () => {
+      const out = await caller("admin", 1).arReminders.history({ openingScope: true });
+      expect(Array.isArray(out)).toBe(true);
+    });
+    it("logSent بـisOpeningBalance:true: مدير ⇒ FORBIDDEN (رغم فرعه المُسنَد)", () =>
+      expectForbidden(
+        caller("manager", 1).arReminders.logSent({
+          customerId: 1,
+          totalUnpaidSnapshot: "1000",
+          oldestInvoiceDate: "2026-01-01",
+          daysOverdue: 10,
+          messageBody: "x",
+          isOpeningBalance: true,
+        })
+      )
+    );
+    it("logSent بـisOpeningBalance:true: admin بفرع مُسنَد وبلا branchId ⇒ يصل لفحص الرصيد الافتتاحي (NOT_FOUND لا FORBIDDEN)", async () => {
+      await expect(
+        caller("admin", 1).arReminders.logSent({
+          customerId: 999999,
+          totalUnpaidSnapshot: "1000",
+          oldestInvoiceDate: "2026-01-01",
+          daysOverdue: 10,
+          messageBody: "x",
+          isOpeningBalance: true,
+        })
+      ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
+    // اكتُشفت يدوياً أثناء التحقّق البصري (٥/٧): openingWriteBranch كانت تسقط لـ`?? 1` الحرفي
+    // (عودة سابقة G3 بالضبط) — معرّفات الفروع تنجرف مع auto_increment (لم تعد ١/٢ في أي قاعدة
+    // حيّة/اختبار قديمة) فيَخرق الرقم الحرفيّ قيد FK بدل رسالة واضحة. الآن FORBIDDEN صريح.
+    it("logSent بـisOpeningBalance:true: admin بلا فرع مُسنَد وبلا branchId ⇒ FORBIDDEN صريح (لا `?? 1` حرفيّاً)", () =>
+      expectForbidden(
+        caller("admin", null).arReminders.logSent({
+          customerId: 1,
+          totalUnpaidSnapshot: "1000",
+          oldestInvoiceDate: "2026-01-01",
+          daysOverdue: 10,
+          messageBody: "x",
+          isOpeningBalance: true,
+        })
+      )
+    );
+  });
 });

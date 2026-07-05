@@ -11,7 +11,7 @@
 // وأقدم فاتورة لكل عميل ⇒ لا نكرّر منطق التعمير.
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, gte, inArray, sql } from "drizzle-orm";
-import { arReminders, customers, invoices } from "../../drizzle/schema";
+import { accountingEntries, arReminders, customers, invoices } from "../../drizzle/schema";
 import { requireDb } from "./tx";
 import { getARAging } from "./reports/arAging";
 import { money, toDbMoney } from "./money";
@@ -46,6 +46,9 @@ export interface ReminderQueueRow {
    * يعطي الواجهة إشارة واضحة لترتيب هؤلاء أعلى القائمة (متابعة استحقاق وعد ⇒ أهمّ من عميل عادي).
    */
   isPromiseDue: boolean;
+  /** `true` حين الصفّ مدينٌ برصيد افتتاحي/مُدوَّر فقط (بلا فاتورة نظام) — قرار المالك (٥/٧): يظهر في
+   *  العرض المجمَّع (branchId=null) فقط، مؤرَّخاً من قيد OPENING، والمبلغ = كامل الرصيد الجاري. الواجهة تُبرزه بشارة. */
+  isOpeningBalance: boolean;
 }
 
 /** حساب أيام التأخّر بين تاريخين UTC نقيّاً (لا Date، لا مناطق زمنية). */
@@ -69,9 +72,19 @@ function todayUTC(): string {
 /** قائمة اليوم المؤهَّلة للتذكير: عملاء بذمّة >0 وأقدم فاتورة متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام.
  *  branchId=null ⇒ تجميع كل الفروع (لوحة المرتفعين/برنامج اليوم — مرآة getDashboardMetrics)؛
  *  التبريد/الوعد يُقرآن عندئذٍ من آخر تذكير للعميل في أي فرع. */
-export async function getReminderQueue(opts: { branchId: number | null }): Promise<ReminderQueueRow[]> {
+export async function getReminderQueue(opts: {
+  branchId: number | null;
+  /** `true` ⇒ **مدينو الرصيد الافتتاحي فقط** (بلا فواتير نظام)، مجمَّعين عبر الفروع. نطاق مستقلّ
+   *  للأدمن في الشاشة، معزول عن طابور الفواتير الفرعيّ (يتجنّب حاصر «قراءة مجمَّعة + كتابة فرعيّة»). */
+  openingOnly?: boolean;
+}): Promise<ReminderQueueRow[]> {
   const db = requireDb();
-  const aging = await getARAging(opts.branchId != null ? { branchId: opts.branchId } : {});
+  // نطاق «مدينو الافتتاحي فقط» يجمع بلا فلتر فرع دائماً (بلا انتماء فرعيّ أصلاً) — فلترة aging بفرع
+  // هنا كانت ستُصنِّف خطأً عميلاً له فواتير في فرعٍ آخر كأنه «مدين افتتاحي بحت» (LEFT JOIN مقيَّد
+  // يُخفي فواتيره الفعلية فتظهر unpaidTotal=0/oldestInvoiceDate=null زوراً لهذا الفرع فقط).
+  const aging = await getARAging(
+    opts.openingOnly || opts.branchId == null ? {} : { branchId: opts.branchId },
+  );
   const today = todayUTC();
 
   // العملاء المؤهَّلون قبل فحص التبريد: ذمّة فعلية >0 + oldestInvoiceDate يعطي ≥REMINDER_MIN_DAYS_OVERDUE
@@ -83,7 +96,11 @@ export async function getReminderQueue(opts: { branchId: number | null }): Promi
   // الافتتاحي الدائن (PR #125) يجعل currentBalance ≤ 0 رغم بقاء فواتير PENDING. الذمم الحاكمة =
   // currentBalance (§٥) ⇒ يُستبعَد كل عميل currentBalance ≤ 0 (سدّد أو دائن — لا مطالبة)، والمبلغ
   // المعروض/المُرسَل = min(unpaidTotal, currentBalance) — لا نطالب بأكثر من الذمّة الجارية.
-  const eligible = aging
+  // مسار (أ) — الفواتير النظامية: عميل بذمّة جارية >0 وأقدم فاتورة مستحقّة متأخّرة ≥٧ أيام.
+  // (يُتخطّى كلياً في نطاق «مدينو الافتتاحي فقط».)
+  const invoiceEligible = opts.openingOnly
+    ? []
+    : aging
     .filter(
       (r) => money(r.unpaidTotal).gt(0) && money(r.currentBalance).gt(0) && r.oldestInvoiceDate,
     )
@@ -93,11 +110,59 @@ export async function getReminderQueue(opts: { branchId: number | null }): Promi
       return {
         row: r,
         dueAmount: toDbMoney(unpaid.lt(balance) ? unpaid : balance),
+        oldestInvoiceDate: r.oldestInvoiceDate!,
         daysOverdue: daysBetween(r.oldestInvoiceDate!, today),
+        isOpeningBalance: false,
       };
     })
     .filter((x) => x.daysOverdue >= REMINDER_MIN_DAYS_OVERDUE);
 
+  // مسار (ب) — مدينو الرصيد الافتتاحي/المُدوَّر فقط (بلا فاتورة نظام) — قرار المالك (٥/٧): يُدرَجون
+  // **فقط عند طلب صريح `openingOnly`** (لا بمجرّد branchId=null) — نطاق مقصودٌ للأدمن حصراً عبر
+  // الراوتر (arRemindersRouter.queue بـopeningScope). ⚠️ تحقّق عدائي (٥/٧) كشف أن الشرط السابق
+  // (`branchId==null || openingOnly`) كان يُسرِّب هؤلاء المدينين إلى تجميع `dashboard.ts` العادي —
+  // الذي يستدعي branchId=null لأي مدير مرتفع (لا الأدمن حصراً)، فيظهرون في «برنامج اليوم» لكل مدير
+  // بلا علمه رغم أن الراوتر يمنعه صراحةً من رؤيتهم مباشرةً. الشرط الآن صريح لا يتفعّل صدفةً.
+  let openingEligible: typeof invoiceEligible = [];
+  if (opts.openingOnly) {
+    const openingCandidates = aging.filter(
+      (r) => !r.oldestInvoiceDate && money(r.currentBalance).gt(0),
+    );
+    if (openingCandidates.length) {
+      const ids = openingCandidates.map((r) => r.customerId);
+      const openRows = await db
+        .select({
+          customerId: accountingEntries.customerId,
+          openedOn: sql<string>`DATE_FORMAT(MIN(${accountingEntries.entryDate}), '%Y-%m-%d')`,
+        })
+        .from(accountingEntries)
+        .where(
+          and(
+            eq(accountingEntries.entryType, "OPENING"),
+            sql`${accountingEntries.customerId} IN (${sql.join(ids.map((id) => sql`${id}`), sql`, `)})`,
+          ),
+        )
+        .groupBy(accountingEntries.customerId);
+      const openedOn = new Map<number, string>();
+      for (const r of openRows) if (r.openedOn) openedOn.set(Number(r.customerId), r.openedOn);
+      openingEligible = openingCandidates
+        // نشترط قيد OPENING فعليّاً (تعريف «مدين افتتاحي») — رصيد موجب من مصدر آخر بلا OPENING يُستبعَد.
+        .filter((r) => openedOn.has(r.customerId))
+        .map((r) => {
+          const openingDate = openedOn.get(r.customerId)!;
+          return {
+            row: r,
+            dueAmount: toDbMoney(money(r.currentBalance)),
+            oldestInvoiceDate: openingDate,
+            daysOverdue: daysBetween(openingDate, today),
+            isOpeningBalance: true,
+          };
+        })
+        .filter((x) => x.daysOverdue >= REMINDER_MIN_DAYS_OVERDUE);
+    }
+  }
+
+  const eligible = [...invoiceEligible, ...openingEligible];
   if (eligible.length === 0) return [];
 
   // آخر تذكير لكل عميل مع تاريخ الوعد (لكل عميل، ONLY latest row) — استعلام subquery داخلي
@@ -151,7 +216,7 @@ export async function getReminderQueue(opts: { branchId: number | null }): Promi
   const nowMs = Date.now();
   const cooldownMs = REMINDER_COOLDOWN_DAYS * 86_400_000;
   const queue: ReminderQueueRow[] = [];
-  for (const { row, dueAmount, daysOverdue } of eligible) {
+  for (const { row, dueAmount, oldestInvoiceDate, daysOverdue, isOpeningBalance } of eligible) {
     const last = lastByCustomer.get(row.customerId);
     const isPromiseDue = !!(last && last.promisedDate && last.promisedDate <= today);
     const isFuturePromise = !!(last && last.promisedDate && last.promisedDate > today);
@@ -164,12 +229,13 @@ export async function getReminderQueue(opts: { branchId: number | null }): Promi
       customerName: row.customerName,
       phone: row.phone,
       totalUnpaid: dueAmount,
-      oldestInvoiceDate: row.oldestInvoiceDate!,
+      oldestInvoiceDate,
       daysOverdue,
       lastReminderAt: last ? last.at.toISOString() : null,
       lastReminderStatus: last ? last.status : null,
       promisedDate: last?.promisedDate ?? null,
       isPromiseDue,
+      isOpeningBalance,
     });
   }
 
@@ -188,6 +254,8 @@ export interface LogReminderInput {
   oldestInvoiceDate: string; // YYYY-MM-DD
   daysOverdue: number;
   messageBody: string;
+  /** مدين رصيد افتتاحي (بلا فاتورة فرعيّة) ⇒ يُتحقَّق بقيد OPENING بدل الفاتورة الفرعيّة. */
+  isOpeningBalance?: boolean;
 }
 
 /** حماية IDOR: العميل «يخصّ الفرع» إن كانت له فاتورة (مؤكَّدة/غير ملغاة) في هذا الفرع.
@@ -210,6 +278,27 @@ async function assertCustomerHasBranchInvoice(customerId: number, branchId: numb
   }
 }
 
+/** حماية IDOR لمدينِي الرصيد الافتتاحي (بلا فاتورة فرعيّة): نتحقّق من ذمّة جارية موجبة + قيد OPENING
+ *  بدل فحص الفاتورة الفرعيّة (الذي يفشل حتماً لغيابها). يمنع تسجيل تذكير على عميل غير مدين افتتاحيّاً. */
+async function assertOpeningBalanceDebtor(customerId: number): Promise<void> {
+  const db = requireDb();
+  const rows = await db
+    .select({ id: accountingEntries.id })
+    .from(accountingEntries)
+    .innerJoin(customers, eq(customers.id, accountingEntries.customerId))
+    .where(
+      and(
+        eq(accountingEntries.entryType, "OPENING"),
+        eq(accountingEntries.customerId, customerId),
+        sql`CAST(${customers.currentBalance} AS DECIMAL(15,2)) > 0`,
+      ),
+    )
+    .limit(1);
+  if (rows.length === 0) {
+    throw new TRPCError({ code: "NOT_FOUND", message: "لا رصيد افتتاحيّ مستحقّ لهذا العميل — لا يجوز تسجيل تذكير عنه." });
+  }
+}
+
 /** تسجيل تذكير أُرسِل (status='SENT'). لا يمسّ الدفتر ولا الأموال ولا الفواتير. */
 export async function logReminderSent(
   input: LogReminderInput,
@@ -227,7 +316,11 @@ export async function logReminderSent(
   if (!input.messageBody.trim()) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "نص الرسالة فارغ." });
   }
-  await assertCustomerHasBranchInvoice(input.customerId, actor.branchId);
+  if (input.isOpeningBalance) {
+    await assertOpeningBalanceDebtor(input.customerId);
+  } else {
+    await assertCustomerHasBranchInvoice(input.customerId, actor.branchId);
+  }
 
   const db = requireDb();
   const res = await db.insert(arReminders).values({
@@ -255,6 +348,8 @@ export interface SkipReminderInput {
   /** تاريخ وعد الدفع الاختياري (YYYY-MM-DD، ≥ اليوم). إن مُلئ ⇒ العميل يعود لقائمة اليوم يوم الوعد
    *  متجاوزاً تبريد ٧ أيام. الترك فارغاً ⇒ تخطٍّ عاديّ (يخضع لتبريد ٧ أيام مثل باقي التذكيرات). */
   promisedDate?: string | null;
+  /** مدين رصيد افتتاحي (بلا فاتورة فرعيّة) ⇒ يُتحقَّق بقيد OPENING بدل الفاتورة الفرعيّة. */
+  isOpeningBalance?: boolean;
 }
 
 /** تسجيل تخطٍّ لتذكير عميل — يمنع ظهوره في القائمة اليومية بقية أيام التبريد. */
@@ -284,7 +379,11 @@ export async function logReminderSkipped(
       throw new TRPCError({ code: "BAD_REQUEST", message: "تاريخ الوعد يجب ألّا يكون في الماضي." });
     }
   }
-  await assertCustomerHasBranchInvoice(input.customerId, actor.branchId);
+  if (input.isOpeningBalance) {
+    await assertOpeningBalanceDebtor(input.customerId);
+  } else {
+    await assertCustomerHasBranchInvoice(input.customerId, actor.branchId);
+  }
 
   const db = requireDb();
   const res = await db.insert(arReminders).values({

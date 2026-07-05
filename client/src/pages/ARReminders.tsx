@@ -4,7 +4,7 @@
 // كل تذكير مُرسَل يُسجَّل في `arReminders` مع snapshots اللحظية (مبلغ + أقدم فاتورة + نصّ الرسالة).
 // نافذة التبريد ٧ أيام تمنع تكرار العميل في القائمة قبل استحقاق تذكير جديد.
 import { useMemo, useState } from "react";
-import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock } from "lucide-react";
+import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { openWhatsApp, sanitizeForWhatsApp } from "@/lib/whatsapp";
@@ -34,6 +34,7 @@ function buildReminderMessage(row: {
   totalUnpaid: string;
   oldestInvoiceDate: string;
   daysOverdue: number;
+  isOpeningBalance?: boolean;
 }): string {
   const amount = Number(row.totalUnpaid).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
   const lines: string[] = [
@@ -42,10 +43,13 @@ function buildReminderMessage(row: {
     "",
     // «المبلغ المستحقّ عن الفواتير المتأخّرة» لا «الرصيد» — القيمة = min(متبقّي الفواتير، الرصيد
     // الجاري)، وقد تقلّ عن رصيد كشف الحساب (افتتاحي مدين فوق الفواتير) فتسمية «الرصيد» تكون كاذبة.
-    `المبلغ المستحقّ عن الفواتير المتأخّرة:`,
+    // مدين الرصيد الافتتاحي (بلا فواتير نظام): المبلغ = كامل الرصيد المُدوَّر، والصياغة تناسبه.
+    row.isOpeningBalance ? `الرصيد المستحقّ (رصيد سابق مُدوَّر):` : `المبلغ المستحقّ عن الفواتير المتأخّرة:`,
     `*${amount} د.ع.*`,
     "",
-    `أقدم فاتورة غير مدفوعة: ${row.oldestInvoiceDate} (${row.daysOverdue} يوماً)`,
+    row.isOpeningBalance
+      ? `الرصيد قائم منذ: ${row.oldestInvoiceDate} (${row.daysOverdue} يوماً)`
+      : `أقدم فاتورة غير مدفوعة: ${row.oldestInvoiceDate} (${row.daysOverdue} يوماً)`,
     "",
     "يرجى مراجعة الرصيد والتسديد في أقرب وقت ممكن.",
     "إن كان هناك أيّ فرق أو استفسار، تواصلوا معنا.",
@@ -76,8 +80,33 @@ export default function ARReminders() {
   const [tab, setTab] = useState<Tab>("queue");
   const utils = trpc.useUtils();
 
-  const queue = trpc.arReminders.queue.useQuery(undefined, { staleTime: 30_000 });
-  const history = trpc.arReminders.history.useQuery(undefined, {
+  const me = trpc.auth.me.useQuery();
+  const isAdmin = me.data?.role === "admin";
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
+  // نطاق العرض: فرع محدَّد (رقم) | مدينو الرصيد الافتتاحي ("opening") | undefined (فرع المستخدم لغير الأدمن).
+  const [scope, setScope] = useState<number | "opening" | undefined>(undefined);
+  const effectiveScope: number | "opening" | undefined =
+    scope ?? (isAdmin ? branches.data?.[0]?.id : undefined);
+  const queueInput =
+    effectiveScope === "opening"
+      ? { openingScope: true }
+      : typeof effectiveScope === "number"
+        ? { branchId: effectiveScope }
+        : undefined;
+  // فرع الكتابة: للنطاق الفرعيّ = الفرع نفسه (يطابق القراءة)؛ للنطاق الافتتاحي = undefined (الخادم يحلّه بلا عزل).
+  const writeBranchId = typeof effectiveScope === "number" ? effectiveScope : undefined;
+  // السجلّ يتبع النطاق نفسه بدقّة (كان يسقط صامتاً لأوّل فرع نشط عند نطاق «الافتتاحي» — تحقّق
+  // عدائي ٥/٧): فرع محدَّد ⇒ سجلّ ذلك الفرع؛ نطاق الافتتاحي ⇒ openingScope (سجلّ مجمَّع)؛ غير الأدمن
+  // بلا نطاق محدَّد ⇒ undefined (الخادم يحلّه لفرعه).
+  const historyInput =
+    effectiveScope === "opening"
+      ? { openingScope: true as const }
+      : typeof effectiveScope === "number"
+        ? { branchId: effectiveScope }
+        : undefined;
+
+  const queue = trpc.arReminders.queue.useQuery(queueInput, { staleTime: 30_000 });
+  const history = trpc.arReminders.history.useQuery(historyInput, {
     enabled: tab === "history",
     staleTime: 30_000,
   });
@@ -137,6 +166,8 @@ export default function ARReminders() {
       oldestInvoiceDate: row.oldestInvoiceDate,
       daysOverdue: row.daysOverdue,
       messageBody: message,
+      isOpeningBalance: row.isOpeningBalance || undefined,
+      branchId: writeBranchId,
     });
   }
 
@@ -162,6 +193,8 @@ export default function ARReminders() {
       daysOverdue: skipTarget.daysOverdue,
       skipReason: skipReason.trim(),
       promisedDate: promise || null,
+      isOpeningBalance: skipTarget.isOpeningBalance || undefined,
+      branchId: writeBranchId,
     });
   }
 
@@ -171,6 +204,29 @@ export default function ARReminders() {
         title="تذكيرات الذمم الآجلة"
         description="قائمة العملاء المتأخّرين ≥٧ أيام. راجع، ثم أرسل تذكيراً عبر واتساب أو تخطَّ برأي مُوثَّق."
       />
+
+      {/* منتقي النطاق — للأدمن حصراً: عبور الفروع + نطاق مدينِي الرصيد الافتتاحي المجمَّع. */}
+      {isAdmin && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-muted-foreground">النطاق:</span>
+          <select
+            value={effectiveScope === "opening" ? "opening" : String(effectiveScope ?? "")}
+            onChange={(e) => setScope(e.target.value === "opening" ? "opening" : Number(e.target.value))}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {(branches.data ?? []).map((b) => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+            <option value="opening">مدينو الرصيد الافتتاحي (كل الفروع)</option>
+          </select>
+          {effectiveScope === "opening" && (
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <Landmark className="size-3.5" aria-hidden />
+              أرصدة سابقة مُدوَّرة بلا فواتير نظام — للمتابعة والتحصيل.
+            </span>
+          )}
+        </div>
+      )}
 
       {/* شريط الملخّص */}
       {tab === "queue" && queue.data && queue.data.length > 0 && (
@@ -360,7 +416,9 @@ function QueueTab({
                 <TableHead className="text-right">العميل</TableHead>
                 <TableHead className="text-right">الهاتف</TableHead>
                 <TableHead className="text-left">الرصيد الآجل</TableHead>
-                <TableHead className="text-center">أقدم فاتورة</TableHead>
+                {/* «متأخّر منذ» لا «أقدم فاتورة» — القيمة لصفوف الرصيد الافتتاحي هي تاريخ قيد
+                    OPENING لا فاتورة، فالتسمية السابقة كانت مضلِّلة لهذه الصفوف (تحقّق عدائي ٥/٧). */}
+                <TableHead className="text-center">متأخّر منذ</TableHead>
                 <TableHead className="text-center">أيام التأخّر</TableHead>
                 <TableHead className="text-center">آخر تذكير</TableHead>
                 <TableHead className="text-center">إجراءات</TableHead>
@@ -381,6 +439,12 @@ function QueueTab({
                           <span className="inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-[11px] font-bold text-amber-800">
                             <CalendarClock className="size-3" aria-hidden />
                             موعود{row.promisedDate ? ` (${row.promisedDate})` : ""}
+                          </span>
+                        )}
+                        {row.isOpeningBalance && (
+                          <span className="inline-flex items-center gap-1 rounded-md bg-sky-500/15 px-2 py-0.5 text-[11px] font-bold text-sky-800">
+                            <Landmark className="size-3" aria-hidden />
+                            رصيد مُدوَّر
                           </span>
                         )}
                       </div>
