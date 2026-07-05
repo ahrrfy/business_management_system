@@ -156,6 +156,18 @@
   }
 }
 
+/* أهداف لمس ≥٤٤px على الأجهزة اللمسية فقط (pointer: coarse) — شاشة الكاشير/اللوحي.
+   مقصورة على مكوّنات نظام التصميم (data-slot) ⇒ لا تمسّ الأنماط اليدوية المضبوطة في POS،
+   ولا سطح المكتب (pointer: fine). min-height ينمّي القصير فقط ولا يقلّص شيئاً. */
+@media (pointer: coarse) {
+  [data-slot="button"]:not(:disabled),
+  [data-slot="input"],
+  [data-slot="select-trigger"],
+  select:not(:disabled) {
+    min-height: 44px;
+  }
+}
+
 /* تنبيه خطأ بارز (notify.errBig) — أخطاء البيع الحرجة كنقص المخزون: عنوان/وصف/أيقونة أكبر. */
 .notify-err-big [data-title] {
   font-size: 16.5px;

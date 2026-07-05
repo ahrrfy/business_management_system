@@ -163,8 +163,14 @@ function useSmartScanInput(onBarcode: (code: string) => Promise<void>) {
       const code = bufRef.current;
       bufRef.current = "";
       inScanRef.current = false;
-      setValue("");
-      if (code.length >= 4) onBarcode(code);
+      if (code.length >= 4) {
+        setValue("");
+        onBarcode(code);
+      } else {
+        // إدخال بشري قصير أُسيء تصنيفه كمسح (نقرتان سريعتان <٨٠مي، وليس باركوداً ≥٤ خانات) —
+        // أعِد النصّ المكتوب بدل ابتلاعه صامتاً. لا يمسّ مسار المسح الحقيقي إطلاقاً (≥٤ يُمسح ويُبحث كالسابق).
+        setValue(code);
+      }
     },
     [onBarcode]
   );

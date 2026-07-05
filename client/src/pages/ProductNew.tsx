@@ -309,6 +309,9 @@ export default function ProductNew() {
     const err = validateLocal();
     if (err) {
       setError(err);
+      // انقل التركيز لأوّل حقل خاطئ شائع (اسم/تكلفة) — WCAG focus-management.
+      if (!productName.trim() && !composedName) document.getElementById("product-name")?.focus();
+      else if (!costPrice.trim()) document.getElementById("product-cost")?.focus();
       return;
     }
     // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce).
@@ -404,7 +407,7 @@ export default function ProductNew() {
               className="md:col-span-3"
             >
               <div className="flex items-center gap-2">
-                <Input value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="اسم المنتج الكامل" dir="auto" />
+                <Input id="product-name" value={productName} onChange={(e) => setProductName(e.target.value)} placeholder="اسم المنتج الكامل" dir="auto" />
                 {composedName && composedName !== productName.trim() && (
                   <Button
                     type="button"
@@ -484,7 +487,7 @@ export default function ProductNew() {
         <CardHeader><CardTitle className="text-base">التسعير والمخزون · مشترك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <Field label="سعر التكلفة (د.ع)" required hint="سعر شراء موحّد لكل الألوان.">
-            <MoneyInput value={costPrice} onChange={setCostPrice} placeholder="150" />
+            <MoneyInput id="product-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
           </Field>
           <Field label="الحد الأدنى الافتراضي" hint="يُطبَّق على المتغيّرات الجديدة.">
             <Input value={defaultMin} onChange={(e) => setDefaultMin(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" />
