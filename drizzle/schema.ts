@@ -13,6 +13,7 @@ import {
   json,
   index,
   unique,
+  primaryKey,
 } from "drizzle-orm/mysql-core";
 
 /**
@@ -2535,3 +2536,74 @@ export const apReminders = mysqlTable(
 );
 export type ApReminder = typeof apReminders.$inferSelect;
 export type InsertApReminder = typeof apReminders.$inferInsert;
+
+/** اشتراكات Web Push للمستخدم (VAPID) — كل جهاز/متصفّح يشترك مرّة، ويُشطَب لينياً عند إبطال المستخدم
+ *  أو انتهاء صلاحية endpoint (404/410 من خدمة الدفع). لا يخزّن أرقام هواتف أو بيانات شخصية عدا
+ *  تعريف الجهاز — endpoint نفسه من خدمة الدفع بالمتصفّح (fcm.googleapis / Mozilla) بلا أثر شخصي. */
+export const pushSubscriptions = mysqlTable(
+  "pushSubscriptions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull().references(() => users.id),
+    /** URL الفريد لخدمة دفع المتصفّح لهذا الجهاز — يُبطَل ⇒ 410 عند الإرسال. UNIQUE يمنع
+     *  تكرار نفس الجهاز/المتصفّح عند إعادة الاشتراك (نُعيد استعمال الصفّ لا نُنشئ ثانياً). */
+    endpoint: varchar("endpoint", { length: 500 }).notNull().unique(),
+    /** مفتاح تشفير محتوى الرسالة (p256dh — منحنى ECDH؛ يوفّره المتصفّح). */
+    p256dh: text("p256dh").notNull(),
+    /** سرّ مصادقة الرسالة (auth — تشفير AES-GCM؛ يوفّره المتصفّح). */
+    auth: varchar("auth", { length: 100 }).notNull(),
+    /** User-Agent المُختصَر — للتشخيص فقط (مثلاً «Chrome على Android»). لا يُعرَض. */
+    userAgent: varchar("userAgent", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    /** حين انتهت صلاحية الاشتراك (410 من خدمة الدفع) أو أبطله المستخدم — لا يُحذَف كي يبقى log
+     *  الإرسال قابلاً للتتبّع تاريخياً. الاستعلام النشِط يُصفّي `revokedAt IS NULL`. */
+    revokedAt: timestamp("revokedAt"),
+  },
+  (table) => ({
+    userIdx: index("idx_push_sub_user").on(table.userId),
+  }),
+);
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
+export type InsertPushSubscription = typeof pushSubscriptions.$inferInsert;
+
+/** سجلّ إرسال الإشعارات — يمنع الإرسال المزدوج (يوم واحد لكل مستخدم لكل نوع) ويوفّر تدقيقاً تاريخياً.
+ *  status: SENT ناجح، FAILED_GONE (410=المستخدم أبطل الاشتراك بالمتصفّح، شطبنا الصفّ)،
+ *  FAILED_OTHER أعطال شبكة/خادم أخرى (نُبقي الاشتراك ونعيد المحاولة الغد). */
+export const pushNotificationLog = mysqlTable(
+  "pushNotificationLog",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull().references(() => users.id),
+    kind: mysqlEnum("pushKind", ["MORNING_BRIEF"]).notNull(),
+    /** JSON مُرسَل (aggregate counts فقط — لا أسماء عملاء) — للتدقيق التاريخي. */
+    payload: text("payload").notNull(),
+    status: mysqlEnum("pushLogStatus", ["SENT", "FAILED_GONE", "FAILED_OTHER"]).notNull(),
+    /** رمز HTTP من خدمة الدفع (201 ناجح، 410 gone…) — nullable قبل الإرسال الفعلي. */
+    statusCode: int("statusCode"),
+    /** رسالة الخطأ (nullable — يُملأ عند FAILED_*). */
+    errorMessage: varchar("errorMessage", { length: 500 }),
+    sentAt: timestamp("sentAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    // يُستعلَم يومياً: «هل أُرسل morning brief لهذا المستخدم اليوم؟» ⇒ (userId,sentAt).
+    userSentIdx: index("idx_push_log_user_sent").on(table.userId, table.sentAt),
+  }),
+);
+export type PushNotificationLogRow = typeof pushNotificationLog.$inferSelect;
+
+/** حجز إرسال إشعار «برنامج اليوم» ليوم مُحدَّد لمستخدم مُحدَّد — أداة تنسيق ذرّية (INSERT IGNORE).
+ *  السبب: نافذة إعادة تشغيل PM2 (reload) قد تشغّل عمليّتين لثوانٍ ⇒ cron يفتح مرّتين. الحجز الأوّل
+ *  يفوز والباقي يفشل بسلام (بلا خطأ). PRIMARY KEY يوفّر الذرّية بلا حاجة لـMySQL advisory lock. */
+export const pushDailyClaim = mysqlTable(
+  "pushDailyClaim",
+  {
+    userId: int("userId").notNull().references(() => users.id),
+    kind: mysqlEnum("pushClaimKind", ["MORNING_BRIEF"]).notNull(),
+    claimDay: date("claimDay", { mode: "string" }).notNull(),
+    claimedAt: timestamp("claimedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.kind, table.claimDay] }),
+  }),
+);
+export type PushDailyClaim = typeof pushDailyClaim.$inferSelect;
