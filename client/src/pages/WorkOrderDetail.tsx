@@ -9,7 +9,8 @@ import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
-import { Printer } from "lucide-react";
+import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
+import { Printer, MessageCircle } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -164,6 +165,25 @@ export default function WorkOrderDetail() {
               deliveryDate: data.dueDate,
             })}
           />
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1"
+            disabled={!data.customerPhone}
+            title={data.customerPhone ? "فتح واتساب برسالة تحديث حالة جاهزة للعميل" : "لا رقم هاتف مسجَّل للعميل"}
+            onClick={() => openWhatsApp(data.customerPhone, buildWorkOrderStatusMessage({
+              orderNumber: data.orderNumber,
+              title: data.title,
+              status: data.status,
+              customerName: data.customerName,
+              quantity: data.quantity,
+              dueDate: data.dueDate ? String(data.dueDate) : null,
+              amountDue: String(Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0))),
+            }))}
+          >
+            <MessageCircle className="h-3.5 w-3.5" />
+            تحديث للعميل
+          </Button>
           <Button variant="outline" size="sm" onClick={() => printWorkOrder({
             woNumber: data.orderNumber,
             woDate: data.createdAt ? String(data.createdAt).slice(0, 10) : undefined,

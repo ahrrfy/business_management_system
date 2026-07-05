@@ -4,6 +4,7 @@ import {
   buildQuotationMessage,
   buildReconciliationMessage,
   buildStatementMessage,
+  buildWorkOrderStatusMessage,
   sanitizeForWhatsApp,
 } from "../whatsapp";
 
@@ -82,5 +83,32 @@ describe("بناة رسائل الواتساب خالية من الإيموجي"
   it("buildReconciliationMessage — رصيد صفر = الحساب مُطابَق ومُسوّى", () => {
     const m = buildReconciliationMessage({ entityName: "زبون", entityType: "customer", currentBalance: 0 });
     expect(m).toContain("مُطابَق ومُسوّى");
+  });
+
+  it("buildWorkOrderStatusMessage — READY يذكر الجهوزية + الموعد + الرصيد بلا إيموجي", () => {
+    const m = buildWorkOrderStatusMessage({
+      orderNumber: "WO-7",
+      title: "بطاقات دعوة",
+      status: "READY",
+      customerName: "أحمد",
+      quantity: 100,
+      dueDate: "2026-07-10",
+      amountDue: 45000,
+    });
+    expect(noEmoji(m)).toBe(true);
+    expect(m).toContain("*تحديث طلب الخدمة #WO-7*");
+    expect(m).toContain("جاهز للاستلام");
+    expect(m).toContain("مرحباً أحمد");
+    expect(m).toContain("بطاقات دعوة (100 نسخة)");
+    expect(m).toContain("الموعد المتوقّع: 2026-07-10");
+    expect(m).toContain("45,000");
+  });
+
+  it("buildWorkOrderStatusMessage — DELIVERED يشكر بلا موعد ولا رصيد", () => {
+    const m = buildWorkOrderStatusMessage({ orderNumber: "WO-8", title: "لافتة", status: "DELIVERED", dueDate: "2026-07-10", amountDue: 20000 });
+    expect(noEmoji(m)).toBe(true);
+    expect(m).toContain("تمّ *تسليم*");
+    expect(m).not.toContain("الموعد المتوقّع");
+    expect(m).not.toContain("الرصيد المستحق");
   });
 });

@@ -236,3 +236,49 @@ export function buildReconciliationMessage(d: ReconcileMessageData): string {
   L.push(COMPANY_NAME);
   return L.join("\n");
 }
+
+export interface WorkOrderStatusMessageData {
+  orderNumber: string;
+  title: string;
+  status: "RECEIVED" | "IN_PROGRESS" | "READY" | "DELIVERED" | "CANCELLED" | string;
+  customerName?: string | null;
+  quantity?: number | null;
+  /** الموعد المتوقّع (YYYY-MM-DD) — يُذكَر للحالات ما قبل التسليم فقط. */
+  dueDate?: string | null;
+  /** الرصيد المستحق عند الاستلام (اختياري) — تذكير لطيف بالمبلغ في حالة READY فقط. */
+  amountDue?: string | number | null;
+}
+
+/**
+ * رسالة تحديث حالة أمر الشغل للعميل — نبرة `buildInvoiceMessage`. تُخبر بالحالة الحالية + الموعد
+ * المتوقّع، وتُذكّر بالرصيد المستحق عند الجهوزية. يدوية عبر wa.me (لا cron، لا سجلّ إرسال —
+ * أمر الشغل يحفظ تاريخ التحديث أصلاً). بلا إيموجي — تُنظَّف عبر sanitizeForWhatsApp في openWhatsApp.
+ */
+export function buildWorkOrderStatusMessage(d: WorkOrderStatusMessageData): string {
+  const statusLine: Record<string, string> = {
+    RECEIVED: "تمّ *استلام* طلبكم وهو في قائمة الانتظار.",
+    IN_PROGRESS: "طلبكم الآن *قيد التنفيذ*.",
+    READY: "طلبكم *جاهز للاستلام*! يسعدنا استقبالكم لاستلامه.",
+    DELIVERED: "تمّ *تسليم* طلبكم بنجاح. شكراً لتعاملكم معنا.",
+    CANCELLED: "نأسف، تمّ *إلغاء* طلبكم. لمزيد من التفاصيل تواصلوا معنا.",
+  };
+  const line = statusLine[d.status] ?? `حالة طلبكم الحالية: ${d.status}`;
+
+  const L: string[] = [
+    `*تحديث طلب الخدمة #${d.orderNumber}*`,
+    COMPANY_NAME,
+    "",
+  ];
+  if (d.customerName) L.push(`مرحباً ${d.customerName}،`);
+  L.push(line);
+  L.push("");
+  L.push(`الطلب: ${d.title}${d.quantity ? ` (${d.quantity} نسخة)` : ""}`);
+  if (d.dueDate && d.status !== "DELIVERED" && d.status !== "CANCELLED") {
+    L.push(`الموعد المتوقّع: ${String(d.dueDate).slice(0, 10)}`);
+  }
+  if (d.status === "READY" && d.amountDue != null && Number(d.amountDue) > 0) {
+    L.push(`الرصيد المستحق عند الاستلام: ${fmtMoney(d.amountDue)} د.ع.`);
+  }
+  L.push("", `للاستفسار تواصلوا معنا — ${COMPANY_NAME}`);
+  return L.join("\n");
+}
