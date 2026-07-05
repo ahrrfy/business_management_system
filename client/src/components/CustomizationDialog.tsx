@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Banknote, Check, FileText, Image as ImageIcon, Palette, Ruler, Truck, Layers } from "lucide-react";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { confirm } from "@/lib/confirm";
 import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 
@@ -81,10 +83,31 @@ interface Props {
 
 export function CustomizationDialog({ open, productName, price, initial, onCancel, onSave }: Props) {
   const [data, setData] = useState<CustomizationData>(() => initial ?? emptyCustomization(productName, price));
+  // لقطة القيمة الأساس عند الفتح — لكشف «تغييرات غير محفوظة» قبل الإغلاق بالخطأ.
+  const baselineRef = useRef<string>("");
 
   useEffect(() => {
-    if (open) setData(initial ?? emptyCustomization(productName, price));
+    if (open) {
+      const init = initial ?? emptyCustomization(productName, price);
+      setData(init);
+      baselineRef.current = JSON.stringify(init);
+    }
   }, [open, productName, price, initial]);
+
+  // حارس فقد البيانات: عند محاولة إغلاق نافذة أمر شغل طويلة وفيها تعديلات، أكّد قبل التجاهل.
+  async function requestClose() {
+    if (JSON.stringify(data) !== baselineRef.current) {
+      const ok = await confirm({
+        variant: "warning",
+        title: "تجاهل التغييرات؟",
+        description: "لديك بيانات غير محفوظة في أمر الشغل. الإغلاق سيتجاهلها.",
+        confirmText: "تجاهل والإغلاق",
+        cancelText: "متابعة التحرير",
+      });
+      if (!ok) return;
+    }
+    onCancel();
+  }
 
   const upd = <K extends keyof CustomizationData>(k: K, v: CustomizationData[K]) =>
     setData((d) => ({ ...d, [k]: v }));
@@ -116,7 +139,7 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
   }
 
   return (
-    <Dialog open={open} onOpenChange={(o) => !o && onCancel()}>
+    <Dialog open={open} onOpenChange={(o) => { if (!o) void requestClose(); }}>
       <DialogContent dir="rtl" className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-base">
@@ -244,14 +267,12 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
                   placeholder="عنوان التوصيل"
                   className="text-sm col-span-2"
                 />
-                <Input
-                  type="number"
-                  min="0"
+                <MoneyInput
                   value={data.deliveryCost}
-                  onChange={(e) => upd("deliveryCost", e.target.value)}
+                  onChange={(v) => upd("deliveryCost", v)}
                   placeholder="تكلفة التوصيل"
-                  className="text-sm tabular-nums"
-                  dir="ltr"
+                  className="text-sm"
+                  ariaLabel="تكلفة التوصيل"
                 />
               </div>
             )}
@@ -293,15 +314,11 @@ export function CustomizationDialog({ open, productName, price, initial, onCance
               <Label htmlFor="cz-deposit" className="text-xs inline-flex items-center gap-1">
                 <Banknote aria-hidden className="size-3.5" /> العربون المدفوع الآن
               </Label>
-              <Input
+              <MoneyInput
                 id="cz-deposit"
-                type="number"
-                min="0"
-                max={grandWithDelivery.toString()}
                 value={data.deposit}
-                onChange={(e) => upd("deposit", e.target.value)}
-                className="text-sm tabular-nums"
-                dir="ltr"
+                onChange={(v) => upd("deposit", v)}
+                className="text-sm"
               />
             </div>
             <div className="flex items-center justify-between text-xs pt-1 border-t">

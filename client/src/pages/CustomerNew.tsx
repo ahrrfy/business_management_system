@@ -104,6 +104,7 @@ export default function CustomerNew() {
     setError("");
     if (!name.trim()) {
       setError("اسم العميل مطلوب.");
+      document.getElementById("name")?.focus(); // WCAG focus-management: انقل التركيز لأوّل حقل خاطئ.
       return;
     }
     // سقف الائتمان (للمدير فقط؛ الكاشير محجوب والخادم يثبّته "0").
@@ -116,6 +117,7 @@ export default function CustomerNew() {
       const c = creditLimit.trim();
       if (!c || !/^\d+(\.\d{1,2})?$/.test(c)) {
         setError("أدخل سقف ائتمان صحيحاً (مثال: 500000) أو اختر «نقدي فقط»/«بلا سقف».");
+        document.getElementById("credit")?.focus();
         return;
       }
       creditLimitPayload = c;
