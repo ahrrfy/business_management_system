@@ -266,8 +266,8 @@ export default function ReportsOverview() {
           icon={Truck}
           rows={topAp}
           empty="لا ذمم دائنة قائمة."
-          href="/suppliers?tab=aging"
-          hrefLabel="أعمار الموردين"
+          href="/reports/ap-reminders"
+          hrefLabel="تذكيرات الدائنة"
           render={(x) => ({ name: x.supplierName, amount: x.unpaidTotal, sub: x.oldestPoDate ? `أقدم: ${x.oldestPoDate}` : "" })}
         />
       </div>
