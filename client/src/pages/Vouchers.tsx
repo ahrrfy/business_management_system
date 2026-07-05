@@ -16,7 +16,7 @@ import { printVoucherReceipt, printVoucherA4, type VoucherPrintData } from "@/li
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
-import { CheckCircle2, XCircle, Paperclip, ShieldQuestion } from "lucide-react";
+import { CheckCircle2, XCircle, Paperclip, ShieldQuestion, Link2 } from "lucide-react";
 
 type VoucherRow = RouterOutputs["vouchers"]["list"][number];
 
@@ -470,7 +470,10 @@ export default function Vouchers() {
                           <div className="text-[10px] text-muted-foreground">{r.counterpartyName}</div>
                         )}
                         {r.invoiceNumber && (
-                          <div className="text-[10px] text-muted-foreground">🔗 فاتورة #{r.invoiceNumber}</div>
+                          <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                            <Link2 className="h-3 w-3 shrink-0" aria-hidden />
+                            <span>فاتورة #{r.invoiceNumber}</span>
+                          </div>
                         )}
                       </td>
                       <td className="p-2 text-xs">
