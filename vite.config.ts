@@ -22,6 +22,10 @@ export default defineConfig({
       workbox: {
         // حزمة التطبيق أكبر من 2MiB ⇒ ارفع حدّ precache كي يُخبّأ التطبيق كاملاً (عمل دون اتصال).
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        // حقن معالج Web Push المخصَّص في SW المولَّد (دون التخلّي عن generateSW — يُبقي
+        // آليّة autoUpdate وworkbox precache/runtimeCaching كما هي). الملف في public/ ⇒ يُنسَخ
+        // إلى /push-handler.js حرفياً، فيصير مُتاحاً لـimportScripts داخل SW.
+        importScripts: ["/push-handler.js"],
         // فعّل الـSW الجديد فوراً وتولَّ التحكّم بكل الألسنة المفتوحة، وامسح precache القديم
         // ⇒ لا تبقى حُزَم/index قديمة تشير لملفّات حُذِفت بالنشر الجديد (جذر علّة «جار التحميل»).
         skipWaiting: true,

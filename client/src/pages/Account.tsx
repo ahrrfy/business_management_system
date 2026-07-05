@@ -9,8 +9,10 @@ import { fmtDateTime } from "@/lib/date";
 import { describeUserAgent } from "@/lib/userAgent";
 import { useState } from "react";
 import { useLocation } from "wouter";
-import { AlertTriangle, Monitor } from "lucide-react";
+import { AlertTriangle, Monitor, Bell, BellOff } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { notify } from "@/lib/notify";
+import { isPushSupported, getPermissionState, subscribeToPush, unsubscribeFromPushBrowser } from "@/lib/push";
 import { ROLE_LABEL } from "./Users";
 
 export default function Account() {
@@ -47,6 +49,49 @@ export default function Account() {
     onSuccess: async () => { await utils.auth.mySessions.invalidate(); },
   });
 
+  // إشعارات الدفع — للمدير/الأدمن حصراً (يطابق RBAC لوحة MorningBrief).
+  const elevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const pushKey = trpc.push.publicKey.useQuery(undefined, { enabled: elevated });
+  const pushStatus = trpc.push.myStatus.useQuery(undefined, { enabled: elevated });
+  const pushSubscribeMut = trpc.push.subscribe.useMutation({
+    onSuccess: async () => { await utils.push.myStatus.invalidate(); notify.ok("تمّ تفعيل إشعارات برنامج اليوم على هذا الجهاز"); },
+    onError: (e) => notify.err(e.message || "تعذّر التفعيل"),
+  });
+  const pushUnsubMut = trpc.push.unsubscribe.useMutation({
+    onSuccess: async () => { await utils.push.myStatus.invalidate(); notify.ok("تمّ إيقاف الإشعارات على هذا الجهاز"); },
+    onError: (e) => notify.err(e.message || "تعذّر الإيقاف"),
+  });
+  const [pushBusy, setPushBusy] = useState(false);
+
+  async function enablePush() {
+    if (!pushKey.data?.enabled || !pushKey.data.publicKey) {
+      notify.err("الإشعارات غير مُهيّأة على الخادم.");
+      return;
+    }
+    setPushBusy(true);
+    try {
+      const sub = await subscribeToPush(pushKey.data.publicKey);
+      await pushSubscribeMut.mutateAsync(sub);
+    } catch (e) {
+      notify.err(e instanceof Error ? e.message : "تعذّر التفعيل");
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
+  async function disablePush() {
+    setPushBusy(true);
+    try {
+      const endpoint = await unsubscribeFromPushBrowser();
+      if (endpoint) await pushUnsubMut.mutateAsync({ endpoint });
+      else notify.ok("لا اشتراك نشط على هذا الجهاز");
+    } catch (e) {
+      notify.err(e instanceof Error ? e.message : "تعذّر الإيقاف");
+    } finally {
+      setPushBusy(false);
+    }
+  }
+
   function submit() {
     setError(""); setDone("");
     if (!oldPassword) return setError("أدخل كلمة المرور الحالية.");
@@ -79,6 +124,42 @@ export default function Account() {
           <div><div className="text-muted-foreground text-xs">الدور</div><div>{me.data ? (ROLE_LABEL[me.data.role] ?? me.data.role) : "—"}</div></div>
         </CardContent>
       </Card>
+
+      {/* إشعارات الدفع — للمدير/الأدمن حصراً، وحين يكون المتصفّح يدعم Push. */}
+      {elevated && pushKey.data?.enabled && isPushSupported() && (
+        <Card>
+          <CardHeader><CardTitle className="text-base flex items-center gap-2"><Bell className="size-4" aria-hidden /> إشعارات برنامج اليوم</CardTitle></CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <p className="text-muted-foreground">
+              يصلك إشعار صباحي (07:00 بغداد) بأعداد المتابعات اليوم — تذكيرات ذمم + وعود مستحقّة + أوامر شغل متأخّرة. بلا أسماء عملاء (تظهر أعداد فقط في شريط الإشعارات).
+            </p>
+            <div className="flex items-center gap-3 flex-wrap">
+              <span className="text-xs text-muted-foreground">
+                {pushStatus.data
+                  ? pushStatus.data.activeCount > 0
+                    ? `مفعّل على ${pushStatus.data.activeCount} جهاز/متصفّح`
+                    : "غير مفعّل على هذا الحساب"
+                  : "…"}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {getPermissionState() === "granted" ? "إذن الإشعارات: مُمنوح" :
+                 getPermissionState() === "denied" ? "إذن الإشعارات: مرفوض (فعّله من إعدادات المتصفّح)" :
+                 "إذن الإشعارات: لم يُطلَب بعد"}
+              </span>
+            </div>
+            <div className="flex gap-2 flex-wrap">
+              <Button size="sm" onClick={enablePush} disabled={pushBusy || getPermissionState() === "denied"} className="gap-1">
+                <Bell className="size-3.5" aria-hidden />
+                {pushBusy ? "جارٍ…" : "تفعيل على هذا الجهاز"}
+              </Button>
+              <Button size="sm" variant="outline" onClick={disablePush} disabled={pushBusy} className="gap-1">
+                <BellOff className="size-3.5" aria-hidden />
+                إيقاف على هذا الجهاز
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid gap-4 items-start lg:grid-cols-2">
         <Card>
