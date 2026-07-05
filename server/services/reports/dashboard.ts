@@ -70,14 +70,16 @@ export async function getDashboardMetrics(
 
   // برنامج اليوم — تذكيرات AR وعدد الموعودين اليوم (يعيد استخدام getReminderQueue الذي يطبّق
   // منطق ≥٧ أيام + تبريد ٧ + وعد اليوم). العزل عبر الفرع (يمرَّر عبر opts.branchId).
-  // حين branchId=null (أدمن يرى الكل)، نستدعي الاستعلام بلا فلتر فرع ⇒ getARAging يجمع.
+  // حين branchId=null (مرتفع يرى الكل) ⇒ getReminderQueue تجمع كل الفروع — مثل بقية عدّادات
+  // هذه الحمولة (lowStock/overdueAR/overdueWorkOrders). (مراجعة ٥/٧: كان `?? 1` يثبّت العدّادين
+  // على الفرع ١ صامتاً فيناقض التعليق والشاشة المرتبطة.)
   //
   // ⚠️ getReminderQueue لا تُرجع الوعود المستقبلية (promisedDate > اليوم مُستبعَد) — الحقل
   // promisedToday يعدّ فقط الوعود المستحقّة اليوم (isPromiseDue=true).
   let arRemindersDue = 0;
   let promisedToday = 0;
   try {
-    const queue = await getReminderQueue({ branchId: branchId ?? 1 });
+    const queue = await getReminderQueue({ branchId });
     arRemindersDue = queue.length;
     promisedToday = queue.filter((r) => r.isPromiseDue).length;
   } catch {

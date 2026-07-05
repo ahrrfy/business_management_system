@@ -4,6 +4,7 @@
  * تركّز على: منطق التصفية (٧ أيام + منع تكرار)، IDOR (فرع)، صحّة snapshots، وترتيب الأقدم أولاً.
  * لا نختبر getARAging الأساسي (له اختباراته الخاصّة) — نستدعيه كما هو.
  */
+import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -31,6 +32,9 @@ async function makeCustomerWithOverdueInvoice(opts: {
   dueDate: string; // YYYY-MM-DD
   total: string;
   paid?: string;
+  /** الرصيد الجاري إن اختلف عن total — لمحاكاة سند قبض مستقلّ (يخفّض الرصيد لا paidAmount)
+   *  أو رصيد افتتاحي دائن. الافتراضي = total (لا دفعات على الحساب). */
+  currentBalance?: string;
 }): Promise<void> {
   const d = db();
   const branchId = opts.branchId ?? 1;
@@ -39,7 +43,7 @@ async function makeCustomerWithOverdueInvoice(opts: {
     name: opts.customerName,
     phone: opts.phone ?? "07901234567",
     customerType: "فرد",
-    currentBalance: opts.total,
+    currentBalance: opts.currentBalance ?? opts.total,
     isActive: true,
   });
   await d.insert(s.invoices).values({
@@ -177,6 +181,72 @@ describe("arRemindersService - getReminderQueue", () => {
     expect(queue2.map((r) => r.customerId)).toEqual([121]);
   });
 
+  it("انقضاء التبريد: عميل ذُكِّر قبل ٨ أيام يعود للقائمة (الجانب الموجب — فجوة مراجعة ٥/٧)", async () => {
+    await makeCustomerWithOverdueInvoice({
+      customerId: 125,
+      customerName: "ذُكِّر قبل ٨ أيام",
+      invoiceId: 1025,
+      invoiceNumber: "INV-1025",
+      dueDate: daysAgo(30),
+      total: "200000",
+    });
+    await logReminderSent(
+      {
+        customerId: 125,
+        totalUnpaidSnapshot: "200000",
+        oldestInvoiceDate: daysAgo(30),
+        daysOverdue: 30,
+        messageBody: "تذكير قديم",
+      },
+      { userId: 1, branchId: 1 },
+    );
+    // داخل نافذة التبريد ⇒ مستبعَد.
+    expect(await getReminderQueue({ branchId: 1 })).toEqual([]);
+    // ادفع التذكير إلى الوراء ٨ أيام (تجاوز REMINDER_COOLDOWN_DAYS=7) ⇒ يجب أن يعود.
+    // انقلاب إشارة/وحدة زمنية في شرط `nowMs - last.at < cooldownMs` كان سيمرّ صامتاً بلا هذا الاختبار.
+    await db().execute(sql`UPDATE arReminders SET createdAt = DATE_SUB(NOW(), INTERVAL 8 DAY)`);
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue.map((r) => r.customerId)).toEqual([125]);
+    expect(queue[0].lastReminderStatus).toBe("SENT");
+    expect(queue[0].isPromiseDue).toBe(false);
+  });
+
+  it("branchId=null ⇒ تجميع كل الفروع (قراءة الأدمن/برنامج اليوم)", async () => {
+    await makeCustomerWithOverdueInvoice({
+      customerId: 126,
+      customerName: "عميل فرع ١ للتجميع",
+      branchId: 1,
+      invoiceId: 1026,
+      invoiceNumber: "INV-1026",
+      dueDate: daysAgo(20),
+      total: "100000",
+    });
+    await makeCustomerWithOverdueInvoice({
+      customerId: 127,
+      customerName: "عميل فرع ٢ للتجميع",
+      branchId: 2,
+      invoiceId: 1027,
+      invoiceNumber: "INV-1027",
+      dueDate: daysAgo(40),
+      total: "80000",
+    });
+    const all = await getReminderQueue({ branchId: null });
+    expect(all.map((r) => r.customerId).sort()).toEqual([126, 127]);
+    // التبريد الموحَّد عبر الفروع: تذكير لعميل ١٢٧ من فرعه يخفيه من القراءة المجمَّعة أيضاً.
+    await logReminderSent(
+      {
+        customerId: 127,
+        totalUnpaidSnapshot: "80000",
+        oldestInvoiceDate: daysAgo(40),
+        daysOverdue: 40,
+        messageBody: "تذكير",
+      },
+      { userId: 2, branchId: 2 },
+    );
+    const after = await getReminderQueue({ branchId: null });
+    expect(after.map((r) => r.customerId)).toEqual([126]);
+  });
+
   it("منع التكرار: عميل ذُكِّر خلال ٧ أيام لا يظهر مجدداً", async () => {
     await makeCustomerWithOverdueInvoice({
       customerId: 130,
@@ -205,6 +275,71 @@ describe("arRemindersService - getReminderQueue", () => {
     // القائمة بعد الإرسال — العميل مستبعَد (تبريد ٧ أيام).
     queue = await getReminderQueue({ branchId: 1 });
     expect(queue).toEqual([]);
+  });
+});
+
+describe("arRemindersService - دلالة الرصيد الجاري (مراجعة ٥/٧: الذمم الحاكمة = currentBalance)", () => {
+  it("عميل سدّد كامل دينه «على الحساب» (سند مستقلّ ⇒ currentBalance=0 وفواتيره PENDING) لا يُطالَب", async () => {
+    // سند القبض المستقلّ يخفّض customers.currentBalance عبر adjustCustomerBalance دون أن يمسّ
+    // invoices.paidAmount ⇒ unpaidTotal يبقى موجباً رغم أن الذمّة صفر. نحاكي أثره النهائي مباشرة.
+    await makeCustomerWithOverdueInvoice({
+      customerId: 400,
+      customerName: "سدّد على الحساب",
+      invoiceId: 4000,
+      invoiceNumber: "INV-4000",
+      dueDate: daysAgo(30),
+      total: "250000",
+      currentBalance: "0",
+    });
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue).toEqual([]);
+  });
+
+  it("عميل دائن برصيد افتتاحي (currentBalance سالب) لا يُطالَب", async () => {
+    await makeCustomerWithOverdueInvoice({
+      customerId: 401,
+      customerName: "دائن افتتاحياً",
+      invoiceId: 4001,
+      invoiceNumber: "INV-4001",
+      dueDate: daysAgo(30),
+      total: "100000",
+      currentBalance: "-50000",
+    });
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue).toEqual([]);
+  });
+
+  it("دفعة جزئية على الحساب ⇒ المبلغ المُطالَب به = min(متبقّي الفواتير، الرصيد الجاري)", async () => {
+    // فواتير متأخّرة بمتبقٍّ 100000 لكن العميل دفع 60000 على الحساب ⇒ ذمّته الجارية 40000.
+    // الرسالة يجب أن تطالب بـ40000 لا 100000 (مطالبة بمبلغ مسدَّد = خطأ تجاه عميل حقيقي).
+    await makeCustomerWithOverdueInvoice({
+      customerId: 402,
+      customerName: "دفع جزئياً على الحساب",
+      invoiceId: 4002,
+      invoiceNumber: "INV-4002",
+      dueDate: daysAgo(30),
+      total: "100000",
+      currentBalance: "40000",
+    });
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue).toHaveLength(1);
+    expect(queue[0].totalUnpaid).toBe("40000.00");
+  });
+
+  it("رصيد جارٍ أكبر من متبقّي الفواتير (افتتاحي مدين إضافي) ⇒ المطالبة بمتبقّي الفواتير فقط", async () => {
+    // التذكير مبنيّ على فواتير متأخّرة محدَّدة — الجزء الافتتاحي/غير المُبوَّب لا يُضخّم الرسالة.
+    await makeCustomerWithOverdueInvoice({
+      customerId: 403,
+      customerName: "افتتاحي مدين فوق الفواتير",
+      invoiceId: 4003,
+      invoiceNumber: "INV-4003",
+      dueDate: daysAgo(30),
+      total: "100000",
+      currentBalance: "175000",
+    });
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue).toHaveLength(1);
+    expect(queue[0].totalUnpaid).toBe("100000.00");
   });
 });
 
@@ -291,6 +426,31 @@ describe("arRemindersService - وعد الدفع (promise tracking)", () => {
     expect(queue.map((r) => r.customerId)).toEqual([300, 301]);
     expect(queue[0].isPromiseDue).toBe(true);
     expect(queue[1].isPromiseDue).toBe(false);
+  });
+
+  it("وعد فات يومه (أمس) ⇒ يبقى ظاهراً بـisPromiseDue متجاوزاً التبريد (فجوة مراجعة ٥/٧)", async () => {
+    // logReminderSkipped يرفض وعداً ماضياً عند الإنشاء ⇒ نحاكي وعداً سُجِّل قبل أيام وفات يومه أمس
+    // بإدراج الصفّ مباشرة (createdAt=الآن ⇒ داخل نافذة التبريد — يثبت أن الوعد الفائت يتجاوزها).
+    // انحدارٌ يحوّل `promisedDate <= today` إلى `===` كان سيُضيع كل وعد فائت بصمت بلا هذا الاختبار.
+    await db()
+      .insert(s.arReminders)
+      .values({
+        customerId: 300,
+        branchId: 1,
+        totalUnpaidSnapshot: "500000.00",
+        oldestInvoiceDate: daysAgo(20),
+        daysOverdue: 20,
+        messageBody: "",
+        status: "SKIPPED",
+        skipReason: "وعد قديم فات يومه",
+        promisedDate: daysAgo(1),
+        createdBy: 1,
+      });
+    const queue = await getReminderQueue({ branchId: 1 });
+    expect(queue).toHaveLength(1);
+    expect(queue[0].customerId).toBe(300);
+    expect(queue[0].isPromiseDue).toBe(true);
+    expect(queue[0].promisedDate).toBe(daysAgo(1));
   });
 
   it("رفض وعد في الماضي (المتابعة يجب أن تكون مستقبلاً)", async () => {
