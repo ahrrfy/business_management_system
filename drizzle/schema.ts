@@ -220,6 +220,9 @@ export const customers = mysqlTable(
     // import-integration: المعرّف القديم («الرقم» في ملفات النظام السابق) — مفتاح مطابقة الاستيراد.
     // UNIQUE يسمح بتعدّد NULL ⇒ حارس بنيوي ضدّ ازدواج الطرف برصيد عند استيراد متزامن.
     legacyCode: varchar("legacyCode", { length: 40 }),
+    // dup-detect (٦/٧): مفتاح idempotency للإنشاء — UUID من نموذج الإضافة، UNIQUE يمنع صفاً
+    // ثانياً عند إعادة الإرسال (نقر مزدوج/إعادة محاولة شبكة). NULL متعدّد للمسارات القديمة. هجرة 0051.
+    clientRequestId: varchar("clientRequestId", { length: 64 }),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -231,6 +234,7 @@ export const customers = mysqlTable(
     nameIdx: index("idx_customer_name").on(table.name),
     phoneIdx: index("idx_customer_phone").on(table.phone),
     legacyUq: unique("uq_customer_legacy").on(table.legacyCode),
+    clientRequestUq: unique("uq_customer_client_request").on(table.clientRequestId),
   })
 );
 
