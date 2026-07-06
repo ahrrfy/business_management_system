@@ -314,7 +314,13 @@ export const reportsRouter = router({
         }
         effectiveBranchId = Number(ctx.user.branchId);
       }
-      return getDashboardMetrics({ branchId: effectiveBranchId });
+      // gap-audit ٥/٧ (HIGH): مدينو الرصيد الافتتاحي (openingScope) للأدمن حصراً — مطابقةً لحصر
+      // نطاق openingScope نفسه في arRemindersRouter.ts (لا انتماء فرعيّ لهؤلاء المدينين، ولا مسار
+      // للمدير للتصرّف بهم أصلاً — راجع openingWriteBranch).
+      return getDashboardMetrics({
+        branchId: effectiveBranchId,
+        includeOpeningBalance: ctx.user.role === "admin",
+      });
     }),
 
   /** تدقيق التوافق المالي — للمشرف فقط. يكشف الانجراف الصامت في الأرصدة/المخزون/الدفتر. */

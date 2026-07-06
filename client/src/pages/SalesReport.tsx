@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { exportRows } from "@/lib/export";
-import { printReportDoc } from "@/lib/printing/reportDoc";
+import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
@@ -299,6 +299,7 @@ export default function SalesReport() {
           isLoading={invoiceQ.isLoading}
           from={from}
           to={to}
+          branchLabel={branchId === "" ? "الكل" : branches.data?.find((b) => b.id === Number(branchId))?.name ?? "—"}
         />
       )}
       {tab === "top" && (
@@ -337,12 +338,14 @@ function InvoicesTab({
   isLoading,
   from,
   to,
+  branchLabel,
 }: {
   rows: ReportRow[];
   totals: RouterOutputs["reports"]["salesReport"]["totals"] | undefined;
   isLoading: boolean;
   from: string;
   to: string;
+  branchLabel: string;
 }) {
   return (
     <>
@@ -388,40 +391,29 @@ function InvoicesTab({
               variant="outline"
               size="sm"
               disabled={!rows.length}
-              onClick={() =>
-                printReportDoc({
-                  title: "تقرير المبيعات",
-                  headerExtra: [{ label: "الفترة", value: `${from} — ${to}` }],
-                  columns: [
-                    { key: "num", label: "رقم الفاتورة" },
-                    { key: "date", label: "التاريخ" },
-                    { key: "customer", label: "العميل" },
-                    { key: "source", label: "المصدر" },
-                    { key: "total", label: "الإجمالي", align: "left" },
-                    { key: "paid", label: "المدفوع", align: "left" },
-                    { key: "unpaid", label: "المتبقّي", align: "left" },
-                    { key: "status", label: "الحالة" },
-                  ],
+              onClick={() => {
+                // القالب عالي الدقّة V2 (gap-audit ٥/٧: printSalesReportV2 كان مكتوباً في PR #140
+                // بلا مستهلِك — رُبط هنا بدل الطباعة العامّة السابقة، بمرآة بقيّة قوالب الفواتير).
+                printSalesReportV2({
+                  periodLabel: `${from} — ${to}`,
+                  branchLabel,
+                  invoiceCount: totals?.count ?? rows.length,
+                  totalSum: totals?.total ?? "0",
+                  paidSum: totals?.paid ?? "0",
+                  unpaidSum: totals?.unpaid ?? "0",
                   rows: rows.map((r) => ({
-                    num: r.invoiceNumber,
-                    date: new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
-                    customer: r.customerName ?? "—",
-                    source: SOURCE[r.sourceType] ?? r.sourceType,
-                    total: fmt(r.total),
-                    paid: fmt(r.paidAmount),
-                    unpaid: fmt(positiveDiff(r.total, r.paidAmount).toString()),
+                    invoiceNumber: r.invoiceNumber,
+                    date: new Date(r.invoiceDate).toLocaleDateString("en-GB"),
+                    customerName: r.customerName ?? "—",
+                    total: r.total,
+                    paid: r.paidAmount,
+                    remaining: positiveDiff(r.total, r.paidAmount).toString(),
                     status: STATUS[r.status] ?? r.status,
+                    statusColor:
+                      r.status === "PAID" ? "#0D6B52" : r.status === "PARTIALLY_PAID" ? "#92400E" : "#8A1F11",
                   })),
-                  summary: totals
-                    ? [
-                        { label: "عدد الفواتير", value: String(totals.count) },
-                        { label: "الإجمالي", value: fmt(totals.total) },
-                        { label: "المحصَّل", value: fmt(totals.paid) },
-                        { label: "المتبقّي", value: fmt(totals.unpaid), large: true, bold: true },
-                      ]
-                    : undefined,
-                })
-              }
+                });
+              }}
             >
               طباعة / PDF
             </Button>

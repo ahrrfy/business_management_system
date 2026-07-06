@@ -160,4 +160,60 @@ describe("runMorningBriefPush", () => {
     expect(r.candidates).toBe(0);
     expect(r.sent).toBe(0);
   });
+
+  // إصلاح gap-audit HIGH (٥/٧): مدينو الرصيد الافتتاحي كانوا غائبين كلياً عن هذا الإشعار — أهمّ
+  // قناة متابعة يومية صُمِّمت خصيصاً لهم. تحقّق طرف-لطرف: العدّاد يصل فعلياً لجسم إشعار الأدمن.
+  it("جسم إشعار الأدمن يتضمّن مدين الرصيد الافتتاحي (بلا فاتورة) — لا يعود غائباً بعد الإصلاح", async () => {
+    await subscribeUserToPush(SUB, 1); // مستخدم ١ = admin (seedBeforeEach)
+    const d = db();
+    await d.insert(s.customers).values({
+      id: 500,
+      name: "مدين افتتاحي",
+      defaultPriceTier: "RETAIL",
+      currentBalance: "500000",
+    });
+    const openedOn = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    await d.insert(s.accountingEntries).values({
+      entryType: "OPENING",
+      customerId: 500,
+      amount: "500000",
+      entryDate: openedOn,
+      dedupeKey: "OPENING:CUSTOMER:500",
+    });
+
+    const r = await runMorningBriefPush();
+    expect(r.sent).toBe(1);
+    const [, payload] = mockSendNotification.mock.calls[0];
+    const parsed = JSON.parse(payload as string);
+    expect(parsed.counts.arRemindersDue).toBe(1);
+    expect(parsed.body).toContain("تذكير");
+  });
+
+  // نفس السيناريو لكن للمدير (لا أدمن) — يجب أن يبقى غائباً (لا انتماء فرعيّ لهؤلاء المدينين، ولا
+  // مسار للمدير للتصرّف بهم — openingScope/openingWriteBranch أدمن حصراً).
+  it("جسم إشعار المدير (لا أدمن) لا يتضمّن مدين الرصيد الافتتاحي — الحصر بالأدمن يعمل عبر السلسلة كاملة", async () => {
+    const d = db();
+    // مدير فعّال بديل (id=1 admin موجود مسبقاً؛ نضيف مديراً فعّالاً بدل تعديل seedBase).
+    await d.insert(s.users).values({ id: 4, openId: "u4", name: "مدير فعّال", role: "manager", loginMethod: "local", branchId: 1, isActive: true });
+    await subscribeUserToPush({ ...SUB, endpoint: SUB.endpoint + "-manager" }, 4);
+    await d.insert(s.customers).values({
+      id: 501,
+      name: "مدين افتتاحي٢",
+      defaultPriceTier: "RETAIL",
+      currentBalance: "300000",
+    });
+    const openedOn = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    await d.insert(s.accountingEntries).values({
+      entryType: "OPENING",
+      customerId: 501,
+      amount: "300000",
+      entryDate: openedOn,
+      dedupeKey: "OPENING:CUSTOMER:501",
+    });
+
+    const r = await runMorningBriefPush();
+    expect(r.candidates).toBe(1); // المدير فقط (الأدمن id=1 بلا اشتراك في هذا الاختبار)
+    expect(r.sent).toBe(0);
+    expect(r.skippedEmpty).toBe(1); // arRemindersDue=0 للمدير ⇒ محتوى فارغ ⇒ لا إشعار
+  });
 });
