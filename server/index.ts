@@ -168,14 +168,20 @@ async function startServer() {
   });
 
   // حدّ صارم على تسجيل الدخول (حماية من تخمين كلمات المرور).
+  // ٦/٧/٢٦: كان ١٠ طلبات/١٥د لكل IP **يَعُدّ الناجح والفاشل معاً** — وكل أجهزة المتجر خلف
+  // راوتر واحد = IP عام واحد يتشارك الميزانية، فصباح عمل عادي (عدة أجهزة + جلسات ١٢ ساعة
+  // تنتهي معاً) كان يُطلق 429 يُقرأ «قفل حساب». الآن: الفشل وحده يُحسب (skipSuccessfulRequests)
+  // والافتراضي ٣٠ فشلاً/١٥د لكل IP — عدّاد التطبيق (شركة×IP، ٢٠/١٥د في authRouter) يبقى
+  // خطّ الدفاع الأدقّ ويُطلق قبله برسالة أوضح + أثر تدقيق.
   app.use(
     "/api/trpc",
     rateLimit({
       windowMs: 15 * 60 * 1000,
-      limit: Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 10),
+      limit: Number(process.env.LOGIN_RATE_LIMIT_MAX ?? 30),
       standardHeaders: "draft-7",
       legacyHeaders: false,
       skip: (req) => !req.path.includes("auth.login"),
+      skipSuccessfulRequests: true,
       handler: rateLimitHandler("محاولات دخول كثيرة، انتظر ١٥ دقيقة ثم أعد المحاولة."),
     })
   );

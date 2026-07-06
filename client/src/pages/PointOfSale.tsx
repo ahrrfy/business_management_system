@@ -4,7 +4,7 @@ import { ShoppingCart, Printer, Palette, Lock, Home } from "lucide-react";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import type { RoleKey } from "@shared/permissions";
+import { levelSatisfies, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 /**
  * نقطة البيع المُوحَّدة — Shell واحد لـ٣ أوضاع: تجزئة / خدمات طباعة / استقبال.
@@ -68,10 +68,18 @@ function readMode(searchString: string): Mode {
   return "RETAIL";
 }
 
-function canSee(roles: RoleKey[] | undefined, current: RoleKey | undefined): boolean {
+// ٦/٧: admin يمرّ دائماً، والمنح الصريح لوحدة «خدمة العملاء» (workorders=FULL عبر مصفوفة
+// الصلاحيات/دور مخصّص) يفتح وضع الاستقبال أيضاً — مرآة بوّابة الخادم workordersCashierProcedure.
+function canSee(
+  roles: RoleKey[] | undefined,
+  current: RoleKey | undefined,
+  override?: PermissionMap | null
+): boolean {
   if (!roles) return true;
   if (!current) return false;
-  return roles.includes(current);
+  if (current === "admin") return true;
+  if (roles.includes(current)) return true;
+  return levelSatisfies(override?.workorders, "FULL");
 }
 
 export default function PointOfSale() {
@@ -84,23 +92,24 @@ export default function PointOfSale() {
 
   const me = trpc.auth.me.useQuery();
   const myRole = me.data?.role as RoleKey | undefined;
+  const myPerms = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   // P1 (ورشة عَدائية ٢٤/٦/٢٦): لا نَحسب visibleModes/accessDenied قبل اِكتمال me ⇒ سَنَّتظر
   // الدور قبل عَرض الـtabs/المحتوى. يَحلّ ٤ مَشاكل: وَميض tab RECEPTION، وَميض Forbidden عند
   // الوصول المُباشر بـURL لـadmin، وحدّة canSee الدلالية، ودَور مُخصَّص يَتأخّر في الوصول.
   const meLoading = me.isLoading;
 
   const visibleModes = useMemo(
-    () => (meLoading ? [] : MODES.filter((m) => canSee(m.roles, myRole))),
-    [meLoading, myRole],
+    () => (meLoading ? [] : MODES.filter((m) => canSee(m.roles, myRole, myPerms))),
+    [meLoading, myRole, myPerms],
   );
   const activeModeMeta = MODES.find((m) => m.v === activeMode);
-  const accessDenied = !meLoading && activeModeMeta != null && !canSee(activeModeMeta.roles, myRole);
+  const accessDenied = !meLoading && activeModeMeta != null && !canSee(activeModeMeta.roles, myRole, myPerms);
 
   function setMode(next: Mode) {
     if (next === activeMode) return;
     if (meLoading) return; // لا تَبديل قَبل اِكتمال الدور.
     const meta = MODES.find((m) => m.v === next);
-    if (!canSee(meta?.roles, myRole)) return;
+    if (!canSee(meta?.roles, myRole, myPerms)) return;
     const url = next === "RETAIL" ? "/pos" : `/pos?mode=${next}`;
     navigate(url, { replace: true });
   }
