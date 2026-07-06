@@ -7,6 +7,10 @@
 # Daily schedule (once, as admin):
 #   schtasks /Create /TN "AlRoya ERP - Pull VPS Backup" /SC DAILY /ST 07:30 /F ^
 #     /TR "powershell -NoProfile -ExecutionPolicy Bypass -File D:\business_management_system\scripts\pull-vps-backup.ps1"
+#   Then FIX THE DEFAULT TASK SETTINGS or it silently refuses to run on battery and never
+#   catches up runs missed while the machine was off/asleep (bit us 2026-07-03..06: three
+#   days with no offsite pull, Last Result 0x800710E0). One-liner (already applied live):
+#     powershell -NoProfile -Command "$t=Get-ScheduledTask 'AlRoya ERP - Pull VPS Backup'; $s=$t.Settings; $s.StartWhenAvailable=$true; $s.DisallowStartIfOnBatteries=$false; $s.StopIfGoingOnBatteries=$false; Set-ScheduledTask 'AlRoya ERP - Pull VPS Backup' -Settings $s"
 # Requires: SSH key for the VPS + Host alias in ~/.ssh/config (default: alroya-erp).
 param(
   [string]$SshHost = "alroya-erp",
