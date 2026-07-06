@@ -201,6 +201,7 @@ export const customers = mysqlTable(
     nameIdx: index("idx_customer_name").on(table.name),
     phoneIdx: index("idx_customer_phone").on(table.phone),
     legacyUq: unique("uq_customer_legacy").on(table.legacyCode),
+    activeIdx: index("idx_customer_active").on(table.isActive),
   })
 );
 

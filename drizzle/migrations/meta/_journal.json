@@ -351,6 +351,13 @@
       "when": 1783280478953,
       "tag": "0049_fixed_nomad",
       "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "5",
+      "when": 1783280478954,
+      "tag": "0050_customer_active_index",
+      "breakpoints": true
     }
   ]
 }
