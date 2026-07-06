@@ -23,7 +23,8 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { accountingEntries, attendance, employees, payrollItems, payrollRuns, receipts } from "../../drizzle/schema";
+import { accountingEntries, attendance, commissionRunLines, commissionRuns, employees, payrollItems, payrollRuns, receipts } from "../../drizzle/schema";
+import { and, inArray } from "drizzle-orm";
 import type { Tx } from "../db";
 import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
@@ -45,10 +46,12 @@ function periodEntryDate(period: string): string {
   return `${period}-01`;
 }
 
-/** صافي البند = الإجمالي + الإضافي − الاستقطاع (لا يقلّ عن الصفر منطقياً، لكن لا نقصّ — قد يكون
- *  الاستقطاع أكبر فعلاً (سلفة)؛ نتركه كما هو ليعكس الواقع، والواجهة تعرضه بدقّة). */
-function computeNet(gross: Decimal, overtime: Decimal, deductions: Decimal): Decimal {
-  return round2(gross.plus(overtime).minus(deductions));
+/** صافي البند = الإجمالي + الإضافي + العمولة − الاستقطاع (لا يقلّ عن الصفر منطقياً، لكن لا نقصّ —
+ *  قد يكون الاستقطاع أكبر فعلاً (سلفة)؛ نتركه كما هو ليعكس الواقع، والواجهة تعرضه بدقّة).
+ *  commissions (٦/٧/٢٦): العمولة تُلتقط من تشغيلة العمولات المعتمدة لنفس الشهر عند التوليد —
+ *  موجبة دائماً (السالب لا يخصم من الراتب؛ يبقى مرحَّلاً في سلسلة التشغيلات). */
+function computeNet(gross: Decimal, overtime: Decimal, commission: Decimal, deductions: Decimal): Decimal {
+  return round2(gross.plus(overtime).plus(commission).minus(deductions));
 }
 
 /* ─────────────────────────── قراءة ─────────────────────────── */
@@ -92,16 +95,18 @@ export async function getRun(id: number) {
 /** يجمع بنود المسيّر (داخل tx) ويحدّث رأس المسيّر بالمجاميع وعدد الموظفين. */
 async function recomputeRunTotals(tx: Tx, runId: number): Promise<void> {
   const items = await tx
-    .select({ gross: payrollItems.gross, overtime: payrollItems.overtime, deductions: payrollItems.deductions, net: payrollItems.net })
+    .select({ gross: payrollItems.gross, overtime: payrollItems.overtime, commission: payrollItems.commission, deductions: payrollItems.deductions, net: payrollItems.net })
     .from(payrollItems)
     .where(eq(payrollItems.runId, runId));
   let g = new Decimal(0);
   let ot = new Decimal(0);
+  let com = new Decimal(0);
   let ded = new Decimal(0);
   let net = new Decimal(0);
   for (const it of items) {
     g = g.plus(money(it.gross));
     ot = ot.plus(money(it.overtime));
+    com = com.plus(money(it.commission));
     ded = ded.plus(money(it.deductions));
     net = net.plus(money(it.net));
   }
@@ -111,6 +116,7 @@ async function recomputeRunTotals(tx: Tx, runId: number): Promise<void> {
       employeeCount: items.length,
       totalGross: toDbMoney(g),
       totalOvertime: toDbMoney(ot),
+      totalCommission: toDbMoney(com),
       totalDeductions: toDbMoney(ded),
       totalNet: toDbMoney(net),
     })
@@ -138,6 +144,46 @@ export async function generatePayroll(period: string, actor: Actor) {
       .where(sql`${employees.employmentStatus} <> 'terminated'`)
       .orderBy(employees.id);
 
+    // commissions (٦/٧/٢٦): التقاط تشغيلة العمولات **المعتمدة** لنفس الشهر — بند «عمولة» لكل
+    // موظف داخل نفس المعاملة (قفل رأس التشغيلة يمنع سباق إلغاء الاعتماد أثناء التوليد).
+    // uq_payroll_period + ON DELETE SET NULL على payrollRunId يضمنان الالتقاط مرّة واحدة بالضبط:
+    // حذف مسودة المسيّر يفكّ الربط تلقائياً فيلتقطها التوليد التالي بلا ازدواج.
+    const [commissionRun] = await tx
+      .select()
+      .from(commissionRuns)
+      .where(and(eq(commissionRuns.period, p), eq(commissionRuns.status, "approved")))
+      .for("update");
+    const commissionByEmp = new Map<number, Decimal>();
+    if (commissionRun) {
+      if (commissionRun.payrollRunId != null) {
+        // دفاعي — لا يبلغه مسار سليم (مسيّر الشهر فريد والفكّ تلقائي مع حذف مسودته).
+        throw new TRPCError({ code: "CONFLICT", message: "تشغيلة العمولات مرتبطة بمسيّر آخر — فكّ الربط أولاً." });
+      }
+      const cLines = await tx
+        .select({ employeeId: commissionRunLines.employeeId, commissionAmount: commissionRunLines.commissionAmount })
+        .from(commissionRunLines)
+        .where(eq(commissionRunLines.runId, Number(commissionRun.id)));
+      for (const l of cLines) commissionByEmp.set(Number(l.employeeId), money(l.commissionAmount));
+    }
+
+    // اكتمال التسوية: موظف له سطر عمولة لكنه خارج قائمة التوليد (فُصل بعد أن باع) يُلحق
+    // ببند أجرٍ صفري كي تُصرف عمولته المستحقة مرّة واحدة ولا تضيع.
+    const listedIds = new Set(emps.map((e) => Number(e.id)));
+    const zeroGrossIds = new Set<number>();
+    const missingIds = Array.from(commissionByEmp.keys()).filter((id) => money(commissionByEmp.get(id) ?? 0).gt(0) && !listedIds.has(id));
+    if (missingIds.length > 0) {
+      const extra = await tx
+        .select({ id: employees.id, payType: employees.payType, salary: employees.salary, allowances: employees.allowances })
+        .from(employees)
+        .where(inArray(employees.id, missingIds));
+      for (const e of extra) {
+        zeroGrossIds.add(Number(e.id));
+        emps.push(e);
+      }
+    }
+
+    // الحارس بعد الاكتمال عمداً: منشأة كلُّ من تبقّى فيها مفصولون ذوو عمولات معتمدة
+    // يجب أن تستطيع توليد مسيّر تسويتهم (بنود أجرٍ صفري بعمولة) — كان الحارس المبكر يمنعها.
     if (emps.length === 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد موظفون لتوليد مسيّر لهم" });
     }
@@ -174,10 +220,15 @@ export async function generatePayroll(period: string, actor: Actor) {
 
     for (const e of emps) {
       const monthly = e.payType === "monthly";
-      const allowances = money(e.allowances ?? 0);
+      const zeroGross = zeroGrossIds.has(Number(e.id));
+      const allowances = zeroGross ? new Decimal(0) : money(e.allowances ?? 0);
       let gross: Decimal;
       let hours: string | null;
-      if (monthly) {
+      if (zeroGross) {
+        // تسوية نهائية لمفصولٍ ذي عمولة مستحقة — لا راتب، عمولة فقط.
+        gross = new Decimal(0);
+        hours = null;
+      } else if (monthly) {
         gross = round2(money(e.salary ?? 0).plus(allowances));
         hours = null;
       } else {
@@ -186,8 +237,9 @@ export async function generatePayroll(period: string, actor: Actor) {
         hours = new Decimal(att?.hours ?? 0).toFixed(2);
       }
       const overtime = new Decimal(0);
+      const commission = commissionByEmp.get(Number(e.id)) ?? new Decimal(0);
       const deductions = new Decimal(0);
-      const net = computeNet(gross, overtime, deductions);
+      const net = computeNet(gross, overtime, commission, deductions);
       await tx.insert(payrollItems).values({
         runId,
         employeeId: Number(e.id),
@@ -195,14 +247,20 @@ export async function generatePayroll(period: string, actor: Actor) {
         hours,
         gross: toDbMoney(gross),
         // مخصّصات لقطة العرض في القسيمة؛ مضمَّنة أصلاً في gross للشهري (gross = أساسي + مخصّصات).
-        allowances: toDbMoney(monthly ? allowances : 0),
+        allowances: toDbMoney(monthly && !zeroGross ? allowances : 0),
         overtime: toDbMoney(overtime),
+        commission: toDbMoney(commission),
         deductions: toDbMoney(deductions),
         net: toDbMoney(net),
       });
     }
 
     await recomputeRunTotals(tx, runId);
+
+    // ربط الالتقاط داخل نفس المعاملة — أثر تدقيقي ثنائي الاتجاه (التشغيلة تعرف مسيّرها).
+    if (commissionRun) {
+      await tx.update(commissionRuns).set({ payrollRunId: runId }).where(eq(commissionRuns.id, Number(commissionRun.id)));
+    }
     return runId;
   }).then((runId) => getRun(runId));
 }
@@ -229,7 +287,8 @@ export async function updateItem(itemId: number, input: UpdateItemInput) {
     const deductions = input.deductions != null ? money(input.deductions) : money(item.deductions);
     if (overtime.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمل الإضافي لا يكون سالباً" });
     if (deductions.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "الاستقطاع لا يكون سالباً" });
-    const net = computeNet(money(item.gross), overtime, deductions);
+    // العمولة قراءة فقط هنا — تعديلها = إعادة احتساب تشغيلة العمولات قبل توليد المسيّر.
+    const net = computeNet(money(item.gross), overtime, money(item.commission), deductions);
 
     await tx
       .update(payrollItems)

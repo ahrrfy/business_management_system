@@ -18,7 +18,8 @@ import { exportRows } from "@/lib/export";
 import { D, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { Calculator, Check, FileDown, Link2, RotateCcw, Trash2, TrendingUp, Undo2, Wallet } from "lucide-react";
+import { printCommissionStatementV2 } from "@/lib/printing/printCommissionV2";
+import { Calculator, Check, FileDown, Link2, Printer, RotateCcw, Trash2, TrendingUp, Undo2, Wallet } from "lucide-react";
 import { Link } from "wouter";
 import { useMemo, useState } from "react";
 
@@ -149,6 +150,33 @@ export default function CommissionRuns() {
       effectiveSum: round2(effectiveSum).toFixed(2),
     };
   }, [run, lines]);
+
+  function printStatement(l: RunLine) {
+    if (!run) return;
+    const d = (l.detail ?? {}) as { tierMode?: "TARGET_PCT" | "AMOUNT_SLAB"; tierThreshold?: string | null; planName?: string };
+    printCommissionStatementV2({
+      runId: Number(run.id),
+      period: run.period,
+      statusLabel: STATUS_LABEL[run.status] ?? run.status,
+      employeeName: l.employeeName,
+      position: l.position,
+      planName: l.planName ?? d.planName ?? "—",
+      tierMode: d.tierMode ?? "TARGET_PCT",
+      baseSales: l.baseSales,
+      baseReturns: l.baseReturns,
+      carryIn: l.carryIn,
+      effectiveBase: l.effectiveBase,
+      targetAmount: l.targetAmount,
+      achievementPct: l.achievementPct,
+      tierApplied: l.tierIndex != null,
+      tierThreshold: d.tierThreshold,
+      ratePct: l.ratePct,
+      fixedBonus: l.fixedBonus,
+      commissionAmount: l.commissionAmount,
+      carryOut: l.carryOut,
+      computedAt: run.computedAt ? new Date(run.computedAt).toLocaleDateString("en-GB") : null,
+    });
+  }
 
   function exportExcel() {
     if (!run) return;
@@ -337,7 +365,10 @@ export default function CommissionRuns() {
                         {D(l.carryOut).isZero() ? "—" : iqd(l.carryOut)}
                       </td>
                       <td className="p-2.5 text-center whitespace-nowrap">
-                        <button onClick={() => setDetailLine(l)} className="text-xs text-primary font-medium hover:underline">
+                        <button onClick={() => printStatement(l)} className="text-xs text-primary font-medium hover:underline inline-flex items-center gap-1">
+                          <Printer className="size-3.5" aria-hidden /> كشف
+                        </button>
+                        <button onClick={() => setDetailLine(l)} className="text-xs text-muted-foreground font-medium hover:underline ms-3">
                           تفاصيل
                         </button>
                       </td>
