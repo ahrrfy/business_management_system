@@ -6,8 +6,9 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
-import { AlertCircle, Package, Wrench, X } from "lucide-react";
+import { AlertCircle, Layers, Package, Wrench, X } from "lucide-react";
 import ServiceForm from "@/components/product/ServiceForm";
+import SimpleProductForm from "@/components/product/SimpleProductForm";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import {
@@ -64,7 +65,9 @@ export default function ProductNew() {
   const [costPrice, setCostPrice] = useState("");
   const [defaultMin, setDefaultMin] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
-  const [isService, setIsService] = useState(false);
+  // نوع البَند: سلعة بسيطة (منتج واحد بباركود) | سلعة بمتغيّرات (ألوان/قياسات) | خِدمة.
+  // الافتراضي «بسيطة» لأنها الحالة الأشيَع في المكتبة (كتاب/ملزمة/دفتر مفرد).
+  const [mode, setMode] = useState<"simple" | "variants" | "service">("simple");
   const [isActive, setIsActive] = useState(true);
 
   // ── قالب الوحدات المشترك ──
@@ -267,7 +270,8 @@ export default function ProductNew() {
       description: description.trim() || null,
       categoryId: categoryId === "" ? undefined : Number(categoryId),
       isCustomizable,
-      isService,
+      // سلعة بمتغيّرات = دائماً مخزنيّة (الخدمة تُدار في ServiceForm، والبسيطة في SimpleProductForm).
+      isService: false,
       variants: variants.map((v) => {
         const overrideCost = v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim();
         return {
@@ -364,26 +368,29 @@ export default function ProductNew() {
           <div className="text-xs text-muted-foreground mb-1">
             المنتجات / <span className="text-foreground">إضافة منتج</span>
           </div>
-          <h1 className="text-2xl font-bold leading-tight">إضافة منتج بمتغيّرات</h1>
+          <h1 className="text-2xl font-bold leading-tight">
+            {mode === "service" ? "إضافة خِدمة" : mode === "simple" ? "إضافة سلعة بسيطة" : "إضافة منتج بمتغيّرات"}
+          </h1>
         </div>
         <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
       </div>
 
-      {/* ── نوع البَند: سلعة مخزنية أو خِدمة (print-catalog) ── */}
-      <div className="inline-flex rounded-lg border bg-muted/40 p-1 gap-1">
+      {/* ── نوع البَند: سلعة بسيطة / بمتغيّرات / خِدمة ── */}
+      <div className="inline-flex flex-wrap rounded-lg border bg-muted/40 p-1 gap-1">
         {[
-          { v: false, label: "سلعة مخزنية", Icon: Package, hint: "بضاعة لها مخزون وباركود" },
-          { v: true, label: "خِدمة", Icon: Wrench, hint: "بلا مخزون — تصوير/تجليد/تصميم" },
+          { v: "simple", label: "سلعة بسيطة", Icon: Package, hint: "منتج واحد بباركود واحد — كتاب/ملزمة/دفتر مفرد" },
+          { v: "variants", label: "سلعة بمتغيّرات", Icon: Layers, hint: "ألوان/قياسات — كل تركيبة منتج مستقل بباركوده" },
+          { v: "service", label: "خِدمة", Icon: Wrench, hint: "بلا مخزون — تصوير/تجليد/تصميم" },
         ].map((t) => (
           <button
-            key={String(t.v)}
+            key={t.v}
             type="button"
-            onClick={() => setIsService(t.v)}
+            onClick={() => setMode(t.v as typeof mode)}
             className={`inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition-colors ${
-              isService === t.v ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
+              mode === t.v ? "bg-card text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"
             }`}
             title={t.hint}
-            aria-pressed={isService === t.v}
+            aria-pressed={mode === t.v}
           >
             <t.Icon aria-hidden className="size-4" />
             {t.label}
@@ -391,8 +398,10 @@ export default function ProductNew() {
         ))}
       </div>
 
-      {isService ? (
+      {mode === "service" ? (
         <ServiceForm />
+      ) : mode === "simple" ? (
+        <SimpleProductForm />
       ) : (
       <>
       {/* ── اسم مركّب + معاينة الكاتالوج ── */}
