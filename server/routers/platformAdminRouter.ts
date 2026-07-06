@@ -53,7 +53,7 @@ export const platformAdminRouter = router({
     if (ctx.platformAdmin) {
       await logPlatformAudit(ctx, { action: "logout", success: true, platformAdminId: ctx.platformAdmin.id, actorEmail: ctx.platformAdmin.email });
     }
-    ctx.res.clearCookie(PLATFORM_ADMIN_COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+    ctx.res.clearCookie(PLATFORM_ADMIN_COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true } as const;
   }),
 

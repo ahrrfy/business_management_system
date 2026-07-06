@@ -107,7 +107,7 @@ export const kioskRouter = router({
 
   /** خروج الجهاز: مسح كوكي الجهاز فقط (لا يمسّ كوكي جلسة النظام). */
   deviceLogout: publicProcedure.mutation(async ({ ctx }) => {
-    ctx.res.clearCookie(KIOSK_COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+    ctx.res.clearCookie(KIOSK_COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { ok: true } as const;
   }),
 
