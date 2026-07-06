@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
+import { isDupEntry } from "@shared/errorMap.ar";
 import { customers, invoices, workOrders } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
@@ -29,6 +30,9 @@ export interface CreateCustomerInput {
   // رصيد افتتاحي اختياري (مبلغ غير سالب) + اتجاه الدين. يُنشئ قيد OPENING مرجعياً.
   openingBalance?: string | null;
   openingBalanceDirection?: OpeningDirection;
+  // dup-detect (٦/٧): مفتاح idempotency — UUID يولّده نموذج الإضافة مرّة لكل فتح. إعادة الإرسال
+  // بنفس المفتاح (نقر مزدوج/إعادة محاولة شبكة) تعيد العميل نفسه بدل إنشاء صفٍّ مكرّر.
+  clientRequestId?: string | null;
 }
 
 export interface UpdateCustomerInput extends Partial<CreateCustomerInput> {
@@ -80,47 +84,157 @@ async function assertUniquePhone(db: any, phone: string | null, excludeId?: numb
     });
 }
 
-/** إنشاء عميل جديد (ذرّي + تحقق من تكرار الهاتف). */
+/**
+ * إنشاء عميل جديد (ذرّي + تحقق من تكرار الهاتف + idempotency).
+ *
+ * dup-detect (٦/٧): حين يصل `clientRequestId` (UUID من نموذج الإضافة) يكون الإنشاء idempotent:
+ *  - فحص مسبق داخل المعاملة يعيد العميل القائم بنفس المفتاح (إعادة إرسال بعد نجاح سابق).
+ *  - سباقان متزامنان بنفس المفتاح: القيد الفريد `uq_customer_client_request` يحسم — الخاسر
+ *    يتلقّى ER_DUP_ENTRY فنعيد قراءة الفائز ونعيده (نمط conversationService/sale idempotency).
+ *  - إعادة التشغيل لا تكرّر قيد OPENING (الفائز سجّله داخل معاملته الذرّية).
+ */
 export async function createCustomer(input: CreateCustomerInput, _actor: Actor) {
-  return withTx(async (tx) => {
-    const name = input.name?.trim();
-    if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم العميل مطلوب" });
-    if (name.length > 255)
-      throw new TRPCError({ code: "BAD_REQUEST", message: "اسم العميل طويل جداً (٢٥٥ حرفاً كحد أقصى)" });
+  const clientRequestId = input.clientRequestId?.trim() || null;
+  try {
+    return await withTx(async (tx) => {
+      const name = input.name?.trim();
+      if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم العميل مطلوب" });
+      if (name.length > 255)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "اسم العميل طويل جداً (٢٥٥ حرفاً كحد أقصى)" });
 
-    const phone = normPhone(input.phone);
-    await assertUniquePhone(tx, phone);
+      // idempotency: إعادة إرسال بنفس المفتاح ⇒ أعد العميل القائم، لا صفاً جديداً ولا قيداً جديداً.
+      if (clientRequestId) {
+        const prior = (
+          await tx.select({ id: customers.id }).from(customers)
+            .where(eq(customers.clientRequestId, clientRequestId)).limit(1)
+        )[0];
+        if (prior) return { customerId: prior.id, idempotentReplay: true };
+      }
 
-    const creditLimit = normalizeCreditLimit(input.creditLimit);
-    // رصيد افتتاحي موقَّع (العميل: موجب = «لنا عليه»). "0.00" حين لا رصيد.
-    const openingBalance = signedOpeningBalance(
-      "CUSTOMER",
-      input.openingBalance,
-      input.openingBalanceDirection ?? "OWED_TO_US",
-    );
+      const phone = normPhone(input.phone);
+      await assertUniquePhone(tx, phone);
 
-    const res = await tx.insert(customers).values({
-      name,
-      phone,
-      phone2: normPhone(input.phone2),
-      phone3: normPhone(input.phone3),
-      whatsapp: normPhone(input.whatsapp),
-      address: input.address?.trim() || null,
-      city: input.city?.trim() || null,
-      district: input.district?.trim() || null,
-      customerType: input.customerType ?? "فرد",
-      defaultPriceTier: input.defaultPriceTier ?? "RETAIL",
-      creditLimit,
-      currentBalance: openingBalance,
-      notes: input.notes?.trim() || null,
-      isActive: true,
+      const creditLimit = normalizeCreditLimit(input.creditLimit);
+      // رصيد افتتاحي موقَّع (العميل: موجب = «لنا عليه»). "0.00" حين لا رصيد.
+      const openingBalance = signedOpeningBalance(
+        "CUSTOMER",
+        input.openingBalance,
+        input.openingBalanceDirection ?? "OWED_TO_US",
+      );
+
+      const res = await tx.insert(customers).values({
+        name,
+        phone,
+        phone2: normPhone(input.phone2),
+        phone3: normPhone(input.phone3),
+        whatsapp: normPhone(input.whatsapp),
+        address: input.address?.trim() || null,
+        city: input.city?.trim() || null,
+        district: input.district?.trim() || null,
+        customerType: input.customerType ?? "فرد",
+        defaultPriceTier: input.defaultPriceTier ?? "RETAIL",
+        creditLimit,
+        currentBalance: openingBalance,
+        notes: input.notes?.trim() || null,
+        clientRequestId,
+        isActive: true,
+      });
+      const customerId = extractInsertId(res);
+      // قيد OPENING المرجعي داخل نفس المعاملة (ذرّي مع إنشاء العميل).
+      if (!money(openingBalance).isZero()) {
+        await postOpeningEntry(tx, "CUSTOMER", customerId, openingBalance);
+      }
+      return { customerId, idempotentReplay: false };
     });
-    const customerId = extractInsertId(res);
-    // قيد OPENING المرجعي داخل نفس المعاملة (ذرّي مع إنشاء العميل).
-    if (!money(openingBalance).isZero()) {
-      await postOpeningEntry(tx, "CUSTOMER", customerId, openingBalance);
+  } catch (e) {
+    // سباق متزامن على نفس المفتاح: الفائز ملتزم (خطأ التكرار لا يُرمى إلا بعد التزامه) ⇒ اقرأه.
+    // الفحص بمحاولة القراءة لا بتحليل نصّ الخطأ: إن لم نجد صفاً فمصدر التكرار قيدٌ آخر ⇒ نعيد الرمي.
+    if (clientRequestId && isDupEntry(e)) {
+      const db = getDb();
+      const prior = db
+        ? (
+            await db.select({ id: customers.id }).from(customers)
+              .where(eq(customers.clientRequestId, clientRequestId)).limit(1)
+          )[0]
+        : undefined;
+      if (prior) return { customerId: prior.id, idempotentReplay: true };
     }
-    return { customerId };
+    throw e;
+  }
+}
+
+export interface FindSimilarCustomersInput {
+  name?: string | null;
+  phones?: (string | null | undefined)[] | null;
+  limit?: number;
+}
+
+/** لاحقة أرقام قابلة للمطابقة من هاتف بأي صيغة كتابة (محلية 07xx أو دولية ‎+9647xx‎):
+ *  أرقام فقط، وآخر ١٠ خانات — القاسم المشترك بين الصيغتين. أقل من ٧ أرقام = ضجيج، تُهمل. */
+function phoneMatchSuffix(s: string | null | undefined): string | null {
+  const digits = (s ?? "").replace(/\D/g, "");
+  if (digits.length < 7) return null;
+  return digits.slice(-10);
+}
+
+/**
+ * dup-detect (٦/٧): مرشّحو تكرار محتمَل لشاشة إضافة العميل — تحذير حيّ قبل الحفظ لا حجب.
+ * المطابقة: الاسم عبر `searchNorm` المطبَّع عربياً (نفس نمط listCustomers)، والهواتف الأربعة
+ * بمطابقة لاحقة أرقام (صيغة محلية تجد المخزَّن دولياً). يشمل المعطَّلين عمداً — «موجود لكنه
+ * معطَّل» أهم تحذيرات التكرار (الحجب البنيوي للهاتف الأساسي المطابق يبقى في assertUniquePhone).
+ */
+export async function findSimilarCustomers(input: FindSimilarCustomersInput) {
+  const db = getDb();
+  if (!db) return [];
+  const limit = Math.min(Math.max(input.limit ?? 5, 1), 10);
+
+  const nameFolded = input.name?.trim() ? normalizeSearchText(input.name.trim()) : "";
+  const suffixes = Array.from(
+    new Set((input.phones ?? []).map(phoneMatchSuffix).filter((s): s is string => !!s)),
+  ).slice(0, 4);
+
+  const conds: ReturnType<typeof sql>[] = [];
+  if (nameFolded.length >= 2) {
+    const likeFolded = `%${escLike(nameFolded)}%`;
+    conds.push(sql`coalesce(${customers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'`);
+  }
+  for (const suf of suffixes) {
+    const p = `%${escLike(suf)}`;
+    conds.push(sql`${customers.phone} LIKE ${p} ESCAPE '!'`);
+    conds.push(sql`${customers.phone2} LIKE ${p} ESCAPE '!'`);
+    conds.push(sql`${customers.phone3} LIKE ${p} ESCAPE '!'`);
+    conds.push(sql`${customers.whatsapp} LIKE ${p} ESCAPE '!'`);
+  }
+  if (conds.length === 0) return [];
+
+  const rows = await db
+    .select({
+      id: customers.id,
+      name: customers.name,
+      phone: customers.phone,
+      phone2: customers.phone2,
+      phone3: customers.phone3,
+      whatsapp: customers.whatsapp,
+      city: customers.city,
+      customerType: customers.customerType,
+      currentBalance: customers.currentBalance,
+      isActive: customers.isActive,
+      searchNorm: customers.searchNorm,
+    })
+    .from(customers)
+    .where(or(...conds))
+    .orderBy(desc(customers.isActive), asc(customers.name))
+    .limit(limit);
+
+  return rows.map((r) => {
+    const rowDigits = [r.phone, r.phone2, r.phone3, r.whatsapp].map((x) => (x ?? "").replace(/\D/g, ""));
+    const phoneHit = suffixes.some((suf) => rowDigits.some((d) => d.length > 0 && d.endsWith(suf)));
+    const nameHit = nameFolded.length >= 2 && (r.searchNorm ?? "").includes(nameFolded);
+    const { searchNorm: _sn, phone2: _p2, phone3: _p3, whatsapp: _wa, ...pub } = r;
+    return {
+      ...pub,
+      matchedOn: (phoneHit && nameHit ? "both" : phoneHit ? "phone" : "name") as "both" | "phone" | "name",
+    };
   });
 }
 

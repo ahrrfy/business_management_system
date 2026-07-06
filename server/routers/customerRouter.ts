@@ -3,6 +3,7 @@ import {
   activateCustomer,
   createCustomer,
   deactivateCustomer,
+  findSimilarCustomers,
   getCustomer,
   listCustomers,
   smartSearchCustomers,
@@ -66,6 +67,20 @@ export const customerRouter = router({
       return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
     }),
 
+  /** dup-detect (٦/٧): مرشّحو تكرار محتمَل لشاشة الإضافة — تحذير حيّ قبل الحفظ (لا حجب).
+   *  الاسم مطبَّع عربياً + الهواتف بمطابقة لاحقة، ويشمل المعطَّلين. الرصيد يُحجب لغير المدير. */
+  findSimilar: customersReadProcedure
+    .input(
+      z.object({
+        name: z.string().max(255).optional(),
+        phones: z.array(z.string().max(25)).max(4).optional(),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const rows = await findSimilarCustomers(input);
+      return rows.map((r) => maskCustomerSensitive(r, ctx.user.role));
+    }),
+
   get: customersReadProcedure
     .input(z.object({ customerId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
@@ -94,6 +109,8 @@ export const customerRouter = router({
         // رصيد افتتاحي (حقل مالي مدير فقط — يُجرّد للكاشير أدناه).
         openingBalance: z.string().nullish(),
         openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
+        // dup-detect (٦/٧): مفتاح idempotency من النموذج (UUID لكل فتح) — إعادة الإرسال تعيد نفس العميل.
+        clientRequestId: z.string().min(8).max(64).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -102,9 +119,12 @@ export const customerRouter = router({
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       const safeInput = elevated ? input : { ...input, creditLimit: "0", openingBalance: null };
       const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: elevated && !!input.openingBalance } });
+      // إعادة تشغيل idempotent = لا كتابة جديدة ⇒ لا نكرّر سجلّ التدقيق.
+      if (!r.idempotentReplay) {
+        await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: elevated && !!input.openingBalance } });
+      }
       // التوافق: المستهلكون القدامى يقرؤون `.id` (مثل WorkOrderNew)؛ نُبقي الكليهما.
-      return { id: r.customerId, customerId: r.customerId };
+      return { id: r.customerId, customerId: r.customerId, idempotentReplay: !!r.idempotentReplay };
     }),
 
   update: customersManagerProcedure
