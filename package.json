@@ -28,6 +28,7 @@
     "db:reset": "node scripts/reset.mjs",
     "db:restore": "node scripts/restore.mjs",
     "backup:pull-vps": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/pull-vps-backup.ps1",
+    "health:check": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/health-check-local.ps1",
     "session:new": "node scripts/session.mjs new",
     "session:list": "node scripts/session.mjs list",
     "session:remove": "node scripts/session.mjs remove",

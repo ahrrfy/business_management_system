@@ -10,6 +10,7 @@ import { branches, branchStock, inventoryMovements, productVariants, products, u
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { applyMovement, convertToBaseQuantity, setStock, transferBetweenBranches } from "../services/inventoryService";
+import { createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
 import { findIdempotentRefId, recordIdempotencyKey } from "../services/idempotency";
 import { withTx } from "../services/tx";
 import { postEntry } from "../services/ledgerService";
@@ -490,6 +491,99 @@ export const inventoryRouter = router({
         hasMore,
         nextCursor,
       };
+    }),
+
+  /**
+   * تنبيهات إعادة الطلب: كل (متغيّر × فرع) رصيده ≤ حدّ الطلب (reorderPoint > 0) — الأشدّ نقصاً أولاً.
+   * عزل الفرع: الكاشير/المخزن مُجبَران بفرعهما (scopedBranchId)؛ المدير بفرعه (طلب فرع آخر = FORBIDDEN،
+   * نمط onHand)؛ الأدمن يختار فرعاً أو يمرّر بلا فرع = كل الفروع.
+   */
+  reorderAlerts: inventoryReadProcedure
+    .input(
+      z
+        .object({
+          branchId: z.number().int().positive().nullish(),
+          limit: z.number().int().positive().max(500).default(200),
+          offset: z.number().int().min(0).default(0),
+        })
+        .optional()
+    )
+    .query(async ({ input, ctx }) => {
+      if (ctx.user.role === "manager" && input?.branchId != null && input.branchId !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة تنبيهات فرع آخر" });
+      }
+      // admin بلا فرع صريح ⇒ كل الفروع (null). غير الأدمن يسقط على فرعه (لا `?? 1` — نمط G3).
+      const branchId =
+        ctx.scopedBranchId ??
+        input?.branchId ??
+        (ctx.user.role === "admin" ? null : ctx.user.branchId != null ? Number(ctx.user.branchId) : null);
+      if (branchId == null && ctx.user.role !== "admin") {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      return listReorderAlerts({ branchId, limit: input?.limit, offset: input?.offset });
+    }),
+
+  /** تحديث عتبتَي الحد الأدنى/إعادة الطلب لمتغيّر — المدير/المخزن (التحقّق داخل الخدمة). */
+  setReorderThresholds: inventoryWarehouseProcedure
+    .input(
+      z.object({
+        variantId: z.number().int().positive(),
+        minStock: z.number().int().min(0),
+        reorderPoint: z.number().int().min(0),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await setReorderThresholds(input);
+      await logAudit(ctx, {
+        action: "inventory.setReorderThresholds",
+        entityType: "variant",
+        entityId: input.variantId,
+        newValue: { minStock: input.minStock, reorderPoint: input.reorderPoint },
+      });
+      return res;
+    }),
+
+  /**
+   * مسودة أمر شراء (DRAFT) من تنبيهات إعادة الطلب — المدير/المخزن. يعيد استعمال
+   * purchaseService.createPurchaseOrder كما هي (الترقيم/التحقّق/الذرّية هناك).
+   * عزل الفرع: warehouse يُجبَر على فرعه؛ admin/manager يحترمان branchId المُرسَل (نمط adjust).
+   */
+  createReorderDraft: inventoryWarehouseProcedure
+    .input(
+      z.object({
+        supplierId: z.number().int().positive(),
+        branchId: z.number().int().positive(),
+        lines: z
+          .array(
+            z.object({
+              variantId: z.number().int().positive(),
+              quantity: z.number().int().positive(),
+            })
+          )
+          .min(1, "اختر صنفاً واحداً على الأقل")
+          .max(200, "حدّ الأصناف في المسودة الواحدة 200"),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      let branchId = input.branchId;
+      if (!elevated) {
+        if (ctx.user.branchId == null) {
+          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+        }
+        branchId = Number(ctx.user.branchId);
+      }
+      const res = await createReorderDraft(
+        { supplierId: input.supplierId, branchId, lines: input.lines },
+        { userId: ctx.user.id, branchId },
+      );
+      await logAudit(ctx, {
+        action: "inventory.createReorderDraft",
+        entityType: "purchaseOrder",
+        entityId: res.purchaseOrderId,
+        newValue: { supplierId: input.supplierId, branchId, lines: input.lines },
+      });
+      return res;
     }),
 
   /**

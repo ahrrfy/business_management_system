@@ -220,6 +220,9 @@ export const customers = mysqlTable(
     // import-integration: المعرّف القديم («الرقم» في ملفات النظام السابق) — مفتاح مطابقة الاستيراد.
     // UNIQUE يسمح بتعدّد NULL ⇒ حارس بنيوي ضدّ ازدواج الطرف برصيد عند استيراد متزامن.
     legacyCode: varchar("legacyCode", { length: 40 }),
+    // dup-detect (٦/٧): مفتاح idempotency للإنشاء — UUID من نموذج الإضافة، UNIQUE يمنع صفاً
+    // ثانياً عند إعادة الإرسال (نقر مزدوج/إعادة محاولة شبكة). NULL متعدّد للمسارات القديمة. هجرة 0051.
+    clientRequestId: varchar("clientRequestId", { length: 64 }),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -231,6 +234,8 @@ export const customers = mysqlTable(
     nameIdx: index("idx_customer_name").on(table.name),
     phoneIdx: index("idx_customer_phone").on(table.phone),
     legacyUq: unique("uq_customer_legacy").on(table.legacyCode),
+    clientRequestUq: unique("uq_customer_client_request").on(table.clientRequestId),
+    // gap-audit low (٥/٧): فهرس يدعم مسار aging المجمَّع بلا فرع (WHERE isActive=TRUE). هجرة 0053.
     activeIdx: index("idx_customer_active").on(table.isActive),
   })
 );
@@ -843,6 +848,9 @@ export const accountingEntries = mysqlTable(
     branchTypeDateIdx: index("idx_entry_branch_type_date").on(table.branchId, table.entryType, table.entryDate),
     customerDateIdx: index("idx_entry_customer_date").on(table.customerId, table.entryDate),
     supplierDateIdx: index("idx_entry_supplier_date").on(table.supplierId, table.entryDate),
+    // commissions (٦/٧/٢٦): كنسة محرّك العمولات الشهرية شركةً كاملةً — entryType IN (SALE,RETURN)
+    // بنطاق شهر على entryDate بلا فرع ⇒ idx_entry_branch_type_date (يبدأ بالفرع) لا يخدمها. هجرة 0051.
+    typeDateIdx: index("idx_entry_type_date").on(table.entryType, table.entryDate),
   })
 );
 
@@ -997,6 +1005,10 @@ export const workOrders = mysqlTable(
     branchIdx: index("idx_wo_branch").on(table.branchId),
     customerIdx: index("idx_wo_customer").on(table.customerId),
     statusIdx: index("idx_wo_status").on(table.status),
+    // commissions (٦/٧/٢٦): يقسّي علاقة 1:1 أمر شغل↔فاتورة التسليم التي يعتمدها الإسناد الذكي
+    // (فاتورة WORKORDER تُنسَب لمنشئ أمر الشغل عبر join على invoiceId) — تعدّد NULL مسموح.
+    // ⚠ invoiceId عمود FK — drizzle-kit قد يُسقط UNIQUE عليه صامتاً؛ دقّق هجرة 0051 يدوياً.
+    invoiceUq: unique("uq_wo_invoice").on(table.invoiceId),
   })
 );
 
@@ -1910,6 +1922,9 @@ export const payrollRuns = mysqlTable(
     employeeCount: int("employeeCount").default(0).notNull(),
     totalGross: decimal("totalGross", { precision: 15, scale: 2 }).default("0").notNull(),
     totalOvertime: decimal("totalOvertime", { precision: 15, scale: 2 }).default("0").notNull(),
+    // commissions (٦/٧/٢٦): مجموع بنود العمولة الملتقطة من تشغيلة العمولات المعتمدة لنفس الشهر
+    // (totalNet يشملها أصلاً — عمود مستقل للعرض والتدقيق). هجرة 0051.
+    totalCommission: decimal("totalCommission", { precision: 15, scale: 2 }).default("0").notNull(),
     totalDeductions: decimal("totalDeductions", { precision: 15, scale: 2 }).default("0").notNull(),
     totalNet: decimal("totalNet", { precision: 15, scale: 2 }).default("0").notNull(),
     notes: text("notes"),
@@ -1947,6 +1962,10 @@ export const payrollItems = mysqlTable(
     gross: decimal("gross", { precision: 15, scale: 2 }).default("0").notNull(),
     allowances: decimal("allowances", { precision: 15, scale: 2 }).default("0").notNull(),
     overtime: decimal("overtime", { precision: 15, scale: 2 }).default("0").notNull(),
+    // commissions (٦/٧/٢٦): عمولة المبيعات الملتقطة من سطر تشغيلة العمولات المعتمدة لنفس الشهر —
+    // للقراءة فقط في المسيّر (تعديلها = إعادة احتساب التشغيلة قبل التوليد). net = gross + overtime
+    // + commission − deductions. هجرة 0051.
+    commission: decimal("commission", { precision: 15, scale: 2 }).default("0").notNull(),
     deductions: decimal("deductions", { precision: 15, scale: 2 }).default("0").notNull(),
     net: decimal("net", { precision: 15, scale: 2 }).default("0").notNull(),
     note: varchar("note", { length: 255 }),
@@ -1959,6 +1978,173 @@ export const payrollItems = mysqlTable(
 );
 export type PayrollItem = typeof payrollItems.$inferSelect;
 export type InsertPayrollItem = typeof payrollItems.$inferInsert;
+
+/* ============================ الأهداف والعمولات (commissions) ============================ */
+
+/**
+ * خطة عمولات: أساس الاحتساب + نمط الشرائح. الأساس المنفَّذ NET_SALES فقط (صافي المبيعات
+ * المفوترة − المرتجعات، قرار المالك ٦/٧/٢٦) — COLLECTED/PROFIT محجوزان والمحرّك يرفضهما صراحةً.
+ * لا حذف صلب (أسطر التشغيلات المعتمدة والإسنادات التاريخية تُشير إليها) — تعطيل فقط.
+ */
+export const commissionPlans = mysqlTable(
+  "commissionPlans",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 120 }).notNull(),
+    basis: mysqlEnum("commissionBasis", ["NET_SALES", "COLLECTED", "PROFIT"]).default("NET_SALES").notNull(),
+    // TARGET_PCT: عتبة الشريحة = نسبة تحقيق الهدف الشهري ٪ ؛ AMOUNT_SLAB: العتبة = صافي مبيعات بالدينار.
+    tierMode: mysqlEnum("commissionTierMode", ["TARGET_PCT", "AMOUNT_SLAB"]).default("TARGET_PCT").notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    notes: varchar("notes", { length: 255 }),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    activeIdx: index("idx_cplan_active").on(t.isActive),
+  })
+);
+export type CommissionPlan = typeof commissionPlans.$inferSelect;
+export type InsertCommissionPlan = typeof commissionPlans.$inferInsert;
+
+/**
+ * شرائح الخطة (تصاعدية بالعتبة): بلوغ العتبة يمنح ratePct على **كامل** الأساس الفعلي + مكافأة
+ * مقطوعة — لا شرائح هامشية (بساطة يفهمها الموظف). رتابة النِّسَب/المكافآت تُفرَض في الخدمة
+ * (منع «بِع أكثر تربح أقل»).
+ */
+export const commissionPlanTiers = mysqlTable(
+  "commissionPlanTiers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    planId: bigint("planId", { mode: "number" }).notNull().references(() => commissionPlans.id, { onDelete: "cascade" }),
+    sort: int("sort").notNull(), // 0..n تصاعدياً مع threshold — يُخزَّن في لقطة السطر (tierIndex).
+    threshold: decimal("threshold", { precision: 15, scale: 2 }).notNull(),
+    ratePct: decimal("ratePct", { precision: 7, scale: 4 }).default("0").notNull(),
+    fixedBonus: decimal("fixedBonus", { precision: 15, scale: 2 }).default("0").notNull(),
+  },
+  (t) => ({
+    planSortUq: unique("uq_ctier_plan_sort").on(t.planId, t.sort),
+    planThresholdUq: unique("uq_ctier_plan_threshold").on(t.planId, t.threshold),
+  })
+);
+export type CommissionPlanTier = typeof commissionPlanTiers.$inferSelect;
+export type InsertCommissionPlanTier = typeof commissionPlanTiers.$inferInsert;
+
+/**
+ * إسناد خطة لموظف بفترات شهرية [effectiveFrom..effectiveTo] شاملةً، effectiveTo=NULL = مفتوح.
+ * إسناد مفتوح واحد لكل موظف — التداخل يُمنع تطبيقياً تحت قفل FOR UPDATE على صفّ الموظف
+ * (MySQL بلا قيد استبعاد مدى). يشترط employees.userId (نسبة المبيعات تتبع users.id في الدفتر).
+ */
+export const commissionAssignments = mysqlTable(
+  "commissionAssignments",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    planId: bigint("planId", { mode: "number" }).notNull().references(() => commissionPlans.id),
+    effectiveFrom: varchar("effectiveFrom", { length: 7 }).notNull(), // YYYY-MM
+    effectiveTo: varchar("effectiveTo", { length: 7 }), // NULL = مفتوح
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    empFromIdx: index("idx_cassign_emp_from").on(t.employeeId, t.effectiveFrom),
+    planIdx: index("idx_cassign_plan").on(t.planId),
+  })
+);
+export type CommissionAssignment = typeof commissionAssignments.$inferSelect;
+export type InsertCommissionAssignment = typeof commissionAssignments.$inferInsert;
+
+/** هدف مبيعات شهري لموظف (دينار، صافي مبيعات). هدف واحد لكل (موظف × شهر). */
+export const salesTargets = mysqlTable(
+  "salesTargets",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    period: varchar("period", { length: 7 }).notNull(), // YYYY-MM
+    targetAmount: decimal("targetAmount", { precision: 15, scale: 2 }).notNull(),
+    notes: varchar("notes", { length: 255 }),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empPeriodUq: unique("uq_target_emp_period").on(t.employeeId, t.period),
+    periodIdx: index("idx_target_period").on(t.period),
+  })
+);
+export type SalesTarget = typeof salesTargets.$inferSelect;
+export type InsertSalesTarget = typeof salesTargets.$inferInsert;
+
+/**
+ * تشغيلة عمولات شهرية (مسودة → معتمدة) — مرآة مسيّر الرواتب: UNIQUE(period) شركةً كاملةً
+ * (يطابق uq_payroll_period كي يلتقطها مسيّر الشهر نفسه)، SOD (المعتمِد ≠ المحتسِب)،
+ * والدفع ليس هنا — payrollRunId يُثبَّت داخل معاملة توليد المسيّر عند الالتقاط
+ * (ON DELETE SET NULL ⇒ حذف مسودة المسيّر يفكّ الربط فيُلتقط مجدداً بلا ازدواج).
+ */
+export const commissionRuns = mysqlTable(
+  "commissionRuns",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    period: varchar("period", { length: 7 }).notNull(), // YYYY-MM
+    status: mysqlEnum("commissionRunStatus", ["draft", "approved"]).default("draft").notNull(),
+    employeeCount: int("employeeCount").default(0).notNull(),
+    totalBaseSales: decimal("totalBaseSales", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalBaseReturns: decimal("totalBaseReturns", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalCommission: decimal("totalCommission", { precision: 15, scale: 2 }).default("0").notNull(),
+    payrollRunId: bigint("payrollRunId", { mode: "number" }).references(() => payrollRuns.id, { onDelete: "set null" }),
+    computedAt: timestamp("computedAt").defaultNow().notNull(), // يُحدَّث عند كل إعادة احتساب.
+    notes: text("notes"),
+    createdBy: int("createdBy").references(() => users.id),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    periodUq: unique("uq_commission_period").on(t.period),
+    statusIdx: index("idx_commission_status").on(t.status),
+  })
+);
+export type CommissionRun = typeof commissionRuns.$inferSelect;
+export type InsertCommissionRun = typeof commissionRuns.$inferInsert;
+
+/**
+ * سطر تشغيلة لموظف — **لقطة كاملة** وقت الاحتساب (الأساس/الهدف/الشريحة/النِّسَب) لا مراجع حيّة:
+ * تعديل الخطط/الأهداف لاحقاً لا يغيّر تشغيلة معتمدة. الترحيل السالب: carryOut(P) ≤ 0 يصبح
+ * carryIn(P+1) — استرداد المرتجعات بلا عكس رواتب. يُكتب سطر لكل موظف مؤهَّل حتى بصفر نشاط
+ * (يحفظ سلسلة الترحيل واكتمال الالتقاط في المسيّر).
+ */
+export const commissionRunLines = mysqlTable(
+  "commissionRunLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    runId: bigint("runId", { mode: "number" }).notNull().references(() => commissionRuns.id),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    userId: int("userId").notNull(), // لقطة users.id المنسوب إليه البيع وقت الاحتساب.
+    branchId: bigint("branchId", { mode: "number" }), // لقطة employees.branchId وقت الاحتساب.
+    baseSales: decimal("baseSales", { precision: 15, scale: 2 }).default("0").notNull(), // Σ SALE.revenue (موجب)
+    baseReturns: decimal("baseReturns", { precision: 15, scale: 2 }).default("0").notNull(), // Σ |RETURN.revenue| (موجب)
+    carryIn: decimal("carryIn", { precision: 15, scale: 2 }).default("0").notNull(), // موقَّع (≤ 0 من عجز سابق)
+    effectiveBase: decimal("effectiveBase", { precision: 15, scale: 2 }).default("0").notNull(),
+    carryOut: decimal("carryOut", { precision: 15, scale: 2 }).default("0").notNull(), // موقَّع (≤ 0)
+    targetAmount: decimal("targetAmount", { precision: 15, scale: 2 }), // لقطة؛ NULL = لا هدف لهذا الشهر.
+    achievementPct: decimal("achievementPct", { precision: 9, scale: 2 }), // NULL حين لا هدف.
+    planId: bigint("planId", { mode: "number" }).notNull().references(() => commissionPlans.id), // لقطة.
+    tierIndex: int("tierIndex"), // sort الشريحة المطبَّقة؛ NULL = لم تُبلَغ أي شريحة.
+    ratePct: decimal("ratePct", { precision: 7, scale: 4 }).default("0").notNull(), // لقطة.
+    fixedBonus: decimal("fixedBonus", { precision: 15, scale: 2 }).default("0").notNull(), // لقطة.
+    commissionAmount: decimal("commissionAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    // تفكيك للواجهة/التدقيق: {invoiceCount, returnCount, planName, tierThreshold, formula}.
+    detail: json("detail"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    runEmpUq: unique("uq_cline_run_emp").on(t.runId, t.employeeId),
+    empIdx: index("idx_cline_emp").on(t.employeeId),
+  })
+);
+export type CommissionRunLine = typeof commissionRunLines.$inferSelect;
+export type InsertCommissionRunLine = typeof commissionRunLines.$inferInsert;
 
 /* طلبات الإجازات (تخصم من رصيد الموظف عند الموافقة على المدفوعة منها). */
 export const leaveRequests = mysqlTable(

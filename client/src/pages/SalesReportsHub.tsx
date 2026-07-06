@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 const SalesReport = lazy(() => import("./SalesReport"));
 const SalesRegister = lazy(() => import("./SalesRegister"));
 const SalesByDimension = lazy(() => import("./SalesByDimension"));
+const WorkOrderProfitability = lazy(() => import("./WorkOrderProfitability"));
 
 function TabFallback() {
   return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
@@ -20,7 +21,7 @@ export default function SalesReportsHub() {
       <div className="mb-3">
         <h1 className="text-2xl font-bold">تَقارير المَبيعات</h1>
         <p className="text-sm text-muted-foreground mt-1">
-          ثَلاث زَوايا للنَظر إلى مَبيعاتك: المُلخَّص، التَفصيل بَنداً-بَنداً، والتَوزيع حَسَب البُعد (عميل/فرع/طَريقة دَفع/كاشير).
+          أربع زَوايا للنَظر إلى مَبيعاتك: المُلخَّص، التَفصيل بَنداً-بَنداً، التَوزيع حَسَب البُعد (عميل/فرع/طَريقة دَفع/كاشير)، وربحية أوامر الشغل.
         </p>
       </div>
       <Tabs defaultValue="summary" className="w-full">
@@ -28,6 +29,7 @@ export default function SalesReportsHub() {
           <TabsTrigger value="summary">مُلخَّص</TabsTrigger>
           <TabsTrigger value="detailed">تَفصيلي (بَنداً-بَنداً)</TabsTrigger>
           <TabsTrigger value="dimension">حَسَب البُعد</TabsTrigger>
+          <TabsTrigger value="wo-profitability">ربحية أوامر الشغل</TabsTrigger>
         </TabsList>
         <TabsContent value="summary" className="mt-3">
           <Suspense fallback={<TabFallback />}><SalesReport /></Suspense>
@@ -37,6 +39,9 @@ export default function SalesReportsHub() {
         </TabsContent>
         <TabsContent value="dimension" className="mt-3">
           <Suspense fallback={<TabFallback />}><SalesByDimension /></Suspense>
+        </TabsContent>
+        <TabsContent value="wo-profitability" className="mt-3">
+          <Suspense fallback={<TabFallback />}><WorkOrderProfitability /></Suspense>
         </TabsContent>
       </Tabs>
     </div>

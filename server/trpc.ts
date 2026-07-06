@@ -265,3 +265,11 @@ export const treasuryManagerProcedure = moduleProcedure(["manager", "accountant"
 export const treasuryManagerReadProcedure = moduleProcedure(["manager", "accountant"], "treasury", "READ");
 export const treasuryReadProcedure = branchScopedProcedure.use(requireModule("treasury", "READ"));
 export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], "treasury", "READ");
+
+// ─── الأهداف والعمولات «commissions» — خطط/أهداف شهرية/تشغيلات عمولات البائعين ───
+// الكتابة (خطط/إسناد/أهداف/احتساب/اعتماد) مديرية بقالبها + منح صريح عبر البوّابة
+// الموحّدة؛ القراءة بالخريطة (accountant/auditor قالباهما READ). العرض الذاتي «أدائي»
+// لا يمرّ من هاتين البوّابتين إطلاقاً — protectedProcedure بهوية ctx.user حصراً
+// (بلا مدخل employeeId) داخل راوتر الوحدة، اتّساقاً مع عزل scopedOwnerId.
+export const commissionsManagerProcedure = moduleProcedure(["manager"], "commissions", "FULL");
+export const commissionsReadProcedure = protectedProcedure.use(requireModule("commissions", "READ"));
