@@ -4,7 +4,7 @@
 // كل تذكير مُرسَل يُسجَّل في `arReminders` مع snapshots اللحظية (مبلغ + أقدم فاتورة + نصّ الرسالة).
 // نافذة التبريد ٧ أيام تمنع تكرار العميل في القائمة قبل استحقاق تذكير جديد.
 import { useMemo, useState } from "react";
-import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark } from "lucide-react";
+import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { openWhatsApp, sanitizeForWhatsApp } from "@/lib/whatsapp";
@@ -223,6 +223,14 @@ export default function ARReminders() {
             <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
               <Landmark className="size-3.5" aria-hidden />
               أرصدة سابقة مُدوَّرة بلا فواتير نظام — للمتابعة والتحصيل.
+            </span>
+          )}
+          {/* تلميح فرق النطاق: هذه الشاشة تفتح على فرع واحد افتراضياً، بخلاف بطاقة «برنامج اليوم»
+              ولوحة التحكم اللتين تجمعان كل الفروع (gap-audit ٥/٧ medium — لا تلميح بصري سابقاً). */}
+          {scope === undefined && (
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <Info className="size-3.5" aria-hidden />
+              افتراضياً على الفرع الأول — «برنامج اليوم» ولوحة التحكم تجمعان كل الفروع.
             </span>
           )}
         </div>

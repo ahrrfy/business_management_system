@@ -5,8 +5,9 @@
  *  - تذكير/تأنيث الأعداد (تُستعمل الصيغة المذكّرة القياسية للتفقيط المالي)
  *  - حالات المفرد/المثنّى/الجمع للأصناف (مليار/ملياران/مليارات، ...)
  * الاستدعاء المعتاد: `formatArabicMoneyWords(n)` → "فقط X دينار عراقي لا غير"
- * ⚠️ يعمل على الجزء الصحيح فقط (يُقرَّب Math.round). العملة IQD لا فلوس مُتداولة.
+ * ⚠️ يعمل على الجزء الصحيح فقط (يُقرَّب HALF_UP). العملة IQD لا فلوس مُتداولة.
  */
+import { D } from "@/lib/money";
 
 const ONES = [
   '', 'واحد', 'اثنان', 'ثلاثة', 'أربعة', 'خمسة', 'ستة', 'سبعة', 'ثمانية', 'تسعة', 'عشرة',
@@ -43,7 +44,8 @@ function threeDigits(num: number): string {
 
 /** يحوّل عدداً صحيحاً موجباً إلى كلمات عربية (بلا بادئة/لاحقة). */
 export function toArabicWords(nRaw: number | string): string {
-  const n = Math.round(Math.abs(Number(nRaw) || 0));
+  // round2/D يضبطان Decimal.rounding=HALF_UP عالمياً (money.ts) — toDecimalPlaces(0) هنا يتبع نفس القاعدة.
+  const n = D(nRaw).abs().toDecimalPlaces(0).toNumber();
   if (n === 0) return 'صفر';
   let rem = n;
   const segs: string[] = [];
