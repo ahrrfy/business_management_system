@@ -9,9 +9,13 @@
  *
  * كل كتابة تُدقَّق عبر logAudit. يُركَّب من قائد التكامل تحت namespace: trpc.commissions
  * ========================================================================== */
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
+import { isDupEntry } from "@shared/errorMap.ar";
 import { logAudit } from "../services/auditService";
+import { computeCommissionRun } from "../services/commissions/engine";
 import * as plansSvc from "../services/commissions/plans";
+import * as runsSvc from "../services/commissions/runs";
 import * as targetsSvc from "../services/commissions/targets";
 import { commissionsManagerProcedure, commissionsReadProcedure, router } from "../trpc";
 import type { TrpcContext } from "../context";
@@ -156,7 +160,63 @@ const targetsRouter = router({
     }),
 });
 
+const runsRouter = router({
+  list: commissionsReadProcedure.query(() => runsSvc.listRuns()),
+
+  get: commissionsReadProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(({ input }) => runsSvc.getRun(input.id)),
+
+  /** احتساب (أو إعادة احتساب مسودة) تشغيلة الشهر — ذرّي، بحارس تسلسل الأشهر. */
+  compute: commissionsManagerProcedure.input(z.object({ period })).mutation(async ({ input, ctx }) => {
+    try {
+      const res = await computeCommissionRun(input.period, actorOf(ctx));
+      await logAudit(ctx, {
+        action: "commissions.runCompute",
+        entityType: "commissionRun",
+        entityId: res.runId,
+        newValue: { period: res.period, employeeCount: res.employeeCount, totalCommission: res.totalCommission, recomputed: res.recomputed },
+      });
+      return res;
+    } catch (err) {
+      // uq_commission_period يحسم سباق إنشاء مزدوج — نعيده CONFLICT برسالة عربية.
+      if (isDupEntry(err)) throw new TRPCError({ code: "CONFLICT", message: `توجد تشغيلة لشهر ${input.period} بالفعل — أعد المحاولة.` });
+      throw err;
+    }
+  }),
+
+  approve: commissionsManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await runsSvc.approveRun(input.id, actorOf(ctx));
+      await logAudit(ctx, {
+        action: "commissions.runApprove",
+        entityType: "commissionRun",
+        entityId: input.id,
+        newValue: { period: res.period, approvedBy: ctx.user.id, requiresPayrollRegeneration: res.requiresPayrollRegeneration },
+      });
+      return res;
+    }),
+
+  unapprove: commissionsManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await runsSvc.unapproveRun(input.id, actorOf(ctx));
+      await logAudit(ctx, { action: "commissions.runUnapprove", entityType: "commissionRun", entityId: input.id, newValue: { status: res.status } });
+      return res;
+    }),
+
+  remove: commissionsManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await runsSvc.deleteDraft(input.id);
+      await logAudit(ctx, { action: "commissions.runDelete", entityType: "commissionRun", entityId: input.id, newValue: { period: res.period } });
+      return res;
+    }),
+});
+
 export const commissionsRouter = router({
   plans: plansRouter,
   targets: targetsRouter,
+  runs: runsRouter,
 });
