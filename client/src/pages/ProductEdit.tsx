@@ -25,6 +25,7 @@ import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
+import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -79,6 +80,9 @@ export default function ProductEdit() {
   const [done, setDone] = useState("");
   const [importOpen, setImportOpen] = useState(false);
   const [printOpen, setPrintOpen] = useState(false);
+  // simple-edit-view: المنتج البسيط (متغيّر واحد بلا لون/قياس) يُحرَّر بنموذج نظيف افتراضياً؛
+  // «advanced» يفتح محرّر المتغيّرات (لإضافة ألوان/قياسات/صور).
+  const [advanced, setAdvanced] = useState(false);
 
   const branches = useMemo(() => (branchesQ.data ?? []).map((b) => ({ id: Number(b.id), name: b.name })), [branchesQ.data]);
   const myBranch = me.data?.branchId ?? 1;
@@ -377,6 +381,19 @@ export default function ProductEdit() {
   if (product.isLoading) return <LoadingState />;
   if (!product.data) return <div className="p-10 text-center text-muted-foreground">المنتج غير موجود.</div>;
 
+  // simple-edit-view: منتج بسيط = متغيّر واحد بلا لون/قياس وليس خِدمة ⇒ نموذج التحرير المبسّط افتراضياً.
+  // (الخدمة تُستثنى: نموذجها المبسّط لا يعرض مفتاح «خِدمة» ويُظهر رصيداً صفريّاً بلا معنى.)
+  const isSimple =
+    product.data.variants.length === 1 &&
+    !product.data.variants[0].color &&
+    !product.data.variants[0].size &&
+    !product.data.isService;
+  if (isSimple && !advanced) {
+    // عند فتح المتقدّم نُصفّر hydrated ليُعاد التحميل من أحدث بيانات الخادم (بعد أي حفظ في المبسّط)
+    // ⇒ لا يعرض المتقدّم لقطةً قديمة ولا يعكس حفظاً سابقاً بالخطأ.
+    return <SimpleProductEditForm productId={productId} onAdvanced={() => { setHydrated(false); setAdvanced(true); }} />;
+  }
+
   const activeCount = variants.filter((v) => v.isActive).length;
 
   return (
@@ -385,7 +402,14 @@ export default function ProductEdit() {
         title="تعديل منتج بمتغيّرات"
         description="المنتجات / تعديل المنتج"
         actions={
-          <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
+          <div className="flex items-center gap-2">
+            {isSimple && (
+              <Button type="button" variant="outline" size="sm" onClick={() => { if (window.confirm("العودة للتحرير المبسّط تتجاهل أي تعديلات غير محفوظة هنا. متابعة؟")) setAdvanced(false); }} title="العودة للتحرير المبسّط">
+                تحرير مبسّط
+              </Button>
+            )}
+            <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
+          </div>
         }
       />
 

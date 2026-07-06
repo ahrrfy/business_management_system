@@ -26,6 +26,7 @@ export interface VariantEditUnit {
   isBaseUnit: boolean;
   retail: string; // سعر المفرد (RETAIL) — فارغ إن لم يُعرَّف
   wholesale: string; // سعر الجملة (WHOLESALE)
+  government: string; // سعر الحكومي (GOVERNMENT) — يجب أن يُعاد إرساله عند الحفظ وإلّا حُذف (upsert يمسح ثم يُدرِج)
 }
 
 export interface VariantEditRow {
@@ -83,7 +84,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       isCustomizable: !!p.isCustomizable,
       isService: !!p.isService,
       isActive: !!p.isActive,
-      unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "" }],
+      unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
       variants: [],
     };
   }
@@ -135,6 +136,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     isBaseUnit: !!u.isBaseUnit,
     retail: priceOf(Number(u.id), "RETAIL"),
     wholesale: priceOf(Number(u.id), "WHOLESALE"),
+    government: priceOf(Number(u.id), "GOVERNMENT"),
   }));
 
   return {
@@ -148,7 +150,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     isCustomizable: !!p.isCustomizable,
     isService: !!p.isService,
     isActive: !!p.isActive,
-    unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "" }],
+    unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
     variants: variantRows,
   };
 }
