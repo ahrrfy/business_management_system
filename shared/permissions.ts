@@ -65,6 +65,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "reports",      label: "التقارير",           description: "تقارير المبيعات، الأرباح، أعمار الذمم" },
   { key: "assets",       label: "الأصول الثابتة",      description: "سجلّ الأصول، العهدة، الإهلاك، الصيانة، الاستبعاد" },
   { key: "hr",           label: "الموارد البشرية",     description: "الموظفون، الحضور، الرواتب، الإجازات، التوظيف" },
+  { key: "commissions",  label: "الأهداف والعمولات",   description: "خطط العمولات، الأهداف الشهرية، احتساب واعتماد عمولات البائعين" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
 ];
@@ -75,6 +76,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   admin: {
     assets: "FULL",
     hr: "FULL",
+    commissions: "FULL",
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL", channels: "FULL", treasury: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "FULL", settings: "FULL",
@@ -82,6 +84,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   manager: {
     assets: "FULL",
     hr: "FULL",
+    commissions: "FULL",
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL", channels: "FULL", treasury: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "READ", settings: "READ",
@@ -89,6 +92,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   accountant: {
     assets: "READ",
     hr: "READ",
+    // READ: يراجع تشغيلات العمولة والأهداف بلا كتابة (الاحتساب/الاعتماد مديريان).
+    commissions: "READ",
     pos: "NONE", sales: "READ", purchases: "READ", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "FULL",
     customers: "READ", suppliers: "READ", products: "NONE", expenses: "FULL", reports: "FULL",
     users: "NONE", settings: "NONE",
@@ -96,6 +101,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   cashier: {
     assets: "NONE",
     hr: "NONE",
+    // NONE: الكاشير يرى أداءه الذاتي فقط عبر «أدائي» (protectedProcedure) لا عبر الوحدة.
+    commissions: "NONE",
     // F2 (تدقيق ٢/٧): workorders READ→FULL — الكاشير ينشئ ويُسلّم أوامر الشغل فعلاً في نظام
     // الاستقبال الهجين (workOrders.create/deliver على cashierProcedure)؛ كان القالب READ سهواً
     // فبعد ربط requireModule("workorders","FULL") كان سيُحجب الكاشير القالبي عن سلوكه القائم.
@@ -106,6 +113,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   warehouse: {
     assets: "READ",
     hr: "NONE",
+    commissions: "NONE",
     pos: "NONE", sales: "READ", purchases: "FULL", inventory: "FULL", workorders: "READ", channels: "NONE", treasury: "NONE",
     customers: "READ", suppliers: "FULL", products: "FULL", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
@@ -113,6 +121,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   purchasing: {
     assets: "NONE",
     hr: "NONE",
+    commissions: "NONE",
     pos: "NONE", sales: "NONE", purchases: "FULL", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "NONE",
     customers: "NONE", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
@@ -120,6 +129,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   print_operator: {
     assets: "NONE",
     hr: "NONE",
+    commissions: "NONE",
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "FULL", channels: "READ", treasury: "NONE",
     customers: "READ", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
@@ -127,6 +137,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   sales_rep: {
     assets: "NONE",
     hr: "NONE",
+    // NONE: كالكاشير — أداؤه الذاتي عبر «أدائي»؛ إدارة الخطط والأهداف مديرية.
+    commissions: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "READ", treasury: "NONE",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
@@ -134,6 +146,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   auditor: {
     assets: "READ",
     hr: "READ",
+    commissions: "READ",
     pos: "READ", sales: "READ", purchases: "READ", inventory: "READ", workorders: "READ", channels: "READ", treasury: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "READ", reports: "READ",
     users: "READ", settings: "READ",
@@ -141,6 +154,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   user: {
     assets: "NONE",
     hr: "NONE",
+    commissions: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "READ", workorders: "READ", channels: "NONE", treasury: "NONE",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
