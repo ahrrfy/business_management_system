@@ -180,6 +180,8 @@ export interface ClientUnit {
   isBase: boolean;
   retail: string;
   wholesale: string;
+  /** سعر الحكومي (GOVERNMENT) — اختياري؛ يجب إعادة إرساله عند التعديل وإلّا حُذف (upsert يمسح ثم يُدرِج). */
+  government?: string;
 }
 
 /** متغيّر واحد = منتج مخزنيّ مستقل (لون/قياس) بباركود لكل وحدة ورصيد لكل فرع. */

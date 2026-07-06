@@ -289,6 +289,7 @@ export default function ProductNew() {
           units: units.map((u) => {
             const retail = u.isBase && v.priceOverride && v.retail.trim() ? v.retail.trim() : u.retail.trim();
             const wholesale = u.wholesale.trim();
+            const government = (u.government ?? "").trim();
             return {
               unitName: u.name.trim(),
               conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
@@ -297,6 +298,7 @@ export default function ProductNew() {
               prices: [
                 ...(retail ? [{ priceTier: "RETAIL" as const, price: retail }] : []),
                 ...(wholesale ? [{ priceTier: "WHOLESALE" as const, price: wholesale }] : []),
+                ...(government ? [{ priceTier: "GOVERNMENT" as const, price: government }] : []),
               ],
             };
           }),
@@ -529,10 +531,11 @@ export default function ProductNew() {
         </CardHeader>
         <CardContent className="space-y-2">
           <div className="hidden md:grid grid-cols-12 gap-2 px-1 text-[11px] font-semibold text-muted-foreground">
-            <span className="col-span-3">الوحدة</span>
-            <span className="col-span-2">معامل التحويل</span>
+            <span className="col-span-2">الوحدة</span>
+            <span className="col-span-1">معامل</span>
             <span className="col-span-2">سعر المفرد</span>
             <span className="col-span-2">سعر الجملة</span>
+            <span className="col-span-2">سعر الحكومي</span>
             <span className="col-span-2">الهامش</span>
             <span className="col-span-1 text-center">أساس</span>
           </div>
@@ -541,10 +544,11 @@ export default function ProductNew() {
             const unitCost = (parseFloat(costPrice) || 0) * factor;
             return (
               <div key={u.id} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-center border-t pt-2 md:border-0 md:pt-0">
-                <Input className="md:col-span-3 h-8 text-sm" value={u.name} onChange={(e) => patchUnit(u.id, { name: e.target.value })} placeholder="قطعة / درزن / كرتون" />
-                <Input className="md:col-span-2 h-8 text-sm" dir="ltr" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(e) => patchUnit(u.id, { factor: e.target.value })} placeholder="12" />
+                <Input className="md:col-span-2 h-8 text-sm" value={u.name} onChange={(e) => patchUnit(u.id, { name: e.target.value })} placeholder="قطعة / درزن" />
+                <Input className="md:col-span-1 h-8 text-sm" dir="ltr" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(e) => patchUnit(u.id, { factor: e.target.value })} placeholder="12" />
                 <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
                 <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" />
+                <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.government ?? ""} onChange={(v) => patchUnit(u.id, { government: v })} placeholder="حكومي" />
                 <div className="md:col-span-2"><MarginBadge cost={unitCost} sell={u.retail} /></div>
                 <div className="md:col-span-1 flex items-center justify-center gap-2">
                   <input type="radio" name="baseUnit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} title="الوحدة الأساس" aria-label="الوحدة الأساس" />
