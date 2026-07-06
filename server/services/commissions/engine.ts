@@ -32,21 +32,21 @@ import {
   employees,
   salesTargets,
 } from "../../../drizzle/schema";
-import type { Tx } from "../../db";
+import type { DB, Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { computeNetSalesByUser } from "./base";
 import { assertPeriod } from "./period";
 
-interface EligibleRow {
+export interface EligibleRow {
   employeeId: number;
   userId: number;
   branchId: number | null;
   planId: number;
 }
 
-interface PlanWithTiers {
+export interface PlanWithTiers {
   id: number;
   name: string;
   basis: string;
@@ -54,9 +54,10 @@ interface PlanWithTiers {
   tiers: { sort: number; threshold: Decimal; ratePct: Decimal; fixedBonus: Decimal }[];
 }
 
-/** الإسنادات الفعّالة للشهر P — سطر لكل موظف مؤهَّل (التداخل ممنوع كتابةً؛ نحسم دفاعياً بالأحدث). */
-async function loadEligible(tx: Tx, period: string): Promise<EligibleRow[]> {
-  const rows = await tx
+/** الإسنادات الفعّالة للشهر P — سطر لكل موظف مؤهَّل (التداخل ممنوع كتابةً؛ نحسم دفاعياً بالأحدث).
+ *  مشتركة مع لوحة الإنجاز/«أدائي» الحيّتين (S5) ⇒ تقبل DB أو Tx. */
+export async function loadEligible(runner: DB | Tx, period: string): Promise<EligibleRow[]> {
+  const rows = await runner
     .select({
       employeeId: commissionAssignments.employeeId,
       planId: commissionAssignments.planId,
@@ -87,10 +88,10 @@ async function loadEligible(tx: Tx, period: string): Promise<EligibleRow[]> {
   return Array.from(byEmployee.values());
 }
 
-async function loadPlans(tx: Tx, planIds: number[]): Promise<Map<number, PlanWithTiers>> {
+export async function loadPlans(runner: DB | Tx, planIds: number[]): Promise<Map<number, PlanWithTiers>> {
   if (planIds.length === 0) return new Map();
-  const plans = await tx.select().from(commissionPlans).where(inArray(commissionPlans.id, planIds));
-  const tiers = await tx
+  const plans = await runner.select().from(commissionPlans).where(inArray(commissionPlans.id, planIds));
+  const tiers = await runner
     .select()
     .from(commissionPlanTiers)
     .where(inArray(commissionPlanTiers.planId, planIds))
@@ -123,8 +124,8 @@ async function loadPlans(tx: Tx, planIds: number[]): Promise<Map<number, PlanWit
 }
 
 /** carryOut آخر سطر معتمد بفترة أقدم من P لكل موظف — أساس سلسلة الترحيل السالب. */
-async function loadCarryIn(tx: Tx, period: string): Promise<Map<number, Decimal>> {
-  const rows = await tx
+export async function loadCarryIn(runner: DB | Tx, period: string): Promise<Map<number, Decimal>> {
+  const rows = await runner
     .select({
       employeeId: commissionRunLines.employeeId,
       carryOut: commissionRunLines.carryOut,
@@ -143,6 +144,24 @@ async function loadCarryIn(tx: Tx, period: string): Promise<Map<number, Decimal>
   const out = new Map<number, Decimal>();
   latest.forEach((v, empId) => out.set(empId, v.carryOut));
   return out;
+}
+
+/** تطبيق شريحة الخطة على الأساس الفعلي — دالة نقية مشتركة بين المحرّك (اللقطات) والعرض الحيّ (S5).
+ *  القاعدة: آخر عتبة ≤ المقياس (TARGET_PCT: نسبة الإنجاز؛ AMOUNT_SLAB: الأساس)، والنسبة على كامل الأساس. */
+export function applyPlanTier(
+  plan: PlanWithTiers,
+  effectiveBase: Decimal,
+  achievementPct: Decimal | null,
+): { tier: PlanWithTiers["tiers"][number] | null; ratePct: Decimal; fixedBonus: Decimal; commission: Decimal } {
+  const measure = plan.tierMode === "TARGET_PCT" ? achievementPct : effectiveBase;
+  let tier: PlanWithTiers["tiers"][number] | null = null;
+  if (measure != null) {
+    for (const t of plan.tiers) if (t.threshold.lte(measure)) tier = t;
+  }
+  const ratePct = tier ? tier.ratePct : new Decimal(0);
+  const fixedBonus = tier ? tier.fixedBonus : new Decimal(0);
+  const commission = tier ? round2(effectiveBase.times(ratePct).div(100)).plus(fixedBonus) : new Decimal(0);
+  return { tier, ratePct, fixedBonus, commission };
 }
 
 export interface ComputeResult {
@@ -223,18 +242,7 @@ export async function computeCommissionRun(period: string, actor: Actor): Promis
       if (target && target.gt(0)) achievementPct = round2(effectiveBase.div(target).times(100));
 
       // المقياس حسب نمط الخطة — TARGET_PCT بلا هدف ⇒ لا شريحة (سطر صفري مرئي).
-      let measure: Decimal | null;
-      if (plan.tierMode === "TARGET_PCT") measure = achievementPct;
-      else measure = effectiveBase;
-
-      let tier: PlanWithTiers["tiers"][number] | null = null;
-      if (measure != null) {
-        for (const t of plan.tiers) if (t.threshold.lte(measure)) tier = t;
-      }
-
-      const ratePct = tier ? tier.ratePct : new Decimal(0);
-      const fixedBonus = tier ? tier.fixedBonus : new Decimal(0);
-      const commission = tier ? round2(effectiveBase.times(ratePct).div(100)).plus(fixedBonus) : new Decimal(0);
+      const { tier, ratePct, fixedBonus, commission } = applyPlanTier(plan, effectiveBase, achievementPct);
 
       await tx.insert(commissionRunLines).values({
         runId,

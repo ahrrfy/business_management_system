@@ -14,10 +14,11 @@ import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { logAudit } from "../services/auditService";
 import { computeCommissionRun } from "../services/commissions/engine";
+import * as perfSvc from "../services/commissions/performance";
 import * as plansSvc from "../services/commissions/plans";
 import * as runsSvc from "../services/commissions/runs";
 import * as targetsSvc from "../services/commissions/targets";
-import { commissionsManagerProcedure, commissionsReadProcedure, router } from "../trpc";
+import { commissionsManagerProcedure, commissionsReadProcedure, protectedProcedure, reportViewerProcedure, router } from "../trpc";
 import type { TrpcContext } from "../context";
 
 const moneyStr = z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة");
@@ -215,8 +216,24 @@ const runsRouter = router({
     }),
 });
 
+const performanceRouter = router({
+  /**
+   * لوحة الإنجاز الحيّة — تقرير قراءة: بوّابة التقارير الموحّدة (manager/accountant/auditor
+   * قالبياً + منح صريح) — ⚠ خط أحمر §٦: تبقى requireModuleGate بقائمة الأدوار، لا requireModule عارٍ.
+   */
+  leaderboard: reportViewerProcedure
+    .input(z.object({ period }))
+    .query(({ input }) => perfSvc.getLeaderboard(input.period)),
+
+  /** «أدائي» — ذاتي بحت: الهوية من ctx.user.id حصراً، لا يقبل employeeId إطلاقاً. */
+  myStatus: protectedProcedure
+    .input(z.object({ period: period.optional() }).optional())
+    .query(({ input, ctx }) => perfSvc.getMyStatus(ctx.user.id, input?.period)),
+});
+
 export const commissionsRouter = router({
   plans: plansRouter,
   targets: targetsRouter,
   runs: runsRouter,
+  performance: performanceRouter,
 });
