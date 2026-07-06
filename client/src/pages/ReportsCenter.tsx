@@ -180,7 +180,10 @@ const SECTION_ROLES: Record<string, RoleKey[]> = {
   audit:      ["admin"],
 };
 
-/** يحوّل gate الخشن (all/manager/admin) + قسمه إلى RoleGate دقيق. all⇒مرئي للكل، admin⇒adminOnly. */
+/** يحوّل gate الخشن (all/manager/admin) + قسمه إلى RoleGate دقيق. all⇒مرئي للكل، admin⇒adminOnly.
+ *  مقصور على الأدوار (SECTION_ROLES) بلا بُعد وحدة: بنود هذا المركز تقصد وجهاتٍ مختلطةً (تقارير
+ *  reportViewer + صفحات hr/assets/stocktake بوحداتها الخاصة)، فمنحُ «reports» عليها كلها كان
+ *  يُعلن روابط يحجبها الخادم فوراً (مراجعة Codex). الوصول المباشر لكل تقرير يحترم منحه في App.tsx. */
 function resolveGate(gate: Gate, sectionKey: string): RoleGate | undefined {
   if (gate === "all") return undefined;
   if (gate === "admin") return { adminOnly: true };
@@ -210,6 +213,9 @@ export default function ReportsCenter() {
   const [favs, setFavs] = useState<Set<string>>(() => loadFavs());
 
   const role = me.data?.role;
+  const permsOverride = (me.data?.permissionsOverride ?? null) as
+    | import("@shared/permissions").PermissionMap
+    | null;
 
   function toggleFav(href: string) {
     setFavs((prev) => {
@@ -229,18 +235,18 @@ export default function ReportsCenter() {
     () =>
       SECTIONS.map((s) => ({
         ...s,
-        items: s.items.filter((it) => canSeeGate(resolveGate(it.gate, s.key), role) && match(it)),
+        items: s.items.filter((it) => canSeeGate(resolveGate(it.gate, s.key), role, permsOverride) && match(it)),
       })).filter((s) => s.items.length > 0),
-    [needle, role],
+    [needle, role, permsOverride],
   );
 
   // المفضّلة (الجاهزة فقط ومرئية)
   const favItems = useMemo(
     () =>
       ALL_ITEMS.filter(
-        (it) => favs.has(it.href) && canSeeGate(resolveGate(it.gate, it.sectionKey), role) && it.status === "ready" && match(it),
+        (it) => favs.has(it.href) && canSeeGate(resolveGate(it.gate, it.sectionKey), role, permsOverride) && it.status === "ready" && match(it),
       ),
-    [favs, needle, role],
+    [favs, needle, role, permsOverride],
   );
 
   return (

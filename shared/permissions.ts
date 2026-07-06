@@ -175,6 +175,48 @@ export function diffFromTemplate(
   return changed > 0 ? diff : null;
 }
 
+/** هل يحقّق مستوى محسوب المستوى الأدنى المطلوب؟ (FULL يشمل READ.) */
+export function levelSatisfies(level: AccessLevel | undefined | null, minLevel: AccessLevel): boolean {
+  if (level === "FULL") return minLevel === "FULL" || minLevel === "READ";
+  if (level === "READ") return minLevel === "READ";
+  return false;
+}
+
+/** فحص بخريطة الوحدة المحلولة (قالب + override) — يطابق دلالة requireModule في الخادم. */
+export function hasModuleAccess(
+  role: string,
+  override: PermissionMap | null | undefined,
+  moduleKey: string,
+  minLevel: AccessLevel
+): boolean {
+  if (role === "admin") return true;
+  const map = resolvePermissions(role as RoleKey, override);
+  return levelSatisfies(map[moduleKey] ?? "NONE", minLevel);
+}
+
+/**
+ * قاعدة البوّابة الموحّدة (خادم + واجهة) — إصلاح «فتحتُ صلاحيات لحساب ولم تُطبَّق»:
+ *  - admin يمرّ دائماً.
+ *  - دور ضمن قائمة البوّابة ⇒ يمرّ إن حقّقت **خريطته المحلولة** المستوى (إنفاذ F2:
+ *    override مُقيِّد يُنفَّذ حتى على الأدوار المسموحة).
+ *  - دور خارج القائمة ⇒ يمرّ فقط إن مُنح **صراحةً** (override فردي أو دور مخصّص)
+ *    مستوى الوحدة المطلوب — القالب وحده لا يفتح بوّابة أضيق من وعده عمداً
+ *    (توسيع القوالب قرار سياسة يُتّخذ بوّابةً-بوّابة لا هنا).
+ */
+export function moduleAccessAllowed(
+  role: string,
+  override: PermissionMap | null | undefined,
+  moduleKey: string,
+  minLevel: AccessLevel,
+  allowedRoles: readonly string[]
+): boolean {
+  if (role === "admin") return true;
+  if (allowedRoles.includes(role)) {
+    return hasModuleAccess(role, override, moduleKey, minLevel);
+  }
+  return levelSatisfies(override?.[moduleKey], minLevel);
+}
+
 export function canSeeCost(role: string): boolean {
   const info = ROLES.find((r) => r.key === role);
   return info?.canSeeCost === true;

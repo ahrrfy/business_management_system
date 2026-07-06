@@ -81,7 +81,7 @@ export function validateAccount(v: AccountFieldsValue): string | null {
   if (!emailV && !usernameV) return "أدخل بريداً إلكترونياً أو اسم مستخدم على الأقل.";
   if (emailV && !/^\S+@\S+\.\S+$/.test(emailV)) return "بريد إلكتروني غير صالح.";
   if (usernameV && !USERNAME_REGEX.test(usernameV)) return USERNAME_POLICY_MSG;
-  if (!isStrongPassword(v.password)) return "كلمة المرور ضعيفة — استخدم زر التوليد أو أدخل 12 خانة تحتوي حرفاً كبيراً وصغيراً ورقماً ورمزاً.";
+  if (!isStrongPassword(v.password)) return `كلمة المرور ضعيفة — استخدم زر التوليد. ${PASSWORD_POLICY_MSG}`;
   if (v.password !== v.passwordConfirm) return "تأكيد كلمة المرور لا يطابق.";
   if (v.hiredAt && !/^\d{4}-\d{2}-\d{2}$/.test(v.hiredAt)) return "تاريخ التوظيف غير صالح.";
   return null;
@@ -229,8 +229,17 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
       const res = await utils.users.generatePassword.fetch();
       onChange({ password: res.password, passwordConfirm: res.password });
     } catch {
-      const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#$%!";
-      const pw = Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join("");
+      // fallback محلي يضمن اجتياز السياسة حتماً: حرف كبير + رمز مضمونان (كان عشوائياً
+      // خالصاً فيفشل أحياناً في تحقيق فئات السياسة).
+      const upper = "ABCDEFGHJKMNPQRSTUVWXYZ";
+      const symbols = "@#$%!";
+      const chars = upper + "abcdefghjkmnpqrstuvwxyz23456789" + symbols;
+      const body = Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]);
+      const pw = [
+        upper[Math.floor(Math.random() * upper.length)],
+        symbols[Math.floor(Math.random() * symbols.length)],
+        ...body,
+      ].join("");
       onChange({ password: pw, passwordConfirm: pw });
     }
   }

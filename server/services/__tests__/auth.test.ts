@@ -132,8 +132,11 @@ describe("session — إبطال وإزالة الدور", () => {
 
   it("getUserFromRequest يقبل التوكن الصالح ويرفضه بعد إبطال الجلسات", async () => {
     await seedAdmin();
-    const token = await signSession(1);
-    const req = { headers: { cookie: `app_session_id=${token}` } } as any;
+    // ٦/٧: البصمة (fp) صارت إلزامية المطابقة لكل طلب — لذا نوقّع بـreq يحمل UA ونتحقّق بنفسه
+    // (يطابق الإنتاج: signSession دائماً بـctx.req). التوكن بلا fp = legacy يُرفَض بعد الترقية.
+    const signReq = { headers: { "user-agent": "vitest-UA" } } as any;
+    const token = await signSession(1, undefined, signReq);
+    const req = { headers: { cookie: `app_session_id=${token}`, "user-agent": "vitest-UA" } } as any;
 
     const u1 = await getUserFromRequest(req);
     expect(u1?.id).toBe(1);

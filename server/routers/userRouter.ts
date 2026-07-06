@@ -19,6 +19,7 @@ import {
   updateUser,
 } from "../services/userService";
 import { getUserUsage } from "../services/entityUsage";
+import { disableTwoFactor } from "../services/twoFactorService";
 import { adminProcedure, protectedProcedure, router } from "../trpc";
 
 // تحفظ tuple الـenum أنواع RoleKey الحرفية ⇒ z.infer ينتج RoleKey لا string ⇒ يُغني عن as any.
@@ -208,6 +209,21 @@ export const userRouter = router({
         newValue: { mustChangePassword: input.mustChangePassword },
       });
       return res;
+    }),
+
+  /** مسار إنقاذ 2FA: تصفير المصادقة الثنائية لمستخدم فقد هاتفه ورموز استرداده معاً —
+   *  للأدمن فقط، مع إبطال كل جلساته احتياطاً (إن كان الهاتف مسروقاً فجلساته معه). */
+  resetTwoFactor: adminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      await disableTwoFactor(input.userId);
+      await revokeUserSessions(input.userId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "user.resetTwoFactor",
+        entityType: "user",
+        entityId: input.userId,
+      });
+      return { success: true } as const;
     }),
 
   /** إبطال كل جلسات مستخدم فوراً بلا تغيير كلمة مروره (جهاز مفقود/موظف مطرود). */

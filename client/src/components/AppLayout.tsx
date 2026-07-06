@@ -46,7 +46,11 @@ const NAV_LINKS: NavLink[] = [
   { href: "/suppliers", label: "الموردون", icon: Building2 },
   { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
   // (د) متخصّص/نادر — الإعدادات في الأسفل دائماً
-  { href: "/exchange", label: "الصيرفة", icon: DollarSign, managerOnly: true },
+  // الصيرفة تتبع وحدة «الخزينة» (راوترها يسمح لـmanager/accountant + منح صريح) — والمحاسب
+  // القالبيّ يظهر عبر قائمة الأدوار، والمنح الصريح لغيره عبر module (تبويبات الصيرفة غير مُقيَّدة).
+  { href: "/exchange", label: "الصيرفة", icon: DollarSign, roles: ["admin", "manager", "accountant"], module: "treasury" },
+  // الأصول/الموارد/الإعدادات: محاور بتبويبات managerOnly داخلها ⇒ لا نفتحها بمنح وحدة (وإلا
+  // وصل المستخدم لمحور بلا تبويبات مرئية = صفحة فارغة، مراجعة Codex). تبقى مديرية بالكامل.
   { href: "/assets", label: "الأصول الثابتة", icon: Server, managerOnly: true },
   { href: "/hr", label: "الموارد البشرية", icon: Briefcase, managerOnly: true },
   { href: "/closing", label: "الإقفال والرَقابة", icon: Lock, managerOnly: true },
@@ -82,6 +86,10 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   }, [loc]);
 
   const role = me.data?.role;
+  // الصلاحيات الممنوحة (override فردي/دور مخصّص) — تُمرَّر لفلترة التنقّل مع الدور.
+  const permsOverride = (me.data?.permissionsOverride ?? null) as
+    | import("@shared/permissions").PermissionMap
+    | null;
 
   const sidebarInner = (
     <>
@@ -115,7 +123,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <div className="my-1 mx-2 border-b border-border/50" />
 
           {/* الوَحدات — قائمة مُسطّحة، مَدخل واحد لكل وحدة */}
-          {NAV_LINKS.filter((m) => canSeeGate(m, role)).map((m) => {
+          {NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride)).map((m) => {
             const active = isModuleActive(loc, m.href);
             const Icon = m.icon;
             return (

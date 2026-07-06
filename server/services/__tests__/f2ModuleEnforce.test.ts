@@ -153,3 +153,43 @@ describe("F7 — إنفاذ وحدة treasury على الكتابة المالي
     catch (e: any) { expect(String(e?.message)).not.toMatch(/صلاحيات غير كافية/); }
   });
 });
+
+// ─── ٦/٧: بوّابة المنح الصريح — «فتحتُ صلاحيات لحساب» تعمل فعلاً الآن ─────────────
+describe("المنح الصريح يفتح بوّابة أضيق من الدور (requireModuleGate)", () => {
+  it("warehouse قالبيّ يقرأ الموردين (قالبه suppliers=FULL وكان managerProcedure يصدّه)", async () => {
+    await expect(caller("warehouse", null).suppliers.list()).resolves.toBeDefined();
+  });
+  it("cashier + {suppliers: READ} يقرأ الموردين", async () => {
+    await expect(caller("cashier", { suppliers: "READ" }).suppliers.list()).resolves.toBeDefined();
+  });
+  it("cashier بلا منح يبقى مرفوضاً عن الموردين (قالبه NONE)", async () => {
+    await expect(caller("cashier", null).suppliers.list()).rejects.toThrow(FORBIDDEN);
+  });
+  it("cashier + {reports: READ} منحاً صريحاً يصل تقارير reportViewer (كانت قائمة أدوار حرفية تصدّه)", async () => {
+    await expect(caller("cashier", { reports: "READ" }).reports.arAging({ branchId: 1 })).resolves.toBeDefined();
+  });
+  // ٦/٧ (مراجعة عدائية): بوّابة التقارير تبقى على قائمة [manager/accountant/auditor] + منح صريح —
+  // warehouse القالبيّ (reports=READ افتراضاً بلا override) محجوب، لئلا تُكشَف تقارير التكلفة/الربح
+  // لدور canSeeCost=false. المنح الصريح للمالك وحده يفتح البوّابة (الاختبار أعلاه).
+  it("warehouse قالبيّ (بلا منح صريح) يبقى محجوباً عن التقارير", async () => {
+    await expect(caller("warehouse", null).reports.arAging({ branchId: 1 })).rejects.toThrow(FORBIDDEN);
+  });
+  it("warehouse + {reports: READ} منحاً صريحاً يصل التقارير", async () => {
+    await expect(caller("warehouse", { reports: "READ" }).reports.arAging({ branchId: 1 })).resolves.toBeDefined();
+  });
+  it("cashier بلا منح يبقى مرفوضاً عن التقارير (قالبه NONE)", async () => {
+    await expect(caller("cashier", null).reports.arAging({ branchId: 1 })).rejects.toThrow(FORBIDDEN);
+  });
+  it("accountant قالبيّ (treasury=FULL موعودة) لا يُرفَض صلاحياتياً عن تحويل نقدي", async () => {
+    try { await caller("accountant", null).cashTransfers.send({ fromBranchId: 1, toBranchId: 2, amount: "1000" } as any); }
+    catch (e: any) { expect(String(e?.message)).not.toMatch(/صلاحيات غير كافية/); }
+  });
+  it("user + {sales: FULL} منحاً صريحاً لا يُرفَض صلاحياتياً عن بوّابة مبيعات الكتابة", async () => {
+    // قد يفشل لاحقاً لسبب أعمالي (مدخلات) — المهم أن البوّابة لم تعد ترفض المنح.
+    try { await caller("user", { sales: "FULL" }).returns.list({} as any); }
+    catch (e: any) { expect(String(e?.message)).not.toMatch(/صلاحيات غير كافية/); }
+  });
+  it("user بلا منح يبقى مرفوضاً عن بوّابة المبيعات المديرية", async () => {
+    await expect(caller("user", null).returns.list({} as any)).rejects.toThrow(FORBIDDEN);
+  });
+});
