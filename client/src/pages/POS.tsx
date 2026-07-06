@@ -426,7 +426,8 @@ export default function POS() {
   // السابقة أثناء الجلب (لا وميض) + التفعيل من حرفين (التطبيع/الترتيب على الخادم).
   const debouncedSearch = useDebouncedValue(search, 180);
   const searchResults = trpc.catalog.posList.useQuery(
-    { branchId, tier: effectiveTier, query: debouncedSearch, limit: 20 },
+    // بند 12ب (٧/٧): تمرير العميل — صاحب سعر تعاقدي يرى سعره (يثبَّت لاحقاً override بمسار POS-ROUND القائم).
+    { branchId, tier: effectiveTier, query: debouncedSearch, limit: 20, customerId: activeTab.customerId },
     {
       enabled: debouncedSearch.trim().length >= 2,
       placeholderData: keepPreviousData,
@@ -473,14 +474,14 @@ export default function POS() {
   const lookupBarcode = useCallback(async (code: string) => {
     if (!code) return;
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier });
+      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
       if (!row) notify.err(`باركود غير معروف: ${code}`);
       else addRow(row);
     } catch (e: unknown) {
       notify.err(e, "خطأ في المسح");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, effectiveTier]);
+  }, [branchId, effectiveTier, activeTab.customerId]);
 
   const { handleKeyDown: handleScanKeyDown } = useSmartScanInput(lookupBarcode);
 

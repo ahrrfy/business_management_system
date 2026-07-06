@@ -30,6 +30,7 @@ import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -204,6 +205,10 @@ export async function generatePayroll(period: string, actor: Actor) {
       attRows.map((r) => [Number(r.employeeId), { amount: String(r.sumAmount), hours: String(r.sumHours) }]),
     );
 
+    // advances (بند 12ج، ٧/٧): اقتراح استقطاع السلف من أقدم سلفة نشطة لكل موظف —
+    // يُملأ advanceDeduction ويدخل **ضمن** deductions (لا فوقها) فيَنقص net تلقائياً.
+    const advanceByEmp = await suggestDeductionsTx(tx, emps.map((e) => Number(e.id)));
+
     // رأس المسيّر (مسودة) — المجاميع تُحدَّث بعد إدراج البنود.
     const runRes = await tx.insert(payrollRuns).values({
       period: p,
@@ -238,7 +243,10 @@ export async function generatePayroll(period: string, actor: Actor) {
       }
       const overtime = new Decimal(0);
       const commission = commissionByEmp.get(Number(e.id)) ?? new Decimal(0);
-      const deductions = new Decimal(0);
+      // استقطاع السلفة المقترح جزء من deductions ابتداءً (يُحرَّر لاحقاً عبر updateItem لكن لا
+      // يهبط الاستقطاع الكلي دون جزء السلفة — انظر الحارس هناك).
+      const advanceDeduction = advanceByEmp.get(Number(e.id))?.suggested ?? new Decimal(0);
+      const deductions = advanceDeduction;
       const net = computeNet(gross, overtime, commission, deductions);
       await tx.insert(payrollItems).values({
         runId,
@@ -251,6 +259,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         overtime: toDbMoney(overtime),
         commission: toDbMoney(commission),
         deductions: toDbMoney(deductions),
+        advanceDeduction: toDbMoney(advanceDeduction),
         net: toDbMoney(net),
       });
     }
@@ -287,6 +296,16 @@ export async function updateItem(itemId: number, input: UpdateItemInput) {
     const deductions = input.deductions != null ? money(input.deductions) : money(item.deductions);
     if (overtime.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمل الإضافي لا يكون سالباً" });
     if (deductions.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "الاستقطاع لا يكون سالباً" });
+    // advances (بند 12ج): استقطاع السلفة المولَّد ثابت في البند — التعديل اليدوي يطال بقية
+    // الاستقطاعات (غياب/جزاء) فوقه فقط. السماح بالهبوط دونه يفكّ الاتساق مع تسوية السلف عند
+    // الدفع (settleAdvancesOnPayTx تُنقص remaining بمقدار advanceDeduction كما وُلّد).
+    const advancePart = money(item.advanceDeduction);
+    if (deductions.lt(advancePart)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الاستقطاع لا يقلّ عن استقطاع السلفة المولَّد (${toDbMoney(advancePart)}) — لتغييره ألغِ المسودة وعدِّل السلفة ثم أعد التوليد`,
+      });
+    }
     // العمولة قراءة فقط هنا — تعديلها = إعادة احتساب تشغيلة العمولات قبل توليد المسيّر.
     const net = computeNet(money(item.gross), overtime, money(item.commission), deductions);
 
@@ -371,6 +390,16 @@ export async function payRun(id: number, actor: Actor) {
       .orderBy(payrollItems.employeeId);
     if (items.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "لا بنود لدفعها" });
 
+    // advances (بند 12ج): هل هذا **أول** دفع لهذا المسيّر أم إعادة دفع بعد عكس؟ تسوية السلف
+    // (إنقاص remaining) تُطبَّق مرّة واحدة عند أول دفع فقط — عكس الدفع لا يُعيد أرصدة السلف
+    // (متّسق مع دلالة cancelRun: القيود الأصلية تبقى والسلفة خُصمت فعلاً من راتبٍ صُرف)، وإعادة
+    // الدفع بعد العكس لا تخصمها مرّة ثانية. الفحص قبل قيد أي مدفوعات هذه الجولة.
+    const [prevPay] = await tx
+      .select({ c: sql<number>`COUNT(*)` })
+      .from(accountingEntries)
+      .where(sql`${accountingEntries.dedupeKey} LIKE ${`PAYROLL:${id}:%`}`);
+    const isFirstPay = Number(prevPay?.c ?? 0) === 0;
+
     const entryDate = new Date(periodEntryDate(run.period));
     for (const it of items) {
       const net = money(it.net);
@@ -408,6 +437,15 @@ export async function payRun(id: number, actor: Actor) {
       });
     }
 
+    // advances (بند 12ج): إنقاص أرصدة السلف بمقدار advanceDeduction المصروف فعلاً —
+    // بالأقدم أولاً، وSETTLED عند بلوغ الصفر. ذرّي مع الدفع (أي فشل يُدحرج كل شيء).
+    if (isFirstPay) {
+      await settleAdvancesOnPayTx(
+        tx,
+        items.map((it) => ({ employeeId: Number(it.employeeId), amount: money(it.advanceDeduction) })),
+      );
+    }
+
     await tx.update(payrollRuns).set({ status: "paid", paidAt: new Date(), paidBy: actor.userId }).where(eq(payrollRuns.id, id));
   }).then(() => getRun(id));
 }
@@ -426,6 +464,11 @@ export async function payRun(id: number, actor: Actor) {
  *
  * ملاحظة تصميم: لا نحذف صفوف accountingEntries الأصلية (سجلّ مالي ثابت). العكس يكون بقيود
  * معاكسة — متّسقاً مع نمط cancelExpense (قيد ADJUST/عكس بدل الحذف).
+ *
+ * advances (بند 12ج): عكس مسيّر **مدفوع** لا يُعيد أرصدة السلف (remaining) المُنقَصة عند
+ * الدفع الأول — قرار موثَّق: التسوية وقعت على راتبٍ صُرف فعلاً، والعكس المحاسبي لا يلغي
+ * واقعة الخصم؛ وإعادة الدفع اللاحقة لا تخصم السلف مرّة ثانية (payRun يتسوّى مرة واحدة فقط
+ * عبر فحص isFirstPay). تصحيح السلف بعد عكس نهائي = شأن يدوي بقرار مدير.
  */
 export async function cancelRun(id: number, actor: Actor) {
   return withTx(async (tx) => {

@@ -1967,6 +1967,9 @@ export const payrollItems = mysqlTable(
     // + commission − deductions. هجرة 0051.
     commission: decimal("commission", { precision: 15, scale: 2 }).default("0").notNull(),
     deductions: decimal("deductions", { precision: 15, scale: 2 }).default("0").notNull(),
+    // بند 12ج (٧/٧): جزء الاستقطاع الآتي من سلف الموظف (مُتضمَّن في deductions لا إضافة عليها) —
+    // يُملأ تلقائياً عند التوليد من employeeAdvances النشطة، وعند صرف التشغيلة يُنقص أرصدتها. هجرة 0056.
+    advanceDeduction: decimal("advanceDeduction", { precision: 15, scale: 2 }).default("0").notNull(),
     net: decimal("net", { precision: 15, scale: 2 }).default("0").notNull(),
     note: varchar("note", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -2824,3 +2827,112 @@ export const pushDailyClaim = mysqlTable(
   }),
 );
 export type PushDailyClaim = typeof pushDailyClaim.$inferSelect;
+
+/* ============================ بند 12 (٧/٧): الأقساط والشيكات الآجلة ============================ */
+
+/**
+ * خطة أقساط لعميل — بيع آجل مجدول بدفعات (نقدية أو شيكات آجلة). ترتبط اختيارياً بفاتورة بيع.
+ * الدلالة المالية: الخطة **جدولة تحصيل** فوق ذمّة العميل القائمة — لا قيد محاسبي عند الإنشاء؛
+ * سداد كل قسط يمرّ عبر سند قبض حقيقي (createVoucher) فيحرّك الذمّة والدفتر بالمسار القائم الموحَّد.
+ */
+export const installmentPlans = mysqlTable(
+  "installmentPlans",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
+    invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    totalAmount: decimal("totalAmount", { precision: 15, scale: 2 }).notNull(),
+    downPayment: decimal("downPayment", { precision: 15, scale: 2 }).default("0").notNull(),
+    status: mysqlEnum("planStatus", ["ACTIVE", "COMPLETED", "CANCELLED"]).default("ACTIVE").notNull(),
+    notes: text("notes"),
+    createdBy: bigint("createdBy", { mode: "number" }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    customerIdx: index("idx_instplan_customer").on(t.customerId),
+    branchStatusIdx: index("idx_instplan_branch_status").on(t.branchId, t.status),
+  })
+);
+export type InstallmentPlan = typeof installmentPlans.$inferSelect;
+
+/** قسط مفرد داخل خطة — نقدي أو شيك آجل (رقم الشيك + المصرف). السداد يربط سند القبض الفعلي. */
+export const installmentLines = mysqlTable(
+  "installmentLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    planId: bigint("planId", { mode: "number" }).notNull().references(() => installmentPlans.id, { onDelete: "cascade" }),
+    seq: int("seq").notNull(),
+    dueDate: date("dueDate", { mode: "string" }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    kind: mysqlEnum("lineKind", ["CASH", "CHECK"]).default("CASH").notNull(),
+    checkNumber: varchar("checkNumber", { length: 60 }),
+    bankName: varchar("bankName", { length: 100 }),
+    status: mysqlEnum("lineStatus", ["PENDING", "PAID", "BOUNCED", "CANCELLED"]).default("PENDING").notNull(),
+    receiptId: bigint("receiptId", { mode: "number" }),
+    paidAt: timestamp("paidAt"),
+    note: varchar("note", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    planIdx: index("idx_instline_plan").on(t.planId),
+    dueStatusIdx: index("idx_instline_due_status").on(t.dueDate, t.status),
+  })
+);
+export type InstallmentLine = typeof installmentLines.$inferSelect;
+
+/* ============================ بند 12ب (٧/٧): التسعير التعاقدي لعميل ============================ */
+
+/**
+ * سعر تعاقدي خاص بعميل لوحدة منتج بعينها — يتقدّم على فئات التسعير الثلاث (RETAIL/WHOLESALE/
+ * GOVERNMENT) عند البيع لهذا العميل (عقود الدوائر الحكومية). فريد لكل (عميل × وحدة منتج).
+ */
+export const customerContractPrices = mysqlTable(
+  "customerContractPrices",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" }).notNull().references(() => customers.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull().references(() => productUnits.id),
+    price: decimal("price", { precision: 15, scale: 2 }).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    note: varchar("note", { length: 255 }),
+    createdBy: bigint("createdBy", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    customerUnitUq: unique("uq_contract_customer_unit").on(t.customerId, t.productUnitId),
+    customerIdx: index("idx_contract_customer").on(t.customerId),
+  })
+);
+export type CustomerContractPrice = typeof customerContractPrices.$inferSelect;
+
+/* ============================ بند 12ج (٧/٧): سلف الموظفين ============================ */
+
+/**
+ * سلفة موظف — تُمنح بسند صرف حقيقي (خزينة OUT عبر createVoucher) ويُخصم رصيدها تلقائياً من
+ * تشغيلات الرواتب (payrollItems.advanceDeduction) عند الصرف حتى التسوية. monthlyDeduction=null
+ * ⇒ يُخصم أقصى الممكن من كل راتب.
+ */
+export const employeeAdvances = mysqlTable(
+  "employeeAdvances",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull().references(() => employees.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    remaining: decimal("remaining", { precision: 15, scale: 2 }).notNull(),
+    monthlyDeduction: decimal("monthlyDeduction", { precision: 15, scale: 2 }),
+    status: mysqlEnum("advanceStatus", ["ACTIVE", "SETTLED", "CANCELLED"]).default("ACTIVE").notNull(),
+    receiptId: bigint("receiptId", { mode: "number" }),
+    note: varchar("note", { length: 255 }),
+    createdBy: bigint("createdBy", { mode: "number" }).notNull(),
+    grantedAt: timestamp("grantedAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    empStatusIdx: index("idx_advance_emp_status").on(t.employeeId, t.status),
+  })
+);
+export type EmployeeAdvance = typeof employeeAdvances.$inferSelect;

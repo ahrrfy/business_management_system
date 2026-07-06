@@ -33,6 +33,7 @@ import { assetsRouter } from "./routers/assetsRouter";
 import { employeeRouter } from "./routers/employeeRouter";
 import { attendanceRouter } from "./routers/attendanceRouter";
 import { payrollRouter } from "./routers/payrollRouter";
+import { installmentRouter } from "./routers/installmentRouter";
 import { commissionsRouter } from "./routers/commissionsRouter";
 import { leaveRouter } from "./routers/leaveRouter";
 import { recruitmentRouter } from "./routers/recruitmentRouter";
@@ -90,6 +91,7 @@ export const appRouter = router({
   employees: employeeRouter,
   attendance: attendanceRouter,
   payroll: payrollRouter,
+  installments: installmentRouter,
   // commissions (٦/٧/٢٦): الأهداف والعمولات — خطط/أهداف شهرية/تشغيلات عمولات البائعين.
   commissions: commissionsRouter,
   leaves: leaveRouter,

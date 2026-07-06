@@ -6,6 +6,7 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
+import * as adv from "../services/advancesService";
 import * as svc from "../services/payrollService";
 import { getPayrollSummary } from "../services/reportsHrService";
 import { protectedProcedure, requireModule, router } from "../trpc";
@@ -90,6 +91,58 @@ export const payrollRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await svc.cancelRun(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0 });
       await logAudit(ctx, { action: "payroll.cancel", entityType: "payrollRun", entityId: input.id, newValue: { status: res.status } });
+      return res;
+    }),
+
+  /* ───────────── سلف الموظفين (بند 12ج) — نفس بوّابات hr ───────────── */
+
+  advancesList: hrRead
+    .input(
+      z
+        .object({
+          employeeId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
+          status: z.enum(["ACTIVE", "SETTLED", "CANCELLED"]).optional(),
+        })
+        .optional(),
+    )
+    .query(({ input }) => adv.listAdvances(input)),
+
+  advanceBalance: hrRead
+    .input(z.object({ employeeId: z.number().int().positive() }))
+    .query(({ input }) => adv.employeeBalance(input.employeeId)),
+
+  /** عتبتا السندات (اعتماد/مُرفق) لواجهة المنح — بوّابة hr (بوّابة الخزينة لا تلزم للاطلاع على العتبتين). */
+  advanceThresholds: hrRead.query(() => adv.advanceThresholds()),
+
+  advanceGrant: hrWrite
+    .input(
+      z.object({
+        employeeId: z.number().int().positive(),
+        branchId: z.number().int().positive(),
+        amount: moneyStr,
+        monthlyDeduction: moneyStr.nullish(),
+        note: z.string().trim().max(255).nullish(),
+        // مُرفق سند الصرف (صورة مضغوطة data URL أو رابط) — نفس سقف voucherRouter.
+        attachmentUrl: z.string().max(4_000_000).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await adv.grantAdvance(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role });
+      await logAudit(ctx, {
+        action: "payroll.advanceGrant",
+        entityType: "employeeAdvance",
+        entityId: res?.id != null ? Number(res.id) : undefined,
+        newValue: { employeeId: input.employeeId, amount: input.amount, monthlyDeduction: input.monthlyDeduction ?? null, voucherNumber: res?.voucherNumber },
+      });
+      return res;
+    }),
+
+  advanceCancel: hrWrite
+    .input(z.object({ advanceId: z.number().int().positive(), reason: z.string().trim().max(200).nullish() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await adv.cancelAdvance(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role });
+      await logAudit(ctx, { action: "payroll.advanceCancel", entityType: "employeeAdvance", entityId: input.advanceId, newValue: { reason: input.reason ?? null } });
       return res;
     }),
 });
