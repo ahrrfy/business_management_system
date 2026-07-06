@@ -379,6 +379,27 @@
       "when": 1783374029601,
       "tag": "0053_customer_active_index",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "5",
+      "when": 1783379039711,
+      "tag": "0054_installments",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "5",
+      "when": 1783379039712,
+      "tag": "0055_contract_prices",
+      "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "5",
+      "when": 1783379039713,
+      "tag": "0056_employee_advances",
+      "breakpoints": true
     }
   ]
 }
