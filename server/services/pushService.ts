@@ -24,7 +24,10 @@ export interface MorningBriefPayload {
   kind: "MORNING_BRIEF";
   title: string;
   body: string;
-  /** المسار الذي يُفتَح عند النقر على الإشعار — عادةً /dashboard. */
+  /** المسار الذي يُفتَح عند النقر على الإشعار — شرطي حسب محتوى `counts` (gap-audit ٥/٧ item 10):
+   *  تذكيرات AR أو وعد اليوم ⇒ /reports/ar-reminders، وإلا أمر شغل متأخّر ⇒ مركز أوامر الشغل،
+   *  وإلا (لا شيء مُستحقّ، حالة نادرة) ⇒ /dashboard. انظر `pickMorningBriefUrl` في
+   *  morningPushScheduler.ts. */
   url: string;
   /** أعداد للسياق (للتحقّق في اختبار E2E المستقبلي). */
   counts: { arRemindersDue: number; promisedToday: number; overdueWorkOrders: number };
@@ -194,47 +197,66 @@ export async function sendPushToUser(
   if (subs.length === 0) return { sent: 0, goneRevoked: 0, failed: 0 };
 
   const body = JSON.stringify(payload);
-  let sent = 0, goneRevoked = 0, failed = 0;
 
-  for (const s of subs) {
-    const subscription: WebPushSubscription = {
-      endpoint: s.endpoint,
-      keys: { p256dh: s.p256dh, auth: s.auth },
-    };
-    let record: SendResultRecord;
-    try {
-      // مهلة ١٠ثوان لكل اشتراك ⇒ اشتراك بطيء لا يُعطّل بقيّة الحلقة والدورة الصباحية.
-      const r = await webpush.sendNotification(subscription, body, { timeout: 10_000 });
-      record = { status: "SENT", statusCode: r.statusCode, errorMessage: null };
-      sent++;
-    } catch (err: unknown) {
-      const e = err as { statusCode?: number; body?: string; message?: string };
-      const code = e.statusCode ?? null;
-      if (code === 410 || code === 404) {
-        // Gone: المستخدم أبطل الاشتراك من المتصفّح أو حذف بيانات الموقع ⇒ لن يعمل ثانيةً.
-        await unsubscribeByEndpoint(s.endpoint);
-        record = { status: "FAILED_GONE", statusCode: code, errorMessage: null };
-        goneRevoked++;
-      } else {
-        // 4xx أخرى (نادرة) / 5xx / أخطاء شبكة ⇒ نُبقي الاشتراك، سنعيد المحاولة الغد.
-        // نخزّن رسالة موجزة فقط — لا `e.body` (قد يحوي VAPID JWT الموقَّع + رؤوس ⇒ تسريب في سجلّ التطبيق).
-        record = {
-          status: "FAILED_OTHER",
-          statusCode: code,
-          errorMessage: `${code ?? "err"}:${(e.message ?? "unknown").slice(0, 200)}`,
-        };
-        failed++;
+  // مُوازاة الاشتراكات (gap-audit ٥/٧ item 9): كانت الحلقة تسلسلية ⇒ N اشتراكاً لمستخدم واحد
+  // قد يأخذ حتى N×١٠ث (مهلة الاشتراك الواحد). Promise.allSettled يُشغّل الكل معاً — فشل/مهلة
+  // اشتراك واحد لا يُبطئ البقيّة، ونحسب نفس العدّادات الثلاثة من نتائج التسويات.
+  const settled = await Promise.allSettled(
+    subs.map(async (s) => {
+      const subscription: WebPushSubscription = {
+        endpoint: s.endpoint,
+        keys: { p256dh: s.p256dh, auth: s.auth },
+      };
+      let record: SendResultRecord;
+      let outcome: "SENT" | "FAILED_GONE" | "FAILED_OTHER";
+      try {
+        // مهلة ١٠ثوان لكل اشتراك ⇒ اشتراك بطيء لا يُعطّل بقيّة الاشتراكات والدورة الصباحية.
+        const r = await webpush.sendNotification(subscription, body, { timeout: 10_000 });
+        record = { status: "SENT", statusCode: r.statusCode, errorMessage: null };
+        outcome = "SENT";
+      } catch (err: unknown) {
+        const e = err as { statusCode?: number; body?: string; message?: string };
+        const code = e.statusCode ?? null;
+        if (code === 410 || code === 404) {
+          // Gone: المستخدم أبطل الاشتراك من المتصفّح أو حذف بيانات الموقع ⇒ لن يعمل ثانيةً.
+          await unsubscribeByEndpoint(s.endpoint);
+          record = { status: "FAILED_GONE", statusCode: code, errorMessage: null };
+          outcome = "FAILED_GONE";
+        } else {
+          // 4xx أخرى (نادرة) / 5xx / أخطاء شبكة ⇒ نُبقي الاشتراك، سنعيد المحاولة الغد.
+          // نخزّن رسالة موجزة فقط — لا `e.body` (قد يحوي VAPID JWT الموقَّع + رؤوس ⇒ تسريب في سجلّ التطبيق).
+          record = {
+            status: "FAILED_OTHER",
+            statusCode: code,
+            errorMessage: `${code ?? "err"}:${(e.message ?? "unknown").slice(0, 200)}`,
+          };
+          outcome = "FAILED_OTHER";
+        }
       }
+      // log سطر لكل محاولة (يفيد لتشخيص لماذا لم يصل الإشعار لجهاز معيّن).
+      await db.insert(pushNotificationLog).values({
+        userId,
+        kind: payload.kind,
+        payload: body,
+        status: record.status,
+        statusCode: record.statusCode,
+        errorMessage: record.errorMessage,
+      });
+      return outcome;
+    }),
+  );
+
+  let sent = 0, goneRevoked = 0, failed = 0;
+  for (const r of settled) {
+    // كل عنصر داخل map مُعالَج (try/catch شامل) ⇒ لا يُفترَض "rejected" هنا إطلاقاً، لكن نُبقي
+    // مساراً آمناً (يُحتسَب "failed") لو نجم خطأ غير متوقَّع خارج المنطقة المحروسة (مثل db.insert).
+    if (r.status === "fulfilled") {
+      if (r.value === "SENT") sent++;
+      else if (r.value === "FAILED_GONE") goneRevoked++;
+      else failed++;
+    } else {
+      failed++;
     }
-    // log سطر لكل محاولة (يفيد لتشخيص لماذا لم يصل الإشعار لجهاز معيّن).
-    await db.insert(pushNotificationLog).values({
-      userId,
-      kind: payload.kind,
-      payload: body,
-      status: record.status,
-      statusCode: record.statusCode,
-      errorMessage: record.errorMessage,
-    });
   }
   return { sent, goneRevoked, failed };
 }

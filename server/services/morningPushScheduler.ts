@@ -31,6 +31,16 @@ function buildBody(counts: { arRemindersDue: number; promisedToday: number; over
   return `${total} بند للمتابعة${parts.length > 0 ? ": " + parts.join("، ") : ""}`;
 }
 
+/** الرابط الأنسب للإشعار حسب ما هو مُستحقّ فعلاً (gap-audit ٥/٧ item 10) — كان مُثبَّتاً على
+ *  /dashboard دائماً رغم أنّ محتوى الإشعار غالباً تذكير ذمم أو أمر شغل متأخّر تحديداً؛ الآن يوجّه
+ *  المستخدم مباشرةً لشاشة العمل ذات الصلة بدل تحويلة إضافية عبر لوحة التحكم.
+ *  الأولوية: تذكيرات AR/وعد اليوم (الأكثر إلحاحاً مالياً) > أوامر شغل متأخّرة > /dashboard. */
+function pickMorningBriefUrl(counts: { arRemindersDue: number; promisedToday: number; overdueWorkOrders: number }): string {
+  if (counts.arRemindersDue > 0 || counts.promisedToday > 0) return "/reports/ar-reminders";
+  if (counts.overdueWorkOrders > 0) return "/work-orders"; // مركز أوامر الشغل التشغيلي (PrintHub) — لا /reports/work-orders الثابتة.
+  return "/dashboard";
+}
+
 /** نتيجة تشغيل واحدة — للاستعمال في السجلّ والاختبار. */
 export interface MorningPushRunResult {
   candidates: number;
@@ -102,7 +112,7 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
         kind: "MORNING_BRIEF",
         title: "برنامج اليوم — الرؤية العربية",
         body: buildBody(m.morningBrief, total),
-        url: "/dashboard",
+        url: pickMorningBriefUrl(m.morningBrief),
         counts: m.morningBrief,
       };
       const r = await sendPushToUser(userId, payload);

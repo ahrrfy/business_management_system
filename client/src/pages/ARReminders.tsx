@@ -7,6 +7,7 @@ import { useMemo, useState } from "react";
 import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { sum } from "@/lib/money";
 import { openWhatsApp, sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
@@ -146,7 +147,7 @@ export default function ARReminders() {
   }, [queue.data, search]);
 
   const totalUnpaidSum = useMemo(
-    () => (queue.data ?? []).reduce((a, r) => a + Number(r.totalUnpaid), 0),
+    () => sum((queue.data ?? []).map((r) => r.totalUnpaid)),
     [queue.data],
   );
 

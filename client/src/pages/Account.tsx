@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
 import { AlertTriangle, Copy, Monitor, Bell, BellOff, ShieldCheck, ShieldOff } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
+import { MyPerformanceCard } from "@/components/account/MyPerformanceCard";
 import { notify } from "@/lib/notify";
 import { isPushSupported, getPermissionState, subscribeToPush, unsubscribeFromPushBrowser } from "@/lib/push";
 import { ROLE_LABEL } from "./Users";
@@ -127,6 +128,9 @@ export default function Account() {
           <div><div className="text-muted-foreground text-xs">الدور</div><div>{me.data ? (ROLE_LABEL[me.data.role] ?? me.data.role) : "—"}</div></div>
         </CardContent>
       </Card>
+
+      {/* أدائي — ذاتي بحت (وحدة الأهداف والعمولات)؛ تختفي لمن لا موظف/خطة/هدف له. */}
+      <MyPerformanceCard />
 
       {/* إشعارات الدفع — للمدير/الأدمن حصراً. gap-audit (بند medium مؤجَّل): البطاقة كانت تختفي
           صامتةً كلياً حين VAPID غير مضبوطة أو المتصفّح لا يدعم Push — الآن تظهر بحالة معطَّلة

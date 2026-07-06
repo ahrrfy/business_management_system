@@ -7,9 +7,12 @@ import { PageTabs, type HubTab } from "@/components/PageTabs";
 const ReportsOverview = lazy(() => import("@/pages/ReportsOverview"));
 const ReportsCenter = lazy(() => import("@/pages/ReportsCenter"));
 const ReportsTools = lazy(() => import("@/pages/ReportsTools"));
+const CommissionLeaderboard = lazy(() => import("@/pages/CommissionLeaderboard"));
 
 const TABS: HubTab[] = [
   { value: "overview", label: "النظرة العامة", gate: { roles: ["admin", "manager", "accountant", "auditor"] }, Component: ReportsOverview },
+  // لوحة الإنجاز (العمولات) — بوّابة الخادم reportViewerProcedure (مرآة gate الواجهة هنا).
+  { value: "commission-board", label: "لوحة الإنجاز", gate: { roles: ["admin", "manager", "accountant", "auditor"] }, Component: CommissionLeaderboard },
   { value: "catalog", label: "كل التقارير", Component: ReportsCenter },
   { value: "tools", label: "أدوات المحاسب", gate: { roles: ["admin", "manager", "accountant"] }, Component: ReportsTools },
 ];
