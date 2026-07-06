@@ -8,6 +8,7 @@ import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign,
+  UserCircle2, ChevronLeft, LogOut,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -135,25 +136,46 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {/* معلومات المستخدم والخروج */}
-        <div className="border-t p-3 text-xs text-muted-foreground">
+        {/* معلومات المستخدم والخروج — كارت واضح النقر (مدخل «حسابي») + زرّ الخروج.
+            كان الرابط سابقاً نصّاً خافتاً بلا أيقونة ⇒ المالك لم يجد كيف يفتح /account (٦/٧).
+            الآن: أيقونة مُلوَّنة + الاسم/الدور بوضوح + شارة nav-item + hover واضح + aria-current. */}
+        <div className="border-t p-2 space-y-1">
           <Link
             href="/account"
+            aria-label="حسابي"
+            aria-current={loc === "/account" ? "page" : undefined}
             className={cn(
-              "mb-1 block rounded px-1 py-0.5 hover:underline truncate",
-              loc === "/account" ? "text-primary" : "",
+              "flex items-center gap-2 rounded-md px-2 py-2 text-sm transition",
+              loc === "/account"
+                ? "bg-primary text-primary-foreground font-semibold"
+                : "bg-muted/40 hover:bg-accent text-foreground",
             )}
           >
-            {me.data?.name ?? me.data?.email}
-            <span className="opacity-60 me-1"> ({me.data?.role})</span>
+            <div className={cn(
+              "flex size-9 shrink-0 items-center justify-center rounded-full",
+              loc === "/account" ? "bg-primary-foreground/20" : "bg-primary/10 text-primary",
+            )}>
+              <UserCircle2 className="size-5" aria-hidden />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-medium leading-tight">{me.data?.name ?? me.data?.email ?? "—"}</div>
+              <div className={cn(
+                "truncate text-[11px] leading-tight",
+                loc === "/account" ? "opacity-80" : "text-muted-foreground",
+              )}>
+                حسابي{me.data?.role ? ` · ${me.data.role}` : ""}
+              </div>
+            </div>
+            <ChevronLeft className="size-4 shrink-0 opacity-60" aria-hidden />
           </Link>
           <Button
             variant="ghost"
             size="sm"
-            className="w-full justify-start"
+            className="w-full justify-start gap-2"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
           >
+            <LogOut className="size-4" aria-hidden />
             تسجيل الخروج
           </Button>
         </div>
