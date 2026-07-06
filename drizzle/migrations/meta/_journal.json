@@ -372,6 +372,13 @@
       "when": 1783370355089,
       "tag": "0052_loud_wong",
       "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "5",
+      "when": 1783374029601,
+      "tag": "0053_customer_active_index",
+      "breakpoints": true
     }
   ]
 }

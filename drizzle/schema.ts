@@ -235,6 +235,8 @@ export const customers = mysqlTable(
     phoneIdx: index("idx_customer_phone").on(table.phone),
     legacyUq: unique("uq_customer_legacy").on(table.legacyCode),
     clientRequestUq: unique("uq_customer_client_request").on(table.clientRequestId),
+    // gap-audit low (٥/٧): فهرس يدعم مسار aging المجمَّع بلا فرع (WHERE isActive=TRUE). هجرة 0053.
+    activeIdx: index("idx_customer_active").on(table.isActive),
   })
 );
 

@@ -430,20 +430,24 @@ function MetricsBar() {
       ico: <TrendIco color="oklch(0.60 0.22 155)" />,
       iBg: "oklch(0.60 0.22 155 / 0.15)",
     },
-    {
-      label: "مبيعات أمس مقابل المعدّل",
-      value: metrics.isLoading ? "..." : fmtAr(Number(pulse?.yesterday ?? 0)),
-      unit: metrics.isLoading
-        ? "د.ع"
-        : hasBaseline
-          ? `${pulseArrow} ${fmtAr(Math.abs(pulse!.changePct))}٪ عن المعدّل`
-          : "لا مبيعات سابقة",
-      copyText: metrics.isLoading || !pulse
-        ? ""
-        : `مبيعات أمس: ${fmtAr(Number(pulse.yesterday))} د.ع (${pulseArrow}${fmtAr(Math.abs(pulse.changePct))}٪ عن معدّل ٧ أيام = ${fmtAr(Number(pulse.avg7d))} د.ع)`,
-      ico: <TrendIco color={pulseColor} />,
-      iBg: pulseColor.replace(")", " / 0.15)"),
-    },
+    // بطاقة نبض المبيعات: بلا معدّل ٧ أيام (لا مبيعات سابقة) = لا نص حشو — تُخفى كاملاً
+    // (تدقيق الفجوات ٥/٧، بند ١٢) — نفس اصطلاح إخفاء بطاقة الجرد أدناه عبر spread شرطي.
+    ...(metrics.isLoading || hasBaseline
+      ? [
+          {
+            label: "مبيعات أمس مقابل المعدّل",
+            value: metrics.isLoading ? "..." : fmtAr(Number(pulse?.yesterday ?? 0)),
+            unit: metrics.isLoading
+              ? "د.ع"
+              : `${pulseArrow} ${fmtAr(Math.abs(pulse!.changePct))}٪ عن المعدّل`,
+            copyText: metrics.isLoading || !pulse
+              ? ""
+              : `مبيعات أمس: ${fmtAr(Number(pulse.yesterday))} د.ع (${pulseArrow}${fmtAr(Math.abs(pulse.changePct))}٪ عن معدّل ٧ أيام = ${fmtAr(Number(pulse.avg7d))} د.ع)`,
+            ico: <TrendIco color={pulseColor} />,
+            iBg: pulseColor.replace(")", " / 0.15)"),
+          },
+        ]
+      : []),
     {
       label: "الوردية الحالية",
       value: shiftLabel,

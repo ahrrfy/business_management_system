@@ -105,11 +105,13 @@ describe("runMorningBriefPush", () => {
     expect(r.sent).toBe(1);
     expect(r.skippedEmpty).toBe(0);
     expect(mockSendNotification).toHaveBeenCalledTimes(1);
-    // نتحقّق من الجسم — يحوي «١ أمر شغل متأخّر» و«/dashboard» ولا يحوي اسم عميل.
+    // نتحقّق من الجسم — يحوي «١ أمر شغل متأخّر» ولا يحوي اسم عميل. الرابط: أمر شغل متأخّر فقط (بلا
+    // تذكيرات AR) ⇒ pickMorningBriefUrl يوجّه لمركز أوامر الشغل التشغيلي لا /dashboard الثابت
+    // (gap-audit ٥/٧ بند ١٠ — الرابط صار ديناميكياً حسب المحتوى المستحقّ فعلياً).
     const [, payload] = mockSendNotification.mock.calls[0];
     const parsed = JSON.parse(payload as string);
     expect(parsed.kind).toBe("MORNING_BRIEF");
-    expect(parsed.url).toBe("/dashboard");
+    expect(parsed.url).toBe("/work-orders");
     expect(parsed.body).toContain("أمر شغل متأخّر");
     expect(parsed.body).not.toContain("عميل-1"); // لا تسريب أسماء عملاء في جسم الإشعار
   });
@@ -187,6 +189,9 @@ describe("runMorningBriefPush", () => {
     const parsed = JSON.parse(payload as string);
     expect(parsed.counts.arRemindersDue).toBe(1);
     expect(parsed.body).toContain("تذكير");
+    // تذكيرات AR/وعد اليوم أعلى أولوية من أوامر الشغل المتأخّرة (gap-audit ٥/٧ بند ١٠) ⇒ الرابط
+    // يوجّه مباشرةً لشاشة تذكيرات الذمم لا /dashboard.
+    expect(parsed.url).toBe("/reports/ar-reminders");
   });
 
   // نفس السيناريو لكن للمدير (لا أدمن) — يجب أن يبقى غائباً (لا انتماء فرعيّ لهؤلاء المدينين، ولا
