@@ -6,6 +6,7 @@ import { PageTabs, type HubTab } from "@/components/PageTabs";
 const Employees = lazy(() => import("@/pages/Employees"));
 const Attendance = lazy(() => import("@/pages/Attendance"));
 const Payroll = lazy(() => import("@/pages/Payroll"));
+const EmployeeAdvances = lazy(() => import("@/pages/EmployeeAdvances"));
 const CommissionPlans = lazy(() => import("@/pages/CommissionPlans"));
 const CommissionTargets = lazy(() => import("@/pages/CommissionTargets"));
 const CommissionRuns = lazy(() => import("@/pages/CommissionRuns"));
@@ -18,6 +19,7 @@ const TABS: HubTab[] = [
   { value: "employees", label: "الموظفون", gate: { managerOnly: true }, Component: Employees },
   { value: "attendance", label: "الحضور والدوام", gate: { managerOnly: true }, Component: Attendance },
   { value: "payroll", label: "الرواتب", gate: { managerOnly: true }, Component: Payroll },
+  { value: "advances", label: "سلف الموظفين", gate: { managerOnly: true }, Component: EmployeeAdvances },
   { value: "commission-plans", label: "خطط العمولات", gate: { managerOnly: true }, Component: CommissionPlans },
   { value: "commission-targets", label: "الأهداف الشهرية", gate: { managerOnly: true }, Component: CommissionTargets },
   { value: "commission-runs", label: "تشغيلات العمولة", gate: { managerOnly: true }, Component: CommissionRuns },

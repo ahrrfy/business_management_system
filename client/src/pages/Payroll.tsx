@@ -247,7 +247,13 @@ export default function Payroll() {
                       <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{D(p.overtime).gt(0) ? `+${iqd(p.overtime)}` : "—"}</td>
                       {/* عمولة المبيعات الملتقطة من تشغيلة العمولات المعتمدة — قراءة فقط (تُعدَّل بإعادة الاحتساب هناك). */}
                       <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{D(p.commission).gt(0) ? `+${iqd(p.commission)}` : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"}</td>
+                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">
+                        {D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"}
+                        {/* advances (بند 12ج): جزء السلفة المخصوم تلقائياً ضمن الاستقطاع. */}
+                        {D(p.advanceDeduction || 0).gt(0) && (
+                          <div className="text-[11px] text-muted-foreground">منه سلفة: {iqd(p.advanceDeduction)}</div>
+                        )}
+                      </td>
                       <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(p.net)}</td>
                       <td className="p-2.5 text-center"><StatusBadge status={run!.status} /></td>
                       <td className="p-2.5 text-center whitespace-nowrap">
@@ -300,6 +306,7 @@ export default function Payroll() {
               يُولَّد مسيّر مسوّدة لكل الموظفين غير منتهي الخدمة: الراتب الأساسي + المخصّصات للشهريين، ومجموع أجر الساعات للساعيين.
               الإضافي والاستقطاع صفر ابتداءً ويُحرَّران من زر «تعديل» قبل الاعتماد.
               وإن وُجدت تشغيلة عمولات <b>معتمدة</b> لنفس الشهر (تبويب «تشغيلات العمولة») يُدرَج بند «عمولة» لكل موظف تلقائياً.
+              وتُملأ استقطاعات <b>سلف الموظفين</b> النشطة تلقائياً ضمن الاستقطاع (تبويب «سلف الموظفين»).
             </p>
           </div>
           <DialogFooter>
@@ -349,6 +356,9 @@ export default function Payroll() {
                   <div className="flex justify-between"><span className="text-muted-foreground">عمولة المبيعات (تشغيلة {run?.period})</span><span className="tabular-nums text-money-positive" dir="ltr">+{iqd(slip.commission)}</span></div>
                 )}
                 <div className="flex justify-between"><span className="text-muted-foreground">الاستقطاعات (سلف/غياب)</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.deductions)}</span></div>
+                {D(slip.advanceDeduction || 0).gt(0) && (
+                  <div className="flex justify-between text-xs"><span className="text-muted-foreground ps-3">منها استقطاع سلفة</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.advanceDeduction)}</span></div>
+                )}
                 {slip.note && <div className="flex justify-between"><span className="text-muted-foreground">ملاحظة</span><span>{slip.note}</span></div>}
               </div>
               <div className="flex justify-between items-center py-3 border-t-2">
@@ -418,6 +428,12 @@ function EditItemDialog({
             <div>
               <Label htmlFor="edit-ded">الاستقطاع — سلف/غياب (د.ع)</Label>
               <Input id="edit-ded" inputMode="decimal" value={deductions} onChange={(e) => setDeductions(e.target.value)} dir="ltr" className="tabular-nums" />
+              {/* advances (بند 12ج): جزء السلفة المولَّد ثابت — الاستقطاع الكلي لا يهبط دونه (الخادم يفرضها). */}
+              {D(item.advanceDeduction || 0).gt(0) && (
+                <p className="text-xs text-muted-foreground mt-1">
+                  منه استقطاع سلفة مولَّد تلقائياً: {iqd(item.advanceDeduction)} د.ع — لا يقلّ الاستقطاع الكلي عنه.
+                </p>
+              )}
             </div>
             <div>
               <Label htmlFor="edit-note">ملاحظة (اختياري)</Label>
