@@ -30,6 +30,7 @@ import { getItemLedger, getAbcAnalysis } from "../services/reportsInventoryAnaly
 import { getTreasurySummary, getExpensesReport, getCashOrphansReport } from "../services/reportsTreasuryService";
 import { getProductionReport, getWorkOrdersReport } from "../services/reportsProductionService";
 import { workOrderProfitability } from "../services/reports/workOrderProfitability";
+import { getMonthlyClosePack } from "../services/reports/monthlyClosePack";
 import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
@@ -482,16 +483,29 @@ export const reportsRouter = router({
       return getSalesRegister({ from: input.from, to: input.to, branchId, limit: input.limit, offset: input.offset });
     }),
 
-  /** المبيعات حسب بُعد (عميل/فرع/طريقة دفع/كاشير) + إجماليات. manager + عزل الفرع. */
+  /** المبيعات حسب بُعد (عميل/فرع/طريقة دفع/كاشير/صنف) + إجماليات وربحية. manager + عزل الفرع. */
   salesByDimension: reportsBranchScoped
     .input(z.object({
       from: ymdStr, to: ymdStr,
       branchId: z.number().int().positive().optional(),
-      dimension: z.enum(["customer", "branch", "paymentMethod", "cashier"]),
+      // بند 9 (٧/٧): بُعد «الصنف» — تجميع على مستوى بنود الفواتير بربحية بصيغة سجلّ المبيعات.
+      dimension: z.enum(["customer", "branch", "paymentMethod", "cashier", "product"]),
     }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getSalesByDimension({ from: input.from, to: input.to, branchId, dimension: input.dimension });
+    }),
+
+  /** بند 11 (٧/٧): حزمة الإقفال الشهري — مبيعات/ربح/مشتريات/مصاريف/خزينة/لقطة ذمم لشهر واحد.
+   *  نفس بوّابة التقارير (تكشف ربحاً وتكلفة) + عزل الفرع بـscopedBranchId. */
+  monthlyClosePack: reportsBranchScoped
+    .input(z.object({
+      month: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, "صيغة الشهر YYYY-MM"),
+      branchId: z.number().int().positive().optional(),
+    }))
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getMonthlyClosePack({ month: input.month, branchId });
     }),
 
   /** تقرير المشتريات — ملخّص حسب المورّد (أوامر مؤكَّدة/مستلَمة). manager + عزل الفرع. */
