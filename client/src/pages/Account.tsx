@@ -128,7 +128,19 @@ export default function Account() {
         </CardContent>
       </Card>
 
-      {/* إشعارات الدفع — للمدير/الأدمن حصراً، وحين يكون المتصفّح يدعم Push. */}
+      {/* إشعارات الدفع — للمدير/الأدمن حصراً. gap-audit (بند medium مؤجَّل): البطاقة كانت تختفي
+          صامتةً كلياً حين VAPID غير مضبوطة أو المتصفّح لا يدعم Push — الآن تظهر بحالة معطَّلة
+          مُفسِّرة (المدير يعرف أن الميزة موجودة ولماذا لا تعمل بدل «أين ذهبت البطاقة؟»). */}
+      {elevated && pushKey.data && (!pushKey.data.enabled || !isPushSupported()) && (
+        <Card>
+          <CardHeader><CardTitle className="text-base flex items-center gap-2"><BellOff className="size-4" aria-hidden /> إشعارات برنامج اليوم</CardTitle></CardHeader>
+          <CardContent className="text-sm text-muted-foreground">
+            {!pushKey.data.enabled
+              ? "الإشعارات غير مفعَّلة على الخادم (مفاتيح VAPID غير مضبوطة في إعدادات التشغيل) — راجع مدير النظام لتفعيلها."
+              : "متصفّحك الحالي لا يدعم إشعارات الدفع (Web Push) — جرّب متصفّحاً حديثاً أو ثبّت التطبيق على الشاشة الرئيسية."}
+          </CardContent>
+        </Card>
+      )}
       {elevated && pushKey.data?.enabled && isPushSupported() && (
         <Card>
           <CardHeader><CardTitle className="text-base flex items-center gap-2"><Bell className="size-4" aria-hidden /> إشعارات برنامج اليوم</CardTitle></CardHeader>
