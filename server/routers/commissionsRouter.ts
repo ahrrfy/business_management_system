@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import * as plansSvc from "../services/commissions/plans";
+import * as targetsSvc from "../services/commissions/targets";
 import { commissionsManagerProcedure, commissionsReadProcedure, router } from "../trpc";
 import type { TrpcContext } from "../context";
 
@@ -114,6 +115,48 @@ const plansRouter = router({
     }),
 });
 
+const targetsRouter = router({
+  /** شبكة أهداف الشهر: الموظفون المؤهَّلون + الهدف الحالي + فعليّ الشهر السابق. */
+  grid: commissionsReadProcedure
+    .input(z.object({ period }))
+    .query(({ input }) => targetsSvc.getTargetsGrid(input.period)),
+
+  saveAll: commissionsManagerProcedure
+    .input(
+      z.object({
+        period,
+        rows: z
+          .array(z.object({ employeeId: z.number().int().positive(), target: moneyStr.nullable() }))
+          .min(1)
+          .max(500),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await targetsSvc.saveTargets(input, actorOf(ctx));
+      await logAudit(ctx, {
+        action: "commissions.targetsSave",
+        entityType: "salesTarget",
+        entityId: input.period,
+        newValue: { period: input.period, rows: input.rows.length, saved: res.saved, removed: res.removed },
+      });
+      return res;
+    }),
+
+  copyFromPrevious: commissionsManagerProcedure
+    .input(z.object({ period, overwrite: z.boolean().default(false) }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await targetsSvc.copyTargetsFromPrevious(input, actorOf(ctx));
+      await logAudit(ctx, {
+        action: "commissions.targetsCopy",
+        entityType: "salesTarget",
+        entityId: input.period,
+        newValue: { period: input.period, overwrite: input.overwrite, copied: res.copied },
+      });
+      return res;
+    }),
+});
+
 export const commissionsRouter = router({
   plans: plansRouter,
+  targets: targetsRouter,
 });
