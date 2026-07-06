@@ -12,13 +12,15 @@ import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
 type Row = RouterOutputs["reports"]["salesByDimension"]["rows"][number];
-type Dimension = "customer" | "branch" | "paymentMethod" | "cashier";
+type Dimension = "customer" | "branch" | "paymentMethod" | "cashier" | "product";
 
 const DIM_LABEL: Record<Dimension, string> = {
   customer: "عميل",
   branch: "فرع",
   paymentMethod: "طريقة دفع",
   cashier: "كاشير",
+  // بند 9 (٧/٧): بُعد الصنف — ربحية على مستوى بنود الفواتير (المحصَّل/المتبقّي خاصيّتا فاتورة فتُخفيان).
+  product: "صنف",
 };
 const DIM_OPTIONS = Object.keys(DIM_LABEL) as Dimension[];
 
@@ -40,12 +42,21 @@ export default function SalesByDimension() {
 
   const rows = q.data?.rows ?? [];
   const totals = q.data?.totals;
+  // المحصَّل/المتبقّي خاصيّتا فاتورة — لا معنى لهما في بُعد الصنف (الخادم يعيدهما صفرين).
+  const showPaidCols = dimension !== "product";
 
   const kpis: KpiItem[] = totals
     ? [
         { label: "إجمالي الإيراد", value: fmtAr(totals.revenue), tone: "info" },
-        { label: "المحصّل", value: fmtAr(totals.paid), tone: "positive" },
-        { label: "المتبقّي", value: fmtAr(totals.unpaid), tone: "warning" },
+        // بند 9 (٧/٧): الربح والهامش كانا في ردّ الخادم بلا عرض — سؤال «أين نكسب؟» صار مرئياً.
+        { label: "الربح", value: fmtAr(totals.profit), tone: Number(totals.profit) < 0 ? "warning" : "positive" },
+        { label: "الهامش", value: `${totals.marginPct}%`, tone: "info" },
+        ...(showPaidCols
+          ? [
+              { label: "المحصّل", value: fmtAr(totals.paid), tone: "positive" as const },
+              { label: "المتبقّي", value: fmtAr(totals.unpaid), tone: "warning" as const },
+            ]
+          : []),
       ]
     : [];
 
@@ -59,8 +70,15 @@ export default function SalesByDimension() {
         { key: "label", header: dimLabel },
         { key: "invoices", header: "عدد الفواتير", map: (r) => r.invoices },
         { key: "revenue", header: "الإيراد", map: (r) => Number(r.revenue) },
-        { key: "paid", header: "المحصّل", map: (r) => Number(r.paid) },
-        { key: "unpaid", header: "المتبقّي", map: (r) => Number(r.unpaid) },
+        ...(showPaidCols
+          ? [
+              { key: "paid", header: "المحصّل", map: (r: Row) => Number(r.paid) },
+              { key: "unpaid", header: "المتبقّي", map: (r: Row) => Number(r.unpaid) },
+            ]
+          : []),
+        { key: "cost", header: "التكلفة", map: (r) => Number(r.cost) },
+        { key: "profit", header: "الربح", map: (r) => Number(r.profit) },
+        { key: "marginPct", header: "الهامش %", map: (r) => Number(r.marginPct) },
       ],
     });
   }
@@ -77,8 +95,15 @@ export default function SalesByDimension() {
         { key: "label", label: dimLabel },
         { key: "invoices", label: "عدد الفواتير", align: "left" },
         { key: "revenue", label: "الإيراد", align: "left" },
-        { key: "paid", label: "المحصّل", align: "left" },
-        { key: "unpaid", label: "المتبقّي", align: "left" },
+        ...(showPaidCols
+          ? [
+              { key: "paid", label: "المحصّل", align: "left" as const },
+              { key: "unpaid", label: "المتبقّي", align: "left" as const },
+            ]
+          : []),
+        { key: "cost", label: "التكلفة", align: "left" },
+        { key: "profit", label: "الربح", align: "left" },
+        { key: "marginPct", label: "الهامش %", align: "left" },
       ],
       rows: rows.map((r) => ({
         label: r.label,
@@ -86,11 +111,19 @@ export default function SalesByDimension() {
         revenue: fmtAr(r.revenue),
         paid: fmtAr(r.paid),
         unpaid: fmtAr(r.unpaid),
+        cost: fmtAr(r.cost),
+        profit: fmtAr(r.profit),
+        marginPct: `${r.marginPct}%`,
       })),
       summary: totals
         ? [
-            { label: "المحصّل", value: fmtAr(totals.paid) },
-            { label: "المتبقّي", value: fmtAr(totals.unpaid) },
+            ...(showPaidCols
+              ? [
+                  { label: "المحصّل", value: fmtAr(totals.paid) },
+                  { label: "المتبقّي", value: fmtAr(totals.unpaid) },
+                ]
+              : []),
+            { label: "الربح", value: fmtAr(totals.profit) },
             { label: "إجمالي الإيراد", value: fmtAr(totals.revenue), large: true, bold: true },
           ]
         : undefined,
@@ -100,7 +133,7 @@ export default function SalesByDimension() {
   return (
     <ReportShell
       title="المبيعات حسب بُعد"
-      description="تجميع الفواتير على محور مختار (عميل/فرع/طريقة دفع/كاشير)."
+      description="تجميع المبيعات على محور مختار (عميل/فرع/طريقة دفع/كاشير/صنف) مع التكلفة والربح والهامش."
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
@@ -139,8 +172,11 @@ export default function SalesByDimension() {
                     <th className="p-2.5 text-end font-medium">{dimLabel}</th>
                     <th className="p-2.5 text-right font-medium">عدد الفواتير</th>
                     <th className="p-2.5 text-right font-medium">الإيراد</th>
-                    <th className="p-2.5 text-right font-medium">المحصّل</th>
-                    <th className="p-2.5 text-right font-medium">المتبقّي</th>
+                    {showPaidCols && <th className="p-2.5 text-right font-medium">المحصّل</th>}
+                    {showPaidCols && <th className="p-2.5 text-right font-medium">المتبقّي</th>}
+                    <th className="p-2.5 text-right font-medium">التكلفة</th>
+                    <th className="p-2.5 text-right font-medium">الربح</th>
+                    <th className="p-2.5 text-right font-medium">الهامش %</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -149,8 +185,20 @@ export default function SalesByDimension() {
                       <td className="p-2.5 text-end">{r.label}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.invoices}</td>
                       <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{fmtAr(r.unpaid)}</td>
+                      {showPaidCols && (
+                        <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
+                      )}
+                      {showPaidCols && (
+                        <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{fmtAr(r.unpaid)}</td>
+                      )}
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.cost)}</td>
+                      <td
+                        className={`p-2.5 text-right tabular-nums ${Number(r.profit) < 0 ? "text-destructive" : "text-money-positive"}`}
+                        dir="ltr"
+                      >
+                        {fmtAr(r.profit)}
+                      </td>
+                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.marginPct}%</td>
                     </tr>
                   ))}
                 </tbody>

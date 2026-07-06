@@ -125,9 +125,9 @@ export async function getSalesRegister(opts: {
   };
 }
 
-/* ============================ المبيعات حسب بُعد (عميل/فرع/طريقة دفع/كاشير) ============================ */
+/* ============================ المبيعات حسب بُعد (عميل/فرع/طريقة دفع/كاشير/صنف) ============================ */
 
-export type SalesDimension = "customer" | "branch" | "paymentMethod" | "cashier";
+export type SalesDimension = "customer" | "branch" | "paymentMethod" | "cashier" | "product";
 
 export interface SalesByDimensionRow {
   key: string;
@@ -204,6 +204,34 @@ export async function getSalesByDimension(opts: {
     ${branchCond}
   `;
 
+  // بند 9 (٧/٧): بُعد «الصنف» — تجميع على مستوى بنود الفواتير (لا الفواتير) بمسار مستقل:
+  //  • revenue = Σ(ii.total)، cost بصيغة السطر نفسها المستعملة في سجلّ المبيعات أعلاه
+  //    (المُعاد للرفّ يُحيَّد؛ التالف يبقى خسارة) ⇒ لا تناقض بين التقريرين على نفس البيانات.
+  //  • paid/unpaid لا معنى لهما على مستوى الصنف (خاصيّة فاتورة) ⇒ صفران، والواجهة تخفيهما.
+  //  • invoices = عدد الفواتير المميَّزة التي ظهر فيها الصنف.
+  if (opts.dimension === "product") {
+    const rows = rowsOf(
+      await db.execute(sql`
+        SELECT
+          CAST(p.id AS CHAR) AS \`key\`,
+          p.name AS label,
+          COUNT(DISTINCT i.id) AS invoices,
+          CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue,
+          CAST(0 AS CHAR) AS paid,
+          CAST(0 AS CHAR) AS unpaid,
+          CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost
+        FROM invoiceItems ii
+        JOIN invoices i ON i.id = ii.invoiceId
+        JOIN productVariants pv ON pv.id = ii.variantId
+        JOIN products p ON p.id = pv.productId
+        WHERE ${where}
+        GROUP BY p.id, p.name
+        ORDER BY SUM(ii.total) DESC
+      `),
+    );
+    return summarizeDimensionRows(rows);
+  }
+
   // revenue=SUM(total)، paid=SUM(paidAmount)، unpaid=SUM(GREATEST(total-paidAmount-returnedTotal,0)).
   const rows = rowsOf(
     await db.execute(sql`
@@ -222,6 +250,11 @@ export async function getSalesByDimension(opts: {
       ORDER BY SUM(i.total) DESC
     `),
   );
+  return summarizeDimensionRows(rows);
+}
+
+/** تحويل صفوف SQL الخام لصفوف النتيجة + إجماليات decimal (مشترك بين مسار الفواتير ومسار الأصناف). */
+function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
 
   let invCount = 0;
   let revenue = money(0);
