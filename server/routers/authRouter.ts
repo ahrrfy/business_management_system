@@ -551,7 +551,7 @@ export const authRouter = router({
       }
       await logAudit(ctx, { action: "auth.logout", entityType: "user", entityId: ctx.user.id });
     }
-    ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+    ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true } as const;
   }),
 
@@ -622,7 +622,7 @@ export const authRouter = router({
       entityType: "user",
       entityId: ctx.user.id,
     });
-    ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+    ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { success: true };
   }),
 
@@ -652,7 +652,7 @@ export const authRouter = router({
         entityId: input.sessionId,
       });
       if (ctx.sessionId != null && input.sessionId === ctx.sessionId) {
-        ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+        ctx.res.clearCookie(COOKIE_NAME, getSessionCookieOptions(ctx.req));
       }
       return { success: true };
     }),

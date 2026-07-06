@@ -162,7 +162,7 @@ export const countPortalRouter = router({
 
   /** خروج: مسح كوكي البوابة (لا يمسّ كوكي جلسة النظام). */
   logout: publicProcedure.mutation(async ({ ctx }) => {
-    ctx.res.clearCookie(COUNT_COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+    ctx.res.clearCookie(COUNT_COOKIE_NAME, getSessionCookieOptions(ctx.req));
     return { ok: true } as const;
   }),
 });
