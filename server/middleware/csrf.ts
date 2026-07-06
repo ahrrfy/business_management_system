@@ -41,15 +41,19 @@ export function csrfGuard(req: Request, res: Response, next: NextFunction): void
     // Sec-Fetch-Site ترويسة محظورة يكتبها المتصفح وحده: same-origin = الطلب من صفحات
     // موقعنا نفسه، وnone = تفاعل مباشر من المستخدم — كلاهما ليس CSRF عابر مواقع.
     const fetchSite = String(req.headers["sec-fetch-site"] ?? "").toLowerCase();
-    if (fetchSite === "same-origin" || fetchSite === "none") {
-      next();
+    if (fetchSite === "cross-site" || fetchSite === "same-site") {
+      deny(req, res, "CSRF: مصدر الطلب غير مصرَّح");
       return;
     }
-    deny(
-      req,
-      res,
-      "تعذّر التحقق من مصدر الطلب: متصفحك يحجب ترويسة المصدر (Origin). عطّل وضع توفير البيانات/الخصوصية لهذا الموقع أو جرّب متصفحاً آخر."
-    );
+    // غياب الإشارات الثلاث كلياً (لا Origin ولا Referer ولا Sec-Fetch-Site) ⇒ نسمح (٦/٧/٢٦).
+    // كان يُرفض قطعياً فيتعطّل كل POST (بما فيه الدخول) في PWA المثبَّت على iOS < 16.4
+    // وبعض WebView القديمة التي لا ترسل Fetch-Metadata إطلاقاً — بينما GET يمرّ فتبدو
+    // الواجهة سليمة والدخول «معطّلاً بلا سبب». السماح هنا آمن لأن:
+    //  ١) كوكي الجلسة sameSite:"strict" (server/cookies.ts) — متصفحٌ لا يرسل الكوكي أصلاً
+    //     في أي طلب عابر مواقع، فطلب CSRF المزوّر يصل بلا جلسة أياً كانت ترويساته.
+    //  ٢) كل متصفح حديث يرسل Origin وSec-Fetch-Site حتماً في POST عابر المواقع — فالغياب
+    //     الكلي يعني عميلاً قديماً/مضمّناً same-origin أو عميلاً غير متصفح (لا كوكي ضحية لديه).
+    next();
     return;
   }
 

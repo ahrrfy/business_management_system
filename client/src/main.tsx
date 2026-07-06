@@ -49,7 +49,17 @@ const queryClient = new QueryClient({
 function handleUnauthorized(error: unknown) {
   if (!(error instanceof TRPCClientError)) return;
   if (typeof window === "undefined") return;
-  if (error.message !== UNAUTHED_ERR_MSG) return;
+  // ٦/٧: المقارنة النصية القديمة (=== UNAUTHED_ERR_MSG) كانت كوداً ميتاً — errorFormatter
+  // في server/trpc.ts يُعرّب كل الرسائل قبل وصولها فلا تتطابق أبداً، فيبقى المستخدم على
+  // شاشة مليئة بالأخطاء حتى انتهاء staleTime. الشرط الآن: كود UNAUTHORIZED البنيوي +
+  // رسالة «الجلسة منتهية» تحديداً (الإنجليزية الأصلية أو تعريبها العام) — لا نلمس
+  // UNAUTHORIZED برسائل مخصّصة (كلمة مرور قديمة خاطئة/اعتماد مدير بالكاشير) وإلا طردنا
+  // مستخدماً حيّاً من شاشته إلى الدخول.
+  const code = (error.data as { code?: string } | null | undefined)?.code;
+  const sessionGone =
+    code === "UNAUTHORIZED" &&
+    (error.message === UNAUTHED_ERR_MSG || error.message === "يجب تسجيل الدخول.");
+  if (!sessionGone) return;
   if (window.location.pathname !== "/login") {
     window.location.href = "/login";
   }

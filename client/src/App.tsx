@@ -238,46 +238,55 @@ export default function App() {
       <Route path="/vouchers"><Redirect to="/treasury?tab=vouchers" /></Route>
       <Route path="/vouchers/receipt/new"><Shell><VoucherReceiptNew /></Shell></Route>
       <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
-      <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager"]}><VoucherCategories /></RequireRole></Shell></Route>
+      <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
-      <Route path="/exchange"><Shell><RequireRole roles={["admin","manager"]}><ExchangeHub /></RequireRole></Shell></Route>
+      <Route path="/exchange"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury"><ExchangeHub /></RequireRole></Shell></Route>
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>
       <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
       <Route path="/reports"><Shell><ReportsHub /></Shell></Route>
-      <Route path="/reports/credit-exposure"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]}><CreditExposureReport /></RequireRole></Shell></Route>
-      <Route path="/reports/profit-loss"><Shell><RequireRole roles={["admin","manager"]}><ProfitLoss /></RequireRole></Shell></Route>
-      <Route path="/reports/general-ledger"><Shell><RequireRole roles={["admin","manager"]}><GeneralLedger /></RequireRole></Shell></Route>
-      <Route path="/reports/trial-balance"><Shell><RequireRole roles={["admin","manager"]}><TrialBalance /></RequireRole></Shell></Route>
-      <Route path="/reports/balance-sheet"><Shell><RequireRole roles={["admin","manager"]}><BalanceSheet /></RequireRole></Shell></Route>
-      <Route path="/reports/cash-flow"><Shell><RequireRole roles={["admin","manager"]}><CashFlow /></RequireRole></Shell></Route>
-      <Route path="/reports/sales-register"><Shell><RequireRole roles={["admin","manager"]}><SalesRegister /></RequireRole></Shell></Route>
-      <Route path="/reports/sales-by-dimension"><Shell><RequireRole roles={["admin","manager"]}><SalesByDimension /></RequireRole></Shell></Route>
-      <Route path="/reports/profitability"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]}><ProfitabilityReport /></RequireRole></Shell></Route>
-      <Route path="/reports/purchases"><Shell><RequireRole roles={["admin","manager"]}><PurchasesReport /></RequireRole></Shell></Route>
-      <Route path="/reports/purchase-register"><Shell><RequireRole roles={["admin","manager"]}><PurchaseRegister /></RequireRole></Shell></Route>
-      <Route path="/reports/aging-detail"><Shell><RequireRole roles={["admin","manager"]}><ArApAgingDetail /></RequireRole></Shell></Route>
-      <Route path="/reports/inventory-valuation"><Shell><RequireRole roles={["admin","manager"]}><InventoryValuation /></RequireRole></Shell></Route>
-      <Route path="/reports/stock-status"><Shell><RequireRole roles={["admin","manager"]}><StockStatus /></RequireRole></Shell></Route>
-      <Route path="/reports/inventory-ops"><Shell><RequireRole roles={["admin","manager","warehouse","purchasing","auditor"]}><InventoryOpsReport /></RequireRole></Shell></Route>
-      <Route path="/reports/item-ledger"><Shell><RequireRole roles={["admin","manager"]}><ItemLedger /></RequireRole></Shell></Route>
-      <Route path="/reports/abc"><Shell><RequireRole roles={["admin","manager"]}><AbcAnalysis /></RequireRole></Shell></Route>
-      <Route path="/reports/treasury"><Shell><RequireRole roles={["admin","manager"]}><TreasuryReport /></RequireRole></Shell></Route>
-      <Route path="/reports/expenses"><Shell><RequireRole roles={["admin","manager"]}><ExpensesReport /></RequireRole></Shell></Route>
-      <Route path="/reports/cash-orphans"><Shell><RequireRole roles={["admin","manager"]}><CashOrphanReport /></RequireRole></Shell></Route>
-      <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager"]}><ProductionReport /></RequireRole></Shell></Route>
-      <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager"]}><WorkOrdersReport /></RequireRole></Shell></Route>
-      <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager"]}><PayrollReport /></RequireRole></Shell></Route>
-      <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager"]}><AttendanceReport /></RequireRole></Shell></Route>
-      <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager"]}><LeaveReport /></RequireRole></Shell></Route>
-      <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager"]}><HrChangesReport /></RequireRole></Shell></Route>
-      <Route path="/reports/executive"><Shell><RequireRole roles={["admin","manager"]}><ExecutiveDashboard /></RequireRole></Shell></Route>
+      {/* مسارات التقارير: module="reports" ⇒ المنح الصريح للتقارير يفتحها لأي دور (مرآة
+          reportViewerProcedure)، وقوائم الأدوار وُسِّعت لتطابق SECTION_ROLES في مركز التقارير
+          (المحاسب/المدقّق كانا مصدودَين واجهياً رغم سماح الخادم — تحقيق ٦/٧). */}
+      <Route path="/reports/credit-exposure"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CreditExposureReport /></RequireRole></Shell></Route>
+      <Route path="/reports/profit-loss"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProfitLoss /></RequireRole></Shell></Route>
+      <Route path="/reports/general-ledger"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><GeneralLedger /></RequireRole></Shell></Route>
+      <Route path="/reports/trial-balance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><TrialBalance /></RequireRole></Shell></Route>
+      <Route path="/reports/balance-sheet"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><BalanceSheet /></RequireRole></Shell></Route>
+      <Route path="/reports/cash-flow"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CashFlow /></RequireRole></Shell></Route>
+      <Route path="/reports/sales-register"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><SalesRegister /></RequireRole></Shell></Route>
+      <Route path="/reports/sales-by-dimension"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><SalesByDimension /></RequireRole></Shell></Route>
+      <Route path="/reports/profitability"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProfitabilityReport /></RequireRole></Shell></Route>
+      {/* كل تقارير reportViewerProcedure على قائمة موحّدة [manager/accountant/auditor] + منح صريح
+          (module="reports") — تطابق بوّابة الخادم بعد مراجعة ٦/٧؛ warehouse/purchasing يصلانها
+          بمنح صريح لا بالقالب (لئلا تُعرَض روابط يحجبها الخادم). */}
+      <Route path="/reports/purchases"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><PurchasesReport /></RequireRole></Shell></Route>
+      <Route path="/reports/purchase-register"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><PurchaseRegister /></RequireRole></Shell></Route>
+      <Route path="/reports/aging-detail"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ArApAgingDetail /></RequireRole></Shell></Route>
+      <Route path="/reports/inventory-valuation"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><InventoryValuation /></RequireRole></Shell></Route>
+      <Route path="/reports/stock-status"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><StockStatus /></RequireRole></Shell></Route>
+      <Route path="/reports/inventory-ops"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><InventoryOpsReport /></RequireRole></Shell></Route>
+      <Route path="/reports/item-ledger"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ItemLedger /></RequireRole></Shell></Route>
+      <Route path="/reports/abc"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AbcAnalysis /></RequireRole></Shell></Route>
+      <Route path="/reports/treasury"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><TreasuryReport /></RequireRole></Shell></Route>
+      <Route path="/reports/expenses"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ExpensesReport /></RequireRole></Shell></Route>
+      <Route path="/reports/cash-orphans"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CashOrphanReport /></RequireRole></Shell></Route>
+      <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
+      <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
+      {/* تقارير الموارد البشرية تستدعي راوترات hr (requireModule("hr","READ")) لا reports —
+          فتُبوَّب بوحدة hr كي يفتحها مَن مُنح الموارد البشرية لا مَن مُنح التقارير (مراجعة Codex). */}
+      <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="READ"><PayrollReport /></RequireRole></Shell></Route>
+      <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
+      <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
+      <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="READ"><HrChangesReport /></RequireRole></Shell></Route>
+      <Route path="/reports/executive"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ExecutiveDashboard /></RequireRole></Shell></Route>
       <Route path="/sales-report"><Redirect to="/invoices?tab=report" /></Route>
-      <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager"]}><SalesReportsHub /></RequireRole></Shell></Route>
-      <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager"]}><AgingReportsHub /></RequireRole></Shell></Route>
-      <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager"]}><ARReminders /></RequireRole></Shell></Route>
-      <Route path="/reports/ap-reminders"><Shell><RequireRole roles={["admin","manager"]}><APReminders /></RequireRole></Shell></Route>
+      <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><SalesReportsHub /></RequireRole></Shell></Route>
+      <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AgingReportsHub /></RequireRole></Shell></Route>
+      {/* التذكيرات ليست تقارير قراءة — راوتراها على وحدتَي العملاء/الموردين بمستوى FULL. */}
+      <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager"]} module="customers" level="FULL"><ARReminders /></RequireRole></Shell></Route>
+      <Route path="/reports/ap-reminders"><Shell><RequireRole roles={["admin","manager"]} module="suppliers" level="FULL"><APReminders /></RequireRole></Shell></Route>
       {/* أُدمجت في وحدة العملاء (CustomersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/ar-aging"><Redirect to="/customers?tab=aging" /></Route>
       <Route path="/customers-statement"><RedirectKeepQuery to="/customers?tab=statement" /></Route>
@@ -289,8 +298,10 @@ export default function App() {
       <Route path="/suppliers-statement"><RedirectKeepQuery to="/suppliers?tab=statement" /></Route>
       <Route path="/kiosk-devices"><Redirect to="/settings?tab=devices" /></Route>
       <Route path="/users"><Redirect to="/settings?tab=users" /></Route>
-      <Route path="/users/new"><Shell><RequireRole roles={["admin","manager"]}><UserNew /></RequireRole></Shell></Route>
-      <Route path="/users/:id/edit"><Shell><RequireRole roles={["admin","manager"]}><UserEdit /></RequireRole></Shell></Route>
+      {/* إدارة المستخدمين admin حصراً (userRouter كله adminProcedure) — كانت الواجهة تسمح
+          للمدير بفتح الشاشة ثم يفشل كل استعلام/حفظ برسالة «ليست لديك صلاحية» (تحقيق ٦/٧). */}
+      <Route path="/users/new"><Shell><RequireRole roles={["admin"]}><UserNew /></RequireRole></Shell></Route>
+      <Route path="/users/:id/edit"><Shell><RequireRole roles={["admin"]}><UserEdit /></RequireRole></Shell></Route>
       <Route path="/roles"><Redirect to="/settings?tab=roles" /></Route>
       <Route path="/roles/new"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>
       <Route path="/roles/:id/edit"><Shell><RequireRole roles={["admin"]}><RoleEdit /></RequireRole></Shell></Route>

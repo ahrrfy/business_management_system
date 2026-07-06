@@ -54,9 +54,12 @@ export function PageTabs({ tabs, ariaLabel }: { tabs: HubTab[]; ariaLabel?: stri
   const search = useSearch();
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role;
+  const permsOverride = (me.data?.permissionsOverride ?? null) as
+    | import("@shared/permissions").PermissionMap
+    | null;
 
-  // تصفية حسب الدور — الإنفاذ الحقيقي خادمي؛ هذا إخفاء بصري + سقوط آمن للتبويب الأوّل.
-  const visible = tabs.filter((t) => canSeeGate(t.gate, role));
+  // تصفية حسب الدور + المنح الصريح — الإنفاذ الحقيقي خادمي؛ هذا إخفاء بصري + سقوط آمن للتبويب الأوّل.
+  const visible = tabs.filter((t) => canSeeGate(t.gate, role, permsOverride));
   if (visible.length === 0) return null; // دور محدود جداً — لا تبويبات (نادر).
 
   const requested = new URLSearchParams(search).get("tab");

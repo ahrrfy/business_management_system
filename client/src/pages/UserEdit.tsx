@@ -150,6 +150,10 @@ export default function UserEdit() {
     onSuccess: () => setRevokeMsg("أُبطِلت كل جلسات المستخدم — سيُطلَب منه الدخول من جديد."),
     onError: (e) => setRevokeMsg(e.message),
   });
+  const reset2fa = trpc.users.resetTwoFactor.useMutation({
+    onSuccess: () => setRevokeMsg("صُفِّرت المصادقة الثنائية وأُبطِلت جلسات المستخدم — يدخل الآن بكلمة المرور وحدها."),
+    onError: (e) => setRevokeMsg(e.message),
+  });
   const userSessions = trpc.users.sessions.useQuery({ userId }, { enabled: userId > 0 });
   const revokeOneSession = trpc.users.revokeSession.useMutation({
     onSuccess: async () => { await utils.users.sessions.invalidate({ userId }); },
@@ -179,8 +183,16 @@ export default function UserEdit() {
       const res = await utils.users.generatePassword.fetch();
       setNewPassword(res.password);
     } catch {
-      const chars = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghjkmnpqrstuvwxyz23456789@#$%!";
-      setNewPassword(Array.from({ length: 12 }, () => chars[Math.floor(Math.random() * chars.length)]).join(""));
+      // fallback محلي يضمن اجتياز السياسة حتماً (حرف كبير + رمز مضمونان).
+      const upper = "ABCDEFGHJKMNPQRSTUVWXYZ";
+      const symbols = "@#$%!";
+      const chars = upper + "abcdefghjkmnpqrstuvwxyz23456789" + symbols;
+      const body = Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]);
+      setNewPassword([
+        upper[Math.floor(Math.random() * upper.length)],
+        symbols[Math.floor(Math.random() * symbols.length)],
+        ...body,
+      ].join(""));
     }
   }
 
@@ -452,7 +464,7 @@ export default function UserEdit() {
                   <Zap aria-hidden className="size-3.5" />توليد
                 </Button>
               </div>
-              <Input id="newpw" type="text" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="12 خانة على الأقل" className="font-mono" />
+              <Input id="newpw" type="text" dir="ltr" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} placeholder="٨ خانات + حرف كبير أو رمز" className="font-mono" />
             </div>
             <Button variant="outline" onClick={doReset} disabled={resetPassword.isPending}>
               {resetPassword.isPending ? "…" : "إعادة التعيين"}
@@ -488,6 +500,28 @@ export default function UserEdit() {
             {revokeSessions.isPending ? "…" : "إبطال كل الجلسات"}
           </Button>
           {revokeMsg && <p className={`text-sm ${revokeSessions.isSuccess ? "text-money-positive" : "text-destructive"}`}>{revokeMsg}</p>}
+          {/* إنقاذ 2FA: المستخدم فقد هاتفه ورموز استرداده معاً ⇒ الأدمن يصفّرها ليدخل بكلمة المرور. */}
+          <div className="border-t pt-3 space-y-2">
+            <p className="text-xs text-muted-foreground">
+              فقد المستخدم هاتفه ورموز الاسترداد معاً؟ صفّر مصادقته الثنائية ليدخل بكلمة المرور
+              وحدها (تُبطَل جلساته كلها احتياطاً). يستطيع إعادة تفعيلها من «حسابي».
+            </p>
+            <Button
+              variant="outline"
+              onClick={async () => {
+                if (!(await confirm({
+                  variant: "danger",
+                  title: "تصفير المصادقة الثنائية",
+                  description: `سيُعطَّل رمز التحقق لـ«${name || u?.email || `#${userId}`}» وتُحذف رموز استرداده وتُبطل جلساته. هل تتابع؟`,
+                  confirmText: "تصفير",
+                }))) return;
+                reset2fa.mutate({ userId });
+              }}
+              disabled={reset2fa.isPending}
+            >
+              {reset2fa.isPending ? "…" : "تصفير المصادقة الثنائية (2FA)"}
+            </Button>
+          </div>
         </CardContent>
       </Card>
 

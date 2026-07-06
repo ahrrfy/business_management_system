@@ -10,23 +10,28 @@ import { useState } from "react";
  */
 export interface PasswordInputProps {
   id?: string;
+  /** اسم الحقل للنموذج — يلتقطه مدير كلمات مرور المتصفح (حفظ البيانات على الهاتف). */
+  name?: string;
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   autoComplete?: "new-password" | "current-password" | "off";
   invalid?: boolean;
   disabled?: boolean;
+  required?: boolean;
   className?: string;
 }
 
 export function PasswordInput({
   id,
+  name,
   value,
   onChange,
   placeholder = "••••••••",
   autoComplete = "new-password",
   invalid,
   disabled,
+  required,
   className,
 }: PasswordInputProps) {
   const [shown, setShown] = useState(false);
@@ -35,6 +40,7 @@ export function PasswordInput({
     <div dir="ltr" className={cn("relative", className)}>
       <Input
         id={id}
+        name={name}
         type={shown ? "text" : "password"}
         dir="ltr"
         autoComplete={autoComplete}
@@ -42,6 +48,7 @@ export function PasswordInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         disabled={disabled}
+        required={required}
         aria-invalid={invalid || undefined}
         className="pl-9"
       />

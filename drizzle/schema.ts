@@ -70,6 +70,15 @@ export const users = mysqlTable(
     // قفل الحساب ضدّ التخمين (brute-force) — عدّاد الإخفاقات وزمن القفل المؤقّت.
     failedLoginAttempts: int("failedLoginAttempts").default(0).notNull(),
     lockedUntil: timestamp("lockedUntil"),
+    // زمن آخر إخفاق — يمنح العدّاد نافذة زمنية (١٥د): إخفاق أقدم من النافذة يبدأ عدّاً
+    // جديداً بدل التراكم الأبدي (٤ أخطاء اليوم + خطأ بعد أسبوع كانت = قفل).
+    lastFailedLoginAt: timestamp("lastFailedLoginAt"),
+    // المصادقة الثنائية TOTP (RFC 6238) — السرّ base32 مشفَّر AES-256-GCM عبر cryptoService
+    // (صيغة v1:iv:tag:ct). وجود سرّ مع totpEnabledAt=null ⇒ تسجيل معلّق لم يُؤكَّد برمز بعد
+    // (لا يُفرض عند الدخول). totpLastUsedStep = آخر خطوة زمنية قُبل رمزها (منع replay ±1).
+    totpSecretEncrypted: varchar("totpSecretEncrypted", { length: 255 }),
+    totpEnabledAt: timestamp("totpEnabledAt"),
+    totpLastUsedStep: bigint("totpLastUsedStep", { mode: "number" }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     lastSignedIn: timestamp("lastSignedIn").defaultNow().notNull(),
@@ -143,6 +152,27 @@ export const userSessions = mysqlTable(
 
 export type UserSession = typeof userSessions.$inferSelect;
 export type InsertUserSession = typeof userSessions.$inferInsert;
+
+/**
+ * رموز استرداد المصادقة الثنائية — ١٠ رموز أحادية الاستخدام تُعرَض للمستخدم مرّة واحدة
+ * عند تفعيل 2FA، وتُخزَّن مُجزّأة scrypt (نفس صيغة server/auth/password.ts). بديل فقدان
+ * الهاتف بلا OTP/SMS مكلف: رمزٌ واحد يدخل به المستخدم ثم يُعلَّم usedAt (لا يُعاد استخدامه).
+ */
+export const userRecoveryCodes = mysqlTable(
+  "userRecoveryCodes",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    userId: int("userId").notNull().references(() => users.id),
+    codeHash: varchar("codeHash", { length: 255 }).notNull(),
+    usedAt: timestamp("usedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    userIdx: index("idx_recovery_codes_user").on(table.userId),
+  })
+);
+
+export type UserRecoveryCode = typeof userRecoveryCodes.$inferSelect;
 
 /* ============================ الفروع ============================ */
 

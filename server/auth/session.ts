@@ -21,40 +21,18 @@ function getSecret(): Uint8Array {
 
 /**
  * بصمة الجلسة (session fingerprint) — تربط التوكن بجهازٍ معيّن لإفشال
- * إعادة استعماله من جهازٍ آخر إذا سُرق. نُولّد هاش `sha256(userAgent + ipPrefix)`
+ * إعادة استعماله من جهازٍ آخر إذا سُرق. نُولّد هاش `sha256(userAgent)`
  * ونضمّه في حمولة الـJWT (claim باسم `fp`). عند كل تحقّق نُعيد حسابه من الطلب
  * الحالي ونقارن: عدم التطابق ⇒ نُبطل الجلسة (re-login إجباري).
  *
- * **بادئة IP لا IP كاملاً**: نأخذ أوّل أوكتيتين فقط لـIPv4 (مثال 192.168.x.x → "192.168")
- * وأوّل ٣ مقاطع hex لـIPv6 ⇒ يتحمّل تنقّل المستخدم بين CGNAT/شبكات الجوال داخل نفس الـISP
- * بلا طرده، لكنه يكسر النقل عبر بلد/شبكة مختلفة (وهو السيناريو الذي نريد رفضه).
- *
- * **User-Agent يدخل كاملاً**: تغيير المتصفح/الجهاز = جلسة جديدة (سلوك مرغوب).
+ * **لماذا User-Agent فقط بلا أي مكوّن IP (٦/٧/٢٦):** كانت البصمة تضمّ بادئة IP
+ * (أوّل أوكتيتين IPv4 / ‏٣ مقاطع IPv6)، وشبكات الجوال العراقية خلف CGNAT تُبدّل
+ * العنوان العام باستمرار متجاوزةً حدود ‎/16 (وdual-stack يتناوب IPv4/IPv6، والانتقال
+ * WiFi↔بيانات يغيّر البادئة حتماً) ⇒ كل مستخدم هاتف/لوحي كان «يدخل ثم يُطرد فوراً»
+ * بصمت. UA وحده ثابت لكل جهاز ويبقى يمنع نقل التوكن لجهاز/متصفح مختلف، والتعويض عن
+ * فقد مكوّن IP هو **إلزام المقارنة لكل طلب HTTP حقيقي** في verifySession أدناه
+ * (لا يستطيع مهاجم «تجريد» UA للإفلات من المقارنة — غيابه يعطي بصمة مختلفة فيُرفض).
  */
-function ipPrefix(ip: string | null | undefined): string {
-  if (!ip) return "";
-  // IPv6: قد يصلنا كـ"::ffff:1.2.3.4" (IPv4-mapped) — استخرج IPv4 منه.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
-  if (mapped) ip = mapped[1];
-  if (ip.includes(".")) {
-    // IPv4 → أوّل أوكتيتين.
-    const parts = ip.split(".");
-    return parts.length >= 2 ? `${parts[0]}.${parts[1]}` : ip;
-  }
-  if (ip.includes(":")) {
-    // IPv6 → أوّل ٣ مقاطع (≈ /48).
-    const parts = ip.split(":");
-    return parts.slice(0, 3).join(":");
-  }
-  return ip;
-}
-
-function getRequestIp(req: Request | { ip?: string; socket?: { remoteAddress?: string } } | null | undefined): string {
-  if (!req) return "";
-  const anyReq = req as { ip?: string; socket?: { remoteAddress?: string } };
-  return anyReq.ip ?? anyReq.socket?.remoteAddress ?? "";
-}
-
 function getRequestUserAgent(req: Request | { headers?: Record<string, unknown> } | null | undefined): string {
   if (!req) return "";
   const anyReq = req as { headers?: Record<string, unknown> };
@@ -62,12 +40,10 @@ function getRequestUserAgent(req: Request | { headers?: Record<string, unknown> 
   return typeof ua === "string" ? ua : "";
 }
 
-/** يحسب بصمة الجلسة من الطلب الحالي (sha256 مقطوع ١٦ خانة hex — كافٍ لتمييز جهاز). */
+/** يحسب بصمة الجلسة من الطلب الحالي (sha256 مقطوع ٣٢ خانة hex — كافٍ لتمييز جهاز). */
 export function computeSessionFingerprint(req: Request | { ip?: string; headers?: Record<string, unknown>; socket?: { remoteAddress?: string } } | null | undefined): string {
   const ua = getRequestUserAgent(req);
-  const ip = ipPrefix(getRequestIp(req));
-  // الدمج بفاصل `\x1f` (Unit Separator) ⇒ لا تصادم محتمل بين قِيَم تنتهي/تبدأ بقيم الأخرى.
-  return createHash("sha256").update(`${ua}\x1f${ip}`).digest("hex").slice(0, 32);
+  return createHash("sha256").update(ua).digest("hex").slice(0, 32);
 }
 
 /**
@@ -154,6 +130,10 @@ export async function verifySession(
       // هامش ٦٠ث لـnbf/exp: نمط إعادة الإصدار عند تغيير كلمة المرور يضع nbf=iat=validFromSec+1
       clockTolerance: 60,
     });
+    // تذكرة التحدّي 2FA (twoFactorTicket) تُوقَّع بنفس السرّ/الخوارزمية وتحمل uid/iat/fp — لكنها
+    // تحمل `purpose` صريحاً. جلسة signSession لا تحمل purpose إطلاقاً ⇒ رفض أي توكن يحمله يمنع
+    // استعمال تذكرة 2FA كوكيَ جلسة (تجاوز التحقّق الثاني عند تسريب كلمة المرور — P1، مراجعة Codex).
+    if (payload.purpose != null) return null;
     const uid = Number(payload.uid);
     const iat = Number(payload.iat);
     if (!Number.isInteger(uid) || uid <= 0) return null;
@@ -175,18 +155,16 @@ export async function verifySession(
         ? payload.sid
         : undefined;
 
-    // إن وُجد طلب يحمل بصمةً قابلةً للحساب (UA أو IP): ألزم تطابق fp ⇒ يحبط إعادة
-    // استعمال التوكن من جهاز آخر. الطلب الذي لا يحمل UA ولا IP (سياق اختبار/داخلي)
-    // لا تُجرى عليه المقارنة لتجنّب أعراض جانبية.
+    // إن مُرّر طلب: ألزم تطابق fp دائماً ⇒ يحبط إعادة استعمال التوكن من جهاز آخر.
+    // المقارنة إلزامية حتى بلا ترويسة UA (بصمة الفراغ لن تطابق بصمة جهاز حقيقي) —
+    // كانت تُتخطّى عند غياب UA وIP معاً، وبعد إسقاط مكوّن IP من البصمة (٦/٧) صار
+    // التخطّي ثغرةً (تجريد UA = تجاوز الربط بالجهاز). الاستدعاء بلا req (اختبارات/
+    // استعمال داخلي) يبقى بلا مقارنة كما كان.
     if (req) {
-      const ua = getRequestUserAgent(req);
-      const ip = ipPrefix(getRequestIp(req));
-      if (ua || ip) {
-        const current = computeSessionFingerprint(req);
-        // legacy token بلا fp ⇒ ارفض (force re-login مرّة واحدة بعد الترقية الأمنية).
-        if (!fp) return null;
-        if (current !== fp) return null;
-      }
+      const current = computeSessionFingerprint(req);
+      // legacy token بلا fp ⇒ ارفض (force re-login مرّة واحدة بعد الترقية الأمنية).
+      if (!fp) return null;
+      if (current !== fp) return null;
     }
 
     return { uid, iat, fp, companyId, sid };

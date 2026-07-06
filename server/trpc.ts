@@ -1,6 +1,6 @@
 import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "@shared/const";
 import { toArabicMessage } from "@shared/errorMap.ar";
-import { canSeeCost as _canSeeCost, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -85,17 +85,45 @@ export function requireModule(moduleKey: string, minLevel: AccessLevel) {
   });
 }
 
+/**
+ * بوّابة الوحدة الموحّدة (٦/٧/٢٦) — إصلاح «فتحتُ صلاحيات لحساب ولم تُطبَّق»:
+ * كانت requireRole تُنفَّذ قبل requireModule وترفض أي دور خارج قائمتها حتى لو مُنح
+ * الوحدة صراحةً عبر مصفوفة الصلاحيات (override فردي أو دور مخصّص) ⇒ المنح ميت.
+ * القاعدة الآن (moduleAccessAllowed في shared/permissions — مشتركة مع الواجهة):
+ * admin يمرّ؛ دور القائمة يمرّ إن حقّقت خريطته المحلولة المستوى (F2 كما هو)؛
+ * دور خارج القائمة يمرّ فقط بمنح **صريح** للوحدة بالمستوى المطلوب.
+ * ملاحظة أمنية: المنح الصريح FULL يفتح كل إجراءات الوحدة (بما فيها ما كان مديرياً
+ * كالإلغاءات) — هذا هو معنى «كامل» المعروض للمالك في المصفوفة، والمنح قرار أدمن.
+ */
+function requireModuleGate(allowedRoles: readonly string[], moduleKey: string, minLevel: AccessLevel) {
+  return t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as
+      | Record<string, AccessLevel>
+      | null
+      | undefined;
+    if (!moduleAccessAllowed(ctx.user.role, override, moduleKey, minLevel, allowedRoles)) {
+      throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    }
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  });
+}
+
 /** عمليات إدارية/مالية: المدير فأعلى (توافق خلفي كامل). */
 export const managerProcedure = t.procedure.use(requireRole("manager"));
 
 /**
- * RBAC-REPORTS (تدقيق ٢/٧): التقارير كانت مقفلة بـmanagerProcedure حصراً ⇒ دورا «محاسب» و«مدقّق»
- * المعلَنان (قالبهما reports=FULL/READ) لا يصلان أي تقرير — الدور بلا فائدة. نسمح لهذه الأدوار الثلاثة
- * ثم نُنفِذ خريطة الصلاحية (requireModule) — فالمحاسب/المدقّق (والدور المخصّص أساسه أحدها) يصل حسب خريطته.
+ * RBAC-REPORTS (تدقيق ٢/٧ + ٦/٧): بوّابة الوحدة الموحّدة على التقارير — تُعامَل «reports»
+ * كأي وحدة أخرى عبر requireModuleGate: الأدوار المالية القالبية (manager/accountant/auditor)
+ * تمرّ بخريطتها، وأي دور آخر يمرّ **بمنحٍ صريح** فقط (override reports≥READ) — يفتح شكوى المالك
+ * «فتحتُ الصلاحية ولم تُطبَّق».
+ * ⚠️ حاسم: لا نُسقِط بوّابة الدور إلى requireModule العاري — إذ يفتح ذلك تقارير التكلفة/الربح
+ * (P&L/الأستاذ/تقييم المخزون) لقوالب warehouse/purchasing/user (reports=READ، canSeeCost=false)
+ * فيخرق ثابت «حجب التكلفة عن غير أدواره» (§٥، مراجعة عدائية ٦/٧). القائمة تُبقي القالب الافتراضي
+ * لتلك الأدوار محجوباً، ويظلّ المنح الصريح قرار المالك الواعي (لا وحدة «تكلفة» منفصلة في المصفوفة).
  */
 export const reportViewerProcedure = t.procedure
-  .use(requireRole("manager", "accountant", "auditor"))
-  .use(requireModule("reports", "READ"))
+  .use(requireModuleGate(["manager", "accountant", "auditor"], "reports", "READ"))
   .use(async ({ ctx, getRawInput, next }) => {
     // عزل الفرع: admin يعبُر أي فرع؛ غير الأدمن يُرفَض إن طلب فرعاً غير فرعه (أثر forensic صريح
     // بدل قصٍّ صامت) — مرآةٌ لِمنطق managerBranchScopedProcedure الذي كان يحرس هذه التقارير.
@@ -182,57 +210,58 @@ export const branchScopedProcedure = protectedProcedure.use(({ ctx, next }) => {
   return next({ ctx: { ...ctx, scopedBranchId, scopedOwnerId } });
 });
 
-// ─── F2 (تدقيق ٢/٧): إجراءات module-gated للوحدات غير المالية ──────────────────
-// المشكلة: البوّابات الخشنة (managerProcedure/cashierProcedure/warehouseProcedure/…) تفحص الدور
-// الأساس (baseRole) فقط عبر requireRole ⇒ دور مخصّص أساسه manager بخريطةٍ تُقيّد وحدةً (مثلاً
-// inventory=NONE) كان يتجاوز القيد على تلك الوحدة (الخريطة وهم). الحلّ: نُركّب requireModule فوق
-// البوّابة الخشنة القائمة (تحافظ على requireOwnBranch/عزل الفرع/عزل الموظف) فتُنفَّذ خريطة الدور
-// المخصّص (القالب + override) لا الأساس فقط. admin يعبُر requireModule داخلياً. الأدوار القالبية
-// (بلا override) بلا انحدار: resolvePermissions(role,null)=القالب يمنح المستوى (تُحقِّق منه §٤ في
-// docs/audit-followups-2026-07-02.md). السابقة المعتمدة: conversationRouter (channels).
-// الاصطلاح: query ⇒ READ، mutation ⇒ FULL.
+// ─── F2 (تدقيق ٢/٧) + بوّابة المنح الصريح (٦/٧) — إجراءات module-gated ─────────
+// F2: خريطة الدور (قالب + override) تُنفَّذ على أدوار القائمة (override مُقيِّد يُطاع).
+// ٦/٧: أي دور خارج القائمة مُنح الوحدة **صراحةً** بالمستوى المطلوب يمرّ أيضاً
+// (requireModuleGate أعلاه) — كان requireRole يرفضه قبل استشارة المنح إطلاقاً.
+// توسيعات قوائم مستهدفة (وعود قوالب كانت مكسورة): purchasing⇐المشتريات/الموردون،
+// accountant⇐الخزينة/إدخال المصروفات، sales_rep⇐كتابة العملاء الأساسية،
+// warehouse⇐كتابة الموردين. الاصطلاح: query ⇒ READ، mutation ⇒ FULL.
+
+/** بوّابة وحدة + إلزام فرع مُسنَد لغير admin/manager (G3) — الأساس لكل إجراءات الكتابة أدناه. */
+function moduleProcedure(allowedRoles: readonly string[], moduleKey: string, minLevel: AccessLevel) {
+  return t.procedure.use(requireModuleGate(allowedRoles, moduleKey, minLevel)).use(requireOwnBranch);
+}
 
 // pos (نقطة بيع خدمات الطباعة — printPos)
-export const posCashierProcedure = cashierProcedure.use(requireModule("pos", "FULL"));
+export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos", "FULL");
 // sales
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
-export const salesCashierProcedure = cashierProcedure.use(requireModule("sales", "FULL"));
-export const salesManagerProcedure = managerProcedure.use(requireModule("sales", "FULL"));
-// purchases
+export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
+export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
+// purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».
 export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));
-export const purchasesManagerProcedure = managerProcedure.use(requireModule("purchases", "FULL"));
-export const purchasesWarehouseProcedure = warehouseProcedure.use(requireModule("purchases", "FULL"));
+export const purchasesManagerProcedure = moduleProcedure(["manager", "purchasing"], "purchases", "FULL");
+export const purchasesWarehouseProcedure = moduleProcedure(["warehouse", "manager", "purchasing"], "purchases", "FULL");
 // inventory (يشمل production/stocktake — كلاهما يُحرّك المخزون)
 export const inventoryReadProcedure = branchScopedProcedure.use(requireModule("inventory", "READ"));
-export const inventoryWarehouseProcedure = warehouseProcedure.use(requireModule("inventory", "FULL"));
-export const inventoryManagerProcedure = managerProcedure.use(requireModule("inventory", "FULL"));
-// customers
+export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manager"], "inventory", "FULL");
+export const inventoryManagerProcedure = moduleProcedure(["manager"], "inventory", "FULL");
+// customers — «مندوب مبيعات» قالبه customers=FULL ووصفه «متابعة عملاء».
 export const customersReadProcedure = protectedProcedure.use(requireModule("customers", "READ"));
-export const customersCashierProcedure = cashierProcedure.use(requireModule("customers", "FULL"));
-export const customersManagerProcedure = managerProcedure.use(requireModule("customers", "FULL"));
-// suppliers (أساسها managerProcedure — لا تُوسَّع لأدوار أدنى ضمن F2)
-export const suppliersReadProcedure = managerProcedure.use(requireModule("suppliers", "READ"));
-export const suppliersManagerProcedure = managerProcedure.use(requireModule("suppliers", "FULL"));
+export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep"], "customers", "FULL");
+export const customersManagerProcedure = moduleProcedure(["manager"], "customers", "FULL");
+// suppliers — القراءة بالخريطة وحدها (كالعملاء): قوالب warehouse/purchasing/auditor/user تعِد
+// بها وكان managerProcedure يصدّها. الكتابة: warehouse/purchasing قالباهما FULL.
+export const suppliersReadProcedure = protectedProcedure.use(requireModule("suppliers", "READ"));
+export const suppliersManagerProcedure = moduleProcedure(["manager", "warehouse", "purchasing"], "suppliers", "FULL");
 // products (catalog)
 export const productsReadProcedure = protectedProcedure.use(requireModule("products", "READ"));
-export const productsManagerProcedure = managerProcedure.use(requireModule("products", "FULL"));
-// expenses
+export const productsManagerProcedure = moduleProcedure(["manager"], "products", "FULL");
+// expenses — «محاسب» قالبه expenses=FULL ⇒ يدخل بوّابة الإدخال (الإلغاء يبقى مديرياً).
 export const expensesReadProcedure = branchScopedProcedure.use(requireModule("expenses", "READ"));
-export const expensesCashierProcedure = cashierProcedure.use(requireModule("expenses", "FULL"));
-export const expensesManagerProcedure = managerProcedure.use(requireModule("expenses", "FULL"));
+export const expensesCashierProcedure = moduleProcedure(["cashier", "manager", "accountant"], "expenses", "FULL");
+export const expensesManagerProcedure = moduleProcedure(["manager"], "expenses", "FULL");
 // workorders (خدمة العملاء)
 export const workordersReadProcedure = branchScopedProcedure.use(requireModule("workorders", "READ"));
-export const workordersCashierProcedure = cashierProcedure.use(requireModule("workorders", "FULL"));
-export const workordersExecProcedure = workOrderExecProcedure.use(requireModule("workorders", "FULL"));
-export const workordersManagerProcedure = managerProcedure.use(requireModule("workorders", "FULL"));
+export const workordersCashierProcedure = moduleProcedure(["cashier", "manager"], "workorders", "FULL");
+export const workordersExecProcedure = moduleProcedure(["cashier", "manager", "print_operator"], "workorders", "FULL");
+export const workordersManagerProcedure = moduleProcedure(["manager"], "workorders", "FULL");
 
-// ─── F7 (تدقيق ٢/٧): إكمال بوّابات الوحدة المالية «treasury» ────────────────────
-// تكملة F2: الوحدات المالية للكتابة (السندات/التحويلات النقدية/الصيرفة/الورديات) كانت مبوَّبة
-// بالدور الأساس فقط ⇒ دور مخصّص manager بـtreasury=NONE ينفّذ صرف نقد/تحويل/صيرفة رغم الخريطة.
-// نُركّب requireModule("treasury",…) فوق البوّابة الخشنة (voucher/cashTransfers/exchange = manager؛
-// الورديات = cashier). **الورديات بمستوى READ** لأن قالب cashier treasury=READ (فتح/إغلاق الوردية
-// سلوك كاشير قائم) — التقييد الفعليّ يُغلق دور treasury=NONE بلا حجب الكاشير القالبي.
-export const treasuryManagerProcedure = managerProcedure.use(requireModule("treasury", "FULL"));
-export const treasuryManagerReadProcedure = managerProcedure.use(requireModule("treasury", "READ"));
+// ─── F7 (تدقيق ٢/٧): بوّابات الوحدة المالية «treasury» ─────────────────────────
+// «محاسب» قالبه treasury=FULL ووصفه المعلن يشمل الخزينة والسندات — كان مصدوداً.
+// **الورديات بمستوى READ** لأن قالب cashier treasury=READ (فتح/إغلاق الوردية سلوك كاشير قائم).
+export const treasuryManagerProcedure = moduleProcedure(["manager", "accountant"], "treasury", "FULL");
+export const treasuryManagerReadProcedure = moduleProcedure(["manager", "accountant"], "treasury", "READ");
 export const treasuryReadProcedure = branchScopedProcedure.use(requireModule("treasury", "READ"));
-export const treasuryCashierProcedure = cashierProcedure.use(requireModule("treasury", "READ"));
+export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], "treasury", "READ");

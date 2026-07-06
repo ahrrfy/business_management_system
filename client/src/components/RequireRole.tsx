@@ -1,24 +1,35 @@
 /**
- * RequireRole — حارس دور على مستوى الواجهة للشاشات الإدارية.
+ * RequireRole — حارس وصول على مستوى الواجهة للشاشات الإدارية.
  *
  * مهم: هذا حارس واجهة فقط (UX/تجربة استخدام) — الإنفاذ الحقيقي للأمان
- * يقع في الخادم عبر adminProcedure/managerProcedure في server/trpc.ts.
- * الهدف هنا: منع تركيب شاشة إدارية لدور غير مسموح وعرض رسالة واضحة.
+ * يقع في الخادم عبر بوّابات server/trpc.ts.
+ *
+ * ٦/٧/٢٦: كان يفحص اسم الدور فقط ويتجاهل الصلاحيات الممنوحة (permissionsOverride)
+ * تماماً ⇒ منح المالك وحدةً لمستخدم لا يغيّر شيئاً في الواجهة («لا تملك صلاحية» رغم
+ * المنح). الآن: عند تمرير `module` تُطبَّق قاعدة الخادم نفسها (moduleAccessAllowed
+ * المشتركة): دور القائمة يخضع لخريطته المحلولة، ودور خارجها يمرّ بمنح صريح للوحدة.
  *
  * يعتمد على trpc.auth.me — يُستخدم داخل <Protected> الذي ضمن وجود جلسة،
  * فلا حاجة للتعامل مع حالة "بلا مستخدم" هنا.
  */
 import { trpc } from "@/lib/trpc";
-import type { RoleKey } from "@shared/permissions";
+import { moduleAccessAllowed, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Lock } from "lucide-react";
 
 type Props = {
   /** الأدوار المسموح لها بالوصول. لا تقبل قائمة فارغة. */
   roles: RoleKey[];
+  /**
+   * مفتاح الوحدة في مصفوفة الصلاحيات (pos/sales/reports/…). عند تمريره يُفتح الوصول
+   * أيضاً لمن مُنح الوحدة صراحةً بالمستوى المطلوب، وتُنفَّذ خريطة الدور على أدوار القائمة.
+   */
+  module?: string;
+  /** المستوى الأدنى المطلوب عند تمرير module (الافتراضي READ). */
+  level?: AccessLevel;
   children: React.ReactNode;
 };
 
-export function RequireRole({ roles, children }: Props) {
+export function RequireRole({ roles, module, level, children }: Props) {
   const me = trpc.auth.me.useQuery();
 
   // أثناء التحميل: لا نكشف عن المحتوى — تجربة هادئة بلا وميض.
@@ -31,7 +42,11 @@ export function RequireRole({ roles, children }: Props) {
   }
 
   const role = me.data?.role as RoleKey | undefined;
-  if (!role || !roles.includes(role)) {
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const allowed = !!role && (module
+    ? moduleAccessAllowed(role, override, module, level ?? "READ", roles)
+    : role === "admin" || roles.includes(role));
+  if (!allowed) {
     return <Forbidden />;
   }
 
