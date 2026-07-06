@@ -14,6 +14,7 @@ import { assertCreditLimit } from "../../lib/credit";
 import { extractInsertId } from "../../lib/insertId";
 import { consumeApproval, validateApproval } from "../creditApprovalService";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
+import { resolveContractPrices } from "../contractPriceService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
@@ -160,6 +161,14 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       variantById.set(Number(r.id), { costPrice: String(r.costPrice), isActive: r.isActive });
     }
 
+    // بند 12ب (٧/٧): الأسعار التعاقدية النشطة للعميل — استعلام واحد (نمط D1 نفسه، لا N+1).
+    // أسبقية اختيار السعر تتبع البنية القائمة حرفياً: override صريح (سعرٌ قصده المستخدم ويعرضه
+    // للزبون — POS يثبّته دائماً، وحارس أقل-من-التكلفة يحكمه) ← السعر التعاقدي ← سعر الفئة.
+    // نفس `resolveContractPrices` تغذّي عرض POS في catalog/pos.ts ⇒ نقطة العرض = نقطة الفرض.
+    const contractPrices = input.customerId
+      ? await resolveContractPrices(tx, input.customerId, input.lines.map((l) => l.productUnitId))
+      : new Map<number, string>();
+
     const computed = [];
     for (const l of input.lines) {
       const v = variantById.get(l.variantId);
@@ -169,10 +178,13 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       }
 
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
+      const contractPrice = contractPrices.get(l.productUnitId);
       const unitPrice =
         l.unitPriceOverride != null && l.unitPriceOverride !== ""
           ? money(l.unitPriceOverride)
-          : await getUnitPrice(tx, l.productUnitId, tier);
+          : contractPrice != null
+            ? money(contractPrice)
+            : await getUnitPrice(tx, l.productUnitId, tier);
       const unitCost = snapshotUnitCost(v.costPrice);
       const lineRes = computeLineTotal({
         unitPrice,

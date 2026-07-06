@@ -2,6 +2,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { branchStock, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { resolveContractPrices } from "../contractPriceService";
 import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility } from "./search";
@@ -27,6 +28,8 @@ export interface PosRow {
   isCustomizable: boolean;
   // خدمة طباعة (productType=PRINT_SERVICE): تُباع عبر مسار createPrintSale (خصم مواد + COGS) لا sales.create.
   isPrintService: boolean;
+  // بند 12ب: السعر المعروض سعرٌ تعاقدي خاص بالعميل المُمرَّر (يتقدّم على سعر الفئة) — الواجهة تُظهر شارة.
+  isContractPrice: boolean;
 }
 
 function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number, tier: PriceTier) {
@@ -74,27 +77,53 @@ function normalize(rows: any[]): PosRow[] {
     isService: !!r.isService,
     isCustomizable: !!r.isCustomizable,
     isPrintService: r.productType === PRINT_SERVICE_TYPE,
+    isContractPrice: false,
   }));
 }
 
-/** Resolve a scanned barcode to a single POS row. */
-export async function lookupByBarcode(barcode: string, branchId: number, tier: PriceTier): Promise<PosRow | null> {
+/** بند 12ب: تراكب الأسعار التعاقدية — حين يُمرَّر customerId ولديه سعر تعاقدي نشط لوحدةٍ،
+ *  يَستبدل السعرُ التعاقدي سعرَ الفئة في الصف مع علم isContractPrice (شارة في الواجهة).
+ *  نفس `resolveContractPrices` التي يستهلكها الفرض في sale/create.ts ⇒ المعروض = المفروض. */
+async function applyContractPrices(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  rows: PosRow[],
+  customerId?: number | null,
+): Promise<PosRow[]> {
+  if (!customerId || !rows.length) return rows;
+  const map = await resolveContractPrices(db, customerId, rows.map((r) => r.productUnitId));
+  if (!map.size) return rows;
+  return rows.map((r) => {
+    const p = map.get(r.productUnitId);
+    return p == null ? r : { ...r, price: p, isContractPrice: true };
+  });
+}
+
+/** Resolve a scanned barcode to a single POS row.
+ *  customerId اختياري: يُطبّق السعر التعاقدي النشط للعميل إن وُجد (بند 12ب). */
+export async function lookupByBarcode(
+  barcode: string,
+  branchId: number,
+  tier: PriceTier,
+  customerId?: number | null,
+): Promise<PosRow | null> {
   const db = getDb();
   if (!db) return null;
   const rows = await baseSelect(db, branchId, tier)
     .where(and(activeOnly, eq(productUnits.barcode, barcode.trim())))
     .limit(1);
-  return normalize(rows)[0] ?? null;
+  const [row] = await applyContractPrices(db, normalize(rows), customerId);
+  return row ?? null;
 }
 
 /** List sellable rows for the POS, optionally filtered by a text query.
- *  includeReceptionServices=true يُظهر خدمات الطباعة المفعَّل عليها showInReception (كاشير الاستقبال). */
+ *  includeReceptionServices=true يُظهر خدمات الطباعة المفعَّل عليها showInReception (كاشير الاستقبال).
+ *  opts.customerId (بند 12ب): يُطبّق الأسعار التعاقدية النشطة للعميل على الصفوف المطابقة. */
 export async function listForPos(
   branchId: number,
   tier: PriceTier,
   query?: string,
   limit = 200,
-  opts?: { includeReceptionServices?: boolean },
+  opts?: { includeReceptionServices?: boolean; customerId?: number | null },
 ): Promise<PosRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -103,5 +132,5 @@ export async function listForPos(
   const where = search ? and(active, search) : active;
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await baseSelect(db, branchId, tier).where(where).orderBy(...order).limit(limit);
-  return normalize(rows);
+  return applyContractPrices(db, normalize(rows), opts?.customerId);
 }

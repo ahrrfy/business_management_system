@@ -9,9 +9,16 @@ import {
   smartSearchCustomers,
   updateCustomer,
 } from "../services/customerService";
+import {
+  listContractPricesForCustomer,
+  removeContractPrice,
+  setContractPriceActive,
+  upsertContractPrice,
+} from "../services/contractPriceService";
 import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive } from "../lib/redact";
+import { positiveMoneyString } from "../lib/schemas";
 import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, router } from "../trpc";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
@@ -182,6 +189,57 @@ export const customerRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await activateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, { action: "customer.activate", entityType: "customer", entityId: input.customerId });
+      return res;
+    }),
+
+  // ─── بند 12ب (٧/٧): التسعير التعاقدي الخاص بعميل (عقود الدوائر الحكومية) — إدارة بمدير ───
+
+  /** كل الأسعار التعاقدية لعميل (نشطة + معطَّلة) لشاشة الإدارة. */
+  contractPricesList: customersManagerProcedure
+    .input(z.object({ customerId: z.number().int().positive() }))
+    .query(({ input }) => listContractPricesForCustomer(input.customerId)),
+
+  /** إضافة/تحديث سعر تعاقدي (UNIQUE عميل×وحدة يحسم السباق — التحديث لا يُنشئ صفاً ثانياً). */
+  contractPriceUpsert: customersManagerProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        productUnitId: z.number().int().positive(),
+        price: positiveMoneyString,
+        note: z.string().max(255).nullish(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await upsertContractPrice(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      await logAudit(ctx, {
+        action: res.updated ? "customer.contractPrice.update" : "customer.contractPrice.create",
+        entityType: "customerContractPrice",
+        entityId: res.id,
+        newValue: { customerId: input.customerId, productUnitId: input.productUnitId, price: input.price, note: input.note ?? null },
+      });
+      return res;
+    }),
+
+  /** تعطيل/تفعيل سعر تعاقدي — المعطَّل لا يسري على البيع ويبقى ظاهراً لإعادة التفعيل. */
+  contractPriceSetActive: customersManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), isActive: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await setContractPriceActive(input.id, input.isActive);
+      await logAudit(ctx, {
+        action: input.isActive ? "customer.contractPrice.activate" : "customer.contractPrice.deactivate",
+        entityType: "customerContractPrice",
+        entityId: input.id,
+        newValue: { isActive: input.isActive },
+      });
+      return res;
+    }),
+
+  /** حذف سعر تعاقدي (بنود الفواتير تُخزّن unitPrice لقطةً — لا مرجعية تاريخية تُكسر). */
+  contractPriceRemove: customersManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await removeContractPrice(input.id);
+      await logAudit(ctx, { action: "customer.contractPrice.remove", entityType: "customerContractPrice", entityId: input.id });
       return res;
     }),
 });
