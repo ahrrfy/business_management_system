@@ -94,7 +94,7 @@ describe("getProductForVariantEdit — القراءة", () => {
     const p = await getProductForVariantEdit(3);
     expect(p).toBeTruthy();
     expect(p!.variants).toEqual([]);
-    expect(p!.unitTemplate).toEqual([{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "" }]);
+    expect(p!.unitTemplate).toEqual([{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }]);
   });
 });
 
@@ -154,6 +154,39 @@ describe("updateProductWithVariants — الكتابة", () => {
     const wholesale = prices.find((p) => p.priceTier === "WHOLESALE")!;
     expect(retail.price).toBe("1200.00");
     expect(wholesale.price).toBe("900.00"); // من القالب — غير مُتأثّر بـbaseRetail override
+  });
+
+  it("سعر الحكومي (GOVERNMENT) يُقرأ في القالب ويبقى بعد جولة حفظ تُعيد إرساله (تصحيح فقد صامت)", async () => {
+    // أضِف سعراً حكوميّاً لوحدة الأساس (قطعة) لمنتج ١.
+    await db().insert(s.productPrices).values({ productUnitId: 1, priceTier: "GOVERNMENT", price: "800.00" });
+
+    // (١) القراءة تُظهره في القالب (كان محجوباً قبل التصحيح ⇒ يُمحى صامتاً عند الحفظ).
+    const p = await getProductForVariantEdit(1);
+    const baseTmpl = p!.unitTemplate.find((u) => u.isBaseUnit)!;
+    expect(baseTmpl.government).toBe("800.00");
+
+    // (٢) جولة حفظ تُعيد إرسال الأسعار الثلاثة (كما يفعل نموذج التحرير المبسّط) ⇒ الحكومي يبقى.
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        unitTemplate: [
+          {
+            unitName: "قطعة", conversionFactor: "1", isBaseUnit: true,
+            prices: [
+              { priceTier: "RETAIL" as const, price: baseTmpl.retail },
+              { priceTier: "WHOLESALE" as const, price: baseTmpl.wholesale },
+              { priceTier: "GOVERNMENT" as const, price: baseTmpl.government },
+            ],
+          },
+          { unitName: "درزن", conversionFactor: "12", isBaseUnit: false, prices: [{ priceTier: "RETAIL" as const, price: "11000.00" }] },
+        ],
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+      },
+      actor,
+    );
+    const baseUnit = (await db().select().from(s.productUnits).where(and(eq(s.productUnits.variantId, 1), eq(s.productUnits.isBaseUnit, true))))[0];
+    const prices = await db().select().from(s.productPrices).where(eq(s.productPrices.productUnitId, Number(baseUnit.id)));
+    expect(prices.find((pr) => pr.priceTier === "GOVERNMENT")?.price).toBe("800.00");
   });
 
   it("وحدة تُحذَف من القالب ⇒ تُعطَّل (isActive=false) لا تُحذَف فعلياً", async () => {
