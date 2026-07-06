@@ -11,6 +11,7 @@ const Products = lazy(() => import("@/pages/Products"));
 const InventoryMovements = lazy(() => import("@/pages/InventoryMovements"));
 const Transfers = lazy(() => import("@/pages/Transfers"));
 const Stocktakes = lazy(() => import("@/pages/Stocktakes"));
+const ReorderAlerts = lazy(() => import("@/pages/ReorderAlerts"));
 const Categories = lazy(() => import("@/pages/Categories"));
 const BarcodeLabels = lazy(() => import("@/pages/BarcodeLabels"));
 
@@ -20,6 +21,7 @@ const TABS: HubTab[] = [
   { value: "movements", label: "الحركات", Component: InventoryMovements },
   { value: "transfers", label: "التحويلات", Component: Transfers },
   { value: "stocktakes", label: "الجرد والتسوية", Component: Stocktakes },
+  { value: "reorder", label: "إعادة الطلب", Component: ReorderAlerts },
   { value: "categories", label: "الفئات", gate: { managerOnly: true }, Component: Categories },
   { value: "barcodes", label: "ملصقات الباركود", Component: BarcodeLabels },
 ];
