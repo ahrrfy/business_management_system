@@ -29,6 +29,7 @@ import { getInventoryValuation, getStockStatus } from "../services/reportsInvent
 import { getItemLedger, getAbcAnalysis } from "../services/reportsInventoryAnalyticsService";
 import { getTreasurySummary, getExpensesReport, getCashOrphansReport } from "../services/reportsTreasuryService";
 import { getProductionReport, getWorkOrdersReport } from "../services/reportsProductionService";
+import { workOrderProfitability } from "../services/reports/workOrderProfitability";
 import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
@@ -610,6 +611,39 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getProductionReport({ from: input.from, to: input.to, branchId });
+    }),
+
+  /**
+   * ربحية أوامر الشغل (Job Costing) — أمرٌ-أمراً: إيراد (صافٍ قبل الضريبة عبر الفاتورة
+   * المرتبطة) − تكلفة مواد − كلفة عملٍ اختيارية بالساعة (workSeconds × laborRatePerHour).
+   * تكشف التكلفة/الربح ⇒ نفس بوّابة بقية التقارير (reportViewerProcedure: manager/accountant/
+   * auditor + منح صريح — لا requireModule عارٍ، خط أحمر §٦) + عزل الفرع بـscopedBranchId.
+   */
+  workOrderProfitability: reportsBranchScoped
+    .input(
+      z.object({
+        from: ymdStr,
+        to: ymdStr,
+        branchId: z.number().int().positive().optional(),
+        laborRatePerHour: z
+          .string()
+          .trim()
+          .regex(/^\d+(\.\d{1,2})?$/, "قيمة مالية غير صالحة (رقم موجب بمنزلتين كحدّ أقصى)")
+          .optional(),
+        limit: z.number().int().min(1).max(2000).default(500),
+        offset: z.number().int().min(0).default(0),
+      })
+    )
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return workOrderProfitability({
+        from: input.from,
+        to: input.to,
+        branchId,
+        laborRatePerHour: input.laborRatePerHour ?? null,
+        limit: input.limit,
+        offset: input.offset,
+      });
     }),
 
   /** تقرير أوامر الشغل — توزيع الحالات + القنوات + ربحية المُسلَّم. manager + عزل الفرع. */
