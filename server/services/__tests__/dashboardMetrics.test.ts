@@ -307,6 +307,33 @@ describe("getDashboardMetrics", () => {
     expect(m1.morningBrief.arRemindersDue).toBe(0);
   });
 
+  it("(ك) مدينو الرصيد الافتتاحي يُحتسَبون عند includeOpeningBalance:true (أدمن حصراً) وفي العرض المجمَّع فقط (إصلاح gap-audit HIGH ٥/٧)", async () => {
+    const d = db();
+    await d.insert(s.customers).values({
+      id: 1,
+      name: "مدين افتتاحي",
+      defaultPriceTier: "RETAIL",
+      currentBalance: "500000",
+    });
+    const openedOn = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
+    await d.insert(s.accountingEntries).values({
+      entryType: "OPENING",
+      customerId: 1,
+      amount: "500000",
+      entryDate: openedOn,
+      dedupeKey: "OPENING:CUSTOMER:1",
+    });
+    // بلا العلَم (منتحل دور مدير) ⇒ سلوك test (ط) القائم: صفر، حتى مع branchId=null.
+    const mDefault = await getDashboardMetrics({});
+    expect(mDefault.morningBrief.arRemindersDue).toBe(0);
+    // مع العلَم صراحةً (منتحل دور أدمن) + branchId=null (العرض المجمَّع) ⇒ يُحتسَب الآن.
+    const mAdmin = await getDashboardMetrics({ includeOpeningBalance: true });
+    expect(mAdmin.morningBrief.arRemindersDue).toBe(1);
+    // مع العلَم لكن على فرع محدَّد ⇒ يبقى صفراً (لا انتماء فرعيّ لهؤلاء المدينين — الشرط يفحص branchId==null أيضاً).
+    const mAdminBranch1 = await getDashboardMetrics({ branchId: 1, includeOpeningBalance: true });
+    expect(mAdminBranch1.morningBrief.arRemindersDue).toBe(0);
+  });
+
   it("(ز) قاعدة فارغة ⇒ كل الحقول صفر (لا انهيار)", async () => {
     const m = await getDashboardMetrics({ branchId: 1 });
     expect(m.morningBrief.arRemindersDue).toBe(0);

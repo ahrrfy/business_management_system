@@ -8,9 +8,9 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { fmt } from "@/lib/money";
+import { fmt, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { printPO } from "@/lib/printing/printTemplates";
+import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 
@@ -79,16 +79,21 @@ export default function Purchases() {
     cancelMut.mutate({ purchaseOrderId: p.id });
   }
 
-  // طباعة أمر الشراء من القائمة: نجلب التفاصيل (purchases.get) ثم نطبع بقالب printPO المُعلَّم.
+  // طباعة أمر الشراء من القائمة: نجلب التفاصيل (purchases.get) ثم نطبع بالقالب عالي الدقّة V2
+  // (gap-audit ٥/٧: printPurchaseInvoiceV2 كان مكتوباً في PR #140 بلا مستهلِك — رُبط هنا).
   async function printOrder(purchaseOrderId: number) {
     try {
       const d = await utils.purchases.get.fetch({ purchaseOrderId });
       if (!d) { notify.err("تعذّر جلب أمر الشراء"); return; }
-      printPO({
-        poNumber: d.poNumber,
-        poDate: d.orderDate ? new Date(d.orderDate as unknown as string).toLocaleDateString("en-GB") : undefined,
+      const remaining = positiveDiff(d.total, d.paidAmount);
+      const statusColor =
+        d.status === "RECEIVED" ? "#0D6B52" : d.status === "CANCELLED" ? "#8A1F11" : "#92400E";
+      printPurchaseInvoiceV2({
+        invoiceNumber: d.poNumber,
+        invoiceDate: d.orderDate as unknown as string | null,
+        statusLabel: PO_STATUS[d.status] ?? d.status,
+        statusColor,
         supplierName: d.supplierName,
-        notes: d.notes,
         items: d.items.map((it) => ({
           productName: it.productName ?? "",
           unitName: it.unitName,
@@ -99,6 +104,8 @@ export default function Purchases() {
         subtotal: d.subtotal ?? "0",
         taxAmount: d.taxAmount ?? "0",
         total: d.total ?? "0",
+        paidAmount: d.paidAmount ?? "0",
+        remainingAmount: remaining.toFixed(2),
       });
     } catch (e) {
       notify.err(e);

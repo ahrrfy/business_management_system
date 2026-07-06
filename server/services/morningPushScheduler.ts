@@ -56,7 +56,7 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
   // مستخدمون فعّالون بحسابات admin/manager ولديهم اشتراك دفع نشط واحد على الأقلّ.
   // GROUP BY على userId يعطي مرشّحين فريدين (اشتراكات متعدّدة لنفس المستخدم = جهاز واحد).
   const candidates = await db
-    .selectDistinct({ userId: pushSubscriptions.userId })
+    .selectDistinct({ userId: pushSubscriptions.userId, role: users.role })
     .from(pushSubscriptions)
     .innerJoin(users, eq(users.id, pushSubscriptions.userId))
     .where(
@@ -68,15 +68,17 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
     );
   result.candidates = candidates.length;
 
-  for (const { userId } of candidates) {
+  for (const { userId, role } of candidates) {
     try {
       // حجز ذرّي — يمنع الازدواج عند نافذة إعادة PM2 (كلا العمليتَين تحاولان، واحدة فقط تنجح).
       if (!(await claimDailyPushSlot(userId, "MORNING_BRIEF"))) {
         result.skippedAlreadySent++;
         continue;
       }
-      // نطاق كل الفروع (يطابق ما يراه المدير/الأدمن على لوحة التحكم).
-      const m = await getDashboardMetrics({ branchId: null });
+      // نطاق كل الفروع (يطابق ما يراه المدير/الأدمن على لوحة التحكم). gap-audit ٥/٧ (HIGH):
+      // مدينو الرصيد الافتتاحي (openingScope) للأدمن حصراً — مطابقةً لحصر النطاق في الراوتر
+      // (كانوا غائبين كلياً عن هذا الإشعار رغم أنه القناة اليومية المصمَّمة لهذا الغرض بالضبط).
+      const m = await getDashboardMetrics({ branchId: null, includeOpeningBalance: role === "admin" });
       const { arRemindersDue, promisedToday, overdueWorkOrders } = m.morningBrief;
       const total = arRemindersDue + promisedToday + overdueWorkOrders;
       if (total === 0) {

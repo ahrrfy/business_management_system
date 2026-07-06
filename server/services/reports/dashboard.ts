@@ -37,7 +37,13 @@ export interface DashboardMetricsResult {
  * لا تطبّق صلاحيات/عزل فرع هنا — يقع ذلك على المستدعي (الراوتر) قبل تمرير `branchId`.
  */
 export async function getDashboardMetrics(
-  opts: { branchId?: number | null } = {}
+  opts: {
+    branchId?: number | null;
+    /** أدرِج مدينِي الرصيد الافتتاحي (نطاق openingScope) في arRemindersDue/promisedToday — يقرّره
+     *  المستدعي حسب دور المستخدم (أدمن حصراً؛ راجع reportsRouter.ts وmorningPushScheduler.ts). لا
+     *  أثر إلا حين branchId=null أيضاً (هؤلاء المدينون بلا انتماء فرعيّ — عرض فرع محدَّد يبقى بلا تغيير). */
+    includeOpeningBalance?: boolean;
+  } = {}
 ): Promise<DashboardMetricsResult> {
   const db = getDb();
   if (!db) {
@@ -94,6 +100,15 @@ export async function getDashboardMetrics(
     const queue = await getReminderQueue({ branchId });
     arRemindersDue = queue.length;
     promisedToday = queue.filter((r) => r.isPromiseDue).length;
+    // gap-audit ٥/٧ (HIGH): مدينو الرصيد الافتتاحي (قرار مالك PR #142 — أدرِجهم للمتابعة) كانوا
+    // غائبين كلياً عن هذين العدّادين رغم أنهما القناتان اليوميّتان المصمَّمتان خصيصاً لهذا الغرض.
+    // نضيفهم فقط حين المستدعي طلب ذلك صراحةً (includeOpeningBalance — الأدمن حصراً، مطابقةً لحصر
+    // openingScope في الراوتر) وفي العرض المجمَّع فقط (لا انتماء فرعيّ لهؤلاء المدينين).
+    if (opts.includeOpeningBalance && branchId == null) {
+      const openingQueue = await getReminderQueue({ branchId: null, openingOnly: true });
+      arRemindersDue += openingQueue.length;
+      promisedToday += openingQueue.filter((r) => r.isPromiseDue).length;
+    }
   } catch {
     // فشل استعلام queue لا يجب أن يُسقط لوحة التحكم — نُعيد أصفاراً وتظهر بقية البطاقات.
   }
