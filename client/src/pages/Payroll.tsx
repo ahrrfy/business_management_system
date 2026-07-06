@@ -121,6 +121,7 @@ export default function Payroll() {
     () => ({
       gross: run?.totalGross ?? "0",
       overtime: run?.totalOvertime ?? "0",
+      commission: run?.totalCommission ?? "0",
       deductions: run?.totalDeductions ?? "0",
       net: run?.totalNet ?? "0",
     }),
@@ -211,6 +212,7 @@ export default function Payroll() {
                   <th className="p-2.5 text-right">الأساسي / الساعات</th>
                   <th className="p-2.5 text-right">مخصّصات</th>
                   <th className="p-2.5 text-right">إضافي</th>
+                  <th className="p-2.5 text-right">عمولة</th>
                   <th className="p-2.5 text-right">استقطاع</th>
                   <th className="p-2.5 text-right">الصافي</th>
                   <th className="p-2.5 text-center">الحالة</th>
@@ -243,6 +245,8 @@ export default function Payroll() {
                       </td>
                       <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{monthly ? iqd(p.allowances) : "—"}</td>
                       <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{D(p.overtime).gt(0) ? `+${iqd(p.overtime)}` : "—"}</td>
+                      {/* عمولة المبيعات الملتقطة من تشغيلة العمولات المعتمدة — قراءة فقط (تُعدَّل بإعادة الاحتساب هناك). */}
+                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{D(p.commission).gt(0) ? `+${iqd(p.commission)}` : "—"}</td>
                       <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{D(p.deductions).gt(0) ? `−${iqd(p.deductions)}` : "—"}</td>
                       <td className="p-2.5 text-right tabular-nums font-bold" dir="ltr">{iqd(p.net)}</td>
                       <td className="p-2.5 text-center"><StatusBadge status={run!.status} /></td>
@@ -265,6 +269,7 @@ export default function Payroll() {
                     <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totals.gross)}</td>
                     <td></td>
                     <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">+{iqd(totals.overtime)}</td>
+                    <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">+{iqd(totals.commission)}</td>
                     <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">−{iqd(totals.deductions)}</td>
                     <td className="p-2.5 text-right tabular-nums" dir="ltr">{iqd(totals.net)}</td>
                     <td colSpan={2}></td>
@@ -272,7 +277,7 @@ export default function Payroll() {
                 )}
                 {!runQ.isLoading && items.length === 0 && (
                   <TableEmptyRow
-                    colSpan={9}
+                    colSpan={10}
                     message={runs.length === 0 ? "لا مسيّرات بعد. ولّد مسيّراً شهرياً للبدء." : "لا بنود في هذا المسيّر."}
                   />
                 )}
@@ -294,6 +299,7 @@ export default function Payroll() {
             <p className="text-xs text-muted-foreground">
               يُولَّد مسيّر مسوّدة لكل الموظفين غير منتهي الخدمة: الراتب الأساسي + المخصّصات للشهريين، ومجموع أجر الساعات للساعيين.
               الإضافي والاستقطاع صفر ابتداءً ويُحرَّران من زر «تعديل» قبل الاعتماد.
+              وإن وُجدت تشغيلة عمولات <b>معتمدة</b> لنفس الشهر (تبويب «تشغيلات العمولة») يُدرَج بند «عمولة» لكل موظف تلقائياً.
             </p>
           </div>
           <DialogFooter>
@@ -339,6 +345,9 @@ export default function Payroll() {
                   <div className="flex justify-between"><span className="text-muted-foreground">المخصّصات</span><span className="tabular-nums" dir="ltr">{iqd(slip.allowances)}</span></div>
                 )}
                 <div className="flex justify-between"><span className="text-muted-foreground">العمل الإضافي</span><span className="tabular-nums text-money-positive" dir="ltr">+{iqd(slip.overtime)}</span></div>
+                {D(slip.commission).gt(0) && (
+                  <div className="flex justify-between"><span className="text-muted-foreground">عمولة المبيعات (تشغيلة {run?.period})</span><span className="tabular-nums text-money-positive" dir="ltr">+{iqd(slip.commission)}</span></div>
+                )}
                 <div className="flex justify-between"><span className="text-muted-foreground">الاستقطاعات (سلف/غياب)</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.deductions)}</span></div>
                 {slip.note && <div className="flex justify-between"><span className="text-muted-foreground">ملاحظة</span><span>{slip.note}</span></div>}
               </div>
@@ -383,7 +392,8 @@ function EditItemDialog({
     setNote(item.note ?? "");
   }
 
-  const newNet = item ? round2(D(item.gross).plus(D(overtime || 0)).minus(D(deductions || 0))).toFixed(2) : "0";
+  // الصافي يشمل العمولة الملتقطة (قراءة فقط هنا — تُعدَّل بإعادة احتساب التشغيلة قبل التوليد).
+  const newNet = item ? round2(D(item.gross).plus(D(overtime || 0)).plus(D(item.commission || 0)).minus(D(deductions || 0))).toFixed(2) : "0";
 
   return (
     <Dialog open={!!item} onOpenChange={(o) => !o && onClose()}>
@@ -395,6 +405,12 @@ function EditItemDialog({
               <span className="text-muted-foreground">الإجمالي (gross)</span>
               <span className="tabular-nums font-medium" dir="ltr">{iqd(item.gross)}</span>
             </div>
+            {D(item.commission || 0).gt(0) && (
+              <div className="flex justify-between text-sm">
+                <span className="text-muted-foreground">عمولة المبيعات (قراءة فقط)</span>
+                <span className="tabular-nums font-medium text-money-positive" dir="ltr">+{iqd(item.commission)}</span>
+              </div>
+            )}
             <div>
               <Label htmlFor="edit-ot">العمل الإضافي (د.ع)</Label>
               <Input id="edit-ot" inputMode="decimal" value={overtime} onChange={(e) => setOvertime(e.target.value)} dir="ltr" className="tabular-nums" />
