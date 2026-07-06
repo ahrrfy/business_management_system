@@ -68,6 +68,19 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
     );
   result.candidates = candidates.length;
 
+  // النتيجة (branchId:null) لا تعتمد على هوية المستخدم — فقط على includeOpeningBalance (أدمن/غيره)
+  // ⇒ قيمتان فريدتان بالضبط بغضّ النظر عن عدد المشتركين. cache بدل استدعاء getDashboardMetrics
+  // الكامل لكل مستخدم (gap-audit ٥/٧ medium: N+1 حقيقي كان يعيد نفس الاستعلامات لكل مشترك).
+  const metricsCache = new Map<boolean, Awaited<ReturnType<typeof getDashboardMetrics>>>();
+  async function metricsFor(includeOpeningBalance: boolean) {
+    let m = metricsCache.get(includeOpeningBalance);
+    if (!m) {
+      m = await getDashboardMetrics({ branchId: null, includeOpeningBalance });
+      metricsCache.set(includeOpeningBalance, m);
+    }
+    return m;
+  }
+
   for (const { userId, role } of candidates) {
     try {
       // حجز ذرّي — يمنع الازدواج عند نافذة إعادة PM2 (كلا العمليتَين تحاولان، واحدة فقط تنجح).
@@ -78,7 +91,7 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
       // نطاق كل الفروع (يطابق ما يراه المدير/الأدمن على لوحة التحكم). gap-audit ٥/٧ (HIGH):
       // مدينو الرصيد الافتتاحي (openingScope) للأدمن حصراً — مطابقةً لحصر النطاق في الراوتر
       // (كانوا غائبين كلياً عن هذا الإشعار رغم أنه القناة اليومية المصمَّمة لهذا الغرض بالضبط).
-      const m = await getDashboardMetrics({ branchId: null, includeOpeningBalance: role === "admin" });
+      const m = await metricsFor(role === "admin");
       const { arRemindersDue, promisedToday, overdueWorkOrders } = m.morningBrief;
       const total = arRemindersDue + promisedToday + overdueWorkOrders;
       if (total === 0) {

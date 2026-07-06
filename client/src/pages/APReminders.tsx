@@ -2,7 +2,7 @@
 // الموظف يسجّل «تمّت المتابعة» (يُخفيه ٧ أيام) أو يؤجّل بتاريخ وعد سداد. كل فعل يُسجَّل في `apReminders`
 // مع snapshots لحظية للتدقيق. تبريد ٧ أيام يمنع تكرار المورد. لا cron ولا أيّ مراسلة خارجية.
 import { useMemo, useState } from "react";
-import { CheckCircle2, SkipForward, Clock, Search, RotateCcw, History, CalendarClock } from "lucide-react";
+import { CheckCircle2, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Info } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { PageHeader } from "@/components/PageHeader";
@@ -43,8 +43,19 @@ export default function APReminders() {
   const [tab, setTab] = useState<Tab>("queue");
   const utils = trpc.useUtils();
 
-  const queue = trpc.apReminders.queue.useQuery(undefined, { staleTime: 30_000 });
-  const history = trpc.apReminders.history.useQuery(undefined, {
+  const me = trpc.auth.me.useQuery();
+  const isAdmin = me.data?.role === "admin";
+  const branches = trpc.branches.list.useQuery(undefined, { enabled: isAdmin });
+  // نطاق العرض: فرع محدَّد (رقم) | undefined (فرع المستخدم لغير الأدمن، أو الفرع الأول افتراضياً للأدمن).
+  const [scope, setScope] = useState<number | undefined>(undefined);
+  const effectiveScope: number | undefined = scope ?? (isAdmin ? branches.data?.[0]?.id : undefined);
+  const queueInput = typeof effectiveScope === "number" ? { branchId: effectiveScope } : undefined;
+  // فرع الكتابة: نطاق القراءة نفسه دائماً (اتفاقية scopedBranch — قراءة مجمَّعة مع كتابة مثبَّتة على
+  // فرع واحد تجعل صفوف الفروع الأخرى غير قابلة للتنفيذ، مثل AR).
+  const writeBranchId = typeof effectiveScope === "number" ? effectiveScope : undefined;
+
+  const queue = trpc.apReminders.queue.useQuery(queueInput, { staleTime: 30_000 });
+  const history = trpc.apReminders.history.useQuery(queueInput, {
     enabled: tab === "history",
     staleTime: 30_000,
   });
@@ -96,6 +107,7 @@ export default function APReminders() {
       oldestPoDate: row.oldestPoDate,
       daysOverdue: row.daysOverdue,
       messageBody: "متابعة داخلية (بلا مراسلة للمورد)",
+      branchId: writeBranchId,
     });
   }
 
@@ -120,6 +132,7 @@ export default function APReminders() {
       daysOverdue: skipTarget.daysOverdue,
       skipReason: skipReason.trim(),
       promisedDate: promise || null,
+      branchId: writeBranchId,
     });
   }
 
@@ -129,6 +142,30 @@ export default function APReminders() {
         title="متابعة الذمم الدائنة"
         description="قائمة داخلية للموردين الذين ندين لهم منذ ≥٧ أيام. سجّل «تمّت المتابعة» أو حدّد موعد سداد — بلا مراسلة للمورد."
       />
+
+      {/* منتقي الفرع — للأدمن حصراً (عبور الفروع، نظير AR). */}
+      {isAdmin && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm text-muted-foreground">الفرع:</span>
+          <select
+            value={String(effectiveScope ?? "")}
+            onChange={(e) => setScope(Number(e.target.value))}
+            className="h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          >
+            {(branches.data ?? []).map((b) => (
+              <option key={b.id} value={b.id}>{b.name}</option>
+            ))}
+          </select>
+          {/* تلميح فرق النطاق: هذه الشاشة تفتح على فرع واحد افتراضياً، بخلاف بطاقة «برنامج اليوم»
+              ولوحة التحكم اللتين تجمعان كل الفروع (gap-audit ٥/٧ medium — لا تلميح بصري سابقاً). */}
+          {scope === undefined && (
+            <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <Info className="size-3.5" aria-hidden />
+              افتراضياً على الفرع الأول — «برنامج اليوم» ولوحة التحكم تجمعان كل الفروع.
+            </span>
+          )}
+        </div>
+      )}
 
       {/* شريط الملخّص */}
       {tab === "queue" && queue.data && queue.data.length > 0 && (
