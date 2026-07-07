@@ -21,7 +21,7 @@
  * ========================================================================== */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { desc, eq, getTableColumns, sql } from "drizzle-orm";
+import { desc, eq, getTableColumns, isNull, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
 import { accountingEntries, attendance, commissionRunLines, commissionRuns, employees, payrollItems, payrollRuns, receipts } from "../../drizzle/schema";
 import { and, inArray } from "drizzle-orm";
@@ -334,6 +334,27 @@ export async function approveRun(id: number, actor: Actor) {
     if (Number(run.employeeCount) === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر فارغ" });
     // حارس المسيّر «الشبح»: صافٍ كلّي صفر/سالب لا يُعتمد (لا شيء يُدفع) ⇒ يُمنع اعتماد/دفع بلا قيد.
     if (money(run.totalNet).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر صافيه صفر" });
+    // #12 (تدقيق التثبيت): حارس التقاط العمولة — تشغيلة عمولات معتمدة لنفس الشهر بلا payrollRunId
+    // يعني عمولة معتمدة ستضيع (تُدفع في مسيّر لاحق أو لا تُدفع). التوليد كان يلتقط عند الإنشاء فقط،
+    // فتشغيلة اعتُمدت بعد التوليد لا تُلتقَط. الاعتماد يحرس: يُرفض حتى يُعاد توليد المسيّر أو يُلغى
+    // اعتماد التشغيلة. لا صرف صامت بلا اعتراف.
+    const [uncaptured] = await tx
+      .select({ id: commissionRuns.id, period: commissionRuns.period })
+      .from(commissionRuns)
+      .where(
+        and(
+          eq(commissionRuns.period, run.period),
+          eq(commissionRuns.status, "approved"),
+          isNull(commissionRuns.payrollRunId),
+        ),
+      )
+      .limit(1);
+    if (uncaptured) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `تشغيلة عمولات معتمدة (#${uncaptured.id}) لشهر ${uncaptured.period} غير مُلتقَطة في هذا المسيّر — أعد توليد المسيّر لالتقاطها، أو ألغِ اعتماد التشغيلة قبل اعتماد المسيّر.`,
+      });
+    }
     // SOD-01/02 (فصل المهام): المُعتمِد يجب أن يختلف عن مُولِّد المسيّر — يَكسر دورة إنشاء→اعتماد→دفع
     // المنفردة (المسار الحرج لاحتيال الرواتب). نُسجّل approvedBy في السجلّ الثابت لإثبات المُعتمِد المستقلّ.
     if (run.createdBy != null && Number(run.createdBy) === actor.userId) {
