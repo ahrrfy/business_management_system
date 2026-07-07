@@ -30,7 +30,7 @@ import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
+import { restoreAdvancesOnCancelTx, settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -525,6 +525,16 @@ export async function cancelRun(id: number, actor: Actor) {
         dedupeKey: await nextDedupeKey(tx, `PAYROLL-REV:${id}:${Number(it.employeeId)}`),
         notes: `عكس راتب — مسيّر ${run.period}`,
       });
+    }
+    // #6 (تدقيق التثبيت): استعادة أرصدة السلف عند عكس مسيّر مدفوع. القرار القديم كان يترك
+    // remaining منقوصةً — لكن الحذف اللاحق للمسيّر ثم توليد جديد لنفس الفترة يخصم السلفة مرّتين
+    // (isFirstPay بمُعرِّف المسيّر لا بالفترة). العكس المحاسبيّ يعيد النقد للخزينة ⇒ ينبغي أن يعيد
+    // الاستقطاع أيضاً. مسيّر بلا advanceDeduction لن يستعيد شيئاً (no-op ذرّي مع باقي العكس).
+    const advanceRestores = items
+      .filter((it) => money(it.advanceDeduction).gt(0))
+      .map((it) => ({ employeeId: Number(it.employeeId), amount: money(it.advanceDeduction) }));
+    if (advanceRestores.length) {
+      await restoreAdvancesOnCancelTx(tx, advanceRestores);
     }
     await tx.update(payrollRuns).set({ status: "approved", paidAt: null }).where(eq(payrollRuns.id, id));
     return { id, deleted: false, status: "approved" as const };
