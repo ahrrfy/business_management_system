@@ -20,7 +20,9 @@ const TABS: HubTab[] = [
   { value: "stock", label: "الأرصدة", Component: Inventory },
   { value: "products", label: "المنتجات", Component: Products },
   { value: "movements", label: "الحركات", Component: InventoryMovements },
-  { value: "transfers", label: "التحويلات", Component: Transfers },
+  // التحويلات كتابة بحتة — بوّابة مرآة راوترها inventoryWarehouseProcedure (مخزن/مدير + منح inventory صريح بمستوى FULL)؛
+  // أدوار قراءة المخزون كانت تهبط على نموذج كل نداءاته FORBIDDEN (بحث المتغيّرات والإرسال معاً).
+  { value: "transfers", label: "التحويلات", gate: { roles: ["warehouse", "manager"], module: "inventory", level: "FULL" }, Component: Transfers },
   { value: "stocktakes", label: "الجرد والتسوية", Component: Stocktakes },
   { value: "reorder", label: "إعادة الطلب", Component: ReorderAlerts },
   { value: "categories", label: "الفئات", gate: { managerOnly: true }, Component: Categories },

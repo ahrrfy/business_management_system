@@ -97,6 +97,10 @@ function DispatchTab() {
   const utils = trpc.useUtils();
   const ready = trpc.delivery.readyForDispatch.useQuery();
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true });
+  const me = trpc.auth.me.useQuery();
+  // مرآة بوّابة الخادم: dispatch = cashierProcedure = requireRole("cashier","manager") وadmin يمرّ ضمنياً
+  // (بوّابة أدوار صِرفة بلا مفتاح وحدة صلاحيات — لا مفتاح delivery في المصفوفة ⇒ القائمة الحرفية هي المطابقة الدقيقة).
+  const canDispatch = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
   const [target, setTarget] = useState<ReadyOrder | null>(null);
 
   const dispatch = trpc.delivery.dispatch.useMutation({
@@ -145,7 +149,12 @@ function DispatchTab() {
                     <td className="p-3 text-left tabular-nums text-emerald-600" dir="ltr">{Number(o.deposit ?? 0) > 0 ? fmt(o.deposit) : "—"}</td>
                     <td className="p-3 text-left font-bold tabular-nums" dir="ltr">{fmt(String(cod))}</td>
                     <td className="p-3 text-center">
-                      <Button size="sm" onClick={() => setTarget(o)} disabled={!o.deliveryAddress && false}>تسليم لمندوب</Button>
+                      {/* #26A: التسليم بعقد الخادم (cashier/manager) — accountant/auditor يصلان /delivery قراءةً فقط. */}
+                      {canDispatch ? (
+                        <Button size="sm" onClick={() => setTarget(o)}>تسليم لمندوب</Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">عرض فقط</span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -251,6 +260,11 @@ function DispatchDialog({ order, parties, pending, onClose, onConfirm }: {
 function SettleTab() {
   const utils = trpc.useUtils();
   const parties = trpc.delivery.listParties.useQuery({ activeOnly: true });
+  const me = trpc.auth.me.useQuery();
+  // مرآة بوّابتي الخادم: recordRemittance = cashierProcedure، وreturnConsignment = managerProcedure
+  // (بوّابتا أدوار صِرفتان بلا مفتاح وحدة — القائمة الحرفية هي المطابقة الدقيقة، وadmin يمرّ ضمنياً).
+  const canRemit = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
+  const canReturn = ["admin", "manager"].includes(me.data?.role ?? "");
   const [partyId, setPartyId] = useState<string>("");
   const cons = trpc.delivery.openConsignments.useQuery({ partyId: Number(partyId) }, { enabled: !!partyId });
   const [rows, setRows] = useState<Record<number, { outcome: "COLLECTED" | "RETURNED"; collected: string }>>({});
@@ -353,13 +367,15 @@ function SettleTab() {
                             className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "COLLECTED" ? "bg-emerald-100 text-emerald-700" : "bg-muted text-muted-foreground")}
                             onClick={() => setRows((r) => ({ ...r, [c.id]: { outcome: "COLLECTED", collected: String(remaining) } }))}
                           ><Check aria-hidden className="inline size-3" /> حُصِّل</button>
-                          <button
-                            className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "RETURNED" ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground")}
-                            onClick={async () => {
-                              const ok = await confirm({ variant: "danger", title: "إرجاع الإرسالية", description: `عكس بيع الإرسالية ${c.consignmentNumber} وإعادة البضاعة للمخزون. متابعة؟`, confirmText: "إرجاع" });
-                              if (ok) ret.mutate({ consignmentId: c.id, clientRequestId: crypto.randomUUID() });
-                            }}
-                          ><RotateCcw aria-hidden className="inline size-3" /> مُرتجَع</button>
+                          {canReturn && (
+                            <button
+                              className={cn("rounded px-2 py-1 text-xs font-bold", st.outcome === "RETURNED" ? "bg-amber-100 text-amber-700" : "bg-muted text-muted-foreground")}
+                              onClick={async () => {
+                                const ok = await confirm({ variant: "danger", title: "إرجاع الإرسالية", description: `عكس بيع الإرسالية ${c.consignmentNumber} وإعادة البضاعة للمخزون. متابعة؟`, confirmText: "إرجاع" });
+                                if (ok) ret.mutate({ consignmentId: c.id, clientRequestId: crypto.randomUUID() });
+                              }}
+                            ><RotateCcw aria-hidden className="inline size-3" /> مُرتجَع</button>
+                          )}
                         </div>
                       </td>
                       <td className="p-3 text-left">
@@ -388,7 +404,9 @@ function SettleTab() {
                 <span className="inline-flex items-center gap-1">{totals.shortfall > 0.01 && <AlertTriangle aria-hidden className="size-3.5" />} {totals.shortfall > 0.01 ? "عجز يبقى ذمّةً على المندوب" : "مطابق"}</span>
                 <span dir="ltr" className="tabular-nums">{fmt(String(Math.max(0, totals.shortfall)))} د.ع</span>
               </div>
-              <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
+              {canRemit && (
+                <Button className="mt-3 w-full" onClick={submit} disabled={remit.isPending}>{remit.isPending ? "جارٍ…" : "تأكيد التسوية وتوريد الصافي"}</Button>
+              )}
             </div>
             <CashCounter value={countedBreakdown} onChange={(c) => setCountedBreakdown(c)} />
           </div>

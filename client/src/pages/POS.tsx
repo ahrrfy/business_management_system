@@ -592,7 +592,12 @@ export default function POS() {
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd(""); setSaleError(null);
     },
     onError: (e) => {
-      if ((e.data as unknown as { code?: string })?.code === "PRECONDITION_FAILED")
+      // #6 (تدقيق التثبيت): بوّابتا حدّ الائتمان (server/lib/credit.ts) والبيع دون التكلفة
+      // (sale/create.ts) ترميان FORBIDDEN لا PRECONDITION_FAILED، فكان حوار موافقة المدير لا يُفتَح
+      // على الكاشير الرئيسي (بخلاف PrintPOS عبر printSaleService) ⇒ يتعذّر البيع المُصرَّح ولو حضر
+      // المدير. نطابق الرسالة كـSalesInvoiceNew:179 (مع إبقاء PRECONDITION_FAILED دفاعاً).
+      const code = (e.data as unknown as { code?: string })?.code;
+      if (code === "PRECONDITION_FAILED" || (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة"))))
         setCreditPrompt(e.message);
       // خطأ بيع حرج (نقص مخزون/رفض) ⇒ تنبيه بارز أكبر وأوضح يلتقطه الكاشير فوراً.
       else { notify.errBig(e); setSaleError(e.message); }

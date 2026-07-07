@@ -11,6 +11,7 @@ import { notify } from "@/lib/notify";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useState } from "react";
 
 const STATUS: Record<string, string> = {
@@ -35,6 +36,11 @@ const selectCls =
 
 export default function Quotations() {
   const utils = trpc.useUtils();
+  // بوّابة عرض مطابقة للخادم: الكتابة (create/setStatus) salesManagerProcedure(["manager"],"sales","FULL")
+  // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
+  const me = trpc.auth.me.useQuery();
+  const canManage = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "sales", "FULL", ["manager"]);
   const [q, setQ] = useState("");
   // فلاتر خادمية: فترة createdAt + الحالة (لا فلترة محلية تُخفي صفحات الخادم).
   const [from, setFrom] = useState("");
@@ -128,7 +134,7 @@ export default function Quotations() {
                 { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
               ],
             }}
-            add={{ href: "/quotations/new", label: "عرض سعر جديد" }}
+            add={canManage ? { href: "/quotations/new", label: "عرض سعر جديد" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -176,7 +182,7 @@ export default function Quotations() {
                             }))) return;
                             setStatusMut.mutate({ quotationId: qr.id, status: "SENT" });
                           },
-                          hidden: qr.status !== "DRAFT",
+                          hidden: qr.status !== "DRAFT" || !canManage,
                           disabled: setStatusMut.isPending,
                         },
                       ]}

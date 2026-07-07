@@ -64,9 +64,13 @@ export const voucherRouter = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إصدار سند" });
       }
       const actorBranchId = Number(ctx.user.branchId);
+      // #3 (تدقيق التثبيت): كان input.branchId من العميل يمرّ كما هو لـcreateVoucher ⇒ محاسب/مدير
+      // فرع A يُصدر سنداً على خزينة فرع B (تلويث تسوية/Z-report فرع لا ينتمي إليه، ويُخفى عنه في
+      // القراءة المعزولة). نثبّت الفرع على فرع الفاعل لغير الأدمن (مرآة sale.create/expense.create).
+      const scopedInput = ctx.user.role === "admin" ? input : { ...input, branchId: actorBranchId };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createVoucher(input, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
+          const res = await createVoucher(scopedInput, { userId: ctx.user.id, branchId: actorBranchId, role: ctx.user.role });
           await logAudit(ctx, {
             action: input.voucherType === "RECEIPT" ? "voucher.receipt.create" : "voucher.payment.create",
             entityType: "receipt",

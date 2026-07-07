@@ -93,6 +93,11 @@ export default function QuotationNew() {
 
   /** يبني payload عرض السعر بأموال نصّية (decimal.js) — لا parseFloat. */
   function buildPayload() {
+    // #10 (تدقيق التثبيت): كانت الأزرار تُظهر «الخصم الكلّي/الضريبة» في TotalsPanel ويتحقّق منها
+    // calcTotals، لكن buildPayload يُسقطها صامتاً ⇒ الإجمالي المطبوع/المحوَّل > الإجمالي المعروض
+    // للعميل. الخادم يقبلهما (quotationRouter.create). ملاحظة: shipping/otherExpenses يبقيان
+    // معروضَين فقط (لا أعمدة مماثلة في مخطّط الفاتورة) — نطاق منفصل يحتاج تغيير مخطّط.
+    const totals = calcTotals(state.items, state);
     return {
       branchId: state.branchId,
       customerId: state.entityId ?? undefined,
@@ -100,6 +105,8 @@ export default function QuotationNew() {
       validUntil: state.validUntil || undefined,
       notes: state.notes?.trim() || undefined,
       clientRequestId,
+      invoiceDiscount: D(totals.globalDiscAmt).gt(0) ? totals.globalDiscAmt : undefined,
+      taxRatePercent: state.taxEnabled ? D(state.taxRatePercent || "0").toFixed(2) : undefined,
       lines: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,

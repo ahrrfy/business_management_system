@@ -446,20 +446,19 @@ describe("duplicateKeyOf + findFileDuplicates — مفتاح التكرار ال
   });
 });
 
-describe("findSkuConflicts — تعارض ملكية sku للملف كاملاً", () => {
+describe("findSkuConflicts — SKU ليس هوية عالمية", () => {
   const keys = { sku: "sku", fallback: "barcode", owner: "productName" };
 
-  it("sku واحد تحت منتجَين مختلفَين ⇒ خطأ على كل صفوفه", () => {
+  it("يسمح بنفس sku تحت منتجَين مختلفَين", () => {
     const rows = [
       row<ProductImportRow>(2, { productName: "قلم أزرق", sku: "PEN-1" }),
       row<ProductImportRow>(3, { productName: "قلم أحمر", sku: "PEN-1" }),
     ];
     const issues = findSkuConflicts(rows, keys);
-    expect(issues.size).toBe(2);
-    expect(issues.get(2)).toContain("PEN-1");
+    expect(issues.size).toBe(0);
   });
 
-  it("نفس sku لنفس المنتج (متغيّرات) لا تعارض، والباركود fallback عند غياب sku", () => {
+  it("نفس sku لنفس المنتج أو منتجات مختلفة لا تعارض؛ الباركود يُفحص في findBarcodeConflicts", () => {
     const rows = [
       row<ProductImportRow>(2, { productName: "قلم", sku: "PEN-1" }),
       row<ProductImportRow>(3, { productName: "قلم", sku: "PEN-1" }),
@@ -469,8 +468,8 @@ describe("findSkuConflicts — تعارض ملكية sku للملف كاملاً
     const issues = findSkuConflicts(rows, keys);
     expect(issues.has(2)).toBe(false);
     expect(issues.has(3)).toBe(false);
-    expect(issues.has(4)).toBe(true);
-    expect(issues.has(5)).toBe(true);
+    expect(issues.has(4)).toBe(false);
+    expect(issues.has(5)).toBe(false);
   });
 });
 

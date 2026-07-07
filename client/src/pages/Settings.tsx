@@ -45,8 +45,10 @@ export default function Settings() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
-  const info = trpc.system.systemInfo.useQuery();
-  const backups = trpc.system.listBackups.useQuery();
+  // #31B (تدقيق التثبيت): systemInfo/listBackups إجراءان adminProcedure — كانا يُطلَقان للمدير
+  // (يفتح تبويب الإعدادات) فيرجعان 403 يظهر كخطأ اتصال كاذب. نُعطّلهما لغير الأدمن (مرآة الخادم).
+  const info = trpc.system.systemInfo.useQuery(undefined, { enabled: isAdmin });
+  const backups = trpc.system.listBackups.useQuery(undefined, { enabled: isAdmin });
   const fileRef = useRef<HTMLInputElement>(null);
   const [danger, setDanger] = useState<DangerAction | null>(null);
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });

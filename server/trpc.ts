@@ -248,6 +248,11 @@ export const suppliersManagerProcedure = moduleProcedure(["manager", "warehouse"
 // products (catalog)
 export const productsReadProcedure = protectedProcedure.use(requireModule("products", "READ"));
 export const productsManagerProcedure = moduleProcedure(["manager"], "products", "FULL");
+// forPurchase (بحث منتجات جانب الشراء — يكشف التكلفة): أدوار الشراء التي تبني/تستلم أوامر الشراء
+// (purchasing/warehouse) تحتاجه لإضافة سطور PO، وكان محصوراً بالمدير فتعذّر عليها بناء أمر الشراء
+// رغم تخويلها إنشاءه (purchasesManagerProcedure)/استلامه (purchasesWarehouseProcedure). قراءة فقط،
+// ومحصور بأدوار الشراء + المدير ⇒ لا تتسرّب التكلفة للكاشير/المندوب/المستخدم العام.
+export const productsPurchaseProcedure = moduleProcedure(["manager", "warehouse", "purchasing"], "products", "READ");
 // expenses — «محاسب» قالبه expenses=FULL ⇒ يدخل بوّابة الإدخال (الإلغاء يبقى مديرياً).
 export const expensesReadProcedure = branchScopedProcedure.use(requireModule("expenses", "READ"));
 export const expensesCashierProcedure = moduleProcedure(["cashier", "manager", "accountant"], "expenses", "FULL");

@@ -1,5 +1,7 @@
 // HrHub — وحدة «الموارد البشرية» بتبويبات (الموظفون + الحضور + الرواتب + الإجازات + الترقيات +
-// التوظيف + الأجهزة). كلها managerOnly. مسارات موظف الإنشاء/التفصيل تبقى مستقلّة.
+// التوظيف + الأجهزة). البوّابات مرآة الخادم: تبويبات hr على requireModule("hr","READ")
+// وتبويبات العمولات على requireModule("commissions","READ") — أدوار القالب + المنح الصريح.
+// مسارات موظف الإنشاء/التفصيل تبقى مستقلّة.
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
 
@@ -15,18 +17,24 @@ const Promotions = lazy(() => import("@/pages/Promotions"));
 const Recruitment = lazy(() => import("@/pages/Recruitment"));
 const HrDevices = lazy(() => import("@/pages/HrDevices"));
 
+// مرآة بوّابات الخادم (لا قائمة أدوار هناك): tabs الموارد البشرية على requireModule("hr","READ")
+// وtabs العمولات على requireModule("commissions","READ") — أدوار القالب تمرّ بقائمة roles،
+// وغيرها بمنح صريح عبر module (canSeeGate). بلا هذا يجتاز الممنوحُ حارسَ المسار ثم يجد صفحة فارغة.
+const HR_GATE: HubTab["gate"] = { roles: ["admin", "manager", "accountant", "auditor"], module: "hr" };
+const COMMISSIONS_GATE: HubTab["gate"] = { roles: ["admin", "manager", "accountant", "auditor"], module: "commissions" };
+
 const TABS: HubTab[] = [
-  { value: "employees", label: "الموظفون", gate: { managerOnly: true }, Component: Employees },
-  { value: "attendance", label: "الحضور والدوام", gate: { managerOnly: true }, Component: Attendance },
-  { value: "payroll", label: "الرواتب", gate: { managerOnly: true }, Component: Payroll },
-  { value: "advances", label: "سلف الموظفين", gate: { managerOnly: true }, Component: EmployeeAdvances },
-  { value: "commission-plans", label: "خطط العمولات", gate: { managerOnly: true }, Component: CommissionPlans },
-  { value: "commission-targets", label: "الأهداف الشهرية", gate: { managerOnly: true }, Component: CommissionTargets },
-  { value: "commission-runs", label: "تشغيلات العمولة", gate: { managerOnly: true }, Component: CommissionRuns },
-  { value: "leaves", label: "الإجازات", gate: { managerOnly: true }, Component: Leaves },
-  { value: "promotions", label: "الترقيات", gate: { managerOnly: true }, Component: Promotions },
-  { value: "recruitment", label: "التوظيف", gate: { managerOnly: true }, Component: Recruitment },
-  { value: "devices", label: "أجهزة البصمة", gate: { managerOnly: true }, Component: HrDevices },
+  { value: "employees", label: "الموظفون", gate: HR_GATE, Component: Employees },
+  { value: "attendance", label: "الحضور والدوام", gate: HR_GATE, Component: Attendance },
+  { value: "payroll", label: "الرواتب", gate: HR_GATE, Component: Payroll },
+  { value: "advances", label: "سلف الموظفين", gate: HR_GATE, Component: EmployeeAdvances },
+  { value: "commission-plans", label: "خطط العمولات", gate: COMMISSIONS_GATE, Component: CommissionPlans },
+  { value: "commission-targets", label: "الأهداف الشهرية", gate: COMMISSIONS_GATE, Component: CommissionTargets },
+  { value: "commission-runs", label: "تشغيلات العمولة", gate: COMMISSIONS_GATE, Component: CommissionRuns },
+  { value: "leaves", label: "الإجازات", gate: HR_GATE, Component: Leaves },
+  { value: "promotions", label: "الترقيات", gate: HR_GATE, Component: Promotions },
+  { value: "recruitment", label: "التوظيف", gate: HR_GATE, Component: Recruitment },
+  { value: "devices", label: "أجهزة البصمة", gate: HR_GATE, Component: HrDevices },
 ];
 
 export default function HrHub() {

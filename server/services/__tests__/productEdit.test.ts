@@ -295,13 +295,13 @@ describe("updateProductWithVariants — الكتابة", () => {
     ).rejects.toThrow(/مكرّر بين المتغيّرات/);
   });
 
-  it("رفض: SKU مُستخدَم لمتغيّر في منتج آخر ⇒ CONFLICT", async () => {
-    await expect(
-      updateProductWithVariants(
-        { productId: 1, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "PEN-2", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
-        actor,
-      ),
-    ).rejects.toThrow(/مُستخدَم لمتغيّر آخر/);
+  it("يسمح بتكرار SKU بين منتجات مختلفة لأن اللون/القياس ليسا هوية عالمية", async () => {
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "PEN-2", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    );
+    const rows = await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "PEN-2"));
+    expect(rows.map((r) => Number(r.productId)).sort()).toEqual([1, 2]);
   });
 
   it("رفض: منتج غير موجود ⇒ NOT_FOUND", async () => {

@@ -531,41 +531,14 @@ export function findFileDuplicates<TRow>(
   return issues;
 }
 
-/** فحص تعارض ملكية sku للملف كاملاً: sku واحد (أو باركوده البديل) تحت منتجَين مختلفَين ⇒ خطأ صفوف واضح قبل الإرسال. */
+/** SKU ليس هوية عالمية: يجوز أن يتكرر بين منتجات مختلفة. الباركود وحده يُفحص عالمياً في findBarcodeConflicts. */
 export function findSkuConflicts<TRow>(
   rows: ParsedRow<TRow>[],
   keys: NonNullable<ImportMeta["skuConflictKeys"]>,
 ): Map<number, string> {
-  const ownersBySku = new Map<string, Set<string>>();
-  const skuOf = (values: Record<string, unknown>): string => {
-    const sku = String(values[keys.sku] ?? "").trim();
-    if (sku) return sku;
-    return keys.fallback ? String(values[keys.fallback] ?? "").trim() : "";
-  };
-  for (const r of rows) {
-    const values = r.values as Record<string, unknown>;
-    const sku = skuOf(values);
-    const owner = String(values[keys.owner] ?? "").trim();
-    if (!sku || !owner) continue;
-    const owners = ownersBySku.get(sku) ?? new Set<string>();
-    owners.add(owner);
-    ownersBySku.set(sku, owners);
-  }
-  const issues = new Map<number, string>();
-  for (const r of rows) {
-    const values = r.values as Record<string, unknown>;
-    const sku = skuOf(values);
-    if (!sku) continue;
-    const owners = ownersBySku.get(sku);
-    if (owners && owners.size > 1) {
-      const names = Array.from(owners).slice(0, 2);
-      issues.set(
-        r.rowNumber,
-        `الـSKU «${sku}» مستخدم لمنتجَين مختلفَين («${names[0]}» و«${names[1]}») — وحّد الاسم أو غيّر الـSKU`,
-      );
-    }
-  }
-  return issues;
+  void rows;
+  void keys;
+  return new Map();
 }
 
 /** فحص تكرار الباركود للملف كاملاً (مرآة كشف الخادم batchBarcodes الذي يعمل داخل النداء الواحد فقط):
@@ -584,10 +557,11 @@ export function findBarcodeConflicts<TRow>(
     if (sku) return sku;
     return keys.fallback ? String(values[keys.fallback] ?? "").trim() : "";
   };
-  // هوية حامل الباركود = (sku، اسم الوحدة) — مطابقة لهوية الوحدة في تجميع الخادم.
+  // هوية حامل الباركود = (اسم المنتج، sku، اسم الوحدة) — SKU وحده ليس هوية عالمية.
   const holderOf = (values: Record<string, unknown>): string => {
+    const owner = String(values[keys.owner] ?? "").trim();
     const unit = keys.unit ? String(values[keys.unit] ?? "").trim() : "";
-    return `${skuOf(values)} ${unit}`;
+    return `${owner}\u0000${skuOf(values)}\u0000${unit}`;
   };
   const holdersByBarcode = new Map<string, Set<string>>();
   for (const r of rows) {

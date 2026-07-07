@@ -12,6 +12,7 @@ import { D, fmt } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import type { ReactNode } from "react";
 import { useState } from "react";
 import { Link, useParams } from "wouter";
@@ -67,6 +68,12 @@ export default function QuotationDetail() {
   const quotationId = Number(params.id);
   const utils = trpc.useUtils();
   const q = trpc.quotations.get.useQuery({ quotationId }, { enabled: Number.isFinite(quotationId) });
+
+  // بوّابة عرض مطابقة للخادم: الكتابة (setStatus/convert) salesManagerProcedure(["manager"],"sales","FULL")
+  // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد (نمط InvoiceDetail).
+  const me = trpc.auth.me.useQuery();
+  const canManage = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "sales", "FULL", ["manager"]);
 
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
@@ -196,7 +203,7 @@ export default function QuotationDetail() {
         </CardContent>
       </Card>
 
-      {data.status === "ACCEPTED" && (
+      {data.status === "ACCEPTED" && canManage && (
         <Card>
           <CardHeader><CardTitle className="text-base">تحويل لفاتورة</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
@@ -236,7 +243,7 @@ export default function QuotationDetail() {
       {done && <p className="text-sm text-emerald-600">{done}</p>}
 
       <div className="flex gap-2 flex-wrap">
-        {data.status === "DRAFT" && (
+        {data.status === "DRAFT" && canManage && (
           <Button
             variant="outline"
             onClick={async () => {
@@ -256,7 +263,7 @@ export default function QuotationDetail() {
             وضع علامة «مُرسَل»
           </Button>
         )}
-        {isOpen && data.status !== "ACCEPTED" && (
+        {isOpen && data.status !== "ACCEPTED" && canManage && (
           <Button
             variant="outline"
             onClick={async () => {
@@ -276,7 +283,7 @@ export default function QuotationDetail() {
             قبول
           </Button>
         )}
-        {isOpen && (
+        {isOpen && canManage && (
           <Button
             variant="outline"
             onClick={async () => {

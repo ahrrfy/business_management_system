@@ -4,6 +4,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { exportRows } from "@/lib/export";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { ErrorState } from "@/components/PageState";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtDateTime } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
@@ -272,7 +273,10 @@ export default function AuditLogs() {
                   </tr>
                 );
               })}
-              {!list.isLoading && rows.length === 0 && (
+              {list.isError && (
+                <tr><td colSpan={7} className="p-0"><ErrorState message="تعذّر تحميل سجلّ التدقيق." onRetry={() => list.refetch()} /></td></tr>
+              )}
+              {!list.isLoading && !list.isError && rows.length === 0 && (
                 <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا سجلّات مطابقة.</td></tr>
               )}
             </tbody>

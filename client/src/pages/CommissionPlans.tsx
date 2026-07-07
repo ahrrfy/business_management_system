@@ -23,6 +23,7 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { iqd } from "@/lib/hr/ui";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Plus, Trash2, Users } from "lucide-react";
 import { useState } from "react";
 
@@ -64,6 +65,12 @@ export default function CommissionPlans() {
   const utils = trpc.useUtils();
   const list = trpc.commissions.plans.list.useQuery();
   const rows = list.data ?? [];
+
+  // بوّابة عرض مطابقة للخادم: الكتابة commissionsManagerProcedure(["manager"],"commissions","FULL")
+  // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد. القراءة (accountant/auditor) بلا أزرار كتابة.
+  const me = trpc.auth.me.useQuery();
+  const canWrite = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
 
   /* ── حوار الخطة (إنشاء/تعديل) ── */
   const [formOpen, setFormOpen] = useState(false);
@@ -207,9 +214,11 @@ export default function CommissionPlans() {
             <Button size="sm" variant="outline" onClick={() => setAssignOpen(true)}>
               <Users className="size-4" /> الإسنادات
             </Button>
-            <Button size="sm" onClick={openAdd}>
-              <Plus className="size-4" /> خطة جديدة
-            </Button>
+            {canWrite && (
+              <Button size="sm" onClick={openAdd}>
+                <Plus className="size-4" /> خطة جديدة
+              </Button>
+            )}
           </div>
         }
       />
@@ -247,18 +256,20 @@ export default function CommissionPlans() {
                       </span>
                     </td>
                     <td className="p-2 text-center">
-                      <RowActions
-                        actions={[
-                          { key: "edit", label: "تعديل", onSelect: () => openEdit(p) },
-                          {
-                            key: "toggle",
-                            label: p.isActive ? "تعطيل" : "تفعيل",
-                            variant: p.isActive ? "destructive" : "default",
-                            disabled: setActiveMut.isPending,
-                            onSelect: () => void toggleActive(p),
-                          },
-                        ]}
-                      />
+                      {canWrite && (
+                        <RowActions
+                          actions={[
+                            { key: "edit", label: "تعديل", onSelect: () => openEdit(p) },
+                            {
+                              key: "toggle",
+                              label: p.isActive ? "تعطيل" : "تفعيل",
+                              variant: p.isActive ? "destructive" : "default",
+                              disabled: setActiveMut.isPending,
+                              onSelect: () => void toggleActive(p),
+                            },
+                          ]}
+                        />
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -407,6 +418,7 @@ export default function CommissionPlans() {
                       )}
                     </td>
                     <td className="p-2">
+                      {canWrite ? (
                       <div className="flex items-center gap-2">
                         <select
                           value={draftPlan[r.employeeId] ?? ""}
@@ -428,18 +440,23 @@ export default function CommissionPlans() {
                           aria-label={`بداية إسناد ${r.employeeName}`}
                         />
                       </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
                     </td>
                     <td className="p-2 text-center">
-                      <div className="flex items-center justify-center gap-1">
-                        <Button size="sm" variant="outline" disabled={assignMut.isPending} onClick={() => assignRow(r)}>
-                          إسناد
-                        </Button>
-                        {r.assignment && (
-                          <Button size="sm" variant="ghost" className="text-destructive" disabled={endMut.isPending} onClick={() => void endRow(r)}>
-                            إنهاء
+                      {canWrite && (
+                        <div className="flex items-center justify-center gap-1">
+                          <Button size="sm" variant="outline" disabled={assignMut.isPending} onClick={() => assignRow(r)}>
+                            إسناد
                           </Button>
-                        )}
-                      </div>
+                          {r.assignment && (
+                            <Button size="sm" variant="ghost" className="text-destructive" disabled={endMut.isPending} onClick={() => void endRow(r)}>
+                              إنهاء
+                            </Button>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}

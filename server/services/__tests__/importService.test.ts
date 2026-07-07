@@ -271,11 +271,26 @@ describe("importProducts", () => {
     expect(r.committed).toBe(false);
   });
 
-  it("يتخطّى SKU موجوداً مسبقاً", async () => {
+  it("يتخطّى نفس المنتج وSKU عند إعادة الاستيراد", async () => {
     await importProducts([baseRow({})], {}, actor);
-    const r = await importProducts([baseRow({ productName: "قلم ٢" })], { onExisting: "skip" }, actor);
+    const r = await importProducts([baseRow({})], { onExisting: "skip" }, actor);
     expect(r.skipped).toBeGreaterThanOrEqual(1);
     expect(await db().select().from(s.products)).toHaveLength(1);
+  });
+
+  it("يسمح بنفس SKU في منتجين مختلفين عند اختلاف الباركود/غيابه", async () => {
+    const r = await importProducts(
+      [
+        baseRow({ rowNumber: 1, productName: "منتج أ", sku: "PR-BLU" }),
+        baseRow({ rowNumber: 2, productName: "منتج ب", sku: "PR-BLU" }),
+      ],
+      {},
+      actor,
+    );
+    expect(r.committed).toBe(true);
+    expect(r.created).toBe(2);
+    const variants = await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "PR-BLU"));
+    expect(variants).toHaveLength(2);
   });
 
   it("ينشئ التصنيف الناقص تلقائياً", async () => {
@@ -334,7 +349,7 @@ describe("importProducts", () => {
     expect(r.committed).toBe(false);
   });
 
-  it("يرفض SKU مرتبطاً بأكثر من منتج (يَفشل الطرفان)", async () => {
+  it("لا يرفض SKU مرتبطاً بأكثر من منتج", async () => {
     const r = await importProducts(
       [
         baseRow({ rowNumber: 1, productName: "منتج أ" }),
@@ -343,8 +358,8 @@ describe("importProducts", () => {
       {},
       actor,
     );
-    expect(r.committed).toBe(false);
-    expect(r.failed).toBe(2);
+    expect(r.committed).toBe(true);
+    expect(r.created).toBe(2);
   });
 
   it("ينشئ تصنيفاً واحداً لاسمين يختلفان بالحالة فقط", async () => {

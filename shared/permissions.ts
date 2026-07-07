@@ -115,7 +115,11 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     hr: "NONE",
     commissions: "NONE",
     pos: "NONE", sales: "READ", purchases: "FULL", inventory: "FULL", workorders: "READ", channels: "NONE", treasury: "NONE",
-    customers: "READ", suppliers: "FULL", products: "FULL", expenses: "NONE", reports: "READ",
+    // products: READ لا FULL — كتابة الكتالوج «مدير فأعلى» (productsManagerProcedure)؛ كان القالب
+    // يَعِد FULL بينما البوّابة تمنعها فتظهر الصلاحية في المصفوفة ثم تفشل كل كتابة (تدقيق التثبيت
+    // #26). صدق القالب (قرار المالك: الخادم هو الحقيقة). أمين المخزن يقرأ المنتجات (مخزون/استلام)
+    // ويبحثها للشراء (productsPurchaseProcedure #27) — لا يُنشئ/يُعدّل الكتالوج.
+    customers: "READ", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
   },
   purchasing: {

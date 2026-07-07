@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { Archive, ArchiveRestore, Inbox as InboxIcon, MessageSquare, Phone, Send, ShoppingBag, Store, User } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -210,6 +210,7 @@ function ConversationDetail({ id, onChanged }: { id: number; onChanged: () => vo
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto p-4" dir="rtl">
         {messages.isLoading && <LoadingState />}
+        {messages.isError && <ErrorState message="تعذّر تحميل الرَسائل." onRetry={() => messages.refetch()} />}
         {messages.data?.length === 0 && (
           <div className="text-center text-muted-foreground text-sm py-8">
             لا رَسائل بَعد. اِبدأ بإرسال رِسالة أو تَسجيل اتصال هاتفي.
@@ -222,7 +223,7 @@ function ConversationDetail({ id, onChanged }: { id: number; onChanged: () => vo
   );
 }
 
-function NewConversationDialog({ onCreated, onClose }: { onCreated: (id: number) => void; onClose: () => void }) {
+function NewConversationDialog({ onCreated, onClose, branchId }: { onCreated: (id: number) => void; onClose: () => void; branchId?: number }) {
   const [channel, setChannel] = useState<"WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "STORE" | "PHONE" | "WALK_IN" | "OTHER">("PHONE");
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -272,7 +273,7 @@ function NewConversationDialog({ onCreated, onClose }: { onCreated: (id: number)
         <div className="flex gap-2 p-4 pt-0">
           <Button variant="outline" onClick={onClose} className="flex-1">إلغاء</Button>
           <Button
-            onClick={() => upsert.mutate({ channel, channelHandle: handle.trim(), displayName: displayName.trim() || null })}
+            onClick={() => upsert.mutate({ channel, channelHandle: handle.trim(), displayName: displayName.trim() || null, branchId })}
             disabled={upsert.isPending || !handle.trim()}
             className="flex-1"
           >
@@ -286,7 +287,15 @@ function NewConversationDialog({ onCreated, onClose }: { onCreated: (id: number)
 
 export default function Inbox() {
   const [filter, setFilter] = useState<"all" | "unread" | "archived" | "closed">("all");
-  const list = trpc.conversations.list.useQuery({ filter });
+  // #8 (تدقيق التثبيت): channelsRead يشتقّ scopedBranchId خادمياً؛ للمدير/الأدمن تعود null
+  // فتطلب branchId صريحاً وإلا BAD_REQUEST ⇒ صندوق فارغ صامت. نمرّر branchId من هوية المستخدم
+  // (كلّ مدير/أدمن مُسنَد فرعياً في هذا النظام) — الكاشير/الفني يتجاهل الخادم إدخاله للمعزول.
+  const me = trpc.auth.me.useQuery();
+  const inputBranchId = me.data?.branchId ? Number(me.data.branchId) : undefined;
+  const list = trpc.conversations.list.useQuery(
+    { filter, branchId: inputBranchId },
+    { enabled: !!me.data },
+  );
   const [selId, setSelId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
 
@@ -330,6 +339,7 @@ export default function Inbox() {
 
         <div className="flex-1 overflow-y-auto space-y-2 pr-1">
           {list.isLoading && <LoadingState />}
+          {list.isError && <ErrorState message="تعذّر تحميل المحادثات." onRetry={() => list.refetch()} />}
           {list.data?.length === 0 && (
             <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-4 text-center">
               لا محادثات. اِضغط «+ جَديدة» لِتَسجيل اتصال أو رَسالة وارِدة.
@@ -355,7 +365,7 @@ export default function Inbox() {
         )}
       </div>
 
-      {showNew && <NewConversationDialog onCreated={(id) => { setSelId(id); list.refetch(); }} onClose={() => setShowNew(false)} />}
+      {showNew && <NewConversationDialog onCreated={(id) => { setSelId(id); list.refetch(); }} onClose={() => setShowNew(false)} branchId={inputBranchId} />}
     </div>
   );
 }

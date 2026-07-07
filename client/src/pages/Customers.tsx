@@ -280,7 +280,8 @@ export default function Customers() {
                 { key: "isActive", header: "نشط", map: (r) => (r.isActive ? "نعم" : "لا") },
               ],
             }}
-            onImport={() => setImportOpen(true)}
+            // imports.customers = managerProcedure خادمياً — زرّ الاستيراد للمدير/الأدمن فقط.
+            onImport={isElevated ? () => setImportOpen(true) : undefined}
             importLabel="استيراد Excel"
             add={{ href: "/customers/new", label: "عميل جديد" }}
           />
