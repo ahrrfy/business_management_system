@@ -22,7 +22,8 @@ export interface CustomerNoteRow {
 
 export interface CustomerNotesListProps {
   notes: CustomerNoteRow[];
-  onToggleResolved: (note: CustomerNoteRow) => void;
+  /** غيابها يُخفي زرّ تبديل الإنجاز (دور قراءة فقط — بوّابة الكتابة customersCashierProcedure). */
+  onToggleResolved?: (note: CustomerNoteRow) => void;
   onEdit?: (note: CustomerNoteRow) => void;
   onDelete?: (note: CustomerNoteRow) => void;
   /** يُعطَّل أثناء طلب قيد التنفيذ (تبديل/حذف) — يمنع نقرات مزدوجة. */
@@ -79,17 +80,19 @@ export function CustomerNotesList({ notes, onToggleResolved, onEdit, onDelete, b
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-1 self-end sm:self-start">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => onToggleResolved(n)}
-                disabled={busy}
-                title={n.isResolved ? "إعادة فتح المتابعة" : "وضع علامة إنجاز"}
-              >
-                {n.isResolved ? <Circle className="size-3.5" aria-hidden /> : <CheckCircle2 className="size-3.5" aria-hidden />}
-                <span className="sr-only">{n.isResolved ? "إعادة فتح" : "إنجاز"}</span>
-              </Button>
+              {onToggleResolved && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => onToggleResolved(n)}
+                  disabled={busy}
+                  title={n.isResolved ? "إعادة فتح المتابعة" : "وضع علامة إنجاز"}
+                >
+                  {n.isResolved ? <Circle className="size-3.5" aria-hidden /> : <CheckCircle2 className="size-3.5" aria-hidden />}
+                  <span className="sr-only">{n.isResolved ? "إعادة فتح" : "إنجاز"}</span>
+                </Button>
+              )}
               {canManage && onEdit && (
                 <Button type="button" size="sm" variant="ghost" onClick={() => onEdit(n)} disabled={busy} title="تعديل الملاحظة">
                   <Pencil className="size-3.5" aria-hidden />

@@ -3,7 +3,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
+import { ErrorState, TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
@@ -200,7 +200,10 @@ export default function Users() {
                   </tr>
                 );
               })}
-              {!list.isLoading && rows.length === 0 && (
+              {list.isError && (
+                <tr><td colSpan={7} className="p-0"><ErrorState message="تعذّر تحميل المستخدمين." onRetry={() => list.refetch()} /></td></tr>
+              )}
+              {!list.isLoading && !list.isError && rows.length === 0 && (
                 <TableEmptyRow colSpan={7} message="لا مستخدمين مطابقين." />
               )}
             </tbody>

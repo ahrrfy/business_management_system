@@ -6,7 +6,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
-import { TableEmptyRow } from "@/components/PageState";
+import { ErrorState, TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { SUPPLIER_FIELDS, SUPPLIER_IMPORT_META } from "@/lib/importFields";
@@ -14,6 +14,7 @@ import type { SupplierImportRow } from "@/lib/importTypes";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useMemo, useState } from "react";
 
 /** نوع صفّ المورّد صريحاً — يتجنّب فشل استدلال T بسبب اتحاد تقنيع التكلفة (maskSupplierSensitive). */
@@ -28,6 +29,14 @@ function legacyCodeOf(r: { legacyCode?: string | null }): string | null {
 
 export default function Suppliers() {
   const utils = trpc.useUtils();
+  // مرآة بوّابة الخادم: أفعال الكتابة (إضافة/تعديل/تعطيل/تفعيل) على
+  // suppliersManagerProcedure(["manager","warehouse","purchasing"], suppliers, FULL) — server/trpc.ts.
+  // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد (نمط InvoiceDetail).
+  const me = trpc.auth.me.useQuery();
+  const canWrite = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "suppliers", "FULL", ["manager", "warehouse", "purchasing"]);
+  // الاستيراد بوّابته أضيق: imports.suppliers = managerProcedure (المدير فأعلى) — server/routers/imports.ts.
+  const canImport = me.data?.role === "admin" || me.data?.role === "manager";
   const [q, setQ] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
   const [page, setPage] = useState(0);
@@ -152,9 +161,9 @@ export default function Suppliers() {
                 { key: "isActive", header: "نشط", map: (r) => (r.isActive ? "نعم" : "لا") },
               ],
             }}
-            onImport={() => setImportOpen(true)}
+            onImport={canImport ? () => setImportOpen(true) : undefined}
             importLabel="استيراد Excel"
-            add={{ href: "/suppliers/new", label: "مورّد جديد" }}
+            add={canWrite ? { href: "/suppliers/new", label: "مورّد جديد" } : undefined}
           />
         </CardHeader>
         <CardContent className="p-0">
@@ -199,7 +208,7 @@ export default function Suppliers() {
                       {/* ٤ إجراءات ⇒ auto يحوّلها لقائمة ⋯ تلقائياً (إسقاط inline مقصود) */}
                       <RowActions
                         actions={[
-                          { key: "edit", label: "تعديل", href: `/suppliers/${id}/edit` },
+                          { key: "edit", label: "تعديل", href: `/suppliers/${id}/edit`, hidden: !canWrite },
                           // كشف الحساب يقرأ ?id= من URL (نمط SupplierStatement)
                           { key: "stmt", label: "كشف حساب", href: `/suppliers-statement?id=${id}` },
                           { key: "pay", label: "سند صرف له", href: "/vouchers/payment/new" },
@@ -208,6 +217,7 @@ export default function Suppliers() {
                             label: isActive ? "تعطيل" : "تفعيل",
                             variant: isActive ? "destructive" : "default",
                             disabled: deactivate.isPending || activate.isPending,
+                            hidden: !canWrite,
                             onSelect: () => void toggle(id, isActive, s.name ?? ""),
                           },
                         ]}
@@ -216,7 +226,14 @@ export default function Suppliers() {
                   </tr>
                 );
               })}
-              {!list.isLoading && rows.length === 0 && (
+              {list.isError && !list.isLoading && (
+                <tr>
+                  <td colSpan={hasLegacy ? 8 : 7}>
+                    <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
+                  </td>
+                </tr>
+              )}
+              {!list.isLoading && !list.isError && rows.length === 0 && (
                 <TableEmptyRow colSpan={hasLegacy ? 8 : 7} message="لا موردين مطابقين. أضف مورّداً جديداً أو غيّر البحث." />
               )}
             </tbody>

@@ -1,5 +1,6 @@
 import { balanceOptionText } from "@/components/BalanceBadge";
 import { ListToolbar, RowActions } from "@/components/list";
+import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -191,7 +192,15 @@ export default function PurchaseReturns() {
                   </td>
                 </tr>
               ))}
-              {!list.isLoading && visibleRows.length === 0 && (
+              {/* 403/فشل الخادم ⇒ خطأ صريح (نمط Vouchers) لا رسالة «لا مرتجعات» مضلِّلة. */}
+              {list.isError && !list.isLoading && (
+                <tr>
+                  <td colSpan={8}>
+                    <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
+                  </td>
+                </tr>
+              )}
+              {!list.isLoading && !list.isError && visibleRows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="p-6 text-center text-muted-foreground">
                     {total === 0 && !supplierId && !branchId && !dateFrom && !dateTo && !dq.trim()

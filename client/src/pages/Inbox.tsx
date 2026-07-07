@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { ErrorState, LoadingState } from "@/components/PageState";
 import { Archive, ArchiveRestore, Inbox as InboxIcon, MessageSquare, Phone, Send, ShoppingBag, Store, User } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -210,6 +210,7 @@ function ConversationDetail({ id, onChanged }: { id: number; onChanged: () => vo
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto p-4" dir="rtl">
         {messages.isLoading && <LoadingState />}
+        {messages.isError && <ErrorState message="تعذّر تحميل الرَسائل." onRetry={() => messages.refetch()} />}
         {messages.data?.length === 0 && (
           <div className="text-center text-muted-foreground text-sm py-8">
             لا رَسائل بَعد. اِبدأ بإرسال رِسالة أو تَسجيل اتصال هاتفي.
@@ -330,6 +331,7 @@ export default function Inbox() {
 
         <div className="flex-1 overflow-y-auto space-y-2 pr-1">
           {list.isLoading && <LoadingState />}
+          {list.isError && <ErrorState message="تعذّر تحميل المحادثات." onRetry={() => list.refetch()} />}
           {list.data?.length === 0 && (
             <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-4 text-center">
               لا محادثات. اِضغط «+ جَديدة» لِتَسجيل اتصال أو رَسالة وارِدة.

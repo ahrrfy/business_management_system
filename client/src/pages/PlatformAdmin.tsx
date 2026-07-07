@@ -13,6 +13,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { ErrorState } from "@/components/PageState";
 import { AlertTriangle, CheckCircle2, CopyIcon, XCircle } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
@@ -249,6 +250,9 @@ function CompaniesDashboard() {
           </CardHeader>
           <CardContent>
             {companies.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+            {companies.error && (
+              <ErrorState message={`تعذّر تحميل الشركات: ${companies.error.message}`} onRetry={() => companies.refetch()} />
+            )}
             {companies.data && companies.data.length === 0 && (
               <p className="text-sm text-muted-foreground">
                 لا شركات بعد — أضف شركة عبر النموذج أدناه، أو من الطرفية: <code dir="ltr">pnpm company:new &lt;رمز&gt; "&lt;اسم&gt;" --admin-email ... --admin-password ...</code>
@@ -300,6 +304,9 @@ function CompaniesDashboard() {
           </CardHeader>
           <CardContent>
             {provisionRequests.isLoading && <p className="text-sm text-muted-foreground">جارٍ التحميل…</p>}
+            {provisionRequests.error && (
+              <ErrorState message={`تعذّر تحميل طلبات التوفير: ${provisionRequests.error.message}`} onRetry={() => provisionRequests.refetch()} />
+            )}
             {provisionRequests.data && provisionRequests.data.length === 0 && (
               <p className="text-sm text-muted-foreground">لا طلبات بعد.</p>
             )}

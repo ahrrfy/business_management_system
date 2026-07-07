@@ -31,6 +31,8 @@ function ageBadge(days: number | null) {
 export default function DeliveryParties() {
   const me = trpc.auth.me.useQuery();
   const isManager = ["admin", "manager"].includes(me.data?.role ?? "");
+  // مرآة بوّابة الخادم: settle = cashierProcedure = requireRole("cashier","manager") وadmin يمرّ ضمنياً.
+  const canSettle = ["admin", "cashier", "manager"].includes(me.data?.role ?? "");
   const utils = trpc.useUtils();
   const list = trpc.delivery.listParties.useQuery({});
   const [showCreate, setShowCreate] = useState(false);
@@ -123,7 +125,7 @@ export default function DeliveryParties() {
                       <td className="p-3 text-center">
                         <div className="inline-flex gap-1.5">
                           <Button size="sm" variant="ghost" onClick={() => printStatement(p)}>كشف</Button>
-                          <Button size="sm" variant="outline" onClick={() => setSettleFor(p)} disabled={bal <= 0}>تسوية</Button>
+                          {canSettle && <Button size="sm" variant="outline" onClick={() => setSettleFor(p)} disabled={bal <= 0}>تسوية</Button>}
                           {isManager && <Button size="sm" variant="outline" className="text-destructive" onClick={() => setWriteOffFor(p)} disabled={bal <= 0}>شطب</Button>}
                         </div>
                       </td>
