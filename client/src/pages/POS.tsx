@@ -113,10 +113,13 @@ const money = (n: number) => n.toFixed(2);
 
 // §٥: سعر فعّال يحسب الخصم بدقّة Decimal (لا Number×float×Math.round) — يصون الفلوس
 // عبر مضاعفات الخصم ١٠.٥٪، ٣٣.٣٣٪، إلخ. يُقرَّب 2dp ثم يعاد رقماً للعرض.
+// promotions v2 (٨/٧/٢٦): إن مرّر pos.ts `promotionEffectivePrice` (السعر بعد الخصم الترويجي)،
+// نستعمله كنقطة انطلاق (بدل السعر الأصلي) قبل تطبيق أي خصم يدوي من الكاشير. الترتيب: العرض أوّلاً
+// ثم الخصم اليدوي — بحيث لا يُلغي الكاشير العرض بلا وعي (يمكنه إضافة خصم فوقه).
 const effectivePrice = (item: CartItem) => {
-  const price = D(item.row.price ?? 0);
-  if (item.disc == null) return price.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
-  const discounted = round2(price.times(D(100).minus(D(item.disc))).div(100));
+  const base = D((item.row as any).promotionEffectivePrice ?? item.row.price ?? 0);
+  if (item.disc == null) return base.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
+  const discounted = round2(base.times(D(100).minus(D(item.disc))).div(100));
   return discounted.toDecimalPlaces(0, 4 /* ROUND_HALF_UP */).toNumber();
 };
 
@@ -132,12 +135,17 @@ const buildSaleLine = (c: CartItem) => {
   const listWhole = D(c.row.price ?? 0).toDecimalPlaces(0, 4 /* HALF_UP */);
   const eff = D(effectivePrice(c));
   const discAmt = listWhole.minus(eff).times(c.qty);
+  // promotions v2 (٨/٧/٢٦): إن كان الصفّ يحمل عرضاً من pos.ts، نمرّر `promotionId` كي يتحقّق الخادم
+  // (idempotent) ويسجّل promotionId + promotionDiscount على invoiceItem. لو تغيّر العرض بين وقت
+  // العرض والحفظ، الخادم يعامل الخصم كيدوي (لا رفض).
+  const promotionId = (c.row as any).promotionId as number | null | undefined;
   return {
     variantId: c.row.variantId,
     productUnitId: c.row.productUnitId,
     quantity: String(c.qty),
     unitPriceOverride: listWhole.toFixed(2),
     ...(discAmt.gt(0) ? { discountAmount: discAmt.toFixed(2) } : {}),
+    ...(promotionId != null ? { promotionId } : {}),
   };
 };
 

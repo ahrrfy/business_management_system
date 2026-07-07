@@ -52,6 +52,7 @@ import { deliveryRouter } from "./routers/deliveryRouter";
 import { exchangeRouter } from "./routers/exchangeRouter";
 import { bundlesRouter } from "./routers/bundlesRouter";
 import { priceWavesRouter } from "./routers/priceWavesRouter";
+import { promotionsV2Router } from "./routers/promotionsV2Router";
 import { platformAdminRouter } from "./routers/platformAdminRouter";
 
 /**
@@ -120,6 +121,9 @@ export const appRouter = router({
   bundles: bundlesRouter,
   // priceWaves (٧/٧/٢٦): موجات تحديث الأسعار — معاينة قبل الالتزام + تطبيق ذرّي + سجلّ دائم.
   priceWaves: priceWavesRouter,
+  // salesPromotions v2 (٨/٧/٢٦): العروض على catalog/pos.ts (فلسفة «نقطة العرض = نقطة الفرض»).
+  // NOTE: مفتاح `salesPromotions` مختلف عن `promotions` (ترقيات HR).
+  salesPromotions: promotionsV2Router,
   // تعدد الشركات — شاشة إدارة المنصّة (منفصلة تماماً عن جلسة/أدوار أي شركة).
   platformAdmin: platformAdminRouter,
 });

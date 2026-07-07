@@ -21,6 +21,11 @@ import {
 } from "../bundleService";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { resolveContractPrices } from "../contractPriceService";
+import {
+  getProductCategoryIds,
+  resolvePromotionForLine,
+  type ResolvedPromotion,
+} from "../salesPromotionService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
@@ -226,6 +231,28 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       }
     }
 
+    // promotions v2: خرائط لتحقّق العرض بلا N+1.
+    const productIdByVariant = new Map<number, number>();
+    for (const r of variantRows) {
+      productIdByVariant.set(Number(r.id), 0); // سيُملأ لاحقاً
+    }
+    // نحتاج productId لكل متغيّر. نستعمل استعلام إضافي واحد.
+    let categoryByProduct = new Map<number, number | null>();
+    const linesNeedingPromo = input.lines.filter((l) => l.promotionId != null);
+    if (linesNeedingPromo.length) {
+      const productRows = await tx
+        .select({ variantId: productVariants.id, productId: productVariants.productId })
+        .from(productVariants)
+        .where(inArray(productVariants.id, Array.from(new Set(linesNeedingPromo.map((l) => l.variantId)))));
+      for (const pr of productRows) productIdByVariant.set(Number(pr.variantId), Number(pr.productId));
+      const productIds = Array.from(new Set(productRows.map((r) => Number(r.productId))));
+      categoryByProduct = await getProductCategoryIds(tx, productIds);
+    }
+    // حبيبة اليوم المحلي (Baghdad UTC+3) — نفس دلالة pos.ts.
+    const _now = new Date();
+    const _bag = new Date(_now.getTime() + 3 * 60 * 60 * 1000);
+    const todayYmd = _bag.toISOString().slice(0, 10);
+
     const computed = [];
     for (const l of input.lines) {
       const v = variantById.get(l.variantId);
@@ -254,6 +281,39 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         discountPercent: l.discountPercent,
         discountAmount: l.discountAmount,
       });
+
+      // promotions v2 (idempotent verification): إن مرّر POS `promotionId`، نُعيد الحلّ خادمياً
+      // ونتحقّق أن `expectedPromoDiscount = discountForUnit × qty` يتّسق مع `discountAmount` (± 1 IQD).
+      // إن اتّسق ⇒ نخزّن promotionId + promotionDiscount على invoiceItem. إن اختلف (تغيّر العرض بين
+      // العرض والحفظ) ⇒ نعامل الخصم كيدوي بلا رفض — يحمي البيع من فشل بسبب تعديل عرض بين وقتين.
+      let recordedPromotionId: number | null = null;
+      let recordedPromoDiscount = "0.00";
+      if (l.promotionId != null && kind !== "BUNDLE") {
+        const productId = productIdByVariant.get(l.variantId);
+        if (productId != null && productId > 0) {
+          const categoryId = categoryByProduct.get(productId) ?? null;
+          const resolved: ResolvedPromotion | null = await resolvePromotionForLine(tx, {
+            branchId: input.branchId,
+            customerTier: tier,
+            productId,
+            variantId: l.variantId,
+            categoryId,
+            unitPrice: unitPrice.toFixed(2),
+            lineAmount: unitPrice.mul(money(l.quantity)).toFixed(2),
+            hasContractPrice: contractPrice != null,
+            todayYmd,
+          });
+          if (resolved && Number(resolved.promotionId) === Number(l.promotionId)) {
+            const expected = money(resolved.discountForUnit).mul(money(l.quantity));
+            const actual = money(lineRes.discountAmount);
+            if (actual.minus(expected).abs().lte("1")) {
+              recordedPromotionId = Number(l.promotionId);
+              recordedPromoDiscount = expected.toFixed(2);
+            }
+          }
+        }
+      }
+
       computed.push({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -264,6 +324,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         discountAmount: lineRes.discountAmount,
         total: lineRes.total,
         kind,
+        promotionId: recordedPromotionId,
+        promotionDiscount: recordedPromoDiscount,
       });
     }
 
@@ -386,6 +448,9 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         unitCost: c.unitCost,
         discountAmount: c.discountAmount,
         total: c.total,
+        // promotions v2: الأثر متجمّد على المستند — تعديل عرضٍ لاحقاً لا يمسّ سجلّ فواتير سابقة.
+        promotionId: c.promotionId,
+        promotionDiscount: c.promotionDiscount,
       });
       // gstack B6: لقطة مكوّنات البكج لحظة البيع. المرتجع يقرأ منها حصراً بدل الوصفة الحيّة —
       // يحمي من انحراف مخزون صامت لو عُدّلت الوصفة بين البيع والإرجاع.

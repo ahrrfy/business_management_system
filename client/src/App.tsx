@@ -176,6 +176,8 @@ export default function App() {
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
       {/* gstack B10 (٧/٧/٢٦): موجات الأسعار — تبويب داخل InventoryHub. المسار المستقلّ يبقى للحفاظ على الروابط. */}
       <Route path="/price-waves"><Redirect to="/inventory?tab=price-waves" /></Route>
+      {/* promotions v2 (٨/٧/٢٦): العروض والخصومات — تبويب في InventoryHub. */}
+      <Route path="/offers"><Redirect to="/inventory?tab=offers" /></Route>
       <Route path="/categories"><Redirect to="/inventory?tab=categories" /></Route>
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><SalesHub /></Shell></Route>

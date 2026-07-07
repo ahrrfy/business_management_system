@@ -785,6 +785,11 @@ export const invoiceItems = mysqlTable(
     discountPercent: decimal("discountPercent", { precision: 5, scale: 2 }).default("0"),
     discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0"),
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
+    // promotions v2 (٨/٧/٢٦): العرض المطبَّق على السطر (nullable — الأغلبية بلا عرض). التخزين هنا
+    // يمنع «تعديل عرضٍ لاحقاً» من تغيير سجلّ فواتير سابقة (الأثر مُجمَّد). B11: NOT NULL DEFAULT '0'
+    // على `promotionDiscount` (كان nullable ⇒ انحراف بين schema والهجرة).
+    promotionId: bigint("promotionId", { mode: "number" }),
+    promotionDiscount: decimal("promotionDiscount", { precision: 15, scale: 2 }).default("0").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -793,11 +798,85 @@ export const invoiceItems = mysqlTable(
     productUnitIdx: index("idx_item_productUnit").on(table.productUnitId),
     // S1 (٢٩/٦/٢٦): مطابقة المرتجعات/COGS المتمحورة حول الصنف (variantId+invoiceId). هجرة 0031.
     variantInvoiceIdx: index("idx_item_variant_invoice").on(table.variantId, table.invoiceId),
+    // promotions v2: تقرير أثر العرض بحسب معرّف العرض.
+    promotionIdx: index("idx_item_promotion").on(table.promotionId),
   })
 );
 
 export type InvoiceItem = typeof invoiceItems.$inferSelect;
 export type InsertInvoiceItem = typeof invoiceItems.$inferInsert;
+
+/* ============================ العروض والخصومات على المبيعات (Promotions v2) ============================ */
+
+/**
+ * promotions v2 (٨/٧/٢٦، بعد gstack-review على PR #163): إعادة بناء بفلسفة «نقطة العرض = نقطة الفرض» —
+ * pos.ts يحلّ السعر المخصوم ويعيده لِـPOS، والكاشير يبني payment.amount من السعر المخصوم مباشرةً
+ * (لا انحراف بين ما يعرضه العميل وما يسجّله الخادم).
+ *
+ * الفوارق الحاسمة عن الإصدار الأوّل (المسحوب):
+ *  * الحلّ في pos.ts لا في sale/create ⇒ POS «يعرف» بالعرض قبل عرض السعر، فتُجنّبنا B2 (فائض Z-report).
+ *  * `promotionDiscount` على invoiceItems صار NOT NULL (B11).
+ *  * `minLineAmount` صار NOT NULL DEFAULT 0 (B11: NULL كان يعطّل العرض بصمت).
+ *  * تاريخ الفاعلية يستعمل حبيبة اليوم المحلي (B8: fix effectiveTo يوم الأخير لا يعمل).
+ *  * الأولوية عند التعارض حتميّة (priority ⇒ discountForUnit ⇒ id).
+ *  * السعر التعاقدي يفوز دائماً (قرار المالك — resolvePromotion يعود null إن hasContractPrice).
+ */
+export const promotions = mysqlTable(
+  "promotions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    type: mysqlEnum("promotionType", ["PERCENT", "AMOUNT"]).notNull(),
+    discountPercent: decimal("discountPercent", { precision: 5, scale: 2 }).default("0").notNull(),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    scope: mysqlEnum("promotionScope", ["ALL", "CATEGORIES", "PRODUCTS"]).notNull(),
+    effectiveFrom: date("effectiveFrom").notNull(),
+    effectiveTo: date("effectiveTo"),
+    customerTier: mysqlEnum("promotionCustomerTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"]),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id, { onDelete: "set null" }),
+    // gstack B11: NOT NULL DEFAULT '0' (كان nullable ⇒ NULL يعطّل العرض بصمت مع lte).
+    minLineAmount: decimal("minLineAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    priority: int("priority").default(0).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    activeDatesIdx: index("idx_promo_active_dates").on(table.isActive, table.effectiveFrom, table.effectiveTo),
+    scopeIdx: index("idx_promo_scope").on(table.scope),
+    branchIdx: index("idx_promo_branch").on(table.branchId),
+  })
+);
+
+export type Promotion = typeof promotions.$inferSelect;
+export type InsertPromotion = typeof promotions.$inferInsert;
+
+/**
+ * promotionTargets: أهداف العرض عند scope ≠ ALL. صفٌّ واحد لكل هدف — إحدى (categoryId/productId/variantId)
+ * حصراً (نفرض ذلك بـCHECK). productId = العرض يشمل كل متغيّرات المنتج (الأشيَع). variantId = دقيق.
+ */
+export const promotionTargets = mysqlTable(
+  "promotionTargets",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    promotionId: bigint("promotionId", { mode: "number" }).notNull().references(() => promotions.id, { onDelete: "cascade" }),
+    categoryId: bigint("categoryId", { mode: "number" }).references(() => categories.id, { onDelete: "cascade" }),
+    productId: bigint("productId", { mode: "number" }).references(() => products.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).references(() => productVariants.id, { onDelete: "cascade" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    promoIdx: index("idx_promo_target_promo").on(table.promotionId),
+    categoryIdx: index("idx_promo_target_category").on(table.categoryId),
+    productIdx: index("idx_promo_target_product").on(table.productId),
+    variantIdx: index("idx_promo_target_variant").on(table.variantId),
+  })
+);
+
+export type PromotionTarget = typeof promotionTargets.$inferSelect;
+export type InsertPromotionTarget = typeof promotionTargets.$inferInsert;
 
 /* ============================ عروض الأسعار (Quotations) ============================ */
 

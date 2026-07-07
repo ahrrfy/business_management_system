@@ -428,6 +428,13 @@
       "when": 1783450000000,
       "tag": "0060_invoice_item_bundle_snapshot",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "5",
+      "when": 1783520000000,
+      "tag": "0061_promotions_v2",
+      "breakpoints": true
     }
   ]
 }
