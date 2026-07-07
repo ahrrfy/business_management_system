@@ -54,7 +54,6 @@ const Kiosk = lazy(() => import("@/pages/Kiosk"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
-const PriceWaves = lazy(() => import("@/pages/PriceWaves"));
 const PurchaseNew = lazy(() => import("@/pages/PurchaseNew"));
 const PurchaseReceive = lazy(() => import("@/pages/PurchaseReceive"));
 const QuotationNew = lazy(() => import("@/pages/QuotationNew"));
@@ -175,7 +174,8 @@ export default function App() {
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
-      <Route path="/price-waves"><Shell><PriceWaves /></Shell></Route>
+      {/* gstack B10 (٧/٧/٢٦): موجات الأسعار — تبويب داخل InventoryHub. المسار المستقلّ يبقى للحفاظ على الروابط. */}
+      <Route path="/price-waves"><Redirect to="/inventory?tab=price-waves" /></Route>
       <Route path="/categories"><Redirect to="/inventory?tab=categories" /></Route>
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><SalesHub /></Shell></Route>

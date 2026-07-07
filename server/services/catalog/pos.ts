@@ -1,6 +1,6 @@
 // قراءات الكاشير (POS): مطابقة الباركود وقائمة البيع.
-import { and, desc, eq } from "drizzle-orm";
-import { branchStock, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { and, desc, eq, inArray } from "drizzle-orm";
+import { branchStock, bundleComponents, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { resolveContractPrices } from "../contractPriceService";
 import type { PriceTier } from "../pricing";
@@ -30,6 +30,9 @@ export interface PosRow {
   isPrintService: boolean;
   // بند 12ب: السعر المعروض سعرٌ تعاقدي خاص بالعميل المُمرَّر (يتقدّم على سعر الفئة) — الواجهة تُظهر شارة.
   isContractPrice: boolean;
+  // gstack B10 (٧/٧/٢٦): البكج بلا branchStock ذاتي — POS يعرض توفّراً **مشتقاً** = min(floor(componentStock/qty))
+  // على مكوّناته. isBundle=true يشغّل الشارة والعدّ عبر `applyBundleAvailability`. المكوّن الأشحّ يحدّد الحدّ.
+  isBundle: boolean;
 }
 
 function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number, tier: PriceTier) {
@@ -52,6 +55,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       isService: products.isService,
       isCustomizable: products.isCustomizable,
       productType: products.productType,
+      isBundle: products.isBundle,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -78,7 +82,78 @@ function normalize(rows: any[]): PosRow[] {
     isCustomizable: !!r.isCustomizable,
     isPrintService: r.productType === PRINT_SERVICE_TYPE,
     isContractPrice: false,
+    isBundle: !!r.isBundle,
   }));
+}
+
+/**
+ * gstack B10 (٧/٧/٢٦): توفّر مشتق للبكج = min(floor(componentStock/componentBaseQuantity)) — عبر
+ * قراءة واحدة لكل مكوّنات البكجات في القائمة. المكوّن الأشحّ يحدّد الحدّ. `isService`=true يُعامَل
+ * كـ«لانهائي» (الخدمات بلا مخزون). إن كان المكوّن غير موجود في `branchStock` نعامله كصفر.
+ */
+async function applyBundleAvailability(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  rows: PosRow[],
+  branchId: number,
+): Promise<PosRow[]> {
+  const bundleVariantIds = rows.filter((r) => r.isBundle).map((r) => r.variantId);
+  if (!bundleVariantIds.length) return rows;
+  const uniqueBundleIds = Array.from(new Set(bundleVariantIds));
+
+  // مكوّنات كل البكجات في القائمة (استعلام واحد بلا N+1).
+  const compRows = await db
+    .select({
+      bundleVariantId: bundleComponents.bundleVariantId,
+      componentVariantId: bundleComponents.componentVariantId,
+      componentBaseQuantity: bundleComponents.componentBaseQuantity,
+    })
+    .from(bundleComponents)
+    .where(inArray(bundleComponents.bundleVariantId, uniqueBundleIds));
+
+  // أرصدة كل المكوّنات + علم isService (خدمات لا تُحدّ التوفّر) — استعلام واحد.
+  const componentIds = Array.from(new Set(compRows.map((c) => Number(c.componentVariantId))));
+  const stockAndKind = componentIds.length
+    ? await db
+        .select({
+          variantId: productVariants.id,
+          stock: branchStock.quantity,
+          isService: products.isService,
+        })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .leftJoin(
+          branchStock,
+          and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)),
+        )
+        .where(inArray(productVariants.id, componentIds))
+    : [];
+  const stockByVid = new Map<number, { stock: number; isService: boolean }>();
+  for (const s of stockAndKind) {
+    stockByVid.set(Number(s.variantId), { stock: s.stock ?? 0, isService: !!s.isService });
+  }
+
+  // احسب حدّاً لكل بكج.
+  const availByBundle = new Map<number, number>();
+  for (const bid of uniqueBundleIds) {
+    const comps = compRows.filter((c) => Number(c.bundleVariantId) === bid);
+    if (!comps.length) {
+      availByBundle.set(bid, 0);
+      continue;
+    }
+    let min = Number.POSITIVE_INFINITY;
+    for (const c of comps) {
+      const info = stockByVid.get(Number(c.componentVariantId));
+      if (!info) { min = 0; break; }
+      if (info.isService) continue; // خدمة كمكوّن: لا تُحدّ (مسموحة عمداً).
+      const qty = Number(c.componentBaseQuantity);
+      const cap = qty > 0 ? Math.floor(info.stock / qty) : 0;
+      if (cap < min) min = cap;
+    }
+    if (min === Number.POSITIVE_INFINITY) min = 0; // كل المكوّنات خدمات ⇒ لا نُظهر ∞، صفراً محايداً.
+    availByBundle.set(bid, Math.max(0, min));
+  }
+
+  return rows.map((r) => (r.isBundle ? { ...r, stockBase: availByBundle.get(r.variantId) ?? 0 } : r));
 }
 
 /** بند 12ب: تراكب الأسعار التعاقدية — حين يُمرَّر customerId ولديه سعر تعاقدي نشط لوحدةٍ،
@@ -111,7 +186,8 @@ export async function lookupByBarcode(
   const rows = await baseSelect(db, branchId, tier)
     .where(and(activeOnly, eq(productUnits.barcode, barcode.trim())))
     .limit(1);
-  const [row] = await applyContractPrices(db, normalize(rows), customerId);
+  const priced = await applyContractPrices(db, normalize(rows), customerId);
+  const [row] = await applyBundleAvailability(db, priced, branchId);
   return row ?? null;
 }
 
@@ -132,5 +208,6 @@ export async function listForPos(
   const where = search ? and(active, search) : active;
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await baseSelect(db, branchId, tier).where(where).orderBy(...order).limit(limit);
-  return applyContractPrices(db, normalize(rows), opts?.customerId);
+  const priced = await applyContractPrices(db, normalize(rows), opts?.customerId);
+  return applyBundleAvailability(db, priced, branchId);
 }
