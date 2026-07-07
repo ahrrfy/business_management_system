@@ -53,9 +53,20 @@ export async function getTopProducts(
       p.name AS productName,
       c.name AS categoryName,
       CAST(COALESCE(SUM(ii.baseQuantity - ii.returnedBaseQuantity), 0) AS CHAR) AS qtySold,
-      CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue,
+      -- #reports-1 (تدقيق التثبيت): كانت الإيرادات تُجمع gross (بلا تصافي المرتجعات) بينما التكلفة
+      -- تُخفَّض بالمُعاد للمخزون ⇒ الربح مبالَغ. الآن نصافي الإيرادات على الوحدات المرتجعة تناسبياً
+      -- (guard على baseQuantity=0 للخدمات). التكلفة كما هي — الوحدات غير المُعادة للمخزون
+      -- (تالف/استهلاك أمر شغل) تبقى تكلفتها خسارةً مطابقةً لدفتر P&L.
+      CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
+        THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+        ELSE ii.total END), 0) AS CHAR) AS revenue,
       CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
-      CAST(COALESCE(SUM(ii.total) - SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
+      CAST(COALESCE(
+        SUM(CASE WHEN ii.baseQuantity > 0
+          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+          ELSE ii.total END)
+        - SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost),
+      0) AS CHAR) AS profit,
       COUNT(DISTINCT ii.invoiceId) AS invoicesCount
     FROM invoiceItems ii
     INNER JOIN invoices i ON i.id = ii.invoiceId
@@ -187,9 +198,18 @@ export async function getProfitByCategory(opts: SalesAnalyticsFilters = {}): Pro
     SELECT
       p.categoryId AS categoryId,
       COALESCE(c.name, 'بلا فئة') AS categoryName,
-      CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue,
+      -- #reports-1 (تدقيق التثبيت): مرآة إصلاح getTopProducts — الإيرادات تُصافى بالمرتجعات
+      -- تناسبياً (باقي التفصيل هناك). ضروري لاتّساق تقرير الربح بالفئة مع تقرير المنتجات وP&L.
+      CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
+        THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+        ELSE ii.total END), 0) AS CHAR) AS revenue,
       CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
-      CAST(COALESCE(SUM(ii.total) - SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
+      CAST(COALESCE(
+        SUM(CASE WHEN ii.baseQuantity > 0
+          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+          ELSE ii.total END)
+        - SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost),
+      0) AS CHAR) AS profit,
       COUNT(*) AS itemsCount
     FROM invoiceItems ii
     INNER JOIN invoices i ON i.id = ii.invoiceId
