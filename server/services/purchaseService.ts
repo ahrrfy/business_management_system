@@ -437,14 +437,23 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     // Optional payment to supplier.
     const paidNow = money(input.payment?.amount ?? "0");
     if (paidNow.gt(0)) {
-      // PROC-05 (تدقيق ٢/٧): السقف الصحيح لمنع AP سالبة هو **رصيد المورد الفعلي** بعد إضافة المستلَم
-      // الآن (adjustSupplierBalance أعلاه رفعه بـreceivedTotal)، لا إجمالي أمر الشراء الذي يشمل بضاعة
-      // لم تُستلَم — فالدفع بحدّ PO الكامل عند استلام جزئي كان يُنشئ رصيداً سالباً (دفعٌ مقابل ما لم يُستلَم).
+      // PROC-05 (تدقيق ٢/٧): السقف الأوّل — رصيد المورد الفعلي (منع AP سالبة على مستوى المورد).
       const supAfter = money(
         (await tx.select({ b: suppliers.currentBalance }).from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).limit(1))[0]?.b ?? "0",
       );
       if (paidNow.gt(supAfter)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز رصيد المورد المستحقّ (${supAfter.toFixed(2)})` });
+      }
+      // #7 (تدقيق التثبيت): سقف ثانٍ — المتبقّي على أمر الشراء نفسه. كان الدفع الداخلي يُنسب كاملاً
+      // لـpo.paidAmount حتى لو تجاوز po.total، مضخّماً هذا PO ومُلوّثاً كل تقارير AP لكل PO (بمورد
+      // له عدّة أوامر مفتوحة). الدفع الزائد المتعمَّد شأن سند صرف مستقلّ — لا مسار «استلام + دفع
+      // إجمالي > المتبقّي».
+      const poRemaining = money(po.total).minus(money(po.paidAmount));
+      if (paidNow.gt(poRemaining)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `الدفعة (${paidNow.toFixed(2)}) تتجاوز المتبقّي على أمر الشراء (${poRemaining.toFixed(2)}) — للمبالغ الزائدة استعمل سند صرف مستقلّاً`,
+        });
       }
       // G14 (١٩/٦/٢٦): دفع نقدي للمورد يَلزم وردية مفتوحة — كان receipts.shiftId=null دائماً
       // ⇒ نقد يَخرج من الصندوق بلا تسوية Z-report ⇒ عجز وهمي عند الإغلاق.

@@ -51,6 +51,23 @@ function fmtIQD(n: string | number | null | undefined): string {
   return fmt(Math.round(Number(n ?? 0)));
 }
 
+/**
+ * #17 (تدقيق التثبيت): نسبة الضريبة تُحسَب من البيانات لا من قيمة مسمَّرة (15٪ كانت خاطئة —
+ * ضريبة العراق 0٪ افتراضياً). الأولوية: taxRate الصريح ⇒ الحساب من taxAmount/(subtotal−discount)
+ * ⇒ نصّ بلا نسبة إن لم يُتحقّق شيء. الحساب يبني نسبةً مقرَّبة لأقرب رقم عشري (0.5٪ خطأ مقبول).
+ */
+function taxLabel(taxAmount: string | number | null | undefined, taxRate: number | null | undefined, subtotal: string | number, discount: string | number | null | undefined): string {
+  const explicitRate = taxRate != null && Number.isFinite(taxRate) ? Number(taxRate) : null;
+  if (explicitRate != null && explicitRate > 0) return `ضريبة المبيعات (${explicitRate}٪)`;
+  const tx = Number(taxAmount ?? 0);
+  const base = Number(subtotal ?? 0) - Number(discount ?? 0);
+  if (base > 0 && tx > 0) {
+    const computed = Math.round((tx / base) * 1000) / 10; // نسبة بدقّة رقم عشري واحد
+    return `ضريبة المبيعات (${computed}٪)`;
+  }
+  return 'ضريبة المبيعات';
+}
+
 /** كميات — تحتفظ بالكسور (البيع يقبل حتى ٣ منازل). عرض «١.٥» كما هو لا «٢». */
 function fmtQty(n: string | number | null | undefined): string {
   if (n == null || n === '') return '—';
@@ -177,7 +194,7 @@ export function printSalesInvoiceV2(d: SalesInvoiceV2Data): boolean {
     lines: [
       { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
       ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'الخصم', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
-      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: `ضريبة المبيعات (${d.taxRate ?? 15}٪)`, value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
+      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
     ],
     grandTotal: { label: 'الإجمالي المستحق', value: fmtIQD(d.total) },
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
@@ -311,7 +328,7 @@ export function printPurchaseInvoiceV2(d: PurchaseInvoiceV2Data): boolean {
     lines: [
       { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
       ...(Number(d.discountAmount ?? 0) > 0 ? [{ label: 'خصم المورّد', value: fmtIQD(d.discountAmount), color: B.orange, sign: '−' as const }] : []),
-      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: `ضريبة المبيعات (${d.taxRate ?? 15}٪)`, value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
+      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, d.discountAmount), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
     ],
     grandTotal: { label: 'الإجمالي المستحق للمورّد', value: fmtIQD(d.total) },
     paid: d.paidAmount != null ? { label: 'المدفوع', value: fmtIQD(d.paidAmount) } : null,
@@ -539,7 +556,7 @@ export function printQuotationV2(d: QuotationV2Data): boolean {
   const totals = totalsBox({
     lines: [
       { label: 'المجموع الفرعي', value: fmtIQD(d.subtotal) },
-      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: `ضريبة المبيعات (${d.taxRate ?? 15}٪)`, value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
+      ...(Number(d.taxAmount ?? 0) > 0 ? [{ label: taxLabel(d.taxAmount, d.taxRate, d.subtotal, 0), value: fmtIQD(d.taxAmount), sign: '+' as const }] : []),
     ],
     grandTotal: { label: 'الإجمالي', value: fmtIQD(d.total) },
   });
