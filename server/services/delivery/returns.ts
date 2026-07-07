@@ -1,7 +1,7 @@
 // إرجاع إرسالية (البضاعة عادت): عكس SALE + إعادة مخزون + عكس العهدة + رد العربون.
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties, invoiceItems, invoices, receipts } from "../../../drizzle/schema";
+import { eq, inArray } from "drizzle-orm";
+import { deliveryConsignments, deliveryParties, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { applyMovement } from "../inventoryService";
@@ -30,9 +30,64 @@ export async function returnConsignment(consignmentId: number, actor: DeliveryTx
     // ملاحظة (تدقيق ٢/٧): تمييز «البند الذي خُصم مخزونه فعلاً» عن «منتج مُخصَّص لم يُخصَم» ليس
     // بمجرّد workOrderId (بند أمر شغل بـbaseVariant يُخصَم فعلاً) — يحتاج فحص «هل جرت حركة OUT
     // للصنف على هذه الفاتورة». مؤجَّل لتفادي منع إعادة تخزينٍ مشروع (أمسك CI الحارس الفجّ).
+    //
+    // gstack B7 (٧/٧/٢٦): بنود البكج بلا branchStock ⇒ applyMovement يرفضها. نُوسّعها إلى مكوّناتها
+    // عبر لقطة `invoiceItemBundleComponents` (كنمط returnService بالضبط). ثم نطبّق الحركات مجمَّعةً.
+    const variantIds = Array.from(new Set(items.map((i) => Number(i.variantId))));
+    const bundleFlags = variantIds.length
+      ? await tx
+          .select({ id: productVariants.id, isBundle: products.isBundle })
+          .from(productVariants)
+          .innerJoin(products, eq(productVariants.productId, products.id))
+          .where(inArray(productVariants.id, variantIds))
+      : [];
+    const isBundleVariant = new Map<number, boolean>(bundleFlags.map((f) => [Number(f.id), !!f.isBundle]));
+    const bundleItemIds = items.filter((i) => isBundleVariant.get(Number(i.variantId))).map((i) => Number(i.id));
+    const snapshotByItem = new Map<number, Array<{ componentVariantId: number; componentBaseQuantity: number }>>();
+    if (bundleItemIds.length) {
+      const snapRows = await tx
+        .select({
+          invoiceItemId: invoiceItemBundleComponents.invoiceItemId,
+          componentVariantId: invoiceItemBundleComponents.componentVariantId,
+          componentBaseQuantity: invoiceItemBundleComponents.componentBaseQuantity,
+        })
+        .from(invoiceItemBundleComponents)
+        .where(inArray(invoiceItemBundleComponents.invoiceItemId, bundleItemIds));
+      for (const r of snapRows) {
+        const iid = Number(r.invoiceItemId);
+        const list = snapshotByItem.get(iid) ?? [];
+        list.push({ componentVariantId: Number(r.componentVariantId), componentBaseQuantity: Number(r.componentBaseQuantity) });
+        snapshotByItem.set(iid, list);
+      }
+    }
+
+    const stockOps = new Map<number, number>(); // variantId → baseQuantity مجمَّعة
     for (const it of items) {
+      const itemVariantId = Number(it.variantId);
+      const itemBase = Number(it.baseQuantity);
+      if (isBundleVariant.get(itemVariantId)) {
+        const snap = snapshotByItem.get(Number(it.id)) ?? [];
+        if (!snap.length) {
+          throw new TRPCError({
+            code: "PRECONDITION_FAILED",
+            message: `بند البكج ${Number(it.id)} بلا لقطة مكوّنات — لا يمكن إرجاع الإرسالية آلياً (فاتورة قبل ٧/٧/٢٦)`,
+          });
+        }
+        for (const c of snap) {
+          const q = c.componentBaseQuantity * itemBase;
+          stockOps.set(c.componentVariantId, (stockOps.get(c.componentVariantId) ?? 0) + q);
+        }
+      } else {
+        stockOps.set(itemVariantId, (stockOps.get(itemVariantId) ?? 0) + itemBase);
+      }
+    }
+    // تطبيق مجمَّع بترتيب variantId تصاعدي (اتّساق مع sale/create.ts + returnService).
+    const sortedVids = Array.from(stockOps.keys()).sort((a, b) => a - b);
+    for (const vid of sortedVids) {
+      const qty = stockOps.get(vid)!;
+      if (qty <= 0) continue;
       await applyMovement(tx, {
-        variantId: Number(it.variantId), branchId: Number(cn.branchId), baseQuantity: Number(it.baseQuantity),
+        variantId: vid, branchId: Number(cn.branchId), baseQuantity: qty,
         movementType: "IN", referenceType: "DELIVERY_RETURN", referenceId: consignmentId, createdBy: actor.userId,
       });
     }
