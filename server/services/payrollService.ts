@@ -526,6 +526,11 @@ export async function cancelRun(id: number, actor: Actor) {
         notes: `عكس راتب — مسيّر ${run.period}`,
       });
     }
+    // #6 (تصحيح — كان الفهم خاطئاً): سياسة موثَّقة صراحةً: عكس مسيّر مدفوع لا يستعيد أرصدة السلف
+    // (advancesService.test.ts:«عكس مسيّر مدفوع ثم إعادة دفعه لا يخصم السلفة مرّتين»). محاولة
+    // الاستعادة كسرت هذا الاختبار — الاستعادة تُنشئ سيناريو الخصم المزدوج عند إعادة الدفع. سيناريو
+    // الحذف+التوليد الذي وصفه التدقيق يحتاج فحص isFirstPay على مستوى الفترة/الموظف (لا runId)،
+    // أو تسجيل تسويات السلف بربطها بـrunId ⇒ استعادة عند حذف المسيّر لا عند عكسه. مؤجَّل.
     await tx.update(payrollRuns).set({ status: "approved", paidAt: null }).where(eq(payrollRuns.id, id));
     return { id, deleted: false, status: "approved" as const };
   });

@@ -15,10 +15,12 @@ import {
   installmentLines,
   installmentPlans,
   invoices,
+  receipts,
   voucherCategories,
   branches,
 } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
+import { adjustCustomerBalance, postEntry } from "./ledgerService";
 import { money, sumMoney, toDbMoney, toDateStr } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { createVoucher } from "./voucherService";
@@ -281,6 +283,15 @@ export async function payLine(
       .where(eq(installmentLines.id, Number(line.id)));
     return { status: "PENDING_APPROVAL", receiptId: voucher.receiptId, voucherNumber: voucher.voucherNumber, planCompleted: false };
   }
+  // #installments-3 (تدقيق التثبيت): حارس أمان — لا نُوسم القسط PAID إلا بسند APPROVED فعلاً.
+  // idempotency الجديد يتجاوز الـreplay على المرفوض (voucher/create.ts) لكن نُبقي هذا الحارس دفاعاً
+  // متعدّد الطبقات لكل مسار محتمل يُنتج سنداً بحالة غير APPROVED (لا أثر مالي).
+  if (voucher.approvalStatus !== "APPROVED") {
+    throw new TRPCError({
+      code: "PRECONDITION_FAILED",
+      message: `السند ${voucher.voucherNumber} غير معتمد (${voucher.approvalStatus}) — لا يمكن وسم القسط مدفوعاً`,
+    });
+  }
 
   // السند مُعتمَد ونافذ مالياً ⇒ وسم القسط PAID + فحص اكتمال الخطة، ذرّياً تحت قفل الصفّ.
   return withTx(async (tx) => {
@@ -332,12 +343,19 @@ export async function payLine(
 
 /* ============================ ارتجاع شيك ============================ */
 
-/** ارتجاع شيك: قسط CHECK بحالة PENDING ⇒ BOUNCED. لا حركة مالية — الشيك لم يُحصَّل أصلاً. */
+/**
+ * ارتجاع شيك: قسط CHECK ⇒ BOUNCED.
+ * - PENDING (الشيك لم يُحصَّل أصلاً) ⇒ تغيير حالة فقط، لا حركة مالية.
+ * - PAID  (#installments-4 — تدقيق التثبيت): كان يُحجَب مطلقاً ⇒ الشيك يرتدّ في البنك بعد وسم القسط
+ *   مدفوعاً فيبقى العميل «مدفوع» ورصيده منقوصاً بلا نقد فعلي (خسارة تتبُّع). نُنفّذ عكساً محاسبيّاً:
+ *   receipt الأصل ⇒ REVERSED؛ قيد PAYMENT_OUT معاكس بمبلغ موجب؛ استعادة رصيد العميل (+amount).
+ *   ذرّي داخل tx واحد؛ إن كان القسط مرتبطاً بفاتورة (voucher.invoiceId) نُعكِّس أثره على AR فيها أيضاً.
+ */
 export async function bounceCheck(
   input: { lineId: number; note?: string | null },
-  _actor: Actor,
+  actor: Actor,
   restrictToBranchId: BranchRestriction = null,
-): Promise<{ lineId: number }> {
+): Promise<{ lineId: number; reversed: boolean }> {
   return withTx(async (tx) => {
     const row = (
       await tx
@@ -353,14 +371,63 @@ export async function bounceCheck(
     if (row.line.kind !== "CHECK") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الارتجاع للشيكات فقط — هذا القسط نقدي" });
     }
-    if (row.line.status !== "PENDING") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "الارتجاع متاح لشيك معلَّق فقط" });
+    if (row.line.status !== "PENDING" && row.line.status !== "PAID") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الارتجاع متاح لشيك معلَّق أو محصَّل فقط" });
     }
+
+    let reversed = false;
+    if (row.line.status === "PAID" && row.line.receiptId != null) {
+      // عكس محاسبيّ للتحصيل السابق: نقفل الإيصال، قيد معاكس، استعادة رصيد العميل.
+      const [rec] = await tx
+        .select()
+        .from(receipts)
+        .where(eq(receipts.id, Number(row.line.receiptId)))
+        .for("update")
+        .limit(1);
+      if (rec && rec.status === "COMPLETED") {
+        const amount = money(rec.amount);
+        await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, Number(rec.id)));
+        await postEntry(tx, {
+          entryType: "PAYMENT_OUT",
+          branchId: rec.branchId != null ? Number(rec.branchId) : Number(row.plan.branchId),
+          receiptId: Number(rec.id),
+          customerId: Number(row.plan.customerId),
+          amount,
+          revenue: money(0),
+          notes: `ارتداد شيك — القسط #${row.line.seq} من خطة #${row.plan.id}`,
+        });
+        // استعادة AR: التحصيل خفّض currentBalance بمقدار amount ⇒ نعيدها بإضافة +amount.
+        await adjustCustomerBalance(tx, Number(row.plan.customerId), amount);
+        reversed = true;
+      }
+      // إن كان القسط مرتبطاً بفاتورة، نُعكِّس paidAmount عليها أيضاً (invoice.paidAmount -= amount)
+      // كي يتّسق «المتبقّي» = total − returnedTotal − paidAmount عبر كل قنوات العرض.
+      if (rec && row.plan.invoiceId != null) {
+        const amt = money(rec.amount);
+        await tx
+          .update(invoices)
+          .set({
+            paidAmount: sql`GREATEST(CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - ${amt.toFixed(2)}, 0)`,
+            status: "PARTIALLY_PAID",
+          })
+          .where(eq(invoices.id, Number(row.plan.invoiceId)));
+      }
+    }
+
     await tx
       .update(installmentLines)
-      .set({ status: "BOUNCED", note: input.note?.trim() ? input.note.trim().slice(0, 255) : row.line.note })
+      .set({
+        status: "BOUNCED",
+        receiptId: null,
+        paidAt: null,
+        note: input.note?.trim() ? input.note.trim().slice(0, 255) : row.line.note,
+      })
       .where(eq(installmentLines.id, input.lineId));
-    return { lineId: input.lineId };
+    // خطة مكتملة سابقاً؟ نُعيدها لـACTIVE لأن هناك قسطاً مرتدّاً يحتاج تحصيلاً جديداً.
+    if (row.plan.status === "COMPLETED") {
+      await tx.update(installmentPlans).set({ status: "ACTIVE" }).where(eq(installmentPlans.id, Number(row.plan.id)));
+    }
+    return { lineId: input.lineId, reversed };
   });
 }
 

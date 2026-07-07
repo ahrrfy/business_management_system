@@ -1,7 +1,7 @@
 // إنشاء سند قبض/صرف مستقلّ ذرّياً (Maker-Checker + idempotency).
 import { TRPCError } from "@trpc/server";
-import { eq } from "drizzle-orm";
-import { customers, invoices, receipts, suppliers } from "../../../drizzle/schema";
+import { and, eq } from "drizzle-orm";
+import { customers, idempotencyKeys, invoices, receipts, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
@@ -21,6 +21,11 @@ import type { VoucherInput, VoucherResult } from "./types";
 export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
   return withTx(async (tx) => {
     // Idempotency: تكرار نفس المفتاح يُعاد بنتيجة السند الأول (لا قيد/نقد مزدوج).
+    // #installments-3 (تدقيق التثبيت): كان الـreplay يُرجع أي سند مخزَّن — بما فيها المرفوض/الملغى —
+    // فمسار الأقساط يستعمل clientRequestId ثابتاً `instpay-${lineId}`، ومحاولةٌ بعد رفض السند تُرجع
+    // السند المرفوض فيُوسم القسط PAID خطأً بمعرِّف سند رُفض (والذمة لا تُخفَّض). الحلّ: نتخطّى الـreplay
+    // إن كان السند المخزَّن في حالة ميتة (REVERSED/FAILED أو REJECTED) — دلالة idempotency: نمنع تكرار
+    // أثر جانبيّ نافذ؛ سند رُبِط في الدفتر ثم عُكس/رُفض ليس له أثر نافذ لنعيد إرجاعه.
     if (input.clientRequestId) {
       const existingRefId = await findIdempotentRefId(tx, "voucher.create", input.clientRequestId);
       if (existingRefId != null) {
@@ -28,28 +33,36 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
         if (!r) {
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "سند idempotency مفقود — تحقّق من الإيصال" });
         }
-        const storedPartyId = r.partyId != null ? Number(r.partyId) : null;
-        const requestedPartyId = input.partyType === "OTHER" ? null : (input.partyId ?? null);
-        const storedInvoiceId = r.invoiceId != null ? Number(r.invoiceId) : null;
-        const requestedInvoiceId = input.invoiceId ?? null;
-        if (
-          Number(r.branchId) !== Number(input.branchId) ||
-          (r.partyType ?? null) !== (input.partyType ?? null) ||
-          storedPartyId !== requestedPartyId ||
-          storedInvoiceId !== requestedInvoiceId ||
-          money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)
-        ) {
-          throw new TRPCError({
-            code: "CONFLICT",
-            message: "تعارض idempotency: المفتاح مستعمَل لسند بطرف/فرع/مبلغ/فاتورة مختلفة",
-          });
+        const isDead = r.status === "REVERSED" || r.status === "FAILED" || r.approvalStatus === "REJECTED";
+        if (!isDead) {
+          const storedPartyId = r.partyId != null ? Number(r.partyId) : null;
+          const requestedPartyId = input.partyType === "OTHER" ? null : (input.partyId ?? null);
+          const storedInvoiceId = r.invoiceId != null ? Number(r.invoiceId) : null;
+          const requestedInvoiceId = input.invoiceId ?? null;
+          if (
+            Number(r.branchId) !== Number(input.branchId) ||
+            (r.partyType ?? null) !== (input.partyType ?? null) ||
+            storedPartyId !== requestedPartyId ||
+            storedInvoiceId !== requestedInvoiceId ||
+            money(r.amount).toFixed(2) !== money(input.amount).toFixed(2)
+          ) {
+            throw new TRPCError({
+              code: "CONFLICT",
+              message: "تعارض idempotency: المفتاح مستعمَل لسند بطرف/فرع/مبلغ/فاتورة مختلفة",
+            });
+          }
+          return {
+            receiptId: existingRefId,
+            voucherNumber: r.voucherNumber ?? "",
+            direction: (r.direction as "IN" | "OUT") ?? "IN",
+            approvalStatus: (r.approvalStatus as VoucherResult["approvalStatus"]) ?? "APPROVED",
+          };
         }
-        return {
-          receiptId: existingRefId,
-          voucherNumber: r.voucherNumber ?? "",
-          direction: (r.direction as "IN" | "OUT") ?? "IN",
-          approvalStatus: (r.approvalStatus as VoucherResult["approvalStatus"]) ?? "APPROVED",
-        };
+        // سند ميت (مرفوض/معكوس/فاشل) ⇒ نتخطّى الـreplay ونُنشئ سنداً جديداً بنفس المفتاح.
+        // recordIdempotencyKey أدناه سيُحاول INSERT وسيصطدم بـUNIQUE ⇒ نحذف السجلّ الميت أوّلاً.
+        await tx.delete(idempotencyKeys).where(
+          and(eq(idempotencyKeys.operation, "voucher.create"), eq(idempotencyKeys.clientRequestId, input.clientRequestId)),
+        );
       }
     }
     const amount = money(input.amount);

@@ -584,14 +584,19 @@ export default function POS() {
         credit: ctx.credit, isCredit: ctx.isCredit,
         method: ctx.method,
       };
-      setReceipt(rec);
-      setLastInv({ num: r.invoiceNumber, total: ctx.total });
+      // #2 (تدقيق التثبيت): إن رجع الخادم total (المُقرَّب المخزَّن فعلاً) نستعمله في الإيصال
+      // كمصدر حقيقة أخير — يُغطّي أي انحراف تقريب مستقبليّ بين العميل والخادم (roundCashIQD مشتركة
+      // حالياً، لكن الاعتماد على قيمة الخادم يحصّن الإيصال ضدّ أي تعديل مستقبلي على القاعدة).
+      const serverTotal = r.total != null ? Number(r.total) : ctx.total;
+      const alignedRec: Receipt = { ...rec, total: serverTotal };
+      setReceipt(alignedRec);
+      setLastInv({ num: r.invoiceNumber, total: serverTotal });
       clearCartDraft(branchId);
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, clientRequestId: newClientRequestId() });
 
-      await printReceipt(buildBrandedReceipt(rec));
+      await printReceipt(buildBrandedReceipt(alignedRec));
       await Promise.all([
         utils.catalog.posList.invalidate(),
         utils.customers.list.invalidate(),
@@ -615,9 +620,15 @@ export default function POS() {
   // §٥: لقطة مبالغ/منتجات البيع بدقّة Decimal لحظة الإرسال (لا وقت النجاح) ⇒ تثبّت على التبويب
   // المُباع ولا تنجرف لو بدّل الكاشير التبويب. نفس صيغ الحساب القديمة (لا تغيير سلوك).
   function captureSaleCtx(): NonNullable<typeof saleCtxRef.current> {
-    const finalReceivedD = isCredit ? paidD : totalD;
-    const finalChangeD   = isCredit ? D(0)  : paidD.minus(totalD);
-    const finalCreditD   = isCredit ? totalD.minus(paidD) : D(0);
+    // #2 (تدقيق التثبيت): البيع النقدي الكامل يستعمل الإجمالي المُقرَّب لأقرب ٢٥٠ د.ع كما يفعل
+    // الخادم — كان الإيصال يعرض total غير مقرَّب فينجرف صندوق Z-report بالفرق (~٥٠ د.ع لكل بيعة
+    // غير مضاعف ٢٥٠) ويُلام عليه الكاشير. roundCashIQD نفس الدالة المُطبَّقة خادمياً ⇒ اتّفاق حتميّ.
+    const cashFull = activeTab.method === "CASH" && !isCredit;
+    const displayTotalD = cashFull ? cashRoundedTotalD : totalD;
+    const displayPaidD = cashFull ? cashRoundedPaidD : paidD;
+    const finalReceivedD = isCredit ? displayPaidD : displayTotalD;
+    const finalChangeD   = isCredit ? D(0)  : displayPaidD.minus(displayTotalD);
+    const finalCreditD   = isCredit ? displayTotalD.minus(displayPaidD) : D(0);
     return {
       tabId: activeTab.id,
       lines: cart.map((c) => ({
@@ -625,7 +636,7 @@ export default function POS() {
         qty: c.qty, price: effectivePrice(c),
         disc: c.disc, total: itemTotal(c),
       })),
-      total,
+      total: round2(displayTotalD).toNumber(),
       received: round2(finalReceivedD).toNumber(),
       change:   round2(finalChangeD).toNumber(),
       credit:   round2(finalCreditD).toNumber(),

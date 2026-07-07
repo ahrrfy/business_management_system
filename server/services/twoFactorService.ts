@@ -131,8 +131,15 @@ export async function consumeTotpCode(userId: number, code: string): Promise<boo
     let secret: string | null = null;
     try {
       secret = decryptSecret(u.totpSecretEncrypted);
-    } catch {
-      return false;
+    } catch (e) {
+      // #18 (تدقيق التثبيت): كان فشل فكّ التشفير (مفتاح مفقود/مُدوَّر) يُعامَل كرمز خاطئ ⇒ يُسجَّل
+      // كمحاولة دخول فاشلة يقفل الحساب بعد ٥ محاولات — كلّ مستخدمي 2FA يُقفَلون خارج حساباتهم لعطلٍ
+      // خادميّ لا لخطأ منهم. نرمي PRECONDITION_FAILED صريحاً يميّزه الراوتر (لا يُسجّل فشلاً ولا يقفل).
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "تعذّر التحقّق من رمز التوثيق الثنائي — إعدادات التشفير الخادمية غير مكتملة. راجع مدير النظام.",
+        cause: e,
+      });
     }
     const matched = secret ? verifyTotp(secret, code) : null;
     if (matched == null) return false;
