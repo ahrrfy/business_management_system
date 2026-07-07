@@ -149,7 +149,12 @@ function DispatchTab() {
                     <td className="p-3 text-left tabular-nums text-emerald-600" dir="ltr">{Number(o.deposit ?? 0) > 0 ? fmt(o.deposit) : "—"}</td>
                     <td className="p-3 text-left font-bold tabular-nums" dir="ltr">{fmt(String(cod))}</td>
                     <td className="p-3 text-center">
-                      <Button size="sm" onClick={() => setTarget(o)}>تسليم لمندوب</Button>
+                      {/* #26A: التسليم بعقد الخادم (cashier/manager) — accountant/auditor يصلان /delivery قراءةً فقط. */}
+                      {canDispatch ? (
+                        <Button size="sm" onClick={() => setTarget(o)}>تسليم لمندوب</Button>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">عرض فقط</span>
+                      )}
                     </td>
                   </tr>
                 );
