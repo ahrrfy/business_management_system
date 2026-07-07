@@ -1,8 +1,8 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, invoiceItems, invoices, receipts } from "../../drizzle/schema";
-import { classifyVariants, getBundleDefinitions } from "./bundleService";
+import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
+import { accountingEntries, customers, invoiceItemBundleComponents, invoiceItems, invoices, receipts } from "../../drizzle/schema";
+import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
@@ -159,12 +159,36 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     // (لا branchStock له) — نُوسّع مكوّناته من الوصفة الحالية ونعيدها للمخزون. تجميع لكل المتغيّرات
     // (بمن فيهم مكوّنات البكج + السلع العادية) قبل التطبيق كي يحافظ على ترتيب القفل الحتميّ.
     // ⚠️ ملاحظة توثيقية: التوسيع يستعمل **الوصفة الحالية** للبكج (قد تختلف عن وصفة يوم البيع إن عُدّلت).
-    // للحدّ من هذا الخطر يحمي bundleService.replaceBundleComponents الوصفة من تعديل عرضيّ، والمدير
-    // ينبَّه في الشاشة قبل التعديل بعدد الفواتير الحيّة التي تستعمل هذا البكج.
+    // gstack B6 (٧/٧/٢٦): نستعمل **لقطة المكوّنات** (`invoiceItemBundleComponents`) المحفوظة لحظة
+    // البيع بدل `bundleComponents` الحيّة — تعديل الوصفة بين البيع والإرجاع لا يُلوّث المرتجع.
+    // اللقطة موجودة لكل invoiceItem بكج (يفرضه sale/create.ts). للفواتير القديمة (قبل هجرة 0060)
+    // اللقطة غائبة ⇒ نرفض المرتجع الآلي برسالة صريحة (لا نسقط بصمت للوصفة الحيّة، دفاع صريح).
     const returnedVariantIds = Array.from(new Set(work.map((w) => Number(w.item.variantId))));
     const kindByVariant = await classifyVariants(tx, returnedVariantIds);
-    const bundleVariantIds = returnedVariantIds.filter((vid) => kindByVariant.get(vid) === "BUNDLE");
-    const bundleDefs = await getBundleDefinitions(tx, bundleVariantIds);
+    // خريطة (invoiceItemId ⇒ صفوف المكوّنات المحفوظة) — قراءة واحدة بلا N+1.
+    const bundleItemIds = work
+      .filter((w) => kindByVariant.get(Number(w.item.variantId)) === "BUNDLE")
+      .map((w) => Number(w.item.id));
+    const snapshotByItem = new Map<number, Array<{ componentVariantId: number; componentBaseQuantity: number }>>();
+    if (bundleItemIds.length) {
+      const rows = await tx
+        .select({
+          invoiceItemId: invoiceItemBundleComponents.invoiceItemId,
+          componentVariantId: invoiceItemBundleComponents.componentVariantId,
+          componentBaseQuantity: invoiceItemBundleComponents.componentBaseQuantity,
+        })
+        .from(invoiceItemBundleComponents)
+        .where(inArray(invoiceItemBundleComponents.invoiceItemId, bundleItemIds));
+      for (const r of rows) {
+        const iid = Number(r.invoiceItemId);
+        const list = snapshotByItem.get(iid) ?? [];
+        list.push({
+          componentVariantId: Number(r.componentVariantId),
+          componentBaseQuantity: Number(r.componentBaseQuantity),
+        });
+        snapshotByItem.set(iid, list);
+      }
+    }
 
     interface StockOp { variantId: number; baseQuantity: number; }
     const stockOps: StockOp[] = [];
@@ -179,12 +203,12 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
 
       if (restock) {
         if (kind === "BUNDLE") {
-          const def = bundleDefs.get(itemVariantId) ?? [];
+          // gstack B6: نقرأ اللقطة المحفوظة على invoiceItem بدل الوصفة الحيّة.
+          const def = snapshotByItem.get(Number(item.id)) ?? [];
           if (!def.length) {
-            // بكج بلا وصفة حالية — لا نستطيع الإرجاع الآلي. رسالة صريحة للمدير.
             throw new TRPCError({
               code: "PRECONDITION_FAILED",
-              message: `البكج (متغيّر ${itemVariantId}) بلا مكوّنات — لا يمكن إعادته آلياً؛ أعِد المكوّنات فرادى`,
+              message: `البكج (بند ${Number(item.id)}) بلا لقطة مكوّنات محفوظة — الفواتير قبل ٧/٧/٢٦ لا تدعم الإرجاع الآلي للبكج؛ أعِد المكوّنات فرادى`,
             });
           }
           for (const c of def) {

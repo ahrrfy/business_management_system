@@ -2,7 +2,7 @@
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
-import { customers, invoiceItems, invoices, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
+import { customers, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import {
   computeInvoiceCost,
   computeInvoiceTotals,
@@ -376,7 +376,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 
     // 9. Items.
     for (const c of computed) {
-      await tx.insert(invoiceItems).values({
+      const itemInsRes = await tx.insert(invoiceItems).values({
         invoiceId,
         variantId: c.variantId,
         productUnitId: c.productUnitId,
@@ -387,6 +387,19 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         discountAmount: c.discountAmount,
         total: c.total,
       });
+      // gstack B6: لقطة مكوّنات البكج لحظة البيع. المرتجع يقرأ منها حصراً بدل الوصفة الحيّة —
+      // يحمي من انحراف مخزون صامت لو عُدّلت الوصفة بين البيع والإرجاع.
+      if (c.kind === "BUNDLE") {
+        const invoiceItemId = extractInsertId(itemInsRes);
+        const def = bundleDefs.get(c.variantId) ?? [];
+        for (const bc of def) {
+          await tx.insert(invoiceItemBundleComponents).values({
+            invoiceItemId,
+            componentVariantId: bc.componentVariantId,
+            componentBaseQuantity: bc.componentBaseQuantity,
+          });
+        }
+      }
     }
 
     // 10. Deduct stock (OUT) per line.

@@ -414,6 +414,13 @@
       "when": 1783445000000,
       "tag": "0059_price_waves",
       "breakpoints": true
+    },
+    {
+      "idx": 60,
+      "version": "5",
+      "when": 1783450000000,
+      "tag": "0060_invoice_item_bundle_snapshot",
+      "breakpoints": true
     }
   ]
 }

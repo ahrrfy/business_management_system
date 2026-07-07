@@ -489,6 +489,36 @@ export const bundleComponents = mysqlTable(
 export type BundleComponent = typeof bundleComponents.$inferSelect;
 export type InsertBundleComponent = typeof bundleComponents.$inferInsert;
 
+/**
+ * invoiceItemBundleComponents (٧/٧/٢٦، gstack B6): لقطة مكوّنات البكج لحظة إنشاء `invoiceItem`.
+ *
+ * السبب: `bundleComponents` وصفة حيّة قابلة للتعديل عبر `bundlesRouter.setComponents`. مسار المرتجع
+ * كان يستعملها ⇒ لو غيّر المدير الوصفة بين البيع والإرجاع، المرتجع يعيد مكوّنات مختلفة عمّا خُصم =
+ * انحراف مخزون صامت. الآن نُخزّن اللقطة على مستوى invoiceItem، ومسار المرتجع يقرأ منها حصراً.
+ *
+ * دورة الحياة: الإدراج في `sale/create.ts` داخل نفس معاملة إنشاء الفاتورة (ذرّي). لا تُعدَّل بعد
+ * ذلك أبداً (مبدأ «الأثر المُجمَّد» — كالخصم في invoiceItems.discountAmount). `ON DELETE cascade`
+ * على `invoiceItemId` كي تختفي مع البند، و`ON DELETE restrict` على المكوّن (يمنع حذف مكوّن
+ * تشير إليه فاتورة قابلة للإرجاع — نفس دلالة `bundleComponents.componentVariantId`).
+ */
+export const invoiceItemBundleComponents = mysqlTable(
+  "invoiceItemBundleComponents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull().references(() => invoiceItems.id, { onDelete: "cascade" }),
+    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "restrict" }),
+    componentBaseQuantity: int("componentBaseQuantity").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    itemIdx: index("idx_iibc_item").on(table.invoiceItemId),
+    componentIdx: index("idx_iibc_component").on(table.componentVariantId),
+  })
+);
+
+export type InvoiceItemBundleComponent = typeof invoiceItemBundleComponents.$inferSelect;
+export type InsertInvoiceItemBundleComponent = typeof invoiceItemBundleComponents.$inferInsert;
+
 /* ============================ موجات تحديث الأسعار (Price Waves) ============================ */
 
 /**
