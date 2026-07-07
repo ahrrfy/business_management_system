@@ -18,6 +18,7 @@ import { exportRows } from "@/lib/export";
 import { D, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { printCommissionStatementV2 } from "@/lib/printing/printCommissionV2";
 import { Calculator, Check, FileDown, Link2, Printer, RotateCcw, Trash2, TrendingUp, Undo2, Wallet } from "lucide-react";
 import { Link } from "wouter";
@@ -76,6 +77,11 @@ type RunLine = RunDetail["lines"][number];
 
 export default function CommissionRuns() {
   const utils = trpc.useUtils();
+  // بوّابة عرض مطابقة للخادم: الكتابة (احتساب/اعتماد/حذف) commissionsManagerProcedure(["manager"],"commissions","FULL")
+  // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد. القراءة (accountant/auditor) عرض وكشوف فقط.
+  const me = trpc.auth.me.useQuery();
+  const canWrite = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
   const runsQ = trpc.commissions.runs.list.useQuery();
   const runs = runsQ.data ?? [];
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -220,9 +226,11 @@ export default function CommissionRuns() {
                 </option>
               ))}
             </select>
-            <Button onClick={() => setComputeOpen(true)} disabled={busy}>
-              <Calculator className="size-4" /> احتساب شهر
-            </Button>
+            {canWrite && (
+              <Button onClick={() => setComputeOpen(true)} disabled={busy}>
+                <Calculator className="size-4" /> احتساب شهر
+              </Button>
+            )}
           </div>
         }
       />
@@ -247,7 +255,7 @@ export default function CommissionRuns() {
           <Button variant="outline" size="sm" onClick={exportExcel} disabled={lines.length === 0}>
             <FileDown className="size-4" /> Excel
           </Button>
-          {isDraft && (
+          {isDraft && canWrite && (
             <>
               <Button
                 variant="outline"
@@ -284,7 +292,7 @@ export default function CommissionRuns() {
               </Button>
             </>
           )}
-          {isApproved && run.payrollRunId == null && (
+          {isApproved && canWrite && run.payrollRunId == null && (
             <Button
               variant="outline"
               size="sm"

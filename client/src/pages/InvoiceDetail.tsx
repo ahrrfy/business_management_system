@@ -15,6 +15,7 @@ import { allocateLineTax } from "@/components/invoice";
 import { D, fmt, round2 } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
 import { Paperclip } from "lucide-react";
@@ -121,11 +122,19 @@ export default function InvoiceDetail() {
     onError: (e) => { setError(e.message); setDone(""); },
   });
 
+  // #28 (تدقيق التثبيت): تسجيل الدفعة = salesCashierProcedure(["cashier","manager"],"sales","FULL").
+  // نُخفي لوحة «تسديد دفعة» عمّن يرفضه الخادم (محاسب/مدقّق/مندوب: sales=READ) بدل عرض نموذج يفشل
+  // بـ403 — بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
+  const me = trpc.auth.me.useQuery();
+
   if (inv.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
   if (!inv.data) return <div className="p-10 text-center text-muted-foreground">الفاتورة غير موجودة.</div>;
   const data = inv.data;
   const remaining = round2(D(data.total).minus(D(data.paidAmount)));
   const canPay = data.status === "PENDING" || data.status === "PARTIALLY_PAID";
+  // بوّابة عرض مطابقة للخادم: كاشير/مدير قالبياً أو مَن مُنح sales=FULL صراحةً (أو admin).
+  const canRecordPayment = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "sales", "FULL", ["cashier", "manager"]);
   const hasDiscount = D(data.discountAmount ?? "0").gt(0);
   const hasTax = D(data.taxAmount ?? "0").gt(0);
 
@@ -378,7 +387,7 @@ export default function InvoiceDetail() {
         </CardContent>
       </Card>
 
-      {canPay && remaining.gt(0) && (
+      {canPay && remaining.gt(0) && canRecordPayment && (
         <Card>
           <CardHeader className="pb-3"><CardTitle className="text-base">تسديد دفعة</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">

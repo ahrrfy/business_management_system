@@ -12,9 +12,12 @@ const Inbox = lazy(() => import("@/pages/Inbox"));
 const TABS: HubTab[] = [
   { value: "invoices", label: "فواتير المبيعات", Component: Invoices },
   { value: "quotations", label: "عروض الأسعار", Component: Quotations },
-  { value: "returns", label: "مرتجعات البيع", Component: SalesReturns },
+  // returns.list خادمياً = salesManagerProcedure(["manager"], "sales", "FULL") — التبويب مرآتها (يُخفى عمّن يرفضه الخادم حتماً).
+  { value: "returns", label: "مرتجعات البيع", gate: { roles: ["manager"], module: "sales", level: "FULL" }, Component: SalesReturns },
   { value: "report", label: "تقرير المبيعات", gate: { managerOnly: true }, Component: SalesReport },
-  { value: "inbox", label: "صندوق الوارد", gate: { roles: ["admin", "manager", "cashier"] }, Component: Inbox },
+  // مرآة بوّابة الخادم (conversationRouter): قراءة الوارد = requireModule("channels","READ") —
+  // القوالب تمنحها أيضاً لفنّي المطبعة/مندوب المبيعات/المدقّق، وmodule يفتح التبويب لمن مُنح «القنوات» صراحةً.
+  { value: "inbox", label: "صندوق الوارد", gate: { roles: ["admin", "manager", "cashier", "print_operator", "sales_rep", "auditor"], module: "channels" }, Component: Inbox },
 ];
 
 export default function SalesHub() {

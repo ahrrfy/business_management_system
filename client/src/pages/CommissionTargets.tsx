@@ -13,11 +13,17 @@ import { confirm } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { iqd } from "@/lib/hr/ui";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { CopyPlus, Save } from "lucide-react";
 import { useMemo, useState } from "react";
 
 export default function CommissionTargets() {
   const utils = trpc.useUtils();
+  // بوّابة عرض مطابقة للخادم: الكتابة commissionsManagerProcedure(["manager"],"commissions","FULL")
+  // — نفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد. القراءة (accountant/auditor) شبكة للعرض فقط.
+  const me = trpc.auth.me.useQuery();
+  const canWrite = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "commissions", "FULL", ["manager"]);
   const [period, setPeriod] = useState<string>(thisMonth());
   const grid = trpc.commissions.targets.grid.useQuery({ period });
   const rows = grid.data ?? [];
@@ -91,18 +97,22 @@ export default function CommissionTargets() {
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <MonthPicker value={period} onChange={changePeriod} ariaLabel="شهر الأهداف" />
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={copyPrev.isPending}
-              onClick={() => copyPrev.mutate({ period, overwrite: false })}
-            >
-              <CopyPlus className="size-4" aria-hidden /> نسخ من الشهر السابق
-            </Button>
-            <Button size="sm" disabled={dirtyRows.length === 0 || save.isPending} onClick={() => save.mutate({ period, rows: dirtyRows })}>
-              <Save className="size-4" aria-hidden />
-              {save.isPending ? "جارٍ الحفظ…" : `حفظ الكل${dirtyRows.length ? ` (${dirtyRows.length})` : ""}`}
-            </Button>
+            {canWrite && (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={copyPrev.isPending}
+                  onClick={() => copyPrev.mutate({ period, overwrite: false })}
+                >
+                  <CopyPlus className="size-4" aria-hidden /> نسخ من الشهر السابق
+                </Button>
+                <Button size="sm" disabled={dirtyRows.length === 0 || save.isPending} onClick={() => save.mutate({ period, rows: dirtyRows })}>
+                  <Save className="size-4" aria-hidden />
+                  {save.isPending ? "جارٍ الحفظ…" : `حفظ الكل${dirtyRows.length ? ` (${dirtyRows.length})` : ""}`}
+                </Button>
+              </>
+            )}
           </div>
         }
       />
@@ -142,14 +152,18 @@ export default function CommissionTargets() {
                         {iqd(r.lastMonthActual)}
                       </td>
                       <td className="p-2">
-                        <MoneyInput
-                          value={value}
-                          onChange={(raw) => setDraft((prev) => ({ ...prev, [r.employeeId]: raw }))}
-                          decimals={0}
-                          placeholder="بلا هدف"
-                          className="h-8 w-40"
-                          ariaLabel={`هدف ${r.employeeName}`}
-                        />
+                        {canWrite ? (
+                          <MoneyInput
+                            value={value}
+                            onChange={(raw) => setDraft((prev) => ({ ...prev, [r.employeeId]: raw }))}
+                            decimals={0}
+                            placeholder="بلا هدف"
+                            className="h-8 w-40"
+                            ariaLabel={`هدف ${r.employeeName}`}
+                          />
+                        ) : (
+                          <span className="tabular-nums" dir="ltr">{r.target != null ? iqd(r.target) : "—"}</span>
+                        )}
                       </td>
                     </tr>
                   );

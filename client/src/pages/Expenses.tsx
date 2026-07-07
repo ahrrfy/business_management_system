@@ -15,6 +15,7 @@ import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { printDoc } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Loader2, Search } from "lucide-react";
 import { useState } from "react";
 import { Link } from "wouter";
@@ -134,6 +135,12 @@ export default function Expenses() {
       setExporting(false);
     }
   }
+
+  // الإلغاء = expensesManagerProcedure(["manager"], "expenses", "FULL") — نُخفي الزرّ عمّن يرفضه
+  // الخادم (كاشير/محاسب: إدخالٌ بلا إلغاء) بنفس دالة الخادم moduleAccessAllowed ⇒ لا تباعُد.
+  const me = trpc.auth.me.useQuery();
+  const canCancel = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "expenses", "FULL", ["manager"]);
 
   const cancel = trpc.expenses.cancel.useMutation({
     onSuccess: async () => {
@@ -272,7 +279,7 @@ export default function Expenses() {
                           key: "cancel",
                           label: "إلغاء",
                           variant: "destructive",
-                          hidden: r.status !== "ACTIVE", // لا حذف صلب — الإلغاء يعكس الصندوق
+                          hidden: r.status !== "ACTIVE" || !canCancel, // لا حذف صلب — الإلغاء يعكس الصندوق؛ الزرّ للمدير (مرآة الخادم)
                           disabled: cancel.isPending,
                           onSelect: () => void (async () => {
                             if (!(await confirm({

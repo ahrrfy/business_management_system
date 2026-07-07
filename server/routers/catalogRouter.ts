@@ -13,7 +13,7 @@ import {
   updateCategory,
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
-import { productsManagerProcedure, productsReadProcedure, router } from "../trpc";
+import { productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
@@ -133,8 +133,10 @@ export const catalogRouter = router({
     .input(z.object({ codes: z.array(z.string().min(1)).max(2000) }))
     .query(({ input }) => checkBarcodesTaken(input.codes)),
 
-  // Purchase-side product search: carries COST (not a sell price). مدير فأعلى (يكشف التكلفة).
-  forPurchase: productsManagerProcedure
+  // Purchase-side product search: carries COST (not a sell price). أدوار الشراء (مدير/أمين
+  // مخزن/مسؤول مشتريات) — تحتاجه لإضافة سطور أمر الشراء الذي تُخوَّل إنشاءه؛ محصور بها فلا
+  // تتسرّب التكلفة للكاشير/المندوب.
+  forPurchase: productsPurchaseProcedure
     .input(z.object({ branchId: z.number().int().positive(), query: z.string().optional(), limit: z.number().default(50) }))
     .query(({ input }) => listForPurchase(input.branchId, input.query, input.limit)),
 

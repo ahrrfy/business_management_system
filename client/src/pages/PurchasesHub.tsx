@@ -7,7 +7,8 @@ const PurchaseReturns = lazy(() => import("@/pages/PurchaseReturns"));
 
 const TABS: HubTab[] = [
   { value: "orders", label: "أوامر الشراء", Component: Purchases },
-  { value: "returns", label: "مرتجعات الشراء", Component: PurchaseReturns },
+  // purchaseReturns.list خادمياً = purchasesManagerProcedure(["manager", "purchasing"], "purchases", "FULL") — التبويب مرآتها (يُخفى عمّن يرفضه الخادم حتماً).
+  { value: "returns", label: "مرتجعات الشراء", gate: { roles: ["manager", "purchasing"], module: "purchases", level: "FULL" }, Component: PurchaseReturns },
 ];
 
 export default function PurchasesHub() {

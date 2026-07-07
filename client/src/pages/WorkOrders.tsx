@@ -3,6 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { AlertTriangle, Calendar, CheckCircle2, ChevronRight, FileText, Package, Printer, Receipt, Search, Timer, Wrench, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
@@ -371,9 +372,9 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
 
 // ─────────────── لوحة التفاصيل (Drawer) ───────────────
 function Drawer({
-  id, onClose, isManager, onAdvance, onCancel, onDeliver, onAssign, busy,
+  id, onClose, isManager, canDeliver, onAdvance, onCancel, onDeliver, onAssign, busy,
 }: {
-  id: number; onClose: () => void; isManager: boolean;
+  id: number; onClose: () => void; isManager: boolean; canDeliver: boolean;
   onAdvance: (id: number, to: Status) => void; onCancel: (d: Detail) => void;
   onDeliver: (d: Detail) => void; onAssign: (id: number, staffId: number | null) => void; busy: boolean;
 }) {
@@ -551,7 +552,7 @@ function Drawer({
               {d.customerPhone && (
                 <a className="wob-wa-lg" href={waUrl(d.customerPhone, d.customerName, d)} target="_blank" rel="noopener noreferrer"><WaIcon size={18} /> راسل العميل</a>
               )}
-              {next ? (
+              {next ? (next !== "DELIVERED" || canDeliver) && (
                 <button className="wob-btn wob-btn-primary" style={{ flex: 1 }} disabled={busy}
                   onClick={() => (next === "DELIVERED" ? onDeliver(d) : onAdvance(d.id, next))}>{ADV_LABEL[next]}</button>
               ) : (
@@ -579,6 +580,11 @@ export default function WorkOrders() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const isManager = me.data?.role === "admin" || me.data?.role === "manager";
+  // مرآة بوّابة الخادم: deliver = workordersCashierProcedure(["cashier","manager"], "workorders", "FULL") —
+  // فنّي المطبعة (workordersExecProcedure) يقدّم المراحل لكن التسليم/الفوترة مال ونقد (كاشير/مدير أو منح صريح).
+  // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد.
+  const canDeliver = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "workorders", "FULL", ["cashier", "manager"]);
   // قائمة الموظَّفين القابِلين للإسناد — مَرفوعة لصَفحة WorkOrders كَي تُستعمَل
   // في الإسناد inline على بطاقات «طابور وارد» (بَدل فَتح الـDrawer لِكل أَمر).
   // مَفعَّلة لِلمَدير فَقط لِتَوافق صَلاحية `assignableStaff` على الخادم.
@@ -672,7 +678,11 @@ export default function WorkOrders() {
       if (!(await confirm({ variant: "info", title: "وضع علامة: جاهز للتسليم", description: `وضع «${order.title}» (${order.orderNumber}) في حالة «جاهز للتسليم». متابعة؟`, confirmText: "جاهز للتسليم", cancelText: "تراجع" }))) return;
       optimisticMove(order.id, "READY"); markReady.mutate({ workOrderId: order.id });
     }
-    else if (to === "DELIVERED") { setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice, deposit: order.deposit ?? "0" }); }
+    else if (to === "DELIVERED") {
+      // مرآة الخادم: deliver محصور بالكاشير/المدير (أو منح workorders=FULL صريح) — لا نفتح حوار تسليم سيفشل بـ403.
+      if (!canDeliver) { notify.warn("التسليم من صلاحية الكاشير/المدير", "تقديم الأمر إلى «مُسلَّم» يُصدر فاتورة نهائية — يتولّاه الكاشير أو المدير."); return; }
+      setDeliverOrder({ id: order.id, orderNumber: order.orderNumber, title: order.title, salePrice: order.salePrice, deposit: order.deposit ?? "0" });
+    }
   }
 
   function hitCol(x: number, y: number): string | null {
@@ -826,6 +836,7 @@ export default function WorkOrders() {
           id={sel}
           onClose={() => setSel(null)}
           isManager={isManager}
+          canDeliver={canDeliver}
           busy={busy}
           onAdvance={async (id, to) => {
             if (to === "IN_PROGRESS") {

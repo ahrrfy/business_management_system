@@ -18,6 +18,7 @@ import { confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 const EMPTY_CUSTOMER: SmartCustomerValue = { customerId: null, name: "", phone: null, isNew: false };
 
@@ -33,7 +34,13 @@ export default function CustomerNotes() {
 
   const me = trpc.auth.me.useQuery();
   const role = me.data?.role;
-  const canManage = role === "admin" || role === "manager";
+  const permsOverride = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  // بوّابتان بمرآة راوتر customerNotes بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية):
+  // الكتابة (create/resolve) = customersCashierProcedure(["cashier","manager","sales_rep"], customers, FULL)
+  // والإدارة (update/delete/dueToday) = customersManagerProcedure(["manager"], customers, FULL).
+  const canWrite =
+    !!role && moduleAccessAllowed(role as RoleKey, permsOverride, "customers", "FULL", ["cashier", "manager", "sales_rep"]);
+  const canManage = !!role && moduleAccessAllowed(role as RoleKey, permsOverride, "customers", "FULL", ["manager"]);
 
   function selectCustomer(v: SmartCustomerValue) {
     setCustomer(v);
@@ -167,19 +174,22 @@ export default function CustomerNotes() {
 
       {!!effectiveCustomerId && (
         <>
-          <Card>
-            <CardHeader><CardTitle className="text-base">{editing ? "تعديل الملاحظة" : "ملاحظة جديدة"}</CardTitle></CardHeader>
-            <CardContent>
-              <CustomerNoteForm
-                key={editing?.id ?? "new"}
-                initial={editing ? { note: editing.note, followUpDate: editing.followUpDate } : undefined}
-                onSubmit={editing ? handleUpdate : handleCreate}
-                onCancel={editing ? () => setEditing(null) : undefined}
-                submitting={editing ? updateMut.isPending : createMut.isPending}
-                submitLabel={editing ? "حفظ التعديل" : "إضافة الملاحظة"}
-              />
-            </CardContent>
-          </Card>
+          {/* نموذج الإضافة/التعديل — مرآة بوّابة الكتابة الخادمية؛ دور القراءة يرى السجلّ بلا نموذج. */}
+          {canWrite && (
+            <Card>
+              <CardHeader><CardTitle className="text-base">{editing ? "تعديل الملاحظة" : "ملاحظة جديدة"}</CardTitle></CardHeader>
+              <CardContent>
+                <CustomerNoteForm
+                  key={editing?.id ?? "new"}
+                  initial={editing ? { note: editing.note, followUpDate: editing.followUpDate } : undefined}
+                  onSubmit={editing ? handleUpdate : handleCreate}
+                  onCancel={editing ? () => setEditing(null) : undefined}
+                  submitting={editing ? updateMut.isPending : createMut.isPending}
+                  submitLabel={editing ? "حفظ التعديل" : "إضافة الملاحظة"}
+                />
+              </CardContent>
+            </Card>
+          )}
 
           <Card>
             <CardHeader><CardTitle className="text-base">سجلّ الملاحظات</CardTitle></CardHeader>
@@ -191,7 +201,7 @@ export default function CustomerNotes() {
               {!notesQuery.isLoading && !notesQuery.isError && (
                 <CustomerNotesList
                   notes={notes}
-                  onToggleResolved={handleToggleResolved}
+                  onToggleResolved={canWrite ? handleToggleResolved : undefined}
                   onEdit={canManage ? setEditing : undefined}
                   onDelete={canManage ? handleDelete : undefined}
                   busyId={busyId}

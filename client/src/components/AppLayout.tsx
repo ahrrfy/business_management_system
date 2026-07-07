@@ -38,7 +38,9 @@ const NAV_LINKS: NavLink[] = [
   { href: "/customers", label: "العملاء", icon: Users },
   { href: "/invoices", label: "المبيعات", icon: Receipt },
   // (ب) يومي مالي/تشغيلي
-  { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet },
+  // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط
+  // أمين المخزن/الفني على hub بلا تبويبات = صفحة فارغة (نفس مبدأ الأصول/الموارد أدناه).
+  { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
   { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
   { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
   // (ج) دوري — أسبوعي/عند الحاجة
@@ -49,10 +51,12 @@ const NAV_LINKS: NavLink[] = [
   // الصيرفة تتبع وحدة «الخزينة» (راوترها يسمح لـmanager/accountant + منح صريح) — والمحاسب
   // القالبيّ يظهر عبر قائمة الأدوار، والمنح الصريح لغيره عبر module (تبويبات الصيرفة غير مُقيَّدة).
   { href: "/exchange", label: "الصيرفة", icon: DollarSign, roles: ["admin", "manager", "accountant"], module: "treasury" },
-  // الأصول/الموارد/الإعدادات: محاور بتبويبات managerOnly داخلها ⇒ لا نفتحها بمنح وحدة (وإلا
+  // الأصول/الإعدادات: محاور بتبويبات managerOnly داخلها ⇒ لا نفتحها بمنح وحدة (وإلا
   // وصل المستخدم لمحور بلا تبويبات مرئية = صفحة فارغة، مراجعة Codex). تبقى مديرية بالكامل.
   { href: "/assets", label: "الأصول الثابتة", icon: Server, managerOnly: true },
-  { href: "/hr", label: "الموارد البشرية", icon: Briefcase, managerOnly: true },
+  // الموارد البشرية: تبويباتها صارت مرآة الخادم (HrHub) ⇒ تُفتح كبوّابته requireModule("hr","READ")
+  // — أدوار القالب (accountant/auditor قالباهما hr=READ) + المنح الصريح عبر module.
+  { href: "/hr", label: "الموارد البشرية", icon: Briefcase, roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
   { href: "/closing", label: "الإقفال والرَقابة", icon: Lock, managerOnly: true },
   { href: "/settings", label: "الإدارة والإعدادات", icon: Settings, managerOnly: true },
 ];

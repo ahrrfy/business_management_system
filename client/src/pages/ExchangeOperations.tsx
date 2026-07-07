@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { D, fmtAr, formatIqd } from "@/lib/money";
 import { BalanceTag, isMoneyStr, isRateStr, newClientRequestId, selectCls, type ExchangeRow } from "@/components/exchange/shared";
@@ -37,6 +38,11 @@ export default function ExchangeOperations() {
   const house = rows.find((h) => h.id === houseId) ?? null;
   const isAdmin = me.data?.role === "admin";
   const effBranch = isAdmin ? branchId : (me.data?.branchId ?? branchId);
+  // كتابات الصيرفة كلها treasuryManagerProcedure(["manager","accountant"],"treasury","FULL") في الخادم —
+  // منح treasury=READ يفتح الشاشة قراءةً لكن الخادم يرفض التنفيذ بـ403 ⇒ نعطّل أزرار التنفيذ
+  // بنفس دالّة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) فلا تباعُد — نمط InvoiceDetail.
+  const canWrite = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "treasury", "FULL", ["manager", "accountant"]);
 
   const onErr = (e: any, retry: () => void) => {
     if (e?.data?.code === "PRECONDITION_FAILED") {
@@ -104,6 +110,11 @@ export default function ExchangeOperations() {
       />
 
       <Card className="p-4 space-y-4">
+        {!canWrite && (
+          <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            صلاحيتك على الخزينة قراءة فقط — تنفيذ عمليات الصيرفة يتطلّب صلاحية كاملة على وحدة الخزينة.
+          </div>
+        )}
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
@@ -183,7 +194,7 @@ export default function ExchangeOperations() {
               </div>
             )}
             <div className="sm:col-span-2">
-              <Button onClick={doDeposit} disabled={pending} className="gap-1.5">
+              <Button onClick={doDeposit} disabled={pending || !canWrite} className="gap-1.5">
                 <ArrowDownToLine className="h-4 w-4" />{pending ? "جارٍ…" : "تنفيذ الإيداع"}
               </Button>
               <p className="text-[11px] text-muted-foreground mt-1.5">
@@ -206,7 +217,7 @@ export default function ExchangeOperations() {
               <Input value={notes} onChange={(e) => setNotes(e.target.value)} />
             </div>
             <div className="sm:col-span-2">
-              <Button onClick={() => doWithdraw(false)} disabled={pending} className="gap-1.5">
+              <Button onClick={() => doWithdraw(false)} disabled={pending || !canWrite} className="gap-1.5">
                 <ArrowUpFromLine className="h-4 w-4" />{pending ? "جارٍ…" : "تنفيذ السحب"}
               </Button>
               <p className="text-[11px] text-muted-foreground mt-1.5">
@@ -235,7 +246,7 @@ export default function ExchangeOperations() {
               </div>
             </div>
             <div className="sm:col-span-3">
-              <Button onClick={() => doBuyUsd(false)} disabled={pending} className="gap-1.5">
+              <Button onClick={() => doBuyUsd(false)} disabled={pending || !canWrite} className="gap-1.5">
                 <DollarSign className="h-4 w-4" />{pending ? "جارٍ…" : "تنفيذ الشراء"}
               </Button>
               <p className="text-[11px] text-muted-foreground mt-1.5">يحوّل دينارَك لدى الصيرفة إلى دولار ويحدّث متوسط الكلفة المرجّح (WAVG).</p>

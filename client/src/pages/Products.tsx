@@ -44,6 +44,8 @@ export default function Products() {
   const utils = trpc.useUtils();
   const me = trpc.auth.me.useQuery();
   const branchId = me.data?.branchId ?? 1;
+  // imports.products = managerProcedure خادمياً — زرّ الاستيراد للمدير/الأدمن فقط (مرآة requireRole).
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
 
   const [q, setQ] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
@@ -260,7 +262,7 @@ export default function Products() {
                 { key: "productIsActive", header: "نشط", map: (r) => (r.productIsActive ? "نعم" : "لا") },
               ],
             }}
-            onImport={() => setImportOpen(true)}
+            onImport={isElevated ? () => setImportOpen(true) : undefined}
             importLabel="استيراد Excel"
             add={{ href: "/products/new", label: "إضافة منتج" }}
           />

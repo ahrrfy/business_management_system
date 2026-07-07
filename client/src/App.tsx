@@ -177,10 +177,11 @@ export default function App() {
       <Route path="/categories"><Redirect to="/inventory?tab=categories" /></Route>
       <Route path="/barcode-labels"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/invoices"><Shell><SalesHub /></Shell></Route>
-      <Route path="/sales/new"><Shell><SalesInvoiceNew /></Shell></Route>
+      <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
       <Route path="/quotations"><Redirect to="/invoices?tab=quotations" /></Route>
-      <Route path="/quotations/new"><Shell><QuotationNew /></Shell></Route>
+      {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}
+      <Route path="/quotations/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><QuotationNew /></RequireRole></Shell></Route>
       <Route path="/quotations/:id"><Shell><QuotationDetail /></Shell></Route>
       <Route path="/customers"><Shell><CustomersHub /></Shell></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
@@ -221,11 +222,11 @@ export default function App() {
       <Route path="/assets/disposal-log"><Redirect to="/assets?tab=disposal" /></Route>
       <Route path="/assets/:id/edit"><Shell><AssetEdit /></Shell></Route>
       <Route path="/assets/:id"><Shell><AssetDetail /></Shell></Route>
-      <Route path="/hr"><Shell><RequireRole roles={["admin","manager"]}><HrHub /></RequireRole></Shell></Route>
+      <Route path="/hr"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><HrHub /></RequireRole></Shell></Route>
       <Route path="/hr/employees"><Redirect to="/hr?tab=employees" /></Route>
-      <Route path="/hr/employees/new"><Shell><EmployeeNew /></Shell></Route>
-      <Route path="/hr/employees/:id/edit"><Shell><EmployeeNew /></Shell></Route>
-      <Route path="/hr/employees/:id"><Shell><EmployeeDetail /></Shell></Route>
+      <Route path="/hr/employees/new"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
+      <Route path="/hr/employees/:id/edit"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
+      <Route path="/hr/employees/:id"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><EmployeeDetail /></RequireRole></Shell></Route>
       <Route path="/hr/attendance"><Redirect to="/hr?tab=attendance" /></Route>
       <Route path="/hr/payroll"><Redirect to="/hr?tab=payroll" /></Route>
       <Route path="/hr/leaves"><Redirect to="/hr?tab=leaves" /></Route>
@@ -275,11 +276,13 @@ export default function App() {
       <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
       <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
       {/* تقارير الموارد البشرية تستدعي راوترات hr (requireModule("hr","READ")) لا reports —
-          فتُبوَّب بوحدة hr كي يفتحها مَن مُنح الموارد البشرية لا مَن مُنح التقارير (مراجعة Codex). */}
-      <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="READ"><PayrollReport /></RequireRole></Shell></Route>
-      <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
-      <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
-      <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="READ"><HrChangesReport /></RequireRole></Shell></Route>
+          فتُبوَّب بوحدة hr كي يفتحها مَن مُنح الموارد البشرية لا مَن مُنح التقارير (مراجعة Codex).
+          قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة
+          الخادم التي بلا قائمة أدوار. */}
+      <Route path="/reports/payroll"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><PayrollReport /></RequireRole></Shell></Route>
+      <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
+      <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
+      <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><HrChangesReport /></RequireRole></Shell></Route>
       <Route path="/reports/executive"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ExecutiveDashboard /></RequireRole></Shell></Route>
       <Route path="/sales-report"><Redirect to="/invoices?tab=report" /></Route>
       <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><SalesReportsHub /></RequireRole></Shell></Route>

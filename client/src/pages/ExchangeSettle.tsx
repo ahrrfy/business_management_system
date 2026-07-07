@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/card";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { trpc } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { notify } from "@/lib/notify";
 import { D, fmtAr, formatIqd } from "@/lib/money";
 import { BalanceTag, isMoneyStr, isRateStr, newClientRequestId, selectCls, type ExchangeRow } from "@/components/exchange/shared";
@@ -36,6 +37,11 @@ export default function ExchangeSettle() {
   const supplier = supRows.find((s) => s.id === supplierId) ?? null;
   const isAdmin = me.data?.role === "admin";
   const effBranch = isAdmin ? branchId : (me.data?.branchId ?? branchId);
+  // التسديد treasuryManagerProcedure(["manager","accountant"],"treasury","FULL") في الخادم —
+  // منح treasury=READ يفتح الشاشة قراءةً لكن الخادم يرفض التنفيذ بـ403 ⇒ نعطّل زرّ التنفيذ
+  // بنفس دالّة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) فلا تباعُد — نمط InvoiceDetail.
+  const canWrite = !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "treasury", "FULL", ["manager", "accountant"]);
 
   // معاينة فرق الصرف = الدين المُسوّى − كلفة ما خرج من المحفظة.
   // فرق الصرف يَنشأ بالدولار فقط (بالدينار: المسحوب = المُسوّى ⇒ صفر دائماً).
@@ -54,6 +60,9 @@ export default function ExchangeSettle() {
       notify.ok(fx.isZero() ? "تمّ التسديد" : `تمّ التسديد — ${fx.isPositive() ? "مكسب" : "خسارة"} صرف ${fmtAr(fx.abs().toFixed(2))} د.ع`);
       reset();
       void utils.exchange.list.invalidate();
+      // دين المورد المعروض هنا من suppliers.list — بلا إبطالٍ يبقى «دين المورد الحالي» قديماً
+      // على الشاشة بعد التسديد فيُغري بتسديدٍ مزدوج بالخطأ.
+      void utils.suppliers.list.invalidate();
     },
     onError: (e: any) => {
       if (e?.data?.code === "PRECONDITION_FAILED") { setWarn(e.message); return; }
@@ -94,6 +103,11 @@ export default function ExchangeSettle() {
       />
 
       <Card className="p-4 space-y-4">
+        {!canWrite && (
+          <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            صلاحيتك على الخزينة قراءة فقط — تنفيذ التسديد يتطلّب صلاحية كاملة على وحدة الخزينة.
+          </div>
+        )}
         <div className="grid gap-4 sm:grid-cols-3">
           <div>
             <label className="text-xs text-muted-foreground mb-1 block">الصيرفة</label>
@@ -170,7 +184,7 @@ export default function ExchangeSettle() {
         )}
 
         <div>
-          <Button onClick={() => doSettle(false)} disabled={settle.isPending} className="gap-1.5">
+          <Button onClick={() => doSettle(false)} disabled={settle.isPending || !canWrite} className="gap-1.5">
             <HandCoins className="h-4 w-4" />{settle.isPending ? "جارٍ…" : "تنفيذ التسديد"}
           </Button>
         </div>
