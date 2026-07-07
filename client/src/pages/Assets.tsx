@@ -1,17 +1,61 @@
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Progress } from "@/components/ui/progress";
 import { trpc } from "@/lib/trpc";
+import { notify } from "@/lib/notify";
+import { confirm } from "@/lib/confirm";
 import { CategoryIcon, StatCard, iqd } from "@/lib/assets/ui";
 import { assetCategoryLabel } from "@shared/assets";
-import { AlertTriangle, ArrowLeft, Banknote, Coins, Package, ThumbsUp, TrendingDown, Users, Wrench } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Banknote, CalendarClock, Coins, Package, ThumbsUp, TrendingDown, Users, Wrench } from "lucide-react";
+import { useState } from "react";
 import { Link, useLocation } from "wouter";
+
+/** الشهر السابق كـ YYYY-MM (نمط <input type="month">) — الافتراضي المألوف لترحيل إهلاك الشهر المُنتهي. */
+function previousMonthYm(): string {
+  const now = new Date();
+  const y = now.getUTCFullYear();
+  const m = now.getUTCMonth(); // 0-based؛ month−1 يعطينا الشهر السابق (0=يناير)
+  const py = m === 0 ? y - 1 : y;
+  const pm = m === 0 ? 12 : m; // 1..12
+  return `${py}-${String(pm).padStart(2, "0")}`;
+}
 
 export default function Assets() {
   const [, navigate] = useLocation();
   const dash = trpc.assets.dashboard.useQuery();
+  // #FI-02 (تدقيق التثبيت): postDepreciation endpoint كان يتيماً — الإهلاك الشهري لا يُرحَّل قطّ
+  // ⇒ accumulatedDepreciation يبقى 0 والميزانية تعرض الأصول بقيمة الشراء والP&L يخلو من مصروف الإهلاك،
+  // والربح مبالَغ كل فترة (حتى يقع التصرّف فيَنسف كامل المتراكم في شهر واحد عبر DEPR:id:DISP catch-up).
+  // إضافة زرّ تشغيل يدوي يُكمل الشريحة الرأسية للـendpoint القائم والمُختبَر (idempotent).
+  const [depPeriod, setDepPeriod] = useState<string>(previousMonthYm());
+  const utils = trpc.useUtils();
+  const postDep = trpc.assets.postDepreciation.useMutation({
+    onSuccess: (r) => {
+      notify.ok(`تمّ ترحيل إهلاك ${r.period}: ${r.assetsPosted} أصلاً، إجمالي ${iqd(r.totalDepreciation)} د.ع`);
+      utils.assets.dashboard.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  async function runDepreciation() {
+    const [ys, ms] = depPeriod.split("-");
+    const year = parseInt(ys, 10);
+    const month = parseInt(ms, 10);
+    if (!(year >= 2000 && year <= 2200) || !(month >= 1 && month <= 12)) {
+      notify.warn("اختر شهراً صالحاً.");
+      return;
+    }
+    if (!(await confirm({
+      variant: "info",
+      title: "ترحيل إهلاك الشهر",
+      description: `سيُرحَّل إهلاك ${depPeriod} لكل الأصول النشطة (يتخطّى تلقائياً ما رُحِّل سابقاً — idempotent). قيد ADJUST/DEPR في الدفتر.`,
+      confirmText: "ترحيل",
+    }))) return;
+    postDep.mutate({ year, month });
+  }
 
   if (dash.isLoading) return <LoadingState />;
   if (dash.error) return <ErrorState message={`تعذّر تحميل لوحة الأصول: ${dash.error.message}`} onRetry={() => dash.refetch()} />;
@@ -72,6 +116,39 @@ export default function Assets() {
           </CardContent>
         </Card>
       </div>
+
+      {/* ترحيل الإهلاك الشهري — إكمال الشريحة الرأسية لـpostDepreciation (لا مُشغِّل قبل هذه الشاشة). */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base flex items-center gap-1.5">
+            <CalendarClock aria-hidden className="size-4" />
+            ترحيل الإهلاك الشهري
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex flex-col md:flex-row gap-3 md:items-end">
+            <div className="space-y-1">
+              <Label htmlFor="dep-period">الشهر</Label>
+              <Input
+                id="dep-period"
+                type="month"
+                dir="ltr"
+                value={depPeriod}
+                min="2000-01"
+                max="2200-12"
+                onChange={(e) => setDepPeriod(e.target.value)}
+                className="w-40"
+              />
+            </div>
+            <Button onClick={runDepreciation} disabled={postDep.isPending}>
+              {postDep.isPending ? "جارٍ الترحيل…" : "ترحيل إهلاك الشهر"}
+            </Button>
+            <p className="text-xs text-muted-foreground md:me-auto max-w-lg">
+              يُرحَّل مصروف الإهلاك لكل الأصول النشطة (SL/DB) على أساس التاريخ المطلوب. آمن للتكرار — لن يُنشئ قيداً مضاعفاً لشهر مُرحَّل.
+            </p>
+          </div>
+        </CardContent>
+      </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         {/* أحدث الصيانة */}

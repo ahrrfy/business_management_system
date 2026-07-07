@@ -216,7 +216,11 @@ export async function getSalesByDimension(opts: {
           CAST(p.id AS CHAR) AS \`key\`,
           p.name AS label,
           COUNT(DISTINCT i.id) AS invoices,
-          CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue,
+          -- #reports-1 (تدقيق التثبيت): مرآة إصلاح getTopProducts — الإيراد يُصافى بالمرتجعات
+          -- تناسبياً (guard على baseQuantity=0 للخدمات) ⇒ يتّسق مع تبويب المنتجات على نفس الشاشة.
+          CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
+            THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+            ELSE ii.total END), 0) AS CHAR) AS revenue,
           CAST(0 AS CHAR) AS paid,
           CAST(0 AS CHAR) AS unpaid,
           CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost
