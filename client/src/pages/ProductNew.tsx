@@ -6,9 +6,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
-import { AlertCircle, Layers, Package, Wrench, X } from "lucide-react";
+import { AlertCircle, Boxes, Layers, Package, Wrench, X } from "lucide-react";
 import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
+import BundleForm from "@/components/product/BundleForm";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import {
@@ -67,7 +68,7 @@ export default function ProductNew() {
   const [isCustomizable, setIsCustomizable] = useState(false);
   // نوع البَند: سلعة بسيطة (منتج واحد بباركود) | سلعة بمتغيّرات (ألوان/قياسات) | خِدمة.
   // الافتراضي «بسيطة» لأنها الحالة الأشيَع في المكتبة (كتاب/ملزمة/دفتر مفرد).
-  const [mode, setMode] = useState<"simple" | "variants" | "service">("simple");
+  const [mode, setMode] = useState<"simple" | "variants" | "service" | "bundle">("simple");
   const [isActive, setIsActive] = useState(true);
 
   // ── قالب الوحدات المشترك ──
@@ -371,18 +372,25 @@ export default function ProductNew() {
             المنتجات / <span className="text-foreground">إضافة منتج</span>
           </div>
           <h1 className="text-2xl font-bold leading-tight">
-            {mode === "service" ? "إضافة خِدمة" : mode === "simple" ? "إضافة سلعة بسيطة" : "إضافة منتج بمتغيّرات"}
+            {mode === "service"
+              ? "إضافة خِدمة"
+              : mode === "simple"
+                ? "إضافة سلعة بسيطة"
+                : mode === "bundle"
+                  ? "إضافة بكج (باندل)"
+                  : "إضافة منتج بمتغيّرات"}
           </h1>
         </div>
         <Link href="/products" className="text-sm text-muted-foreground hover:text-foreground">← رجوع للمنتجات</Link>
       </div>
 
-      {/* ── نوع البَند: سلعة بسيطة / بمتغيّرات / خِدمة ── */}
+      {/* ── نوع البَند: سلعة بسيطة / بمتغيّرات / خِدمة / بكج ── */}
       <div className="inline-flex flex-wrap rounded-lg border bg-muted/40 p-1 gap-1">
         {[
           { v: "simple", label: "سلعة بسيطة", Icon: Package, hint: "منتج واحد بباركود واحد — كتاب/ملزمة/دفتر مفرد" },
           { v: "variants", label: "سلعة بمتغيّرات", Icon: Layers, hint: "ألوان/قياسات — كل تركيبة منتج مستقل بباركوده" },
           { v: "service", label: "خِدمة", Icon: Wrench, hint: "بلا مخزون — تصوير/تجليد/تصميم" },
+          { v: "bundle", label: "بكج (باندل)", Icon: Boxes, hint: "منتج مركّب من عدّة منتجات يُباع كوحدة — طقم مدرسي/هدية" },
         ].map((t) => (
           <button
             key={t.v}
@@ -404,6 +412,8 @@ export default function ProductNew() {
         <ServiceForm />
       ) : mode === "simple" ? (
         <SimpleProductForm />
+      ) : mode === "bundle" ? (
+        <BundleForm />
       ) : (
       <>
       {/* ── اسم مركّب + معاينة الكاتالوج ── */}

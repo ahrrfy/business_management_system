@@ -13,6 +13,12 @@ import {
 import { assertCreditLimit } from "../../lib/credit";
 import { extractInsertId } from "../../lib/insertId";
 import { consumeApproval, validateApproval } from "../creditApprovalService";
+import {
+  classifyVariants,
+  computeBundleUnitCosts,
+  getBundleDefinitions,
+  type VariantKind,
+} from "../bundleService";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { resolveContractPrices } from "../contractPriceService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
@@ -169,6 +175,26 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       ? await resolveContractPrices(tx, input.customerId, input.lines.map((l) => l.productUnitId))
       : new Map<number, string>();
 
+    // bundles (٧/٧/٢٦): تصنيف المتغيّرات لتوجيه منطق التكلفة والمخزون. متغيّر BUNDLE:
+    //   * تُحسب unitCost = Σ(componentCost × componentBaseQty) بدلاً من snapshotUnitCost(v.costPrice).
+    //   * لا يُطبَّق applyMovement على المتغيّر نفسه (لا branchStock له) — يُطبَّق على مكوّناته لاحقاً.
+    // القراءات دفعةً واحدة (لا N+1).
+    const kindByVariant: Map<number, VariantKind> = await classifyVariants(tx, uniqueVariantIds);
+    const bundleVariantIds = uniqueVariantIds.filter((vid) => kindByVariant.get(vid) === "BUNDLE");
+    const bundleDefs = await getBundleDefinitions(tx, bundleVariantIds);
+    const bundleUnitCosts = await computeBundleUnitCosts(tx, bundleVariantIds, bundleDefs);
+    // حارس صحّة: كل بكجٍ ورد كسطر بيع يجب أن يملك وصفة (على الأقل مكوّناً واحداً) — منتج بلا وصفة
+    // مسجَّل isBundle=true بحادثة سيّئة (ملفَّق يدوياً أو حالة سباق). نرفض البيع صراحةً بدل حساب صفر.
+    for (const bid of bundleVariantIds) {
+      const list = bundleDefs.get(bid);
+      if (!list || !list.length) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `البكج (متغيّر ${bid}) بلا مكوّنات — أضف مكوّناته قبل البيع`,
+        });
+      }
+    }
+
     const computed = [];
     for (const l of input.lines) {
       const v = variantById.get(l.variantId);
@@ -185,7 +211,12 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
           : contractPrice != null
             ? money(contractPrice)
             : await getUnitPrice(tx, l.productUnitId, tier);
-      const unitCost = snapshotUnitCost(v.costPrice);
+      // bundles: تكلفة البكج محسوبة لحظياً من مجموع مكوّناته (لا `productVariants.costPrice`
+      // لأن البكج نفسه بلا WAVG — تكلفته صافي مجموع مكوّناته الحيّ لحظة البيع، قرار مالك ٧/٧).
+      const kind = kindByVariant.get(l.variantId) ?? "STOCKED";
+      const unitCost = kind === "BUNDLE"
+        ? snapshotUnitCost(bundleUnitCosts.get(l.variantId) ?? "0")
+        : snapshotUnitCost(v.costPrice);
       const lineRes = computeLineTotal({
         unitPrice,
         quantity: money(l.quantity),
@@ -201,6 +232,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         quantity: lineRes.quantity,
         discountAmount: lineRes.discountAmount,
         total: lineRes.total,
+        kind,
       });
     }
 
@@ -327,11 +359,41 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     }
 
     // 10. Deduct stock (OUT) per line.
+    //     bundles (٧/٧/٢٦): البكج لا يملك branchStock — نتخطّاه لصالح **مكوّناته**. نبني قائمة العمليات
+    //     المخزنيّة الفعلية أوّلاً ثم نجمّعها بالمتغيّر (بكجان يتشاركان مكوّناً ⇒ حركة واحدة مجمَّعة)
+    //     ثم نطبّقها بترتيب variantId التصاعدي — يحافظ على ترتيب القفل الحتميّ (بند 5 أعلاه).
+    //     ⚠️ نفس الترتيب مهم للسلامة تحت التزامن: تجميع قبل التطبيق يمنع سباق قفل على نفس الصفّ.
+    interface StockOp { variantId: number; baseQuantity: number; }
+    const stockOps: StockOp[] = [];
     for (const c of computed) {
+      if (c.kind === "BUNDLE") {
+        const def = bundleDefs.get(c.variantId) ?? [];
+        // في هذه النقطة تحقّقنا سابقاً أن الوصفة غير فارغة (حارس PRECONDITION أعلاه).
+        for (const comp of def) {
+          stockOps.push({
+            variantId: comp.componentVariantId,
+            baseQuantity: comp.componentBaseQuantity * c.baseQuantity,
+          });
+        }
+      } else {
+        // STOCKED / SERVICE — applyMovement تعرف كيف تتعامل مع الخدمة (لا branchStock).
+        stockOps.push({ variantId: c.variantId, baseQuantity: c.baseQuantity });
+      }
+    }
+    // تجميع بحسب variantId (لتحاشي حركتين على نفس الصنف من بكجين مختلفين — كذلك سطر بكج + سطر مفرد
+    // من نفس الصنف يُجمعان في قفلٍ واحد). حساب decimal-free (كل الكميّات صحيحة موجبة).
+    const aggregated = new Map<number, number>();
+    for (const op of stockOps) {
+      aggregated.set(op.variantId, (aggregated.get(op.variantId) ?? 0) + op.baseQuantity);
+    }
+    const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
+    for (const vid of sortedVariantIds) {
+      const qty = aggregated.get(vid)!;
+      if (qty <= 0) continue; // احترازي — تجميع كميّات صفريّة لا يجب أن يحصل.
       await applyMovement(tx, {
-        variantId: c.variantId,
+        variantId: vid,
         branchId: input.branchId,
-        baseQuantity: c.baseQuantity,
+        baseQuantity: qty,
         movementType: "OUT",
         referenceType: "INVOICE",
         referenceId: invoiceId,

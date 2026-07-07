@@ -2,6 +2,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, gte, isNotNull, isNull, lte, sql } from "drizzle-orm";
 import { accountingEntries, customers, invoiceItems, invoices, receipts } from "../../drizzle/schema";
+import { classifyVariants, getBundleDefinitions } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
@@ -154,21 +155,47 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     let returnedGrossNet = new Decimal(0);
     let returnedCost = new Decimal(0);
 
+    // bundles (٧/٧/٢٦): إن كان أحد البنود المُرجَعة بكجاً، لا نطبّق applyMovement على البكج نفسه
+    // (لا branchStock له) — نُوسّع مكوّناته من الوصفة الحالية ونعيدها للمخزون. تجميع لكل المتغيّرات
+    // (بمن فيهم مكوّنات البكج + السلع العادية) قبل التطبيق كي يحافظ على ترتيب القفل الحتميّ.
+    // ⚠️ ملاحظة توثيقية: التوسيع يستعمل **الوصفة الحالية** للبكج (قد تختلف عن وصفة يوم البيع إن عُدّلت).
+    // للحدّ من هذا الخطر يحمي bundleService.replaceBundleComponents الوصفة من تعديل عرضيّ، والمدير
+    // ينبَّه في الشاشة قبل التعديل بعدد الفواتير الحيّة التي تستعمل هذا البكج.
+    const returnedVariantIds = Array.from(new Set(work.map((w) => Number(w.item.variantId))));
+    const kindByVariant = await classifyVariants(tx, returnedVariantIds);
+    const bundleVariantIds = returnedVariantIds.filter((vid) => kindByVariant.get(vid) === "BUNDLE");
+    const bundleDefs = await getBundleDefinitions(tx, bundleVariantIds);
+
+    interface StockOp { variantId: number; baseQuantity: number; }
+    const stockOps: StockOp[] = [];
+
     for (const { line, item } of work) {
       const portion = new Decimal(line.baseQuantity).dividedBy(item.baseQuantity);
       returnedGrossNet = returnedGrossNet.plus(money(item.total).times(portion));
       returnedCost = returnedCost.plus(round2(money(item.unitCost).times(line.baseQuantity)));
 
+      const itemVariantId = Number(item.variantId);
+      const kind = kindByVariant.get(itemVariantId) ?? "STOCKED";
+
       if (restock) {
-        await applyMovement(tx, {
-          variantId: Number(item.variantId),
-          branchId: Number(inv.branchId),
-          baseQuantity: line.baseQuantity,
-          movementType: "RETURN",
-          referenceType: "RETURN",
-          referenceId: input.invoiceId,
-          createdBy: actor.userId,
-        });
+        if (kind === "BUNDLE") {
+          const def = bundleDefs.get(itemVariantId) ?? [];
+          if (!def.length) {
+            // بكج بلا وصفة حالية — لا نستطيع الإرجاع الآلي. رسالة صريحة للمدير.
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: `البكج (متغيّر ${itemVariantId}) بلا مكوّنات — لا يمكن إعادته آلياً؛ أعِد المكوّنات فرادى`,
+            });
+          }
+          for (const c of def) {
+            stockOps.push({
+              variantId: c.componentVariantId,
+              baseQuantity: c.componentBaseQuantity * line.baseQuantity,
+            });
+          }
+        } else {
+          stockOps.push({ variantId: itemVariantId, baseQuantity: line.baseQuantity });
+        }
       }
       await tx
         .update(invoiceItems)
@@ -181,6 +208,28 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
             : {}),
         })
         .where(eq(invoiceItems.id, Number(item.id)));
+    }
+
+    // تجميع + تطبيق بترتيب variantId التصاعدي — نفس نمط sale/create.ts (خطوة 10).
+    if (restock) {
+      const aggregated = new Map<number, number>();
+      for (const op of stockOps) {
+        aggregated.set(op.variantId, (aggregated.get(op.variantId) ?? 0) + op.baseQuantity);
+      }
+      const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
+      for (const vid of sortedVariantIds) {
+        const qty = aggregated.get(vid)!;
+        if (qty <= 0) continue;
+        await applyMovement(tx, {
+          variantId: vid,
+          branchId: Number(inv.branchId),
+          baseQuantity: qty,
+          movementType: "RETURN",
+          referenceType: "RETURN",
+          referenceId: input.invoiceId,
+          createdBy: actor.userId,
+        });
+      }
     }
 
     // Completion is known now (returnedBaseQuantity was updated in the loop).

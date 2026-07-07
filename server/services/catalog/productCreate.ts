@@ -11,6 +11,7 @@ import {
   productionRecipeLines,
   productionRecipes,
 } from "../../../drizzle/schema";
+import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
 import { getDb } from "../../db";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -36,6 +37,11 @@ export interface CreateProductInput {
   printService?: boolean;
   // توجيه الخدمة لكاشير خدمة العملاء (الاستقبال) أيضاً — يَظهر هناك ويُباع عبر createPrintSale.
   showInReception?: boolean;
+  // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب: متغيّر واحد، وحدة أساس واحدة، ومكوّنات في `bundleComponents`.
+  // التكلفة لن تُقرأ من costPrice (تُحسب لحظة البيع من مجموع مكوّناته)، والمخزون الافتتاحي يُتجاهَل (لا branchStock للبكج).
+  isBundle?: boolean;
+  // bundles: وصفة البكج — قائمة المكوّنات (متغيّر أساس + كميّة صحيحة بالوحدة الأساس). إلزامية عند isBundle=true.
+  bundleComponents?: BundleComponentInput[];
   // print-catalog: وصفة المواد الخام التي تَستهلكها الخدمة (ورق/حبر…). تُربَط بمتغيّر البَند الأوّل
   // (الخدمات أحاديّة المتغيّر). اختيارية: خدمة بلا مواد (إلكترونية/تصميم) تُترَك بلا وصفة.
   recipe?: Array<{ inputVariantId: number; qtyPerOutputBase: string }>;
@@ -142,6 +148,30 @@ export async function checkBarcodesTaken(codes: string[]): Promise<Array<{ code:
 /** Create a product with its variants, units and prices in one transaction. */
 export async function createProduct(input: CreateProductInput, actor: Actor) {
   if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
+  // bundles: قيود إنشاء البكج تُفرض قبل فتح المعاملة كي تعطي رسائل واضحة قبل أي إدراج.
+  const isBundle = !!input.isBundle;
+  if (isBundle) {
+    if (input.isService || input.printService) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن أن يكون المنتج بكجاً وخدمةً في آنٍ معاً" });
+    }
+    if (input.variants.length !== 1) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "البكج يحوي متغيّراً واحداً — احذف المتغيّرات الإضافية" });
+    }
+    const baseUnits = input.variants[0].units.filter((u) => u.isBaseUnit).length;
+    if (baseUnits !== 1) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "البكج يحوي وحدة أساس واحدة" });
+    }
+    if (!input.bundleComponents || input.bundleComponents.length === 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "البكج يحتاج مكوّناً واحداً على الأقلّ" });
+    }
+    // رصيد افتتاحي على بكج غير معنيّ (لا branchStock له) — نجرّده احترازياً.
+    if (input.variants[0].openingStock || (input.variants[0].openingStockByBranch && input.variants[0].openingStockByBranch.length)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُسمَح برصيد افتتاحي على البكج — مخزونه هو مخزون مكوّناته" });
+    }
+    if (input.recipe && input.recipe.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "وصفة الإنتاج لا تُدار على البكج — استعمل bundleComponents" });
+    }
+  }
   return withTx(async (tx) => {
     const composedName = composeProductName(input);
     if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل)" });
@@ -159,12 +189,15 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       isCustomizable: input.isCustomizable ?? false,
       isService,
       showInReception: !!input.showInReception,
+      isBundle,
     });
     const productId = extractInsertId(pRes);
 
     // print-catalog: نَلتقط متغيّر البَند الأوّل ووحدته الأساس لِربط الوصفة (الخدمات أحاديّة المتغيّر).
     let recipeOutputVariantId: number | null = null;
     let recipeOutputUnitId: number | null = null;
+    // bundles: نَلتقط متغيّر البكج الوحيد لِربط وصفة المكوّنات به بعد الحلقة.
+    let bundleParentVariantId: number | null = null;
 
     for (const v of input.variants) {
       if (!v.units.some((u) => u.isBaseUnit)) {
@@ -184,6 +217,8 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       });
       const variantId = extractInsertId(vRes);
       if (recipeOutputVariantId == null) recipeOutputVariantId = variantId;
+      // bundles: البكج أحاديّ المتغيّر (فُرض قبل المعاملة) — نلتقطه هنا لِحفظ وصفته لاحقاً.
+      if (isBundle && bundleParentVariantId == null) bundleParentVariantId = variantId;
 
       for (const u of v.units) {
         const uRes = await tx.insert(productUnits).values({
@@ -271,6 +306,16 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
           qtyPerOutputBase: toDbMoney(rl.qtyPerOutputBase),
         });
       }
+    }
+
+    // bundles: حفظ وصفة المكوّنات بعد إنشاء متغيّر البكج (متغيّر واحد بحكم القيود أعلاه).
+    // replaceBundleComponents يفرض B1..B6 داخلياً (نَست ممنوع، تفعيل، كميّة صحيحة موجبة، فرادة).
+    if (isBundle) {
+      if (bundleParentVariantId == null) {
+        // احترازي — لن يحصل بحكم قيد variants.length===1، لكن نُفصح عن السبب صراحةً بدل NULL خفيّ.
+        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تحديد متغيّر البكج بعد الإنشاء" });
+      }
+      await replaceBundleComponents(tx, bundleParentVariantId, input.bundleComponents ?? []);
     }
 
     return { productId };

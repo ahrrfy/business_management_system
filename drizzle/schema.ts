@@ -352,6 +352,10 @@ export const products = mysqlTable(
     // توجيه الخدمة لنقطة خدمة العملاء (الاستقبال): خدمة طباعة (productType=PRINT_SERVICE) مفعَّلة هنا
     // تَظهر أيضاً في كاشير الاستقبال وتُباع عبر مسار createPrintSale المدقَّق (خصم المواد + COGS).
     showInReception: boolean("showInReception").default(false).notNull(),
+    // bundles (٧/٧/٢٦): منتج مركّب (باندل/بكج) — بلا رصيد مخزنيّ خاص به؛ سعره مستقلّ يضعه المدير،
+    // وتكلفته تُحسب لحظة البيع من مجموع تكاليف مكوّناته (WAVG الحيّ)، والمخزون يُخصَم من كل مكوّن.
+    // النَسْت مَمنوع (مكوّن البكج لا يكون بكجاً) — يُفرض خادمياً في bundleService.
+    isBundle: boolean("isBundle").default(false).notNull(),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -365,6 +369,8 @@ export const products = mysqlTable(
     nameIdx: index("idx_product_name").on(table.name),
     categoryIdx: index("idx_product_category").on(table.categoryId),
     parentIdx: index("idx_product_parent").on(table.parentProductId),
+    // bundles: كشف سريع للمنتجات المركّبة (لوحة إدارة البكج، فلترة POS).
+    bundleIdx: index("idx_product_is_bundle").on(table.isBundle),
   })
 );
 
@@ -439,6 +445,49 @@ export const productPrices = mysqlTable(
 
 export type ProductPrice = typeof productPrices.$inferSelect;
 export type InsertProductPrice = typeof productPrices.$inferInsert;
+
+/* ============================ مكوّنات البكج (باندل) ============================ */
+
+/**
+ * bundles (٧/٧/٢٦): كل صفٍّ = مكوّن واحد من مكوّنات بكجٍ ما.
+ * البكج = متغيّر منتجٍ يحمل `products.isBundle=true`. المكوّنات متغيّرات منتجات **بسيطة** (`isBundle=false`) —
+ * التداخل ممنوع خادمياً في bundleService (وحارس تطبيقي: نفحص كل مكوّن مضاف).
+ *
+ * الدلالة:
+ *  - `bundleVariantId`: المتغيّر الأب (البكج نفسه؛ الذي يحمله `products.isBundle`).
+ *  - `componentVariantId`: المتغيّر المكوّن (منتج بسيط بمخزون فعلي).
+ *  - `componentBaseQuantity`: كم وحدة أساس من المكوّن تدخل في كل **وحدة أساس** من البكج.
+ *    مثال: بكج «طقم مدرسي» = 3 أقلام + 1 دفتر ⇒ صفّان بـ3 و1. عند بيع 5 أطقم = خصم 15 قلماً + 5 دفاتر.
+ *  - `componentUnitId`: وحدة العرض للمستخدم (اختيارية، لا تؤثّر على الحساب — الحساب دائماً بالأساس).
+ *
+ * قيد التفرّد: مكوّن واحد لكل (bundle, component) — إن أراد المدير كميّة أكبر يزيد `componentBaseQuantity`.
+ * قيد الحذف: cascade على البكج، restrict على المكوّن (كي لا يُحذَف مكوّن مستعمَل في بكجٍ حيّ).
+ */
+export const bundleComponents = mysqlTable(
+  "bundleComponents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    bundleVariantId: bigint("bundleVariantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "cascade" }),
+    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "restrict" }),
+    // كم وحدة أساس من المكوّن لكل وحدة أساس من البكج. صحيح موجب (>0) — يفرضه CHECK في 0057.
+    componentBaseQuantity: int("componentBaseQuantity").notNull(),
+    // وحدة العرض (كي يفهم المستخدم "3 أقلام" بدل "3 وحدات"). اختيارية، عرضٌ فقط.
+    componentUnitId: bigint("componentUnitId", { mode: "number" }).references(() => productUnits.id, { onDelete: "set null" }),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    bundleIdx: index("idx_bundle_component_bundle").on(table.bundleVariantId),
+    componentIdx: index("idx_bundle_component_child").on(table.componentVariantId),
+    // مكوّن واحد لكل (بكج، مكوّن) — الكمّية تُدار بـcomponentBaseQuantity لا بتكرار الأسطر.
+    bundleComponentUq: unique("uq_bundle_component").on(table.bundleVariantId, table.componentVariantId),
+  })
+);
+
+export type BundleComponent = typeof bundleComponents.$inferSelect;
+export type InsertBundleComponent = typeof bundleComponents.$inferInsert;
 
 /* ============================ المخزون لكل (متغيّر × فرع) ============================ */
 

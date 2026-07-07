@@ -50,6 +50,7 @@ import { conversationRouter } from "./routers/conversationRouter";
 import { integrationRouter } from "./routers/integrationRouter";
 import { deliveryRouter } from "./routers/deliveryRouter";
 import { exchangeRouter } from "./routers/exchangeRouter";
+import { bundlesRouter } from "./routers/bundlesRouter";
 import { platformAdminRouter } from "./routers/platformAdminRouter";
 
 /**
@@ -114,6 +115,8 @@ export const appRouter = router({
   delivery: deliveryRouter,
   // exchange-house (٣٠/٦/٢٦): الصيرفة (الصرّاف) — محفظتان دينار/دولار + تسديد موردين + كشف/مطابقة.
   exchange: exchangeRouter,
+  // bundles (٧/٧/٢٦): المنتجات المركّبة (باندل/بكج) — إدارة وصفة المكوّنات + معاينة أثر التعديل.
+  bundles: bundlesRouter,
   // تعدد الشركات — شاشة إدارة المنصّة (منفصلة تماماً عن جلسة/أدوار أي شركة).
   platformAdmin: platformAdminRouter,
 });
