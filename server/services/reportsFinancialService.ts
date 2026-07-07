@@ -499,9 +499,11 @@ export async function getFinancialPosition(
   `))[0] ?? { v: "0" };
 
   // FI-02: الأصول بصافي القيمة الدفترية NBV = التكلفة − الإهلاك المتراكم المُرحَّل (postMonthlyDepreciation).
+  // #2 (تدقيق التثبيت): استبعاد 'retired' أيضاً — الأصل المشطوب سُجِّلت قيمته الدفترية المتبقّية خسارةً
+  // في P&L عند الشطب، فبقاؤه في مجموع الأصول بـNBV يضخّم الأصول ويناقض الخسارة المُعترَف بها.
   const fa = rowsOf(await db.execute(sql`
     SELECT CAST(COALESCE(SUM(purchaseValue - accumulatedDepreciation), 0) AS CHAR) AS v
-    FROM fixedAssets WHERE assetStatus <> 'disposed' ${bId ? sql`AND branchId = ${bId}` : sql``}
+    FROM fixedAssets WHERE assetStatus NOT IN ('disposed', 'retired') ${bId ? sql`AND branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 
   // FIN-05 (تدقيق ٢٠/٦ — نظير FI-01 لأوامر الشغل): العربون المقبوض على أمر شغل غير مُسلَّم يَرفع النقد

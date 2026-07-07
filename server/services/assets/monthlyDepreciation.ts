@@ -1,6 +1,6 @@
 // FI-02 الإهلاك الشهري: يُرحّل إهلاك شهرٍ واحد لكل أصل غير مُستبعَد (نهج catch-up + idempotent).
 import Decimal from "decimal.js";
-import { eq, ne } from "drizzle-orm";
+import { eq, notInArray } from "drizzle-orm";
 import { fixedAssets } from "../../../drizzle/schema";
 import { postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
@@ -30,14 +30,16 @@ export async function postMonthlyDepreciation(year: number, month: number, actor
   const asOf = new Date(Date.UTC(year, month, 1));
   const entryDate = new Date(Date.UTC(year, month, 0));
   const db = requireDb();
-  const rows = await db.select({ id: fixedAssets.id }).from(fixedAssets).where(ne(fixedAssets.status, "disposed"));
+  // #3 (تدقيق التثبيت): استبعاد 'retired' كـ'disposed' — الأصل المشطوب جُمِّد إهلاكه المتراكم وسُجِّلت
+  // بقيّته خسارةً، فمواصلة إهلاكه تُكرّر الشطب (خسارة عند الشطب + إهلاك لاحق). كامن حتى تُوصَل postDepreciation.
+  const rows = await db.select({ id: fixedAssets.id }).from(fixedAssets).where(notInArray(fixedAssets.status, ["disposed", "retired"]));
 
   let posted = 0;
   let total = new Decimal(0);
   for (const { id } of rows) {
     const dep = await withTx(async (tx) => {
       const a = await loadForUpdate(tx, id);
-      if (a.status === "disposed") return new Decimal(0);
+      if (a.status === "disposed" || a.status === "retired") return new Decimal(0);
       const target = money(
         computeDepreciation(
           {
