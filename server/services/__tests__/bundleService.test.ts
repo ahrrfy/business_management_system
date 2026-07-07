@@ -1,6 +1,6 @@
 // اختبارات وحدة البكج (باندل/بكج) — ٧/٧/٢٦:
 // تغطّي ثوابت الأمان B1..B6 + توسيع البيع + توسيع المرتجع + قواعد الحفظ.
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -21,7 +21,7 @@ const actor = { userId: 1, branchId: 1 };
 
 const TABLES = [
   "accountingEntries", "receipts", "inventoryMovements",
-  "invoiceItems", "invoices", "idempotencyKeys", "bundleComponents",
+  "invoiceItemBundleComponents", "invoiceItems", "invoices", "idempotencyKeys", "bundleComponents",
   "branchStock", "productPrices", "productUnits", "productVariants", "productImages", "products",
   "shifts", "auditLogs", "customers", "suppliers", "categories",
   "users", "branches",
@@ -347,5 +347,61 @@ describe("bundleService — replaceBundleComponents (تعديل الوصفة)", 
     await withTx(async (tx) => {
       await expect(replaceBundleComponents(tx, 1, [{ componentVariantId: 2, componentBaseQuantity: 1 }])).rejects.toThrow(/بكج/);
     });
+  });
+});
+
+describe("bundleService — gstack B6 (لقطة المرتجع) + M9 (ثابت Σ=0)", () => {
+  it("B6: تعديل الوصفة بعد البيع لا يمسّ المرتجع — يعيد المكوّنات المحفوظة لحظة البيع", async () => {
+    await setStock(1, 1, 20); await setStock(2, 1, 10); await setStock(3, 1, 20);
+    // بكج {3×قلم(1) + 1×دفتر(2)}
+    const { variantId: bundleVid, productUnitId: bundleUid } = await createTestBundle("طقم-b6", [{ vid: 1, qty: 3 }, { vid: 2, qty: 1 }], "24.00");
+    const shiftId = await openShift();
+    const sale = await createSale(
+      { branchId: 1, shiftId, sourceType: "POS", priceTier: "RETAIL", lines: [{ variantId: bundleVid, productUnitId: bundleUid, quantity: "2" }], payment: { amount: "48.00", method: "CASH" } } as any,
+      actor,
+    );
+    // بعد البيع: 14 قلم، 8 دفتر.
+    expect(await stockOf(1, 1)).toBe(14);
+    expect(await stockOf(2, 1)).toBe(8);
+
+    // نُغيّر الوصفة بعد البيع إلى {2×مسطرة(3)} — وصفة مختلفة تماماً.
+    await withTx(async (tx) => {
+      await replaceBundleComponents(tx, bundleVid, [{ componentVariantId: 3, componentBaseQuantity: 2 }]);
+    });
+
+    // إرجاع البكج — يجب أن يعيد **الوصفة الأصلية (قلم/دفتر)** لا الجديدة (مسطرة).
+    const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    await returnSale(
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 2 }], restock: true } as any,
+      actor,
+    );
+    expect(await stockOf(1, 1)).toBe(20);  // القلم: عاد للأصل ✅
+    expect(await stockOf(2, 1)).toBe(10);  // الدفتر: عاد للأصل ✅
+    expect(await stockOf(3, 1)).toBe(20);  // المسطرة: لم تُمَسّ (لم تكن في وصفة البيع) ✅
+  });
+
+  it("M9: مرتجع كامل لبيع بكج ⇒ Σ(revenue)=0 و Σ(profit)=0 عبر SALE + RETURN", async () => {
+    await setStock(1, 1, 20); await setStock(2, 1, 10);
+    const { variantId: bundleVid, productUnitId: bundleUid } = await createTestBundle("طقم-m9", [{ vid: 1, qty: 3 }, { vid: 2, qty: 1 }], "30.00");
+    const shiftId = await openShift();
+    const sale = await createSale(
+      { branchId: 1, shiftId, sourceType: "POS", priceTier: "RETAIL", lines: [{ variantId: bundleVid, productUnitId: bundleUid, quantity: "1" }], payment: { amount: "30.00", method: "CASH" } } as any,
+      actor,
+    );
+    const items = await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId));
+    await returnSale(
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(items[0].id), baseQuantity: 1 }], restock: true, refund: { amount: "30.00", method: "CASH" } } as any,
+      actor,
+    );
+
+    // Σ عبر SALE + RETURN لهذه الفاتورة.
+    const entries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(and(eq(s.accountingEntries.invoiceId, sale.invoiceId), sql`entryType IN ('SALE','RETURN')`));
+    const sumRev = entries.reduce((a, e) => a + Number(e.revenue ?? 0), 0);
+    const sumProfit = entries.reduce((a, e) => a + Number(e.profit ?? 0), 0);
+    expect(sumRev).toBeCloseTo(0, 2);
+    expect(sumProfit).toBeCloseTo(0, 2);
   });
 });
