@@ -223,7 +223,7 @@ function ConversationDetail({ id, onChanged }: { id: number; onChanged: () => vo
   );
 }
 
-function NewConversationDialog({ onCreated, onClose }: { onCreated: (id: number) => void; onClose: () => void }) {
+function NewConversationDialog({ onCreated, onClose, branchId }: { onCreated: (id: number) => void; onClose: () => void; branchId?: number }) {
   const [channel, setChannel] = useState<"WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "STORE" | "PHONE" | "WALK_IN" | "OTHER">("PHONE");
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -273,7 +273,7 @@ function NewConversationDialog({ onCreated, onClose }: { onCreated: (id: number)
         <div className="flex gap-2 p-4 pt-0">
           <Button variant="outline" onClick={onClose} className="flex-1">إلغاء</Button>
           <Button
-            onClick={() => upsert.mutate({ channel, channelHandle: handle.trim(), displayName: displayName.trim() || null })}
+            onClick={() => upsert.mutate({ channel, channelHandle: handle.trim(), displayName: displayName.trim() || null, branchId })}
             disabled={upsert.isPending || !handle.trim()}
             className="flex-1"
           >
@@ -287,7 +287,15 @@ function NewConversationDialog({ onCreated, onClose }: { onCreated: (id: number)
 
 export default function Inbox() {
   const [filter, setFilter] = useState<"all" | "unread" | "archived" | "closed">("all");
-  const list = trpc.conversations.list.useQuery({ filter });
+  // #8 (تدقيق التثبيت): channelsRead يشتقّ scopedBranchId خادمياً؛ للمدير/الأدمن تعود null
+  // فتطلب branchId صريحاً وإلا BAD_REQUEST ⇒ صندوق فارغ صامت. نمرّر branchId من هوية المستخدم
+  // (كلّ مدير/أدمن مُسنَد فرعياً في هذا النظام) — الكاشير/الفني يتجاهل الخادم إدخاله للمعزول.
+  const me = trpc.auth.me.useQuery();
+  const inputBranchId = me.data?.branchId ? Number(me.data.branchId) : undefined;
+  const list = trpc.conversations.list.useQuery(
+    { filter, branchId: inputBranchId },
+    { enabled: !!me.data },
+  );
   const [selId, setSelId] = useState<number | null>(null);
   const [showNew, setShowNew] = useState(false);
 
@@ -357,7 +365,7 @@ export default function Inbox() {
         )}
       </div>
 
-      {showNew && <NewConversationDialog onCreated={(id) => { setSelId(id); list.refetch(); }} onClose={() => setShowNew(false)} />}
+      {showNew && <NewConversationDialog onCreated={(id) => { setSelId(id); list.refetch(); }} onClose={() => setShowNew(false)} branchId={inputBranchId} />}
     </div>
   );
 }

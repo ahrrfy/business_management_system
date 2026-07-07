@@ -55,6 +55,11 @@ export default function Returns() {
   const [done, setDone] = useState("");
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("");
+  // #5 (تدقيق التثبيت): idempotency للمرتجع — الشاشة كانت ترسل create.mutate بلا clientRequestId
+  // (بخلاف SalesReturnNew) ⇒ على شبكة جوّال متذبذبة (CGNAT): commit ينجح لكن الاستجابة تنتهي مهلتها،
+  // فيضغط المستخدم مرّةً ثانية ⇒ مرتجع مكرَّر (RETURN restock مكرَّر + adjustCustomerBalance مكرَّر
+  // + استرداد نقدي يخرج مرّتين). المفتاح ثابت للفاتورة المختارة، يتجدَّد عند pick()/بعد النجاح.
+  const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
 
   const invoicesQuery = trpc.sales.list.useQuery({ limit: 50 });
 
@@ -83,6 +88,8 @@ export default function Returns() {
     setRestock(true);
     setError("");
     setDone("");
+    // #5: مفتاح جديد لكل فاتورة مختارة — يمنع خلط idempotency بين فواتير مختلفة.
+    setClientRequestId(crypto.randomUUID());
   }
 
   function resetFields() {
@@ -96,6 +103,8 @@ export default function Returns() {
     onSuccess: async () => {
       setDone("تمّ تسجيل المرتجع بنجاح.");
       resetFields();
+      // #5: مفتاح جديد للمرتجع التالي على نفس الفاتورة (مرتجعات جزئية متكرّرة).
+      setClientRequestId(crypto.randomUUID());
       await Promise.all([
         utils.sales.list.invalidate(),
         utils.returns.getInvoice.invalidate(),
@@ -151,7 +160,7 @@ export default function Returns() {
     )
       return;
 
-    create.mutate({ invoiceId: data.id, lines, refund, restock });
+    create.mutate({ invoiceId: data.id, lines, refund, restock, clientRequestId });
   }
 
   return (
