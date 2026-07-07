@@ -236,14 +236,17 @@ export async function getSalesByDimension(opts: {
     return summarizeDimensionRows(rows);
   }
 
-  // revenue=SUM(total)، paid=SUM(paidAmount)، unpaid=SUM(GREATEST(total-paidAmount-returnedTotal,0)).
+  // #11 (تدقيق التثبيت): revenue = SUM(i.total - i.returnedTotal) — كان يستعمل i.total الخام
+  // (شامل الضريبة، بلا تصافي المرتجعات) فينحرف عن تبويب المنتج على نفس الشاشة وعن P&L.
+  // التصافي على مستوى الفاتورة دقيق (invoices.returnedTotal تراكميّ). التكلفة تبقى i.costTotal —
+  // إن أعيد جزء للمخزون فإن قيمته ستُخصم عبر بيع لاحق، فتكلفة هذه الفاتورة الأصلية تبقى ثابتة.
   const rows = rowsOf(
     await db.execute(sql`
       SELECT
         CAST(COALESCE(${groupKey}, '') AS CHAR) AS \`key\`,
         ${labelExpr} AS label,
         COUNT(*) AS invoices,
-        CAST(COALESCE(SUM(i.total), 0) AS CHAR) AS revenue,
+        CAST(COALESCE(SUM(i.total - i.returnedTotal), 0) AS CHAR) AS revenue,
         CAST(COALESCE(SUM(i.paidAmount), 0) AS CHAR) AS paid,
         CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaid,
         CAST(COALESCE(SUM(i.costTotal), 0) AS CHAR) AS cost
@@ -251,7 +254,7 @@ export async function getSalesByDimension(opts: {
       ${joinClause}
       WHERE ${where}
       GROUP BY ${groupKey}, label
-      ORDER BY SUM(i.total) DESC
+      ORDER BY SUM(i.total - i.returnedTotal) DESC
     `),
   );
   return summarizeDimensionRows(rows);
