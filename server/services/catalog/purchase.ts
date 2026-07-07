@@ -4,6 +4,11 @@ import { branchStock, productUnits, productVariants, products } from "../../../d
 import { getDb } from "../../db";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
 
+// Codex #163 P2 (Filter bundles out before stock movements): البكج بلا مخزون ذاتي ⇒ إضافته إلى
+// أمر شراء تفشل عند الاستلام في `applyMovement` (يرفض تحريك مخزون البكج مباشرةً). نستبعده هنا
+// كي لا يظهر في المنتقيات أصلاً بدل التعثّر متأخّراً بعد جهد إدخال. لا يمسّ منطق الشراء نفسه.
+const notBundle = eq(products.isBundle, false);
+
 /** One purchasable line: a (variant × unit) with the variant's last cost (per base) and branch stock.
  *  Distinct from {@link PosRow}: it carries COST, never a sell price, so it must never feed the cashier UI. */
 export interface PurchaseRow {
@@ -27,7 +32,7 @@ export async function listForPurchase(branchId: number, query?: string, limit = 
   const db = getDb();
   if (!db) return [];
   const search = buildCatalogSearchWhere(query);
-  const where = search ? and(activeOnly, search) : activeOnly;
+  const where = search ? and(activeOnly, notBundle, search) : and(activeOnly, notBundle);
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await db
     .select({

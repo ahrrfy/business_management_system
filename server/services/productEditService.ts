@@ -58,6 +58,8 @@ export interface ProductForVariantEdit {
   categoryId: number | null;
   isCustomizable: boolean;
   isService: boolean;
+  /** gstack B12 (٧/٧/٢٦): علم البكج — يُشغّل تبويب وصفة المكوّنات في ProductEdit. */
+  isBundle: boolean;
   isActive: boolean;
   /** قالب الوحدات المشترك — مُشتقّ من وحدات أوّل متغيّر فعّال (النموذج يصنعها موحّدة). */
   unitTemplate: VariantEditUnit[];
@@ -83,6 +85,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       categoryId: p.categoryId != null ? Number(p.categoryId) : null,
       isCustomizable: !!p.isCustomizable,
       isService: !!p.isService,
+      isBundle: !!p.isBundle,
       isActive: !!p.isActive,
       unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
       variants: [],
@@ -149,6 +152,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     categoryId: p.categoryId != null ? Number(p.categoryId) : null,
     isCustomizable: !!p.isCustomizable,
     isService: !!p.isService,
+    isBundle: !!p.isBundle,
     isActive: !!p.isActive,
     unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
     variants: variantRows,

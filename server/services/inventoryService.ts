@@ -17,6 +17,18 @@ async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
   return !!rows[0]?.isService;
 }
 
+/** bundles (٧/٧/٢٦): يتحقّق إن كان المتغيّر يخصّ منتج بكج (لا branchStock له — يُوسَّع لمكوّناته).
+ *  استُدعي كحاجز دفاعي على applyMovement كي لا يُعبَّى صفّ رصيدٍ وهميّ للبكج (تدوين خطأ خفيّ في التقارير). */
+async function isBundleVariant(tx: Tx, variantId: number): Promise<boolean> {
+  const rows = await tx
+    .select({ isBundle: products.isBundle })
+    .from(productVariants)
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(eq(productVariants.id, variantId))
+    .limit(1);
+  return !!rows[0]?.isBundle;
+}
+
 export type MovementType = "IN" | "OUT" | "ADJUST" | "RETURN" | "TRANSFER_IN" | "TRANSFER_OUT";
 type DirectionalType = Exclude<MovementType, "ADJUST">;
 
@@ -88,6 +100,15 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُمكن تَحويل مُنتج خِدمي بين الفُروع" });
     }
     return { movementId: 0, newQuantity: 0 };
+  }
+
+  // bundles: البكج بلا branchStock — يجب أن يُوسَّع لمكوّناته قبل الوصول لهنا (sale/create.ts + returnService).
+  // أي استدعاء مباشر خطأ برمجيّ (شراء بكج، تحويل بكج، جرد بكج) — نمنعه صراحةً برسالةٍ تدلّ على السبب.
+  if (await isBundleVariant(tx, a.variantId)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يُمكن تحريك مخزون مباشرةً لمنتج بكج — البكج مركّب ومخزونه = مخزون مكوّناته",
+    });
   }
 
   // اضمن وجود صفّ الرصيد قبل القفل — FOR UPDATE لا يقفل شيئاً على صفّ غير موجود (يتسرّب بيعٌ زائد/فقدُ تحديث).
@@ -199,6 +220,13 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
   // مُنتج خِدمي: لا تَسوية مَخزون لـ«ما لا مَخزون له». نَتجاهل بِنَتيجة اصطناعية.
   if (await isServiceVariant(tx, a.variantId)) {
     return { movementId: 0, newQuantity: 0, delta: 0 };
+  }
+  // bundles: لا تسوية جرد مباشرة للبكج — الجرد يفحص مكوّناته. رفض صريح لا تجاهُل صامت.
+  if (await isBundleVariant(tx, a.variantId)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا تُسوَّى مخزون بكجٍ مباشرةً — سوِّ مكوّناته",
+    });
   }
   // اضمن وجود الصفّ قبل القفل (نفس علّة FOR UPDATE على صفّ غير موجود).
   await tx

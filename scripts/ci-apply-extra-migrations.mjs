@@ -23,6 +23,16 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0036_vouchers_pro.sql",
   // 0039 توسعة D2: نفس نمط 0035 (GENERATED STORED) على customers.searchNorm/suppliers.searchNorm.
   "drizzle/migrations/0039_search_norm_customers_suppliers.sql",
+  // gstack M6 (٧/٧/٢٦): قيود CHECK للـبكج/اللقطة/موجات الأسعار — drizzle-kit db:push لا يبنيها
+  // موثوقاً على MySQL 8. snippet idempotent (يفحص INFORMATION_SCHEMA قبل ALTER).
+  "drizzle/migrations/extras/0057_0060_bundle_check_constraints.sql",
+  // ٨/٧/٢٦ (تشخيص فشل perf.explain على PR #163): db:push يترك invoices بلا فهارسها المُغطّية على
+  // قواعد CI بعد تضخّم schema (المذكور في الذاكرة «db:push ينشئ جداول عارية عند فشله النصفي»).
+  // الفهارس مطلوبة لحارس perf.explain وللأداء الفعلي. 0031/0032/0033 idempotent (INFORMATION_SCHEMA
+  // checks) فآمنة للتَطبيق المتكرّر بعد db:push. الترتيب مهم: 0031→0032→0033 (0033 يُسقط بادئة كرَّرها 0032).
+  "drizzle/migrations/0031_scale_composite_indexes.sql",
+  "drizzle/migrations/0032_invoice_covering_indexes.sql",
+  "drizzle/migrations/0033_drop_redundant_invoice_index.sql",
 ];
 
 const url = process.env.DATABASE_URL;

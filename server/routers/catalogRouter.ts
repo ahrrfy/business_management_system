@@ -159,6 +159,20 @@ export const catalogRouter = router({
           .array(z.object({ inputVariantId: z.number().int().positive(), qtyPerOutputBase: z.string() }))
           .max(50)
           .optional(),
+        // bundles (٧/٧/٢٦): منتج مركّب (بكج). عند true يجب variants.length=1 + وحدة أساس واحدة + bundleComponents ≥1.
+        isBundle: z.boolean().optional(),
+        bundleComponents: z
+          .array(
+            z.object({
+              componentVariantId: z.number().int().positive(),
+              componentBaseQuantity: z.number().int().positive(),
+              componentUnitId: z.number().int().positive().nullish(),
+              sortOrder: z.number().int().min(0).max(999).optional(),
+              notes: z.string().max(500).nullish(),
+            }),
+          )
+          .max(50)
+          .optional(),
         variants: z.array(variantSchema).min(1),
         images: z.array(imageSchema).max(10).optional(),
       })

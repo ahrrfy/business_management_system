@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like, sql } from "drizzle-orm";
-import { branchStock, productUnits, productVariants, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../drizzle/schema";
+import { branchStock, productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../drizzle/schema";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
@@ -44,6 +44,27 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     }
 
     if (!input.items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء بلا أصناف" });
+
+    // gstack B5 (Bundle in PO ⇒ inventory limbo): البكج بلا مخزون ذاتي — تسجيله في أمر شراء يؤدّي إلى
+    // فشل الاستلام بحاجز `applyMovement` بعد جهد إدخال كامل، وقد يترك بضاعة على الرصيف بلا AP. نرفض
+    // عند الإدخال بدل التعثّر متأخّراً. `listForPurchase` يستبعده من المنتقيات، لكن الدفاع في العمق
+    // على مستوى الخدمة يحرس المسارات الأخرى (استيراد/API خارجي/راوتر لا يمرّ بمنتقي الشاشة).
+    const uniqueVariantIds = Array.from(new Set(input.items.map((it) => it.variantId)));
+    if (uniqueVariantIds.length) {
+      const flags = await tx
+        .select({ isBundle: products.isBundle, productName: products.name, sku: productVariants.sku })
+        .from(productVariants)
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(inArray(productVariants.id, uniqueVariantIds));
+      for (const f of flags) {
+        if (f.isBundle) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `لا يُشترى بكج مباشرةً: «${f.productName} — ${f.sku}». اشترِ مكوّناته فرادى.`,
+          });
+        }
+      }
+    }
 
     const rows = [];
     const lineNets: string[] = [];

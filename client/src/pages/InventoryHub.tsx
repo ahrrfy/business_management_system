@@ -14,6 +14,7 @@ const Stocktakes = lazy(() => import("@/pages/Stocktakes"));
 const ReorderAlerts = lazy(() => import("@/pages/ReorderAlerts"));
 const Categories = lazy(() => import("@/pages/Categories"));
 const BarcodeLabels = lazy(() => import("@/pages/BarcodeLabels"));
+const PriceWaves = lazy(() => import("@/pages/PriceWaves"));
 
 const TABS: HubTab[] = [
   { value: "stock", label: "الأرصدة", Component: Inventory },
@@ -26,6 +27,8 @@ const TABS: HubTab[] = [
   { value: "reorder", label: "إعادة الطلب", Component: ReorderAlerts },
   { value: "categories", label: "الفئات", gate: { managerOnly: true }, Component: Categories },
   { value: "barcodes", label: "ملصقات الباركود", Component: BarcodeLabels },
+  // gstack B10 (٧/٧/٢٦): موجات الأسعار كتبويب ضمن المخزون (managerOnly — تُعدّل أسعاراً جماعياً).
+  { value: "price-waves", label: "موجات الأسعار", gate: { managerOnly: true }, Component: PriceWaves },
 ];
 
 export default function InventoryHub() {

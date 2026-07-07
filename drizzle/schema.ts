@@ -352,6 +352,10 @@ export const products = mysqlTable(
     // توجيه الخدمة لنقطة خدمة العملاء (الاستقبال): خدمة طباعة (productType=PRINT_SERVICE) مفعَّلة هنا
     // تَظهر أيضاً في كاشير الاستقبال وتُباع عبر مسار createPrintSale المدقَّق (خصم المواد + COGS).
     showInReception: boolean("showInReception").default(false).notNull(),
+    // bundles (٧/٧/٢٦): منتج مركّب (باندل/بكج) — بلا رصيد مخزنيّ خاص به؛ سعره مستقلّ يضعه المدير،
+    // وتكلفته تُحسب لحظة البيع من مجموع تكاليف مكوّناته (WAVG الحيّ)، والمخزون يُخصَم من كل مكوّن.
+    // النَسْت مَمنوع (مكوّن البكج لا يكون بكجاً) — يُفرض خادمياً في bundleService.
+    isBundle: boolean("isBundle").default(false).notNull(),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -365,6 +369,8 @@ export const products = mysqlTable(
     nameIdx: index("idx_product_name").on(table.name),
     categoryIdx: index("idx_product_category").on(table.categoryId),
     parentIdx: index("idx_product_parent").on(table.parentProductId),
+    // bundles: كشف سريع للمنتجات المركّبة (لوحة إدارة البكج، فلترة POS).
+    bundleIdx: index("idx_product_is_bundle").on(table.isBundle),
   })
 );
 
@@ -439,6 +445,163 @@ export const productPrices = mysqlTable(
 
 export type ProductPrice = typeof productPrices.$inferSelect;
 export type InsertProductPrice = typeof productPrices.$inferInsert;
+
+/* ============================ مكوّنات البكج (باندل) ============================ */
+
+/**
+ * bundles (٧/٧/٢٦): كل صفٍّ = مكوّن واحد من مكوّنات بكجٍ ما.
+ * البكج = متغيّر منتجٍ يحمل `products.isBundle=true`. المكوّنات متغيّرات منتجات **بسيطة** (`isBundle=false`) —
+ * التداخل ممنوع خادمياً في bundleService (وحارس تطبيقي: نفحص كل مكوّن مضاف).
+ *
+ * الدلالة:
+ *  - `bundleVariantId`: المتغيّر الأب (البكج نفسه؛ الذي يحمله `products.isBundle`).
+ *  - `componentVariantId`: المتغيّر المكوّن (منتج بسيط بمخزون فعلي).
+ *  - `componentBaseQuantity`: كم وحدة أساس من المكوّن تدخل في كل **وحدة أساس** من البكج.
+ *    مثال: بكج «طقم مدرسي» = 3 أقلام + 1 دفتر ⇒ صفّان بـ3 و1. عند بيع 5 أطقم = خصم 15 قلماً + 5 دفاتر.
+ *  - `componentUnitId`: وحدة العرض للمستخدم (اختيارية، لا تؤثّر على الحساب — الحساب دائماً بالأساس).
+ *
+ * قيد التفرّد: مكوّن واحد لكل (bundle, component) — إن أراد المدير كميّة أكبر يزيد `componentBaseQuantity`.
+ * قيد الحذف: cascade على البكج، restrict على المكوّن (كي لا يُحذَف مكوّن مستعمَل في بكجٍ حيّ).
+ */
+export const bundleComponents = mysqlTable(
+  "bundleComponents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    bundleVariantId: bigint("bundleVariantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "cascade" }),
+    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "restrict" }),
+    // كم وحدة أساس من المكوّن لكل وحدة أساس من البكج. صحيح موجب (>0) — يفرضه CHECK في 0057.
+    componentBaseQuantity: int("componentBaseQuantity").notNull(),
+    // وحدة العرض (كي يفهم المستخدم "3 أقلام" بدل "3 وحدات"). اختيارية، عرضٌ فقط.
+    componentUnitId: bigint("componentUnitId", { mode: "number" }).references(() => productUnits.id, { onDelete: "set null" }),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    notes: text("notes"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    bundleIdx: index("idx_bundle_component_bundle").on(table.bundleVariantId),
+    componentIdx: index("idx_bundle_component_child").on(table.componentVariantId),
+    // مكوّن واحد لكل (بكج، مكوّن) — الكمّية تُدار بـcomponentBaseQuantity لا بتكرار الأسطر.
+    bundleComponentUq: unique("uq_bundle_component").on(table.bundleVariantId, table.componentVariantId),
+  })
+);
+
+export type BundleComponent = typeof bundleComponents.$inferSelect;
+export type InsertBundleComponent = typeof bundleComponents.$inferInsert;
+
+/**
+ * invoiceItemBundleComponents (٧/٧/٢٦، gstack B6): لقطة مكوّنات البكج لحظة إنشاء `invoiceItem`.
+ *
+ * السبب: `bundleComponents` وصفة حيّة قابلة للتعديل عبر `bundlesRouter.setComponents`. مسار المرتجع
+ * كان يستعملها ⇒ لو غيّر المدير الوصفة بين البيع والإرجاع، المرتجع يعيد مكوّنات مختلفة عمّا خُصم =
+ * انحراف مخزون صامت. الآن نُخزّن اللقطة على مستوى invoiceItem، ومسار المرتجع يقرأ منها حصراً.
+ *
+ * دورة الحياة: الإدراج في `sale/create.ts` داخل نفس معاملة إنشاء الفاتورة (ذرّي). لا تُعدَّل بعد
+ * ذلك أبداً (مبدأ «الأثر المُجمَّد» — كالخصم في invoiceItems.discountAmount). `ON DELETE cascade`
+ * على `invoiceItemId` كي تختفي مع البند، و`ON DELETE restrict` على المكوّن (يمنع حذف مكوّن
+ * تشير إليه فاتورة قابلة للإرجاع — نفس دلالة `bundleComponents.componentVariantId`).
+ */
+export const invoiceItemBundleComponents = mysqlTable(
+  "invoiceItemBundleComponents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull().references(() => invoiceItems.id, { onDelete: "cascade" }),
+    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "restrict" }),
+    componentBaseQuantity: int("componentBaseQuantity").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    itemIdx: index("idx_iibc_item").on(table.invoiceItemId),
+    componentIdx: index("idx_iibc_component").on(table.componentVariantId),
+  })
+);
+
+export type InvoiceItemBundleComponent = typeof invoiceItemBundleComponents.$inferSelect;
+export type InsertInvoiceItemBundleComponent = typeof invoiceItemBundleComponents.$inferInsert;
+
+/* ============================ موجات تحديث الأسعار (Price Waves) ============================ */
+
+/**
+ * priceUpdateWaves (٧/٧/٢٦): «موجة تحديث أسعار» = تعديل جماعيّ لأسعار البيع بمعاينة ذرّية.
+ *
+ * السياق العراقي: أسعار السوق (دولار، تكلفة استيراد، وسم مورد) تتذبذب أسبوعياً. المدير يريد
+ * تحديث أسعار مجموعة منتجات دفعةً واحدة بنسبة/مبلغ محدَّد، ويرى **معاينة** قبل الالتزام،
+ * ويحتفظ بسجلٍّ دائم لمن غيّر ولماذا (P&L الفعلي، فحص هامش، تدقيق).
+ *
+ * الآلية:
+ *   1. `previewPriceWave(filters, changeType, changeValue)` — يُرجع صفوف productUnits×tier
+ *      المتأثّرة مع (oldPrice, newPrice) — بلا كتابة.
+ *   2. `applyPriceWave(inputAfterPreview, actor)` — يفتح معاملة واحدة:
+ *        - يكتب رأس الموجة (priceUpdateWaves) بـtotalRows.
+ *        - لكل صفٍّ متأثّر: UPDATE productPrices + INSERT priceChangeLog (مربوطاً بـwaveId).
+ *   3. لا rollback جزئي: كل الأسطر تنجح أو لا تنجح (withTx).
+ *
+ * أنواع التغيير (`changeType`):
+ *   INCREASE_PERCENT — رفع بنسبة (مثل +5% على كل شيء).
+ *   DECREASE_PERCENT — تخفيض بنسبة.
+ *   INCREASE_AMOUNT  — إضافة مبلغ ثابت لكل وحدة (مثل +500 د.ع).
+ *   DECREASE_AMOUNT  — طرح مبلغ ثابت.
+ *   SET_MARGIN       — تعيين هامش ربح على التكلفة (newPrice = cost × (1 + margin%)) — يقرأ تكلفة WAVG.
+ *
+ * الفلاتر (`filtersJson`): categoryId, productSearch (name/sku LIKE), priceTier, onlyBelowMargin (%).
+ */
+export const priceUpdateWaves = mysqlTable(
+  "priceUpdateWaves",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    changeType: mysqlEnum("priceChangeType", [
+      "INCREASE_PERCENT", "DECREASE_PERCENT",
+      "INCREASE_AMOUNT", "DECREASE_AMOUNT",
+      "SET_MARGIN",
+    ]).notNull(),
+    // قيمة التغيير: نسبة (0..1000) أو مبلغ ثابت أو نسبة الهامش. الدلالة تعتمد على changeType.
+    changeValue: decimal("changeValue", { precision: 15, scale: 2 }).notNull(),
+    // فلاتر الاختيار كـJSON — للتدقيق (من غيّر ولمن ولمتى).
+    filtersJson: text("filtersJson"),
+    totalRows: int("totalRows").default(0).notNull(),
+    appliedBy: int("appliedBy").notNull().references(() => users.id),
+    appliedAt: timestamp("appliedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    appliedAtIdx: index("idx_wave_applied_at").on(table.appliedAt),
+    appliedByIdx: index("idx_wave_applied_by").on(table.appliedBy),
+  })
+);
+
+export type PriceUpdateWave = typeof priceUpdateWaves.$inferSelect;
+export type InsertPriceUpdateWave = typeof priceUpdateWaves.$inferInsert;
+
+/**
+ * priceChangeLog: صفٌّ لكل تغيير سعر على (productUnit × tier) — سجلّ دائم للتدقيق.
+ * `waveId` nullable: التغييرات اليدوية (شاشة تعديل المنتج فرادى) تُسجَّل بـwaveId=NULL لاحقاً؛
+ * تغييرات الموجة الجماعية تُربَط بـwaveId. الأثر مُجمَّد — لا يُحذَف السجلّ عند إلغاء الموجة.
+ */
+export const priceChangeLog = mysqlTable(
+  "priceChangeLog",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull().references(() => productUnits.id, { onDelete: "cascade" }),
+    priceTier: mysqlEnum("priceChangeTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"]).notNull(),
+    // oldPrice=NULL يشير إلى إنشاء أوّل سعر (لم يكن هناك سعر قبل).
+    oldPrice: decimal("oldPrice", { precision: 15, scale: 2 }),
+    newPrice: decimal("newPrice", { precision: 15, scale: 2 }).notNull(),
+    // مبرّر التغيير (اختياري لكن ينصح به) — يعرَض في التقارير.
+    reason: varchar("reason", { length: 255 }),
+    waveId: bigint("waveId", { mode: "number" }).references(() => priceUpdateWaves.id, { onDelete: "set null" }),
+    actorUserId: int("actorUserId").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    unitTierIdx: index("idx_price_log_unit_tier").on(table.productUnitId, table.priceTier),
+    waveIdx: index("idx_price_log_wave").on(table.waveId),
+    createdAtIdx: index("idx_price_log_created").on(table.createdAt),
+  })
+);
+
+export type PriceChangeLog = typeof priceChangeLog.$inferSelect;
+export type InsertPriceChangeLog = typeof priceChangeLog.$inferInsert;
 
 /* ============================ المخزون لكل (متغيّر × فرع) ============================ */
 
