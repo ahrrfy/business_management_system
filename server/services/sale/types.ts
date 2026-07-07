@@ -11,6 +11,11 @@ export interface SaleLineInput {
   unitPriceOverride?: string | null;
   discountPercent?: string | null;
   discountAmount?: string | null;
+  /** promotions v2 (٨/٧/٢٦): معرّف العرض الذي عرضه POS للعميل — الخادم يتحقّق (idempotent)
+   *  أن العرض ما زال ساري ويحسب `expectedDiscount = discountForUnit × qty` ويقارن مع `discountAmount`.
+   *  إن طابق ⇒ يُخزَّن `promotionId` + `promotionDiscount` على invoiceItem. إن لم يطابق ⇒ لا نُخزّن
+   *  (نعامل الخصم كيدوي) — لا نرفض لتفادي فشل بيع بعد تعديل عرض بين العرض والحفظ. */
+  promotionId?: number | null;
 }
 
 export interface CreateSaleInput {

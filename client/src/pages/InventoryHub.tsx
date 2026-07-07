@@ -15,6 +15,7 @@ const ReorderAlerts = lazy(() => import("@/pages/ReorderAlerts"));
 const Categories = lazy(() => import("@/pages/Categories"));
 const BarcodeLabels = lazy(() => import("@/pages/BarcodeLabels"));
 const PriceWaves = lazy(() => import("@/pages/PriceWaves"));
+const Offers = lazy(() => import("@/pages/Offers"));
 
 const TABS: HubTab[] = [
   { value: "stock", label: "الأرصدة", Component: Inventory },
@@ -26,9 +27,13 @@ const TABS: HubTab[] = [
   { value: "stocktakes", label: "الجرد والتسوية", Component: Stocktakes },
   { value: "reorder", label: "إعادة الطلب", Component: ReorderAlerts },
   { value: "categories", label: "الفئات", gate: { managerOnly: true }, Component: Categories },
-  { value: "barcodes", label: "ملصقات الباركود", Component: BarcodeLabels },
+  // labels (٨/٧/٢٦): طباعة ملصقات الباركود مع بوّابة صريحة على وحدة المنتجات — الكاشير الذي لا يملك
+  // access للمنتجات لا ينبغي أن يطبع ملصقات (يمكن تسريب أسماء منتجات/باركود لجهة خارجية).
+  { value: "barcodes", label: "ملصقات الباركود", gate: { module: "products", level: "READ" }, Component: BarcodeLabels },
   // gstack B10 (٧/٧/٢٦): موجات الأسعار كتبويب ضمن المخزون (managerOnly — تُعدّل أسعاراً جماعياً).
   { value: "price-waves", label: "موجات الأسعار", gate: { managerOnly: true }, Component: PriceWaves },
+  // promotions v2 (٨/٧/٢٦): العروض والخصومات — تُطبَّق آلياً في POS على السعر المعروض.
+  { value: "offers", label: "العروض والخصومات", gate: { managerOnly: true }, Component: Offers },
 ];
 
 export default function InventoryHub() {

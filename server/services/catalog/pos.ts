@@ -1,10 +1,13 @@
 // قراءات الكاشير (POS): مطابقة الباركود وقائمة البيع.
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { branchStock, bundleComponents, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
-import { getDb } from "../../db";
+import { getDb, type Tx } from "../../db";
 import { resolveContractPrices } from "../contractPriceService";
+import { money, toDbMoney } from "../money";
 import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
+import { getProductCategoryIds, resolvePromotionForLine } from "../salesPromotionService";
+import { withTx } from "../tx";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility } from "./search";
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
@@ -33,6 +36,15 @@ export interface PosRow {
   // gstack B10 (٧/٧/٢٦): البكج بلا branchStock ذاتي — POS يعرض توفّراً **مشتقاً** = min(floor(componentStock/qty))
   // على مكوّناته. isBundle=true يشغّل الشارة والعدّ عبر `applyBundleAvailability`. المكوّن الأشحّ يحدّد الحدّ.
   isBundle: boolean;
+  // promotions v2 (٨/٧/٢٦، gstack B1+B2): «نقطة العرض = نقطة الفرض». `price` أعلاه = السعر الأصلي
+  // (سعر الفئة أو التعاقدي). `promotionDiscountForUnit` هو الخصم لكل وحدة (>0 لو ينطبق عرض).
+  // `promotionEffectivePrice` = `price - promotionDiscountForUnit` — الكاشير يعرضه للعميل ويبني منه
+  // payment.amount ⇒ لا انحراف بين ما يعرضه ويحصّله وما يسجّله الخادم (يحلّ B2).
+  // `promotionId`+`promotionName` للتدقيق/الشارة. سعر تعاقدي؟ العرض لا ينطبق (contract wins).
+  promotionId: number | null;
+  promotionName: string | null;
+  promotionDiscountForUnit: string; // "0.00" لو لا عرض
+  promotionEffectivePrice: string | null; // السعر بعد الخصم — null لو لا عرض (المستهلك يستعمل price)
 }
 
 function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number, tier: PriceTier) {
@@ -83,7 +95,87 @@ function normalize(rows: any[]): PosRow[] {
     isPrintService: r.productType === PRINT_SERVICE_TYPE,
     isContractPrice: false,
     isBundle: !!r.isBundle,
+    promotionId: null,
+    promotionName: null,
+    promotionDiscountForUnit: "0.00",
+    promotionEffectivePrice: null,
   }));
+}
+
+/** حبيبة اليوم المحلي (Baghdad UTC+3) بصيغة YYYY-MM-DD (B8 من gstack). */
+function todayYmdBaghdad(): string {
+  const now = new Date();
+  // UTC+3 offset — بغداد لا تستعمل DST.
+  const baghdad = new Date(now.getTime() + 3 * 60 * 60 * 1000);
+  return baghdad.toISOString().slice(0, 10);
+}
+
+/**
+ * promotions v2 (٨/٧/٢٦، gstack B1+B2+B8): يحلّ العرض المطبَّق على كل صفٍّ ويعرض السعر المخصوم.
+ *   - يتخطّى الأسطر التي لها سعر تعاقدي (`isContractPrice=true`) — قرار المالك: التعاقدي يفوز.
+ *   - يتخطّى البكجات (نطاق قرار: العروض على البكج نُخطّطها بعد استقرار موجة v2).
+ *   - يتخطّى الخدمات (لا معنى لعرض «خصم» على خدمة مسعّرة كليّاً).
+ *   - يستدعي `resolvePromotionForLine` لكل صفٍّ ناجٍ ⇒ يُعبّي promotionId/Name/DiscountForUnit/EffectivePrice.
+ *
+ * ملاحظة الأداء: النداء يمرّ بـ`withTx` قصير لكل قائمة (لا يمنع القفل — نستدعي بلا FOR UPDATE).
+ * المستدعي: قائمة POS + مطابقة الباركود ⇒ ٥٠-٢٠٠ صف ⇒ استدعاء واحد لكل نداء API. مقبول.
+ */
+async function applyPromotions(
+  rows: PosRow[],
+  branchId: number,
+  customerTier: PriceTier,
+): Promise<PosRow[]> {
+  if (!rows.length) return rows;
+  const eligible = rows.filter(
+    (r) => !r.isContractPrice && !r.isBundle && !r.isService && !r.isPrintService && r.price != null,
+  );
+  if (!eligible.length) return rows;
+
+  const todayYmd = todayYmdBaghdad();
+  const resolvedMap = new Map<number, { id: number; name: string; discountForUnit: string; effective: string }>();
+
+  await withTx(async (tx: Tx) => {
+    // productId + categoryId جماعياً — تجنّب N+1.
+    const productIds = Array.from(new Set(eligible.map((r) => r.productId)));
+    const categoryByProduct = await getProductCategoryIds(tx, productIds);
+
+    for (const r of eligible) {
+      const price = money(r.price!);
+      const lineAmount = price; // كميّة 1 عند التسعير المعروض — Line-min filter عمليّاً لا يعمل لأنه على «إجمالي السطر» في العرض الأصلي؛ للـPOS نمرّر سعر الوحدة (خصمٌ min-line=0 يعمل، >0 يتخطّى لأن العميل يبني الكميّة لاحقاً).
+      const res = await resolvePromotionForLine(tx, {
+        branchId,
+        customerTier,
+        productId: r.productId,
+        variantId: r.variantId,
+        categoryId: categoryByProduct.get(r.productId) ?? null,
+        unitPrice: price.toFixed(2),
+        lineAmount: lineAmount.toFixed(2),
+        hasContractPrice: false, // filtered above
+        todayYmd,
+      });
+      if (res) {
+        const effective = price.minus(money(res.discountForUnit));
+        resolvedMap.set(r.productUnitId, {
+          id: res.promotionId,
+          name: res.promotionName,
+          discountForUnit: res.discountForUnit,
+          effective: toDbMoney(effective.lt(0) ? new (money("0").constructor as any)(0) : effective),
+        });
+      }
+    }
+  });
+
+  return rows.map((r) => {
+    const res = resolvedMap.get(r.productUnitId);
+    if (!res) return r;
+    return {
+      ...r,
+      promotionId: res.id,
+      promotionName: res.name,
+      promotionDiscountForUnit: res.discountForUnit,
+      promotionEffectivePrice: res.effective,
+    };
+  });
 }
 
 /**
@@ -187,7 +279,9 @@ export async function lookupByBarcode(
     .where(and(activeOnly, eq(productUnits.barcode, barcode.trim())))
     .limit(1);
   const priced = await applyContractPrices(db, normalize(rows), customerId);
-  const [row] = await applyBundleAvailability(db, priced, branchId);
+  const withAvail = await applyBundleAvailability(db, priced, branchId);
+  // promotions v2: يحلّ العرض للأسطر غير-التعاقدية غير-البكجية غير-الخدمية.
+  const [row] = await applyPromotions(withAvail, branchId, tier);
   return row ?? null;
 }
 
@@ -209,5 +303,6 @@ export async function listForPos(
   const order = search ? buildCatalogSearchOrder(query) : [desc(products.id)];
   const rows = await baseSelect(db, branchId, tier).where(where).orderBy(...order).limit(limit);
   const priced = await applyContractPrices(db, normalize(rows), opts?.customerId);
-  return applyBundleAvailability(db, priced, branchId);
+  const withAvail = await applyBundleAvailability(db, priced, branchId);
+  return applyPromotions(withAvail, branchId, tier);
 }

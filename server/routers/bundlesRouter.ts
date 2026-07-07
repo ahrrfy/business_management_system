@@ -35,6 +35,7 @@ export const bundlesRouter = router({
       const rows = await db
         .select({
           variantId: productVariants.id,
+          productId: productVariants.productId,
           productName: products.name,
           sku: productVariants.sku,
           costPrice: productVariants.costPrice,
@@ -54,6 +55,7 @@ export const bundlesRouter = router({
       return {
         items: rows.map((r) => ({
           variantId: Number(r.variantId),
+          productId: Number(r.productId),
           productName: r.productName,
           sku: r.sku,
           costPrice: String(r.costPrice ?? "0"),

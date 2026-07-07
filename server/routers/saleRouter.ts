@@ -146,6 +146,9 @@ const lineSchema = z.object({
   unitPriceOverride: nonNegMoneyString.optional(),
   discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة خصم غير صالحة").optional(),
   discountAmount: nonNegMoneyString.optional(),
+  // promotions v2 (٨/٧/٢٦): معرّف العرض الذي عرضه POS للعميل — الخادم يتحقّق (idempotent)
+  // ويُخزّن promotionId + promotionDiscount على invoiceItem. إن اختلف عن حلّ الخادم ⇒ يعامل كيدوي.
+  promotionId: z.number().int().positive().optional(),
 });
 
 // مخطط فلترة قائمة المبيعات — مشترك بين list و listSummary (نفس الفلاتر حتماً).
