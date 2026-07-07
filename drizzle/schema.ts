@@ -489,6 +489,90 @@ export const bundleComponents = mysqlTable(
 export type BundleComponent = typeof bundleComponents.$inferSelect;
 export type InsertBundleComponent = typeof bundleComponents.$inferInsert;
 
+/* ============================ موجات تحديث الأسعار (Price Waves) ============================ */
+
+/**
+ * priceUpdateWaves (٧/٧/٢٦): «موجة تحديث أسعار» = تعديل جماعيّ لأسعار البيع بمعاينة ذرّية.
+ *
+ * السياق العراقي: أسعار السوق (دولار، تكلفة استيراد، وسم مورد) تتذبذب أسبوعياً. المدير يريد
+ * تحديث أسعار مجموعة منتجات دفعةً واحدة بنسبة/مبلغ محدَّد، ويرى **معاينة** قبل الالتزام،
+ * ويحتفظ بسجلٍّ دائم لمن غيّر ولماذا (P&L الفعلي، فحص هامش، تدقيق).
+ *
+ * الآلية:
+ *   1. `previewPriceWave(filters, changeType, changeValue)` — يُرجع صفوف productUnits×tier
+ *      المتأثّرة مع (oldPrice, newPrice) — بلا كتابة.
+ *   2. `applyPriceWave(inputAfterPreview, actor)` — يفتح معاملة واحدة:
+ *        - يكتب رأس الموجة (priceUpdateWaves) بـtotalRows.
+ *        - لكل صفٍّ متأثّر: UPDATE productPrices + INSERT priceChangeLog (مربوطاً بـwaveId).
+ *   3. لا rollback جزئي: كل الأسطر تنجح أو لا تنجح (withTx).
+ *
+ * أنواع التغيير (`changeType`):
+ *   INCREASE_PERCENT — رفع بنسبة (مثل +5% على كل شيء).
+ *   DECREASE_PERCENT — تخفيض بنسبة.
+ *   INCREASE_AMOUNT  — إضافة مبلغ ثابت لكل وحدة (مثل +500 د.ع).
+ *   DECREASE_AMOUNT  — طرح مبلغ ثابت.
+ *   SET_MARGIN       — تعيين هامش ربح على التكلفة (newPrice = cost × (1 + margin%)) — يقرأ تكلفة WAVG.
+ *
+ * الفلاتر (`filtersJson`): categoryId, productSearch (name/sku LIKE), priceTier, onlyBelowMargin (%).
+ */
+export const priceUpdateWaves = mysqlTable(
+  "priceUpdateWaves",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    description: text("description"),
+    changeType: mysqlEnum("priceChangeType", [
+      "INCREASE_PERCENT", "DECREASE_PERCENT",
+      "INCREASE_AMOUNT", "DECREASE_AMOUNT",
+      "SET_MARGIN",
+    ]).notNull(),
+    // قيمة التغيير: نسبة (0..1000) أو مبلغ ثابت أو نسبة الهامش. الدلالة تعتمد على changeType.
+    changeValue: decimal("changeValue", { precision: 15, scale: 2 }).notNull(),
+    // فلاتر الاختيار كـJSON — للتدقيق (من غيّر ولمن ولمتى).
+    filtersJson: text("filtersJson"),
+    totalRows: int("totalRows").default(0).notNull(),
+    appliedBy: int("appliedBy").notNull().references(() => users.id),
+    appliedAt: timestamp("appliedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    appliedAtIdx: index("idx_wave_applied_at").on(table.appliedAt),
+    appliedByIdx: index("idx_wave_applied_by").on(table.appliedBy),
+  })
+);
+
+export type PriceUpdateWave = typeof priceUpdateWaves.$inferSelect;
+export type InsertPriceUpdateWave = typeof priceUpdateWaves.$inferInsert;
+
+/**
+ * priceChangeLog: صفٌّ لكل تغيير سعر على (productUnit × tier) — سجلّ دائم للتدقيق.
+ * `waveId` nullable: التغييرات اليدوية (شاشة تعديل المنتج فرادى) تُسجَّل بـwaveId=NULL لاحقاً؛
+ * تغييرات الموجة الجماعية تُربَط بـwaveId. الأثر مُجمَّد — لا يُحذَف السجلّ عند إلغاء الموجة.
+ */
+export const priceChangeLog = mysqlTable(
+  "priceChangeLog",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull().references(() => productUnits.id, { onDelete: "cascade" }),
+    priceTier: mysqlEnum("priceChangeTier", ["RETAIL", "WHOLESALE", "GOVERNMENT"]).notNull(),
+    // oldPrice=NULL يشير إلى إنشاء أوّل سعر (لم يكن هناك سعر قبل).
+    oldPrice: decimal("oldPrice", { precision: 15, scale: 2 }),
+    newPrice: decimal("newPrice", { precision: 15, scale: 2 }).notNull(),
+    // مبرّر التغيير (اختياري لكن ينصح به) — يعرَض في التقارير.
+    reason: varchar("reason", { length: 255 }),
+    waveId: bigint("waveId", { mode: "number" }).references(() => priceUpdateWaves.id, { onDelete: "set null" }),
+    actorUserId: int("actorUserId").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    unitTierIdx: index("idx_price_log_unit_tier").on(table.productUnitId, table.priceTier),
+    waveIdx: index("idx_price_log_wave").on(table.waveId),
+    createdAtIdx: index("idx_price_log_created").on(table.createdAt),
+  })
+);
+
+export type PriceChangeLog = typeof priceChangeLog.$inferSelect;
+export type InsertPriceChangeLog = typeof priceChangeLog.$inferInsert;
+
 /* ============================ المخزون لكل (متغيّر × فرع) ============================ */
 
 /** رصيد المخزون بالوحدة الأساس لكل متغيّر في كل فرع. */
