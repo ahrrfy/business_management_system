@@ -2,7 +2,7 @@
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
-import { customers, invoiceItems, invoices, productVariants, receipts, shifts } from "../../../drizzle/schema";
+import { customers, invoiceItems, invoices, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import {
   computeInvoiceCost,
   computeInvoiceTotals,
@@ -192,6 +192,37 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
           code: "PRECONDITION_FAILED",
           message: `البكج (متغيّر ${bid}) بلا مكوّنات — أضف مكوّناته قبل البيع`,
         });
+      }
+    }
+    // Codex #163 P2 (Block bundles whose components were later disabled): إن عُطِّل مكوّن بعد إنشاء
+    // البكج، البكج يبقى قابلاً للبيع بلا فحصٍ لحيويّة مكوّناته ⇒ يخصم مكوّناً معطَّلاً (يخالف B2 من
+    // bundleService لكنّه لا يفرضه في مسار البيع). الآن نلتقط كل مكوّنات البكجات المُباعة دفعةً واحدة
+    // ونرفض البيع لو أيٌّ منها معطَّل (منتج أو متغيّر).
+    if (bundleVariantIds.length) {
+      const allComponentIds = new Set<number>();
+      for (const bid of bundleVariantIds) {
+        for (const c of bundleDefs.get(bid) ?? []) allComponentIds.add(c.componentVariantId);
+      }
+      if (allComponentIds.size) {
+        const componentRows = await tx
+          .select({
+            id: productVariants.id,
+            variantActive: productVariants.isActive,
+            productActive: products.isActive,
+            productName: products.name,
+            sku: productVariants.sku,
+          })
+          .from(productVariants)
+          .innerJoin(products, eq(productVariants.productId, products.id))
+          .where(inArray(productVariants.id, Array.from(allComponentIds)));
+        for (const cr of componentRows) {
+          if (cr.variantActive === false || cr.productActive === false) {
+            throw new TRPCError({
+              code: "PRECONDITION_FAILED",
+              message: `مكوّن بكج معطَّل: «${cr.productName} — ${cr.sku}» — فعّله أو استبدله قبل البيع`,
+            });
+          }
+        }
       }
     }
 
