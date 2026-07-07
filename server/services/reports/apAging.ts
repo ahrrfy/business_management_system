@@ -35,23 +35,37 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
   // REP-03: مرساة «اليوم» = UTC_DATE() لا CURDATE() (نفس علّة AR aging أعلاه). orderDate عمود
   // timestamp مخزَّن بـUTC ⇒ DATEDIFF(UTC_DATE(), DATE(po.orderDate)) يحسب الفرق على أساس UTC
   // واحد فلا ينزاح الدلو يوماً عند حدّ اليوم. الحدود ثابتة.
+  // #AP-aging (تدقيق التثبيت): سابقاً كان unpaid = GREATEST(po.total - po.paidAmount, 0) بلا تصافي
+  // مرتجعات الشراء الائتمانية (بخلاف AR الذي يستعمل returnedTotal). purchaseOrders لا يحمل
+  // returnedTotal، لكن accountingEntries يحمل قيود RETURN (سالبة) وPAYMENT_IN (استرداد نقدي).
+  // net_credit_returned = |Σ RETURN| − Σ PAYMENT_IN لكل PO ⇒ CASH يصفَّر (0)، CREDIT يبقى موجباً.
   const rows = await db.execute(sql`
     SELECT
       s.id AS supplierId,
       s.name AS supplierName,
       s.phone,
       CAST(s.currentBalance AS CHAR) AS currentBalance,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) <= 30 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 31 AND 60 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 61 AND 90 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) > 90 THEN GREATEST(po.total - po.paidAmount, 0) ELSE 0 END), 0) AS CHAR) AS d91p,
-      CAST(COALESCE(SUM(GREATEST(po.total - po.paidAmount, 0)), 0) AS CHAR) AS unpaidTotal,
-      DATE_FORMAT(MIN(CASE WHEN po.poStatus IN ('CONFIRMED','RECEIVED') AND po.total > po.paidAmount THEN po.orderDate END), '%Y-%m-%d') AS oldestPoDate
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) <= 30 THEN GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 31 AND 60 THEN GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 61 AND 90 THEN GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) > 90 THEN GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(COALESCE(SUM(GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0)), 0) AS CHAR) AS unpaidTotal,
+      DATE_FORMAT(MIN(CASE WHEN po.poStatus IN ('CONFIRMED','RECEIVED') AND (po.total - po.paidAmount - COALESCE(ret.creditReturned, 0)) > 0 THEN po.orderDate END), '%Y-%m-%d') AS oldestPoDate
     FROM suppliers s
     LEFT JOIN purchaseOrders po
       ON po.supplierId = s.id
       AND po.poStatus IN ('CONFIRMED', 'RECEIVED')
       ${branchFilter}
+    LEFT JOIN (
+      SELECT ae.purchaseOrderId,
+        COALESCE(SUM(CASE WHEN ae.entryType = 'RETURN' THEN -ae.amount ELSE 0 END), 0)
+        - COALESCE(SUM(CASE WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount ELSE 0 END), 0)
+        AS creditReturned
+      FROM accountingEntries ae
+      WHERE ae.purchaseOrderId IS NOT NULL AND ae.supplierId IS NOT NULL
+        AND ae.entryType IN ('RETURN', 'PAYMENT_IN')
+      GROUP BY ae.purchaseOrderId
+    ) ret ON ret.purchaseOrderId = po.id
     WHERE s.isActive = TRUE
     GROUP BY s.id, s.name, s.phone, s.currentBalance
     HAVING unpaidTotal > 0 OR s.currentBalance > 0
