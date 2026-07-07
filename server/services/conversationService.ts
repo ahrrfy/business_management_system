@@ -148,7 +148,11 @@ export async function addMessage(input: AddMessageInput): Promise<{ messageId: n
       mediaType: input.mediaType?.slice(0, 40) ?? null,
       externalId: input.externalId ?? null,
       authorUserId: input.authorUserId ?? null,
-      deliveryStatus: input.deliveryStatus ?? (input.direction === "OUT" ? "PENDING" : null),
+      // #25 (تدقيق التثبيت): OUT كان يُوسَم "PENDING" افتراضياً بانتظار webhook تكامل قناة لن يصل
+      // (webhooks معطَّلة/غير مُهيَّأة على أغلب البيئات) ⇒ الشارة تبقى «PENDING» أبداً وتُضلّل الموظفين.
+      // نمرّر deliveryStatus صريحاً فقط حين يستلمه مسار متكامل مع قناة حيّة — الافتراضي null (لا شارة
+      // مضلّلة). عند تفعيل webhooks لاحقاً يمرّر مسار الإرسال المتكامل PENDING صراحةً فتُظهره الواجهة.
+      deliveryStatus: input.deliveryStatus ?? null,
     });
     const messageId = Number((insRes as any)?.[0]?.insertId ?? (insRes as any)?.insertId);
 
