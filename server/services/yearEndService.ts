@@ -16,8 +16,8 @@
  */
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, eq, sql } from "drizzle-orm";
-import { accountingEntries, yearEndSnapshots } from "../../drizzle/schema";
+import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { accountingEntries, financialPeriods, yearEndSnapshots } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
 import type { Tx } from "../db";
 import { money, round2, toDbMoney } from "./money";
@@ -106,12 +106,24 @@ export async function closeYear(tx: Tx, input: CloseYearInput): Promise<CloseYea
   const netProfit = round2(revenue.minus(cogs).minus(expenses));
 
   // ٢. قفل الفترة (cutoffDate = Dec 31)
+  // #closing-2 (تدقيق التثبيت): كان lockPeriod يرفض cutoffDate ≤ قفل قائم ⇒ إقفال شهر ديسمبر
+  // (أو أحدث) بنفس نمط الإقفال الشهري يمنع إقفال السنة كاملاً (تصادم مصيري). الحلّ: إن كان
+  // القفل النشط يغطّي بالفعل ${year}-12-31، نعيد استعمال معرّفه ولا نُنشئ قفلاً جديداً — الفترة
+  // مُقفَلة أصلاً بالمعنى المطلوب.
   const cutoffDate = `${year}-12-31`;
-  const periodLock = await lockPeriod(tx, {
-    cutoffDate,
-    lockedBy: closedBy,
-    notes: `إقفال سنة ${year}${branchId != null ? ` (فرع ${branchId})` : ""}`,
-  });
+  const existingCovering = await tx
+    .select({ id: financialPeriods.id, cutoffDate: financialPeriods.cutoffDate })
+    .from(financialPeriods)
+    .where(and(eq(financialPeriods.status, "LOCKED"), gte(financialPeriods.cutoffDate, cutoffDate)))
+    .orderBy(desc(financialPeriods.cutoffDate))
+    .limit(1);
+  const periodLock = existingCovering[0]
+    ? { id: existingCovering[0].id }
+    : await lockPeriod(tx, {
+        cutoffDate,
+        lockedBy: closedBy,
+        notes: `إقفال سنة ${year}${branchId != null ? ` (فرع ${branchId})` : ""}`,
+      });
 
   // ٣. قيد Retained Earnings (يحفظ الـnetProfit في الدفتر السنة التالية كـopening conceptually).
   //    دلالة محاسبية: ADJUST بـrevenue=netProfit، profit=netProfit، amount=|netProfit|.
