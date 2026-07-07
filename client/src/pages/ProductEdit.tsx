@@ -26,6 +26,7 @@ import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
+import BundleRecipeCard from "@/components/product/BundleRecipeCard";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -568,6 +569,12 @@ export default function ProductEdit() {
           />
         </CardContent>
       </Card>
+
+      {/* gstack B12 (٧/٧/٢٦): تبويب وصفة البكج — يُعرض فقط لو المنتج بكج. المتغيّر الأول هو الأب حصراً
+          (قيد الإنشاء + التعديل). previewImpact + setComponents يستهلكان في المكوّن. */}
+      {product.data?.isBundle && (product.data as any)?.variants?.[0]?.id != null && (
+        <BundleRecipeCard bundleVariantId={Number((product.data as any).variants[0].id)} />
+      )}
 
       {error && (
         <div role="alert" className="flex items-start gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">

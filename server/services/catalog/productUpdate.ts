@@ -47,6 +47,19 @@ export async function updateProduct(input: UpdateProductInput, _actor: Actor) {
     const p = (await tx.select().from(products).where(eq(products.id, input.productId)).limit(1))[0];
     if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
 
+    // gstack B12 (٧/٧/٢٦): مرآة قيود إنشاء البكج على مسار التعديل — كانت غائبة فيسمح تعديل بكج بإضافة
+    // متغيّر ثانٍ (متغيّر «شبح» بلا وصفة، مصنَّف BUNDLE، يفشل عند البيع بـPRECONDITION_FAILED) أو
+    // بتعطيل وحدة الأساس. نفرض هنا: بكج = متغيّر واحد فقط + وحدة أساس واحدة فقط.
+    if (p.isBundle) {
+      if (input.variants.length !== 1) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "البكج لا يقبل إلّا متغيّراً واحداً — احذف المتغيّرات الإضافية" });
+      }
+      const baseUnitsCount = input.variants[0].units.filter((u) => u.isBaseUnit).length;
+      if (baseUnitsCount !== 1) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "البكج لا يقبل إلّا وحدة أساس واحدة" });
+      }
+    }
+
     await tx
       .update(products)
       .set({
