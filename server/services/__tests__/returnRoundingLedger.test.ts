@@ -16,6 +16,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
+import { processPayment } from "../sale/payment";
 import { money } from "../money";
 
 const actor = { userId: 1, branchId: 1 };
@@ -121,5 +122,41 @@ describe("F6 — تصافُر الدفتر عند المرتجع الكامل ل
     const adjs = await db().select().from(s.accountingEntries)
       .where(sql`${s.accountingEntries.invoiceId}=${sale.invoiceId} AND ${s.accountingEntries.entryType}='ADJUST'`);
     expect(adjs).toHaveLength(0);
+  });
+});
+
+// #1 (تدقيق التثبيت): سقف الدفع الخادمي يمنع التحصيل الزائد بعد مرتجع جزئي (المتبقّي الحقيقي =
+// total − returnedTotal − paidAmount) ⇒ لا يصير رصيد العميل سالباً (ذمة وهمية على المتجر).
+describe("#1 — سقف الدفع بعد المرتجع الجزئي", () => {
+  it("بيع آجل ٢٠٠٠ ثم مرتجع جزئي ١٠٠٠ (بلا ردّ) ⇒ دفع ٢٠٠٠ يُرفَض ودفع ١٠٠٠ يُقبَل (لا رصيد سالب)", async () => {
+    await reset();
+    await seed("1000.00");
+    await db().insert(s.customers).values({ id: 1, name: "عميل آجل", currentBalance: "0", creditLimit: "9999999.00" });
+    // بيع آجل (بلا payment) لوحدتين ⇒ total=2000، PENDING، AR=2000.
+    const sale = await createSale(
+      { branchId: 1, customerId: 1, shiftId: 1, priceTier: "RETAIL", sourceType: "ORDER",
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }] },
+      actor,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    // مرتجع وحدة واحدة بلا ردّ نقدي ⇒ returnedTotal=1000، AR=1000.
+    await returnSale(
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], restock: true },
+      actor,
+    );
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    expect(inv.returnedTotal).toBe("1000.00");
+
+    // دفع الإجمالي الكامل (٢٠٠٠) يتجاوز المتبقّي الحقيقي (١٠٠٠) ⇒ يُرفَض بالسقف الجديد.
+    await expect(
+      processPayment({ invoiceId: sale.invoiceId, amount: "2000.00", method: "CASH" }, actor),
+    ).rejects.toThrow(/يتجاوز المتبقّي/);
+
+    // دفع المتبقّي الحقيقي (١٠٠٠) يُقبَل ⇒ الفاتورة PAID والذمة صفر (لا رصيد سالب).
+    await processPayment({ invoiceId: sale.invoiceId, amount: "1000.00", method: "CASH" }, actor);
+    const inv2 = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    expect(inv2.status).toBe("PAID");
+    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    expect(money(cust.currentBalance).toFixed(2)).toBe("0.00");
   });
 });

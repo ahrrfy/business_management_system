@@ -105,7 +105,9 @@ export default function InvoiceDetail() {
   // Default the payment amount to remaining balance once data loads.
   useEffect(() => {
     if (!inv.data) return;
-    const remaining = round2(D(inv.data.total).minus(D(inv.data.paidAmount)));
+    // #1 (تدقيق التثبيت): المتبقّي = total − returnedTotal − paidAmount؛ تجاهُل المرتجعات كان
+    // يُملأ بمبلغٍ أكبر من الحقيقي ⇒ تحصيل زائد ورصيد عميل سالب (ذمة وهمية).
+    const remaining = round2(D(inv.data.total).minus(D(inv.data.returnedTotal ?? "0")).minus(D(inv.data.paidAmount)));
     setPayAmount(remaining.gt(0) ? remaining.toFixed(2) : "");
   }, [inv.data]);
 
@@ -130,7 +132,8 @@ export default function InvoiceDetail() {
   if (inv.isLoading) return <div className="p-10 text-center text-muted-foreground">جارٍ التحميل…</div>;
   if (!inv.data) return <div className="p-10 text-center text-muted-foreground">الفاتورة غير موجودة.</div>;
   const data = inv.data;
-  const remaining = round2(D(data.total).minus(D(data.paidAmount)));
+  // #1: المتبقّي الحقيقي = total − returnedTotal − paidAmount (يمنع التحصيل الزائد بعد مرتجع جزئي).
+  const remaining = round2(D(data.total).minus(D(data.returnedTotal ?? "0")).minus(D(data.paidAmount)));
   const canPay = data.status === "PENDING" || data.status === "PARTIALLY_PAID";
   // بوّابة عرض مطابقة للخادم: كاشير/مدير قالبياً أو مَن مُنح sales=FULL صراحةً (أو admin).
   const canRecordPayment = !!me.data?.role &&
