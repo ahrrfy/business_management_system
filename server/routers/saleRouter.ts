@@ -437,6 +437,8 @@ export const saleRouter = router({
           total: invoices.total,
           costTotal: invoices.costTotal,
           paidAmount: invoices.paidAmount,
+          // #1 (تدقيق التثبيت): المتبقّي الحقيقي = total − returnedTotal − paidAmount (كـlistSummary).
+          returnedTotal: invoices.returnedTotal,
           status: invoices.status,
           paymentMethod: invoices.paymentMethod,
           notes: invoices.notes,
