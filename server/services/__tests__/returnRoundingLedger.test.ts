@@ -125,10 +125,12 @@ describe("F6 — تصافُر الدفتر عند المرتجع الكامل ل
   });
 });
 
-// #1 (تدقيق التثبيت): سقف الدفع الخادمي يمنع التحصيل الزائد بعد مرتجع جزئي (المتبقّي الحقيقي =
-// total − returnedTotal − paidAmount) ⇒ لا يصير رصيد العميل سالباً (ذمة وهمية على المتجر).
-describe("#1 — سقف الدفع بعد المرتجع الجزئي", () => {
-  it("بيع آجل ٢٠٠٠ ثم مرتجع جزئي ١٠٠٠ (بلا ردّ) ⇒ دفع ٢٠٠٠ يُرفَض ودفع ١٠٠٠ يُقبَل (لا رصيد سالب)", async () => {
+// #1 (تدقيق التثبيت): بعد مرتجع جزئي، «المتبقّي» الحقيقي = total − returnedTotal − paidAmount.
+// كانت الواجهة تعرض total − paidAmount (تتجاهل المرتجعات) فتُملّئ مبلغاً أكبر وتُضلّل الكاشير لتحصيلٍ
+// زائد غير مقصود ⇒ رصيد عميل سالب. الإصلاح واجهيّ (العرض) لا خادميّ — «الدفع الزائد المتعمَّد مسموح»
+// قرار مالك (financialPolicies السياسة ٦)، فلا نمنعه خادمياً؛ فقط نُصلِح ما يُملأ تلقائياً.
+describe("#1 — المتبقّي المعروض يطرح المرتجعات (لا تضليل لتحصيل زائد)", () => {
+  it("بيع آجل ٢٠٠٠ ثم مرتجع جزئي ١٠٠٠ ⇒ المتبقّي المعروض = ١٠٠٠ (لا ٢٠٠٠)، ودفعه يُصفّي الذمة", async () => {
     await reset();
     await seed("1000.00");
     await db().insert(s.customers).values({ id: 1, name: "عميل آجل", currentBalance: "0", creditLimit: "9999999.00" });
@@ -146,13 +148,12 @@ describe("#1 — سقف الدفع بعد المرتجع الجزئي", () => {
     );
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     expect(inv.returnedTotal).toBe("1000.00");
+    // المتبقّي الحقيقي الذي تعرضه الواجهة بعد الإصلاح = total − returnedTotal − paidAmount = 1000
+    // (كان العطل: تعرض total − paidAmount = 2000 فتُضلّل الكاشير لتحصيلٍ زائد بمقدار المرتجع).
+    const netRemaining = money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount));
+    expect(netRemaining.toFixed(2)).toBe("1000.00");
 
-    // دفع الإجمالي الكامل (٢٠٠٠) يتجاوز المتبقّي الحقيقي (١٠٠٠) ⇒ يُرفَض بالسقف الجديد.
-    await expect(
-      processPayment({ invoiceId: sale.invoiceId, amount: "2000.00", method: "CASH" }, actor),
-    ).rejects.toThrow(/يتجاوز المتبقّي/);
-
-    // دفع المتبقّي الحقيقي (١٠٠٠) يُقبَل ⇒ الفاتورة PAID والذمة صفر (لا رصيد سالب).
+    // دفع المتبقّي الحقيقي (١٠٠٠) — الذي يقود إليه العرض المُصلَح — يُصفّي الفاتورة والذمة إلى صفر.
     await processPayment({ invoiceId: sale.invoiceId, amount: "1000.00", method: "CASH" }, actor);
     const inv2 = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     expect(inv2.status).toBe("PAID");

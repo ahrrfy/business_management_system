@@ -79,17 +79,10 @@ export async function processPayment(input: ProcessPaymentInput, actor: Actor) {
     }
     const amount = money(input.amount);
     if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يجب أن يكون موجباً" });
-    // #1 (تدقيق التثبيت): سقف خادمي ضدّ التحصيل الزائد من أيّ قناة — المتبقّي الحقيقي =
-    // total − returnedTotal − paidAmount. غيابه كان يتيح دفعاً يتجاوز المستحقّ (خاصّةً بعد مرتجع
-    // جزئي بلا ردّ نقدي) فيصير رصيد العميل سالباً (ذمة وهمية على المتجر). الواجهة تعرض المتبقّي
-    // الصحيح، وهذا حارس دفاعي لكلّ القنوات (يُكمِّل حارس الواجهة في InvoiceDetail).
-    const trueRemaining = money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount));
-    if (amount.gt(trueRemaining)) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: `المبلغ يتجاوز المتبقّي المستحقّ (${trueRemaining.toFixed(2)})`,
-      });
-    }
+    // #1 (تدقيق التثبيت): لا سقف خادمي على المبلغ — «الدفع الزائد مسموح» قرار مالك (financialPolicies
+    // السياسة ٦: الزيادة تُقبَل وتُسجَّل AR سالباً = دائن للعميل). العطل الحقيقي كان في الواجهة التي
+    // تُملّئ الإجمالي (total − paidAmount) متجاهلةً returnedTotal فتُضلّل الكاشير لتحصيلٍ زائد غير مقصود؛
+    // أُصلِح في InvoiceDetail (المتبقّي = total − returnedTotal − paidAmount) دون منع الزيادة المتعمَّدة.
 
     // إن مُرِّر shiftId: تَحقّق من حالة الوردية وملكيتها (M5 + M9).
     if (input.shiftId != null) {
