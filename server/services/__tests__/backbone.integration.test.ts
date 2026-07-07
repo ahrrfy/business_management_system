@@ -672,6 +672,20 @@ describe("الكتالوج: إنشاء منتج بمخزون افتتاحي", ()
     const prices = await db().select().from(s.productPrices).where(eq(s.productPrices.productUnitId, Number(baseUnit.id)));
     expect(prices.map((p) => p.priceTier).sort()).toEqual(["RETAIL", "WHOLESALE"]);
   });
+
+  it("createProduct يسمح بنفس SKU في منتجين مختلفين", async () => {
+    await createProduct(
+      { name: "منتج أزرق أول", variants: [{ sku: "PR-BLU", color: "أزرق", costPrice: "1.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] },
+      actor
+    );
+    await createProduct(
+      { name: "منتج أزرق ثانٍ", variants: [{ sku: "PR-BLU", color: "أزرق", costPrice: "2.00", units: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }] }] },
+      actor
+    );
+
+    const rows = await db().select().from(s.productVariants).where(eq(s.productVariants.sku, "PR-BLU"));
+    expect(rows).toHaveLength(2);
+  });
 });
 
 describe("الكتالوج: إسناد الباركود (ملصقات)", () => {

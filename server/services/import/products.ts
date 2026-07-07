@@ -52,6 +52,8 @@ const EXPLICIT_PRICE_FIELDS = [
   ["governmentPrice", "GOVERNMENT"],
 ] as const;
 
+const productSkuKey = (productName: string, sku: string) => `${productName.trim().toLowerCase()}\u0000${sku.trim()}`;
+
 export async function importProducts(
   rows: ProductImportRow[],
   options: ImportOptions,
@@ -63,7 +65,7 @@ export async function importProducts(
   const failures = new Map<number, string>(); // rowNumber → سبب الفشل
 
   // ١) التجميع: productName → variants(sku) → units(name) → prices(tier) — مع كشف تعارض الصفوف المكرّرة.
-  const { groups, skuOwner } = aggregateImportRows(rows, failures);
+  const groups = aggregateImportRows(rows, failures);
 
   // ٢) افتراض isBaseUnit المشروط (sku بصفّ واحد بلا تحديد ⇒ وحدته هي الأساس).
   applyBaseUnitDefaults(groups);
@@ -71,11 +73,11 @@ export async function importProducts(
   // ٣) التحقّق على مستوى المتغيّر/الوحدة + تكرار الباركود داخل الملف.
   const batchBarcodes = validateProductGroups(groups, failures);
 
-  // ٤) كشف الموجود في القاعدة: SKU (متغيّر) + الباركود مع sku متغيّره المالك.
-  const { existingSkus, existingBarcodeOwner } = await detectExistingProducts(db, skuOwner, batchBarcodes);
+  // ٤) كشف الموجود في القاعدة: (اسم المنتج + SKU) + الباركود مع مالك وحدته.
+  const { existingProductSkus, existingBarcodeOwner } = await detectExistingProducts(db, groups, batchBarcodes);
 
   // ٥) تصنيف كل مجموعة منتج: إنشاء / تخطّي / فشل.
-  const { results, toCreate } = classifyProductGroups(groups, existingSkus, existingBarcodeOwner, failures, onExisting);
+  const { results, toCreate } = classifyProductGroups(groups, existingProductSkus, existingBarcodeOwner, failures, onExisting);
 
   const anyFailed = results.some((r) => r.status === "failed");
   if (options.dryRun || (anyFailed && !skipFailed) || !toCreate.length) {
@@ -93,15 +95,12 @@ export async function importProducts(
   return finalize("PRODUCTS", rows.length, results, true, options, actor);
 }
 
-type SkuOwner = Map<string, { productName: string; rows: number[] }>;
-
 /** ① التجميع: productName → variants(sku) → units(name) → prices(tier) — مع كشف تعارض الصفوف المكرّرة. */
 function aggregateImportRows(
   rows: ProductImportRow[],
   failures: Map<number, string>,
-): { groups: Map<string, ProductAgg>; skuOwner: SkuOwner } {
+): Map<string, ProductAgg> {
   const groups = new Map<string, ProductAgg>();
-  const skuOwner: SkuOwner = new Map(); // sku → المالك الأول + صفوفه
   for (const r of rows) {
     const pName = r.productName.trim();
     let p = groups.get(pName);
@@ -116,17 +115,6 @@ function aggregateImportRows(
     if (!sku) {
       failures.set(r.rowNumber, "حدّد SKU أو الباركود");
       continue;
-    }
-
-    // تضارب ملكية الـ SKU عبر منتجَين ⇒ أفشِل الصفّ الحالي وكل صفوف المالك الأول (لا تتركها «created»).
-    const owner = skuOwner.get(sku);
-    if (owner && owner.productName !== pName) {
-      failures.set(r.rowNumber, `الـ SKU «${sku}» مرتبط بأكثر من منتج`);
-      for (const rn of owner.rows) failures.set(rn, `الـ SKU «${sku}» مرتبط بأكثر من منتج`);
-    } else if (owner) {
-      owner.rows.push(r.rowNumber);
-    } else {
-      skuOwner.set(sku, { productName: pName, rows: [r.rowNumber] });
     }
 
     const vName = norm(r.variantName) ?? undefined;
@@ -182,7 +170,7 @@ function aggregateImportRows(
       else setUnitPrice(r.priceTier, r.price, r.rowNumber);
     }
   }
-  return { groups, skuOwner };
+  return groups;
 }
 
 /**
@@ -237,39 +225,50 @@ function validateProductGroups(
 }
 
 /**
- * ④ كشف الموجود في القاعدة: SKU (متغيّر) + الباركود مع sku متغيّره المالك —
+ * ④ كشف الموجود في القاعدة: (اسم المنتج + SKU) + الباركود مع مالك وحدته —
  * الباركود الموجود لمتغيّرٍ من المنتج نفسه ليس «تعارضاً» بل إعادةُ استيراد منتجٍ سبق إنشاؤه:
  * ملف المالك بلا عمود SKU ⇒ sku=الباركود لكل صف، فبدون تمييز المالك كانت إعادة الاستيراد
  * تُصنَّف «فاشل: باركود مُستخدَم» وتُوقف بقية الدفعات (نقيض «إعادة التشغيل آمنة» — §٤.٣.٤-د).
  */
 async function detectExistingProducts(
   db: ReturnType<typeof requireDb>,
-  skuOwner: SkuOwner,
+  groups: Map<string, ProductAgg>,
   batchBarcodes: Map<string, number[]>,
-): Promise<{ existingSkus: Set<string>; existingBarcodeOwner: Map<string, string> }> {
-  const allSkus = Array.from(skuOwner.keys());
+): Promise<{ existingProductSkus: Set<string>; existingBarcodeOwner: Map<string, string> }> {
+  const allSkus = uniq(Array.from(groups.values()).flatMap((p) => Array.from(p.variants.keys())));
   const allBarcodes = Array.from(batchBarcodes.keys());
-  const existingSkus = new Set<string>();
-  const existingBarcodeOwner = new Map<string, string>(); // barcode → sku المتغيّر المالك في القاعدة
+  const productNames = Array.from(groups.keys());
+  const existingProductSkus = new Set<string>();
+  const existingBarcodeOwner = new Map<string, string>(); // barcode → (productName + sku) المالك في القاعدة
   if (allSkus.length) {
-    for (const e of await db.select({ sku: productVariants.sku }).from(productVariants).where(inArray(productVariants.sku, allSkus)))
-      existingSkus.add(e.sku);
+    const rows = await db
+      .select({ productName: products.name, sku: productVariants.sku })
+      .from(productVariants)
+      .innerJoin(products, eq(productVariants.productId, products.id))
+      .where(inArray(productVariants.sku, allSkus));
+    const wantedProducts = new Set(productNames.map((name) => name.trim().toLowerCase()));
+    for (const e of rows) {
+      if (wantedProducts.has(e.productName.trim().toLowerCase())) {
+        existingProductSkus.add(productSkuKey(e.productName, e.sku));
+      }
+    }
   }
   if (allBarcodes.length) {
     for (const e of await db
-      .select({ barcode: productUnits.barcode, sku: productVariants.sku })
+      .select({ barcode: productUnits.barcode, productName: products.name, sku: productVariants.sku })
       .from(productUnits)
       .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+      .innerJoin(products, eq(productVariants.productId, products.id))
       .where(inArray(productUnits.barcode, allBarcodes)))
-      if (e.barcode) existingBarcodeOwner.set(e.barcode, e.sku);
+      if (e.barcode) existingBarcodeOwner.set(e.barcode, productSkuKey(e.productName, e.sku));
   }
-  return { existingSkus, existingBarcodeOwner };
+  return { existingProductSkus, existingBarcodeOwner };
 }
 
 /** ⑤ تصنيف كل مجموعة منتج: إنشاء / تخطّي / فشل. يُعيد نتائج كل الصفوف + المجموعات الجاهزة للإنشاء. */
 function classifyProductGroups(
   groups: Map<string, ProductAgg>,
-  existingSkus: Set<string>,
+  existingProductSkus: Set<string>,
   existingBarcodeOwner: Map<string, string>,
   failures: Map<number, string>,
   onExisting: string,
@@ -283,15 +282,14 @@ function classifyProductGroups(
       continue;
     }
     const skus = Array.from(p.variants.keys());
-    const skuSet = new Set(skus);
-    const hasExistingSku = skus.some((sku) => existingSkus.has(sku));
+    const hasExistingSku = skus.some((sku) => existingProductSkus.has(productSkuKey(p.productName, sku)));
     // التعارض الحقيقي: باركود موجود في القاعدة لمتغيّرٍ من «خارج هذا المنتج» (sku المالك ليس من
     // skus المنتج) — أمّا المملوك لأحد متغيّراته نفسها (إعادة استيراد) فيُحسم «موجود مسبقاً» أدناه.
     const barcodeClash = Array.from(p.variants.values()).some((v) =>
       Array.from(v.units.values()).some((u) => {
         if (!u.barcode) return false;
-        const ownerSku = existingBarcodeOwner.get(u.barcode);
-        return ownerSku != null && !skuSet.has(ownerSku);
+        const ownerKey = existingBarcodeOwner.get(u.barcode);
+        return ownerKey != null && !skus.some((sku) => ownerKey === productSkuKey(p.productName, sku));
       }),
     );
 

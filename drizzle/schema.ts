@@ -377,7 +377,7 @@ export const productVariants = mysqlTable(
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     productId: bigint("productId", { mode: "number" }).notNull().references(() => products.id, { onDelete: "cascade" }),
-    sku: varchar("sku", { length: 60 }).notNull().unique(),
+    sku: varchar("sku", { length: 60 }).notNull(),
     variantName: varchar("variantName", { length: 255 }),
     color: varchar("color", { length: 60 }),
     size: varchar("size", { length: 60 }),

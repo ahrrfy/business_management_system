@@ -400,6 +400,13 @@
       "when": 1783379039713,
       "tag": "0056_employee_advances",
       "breakpoints": true
+    },
+    {
+      "idx": 57,
+      "version": "5",
+      "when": 1783380000000,
+      "tag": "0057_drop_variant_sku_unique",
+      "breakpoints": true
     }
   ]
 }

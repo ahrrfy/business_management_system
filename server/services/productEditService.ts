@@ -205,7 +205,7 @@ function composeName(input: UpdateProductVariantsInput, fallback: string): strin
   return explicit || composed || fallback;
 }
 
-/** يرفض الباركود/SKU المكرّر داخل الحمولة أو ضدّ منتجات أخرى (يستثني هذا المنتج). */
+/** يرفض الباركود المكرّر ضدّ منتجات أخرى، ويرفض SKU المكرّر داخل نفس المنتج فقط. */
 async function assertEditUniqueness(tx: Tx, input: UpdateProductVariantsInput) {
   const unitNames = input.unitTemplate.map((u) => u.unitName.trim());
   const codes: string[] = [];
@@ -234,14 +234,6 @@ async function assertEditUniqueness(tx: Tx, input: UpdateProductVariantsInput) {
   for (const s of skus) {
     if (seenSku.has(s)) throw new TRPCError({ code: "CONFLICT", message: `الرمز ${s} (SKU) مكرّر بين المتغيّرات.` });
     seenSku.add(s);
-  }
-  if (seenSku.size) {
-    const takenSku = await tx
-      .select({ sku: productVariants.sku })
-      .from(productVariants)
-      .where(and(inArray(productVariants.sku, Array.from(seenSku)), ne(productVariants.productId, input.productId)))
-      .limit(1);
-    if (takenSku[0]) throw new TRPCError({ code: "CONFLICT", message: `الرمز ${takenSku[0].sku} (SKU) مُستخدَم لمتغيّر آخر.` });
   }
 }
 

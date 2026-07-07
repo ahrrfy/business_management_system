@@ -74,8 +74,8 @@ function composeProductName(input: { name?: string | null; productType?: string 
 }
 
 /**
- * product-variants: تحقّق مسبق من تفرّد الباركود والـSKU قبل أي إدراج —
- * يكشف التكرار داخل الحمولة وضدّ القاعدة فيرمي رسالة عربية تسمّي القيمة المخالفة،
+ * product-variants: تحقّق مسبق من تفرّد الباركود وتكرار الـSKU داخل المنتج قبل أي إدراج —
+ * يكشف التكرار داخل الحمولة، ويفحص الباركود ضدّ القاعدة، فيرمي رسالة عربية تسمّي القيمة المخالفة،
  * بدل ترك قيد UNIQUE يفشل برسالة «قيمة مكرّرة» عامّة لا تدلّ على الباركود/الرمز.
  */
 async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
@@ -101,21 +101,13 @@ async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
     if (taken[0]) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${taken[0].code} مُستخدَم في «${taken[0].name}».` });
   }
 
-  // الرموز (SKU) — واحد لكل متغيّر.
+  // الرموز (SKU) — فريدة داخل المنتج فقط؛ يجوز أن يتكرر "أزرق"/PR-BLU في منتج آخر.
   const seenSku = new Set<string>();
   for (const v of input.variants) {
     const s = v.sku.trim();
     if (!s) continue;
     if (seenSku.has(s)) throw new TRPCError({ code: "CONFLICT", message: `الرمز ${s} (SKU) مكرّر بين المتغيّرات — لكل متغيّر رمز فريد.` });
     seenSku.add(s);
-  }
-  if (seenSku.size) {
-    const takenSku = await tx
-      .select({ sku: productVariants.sku })
-      .from(productVariants)
-      .where(inArray(productVariants.sku, Array.from(seenSku)))
-      .limit(1);
-    if (takenSku[0]) throw new TRPCError({ code: "CONFLICT", message: `الرمز ${takenSku[0].sku} (SKU) مُستخدَم لمتغيّر آخر — اختر رمزاً مختلفاً.` });
   }
 }
 
@@ -172,7 +164,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       }
       const vRes = await tx.insert(productVariants).values({
         productId,
-        sku: v.sku,
+        sku: v.sku.trim(),
         variantName: v.variantName ?? null,
         color: v.color ?? null,
         size: v.size ?? null,
