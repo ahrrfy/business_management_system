@@ -120,8 +120,19 @@ export default function BundleForm() {
     { enabled: bulkOpen && (bulkHasQuery || bulkHasCategory), staleTime: 5_000 }
   );
 
+  // مؤقّت الوميض المُشترَك — يُلغى قبل جدولة جديدة كي لا يُطفئ مسحٌ سابقٌ وميض مسحٍ لاحق.
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function showFlash(kind: "ok" | "err") {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    setFlash(kind);
+    flashTimerRef.current = setTimeout(() => {
+      setFlash("");
+      flashTimerRef.current = null;
+    }, kind === "ok" ? 700 : 900);
+  }
+
   const [busy, setBusy] = useState(false);
-  /** استرجاع مكوّن بالباركود (يُستعمَل من الحقل الذكيّ عند Enter على نصٍّ رقميّ). */
+  /** استرجاع مكوّن بالباركود. يعيد true فقط عند إضافة **حقيقية** — لا عند تكرار أو فشل. */
   async function lookupByBarcode(code: string): Promise<boolean> {
     if (busy) return false;
     setBusy(true);
@@ -130,21 +141,24 @@ export default function BundleForm() {
       const res = await utils.bundles.lookupComponentByBarcode.fetch({ barcode: code });
       if (!res.item) {
         setError(`لا يوجد منتج مؤهّل بالباركود «${code}» (قد يكون بكجاً/خدمة/غير نشط).`);
-        setFlash("err");
-        setTimeout(() => setFlash(""), 900);
+        showFlash("err");
+        return false;
+      }
+      // تكرار = فشل UX (لا وميض أخضر متضارب مع رسالة الخطأ).
+      if (components.some((c) => c.componentVariantId === res.item!.variantId)) {
+        setError(`المكوّن «${res.item.productName}» مضاف مسبقاً — زد كميّته بدل تكرار السطر.`);
+        showFlash("err");
         return false;
       }
       addComponent(res.item.variantId, res.item.productName, res.item.sku ?? "", res.item.costPrice);
       setPicker("");
-      setFlash("ok");
-      setTimeout(() => setFlash(""), 700);
+      showFlash("ok");
       pickerInputRef.current?.focus();
       return true;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "تعذّر البحث عن الباركود.";
       setError(msg);
-      setFlash("err");
-      setTimeout(() => setFlash(""), 900);
+      showFlash("err");
       return false;
     } finally {
       setBusy(false);
@@ -153,12 +167,13 @@ export default function BundleForm() {
 
   /** Enter على الحقل الذكيّ:
    *  - نصّ كلّه أرقام (≥٤ خانات) ⇒ يُعامَل كباركود ⇒ نداء `lookupByBarcode`.
-   *  - غير ذلك، وثمّة نتائج بحث تُطابق النصّ الحاليّ ⇒ إضافة أوّل نتيجة.
-   *  ⚠️ حماية من ضغط Enter داخل نافذة التأخير (٣٠٠م): نتائج البحث القديمة (`searchRows`) قد تخصّ
-   *  إدخالاً سابقاً بينما `picker` تغيّر — لا نُضيف إلّا حين يكون النصّ المُطبَّق (`pickerDeb`) مطابقاً
-   *  للنصّ الحاليّ فعلاً؛ وإلّا نبتلع Enter صامتاً حتى تستقرّ النتائج. */
+   *  - غير ذلك، وثمّة نتائج بحث حيّة (`hasQuery||hasCategory`) وتُطابق النصّ الحاليّ ⇒ إضافة أوّل نتيجة.
+   *  ⚠️ حواجز: (١) IME العربي/الجوال قد يُطلق Enter كـcommit — نتجاهله. (٢) نتائج البحث القديمة
+   *  المُخبَّأة (TanStack Query cache) قد تبقى بعد تقصير النصّ تحت العتبة — نلزم `hasQuery||hasCategory`
+   *  ليكون الاستعلام مفعَّلاً فعلاً، مع مطابقة `pickerDeb === v`. */
   async function handleSmartKey(e: ReactKeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
+    if (e.nativeEvent.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return;
     e.preventDefault();
     const v = picker.trim();
     if (!v) return;
@@ -166,16 +181,13 @@ export default function BundleForm() {
       await lookupByBarcode(v);
       return;
     }
-    const settled = pickerDeb.trim() === v && !searchQ.isFetching;
-    if (settled && searchRows.length > 0) {
-      const first = searchRows[0];
-      if (!components.some((c) => c.componentVariantId === first.variantId)) {
-        addComponent(first.variantId, first.productName, first.sku ?? "", first.costPrice);
-        setPicker("");
-        setFlash("ok");
-        setTimeout(() => setFlash(""), 700);
-      }
-    }
+    const settled = (hasQuery || hasCategory) && pickerDeb.trim() === v && !searchQ.isFetching;
+    if (!settled || searchRows.length === 0) return;
+    const first = searchRows[0];
+    if (components.some((c) => c.componentVariantId === first.variantId)) return;
+    addComponent(first.variantId, first.productName, first.sku ?? "", first.costPrice);
+    setPicker("");
+    showFlash("ok");
   }
 
   // ── حساب التكلفة اللحظية (Σ تكاليف مكوّنات × كمياتها) ──
@@ -426,7 +438,12 @@ export default function BundleForm() {
                           <button
                             type="button"
                             disabled={already}
-                            onClick={() => addComponent(r.variantId, r.productName, r.sku ?? "", r.costPrice)}
+                            onClick={() => {
+                              addComponent(r.variantId, r.productName, r.sku ?? "", r.costPrice);
+                              setPicker("");
+                              showFlash("ok");
+                              pickerInputRef.current?.focus();
+                            }}
                             className={cn(
                               "w-full text-right px-3 py-2 text-sm flex items-center justify-between gap-2 border-b last:border-b-0",
                               already ? "opacity-50 cursor-not-allowed" : "hover:bg-accent focus:bg-accent",
@@ -572,7 +589,11 @@ export default function BundleForm() {
       </Card>
 
       {error && (
-        <div className="rounded-md border border-red-500/40 bg-red-50 dark:bg-red-950/40 p-3 text-sm flex items-start gap-2">
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="rounded-md border border-red-500/40 bg-red-50 dark:bg-red-950/40 p-3 text-sm flex items-start gap-2"
+        >
           <AlertCircle className="size-4 mt-0.5 shrink-0 text-red-600" />
           <div>{error}</div>
         </div>
@@ -601,7 +622,29 @@ export default function BundleForm() {
               <Input
                 value={bulkPicker}
                 onChange={(e) => setBulkPicker(e.target.value)}
-                placeholder="اكتب ≥ حرفَين للبحث…"
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  if (e.nativeEvent.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return;
+                  e.preventDefault();
+                  const items = bulkSearchQ.data?.items ?? [];
+                  const first = items.find((r) =>
+                    !components.some((c) => c.componentVariantId === r.variantId) &&
+                    !bulkSelected.has(r.variantId),
+                  );
+                  if (first) {
+                    setBulkSelected((prev) => {
+                      const next = new Map(prev);
+                      next.set(first.variantId, {
+                        variantId: first.variantId,
+                        productName: first.productName,
+                        sku: first.sku,
+                        costPrice: first.costPrice,
+                      });
+                      return next;
+                    });
+                  }
+                }}
+                placeholder="اكتب ≥ حرفَين للبحث… (Enter لتعليم أوّل نتيجة)"
                 dir="auto"
                 aria-label="بحث في الحوار"
                 autoFocus
@@ -670,7 +713,7 @@ export default function BundleForm() {
                 </ul>
               )}
             </div>
-            <div className="text-xs text-muted-foreground">
+            <div className="text-xs text-muted-foreground" aria-live="polite">
               محدَّد: <b className="text-foreground">{bulkSelected.size}</b>
             </div>
           </div>
