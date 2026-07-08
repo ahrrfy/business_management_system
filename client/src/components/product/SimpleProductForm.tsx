@@ -12,6 +12,7 @@ import { Field, MarginBadge, MiniBarcode, ScanButton } from "@/components/produc
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
+import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBarcodeAliases";
 import { cn } from "@/lib/utils";
 
 /**
@@ -44,6 +45,8 @@ export default function SimpleProductForm() {
   // ── الباركود + الوحدة + التسعير ──
   const [barcode, setBarcode] = useState("");
   const [unitName, setUnitName] = useState("قطعة");
+  // باركودات بديلة تُجمَع محلّياً وتُدرَج ذرّياً مع المنتج عند الحفظ.
+  const [aliases, setAliases] = useState<LocalAlias[]>([]);
   const [costPrice, setCostPrice] = useState("");
   const [retail, setRetail] = useState("");
   const [wholesale, setWholesale] = useState("");
@@ -189,6 +192,9 @@ export default function SimpleProductForm() {
               barcode: code || undefined,
               isBaseUnit: true,
               prices,
+              barcodeAliases: aliases.length
+                ? aliases.map((a) => ({ barcode: a.barcode, note: a.note ?? null }))
+                : undefined,
             },
           ],
         },
@@ -289,6 +295,11 @@ export default function SimpleProductForm() {
                   className={cn("font-mono", bcCls)}
                 />
                 <ScanButton onClick={() => setBarcode(genEan13("621"))} title="توليد باركود EAN-13 صالح" />
+                <UnitBarcodeAliases
+                  unitName={unitName || "قطعة"}
+                  localAliases={aliases}
+                  onLocalChange={setAliases}
+                />
               </div>
             </Field>
             <Field label="وحدة القياس" required hint="قطعة / نسخة / علبة…">
