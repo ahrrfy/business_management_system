@@ -12,7 +12,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { trpc } from "@/lib/trpc";
-import { downloadLauncherCmd, kioskUrl } from "@/lib/kioskLauncher";
+import { downloadInstallerCmd, kioskUrl } from "@/lib/kioskLauncher";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
@@ -92,6 +92,28 @@ export default function KioskDevices() {
         }
       />
 
+      {/* المُشغّل الكوني — يُنزَّل مرّة، يُنسَخ على كل جهاز، يُلصَق فيه الرمز */}
+      <Card className="border-primary/40 bg-primary/5">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base">مُشغّل الكشك (ملف واحد لكل الأجهزة)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <ol className="list-decimal pr-5 space-y-1.5 text-sm text-muted-foreground marker:text-foreground/70">
+            <li>نزّل الملف مرّةً واحدة أدناه ← انسخه على كل جهاز شاشة.</li>
+            <li>شغّله على الجهاز ← الصق <b>رمز الجهاز</b> (من أدناه) ← Enter.</li>
+            <li>يفعّل الجهاز فوراً، يفتح ملء الشاشة، ويُثبّت نفسه للإقلاع التلقائي (تأخير ١٢٠ ثانية بعد كل تشغيل للوندوز).</li>
+          </ol>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button className="inline-flex items-center gap-1.5" onClick={() => downloadInstallerCmd({ origin })}>
+              <Download aria-hidden className="size-4" />تنزيل مُشغّل الكشك (.cmd)
+            </Button>
+            <span className="text-xs text-muted-foreground self-center">
+              الخادم مضمَّن في الملف — لا حاجة لأي إعداد يدوي على جهاز الشاشة.
+            </span>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* الرمز المكشوف مرّة واحدة */}
       {reveal && (
         <Card className="border-emerald-400/60 bg-emerald-50/50 dark:bg-emerald-950/20">
@@ -103,12 +125,13 @@ export default function KioskDevices() {
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 p-3 text-xs text-amber-800 dark:text-amber-300">
-              احفظ الرمز/المُشغّل الآن — لن يظهر الرمز ثانيةً. إن فقدته استعمل «تدوير الرمز».
+              انسخ الرمز الآن — لن يظهر ثانيةً. الصقه في مُشغّل الكشك على الجهاز عند طلب «الرمز».
+              إن فقدته: «تدوير الرمز» يُصدر رمزاً جديداً ويُبطل القديم فوراً.
             </div>
 
             <div className="grid gap-3 lg:grid-cols-2 items-start">
               <div className="space-y-1">
-                <Label className="text-xs">رمز الجهاز</Label>
+                <Label className="text-xs">رمز الجهاز (الصقه في المُشغّل)</Label>
                 <div className="flex gap-2">
                   <Input readOnly dir="ltr" value={reveal.rawToken} className="font-mono text-xs" />
                   <Button variant="outline" size="sm" onClick={() => copy(reveal.rawToken, "نُسخ الرمز")}>نسخ</Button>
@@ -116,21 +139,12 @@ export default function KioskDevices() {
               </div>
 
               <div className="space-y-1">
-                <Label className="text-xs">رابط الكشك (يحوي الرمز)</Label>
+                <Label className="text-xs">رابط الكشك المباشر (بديل يدوي — يحوي الرمز)</Label>
                 <div className="flex gap-2">
                   <Input readOnly dir="ltr" value={kioskUrl(origin, reveal.rawToken)} className="font-mono text-xs" />
                   <Button variant="outline" size="sm" onClick={() => copy(kioskUrl(origin, reveal.rawToken), "نُسخ الرابط")}>نسخ</Button>
                 </div>
               </div>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2 pt-1">
-              <Button className="inline-flex items-center gap-1.5" onClick={() => downloadLauncherCmd({ origin, token: reveal.rawToken, label: reveal.label, branchName: reveal.branchName, deviceId: reveal.deviceId })}>
-                <Download aria-hidden className="size-4" />تنزيل المُشغّل (.cmd)
-              </Button>
-              <span className="text-xs text-muted-foreground self-center">
-                شغّل الملف على جهاز الشاشة، أو ضعه في مجلّد بدء التشغيل (shell:startup) للتشغيل التلقائي.
-              </span>
             </div>
           </CardContent>
         </Card>
