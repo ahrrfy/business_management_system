@@ -6,6 +6,7 @@ import {
   productImages,
   productPrices,
   productUnits,
+  productUnitBarcodes,
   productVariants,
   products,
   productionRecipeLines,
@@ -66,6 +67,8 @@ export interface CreateProductInput {
       barcode?: string | null;
       isBaseUnit?: boolean;
       prices?: Array<{ priceTier: PriceTier; price: string }>;
+      // باركودات بديلة تُدرَج مع الوحدة في نفس المعاملة الذرّية.
+      barcodeAliases?: Array<{ barcode: string; note?: string | null }>;
     }>;
   }>;
   // v3-add-screens: صور المنتج. أوّل isPrimary=true يُعتمد، وإلا أوّل صورة.
@@ -86,15 +89,19 @@ function composeProductName(input: { name?: string | null; productType?: string 
  * بدل ترك قيد UNIQUE يفشل برسالة «قيمة مكرّرة» عامّة لا تدلّ على الباركود/الرمز.
  */
 async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
-  // الباركودات (لكل وحدة من كل متغيّر).
+  // الباركودات: الأساسيّ + البديل معاً — نفس فضاء التفرّد.
   const codes: string[] = [];
   for (const v of input.variants) for (const u of v.units) {
     const b = (u.barcode ?? "").trim();
     if (b) codes.push(b);
+    for (const a of u.barcodeAliases ?? []) {
+      const ab = (a.barcode ?? "").trim();
+      if (ab) codes.push(ab);
+    }
   }
   const seenCode = new Set<string>();
   for (const c of codes) {
-    if (seenCode.has(c)) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون باركود فريد.` });
+    if (seenCode.has(c)) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${c} مكرّر داخل المنتج — لكل وحدة/لون/بديل باركود فريد.` });
     seenCode.add(c);
   }
   if (seenCode.size) {
@@ -221,6 +228,17 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         }
         for (const p of u.prices ?? []) {
           await tx.insert(productPrices).values({ productUnitId, priceTier: p.priceTier, price: toDbMoney(p.price) });
+        }
+        // باركودات بديلة تُدرَج ذرّياً في نفس المعاملة — تفرّدها تم التحقّق منه في assertCatalogUniqueness.
+        for (const a of u.barcodeAliases ?? []) {
+          const code = (a.barcode ?? "").trim();
+          if (!code) continue;
+          await tx.insert(productUnitBarcodes).values({
+            productUnitId,
+            barcode: code,
+            note: (a.note ?? "").trim() || null,
+            createdBy: actor.userId,
+          });
         }
       }
 

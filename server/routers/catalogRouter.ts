@@ -29,12 +29,18 @@ function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, 
 }
 
 const priceSchema = z.object({ priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]), price: z.string() });
+const barcodeAliasSchema = z.object({
+  barcode: z.string().min(1).max(64),
+  note: z.string().max(255).optional().nullable(),
+});
 const unitSchema = z.object({
   unitName: z.string().min(1),
   conversionFactor: z.string(),
   barcode: z.string().optional(),
   isBaseUnit: z.boolean().optional(),
   prices: z.array(priceSchema).optional(),
+  // باركودات بديلة تُضاف مع إنشاء الوحدة — نفس السلعة/التكلفة/السعر/المخزون، عدّة باركودات.
+  barcodeAliases: z.array(barcodeAliasSchema).max(20).optional(),
 });
 const variantSchema = z.object({
   sku: z.string().min(1),

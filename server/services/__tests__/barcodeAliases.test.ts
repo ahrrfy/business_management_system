@@ -19,6 +19,7 @@ import {
   resolveProductUnitId,
 } from "../catalog/barcodeAliases";
 import { assignBarcode } from "../catalog/barcode";
+import { createProduct } from "../catalog/productCreate";
 import { lookupByBarcode } from "../catalog/pos";
 import { kioskLookup } from "../kioskService";
 
@@ -206,6 +207,102 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       const dst = await listUnitBarcodes(2);
       expect(src.aliases).toHaveLength(0);
       expect(dst.aliases).toHaveLength(2);
+    });
+  });
+
+  describe("A8: createProduct يُدرج البدائل ذرّياً مع المنتج", () => {
+    it("createProduct مع barcodeAliases يُدرج الأساسيّ والبدائل معاً", async () => {
+      const res = await createProduct(
+        {
+          name: "قلم جاف أزرق شكل ٢",
+          variants: [
+            {
+              sku: "PEN-BLU-S2",
+              costPrice: "150.00",
+              units: [
+                {
+                  unitName: "قطعة",
+                  conversionFactor: "1",
+                  barcode: "1110000000001",
+                  isBaseUnit: true,
+                  prices: [{ priceTier: "RETAIL", price: "500.00" }],
+                  barcodeAliases: [
+                    { barcode: "2220000000002", note: "شكل ٢" },
+                    { barcode: "3330000000003", note: "شكل ٣" },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+        { userId: 1, branchId: 1 },
+      );
+      expect(res.productId).toBeGreaterThan(0);
+      // كل الباركودات الثلاثة تحلّ لنفس المنتج/الوحدة
+      const primary = await resolveBarcodeOwner(db(), "1110000000001");
+      const alias1 = await resolveBarcodeOwner(db(), "2220000000002");
+      const alias2 = await resolveBarcodeOwner(db(), "3330000000003");
+      expect(primary?.productUnitId).toBe(alias1?.productUnitId);
+      expect(primary?.productUnitId).toBe(alias2?.productUnitId);
+      expect(primary?.productName).toBe("قلم جاف أزرق شكل ٢");
+    });
+
+    it("createProduct مع بديل يطابق باركوداً موجوداً ⇒ CONFLICT (تفرّد قبل الإدراج)", async () => {
+      // "6001000000017" هو أساسيّ للقلم الأزرق (id=1) من seedBase.
+      await expect(
+        createProduct(
+          {
+            name: "منتج جديد",
+            variants: [
+              {
+                sku: "NEW-1",
+                costPrice: "100.00",
+                units: [
+                  {
+                    unitName: "قطعة",
+                    conversionFactor: "1",
+                    barcode: "9999999999999",
+                    isBaseUnit: true,
+                    prices: [{ priceTier: "RETAIL", price: "200.00" }],
+                    barcodeAliases: [{ barcode: "6001000000017", note: "تعارض" }],
+                  },
+                ],
+              },
+            ],
+          },
+          { userId: 1, branchId: 1 },
+        ),
+      ).rejects.toThrow(/مُستخدَم|CONFLICT/);
+    });
+
+    it("createProduct يرفض تكرار بديلين متطابقين داخل نفس الحمولة", async () => {
+      await expect(
+        createProduct(
+          {
+            name: "منتج ٣",
+            variants: [
+              {
+                sku: "P3",
+                costPrice: "50.00",
+                units: [
+                  {
+                    unitName: "قطعة",
+                    conversionFactor: "1",
+                    barcode: "8880000000001",
+                    isBaseUnit: true,
+                    prices: [{ priceTier: "RETAIL", price: "80.00" }],
+                    barcodeAliases: [
+                      { barcode: "7770000000001", note: "أ" },
+                      { barcode: "7770000000001", note: "مكرَّر" },
+                    ],
+                  },
+                ],
+              },
+            ],
+          },
+          { userId: 1, branchId: 1 },
+        ),
+      ).rejects.toThrow(/مكرّر|CONFLICT/);
     });
   });
 
