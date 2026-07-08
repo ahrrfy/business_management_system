@@ -256,8 +256,9 @@ export default function KioskView({
   const branchName = isDevice ? (deviceBranchName ?? "—") : (branches.find((b) => b.id === staffBranchId)?.name ?? "—");
 
   // البنر: الموظّف يرسل branchId؛ الجهاز يعتمد كوكيه (الفرع مفروض خادمياً) فلا يرسل branchId.
+  // limit=500 (كل الكتالوج): يعرض البنر كامل المنتجات النشطة غير الخدمية، لا عيّنة ٤٠.
   const bannerQ = trpc.kiosk.banner.useQuery(
-    isDevice ? { limit: 40 } : { branchId: staffBranchId ?? 0, limit: 40 },
+    isDevice ? { limit: 500 } : { branchId: staffBranchId ?? 0, limit: 500 },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 5 * 60 * 1000, refetchOnWindowFocus: false }
   );
   const products = (bannerQ.data ?? []) as KProduct[];
