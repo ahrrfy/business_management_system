@@ -11,12 +11,16 @@ import { truncateTables } from "./__testUtils__";
 import {
   addUnitBarcodeAlias,
   checkBarcodesTakenAcrossBoth,
+  findBarcodeClashes,
   listUnitBarcodes,
+  migrateAliases,
   removeUnitBarcodeAlias,
   resolveBarcodeOwner,
   resolveProductUnitId,
 } from "../catalog/barcodeAliases";
+import { assignBarcode } from "../catalog/barcode";
 import { lookupByBarcode } from "../catalog/pos";
+import { kioskLookup } from "../kioskService";
 
 const TABLES = [
   "productUnitBarcodes", "productPrices", "productUnits", "productVariants", "productImages", "products",
@@ -164,6 +168,58 @@ describe("barcodeAliases — ثوابت السلامة", () => {
       expect(await resolveProductUnitId(1, "قطعة")).toBe(1);
       expect(await resolveProductUnitId(1, "درزن")).toBe(2);
       expect(await resolveProductUnitId(1, "غير موجود")).toBeNull();
+    });
+  });
+
+  describe("A4: كل مسارات المسح تجد البديل (kiosk + globalSearch)", () => {
+    it("kioskLookup يجد البديل كالأساسيّ (نفس السعر والوحدة)", async () => {
+      await addUnitBarcodeAlias(1, "5550000000005", "شكل ٢", 1);
+      const primary = await kioskLookup("6001000000017", 1);
+      const alias = await kioskLookup("5550000000005", 1);
+      expect(primary).not.toBeNull();
+      expect(alias).not.toBeNull();
+      expect(alias!.productName).toBe(primary!.productName);
+      expect(alias!.price).toBe(primary!.price);
+      expect(alias!.unitName).toBe(primary!.unitName);
+    });
+  });
+
+  describe("A5: assignBarcode يفحص البدائل ⛔ (Codex P1)", () => {
+    it("لا يسمح بإسناد باركود يطابق بديلاً لسلعة أخرى", async () => {
+      await addUnitBarcodeAlias(1, "4440000000004", "بديل الأزرق", 1);
+      // نحاول إسناد الباركود نفسه كأساسيّ لوحدة القلم الأحمر (id=3) ⇒ يجب أن يفشل.
+      await expect(assignBarcode(3, "4440000000004")).rejects.toThrow(/مُستخدَم|CONFLICT/);
+    });
+    it("يسمح بإعادة تعيين نفس الباركود لنفس الوحدة (تحديث ذاتيّ)", async () => {
+      await expect(assignBarcode(1, "6001000000017")).resolves.toMatchObject({ productUnitId: 1 });
+    });
+  });
+
+  describe("A6: نقل البدائل عند إعادة تسمية الوحدة (Codex P2-3)", () => {
+    it("migrateAliases ينقل كل البدائل من وحدة إلى أخرى", async () => {
+      await addUnitBarcodeAlias(1, "3330000000001", "أ", 1);
+      await addUnitBarcodeAlias(1, "3330000000002", "ب", 1);
+      // ننقلها من id=1 (قطعة القلم الأزرق) إلى id=2 (درزن القلم الأزرق) — محاكاة نقل بعد إعادة تسمية.
+      const moved = await migrateAliases(db(), 1, 2);
+      expect(moved).toBe(2);
+      const src = await listUnitBarcodes(1);
+      const dst = await listUnitBarcodes(2);
+      expect(src.aliases).toHaveLength(0);
+      expect(dst.aliases).toHaveLength(2);
+    });
+  });
+
+  describe("A7: findBarcodeClashes يحترم استثناءات المفاتيح", () => {
+    it("يتجاهل الوحدة الحاليّة في الاستثناء (تحديث ذاتيّ)", async () => {
+      const clashes = await findBarcodeClashes(db(), ["6001000000017"], {
+        ignorePrimaryUnitIds: [1],
+      });
+      expect(clashes).toHaveLength(0);
+    });
+    it("لا يتجاهل وحدة أخرى — تُبقى كصدام", async () => {
+      const clashes = await findBarcodeClashes(db(), ["6001000000017"]);
+      expect(clashes).toHaveLength(1);
+      expect(clashes[0].source).toBe("primary");
     });
   });
 });

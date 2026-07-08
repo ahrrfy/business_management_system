@@ -12,7 +12,7 @@ import {
   productionRecipes,
 } from "../../../drizzle/schema";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
-import { checkBarcodesTakenAcrossBoth } from "./barcodeAliases";
+import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
 import { getDb } from "../../db";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -98,14 +98,16 @@ async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
     seenCode.add(c);
   }
   if (seenCode.size) {
-    const taken = await tx
-      .select({ code: productUnits.barcode, name: products.name })
-      .from(productUnits)
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(inArray(productUnits.barcode, Array.from(seenCode)))
-      .limit(1);
-    if (taken[0]) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${taken[0].code} مُستخدَم في «${taken[0].name}».` });
+    // مرَّتان: على `productUnits.barcode` (الأساسيّ) وعلى `productUnitBarcodes.barcode` (البديل).
+    // بدون فحص البدائل يمكن كتابة أساسيّ لسلعة يطابق بديلاً لسلعة أخرى ⇒ resolveBarcodeOwner
+    // يرجع لسلعتين مختلفتين حسب أيّهما مُسجَّل أولاً (سيناريو Codex P1).
+    const clashes = await findBarcodeClashes(tx, Array.from(seenCode));
+    if (clashes[0]) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `الباركود ${clashes[0].code} مُستخدَم في «${clashes[0].takenBy}».`,
+      });
+    }
   }
 
   // الرموز (SKU) — فريدة داخل المنتج فقط؛ يجوز أن يتكرر "أزرق"/PR-BLU في منتج آخر.

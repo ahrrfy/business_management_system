@@ -13,6 +13,7 @@ import { and, eq, inArray, ne } from "drizzle-orm";
 import { branchStock, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import type { Tx } from "../db";
+import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
@@ -252,9 +253,28 @@ async function upsertVariantUnits(
 ) {
   const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, variantId));
   const keep = new Set<number>();
+  // فحص التفرّد للباركودات الأساسيّة على مستوى (الأساسيّ + البديل) قبل أيّ كتابة — نمنع
+  // كتابة باركود أساسيّ يطابق بديلاً لسلعة أخرى (Codex P1). نتجاهل وحدات المتغيّر الحاليّة
+  // (تحديث ذاتيّ مقبول).
+  const codesToWrite = template
+    .map((t) => (unitBarcodes[t.unitName.trim()] ?? "").trim())
+    .filter(Boolean);
+  if (codesToWrite.length) {
+    const clashes = await findBarcodeClashes(tx, codesToWrite, {
+      ignorePrimaryUnitIds: existing.map((u) => Number(u.id)),
+    });
+    if (clashes[0]) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `الباركود ${clashes[0].code} مُستخدَم في «${clashes[0].takenBy}».`,
+      });
+    }
+  }
   const override = (baseRetailOverride ?? "").trim();
   // نَجمع كل صفوف الأسعار ثم نُدرجها دفعةً واحدة (بدل INSERT لكل سعر) — أقلّ ذهاباً للقاعدة.
   const priceRows: { productUnitId: number; priceTier: PriceTier; price: string }[] = [];
+  // نتتبّع الوحدات المُنشأة حديثاً (لنَنقل بدائل الوحدات المُعطَّلة إليها لدى إعادة التسمية).
+  const inserted: Array<{ unitId: number; barcode: string | null }> = [];
   for (const t of template) {
     const name = t.unitName.trim();
     const barcode = (unitBarcodes[name] ?? "").trim() || null;
@@ -276,6 +296,7 @@ async function upsertVariantUnits(
         isBaseUnit: t.isBaseUnit,
       });
       unitId = extractInsertId(res);
+      inserted.push({ unitId, barcode });
     }
     keep.add(unitId);
     for (const pr of t.prices) {
@@ -285,9 +306,17 @@ async function upsertVariantUnits(
     }
   }
   if (priceRows.length) await tx.insert(productPrices).values(priceRows);
-  // وحدات لم تعد في القالب ⇒ تعطيل (حفظ التاريخ، لا حذف) — تحديث واحد بـinArray بدل تحديث لكلّ وحدة.
-  const drop = existing.filter((u) => !keep.has(Number(u.id))).map((u) => Number(u.id));
-  if (drop.length) await tx.update(productUnits).set({ isActive: false }).where(inArray(productUnits.id, drop));
+  // وحدات لم تعد في القالب ⇒ تعطيل (حفظ التاريخ، لا حذف).
+  // **قبل التعطيل**: إن كانت الوحدة القديمة تحمل باركوداً يطابق أحد الوحدات المُنشأة حديثاً
+  // (سيناريو إعادة تسمية: "قطعة"→"حبة" بنفس الباركود)، ننقل بدائلها إلى الوحدة الجديدة كي
+  // لا تعلق البدائل على وحدة معطَّلة (Codex P2-3).
+  const drop = existing.filter((u) => !keep.has(Number(u.id)));
+  for (const oldUnit of drop) {
+    if (!oldUnit.barcode) continue;
+    const successor = inserted.find((i) => i.barcode === oldUnit.barcode);
+    if (successor) await migrateAliases(tx, Number(oldUnit.id), successor.unitId);
+  }
+  if (drop.length) await tx.update(productUnits).set({ isActive: false }).where(inArray(productUnits.id, drop.map((u) => Number(u.id))));
 }
 
 /** تعديل منتج بنموذج المتغيّرات ضمن معاملة ذرّية. لا يحذف متغيّراً (تعطيل فقط) حفظاً للمخزون. */

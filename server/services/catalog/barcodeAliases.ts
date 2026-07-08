@@ -60,6 +60,52 @@ export async function resolveBarcodeOwner(db: DbOrTx, code: string): Promise<Bar
   };
 }
 
+/** كاشف صدامات الباركود داخل معاملة الكتابة (tx) — نقطة الحقيقة للـwrite paths.
+ *  يمرّ على الأساسيّ والبديل معاً، ويسمح بتجاهل وحدات معيّنة (لحالات التحديث الذاتيّ).
+ *  رجوعه فارغ ⇒ آمن للإدراج/التحديث. */
+export async function findBarcodeClashes(
+  tx: DbOrTx,
+  codes: string[],
+  opts?: { ignorePrimaryUnitIds?: number[]; ignoreAliasIds?: number[] },
+): Promise<Array<{ code: string; takenBy: string; source: "primary" | "alias" }>> {
+  const clean = Array.from(new Set(codes.map((c) => c.trim()).filter(Boolean)));
+  if (!clean.length) return [];
+  const ignorePrim = opts?.ignorePrimaryUnitIds ?? [];
+  const ignoreAli = opts?.ignoreAliasIds ?? [];
+
+  const primary = await tx
+    .select({ id: productUnits.id, code: productUnits.barcode, productName: products.name, sku: productVariants.sku })
+    .from(productUnits)
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productUnits.barcode, clean));
+
+  const aliases = await tx
+    .select({
+      id: productUnitBarcodes.id,
+      code: productUnitBarcodes.barcode,
+      productName: products.name,
+      sku: productVariants.sku,
+    })
+    .from(productUnitBarcodes)
+    .innerJoin(productUnits, eq(productUnitBarcodes.productUnitId, productUnits.id))
+    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(inArray(productUnitBarcodes.barcode, clean));
+
+  const out: Array<{ code: string; takenBy: string; source: "primary" | "alias" }> = [];
+  for (const r of primary) {
+    if (!r.code) continue;
+    if (ignorePrim.includes(Number(r.id))) continue;
+    out.push({ code: r.code, takenBy: `${r.productName} (${r.sku})`, source: "primary" });
+  }
+  for (const r of aliases) {
+    if (ignoreAli.includes(Number(r.id))) continue;
+    out.push({ code: r.code, takenBy: `${r.productName} (${r.sku}) — بديل`, source: "alias" });
+  }
+  return out;
+}
+
 /** يفحص قائمةً من الباركودات ويعيد المُستعمَل منها (بصريّاً أو بديلاً) — للتحقّق اللحظيّ قبل الحفظ. */
 export async function checkBarcodesTakenAcrossBoth(codes: string[]): Promise<Array<{ code: string; takenBy: string }>> {
   const db = getDb();
@@ -113,6 +159,22 @@ export async function assertBarcodeFree(code: string, opts?: { ignoreUnitId?: nu
     code: "CONFLICT",
     message: `الباركود ${clean} مُستعمَل في «${taken[0].takenBy}» — غيّره أو احذفه من هناك أوّلاً.`,
   });
+}
+
+/** ينقل كل البدائل من وحدة إلى أخرى داخل معاملة — يُستعمَل عند إعادة تسمية الوحدة في
+ *  `updateProductWithVariants` (كي لا تبقى البدائل عالقةً على الوحدة المعطَّلة). */
+export async function migrateAliases(tx: DbOrTx, fromUnitId: number, toUnitId: number): Promise<number> {
+  if (fromUnitId === toUnitId) return 0;
+  const existing = await tx
+    .select({ id: productUnitBarcodes.id })
+    .from(productUnitBarcodes)
+    .where(eq(productUnitBarcodes.productUnitId, fromUnitId));
+  if (!existing.length) return 0;
+  await tx
+    .update(productUnitBarcodes)
+    .set({ productUnitId: toUnitId })
+    .where(eq(productUnitBarcodes.productUnitId, fromUnitId));
+  return existing.length;
 }
 
 /** يحلّ (variantId + unitName) إلى productUnitId — يُستعمَل من الواجهة حين لا تحمل الـid مباشرةً. */

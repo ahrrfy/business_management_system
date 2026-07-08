@@ -14,8 +14,12 @@ async function searchProducts(
   query: string,
   limit: number,
 ): Promise<SearchResult[]> {
-  // الباركود: تطابق دقيق على productUnits.barcode (UNIQUE) ⇒ أعلى رتبة (rank=0).
+  // الباركود: تطابق دقيق على الأساسيّ (`productUnits.barcode`) والبديل (`productUnitBarcodes`) معاً
+  // ⇒ أعلى رتبة (rank=0). البديل ينتج نفس الصفّ كالأساسيّ.
   if (kind === "BARCODE") {
+    const { resolveBarcodeOwner } = await import("../catalog/barcodeAliases");
+    const owner = await resolveBarcodeOwner(db, query);
+    if (!owner) return [];
     const rows = await db
       .select({
         unitId: productUnits.id,
@@ -30,7 +34,7 @@ async function searchProducts(
       .from(productUnits)
       .innerJoin(productVariants, eq(productVariants.id, productUnits.variantId))
       .innerJoin(products, eq(products.id, productVariants.productId))
-      .where(and(eq(productUnits.barcode, query), eq(products.isActive, true)))
+      .where(and(eq(productUnits.id, owner.productUnitId), eq(products.isActive, true)))
       .limit(limit);
 
     return rows.map((r) => ({

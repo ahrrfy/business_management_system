@@ -9,6 +9,7 @@
 import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { resolveBarcodeOwner } from "./catalog/barcodeAliases";
 
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون. */
 export interface KioskProduct {
@@ -107,8 +108,11 @@ export async function kioskLookup(barcode: string, branchId: number): Promise<Ki
   if (!db) return null;
   const code = String(barcode ?? "").trim();
   if (!code) return null;
+  // البحث يمرّ على الأساسيّ والبديل معاً — البديل يعطي نفس السعر/الوحدة كالأساسيّ.
+  const owner = await resolveBarcodeOwner(db, code);
+  if (!owner) return null;
   const rows = await kioskSelect(db, branchId)
-    .where(and(activeOnly, eq(productUnits.barcode, code)))
+    .where(and(activeOnly, eq(productUnits.id, owner.productUnitId)))
     .limit(1);
   return rows.length ? toKioskProduct(rows[0]) : null;
 }

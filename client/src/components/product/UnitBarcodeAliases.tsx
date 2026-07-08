@@ -4,7 +4,6 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
-import { onlyDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
 
 /**
@@ -189,16 +188,16 @@ export function UnitBarcodeAliases({ productUnitId: unitIdProp, variantId, unitN
               <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_auto] gap-2">
                 <Input
                   value={newCode}
-                  onChange={(e) => setNewCode(onlyDigits(e.target.value))}
+                  // نقبل EAN/UPC (أرقام فقط) و Code128 (أرقام + حروف + رموز) حتى ٦٤ خانة — نطاق varchar(64) في DB.
+                  onChange={(e) => setNewCode(e.target.value.slice(0, 64))}
                   onKeyDown={(e) => {
                     if (e.key !== "Enter") return;
                     if (e.nativeEvent.isComposing) return;
                     e.preventDefault();
                     submitAdd();
                   }}
-                  placeholder="الباركود…"
+                  placeholder="الباركود (أرقام أو أرقام+حروف)…"
                   dir="ltr"
-                  inputMode="numeric"
                   className="font-mono"
                   aria-label="باركود بديل جديد"
                 />

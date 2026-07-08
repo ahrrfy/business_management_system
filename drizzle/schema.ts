@@ -439,7 +439,8 @@ export const productUnitBarcodes = mysqlTable(
       .references(() => productUnits.id, { onDelete: "cascade" }),
     barcode: varchar("barcode", { length: 64 }).notNull(),
     note: varchar("note", { length: 255 }),
-    createdBy: bigint("createdBy", { mode: "number" }).references(() => users.id, { onDelete: "set null" }),
+    // `users.id` هو INT — يجب أن يطابق الـFK عمود الأب حرفياً وإلا فشل db:push بـERR 3780.
+    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
