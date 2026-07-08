@@ -31,15 +31,19 @@ export interface LauncherInfo {
   label: string;
   branchName?: string | null;
   deviceId: number;
+  /** ثواني الانتظار قبل فتح المتصفّح (لبدء التشغيل التلقائي مع الوندوز). افتراضي 120 ثانية. */
+  bootDelaySeconds?: number;
 }
 
 /** نصّ مُشغّل Windows (.cmd): Chrome أولاً ثم Edge، بوضع كشك وملء شاشة وملف تعريف مخصّص. */
 export function buildLauncherCmd(info: LauncherInfo): string {
   const url = kioskUrl(info.origin, info.token);
   const profile = `%LOCALAPPDATA%\\AlroyaKiosk\\dev-${info.deviceId}`;
+  const delay = Math.max(0, Math.floor(info.bootDelaySeconds ?? 120));
   const lines = [
     "@echo off",
     "chcp 65001 >nul",
+    `title قارئ الأسعار - ${info.label}`,
     "REM ============================================================",
     "REM  مُشغّل شاشة قارئ الأسعار — الرؤية العربية",
     `REM  الجهاز: ${info.label}   |   الفرع: ${info.branchName ?? ""}`,
@@ -47,8 +51,20 @@ export function buildLauncherCmd(info: LauncherInfo): string {
     "REM  (Win+R ثم اكتب: shell:startup ثم انسخ الملف هناك).",
     "REM  تنبيه: هذا الملف يحوي رمز الجهاز — احفظه بأمان، وألغِ الجهاز من النظام إن فُقد.",
     "REM ============================================================",
+    "",
+    "REM --- تأخير الإقلاع: ينتظر استقرار الوندوز والشبكة قبل فتح المتصفّح. ---",
+    "REM     غيّر الرقم أدناه لتغيير مدّة الانتظار بالثواني (0 = بلا انتظار).",
+    `set "BOOT_DELAY_SECS=${delay}"`,
     `set "KURL=${url}"`,
     `set "PROFILE=${profile}"`,
+    "",
+    "if %BOOT_DELAY_SECS% GTR 0 (",
+    "  echo.",
+    "  echo   قارئ الأسعار سيبدأ خلال %BOOT_DELAY_SECS% ثانية...",
+    "  echo   (انتظار استقرار الوندوز والاتصال بالخادم)",
+    "  echo.",
+    "  timeout /t %BOOT_DELAY_SECS% /nobreak >nul",
+    ")",
     "",
     "set \"CHROME=\"",
     "if exist \"%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe\" set \"CHROME=%ProgramFiles%\\Google\\Chrome\\Application\\chrome.exe\"",
