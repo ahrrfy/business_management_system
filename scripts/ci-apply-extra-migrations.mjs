@@ -33,6 +33,10 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0031_scale_composite_indexes.sql",
   "drizzle/migrations/0032_invoice_covering_indexes.sql",
   "drizzle/migrations/0033_drop_redundant_invoice_index.sql",
+  // ٨/٧/٢٦: باركودات بديلة (aliases) — jedwal جانبيّ بـFK cascade على productUnits. `db:push`
+  // على CI أنشأ الجدول بلا قيد FK فَسقط اختبار A3 (حذف الوحدة لم يُلقِ بدائلها) — إعادة تطبيق
+  // idempotent لضمان القيود على CI. راجع ذاكرة «db:push ينشئ جداول عارية عند فشله النصفي».
+  "drizzle/migrations/0062_product_unit_barcode_aliases.sql",
 ];
 
 const url = process.env.DATABASE_URL;
