@@ -1,4 +1,4 @@
-import { useRef, type ChangeEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FocusEvent } from "react";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -48,6 +48,20 @@ function groupThousands(raw: string): string {
   return (neg ? "-" : "") + grouped + (decPart !== undefined ? `.${decPart}` : "");
 }
 
+/** يشذّب الأصفار العشرية الزائدة والنقطة اليتيمة: "500.0000" → "500"، "500.50" → "500.5"،
+ *  "500." → "500". لا يمسّ الأرقام الدالّة. يُستعمَل للعرض غير المُركَّز وعند فقد التركيز. */
+function stripTrailingZeros(raw: string): string {
+  if (!raw) return "";
+  const neg = raw.startsWith("-");
+  const body = neg ? raw.slice(1) : raw;
+  const dot = body.indexOf(".");
+  if (dot === -1) return raw;
+  const intPart = body.slice(0, dot);
+  let decPart = body.slice(dot + 1).replace(/0+$/, "");
+  const cleaned = decPart.length > 0 ? `${intPart}.${decPart}` : intPart;
+  return neg ? `-${cleaned}` : cleaned;
+}
+
 /** عدد الخانات «الدالّة» (أرقام/نقطة/سالب — كل ما عدا الفاصلة) حتى موضع upto. */
 function meaningfulCount(s: string, upto: number): number {
   let count = 0;
@@ -72,7 +86,7 @@ export function MoneyInput({
   id,
   value,
   onChange,
-  placeholder = "0.00",
+  placeholder = "0",
   disabled,
   allowNegative = false,
   decimals = 2,
@@ -80,7 +94,11 @@ export function MoneyInput({
   ariaLabel,
 }: MoneyInputProps) {
   const ref = useRef<HTMLInputElement>(null);
-  const display = groupThousands(value ?? "");
+  const [focused, setFocused] = useState(false);
+  // أثناء التركيز: نُبقي ما يكتبه المستخدم كما هو (كي لا يختفي «.» أثناء كتابة كسر).
+  // خارج التركيز: نشذّب الأصفار العشرية الزائدة للعرض ⇒ «500.00» تظهر «500»، «3000.50» تظهر «3,000.5».
+  const rawForDisplay = focused ? (value ?? "") : stripTrailingZeros(value ?? "");
+  const display = groupThousands(rawForDisplay);
 
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     const el = e.target;
@@ -98,12 +116,21 @@ export function MoneyInput({
     });
   };
 
+  const handleBlur = (_e: FocusEvent<HTMLInputElement>) => {
+    setFocused(false);
+    // نُطبّع القيمة الخام نفسها فور فقد التركيز — كي لا تُرسَل «500.00» للخادم/الحفظ.
+    const normalized = stripTrailingZeros(value ?? "");
+    if (normalized !== (value ?? "")) onChange(normalized);
+  };
+
   return (
     <Input
       id={id}
       ref={ref}
       value={display}
       onChange={handleChange}
+      onFocus={() => setFocused(true)}
+      onBlur={handleBlur}
       dir="ltr"
       inputMode="decimal"
       placeholder={placeholder}

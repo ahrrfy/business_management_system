@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { NumberInput } from "@/components/form/NumberInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
@@ -555,7 +556,7 @@ export default function ProductNew() {
             return (
               <div key={u.id} className="grid grid-cols-2 md:grid-cols-12 gap-2 items-center border-t pt-2 md:border-0 md:pt-0">
                 <Input className="md:col-span-2 h-8 text-sm" value={u.name} onChange={(e) => patchUnit(u.id, { name: e.target.value })} placeholder="قطعة / درزن" />
-                <Input className="md:col-span-1 h-8 text-sm" dir="ltr" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(e) => patchUnit(u.id, { factor: e.target.value })} placeholder="12" />
+                <NumberInput className="md:col-span-1 h-8 text-sm" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(v) => patchUnit(u.id, { factor: v })} placeholder="12" decimals={4} />
                 <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
                 <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" />
                 <MoneyInput className="md:col-span-2 h-8 text-sm" value={u.government ?? ""} onChange={(v) => patchUnit(u.id, { government: v })} placeholder="حكومي" />

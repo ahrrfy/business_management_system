@@ -8,7 +8,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { bundleComponents, invoiceItems, products, productVariants } from "../../drizzle/schema";
+import { bundleComponents, invoiceItems, products, productUnits, productVariants } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import { getBundleDefinitions, replaceBundleComponents } from "../services/bundleService";
 import { getDb } from "../db";
@@ -25,13 +25,32 @@ const componentInputSchema = z.object({
 
 export const bundlesRouter = router({
   /** بحث على المكوّنات المؤهّلة (سلعة نشطة غير بكج وغير خدمة) — يكشف التكلفة ⇒ productsManagerProcedure.
-   *  يُستعمَل في شاشة إنشاء البكج + شاشة تعديل الوصفة كي يفلتر البكجات/الخدمات مبكّراً بدل رفضها بعد الإرسال. */
+   *  يُستعمَل في شاشة إنشاء البكج + شاشة تعديل الوصفة كي يفلتر البكجات/الخدمات مبكّراً بدل رفضها بعد الإرسال.
+   *  يقبل نصّاً حرّاً و/أو فئة — أحدهما إلزامي (لتفادي مسح جدول كامل بلا فلتر). */
   searchComponents: productsManagerProcedure
-    .input(z.object({ q: z.string().min(1).max(120), limit: z.number().int().positive().max(50).default(20) }))
+    .input(
+      z.object({
+        q: z.string().max(120).optional(),
+        categoryId: z.number().int().positive().nullish(),
+        limit: z.number().int().positive().max(50).default(20),
+      }),
+    )
     .query(async ({ input }) => {
       const db = getDb();
       if (!db) return { items: [] };
-      const term = `%${input.q.trim()}%`;
+      const q = (input.q ?? "").trim();
+      const hasQ = q.length >= 1;
+      const hasCat = input.categoryId != null;
+      if (!hasQ && !hasCat) return { items: [] };
+      const term = `%${q}%`;
+      const conds = [
+        eq(products.isBundle, false),
+        eq(products.isService, false),
+        eq(products.isActive, true),
+        eq(productVariants.isActive, true),
+      ];
+      if (hasCat) conds.push(eq(products.categoryId, Number(input.categoryId)));
+      if (hasQ) conds.push(sql`(${products.name} LIKE ${term} OR ${productVariants.sku} LIKE ${term})`);
       const rows = await db
         .select({
           variantId: productVariants.id,
@@ -42,15 +61,7 @@ export const bundlesRouter = router({
         })
         .from(productVariants)
         .innerJoin(products, eq(productVariants.productId, products.id))
-        .where(
-          and(
-            eq(products.isBundle, false),
-            eq(products.isService, false),
-            eq(products.isActive, true),
-            eq(productVariants.isActive, true),
-            sql`(${products.name} LIKE ${term} OR ${productVariants.sku} LIKE ${term})`,
-          ),
-        )
+        .where(and(...conds))
         .limit(input.limit);
       return {
         items: rows.map((r) => ({
@@ -60,6 +71,48 @@ export const bundlesRouter = router({
           sku: r.sku,
           costPrice: String(r.costPrice ?? "0"),
         })),
+      };
+    }),
+
+  /** بحث بمكوّنٍ عبر الباركود (لقارئ الباركود اليدوي). يُطابق `productUnits.barcode` — لأنّ الباركود
+   *  يُخزَّن على وحدة المتغيّر لا على المتغيّر مباشرةً. يعيد المتغيّر إن كان مؤهّلاً (لا بكج/خدمة، نشط). */
+  lookupComponentByBarcode: productsManagerProcedure
+    .input(z.object({ barcode: z.string().min(1).max(64) }))
+    .query(async ({ input }) => {
+      const db = getDb();
+      if (!db) return { item: null };
+      const code = input.barcode.trim();
+      const rows = await db
+        .select({
+          variantId: productVariants.id,
+          productId: productVariants.productId,
+          productName: products.name,
+          sku: productVariants.sku,
+          costPrice: productVariants.costPrice,
+        })
+        .from(productUnits)
+        .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
+        .innerJoin(products, eq(productVariants.productId, products.id))
+        .where(
+          and(
+            eq(productUnits.barcode, code),
+            eq(products.isBundle, false),
+            eq(products.isService, false),
+            eq(products.isActive, true),
+            eq(productVariants.isActive, true),
+          ),
+        )
+        .limit(1);
+      if (!rows[0]) return { item: null };
+      const r = rows[0];
+      return {
+        item: {
+          variantId: Number(r.variantId),
+          productId: Number(r.productId),
+          productName: r.productName,
+          sku: r.sku,
+          costPrice: String(r.costPrice ?? "0"),
+        },
       };
     }),
 
