@@ -1,8 +1,10 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, Package, Plus, ScanLine, Search, X } from "lucide-react";
+import { AlertCircle, ListPlus, Package, Plus, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
@@ -62,9 +64,15 @@ export default function BundleForm() {
   const [components, setComponents] = useState<ComponentPick[]>([]);
   const [picker, setPicker] = useState("");
   const [pickerCategoryId, setPickerCategoryId] = useState<number | "">("");
-  const [scanCode, setScanCode] = useState("");
-  const [scanFlash, setScanFlash] = useState<"" | "ok" | "err">("");
-  const scanInputRef = useRef<HTMLInputElement>(null);
+  const [flash, setFlash] = useState<"" | "ok" | "err">("");
+  const pickerInputRef = useRef<HTMLInputElement>(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
+  // نخزّن بيانات الصفّ كاملةً لا معرّفاته فقط — كي يعبر التحديد تغييرات الفلترة/البحث
+  // في الحوار (الاختيار في نتيجة سابقة لا يُفقد عند تبديل الفئة أو الكتابة).
+  type BulkPick = { variantId: number; productName: string; sku: string | null; costPrice: string };
+  const [bulkSelected, setBulkSelected] = useState<Map<number, BulkPick>>(new Map());
+  const [bulkPicker, setBulkPicker] = useState("");
+  const [bulkCategoryId, setBulkCategoryId] = useState<number | "">("");
   const [error, setError] = useState("");
 
   const branchId = me.data?.branchId ?? 1;
@@ -86,8 +94,7 @@ export default function BundleForm() {
   const taken = useMemo(() => (checkQ.data ?? []).find((r) => r.code === code), [checkQ.data, code]);
   const bcState = barcodeState(code, { countInForm: 1, takenInDb: !!taken });
 
-  // ── بحث المكوّنات المؤهّلة (يفلتر البكجات/الخدمات خادمياً) ──
-  //     ينشط بأحد شرطين: نصّ بحث ≥ حرفَين، أو اختيار فئة (تصفّح الفئة كاملة).
+  // ── بحث المكوّنات المؤهّلة (نصّ + فئة، مباشرة على الشاشة) ──
   const pickerDeb = useDebouncedValue(picker, 300);
   const hasQuery = pickerDeb.trim().length >= 2;
   const hasCategory = pickerCategoryId !== "";
@@ -100,34 +107,87 @@ export default function BundleForm() {
     { enabled: hasQuery || hasCategory, staleTime: 5_000 }
   );
 
-  // ── بحث بالباركود (query يُستدعى بشكلٍ حَتميّ عبر fetch عند مسح/إدخال) ──
-  const [scanBusy, setScanBusy] = useState(false);
-  async function submitScan() {
-    const code = scanCode.trim();
-    if (!code || scanBusy) return;
-    setScanBusy(true);
+  // ── بحث موازٍ داخل حوار «إضافة متعدّدة» ──
+  const bulkPickerDeb = useDebouncedValue(bulkPicker, 300);
+  const bulkHasQuery = bulkPickerDeb.trim().length >= 2;
+  const bulkHasCategory = bulkCategoryId !== "";
+  const bulkSearchQ = trpc.bundles.searchComponents.useQuery(
+    {
+      q: bulkHasQuery ? bulkPickerDeb : undefined,
+      categoryId: bulkHasCategory ? Number(bulkCategoryId) : undefined,
+      limit: 50,
+    },
+    { enabled: bulkOpen && (bulkHasQuery || bulkHasCategory), staleTime: 5_000 }
+  );
+
+  // مؤقّت الوميض المُشترَك — يُلغى قبل جدولة جديدة كي لا يُطفئ مسحٌ سابقٌ وميض مسحٍ لاحق.
+  const flashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function showFlash(kind: "ok" | "err") {
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    setFlash(kind);
+    flashTimerRef.current = setTimeout(() => {
+      setFlash("");
+      flashTimerRef.current = null;
+    }, kind === "ok" ? 700 : 900);
+  }
+
+  const [busy, setBusy] = useState(false);
+  /** استرجاع مكوّن بالباركود. يعيد true فقط عند إضافة **حقيقية** — لا عند تكرار أو فشل. */
+  async function lookupByBarcode(code: string): Promise<boolean> {
+    if (busy) return false;
+    setBusy(true);
     setError("");
     try {
       const res = await utils.bundles.lookupComponentByBarcode.fetch({ barcode: code });
       if (!res.item) {
-        setError("لا يوجد منتج مؤهّل بهذا الباركود (قد يكون بكجاً/خدمة/غير نشط).");
-        setScanFlash("err");
-        setTimeout(() => setScanFlash(""), 900);
-        return;
+        setError(`لا يوجد منتج مؤهّل بالباركود «${code}» (قد يكون بكجاً/خدمة/غير نشط).`);
+        showFlash("err");
+        return false;
+      }
+      // تكرار = فشل UX (لا وميض أخضر متضارب مع رسالة الخطأ).
+      if (components.some((c) => c.componentVariantId === res.item!.variantId)) {
+        setError(`المكوّن «${res.item.productName}» مضاف مسبقاً — زد كميّته بدل تكرار السطر.`);
+        showFlash("err");
+        return false;
       }
       addComponent(res.item.variantId, res.item.productName, res.item.sku ?? "", res.item.costPrice);
-      setScanCode("");
-      setScanFlash("ok");
-      setTimeout(() => setScanFlash(""), 700);
-      scanInputRef.current?.focus();
+      setPicker("");
+      showFlash("ok");
+      pickerInputRef.current?.focus();
+      return true;
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "تعذّر البحث عن الباركود.";
       setError(msg);
-      setScanFlash("err");
-      setTimeout(() => setScanFlash(""), 900);
+      showFlash("err");
+      return false;
     } finally {
-      setScanBusy(false);
+      setBusy(false);
     }
+  }
+
+  /** Enter على الحقل الذكيّ:
+   *  - نصّ كلّه أرقام (≥٤ خانات) ⇒ يُعامَل كباركود ⇒ نداء `lookupByBarcode`.
+   *  - غير ذلك، وثمّة نتائج بحث حيّة (`hasQuery||hasCategory`) وتُطابق النصّ الحاليّ ⇒ إضافة أوّل نتيجة.
+   *  ⚠️ حواجز: (١) IME العربي/الجوال قد يُطلق Enter كـcommit — نتجاهله. (٢) نتائج البحث القديمة
+   *  المُخبَّأة (TanStack Query cache) قد تبقى بعد تقصير النصّ تحت العتبة — نلزم `hasQuery||hasCategory`
+   *  ليكون الاستعلام مفعَّلاً فعلاً، مع مطابقة `pickerDeb === v`. */
+  async function handleSmartKey(e: ReactKeyboardEvent<HTMLInputElement>) {
+    if (e.key !== "Enter") return;
+    if (e.nativeEvent.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return;
+    e.preventDefault();
+    const v = picker.trim();
+    if (!v) return;
+    if (/^\d{4,}$/.test(v)) {
+      await lookupByBarcode(v);
+      return;
+    }
+    const settled = (hasQuery || hasCategory) && pickerDeb.trim() === v && !searchQ.isFetching;
+    if (!settled || searchRows.length === 0) return;
+    const first = searchRows[0];
+    if (components.some((c) => c.componentVariantId === first.variantId)) return;
+    addComponent(first.variantId, first.productName, first.sku ?? "", first.costPrice);
+    setPicker("");
+    showFlash("ok");
   }
 
   // ── حساب التكلفة اللحظية (Σ تكاليف مكوّنات × كمياتها) ──
@@ -315,58 +375,32 @@ export default function BundleForm() {
         <CardHeader>
           <CardTitle className="text-base">مكوّنات البكج</CardTitle>
           <p className="text-xs text-muted-foreground mt-1">
-            أضف المكوّنات بأيّ طريقة تناسبك: <strong>امسح باركود المنتج</strong>، أو <strong>اختر فئة لتصفّح منتجاتها</strong>، أو <strong>اكتب اسماً/SKU</strong>. الخدمات والبكجات الأخرى مستبعَدة تلقائياً.
+            امسح باركود المنتج بالقارئ، أو ابدأ الكتابة (اسم/SKU) للبحث، أو استعمل «إضافة متعدّدة» لاختيار عدّة منتجات دفعةً واحدة. الخدمات والبكجات الأخرى مستبعَدة تلقائياً.
           </p>
         </CardHeader>
         <CardContent className="space-y-3">
-          {/* — طريقة ١: مسح الباركود — */}
-          <div className="rounded-md border bg-muted/20 p-3">
-            <div className="text-xs font-medium mb-1.5 flex items-center gap-1.5">
-              <ScanLine aria-hidden className="size-3.5" /> مسح بالباركود
-              <span className="text-muted-foreground font-normal">— وجّه القارئ إلى المنتج، أو اكتب الباركود واضغط Enter</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Input
-                ref={scanInputRef}
-                value={scanCode}
-                onChange={(e) => setScanCode(onlyDigits(e.target.value))}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    submitScan();
-                  }
-                }}
-                placeholder="باركود المنتج…"
-                dir="ltr"
-                inputMode="numeric"
-                className={cn(
-                  "font-mono",
-                  scanFlash === "ok" && "border-emerald-500 ring-1 ring-emerald-500",
-                  scanFlash === "err" && "border-red-500 ring-1 ring-red-500",
-                )}
-                aria-label="مسح الباركود"
-              />
-              <Button type="button" variant="secondary" onClick={submitScan} disabled={scanBusy || !scanCode.trim()}>
-                <Plus aria-hidden className="size-4 me-1" /> إضافة
-              </Button>
-            </div>
-          </div>
-
-          {/* — طريقة ٢ + ٣: تصفّح بالفئة + بحث نصّي — */}
+          {/* — الحقل الذكيّ الموحّد (باركود + نصّ) + فئة + إضافة متعدّدة — */}
           <div className="rounded-md border bg-muted/20 p-3 space-y-2">
-            <div className="text-xs font-medium flex items-center gap-1.5">
-              <Search aria-hidden className="size-3.5" /> تصفّح أو ابحث في المنتجات
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-[1fr_240px] gap-2">
-              <Input
-                value={picker}
-                onChange={(e) => setPicker(e.target.value)}
-                placeholder="اكتب ≥ حرفَين (اسم أو SKU)…"
-                dir="auto"
-                aria-label="بحث نصّي على المكوّنات"
-              />
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1 min-w-0">
+                <Search aria-hidden className="absolute end-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground pointer-events-none" />
+                <Input
+                  ref={pickerInputRef}
+                  value={picker}
+                  onChange={(e) => setPicker(e.target.value)}
+                  onKeyDown={handleSmartKey}
+                  placeholder="امسح باركوداً أو اكتب اسماً/SKU… (اضغط Enter لإضافة أوّل نتيجة)"
+                  dir="auto"
+                  className={cn(
+                    "pe-9",
+                    flash === "ok" && "border-emerald-500 ring-1 ring-emerald-500",
+                    flash === "err" && "border-red-500 ring-1 ring-red-500",
+                  )}
+                  aria-label="بحث ذكيّ للمكوّن (باركود أو نصّ)"
+                />
+              </div>
               <select
-                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm min-w-[130px]"
                 value={pickerCategoryId}
                 onChange={(e) => setPickerCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
                 aria-label="فلترة بالفئة"
@@ -376,14 +410,24 @@ export default function BundleForm() {
                   <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
               </select>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => { setBulkOpen(true); setBulkSelected(new Map()); setBulkPicker(""); setBulkCategoryId(""); }}
+                aria-label="إضافة عدّة مكوّنات دفعةً"
+                title="اختر عدّة منتجات دفعةً واحدة (كالفواتير المتقدّمة)"
+              >
+                <ListPlus aria-hidden className="size-4 me-1" /> إضافة متعدّدة
+              </Button>
             </div>
+
             {(hasQuery || hasCategory) ? (
               <div className="max-h-64 overflow-auto rounded-md border bg-popover">
                 {searchQ.isFetching ? (
                   <div className="px-3 py-6 text-center text-xs text-muted-foreground">جارٍ البحث…</div>
                 ) : searchRows.length === 0 ? (
                   <div className="px-3 py-6 text-center text-xs text-muted-foreground">
-                    لا نتائج — جرّب فئة أخرى أو نصّاً مختلفاً.
+                    لا نتائج — جرّب فئة أخرى أو نصّاً مختلفاً، أو امسح الباركود مباشرةً.
                   </div>
                 ) : (
                   <ul>
@@ -394,7 +438,12 @@ export default function BundleForm() {
                           <button
                             type="button"
                             disabled={already}
-                            onClick={() => addComponent(r.variantId, r.productName, r.sku ?? "", r.costPrice)}
+                            onClick={() => {
+                              addComponent(r.variantId, r.productName, r.sku ?? "", r.costPrice);
+                              setPicker("");
+                              showFlash("ok");
+                              pickerInputRef.current?.focus();
+                            }}
                             className={cn(
                               "w-full text-right px-3 py-2 text-sm flex items-center justify-between gap-2 border-b last:border-b-0",
                               already ? "opacity-50 cursor-not-allowed" : "hover:bg-accent focus:bg-accent",
@@ -414,15 +463,15 @@ export default function BundleForm() {
                 )}
               </div>
             ) : (
-              <div className="text-xs text-muted-foreground text-center py-2">
-                اختر فئة أو ابدأ الكتابة لعرض المنتجات.
+              <div className="text-xs text-muted-foreground text-center py-1">
+                امسح باركوداً بالقارئ، أو ابدأ الكتابة، أو اختر فئة.
               </div>
             )}
           </div>
 
           {components.length === 0 && (
             <div className="text-center text-sm text-muted-foreground py-8 border rounded-md">
-              لا مكوّنات بعد — استعمل الباركود، الفئة، أو البحث النصّي أعلاه.
+              لا مكوّنات بعد — استعمل الحقل أعلاه (باركود، اسم، أو فئة).
             </div>
           )}
 
@@ -540,7 +589,11 @@ export default function BundleForm() {
       </Card>
 
       {error && (
-        <div className="rounded-md border border-red-500/40 bg-red-50 dark:bg-red-950/40 p-3 text-sm flex items-start gap-2">
+        <div
+          role="alert"
+          aria-live="assertive"
+          className="rounded-md border border-red-500/40 bg-red-50 dark:bg-red-950/40 p-3 text-sm flex items-start gap-2"
+        >
           <AlertCircle className="size-4 mt-0.5 shrink-0 text-red-600" />
           <div>{error}</div>
         </div>
@@ -552,6 +605,144 @@ export default function BundleForm() {
           {create.isPending ? "جارٍ الحفظ…" : "حفظ البكج"}
         </Button>
       </div>
+
+      {/* ── حوار «إضافة متعدّدة»: اختر عدّة منتجات دفعةً بمربّعات اختيار ── */}
+      <Dialog open={bulkOpen} onOpenChange={setBulkOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="text-base flex items-center gap-2">
+              <ListPlus aria-hidden className="size-4" /> إضافة عدّة مكوّنات دفعةً
+            </DialogTitle>
+            <p className="text-xs text-muted-foreground">
+              علِّم كلّ منتج تريده — يُضاف بكميّة ١ ويمكنك تعديلها لاحقاً في الجدول. المكوّنات المُضافة سلفاً معطَّلة.
+            </p>
+          </DialogHeader>
+          <div className="space-y-2">
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_180px] gap-2">
+              <Input
+                value={bulkPicker}
+                onChange={(e) => setBulkPicker(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter") return;
+                  if (e.nativeEvent.isComposing || (e as unknown as { keyCode: number }).keyCode === 229) return;
+                  e.preventDefault();
+                  const items = bulkSearchQ.data?.items ?? [];
+                  const first = items.find((r) =>
+                    !components.some((c) => c.componentVariantId === r.variantId) &&
+                    !bulkSelected.has(r.variantId),
+                  );
+                  if (first) {
+                    setBulkSelected((prev) => {
+                      const next = new Map(prev);
+                      next.set(first.variantId, {
+                        variantId: first.variantId,
+                        productName: first.productName,
+                        sku: first.sku,
+                        costPrice: first.costPrice,
+                      });
+                      return next;
+                    });
+                  }
+                }}
+                placeholder="اكتب ≥ حرفَين للبحث… (Enter لتعليم أوّل نتيجة)"
+                dir="auto"
+                aria-label="بحث في الحوار"
+                autoFocus
+              />
+              <select
+                className="h-9 rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                value={bulkCategoryId}
+                onChange={(e) => setBulkCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
+                aria-label="فلترة بالفئة"
+              >
+                <option value="">— كل الفئات —</option>
+                {(categoriesQ.data ?? []).map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="max-h-80 overflow-auto rounded-md border bg-popover">
+              {!(bulkHasQuery || bulkHasCategory) ? (
+                <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                  اختر فئة أو ابدأ الكتابة لعرض المنتجات القابلة للاختيار.
+                </div>
+              ) : bulkSearchQ.isFetching ? (
+                <div className="px-3 py-8 text-center text-xs text-muted-foreground">جارٍ البحث…</div>
+              ) : (bulkSearchQ.data?.items.length ?? 0) === 0 ? (
+                <div className="px-3 py-8 text-center text-xs text-muted-foreground">لا نتائج مطابقة.</div>
+              ) : (
+                <ul>
+                  {(bulkSearchQ.data?.items ?? []).map((r) => {
+                    const already = components.some((c) => c.componentVariantId === r.variantId);
+                    const checked = bulkSelected.has(r.variantId);
+                    return (
+                      <li key={r.variantId} className={cn("border-b last:border-b-0", already && "opacity-50")}>
+                        <label className={cn(
+                          "flex items-center gap-3 px-3 py-2 text-sm cursor-pointer hover:bg-accent",
+                          already && "cursor-not-allowed",
+                        )}>
+                          <Checkbox
+                            checked={checked}
+                            disabled={already}
+                            onCheckedChange={(v) => {
+                              setBulkSelected((prev) => {
+                                const next = new Map(prev);
+                                if (v) {
+                                  next.set(r.variantId, {
+                                    variantId: r.variantId,
+                                    productName: r.productName,
+                                    sku: r.sku,
+                                    costPrice: r.costPrice,
+                                  });
+                                } else {
+                                  next.delete(r.variantId);
+                                }
+                                return next;
+                              });
+                            }}
+                          />
+                          <span className="flex-1 flex items-center justify-between gap-2 truncate">
+                            <span className="truncate">{r.productName}</span>
+                            <span className="text-xs text-muted-foreground shrink-0 font-mono">{r.sku}</span>
+                          </span>
+                          {already && <span className="text-xs text-emerald-600 shrink-0">مُضاف مسبقاً</span>}
+                        </label>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+            <div className="text-xs text-muted-foreground" aria-live="polite">
+              محدَّد: <b className="text-foreground">{bulkSelected.size}</b>
+            </div>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setBulkOpen(false)}>إلغاء</Button>
+            <Button
+              disabled={bulkSelected.size === 0}
+              onClick={() => {
+                // نمرّ على المحدَّد المخزَّن كاملاً — لا على النتائج المفلترة حالياً — كي لا تُفقَد
+                // خيارات المستخدم من فلترات سابقة عند تبديل الفئة/الكتابة قبل الحفظ.
+                let added = 0;
+                for (const r of Array.from(bulkSelected.values())) {
+                  if (components.some((c) => c.componentVariantId === r.variantId)) continue;
+                  addComponent(r.variantId, r.productName, r.sku ?? "", r.costPrice);
+                  added++;
+                }
+                setBulkOpen(false);
+                setBulkSelected(new Map());
+                if (added > 0) {
+                  setFlash("ok");
+                  setTimeout(() => setFlash(""), 700);
+                }
+              }}
+            >
+              <Plus aria-hidden className="size-4 me-1" /> أضف المحدَّد ({bulkSelected.size})
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
