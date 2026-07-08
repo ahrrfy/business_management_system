@@ -8,6 +8,7 @@ import type { PriceTier } from "../pricing";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
 import { getProductCategoryIds, resolvePromotionForLine } from "../salesPromotionService";
 import { withTx } from "../tx";
+import { resolveBarcodeOwner } from "./barcodeAliases";
 import { activeOnly, buildCatalogSearchOrder, buildCatalogSearchWhere, posVisibility } from "./search";
 
 /** One sellable line for the POS: a (variant × unit) with its tier price and branch stock. */
@@ -266,7 +267,8 @@ async function applyContractPrices(
 }
 
 /** Resolve a scanned barcode to a single POS row.
- *  customerId اختياري: يُطبّق السعر التعاقدي النشط للعميل إن وُجد (بند 12ب). */
+ *  customerId اختياري: يُطبّق السعر التعاقدي النشط للعميل إن وُجد (بند 12ب).
+ *  البحث يمرّ على الأساسيّ (`productUnits.barcode`) والبديل (`productUnitBarcodes`) معاً. */
 export async function lookupByBarcode(
   barcode: string,
   branchId: number,
@@ -275,8 +277,10 @@ export async function lookupByBarcode(
 ): Promise<PosRow | null> {
   const db = getDb();
   if (!db) return null;
+  const owner = await resolveBarcodeOwner(db, barcode);
+  if (!owner) return null;
   const rows = await baseSelect(db, branchId, tier)
-    .where(and(activeOnly, eq(productUnits.barcode, barcode.trim())))
+    .where(and(activeOnly, eq(productUnits.id, owner.productUnitId)))
     .limit(1);
   const priced = await applyContractPrices(db, normalize(rows), customerId);
   const withAvail = await applyBundleAvailability(db, priced, branchId);

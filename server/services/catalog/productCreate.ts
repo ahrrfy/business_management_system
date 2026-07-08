@@ -12,6 +12,7 @@ import {
   productionRecipes,
 } from "../../../drizzle/schema";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
+import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
 import { getDb } from "../../db";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -97,14 +98,16 @@ async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
     seenCode.add(c);
   }
   if (seenCode.size) {
-    const taken = await tx
-      .select({ code: productUnits.barcode, name: products.name })
-      .from(productUnits)
-      .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-      .innerJoin(products, eq(productVariants.productId, products.id))
-      .where(inArray(productUnits.barcode, Array.from(seenCode)))
-      .limit(1);
-    if (taken[0]) throw new TRPCError({ code: "CONFLICT", message: `الباركود ${taken[0].code} مُستخدَم في «${taken[0].name}».` });
+    // مرَّتان: على `productUnits.barcode` (الأساسيّ) وعلى `productUnitBarcodes.barcode` (البديل).
+    // بدون فحص البدائل يمكن كتابة أساسيّ لسلعة يطابق بديلاً لسلعة أخرى ⇒ resolveBarcodeOwner
+    // يرجع لسلعتين مختلفتين حسب أيّهما مُسجَّل أولاً (سيناريو Codex P1).
+    const clashes = await findBarcodeClashes(tx, Array.from(seenCode));
+    if (clashes[0]) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `الباركود ${clashes[0].code} مُستخدَم في «${clashes[0].takenBy}».`,
+      });
+    }
   }
 
   // الرموز (SKU) — فريدة داخل المنتج فقط؛ يجوز أن يتكرر "أزرق"/PR-BLU في منتج آخر.
@@ -120,21 +123,12 @@ async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
 /**
  * product-variants: أيُّ باركودات من القائمة محجوزة مسبقاً (وفي أي منتج)؟
  * يغذّي التحقّق اللحظي في شاشة الإضافة قبل الحفظ.
+ *
+ * ملاحظة: يمرّ على الأساسيّ (`productUnits.barcode`) والبديل (`productUnitBarcodes.barcode`) معاً
+ * عبر `checkBarcodesTakenAcrossBoth` — كي لا يمرّ باركود بديلٍ بلا اصطدام بأساسيٍّ لسلعةٍ أخرى.
  */
 export async function checkBarcodesTaken(codes: string[]): Promise<Array<{ code: string; takenBy: string }>> {
-  const db = getDb();
-  if (!db) return [];
-  const clean = Array.from(new Set(codes.map((c) => c.trim()).filter(Boolean)));
-  if (!clean.length) return [];
-  const rows = await db
-    .select({ code: productUnits.barcode, productName: products.name, sku: productVariants.sku })
-    .from(productUnits)
-    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-    .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(inArray(productUnits.barcode, clean));
-  return rows
-    .filter((r) => r.code)
-    .map((r) => ({ code: r.code as string, takenBy: `${r.productName} (${r.sku})` }));
+  return checkBarcodesTakenAcrossBoth(codes);
 }
 
 /** Create a product with its variants, units and prices in one transaction. */

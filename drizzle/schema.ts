@@ -427,6 +427,31 @@ export const productUnits = mysqlTable(
 export type ProductUnit = typeof productUnits.$inferSelect;
 export type InsertProductUnit = typeof productUnits.$inferInsert;
 
+/** باركودات بديلة (aliases) لوحدة المنتج — نفس السلعة/التكلفة/السعر/المخزون بعدّة باركودات.
+ *  استخدام: نفس القلم بأشكال خارجية مختلفة، دفعات استيراد بترميز مختلف، الخ.
+ *  التفرّد بين الأساسيّ والبديل يُنفَّذ تطبيقياً في `checkBarcodesTaken` (يفحص الجدولَين). */
+export const productUnitBarcodes = mysqlTable(
+  "productUnitBarcodes",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productUnitId: bigint("productUnitId", { mode: "number" })
+      .notNull()
+      .references(() => productUnits.id, { onDelete: "cascade" }),
+    barcode: varchar("barcode", { length: 64 }).notNull(),
+    note: varchar("note", { length: 255 }),
+    // `users.id` هو INT — يجب أن يطابق الـFK عمود الأب حرفياً وإلا فشل db:push بـERR 3780.
+    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    barcodeUq: unique("uq_unit_barcode_alias").on(table.barcode),
+    unitIdx: index("idx_alias_unit").on(table.productUnitId),
+  }),
+);
+
+export type ProductUnitBarcode = typeof productUnitBarcodes.$inferSelect;
+export type InsertProductUnitBarcode = typeof productUnitBarcodes.$inferInsert;
+
 /** سعر صريح لكل (وحدة × فئة تسعير). */
 export const productPrices = mysqlTable(
   "productPrices",

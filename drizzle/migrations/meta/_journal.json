@@ -435,6 +435,13 @@
       "when": 1783520000000,
       "tag": "0061_promotions_v2",
       "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "5",
+      "when": 1783600000000,
+      "tag": "0062_product_unit_barcode_aliases",
+      "breakpoints": true
     }
   ]
 }
