@@ -57,7 +57,7 @@ const deviceIdInput = z.object({ id: z.number().int().positive() });
 export const kioskRouter = router({
   /** منتجات البنر المتوفّرة في الفرع (سعر المفرد + صورة). */
   banner: kioskReadProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional(), limit: z.number().int().min(1).max(60).default(40) }))
+    .input(z.object({ branchId: z.number().int().positive().optional(), limit: z.number().int().min(1).max(500).default(500) }))
     .query(({ input, ctx }) => kioskBanner(effectiveBranchId(ctx.deviceBranchId, input.branchId), input.limit)),
 
   /** بحث سعر بالباركود (المسح). يعيد null إن لم يُعرَف الباركود. */

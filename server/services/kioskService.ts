@@ -29,6 +29,10 @@ const RETAIL = "RETAIL" as const;
 
 const activeOnly = and(
   eq(products.isActive, true),
+  // ٨/٧ (٢٦): استبعاد الخدمات من بنر الكشك — الخدمات (تصميم/طباعة/رسوم) لا معنى لعرضها
+  // على شاشة أسعار للزبون؛ كتالوج المكتبة القابل للاقتناء فقط. البحث بالباركود لا يفلترها
+  // لأن الخدمة لا تحمل باركوداً عادةً (والفلتر مشترك مع البنر بغرض الأمن).
+  eq(products.isService, false),
   eq(productVariants.isActive, true),
   eq(productUnits.isActive, true)
 );
@@ -85,13 +89,15 @@ function toKioskProduct(r: any): KioskProduct {
  * مشترك بين الفروع في هذا النشاط). يبقى المعامل جزءاً من التوقيع لتوافق النداء الحالي — ولإعادة
  * تفعيل الشرط لاحقاً بإضافة `gt(branchStock.quantity, 0)` سطراً واحداً بعد إدخال المخزون.
  */
-export async function kioskBanner(branchId: number, limit = 40): Promise<KioskProduct[]> {
+export async function kioskBanner(branchId: number, limit = 500): Promise<KioskProduct[]> {
   const db = getDb();
   if (!db) return [];
+  // سقف ٥٠٠: يستوعب كتالوج مكتبة نموذجي كاملاً، ويحمي من كوارث الأداء إن نما إلى آلاف.
+  const cap = Math.min(Math.max(limit, 1), 500);
   const rows = await kioskSelect(db, branchId)
     .where(and(activeOnly, eq(productUnits.isBaseUnit, true), sql`${productPrices.price} is not null`))
     .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name))
-    .limit(Math.min(Math.max(limit, 1), 60) * 2); // فائض لاستيعاب إزالة التكرار
+    .limit(cap * 2); // فائض لاستيعاب إزالة التكرار
 
   // منتج واحد لكل بطاقة (متغيّرات متعدّدة لنفس المنتج تُختصر لأول ظهور).
   const seen = new Set<number>();
@@ -101,7 +107,7 @@ export async function kioskBanner(branchId: number, limit = 40): Promise<KioskPr
     if (seen.has(pid)) continue;
     seen.add(pid);
     out.push(toKioskProduct(r));
-    if (out.length >= Math.min(Math.max(limit, 1), 60)) break;
+    if (out.length >= cap) break;
   }
   return out;
 }
