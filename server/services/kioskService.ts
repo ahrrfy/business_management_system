@@ -6,7 +6,7 @@
  * اسم المنتج، الماركة، الفئة، **سعر المفرد (RETAIL)**، الوحدة، الباركود، والصورة الرئيسية.
  * شرط التوفّر (المخزون > 0) يُطبَّق خادمياً للبنر دون كشف الكمية نفسها.
  */
-import { and, asc, desc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 
@@ -74,14 +74,22 @@ function toKioskProduct(r: any): KioskProduct {
 }
 
 /**
- * بنر الجذب: منتجات الفرع **المتوفّرة فعلاً** (مخزون > 0) ذات سعر مفرد — صفّ لكل منتج
- * (الوحدة الأساس) مع الصورة، مرتّبة: ذوات الصور أولاً ثم أبجدياً. لا تُعيد الكمية.
+ * بنر الجذب (وضع «معرض تسويقي»): كل منتج بوحدة أساس فعّالة وسعر مفرد صريح — صفّ لكل منتج
+ * مع الصورة، مرتّبة: ذوات الصور أولاً ثم أبجدياً. لا تُعيد الكمية.
+ *
+ * **قرار المالك (٨/٧):** حُذف شرط «مخزون الفرع > 0» ليعرض البنر الكتالوج فوراً بينما يُدخَل
+ * المخزون تدريجياً بعد مسح ٥/٧. يقبل هذا التنازل احتمال ظهور منتج قد لا يكون على الرفّ؛
+ * لكنّ مسح الباركود يبقى دقيقاً (`kioskLookup` لا يشترط المخزون أصلاً — الزبون يعرف السعر عند المسح).
+ *
+ * **ملاحظة نطاق الفرع:** بحذف شرط المخزون، `branchId` لم يعُد يُقيّد الكتالوج (كتالوج المنتجات
+ * مشترك بين الفروع في هذا النشاط). يبقى المعامل جزءاً من التوقيع لتوافق النداء الحالي — ولإعادة
+ * تفعيل الشرط لاحقاً بإضافة `gt(branchStock.quantity, 0)` سطراً واحداً بعد إدخال المخزون.
  */
 export async function kioskBanner(branchId: number, limit = 40): Promise<KioskProduct[]> {
   const db = getDb();
   if (!db) return [];
   const rows = await kioskSelect(db, branchId)
-    .where(and(activeOnly, eq(productUnits.isBaseUnit, true), sql`${productPrices.price} is not null`, gt(branchStock.quantity, 0)))
+    .where(and(activeOnly, eq(productUnits.isBaseUnit, true), sql`${productPrices.price} is not null`))
     .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name))
     .limit(Math.min(Math.max(limit, 1), 60) * 2); // فائض لاستيعاب إزالة التكرار
 
