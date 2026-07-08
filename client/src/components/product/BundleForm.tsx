@@ -67,7 +67,10 @@ export default function BundleForm() {
   const [flash, setFlash] = useState<"" | "ok" | "err">("");
   const pickerInputRef = useRef<HTMLInputElement>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
-  const [bulkSelected, setBulkSelected] = useState<Set<number>>(new Set());
+  // نخزّن بيانات الصفّ كاملةً لا معرّفاته فقط — كي يعبر التحديد تغييرات الفلترة/البحث
+  // في الحوار (الاختيار في نتيجة سابقة لا يُفقد عند تبديل الفئة أو الكتابة).
+  type BulkPick = { variantId: number; productName: string; sku: string | null; costPrice: string };
+  const [bulkSelected, setBulkSelected] = useState<Map<number, BulkPick>>(new Map());
   const [bulkPicker, setBulkPicker] = useState("");
   const [bulkCategoryId, setBulkCategoryId] = useState<number | "">("");
   const [error, setError] = useState("");
@@ -150,7 +153,10 @@ export default function BundleForm() {
 
   /** Enter على الحقل الذكيّ:
    *  - نصّ كلّه أرقام (≥٤ خانات) ⇒ يُعامَل كباركود ⇒ نداء `lookupByBarcode`.
-   *  - غير ذلك، وثمّة نتائج بحث ⇒ إضافة أوّل نتيجة. */
+   *  - غير ذلك، وثمّة نتائج بحث تُطابق النصّ الحاليّ ⇒ إضافة أوّل نتيجة.
+   *  ⚠️ حماية من ضغط Enter داخل نافذة التأخير (٣٠٠م): نتائج البحث القديمة (`searchRows`) قد تخصّ
+   *  إدخالاً سابقاً بينما `picker` تغيّر — لا نُضيف إلّا حين يكون النصّ المُطبَّق (`pickerDeb`) مطابقاً
+   *  للنصّ الحاليّ فعلاً؛ وإلّا نبتلع Enter صامتاً حتى تستقرّ النتائج. */
   async function handleSmartKey(e: ReactKeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
     e.preventDefault();
@@ -160,7 +166,8 @@ export default function BundleForm() {
       await lookupByBarcode(v);
       return;
     }
-    if (searchRows.length > 0 && !searchQ.isFetching) {
+    const settled = pickerDeb.trim() === v && !searchQ.isFetching;
+    if (settled && searchRows.length > 0) {
       const first = searchRows[0];
       if (!components.some((c) => c.componentVariantId === first.variantId)) {
         addComponent(first.variantId, first.productName, first.sku ?? "", first.costPrice);
@@ -394,7 +401,7 @@ export default function BundleForm() {
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => { setBulkOpen(true); setBulkSelected(new Set()); setBulkPicker(""); setBulkCategoryId(""); }}
+                onClick={() => { setBulkOpen(true); setBulkSelected(new Map()); setBulkPicker(""); setBulkCategoryId(""); }}
                 aria-label="إضافة عدّة مكوّنات دفعةً"
                 title="اختر عدّة منتجات دفعةً واحدة (كالفواتير المتقدّمة)"
               >
@@ -636,8 +643,17 @@ export default function BundleForm() {
                             disabled={already}
                             onCheckedChange={(v) => {
                               setBulkSelected((prev) => {
-                                const next = new Set(prev);
-                                if (v) next.add(r.variantId); else next.delete(r.variantId);
+                                const next = new Map(prev);
+                                if (v) {
+                                  next.set(r.variantId, {
+                                    variantId: r.variantId,
+                                    productName: r.productName,
+                                    sku: r.sku,
+                                    costPrice: r.costPrice,
+                                  });
+                                } else {
+                                  next.delete(r.variantId);
+                                }
                                 return next;
                               });
                             }}
@@ -663,16 +679,16 @@ export default function BundleForm() {
             <Button
               disabled={bulkSelected.size === 0}
               onClick={() => {
-                const items = bulkSearchQ.data?.items ?? [];
+                // نمرّ على المحدَّد المخزَّن كاملاً — لا على النتائج المفلترة حالياً — كي لا تُفقَد
+                // خيارات المستخدم من فلترات سابقة عند تبديل الفئة/الكتابة قبل الحفظ.
                 let added = 0;
-                for (const r of items) {
-                  if (!bulkSelected.has(r.variantId)) continue;
+                for (const r of Array.from(bulkSelected.values())) {
                   if (components.some((c) => c.componentVariantId === r.variantId)) continue;
                   addComponent(r.variantId, r.productName, r.sku ?? "", r.costPrice);
                   added++;
                 }
                 setBulkOpen(false);
-                setBulkSelected(new Set());
+                setBulkSelected(new Map());
                 if (added > 0) {
                   setFlash("ok");
                   setTimeout(() => setFlash(""), 700);
