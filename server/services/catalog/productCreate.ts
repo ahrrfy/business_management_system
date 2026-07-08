@@ -12,6 +12,7 @@ import {
   productionRecipes,
 } from "../../../drizzle/schema";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
+import { checkBarcodesTakenAcrossBoth } from "./barcodeAliases";
 import { getDb } from "../../db";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -120,21 +121,12 @@ async function assertCatalogUniqueness(tx: Tx, input: CreateProductInput) {
 /**
  * product-variants: أيُّ باركودات من القائمة محجوزة مسبقاً (وفي أي منتج)؟
  * يغذّي التحقّق اللحظي في شاشة الإضافة قبل الحفظ.
+ *
+ * ملاحظة: يمرّ على الأساسيّ (`productUnits.barcode`) والبديل (`productUnitBarcodes.barcode`) معاً
+ * عبر `checkBarcodesTakenAcrossBoth` — كي لا يمرّ باركود بديلٍ بلا اصطدام بأساسيٍّ لسلعةٍ أخرى.
  */
 export async function checkBarcodesTaken(codes: string[]): Promise<Array<{ code: string; takenBy: string }>> {
-  const db = getDb();
-  if (!db) return [];
-  const clean = Array.from(new Set(codes.map((c) => c.trim()).filter(Boolean)));
-  if (!clean.length) return [];
-  const rows = await db
-    .select({ code: productUnits.barcode, productName: products.name, sku: productVariants.sku })
-    .from(productUnits)
-    .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
-    .innerJoin(products, eq(productVariants.productId, products.id))
-    .where(inArray(productUnits.barcode, clean));
-  return rows
-    .filter((r) => r.code)
-    .map((r) => ({ code: r.code as string, takenBy: `${r.productName} (${r.sku})` }));
+  return checkBarcodesTakenAcrossBoth(codes);
 }
 
 /** Create a product with its variants, units and prices in one transaction. */

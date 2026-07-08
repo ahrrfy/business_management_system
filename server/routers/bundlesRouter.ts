@@ -10,6 +10,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { bundleComponents, invoiceItems, products, productUnits, productVariants } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
+import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
 import { getBundleDefinitions, replaceBundleComponents } from "../services/bundleService";
 import { getDb } from "../db";
 import { withTx } from "../services/tx";
@@ -74,14 +75,15 @@ export const bundlesRouter = router({
       };
     }),
 
-  /** بحث بمكوّنٍ عبر الباركود (لقارئ الباركود اليدوي). يُطابق `productUnits.barcode` — لأنّ الباركود
-   *  يُخزَّن على وحدة المتغيّر لا على المتغيّر مباشرةً. يعيد المتغيّر إن كان مؤهّلاً (لا بكج/خدمة، نشط). */
+  /** بحث بمكوّنٍ عبر الباركود (لقارئ الباركود اليدوي). يمرّ على الأساسيّ والبديل معاً عبر
+   *  `resolveBarcodeOwner`. يعيد المتغيّر إن كان مؤهّلاً (لا بكج/خدمة، نشط). */
   lookupComponentByBarcode: productsManagerProcedure
     .input(z.object({ barcode: z.string().min(1).max(64) }))
     .query(async ({ input }) => {
       const db = getDb();
       if (!db) return { item: null };
-      const code = input.barcode.trim();
+      const owner = await resolveBarcodeOwner(db, input.barcode);
+      if (!owner) return { item: null };
       const rows = await db
         .select({
           variantId: productVariants.id,
@@ -95,7 +97,7 @@ export const bundlesRouter = router({
         .innerJoin(products, eq(productVariants.productId, products.id))
         .where(
           and(
-            eq(productUnits.barcode, code),
+            eq(productUnits.id, owner.productUnitId),
             eq(products.isBundle, false),
             eq(products.isService, false),
             eq(products.isActive, true),

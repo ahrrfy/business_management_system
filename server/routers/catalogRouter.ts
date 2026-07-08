@@ -4,6 +4,7 @@ import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { assignBarcode, checkBarcodesTaken, createProduct, getProductForEdit, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
+import { addUnitBarcodeAlias, listUnitBarcodes, removeUnitBarcodeAlias, resolveProductUnitId } from "../services/catalog/barcodeAliases";
 import {
   createCategory,
   deleteCategory,
@@ -328,6 +329,52 @@ export const catalogRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await assignBarcode(input.productUnitId, input.barcode);
       await logAudit(ctx, { action: "product.assignBarcode", entityType: "productUnit", entityId: input.productUnitId, newValue: { barcode: input.barcode } });
+      return res;
+    }),
+
+  /** الباركودات البديلة لوحدة المنتج (aliases): نفس السلعة/التكلفة/السعر/المخزون بعدّة باركودات. */
+  listUnitBarcodes: productsReadProcedure
+    .input(z.object({ productUnitId: z.number().int().positive() }))
+    .query(({ input }) => listUnitBarcodes(input.productUnitId)),
+
+  /** يحلّ (variantId + unitName) إلى productUnitId — يُستعمَل من الواجهة لفتح شاشة البدائل. */
+  resolveProductUnitId: productsReadProcedure
+    .input(z.object({ variantId: z.number().int().positive(), unitName: z.string().min(1).max(40) }))
+    .query(({ input }) => resolveProductUnitId(input.variantId, input.unitName)),
+
+  addUnitBarcodeAlias: productsManagerProcedure
+    .input(
+      z.object({
+        productUnitId: z.number().int().positive(),
+        barcode: z.string().min(1).max(64),
+        note: z.string().max(255).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await addUnitBarcodeAlias(
+        input.productUnitId,
+        input.barcode,
+        input.note ?? null,
+        ctx.user.id,
+      );
+      await logAudit(ctx, {
+        action: "productUnit.addBarcodeAlias",
+        entityType: "productUnit",
+        entityId: input.productUnitId,
+        newValue: { barcode: input.barcode.trim(), note: input.note ?? null },
+      });
+      return res;
+    }),
+
+  removeUnitBarcodeAlias: productsManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await removeUnitBarcodeAlias(input.id);
+      await logAudit(ctx, {
+        action: "productUnit.removeBarcodeAlias",
+        entityType: "productUnitBarcode",
+        entityId: input.id,
+      });
       return res;
     }),
 

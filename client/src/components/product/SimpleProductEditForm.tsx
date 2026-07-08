@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, MiniBarcode, ScanButton } from "@/components/product/variantBits";
+import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
@@ -340,10 +341,10 @@ export default function SimpleProductEditForm({
                   </label>
                   <button type="button" onClick={() => removeUnit(u.id)} disabled={units.length <= 1} className="h-8 inline-flex items-center text-muted-foreground hover:text-destructive disabled:opacity-30" aria-label="حذف الوحدة" title="حذف الوحدة"><X aria-hidden className="size-4" /></button>
                 </div>
-                <Field label="الباركود" hint={bcTitle || "امسح أو اكتب باركود هذه الوحدة."}>
-                  <div className="flex items-center gap-2">
+                <Field label="الباركود" hint={bcTitle || "امسح أو اكتب باركود هذه الوحدة. «بدائل» = باركودات إضافية لنفس السلعة (نفس التكلفة/السعر/المخزون)."}>
+                  <div className="flex items-center gap-2 flex-wrap">
                     <Input
-                      className={cn("h-8 font-mono text-xs", bcCls)}
+                      className={cn("h-8 font-mono text-xs min-w-[200px]", bcCls)}
                       dir="ltr"
                       inputMode="numeric"
                       value={u.barcode}
@@ -353,6 +354,10 @@ export default function SimpleProductEditForm({
                       aria-invalid={st === "takenInDb" || st === "dupInForm"}
                     />
                     <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("621") })} />
+                    <UnitBarcodeAliases
+                      variantId={variantId.current}
+                      unitName={u.name}
+                    />
                     {code && <div className="bg-white rounded p-1 hidden sm:flex justify-center items-center min-w-[130px] min-h-[42px]"><MiniBarcode value={code} height={30} /></div>}
                   </div>
                 </Field>
