@@ -9,7 +9,7 @@
  * البيانات آمنة للزبون (kioskRouter): بلا تكلفة ولا كمية مخزون.
  */
 import "@/pages/PriceChecker.css";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import QRCode from "qrcode";
 import { trpc } from "@/lib/trpc";
@@ -261,7 +261,26 @@ export default function KioskView({
     isDevice ? { limit: 500 } : { branchId: staffBranchId ?? 0, limit: 500 },
     { enabled: isDevice || staffBranchId != null, refetchInterval: 5 * 60 * 1000, refetchOnWindowFocus: false }
   );
-  const products = (bannerQ.data ?? []) as KProduct[];
+
+  // خلط عشوائي (Fisher-Yates) عند كل جلب ناجح: react-query يُعيد نفس مرجع `data` بلا تغيير
+  // إن لم يحدث fetch، وبمرجع جديد عند كل استجابة (كل ٥ دقائق) ⇒ useMemo يُعيد خلطها فقط
+  // عند حدوث جلب فعلي. النتيجة: كل ٥ دقائق يرى الزبون ترتيباً مختلفاً بدل «أبجدي ممل» ثابت.
+  // ذوات الصور تبقى في المقدّمة (الخادم يُرتّبها أولاً)، ثمّ الخلط داخل كل مجموعة.
+  const products = useMemo<KProduct[]>(() => {
+    const data = (bannerQ.data ?? []) as KProduct[];
+    if (data.length <= 1) return data;
+    const withImg: KProduct[] = [];
+    const noImg: KProduct[] = [];
+    for (const p of data) (p.imageUrl ? withImg : noImg).push(p);
+    const shuffle = (arr: KProduct[]) => {
+      for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+      }
+      return arr;
+    };
+    return [...shuffle(withImg), ...shuffle(noImg)];
+  }, [bannerQ.data]);
 
   // ── محرّك المسح ──
   const utils = trpc.useUtils();
