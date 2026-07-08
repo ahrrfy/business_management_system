@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, Package, Plus, X } from "lucide-react";
+import { AlertCircle, Package, Plus, ScanLine, Search, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -61,6 +61,10 @@ export default function BundleForm() {
   // ── مكوّنات البكج ──
   const [components, setComponents] = useState<ComponentPick[]>([]);
   const [picker, setPicker] = useState("");
+  const [pickerCategoryId, setPickerCategoryId] = useState<number | "">("");
+  const [scanCode, setScanCode] = useState("");
+  const [scanFlash, setScanFlash] = useState<"" | "ok" | "err">("");
+  const scanInputRef = useRef<HTMLInputElement>(null);
   const [error, setError] = useState("");
 
   const branchId = me.data?.branchId ?? 1;
@@ -83,11 +87,48 @@ export default function BundleForm() {
   const bcState = barcodeState(code, { countInForm: 1, takenInDb: !!taken });
 
   // ── بحث المكوّنات المؤهّلة (يفلتر البكجات/الخدمات خادمياً) ──
+  //     ينشط بأحد شرطين: نصّ بحث ≥ حرفَين، أو اختيار فئة (تصفّح الفئة كاملة).
   const pickerDeb = useDebouncedValue(picker, 300);
+  const hasQuery = pickerDeb.trim().length >= 2;
+  const hasCategory = pickerCategoryId !== "";
   const searchQ = trpc.bundles.searchComponents.useQuery(
-    { q: pickerDeb, limit: 20 },
-    { enabled: pickerDeb.trim().length >= 2, staleTime: 5_000 }
+    {
+      q: hasQuery ? pickerDeb : undefined,
+      categoryId: hasCategory ? Number(pickerCategoryId) : undefined,
+      limit: 30,
+    },
+    { enabled: hasQuery || hasCategory, staleTime: 5_000 }
   );
+
+  // ── بحث بالباركود (query يُستدعى بشكلٍ حَتميّ عبر fetch عند مسح/إدخال) ──
+  const [scanBusy, setScanBusy] = useState(false);
+  async function submitScan() {
+    const code = scanCode.trim();
+    if (!code || scanBusy) return;
+    setScanBusy(true);
+    setError("");
+    try {
+      const res = await utils.bundles.lookupComponentByBarcode.fetch({ barcode: code });
+      if (!res.item) {
+        setError("لا يوجد منتج مؤهّل بهذا الباركود (قد يكون بكجاً/خدمة/غير نشط).");
+        setScanFlash("err");
+        setTimeout(() => setScanFlash(""), 900);
+        return;
+      }
+      addComponent(res.item.variantId, res.item.productName, res.item.sku ?? "", res.item.costPrice);
+      setScanCode("");
+      setScanFlash("ok");
+      setTimeout(() => setScanFlash(""), 700);
+      scanInputRef.current?.focus();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "تعذّر البحث عن الباركود.";
+      setError(msg);
+      setScanFlash("err");
+      setTimeout(() => setScanFlash(""), 900);
+    } finally {
+      setScanBusy(false);
+    }
+  }
 
   // ── حساب التكلفة اللحظية (Σ تكاليف مكوّنات × كمياتها) ──
   const computedCost = useMemo(() => {
@@ -274,36 +315,114 @@ export default function BundleForm() {
         <CardHeader>
           <CardTitle className="text-base">مكوّنات البكج</CardTitle>
           <p className="text-xs text-muted-foreground mt-1">
-            ابحث عن منتج بضاعة مفرد ثم اختره لإضافته. الخدمات والبكجات الأخرى مستبعَدة.
+            أضف المكوّنات بأيّ طريقة تناسبك: <strong>امسح باركود المنتج</strong>، أو <strong>اختر فئة لتصفّح منتجاتها</strong>، أو <strong>اكتب اسماً/SKU</strong>. الخدمات والبكجات الأخرى مستبعَدة تلقائياً.
           </p>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="relative">
-            <Input
-              value={picker}
-              onChange={(e) => setPicker(e.target.value)}
-              placeholder="اكتب ≥ حرفَين للبحث في المنتجات…"
-            />
-            {picker.trim().length >= 2 && searchRows.length > 0 && (
-              <div className="absolute z-10 mt-1 w-full max-h-64 overflow-auto rounded-md border bg-popover shadow-md">
-                {searchRows.map((r) => (
-                  <button
-                    key={r.variantId}
-                    type="button"
-                    onClick={() => addComponent(r.variantId, r.productName, r.sku ?? "", r.costPrice)}
-                    className="w-full text-right px-3 py-2 hover:bg-accent focus:bg-accent text-sm flex items-center justify-between gap-2"
-                  >
-                    <span className="truncate">{r.productName}</span>
-                    <span className="text-xs text-muted-foreground shrink-0">{r.sku}</span>
-                  </button>
+          {/* — طريقة ١: مسح الباركود — */}
+          <div className="rounded-md border bg-muted/20 p-3">
+            <div className="text-xs font-medium mb-1.5 flex items-center gap-1.5">
+              <ScanLine aria-hidden className="size-3.5" /> مسح بالباركود
+              <span className="text-muted-foreground font-normal">— وجّه القارئ إلى المنتج، أو اكتب الباركود واضغط Enter</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Input
+                ref={scanInputRef}
+                value={scanCode}
+                onChange={(e) => setScanCode(onlyDigits(e.target.value))}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitScan();
+                  }
+                }}
+                placeholder="باركود المنتج…"
+                dir="ltr"
+                inputMode="numeric"
+                className={cn(
+                  "font-mono",
+                  scanFlash === "ok" && "border-emerald-500 ring-1 ring-emerald-500",
+                  scanFlash === "err" && "border-red-500 ring-1 ring-red-500",
+                )}
+                aria-label="مسح الباركود"
+              />
+              <Button type="button" variant="secondary" onClick={submitScan} disabled={scanBusy || !scanCode.trim()}>
+                <Plus aria-hidden className="size-4 me-1" /> إضافة
+              </Button>
+            </div>
+          </div>
+
+          {/* — طريقة ٢ + ٣: تصفّح بالفئة + بحث نصّي — */}
+          <div className="rounded-md border bg-muted/20 p-3 space-y-2">
+            <div className="text-xs font-medium flex items-center gap-1.5">
+              <Search aria-hidden className="size-3.5" /> تصفّح أو ابحث في المنتجات
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-[1fr_240px] gap-2">
+              <Input
+                value={picker}
+                onChange={(e) => setPicker(e.target.value)}
+                placeholder="اكتب ≥ حرفَين (اسم أو SKU)…"
+                dir="auto"
+                aria-label="بحث نصّي على المكوّنات"
+              />
+              <select
+                className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm"
+                value={pickerCategoryId}
+                onChange={(e) => setPickerCategoryId(e.target.value === "" ? "" : Number(e.target.value))}
+                aria-label="فلترة بالفئة"
+              >
+                <option value="">— كل الفئات —</option>
+                {(categoriesQ.data ?? []).map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
                 ))}
+              </select>
+            </div>
+            {(hasQuery || hasCategory) ? (
+              <div className="max-h-64 overflow-auto rounded-md border bg-popover">
+                {searchQ.isFetching ? (
+                  <div className="px-3 py-6 text-center text-xs text-muted-foreground">جارٍ البحث…</div>
+                ) : searchRows.length === 0 ? (
+                  <div className="px-3 py-6 text-center text-xs text-muted-foreground">
+                    لا نتائج — جرّب فئة أخرى أو نصّاً مختلفاً.
+                  </div>
+                ) : (
+                  <ul>
+                    {searchRows.map((r) => {
+                      const already = components.some((c) => c.componentVariantId === r.variantId);
+                      return (
+                        <li key={r.variantId}>
+                          <button
+                            type="button"
+                            disabled={already}
+                            onClick={() => addComponent(r.variantId, r.productName, r.sku ?? "", r.costPrice)}
+                            className={cn(
+                              "w-full text-right px-3 py-2 text-sm flex items-center justify-between gap-2 border-b last:border-b-0",
+                              already ? "opacity-50 cursor-not-allowed" : "hover:bg-accent focus:bg-accent",
+                            )}
+                          >
+                            <span className="flex items-center gap-2 truncate">
+                              {!already && <Plus aria-hidden className="size-3.5 shrink-0" />}
+                              <span className="truncate">{r.productName}</span>
+                              {already && <span className="text-xs text-emerald-600 shrink-0">مُضاف</span>}
+                            </span>
+                            <span className="text-xs text-muted-foreground shrink-0 font-mono">{r.sku}</span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
+            ) : (
+              <div className="text-xs text-muted-foreground text-center py-2">
+                اختر فئة أو ابدأ الكتابة لعرض المنتجات.
               </div>
             )}
           </div>
 
           {components.length === 0 && (
             <div className="text-center text-sm text-muted-foreground py-8 border rounded-md">
-              لا مكوّنات بعد — ابحث وأضف
+              لا مكوّنات بعد — استعمل الباركود، الفئة، أو البحث النصّي أعلاه.
             </div>
           )}
 
