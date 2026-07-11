@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { AlertCircle, Package } from "lucide-react";
+import { AlertCircle, Package, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -16,20 +16,35 @@ import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBa
 import { cn } from "@/lib/utils";
 
 /**
- * SimpleProductForm — إضافة «سلعة بسيطة» بلا ألوان/قياسات: منتجٌ واحد بباركود واحد.
+ * SimpleProductForm — إضافة «سلعة بسيطة» بلا ألوان/قياسات: منتجٌ واحد (متغيّر واحد) بعدّة وحدات.
  *
- * شريحة add-simple-product: كثير من أصناف المكتبة (كتاب، ملزمة، دفتر مفرد) بلا متغيّرات
- * ولا باركودات متعددة — فشاشة «المتغيّرات» تُثقِلها بلا داعٍ وتُلزِم إدخال «لون» وهميّ.
- * هذا النموذج يُرسِل إلى `catalog.createProduct` **متغيّراً واحداً** (بلا لون/قياس) بوحدة أساس
- * واحدة تحمل الباركود مباشرةً — وهو ما يدعمه العقد الخادميّ أصلاً (productUnits.barcode).
+ * شريحة add-simple-product: كثير من أصناف المكتبة (كتاب، ملزمة، دفتر مفرد) بلا متغيّرات لون/قياس،
+ * لكنها قد تُباع بوحدات متعددة (قطعة/درزن/كرتون) لكلٍّ باركودها وسعرها. فشاشة «المتغيّرات» تُثقِلها
+ * بأعمدة لون/قياس بلا داعٍ. هذا النموذج يُرسِل إلى `catalog.createProduct` **متغيّراً واحداً** (بلا
+ * لون/قياس) بقالب وحدات كامل — وهو ما يدعمه العقد الخادميّ أصلاً (units[] + productUnits.barcode).
  *
- * المسح: تركيز حقل الباركود يجعل ماسح HID يكتب فيه مباشرةً؛ زرّ «المسح» يولّد EAN-13 صالحاً
- * لمن يطبع باركوده ذاتياً. فحص تكرار حيّ ضدّ القاعدة عبر `catalog.checkBarcodes` (نفس مسار المتغيّرات).
+ * الوحدات: وحدة أساس واحدة (معامل ١) + وحدات أكبر بمعاملها (درزن ×١٢…). لكل وحدة باركودها المستقل
+ * وأسعارها، و«بدائل» (باركودات إضافية لنفس الوحدة) تُجمَع محلّياً وتُدرَج ذرّياً مع المنتج عند الحفظ.
+ * المسح: تركيز حقل الباركود يجعل ماسح HID يكتب فيه مباشرةً؛ زرّ «المسح» يولّد EAN-13 صالحاً.
+ * فحص تكرار حيّ ضدّ القاعدة عبر `catalog.checkBarcodes` (نفس مسار المتغيّرات) يشمل البدائل.
  */
+
+/** وحدة في قالب السلعة البسيطة — باركود وأسعار وبدائل مستقلّة لكل وحدة (وضع محلّي). */
+type SimpleUnit = {
+  id: number;
+  name: string;
+  factor: string;
+  isBase: boolean;
+  barcode: string;
+  retail: string;
+  wholesale: string;
+  government: string;
+  aliases: LocalAlias[];
+};
+
 export default function SimpleProductForm() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
-  const me = trpc.auth.me.useQuery();
   const branchesQ = trpc.branches.list.useQuery();
   const categoriesQ = trpc.catalog.categories.useQuery();
 
@@ -42,17 +57,14 @@ export default function SimpleProductForm() {
   const [categoryId, setCategoryId] = useState<number | "">("");
   const [sku, setSku] = useState("");
 
-  // ── الباركود + الوحدة + التسعير ──
-  const [barcode, setBarcode] = useState("");
-  const [unitName, setUnitName] = useState("قطعة");
-  // باركودات بديلة تُجمَع محلّياً وتُدرَج ذرّياً مع المنتج عند الحفظ.
-  const [aliases, setAliases] = useState<LocalAlias[]>([]);
-  const [costPrice, setCostPrice] = useState("");
-  const [retail, setRetail] = useState("");
-  const [wholesale, setWholesale] = useState("");
-  const [government, setGovernment] = useState("");
+  // ── قالب الوحدات (باركود + أسعار + بدائل لكلّ) — الافتراضي وحدة أساس واحدة (قطعة) ──
+  const unitSeq = useRef(2);
+  const [units, setUnits] = useState<SimpleUnit[]>([
+    { id: 1, name: "قطعة", factor: "1", isBase: true, barcode: "", retail: "", wholesale: "", government: "", aliases: [] },
+  ]);
 
-  // ── المخزون الافتتاحي + الضبط ──
+  // ── التكلفة المشتركة (على مستوى المتغيّر، لا الوحدة) + المخزون الافتتاحي + الضبط ──
+  const [costPrice, setCostPrice] = useState("");
   const [stockByBranch, setStockByBranch] = useState<Record<number, string>>({});
   const [minStock, setMinStock] = useState("0");
   const [reorderPoint, setReorderPoint] = useState("0");
@@ -72,31 +84,41 @@ export default function SimpleProductForm() {
     [productType, brand, modelName]
   );
   const finalName = name.trim() || composedName;
+  const baseUnit = units.find((u) => u.isBase);
+  const baseBarcode = baseUnit?.barcode.trim() ?? "";
+  const baseUnitName = baseUnit?.name.trim() || "قطعة";
 
-  // ── فحص تكرار الباركود ضدّ القاعدة (live، debounced) — نفس نمط شاشة المتغيّرات ──
-  const code = barcode.trim();
-  const debouncedCode = useDebouncedValue(code, 450);
-  const checkQ = trpc.catalog.checkBarcodes.useQuery(
-    { codes: [debouncedCode] },
-    { enabled: debouncedCode.length > 0, staleTime: 10_000 }
-  );
-  const taken = useMemo(() => (checkQ.data ?? []).find((r) => r.code === code), [checkQ.data, code]);
-  const bcState = barcodeState(code, { countInForm: 1, takenInDb: !!taken });
-  const bcHint: Record<typeof bcState, string> = {
-    empty: "",
-    valid: "باركود EAN-13 صالح.",
-    invalid: "خانة تحقّق EAN-13 غير مطابقة — يُقبل مع ذلك (قد يكون كود Code128 داخليّاً).",
-    dupInForm: "",
-    takenInDb: taken ? `مُستخدَم في «${taken.takenBy}» — غيّره قبل الحفظ.` : "باركود مُستخدَم مسبقاً.",
+  // ── فحص تكرار الباركود ضدّ القاعدة (live، debounced) — يشمل باركودات الوحدات وبدائلها ──
+  const allCodes = useMemo(() => {
+    const set = new Set<string>();
+    for (const u of units) {
+      const c = u.barcode.trim();
+      if (c) set.add(c);
+      for (const a of u.aliases) {
+        const ac = (a.barcode || "").trim();
+        if (ac) set.add(ac);
+      }
+    }
+    return Array.from(set);
+  }, [units]);
+  // عدّاد ظهور باركود في كامل النموذج (باركودات الوحدات + بدائلها) — يطابق فضاء تفرّد الحفظ،
+  // فيومض التكرار حيّاً حتى حين يصطدم الأساسيّ ببديلٍ في وحدة أخرى (لا الأساسيّات وحدها).
+  const codeCountInForm = (c: string) => {
+    if (!c) return 0;
+    let n = 0;
+    for (const u of units) {
+      if (u.barcode.trim() === c) n++;
+      for (const a of u.aliases) if ((a.barcode || "").trim() === c) n++;
+    }
+    return n;
   };
-  const bcCls =
-    bcState === "takenInDb"
-      ? "border-amber-500 ring-1 ring-amber-500"
-      : bcState === "invalid"
-        ? "border-amber-500"
-        : bcState === "valid"
-          ? "border-emerald-500/60"
-          : "";
+  const debouncedKey = useDebouncedValue(allCodes.join("\n"), 450);
+  const debouncedCodes = useMemo(() => (debouncedKey ? debouncedKey.split("\n") : []), [debouncedKey]);
+  const checkQ = trpc.catalog.checkBarcodes.useQuery(
+    { codes: debouncedCodes },
+    { enabled: debouncedCodes.length > 0, staleTime: 10_000 }
+  );
+  const takenInDb = useMemo(() => new Set((checkQ.data ?? []).map((r) => r.code)), [checkQ.data]);
 
   const create = trpc.catalog.createProduct.useMutation({
     onSuccess: async () => {
@@ -116,10 +138,28 @@ export default function SimpleProductForm() {
     [stockByBranch]
   );
 
+  /* ── الوحدات ── */
+  const addUnit = () =>
+    setUnits((u) => [
+      ...u,
+      { id: unitSeq.current++, name: "", factor: "", isBase: false, barcode: "", retail: "", wholesale: "", government: "", aliases: [] },
+    ]);
+  const patchUnit = (id: number, patch: Partial<SimpleUnit>) =>
+    setUnits((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const removeUnit = (id: number) =>
+    setUnits((u) => {
+      if (u.length <= 1) return u;
+      const next = u.filter((x) => x.id !== id);
+      // إن حُذفت وحدة الأساس، رقِّ الأولى الباقية أساساً — وإلّا بقي النموذج بلا أساس ويُحجَب الحفظ.
+      if (!next.some((x) => x.isBase)) next[0] = { ...next[0], isBase: true };
+      return next;
+    });
+  const setBaseUnit = (id: number) => setUnits((u) => u.map((x) => ({ ...x, isBase: x.id === id })));
+
   /**
    * SKU صريح إن وُجد، وإلا يُولَّد فريداً. الأسماء العربية الخالصة تُجرَّد إلى فراغ بعد إسقاط
-   * غير [A-Z0-9]، فنُلحِق لاحقةً عشوائية قصيرة لضمان التفرّد (وإلّا لَتصادم كلُّ اسمٍ عربيٍّ بلا
-   * باركود على «PR» نفسه). الباركود (فريدٌ أصلاً) بديلٌ صالح حين يغيب مقطع الاسم اللاتيني.
+   * غير [A-Z0-9]، فنُلحِق لاحقةً عشوائية قصيرة لضمان التفرّد. باركود وحدة الأساس (فريدٌ أصلاً)
+   * بديلٌ صالح حين يغيب مقطع الاسم اللاتيني.
    */
   function autoSku(): string {
     const explicit = sku.trim().toUpperCase().replace(/[^A-Z0-9-]/g, "");
@@ -127,15 +167,38 @@ export default function SimpleProductForm() {
     const slug = finalName.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 12);
     const suffix = Math.random().toString(36).slice(2, 6).toUpperCase();
     if (slug) return `PR-${slug}-${suffix}`;
-    if (code) return code;
+    if (baseBarcode) return baseBarcode;
     return `PR-${suffix}`;
   }
 
   function validate(): string | null {
     if (!finalName) return "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل).";
-    if (!unitName.trim()) return "وحدة القياس مطلوبة (قطعة / نسخة / علبة…).";
+    if (units.some((u) => !u.name.trim())) return "كل وحدة تحتاج اسماً (قطعة / درزن / علبة…).";
+    // اسم الوحدة مفتاحُ مطابقةٍ في مسار التعديل (getForVariantEdit/upsertVariantUnits يطابقان بالاسم)
+    // ⇒ وحدتان بنفس الاسم تتداخلان فيُطمَس باركود/سعر إحداهما عند أوّل تعديل. امنع التكرار عند الإنشاء.
+    const unitNames = units.map((u) => u.name.trim());
+    const dupUnitName = unitNames.find((n, i) => n && unitNames.indexOf(n) !== i);
+    if (dupUnitName) return `اسم وحدة مكرّر: «${dupUnitName}» — لكل وحدة اسمٌ فريد (قطعة/درزن/كرتون).`;
+    if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط.";
+    // كل وحدة غير أساس أكبر من الأساس ⇒ معامل تحويلها صحيحٌ أكبر من ١ (درزن=١٢). بلا هذا الحارس
+    // يُرسَل المعامل الفارغ كـ«١» صامتاً فيُخصَم الدرزن قطعةً واحدةً من المخزون (§٥ baseQuantity).
+    if (units.some((u) => !u.isBase && !(Number(u.factor.trim()) > 1)))
+      return "الوحدة الأكبر من الأساس (درزن/كرتون) تحتاج معامل تحويل صحيحاً أكبر من ١ (درزن = ١٢).";
     if (!costPrice.trim()) return "سعر التكلفة مطلوب.";
-    if (!retail.trim() && !wholesale.trim() && !government.trim()) return "حدّد سعر بيع واحداً على الأقل (المفرد افتراضاً).";
+    const anyPrice = units.some((u) => u.retail.trim() || u.wholesale.trim() || u.government.trim());
+    if (!anyPrice) return "حدّد سعر بيع واحداً على الأقل (المفرد افتراضاً).";
+    // تكرار الباركود داخل النموذج (وحدات + بدائل) ضمن فضاء تفرّد واحد.
+    const codes: string[] = [];
+    for (const u of units) {
+      const c = u.barcode.trim();
+      if (c) codes.push(c);
+      for (const a of u.aliases) {
+        const ac = (a.barcode || "").trim();
+        if (ac) codes.push(ac);
+      }
+    }
+    const dup = codes.find((c, i) => codes.indexOf(c) !== i);
+    if (dup) return `باركود مكرّر داخل النموذج: ${dup} — لكل وحدة/بديل باركود فريد.`;
     return null;
   }
 
@@ -148,10 +211,17 @@ export default function SimpleProductForm() {
       else if (!costPrice.trim()) document.getElementById("simple-cost")?.focus();
       return;
     }
-    // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce).
-    if (code) {
+    // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce) — يشمل البدائل.
+    const codes = Array.from(
+      new Set(
+        units
+          .flatMap((u) => [u.barcode.trim(), ...u.aliases.map((a) => (a.barcode || "").trim())])
+          .filter(Boolean)
+      )
+    );
+    if (codes.length) {
       try {
-        const hit = await utils.catalog.checkBarcodes.fetch({ codes: [code] });
+        const hit = await utils.catalog.checkBarcodes.fetch({ codes });
         if (hit.length) {
           setError(`الباركود ${hit[0].code} مُستخدَم في «${hit[0].takenBy}». غيّره قبل الحفظ.`);
           document.getElementById("simple-barcode")?.focus();
@@ -161,11 +231,23 @@ export default function SimpleProductForm() {
         // فشل الفحص المسبق لا يمنع الحفظ — قيد UNIQUE في القاعدة يبقى الحارس الأخير.
       }
     }
-    const prices = [
-      ...(retail.trim() ? [{ priceTier: "RETAIL" as const, price: retail.trim() }] : []),
-      ...(wholesale.trim() ? [{ priceTier: "WHOLESALE" as const, price: wholesale.trim() }] : []),
-      ...(government.trim() ? [{ priceTier: "GOVERNMENT" as const, price: government.trim() }] : []),
-    ];
+    const unitsPayload = units.map((u) => {
+      const aliases = u.aliases
+        .map((a) => ({ barcode: (a.barcode || "").trim(), note: a.note ?? null }))
+        .filter((a) => a.barcode);
+      return {
+        unitName: u.name.trim(),
+        conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
+        barcode: u.barcode.trim() || undefined,
+        isBaseUnit: u.isBase,
+        prices: [
+          ...(u.retail.trim() ? [{ priceTier: "RETAIL" as const, price: u.retail.trim() }] : []),
+          ...(u.wholesale.trim() ? [{ priceTier: "WHOLESALE" as const, price: u.wholesale.trim() }] : []),
+          ...(u.government.trim() ? [{ priceTier: "GOVERNMENT" as const, price: u.government.trim() }] : []),
+        ],
+        barcodeAliases: aliases.length ? aliases : undefined,
+      };
+    });
     create.mutate({
       name: finalName,
       productType: productType.trim() || null,
@@ -185,18 +267,7 @@ export default function SimpleProductForm() {
           openingStockByBranch: branches
             .map((b) => ({ branchId: b.id, qty: clampInt(stockByBranch[b.id] || "0") }))
             .filter((x) => x.qty > 0),
-          units: [
-            {
-              unitName: unitName.trim(),
-              conversionFactor: "1",
-              barcode: code || undefined,
-              isBaseUnit: true,
-              prices,
-              barcodeAliases: aliases.length
-                ? aliases.map((a) => ({ barcode: a.barcode, note: a.note ?? null }))
-                : undefined,
-            },
-          ],
+          units: unitsPayload,
         },
       ],
       images: images.length
@@ -216,7 +287,7 @@ export default function SimpleProductForm() {
             <Package aria-hidden className="size-4" /> بيانات المنتج
           </CardTitle>
           <p className="text-xs text-muted-foreground mt-1">
-            منتج واحد بباركود واحد — للأصناف بلا ألوان/قياسات (كتاب، ملزمة، دفتر مفرد…).
+            منتج واحد بلا ألوان/قياسات (كتاب، ملزمة، دفتر مفرد…) — بوحدة أو أكثر (قطعة/درزن/كرتون).
           </p>
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -272,78 +343,134 @@ export default function SimpleProductForm() {
         </CardContent>
       </Card>
 
-      {/* ── الباركود والتسعير ── */}
+      {/* ── الوحدات والباركود والأسعار ── */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">الباركود والتسعير</CardTitle>
-          <p className="text-xs text-muted-foreground mt-1">
-            امسح الباركود أو اكتبه (أو ولّده بالزر). يُفحَص فوراً ضدّ باقي المنتجات لمنع التكرار.
-          </p>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <div>
+            <CardTitle className="text-base">الوحدات والباركود والأسعار</CardTitle>
+            <p className="text-xs text-muted-foreground mt-1">
+              لكل وحدة باركودها المستقل وسعرها. أضِف وحدة أكبر (درزن/كرتون) بمعامل تحويلها.
+              «بدائل» = باركودات إضافية لنفس الوحدة (نفس التكلفة/السعر/المخزون).
+            </p>
+          </div>
+          <Button type="button" variant="outline" size="sm" onClick={addUnit}>+ وحدة</Button>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <Field label="الباركود" hint={bcHint[bcState] || "اختياري — يمكن إضافته لاحقاً."} className="md:col-span-2">
-              <div className="flex items-center gap-2">
-                <Input
-                  id="simple-barcode"
-                  value={barcode}
-                  onChange={(e) => setBarcode(e.target.value)}
-                  dir="ltr"
-                  inputMode="numeric"
-                  placeholder="امسح أو اكتب الباركود…"
-                  title={bcHint[bcState]}
-                  className={cn("font-mono", bcCls)}
-                />
-                <ScanButton onClick={() => setBarcode(genEan13("621"))} title="توليد باركود EAN-13 صالح" />
-                <UnitBarcodeAliases
-                  unitName={unitName || "قطعة"}
-                  localAliases={aliases}
-                  onLocalChange={setAliases}
-                />
+        <CardContent className="space-y-3">
+          {units.map((u, idx) => {
+            const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
+            const uCost = unitCost * factor;
+            const code = u.barcode.trim();
+            const st = barcodeState(code, {
+              countInForm: codeCountInForm(code),
+              takenInDb: takenInDb.has(code),
+            });
+            const bcCls =
+              st === "takenInDb" || st === "dupInForm"
+                ? "border-amber-500 ring-1 ring-amber-500"
+                : st === "invalid"
+                  ? "border-amber-500"
+                  : st === "valid"
+                    ? "border-emerald-500/60"
+                    : "";
+            const bcTitle =
+              st === "takenInDb"
+                ? "باركود مُستخدَم في منتج آخر — غيّره قبل الحفظ."
+                : st === "dupInForm"
+                  ? "باركود مكرّر داخل النموذج."
+                  : st === "invalid"
+                    ? "خانة تحقّق EAN-13 غير مطابقة — يُقبل مع ذلك (قد يكون كود Code128 داخليّاً)."
+                    : st === "valid"
+                      ? "باركود EAN-13 صالح."
+                      : "";
+            return (
+              <div key={u.id} className="rounded-lg border bg-muted/10 p-3 space-y-3">
+                <div className="flex flex-wrap items-end gap-3">
+                  <Field label="الوحدة" className="flex-1 min-w-[140px]">
+                    <Input className="h-8 text-sm" value={u.name} onChange={(e) => patchUnit(u.id, { name: e.target.value })} placeholder="قطعة / درزن / علبة" dir="auto" />
+                  </Field>
+                  <Field label="معامل التحويل" className="w-24" hint="كم وحدة أساس في هذه الوحدة (درزن=١٢).">
+                    <Input className="h-8 text-sm" dir="ltr" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(e) => patchUnit(u.id, { factor: onlyDigits(e.target.value) })} placeholder="12" />
+                  </Field>
+                  <label className="flex items-center gap-1.5 text-xs h-8">
+                    <input type="radio" name="simpleBaseUnit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} aria-label="الوحدة الأساس" />
+                    وحدة أساس
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => removeUnit(u.id)}
+                    disabled={units.length <= 1}
+                    className="h-8 inline-flex items-center text-muted-foreground hover:text-destructive disabled:opacity-30"
+                    aria-label="حذف الوحدة"
+                    title="حذف الوحدة"
+                  >
+                    <X aria-hidden className="size-4" />
+                  </button>
+                </div>
+                <Field label="الباركود" hint={bcTitle || "امسح أو اكتب باركود هذه الوحدة (اختياري)."}>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Input
+                      id={idx === 0 ? "simple-barcode" : undefined}
+                      className={cn("h-8 font-mono text-xs min-w-[200px]", bcCls)}
+                      dir="ltr"
+                      inputMode="numeric"
+                      value={u.barcode}
+                      onChange={(e) => patchUnit(u.id, { barcode: e.target.value })}
+                      placeholder="امسح أو اكتب الباركود…"
+                      title={bcTitle}
+                      aria-invalid={st === "takenInDb" || st === "dupInForm"}
+                    />
+                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("621") })} title="توليد باركود EAN-13 صالح" />
+                    <UnitBarcodeAliases
+                      unitName={u.name || "قطعة"}
+                      localAliases={u.aliases}
+                      onLocalChange={(next) => patchUnit(u.id, { aliases: next })}
+                    />
+                    {code && (
+                      <div className="bg-white rounded p-1 hidden sm:flex justify-center items-center min-w-[130px] min-h-[42px]">
+                        <MiniBarcode value={code} height={30} />
+                      </div>
+                    )}
+                  </div>
+                </Field>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <Field label="سعر المفرد"><MoneyInput className="h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" /></Field>
+                  <Field label="سعر الجملة"><MoneyInput className="h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" /></Field>
+                  <Field label="سعر الحكومي"><MoneyInput className="h-8 text-sm" value={u.government} onChange={(v) => patchUnit(u.id, { government: v })} placeholder="حكومي" /></Field>
+                  <div className="flex items-end pb-1.5"><MarginBadge cost={uCost} sell={u.retail} /></div>
+                </div>
               </div>
-            </Field>
-            <Field label="وحدة القياس" required hint="قطعة / نسخة / علبة…">
-              <Input value={unitName} onChange={(e) => setUnitName(e.target.value)} placeholder="قطعة" dir="auto" />
-            </Field>
-          </div>
-
-          {code && (
-            <div className="rounded-lg border bg-muted/20 p-3 inline-flex items-center gap-3">
-              <div className="bg-white rounded p-2 flex justify-center min-h-[52px] items-center min-w-[180px]">
-                <MiniBarcode value={code} />
-              </div>
-              <span className="text-[11px] text-muted-foreground">معاينة الباركود</span>
-            </div>
-          )}
-
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 border-t pt-4">
-            <Field label="سعر التكلفة (د.ع)" required hint="سعر الشراء.">
-              <MoneyInput id="simple-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
-            </Field>
-            <Field label="سعر المفرد (د.ع)" hint="السعر الافتراضي للبيع.">
-              <MoneyInput value={retail} onChange={setRetail} placeholder="250" />
-            </Field>
-            <Field label="سعر الجملة (اختياري)">
-              <MoneyInput value={wholesale} onChange={setWholesale} placeholder="—" />
-            </Field>
-            <Field label="سعر الحكومي (اختياري)">
-              <MoneyInput value={government} onChange={setGovernment} placeholder="—" />
-            </Field>
-            <div className="col-span-2 md:col-span-4 flex items-center gap-2 text-xs text-muted-foreground">
-              الهامش على المفرد: <MarginBadge cost={unitCost} sell={retail} />
-            </div>
-          </div>
+            );
+          })}
         </CardContent>
       </Card>
 
-      {/* ── المخزون الافتتاحي والضبط ── */}
+      {/* ── التكلفة والمخزون الافتتاحي والضبط ── */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">المخزون الافتتاحي والضبط</CardTitle>
-          <p className="text-xs text-muted-foreground mt-1">الرصيد الافتتاحي لكل فرع (يُسجَّل حركة OPENING). اتركه صفراً إن لم يتوفّر بعد.</p>
+          <CardTitle className="text-base">التكلفة والمخزون الافتتاحي</CardTitle>
+          <p className="text-xs text-muted-foreground mt-1">
+            التكلفة موحّدة للمنتج (بالوحدة الأساس). الرصيد الافتتاحي لكل فرع يُسجَّل حركة OPENING — اتركه صفراً إن لم يتوفّر.
+          </p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <div className="flex flex-wrap gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <Field label="سعر التكلفة (د.ع)" required hint="سعر شراء الوحدة الأساس.">
+              <MoneyInput id="simple-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
+            </Field>
+            <Field label="الحد الأدنى" hint="ينبّه عند النزول عنه.">
+              <Input value={minStock} onChange={(e) => setMinStock(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" className="text-center" />
+            </Field>
+            <Field label="نقطة إعادة الطلب" hint="يقترح الشراء عند بلوغها.">
+              <Input value={reorderPoint} onChange={(e) => setReorderPoint(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" className="text-center" />
+            </Field>
+            <Field label="قابل للتخصيص">
+              <div className="flex items-center gap-2 h-9">
+                <Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} />
+                <span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span>
+              </div>
+            </Field>
+          </div>
+          <div className="flex flex-wrap gap-3 border-t pt-4">
             {branchesQ.isLoading ? (
               <p className="text-xs text-muted-foreground py-2">جارٍ تحميل الفروع…</p>
             ) : branches.length === 0 ? (
@@ -362,20 +489,6 @@ export default function SimpleProductForm() {
                 </Field>
               ))
             )}
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 border-t pt-4">
-            <Field label="الحد الأدنى" hint="ينبّه عند النزول عنه.">
-              <Input value={minStock} onChange={(e) => setMinStock(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" className="text-center" />
-            </Field>
-            <Field label="نقطة إعادة الطلب" hint="يقترح الشراء عند بلوغها.">
-              <Input value={reorderPoint} onChange={(e) => setReorderPoint(onlyDigits(e.target.value))} dir="ltr" inputMode="numeric" className="text-center" />
-            </Field>
-            <Field label="قابل للتخصيص">
-              <div className="flex items-center gap-2 h-9">
-                <Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} />
-                <span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span>
-              </div>
-            </Field>
             <Field label="الحالة">
               <div className="flex items-center gap-2 h-9">
                 <Switch checked={isActive} onCheckedChange={setIsActive} />
@@ -409,9 +522,9 @@ export default function SimpleProductForm() {
       {/* ── شريط الحفظ الثابت ── */}
       <div className="fixed bottom-0 inset-x-0 lg:start-60 border-t bg-card/95 backdrop-blur px-6 py-3 flex items-center justify-between gap-3 z-30">
         <div className="text-xs text-muted-foreground hidden sm:block">
-          سيُحفظ منتج بسيط واحد
-          {code ? " بباركوده" : " (بلا باركود)"}
-          {totalStock > 0 && <> — رصيد افتتاحيّ <b className="text-foreground">{toArabicDigits(totalStock)}</b> {unitName.trim() || "قطعة"}</>}.
+          سيُحفظ منتج بسيط واحد بـ<b className="text-foreground">{toArabicDigits(units.length)}</b> وحدة
+          {baseBarcode ? " (بباركود)" : " (بلا باركود)"}
+          {totalStock > 0 && <> — رصيد افتتاحيّ <b className="text-foreground">{toArabicDigits(totalStock)}</b> {baseUnitName}</>}.
         </div>
         <div className="flex gap-2">
           <Button type="button" variant="outline" size="sm" onClick={() => navigate("/products")}>إلغاء</Button>

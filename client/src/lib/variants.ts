@@ -202,4 +202,10 @@ export interface ClientVariant {
   retail: string;
   isActive: boolean;
   image: string | null;
+  /**
+   * باركودات بديلة محلّية لكل وحدة (مفتاحه `ClientUnit.id`) — نفس السلعة/التكلفة/السعر/المخزون
+   * بعدّة باركودات. تُجمَع في الواجهة وتُدرَج ذرّياً مع المنتج عبر `createProduct` (وضع local،
+   * لا تعبر الشبكة قبل الحفظ). اختياريّ: شاشات لا تُفعّل البدائل (كالتعديل) تتركه فارغاً.
+   */
+  unitBarcodeAliases?: Record<number, Array<{ barcode: string; note?: string | null }>>;
 }

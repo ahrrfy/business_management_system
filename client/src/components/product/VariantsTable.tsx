@@ -18,6 +18,7 @@ import {
   type ClientVariant,
 } from "@/lib/variants";
 import { ColorDot, Field, ImageSlot, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
+import { UnitBarcodeAliases } from "./UnitBarcodeAliases";
 import { ChevronLeft, X } from "lucide-react";
 
 interface Branch {
@@ -46,6 +47,7 @@ export function VariantsTable({
   removeVariant,
   onScan,
   stockEditable = true,
+  localAliases = false,
   emptyHint = "لا متغيّرات بعد — استخدم المولّد أعلاه (اكتب لوناً ثم «ولّد المتغيّرات»).",
 }: {
   variants: ClientVariant[];
@@ -60,6 +62,12 @@ export function VariantsTable({
   onScan: (variantId: string, unitId: number) => void;
   /** في التعديل: المخزون قراءة فقط (يُدار عبر شاشات الجرد/الحركات). */
   stockEditable?: boolean;
+  /**
+   * عند true: يعرض زرّ «بدائل» (باركودات بديلة) لكل وحدة في صفّ التوسيع، بوضع محلّي يكتب في
+   * `variant.unitBarcodeAliases` — تُدرَج ذرّياً مع المنتج عند الحفظ (شاشة الإضافة فقط؛ التعديل
+   * يستعمل مساراً خادميّاً منفصلاً فلا يُفعَّل هنا كي لا تُفقَد البدائل بمسار تحديثٍ لا يحملها).
+   */
+  localAliases?: boolean;
   emptyHint?: string;
 }) {
   // عدّادات التكرار داخل النموذج (باركود + SKU) — مرّة لكل تغيّر بدل كل رسم.
@@ -127,6 +135,7 @@ export function VariantsTable({
               remove={() => removeVariant(v.id)}
               onScan={(unitId) => onScan(v.id, unitId)}
               stockEditable={stockEditable}
+              localAliases={localAliases}
             />
           ))}
         </tbody>
@@ -149,6 +158,7 @@ function VariantRow({
   remove,
   onScan,
   stockEditable,
+  localAliases,
 }: {
   v: ClientVariant;
   idx: number;
@@ -163,6 +173,7 @@ function VariantRow({
   remove: () => void;
   onScan: (unitId: number) => void;
   stockEditable: boolean;
+  localAliases: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const fullName = [baseName, v.color, v.size].filter(Boolean).join(" ");
@@ -299,6 +310,16 @@ function VariantRow({
                         <div className="bg-white rounded p-2 flex justify-center min-h-[52px] items-center">
                           <MiniBarcode value={code} />
                         </div>
+                        {localAliases && (
+                          <UnitBarcodeAliases
+                            unitName={u.name || "وحدة"}
+                            variantLabel={fullName}
+                            localAliases={v.unitBarcodeAliases?.[u.id] ?? []}
+                            onLocalChange={(next) =>
+                              patch({ unitBarcodeAliases: { ...(v.unitBarcodeAliases ?? {}), [u.id]: next } })
+                            }
+                          />
+                        )}
                       </div>
                     );
                   })}
