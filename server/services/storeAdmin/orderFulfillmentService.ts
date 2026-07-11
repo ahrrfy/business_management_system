@@ -43,6 +43,7 @@ export interface OnlineOrderRow {
   total: string;
   deliveryFee: string;
   deliveryPartyId: number | null;
+  cancelReason: string | null;
   itemCount: number;
   createdAt: Date;
 }
@@ -71,6 +72,7 @@ export async function listOnlineOrders(opts: {
       total: onlineOrders.total,
       deliveryFee: onlineOrders.shippingCost,
       deliveryPartyId: onlineOrders.deliveryPartyId,
+      cancelReason: onlineOrders.cancelReason,
       createdAt: onlineOrders.createdAt,
       itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
     })
@@ -89,6 +91,7 @@ export async function listOnlineOrders(opts: {
     total: String(r.total),
     deliveryFee: String(r.deliveryFee),
     deliveryPartyId: r.deliveryPartyId != null ? Number(r.deliveryPartyId) : null,
+    cancelReason: r.cancelReason ?? null,
     itemCount: Number(r.itemCount),
     createdAt: r.createdAt,
   }));
@@ -140,6 +143,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         subtotal: onlineOrders.subtotal,
         deliveryFee: onlineOrders.shippingCost,
         deliveryPartyId: onlineOrders.deliveryPartyId,
+        cancelReason: onlineOrders.cancelReason,
         total: onlineOrders.total,
         createdAt: onlineOrders.createdAt,
       })
@@ -177,6 +181,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     subtotal: String(order.subtotal),
     deliveryFee: String(order.deliveryFee),
     deliveryPartyId: order.deliveryPartyId != null ? Number(order.deliveryPartyId) : null,
+    cancelReason: order.cancelReason ?? null,
     total: String(order.total),
     itemCount: items.length,
     createdAt: order.createdAt,

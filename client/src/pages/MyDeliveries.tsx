@@ -5,8 +5,8 @@
  * والتحصيل» فتُسدَّد الفاتورة (ذمّة العميل↓) ويرتفع النقد بذمّته (عهدة) حتى يُورّده للمتجر.
  * عزل ذاتي خادمي: كل نقطة تحلّ المندوب من الجلسة (courier.myDeliveries/confirmDelivery).
  */
-import { useState } from "react";
-import { Banknote, CheckCircle2, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Banknote, CheckCircle2, Loader2, MapPin, MessageCircle, PackageCheck, Phone, Truck, XCircle } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -28,6 +28,7 @@ export default function MyDeliveries() {
   const q = trpc.courier.myDeliveries.useQuery(undefined, { refetchInterval: 60_000 });
   const utils = trpc.useUtils();
   const [confirmingId, setConfirmingId] = useState<number | null>(null);
+  const [failTarget, setFailTarget] = useState<DeliveryRow | null>(null);
 
   const confirmM = trpc.courier.confirmDelivery.useMutation({
     onSuccess: (res) => {
@@ -40,6 +41,15 @@ export default function MyDeliveries() {
     },
     onError: (e) => notify.err(e),
     onSettled: () => setConfirmingId(null),
+  });
+
+  const failM = trpc.courier.failDelivery.useMutation({
+    onSuccess: (res) => {
+      notify.ok(`أُلغِي الطلب ${res.orderNumber}${res.reversed ? " وأُعيدت البضاعة للمخزون" : ""}`);
+      setFailTarget(null);
+      void utils.courier.myDeliveries.invalidate();
+    },
+    onError: (e) => notify.err(e),
   });
 
   async function doConfirm(row: DeliveryRow) {
@@ -100,7 +110,13 @@ export default function MyDeliveries() {
               <div className="rounded-xl border border-dashed border-border p-6 text-center text-sm text-muted-foreground">لا طلبات قيد التوصيل حالياً.</div>
             ) : (
               data!.toDeliver.map((row) => (
-                <DeliveryCard key={row.id} row={row} busy={confirmingId === row.id || confirmM.isPending} onConfirm={() => doConfirm(row)} />
+                <DeliveryCard
+                  key={row.id}
+                  row={row}
+                  busy={confirmingId === row.id || confirmM.isPending || failM.isPending}
+                  onConfirm={() => doConfirm(row)}
+                  onFail={() => setFailTarget(row)}
+                />
               ))
             )}
           </section>
@@ -123,11 +139,20 @@ export default function MyDeliveries() {
           )}
         </>
       )}
+
+      {failTarget && (
+        <FailModal
+          row={failTarget}
+          pending={failM.isPending}
+          onCancel={() => !failM.isPending && setFailTarget(null)}
+          onConfirm={(reason) => failM.mutate({ onlineOrderId: failTarget.id, reason })}
+        />
+      )}
     </div>
   );
 }
 
-function DeliveryCard({ row, busy, onConfirm }: { row: DeliveryRow; busy: boolean; onConfirm: () => void }) {
+function DeliveryCard({ row, busy, onConfirm, onFail }: { row: DeliveryRow; busy: boolean; onConfirm: () => void; onFail: () => void }) {
   const phone = row.customerPhone;
   const waMsg = `مرحباً${row.customerName ? " " + row.customerName : ""}، أنا مندوب توصيل الرؤية العربية بخصوص طلبك ${row.orderNumber}. أنا في الطريق إليك.`;
   return (
@@ -168,13 +193,69 @@ function DeliveryCard({ row, busy, onConfirm }: { row: DeliveryRow; busy: boolea
           </>
         )}
         <button
+          onClick={onFail}
+          disabled={busy}
+          className="ms-auto flex items-center gap-1 rounded-lg border border-rose-300 px-3 py-2 text-xs font-bold text-rose-600 transition hover:bg-rose-50 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-400 dark:hover:bg-rose-500/10"
+        >
+          <XCircle aria-hidden className="size-3.5" /> تعذّر التسليم
+        </button>
+        <button
           onClick={onConfirm}
           disabled={busy}
-          className="ms-auto flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
+          className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
         >
           {busy ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4" />}
           تم التسليم والتحصيل
         </button>
+      </div>
+    </div>
+  );
+}
+
+/** حوار «تعذّر التسليم»: سبب إلزامي ثم عكس بيع الطلب + إلغاؤه. z-[100]. */
+function FailModal({ row, pending, onCancel, onConfirm }: { row: DeliveryRow; pending: boolean; onCancel: () => void; onConfirm: (reason: string) => void }) {
+  const [reason, setReason] = useState("");
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !pending) onCancel(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, onCancel]);
+  const REASONS = ["رفض الزبون الاستلام", "الزبون غير متوفّر", "عنوان خاطئ", "تعذّر التواصل"];
+  return (
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4" role="dialog" aria-modal="true" aria-label="تعذّر التسليم" onClick={onCancel} dir="rtl">
+      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2 text-base font-bold text-rose-600 dark:text-rose-400">
+          <XCircle aria-hidden className="size-5" />
+          تعذّر تسليم <span dir="ltr" className="tracking-wider">{row.orderNumber}</span>
+        </div>
+        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+          سيُلغى الطلب وتُعاد بضاعته للمخزون وتُصفّى ذمّة الزبون (لم يُحصَّل أيّ مبلغ). لا يمكن التراجع.
+        </p>
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {REASONS.map((r) => (
+            <button key={r} type="button" onClick={() => setReason(r)} className={`rounded-full px-2.5 py-1 text-xs font-medium transition ${reason === r ? "bg-rose-600 text-white" : "bg-muted text-muted-foreground hover:bg-accent"}`}>
+              {r}
+            </button>
+          ))}
+        </div>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          placeholder="سبب تعذّر التسليم…"
+          rows={2}
+          className="mb-4 w-full rounded-lg border border-border bg-transparent px-3 py-2 text-sm outline-none focus:border-rose-400"
+        />
+        <div className="flex items-center justify-end gap-2">
+          <button onClick={onCancel} disabled={pending} className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50">تراجع</button>
+          <button
+            onClick={() => reason.trim().length >= 2 && onConfirm(reason.trim())}
+            disabled={pending || reason.trim().length < 2}
+            className="flex items-center gap-1.5 rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-rose-700 disabled:opacity-50"
+          >
+            {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <XCircle aria-hidden className="size-4" />}
+            تأكيد الإلغاء
+          </button>
+        </div>
       </div>
     </div>
   );

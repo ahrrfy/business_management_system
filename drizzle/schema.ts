@@ -1472,6 +1472,8 @@ export const onlineOrders = mysqlTable(
     clientRequestId: varchar("clientRequestId", { length: 80 }),
     // جهة التوصيل المُسنَد إليها الطلب عند الإرسال (مندوب داخلي/شركة) — تغذّي شاشة المندوب (ش٥). هجرة 0067.
     deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
+    // سبب الإلغاء — يملؤه المندوب عند «تعذّر التسليم» (رفض الزبون/عنوان خاطئ...) ليراه الموظّف. هجرة 0069.
+    cancelReason: varchar("cancelReason", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },

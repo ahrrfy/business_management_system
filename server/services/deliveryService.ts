@@ -43,5 +43,5 @@ export {
   getDeliveryPartyStatement,
 } from "./delivery/queries";
 // courier (١٢/٧): شاشة المندوب الذاتية «توصيلاتي» — عزل ذاتي عبر deliveryParties.userId.
-export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult } from "./delivery/courier";
-export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery } from "./delivery/courier";
+export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult, FailDeliveryResult } from "./delivery/courier";
+export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery, failCourierDelivery } from "./delivery/courier";

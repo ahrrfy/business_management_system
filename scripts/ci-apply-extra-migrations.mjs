@@ -48,6 +48,8 @@ const EXTRA_MIGRATIONS = [
   // ١٢/٧/٢٦: دور courier + ربط جهة التوصيل بحساب (deliveryParties.userId). enum ALTER + عمود/UNIQUE/FK
   // محروسة idempotently — نُعيد تطبيقها لضمان وجودها على CI بعد db:push (لا يُمثّل توسيع enum موثوقاً).
   "drizzle/migrations/0068_courier_role_and_party_user.sql",
+  // ١٢/٧/٢٦: سبب إلغاء طلب المتجر (cancelReason) — «تعذّر التسليم» للمندوب. عمود عادي محروس idempotently.
+  "drizzle/migrations/0069_online_order_cancel_reason.sql",
 ];
 
 const url = process.env.DATABASE_URL;

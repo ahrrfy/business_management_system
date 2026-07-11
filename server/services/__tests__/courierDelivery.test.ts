@@ -8,12 +8,12 @@
  *   • reconcileLedgerProfit — قيودنا revenue=cost=0 لا تمسّ P&L (الإيراد اعتُرف بـSALE عند الإرسال).
  * + العزل الذاتي (IDOR): مندوب لا يؤكّد إلا طلباته؛ حساب بلا جهة يُرفض؛ idempotency النقر المزدوج.
  */
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
-import { confirmCourierDelivery, createDeliveryParty, listMyDeliveries, resolveCourierPartyId, setDeliveryPartyActive, updateDeliveryParty } from "../deliveryService";
+import { confirmCourierDelivery, createDeliveryParty, failCourierDelivery, listMyDeliveries, resolveCourierPartyId, setDeliveryPartyActive, updateDeliveryParty } from "../deliveryService";
 import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
 import { adjustCustomerBalance } from "../ledgerService";
 import { money } from "../money";
@@ -98,6 +98,9 @@ async function customerBalance(id: number): Promise<string> {
 }
 async function partyBalance(id: number): Promise<string> {
   return String((await db().select({ b: s.deliveryParties.currentBalance }).from(s.deliveryParties).where(eq(s.deliveryParties.id, id)).limit(1))[0]?.b ?? "0");
+}
+async function stockOf(variantId: number): Promise<number> {
+  return Number((await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, 1))).limit(1))[0]?.q ?? 0);
 }
 async function reconcileClean() {
   expect(await reconcileCustomerBalances()).toEqual([]);
@@ -214,6 +217,43 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     await setDeliveryPartyActive(partyB, false, { userId: 1, branchId: 1 }); // لا طلبات ⇒ مسموح
     expect(await resolveCourierPartyId(4)).toBeNull();
     expect((await listMyDeliveries(4)).linked).toBe(false);
+  });
+
+  it("تعذّر التسليم: يعكس البيع (إعادة مخزون + تصفير ذمّة + فاتورة RETURNED + طلب CANCELLED) والمطابِقات نظيفة", async () => {
+    const { partyA } = await seedParties();
+    const before = await stockOf(1); // 100
+    const o = await shippedOrder(2, "ORD-F1", partyA); // خصم مخزون 2 ⇒ 98
+    expect(await stockOf(1)).toBe(before - 2);
+    expect(await customerBalance(1)).toBe("20.00");
+
+    const res = await failCourierDelivery({ onlineOrderId: o.orderId, reason: "رفض الزبون الاستلام" }, { userId: 3 });
+    expect(res.reversed).toBe(true);
+    expect(await stockOf(1)).toBe(before); // أُعيدت البضاعة للمخزون
+    expect(await customerBalance(1)).toBe("0.00"); // ذمّة العميل صُفّيت
+    expect((await invoice(o.invoiceId)).status).toBe("RETURNED");
+    const ord = await order(o.orderId);
+    expect(ord.status).toBe("CANCELLED");
+    expect(ord.cancelReason).toBe("رفض الزبون الاستلام");
+    expect(await partyBalance(partyA)).toBe("0.00"); // بلا عهدة (لم يُحصَّل)
+    await reconcileClean();
+  });
+
+  it("تعذّر التسليم: IDOR (مندوب آخر) + idempotent (استدعاء ثانٍ) + حجب طلبٍ محصَّل", async () => {
+    const { partyA } = await seedParties();
+    const o = await shippedOrder(1, "ORD-F2", partyA);
+    // مندوب آخر (userId 4) لا يُلغي طلب جهة أ.
+    await expect(failCourierDelivery({ onlineOrderId: o.orderId, reason: "اختبار" }, { userId: 4 })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    // إلغاء صحيح ثم استدعاء ثانٍ ⇒ alreadyCancelled بلا عكس مزدوج.
+    await failCourierDelivery({ onlineOrderId: o.orderId, reason: "عنوان خاطئ" }, { userId: 3 });
+    const again = await failCourierDelivery({ onlineOrderId: o.orderId, reason: "عنوان خاطئ" }, { userId: 3 });
+    expect(again.alreadyCancelled).toBe(true);
+    await reconcileClean();
+
+    // طلب محصَّل (paidAmount>0) لا يُعذَّر تسليمه (يُرجَع بعد التسليم عبر المدير).
+    const o2 = await shippedOrder(1, "ORD-F3", partyA);
+    await confirmCourierDelivery({ onlineOrderId: o2.orderId }, { userId: 3 }); // حُصِّل
+    // بعد التحصيل الطلب DELIVERED لا SHIPPED ⇒ يُرفض بـ«ليس قيد التوصيل».
+    await expect(failCourierDelivery({ onlineOrderId: o2.orderId, reason: "متأخّر" }, { userId: 3 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 });
 

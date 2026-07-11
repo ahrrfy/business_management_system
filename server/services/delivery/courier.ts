@@ -13,10 +13,11 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { customers, deliveryParties, invoices, onlineOrders } from "../../../drizzle/schema";
+import { customers, deliveryParties, invoiceItems, invoices, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { adjustCustomerBalance, adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { returnSale } from "../returnService";
 import { withTx } from "../tx";
 
 /** يحلّ جهة التوصيل المرتبطة بحساب المستخدم (المندوب). null إن لم يُربط الحساب بجهة نشطة. */
@@ -220,4 +221,63 @@ export async function confirmCourierDelivery(
       alreadyDelivered: wasDelivered && collected.isZero(),
     };
   });
+}
+
+export interface FailDeliveryResult {
+  orderId: number;
+  orderNumber: string;
+  reversed: boolean;
+  alreadyCancelled?: boolean;
+}
+
+/**
+ * تعذّر التسليم (رفض الزبون/عنوان خاطئ): يعكس بيع الطلب المرفوض ذرّياً ويُلغيه.
+ * البضاعة تعود للمخزون + قيد RETURN عاكس + تُصفّى ذمّة العميل عن الفاتورة + الفاتورة RETURNED + الطلب
+ * CANCELLED (بسبب). بلا عهدة (لم يُحصَّل شيء). يُعاد استخدام returnSale المُختبَر (idempotent بمفتاح
+ * `courier-fail:<order>` ⇒ استرداد آمن لو فشل تحديث الطلب بعد نجاح العكس). محصورٌ بطلبٍ **غير محصَّل**
+ * (paidAmount=0): بعد التحصيل يكون إرجاعاً بعد التسليم (مدير)، لا «تعذّر تسليم».
+ */
+export async function failCourierDelivery(
+  input: { onlineOrderId: number; reason: string },
+  actor: { userId: number },
+): Promise<FailDeliveryResult> {
+  const partyId = await resolveCourierPartyId(actor.userId);
+  if (partyId == null) throw new TRPCError({ code: "FORBIDDEN", message: "حسابك غير مرتبط بمندوب توصيل — راجع المدير" });
+  const reason = (input.reason ?? "").trim();
+  if (reason.length < 2) throw new TRPCError({ code: "BAD_REQUEST", message: "اذكر سبب تعذّر التسليم" });
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+
+  const order = (await db.select().from(onlineOrders).where(eq(onlineOrders.id, input.onlineOrderId)).limit(1))[0];
+  if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+  if (Number(order.deliveryPartyId) !== partyId) throw new TRPCError({ code: "FORBIDDEN", message: "هذا الطلب ليس ضمن توصيلاتك" });
+  if (order.status === "CANCELLED") return { orderId: order.id, orderNumber: order.orderNumber, reversed: false, alreadyCancelled: true };
+  if (order.status !== "SHIPPED") throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ليس قيد التوصيل" });
+  if (!order.invoiceId) throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا فاتورة" });
+
+  const inv = (await db.select({ paidAmount: invoices.paidAmount, branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, Number(order.invoiceId))).limit(1))[0];
+  if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الطلب غير موجودة" });
+  if (money(inv.paidAmount ?? "0").gt(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب محصَّل — الإرجاع بعد التسليم عبر المدير" });
+  }
+
+  // أسطر الإرجاع = كل بنود الفاتورة بكامل الكمية المتبقّية (طلب مرفوض كليّاً).
+  const items = await db
+    .select({ id: invoiceItems.id, baseQuantity: invoiceItems.baseQuantity, returnedBaseQuantity: invoiceItems.returnedBaseQuantity })
+    .from(invoiceItems)
+    .where(eq(invoiceItems.invoiceId, Number(order.invoiceId)));
+  const lines = items
+    .map((i) => ({ invoiceItemId: Number(i.id), baseQuantity: Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0) }))
+    .filter((l) => l.baseQuantity > 0);
+
+  if (lines.length > 0) {
+    // returnSale ذرّي: إعادة مخزون + عكس SALE + تصفير ذمّة العميل + الفاتورة RETURNED. actor.branchId=فرع
+    // الفاتورة كي يمرّ فحص ملكية الفرع (المندوب عابرٌ للفروع). لا استرداد نقدي (paidAmount=0).
+    await returnSale(
+      { invoiceId: Number(order.invoiceId), lines, refund: null, restock: true, clientRequestId: `courier-fail:${order.id}` },
+      { userId: actor.userId, branchId: Number(inv.branchId), role: "courier" },
+    );
+  }
+  await db.update(onlineOrders).set({ status: "CANCELLED", cancelReason: reason }).where(eq(onlineOrders.id, order.id));
+  return { orderId: order.id, orderNumber: order.orderNumber, reversed: lines.length > 0 };
 }

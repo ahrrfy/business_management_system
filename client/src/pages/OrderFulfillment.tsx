@@ -195,6 +195,9 @@ export default function OrderFulfillment() {
                     <td className="p-2 font-bold tabular-nums" dir="ltr">{money(o.total)} د.ع</td>
                     <td className="p-2">
                       <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${meta.pill}`}>{meta.label}</span>
+                      {st === "CANCELLED" && o.cancelReason && (
+                        <div className="mt-0.5 max-w-[12rem] truncate text-[11px] text-muted-foreground" title={o.cancelReason}>{o.cancelReason}</div>
+                      )}
                     </td>
                     <td className="p-2">
                       <div className="flex flex-wrap items-center gap-1.5">

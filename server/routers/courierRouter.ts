@@ -8,7 +8,7 @@
 import { z } from "zod";
 import { courierProcedure, router } from "../trpc";
 import { logAudit } from "../services/auditService";
-import { confirmCourierDelivery, listMyDeliveries } from "../services/deliveryService";
+import { confirmCourierDelivery, failCourierDelivery, listMyDeliveries } from "../services/deliveryService";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 export const courierRouter = router({
@@ -33,6 +33,27 @@ export const courierRouter = router({
         entityType: "onlineOrder",
         entityId: input.onlineOrderId,
         newValue: { collected: res.collected, custodyAfter: res.custodyAfter },
+      });
+      return res;
+    }),
+
+  /** تعذّر التسليم (رفض الزبون): عكس بيع الطلب المرفوض + إلغاؤه (بلا تحصيل). */
+  failDelivery: courierProcedure
+    .input(z.object({ onlineOrderId: z.number().int().positive(), reason: z.string().trim().min(2).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id };
+      let res;
+      try {
+        res = await failCourierDelivery({ onlineOrderId: input.onlineOrderId, reason: input.reason }, actor);
+      } catch (e) {
+        if (isDupEntry(e)) res = await failCourierDelivery({ onlineOrderId: input.onlineOrderId, reason: input.reason }, actor);
+        else throw e;
+      }
+      await logAudit(ctx, {
+        action: "courier.failDelivery",
+        entityType: "onlineOrder",
+        entityId: input.onlineOrderId,
+        newValue: { reason: input.reason, reversed: res.reversed },
       });
       return res;
     }),
