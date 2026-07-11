@@ -9,12 +9,13 @@
  * ويطبّق **نفس محرّك العروض** (`resolvePromotionForLine`) المستعمل في نقطة البيع — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, gt, isNull, like, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNull, like, ne, or, sql } from "drizzle-orm";
 import {
   branchStock,
   branches,
   bundleComponents,
   categories,
+  invoiceItems,
   productImages,
   productPrices,
   productUnits,
@@ -73,7 +74,14 @@ export interface StorefrontProduct {
   isBundle: boolean;
   /** محتويات البكج (اسم + كمية) — تُملأ في صفحة المنتج فقط للبكجات. */
   bundleItems?: { name: string; quantity: number }[];
+  /** الندرة: المتبقّي بالمخزون — يُكشَف فقط حين ينخفض (≤ عتبة) كإشارة تسويقية؛ null إن وفير. */
+  stockLeft: number | null;
+  /** الدليل الاجتماعي: عدد مرّات بيع المنتج فعلياً (من الفواتير). */
+  soldCount: number;
 }
+
+/** عتبة «كمية محدودة» — الكمية تُكشَف للزبون فقط عندها فأقلّ (ندرة، لا تسريب مخزون كامل). */
+const LOW_STOCK_THRESHOLD = 5;
 
 export interface StorefrontCategory {
   id: number;
@@ -136,7 +144,26 @@ function toStorefront(r: {
     inStock: Number(r.stockQty ?? 0) > 0,
     imageUrl: r.imageUrl ?? null,
     isBundle: !!r.isBundle,
+    stockLeft: Number(r.stockQty ?? 0) > 0 && Number(r.stockQty) <= LOW_STOCK_THRESHOLD ? Number(r.stockQty) : null,
+    soldCount: 0,
   };
+}
+
+/** الدليل الاجتماعي: يُرفق عدد مرّات بيع كل منتج (COUNT فواتير مميّزة) — استعلام مجمَّع واحد. */
+async function attachSoldCounts(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  items: StorefrontProduct[]
+): Promise<void> {
+  if (!items.length) return;
+  const productIds = items.map((i) => i.productId);
+  const rows = await db
+    .select({ productId: productVariants.productId, n: sql<number>`COUNT(DISTINCT ${invoiceItems.invoiceId})` })
+    .from(invoiceItems)
+    .innerJoin(productVariants, eq(invoiceItems.variantId, productVariants.id))
+    .where(inArray(productVariants.productId, productIds))
+    .groupBy(productVariants.productId);
+  const map = new Map(rows.map((r) => [Number(r.productId), Number(r.n)]));
+  for (const it of items) it.soldCount = map.get(it.productId) ?? 0;
 }
 
 /**
@@ -223,6 +250,7 @@ export async function storefrontCatalog(opts: {
     if (items.length >= cap) break;
   }
   await applyStorefrontPromotions(items, branchId);
+  await attachSoldCounts(db, items);
   return { items };
 }
 
@@ -261,6 +289,7 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   if (!rows.length) return null;
   const item = toStorefront(rows[0]);
   await applyStorefrontPromotions([item], branchId);
+  await attachSoldCounts(db, [item]);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
   return item;
 }
@@ -310,6 +339,7 @@ export async function storefrontRelated(
     if (items.length >= cap) break;
   }
   await applyStorefrontPromotions(items, branchId);
+  await attachSoldCounts(db, items);
   return items;
 }
 

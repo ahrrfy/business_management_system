@@ -18,6 +18,7 @@ import {
   Banknote,
   BadgePercent,
   Check,
+  Flame,
   ImageOff,
   Loader2,
   LogIn,
@@ -448,6 +449,14 @@ export default function Storefront() {
                       </span>
                       {onSale && <span className="text-[11px] text-slate-400 line-through">{money(p.price)}</span>}
                     </div>
+                    <div className="flex min-h-[0.9rem] flex-wrap items-center gap-x-2 text-[10px] leading-none">
+                      {p.stockLeft != null && <span className="font-bold text-amber-600 dark:text-amber-400">بقي {p.stockLeft} فقط</span>}
+                      {p.soldCount >= 10 ? (
+                        <span className="flex items-center gap-0.5 font-bold text-orange-500"><Flame aria-hidden className="size-3" /> الأكثر مبيعاً</span>
+                      ) : p.soldCount >= 3 ? (
+                        <span className="text-slate-400">بيع {p.soldCount} مرة</span>
+                      ) : null}
+                    </div>
                     <button
                       onClick={() => addToCart(p)}
                       disabled={!p.inStock}
@@ -517,8 +526,17 @@ export default function Storefront() {
                       </span>
                     )}
                     <p className={`mt-2 text-xs font-bold ${detailQ.data.inStock ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500"}`}>
-                      {detailQ.data.inStock ? "متوفّر" : "غير متوفّر حالياً"}
+                      {detailQ.data.inStock
+                        ? detailQ.data.stockLeft != null
+                          ? `متوفّر — بقي ${detailQ.data.stockLeft} فقط، سارع بالطلب`
+                          : "متوفّر"
+                        : "غير متوفّر حالياً"}
                     </p>
+                    {detailQ.data.soldCount >= 3 && (
+                      <p className="mt-1 flex items-center gap-1 text-xs font-bold text-orange-500">
+                        <Flame aria-hidden className="size-3.5" /> {detailQ.data.soldCount >= 10 ? "من الأكثر مبيعاً" : `بيع ${detailQ.data.soldCount} مرة`}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <button
