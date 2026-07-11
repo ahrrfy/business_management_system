@@ -17,7 +17,7 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { printOrderLabelDoc } from "@/lib/printing/orderLabel";
+import { printShippingLabel } from "@/lib/printing/shippingLabel";
 
 type Status = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -102,19 +102,18 @@ export default function OrderFulfillment() {
         notify.err("تعذّر جلب تفاصيل الطلب");
         return;
       }
-      const res = await printOrderLabelDoc({
+      const res = await printShippingLabel({
         orderNumber: d.orderNumber,
         customerName: d.customerName,
         customerPhone: d.customerPhone,
         governorate: d.governorate,
         addressText: d.addressText,
-        subtotal: d.subtotal,
-        deliveryFee: d.deliveryFee,
         total: d.total,
+        deliveryPartyName: d.deliveryPartyName,
         createdAt: d.createdAt,
         items: d.items.map((it) => ({ productName: it.productName, unitName: it.unitName, quantity: it.quantity })),
       });
-      notify.ok(res.via === "browser" ? "فُتحت نافذة الطباعة" : "أُرسل الملصق إلى الطابعة");
+      notify.ok(res.ok ? "فُتحت نافذة طباعة ملصق الشحن (١٠٠×١٥٠مم)" : "افسح مانع النوافذ المنبثقة لطباعة الملصق");
     } catch (e) {
       notify.err(e);
     } finally {

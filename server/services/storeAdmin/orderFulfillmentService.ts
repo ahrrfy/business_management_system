@@ -10,6 +10,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   customers,
+  deliveryParties,
   invoices,
   onlineOrderItems,
   onlineOrders,
@@ -122,6 +123,7 @@ export interface OnlineOrderDetail extends OnlineOrderRow {
   branchId: number;
   addressText: string | null;
   subtotal: string;
+  deliveryPartyName: string | null;
   items: OnlineOrderDetailItem[];
 }
 
@@ -143,12 +145,14 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         subtotal: onlineOrders.subtotal,
         deliveryFee: onlineOrders.shippingCost,
         deliveryPartyId: onlineOrders.deliveryPartyId,
+        deliveryPartyName: deliveryParties.name,
         cancelReason: onlineOrders.cancelReason,
         total: onlineOrders.total,
         createdAt: onlineOrders.createdAt,
       })
       .from(onlineOrders)
       .leftJoin(customers, eq(onlineOrders.customerId, customers.id))
+      .leftJoin(deliveryParties, eq(onlineOrders.deliveryPartyId, deliveryParties.id))
       .where(eq(onlineOrders.id, id))
       .limit(1)
   )[0];
@@ -181,6 +185,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     subtotal: String(order.subtotal),
     deliveryFee: String(order.deliveryFee),
     deliveryPartyId: order.deliveryPartyId != null ? Number(order.deliveryPartyId) : null,
+    deliveryPartyName: order.deliveryPartyName ?? null,
     cancelReason: order.cancelReason ?? null,
     total: String(order.total),
     itemCount: items.length,
