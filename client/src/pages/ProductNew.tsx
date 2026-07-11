@@ -121,6 +121,11 @@ export default function ProductNew() {
     for (const v of variants) for (const u of units) {
       const c = (v.unitBarcodes[u.id] || "").trim();
       if (c) set.add(c);
+      // البدائل تتشارك فضاء تفرّد الباركود نفسه (assertCatalogUniqueness) ⇒ نفحصها حيّاً أيضاً.
+      for (const a of v.unitBarcodeAliases?.[u.id] ?? []) {
+        const ac = (a.barcode || "").trim();
+        if (ac) set.add(ac);
+      }
     }
     return Array.from(set);
   }, [variants, units]);
@@ -147,7 +152,14 @@ export default function ProductNew() {
     setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, retail: "", wholesale: "" }]);
   const patchUnit = (id: number, patch: Partial<ClientUnit>) =>
     setUnits((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const removeUnit = (id: number) => setUnits((u) => (u.length <= 1 ? u : u.filter((x) => x.id !== id)));
+  const removeUnit = (id: number) =>
+    setUnits((u) => {
+      if (u.length <= 1) return u;
+      const next = u.filter((x) => x.id !== id);
+      // إن حُذفت وحدة الأساس، رقِّ الأولى الباقية أساساً — وإلّا بقي القالب بلا أساس ويُحجَب الحفظ.
+      if (!next.some((x) => x.isBase)) next[0] = { ...next[0], isBase: true };
+      return next;
+    });
   const setBaseUnit = (id: number) => setUnits((u) => u.map((x) => ({ ...x, isBase: x.id === id })));
 
   /* ── المصفوفة + المتغيّرات ── */
@@ -173,6 +185,7 @@ export default function ProductNew() {
       retail: "",
       isActive: true,
       image: null,
+      unitBarcodeAliases: {},
     };
   }
 
@@ -199,18 +212,31 @@ export default function ProductNew() {
       const idxByKey = new Map(out.map((v, i) => [`${v.color}|${v.size}`, i]));
       for (const r of rows) {
         const key = `${r.color}|${r.size}`;
-        const base = makeVariant(r.color, r.size);
-        if (r.sku) base.sku = r.sku;
-        r.barcodes.forEach((b, i) => {
-          const u = units[i];
-          if (u && b) base.unitBarcodes[u.id] = b;
-        });
-        base.stockByBranch = { [branchId]: r.stock || "0" };
         const existingIdx = idxByKey.get(key);
         if (existingIdx != null) {
-          // دمج غير متلف: نحفظ معرّف الصفّ الموجود ونحدّث قيمه.
-          out[existingIdx] = { ...out[existingIdx], ...base, id: out[existingIdx].id };
+          // دمج غير متلف حقّاً: نطبّق فقط ما يحمله اللصق (SKU/باركود الوحدات/مخزون الفرع) ونُبقي
+          // بقية حقول الصفّ كما هي — البدائل (unitBarcodeAliases) والصورة والسعر الخاص والحدود.
+          // (نسخ makeVariant كاملاً كان يمسح البدائل والحقول الموسَّعة صامتاً — نمط شاشة التعديل.)
+          const cur = out[existingIdx];
+          const unitBarcodes = { ...cur.unitBarcodes };
+          r.barcodes.forEach((b, i) => {
+            const u = units[i];
+            if (u && b) unitBarcodes[u.id] = b;
+          });
+          out[existingIdx] = {
+            ...cur,
+            sku: r.sku || cur.sku,
+            unitBarcodes,
+            stockByBranch: { ...cur.stockByBranch, [branchId]: r.stock || cur.stockByBranch[branchId] || "0" },
+          };
         } else {
+          const base = makeVariant(r.color, r.size);
+          if (r.sku) base.sku = r.sku;
+          r.barcodes.forEach((b, i) => {
+            const u = units[i];
+            if (u && b) base.unitBarcodes[u.id] = b;
+          });
+          base.stockByBranch = { [branchId]: r.stock || "0" };
           idxByKey.set(key, out.length);
           out.push(base);
         }
@@ -247,6 +273,9 @@ export default function ProductNew() {
     if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
     if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
     if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط في قالب الوحدات.";
+    // الوحدة غير الأساس معاملها أكبر من ١ (درزن=١٢) — بلا ذلك يُخصَم الدرزن قطعةً واحدةً (§٥).
+    if (units.some((u) => !u.isBase && !(Number((u.factor ?? "").trim()) > 1)))
+      return "الوحدة الأكبر من الأساس (درزن/كرتون) تحتاج معامل تحويل أكبر من ١ في قالب الوحدات.";
     if (!variants.length) return "أضف متغيّراً واحداً على الأقل (اكتب لوناً ثم «ولّد المتغيّرات»).";
     if (variants.some((v) => !v.sku.trim())) return "كل متغيّر يحتاج SKU.";
     const skus = variants.map((v) => v.sku.trim());
@@ -256,9 +285,14 @@ export default function ProductNew() {
     for (const v of variants) for (const u of units) {
       const c = (v.unitBarcodes[u.id] || "").trim();
       if (c) codes.push(c);
+      // البدائل ضمن نفس فضاء التفرّد (أساسيّ + بديل) — تكرارها يُرفَض خادمياً، فنمسكه هنا برسالة واضحة.
+      for (const a of v.unitBarcodeAliases?.[u.id] ?? []) {
+        const ac = (a.barcode || "").trim();
+        if (ac) codes.push(ac);
+      }
     }
     const dupBc = codes.find((c, i) => codes.indexOf(c) !== i);
-    if (dupBc) return `باركود مكرّر داخل النموذج: ${dupBc} — لكل وحدة/لون باركود فريد.`;
+    if (dupBc) return `باركود مكرّر داخل النموذج: ${dupBc} — لكل وحدة/لون/بديل باركود فريد.`;
     return null;
   }
 
@@ -292,6 +326,10 @@ export default function ProductNew() {
             const retail = u.isBase && v.priceOverride && v.retail.trim() ? v.retail.trim() : u.retail.trim();
             const wholesale = u.wholesale.trim();
             const government = (u.government ?? "").trim();
+            // باركودات بديلة لهذه الوحدة من هذا اللون (وضع محلّي) — تُدرَج ذرّياً مع المنتج.
+            const aliases = (v.unitBarcodeAliases?.[u.id] ?? [])
+              .map((a) => ({ barcode: (a.barcode || "").trim(), note: a.note ?? null }))
+              .filter((a) => a.barcode);
             return {
               unitName: u.name.trim(),
               conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
@@ -302,6 +340,7 @@ export default function ProductNew() {
                 ...(wholesale ? [{ priceTier: "WHOLESALE" as const, price: wholesale }] : []),
                 ...(government ? [{ priceTier: "GOVERNMENT" as const, price: government }] : []),
               ],
+              barcodeAliases: aliases.length ? aliases : undefined,
             };
           }),
         };
@@ -322,9 +361,19 @@ export default function ProductNew() {
       else if (!costPrice.trim()) document.getElementById("product-cost")?.focus();
       return;
     }
-    // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce).
+    // فحص أخير حاسم للباركود ضدّ القاعدة (لا نعتمد على توقيت الـdebounce). يشمل البدائل — فهي في
+    // فضاء التفرّد نفسه (أساسيّ + بديل)، فباركود بديل محجوز في منتج آخر يجب أن يُمسَك قبل الحفظ.
     const codes = Array.from(
-      new Set(variants.flatMap((v) => units.map((u) => (v.unitBarcodes[u.id] || "").trim())).filter(Boolean))
+      new Set(
+        variants
+          .flatMap((v) =>
+            units.flatMap((u) => [
+              (v.unitBarcodes[u.id] || "").trim(),
+              ...(v.unitBarcodeAliases?.[u.id] ?? []).map((a) => (a.barcode || "").trim()),
+            ])
+          )
+          .filter(Boolean)
+      )
     );
     if (codes.length) {
       try {
@@ -581,6 +630,7 @@ export default function ProductNew() {
             </CardTitle>
             <p className="text-xs text-muted-foreground mt-1">
               كل صفّ منتج مخزنيّ مستقل: SKU ورصيد لكل فرع وظهور منفصل في البيع — <b>وباركود مستقل لكل وحدة</b>.
+              افتح تفاصيل الصفّ (السهم) لإضافة <b>«بدائل»</b> (باركودات إضافية لنفس الوحدة).
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap">
@@ -633,6 +683,7 @@ export default function ProductNew() {
             patchVariant={patchVariant}
             removeVariant={removeVariant}
             onScan={onScan}
+            localAliases
           />
           {variants.length > 0 && (
             <div className="flex flex-wrap items-center gap-x-6 gap-y-1 text-xs text-muted-foreground px-1">
