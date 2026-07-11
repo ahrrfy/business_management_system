@@ -1,0 +1,58 @@
+{
+  "_comment": "إعداد Bubblewrap لتغليف متجر الرؤية العربية (alarabiya.online) كتطبيق أندرويد TWA على Google Play. راجع docs/twa-android-setup.md. القيم مبدئية — عدّل packageId/signingKey حسب حسابك ثم شغّل: bubblewrap build داخل مجلد twa/.",
+  "packageId": "online.alarabiya.store",
+  "host": "alarabiya.online",
+  "name": "الرؤية العربية",
+  "launcherName": "الرؤية العربية",
+  "display": "standalone",
+  "orientation": "default",
+  "themeColor": "#2563eb",
+  "themeColorDark": "#0b1220",
+  "navigationColor": "#2563eb",
+  "navigationColorDark": "#0b1220",
+  "navigationDividerColor": "#2563eb",
+  "navigationDividerColorDark": "#0b1220",
+  "backgroundColor": "#ffffff",
+  "enableNotifications": false,
+  "startUrl": "/",
+  "iconUrl": "https://alarabiya.online/icon-512.png",
+  "maskableIconUrl": "https://alarabiya.online/icon-512.png",
+  "monochromeIconUrl": "",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./android-keystore.jks",
+    "alias": "upload"
+  },
+  "appVersionName": "1.0.0",
+  "appVersionCode": 1,
+  "shortcuts": [
+    {
+      "name": "المتجر",
+      "shortName": "المتجر",
+      "url": "/store",
+      "chosenIconUrl": "https://alarabiya.online/icon-192.png"
+    },
+    {
+      "name": "توصيلاتي",
+      "shortName": "توصيلاتي",
+      "url": "/my-deliveries",
+      "chosenIconUrl": "https://alarabiya.online/icon-192.png"
+    }
+  ],
+  "generatorApp": "bubblewrap-cli",
+  "webManifestUrl": "https://alarabiya.online/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://alarabiya.online/",
+  "minSdkVersion": 23,
+  "fingerprints": [],
+  "additionalTrustedOrigins": ["www.alarabiya.online"],
+  "retainedBundles": [],
+  "appVersion": "1.0.0"
+}

@@ -19,6 +19,7 @@ import { getDb, closeDb } from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
+import { registerWellKnown } from "./wellKnown";
 import { csrfGuard } from "./middleware/csrf";
 import { isTrpcSurface, sendTrpcError, trpcAwareRateLimitHandler } from "./middleware/trpcError";
 import { printRouter } from "./printRoute";
@@ -394,6 +395,10 @@ async function startServer() {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+
+  // Digital Asset Links لـTWA — يُسجَّل **قبل** catch-all الـSPA (setupVite/serveStatic) كي يعيد
+  // JSON لا index.html على /.well-known/assetlinks.json (تغليف أندرويد على Play).
+  registerWellKnown(app);
 
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
