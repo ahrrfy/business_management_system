@@ -241,6 +241,12 @@ export const inventoryManagerProcedure = moduleProcedure(["manager"], "inventory
 export const customersReadProcedure = protectedProcedure.use(requireModule("customers", "READ"));
 export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep"], "customers", "FULL");
 export const customersManagerProcedure = moduleProcedure(["manager"], "customers", "FULL");
+
+// المتجر الإلكتروني (وحدة store): قراءة الطلبات/البنرات، تثبيت الطلبات وطباعة الملصقات (تشغيلي)،
+// وإدارة البنرات/الإعدادات (مديري). branchScopedProcedure للقراءة ⇒ عزل فرع لغير المرتفعين.
+export const storeReadProcedure = branchScopedProcedure.use(requireModule("store", "READ"));
+export const storeFulfillProcedure = moduleProcedure(["manager", "cashier", "sales_rep"], "store", "FULL");
+export const storeManagerProcedure = moduleProcedure(["manager"], "store", "FULL");
 // suppliers — القراءة بالخريطة وحدها (كالعملاء): قوالب warehouse/purchasing/auditor/user تعِد
 // بها وكان managerProcedure يصدّها. الكتابة: warehouse/purchasing قالباهما FULL.
 export const suppliersReadProcedure = protectedProcedure.use(requireModule("suppliers", "READ"));

@@ -8,7 +8,7 @@ import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign,
-  UserCircle2, ChevronLeft, LogOut,
+  UserCircle2, ChevronLeft, LogOut, Store,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -42,6 +42,7 @@ const NAV_LINKS: NavLink[] = [
   // أمين المخزن/الفني على hub بلا تبويبات = صفحة فارغة (نفس مبدأ الأصول/الموارد أدناه).
   { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
   { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
+  { href: "/store-admin", label: "طلبات المتجر", icon: Store, roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
   { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
   // (ج) دوري — أسبوعي/عند الحاجة
   { href: "/purchases", label: "المشتريات", icon: Package },

@@ -55,6 +55,7 @@ import { priceWavesRouter } from "./routers/priceWavesRouter";
 import { promotionsV2Router } from "./routers/promotionsV2Router";
 import { platformAdminRouter } from "./routers/platformAdminRouter";
 import { storefrontRouter } from "./routers/storefrontRouter";
+import { storeAdminRouter } from "./routers/storeAdminRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -91,6 +92,7 @@ export const appRouter = router({
   count: countPortalRouter,
   kiosk: kioskRouter,
   storefront: storefrontRouter,
+  storeAdmin: storeAdminRouter,
   production: productionRouter,
   assets: assetsRouter,
   employees: employeeRouter,

@@ -57,6 +57,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "inventory",    label: "المخزون والأرصدة",  description: "حركات المخزون، التحويلات، الجرد" },
   { key: "workorders",   label: "خدمة العملاء",       description: "إنشاء ومتابعة طلبات خدمة العملاء (طباعة وتخصيص)" },
   { key: "channels",     label: "القنوات والوارد",     description: "صندوق الوارد الموحّد (واتساب/إنستغرام/المتجر) والمحادثات" },
+  { key: "store",        label: "المتجر الإلكتروني",   description: "طلبات المتجر الإلكترونية: تثبيتها وطباعة الملصقات، والبنرات وإعدادات المتجر" },
   { key: "treasury",     label: "الخزينة والمدفوعات",  description: "لوحة الخزينة، السندات، التحويلات النقدية، الورديات" },
   { key: "customers",    label: "العملاء",            description: "إدارة العملاء وكشوف الحساب" },
   { key: "suppliers",    label: "الموردون",           description: "إدارة الموردين وكشوف الحساب" },
@@ -82,6 +83,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "FULL", settings: "FULL",
   },
   manager: {
+    store: "FULL",
     assets: "FULL",
     hr: "FULL",
     commissions: "FULL",
@@ -90,6 +92,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   accountant: {
+    store: "READ",
     assets: "READ",
     hr: "READ",
     // READ: يراجع تشغيلات العمولة والأهداف بلا كتابة (الاحتساب/الاعتماد مديريان).
@@ -99,6 +102,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   cashier: {
+    store: "FULL",
     assets: "NONE",
     hr: "NONE",
     // NONE: الكاشير يرى أداءه الذاتي فقط عبر «أدائي» (protectedProcedure) لا عبر الوحدة.
@@ -139,6 +143,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   sales_rep: {
+    store: "FULL",
     assets: "NONE",
     hr: "NONE",
     // NONE: كالكاشير — أداؤه الذاتي عبر «أدائي»؛ إدارة الخطط والأهداف مديرية.
@@ -148,6 +153,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   auditor: {
+    store: "READ",
     assets: "READ",
     hr: "READ",
     commissions: "READ",
