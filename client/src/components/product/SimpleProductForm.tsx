@@ -174,6 +174,11 @@ export default function SimpleProductForm() {
   function validate(): string | null {
     if (!finalName) return "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل).";
     if (units.some((u) => !u.name.trim())) return "كل وحدة تحتاج اسماً (قطعة / درزن / علبة…).";
+    // اسم الوحدة مفتاحُ مطابقةٍ في مسار التعديل (getForVariantEdit/upsertVariantUnits يطابقان بالاسم)
+    // ⇒ وحدتان بنفس الاسم تتداخلان فيُطمَس باركود/سعر إحداهما عند أوّل تعديل. امنع التكرار عند الإنشاء.
+    const unitNames = units.map((u) => u.name.trim());
+    const dupUnitName = unitNames.find((n, i) => n && unitNames.indexOf(n) !== i);
+    if (dupUnitName) return `اسم وحدة مكرّر: «${dupUnitName}» — لكل وحدة اسمٌ فريد (قطعة/درزن/كرتون).`;
     if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط.";
     // كل وحدة غير أساس أكبر من الأساس ⇒ معامل تحويلها صحيحٌ أكبر من ١ (درزن=١٢). بلا هذا الحارس
     // يُرسَل المعامل الفارغ كـ«١» صامتاً فيُخصَم الدرزن قطعةً واحدةً من المخزون (§٥ baseQuantity).

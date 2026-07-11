@@ -272,6 +272,11 @@ export default function ProductNew() {
     if (!productName.trim() && !composedName) return "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل).";
     if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
     if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
+    // اسم الوحدة مفتاح مطابقة في مسار التعديل (يطابق بالاسم) ⇒ وحدتان بنفس الاسم تتداخلان فيُطمَس
+    // باركود/سعر إحداهما عند التعديل. امنع التكرار عند الإنشاء (نفس حارس السلعة البسيطة).
+    const unitNames = units.map((u) => u.name.trim());
+    const dupUnitName = unitNames.find((n, i) => n && unitNames.indexOf(n) !== i);
+    if (dupUnitName) return `اسم وحدة مكرّر في القالب: «${dupUnitName}» — لكل وحدة اسمٌ فريد.`;
     if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط في قالب الوحدات.";
     // الوحدة غير الأساس معاملها أكبر من ١ (درزن=١٢) — بلا ذلك يُخصَم الدرزن قطعةً واحدةً (§٥).
     if (units.some((u) => !u.isBase && !(Number((u.factor ?? "").trim()) > 1)))
