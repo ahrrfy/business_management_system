@@ -6,11 +6,12 @@
  * بلا أثر مالي هنا (تحويل الطلب لفاتورة/إرسالية شريحة لاحقة).
  */
 import { useState } from "react";
-import { Check, ClipboardList, Loader2, Package, Printer, Store, Truck, X } from "lucide-react";
+import { Check, ClipboardList, Loader2, MessageCircle, Package, Printer, Store, Truck, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
+import { buildOnlineOrderFollowupMessage, openWhatsApp } from "@/lib/whatsapp";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -183,6 +184,15 @@ export default function OrderFulfillment() {
                           {printingId === o.id ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <Printer aria-hidden className="size-3.5" />}
                           الملصق
                         </button>
+                        {o.customerPhone && (
+                          <button
+                            onClick={() => openWhatsApp(o.customerPhone, buildOnlineOrderFollowupMessage({ orderNumber: o.orderNumber, customerName: o.customerName, total: o.total, status: o.status }))}
+                            title="متابعة الزبون عبر واتساب"
+                            className="flex items-center gap-1 rounded-lg border border-emerald-500/40 bg-emerald-50 px-2.5 py-1.5 text-xs font-bold text-emerald-700 transition hover:bg-emerald-100 dark:bg-emerald-500/10 dark:text-emerald-400"
+                          >
+                            <MessageCircle aria-hidden className="size-3.5" /> واتساب
+                          </button>
+                        )}
                         {next && (
                           <button
                             onClick={() => advance(o.id, next.to, next.label)}

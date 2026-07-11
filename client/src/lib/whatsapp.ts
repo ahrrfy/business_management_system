@@ -237,6 +237,53 @@ export function buildReconciliationMessage(d: ReconcileMessageData): string {
   return L.join("\n");
 }
 
+// ─────────────────────────────────────────────
+// متجر الجوال (B2C): استرداد السلة + متابعة الطلب
+// ─────────────────────────────────────────────
+
+export interface StorefrontCartLine {
+  name: string;
+  quantity: number;
+  total: number;
+}
+
+/**
+ * رسالة يرسلها الزبون من سلّته إلى **واتساب المتجر** (استرداد السلة المهجورة): بديل سريع
+ * لإتمام الطلب عبر واتساب لمن لا يكمل نموذج الدفع. الدفع عند الاستلام.
+ */
+export function buildStorefrontCartMessage(items: StorefrontCartLine[], subtotal: number): string {
+  const L: string[] = [`*طلب جديد من المتجر*`, COMPANY_NAME, "", "*المطلوب:*"];
+  for (const it of items.slice(0, 20)) L.push(`  • ${it.name} × ${it.quantity} = ${fmtMoney(it.total)} د.ع.`);
+  if (items.length > 20) L.push(`  ... و${items.length - 20} صنفاً آخر`);
+  L.push("", `*المجموع:* ${fmtMoney(subtotal)} د.ع.`, "", "أودّ إتمام هذا الطلب — الدفع عند الاستلام.");
+  return L.join("\n");
+}
+
+export interface OnlineOrderFollowupData {
+  orderNumber: string;
+  customerName?: string | null;
+  total: string | number;
+  status?: string;
+}
+
+/**
+ * رسالة يرسلها الموظف للزبون لمتابعة/استرداد طلب المتجر (تأكيد الطلب المعلّق، أو إشعار «مع المندوب»).
+ */
+export function buildOnlineOrderFollowupMessage(d: OnlineOrderFollowupData): string {
+  const line =
+    d.status === "CANCELLED"
+      ? "نأسف، تمّ *إلغاء* طلبك. لمزيد من التفاصيل تواصل معنا."
+      : d.status === "SHIPPED"
+      ? "طلبك الآن *مع المندوب* في طريقه إليك."
+      : d.status === "DELIVERED"
+      ? "تمّ *تسليم* طلبك بنجاح. شكراً لتعاملك معنا."
+      : "لتأكيد طلبك وإتمام التوصيل، يرجى الردّ على هذه الرسالة.";
+  const L: string[] = [`*بخصوص طلبك #${d.orderNumber}*`, COMPANY_NAME, ""];
+  if (d.customerName) L.push(`مرحباً ${d.customerName}،`);
+  L.push(line, "", `الإجمالي (الدفع عند الاستلام): ${fmtMoney(d.total)} د.ع.`, "", "للاستفسار تواصلوا معنا.");
+  return L.join("\n");
+}
+
 export interface WorkOrderStatusMessageData {
   orderNumber: string;
   title: string;

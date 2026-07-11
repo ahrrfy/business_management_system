@@ -22,6 +22,7 @@ import {
   ImageOff,
   Loader2,
   LogIn,
+  MessageCircle,
   Minus,
   Package,
   Phone,
@@ -40,6 +41,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
+import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -654,6 +656,22 @@ export default function Storefront() {
                 متابعة إلى الدفع عند الاستلام
                 <ArrowRight aria-hidden className="size-4" />
               </button>
+              {settingsQ.data?.whatsappNumber && (
+                <button
+                  onClick={() =>
+                    openWhatsApp(
+                      settingsQ.data!.whatsappNumber,
+                      buildStorefrontCartMessage(
+                        cartLines.map((l) => ({ name: l.name, quantity: l.qty, total: Number(l.price) * l.qty })),
+                        cartSubtotal
+                      )
+                    )
+                  }
+                  className="mt-2 flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-500 bg-emerald-50 py-3 text-sm font-bold text-emerald-700 transition motion-safe:active:scale-[0.98] hover:bg-emerald-100 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-400"
+                >
+                  <MessageCircle aria-hidden className="size-4" /> أو أرسل سلّتك عبر واتساب
+                </button>
+              )}
             </>
           )}
         </PanelShell>
