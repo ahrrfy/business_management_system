@@ -9,10 +9,11 @@
  * ويطبّق **نفس محرّك العروض** (`resolvePromotionForLine`) المستعمل في نقطة البيع — فالسعر المعروض
  * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, gt, isNull, like, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, like, ne, or, sql } from "drizzle-orm";
 import {
   branchStock,
   branches,
+  bundleComponents,
   categories,
   productImages,
   productPrices,
@@ -65,9 +66,13 @@ export interface StorefrontProduct {
   salePrice: string | null;
   /** اسم العرض المطبَّق (للشارة) — null لا عرض. */
   promotionName: string | null;
-  /** متوفّر في المخزون (الكمية > 0 بالفرع) — نعم/لا فقط، لا نكشف الكمية. */
+  /** متوفّر في المخزون (الكمية > 0 بالفرع) — نعم/لا فقط, لا نكشف الكمية. */
   inStock: boolean;
   imageUrl: string | null;
+  /** بكج (مجموعة مُجمّعة) — يُعرَض بشارة «بكج» ومحتوياته في التفاصيل. */
+  isBundle: boolean;
+  /** محتويات البكج (اسم + كمية) — تُملأ في صفحة المنتج فقط للبكجات. */
+  bundleItems?: { name: string; quantity: number }[];
 }
 
 export interface StorefrontCategory {
@@ -99,6 +104,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number)
       unitName: productUnits.unitName,
       price: productPrices.price,
       imageUrl: productImages.url,
+      isBundle: products.isBundle,
       stockQty: branchStock.quantity, // داخلي فقط ⇒ inStock
     })
     .from(productUnits)
@@ -113,7 +119,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number)
 function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
   category: string | null; categoryId: number | null; unitName: string; price: string | null;
-  imageUrl: string | null; stockQty: number | null;
+  imageUrl: string | null; isBundle: boolean | null; stockQty: number | null;
 }): StorefrontProduct {
   return {
     productId: Number(r.productId),
@@ -129,6 +135,7 @@ function toStorefront(r: {
     promotionName: null,
     inStock: Number(r.stockQty ?? 0) > 0,
     imageUrl: r.imageUrl ?? null,
+    isBundle: !!r.isBundle,
   };
 }
 
@@ -254,7 +261,56 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   if (!rows.length) return null;
   const item = toStorefront(rows[0]);
   await applyStorefrontPromotions([item], branchId);
+  if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
   return item;
+}
+
+/** محتويات البكج (اسم المنتج المكوّن + الكمية) — لعرض «يحتوي على» في صفحة البكج. */
+async function getBundleItems(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  bundleVariantId: number
+): Promise<{ name: string; quantity: number }[]> {
+  const rows = await db
+    .select({ name: products.name, qty: bundleComponents.componentBaseQuantity })
+    .from(bundleComponents)
+    .innerJoin(productVariants, eq(bundleComponents.componentVariantId, productVariants.id))
+    .innerJoin(products, eq(productVariants.productId, products.id))
+    .where(eq(bundleComponents.bundleVariantId, bundleVariantId))
+    .orderBy(asc(bundleComponents.sortOrder))
+    .limit(30);
+  return rows.map((r) => ({ name: r.name, quantity: Number(r.qty) }));
+}
+
+/**
+ * منتجات ذات صلة (cross-sell «يُشترى معه»): نفس فئة المنتج، متوفّرة، مستثنى المنتج نفسه.
+ * heuristic بسيط بلا سجلّ شراء — يرفع متوسط قيمة الطلب بتشجيع إضافة أصناف مكمّلة.
+ */
+export async function storefrontRelated(
+  productId: number,
+  branchIdInput?: number,
+  limit = 8
+): Promise<StorefrontProduct[]> {
+  const db = getDb();
+  if (!db) return [];
+  const branchId = await resolveStorefrontBranchId(branchIdInput);
+  const cat = (await db.select({ categoryId: products.categoryId }).from(products).where(eq(products.id, productId)).limit(1))[0];
+  if (!cat || cat.categoryId == null) return [];
+  const cap = Math.min(Math.max(limit, 1), 20);
+  const rows = await safeSelect(db, branchId)
+    .where(and(sellable, eq(products.categoryId, Number(cat.categoryId)), ne(products.id, productId), gt(branchStock.quantity, 0)))
+    .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name))
+    .limit(cap * 3);
+  const seen = new Set<number>();
+  const items: StorefrontProduct[] = [];
+  for (const r of rows) {
+    const pid = Number(r.productId);
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    items.push(toStorefront(r));
+    if (items.length >= cap) break;
+  }
+  await applyStorefrontPromotions(items, branchId);
+  return items;
 }
 
 export interface StorefrontOffer {

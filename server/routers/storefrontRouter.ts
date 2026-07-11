@@ -11,7 +11,7 @@
  */
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
-import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct } from "../services/storefrontService";
+import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
 import { createOnlineOrder, trackOnlineOrder } from "../services/onlineOrderService";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
@@ -52,10 +52,15 @@ export const storefrontRouter = router({
       })
     ),
 
-  /** صفحة منتج واحد. */
+  /** صفحة منتج واحد (تشمل محتويات البكج إن كان بكجاً). */
   product: publicProcedure
     .input(z.object({ productId: z.number().int().positive(), branchId: z.number().int().positive().optional() }))
     .query(({ input }) => storefrontProduct(input.productId, input.branchId)),
+
+  /** منتجات ذات صلة (cross-sell «يُشترى معه») — نفس الفئة، متوفّرة. */
+  related: publicProcedure
+    .input(z.object({ productId: z.number().int().positive(), branchId: z.number().int().positive().optional() }))
+    .query(({ input }) => storefrontRelated(input.productId, input.branchId)),
 
   /**
    * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.

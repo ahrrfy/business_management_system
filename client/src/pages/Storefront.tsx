@@ -101,6 +101,7 @@ export default function Storefront() {
     { placeholderData: (prev) => prev }
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
+  const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
 
   const createOrder = trpc.storefront.createOrder.useMutation({
     onSuccess: (res) => {
@@ -423,6 +424,11 @@ export default function Storefront() {
                         −{pct}٪
                       </span>
                     )}
+                    {p.isBundle && (
+                      <span className="absolute left-2 top-2 flex items-center gap-1 rounded-full bg-emerald-600 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">
+                        <Package aria-hidden className="size-3" /> بكج
+                      </span>
+                    )}
                     {!p.inStock && (
                       <span className="absolute inset-x-0 bottom-0 bg-slate-900/70 py-1 text-center text-[11px] font-bold text-white">
                         غير متوفّر
@@ -526,6 +532,46 @@ export default function Storefront() {
                   <Plus aria-hidden className="size-4" />
                   {detailQ.data.inStock ? "أضف إلى السلة" : "غير متوفّر"}
                 </button>
+
+                {/* محتويات البكج */}
+                {detailQ.data.isBundle && detailQ.data.bundleItems && detailQ.data.bundleItems.length > 0 && (
+                  <div className="mt-4 rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+                    <p className="mb-1.5 flex items-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-400">
+                      <Package aria-hidden className="size-3.5" /> يحتوي البكج على:
+                    </p>
+                    <ul className="space-y-0.5 text-xs text-slate-700 dark:text-slate-300">
+                      {detailQ.data.bundleItems.map((bi, i) => (
+                        <li key={i} className="flex justify-between">
+                          <span>{bi.name}</span>
+                          <span className="tabular-nums text-slate-500">×{bi.quantity}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* قد يعجبك أيضاً (cross-sell) */}
+                {(relatedQ.data?.length ?? 0) > 0 && (
+                  <div className="mt-5">
+                    <h3 className="mb-2 text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
+                    <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                      {relatedQ.data!.map((rp) => (
+                        <div key={rp.productId} className="flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                          <button onClick={() => setSelectedId(rp.productId)} className="text-right">
+                            <ProductImage url={rp.imageUrl} alt={rp.productName} className="aspect-square w-full" />
+                          </button>
+                          <div className="flex flex-1 flex-col gap-1 p-2">
+                            <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
+                            <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
+                            <button onClick={() => addToCart(rp)} className="mt-0.5 flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600">
+                              <Plus aria-hidden className="size-3" /> أضف
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="py-8 text-center text-sm text-slate-400">تعذّر تحميل تفاصيل المنتج</p>
