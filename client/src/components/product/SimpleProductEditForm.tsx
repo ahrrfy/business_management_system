@@ -326,6 +326,13 @@ export default function SimpleProductEditForm({
                 : st === "dupInForm" ? "باركود مكرّر داخل النموذج."
                   : st === "invalid" ? "خانة تحقّق EAN-13 غير مطابقة — يُقبل مع ذلك (قد يكون كود Code128 داخليّاً)."
                     : st === "valid" ? "باركود EAN-13 صالح." : "";
+            // لون نصّ حالة الباركود المرئيّ (a11y): أحمر للحاصر، كهرماني للتحذير، أخضر للصالح.
+            const bcHelpColor =
+              st === "takenInDb" || st === "dupInForm"
+                ? "text-red-600 dark:text-red-400"
+                : st === "invalid"
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-emerald-600 dark:text-emerald-400";
             return (
               <div key={u.id} className="rounded-lg border bg-muted/20 p-3 space-y-2">
                 {/* هوية الوحدة: الاسم + المعامل + وحدة الأساس + الحذف — شبكة محاذاة واحدة */}
@@ -383,14 +390,22 @@ export default function SimpleProductEditForm({
                       title={bcTitle}
                       aria-label="باركود الوحدة"
                       aria-invalid={st === "takenInDb" || st === "dupInForm"}
+                      aria-describedby={bcTitle ? `simpleedit-bc-help-${u.id}` : undefined}
                     />
                     <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("621") })} title="توليد باركود EAN-13 صالح" />
                     <UnitBarcodeAliases variantId={variantId.current} unitName={u.name} />
                   </div>
-                  <MoneyInput className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
-                  <MoneyInput className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" />
-                  <MoneyInput className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.government} onChange={(v) => patchUnit(u.id, { government: v })} placeholder="حكومي" />
+                  <MoneyInput ariaLabel="سعر المفرد" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
+                  <MoneyInput ariaLabel="سعر الجملة" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" />
+                  <MoneyInput ariaLabel="سعر الحكومي" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.government} onChange={(v) => patchUnit(u.id, { government: v })} placeholder="حكومي" />
                 </div>
+
+                {/* حالة الباركود مرئيّة + مربوطة بـaria-describedby لقارئ الشاشة */}
+                {bcTitle && (
+                  <p id={`simpleedit-bc-help-${u.id}`} className={cn("text-[11px] ps-0.5", bcHelpColor)}>
+                    {bcTitle}
+                  </p>
+                )}
 
                 {/* سطر تلميح خفيف: تسمية أعمدة السعر + هامش المفرد */}
                 <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground ps-0.5">
