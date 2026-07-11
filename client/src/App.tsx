@@ -51,6 +51,7 @@ const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
 const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
+const Storefront = lazy(() => import("@/pages/Storefront"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
@@ -164,6 +165,8 @@ export default function App() {
       </Route>
       {/* جهاز الكشك الخارجي — بملء الشاشة بمصادقة جهاز (كوكي رمز للقراءة فقط)، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/kiosk" component={Kiosk} />
+      {/* متجر الزبون (B2C) — صفحة علنية بملء الشاشة، نقطة دخول تطبيق الجوال. بلا جلسة وبلا AppLayout. */}
+      <Route path="/store" component={Storefront} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}

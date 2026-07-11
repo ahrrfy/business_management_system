@@ -248,6 +248,20 @@ async function startServer() {
     })
   );
 
+  // حدّ على سطح المتجر العلني (storefront.*) — قراءة آمنة بلا مصادقة على الإنترنت ⇒ حماية من
+  // الكشط/الإغراق. سخيّ لأنه تصفّح (بطاقات + بحث + صفحة منتج) لكن مسقوف لكل IP.
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.STOREFRONT_RATE_LIMIT_MAX ?? 600),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("storefront."),
+      handler: rateLimitHandler("طلبات كثيرة على المتجر، انتظر قليلاً ثم أعد المحاولة."),
+    })
+  );
+
   // حماية CSRF (طبقة دفاع ثانية فوق sameSite:"strict").
   app.use("/api/trpc", csrfGuard);
 
