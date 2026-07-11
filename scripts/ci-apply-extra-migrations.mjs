@@ -44,6 +44,7 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0064_store_banners.sql",
   "drizzle/migrations/0065_store_settings.sql",
   "drizzle/migrations/0066_store_free_shipping.sql",
+  "drizzle/migrations/0067_online_order_delivery_party.sql",
 ];
 
 const url = process.env.DATABASE_URL;

@@ -2,16 +2,18 @@
  * OrderFulfillment — الجهة الإدارية لطلبات المتجر الإلكترونية (لوحة تنفيذ بنمط Kanban خفيف).
  *
  * الموظف: يرى الطلبات الواردة (وارد) ← يثبّتها ← يطبع ملصق الطلب على طابعة الملصقات (بضغطة،
- * صفر إدخال يدوي = منع الخطأ) ← يسلّمها للمندوب ← تُسلَّم. عزل الفرع خادمياً (storeReadProcedure).
- * بلا أثر مالي هنا (تحويل الطلب لفاتورة/إرسالية شريحة لاحقة).
+ * صفر إدخال يدوي = منع الخطأ) ← **يُرسلها لمندوب** (نقطة العرض = نقطة الفرض: هنا تُنشأ فاتورة COD
+ * حقيقية + يُخصم المخزون + قيد دفتر عبر orders.dispatch) ← تُسلَّم. عزل الفرع خادمياً.
+ * الإرسال مديريّ فقط (يُقرّ ائتمان COD المؤقّت للزبون النقدي) — يُخفى زرّه عن غير المدير.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, ClipboardList, Loader2, MessageCircle, Package, Printer, Store, Truck, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { buildOnlineOrderFollowupMessage, openWhatsApp } from "@/lib/whatsapp";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -28,11 +30,10 @@ const STATUS_META: Record<Status, { label: string; pill: string }> = {
   CANCELLED: { label: "ملغى", pill: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400" },
 };
 
-/** الخطوة الأمامية الطبيعية لكل حالة (زر «التالي»). */
+/** الخطوة الأمامية بتغيير حالة بحت (بلا أثر مالي). CONFIRMED/PROCESSING تُرسَل عبر منتقي المندوب
+ *  (orders.dispatch) الذي يُنشئ الفاتورة — فلا تُدرَج هنا. */
 const NEXT_STEP: Partial<Record<Status, { to: Status; label: string }>> = {
   PENDING: { to: "CONFIRMED", label: "تثبيت الطلب" },
-  CONFIRMED: { to: "SHIPPED", label: "تسليم للمندوب" },
-  PROCESSING: { to: "SHIPPED", label: "تسليم للمندوب" },
   SHIPPED: { to: "DELIVERED", label: "تم التسليم" },
 };
 
@@ -48,16 +49,34 @@ function money(v: string | number | null): string {
   return v == null || v === "" ? "0" : fmtInt(v);
 }
 
+type OrderRow = { id: number; orderNumber: string; total: string; customerName: string | null };
+
 export default function OrderFulfillment() {
   const [filter, setFilter] = useState<Status | null>(null);
   const [printingId, setPrintingId] = useState<number | null>(null);
+  const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
   const utils = trpc.useUtils();
+
+  const me = trpc.auth.me.useQuery();
+  // الإرسال مديريّ فقط — يعكس storeManagerProcedure خادمياً (admin يعبُر داخل moduleAccessAllowed).
+  const canDispatch =
+    !!me.data?.role &&
+    moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "store", "FULL", ["manager"]);
 
   const countsQ = trpc.storeAdmin.orders.counts.useQuery();
   const listQ = trpc.storeAdmin.orders.list.useQuery({ status: filter, limit: 200 });
   const setStatusM = trpc.storeAdmin.orders.setStatus.useMutation({
     onSuccess: (res) => {
       notify.ok(`تم تحديث الطلب إلى «${STATUS_META[res.to].label}»`);
+      void utils.storeAdmin.orders.list.invalidate();
+      void utils.storeAdmin.orders.counts.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const dispatchM = trpc.storeAdmin.orders.dispatch.useMutation({
+    onSuccess: (res) => {
+      notify.ok(`تم إنشاء الفاتورة ${res.invoiceNumber} وإسناد الطلب للمندوب`);
+      setDispatchTarget(null);
       void utils.storeAdmin.orders.list.invalidate();
       void utils.storeAdmin.orders.counts.invalidate();
     },
@@ -193,6 +212,16 @@ export default function OrderFulfillment() {
                             <MessageCircle aria-hidden className="size-3.5" /> واتساب
                           </button>
                         )}
+                        {canDispatch && (st === "CONFIRMED" || st === "PROCESSING") && (
+                          <button
+                            onClick={() => setDispatchTarget({ id: o.id, orderNumber: o.orderNumber, total: o.total, customerName: o.customerName })}
+                            disabled={isBusy || dispatchM.isPending}
+                            className="flex items-center gap-1 rounded-lg bg-teal-600 px-2.5 py-1.5 text-xs font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
+                          >
+                            <Truck aria-hidden className="size-3.5" />
+                            إرسال لمندوب
+                          </button>
+                        )}
                         {next && (
                           <button
                             onClick={() => advance(o.id, next.to, next.label)}
@@ -222,6 +251,121 @@ export default function OrderFulfillment() {
           </tbody>
         </table>
       </ScrollTableShell>
+
+      {dispatchTarget && (
+        <DispatchModal
+          order={dispatchTarget}
+          pending={dispatchM.isPending}
+          onCancel={() => !dispatchM.isPending && setDispatchTarget(null)}
+          onConfirm={(partyId) => dispatchM.mutate({ id: dispatchTarget.id, partyId })}
+        />
+      )}
+    </div>
+  );
+}
+
+/** منتقي المندوب عند الإرسال — يُنشئ الفاتورة (COD) + يُسند الطلب. z-[100] (فوق Radix، تحت confirm). */
+function DispatchModal({
+  order,
+  pending,
+  onCancel,
+  onConfirm,
+}: {
+  order: OrderRow;
+  pending: boolean;
+  onCancel: () => void;
+  onConfirm: (partyId: number) => void;
+}) {
+  const [partyId, setPartyId] = useState<number | null>(null);
+  const partiesQ = trpc.storeAdmin.orders.parties.useQuery();
+  const parties = partiesQ.data ?? [];
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !pending) onCancel();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, onCancel]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="إرسال الطلب لمندوب"
+      onClick={onCancel}
+    >
+      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2 text-base font-bold">
+          <Truck aria-hidden className="size-5 text-teal-600" />
+          إرسال الطلب <span dir="ltr" className="tracking-wider">{order.orderNumber}</span>
+        </div>
+        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+          سيُنشأ فاتورة بيع بقيمة <b className="text-foreground">{money(order.total)} د.ع</b> على ذمّة{" "}
+          {order.customerName ? <b className="text-foreground">{order.customerName}</b> : "الزبون"} (تُحصَّل عند
+          التسليم COD)، ويُخصم المخزون، ثم يُسند الطلب للمندوب المُختار.
+        </p>
+
+        {partiesQ.isLoading ? (
+          <div className="py-8 text-center text-muted-foreground">
+            <Loader2 aria-hidden className="mx-auto size-6 animate-spin" />
+          </div>
+        ) : parties.length === 0 ? (
+          <div className="rounded-lg bg-muted p-4 text-center text-sm text-muted-foreground">
+            لا يوجد مندوبون نشطون — أضِف مندوباً من إدارة التوصيل أولاً.
+          </div>
+        ) : (
+          <div className="max-h-64 space-y-2 overflow-y-auto">
+            {parties.map((p) => (
+              <label
+                key={p.id}
+                className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition ${
+                  partyId === p.id ? "border-teal-500 bg-teal-50 dark:bg-teal-500/10" : "border-border hover:bg-accent"
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="dispatch-party"
+                  className="size-4 accent-teal-600"
+                  checked={partyId === p.id}
+                  onChange={() => setPartyId(p.id)}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 text-sm font-bold">
+                    {p.name}
+                    <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                      {p.partyType === "COMPANY" ? "شركة توصيل" : "مندوب"}
+                    </span>
+                  </div>
+                  <div className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
+                    {p.phone && <span dir="ltr">{p.phone}</span>}
+                    {p.openConsignments > 0 && <span>قيد التوصيل: {p.openConsignments}</span>}
+                  </div>
+                </div>
+              </label>
+            ))}
+          </div>
+        )}
+
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={pending}
+            className="rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground transition hover:bg-accent disabled:opacity-50"
+          >
+            إلغاء
+          </button>
+          <button
+            onClick={() => partyId != null && onConfirm(partyId)}
+            disabled={pending || partyId == null || parties.length === 0}
+            className="flex items-center gap-1.5 rounded-lg bg-teal-600 px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:opacity-50"
+          >
+            {pending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}
+            تأكيد الإرسال
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

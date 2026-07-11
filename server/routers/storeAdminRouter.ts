@@ -14,6 +14,9 @@ import {
   onlineOrderStatusCounts,
   setOnlineOrderStatus,
 } from "../services/storeAdmin/orderFulfillmentService";
+import { dispatchOnlineOrder } from "../services/storeAdmin/dispatchOnlineOrder";
+import { listDeliveryParties } from "../services/deliveryService";
+import { isDupEntry } from "@shared/errorMap.ar";
 import {
   createBanner,
   deleteBanner,
@@ -58,6 +61,33 @@ const ordersRouter = router({
         entityId: input.id,
         oldValue: { status: res.from },
         newValue: { status: res.to },
+      });
+      return res;
+    }),
+
+  /** جهات التوصيل النشطة (لمنتقي الإسناد عند الإرسال). */
+  parties: storeReadProcedure.query(({ ctx }) => listDeliveryParties({ branchId: ctx.scopedBranchId, activeOnly: true })),
+
+  /** إرسال طلب مؤكَّد ⇒ فاتورة (خصم مخزون + قيد) + إسناد لجهة توصيل. مدير فقط: يُقرّ ائتمان COD
+   *  المؤقّت للعميل النقدي (managerOverrideByUserId يجب أن يكون مديراً مُتحقَّقاً — الكاشير محجوب). */
+  dispatch: storeManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), partyId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role };
+      const args = { onlineOrderId: input.id, partyId: input.partyId };
+      let res;
+      try {
+        res = await dispatchOnlineOrder(args, actor);
+      } catch (e) {
+        // سباق ترقيم الفاتورة (قيد فريد) ⇒ إعادة محاولة واحدة (createSale idempotent).
+        if (isDupEntry(e)) res = await dispatchOnlineOrder(args, actor);
+        else throw e;
+      }
+      await logAudit(ctx, {
+        action: "store.order.dispatch",
+        entityType: "onlineOrder",
+        entityId: input.id,
+        newValue: { invoiceId: res.invoiceId, partyId: input.partyId, total: res.total },
       });
       return res;
     }),

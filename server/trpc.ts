@@ -246,6 +246,8 @@ export const customersManagerProcedure = moduleProcedure(["manager"], "customers
 // وإدارة البنرات/الإعدادات (مديري). branchScopedProcedure للقراءة ⇒ عزل فرع لغير المرتفعين.
 export const storeReadProcedure = branchScopedProcedure.use(requireModule("store", "READ"));
 export const storeFulfillProcedure = moduleProcedure(["manager", "cashier", "sales_rep"], "store", "FULL");
+// الإرسال (فاتورة COD + خصم مخزون + إسناد مندوب) يستعمل storeManagerProcedure: المدير يُقرّ
+// ائتمان COD المؤقّت للزبون النقدي (managerOverrideByUserId يجب أن يكون مديراً مُتحقَّقاً).
 export const storeManagerProcedure = moduleProcedure(["manager"], "store", "FULL");
 // suppliers — القراءة بالخريطة وحدها (كالعملاء): قوالب warehouse/purchasing/auditor/user تعِد
 // بها وكان managerProcedure يصدّها. الكتابة: warehouse/purchasing قالباهما FULL.

@@ -1469,6 +1469,8 @@ export const onlineOrders = mysqlTable(
     latitude: decimal("latitude", { precision: 10, scale: 7 }),
     longitude: decimal("longitude", { precision: 10, scale: 7 }),
     clientRequestId: varchar("clientRequestId", { length: 80 }),
+    // جهة التوصيل المُسنَد إليها الطلب عند الإرسال (مندوب داخلي/شركة) — تغذّي شاشة المندوب (ش٥). هجرة 0067.
+    deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -1477,6 +1479,7 @@ export const onlineOrders = mysqlTable(
     customerIdx: index("idx_order_customer").on(table.customerId),
     statusIdx: index("idx_order_status").on(table.status),
     clientReqUq: unique("uq_online_order_client_req").on(table.clientRequestId),
+    deliveryPartyIdx: index("idx_order_delivery_party").on(table.deliveryPartyId),
   })
 );
 

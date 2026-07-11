@@ -470,6 +470,13 @@
       "when": 1783760002000,
       "tag": "0066_store_free_shipping",
       "breakpoints": true
+    },
+    {
+      "idx": 67,
+      "version": "5",
+      "when": 1783760003000,
+      "tag": "0067_online_order_delivery_party",
+      "breakpoints": true
     }
   ]
 }
