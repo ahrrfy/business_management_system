@@ -14,7 +14,7 @@ import {
   updateCategory,
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
-import { productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
+import { productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, publicProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
@@ -98,6 +98,10 @@ export const catalogRouter = router({
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
     .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
     .query(({ input, ctx }) => listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined })),
+
+  publicPosList: publicProcedure
+    .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional() }))
+    .query(({ input }) => listForPos(input.branchId, input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices })),
 
   // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
   // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
