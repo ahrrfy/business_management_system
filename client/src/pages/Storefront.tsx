@@ -94,6 +94,8 @@ export default function Storefront() {
 
   const categoriesQ = trpc.storefront.categories.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
+  const bannersQ = trpc.storefront.banners.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
+  const settingsQ = trpc.storefront.settings.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const catalogQ = trpc.storefront.catalog.useQuery(
     { categoryId, search: search || undefined, limit: 120 },
     { placeholderData: (prev) => prev }
@@ -111,6 +113,9 @@ export default function Storefront() {
   const items = catalogQ.data?.items ?? [];
   const cats = categoriesQ.data ?? [];
   const offers = offersQ.data ?? [];
+  const banners = bannersQ.data ?? [];
+  const announcement = settingsQ.data?.announcement ?? null;
+  const storeOpen = settingsQ.data?.isOpen ?? true;
   const activeCatName = useMemo(
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
@@ -158,6 +163,7 @@ export default function Storefront() {
   }
 
   function openCheckout() {
+    if (!storeOpen) return; // المتجر مغلق — الإشعار ظاهر أعلى الصفحة
     setClientRequestId(`sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
     setPanel("checkout");
   }
@@ -254,23 +260,71 @@ export default function Storefront() {
 
       {/* المحتوى */}
       <main className="mx-auto max-w-2xl px-4 py-4 pb-28">
+        {/* شريط إعلان الموظف */}
+        {announcement && (
+          <div className="mb-3 flex items-center gap-2 rounded-2xl bg-amber-100 px-4 py-2.5 text-sm font-bold text-amber-900 dark:bg-amber-500/15 dark:text-amber-300">
+            <BadgePercent aria-hidden className="size-4 shrink-0" />
+            <span>{announcement}</span>
+          </div>
+        )}
+        {/* المتجر مغلق مؤقتاً */}
+        {!storeOpen && (
+          <div className="mb-4 rounded-2xl bg-rose-100 px-4 py-3 text-center text-sm font-bold text-rose-700 dark:bg-rose-500/15 dark:text-rose-300">
+            المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً. تصفّح المنتجات وعُد لاحقاً.
+          </div>
+        )}
+
         {!search && categoryId == null && (
           <>
-            {/* الهيرو */}
-            <section className="relative mb-4 overflow-hidden rounded-3xl bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500 p-5 text-white shadow-lg shadow-emerald-600/20">
-              <Sparkles aria-hidden className="absolute -left-3 -top-3 size-24 opacity-15" />
-              <p className="text-xs font-bold text-emerald-50/90">أهلاً بك في</p>
-              <h2 className="mt-0.5 text-2xl font-extrabold leading-tight">{STORE_NAME}</h2>
-              <p className="mt-1.5 max-w-[85%] text-sm text-emerald-50/90">
-                كل ما تحتاجه من القرطاسية والطباعة والهدايا — اطلب الآن وادفع عند الاستلام.
-              </p>
-              {offers.length > 0 && (
-                <span className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold text-amber-950 shadow">
-                  <BadgePercent aria-hidden className="size-4" />
-                  عروض اليوم متاحة الآن
-                </span>
-              )}
-            </section>
+            {/* البنرات المُدارة (لوحة hPanel) — أو الهيرو الافتراضي إن لم توجد */}
+            {banners.length > 0 ? (
+              <section className="mb-4 flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {banners.map((b) => {
+                  const inner = (
+                    <>
+                      {b.imageUrl ? (
+                        <img src={b.imageUrl} alt={b.title} className="h-36 w-full object-cover" />
+                      ) : (
+                        <div className="flex h-36 w-full items-center justify-center bg-gradient-to-l from-emerald-600 to-teal-500" />
+                      )}
+                      <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
+                        <p className="text-base font-extrabold leading-tight">{b.title}</p>
+                        {b.subtitle && <p className="mt-0.5 text-xs text-white/90">{b.subtitle}</p>}
+                        {b.ctaLabel && (
+                          <span className="mt-2 inline-flex w-fit items-center gap-1 rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold text-amber-950">
+                            {b.ctaLabel}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  );
+                  return b.ctaUrl ? (
+                    <a key={b.id} href={b.ctaUrl} className="relative block min-w-[85%] shrink-0 overflow-hidden rounded-3xl shadow-md sm:min-w-[70%]">
+                      {inner}
+                    </a>
+                  ) : (
+                    <div key={b.id} className="relative min-w-[85%] shrink-0 overflow-hidden rounded-3xl shadow-md sm:min-w-[70%]">
+                      {inner}
+                    </div>
+                  );
+                })}
+              </section>
+            ) : (
+              <section className="relative mb-4 overflow-hidden rounded-3xl bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500 p-5 text-white shadow-lg shadow-emerald-600/20">
+                <Sparkles aria-hidden className="absolute -left-3 -top-3 size-24 opacity-15" />
+                <p className="text-xs font-bold text-emerald-50/90">أهلاً بك في</p>
+                <h2 className="mt-0.5 text-2xl font-extrabold leading-tight">{STORE_NAME}</h2>
+                <p className="mt-1.5 max-w-[85%] text-sm text-emerald-50/90">
+                  كل ما تحتاجه من القرطاسية والطباعة والهدايا — اطلب الآن وادفع عند الاستلام.
+                </p>
+                {offers.length > 0 && (
+                  <span className="mt-3 inline-flex items-center gap-1.5 rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold text-amber-950 shadow">
+                    <BadgePercent aria-hidden className="size-4" />
+                    عروض اليوم متاحة الآن
+                  </span>
+                )}
+              </section>
+            )}
 
             {/* شريط الثقة */}
             <section className="mb-4 grid grid-cols-3 gap-2">

@@ -449,6 +449,20 @@
       "when": 1783680000000,
       "tag": "0063_online_order_cod_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 64,
+      "version": "5",
+      "when": 1783760000000,
+      "tag": "0064_store_banners",
+      "breakpoints": true
+    },
+    {
+      "idx": 65,
+      "version": "5",
+      "when": 1783760001000,
+      "tag": "0065_store_settings",
+      "breakpoints": true
     }
   ]
 }

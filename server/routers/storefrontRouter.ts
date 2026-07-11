@@ -13,15 +13,25 @@ import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct } from "../services/storefrontService";
 import { createOnlineOrder, trackOnlineOrder } from "../services/onlineOrderService";
+import { listActiveBanners } from "../services/storeAdmin/bannerService";
+import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
 
 export const storefrontRouter = router({
   /** فئات المتجر (لأشرطة الفلترة). */
   categories: publicProcedure.query(() => storefrontCategories()),
 
-  /** العروض والخصومات الفعّالة اليوم (للبنرات الترويجية). */
+  /** العروض والخصومات الفعّالة اليوم (بنرات مشتقّة تلقائياً). */
   offers: publicProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(({ input }) => storefrontOffers(input?.branchId)),
+
+  /** البنرات الترويجية التي يديرها الموظف (لوحة hPanel) — فعّالة فقط. */
+  banners: publicProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(({ input }) => listActiveBanners(input?.branchId)),
+
+  /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
+  settings: publicProcedure.query(() => getStoreSettings()),
 
   /** كتالوج المتجر: فلترة فئة + بحث نصّي + سقف. يعيد التوفّر وسعر العرض. */
   catalog: publicProcedure

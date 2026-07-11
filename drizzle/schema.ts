@@ -1504,6 +1504,50 @@ export const onlineOrderItems = mysqlTable(
 export type OnlineOrderItem = typeof onlineOrderItems.$inferSelect;
 export type InsertOnlineOrderItem = typeof onlineOrderItems.$inferInsert;
 
+// ═══════════════════════ إدارة المتجر (لوحة hPanel): بنرات + إعدادات ═══════════════════════
+/**
+ * storeBanners — بنرات ترويجية **يديرها الموظف** من لوحة المتجر (عنوان/وصف/صورة/زرّ/ترتيب/نافذة
+ * تاريخ). مستقلّة عن بنرات «عروض اليوم» المشتقّة تلقائياً من promotions (تُعرَض بجانبها في المتجر).
+ * الصورة data-URL مضغوط في mediumtext (نمط productImages.url). branchId=null ⇒ كل الفروع.
+ */
+export const storeBanners = mysqlTable(
+  "storeBanners",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    title: varchar("title", { length: 255 }).notNull(),
+    subtitle: varchar("subtitle", { length: 500 }),
+    imageUrl: mediumtext("imageUrl"),
+    ctaLabel: varchar("ctaLabel", { length: 120 }),
+    ctaUrl: varchar("ctaUrl", { length: 500 }),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    effectiveFrom: date("effectiveFrom", { mode: "string" }),
+    effectiveTo: date("effectiveTo", { mode: "string" }),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    activeSortIdx: index("idx_banner_active_sort").on(t.isActive, t.sortOrder),
+    branchIdx: index("idx_banner_branch").on(t.branchId),
+  })
+);
+export type StoreBanner = typeof storeBanners.$inferSelect;
+export type InsertStoreBanner = typeof storeBanners.$inferInsert;
+
+/** إعدادات المتجر (صفّ مفرد، نمط taxSettings): فتح/إغلاق المتجر، شريط إعلان، رقم واتساب. */
+export const storeSettings = mysqlTable("storeSettings", {
+  id: int("id").autoincrement().primaryKey(),
+  isOpen: boolean("isOpen").default(true).notNull(),
+  announcement: varchar("announcement", { length: 500 }),
+  whatsappNumber: varchar("whatsappNumber", { length: 20 }),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type StoreSettings = typeof storeSettings.$inferSelect;
+export type InsertStoreSettings = typeof storeSettings.$inferInsert;
+
 /* ============================ الموارد البشرية ============================ */
 
 export const employees = mysqlTable(

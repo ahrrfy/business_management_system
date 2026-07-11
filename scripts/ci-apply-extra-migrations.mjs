@@ -40,6 +40,9 @@ const EXTRA_MIGRATIONS = [
   // ١١/٧/٢٦: حقول متجر الجوال B2C (COD) على onlineOrders — أعمدة عادية + UNIQUE على عمود
   // غير-FK؛ نُعيد تطبيقها idempotently (INFORMATION_SCHEMA) لضمان وجودها على CI بعد db:push.
   "drizzle/migrations/0063_online_order_cod_fields.sql",
+  // ١١/٧/٢٦: إدارة المتجر (لوحة hPanel) — جدولا storeBanners/storeSettings (بنرات + إعدادات).
+  "drizzle/migrations/0064_store_banners.sql",
+  "drizzle/migrations/0065_store_settings.sql",
 ];
 
 const url = process.env.DATABASE_URL;

@@ -149,6 +149,10 @@ async function startServer() {
     if (req.path.includes("vouchers.create")) {
       return express.json({ limit: "3mb" })(req, res, next);
     }
+    // بنرات المتجر تحمل صورة data-URL مضغوطة (نمط vouchers.create) ⇒ استثناء ٣mb لإنشائها/تعديلها.
+    if (req.path.includes("storeAdmin.banners")) {
+      return express.json({ limit: "3mb" })(req, res, next);
+    }
     // #9 (تدقيق التثبيت): system.restoreUpload يستقبل ملف نسخة احتياطية base64. الخدمة تقبل حتى
     // ٢٠٠MB مفكوكاً (maintenanceService.MAX_UPLOAD_BYTES) لكن هذا الوسيط كان يحبس عند ١MB ⇒ النسخ
     // الحقيقية لا تُستعاد أبداً. adminProcedure + كلمة مرور + رمز تأكيد ⇒ سطح DoS محدود بحساب مدير

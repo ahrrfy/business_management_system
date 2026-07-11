@@ -52,7 +52,7 @@ const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
 const Storefront = lazy(() => import("@/pages/Storefront"));
-const OrderFulfillment = lazy(() => import("@/pages/OrderFulfillment"));
+const StoreHub = lazy(() => import("@/pages/StoreHub"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
@@ -256,7 +256,7 @@ export default function App() {
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>
       {/* الجهة الإدارية للمتجر الإلكتروني: تثبيت الطلبات + طباعة الملصق (منفصل عن /store العلني). */}
-      <Route path="/store-admin"><Shell><RequireRole roles={["admin","manager","cashier","sales_rep","accountant","auditor"]} module="store" level="READ"><OrderFulfillment /></RequireRole></Shell></Route>
+      <Route path="/store-admin"><Shell><RequireRole roles={["admin","manager","cashier","sales_rep","accountant","auditor"]} module="store" level="READ"><StoreHub /></RequireRole></Shell></Route>
       <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
       <Route path="/reports"><Shell><ReportsHub /></Shell></Route>
       {/* مسارات التقارير: module="reports" ⇒ المنح الصريح للتقارير يفتحها لأي دور (مرآة

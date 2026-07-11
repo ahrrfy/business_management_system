@@ -30,6 +30,7 @@ import { extractInsertId } from "../lib/insertId";
 import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
 import { resolvePromotionForLine } from "./salesPromotionService";
 import { resolveStorefrontBranchId } from "./storefrontService";
+import { getStoreSettings } from "./storeAdmin/storeSettingsService";
 import { withTx } from "./tx";
 
 const RETAIL = "RETAIL" as const;
@@ -78,6 +79,9 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
   if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "رقم الهاتف مطلوب" });
   const address = input.addressText.trim();
   if (!address) throw new TRPCError({ code: "BAD_REQUEST", message: "العنوان مطلوب" });
+  // المتجر مغلق مؤقتاً (إعداد الموظف) ⇒ لا يُقبل طلب (إنفاذ خادمي فوق حجب الواجهة).
+  const storeSettings = await getStoreSettings();
+  if (!storeSettings.isOpen) throw new TRPCError({ code: "BAD_REQUEST", message: "المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً" });
   const branchId = await resolveStorefrontBranchId(input.branchId);
 
   return withTx(async (tx) => {
