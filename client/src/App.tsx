@@ -72,7 +72,6 @@ const EmployeeNew = lazy(() => import("@/pages/EmployeeNew"));
 const EmployeeDetail = lazy(() => import("@/pages/EmployeeDetail"));
 const JobApply = lazy(() => import("@/pages/JobApply"));
 const PlatformAdmin = lazy(() => import("@/pages/PlatformAdmin"));
-const BmsSuperApp = lazy(() => import("@/pages/BmsSuperApp").then(m => ({ default: m.BmsSuperApp })));
 const UserNew = lazy(() => import("@/pages/UserNew"));
 const UserEdit = lazy(() => import("@/pages/UserEdit"));
 const RoleEdit = lazy(() => import("@/pages/RoleEdit"));
@@ -170,8 +169,6 @@ export default function App() {
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
       <Route path="/platform-admin" component={PlatformAdmin} />
-      {/* تطبيق متجر سوق الرفاهية ولوحة المبيعات (BMS Super App) */}
-      <Route path="/superapp" component={BmsSuperApp} />
       <Route path="/"><Shell><Dashboard /></Shell></Route>
       {/* أُدمجت في وحدة المخزون (InventoryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>

@@ -70,7 +70,6 @@ const EXCLUDED_PATHS = [
   /[\/\\]lib[\/\\]intlPhone\.ts$/,
   /[\/\\]lib[\/\\]import\.ts$/,
   /[\/\\]lib[\/\\]whatsapp\.ts$/,
-  /[\/\\]pages[\/\\]BmsSuperApp\.tsx$/,
 ];
 
 function isExcluded(file) {

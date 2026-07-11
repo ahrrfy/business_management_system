@@ -14,7 +14,6 @@ import {
   index,
   unique,
   primaryKey,
-  foreignKey,
 } from "drizzle-orm/mysql-core";
 
 /**
@@ -531,24 +530,14 @@ export const invoiceItemBundleComponents = mysqlTable(
   "invoiceItemBundleComponents",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
-    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull(),
-    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull(),
+    invoiceItemId: bigint("invoiceItemId", { mode: "number" }).notNull().references(() => invoiceItems.id, { onDelete: "cascade" }),
+    componentVariantId: bigint("componentVariantId", { mode: "number" }).notNull().references(() => productVariants.id, { onDelete: "restrict" }),
     componentBaseQuantity: int("componentBaseQuantity").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
     itemIdx: index("idx_iibc_item").on(table.invoiceItemId),
     componentIdx: index("idx_iibc_component").on(table.componentVariantId),
-    invoiceItemFk: foreignKey({
-      name: "fk_iibc_item_id",
-      columns: [table.invoiceItemId],
-      foreignColumns: [invoiceItems.id]
-    }).onDelete("cascade"),
-    componentVariantFk: foreignKey({
-      name: "fk_iibc_comp_var_id",
-      columns: [table.componentVariantId],
-      foreignColumns: [productVariants.id]
-    }).onDelete("restrict"),
   })
 );
 

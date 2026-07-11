@@ -18,7 +18,7 @@ import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { verifyPassword } from "../auth/password";
 import { logAudit } from "../services/auditService";
 import { createSale, processPayment } from "../services/saleService";
-import { canSeeCostForUser, publicProcedure, router, salesCashierProcedure, salesReadProcedure } from "../trpc";
+import { canSeeCostForUser, router, salesCashierProcedure, salesReadProcedure } from "../trpc";
 import { invoiceBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
@@ -266,40 +266,6 @@ export const saleRouter = router({
             "sale.create فشل بخطأ غير متوقّع (السبب الجذري أدناه)"
           );
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر إتمام البيع" });
-        }
-      }
-      throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
-    }),
-
-  createPublic: publicProcedure
-    .input(
-      z.object({
-        branchId: z.number().int().positive(),
-        lines: z.array(lineSchema).min(1),
-        notes: z.string().optional(),
-        payment: z.object({ amount: positiveMoneyString, method }).optional(),
-      })
-    )
-    .mutation(async ({ input }) => {
-      const actor = { userId: 1, branchId: input.branchId, role: "admin" as const };
-      const effectiveInput = {
-        branchId: input.branchId,
-        sourceType: "ONLINE" as const,
-        priceTier: "RETAIL" as const,
-        lines: input.lines,
-        notes: input.notes,
-        payment: input.payment,
-        creditApproved: false,
-        priceOverrideApproved: false,
-      };
-      for (let attempt = 0; attempt < 3; attempt++) {
-        try {
-          const res = await createSale(effectiveInput, actor);
-          return res;
-        } catch (e: any) {
-          if (isDupEntry(e) && attempt < 2) continue;
-          logger.error(e, "Public order creation failed");
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذر إرسال الطلب، يرجى المحاولة لاحقاً" });
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر توليد رقم فاتورة فريد" });
