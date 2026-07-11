@@ -22,6 +22,7 @@ import {
   Search,
   ShoppingCart,
   Store,
+  Tag,
   Trash2,
   Truck,
   User,
@@ -85,6 +86,7 @@ export default function Storefront() {
   }, [rawSearch]);
 
   const categoriesQ = trpc.storefront.categories.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
+  const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const catalogQ = trpc.storefront.catalog.useQuery(
     { categoryId, search: search || undefined, limit: 120 },
     { placeholderData: (prev) => prev }
@@ -101,6 +103,7 @@ export default function Storefront() {
 
   const items = catalogQ.data?.items ?? [];
   const cats = categoriesQ.data ?? [];
+  const offers = offersQ.data ?? [];
   const activeCatName = useMemo(
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
@@ -112,8 +115,12 @@ export default function Storefront() {
   const deliveryFee = deliveryFeeFor(form.governorate);
   const cartTotal = cartSubtotal + deliveryFee;
 
-  function addToCart(p: { productUnitId: number; productId: number; productName: string; price: string | null; imageUrl: string | null; unitName: string }) {
-    if (p.price == null) return;
+  function addToCart(p: {
+    productUnitId: number; productId: number; productName: string; price: string | null;
+    salePrice?: string | null; imageUrl: string | null; unitName: string; inStock?: boolean;
+  }) {
+    const eff = p.salePrice ?? p.price; // نستعمل سعر العرض إن وُجد
+    if (eff == null || p.inStock === false) return;
     setCart((prev) => {
       const next = new Map(prev);
       const existing = next.get(p.productUnitId);
@@ -121,13 +128,17 @@ export default function Storefront() {
         productUnitId: p.productUnitId,
         productId: p.productId,
         name: p.productName,
-        price: p.price!,
+        price: eff,
         imageUrl: p.imageUrl,
         unitName: p.unitName,
         qty: (existing?.qty ?? 0) + 1,
       });
       return next;
     });
+  }
+
+  function offerLabel(o: { type: "PERCENT" | "AMOUNT"; discountPercent: string; discountAmount: string }): string {
+    return o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`;
   }
   function setQty(productUnitId: number, qty: number) {
     setCart((prev) => {
@@ -152,7 +163,6 @@ export default function Storefront() {
     const address = form.address.trim();
     if (!name || phone.replace(/\D/g, "").length < 8 || address.length < 3 || cartLines.length === 0) return;
     createOrder.mutate({
-      branchId: 1,
       customerName: name,
       customerPhone: phone,
       governorate: form.governorate,
@@ -245,6 +255,26 @@ export default function Storefront() {
 
       {/* المحتوى */}
       <main className="mx-auto max-w-2xl px-4 py-4 pb-24">
+        {/* بنرات العروض الترويجية (من عروض النظام الفعّالة اليوم) */}
+        {offers.length > 0 && !search && categoryId == null && (
+          <div className="mb-4 flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {offers.map((o) => (
+              <div
+                key={o.id}
+                className="flex min-w-[240px] max-w-[280px] shrink-0 items-center gap-3 rounded-2xl bg-gradient-to-l from-primary to-primary/70 p-4 text-primary-foreground shadow-md"
+              >
+                <div className="flex size-11 shrink-0 items-center justify-center rounded-xl bg-white/20">
+                  <Tag aria-hidden className="size-5" />
+                </div>
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-bold leading-tight">{o.name}</p>
+                  <p className="mt-0.5 text-xs font-extrabold">{offerLabel(o)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
         {(activeCatName || search) && (
           <p className="mb-3 text-sm text-muted-foreground">
             {search ? <>نتائج «{search}»</> : <>فئة «{activeCatName}»</>}
@@ -276,27 +306,45 @@ export default function Storefront() {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-            {items.map((p) => (
-              <div key={p.productId} className="flex flex-col overflow-hidden rounded-2xl border border-border bg-card">
-                <button onClick={() => setSelectedId(p.productId)} className="text-right">
-                  <ProductImage url={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
-                </button>
-                <div className="flex flex-1 flex-col gap-1 p-2.5">
-                  {p.brand && <span className="truncate text-[10px] text-muted-foreground">{p.brand}</span>}
-                  <button onClick={() => setSelectedId(p.productId)} className="text-right">
-                    <span className="line-clamp-2 min-h-[2.4em] text-xs font-semibold leading-tight">{p.productName}</span>
+            {items.map((p) => {
+              const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
+              const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
+              return (
+                <div key={p.productId} className={`flex flex-col overflow-hidden rounded-2xl border border-border bg-card ${!p.inStock ? "opacity-70" : ""}`}>
+                  <button onClick={() => setSelectedId(p.productId)} className="relative block text-right">
+                    <ProductImage url={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
+                    {onSale && pct > 0 && (
+                      <span className="absolute right-2 top-2 rounded-full bg-destructive px-2 py-0.5 text-[11px] font-bold text-destructive-foreground">
+                        −{pct}٪
+                      </span>
+                    )}
+                    {!p.inStock && (
+                      <span className="absolute inset-x-0 bottom-0 bg-black/60 py-1 text-center text-[11px] font-bold text-white">
+                        غير متوفّر
+                      </span>
+                    )}
                   </button>
-                  <span className="text-sm font-bold text-primary">{priceLabel(p.price)}</span>
-                  <button
-                    onClick={() => addToCart(p)}
-                    className="mt-1 flex items-center justify-center gap-1 rounded-lg bg-primary py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90"
-                  >
-                    <Plus aria-hidden className="size-3.5" />
-                    أضف للسلة
-                  </button>
+                  <div className="flex flex-1 flex-col gap-1 p-2.5">
+                    {p.brand && <span className="truncate text-[10px] text-muted-foreground">{p.brand}</span>}
+                    <button onClick={() => setSelectedId(p.productId)} className="text-right">
+                      <span className="line-clamp-2 min-h-[2.4em] text-xs font-semibold leading-tight">{p.productName}</span>
+                    </button>
+                    <div className="flex items-baseline gap-2">
+                      <span className="text-sm font-bold text-primary">{priceLabel(p.salePrice ?? p.price)}</span>
+                      {onSale && <span className="text-[11px] text-muted-foreground line-through">{money(p.price)}</span>}
+                    </div>
+                    <button
+                      onClick={() => addToCart(p)}
+                      disabled={!p.inStock}
+                      className="mt-1 flex items-center justify-center gap-1 rounded-lg bg-primary py-1.5 text-xs font-semibold text-primary-foreground transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <Plus aria-hidden className="size-3.5" />
+                      {p.inStock ? "أضف للسلة" : "غير متوفّر"}
+                    </button>
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </main>
@@ -342,7 +390,20 @@ export default function Storefront() {
                     <h3 className="text-base font-bold leading-snug">{detailQ.data.productName}</h3>
                     {detailQ.data.category && <p className="mt-1 text-xs text-muted-foreground">الفئة: {detailQ.data.category}</p>}
                     <p className="mt-0.5 text-xs text-muted-foreground">الوحدة: {detailQ.data.unitName}</p>
-                    <p className="mt-3 text-xl font-extrabold text-primary">{priceLabel(detailQ.data.price)}</p>
+                    <div className="mt-3 flex items-baseline gap-2">
+                      <p className="text-xl font-extrabold text-primary">{priceLabel(detailQ.data.salePrice ?? detailQ.data.price)}</p>
+                      {detailQ.data.salePrice != null && detailQ.data.price != null && Number(detailQ.data.salePrice) < Number(detailQ.data.price) && (
+                        <span className="text-sm text-muted-foreground line-through">{money(detailQ.data.price)}</span>
+                      )}
+                    </div>
+                    {detailQ.data.promotionName && (
+                      <span className="mt-1 inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                        <Tag aria-hidden className="size-3" /> {detailQ.data.promotionName}
+                      </span>
+                    )}
+                    <p className={`mt-2 text-xs font-semibold ${detailQ.data.inStock ? "text-emerald-600 dark:text-emerald-400" : "text-destructive"}`}>
+                      {detailQ.data.inStock ? "متوفّر" : "غير متوفّر حالياً"}
+                    </p>
                   </div>
                 </div>
                 <button
@@ -350,11 +411,11 @@ export default function Storefront() {
                     if (detailQ.data) addToCart(detailQ.data);
                     setSelectedId(null);
                   }}
-                  disabled={detailQ.data.price == null}
+                  disabled={!detailQ.data.inStock || detailQ.data.price == null}
                   className="mt-4 flex w-full items-center justify-center gap-2 rounded-xl bg-primary py-3 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50"
                 >
                   <Plus aria-hidden className="size-4" />
-                  أضف إلى السلة
+                  {detailQ.data.inStock ? "أضف إلى السلة" : "غير متوفّر"}
                 </button>
               </div>
             ) : (

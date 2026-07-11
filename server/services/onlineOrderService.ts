@@ -15,6 +15,7 @@ import { TRPCError } from "@trpc/server";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import {
+  branchStock,
   customers,
   onlineOrderItems,
   onlineOrders,
@@ -27,9 +28,16 @@ import { deliveryFeeFor, governorateById } from "@shared/governorates";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
+import { resolvePromotionForLine } from "./salesPromotionService";
+import { resolveStorefrontBranchId } from "./storefrontService";
 import { withTx } from "./tx";
 
 const RETAIL = "RETAIL" as const;
+
+/** حبيبة اليوم المحلي (بغداد UTC+3) YYYY-MM-DD — لتطابق نافذة العروض مع العرض في الكتالوج. */
+function todayYmdBaghdad(): string {
+  return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
 
 export interface OnlineOrderLineInput {
   productUnitId: number;
@@ -37,7 +45,7 @@ export interface OnlineOrderLineInput {
 }
 
 export interface CreateOnlineOrderInput {
-  branchId: number;
+  branchId?: number | null;
   customerName: string;
   customerPhone: string;
   governorate: string;
@@ -70,6 +78,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
   if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "رقم الهاتف مطلوب" });
   const address = input.addressText.trim();
   if (!address) throw new TRPCError({ code: "BAD_REQUEST", message: "العنوان مطلوب" });
+  const branchId = await resolveStorefrontBranchId(input.branchId);
 
   return withTx(async (tx) => {
     // ① idempotency: أعِد الطلب نفسه إن تكرّر المفتاح (بلا إنشاء ثانٍ).
@@ -113,6 +122,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
       unitPrice: string;
       lineTotal: string;
     }[] = [];
+    const todayYmd = todayYmdBaghdad();
     for (const line of input.lines) {
       const qty = Math.floor(line.quantity);
       if (!Number.isFinite(qty) || qty <= 0) {
@@ -121,6 +131,9 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
       const row = (
         await tx
           .select({
+            productId: products.id,
+            productName: products.name,
+            categoryId: products.categoryId,
             productUnitId: productUnits.id,
             variantId: productVariants.id,
             conversionFactor: productUnits.conversionFactor,
@@ -129,6 +142,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
             productActive: products.isActive,
             isService: products.isService,
             price: productPrices.price,
+            stockQty: branchStock.quantity,
           })
           .from(productUnits)
           .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -136,6 +150,10 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
           .leftJoin(
             productPrices,
             and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL))
+          )
+          .leftJoin(
+            branchStock,
+            and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId))
           )
           .where(eq(productUnits.id, line.productUnitId))
           .limit(1)
@@ -150,7 +168,25 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
       ) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "أحد المنتجات لم يعُد متاحاً — حدّث السلة" });
       }
-      const unitPrice = round2(row.price); // سعر المفرد الخادمي (لا من العميل)
+      // مزامنة المخزون: لا يُطلَب صنفٌ غير متوفّر (يُخصَم المخزون فعلياً عند الإرسال — شريحة ٤).
+      if (Number(row.stockQty ?? 0) <= 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `«${row.productName}» غير متوفّر حالياً` });
+      }
+      // العرض خادمياً (نفس محرّك الكتالوج/POS) ⇒ السعر المدفوع = السعر المعروض.
+      const retail = round2(row.price);
+      const promo = await resolvePromotionForLine(tx, {
+        branchId,
+        customerTier: RETAIL,
+        productId: Number(row.productId),
+        variantId: Number(row.variantId),
+        categoryId: row.categoryId != null ? Number(row.categoryId) : null,
+        unitPrice: retail.toFixed(2),
+        lineAmount: retail.toFixed(2),
+        hasContractPrice: false,
+        todayYmd,
+      });
+      const discount = promo ? money(promo.discountForUnit) : money(0);
+      const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
       const lineTotal = round2(unitPrice.times(qty));
       const baseQuantity = Number(money(qty).times(row.conversionFactor ?? 1).toFixed(0));
       items.push({
@@ -194,7 +230,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     const insOrder = await tx.insert(onlineOrders).values({
       orderNumber: `TMP-${randomUUID()}`,
       customerId,
-      branchId: input.branchId,
+      branchId,
       subtotal: toDbMoney(subtotal),
       shippingCost: toDbMoney(deliveryFee),
       taxAmount: "0",

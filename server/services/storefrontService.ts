@@ -1,34 +1,72 @@
 /**
  * storefrontService — كتالوج آمن **علني** (بلا مصادقة) لمتجر الزبون على الجوال (B2C).
  *
- * ⚠️ أمن مالي حاكم (نفس مبدأ kioskService): هذه الدوال تُغذّي شاشةً يراها **الزبون على
- * الإنترنت**، فلا تُعيد أبداً التكلفة (costPrice) ولا كمية المخزون ولا أسعار الجملة/الحكومي —
- * فقط الحقول التسويقية الآمنة: اسم المنتج، الماركة، الفئة، **سعر المفرد (RETAIL)**، اسم
- * الوحدة، والصورة الرئيسية. كل نقاط هذا السطح **محدودة المعدّل** على مستوى المسار في
- * server/index.ts (سطح علني قابل للكشط/الإغراق) — عكس نقطة Antigravity العارية التي حُذفت.
+ * ⚠️ أمن مالي حاكم (نظير kioskService): بيانات يراها الزبون على الإنترنت ⇒ لا تُعيد أبداً
+ * التكلفة ولا **كمية** المخزون ولا أسعار الجملة/الحكومي — فقط الحقول التسويقية الآمنة +
+ * **توفّر** (inStock: نعم/لا، لا الكمية) + **سعر العرض** بعد الخصم إن وُجد.
  *
- * الكتالوج مشترك بين الفروع في هذا النشاط (كما في kioskBanner)، فلا يُقيَّد بفرع.
- * يُعرَض المنتج بوحدة الأساس التي لها سعر مفرد صريح، وبطاقةٌ واحدة لكل منتج.
+ * 🔗 مزامنة حقيقية مع النظام (لا بيانات منفصلة): يقرأ نفس جداول `products/productPrices/branchStock`
+ * ويطبّق **نفس محرّك العروض** (`resolvePromotionForLine`) المستعمل في نقطة البيع — فالسعر المعروض
+ * = السعر المفروض (نقطة العرض = نقطة الفرض)، وطلب الزبون يُعاد تسعيره بنفس المحرّك خادمياً.
  */
-import { and, asc, desc, eq, like, or, sql } from "drizzle-orm";
-import { categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
+import { and, asc, desc, eq, gt, isNull, like, or, sql } from "drizzle-orm";
+import {
+  branchStock,
+  branches,
+  categories,
+  productImages,
+  productPrices,
+  productUnits,
+  productVariants,
+  products,
+  promotions,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
+import { withTx } from "./tx";
+import { money, toDbMoney } from "./money";
+import { getProductCategoryIds, resolvePromotionForLine } from "./salesPromotionService";
 
 const RETAIL = "RETAIL" as const;
+
+/** حبيبة اليوم المحلي (بغداد UTC+3) YYYY-MM-DD — نظير pos.ts (لتطابق نافذة العروض). */
+function todayYmdBaghdad(): string {
+  const baghdad = new Date(Date.now() + 3 * 60 * 60 * 1000);
+  return baghdad.toISOString().slice(0, 10);
+}
+
+/**
+ * فرع تسليم المتجر الافتراضي = الفرع الرئيسي (MAIN) — يُحلّ ديناميكياً لا يُثبَّت بـ1 (معرّفات
+ * الفروع تختلف بين البيئات). لا كاش (احترام عزل الشركات في تعدّد الشركات). explicit يفوز.
+ */
+export async function resolveStorefrontBranchId(explicit?: number | null): Promise<number> {
+  if (explicit != null && explicit > 0) return explicit;
+  const db = getDb();
+  if (!db) return 1;
+  const byCode = (await db.select({ id: branches.id }).from(branches).where(eq(branches.code, "MAIN")).limit(1))[0];
+  if (byCode) return Number(byCode.id);
+  const first = (await db.select({ id: branches.id }).from(branches).orderBy(asc(branches.id)).limit(1))[0];
+  return first ? Number(first.id) : 1;
+}
 
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون ولا أسعار جملة/حكومي. */
 export interface StorefrontProduct {
   productId: number;
   /** مُعرّف وحدة الأساس — يحتاجه سطر الطلب (createOrder). مُعرّف فقط، لا حقل حسّاس. */
   productUnitId: number;
+  variantId: number;
   productName: string;
   brand: string | null;
   category: string | null;
   categoryId: number | null;
   unitName: string;
-  /** سعر هذه الوحدة بفئة المفرد (RETAIL)؛ null نظرياً لكنه مُستبعَد بالشرط. */
+  /** سعر المفرد الأصلي (RETAIL). */
   price: string | null;
-  /** صورة المنتج الرئيسية (data URL أو رابط)؛ null ⇒ خانة بديلة في الواجهة. */
+  /** سعر العرض بعد الخصم (null = لا عرض ⇒ يُستعمل price). */
+  salePrice: string | null;
+  /** اسم العرض المطبَّق (للشارة) — null لا عرض. */
+  promotionName: string | null;
+  /** متوفّر في المخزون (الكمية > 0 بالفرع) — نعم/لا فقط، لا نكشف الكمية. */
+  inStock: boolean;
   imageUrl: string | null;
 }
 
@@ -38,7 +76,6 @@ export interface StorefrontCategory {
   productCount: number;
 }
 
-/** شرط «قابل للاقتناء والعرض للزبون»: منتج فعّال غير خدمي، بوحدة أساس فعّالة ولها سعر مفرد. */
 const sellable = and(
   eq(products.isActive, true),
   eq(products.isService, false),
@@ -48,12 +85,13 @@ const sellable = and(
   sql`${productPrices.price} is not null`
 );
 
-/** SELECT موحّد بالحقول الآمنة فقط — يُغذّي الكتالوج وصفحة المنتج معاً. */
-function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
+/** SELECT موحّد بالحقول الآمنة + كمية الفرع (داخلياً لحساب inStock فقط، لا تُصدَّر). */
+function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number) {
   return db
     .select({
       productId: products.id,
       productUnitId: productUnits.id,
+      variantId: productVariants.id,
       productName: products.name,
       brand: products.brand,
       category: categories.name,
@@ -61,44 +99,99 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
       unitName: productUnits.unitName,
       price: productPrices.price,
       imageUrl: productImages.url,
+      stockQty: branchStock.quantity, // داخلي فقط ⇒ inStock
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
     .innerJoin(products, eq(productVariants.productId, products.id))
     .leftJoin(categories, eq(products.categoryId, categories.id))
     .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
+    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
 }
 
 function toStorefront(r: {
-  productId: number; productUnitId: number; productName: string; brand: string | null; category: string | null;
-  categoryId: number | null; unitName: string; price: string | null; imageUrl: string | null;
+  productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
+  category: string | null; categoryId: number | null; unitName: string; price: string | null;
+  imageUrl: string | null; stockQty: number | null;
 }): StorefrontProduct {
   return {
     productId: Number(r.productId),
     productUnitId: Number(r.productUnitId),
+    variantId: Number(r.variantId),
     productName: r.productName,
     brand: r.brand ?? null,
     category: r.category ?? null,
     categoryId: r.categoryId != null ? Number(r.categoryId) : null,
     unitName: r.unitName,
     price: r.price ?? null,
+    salePrice: null,
+    promotionName: null,
+    inStock: Number(r.stockQty ?? 0) > 0,
     imageUrl: r.imageUrl ?? null,
   };
 }
 
 /**
- * كتالوج المتجر: منتجات قابلة للاقتناء (بطاقة لكل منتج) مع فلترة فئة وبحث نصّي اختياريين.
- * ترتيب: ذوات الصور أولاً ثم أبجدياً (نفس منطق البنر). لا صفحات keyset بعد — سقفٌ معقول
- * يستوعب كتالوج مكتبة نموذجياً؛ يُرقَّى لاحقاً (شريحة تالية) عند الحاجة.
+ * يطبّق العروض على قائمة منتجات (نفس محرّك POS ⇒ العرض = الفرض). حارس أداء: إن لا عرض
+ * فعّال اليوم ⇒ يعود بلا مسح لكل منتج (استعلام واحد رخيص). وإلّا يحلّ العرض الأنسب لكلٍّ.
  */
+async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: number): Promise<void> {
+  const eligible = list.filter((p) => p.price != null);
+  if (!eligible.length) return;
+  const db = getDb();
+  if (!db) return;
+  const todayYmd = todayYmdBaghdad();
+  // حارس: هل يوجد أيّ عرض فعّال اليوم على هذا الفرع/فئة المفرد؟ (لا ⇒ تخطّي كامل.)
+  const anyActive = await db
+    .select({ id: promotions.id })
+    .from(promotions)
+    .where(
+      and(
+        eq(promotions.isActive, true),
+        sql`${promotions.effectiveFrom} <= DATE(${todayYmd})`,
+        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${todayYmd})`)!,
+        or(isNull(promotions.branchId), eq(promotions.branchId, branchId))!,
+        or(isNull(promotions.customerTier), eq(promotions.customerTier, RETAIL))!
+      )
+    )
+    .limit(1);
+  if (!anyActive.length) return;
+
+  await withTx(async (tx) => {
+    const catByProduct = await getProductCategoryIds(tx, Array.from(new Set(eligible.map((p) => p.productId))));
+    for (const p of eligible) {
+      const price = money(p.price!);
+      const res = await resolvePromotionForLine(tx, {
+        branchId,
+        customerTier: RETAIL,
+        productId: p.productId,
+        variantId: p.variantId,
+        categoryId: catByProduct.get(p.productId) ?? p.categoryId ?? null,
+        unitPrice: price.toFixed(2),
+        lineAmount: price.toFixed(2),
+        hasContractPrice: false,
+        todayYmd,
+      });
+      if (res) {
+        const eff = price.minus(money(res.discountForUnit));
+        p.salePrice = toDbMoney(eff.lt(0) ? money(0) : eff);
+        p.promotionName = res.promotionName;
+      }
+    }
+  });
+}
+
+/** كتالوج المتجر: منتجات قابلة للاقتناء (بطاقة لكل منتج) + توفّر + سعر عرض. المتوفّر أولاً. */
 export async function storefrontCatalog(opts: {
+  branchId?: number;
   categoryId?: number | null;
   search?: string | null;
   limit?: number;
 }): Promise<{ items: StorefrontProduct[] }> {
   const db = getDb();
   if (!db) return { items: [] };
+  const branchId = await resolveStorefrontBranchId(opts.branchId);
   const cap = Math.min(Math.max(opts.limit ?? 60, 1), 120);
   const conds = [sellable];
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
@@ -108,10 +201,9 @@ export async function storefrontCatalog(opts: {
     const searchCond = or(like(products.name, p), like(products.brand, p), like(productUnits.barcode, p));
     if (searchCond) conds.push(searchCond);
   }
-  // فائض ×٣ لاستيعاب إزالة تكرار المتغيّرات (منتج بعدّة متغيّرات لكلٍّ وحدة أساس).
-  const rows = await safeSelect(db)
+  const rows = await safeSelect(db, branchId)
     .where(and(...conds))
-    .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name))
+    .orderBy(desc(sql`${branchStock.quantity} > 0`), desc(sql`${productImages.url} is not null`), asc(products.name))
     .limit(cap * 3);
 
   const seen = new Set<number>();
@@ -123,10 +215,11 @@ export async function storefrontCatalog(opts: {
     items.push(toStorefront(r));
     if (items.length >= cap) break;
   }
+  await applyStorefrontPromotions(items, branchId);
   return { items };
 }
 
-/** فئات المتجر: الفئات التي فيها منتج واحد على الأقل قابل للاقتناء (لأشرطة الفلترة). */
+/** فئات المتجر: الفئات التي فيها منتج واحد على الأقل قابل للاقتناء. */
 export async function storefrontCategories(): Promise<StorefrontCategory[]> {
   const db = getDb();
   if (!db) return [];
@@ -150,12 +243,63 @@ export async function storefrontCategories(): Promise<StorefrontCategory[]> {
   return rows.map((r) => ({ id: Number(r.id), name: r.name, productCount: Number(r.productCount) }));
 }
 
-/** صفحة منتج واحد (تفاصيل آمنة). null إن لم يُعثر عليه أو ليس قابلاً للاقتناء. */
-export async function storefrontProduct(productId: number): Promise<StorefrontProduct | null> {
+/** صفحة منتج واحد (تفاصيل آمنة + توفّر + سعر عرض). */
+export async function storefrontProduct(productId: number, branchIdInput?: number): Promise<StorefrontProduct | null> {
   const db = getDb();
   if (!db) return null;
-  const rows = await safeSelect(db)
+  const branchId = await resolveStorefrontBranchId(branchIdInput);
+  const rows = await safeSelect(db, branchId)
     .where(and(sellable, eq(products.id, productId)))
     .limit(1);
-  return rows.length ? toStorefront(rows[0]) : null;
+  if (!rows.length) return null;
+  const item = toStorefront(rows[0]);
+  await applyStorefrontPromotions([item], branchId);
+  return item;
+}
+
+export interface StorefrontOffer {
+  id: number;
+  name: string;
+  type: "PERCENT" | "AMOUNT";
+  discountPercent: string;
+  discountAmount: string;
+  scope: "ALL" | "CATEGORIES" | "PRODUCTS";
+}
+
+/** العروض الفعّالة اليوم (للبنرات) — نفس نافذة resolvePromotionForLine. */
+export async function storefrontOffers(branchIdInput?: number): Promise<StorefrontOffer[]> {
+  const db = getDb();
+  if (!db) return [];
+  const branchId = await resolveStorefrontBranchId(branchIdInput);
+  const todayYmd = todayYmdBaghdad();
+  const rows = await db
+    .select({
+      id: promotions.id,
+      name: promotions.name,
+      type: promotions.type,
+      discountPercent: promotions.discountPercent,
+      discountAmount: promotions.discountAmount,
+      scope: promotions.scope,
+      priority: promotions.priority,
+    })
+    .from(promotions)
+    .where(
+      and(
+        eq(promotions.isActive, true),
+        sql`${promotions.effectiveFrom} <= DATE(${todayYmd})`,
+        or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${todayYmd})`)!,
+        or(isNull(promotions.branchId), eq(promotions.branchId, branchId))!,
+        or(isNull(promotions.customerTier), eq(promotions.customerTier, RETAIL))!
+      )
+    )
+    .orderBy(desc(promotions.priority), desc(promotions.id))
+    .limit(10);
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: r.name,
+    type: r.type as "PERCENT" | "AMOUNT",
+    discountPercent: String(r.discountPercent ?? "0"),
+    discountAmount: String(r.discountAmount ?? "0"),
+    scope: r.scope as "ALL" | "CATEGORIES" | "PRODUCTS",
+  }));
 }
