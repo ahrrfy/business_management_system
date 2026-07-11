@@ -161,11 +161,15 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [defaultFee, setDefaultFee] = useState("0");
+  const [userId, setUserId] = useState<number | null>(null);
+  // حسابات المناديب (courier) لربط جهة فرد بحساب دخول ⇒ يرى «توصيلاتي». المتاح = غير المرتبط سلفاً.
+  const accounts = trpc.delivery.courierAccounts.useQuery();
+  const available = (accounts.data ?? []).filter((a) => a.linkedPartyId == null);
   const m = trpc.delivery.createParty.useMutation({ onSuccess: () => { notify.ok("أُضيفت الجهة"); onDone(); }, onError: (e) => notify.err(e) });
   return (
     <Modal title="جهة توصيل جديدة" onClose={onClose}>
       <label className="mb-1.5 block text-sm font-bold">النوع</label>
-      <select className="mb-3 h-11 w-full rounded-md border bg-transparent px-3 text-sm" value={partyType} onChange={(e) => setPartyType(e.target.value as typeof partyType)}>
+      <select className="mb-3 h-11 w-full rounded-md border bg-transparent px-3 text-sm" value={partyType} onChange={(e) => { setPartyType(e.target.value as typeof partyType); if (e.target.value === "COMPANY") setUserId(null); }}>
         <option value="INDIVIDUAL">مندوب فرد</option>
         <option value="COMPANY">شركة توصيل</option>
       </select>
@@ -174,10 +178,22 @@ function CreatePartyDialog({ onClose, onDone }: { onClose: () => void; onDone: (
       <label className="mb-1.5 block text-sm font-bold">الهاتف</label>
       <Input dir="ltr" value={phone} onChange={(e) => setPhone(e.target.value)} className="mb-3 h-11 text-end" />
       <label className="mb-1.5 block text-sm font-bold">أجرة توصيل افتراضية (د.ع)</label>
-      <Input dir="ltr" inputMode="decimal" value={defaultFee} onChange={(e) => setDefaultFee(e.target.value)} className="mb-4 h-11 text-end tabular-nums" />
+      <Input dir="ltr" inputMode="decimal" value={defaultFee} onChange={(e) => setDefaultFee(e.target.value)} className="mb-3 h-11 text-end tabular-nums" />
+      {partyType === "INDIVIDUAL" && (
+        <>
+          <label className="mb-1.5 block text-sm font-bold">حساب الدخول للمندوب (اختياري)</label>
+          <select className="mb-1 h-11 w-full rounded-md border bg-transparent px-3 text-sm" value={userId ?? ""} onChange={(e) => setUserId(e.target.value ? Number(e.target.value) : null)}>
+            <option value="">بلا حساب دخول</option>
+            {available.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}{a.username ? ` (${a.username})` : ""}</option>
+            ))}
+          </select>
+          <p className="mb-4 text-xs text-muted-foreground">اربطه بحساب دوره «مندوب توصيل» ليدخل ويرى شاشة «توصيلاتي». أنشئ الحساب من «المستخدمون» أولاً.</p>
+        </>
+      )}
       <div className="flex gap-2.5">
         <Button variant="outline" className="flex-1" onClick={onClose}>إلغاء</Button>
-        <Button className="flex-1" disabled={m.isPending || !name.trim()} onClick={() => m.mutate({ partyType, name: name.trim(), phone: phone || null, defaultFee: /^\d+(\.\d{1,2})?$/.test(defaultFee) ? defaultFee : "0" })}>{m.isPending ? "جارٍ…" : "إضافة"}</Button>
+        <Button className="flex-1" disabled={m.isPending || !name.trim()} onClick={() => m.mutate({ partyType, name: name.trim(), phone: phone || null, userId: userId ?? undefined, defaultFee: /^\d+(\.\d{1,2})?$/.test(defaultFee) ? defaultFee : "0" })}>{m.isPending ? "جارٍ…" : "إضافة"}</Button>
       </div>
     </Modal>
   );

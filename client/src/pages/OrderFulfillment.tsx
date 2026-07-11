@@ -180,7 +180,10 @@ export default function OrderFulfillment() {
               orders.map((o) => {
                 const st = (o.status as Status) in STATUS_META ? (o.status as Status) : "PENDING";
                 const meta = STATUS_META[st];
-                const next = NEXT_STEP[st];
+                // طلب SHIPPED مُسنَد لمندوب يُسلَّم ويُحصَّل عبر «توصيلاتي» (لا زر «تم التسليم» بلا تحصيل
+                // — يُخفي COD؛ مراجعة عدائية ١٢/٧). النقل اليدوي لـDELIVERED محجوبٌ خادمياً أيضاً.
+                const courierShipped = st === "SHIPPED" && o.deliveryPartyId != null;
+                const next = courierShipped ? undefined : NEXT_STEP[st];
                 const isBusy = setStatusM.isPending || printingId === o.id;
                 return (
                   <tr key={o.id} className="border-t border-border hover:bg-muted/40">

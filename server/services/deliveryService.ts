@@ -27,6 +27,7 @@ export {
   setDeliveryPartyActive,
   listDeliveryParties,
   getDeliveryParty,
+  listCourierAccounts,
 } from "./delivery/parties";
 export type { DispatchInput } from "./delivery/dispatch";
 export { dispatchToDelivery } from "./delivery/dispatch";
@@ -41,3 +42,6 @@ export {
   listConsignmentsForParty,
   getDeliveryPartyStatement,
 } from "./delivery/queries";
+// courier (١٢/٧): شاشة المندوب الذاتية «توصيلاتي» — عزل ذاتي عبر deliveryParties.userId.
+export type { MyDeliveryRow, MyDeliveriesResult, ConfirmDeliveryResult } from "./delivery/courier";
+export { resolveCourierPartyId, listMyDeliveries, confirmCourierDelivery } from "./delivery/courier";

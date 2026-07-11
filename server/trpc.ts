@@ -249,6 +249,17 @@ export const storeFulfillProcedure = moduleProcedure(["manager", "cashier", "sal
 // الإرسال (فاتورة COD + خصم مخزون + إسناد مندوب) يستعمل storeManagerProcedure: المدير يُقرّ
 // ائتمان COD المؤقّت للزبون النقدي (managerOverrideByUserId يجب أن يكون مديراً مُتحقَّقاً).
 export const storeManagerProcedure = moduleProcedure(["manager"], "store", "FULL");
+// courier (١٢/٧): شاشة المندوب الذاتية «توصيلاتي» — القراءة/التأكيد يحلّان partyId من ctx.user
+// (deliveryParties.userId) لا من الفرع. **بلا requireOwnBranch** عمداً: العزل بالمندوب (userId) لا
+// بالفرع، والمندوب قد يخدم عدّة فروع (عابرٌ لفروع طلباته) فيُنشأ أحياناً بلا فرع مُسنَد — فرضُ الفرع
+// كان يقفل الميزة كلّها عليه (مراجعة عدائية ١٢/٧). الدور courier فقط (admin يعبُر البوّابة لكنه بلا
+// جهة مرتبطة ⇒ النقاط الذاتية تعيد linked:false برشاقة).
+export const courierProcedure = t.procedure.use(requireModuleGate(["courier"], "courier", "FULL"));
+// قراءات مركز التوصيل (/delivery) — مقيّدة بوحدة store: كل مستعملي الشاشة (manager/cashier FULL،
+// accountant/auditor READ، admin يعبُر) يملكون store≥READ، بينما courier=NONE ⇒ محجوبٌ من قراءة
+// عهدة/بيانات جهات أخرى وPII زبائن الإرساليات (مراجعة عدائية ١٢/٧: branchScoped وحده لا يستشير
+// خريطة الصلاحيات فيسرّبها لأي مستخدم مصادَق ذي فرع). branchScoped ⇒ يبقى scopedBranchId للعزل.
+export const deliveryReadProcedure = branchScopedProcedure.use(requireModule("store", "READ"));
 // suppliers — القراءة بالخريطة وحدها (كالعملاء): قوالب warehouse/purchasing/auditor/user تعِد
 // بها وكان managerProcedure يصدّها. الكتابة: warehouse/purchasing قالباهما FULL.
 export const suppliersReadProcedure = protectedProcedure.use(requireModule("suppliers", "READ"));

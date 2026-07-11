@@ -47,10 +47,11 @@ export const users = mysqlTable(
     passwordHash: varchar("passwordHash", { length: 255 }),
     phone: varchar("phone", { length: 20 }),
     loginMethod: varchar("loginMethod", { length: 64 }).default("local"),
-    // الأدوار العشرة — إضافة قيم enum آمنة بلا فقد بيانات (MySQL INSTANT).
+    // الأدوار — إضافة قيم enum آمنة بلا فقد بيانات (MySQL INSTANT). courier (١٢/٧): مندوب توصيل
+    // ذاتي الخدمة (شاشة «توصيلاتي») — هجرة 0068.
     role: mysqlEnum("role", [
       "user", "admin", "manager", "cashier", "warehouse",
-      "accountant", "print_operator", "sales_rep", "purchasing", "auditor",
+      "accountant", "print_operator", "sales_rep", "purchasing", "auditor", "courier",
     ]).default("user").notNull(),
     branchId: bigint("branchId", { mode: "number" }),
     isActive: boolean("isActive").default(true),
@@ -106,10 +107,10 @@ export const roles = mysqlTable(
     key: varchar("key", { length: 64 }).notNull().unique(),
     label: varchar("label", { length: 120 }).notNull(),
     description: text("description"),
-    // الفئة الأساسية للبوّابات الخشنة — قيم enum الأدوار نفسها.
+    // الفئة الأساسية للبوّابات الخشنة — قيم enum الأدوار نفسها (يجب مطابقة users.role).
     baseRole: mysqlEnum("baseRole", [
       "user", "admin", "manager", "cashier", "warehouse",
-      "accountant", "print_operator", "sales_rep", "purchasing", "auditor",
+      "accountant", "print_operator", "sales_rep", "purchasing", "auditor", "courier",
     ]).default("user").notNull(),
     // خريطة الصلاحيات الكاملة {moduleKey: FULL|READ|NONE}.
     permissions: json("permissions").notNull(),
@@ -2830,6 +2831,9 @@ export const deliveryParties = mysqlTable(
     name: varchar("name", { length: 255 }).notNull(),
     phone: varchar("phone", { length: 20 }),
     phone2: varchar("phone2", { length: 20 }),
+    // ربط اختياري بحساب دخول (مندوب courier) ⇒ شاشة «توصيلاتي» الذاتية تحلّ partyId من ctx.user.
+    // فريد: حساب واحد لكل جهة (هجرة 0068). nullable ⇒ الجهات الخارجية/شركات التوصيل بلا حساب.
+    userId: int("userId").references(() => users.id),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     nationalId: varchar("nationalId", { length: 40 }),
     vehicleInfo: varchar("vehicleInfo", { length: 120 }),
@@ -2847,6 +2851,7 @@ export const deliveryParties = mysqlTable(
     nameIdx: index("idx_delivery_party_name").on(table.name),
     branchIdx: index("idx_delivery_party_branch").on(table.branchId),
     activeIdx: index("idx_delivery_party_active").on(table.isActive),
+    userUq: unique("uq_delivery_party_user").on(table.userId),
   }),
 );
 export type DeliveryParty = typeof deliveryParties.$inferSelect;

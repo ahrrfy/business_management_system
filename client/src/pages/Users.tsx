@@ -20,6 +20,7 @@ export const ROLE_OPTIONS = [
   { value: "print_operator", label: "فني مطبعة" },
   { value: "sales_rep",      label: "مندوب مبيعات" },
   { value: "auditor",        label: "مدقّق" },
+  { value: "courier",        label: "مندوب توصيل" },
   { value: "user",           label: "مستخدم عام" },
 ] as const;
 
@@ -42,6 +43,7 @@ function RoleBadge({ role }: { role: string }) {
     print_operator: "bg-cyan-100 text-cyan-700",
     sales_rep:      "bg-teal-100 text-teal-700",
     auditor:        "bg-slate-100 text-slate-700",
+    courier:        "bg-lime-100 text-lime-700",
     user:           "bg-gray-100 text-gray-600",
   };
   return (

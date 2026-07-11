@@ -45,6 +45,9 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0065_store_settings.sql",
   "drizzle/migrations/0066_store_free_shipping.sql",
   "drizzle/migrations/0067_online_order_delivery_party.sql",
+  // ١٢/٧/٢٦: دور courier + ربط جهة التوصيل بحساب (deliveryParties.userId). enum ALTER + عمود/UNIQUE/FK
+  // محروسة idempotently — نُعيد تطبيقها لضمان وجودها على CI بعد db:push (لا يُمثّل توسيع enum موثوقاً).
+  "drizzle/migrations/0068_courier_role_and_party_user.sql",
 ];
 
 const url = process.env.DATABASE_URL;

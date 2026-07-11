@@ -1,18 +1,43 @@
 // CRUD جهات التوصيل.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, like, or, sql } from "drizzle-orm";
-import { deliveryConsignments, deliveryParties } from "../../../drizzle/schema";
+import { and, desc, eq, like, ne, or, sql } from "drizzle-orm";
+import { deliveryConsignments, deliveryParties, onlineOrders, users } from "../../../drizzle/schema";
+import type { Tx } from "../../db";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { DeliveryActor, DeliveryPartyKind } from "./types";
 
+/** يمنع تعطيل/فكّ ربط جهة عليها طلبات متجر «مع المندوب» (SHIPPED) — وإلا تُيتَّم من مسار التحصيل
+ *  الوحيد (توصيلاتي) بلا إعادة إسناد (مراجعة عدائية ١٢/٧). العهدة=0 لطلبٍ لم يُحصَّل بعد فلا يحرسها فحص الرصيد. */
+async function assertNoOpenCourierOrders(tx: Tx, partyId: number): Promise<void> {
+  const open = (await tx
+    .select({ n: sql<number>`COUNT(*)` })
+    .from(onlineOrders)
+    .where(and(eq(onlineOrders.deliveryPartyId, partyId), eq(onlineOrders.status, "SHIPPED"))))[0];
+  if (Number(open?.n ?? 0) > 0) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل/فكّ ربط جهة عليها طلبات قيد التوصيل — سلّمها أو أعِد إسنادها أولاً" });
+  }
+}
+
+/** يتحقّق أن userId حسابُ مندوب (courier) غير مرتبط بجهة أخرى — قبل الربط. (excludePartyId للتعديل.) */
+async function assertLinkableCourier(tx: Tx, userId: number, excludePartyId?: number): Promise<void> {
+  const u = (await tx.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!u) throw new TRPCError({ code: "BAD_REQUEST", message: "الحساب المختار غير موجود" });
+  if (u.role !== "courier") throw new TRPCError({ code: "BAD_REQUEST", message: "الحساب المختار ليس دوره «مندوب توصيل»" });
+  const conds = [eq(deliveryParties.userId, userId)];
+  if (excludePartyId != null) conds.push(ne(deliveryParties.id, excludePartyId));
+  const linked = (await tx.select({ id: deliveryParties.id }).from(deliveryParties).where(and(...conds)).limit(1))[0];
+  if (linked) throw new TRPCError({ code: "BAD_REQUEST", message: "هذا الحساب مرتبط بجهة توصيل أخرى" });
+}
+
 export interface CreateDeliveryPartyInput {
   partyType: DeliveryPartyKind;
   name: string;
   phone?: string | null;
   phone2?: string | null;
+  userId?: number | null;
   branchId?: number | null;
   nationalId?: string | null;
   vehicleInfo?: string | null;
@@ -23,11 +48,13 @@ export interface CreateDeliveryPartyInput {
 
 export async function createDeliveryParty(input: CreateDeliveryPartyInput, actor: DeliveryActor): Promise<{ id: number }> {
   return withTx(async (tx) => {
+    if (input.userId != null) await assertLinkableCourier(tx, input.userId);
     const res = await tx.insert(deliveryParties).values({
       partyType: input.partyType,
       name: input.name.trim(),
       phone: input.phone ?? null,
       phone2: input.phone2 ?? null,
+      userId: input.userId ?? null,
       branchId: input.branchId ?? actor.branchId ?? null,
       nationalId: input.nationalId ?? null,
       vehicleInfo: input.vehicleInfo ?? null,
@@ -46,6 +73,7 @@ export interface UpdateDeliveryPartyInput {
   name?: string;
   phone?: string | null;
   phone2?: string | null;
+  userId?: number | null;
   branchId?: number | null;
   nationalId?: string | null;
   vehicleInfo?: string | null;
@@ -61,6 +89,11 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
     if (input.name !== undefined) patch.name = input.name.trim();
     if (input.phone !== undefined) patch.phone = input.phone;
     if (input.phone2 !== undefined) patch.phone2 = input.phone2;
+    if (input.userId !== undefined) {
+      if (input.userId != null) await assertLinkableCourier(tx, input.userId, input.id);
+      else await assertNoOpenCourierOrders(tx, input.id); // فكّ الربط: امنعه ما دامت طلبات قيد التوصيل
+      patch.userId = input.userId;
+    }
     if (input.branchId !== undefined) patch.branchId = input.branchId;
     if (input.nationalId !== undefined) patch.nationalId = input.nationalId;
     if (input.vehicleInfo !== undefined) patch.vehicleInfo = input.vehicleInfo;
@@ -77,10 +110,13 @@ export async function updateDeliveryParty(input: UpdateDeliveryPartyInput, _acto
 export async function setDeliveryPartyActive(id: number, isActive: boolean, _actor: DeliveryActor): Promise<{ id: number }> {
   return withTx(async (tx) => {
     if (!isActive) {
-      const p = (await tx.select({ balance: deliveryParties.currentBalance }).from(deliveryParties).where(eq(deliveryParties.id, id)).limit(1))[0];
+      // .for("update"): يقفل صفّ الجهة قبل فحص العهدة ⇒ لا يسبق قرارَ التعطيل تحصيلٌ متزامن يرفع
+      // العهدة بعد قراءةٍ غير مقفلة (سباق check-then-act — مراجعة عدائية ١٢/٧). التحصيل يقفل نفس الصفّ.
+      const p = (await tx.select({ balance: deliveryParties.currentBalance }).from(deliveryParties).where(eq(deliveryParties.id, id)).for("update").limit(1))[0];
       if (p && money(p.balance ?? "0").abs().gt("0.01")) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل جهة عليها عهدة قائمة — سوِّ الرصيد أولاً" });
       }
+      await assertNoOpenCourierOrders(tx, id); // + طلبات متجر قيد التوصيل (العهدة=0 لا تحرسها)
     }
     await tx.update(deliveryParties).set({ isActive }).where(eq(deliveryParties.id, id));
     return { id };
@@ -111,6 +147,7 @@ export async function listDeliveryParties(opts: ListPartiesOpts) {
       partyType: deliveryParties.partyType,
       name: deliveryParties.name,
       phone: deliveryParties.phone,
+      userId: deliveryParties.userId,
       branchId: deliveryParties.branchId,
       defaultFee: deliveryParties.defaultFee,
       currentBalance: deliveryParties.currentBalance,
@@ -145,4 +182,29 @@ export async function getDeliveryParty(id: number) {
   if (!db) return null;
   const rows = await db.select().from(deliveryParties).where(eq(deliveryParties.id, id)).limit(1);
   return rows[0] ?? null;
+}
+
+/** حسابات المناديب (دور courier) لربطها بجهة توصيل — مع الجهة المرتبطة حالياً (لمنتقي الربط). */
+export async function listCourierAccounts() {
+  const db = getDb();
+  if (!db) return [];
+  const rows = await db
+    .select({
+      id: users.id,
+      name: users.name,
+      username: users.username,
+      linkedPartyId: deliveryParties.id,
+      linkedPartyName: deliveryParties.name,
+    })
+    .from(users)
+    .leftJoin(deliveryParties, eq(deliveryParties.userId, users.id))
+    .where(eq(users.role, "courier"))
+    .orderBy(users.name);
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: r.name ?? r.username ?? `#${r.id}`,
+    username: r.username ?? null,
+    linkedPartyId: r.linkedPartyId != null ? Number(r.linkedPartyId) : null,
+    linkedPartyName: r.linkedPartyName ?? null,
+  }));
 }

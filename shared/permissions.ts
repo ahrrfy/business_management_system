@@ -21,6 +21,7 @@ export type RoleKey =
   | "print_operator"
   | "sales_rep"
   | "auditor"
+  | "courier"
   | "user";
 
 export interface RoleInfo {
@@ -41,6 +42,7 @@ export const ROLES: RoleInfo[] = [
   { key: "print_operator", label: "فني مطبعة",           description: "طلبات خدمة العملاء والطباعة فقط" },
   { key: "sales_rep",      label: "مندوب مبيعات",        description: "عروض أسعار ومتابعة عملاء بلا صندوق" },
   { key: "auditor",        label: "مدقّق / مراجع",       description: "قراءة كل شيء بلا كتابة — للمراجعة الخارجية" },
+  { key: "courier",        label: "مندوب توصيل",         description: "توصيل طلبات المتجر وتحصيل COD — شاشة «توصيلاتي» فقط" },
   { key: "user",           label: "مستخدم عام",          description: "قراءة فقط لمعظم الوحدات" },
 ];
 
@@ -67,6 +69,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "assets",       label: "الأصول الثابتة",      description: "سجلّ الأصول، العهدة، الإهلاك، الصيانة، الاستبعاد" },
   { key: "hr",           label: "الموارد البشرية",     description: "الموظفون، الحضور، الرواتب، الإجازات، التوظيف" },
   { key: "commissions",  label: "الأهداف والعمولات",   description: "خطط العمولات، الأهداف الشهرية، احتساب واعتماد عمولات البائعين" },
+  { key: "courier",      label: "توصيلاتي (المندوب)",  description: "شاشة المندوب الذاتية: طلباتي، تأكيد التسليم والتحصيل، عهدتي" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
 ];
@@ -167,6 +170,15 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "READ", workorders: "READ", channels: "NONE", treasury: "NONE",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "NONE", reports: "READ",
+    users: "NONE", settings: "NONE",
+  },
+  courier: {
+    // مندوب توصيل ذاتي الخدمة: يرى «توصيلاتي» فقط (courier=FULL). كل الوحدات الأخرى NONE —
+    // بياناته (اسم/هاتف/عنوان الزبون + COD) تأتي من نقاط courier الذاتية لا من وحدات العملاء/المبيعات.
+    courier: "FULL",
+    store: "NONE", assets: "NONE", hr: "NONE", commissions: "NONE",
+    pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "NONE", treasury: "NONE",
+    customers: "NONE", suppliers: "NONE", products: "NONE", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
 };

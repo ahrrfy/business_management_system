@@ -58,6 +58,9 @@ export default function Login() {
     // كلمة مرور مؤقتة تستوجب التغيير الفوري → وجّه لصفحة الحساب
     if (data.mustChangePassword) {
       navigate("/account?mustChange=1");
+    } else if (utils.auth.me.getData()?.role === "courier") {
+      // المندوب يهبط مباشرةً على شاشته الذاتية «توصيلاتي» بدل لوحة التحكم.
+      navigate("/my-deliveries");
     } else {
       navigate("/");
     }

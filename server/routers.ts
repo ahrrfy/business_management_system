@@ -56,6 +56,7 @@ import { promotionsV2Router } from "./routers/promotionsV2Router";
 import { platformAdminRouter } from "./routers/platformAdminRouter";
 import { storefrontRouter } from "./routers/storefrontRouter";
 import { storeAdminRouter } from "./routers/storeAdminRouter";
+import { courierRouter } from "./routers/courierRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -119,6 +120,8 @@ export const appRouter = router({
   integrations: integrationRouter,
   // delivery-cod (٢٦/٦/٢٦): التوصيل (COD) — جهات التوصيل/العهد/الترحيل.
   delivery: deliveryRouter,
+  // courier (١٢/٧/٢٦): شاشة المندوب الذاتية «توصيلاتي» — طلباتي + تأكيد التسليم والتحصيل.
+  courier: courierRouter,
   // exchange-house (٣٠/٦/٢٦): الصيرفة (الصرّاف) — محفظتان دينار/دولار + تسديد موردين + كشف/مطابقة.
   exchange: exchangeRouter,
   // bundles (٧/٧/٢٦): المنتجات المركّبة (باندل/بكج) — إدارة وصفة المكوّنات + معاينة أثر التعديل.

@@ -10,6 +10,7 @@ import { TRPCError } from "@trpc/server";
 import { and, desc, eq, sql } from "drizzle-orm";
 import {
   customers,
+  invoices,
   onlineOrderItems,
   onlineOrders,
   productUnits,
@@ -17,6 +18,7 @@ import {
   products,
 } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { money } from "../money";
 import { withTx } from "../tx";
 
 export type OnlineOrderStatus = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
@@ -40,6 +42,7 @@ export interface OnlineOrderRow {
   governorate: string | null;
   total: string;
   deliveryFee: string;
+  deliveryPartyId: number | null;
   itemCount: number;
   createdAt: Date;
 }
@@ -67,6 +70,7 @@ export async function listOnlineOrders(opts: {
       governorate: onlineOrders.governorate,
       total: onlineOrders.total,
       deliveryFee: onlineOrders.shippingCost,
+      deliveryPartyId: onlineOrders.deliveryPartyId,
       createdAt: onlineOrders.createdAt,
       itemCount: sql<number>`(SELECT COUNT(*) FROM ${onlineOrderItems} WHERE ${onlineOrderItems.onlineOrderId} = ${onlineOrders.id})`,
     })
@@ -84,6 +88,7 @@ export async function listOnlineOrders(opts: {
     governorate: r.governorate ?? null,
     total: String(r.total),
     deliveryFee: String(r.deliveryFee),
+    deliveryPartyId: r.deliveryPartyId != null ? Number(r.deliveryPartyId) : null,
     itemCount: Number(r.itemCount),
     createdAt: r.createdAt,
   }));
@@ -134,6 +139,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
         addressText: onlineOrders.shippingAddress,
         subtotal: onlineOrders.subtotal,
         deliveryFee: onlineOrders.shippingCost,
+        deliveryPartyId: onlineOrders.deliveryPartyId,
         total: onlineOrders.total,
         createdAt: onlineOrders.createdAt,
       })
@@ -170,6 +176,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
     addressText: order.addressText ?? null,
     subtotal: String(order.subtotal),
     deliveryFee: String(order.deliveryFee),
+    deliveryPartyId: order.deliveryPartyId != null ? Number(order.deliveryPartyId) : null,
     total: String(order.total),
     itemCount: items.length,
     createdAt: order.createdAt,
@@ -200,6 +207,19 @@ export async function setOnlineOrderStatus(
     if (from === input.status) return { id: input.id, from, to: input.status };
     if (!ALLOWED_TRANSITIONS[from].includes(input.status)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: `انتقال غير مسموح: ${from} ← ${input.status}` });
+    }
+    // ⛔ حارس تسريب COD (مراجعة عدائية ١٢/٧): «تم التسليم» هنا تغييرُ حالةٍ بلا أثر مالي. لو كان الطلب
+    // مُسنَداً لمندوب وفاتورته ما تزال بها مبلغٌ مستحقّ (COD غير محصَّل)، فإنهاؤه «مُسلَّم» يُخفي التحصيل
+    // إلى الأبد (DELIVERED نهائيّة) ⇒ نقدٌ بيد المندوب خارج الدفتر. يُسلَّم ويُحصَّل حصراً عبر «توصيلاتي»
+    // (confirmCourierDelivery) أو بتسجيل دفعة على الفاتورة أولاً.
+    if (input.status === "DELIVERED" && order.deliveryPartyId != null && order.invoiceId != null) {
+      const inv = (await tx.select({ total: invoices.total, paid: invoices.paidAmount, returned: invoices.returnedTotal }).from(invoices).where(eq(invoices.id, Number(order.invoiceId))).limit(1))[0];
+      if (inv) {
+        const outstanding = money(inv.total).minus(money(inv.returned ?? "0")).minus(money(inv.paid ?? "0"));
+        if (outstanding.gt("0.01")) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب مع مندوب ولم يُحصَّل المبلغ — يُسلَّم ويُحصَّل عبر «توصيلاتي» أو سجّل الدفعة أولاً" });
+        }
+      }
     }
     await tx.update(onlineOrders).set({ status: input.status }).where(eq(onlineOrders.id, input.id));
     return { id: input.id, from, to: input.status };

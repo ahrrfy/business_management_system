@@ -477,6 +477,13 @@
       "when": 1783760003000,
       "tag": "0067_online_order_delivery_party",
       "breakpoints": true
+    },
+    {
+      "idx": 68,
+      "version": "5",
+      "when": 1783760004000,
+      "tag": "0068_courier_role_and_party_user",
+      "breakpoints": true
     }
   ]
 }

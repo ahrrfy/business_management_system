@@ -8,7 +8,7 @@ import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign,
-  UserCircle2, ChevronLeft, LogOut, Store,
+  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -42,6 +42,8 @@ const NAV_LINKS: NavLink[] = [
   // أمين المخزن/الفني على hub بلا تبويبات = صفحة فارغة (نفس مبدأ الأصول/الموارد أدناه).
   { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
   { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
+  // شاشة المندوب الذاتية — courier فقط (admin يراها عبر canSeeGate؛ المدير يدير عبر /delivery).
+  { href: "/my-deliveries", label: "توصيلاتي", icon: PackageCheck, roles: ["courier"], module: "courier" },
   { href: "/store-admin", label: "طلبات المتجر", icon: Store, roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
   { href: "/inventory", label: "المخزون والبضاعة", icon: Boxes },
   // (ج) دوري — أسبوعي/عند الحاجة
@@ -95,6 +97,12 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   const permsOverride = (me.data?.permissionsOverride ?? null) as
     | import("@shared/permissions").PermissionMap
     | null;
+  // المندوب (courier) شاشةٌ واحدة «توصيلاتي» فقط — نخفي بقية الروابط (كلها إمّا محجوبة خادمياً أو
+  // بلا معنى له) بدل عرض جدارٍ من روابط ميتة (مراجعة عدائية ١٢/٧). العزل الحقيقي خادميّ؛ هذا تحسين UX.
+  const isCourier = role === "courier";
+  const visibleNav = isCourier
+    ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
+    : NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride));
 
   const sidebarInner = (
     <>
@@ -112,23 +120,26 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="flex-1 overflow-y-auto py-2">
-          {/* لوحة التحكم — رابط مستقلّ */}
-          <Link
-            href="/"
-            aria-current={loc === "/" ? "page" : undefined}
-            className={cn(
-              "flex items-center gap-2 rounded-md mx-2 px-3 py-2 min-h-[40px] text-sm transition",
-              loc === "/" ? "bg-primary text-primary-foreground font-semibold" : "hover:bg-accent",
-            )}
-          >
-            <Home className="size-4 shrink-0" aria-hidden />
-            <span className="truncate">لوحة التحكم</span>
-          </Link>
-
-          <div className="my-1 mx-2 border-b border-border/50" />
+          {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب: شاشته «توصيلاتي» فقط) */}
+          {!isCourier && (
+            <>
+              <Link
+                href="/"
+                aria-current={loc === "/" ? "page" : undefined}
+                className={cn(
+                  "flex items-center gap-2 rounded-md mx-2 px-3 py-2 min-h-[40px] text-sm transition",
+                  loc === "/" ? "bg-primary text-primary-foreground font-semibold" : "hover:bg-accent",
+                )}
+              >
+                <Home className="size-4 shrink-0" aria-hidden />
+                <span className="truncate">لوحة التحكم</span>
+              </Link>
+              <div className="my-1 mx-2 border-b border-border/50" />
+            </>
+          )}
 
           {/* الوَحدات — قائمة مُسطّحة، مَدخل واحد لكل وحدة */}
-          {NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride)).map((m) => {
+          {visibleNav.map((m) => {
             const active = isModuleActive(loc, m.href);
             const Icon = m.icon;
             return (

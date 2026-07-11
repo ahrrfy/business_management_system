@@ -40,6 +40,7 @@ const PrintHub = lazy(() => import("@/pages/PrintHub"));
 const AssetsHub = lazy(() => import("@/pages/AssetsHub"));
 const HrHub = lazy(() => import("@/pages/HrHub"));
 const DeliveryCenter = lazy(() => import("@/pages/DeliveryCenter"));
+const MyDeliveries = lazy(() => import("@/pages/MyDeliveries"));
 const ClosingHub = lazy(() => import("@/pages/ClosingHub"));
 const AdminHub = lazy(() => import("@/pages/AdminHub"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
@@ -280,6 +281,8 @@ export default function App() {
       <Route path="/exchange"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury"><ExchangeHub /></RequireRole></Shell></Route>
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>
+      {/* شاشة المندوب الذاتية «توصيلاتي» (courier فقط + منح صريح لوحدة courier؛ admin يعبُر). */}
+      <Route path="/my-deliveries"><Shell><RequireRole roles={["courier"]} module="courier" level="READ"><MyDeliveries /></RequireRole></Shell></Route>
       {/* الجهة الإدارية للمتجر الإلكتروني: تثبيت الطلبات + طباعة الملصق (منفصل عن /store العلني). */}
       <Route path="/store-admin"><Shell><RequireRole roles={["admin","manager","cashier","sales_rep","accountant","auditor"]} module="store" level="READ"><StoreHub /></RequireRole></Shell></Route>
       <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
