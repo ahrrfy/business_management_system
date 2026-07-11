@@ -19,6 +19,8 @@ const RETAIL = "RETAIL" as const;
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون ولا أسعار جملة/حكومي. */
 export interface StorefrontProduct {
   productId: number;
+  /** مُعرّف وحدة الأساس — يحتاجه سطر الطلب (createOrder). مُعرّف فقط، لا حقل حسّاس. */
+  productUnitId: number;
   productName: string;
   brand: string | null;
   category: string | null;
@@ -51,6 +53,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
   return db
     .select({
       productId: products.id,
+      productUnitId: productUnits.id,
       productName: products.name,
       brand: products.brand,
       category: categories.name,
@@ -68,11 +71,12 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>) {
 }
 
 function toStorefront(r: {
-  productId: number; productName: string; brand: string | null; category: string | null;
+  productId: number; productUnitId: number; productName: string; brand: string | null; category: string | null;
   categoryId: number | null; unitName: string; price: string | null; imageUrl: string | null;
 }): StorefrontProduct {
   return {
     productId: Number(r.productId),
+    productUnitId: Number(r.productUnitId),
     productName: r.productName,
     brand: r.brand ?? null,
     category: r.category ?? null,

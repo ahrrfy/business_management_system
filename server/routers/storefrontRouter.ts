@@ -12,6 +12,7 @@
 import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontProduct } from "../services/storefrontService";
+import { createOnlineOrder, trackOnlineOrder } from "../services/onlineOrderService";
 
 export const storefrontRouter = router({
   /** فئات المتجر (لأشرطة الفلترة). */
@@ -34,4 +35,40 @@ export const storefrontRouter = router({
   product: publicProcedure
     .input(z.object({ productId: z.number().int().positive() }))
     .query(({ input }) => storefrontProduct(input.productId)),
+
+  /**
+   * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.
+   * السعر خادمي بالكامل (المدخل لا يحوي أسعاراً — فقط productUnitId + الكمية). المحافظة يتحقّق
+   * منها الخادم. clientRequestId (اختياري) يمنع الطلب المكرّر.
+   */
+  createOrder: publicProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive().default(1),
+        customerName: z.string().trim().min(1).max(255),
+        customerPhone: z.string().trim().min(5).max(20),
+        governorate: z.string().trim().min(1).max(40),
+        addressText: z.string().trim().min(3).max(1000),
+        latitude: z.number().min(-90).max(90).nullish(),
+        longitude: z.number().min(-180).max(180).nullish(),
+        notes: z.string().max(500).optional(),
+        lines: z
+          .array(z.object({ productUnitId: z.number().int().positive(), quantity: z.number().int().positive().max(999) }))
+          .min(1)
+          .max(100),
+        clientRequestId: z.string().max(80).optional(),
+      })
+    )
+    .mutation(({ input }) =>
+      createOnlineOrder({
+        ...input,
+        latitude: input.latitude ?? null,
+        longitude: input.longitude ?? null,
+      })
+    ),
+
+  /** تتبّع طلب: يتطلّب رقم الطلب + الهاتف معاً (خصوصية). */
+  trackOrder: publicProcedure
+    .input(z.object({ orderNumber: z.string().trim().min(1).max(50), phone: z.string().trim().min(1).max(20) }))
+    .query(({ input }) => trackOnlineOrder(input.orderNumber, input.phone)),
 });

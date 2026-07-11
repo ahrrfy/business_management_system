@@ -442,6 +442,13 @@
       "when": 1783600000000,
       "tag": "0062_product_unit_barcode_aliases",
       "breakpoints": true
+    },
+    {
+      "idx": 63,
+      "version": "5",
+      "when": 1783680000000,
+      "tag": "0063_online_order_cod_fields",
+      "breakpoints": true
     }
   ]
 }

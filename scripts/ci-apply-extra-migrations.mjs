@@ -37,6 +37,9 @@ const EXTRA_MIGRATIONS = [
   // على CI أنشأ الجدول بلا قيد FK فَسقط اختبار A3 (حذف الوحدة لم يُلقِ بدائلها) — إعادة تطبيق
   // idempotent لضمان القيود على CI. راجع ذاكرة «db:push ينشئ جداول عارية عند فشله النصفي».
   "drizzle/migrations/0062_product_unit_barcode_aliases.sql",
+  // ١١/٧/٢٦: حقول متجر الجوال B2C (COD) على onlineOrders — أعمدة عادية + UNIQUE على عمود
+  // غير-FK؛ نُعيد تطبيقها idempotently (INFORMATION_SCHEMA) لضمان وجودها على CI بعد db:push.
+  "drizzle/migrations/0063_online_order_cod_fields.sql",
 ];
 
 const url = process.env.DATABASE_URL;

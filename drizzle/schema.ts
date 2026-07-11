@@ -1463,6 +1463,12 @@ export const onlineOrders = mysqlTable(
     status: mysqlEnum("orderStatus", ["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]).default("PENDING").notNull(),
     shippingAddress: text("shippingAddress"),
     trackingNumber: varchar("trackingNumber", { length: 100 }),
+    // حقول متجر الجوال B2C (COD) — أُضيفت في هجرة 0063. المحافظة تُحدّد الأجرة (shippingCost)
+    // والتوجيه؛ الإحداثيات لخريطة المندوب (شريحة ٥)؛ clientRequestId لمنع الطلب المكرّر (نقرة مزدوجة).
+    governorate: varchar("governorate", { length: 40 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
+    clientRequestId: varchar("clientRequestId", { length: 80 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -1470,6 +1476,7 @@ export const onlineOrders = mysqlTable(
     numberIdx: index("idx_order_number").on(table.orderNumber),
     customerIdx: index("idx_order_customer").on(table.customerId),
     statusIdx: index("idx_order_status").on(table.status),
+    clientReqUq: unique("uq_online_order_client_req").on(table.clientRequestId),
   })
 );
 

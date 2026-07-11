@@ -248,6 +248,20 @@ async function startServer() {
     })
   );
 
+  // حدّ صارم على **كتابة الطلب** العلنية (storefront.createOrder) — إجراء كتابة بلا مصادقة
+  // ⇒ حماية من إغراق جدول الطلبات/إنشاء عملاء وهميين بالجملة. (يسبق الحدّ العام للقراءة.)
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.STOREFRONT_ORDER_RATE_LIMIT_MAX ?? 20),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("storefront.createOrder"),
+      handler: rateLimitHandler("طلبات كثيرة، انتظر قليلاً ثم أعد المحاولة."),
+    })
+  );
+
   // حدّ على سطح المتجر العلني (storefront.*) — قراءة آمنة بلا مصادقة على الإنترنت ⇒ حماية من
   // الكشط/الإغراق. سخيّ لأنه تصفّح (بطاقات + بحث + صفحة منتج) لكن مسقوف لكل IP.
   app.use(
