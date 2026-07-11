@@ -389,8 +389,10 @@ export default function BundleForm() {
                   value={picker}
                   onChange={(e) => setPicker(e.target.value)}
                   onKeyDown={handleSmartKey}
-                  placeholder="امسح باركوداً أو اكتب اسماً/SKU… (اضغط Enter لإضافة أوّل نتيجة)"
-                  dir="auto"
+                  placeholder="ابحث بالباركود أو باسم المنتج…"
+                  // اتجاه ثابت (rtl) لا «auto»: يمنع تأرجُح محاذاة النصّ بين باركود (أرقام) واسم عربيّ،
+                  // وبنصٍّ قصير خالص العربية لا يتراكب مع أيقونة البحث. (الأرقام تبقى مقروءة LTR ضمن RTL.)
+                  dir="rtl"
                   className={cn(
                     "pe-9",
                     flash === "ok" && "border-emerald-500 ring-1 ring-emerald-500",
@@ -464,7 +466,7 @@ export default function BundleForm() {
               </div>
             ) : (
               <div className="text-xs text-muted-foreground text-center py-1">
-                امسح باركوداً بالقارئ، أو ابدأ الكتابة، أو اختر فئة.
+                امسح باركوداً بالقارئ، أو اكتب اسماً/SKU، أو اختر فئة — ثم اضغط Enter لإضافة أوّل نتيجة.
               </div>
             )}
           </div>
@@ -644,8 +646,8 @@ export default function BundleForm() {
                     });
                   }
                 }}
-                placeholder="اكتب ≥ حرفَين للبحث… (Enter لتعليم أوّل نتيجة)"
-                dir="auto"
+                placeholder="اكتب حرفَين أو أكثر للبحث…"
+                dir="rtl"
                 aria-label="بحث في الحوار"
                 autoFocus
               />
