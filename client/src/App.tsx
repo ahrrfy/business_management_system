@@ -142,6 +142,31 @@ function NotFound() {
   return <div className="p-10 text-center text-muted-foreground">404 — الصفحة غير موجودة</div>;
 }
 
+/**
+ * نطاقات المتجر: على هذه المضيفات، جذر «/» يفتح المتجر للزائر (غير المسجَّل) مباشرةً —
+ * فـalarabiya.online = واجهة الزبون، بينما نطاق النظام (hstgr.cloud) يبقى للوحة الموظف.
+ * (يعمل فقط عند تقديم التطبيق عبر هذا المضيف؛ حتى ضبط DNS يبقى بلا أثر.)
+ */
+const STORE_HOSTS = ["alarabiya.online", "www.alarabiya.online"];
+function isStoreHost(): boolean {
+  return typeof window !== "undefined" && STORE_HOSTS.includes(window.location.hostname);
+}
+
+/** مسار الجذر: على نطاق المتجر ⇒ الزائر يُوجَّه للمتجر، والموظف المسجَّل يرى لوحته. */
+function RootRoute() {
+  const storeHost = isStoreHost();
+  const me = trpc.auth.me.useQuery(undefined, { enabled: storeHost, retry: false });
+  if (storeHost) {
+    if (me.isLoading) return <RouteFallback />;
+    if (!me.data) return <Redirect to="/store" />;
+  }
+  return (
+    <Shell>
+      <Dashboard />
+    </Shell>
+  );
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
@@ -173,7 +198,7 @@ export default function App() {
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
       <Route path="/platform-admin" component={PlatformAdmin} />
-      <Route path="/"><Shell><Dashboard /></Shell></Route>
+      <Route path="/"><RootRoute /></Route>
       {/* أُدمجت في وحدة المخزون (InventoryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
