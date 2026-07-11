@@ -104,7 +104,14 @@ const bannersRouter = router({
 const settingsRouter = router({
   get: storeReadProcedure.query(() => getStoreSettings()),
   update: storeManagerProcedure
-    .input(z.object({ isOpen: z.boolean().optional(), announcement: z.string().max(500).nullish(), whatsappNumber: z.string().max(20).nullish() }))
+    .input(
+      z.object({
+        isOpen: z.boolean().optional(),
+        announcement: z.string().max(500).nullish(),
+        whatsappNumber: z.string().max(20).nullish(),
+        freeShippingThreshold: z.string().regex(/^\d+(\.\d{1,2})?$/, "قيمة غير صحيحة").nullish(),
+      })
+    )
     .mutation(async ({ input, ctx }) => {
       const r = await updateStoreSettings(input, ctx.user.id);
       await logAudit(ctx, { action: "store.settings.update", entityType: "storeSettings", entityId: 1, newValue: r });

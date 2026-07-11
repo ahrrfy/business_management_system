@@ -43,6 +43,7 @@ const EXTRA_MIGRATIONS = [
   // ١١/٧/٢٦: إدارة المتجر (لوحة hPanel) — جدولا storeBanners/storeSettings (بنرات + إعدادات).
   "drizzle/migrations/0064_store_banners.sql",
   "drizzle/migrations/0065_store_settings.sql",
+  "drizzle/migrations/0066_store_free_shipping.sql",
 ];
 
 const url = process.env.DATABASE_URL;

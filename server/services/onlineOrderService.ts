@@ -204,7 +204,10 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     }
 
     const subtotal = round2(sumMoney(items.map((i) => i.lineTotal)));
-    const deliveryFee = round2(deliveryFeeFor(input.governorate));
+    let deliveryFee = round2(deliveryFeeFor(input.governorate));
+    // توصيل مجاني (AOV): إن بلغ المجموع الفرعي عتبة الإعدادات ⇒ الأجرة صفر (إنفاذ خادمي).
+    const freeThreshold = storeSettings.freeShippingThreshold ? money(storeSettings.freeShippingThreshold) : null;
+    if (freeThreshold && freeThreshold.gt(0) && subtotal.gte(freeThreshold)) deliveryFee = round2(money(0));
     const total = round2(subtotal.plus(deliveryFee));
 
     // ③ find-or-create عميل نقدي بالهاتف (creditLimit "0" = نقدي فقط، لا ائتمان).

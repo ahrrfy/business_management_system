@@ -125,7 +125,11 @@ export default function Storefront() {
   const cartCount = cartLines.reduce((s, l) => s + l.qty, 0);
   const cartSubtotal = cartLines.reduce((s, l) => s + Number(l.price) * l.qty, 0);
   const deliveryFee = deliveryFeeFor(form.governorate);
-  const cartTotal = cartSubtotal + deliveryFee;
+  const freeThreshold = settingsQ.data?.freeShippingThreshold ? Number(settingsQ.data.freeShippingThreshold) : 0;
+  const qualifiesFree = freeThreshold > 0 && cartSubtotal >= freeThreshold;
+  const effectiveDeliveryFee = qualifiesFree ? 0 : deliveryFee;
+  const remainingForFree = freeThreshold > 0 ? Math.max(freeThreshold - cartSubtotal, 0) : 0;
+  const cartTotal = cartSubtotal + effectiveDeliveryFee;
 
   function addToCart(p: {
     productUnitId: number; productId: number; productName: string; price: string | null;
@@ -572,6 +576,16 @@ export default function Storefront() {
                   <span className="font-extrabold text-slate-800 tabular-nums dark:text-slate-100">{money(cartSubtotal)} د.ع</span>
                 </div>
               </div>
+              {freeThreshold > 0 &&
+                (qualifiesFree ? (
+                  <div className="mt-3 flex items-center justify-center gap-1.5 rounded-xl bg-emerald-50 px-3 py-2.5 text-xs font-bold text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400">
+                    <Truck aria-hidden className="size-4" /> رائع! حصلت على توصيل مجاني
+                  </div>
+                ) : (
+                  <div className="mt-3 rounded-xl bg-amber-50 px-3 py-2.5 text-center text-xs font-bold text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">
+                    أضِف <span className="tabular-nums">{money(remainingForFree)}</span> د.ع لتحصل على <span className="font-extrabold">توصيل مجاني</span>
+                  </div>
+                ))}
               <button onClick={openCheckout} className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600">
                 متابعة إلى الدفع عند الاستلام
                 <ArrowRight aria-hidden className="size-4" />
@@ -617,7 +631,11 @@ export default function Storefront() {
               </div>
               <div className="mt-1.5 flex items-center justify-between text-slate-500">
                 <span className="flex items-center gap-1"><Truck aria-hidden className="size-3.5" /> أجرة التوصيل (تقديري)</span>
-                <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(deliveryFee)} د.ع</span>
+                {qualifiesFree ? (
+                  <span className="font-bold text-emerald-600 dark:text-emerald-400">مجاني</span>
+                ) : (
+                  <span className="tabular-nums text-slate-800 dark:text-slate-100">{money(deliveryFee)} د.ع</span>
+                )}
               </div>
               <div className="mt-2 flex justify-between border-t border-slate-100 pt-2 text-base font-extrabold dark:border-slate-800">
                 <span>الإجمالي</span>

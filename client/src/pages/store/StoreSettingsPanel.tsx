@@ -3,17 +3,22 @@
  * فتح/إغلاق المتجر (يوقف الطلب مؤقتاً)، شريط إعلان أعلى المتجر، رقم واتساب.
  */
 import { useEffect, useState } from "react";
-import { Loader2, Megaphone, Phone, Power, Save } from "lucide-react";
+import { Loader2, Megaphone, Phone, Power, Save, Truck } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 
 export default function StoreSettingsPanel() {
   const utils = trpc.useUtils();
   const q = trpc.storeAdmin.settings.get.useQuery();
-  const [form, setForm] = useState({ isOpen: true, announcement: "", whatsappNumber: "" });
+  const [form, setForm] = useState({ isOpen: true, announcement: "", whatsappNumber: "", freeShippingThreshold: "" });
 
   useEffect(() => {
-    if (q.data) setForm({ isOpen: q.data.isOpen, announcement: q.data.announcement ?? "", whatsappNumber: q.data.whatsappNumber ?? "" });
+    if (q.data) setForm({
+      isOpen: q.data.isOpen,
+      announcement: q.data.announcement ?? "",
+      whatsappNumber: q.data.whatsappNumber ?? "",
+      freeShippingThreshold: q.data.freeShippingThreshold ? String(Number(q.data.freeShippingThreshold)) : "",
+    });
   }, [q.data]);
 
   const m = trpc.storeAdmin.settings.update.useMutation({
@@ -57,7 +62,13 @@ export default function StoreSettingsPanel() {
         <input value={form.whatsappNumber} onChange={(e) => setForm({ ...form, whatsappNumber: e.target.value })} dir="ltr" placeholder="+9647XXXXXXXXX" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-left outline-none focus:ring-2 focus:ring-primary/30" />
       </label>
 
-      <button onClick={() => m.mutate({ isOpen: form.isOpen, announcement: form.announcement || null, whatsappNumber: form.whatsappNumber || null })} disabled={m.isPending} className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
+      <label className="block text-sm">
+        <span className="mb-1 flex items-center gap-1.5 font-medium text-muted-foreground"><Truck aria-hidden className="size-4" /> عتبة التوصيل المجاني بالدينار (اختياري)</span>
+        <input value={form.freeShippingThreshold} onChange={(e) => setForm({ ...form, freeShippingThreshold: e.target.value.replace(/[^\d.]/g, "") })} inputMode="numeric" dir="ltr" placeholder="مثال: 50000 (اتركه فارغاً للتعطيل)" className="w-full rounded-lg border border-border bg-background px-3 py-2 text-left outline-none focus:ring-2 focus:ring-primary/30" />
+        <span className="mt-1 block text-xs text-muted-foreground">إن بلغ طلب الزبون هذا المبلغ ⇒ توصيل مجاني (يرفع متوسط قيمة الطلب).</span>
+      </label>
+
+      <button onClick={() => m.mutate({ isOpen: form.isOpen, announcement: form.announcement || null, whatsappNumber: form.whatsappNumber || null, freeShippingThreshold: form.freeShippingThreshold ? String(Number(form.freeShippingThreshold)) : null })} disabled={m.isPending} className="flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
         {m.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />} حفظ الإعدادات
       </button>
     </div>

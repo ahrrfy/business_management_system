@@ -1542,6 +1542,8 @@ export const storeSettings = mysqlTable("storeSettings", {
   isOpen: boolean("isOpen").default(true).notNull(),
   announcement: varchar("announcement", { length: 500 }),
   whatsappNumber: varchar("whatsappNumber", { length: 20 }),
+  // عتبة التوصيل المجاني (AOV): إن بلغ المجموع الفرعي هذا الحدّ ⇒ أجرة توصيل صفر. null/0 = معطّل.
+  freeShippingThreshold: decimal("freeShippingThreshold", { precision: 15, scale: 2 }),
   updatedBy: int("updatedBy").references(() => users.id),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });

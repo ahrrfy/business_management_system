@@ -463,6 +463,13 @@
       "when": 1783760001000,
       "tag": "0065_store_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 66,
+      "version": "5",
+      "when": 1783760002000,
+      "tag": "0066_store_free_shipping",
+      "breakpoints": true
     }
   ]
 }

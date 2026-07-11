@@ -11,9 +11,11 @@ export interface StoreSettingsValue {
   isOpen: boolean;
   announcement: string | null;
   whatsappNumber: string | null;
+  /** عتبة التوصيل المجاني (د.ع نصّاً)؛ null/"0" = معطّل. */
+  freeShippingThreshold: string | null;
 }
 
-const DEFAULTS: StoreSettingsValue = { isOpen: true, announcement: null, whatsappNumber: null };
+const DEFAULTS: StoreSettingsValue = { isOpen: true, announcement: null, whatsappNumber: null, freeShippingThreshold: null };
 
 export async function getStoreSettings(): Promise<StoreSettingsValue> {
   const db = getDb();
@@ -24,6 +26,7 @@ export async function getStoreSettings(): Promise<StoreSettingsValue> {
     isOpen: !!row.isOpen,
     announcement: row.announcement ?? null,
     whatsappNumber: row.whatsappNumber ?? null,
+    freeShippingThreshold: row.freeShippingThreshold ?? null,
   };
 }
 
@@ -37,6 +40,8 @@ export async function updateStoreSettings(
       isOpen: input.isOpen ?? (existing ? !!existing.isOpen : DEFAULTS.isOpen),
       announcement: input.announcement !== undefined ? (input.announcement || null) : existing?.announcement ?? null,
       whatsappNumber: input.whatsappNumber !== undefined ? (input.whatsappNumber || null) : existing?.whatsappNumber ?? null,
+      freeShippingThreshold:
+        input.freeShippingThreshold !== undefined ? (input.freeShippingThreshold || null) : existing?.freeShippingThreshold ?? null,
     };
     if (existing) {
       await tx.update(storeSettings).set({ ...next, updatedBy: userId }).where(eq(storeSettings.id, 1));
