@@ -12,10 +12,11 @@
  */
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { deliveryParties, invoices, onlineOrderItems, onlineOrders } from "../../../drizzle/schema";
+import { deliveryParties, invoiceItems, invoices, onlineOrderItems, onlineOrders } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
-import type { Actor } from "../tx";
+import { returnSale } from "../returnService";
+import { withTx, type Actor } from "../tx";
 
 export interface DispatchOnlineOrderInput {
   onlineOrderId: number;
@@ -110,8 +111,25 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
     await db.update(onlineOrders).set({ invoiceId }).where(eq(onlineOrders.id, order.id)); // ربط فوري (استرداد)
   }
 
-  // ② إسناد جهة التوصيل + الحالة SHIPPED (تظهر في شاشة المندوب).
-  await db.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, order.id));
+  // ② مطالبة ذرّية بالطلب (SHIPPED) تحت قفل الصفّ + إعادة فحص عدم الإلغاء المتزامن (مراجعة عدائية ١٢/٧):
+  //    لولاها لأمكن لإلغاءٍ متزامن أن يقع بين إنشاء الفاتورة وربطها فيُحييَ هذا التحديثُ طلباً مُلغى.
+  const claim = await withTx(async (tx) => {
+    const cur = (await tx.select({ status: onlineOrders.status }).from(onlineOrders).where(eq(onlineOrders.id, order.id)).for("update").limit(1))[0];
+    if (cur?.status === "CANCELLED") return { cancelled: true as const };
+    await tx.update(onlineOrders).set({ deliveryPartyId: input.partyId, status: "SHIPPED" }).where(eq(onlineOrders.id, order.id));
+    return { cancelled: false as const };
+  });
+
+  // أُلغي أثناء الإرسال ⇒ نعكس الفاتورة المُنشأة حديثاً (إعادة مخزون + عكس بيع + تصفير ذمّة) فلا تبقى
+  //    فاتورة يتيمة على طلبٍ مُلغى. idempotent بمفتاح فريد. الطلب يبقى CANCELLED (كما تركه الإلغاء).
+  if (claim.cancelled) {
+    const invItems = await db.select({ id: invoiceItems.id, baseQuantity: invoiceItems.baseQuantity, returnedBaseQuantity: invoiceItems.returnedBaseQuantity }).from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
+    const lines = invItems.map((i) => ({ invoiceItemId: Number(i.id), baseQuantity: Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0) })).filter((l) => l.baseQuantity > 0);
+    if (lines.length > 0) {
+      await returnSale({ invoiceId, lines, refund: null, restock: true, clientRequestId: `dispatch-cancelled:${order.id}` }, { userId: actor.userId, branchId, role: actor.role });
+    }
+    throw new TRPCError({ code: "CONFLICT", message: "أُلغي الطلب أثناء الإرسال — أُعيدت البضاعة للمخزون ولم يُرسَل" });
+  }
 
   return { orderId: order.id, invoiceId, invoiceNumber, partyId: input.partyId, total };
 }

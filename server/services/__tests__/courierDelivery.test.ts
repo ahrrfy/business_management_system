@@ -15,6 +15,7 @@ import { getDb } from "../../db";
 import { createSale } from "../saleService";
 import { confirmCourierDelivery, createDeliveryParty, failCourierDelivery, listMyDeliveries, resolveCourierPartyId, setDeliveryPartyActive, updateDeliveryParty } from "../deliveryService";
 import { setOnlineOrderStatus } from "../storeAdmin/orderFulfillmentService";
+import { dispatchOnlineOrder } from "../storeAdmin/dispatchOnlineOrder";
 import { adjustCustomerBalance } from "../ledgerService";
 import { money } from "../money";
 import { withTx } from "../tx";
@@ -86,6 +87,24 @@ async function shippedOrder(qty: number, orderNumber: string, partyId: number, f
   });
   const orderId = Number((await d.select({ id: s.onlineOrders.id }).from(s.onlineOrders).where(eq(s.onlineOrders.orderNumber, orderNumber)).limit(1))[0].id);
   return { orderId, invoiceId: sale.invoiceId, total };
+}
+
+/** يُهيّئ طلب متجر مؤكَّداً (CONFIRMED) بلا فاتورة — الحالة التي يستقبلها dispatchOnlineOrder. */
+async function confirmedOrder(qty: number, orderNumber: string, fee = "0"): Promise<{ orderId: number; total: string }> {
+  const d = db();
+  const subtotal = qty * 10;
+  const total = (subtotal + Number(fee)).toFixed(2);
+  await d.insert(s.onlineOrders).values({
+    orderNumber, customerId: 1, branchId: 1,
+    subtotal: subtotal.toFixed(2), shippingCost: Number(fee).toFixed(2), taxAmount: "0", total,
+    status: "CONFIRMED", shippingAddress: "بغداد - الكرادة", governorate: "baghdad",
+  });
+  const orderId = Number((await d.select({ id: s.onlineOrders.id }).from(s.onlineOrders).where(eq(s.onlineOrders.orderNumber, orderNumber)).limit(1))[0].id);
+  await d.insert(s.onlineOrderItems).values({
+    onlineOrderId: orderId, variantId: 1, productUnitId: 1,
+    quantity: String(qty), baseQuantity: qty, unitPrice: "10.00", total: subtotal.toFixed(2),
+  });
+  return { orderId, total };
 }
 
 async function order(id: number) {
@@ -277,6 +296,37 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     expect(await customerBalance(1)).toBe("0.00");
     expect(await partyBalance(partyA)).toBe("3020.00"); // عهدة = الكامل
     expect((await invoice(o.invoiceId)).status).toBe("PAID");
+    await reconcileClean();
+  });
+
+  it("dispatchOnlineOrder: طلبٌ مؤكَّد ⇒ فاتورة ONLINE + خصم مخزون + SHIPPED + أجرة على الفاتورة + مطابِقات نظيفة", async () => {
+    const { partyA } = await seedParties();
+    const stockBefore = await stockOf(1);
+    const o = await confirmedOrder(2, "ORD-DSP1", "3000"); // subtotal 20 + شحن 3000
+    const res = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA }, MANAGER);
+    expect(res.total).toBe("3020.00");
+    const row = await order(o.orderId);
+    expect(row.status).toBe("SHIPPED"); // المطالبة الذرّية تحت القفل ضبطت الحالة
+    expect(Number(row.invoiceId)).toBe(res.invoiceId);
+    expect(Number(row.deliveryPartyId)).toBe(partyA);
+    const inv = await invoice(res.invoiceId);
+    expect(inv.total).toBe("3020.00"); // الأجرة على رأس الفاتورة (لا تُفقَد)
+    expect(inv.sourceType).toBe("ONLINE");
+    expect(await customerBalance(1)).toBe("3020.00"); // AR = order.total (COD)
+    expect(await stockOf(1)).toBe(stockBefore - 2); // خُصم المخزون فعلاً
+    await reconcileClean();
+  });
+
+  it("dispatchOnlineOrder idempotent: إعادة الإرسال ⇒ alreadyDispatched بلا ازدواج فاتورة/مخزون/ذمّة", async () => {
+    const { partyA } = await seedParties();
+    const o = await confirmedOrder(1, "ORD-DSP2");
+    const r1 = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA }, MANAGER);
+    const stockAfter = await stockOf(1);
+    const r2 = await dispatchOnlineOrder({ onlineOrderId: o.orderId, partyId: partyA }, MANAGER);
+    expect(r2.alreadyDispatched).toBe(true);
+    expect(r2.invoiceId).toBe(r1.invoiceId); // نفس الفاتورة
+    expect(await stockOf(1)).toBe(stockAfter); // لا خصم ثانٍ
+    expect(await customerBalance(1)).toBe("10.00"); // ذمّة مرّة واحدة
     await reconcileClean();
   });
 });

@@ -56,6 +56,61 @@ interface CartLine {
   qty: number;
 }
 
+// حفظ السلة + بيانات التوصيل محلياً (مراجعة عدائية ١٢/٧): كان تحديث الصفحة/العودة للتطبيق يفرّغ
+// السلة والنموذج فيهجر الزبون الطلب. نُبقيهما في localStorage فيستأنف الزبون من حيث توقّف.
+type CheckoutForm = { name: string; phone: string; governorate: string; address: string; notes: string };
+const DEFAULT_FORM: CheckoutForm = { name: "", phone: "+964 ", governorate: "baghdad", address: "", notes: "" };
+const CART_STORAGE_KEY = "alroya-store-cart-v1";
+const CHECKOUT_STORAGE_KEY = "alroya-store-checkout-v1";
+
+function loadCart(): Map<number, CartLine> {
+  const m = new Map<number, CartLine>();
+  try {
+    const raw = localStorage.getItem(CART_STORAGE_KEY);
+    if (!raw) return m;
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return m;
+    for (const l of arr as CartLine[]) {
+      if (l && typeof l.productUnitId === "number" && typeof l.qty === "number" && l.qty > 0) m.set(l.productUnitId, l);
+    }
+  } catch {
+    /* تالف/محظور (وضع خاص) — سلّة فارغة */
+  }
+  return m;
+}
+function saveCart(cart: Map<number, CartLine>) {
+  try {
+    const arr = Array.from(cart.values());
+    if (arr.length === 0) localStorage.removeItem(CART_STORAGE_KEY);
+    else localStorage.setItem(CART_STORAGE_KEY, JSON.stringify(arr));
+  } catch {
+    /* تخزين ممتلئ/محظور — تجاهل */
+  }
+}
+function loadForm(): CheckoutForm {
+  try {
+    const raw = localStorage.getItem(CHECKOUT_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_FORM };
+    const f = JSON.parse(raw) as Partial<CheckoutForm>;
+    return {
+      name: typeof f.name === "string" ? f.name : DEFAULT_FORM.name,
+      phone: typeof f.phone === "string" && f.phone ? f.phone : DEFAULT_FORM.phone,
+      governorate: typeof f.governorate === "string" ? f.governorate : DEFAULT_FORM.governorate,
+      address: typeof f.address === "string" ? f.address : DEFAULT_FORM.address,
+      notes: typeof f.notes === "string" ? f.notes : DEFAULT_FORM.notes,
+    };
+  } catch {
+    return { ...DEFAULT_FORM };
+  }
+}
+function saveForm(form: CheckoutForm) {
+  try {
+    localStorage.setItem(CHECKOUT_STORAGE_KEY, JSON.stringify(form));
+  } catch {
+    /* تجاهل */
+  }
+}
+
 function money(v: string | number | null): string {
   if (v == null || v === "") return "0";
   return fmtInt(v);
@@ -84,9 +139,9 @@ export default function Storefront() {
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
-  const [cart, setCart] = useState<Map<number, CartLine>>(new Map());
+  const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
 
-  const [form, setForm] = useState({ name: "", phone: "+964 ", governorate: "baghdad", address: "", notes: "" });
+  const [form, setForm] = useState<CheckoutForm>(loadForm);
   const [clientRequestId, setClientRequestId] = useState<string>("");
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
 
@@ -94,6 +149,14 @@ export default function Storefront() {
     const t = setTimeout(() => setSearch(rawSearch.trim()), 350);
     return () => clearTimeout(t);
   }, [rawSearch]);
+
+  // استمرار السلة + بيانات التوصيل عبر تحديث الصفحة/إغلاق التطبيق (localStorage).
+  useEffect(() => {
+    saveCart(cart);
+  }, [cart]);
+  useEffect(() => {
+    saveForm(form);
+  }, [form]);
 
   const categoriesQ = trpc.storefront.categories.useQuery(undefined, { staleTime: 5 * 60 * 1000 });
   const offersQ = trpc.storefront.offers.useQuery(undefined, { staleTime: 5 * 60 * 1000 });

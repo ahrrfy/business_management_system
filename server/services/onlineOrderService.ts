@@ -13,7 +13,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   branchStock,
   customers,
@@ -211,23 +211,35 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     const total = round2(subtotal.plus(deliveryFee));
 
     // ③ find-or-create عميل نقدي بالهاتف (creditLimit "0" = نقدي فقط، لا ائتمان).
+    // GET_LOCK بالهاتف (نمط nextInvoiceNumber): يُسلسِل طلبَين أوّلَين متزامنَين بنفس الهاتف فلا
+    // يُدرَج عميلان متكرّران (مراجعة عدائية ١٢/٧). يُحرَّر في finally داخل نفس المعاملة/الاتصال.
+    const custLock = `online-customer:${phone}`;
+    const lockRes = (await tx.execute(sql`SELECT GET_LOCK(${custLock}, 5) AS locked`)) as unknown;
+    const lockedRow = Array.isArray(lockRes) ? (lockRes[0] as { locked?: number }[])?.[0] : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
+    if (!lockedRow || Number(lockedRow.locked) !== 1) {
+      throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "تعذّر تأمين إنشاء العميل — أعد المحاولة" });
+    }
     let customerId: number;
-    const existingCust = (
-      await tx.select({ id: customers.id, name: customers.name }).from(customers).where(eq(customers.phone, phone)).limit(1)
-    )[0];
-    if (existingCust) {
-      customerId = Number(existingCust.id);
-    } else {
-      const insCust = await tx.insert(customers).values({
-        name,
-        phone,
-        customerType: "فرد",
-        defaultPriceTier: RETAIL,
-        creditLimit: "0",
-        currentBalance: "0",
-        isActive: true,
-      });
-      customerId = extractInsertId(insCust);
+    try {
+      const existingCust = (
+        await tx.select({ id: customers.id, name: customers.name }).from(customers).where(eq(customers.phone, phone)).limit(1)
+      )[0];
+      if (existingCust) {
+        customerId = Number(existingCust.id);
+      } else {
+        const insCust = await tx.insert(customers).values({
+          name,
+          phone,
+          customerType: "فرد",
+          defaultPriceTier: RETAIL,
+          creditLimit: "0",
+          currentBalance: "0",
+          isActive: true,
+        });
+        customerId = extractInsertId(insCust);
+      }
+    } finally {
+      await tx.execute(sql`SELECT RELEASE_LOCK(${custLock})`);
     }
 
     // ④ إنشاء الطلب (PENDING) — رقمٌ مؤقّت فريد ثم ORD-{id} (بلا سباق ترقيم).
