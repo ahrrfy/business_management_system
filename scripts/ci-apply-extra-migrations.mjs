@@ -53,6 +53,7 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0070_invoice_delivery_fee.sql",
   "drizzle/migrations/0071_category_store_fields.sql",
   "drizzle/migrations/0072_product_store_merchandising.sql",
+  "drizzle/migrations/0073_promotion_store_managed.sql",
 ];
 
 const url = process.env.DATABASE_URL;

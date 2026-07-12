@@ -43,6 +43,8 @@ export interface CreatePromotionInput {
   minLineAmount?: string;
   priority?: number;
   targets?: PromotionTargetInput[];
+  /** 0073: true = عرض متجر إلكترونيّ (أونلاين فقط — يُستثنى من تسعير الكاشير). افتراضي false. */
+  isStoreManaged?: boolean;
 }
 
 function assertShape(input: CreatePromotionInput) {
@@ -101,6 +103,7 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
     minLineAmount: toDbMoney(input.minLineAmount ?? "0"),
     priority: input.priority ?? 0,
     isActive: true,
+    isStoreManaged: input.isStoreManaged ?? false,
     createdBy: actorUserId,
   });
   const promotionId = extractInsertId(res);
@@ -138,6 +141,8 @@ interface ResolveLineInput {
   hasContractPrice: boolean;
   /** تاريخ يوم البيع بصيغة YYYY-MM-DD (لا datetime) — يفرض حبيبة اليوم المحلي (B8). */
   todayYmd: string;
+  /** 0073: هل تُدرَج عروض المتجر (isStoreManaged)؟ الكاشير=false (أونلاين فقط)، المتجر=true. افتراضي false. */
+  includeStoreManaged?: boolean;
 }
 
 /**
@@ -183,6 +188,9 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
         or(isNull(promotions.customerTier), eq(promotions.customerTier, input.customerTier))!,
         // B11: minLineAmount NOT NULL على المخطّط، لكن نُعامل NULL كصفر دفاعاً لبيانات قديمة.
         lte(promotions.minLineAmount, toDbMoney(lineAmount)),
+        // 0073: عروض المتجر (isStoreManaged) أونلاين فقط ⇒ يستثنيها الكاشير افتراضياً (منع خصمها بيعَ
+        // الكاشير للمفرد على نفس الفرع+الفئة). المتجر يمرّر includeStoreManaged=true فيدرِجها.
+        input.includeStoreManaged ? undefined : eq(promotions.isStoreManaged, false),
       ),
     );
   if (!candidates.length) return null;

@@ -41,7 +41,13 @@ import {
   setProductStoreVisible,
   setStoreProductStock,
 } from "../services/storeAdmin/storeCatalogService";
+import {
+  createStorePromotion,
+  deactivateStorePromotion,
+  listStorePromotions,
+} from "../services/storeAdmin/storePromotionService";
 import { resolveStorefrontBranchId } from "../services/storefrontService";
+import { withTx } from "../services/tx";
 
 const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]);
 
@@ -271,10 +277,65 @@ const catalogRouter = router({
     }),
 });
 
+/** اليوم بحبيبة بغداد (UTC+3) بصيغة YYYY-MM-DD — نفس نافذة storefrontOffers/resolvePromotionForLine. */
+function baghdadTodayYmd(): string {
+  const bag = new Date(Date.now() + 3 * 60 * 60 * 1000);
+  return bag.toISOString().slice(0, 10);
+}
+
+/** عروض/خصومات المتجر (لوحة hPanel). العرض المتجريّ = RETAIL على فرع المتجر ⇒ يظهر تلقائياً في المتجر. */
+const promotionsRouter = router({
+  list: storeReadProcedure
+    .input(z.object({ includeInactive: z.boolean().default(false) }))
+    .query(async ({ input }) => {
+      // فرع المتجر = فرع الواجهة نفسه دائماً (كـcreate/deactivate/storefront) — لا يُشتَقّ من فرع
+      // المُشاهِد (scopedBranchId) وإلا لرأى مستخدم READ على فرعٍ آخر عروضاً خاطئة/فارغة (مراجعة ١٣/٧).
+      const branchId = await resolveStorefrontBranchId(undefined);
+      return listStorePromotions({ branchId, includeInactive: input.includeInactive, todayYmd: baghdadTodayYmd() });
+    }),
+  create: storeManagerProcedure
+    .input(z.object({
+      name: z.string().min(1).max(255),
+      description: z.string().max(2000).nullish(),
+      type: z.enum(["PERCENT", "AMOUNT"]),
+      discountPercent: z.string().regex(/^\d+(\.\d{1,2})?$/, "نسبة غير صالحة").optional(),
+      discountAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+      scope: z.enum(["ALL", "CATEGORIES", "PRODUCTS"]),
+      effectiveFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح"),
+      effectiveTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح").nullish(),
+      minLineAmount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح").optional(),
+      priority: z.number().int().min(0).max(999).optional(),
+      targets: z.array(z.object({
+        categoryId: z.number().int().positive().nullish(),
+        productId: z.number().int().positive().nullish(),
+        variantId: z.number().int().positive().nullish(),
+      })).max(500).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = await resolveStorefrontBranchId(undefined);
+      const promotionId = await withTx((tx) => createStorePromotion(tx, input, ctx.user.id, branchId));
+      await logAudit(ctx, {
+        action: "store.promotion.create",
+        entityType: "promotion",
+        entityId: promotionId,
+        newValue: { name: input.name, type: input.type, scope: input.scope, branchId },
+      });
+      return { promotionId };
+    }),
+  deactivate: storeManagerProcedure
+    .input(z.object({ promotionId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      await withTx((tx) => deactivateStorePromotion(tx, input.promotionId));
+      await logAudit(ctx, { action: "store.promotion.deactivate", entityType: "promotion", entityId: input.promotionId });
+      return { ok: true };
+    }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
   settings: settingsRouter,
   categories: categoriesRouter,
   catalog: catalogRouter,
+  promotions: promotionsRouter,
 });

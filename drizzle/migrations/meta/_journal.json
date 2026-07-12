@@ -512,6 +512,13 @@
       "when": 1783760008000,
       "tag": "0072_product_store_merchandising",
       "breakpoints": true
+    },
+    {
+      "idx": 73,
+      "version": "5",
+      "when": 1783760009000,
+      "tag": "0073_promotion_store_managed",
+      "breakpoints": true
     }
   ]
 }

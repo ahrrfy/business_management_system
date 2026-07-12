@@ -207,6 +207,7 @@ async function applyStorefrontPromotions(list: StorefrontProduct[], branchId: nu
         lineAmount: price.toFixed(2),
         hasContractPrice: false,
         todayYmd,
+        includeStoreManaged: true, // 0073: المتجر يُدرِج عروضه المتجرية (أونلاين) بخلاف الكاشير
       });
       if (res) {
         const eff = price.minus(money(res.discountForUnit));

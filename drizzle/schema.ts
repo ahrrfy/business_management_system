@@ -875,6 +875,9 @@ export const promotions = mysqlTable(
     minLineAmount: decimal("minLineAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     priority: int("priority").default(0).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
+    // قناة العرض (0073): true = عرض متجر إلكترونيّ (من لوحة hPanel، أونلاين فقط — يُستثنى من تسعير
+    // الكاشير). false = عرض كاشير/إدارة عامّ (السلوك السابق). يميّز القناتين إذ يتطابق branch+tier.
+    isStoreManaged: boolean("isStoreManaged").default(false).notNull(),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
