@@ -8,7 +8,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
-import { Field, MarginBadge, MiniBarcode, ScanButton } from "@/components/product/variantBits";
+import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -326,46 +326,91 @@ export default function SimpleProductEditForm({
                 : st === "dupInForm" ? "باركود مكرّر داخل النموذج."
                   : st === "invalid" ? "خانة تحقّق EAN-13 غير مطابقة — يُقبل مع ذلك (قد يكون كود Code128 داخليّاً)."
                     : st === "valid" ? "باركود EAN-13 صالح." : "";
+            // لون نصّ حالة الباركود المرئيّ (a11y): أحمر للحاصر، كهرماني للتحذير، أخضر للصالح.
+            const bcHelpColor =
+              st === "takenInDb" || st === "dupInForm"
+                ? "text-red-600 dark:text-red-400"
+                : st === "invalid"
+                  ? "text-amber-600 dark:text-amber-400"
+                  : "text-emerald-600 dark:text-emerald-400";
             return (
-              <div key={u.id} className="rounded-lg border bg-muted/10 p-3 space-y-3">
-                <div className="flex flex-wrap items-end gap-3">
-                  <Field label="الوحدة" className="flex-1 min-w-[140px]">
-                    <Input className="h-8 text-sm" value={u.name} onChange={(e) => patchUnit(u.id, { name: e.target.value })} placeholder="قطعة / نسخة / علبة" dir="auto" />
-                  </Field>
-                  <Field label="معامل التحويل" className="w-24">
-                    <Input className="h-8 text-sm" dir="ltr" disabled={u.isBase} value={u.isBase ? "1" : u.factor} onChange={(e) => patchUnit(u.id, { factor: onlyDigits(e.target.value) })} placeholder="12" />
-                  </Field>
-                  <label className="flex items-center gap-1.5 text-xs h-8">
+              <div key={u.id} className="rounded-lg border bg-muted/20 p-3 space-y-2">
+                {/* هوية الوحدة: الاسم + المعامل + وحدة الأساس + الحذف — شبكة محاذاة واحدة */}
+                <div className="grid grid-cols-12 gap-2 items-center">
+                  <Input
+                    className="col-span-12 sm:col-span-5 h-8 text-sm"
+                    value={u.name}
+                    onChange={(e) => patchUnit(u.id, { name: e.target.value })}
+                    placeholder="اسم الوحدة (قطعة / درزن / كرتون)"
+                    dir="auto"
+                    aria-label="اسم الوحدة"
+                  />
+                  <div className="col-span-5 sm:col-span-3 flex items-center gap-1.5">
+                    <span className="text-xs text-muted-foreground whitespace-nowrap">معامل ×</span>
+                    <Input
+                      className="h-8 text-sm text-center"
+                      dir="ltr"
+                      inputMode="numeric"
+                      disabled={u.isBase}
+                      value={u.isBase ? "1" : u.factor}
+                      onChange={(e) => patchUnit(u.id, { factor: onlyDigits(e.target.value) })}
+                      placeholder="12"
+                      title="كم وحدة أساس في هذه الوحدة (درزن = ١٢)"
+                      aria-label="معامل التحويل"
+                    />
+                  </div>
+                  <label className="col-span-5 sm:col-span-3 flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
                     <input type="radio" name="simpleEditBaseUnit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} aria-label="الوحدة الأساس" />
                     وحدة أساس
                   </label>
-                  <button type="button" onClick={() => removeUnit(u.id)} disabled={units.length <= 1} className="h-8 inline-flex items-center text-muted-foreground hover:text-destructive disabled:opacity-30" aria-label="حذف الوحدة" title="حذف الوحدة"><X aria-hidden className="size-4" /></button>
+                  <div className="col-span-2 sm:col-span-1 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => removeUnit(u.id)}
+                      disabled={units.length <= 1}
+                      className="inline-flex h-8 items-center text-muted-foreground hover:text-destructive disabled:opacity-30"
+                      aria-label="حذف الوحدة"
+                      title="حذف الوحدة"
+                    >
+                      <X aria-hidden className="size-4" />
+                    </button>
+                  </div>
                 </div>
-                <Field label="الباركود" hint={bcTitle || "امسح أو اكتب باركود هذه الوحدة. «بدائل» = باركودات إضافية لنفس السلعة (نفس التكلفة/السعر/المخزون)."}>
-                  <div className="flex items-center gap-2 flex-wrap">
+
+                {/* الباركود (بعرض معقول) + مسح + بدائل، والأسعار — في شبكة واحدة محاذاة */}
+                <div className="grid grid-cols-12 gap-2 items-center">
+                  <div className="col-span-12 sm:col-span-6 flex items-center gap-1.5">
                     <Input
-                      className={cn("h-8 font-mono text-xs min-w-[200px]", bcCls)}
+                      className={cn("h-8 font-mono text-xs flex-1 min-w-0", bcCls)}
                       dir="ltr"
                       inputMode="numeric"
                       value={u.barcode}
                       onChange={(e) => patchUnit(u.id, { barcode: e.target.value })}
-                      placeholder="باركود الوحدة"
+                      placeholder="باركود الوحدة (اختياري)…"
                       title={bcTitle}
+                      aria-label="باركود الوحدة"
                       aria-invalid={st === "takenInDb" || st === "dupInForm"}
+                      aria-describedby={bcTitle ? `simpleedit-bc-help-${u.id}` : undefined}
                     />
-                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("621") })} />
-                    <UnitBarcodeAliases
-                      variantId={variantId.current}
-                      unitName={u.name}
-                    />
-                    {code && <div className="bg-white rounded p-1 hidden sm:flex justify-center items-center min-w-[130px] min-h-[42px]"><MiniBarcode value={code} height={30} /></div>}
+                    <ScanButton onClick={() => patchUnit(u.id, { barcode: genEan13("621") })} title="توليد باركود EAN-13 صالح" />
+                    <UnitBarcodeAliases variantId={variantId.current} unitName={u.name} />
                   </div>
-                </Field>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <Field label="سعر المفرد"><MoneyInput className="h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" /></Field>
-                  <Field label="سعر الجملة"><MoneyInput className="h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" /></Field>
-                  <Field label="سعر الحكومي"><MoneyInput className="h-8 text-sm" value={u.government} onChange={(v) => patchUnit(u.id, { government: v })} placeholder="حكومي" /></Field>
-                  <div className="flex items-end pb-1.5"><MarginBadge cost={uCost} sell={u.retail} /></div>
+                  <MoneyInput ariaLabel="سعر المفرد" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.retail} onChange={(v) => patchUnit(u.id, { retail: v })} placeholder="مفرد" />
+                  <MoneyInput ariaLabel="سعر الجملة" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.wholesale} onChange={(v) => patchUnit(u.id, { wholesale: v })} placeholder="جملة" />
+                  <MoneyInput ariaLabel="سعر الحكومي" className="col-span-4 sm:col-span-2 h-8 text-sm" value={u.government} onChange={(v) => patchUnit(u.id, { government: v })} placeholder="حكومي" />
+                </div>
+
+                {/* حالة الباركود مرئيّة + مربوطة بـaria-describedby لقارئ الشاشة */}
+                {bcTitle && (
+                  <p id={`simpleedit-bc-help-${u.id}`} className={cn("text-[11px] ps-0.5", bcHelpColor)}>
+                    {bcTitle}
+                  </p>
+                )}
+
+                {/* سطر تلميح خفيف: تسمية أعمدة السعر + هامش المفرد */}
+                <div className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground ps-0.5">
+                  <span className="hidden sm:block">الأسعار: مفرد · جملة · حكومي (د.ع)</span>
+                  <span className="flex items-center gap-1.5">هامش المفرد: <MarginBadge cost={uCost} sell={u.retail} /></span>
                 </div>
               </div>
             );
