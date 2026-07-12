@@ -1,6 +1,13 @@
 // تصدير أي صفوف إلى Excel أو CSV — للمالك/المحاسب (§٢ تقليل الجهد).
 // استُبدل xlsx@0.18.5 المهجور (CVE-2023-30533: Prototype Pollution + ReDoS) بـexceljs المُصان.
 //
+// «أين أحفظ؟» (طلب المالك ١٢/٧): حوار «حفظ باسم» حقيقي عبر File System Access API
+// (Chrome/Edge) يسأل المستخدم المكانَ والاسم. **يجب** فتح الحوار متزامناً داخل إيماءة
+// النقر (transient activation) قبل أي await — لذلك تقبل exportRows/exportSheets دالةَ
+// جلبٍ بدل المصفوفة (القوائم المُصفّحة): الحوار يُفتح فوراً والجلب يجري بالتوازي.
+// المتصفحات غير الداعمة (Firefox/Safari) تسقط تلقائياً للتنزيل التقليدي (مجلد التنزيلات)،
+// وإلغاء المستخدم للحوار يُلغي التصدير بصمت (لا تنزيل خلفياً).
+//
 // Excel احترافي (ترقية ٢٧/٦): رأس عناوين عريض ملوّن + تجميد + اتجاه RTL للورقة + عرض أعمدة
 // تلقائي + تنسيق مالي رقمي (#,##0 ⇒ مجاميع Excel تعمل) + كتلة ترويسة (عنوان/فلاتر) + صفّ مجاميع.
 // كلّها اختيارية ⇒ متوافق رجعياً مع كل المستدعين القائمين.
@@ -15,6 +22,7 @@
 // (انظر exportRows/exportSheets). كانت import استاتيكية ⇒ كل صفحة تستورد هذا الملف (وكثيرٌ منها
 // عبر ListToolbar/DataTable) تجلب 936KB eager بلا داعٍ — مساهمٌ كبير في بطء فتح الصفحات.
 import type ExcelJS from "exceljs";
+import { notify } from "@/lib/notify";
 
 export type ExportColumn<T> = {
   key: keyof T | string;
@@ -181,50 +189,107 @@ function buildSheet<T>(wb: ExcelJS.Workbook, spec: SheetSpec<T>): void {
   ws.headerFooter = { oddFooter: "&C&P / &N", evenFooter: "&C&P / &N" };
 }
 
-async function downloadWorkbook(wb: ExcelJS.Workbook, filename: string): Promise<void> {
-  const buf = await wb.xlsx.writeBuffer();
-  downloadBlob(
-    new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
-    filename,
-  );
+/* ──────────── مصرف الحفظ: حوار «حفظ باسم» (Chrome/Edge) أو التنزيل التقليدي ──────────── */
+
+const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+
+// أنواع محلية دنيا لـFile System Access API (غير مكتملة في lib.dom).
+type SaveWritable = { write(data: Blob): Promise<void>; close(): Promise<void> };
+type SaveFileHandle = { createWritable(): Promise<SaveWritable> };
+type SavePickerOptions = { suggestedName?: string; types?: Array<{ description?: string; accept: Record<string, string[]> }> };
+type SaveSink = { kind: "picker"; handle: Promise<SaveFileHandle> } | { kind: "anchor" };
+
+/**
+ * يفتح حوار «حفظ باسم» — **متزامناً داخل إيماءة النقر** (بعد await يرفضه المتصفح بـSecurityError
+ * فيسقط للتنزيل التقليدي داخل writeToSink). غير الداعم (Firefox/Safari) ⇒ anchor مباشرة.
+ */
+function acquireSaveSink(filename: string, description: string, mime: string, ext: string): SaveSink {
+  const w = window as unknown as { showSaveFilePicker?: (o: SavePickerOptions) => Promise<SaveFileHandle> };
+  if (typeof w.showSaveFilePicker !== "function") return { kind: "anchor" };
+  const handle = w.showSaveFilePicker({
+    suggestedName: filename,
+    types: [{ description, accept: { [mime]: [ext] } }],
+  });
+  handle.catch(() => {}); // يمنع unhandledrejection إن ألغى المستخدم الحوار قبل جاهزية البيانات
+  return { kind: "picker", handle };
 }
 
-/** يُصدّر صفوفاً إلى Excel (منسّق) أو CSV. void (لا Promise) للحفاظ على عقد المستدعين القائمين. */
-export function exportRows<T>(rows: T[], opts: ExportOptions<T>): void {
-  const stamp = new Date().toISOString().slice(0, 10);
-
-  if ((opts.format ?? "xlsx") === "csv") {
-    const csv = "﻿" + toCsv(rows, opts.columns); // BOM لقراءة العربية في Excel
-    downloadBlob(new Blob([csv], { type: "text/csv;charset=utf-8" }), `${opts.filename}-${stamp}.csv`);
-    return;
+/** يكتب الملف في المصرف: اختيار المستخدم (مع توست تأكيد) أو التنزيل التقليدي عند التعذّر. */
+async function writeToSink(sink: SaveSink, blob: Blob, filename: string): Promise<void> {
+  if (sink.kind === "picker") {
+    try {
+      const handle = await sink.handle;
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      notify.ok(`حُفظ الملف: ${filename}`);
+      return;
+    } catch (e) {
+      if ((e as DOMException)?.name === "AbortError") return; // المستخدم ألغى — لا تنزيل خلفياً
+      // SecurityError (انتهاء إيماءة النقر) أو فشل كتابة ⇒ سقوط للتنزيل التقليدي.
+      console.warn("[export] save picker unavailable, falling back to download:", e);
+    }
   }
+  downloadBlob(blob, filename);
+}
 
-  // تحميل exceljs ديناميكياً عند التصدير فقط (حُزمة منفصلة لا تُثقل فتح الصفحات).
+/**
+ * يُصدّر صفوفاً إلى Excel (منسّق) أو CSV. void (لا Promise) للحفاظ على عقد المستدعين القائمين.
+ * تقبل مصفوفةً جاهزة أو **دالة جلب** (القوائم المُصفّحة): مرّر الدالة نفسها لا نتيجتها —
+ * حوار الحفظ يُفتح فوراً داخل إيماءة النقر بينما يجري الجلب بالتوازي.
+ */
+export function exportRows<T>(rowsOrFetch: T[] | (() => Promise<T[]>), opts: ExportOptions<T>): void {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const format = opts.format ?? "xlsx";
+  const filename = `${opts.filename}-${stamp}.${format}`;
+  const sink =
+    format === "csv"
+      ? acquireSaveSink(filename, "CSV", "text/csv", ".csv")
+      : acquireSaveSink(filename, "Excel", XLSX_MIME, ".xlsx");
+
   void (async () => {
     try {
+      const rows = typeof rowsOrFetch === "function" ? await (rowsOrFetch as () => Promise<T[]>)() : rowsOrFetch;
+      if (typeof rowsOrFetch === "function" && rows.length === 0) {
+        notify.err("لا بيانات للتصدير");
+        return;
+      }
+      if (format === "csv") {
+        const csv = "﻿" + toCsv(rows, opts.columns); // BOM لقراءة العربية في Excel
+        await writeToSink(sink, new Blob([csv], { type: "text/csv;charset=utf-8" }), filename);
+        return;
+      }
+      // تحميل exceljs ديناميكياً عند التصدير فقط (حُزمة منفصلة لا تُثقل فتح الصفحات).
       const { default: ExcelJS } = await import("exceljs");
       const wb = new ExcelJS.Workbook();
       buildSheet(wb, { ...opts, rows });
-      await downloadWorkbook(wb, `${opts.filename}-${stamp}.xlsx`);
+      const buf = await wb.xlsx.writeBuffer();
+      await writeToSink(sink, new Blob([buf], { type: XLSX_MIME }), filename);
     } catch (e) {
-      console.error("[export.xlsx] failed:", e);
+      console.error("[export] failed:", e);
+      notify.err(e);
     }
   })();
 }
 
 /** يُصدّر عدّة أوراق في مصنّف واحد (حزمة المحاسب الشهرية). كل عنصر ورقة منسّقة مستقلّة. */
-export function exportSheets(filename: string, sheets: SheetSpec[]): void {
+export function exportSheets(filename: string, sheetsOrFetch: SheetSpec[] | (() => Promise<SheetSpec[]>)): void {
   const stamp = new Date().toISOString().slice(0, 10);
-  // تحميل exceljs ديناميكياً عند التصدير فقط.
+  const full = `${filename}-${stamp}.xlsx`;
+  const sink = acquireSaveSink(full, "Excel", XLSX_MIME, ".xlsx");
   void (async () => {
     try {
+      const sheets = typeof sheetsOrFetch === "function" ? await sheetsOrFetch() : sheetsOrFetch;
+      // تحميل exceljs ديناميكياً عند التصدير فقط.
       const { default: ExcelJS } = await import("exceljs");
       const wb = new ExcelJS.Workbook();
       if (!sheets.length) wb.addWorksheet("فارغة");
       for (const sheet of sheets) buildSheet(wb, sheet);
-      await downloadWorkbook(wb, `${filename}-${stamp}.xlsx`);
+      const buf = await wb.xlsx.writeBuffer();
+      await writeToSink(sink, new Blob([buf], { type: XLSX_MIME }), full);
     } catch (e) {
       console.error("[export.xlsx] failed:", e);
+      notify.err(e);
     }
   })();
 }
