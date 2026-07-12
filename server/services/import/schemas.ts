@@ -83,6 +83,9 @@ export const productImportRow = z.object({
   // isBaseUnit بلا افتراض هنا: افتراضه المشروط يُنفَّذ في مرحلة التجميع (§٥.١ — التحقق الصفّي لا يرى سياق المجموعة).
   isBaseUnit: z.boolean().optional(),
   barcode: z.string().trim().max(64).optional(),
+  // بدائل الباركود (نفس السلعة بعدّة باركودات): سلسلة مفصولة بـ«،» أو «,» — تُفكَّك وتُدقَّق في importProducts.
+  // مرآة عمود «بدائل الباركود» في تصدير شاشة المنتجات (ذهاب-إياب كامل).
+  barcodeAliases: z.string().trim().max(2000).optional(),
   priceTier: priceTier.optional(),
   price: moneyStr.optional(),
   // أسعار صريحة (§٤.٢/§٥.٣): قيمة 0 أو فارغة ⇒ لا يُنشأ سعر لهذه الفئة.

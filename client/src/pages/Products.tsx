@@ -253,10 +253,16 @@ export default function Products() {
                       .then((r) => ({ rows: r.rows, total: r.total })),
                   { pageSize: 500 },
                 ),
+              // الترويسات مرآة حقول الاستيراد (labels/aliases في importFields.ts) ⇒ الملف المُصدَّر
+              // يُربط تلقائياً عند إعادة استيراده — ذهاب-إياب كامل (يشمل بدائل الباركود والبنية).
               columns: [
                 { key: "productName", header: "المنتج" },
+                { key: "categoryName", header: "الفئة" },
+                { key: "sku", header: "SKU" },
                 { key: "variantName", header: "المتغيّر", map: (r) => r.variantName ?? r.color ?? r.sku ?? "" },
                 { key: "unitName", header: "الوحدة" },
+                { key: "conversionFactor", header: "معامل التحويل", map: (r) => r.conversionFactor ?? "" },
+                { key: "isBaseUnit", header: "وحدة الأساس", map: (r) => (r.isBaseUnit == null ? "" : r.isBaseUnit ? "نعم" : "لا") },
                 { key: "barcode", header: "الباركود" },
                 { key: "barcodeAliases", header: "بدائل الباركود", map: (r) => (r.barcodeAliases ?? []).join("، ") },
                 { key: "price", header: "السعر مفرد", map: (r) => (r.price != null ? Number(r.price) : "") },
