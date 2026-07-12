@@ -70,30 +70,28 @@ export function ListToolbar<T>({
   const exportDisabled =
     !exportSpec || exporting || (!exportSpec.fetchAll && exportSpec.rows.length === 0);
 
-  async function doExport(format: "xlsx" | "csv") {
+  // متزامنة عمداً: exportRows تفتح حوار «حفظ باسم» داخل إيماءة النقر نفسها —
+  // أي await هنا قبلها (كجلب fetchAll) يُبطل الإيماءة فيسقط الحوار للتنزيل التقليدي.
+  function doExport(format: "xlsx" | "csv") {
     if (!exportSpec) return;
-    let rows = exportSpec.rows;
-    if (exportSpec.fetchAll) {
-      setExporting(true);
-      try {
-        rows = await exportSpec.fetchAll();
-      } catch (e) {
-        notify.err(e);
-        setExporting(false);
-        return;
-      }
-      setExporting(false);
-    }
-    if (rows.length === 0) {
-      notify.err("لا بيانات للتصدير");
-      return;
-    }
-    exportRows(rows, {
+    const opts = {
       filename: exportSpec.filename,
       columns: exportSpec.columns,
       sheetName: exportSpec.sheetName,
       format,
-    });
+    };
+    if (!exportSpec.fetchAll) {
+      if (exportSpec.rows.length === 0) {
+        notify.err("لا بيانات للتصدير");
+        return;
+      }
+      exportRows(exportSpec.rows, opts);
+      return;
+    }
+    // نمرّر دالة الجلب نفسها: الحوار يُفتح فوراً والجلب يجري بالتوازي (المؤشّر يبقى يعمل).
+    const fetchAll = exportSpec.fetchAll;
+    setExporting(true);
+    exportRows(() => fetchAll().finally(() => setExporting(false)), opts);
   }
 
   return (
@@ -140,10 +138,10 @@ export function ListToolbar<T>({
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 {formats.includes("xlsx") && (
-                  <DropdownMenuItem onSelect={() => void doExport("xlsx")}>Excel (.xlsx)</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => doExport("xlsx")}>Excel (.xlsx)</DropdownMenuItem>
                 )}
                 {formats.includes("csv") && (
-                  <DropdownMenuItem onSelect={() => void doExport("csv")}>CSV (.csv)</DropdownMenuItem>
+                  <DropdownMenuItem onSelect={() => doExport("csv")}>CSV (.csv)</DropdownMenuItem>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>
@@ -152,7 +150,7 @@ export function ListToolbar<T>({
               variant="outline"
               size="sm"
               disabled={exportDisabled}
-              onClick={() => void doExport(formats[0])}
+              onClick={() => doExport(formats[0])}
             >
               {exporting ? <Loader2 className="size-4 animate-spin" /> : <FileSpreadsheet className="size-4" />}
               {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
