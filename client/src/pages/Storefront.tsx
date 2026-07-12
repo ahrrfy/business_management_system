@@ -232,6 +232,67 @@ function ProductRow({
   );
 }
 
+/** بنر إعلانيّ ديناميكيّ: كاروسيل يتبدّل تلقائياً كل ٥ث (crossfade آمنٌ لـRTL) + نقاط تنقّل +
+ *  ارتفاعٌ متجاوب (auto-scale). يُشتقّ من بنرات لوحة hPanel؛ بنرٌ واحد ⇒ يُعرَض ثابتاً بلا نقاط. */
+type BannerItem = { id: number; title: string; subtitle?: string | null; imageUrl?: string | null; ctaLabel?: string | null; ctaUrl?: string | null };
+function BannerCarousel({ banners }: { banners: BannerItem[] }) {
+  const [cur, setCur] = useState(0);
+  useEffect(() => {
+    if (banners.length <= 1) return;
+    const t = setInterval(() => setCur((i) => (i + 1) % banners.length), 5000);
+    return () => clearInterval(t);
+  }, [banners.length]);
+  if (banners.length === 0) return null;
+  const active = cur % banners.length;
+  return (
+    <section className="mb-4">
+      <div className="relative h-44 overflow-hidden rounded-3xl shadow-md sm:h-56 md:h-64 lg:h-72">
+        {banners.map((b, i) => {
+          const inner = (
+            <>
+              {b.imageUrl ? (
+                <img src={b.imageUrl} alt={b.title} className="h-full w-full object-cover" />
+              ) : (
+                <div className="h-full w-full bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500" />
+              )}
+              <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-black/25 to-transparent p-5 text-white sm:p-7">
+                <p className="text-lg font-extrabold leading-tight sm:text-2xl md:text-3xl">{b.title}</p>
+                {b.subtitle && <p className="mt-1 max-w-[90%] text-xs text-white/90 sm:text-sm md:text-base">{b.subtitle}</p>}
+                {b.ctaLabel && (
+                  <span className="mt-2.5 inline-flex w-fit items-center gap-1 rounded-full bg-amber-400 px-4 py-1.5 text-xs font-extrabold text-amber-950 shadow sm:text-sm">
+                    {b.ctaLabel}
+                  </span>
+                )}
+              </div>
+            </>
+          );
+          return (
+            <div key={b.id} className={`absolute inset-0 transition-opacity duration-700 ${i === active ? "opacity-100" : "pointer-events-none opacity-0"}`}>
+              {b.ctaUrl ? (
+                <a href={b.ctaUrl} className="block h-full w-full">{inner}</a>
+              ) : (
+                <div className="h-full w-full">{inner}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {banners.length > 1 && (
+        <div className="mt-2.5 flex justify-center gap-1.5">
+          {banners.map((b, i) => (
+            <button
+              key={b.id}
+              onClick={() => setCur(i)}
+              aria-label={`الانتقال للبنر ${i + 1}`}
+              className={`h-1.5 rounded-full transition-all ${i === active ? "w-5 bg-emerald-600" : "w-1.5 bg-emerald-200 dark:bg-slate-700"}`}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
 type Panel = null | "cart" | "checkout" | "confirmation";
 
 export default function Storefront() {
@@ -477,37 +538,7 @@ export default function Storefront() {
           <>
             {/* البنرات المُدارة (لوحة hPanel) — أو الهيرو الافتراضي إن لم توجد */}
             {banners.length > 0 ? (
-              <section className="mb-4 flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                {banners.map((b) => {
-                  const inner = (
-                    <>
-                      {b.imageUrl ? (
-                        <img src={b.imageUrl} alt={b.title} className="h-36 w-full object-cover" />
-                      ) : (
-                        <div className="flex h-36 w-full items-center justify-center bg-gradient-to-l from-emerald-600 to-teal-500" />
-                      )}
-                      <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 to-transparent p-4 text-white">
-                        <p className="text-base font-extrabold leading-tight">{b.title}</p>
-                        {b.subtitle && <p className="mt-0.5 text-xs text-white/90">{b.subtitle}</p>}
-                        {b.ctaLabel && (
-                          <span className="mt-2 inline-flex w-fit items-center gap-1 rounded-full bg-amber-400 px-3 py-1 text-xs font-extrabold text-amber-950">
-                            {b.ctaLabel}
-                          </span>
-                        )}
-                      </div>
-                    </>
-                  );
-                  return b.ctaUrl ? (
-                    <a key={b.id} href={b.ctaUrl} className="relative block min-w-[85%] shrink-0 overflow-hidden rounded-3xl shadow-md sm:min-w-[70%]">
-                      {inner}
-                    </a>
-                  ) : (
-                    <div key={b.id} className="relative min-w-[85%] shrink-0 overflow-hidden rounded-3xl shadow-md sm:min-w-[70%]">
-                      {inner}
-                    </div>
-                  );
-                })}
-              </section>
+              <BannerCarousel banners={banners} />
             ) : (
               <section className="relative mb-4 overflow-hidden rounded-3xl bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500 p-5 text-white shadow-lg shadow-emerald-600/20">
                 <Sparkles aria-hidden className="absolute -left-3 -top-3 size-24 opacity-15" />
