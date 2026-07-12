@@ -57,6 +57,7 @@ export type ProductImportRow = {
   conversionFactor?: string; // اختياري — افتراضه «1»
   isBaseUnit?: boolean; // افتراضه المشروط في مرحلة تجميع الخادم (صف وحيد بلا تحديد ⇒ أساس)
   barcode?: string;
+  barcodeAliases?: string; // بدائل الباركود مفصولة بـ«،» أو «,» — مرآة عمود التصدير (ذهاب-إياب)؛ تُدمَج إضافياً على الموجود
   priceTier?: "RETAIL" | "WHOLESALE" | "GOVERNMENT"; // قديم — يبقى للتوافق
   price?: string; // قديم — يبقى للتوافق
   retailPrice?: string; // «سعر البيع» — 0 أو فارغ ⇒ لا يُنشأ سعر للفئة

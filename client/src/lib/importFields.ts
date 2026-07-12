@@ -314,7 +314,8 @@ export const PRODUCT_FIELDS: ImportField<ProductImportRow>[] = [
     type: "string",
     required: true,
     // «الاسم» هي ترويسة ملف الأصناف الفعلية (٩٤١٥ صفاً) — بدونها يُحظر زر الاستيراد بـ«حقول مطلوبة غير مربوطة».
-    aliases: ["product", "product name", "name", "الاسم", "اسم الصنف"],
+    // «المنتج» = ترويسة تصدير شاشة المنتجات (ذهاب-إياب: الملف المُصدَّر يُربط تلقائياً).
+    aliases: ["product", "product name", "name", "الاسم", "اسم الصنف", "المنتج"],
     maxLen: 255,
     example: "ورق A4 80غرام",
   },
@@ -409,6 +410,16 @@ export const PRODUCT_FIELDS: ImportField<ProductImportRow>[] = [
     example: "6935403104236",
   },
   {
+    key: "barcodeAliases",
+    label: "بدائل الباركود",
+    type: "string",
+    // مفصولة بـ«،» أو «,» — مرآة عمود «بدائل الباركود» في تصدير شاشة المنتجات (ذهاب-إياب كامل).
+    // على منتج موجود: تُدمَج البدائل الجديدة إضافياً (لا حذف)؛ على جديد: تُنشأ مع الوحدة.
+    aliases: ["بدائل", "باركودات بديلة", "aliases", "barcode aliases", "alias"],
+    maxLen: 2000,
+    example: "6935403104243، 6935403104250",
+  },
+  {
     key: "priceTier",
     label: "فئة السعر",
     type: "enum",
@@ -434,7 +445,8 @@ export const PRODUCT_FIELDS: ImportField<ProductImportRow>[] = [
     label: "سعر البيع",
     type: "money",
     // قيمة 0 أو فارغة ⇒ لا يُنشأ سعر لهذه الفئة (سلوك الخادم).
-    aliases: ["سعر المفرد", "retail", "retail price"],
+    // «السعر مفرد» = ترويسة تصدير شاشة المنتجات (ذهاب-إياب).
+    aliases: ["سعر المفرد", "السعر مفرد", "retail", "retail price"],
     example: "3500",
   },
   {
