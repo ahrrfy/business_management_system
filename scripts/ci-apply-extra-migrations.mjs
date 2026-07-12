@@ -37,6 +37,20 @@ const EXTRA_MIGRATIONS = [
   // على CI أنشأ الجدول بلا قيد FK فَسقط اختبار A3 (حذف الوحدة لم يُلقِ بدائلها) — إعادة تطبيق
   // idempotent لضمان القيود على CI. راجع ذاكرة «db:push ينشئ جداول عارية عند فشله النصفي».
   "drizzle/migrations/0062_product_unit_barcode_aliases.sql",
+  // ١١/٧/٢٦: حقول متجر الجوال B2C (COD) على onlineOrders — أعمدة عادية + UNIQUE على عمود
+  // غير-FK؛ نُعيد تطبيقها idempotently (INFORMATION_SCHEMA) لضمان وجودها على CI بعد db:push.
+  "drizzle/migrations/0063_online_order_cod_fields.sql",
+  // ١١/٧/٢٦: إدارة المتجر (لوحة hPanel) — جدولا storeBanners/storeSettings (بنرات + إعدادات).
+  "drizzle/migrations/0064_store_banners.sql",
+  "drizzle/migrations/0065_store_settings.sql",
+  "drizzle/migrations/0066_store_free_shipping.sql",
+  "drizzle/migrations/0067_online_order_delivery_party.sql",
+  // ١٢/٧/٢٦: دور courier + ربط جهة التوصيل بحساب (deliveryParties.userId). enum ALTER + عمود/UNIQUE/FK
+  // محروسة idempotently — نُعيد تطبيقها لضمان وجودها على CI بعد db:push (لا يُمثّل توسيع enum موثوقاً).
+  "drizzle/migrations/0068_courier_role_and_party_user.sql",
+  // ١٢/٧/٢٦: سبب إلغاء طلب المتجر (cancelReason) — «تعذّر التسليم» للمندوب. عمود عادي محروس idempotently.
+  "drizzle/migrations/0069_online_order_cancel_reason.sql",
+  "drizzle/migrations/0070_invoice_delivery_fee.sql",
 ];
 
 const url = process.env.DATABASE_URL;

@@ -1,8 +1,8 @@
 /**
  * shared/permissions.ts — نموذج الصلاحيات المشترك بين الخادم والعميل.
  *
- * الأدوار العشرة: admin / manager / accountant / cashier / warehouse /
- *                 purchasing / print_operator / sales_rep / auditor / user
+ * الأدوار الأحد عشر: admin / manager / accountant / cashier / warehouse /
+ *                 purchasing / print_operator / sales_rep / auditor / courier / user
  *
  * كل وحدة لها مستوى وصول: FULL / READ / NONE.
  * التخزين في DB هو فقط الانحرافات عن القالب (permissionsOverride).
@@ -21,6 +21,7 @@ export type RoleKey =
   | "print_operator"
   | "sales_rep"
   | "auditor"
+  | "courier"
   | "user";
 
 export interface RoleInfo {
@@ -41,6 +42,7 @@ export const ROLES: RoleInfo[] = [
   { key: "print_operator", label: "فني مطبعة",           description: "طلبات خدمة العملاء والطباعة فقط" },
   { key: "sales_rep",      label: "مندوب مبيعات",        description: "عروض أسعار ومتابعة عملاء بلا صندوق" },
   { key: "auditor",        label: "مدقّق / مراجع",       description: "قراءة كل شيء بلا كتابة — للمراجعة الخارجية" },
+  { key: "courier",        label: "مندوب توصيل",         description: "توصيل طلبات المتجر وتحصيل COD — شاشة «توصيلاتي» فقط" },
   { key: "user",           label: "مستخدم عام",          description: "قراءة فقط لمعظم الوحدات" },
 ];
 
@@ -57,6 +59,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "inventory",    label: "المخزون والأرصدة",  description: "حركات المخزون، التحويلات، الجرد" },
   { key: "workorders",   label: "خدمة العملاء",       description: "إنشاء ومتابعة طلبات خدمة العملاء (طباعة وتخصيص)" },
   { key: "channels",     label: "القنوات والوارد",     description: "صندوق الوارد الموحّد (واتساب/إنستغرام/المتجر) والمحادثات" },
+  { key: "store",        label: "المتجر الإلكتروني",   description: "طلبات المتجر الإلكترونية: تثبيتها وطباعة الملصقات، والبنرات وإعدادات المتجر" },
   { key: "treasury",     label: "الخزينة والمدفوعات",  description: "لوحة الخزينة، السندات، التحويلات النقدية، الورديات" },
   { key: "customers",    label: "العملاء",            description: "إدارة العملاء وكشوف الحساب" },
   { key: "suppliers",    label: "الموردون",           description: "إدارة الموردين وكشوف الحساب" },
@@ -66,6 +69,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "assets",       label: "الأصول الثابتة",      description: "سجلّ الأصول، العهدة، الإهلاك، الصيانة، الاستبعاد" },
   { key: "hr",           label: "الموارد البشرية",     description: "الموظفون، الحضور، الرواتب، الإجازات، التوظيف" },
   { key: "commissions",  label: "الأهداف والعمولات",   description: "خطط العمولات، الأهداف الشهرية، احتساب واعتماد عمولات البائعين" },
+  { key: "courier",      label: "توصيلاتي (المندوب)",  description: "شاشة المندوب الذاتية: طلباتي، تأكيد التسليم والتحصيل، عهدتي" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
 ];
@@ -82,6 +86,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "FULL", settings: "FULL",
   },
   manager: {
+    store: "FULL",
     assets: "FULL",
     hr: "FULL",
     commissions: "FULL",
@@ -90,6 +95,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   accountant: {
+    store: "READ",
     assets: "READ",
     hr: "READ",
     // READ: يراجع تشغيلات العمولة والأهداف بلا كتابة (الاحتساب/الاعتماد مديريان).
@@ -99,6 +105,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   cashier: {
+    store: "FULL",
     assets: "NONE",
     hr: "NONE",
     // NONE: الكاشير يرى أداءه الذاتي فقط عبر «أدائي» (protectedProcedure) لا عبر الوحدة.
@@ -139,6 +146,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   sales_rep: {
+    store: "FULL",
     assets: "NONE",
     hr: "NONE",
     // NONE: كالكاشير — أداؤه الذاتي عبر «أدائي»؛ إدارة الخطط والأهداف مديرية.
@@ -148,6 +156,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   auditor: {
+    store: "READ",
     assets: "READ",
     hr: "READ",
     commissions: "READ",
@@ -161,6 +170,15 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "READ", workorders: "READ", channels: "NONE", treasury: "NONE",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "NONE", reports: "READ",
+    users: "NONE", settings: "NONE",
+  },
+  courier: {
+    // مندوب توصيل ذاتي الخدمة: يرى «توصيلاتي» فقط (courier=FULL). كل الوحدات الأخرى NONE —
+    // بياناته (اسم/هاتف/عنوان الزبون + COD) تأتي من نقاط courier الذاتية لا من وحدات العملاء/المبيعات.
+    courier: "FULL",
+    store: "NONE", assets: "NONE", hr: "NONE", commissions: "NONE",
+    pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "NONE", treasury: "NONE",
+    customers: "NONE", suppliers: "NONE", products: "NONE", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
 };

@@ -281,7 +281,11 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     let returnedTotal: Decimal;
     if (fullyReturned) {
       // Last-installment remainder: cumulative returns equal the original exactly.
-      const invoiceRevenue = money(inv.subtotal).minus(money(inv.discountAmount));
+      // إيراد الفاتورة الأصلي = (المجموع الفرعي − الخصم) + أجرة الشحن — مطابقٌ تماماً لقيد SALE
+      // (create.ts: revenue = subtotal − discount + deliveryFee). عكسُ الشحن على الإرجاع الكامل فقط
+      // (لا الجزئي: الشحن يُستحقّ حتى لو أُرجِع بعض البنود) ⇒ يبقى Σ(revenue)=Σ(profit)=0 عند الإرجاع
+      // الكامل، وصفراً للفواتير بلا شحن (deliveryFee=0) فلا تغيّر سلوكيّ (مراجعة عدائية ١٢/٧).
+      const invoiceRevenue = money(inv.subtotal).minus(money(inv.discountAmount)).plus(money(inv.deliveryFee ?? "0"));
       returnedRevenue = round2(invoiceRevenue.minus(priorRevenue));
       returnedTax = round2(money(inv.taxAmount).minus(priorTax));
       returnedTotal = round2(money(inv.total).minus(priorTotal));

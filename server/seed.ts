@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { assetCustodyLog, assetMaintenance, branches, categories, employees, fixedAssets, productVariants, products, suppliers, users } from "../drizzle/schema";
+import { assetCustodyLog, assetMaintenance, branches, categories, deliveryParties, employees, fixedAssets, productVariants, products, suppliers, users } from "../drizzle/schema";
 import { isStrongPassword } from "../shared/const";
 import { hashPassword } from "./auth/password";
 import { getDb } from "./db";
@@ -104,6 +104,41 @@ async function seed() {
     }
     console.log("✓ بذرة الإنتاج اكتملت: مدير + فرعان + فئات أساس (بلا عيّنات).");
     return;
+  }
+
+  // ===== مندوب توصيل تجريبي (دور courier) + جهة توصيل مرتبطة به — لاختبار شاشة «توصيلاتي» =====
+  // تطوير فقط (بعد isProd return). idempotent بالبريد + ربط الجهة بحساب المندوب (deliveryParties.userId).
+  const courierEmail = "courier@alroya.local";
+  let courier = (await db.select().from(users).where(eq(users.email, courierEmail)).limit(1))[0];
+  if (!courier) {
+    await db.insert(users).values({
+      openId: `local_${nanoid()}`,
+      email: courierEmail,
+      username: "courier",
+      name: "مندوب التوصيل التجريبي",
+      passwordHash: hashPassword(process.env.ADMIN_PASSWORD ?? "Admin@12345"),
+      role: "courier",
+      loginMethod: "local",
+      branchId: mainBranch ? Number(mainBranch.id) : null,
+      sessionsValidFrom: new Date(Date.now() - 2000),
+    });
+    courier = (await db.select().from(users).where(eq(users.email, courierEmail)).limit(1))[0];
+    console.log(`✓ seeded courier user: ${courierEmail}`);
+  }
+  if (courier) {
+    const linked = (await db.select().from(deliveryParties).where(eq(deliveryParties.userId, Number(courier.id))).limit(1))[0];
+    if (!linked) {
+      await db.insert(deliveryParties).values({
+        partyType: "INDIVIDUAL",
+        name: "مندوب التوصيل التجريبي",
+        phone: "+9647801112233",
+        userId: Number(courier.id),
+        branchId: mainBranch ? Number(mainBranch.id) : null,
+        defaultFee: "3000",
+        isActive: true,
+      });
+      console.log("✓ linked delivery party to courier user");
+    }
   }
 
   // ===== موظفون + أصول ثابتة (عيّنة تطوير واقعية) — idempotent =====

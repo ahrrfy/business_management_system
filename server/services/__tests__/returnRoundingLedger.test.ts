@@ -125,6 +125,59 @@ describe("F6 — تصافُر الدفتر عند المرتجع الكامل ل
   });
 });
 
+// عكس أجرة الشحن (مراجعة عدائية ١٢/٧): بيع COD بأجرة شحن يعترف قيد SALE بالشحن ضمن revenue
+// (create.ts: revenue = subtotal − discount + deliveryFee). كان المرتجع الكامل يعكس (subtotal − discount)
+// فقط ⇒ يترك إيراد شحنٍ وهميّاً (Σ(revenue)>0) على طلبٍ أُلغِيَ كلياً — يظهر في «تعذّر التسليم» وعكس
+// سباق الإرسال والمرتجع اليدوي. الإصلاح: عمود invoices.deliveryFee مُخزَّن ويُعكَس عند الإرجاع الكامل.
+describe("عكس أجرة الشحن — Σ(revenue)=Σ(profit)=0 عند الإرجاع الكامل لفاتورةٍ بأجرة", () => {
+  it("بيع بأجرة شحن ٣٠٠٠ ثم مرتجع كامل ⇒ الشحن يُعكَس (لا إيرادٌ وهميّ) والقيد متّسق", async () => {
+    await reset();
+    await seed("10000.00");
+    await db().insert(s.customers).values({ id: 1, name: "عميل COD", currentBalance: "0", creditLimit: "9999999.00" });
+    const sale = await createSale(
+      { branchId: 1, customerId: 1, priceTier: "RETAIL", sourceType: "ONLINE",
+        deliveryFee: "3000", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] },
+      actor,
+    );
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
+    expect(inv.total).toBe("13000.00"); // subtotal 10000 + شحن 3000
+    expect(inv.deliveryFee).toBe("3000.00"); // مُخزَّنة صراحةً
+    expect(money(await sumCol(sale.invoiceId, "revenue")).toFixed(2)).toBe("13000.00"); // SALE يشمل الشحن
+
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    const ret = await returnSale(
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: null, restock: true },
+      actor,
+    );
+    expect(ret.fullyReturned).toBe(true);
+    expect(money(await sumCol(sale.invoiceId, "revenue")).isZero()).toBe(true); // ← كان يترك +3000 وهميّاً
+    expect(money(await sumCol(sale.invoiceId, "profit")).isZero()).toBe(true);
+    // قيد RETURN متّسق داخلياً: revenue + tax = amount (كان يختلف بمقدار الشحن قبل الإصلاح).
+    const retEntry = (await db().select().from(s.accountingEntries)
+      .where(sql`${s.accountingEntries.invoiceId}=${sale.invoiceId} AND ${s.accountingEntries.entryType}='RETURN'`))[0];
+    expect(money(retEntry.revenue).plus(money(retEntry.taxAmount)).toFixed(2)).toBe(money(retEntry.amount).toFixed(2));
+  });
+
+  it("مرتجع جزئي لا يعكس الشحن (يُستحقّ)؛ المرتجع المُكمِل يعكسه ⇒ Σ=0 عند الاكتمال فقط", async () => {
+    await reset();
+    await seed("10000.00");
+    await db().insert(s.customers).values({ id: 1, name: "عميل COD", currentBalance: "0", creditLimit: "9999999.00" });
+    const sale = await createSale(
+      { branchId: 1, customerId: 1, priceTier: "RETAIL", sourceType: "ONLINE",
+        deliveryFee: "3000", lines: [{ variantId: 1, productUnitId: 1, quantity: "2" }] },
+      actor,
+    );
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: null, restock: true }, actor);
+    // بعد الجزئي: SALE(20000+3000) − RETURN جزئي(10000) = 13000 (الشحن باقٍ، لم يُعكَس).
+    expect(money(await sumCol(sale.invoiceId, "revenue")).toFixed(2)).toBe("13000.00");
+    const ret2 = await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: null, restock: true }, actor);
+    expect(ret2.fullyReturned).toBe(true);
+    expect(money(await sumCol(sale.invoiceId, "revenue")).isZero()).toBe(true); // الشحن عُكِس عند الاكتمال
+    expect(money(await sumCol(sale.invoiceId, "profit")).isZero()).toBe(true);
+  });
+});
+
 // #1 (تدقيق التثبيت): بعد مرتجع جزئي، «المتبقّي» الحقيقي = total − returnedTotal − paidAmount.
 // كانت الواجهة تعرض total − paidAmount (تتجاهل المرتجعات) فتُملّئ مبلغاً أكبر وتُضلّل الكاشير لتحصيلٍ
 // زائد غير مقصود ⇒ رصيد عميل سالب. الإصلاح واجهيّ (العرض) لا خادميّ — «الدفع الزائد المتعمَّد مسموح»

@@ -19,6 +19,7 @@ import { getDb, closeDb } from "./db";
 import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
+import { registerWellKnown } from "./wellKnown";
 import { csrfGuard } from "./middleware/csrf";
 import { isTrpcSurface, sendTrpcError, trpcAwareRateLimitHandler } from "./middleware/trpcError";
 import { printRouter } from "./printRoute";
@@ -149,6 +150,10 @@ async function startServer() {
     if (req.path.includes("vouchers.create")) {
       return express.json({ limit: "3mb" })(req, res, next);
     }
+    // بنرات المتجر تحمل صورة data-URL مضغوطة (نمط vouchers.create) ⇒ استثناء ٣mb لإنشائها/تعديلها.
+    if (req.path.includes("storeAdmin.banners")) {
+      return express.json({ limit: "3mb" })(req, res, next);
+    }
     // #9 (تدقيق التثبيت): system.restoreUpload يستقبل ملف نسخة احتياطية base64. الخدمة تقبل حتى
     // ٢٠٠MB مفكوكاً (maintenanceService.MAX_UPLOAD_BYTES) لكن هذا الوسيط كان يحبس عند ١MB ⇒ النسخ
     // الحقيقية لا تُستعاد أبداً. adminProcedure + كلمة مرور + رمز تأكيد ⇒ سطح DoS محدود بحساب مدير
@@ -245,6 +250,34 @@ async function startServer() {
       legacyHeaders: false,
       skip: (req) => !req.path.includes("recruitment.submit"),
       handler: rateLimitHandler("طلبات تقديم كثيرة، انتظر قليلاً ثم أعد المحاولة."),
+    })
+  );
+
+  // حدّ صارم على **كتابة الطلب** العلنية (storefront.createOrder) — إجراء كتابة بلا مصادقة
+  // ⇒ حماية من إغراق جدول الطلبات/إنشاء عملاء وهميين بالجملة. (يسبق الحدّ العام للقراءة.)
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.STOREFRONT_ORDER_RATE_LIMIT_MAX ?? 20),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("storefront.createOrder"),
+      handler: rateLimitHandler("طلبات كثيرة، انتظر قليلاً ثم أعد المحاولة."),
+    })
+  );
+
+  // حدّ على سطح المتجر العلني (storefront.*) — قراءة آمنة بلا مصادقة على الإنترنت ⇒ حماية من
+  // الكشط/الإغراق. سخيّ لأنه تصفّح (بطاقات + بحث + صفحة منتج) لكن مسقوف لكل IP.
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.STOREFRONT_RATE_LIMIT_MAX ?? 600),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("storefront."),
+      handler: rateLimitHandler("طلبات كثيرة على المتجر، انتظر قليلاً ثم أعد المحاولة."),
     })
   );
 
@@ -362,6 +395,10 @@ async function startServer() {
   };
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
   process.on("SIGINT", () => void shutdown("SIGINT"));
+
+  // Digital Asset Links لـTWA — يُسجَّل **قبل** catch-all الـSPA (setupVite/serveStatic) كي يعيد
+  // JSON لا index.html على /.well-known/assetlinks.json (تغليف أندرويد على Play).
+  registerWellKnown(app);
 
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);

@@ -47,10 +47,11 @@ export const users = mysqlTable(
     passwordHash: varchar("passwordHash", { length: 255 }),
     phone: varchar("phone", { length: 20 }),
     loginMethod: varchar("loginMethod", { length: 64 }).default("local"),
-    // الأدوار العشرة — إضافة قيم enum آمنة بلا فقد بيانات (MySQL INSTANT).
+    // الأدوار — إضافة قيم enum آمنة بلا فقد بيانات (MySQL INSTANT). courier (١٢/٧): مندوب توصيل
+    // ذاتي الخدمة (شاشة «توصيلاتي») — هجرة 0068.
     role: mysqlEnum("role", [
       "user", "admin", "manager", "cashier", "warehouse",
-      "accountant", "print_operator", "sales_rep", "purchasing", "auditor",
+      "accountant", "print_operator", "sales_rep", "purchasing", "auditor", "courier",
     ]).default("user").notNull(),
     branchId: bigint("branchId", { mode: "number" }),
     isActive: boolean("isActive").default(true),
@@ -106,10 +107,10 @@ export const roles = mysqlTable(
     key: varchar("key", { length: 64 }).notNull().unique(),
     label: varchar("label", { length: 120 }).notNull(),
     description: text("description"),
-    // الفئة الأساسية للبوّابات الخشنة — قيم enum الأدوار نفسها.
+    // الفئة الأساسية للبوّابات الخشنة — قيم enum الأدوار نفسها (يجب مطابقة users.role).
     baseRole: mysqlEnum("baseRole", [
       "user", "admin", "manager", "cashier", "warehouse",
-      "accountant", "print_operator", "sales_rep", "purchasing", "auditor",
+      "accountant", "print_operator", "sales_rep", "purchasing", "auditor", "courier",
     ]).default("user").notNull(),
     // خريطة الصلاحيات الكاملة {moduleKey: FULL|READ|NONE}.
     permissions: json("permissions").notNull(),
@@ -750,6 +751,10 @@ export const invoices = mysqlTable(
     costTotal: decimal("costTotal", { precision: 15, scale: 2 }).default("0").notNull(),
     // فرق تقريب النقد العراقي (±) للبيع النقدي الكامل؛ يُسجَّل أيضاً كقيد ADJUST ليتّسق الدفتر مع النقد المستلم.
     cashRoundingAdjustment: decimal("cashRoundingAdjustment", { precision: 15, scale: 2 }).default("0").notNull(),
+    // أجرة الشحن/التوصيل كإيراد على رأس الفاتورة (COD المتجر) — مُضمَّنة في total لا في subtotal، وقيد
+    // SALE يعترف بها ضمن revenue. تُخزَّن صراحةً (هجرة 0070) ليعكسها المرتجع الكامل بدقّة فيبقى
+    // Σ(revenue)=Σ(profit)=0 (مراجعة عدائية ١٢/٧: عكسٌ بلا هذا العمود كان يترك إيراد شحنٍ وهميّاً).
+    deliveryFee: decimal("deliveryFee", { precision: 15, scale: 2 }).default("0").notNull(),
     status: mysqlEnum("invoiceStatus", ["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).default("PENDING").notNull(),
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     // returnedTotal: مجموع ما أُرجِع من إجمالي الفاتورة (تراكميّ عبر مرتجعات جزئية).
@@ -1463,6 +1468,16 @@ export const onlineOrders = mysqlTable(
     status: mysqlEnum("orderStatus", ["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]).default("PENDING").notNull(),
     shippingAddress: text("shippingAddress"),
     trackingNumber: varchar("trackingNumber", { length: 100 }),
+    // حقول متجر الجوال B2C (COD) — أُضيفت في هجرة 0063. المحافظة تُحدّد الأجرة (shippingCost)
+    // والتوجيه؛ الإحداثيات لخريطة المندوب (شريحة ٥)؛ clientRequestId لمنع الطلب المكرّر (نقرة مزدوجة).
+    governorate: varchar("governorate", { length: 40 }),
+    latitude: decimal("latitude", { precision: 10, scale: 7 }),
+    longitude: decimal("longitude", { precision: 10, scale: 7 }),
+    clientRequestId: varchar("clientRequestId", { length: 80 }),
+    // جهة التوصيل المُسنَد إليها الطلب عند الإرسال (مندوب داخلي/شركة) — تغذّي شاشة المندوب (ش٥). هجرة 0067.
+    deliveryPartyId: bigint("deliveryPartyId", { mode: "number" }),
+    // سبب الإلغاء — يملؤه المندوب عند «تعذّر التسليم» (رفض الزبون/عنوان خاطئ...) ليراه الموظّف. هجرة 0069.
+    cancelReason: varchar("cancelReason", { length: 500 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -1470,6 +1485,8 @@ export const onlineOrders = mysqlTable(
     numberIdx: index("idx_order_number").on(table.orderNumber),
     customerIdx: index("idx_order_customer").on(table.customerId),
     statusIdx: index("idx_order_status").on(table.status),
+    clientReqUq: unique("uq_online_order_client_req").on(table.clientRequestId),
+    deliveryPartyIdx: index("idx_order_delivery_party").on(table.deliveryPartyId),
   })
 );
 
@@ -1496,6 +1513,52 @@ export const onlineOrderItems = mysqlTable(
 
 export type OnlineOrderItem = typeof onlineOrderItems.$inferSelect;
 export type InsertOnlineOrderItem = typeof onlineOrderItems.$inferInsert;
+
+// ═══════════════════════ إدارة المتجر (لوحة hPanel): بنرات + إعدادات ═══════════════════════
+/**
+ * storeBanners — بنرات ترويجية **يديرها الموظف** من لوحة المتجر (عنوان/وصف/صورة/زرّ/ترتيب/نافذة
+ * تاريخ). مستقلّة عن بنرات «عروض اليوم» المشتقّة تلقائياً من promotions (تُعرَض بجانبها في المتجر).
+ * الصورة data-URL مضغوط في mediumtext (نمط productImages.url). branchId=null ⇒ كل الفروع.
+ */
+export const storeBanners = mysqlTable(
+  "storeBanners",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    title: varchar("title", { length: 255 }).notNull(),
+    subtitle: varchar("subtitle", { length: 500 }),
+    imageUrl: mediumtext("imageUrl"),
+    ctaLabel: varchar("ctaLabel", { length: 120 }),
+    ctaUrl: varchar("ctaUrl", { length: 500 }),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    isActive: boolean("isActive").default(true).notNull(),
+    effectiveFrom: date("effectiveFrom", { mode: "string" }),
+    effectiveTo: date("effectiveTo", { mode: "string" }),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    activeSortIdx: index("idx_banner_active_sort").on(t.isActive, t.sortOrder),
+    branchIdx: index("idx_banner_branch").on(t.branchId),
+  })
+);
+export type StoreBanner = typeof storeBanners.$inferSelect;
+export type InsertStoreBanner = typeof storeBanners.$inferInsert;
+
+/** إعدادات المتجر (صفّ مفرد، نمط taxSettings): فتح/إغلاق المتجر، شريط إعلان، رقم واتساب. */
+export const storeSettings = mysqlTable("storeSettings", {
+  id: int("id").autoincrement().primaryKey(),
+  isOpen: boolean("isOpen").default(true).notNull(),
+  announcement: varchar("announcement", { length: 500 }),
+  whatsappNumber: varchar("whatsappNumber", { length: 20 }),
+  // عتبة التوصيل المجاني (AOV): إن بلغ المجموع الفرعي هذا الحدّ ⇒ أجرة توصيل صفر. null/0 = معطّل.
+  freeShippingThreshold: decimal("freeShippingThreshold", { precision: 15, scale: 2 }),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type StoreSettings = typeof storeSettings.$inferSelect;
+export type InsertStoreSettings = typeof storeSettings.$inferInsert;
 
 /* ============================ الموارد البشرية ============================ */
 
@@ -2774,6 +2837,9 @@ export const deliveryParties = mysqlTable(
     name: varchar("name", { length: 255 }).notNull(),
     phone: varchar("phone", { length: 20 }),
     phone2: varchar("phone2", { length: 20 }),
+    // ربط اختياري بحساب دخول (مندوب courier) ⇒ شاشة «توصيلاتي» الذاتية تحلّ partyId من ctx.user.
+    // فريد: حساب واحد لكل جهة (هجرة 0068). nullable ⇒ الجهات الخارجية/شركات التوصيل بلا حساب.
+    userId: int("userId").references(() => users.id),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     nationalId: varchar("nationalId", { length: 40 }),
     vehicleInfo: varchar("vehicleInfo", { length: 120 }),
@@ -2791,6 +2857,7 @@ export const deliveryParties = mysqlTable(
     nameIdx: index("idx_delivery_party_name").on(table.name),
     branchIdx: index("idx_delivery_party_branch").on(table.branchId),
     activeIdx: index("idx_delivery_party_active").on(table.isActive),
+    userUq: unique("uq_delivery_party_user").on(table.userId),
   }),
 );
 export type DeliveryParty = typeof deliveryParties.$inferSelect;

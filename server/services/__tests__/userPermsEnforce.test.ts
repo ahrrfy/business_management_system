@@ -129,13 +129,14 @@ describe("canSeeCost — أدوار ترى التكلفة", () => {
     expect(canSeeCost("print_operator")).toBe(false);
     expect(canSeeCost("sales_rep")).toBe(false);
     expect(canSeeCost("auditor")).toBe(false);
+    expect(canSeeCost("courier")).toBe(false);
     expect(canSeeCost("user")).toBe(false);
   });
 });
 
 describe("ALL_ROLES — تغطية كاملة", () => {
-  it("يحتوي على العشرة أدوار", () => {
-    expect(ALL_ROLES).toHaveLength(10);
+  it("يحتوي على الأحد عشر دوراً", () => {
+    expect(ALL_ROLES).toHaveLength(11);
   });
   it("كل دور له قالب في ROLE_TEMPLATES", () => {
     for (const r of ALL_ROLES) {

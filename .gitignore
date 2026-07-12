@@ -51,3 +51,8 @@ boot-diag.log
 
 # Database backups (local dumps — keep off git)
 backups/
+
+# TWA / Android (Bubblewrap) — نُبقي إعداد twa-manifest.json فقط؛ نتجاهل مشروع أندرويد المولَّد
+# ومفتاح التوقيع وحُزَم البناء (keystore/AAB/APK لا تُلتزم — أسرار + مخرجات بناء محلّية).
+twa/*
+!twa/twa-manifest.json

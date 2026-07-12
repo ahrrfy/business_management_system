@@ -1,6 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { branchScopedProcedure, cashierProcedure, managerProcedure, router } from "../trpc";
+import { cashierProcedure, deliveryReadProcedure, managerProcedure, router } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 import {
   createDeliveryParty,
@@ -8,6 +8,7 @@ import {
   getDeliveryParty,
   getDeliveryPartyStatement,
   listConsignmentsForParty,
+  listCourierAccounts,
   listDeliveryParties,
   listOpenConsignments,
   listReadyForDispatch,
@@ -54,18 +55,21 @@ async function assertPartyInScope(partyId: number, scopedBranchId: number | null
 
 export const deliveryRouter = router({
   // قائمة جهات التوصيل + عهدتها (branch-scoped: غير المرتفعين يَرون فرعهم فقط).
-  listParties: branchScopedProcedure
+  listParties: deliveryReadProcedure
     .input(z.object({ activeOnly: z.boolean().optional(), search: z.string().optional() }).optional())
     .query(({ input, ctx }) =>
       listDeliveryParties({ branchId: ctx.scopedBranchId, activeOnly: input?.activeOnly, search: input?.search }),
     ),
 
-  getParty: branchScopedProcedure
+  getParty: deliveryReadProcedure
     .input(z.object({ id: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.id, ctx.scopedBranchId);
       return getDeliveryParty(input.id);
     }),
+
+  // حسابات المناديب (دور courier) لربطها بجهة — لمنتقي الربط في نموذج الجهة (مدير).
+  courierAccounts: managerProcedure.query(() => listCourierAccounts()),
 
   createParty: managerProcedure
     .input(
@@ -74,6 +78,7 @@ export const deliveryRouter = router({
         name: z.string().min(1).max(255),
         phone: z.string().max(20).nullish(),
         phone2: z.string().max(20).nullish(),
+        userId: z.number().int().positive().nullish(),
         branchId: z.number().int().positive().nullish(),
         nationalId: z.string().max(40).nullish(),
         vehicleInfo: z.string().max(120).nullish(),
@@ -96,6 +101,7 @@ export const deliveryRouter = router({
         name: z.string().min(1).max(255).optional(),
         phone: z.string().max(20).nullish(),
         phone2: z.string().max(20).nullish(),
+        userId: z.number().int().positive().nullish(),
         branchId: z.number().int().positive().nullish(),
         nationalId: z.string().max(40).nullish(),
         vehicleInfo: z.string().max(120).nullish(),
@@ -119,23 +125,23 @@ export const deliveryRouter = router({
     }),
 
   // ─── قراءات الشاشة ───
-  readyForDispatch: branchScopedProcedure.query(({ ctx }) => listReadyForDispatch(ctx.scopedBranchId)),
+  readyForDispatch: deliveryReadProcedure.query(({ ctx }) => listReadyForDispatch(ctx.scopedBranchId)),
 
-  openConsignments: branchScopedProcedure
+  openConsignments: deliveryReadProcedure
     .input(z.object({ partyId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
       return listOpenConsignments(input.partyId);
     }),
 
-  consignments: branchScopedProcedure
+  consignments: deliveryReadProcedure
     .input(z.object({ partyId: z.number().int().positive(), openOnly: z.boolean().optional() }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);
       return listConsignmentsForParty(input.partyId, input.openOnly ?? false);
     }),
 
-  partyStatement: branchScopedProcedure
+  partyStatement: deliveryReadProcedure
     .input(z.object({ partyId: z.number().int().positive(), from: z.string().optional(), to: z.string().optional() }))
     .query(async ({ input, ctx }) => {
       await assertPartyInScope(input.partyId, ctx.scopedBranchId);

@@ -187,9 +187,27 @@ async function customerOpeningBalance(customerId: number, from?: string) {
         sql`${accountingEntries.entryDate} < ${from}`
       )
     );
+  // COD-COURIER (مراجعة عدائية ١٢/٧): تحصيل المندوب لطلب متجر يرفع invoices.paidAmount ويكتب قيد
+  // PAYMENT_IN بلا إيصال درج (النقد بعهدة المندوب) — فلا يلتقطه payRow (receipts) رغم أنه سدّد الذمّة.
+  // بدونه يُرحَّل كامل total الفاتورة فيظهر العميل مديناً بما سدّده. نطرح هذه الدفعات صراحةً.
+  // الفلتر (customerId + invoiceId NOT NULL + receiptId NULL) يخصّ مسار تحصيل المندوب حصراً (دفعات
+  // البيع العادية لها receiptId، والسندات المستقلّة invoiceId=NULL) ⇒ لا ازدواج مع payRow.
+  const codPayRow = await db
+    .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+    .from(accountingEntries)
+    .where(
+      and(
+        eq(accountingEntries.entryType, "PAYMENT_IN"),
+        eq(accountingEntries.customerId, customerId),
+        sql`${accountingEntries.invoiceId} IS NOT NULL`,
+        sql`${accountingEntries.receiptId} IS NULL`,
+        sql`${accountingEntries.entryDate} < ${fromTs}`
+      )
+    );
   return opening
     .plus(money(invRow[0]?.v ?? 0))
     .minus(money(payRow[0]?.v ?? 0))
+    .minus(money(codPayRow[0]?.v ?? 0))
     .plus(money(retRow[0]?.v ?? 0));
 }
 
@@ -248,6 +266,22 @@ export async function getCustomerStatement(
     .where(and(...payConds))
     .orderBy(asc(receipts.createdAt), asc(receipts.id));
 
+  // COD-COURIER (مراجعة عدائية ١٢/٧): تحصيلات المندوب (PAYMENT_IN بلا إيصال) كدفعات مرئية في الكشف
+  // كي يظهر السداد كمستندٍ متتبَّع (لا فاتورة PAID بلا دفعة). نفس فلتر الفترة على entryDate. المعرّف
+  // سالبٌ لتمييزه عن معرّفات الإيصالات (لا تصادم مفتاح React).
+  const codPayConds = [
+    eq(accountingEntries.entryType, "PAYMENT_IN"),
+    eq(accountingEntries.customerId, customerId),
+    sql`${accountingEntries.invoiceId} IS NOT NULL`,
+    sql`${accountingEntries.receiptId} IS NULL`,
+  ];
+  if (from) codPayConds.push(sql`${accountingEntries.entryDate} >= ${`${from} 00:00:00`}`);
+  if (to) codPayConds.push(sql`${accountingEntries.entryDate} < ${`${nextDayStr(to)} 00:00:00`}`);
+  const codPayments = await db
+    .select({ id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount, createdAt: accountingEntries.entryDate, notes: accountingEntries.notes })
+    .from(accountingEntries)
+    .where(and(...codPayConds));
+
   const openingBalance = await customerOpeningBalance(customerId, from);
 
   // أموال بدقّة decimal.js (§٥) — لا Number/toFixed على الأموال.
@@ -280,18 +314,32 @@ export async function getCustomerStatement(
       status: i.status,
       sourceType: i.sourceType,
     })),
-    payments: payments.map((p) => ({
-      id: Number(p.id),
-      invoiceId: p.invoiceId ? Number(p.invoiceId) : null,
-      direction: p.direction as "IN" | "OUT",
-      amount: String(p.amount),
-      paymentMethod: String(p.paymentMethod),
-      status: String(p.status),
-      createdAt: p.createdAt,
-      isStandalone: p.invoiceId == null,
-      voucherNumber: p.voucherNumber ? String(p.voucherNumber) : null,
-      description: p.description ? String(p.description) : null,
-    })),
+    payments: [
+      ...payments.map((p) => ({
+        id: Number(p.id),
+        invoiceId: p.invoiceId ? Number(p.invoiceId) : null,
+        direction: p.direction as "IN" | "OUT",
+        amount: String(p.amount),
+        paymentMethod: String(p.paymentMethod),
+        status: String(p.status),
+        createdAt: p.createdAt,
+        isStandalone: p.invoiceId == null,
+        voucherNumber: p.voucherNumber ? String(p.voucherNumber) : null,
+        description: p.description ? String(p.description) : null,
+      })),
+      ...codPayments.map((e) => ({
+        id: -Number(e.id),
+        invoiceId: e.invoiceId ? Number(e.invoiceId) : null,
+        direction: "IN" as const,
+        amount: String(e.amount),
+        paymentMethod: "COD",
+        status: "COMPLETED",
+        createdAt: e.createdAt,
+        isStandalone: false,
+        voucherNumber: null,
+        description: e.notes ? String(e.notes) : "تحصيل مندوب التوصيل",
+      })),
+    ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     summary: {
       totalSales: toDbMoney(totalSales),
       totalPaid: toDbMoney(totalPaid),

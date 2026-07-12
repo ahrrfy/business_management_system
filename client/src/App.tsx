@@ -40,6 +40,7 @@ const PrintHub = lazy(() => import("@/pages/PrintHub"));
 const AssetsHub = lazy(() => import("@/pages/AssetsHub"));
 const HrHub = lazy(() => import("@/pages/HrHub"));
 const DeliveryCenter = lazy(() => import("@/pages/DeliveryCenter"));
+const MyDeliveries = lazy(() => import("@/pages/MyDeliveries"));
 const ClosingHub = lazy(() => import("@/pages/ClosingHub"));
 const AdminHub = lazy(() => import("@/pages/AdminHub"));
 const Dashboard = lazy(() => import("@/pages/Dashboard"));
@@ -51,6 +52,8 @@ const InvoiceDetail = lazy(() => import("@/pages/InvoiceDetail"));
 const PointOfSale = lazy(() => import("@/pages/PointOfSale"));
 const PriceChecker = lazy(() => import("@/pages/PriceChecker"));
 const Kiosk = lazy(() => import("@/pages/Kiosk"));
+const Storefront = lazy(() => import("@/pages/Storefront"));
+const StoreHub = lazy(() => import("@/pages/StoreHub"));
 const SalesInvoiceNew = lazy(() => import("@/pages/SalesInvoiceNew"));
 const ProductEdit = lazy(() => import("@/pages/ProductEdit"));
 const ProductNew = lazy(() => import("@/pages/ProductNew"));
@@ -140,6 +143,32 @@ function NotFound() {
   return <div className="p-10 text-center text-muted-foreground">404 — الصفحة غير موجودة</div>;
 }
 
+/**
+ * نطاقات المتجر: على هذه المضيفات، جذر «/» يفتح المتجر للزائر (غير المسجَّل) مباشرةً —
+ * فـalarabiya.online = واجهة الزبون، بينما نطاق النظام (hstgr.cloud) يبقى للوحة الموظف.
+ * (يعمل فقط عند تقديم التطبيق عبر هذا المضيف؛ حتى ضبط DNS يبقى بلا أثر.)
+ */
+const STORE_HOSTS = ["alarabiya.online", "www.alarabiya.online"];
+function isStoreHost(): boolean {
+  return typeof window !== "undefined" && STORE_HOSTS.includes(window.location.hostname);
+}
+
+/** مسار الجذر: على نطاق المتجر ⇒ الزائر يُوجَّه للمتجر؛ المندوب ⇒ «توصيلاتي»؛ بقية الموظفين ⇒ لوحتهم. */
+function RootRoute() {
+  const storeHost = isStoreHost();
+  // نجلب الجلسة دائماً (لا storeHost فقط): يلزم لتوجيه المندوب من الجذر لشاشته الذاتية (مراجعة عدائية ١٢/٧).
+  const me = trpc.auth.me.useQuery(undefined, { retry: false });
+  if (me.isLoading) return <RouteFallback />;
+  if (storeHost && !me.data) return <Redirect to="/store" />;
+  // المندوب يهبط على «توصيلاتي» بدل لوحة الموظف (أينما كان الجذر) — مكمِّل لتوجيه الدخول في Login.
+  if (me.data?.role === "courier") return <Redirect to="/my-deliveries" />;
+  return (
+    <Shell>
+      <Dashboard />
+    </Shell>
+  );
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
@@ -164,12 +193,14 @@ export default function App() {
       </Route>
       {/* جهاز الكشك الخارجي — بملء الشاشة بمصادقة جهاز (كوكي رمز للقراءة فقط)، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/kiosk" component={Kiosk} />
+      {/* متجر الزبون (B2C) — صفحة علنية بملء الشاشة، نقطة دخول تطبيق الجوال. بلا جلسة وبلا AppLayout. */}
+      <Route path="/store" component={Storefront} />
       {/* بوابة العدّ الخارجية لعامل الجرد — عامة بمصادقة PIN خاصة، بلا جلسة دخول وبلا AppLayout */}
       <Route path="/count/:code" component={CountPortal} />
       {/* استمارة التقديم على الوظائف — صفحة عامة بلا جلسة دخول وبلا AppLayout (رابط خارجي للمتقدّمين) */}
       <Route path="/apply" component={JobApply} />
       <Route path="/platform-admin" component={PlatformAdmin} />
-      <Route path="/"><Shell><Dashboard /></Shell></Route>
+      <Route path="/"><RootRoute /></Route>
       {/* أُدمجت في وحدة المخزون (InventoryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/products"><Redirect to="/inventory?tab=products" /></Route>
       <Route path="/products/new"><Shell><ProductNew /></Shell></Route>
@@ -251,6 +282,10 @@ export default function App() {
       <Route path="/exchange"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury"><ExchangeHub /></RequireRole></Shell></Route>
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>
+      {/* شاشة المندوب الذاتية «توصيلاتي» (courier فقط + منح صريح لوحدة courier؛ admin يعبُر). */}
+      <Route path="/my-deliveries"><Shell><RequireRole roles={["courier"]} module="courier" level="READ"><MyDeliveries /></RequireRole></Shell></Route>
+      {/* الجهة الإدارية للمتجر الإلكتروني: تثبيت الطلبات + طباعة الملصق (منفصل عن /store العلني). */}
+      <Route path="/store-admin"><Shell><RequireRole roles={["admin","manager","cashier","sales_rep","accountant","auditor"]} module="store" level="READ"><StoreHub /></RequireRole></Shell></Route>
       <Route path="/delivery/parties"><Redirect to="/delivery?tab=parties" /></Route>
       <Route path="/reports"><Shell><ReportsHub /></Shell></Route>
       {/* مسارات التقارير: module="reports" ⇒ المنح الصريح للتقارير يفتحها لأي دور (مرآة
