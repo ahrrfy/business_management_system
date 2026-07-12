@@ -47,6 +47,7 @@ import {
   listStorePromotions,
 } from "../services/storeAdmin/storePromotionService";
 import { getStoreAnalytics } from "../services/storeAdmin/storeAnalyticsService";
+import { getStoreCustomers } from "../services/storeAdmin/storeCustomerService";
 import { resolveStorefrontBranchId } from "../services/storefrontService";
 import { withTx } from "../services/tx";
 
@@ -352,6 +353,20 @@ const analyticsRouter = router({
     }),
 });
 
+/** عملاء المتجر (لوحة hPanel) — من لهم طلبٌ أونلاين + مؤشّراتهم. بلا تكلفة/ربح (§٦)، عزل فرع. */
+const customersRouter = router({
+  list: storeReadProcedure
+    .input(z.object({
+      q: z.string().max(120).optional(),
+      sort: z.enum(["spend", "recent", "orders"]).default("spend"),
+      limit: z.number().int().positive().max(200).default(30),
+      offset: z.number().int().min(0).default(0),
+    }))
+    .query(async ({ input, ctx }) => {
+      return getStoreCustomers({ scopedBranchId: ctx.scopedBranchId ?? null, ...input });
+    }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
@@ -360,4 +375,5 @@ export const storeAdminRouter = router({
   catalog: catalogRouter,
   promotions: promotionsRouter,
   analytics: analyticsRouter,
+  customers: customersRouter,
 });
