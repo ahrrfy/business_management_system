@@ -13,6 +13,7 @@ import { z } from "zod";
 import { publicProcedure, router } from "../trpc";
 import { storefrontCatalog, storefrontCategories, storefrontOffers, storefrontProduct, storefrontRelated } from "../services/storefrontService";
 import { createOnlineOrder, trackOnlineOrder } from "../services/onlineOrderService";
+import { retryOnDup } from "../lib/retryDup";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
 
@@ -85,12 +86,17 @@ export const storefrontRouter = router({
         clientRequestId: z.string().max(80).optional(),
       })
     )
+    // retryOnDup: نقرة مزدوجة متزامنة بنفس clientRequestId قد يمرّ فحصُها الاستباقي معاً قبل الالتزام،
+    // فيصطدم الإدراج الثاني بقيد uq_online_order_client_req (ER_DUP_ENTRY). إعادة المحاولة تلتقط الطلب
+    // المُلتزَم فتُعيد replay بدل 500 (مراجعة عدائية ١٢/٧).
     .mutation(({ input }) =>
-      createOnlineOrder({
-        ...input,
-        latitude: input.latitude ?? null,
-        longitude: input.longitude ?? null,
-      })
+      retryOnDup(() =>
+        createOnlineOrder({
+          ...input,
+          latitude: input.latitude ?? null,
+          longitude: input.longitude ?? null,
+        }),
+      )
     ),
 
   /** تتبّع طلب: يتطلّب رقم الطلب + الهاتف معاً (خصوصية). */

@@ -26,6 +26,9 @@ export interface CreateSaleInput {
   sourceType: "POS" | "ONLINE" | "ORDER" | "WORKORDER";
   lines: SaleLineInput[];
   invoiceDiscount?: string | null;
+  /** أجرة توصيل/شحن تُضاف على رأس الفاتورة كإيراد شحن (بلا تكلفة/مخزون). تُستعمل في إرسال طلب المتجر
+   *  (COD) كي تكون invoice.total = subtotal + الشحن = ما وافق عليه الزبون، فيُحصّل المندوب كامل المبلغ. */
+  deliveryFee?: string | null;
   taxRatePercent?: string | null;
   payment?: { amount: string; method: PaymentMethod } | null;
   clientRequestId?: string | null;

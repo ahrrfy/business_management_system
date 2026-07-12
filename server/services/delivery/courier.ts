@@ -248,36 +248,52 @@ export async function failCourierDelivery(
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
 
-  const order = (await db.select().from(onlineOrders).where(eq(onlineOrders.id, input.onlineOrderId)).limit(1))[0];
-  if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
-  if (Number(order.deliveryPartyId) !== partyId) throw new TRPCError({ code: "FORBIDDEN", message: "هذا الطلب ليس ضمن توصيلاتك" });
-  if (order.status === "CANCELLED") return { orderId: order.id, orderNumber: order.orderNumber, reversed: false, alreadyCancelled: true };
-  if (order.status !== "SHIPPED") throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ليس قيد التوصيل" });
-  if (!order.invoiceId) throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا فاتورة" });
-
-  const inv = (await db.select({ paidAmount: invoices.paidAmount, branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, Number(order.invoiceId))).limit(1))[0];
-  if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الطلب غير موجودة" });
-  if (money(inv.paidAmount ?? "0").gt(0)) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب محصَّل — الإرجاع بعد التسليم عبر المدير" });
+  // المرحلة ①: **مطالبة ذرّية** بالطلب تحت قفل الصفّ (SHIPPED→CANCELLED). تُسلسِل ضدّ التحصيل المتزامن
+  // (confirmCourierDelivery يقفل نفس الصفّ ويشترط SHIPPED/DELIVERED) ⇒ لا يعكس هذا فاتورةً حُصِّلت
+  // للتوّ (مراجعة عدائية ١٢/٧): إمّا هذا يُطالِب أولاً فيرى confirm الحالة CANCELLED فيُرفَض، أو confirm
+  // يُطالِب فيرى هذا DELIVERED فيُرفَض. فحص paidAmount يجري **تحت القفل** بعد المطالبة.
+  const claim = await withTx(async (tx) => {
+    const order = (await tx.select().from(onlineOrders).where(eq(onlineOrders.id, input.onlineOrderId)).for("update").limit(1))[0];
+    if (!order) throw new TRPCError({ code: "NOT_FOUND", message: "الطلب غير موجود" });
+    if (Number(order.deliveryPartyId) !== partyId) throw new TRPCError({ code: "FORBIDDEN", message: "هذا الطلب ليس ضمن توصيلاتك" });
+    if (!order.invoiceId) throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب بلا فاتورة" });
+    const inv = (await tx.select({ status: invoices.status, paidAmount: invoices.paidAmount, branchId: invoices.branchId }).from(invoices).where(eq(invoices.id, Number(order.invoiceId))).for("update").limit(1))[0];
+    if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الطلب غير موجودة" });
+    if (order.status === "CANCELLED") {
+      // استرداد idempotent: مُطالَبٌ سابقاً — أكمِل العكس إن لم تُرجَع الفاتورة بعد (فشلٌ بين المطالبة والعكس).
+      const done = inv.status === "CANCELLED" || inv.status === "RETURNED";
+      return { orderNumber: order.orderNumber, invoiceId: Number(order.invoiceId), branchId: Number(inv.branchId), needsReverse: !done, alreadyDone: done };
+    }
+    if (order.status !== "SHIPPED") throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ليس قيد التوصيل" });
+    if (money(inv.paidAmount ?? "0").gt(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب محصَّل — الإرجاع بعد التسليم عبر المدير" });
+    }
+    await tx.update(onlineOrders).set({ status: "CANCELLED", cancelReason: reason }).where(eq(onlineOrders.id, order.id));
+    return { orderNumber: order.orderNumber, invoiceId: Number(order.invoiceId), branchId: Number(inv.branchId), needsReverse: true, alreadyDone: false };
+  });
+  if (claim.alreadyDone) {
+    return { orderId: input.onlineOrderId, orderNumber: claim.orderNumber, reversed: false, alreadyCancelled: true };
   }
 
-  // أسطر الإرجاع = كل بنود الفاتورة بكامل الكمية المتبقّية (طلب مرفوض كليّاً).
-  const items = await db
-    .select({ id: invoiceItems.id, baseQuantity: invoiceItems.baseQuantity, returnedBaseQuantity: invoiceItems.returnedBaseQuantity })
-    .from(invoiceItems)
-    .where(eq(invoiceItems.invoiceId, Number(order.invoiceId)));
-  const lines = items
-    .map((i) => ({ invoiceItemId: Number(i.id), baseQuantity: Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0) }))
-    .filter((l) => l.baseQuantity > 0);
-
-  if (lines.length > 0) {
-    // returnSale ذرّي: إعادة مخزون + عكس SALE + تصفير ذمّة العميل + الفاتورة RETURNED. actor.branchId=فرع
-    // الفاتورة كي يمرّ فحص ملكية الفرع (المندوب عابرٌ للفروع). لا استرداد نقدي (paidAmount=0).
-    await returnSale(
-      { invoiceId: Number(order.invoiceId), lines, refund: null, restock: true, clientRequestId: `courier-fail:${order.id}` },
-      { userId: actor.userId, branchId: Number(inv.branchId), role: "courier" },
-    );
+  // المرحلة ②: عكس البيع (returnSale ذرّي، idempotent). الطلب مُطالَبٌ CANCELLED ⇒ لا يتدخّل confirm.
+  let reversed = false;
+  if (claim.needsReverse) {
+    const items = await db
+      .select({ id: invoiceItems.id, baseQuantity: invoiceItems.baseQuantity, returnedBaseQuantity: invoiceItems.returnedBaseQuantity })
+      .from(invoiceItems)
+      .where(eq(invoiceItems.invoiceId, claim.invoiceId));
+    const lines = items
+      .map((i) => ({ invoiceItemId: Number(i.id), baseQuantity: Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0) }))
+      .filter((l) => l.baseQuantity > 0);
+    if (lines.length > 0) {
+      // إعادة مخزون + عكس SALE + تصفير ذمّة العميل + الفاتورة RETURNED. actor.branchId=فرع الفاتورة
+      // (المندوب عابرٌ للفروع). لا استرداد نقدي (paidAmount=0 مُتحقَّقٌ تحت القفل).
+      await returnSale(
+        { invoiceId: claim.invoiceId, lines, refund: null, restock: true, clientRequestId: `courier-fail:${input.onlineOrderId}` },
+        { userId: actor.userId, branchId: claim.branchId, role: "courier" },
+      );
+      reversed = true;
+    }
   }
-  await db.update(onlineOrders).set({ status: "CANCELLED", cancelReason: reason }).where(eq(onlineOrders.id, order.id));
-  return { orderId: order.id, orderNumber: order.orderNumber, reversed: lines.length > 0 };
+  return { orderId: input.onlineOrderId, orderNumber: claim.orderNumber, reversed };
 }

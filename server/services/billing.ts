@@ -42,6 +42,9 @@ export interface InvoiceTotalsInput {
   lineTotals: string[];
   invoiceDiscount?: string | null;
   taxRatePercent?: string | null;
+  /** أجرة توصيل/شحن تُضاف على رأس الفاتورة (بعد الضريبة، لا تُخصم منها ولا تحمل تكلفة) — إيرادُ شحن.
+   *  الافتراضي 0 ⇒ سلوك متطابق للمسارات القائمة (POS/بيع عادي). يُستعمل في إرسال طلب المتجر (COD). */
+  deliveryFee?: string | null;
 }
 export interface InvoiceTotals {
   subtotal: string;
@@ -66,11 +69,15 @@ export function computeInvoiceTotals(i: InvoiceTotalsInput): InvoiceTotals {
   const discount = clampMoney(rawDiscount, subtotal);
   const taxable = subtotal.minus(discount);
   const tax = round2(taxable.times(rawTax).dividedBy(100));
+  const rawFee = round2(money(i.deliveryFee ?? "0"));
+  if (rawFee.lt(0)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "أجرة التوصيل لا تصحّ أن تكون سالبة" });
+  }
   return {
     subtotal: subtotal.toFixed(2),
     discountAmount: discount.toFixed(2),
     taxAmount: tax.toFixed(2),
-    total: round2(taxable.plus(tax)).toFixed(2),
+    total: round2(taxable.plus(tax).plus(rawFee)).toFixed(2),
   };
 }
 

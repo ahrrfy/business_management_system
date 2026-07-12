@@ -283,7 +283,9 @@ function DispatchModal({
 }) {
   const [partyId, setPartyId] = useState<number | null>(null);
   const partiesQ = trpc.storeAdmin.orders.parties.useQuery();
-  const parties = partiesQ.data ?? [];
+  // فقط الجهات المرتبطة بحساب مندوب (userId) — كي يستطيع المندوب تأكيد التسليم والتحصيل من «توصيلاتي».
+  // جهةٌ بلا حساب (شركة خارجية) لا مسار لها لإنهاء الطلب داخل النظام ⇒ يبقى عالقاً (مراجعة عدائية ١٢/٧).
+  const parties = (partiesQ.data ?? []).filter((p) => p.userId != null);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -318,7 +320,7 @@ function DispatchModal({
           </div>
         ) : parties.length === 0 ? (
           <div className="rounded-lg bg-muted p-4 text-center text-sm text-muted-foreground">
-            لا يوجد مندوبون نشطون — أضِف مندوباً من إدارة التوصيل أولاً.
+            لا يوجد مندوبٌ نشطٌ مرتبطٌ بحساب دخول. أنشئ حساب «مندوب توصيل» في المستخدمين، ثم اربطه بجهة توصيل من إدارة التوصيل ليظهر هنا (فيستطيع تأكيد التسليم عبر «توصيلاتي»).
           </div>
         ) : (
           <div className="max-h-64 space-y-2 overflow-y-auto">

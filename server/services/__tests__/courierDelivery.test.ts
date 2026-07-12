@@ -70,16 +70,17 @@ async function seedBase() {
  * فاتورة ONLINE حقيقية على ذمّة العميل (عبر createSale — بيع + مخزون + قيد SALE + AR)، ثم طلبٌ
  * مربوطٌ بها ومُسنَدٌ للمندوب. يعيد {orderId, invoiceId, total}.
  */
-async function shippedOrder(qty: number, orderNumber: string, partyId: number): Promise<{ orderId: number; invoiceId: number; total: string }> {
+async function shippedOrder(qty: number, orderNumber: string, partyId: number, fee = "0"): Promise<{ orderId: number; invoiceId: number; total: string }> {
   const d = db();
   const sale = await createSale(
-    { branchId: 1, customerId: 1, sourceType: "ONLINE", priceTier: "RETAIL", lines: [{ variantId: 1, productUnitId: 1, quantity: String(qty) }] },
+    { branchId: 1, customerId: 1, sourceType: "ONLINE", priceTier: "RETAIL", deliveryFee: fee, lines: [{ variantId: 1, productUnitId: 1, quantity: String(qty) }] },
     MANAGER,
   );
-  const total = (qty * 10).toFixed(2);
+  const subtotal = qty * 10;
+  const total = (subtotal + Number(fee)).toFixed(2);
   await d.insert(s.onlineOrders).values({
     orderNumber, customerId: 1, branchId: 1,
-    subtotal: total, shippingCost: "0", taxAmount: "0", total,
+    subtotal: subtotal.toFixed(2), shippingCost: Number(fee).toFixed(2), taxAmount: "0", total,
     status: "SHIPPED", invoiceId: sale.invoiceId, deliveryPartyId: partyId,
     shippingAddress: "بغداد - الكرادة", governorate: "baghdad",
   });
@@ -254,6 +255,29 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     await confirmCourierDelivery({ onlineOrderId: o2.orderId }, { userId: 3 }); // حُصِّل
     // بعد التحصيل الطلب DELIVERED لا SHIPPED ⇒ يُرفض بـ«ليس قيد التوصيل».
     await expect(failCourierDelivery({ onlineOrderId: o2.orderId, reason: "متأخّر" }, { userId: 3 })).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("حارس يُتْم الفاتورة: إلغاء طلبٍ مُرسَل (له فاتورة) بتغيير الحالة محجوب", async () => {
+    const { partyA } = await seedParties();
+    const o = await shippedOrder(2, "ORD-GC1", partyA); // له فاتورة (مخزون مخصوم + ذمّة)
+    await expect(setOnlineOrderStatus({ id: o.orderId, status: "CANCELLED", scopedBranchId: null }, 1)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    expect((await order(o.orderId)).status).toBe("SHIPPED"); // لم يُلغَ
+    expect(await customerBalance(1)).toBe("20.00"); // الذمّة سليمة (لم تُيتَّم)
+  });
+
+  it("أجرة الشحن في الفاتورة: invoice.total = subtotal + الأجرة، والمندوب يُحصّل الكامل", async () => {
+    const { partyA } = await seedParties();
+    const o = await shippedOrder(2, "ORD-FEE1", partyA, "3000"); // subtotal 20 + شحن 3000
+    expect(o.total).toBe("3020.00");
+    const inv = await invoice(o.invoiceId);
+    expect(inv.total).toBe("3020.00"); // الأجرة على رأس الفاتورة (لا تُفقَد)
+    expect(await customerBalance(1)).toBe("3020.00"); // AR = order.total
+    const res = await confirmCourierDelivery({ onlineOrderId: o.orderId }, { userId: 3 });
+    expect(res.collected).toBe("3020.00"); // المندوب يُحصّل ما وافق عليه الزبون كاملاً
+    expect(await customerBalance(1)).toBe("0.00");
+    expect(await partyBalance(partyA)).toBe("3020.00"); // عهدة = الكامل
+    expect((await invoice(o.invoiceId)).status).toBe("PAID");
+    await reconcileClean();
   });
 });
 

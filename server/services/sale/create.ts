@@ -337,6 +337,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       lineTotals: computed.map((c) => c.total),
       invoiceDiscount: input.invoiceDiscount,
       taxRatePercent: input.taxRatePercent,
+      deliveryFee: input.deliveryFee,
     });
     const costTotal = computeInvoiceCost(
       computed.map((c) => ({ unitCost: c.unitCost, baseQuantity: c.baseQuantity }))
@@ -510,8 +511,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       });
     }
 
-    // 11. SALE ledger entry (revenue = net before tax).
-    const revenue = money(totals.subtotal).minus(money(totals.discountAmount));
+    // 11. SALE ledger entry (revenue = net before tax + أجرة الشحن كإيراد بلا تكلفة).
+    const revenue = money(totals.subtotal).minus(money(totals.discountAmount)).plus(money(input.deliveryFee ?? "0"));
     const cost = money(costTotal);
     await postEntry(tx, {
       entryType: "SALE",

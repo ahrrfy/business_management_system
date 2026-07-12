@@ -91,6 +91,9 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
           quantity: String(it.quantity),
           unitPriceOverride: String(it.unitPrice), // تثبيت سعر لقطة الطلب
         })),
+        // أجرة الشحن على رأس الفاتورة كإيراد ⇒ invoice.total = subtotal + الشحن = order.total (ما وافق
+        // عليه الزبون) فيُحصّل المندوب المبلغ كاملاً وتُصفّى الذمّة بلا نقصٍ (مراجعة عدائية ١٢/٧).
+        deliveryFee: order.shippingCost ?? "0",
         notes: `طلب متجر ${order.orderNumber}`,
         clientRequestId: `online-dispatch:${order.id}`,
         priceOverrideApproved: true, // الموظف المُرسِل يُقرّ السعر المتّفق عليه مسبقاً

@@ -652,9 +652,19 @@ export default function Storefront() {
                     أضِف <span className="tabular-nums">{money(remainingForFree)}</span> د.ع لتحصل على <span className="font-extrabold">توصيل مجاني</span>
                   </div>
                 ))}
-              <button onClick={openCheckout} className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600">
-                متابعة إلى الدفع عند الاستلام
-                <ArrowRight aria-hidden className="size-4" />
+              <button
+                onClick={openCheckout}
+                disabled={!storeOpen}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+              >
+                {storeOpen ? (
+                  <>
+                    متابعة إلى الدفع عند الاستلام
+                    <ArrowRight aria-hidden className="size-4" />
+                  </>
+                ) : (
+                  "المتجر مغلق مؤقتاً — تعذّر إتمام الطلب"
+                )}
               </button>
               {settingsQ.data?.whatsappNumber && (
                 <button

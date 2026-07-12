@@ -153,14 +153,15 @@ function isStoreHost(): boolean {
   return typeof window !== "undefined" && STORE_HOSTS.includes(window.location.hostname);
 }
 
-/** مسار الجذر: على نطاق المتجر ⇒ الزائر يُوجَّه للمتجر، والموظف المسجَّل يرى لوحته. */
+/** مسار الجذر: على نطاق المتجر ⇒ الزائر يُوجَّه للمتجر؛ المندوب ⇒ «توصيلاتي»؛ بقية الموظفين ⇒ لوحتهم. */
 function RootRoute() {
   const storeHost = isStoreHost();
-  const me = trpc.auth.me.useQuery(undefined, { enabled: storeHost, retry: false });
-  if (storeHost) {
-    if (me.isLoading) return <RouteFallback />;
-    if (!me.data) return <Redirect to="/store" />;
-  }
+  // نجلب الجلسة دائماً (لا storeHost فقط): يلزم لتوجيه المندوب من الجذر لشاشته الذاتية (مراجعة عدائية ١٢/٧).
+  const me = trpc.auth.me.useQuery(undefined, { retry: false });
+  if (me.isLoading) return <RouteFallback />;
+  if (storeHost && !me.data) return <Redirect to="/store" />;
+  // المندوب يهبط على «توصيلاتي» بدل لوحة الموظف (أينما كان الجذر) — مكمِّل لتوجيه الدخول في Login.
+  if (me.data?.role === "courier") return <Redirect to="/my-deliveries" />;
   return (
     <Shell>
       <Dashboard />
