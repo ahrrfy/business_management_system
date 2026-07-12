@@ -68,13 +68,33 @@ export interface CreateOnlineOrderResult {
   idempotentReplay?: boolean;
 }
 
+/**
+ * تطبيع رقم عراقي إلى صيغة E.164 قانونية واحدة (+964…) قبل استعماله في مفتاح القفل + البحث +
+ * الإدراج (مراجعة عدائية ١٢/٧): بدونه «07701234567» و«+9647701234567» لنفس المشترك يعطيان مفتاحَي
+ * قفل مختلفَين وتطابقَين مختلفَين ⇒ عميلان متكرّران. نُوحّدهما هنا فتتلاقى الصيغ على سجلّ واحد.
+ */
+export function normalizeStorePhone(raw: string): string {
+  const trimmed = raw.trim();
+  let s = trimmed.replace(/[\s\-()]/g, "");
+  if (s.startsWith("00")) s = "+" + s.slice(2);
+  if (s.startsWith("+")) {
+    const digits = s.slice(1).replace(/\D/g, "");
+    return digits ? "+" + digits : trimmed;
+  }
+  const digits = s.replace(/\D/g, "");
+  if (!digits) return trimmed;
+  if (digits.startsWith("964")) return "+" + digits;
+  if (digits.startsWith("0")) return "+964" + digits.slice(1);
+  return "+964" + digits;
+}
+
 /** طلب متجر جديد — server-priced، مُتحقَّق، idempotent، ذرّي. لا أثر مالي (PENDING فقط). */
 export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<CreateOnlineOrderResult> {
   const gov = governorateById(input.governorate);
   if (!gov) throw new TRPCError({ code: "BAD_REQUEST", message: "المحافظة غير معروفة" });
   if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "السلة فارغة" });
   const name = input.customerName.trim();
-  const phone = input.customerPhone.trim();
+  const phone = normalizeStorePhone(input.customerPhone);
   if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "الاسم مطلوب" });
   if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "رقم الهاتف مطلوب" });
   const address = input.addressText.trim();
@@ -211,8 +231,11 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     const total = round2(subtotal.plus(deliveryFee));
 
     // ③ find-or-create عميل نقدي بالهاتف (creditLimit "0" = نقدي فقط، لا ائتمان).
-    // GET_LOCK بالهاتف (نمط nextInvoiceNumber): يُسلسِل طلبَين أوّلَين متزامنَين بنفس الهاتف فلا
-    // يُدرَج عميلان متكرّران (مراجعة عدائية ١٢/٧). يُحرَّر في finally داخل نفس المعاملة/الاتصال.
+    // منع التكرار تحت التزامن (مراجعة عدائية ١٢/٧): GET_LOCK وحده لا يكفي — يُحرَّر في finally قبل
+    // COMMIT، وقراءة snapshot تحت REPEATABLE READ لا ترى إدراج المعاملة الأخرى. **القفل الحقيقي هو
+    // قفل صفّ الفهرس**: البحث بـ`.for("update")` يقرأ آخر مُلتزَم ويحجز الصفّ/الفجوة، فطلبٌ ثانٍ
+    // بنفس الهاتف يتربّص على قفل الإدراج الأول حتى يلتزم ثم يجده فيعيد استعماله (نمط credit.ts).
+    // نُبقي GET_LOCK كتسلسُلٍ مبكّر يُجنّب تسابق الفجوة (deadlock) في المسار الشائع.
     const custLock = `online-customer:${phone}`;
     const lockRes = (await tx.execute(sql`SELECT GET_LOCK(${custLock}, 5) AS locked`)) as unknown;
     const lockedRow = Array.isArray(lockRes) ? (lockRes[0] as { locked?: number }[])?.[0] : (lockRes as { rows?: { locked?: number }[] })?.rows?.[0];
@@ -222,7 +245,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     let customerId: number;
     try {
       const existingCust = (
-        await tx.select({ id: customers.id, name: customers.name }).from(customers).where(eq(customers.phone, phone)).limit(1)
+        await tx.select({ id: customers.id, name: customers.name }).from(customers).where(eq(customers.phone, phone)).limit(1).for("update")
       )[0];
       if (existingCust) {
         customerId = Number(existingCust.id);

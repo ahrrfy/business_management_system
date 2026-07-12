@@ -1,8 +1,8 @@
 /**
  * shared/permissions.ts — نموذج الصلاحيات المشترك بين الخادم والعميل.
  *
- * الأدوار العشرة: admin / manager / accountant / cashier / warehouse /
- *                 purchasing / print_operator / sales_rep / auditor / user
+ * الأدوار الأحد عشر: admin / manager / accountant / cashier / warehouse /
+ *                 purchasing / print_operator / sales_rep / auditor / courier / user
  *
  * كل وحدة لها مستوى وصول: FULL / READ / NONE.
  * التخزين في DB هو فقط الانحرافات عن القالب (permissionsOverride).

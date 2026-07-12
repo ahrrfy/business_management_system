@@ -173,6 +173,10 @@ export default function Storefront() {
     onSuccess: (res) => {
       setConfirmation({ orderNumber: res.orderNumber, total: res.total });
       setCart(new Map());
+      // امسح بيانات التوصيل (اسم/هاتف/عنوان) من الحالة و localStorage بعد نجاح الطلب (مراجعة عدائية
+      // ١٢/٧): المتجر علنيّ بلا جلسة ⇒ إبقاؤها يسرّبها للزبون التالي على جهازٍ مشترك/كشك. الاستعادة
+      // عبر التحديث تخصّ طلباً قيد الإنشاء فقط، لا بعد إتمامه.
+      setForm({ ...DEFAULT_FORM });
       setPanel("confirmation");
     },
   });
@@ -842,7 +846,6 @@ export default function Storefront() {
               onClick={() => {
                 setPanel(null);
                 setConfirmation(null);
-                setForm((f) => ({ ...f, notes: "" }));
               }}
               className="mt-6 w-full rounded-2xl bg-emerald-600 py-4 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-emerald-700"
             >

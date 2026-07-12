@@ -27,7 +27,7 @@ import {
   type ResolvedPromotion,
 } from "../salesPromotionService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
-import { money, roundCashIQD, toDbMoney } from "../money";
+import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
 import { getUnitPrice, resolveTier, type PriceTier } from "../pricing";
 import { type Actor, withTx } from "../tx";
@@ -423,6 +423,9 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       total: toDbMoney(effectiveTotalD),
       costTotal,
       cashRoundingAdjustment: toDbMoney(cashRoundingAdj),
+      // أجرة الشحن كإيراد (مُضمَّنة في total ومُعترَف بها في revenue أدناه) — تُخزَّن صراحةً ليعكسها
+      // المرتجع الكامل بدقّة (returnService) فيبقى Σ(revenue)=Σ(profit)=0.
+      deliveryFee: toDbMoney(round2(money(input.deliveryFee ?? "0"))),
       status,
       paidAmount: toDbMoney(paidNow),
       paymentMethod: input.payment?.method ?? null,

@@ -32,6 +32,27 @@ export interface DispatchOnlineOrderResult {
   alreadyDispatched?: boolean;
 }
 
+/**
+ * عكسٌ ذرّي idempotent لفاتورةٍ صدرت عن إرسال طلبٍ ثمّ وجب إلغاؤه (إعادة مخزون + عكس بيع + تصفير
+ * ذمّة + عكس أجرة الشحن). يُستعمَل في مسارين: المطالبة الذرّية إن أُلغي أثناء الإرسال، واسترداد
+ * اليتيم عند إعادة المحاولة بعد فشلٍ عابر/انهيار (مراجعة عدائية ١٢/٧). المفتاح
+ * `dispatch-cancelled:<orderId>` يجعله آمناً للتكرار (returnSale idempotent على نفس المفتاح).
+ */
+async function reverseDispatchedInvoice(invoiceId: number, orderId: number, branchId: number, actor: Actor): Promise<void> {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const invItems = await db
+    .select({ id: invoiceItems.id, baseQuantity: invoiceItems.baseQuantity, returnedBaseQuantity: invoiceItems.returnedBaseQuantity })
+    .from(invoiceItems)
+    .where(eq(invoiceItems.invoiceId, invoiceId));
+  const lines = invItems
+    .map((i) => ({ invoiceItemId: Number(i.id), baseQuantity: Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0) }))
+    .filter((l) => l.baseQuantity > 0);
+  if (lines.length > 0) {
+    await returnSale({ invoiceId, lines, refund: null, restock: true, clientRequestId: `dispatch-cancelled:${orderId}` }, { userId: actor.userId, branchId, role: actor.role });
+  }
+}
+
 export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor: Actor): Promise<DispatchOnlineOrderResult> {
   const db = getDb();
   if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
@@ -43,7 +64,20 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
   if (!elevated && Number(order.branchId) !== actor.branchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "الطلب يخصّ فرعاً آخر" });
   }
-  if (order.status === "CANCELLED") throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ملغى" });
+  if (order.status === "CANCELLED") {
+    // استرداد اليتيم (مراجعة عدائية ١٢/٧): لو أُلغي الطلب أثناء إرسالٍ سابق ففشل عكسُ فاتورته بعد ربطها
+    // (deadlock عابر أو انهيار العملية بين الربط والعكس)، تبقى فاتورة حيّة على طلبٍ مُلغى (مخزون مخصوم
+    // + ذمّة منتفخة + بيع مُعترَف به). أعِد العكس idempotently هنا بدل الرفض الأعمى الذي كان يمنع أيّ
+    // تعافٍ ⇒ إعادة المحاولة (راوتر/يدوي) تُشفي اليتيم. لا فاتورة حيّة ⇒ رفضٌ عاديّ.
+    if (order.invoiceId) {
+      const inv = (await db.select({ s: invoices.status }).from(invoices).where(eq(invoices.id, Number(order.invoiceId))).limit(1))[0];
+      if (inv && inv.s !== "CANCELLED" && inv.s !== "RETURNED") {
+        await reverseDispatchedInvoice(Number(order.invoiceId), order.id, Number(order.branchId), actor);
+        throw new TRPCError({ code: "CONFLICT", message: "أُلغي الطلب أثناء الإرسال — أُعيدت البضاعة للمخزون ولم يُرسَل" });
+      }
+    }
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب ملغى" });
+  }
 
   const branchId = Number(order.branchId);
   const fetchInv = async (id: number) =>
@@ -123,11 +157,7 @@ export async function dispatchOnlineOrder(input: DispatchOnlineOrderInput, actor
   // أُلغي أثناء الإرسال ⇒ نعكس الفاتورة المُنشأة حديثاً (إعادة مخزون + عكس بيع + تصفير ذمّة) فلا تبقى
   //    فاتورة يتيمة على طلبٍ مُلغى. idempotent بمفتاح فريد. الطلب يبقى CANCELLED (كما تركه الإلغاء).
   if (claim.cancelled) {
-    const invItems = await db.select({ id: invoiceItems.id, baseQuantity: invoiceItems.baseQuantity, returnedBaseQuantity: invoiceItems.returnedBaseQuantity }).from(invoiceItems).where(eq(invoiceItems.invoiceId, invoiceId));
-    const lines = invItems.map((i) => ({ invoiceItemId: Number(i.id), baseQuantity: Number(i.baseQuantity) - Number(i.returnedBaseQuantity ?? 0) })).filter((l) => l.baseQuantity > 0);
-    if (lines.length > 0) {
-      await returnSale({ invoiceId, lines, refund: null, restock: true, clientRequestId: `dispatch-cancelled:${order.id}` }, { userId: actor.userId, branchId, role: actor.role });
-    }
+    await reverseDispatchedInvoice(invoiceId, order.id, branchId, actor);
     throw new TRPCError({ code: "CONFLICT", message: "أُلغي الطلب أثناء الإرسال — أُعيدت البضاعة للمخزون ولم يُرسَل" });
   }
 

@@ -751,6 +751,10 @@ export const invoices = mysqlTable(
     costTotal: decimal("costTotal", { precision: 15, scale: 2 }).default("0").notNull(),
     // فرق تقريب النقد العراقي (±) للبيع النقدي الكامل؛ يُسجَّل أيضاً كقيد ADJUST ليتّسق الدفتر مع النقد المستلم.
     cashRoundingAdjustment: decimal("cashRoundingAdjustment", { precision: 15, scale: 2 }).default("0").notNull(),
+    // أجرة الشحن/التوصيل كإيراد على رأس الفاتورة (COD المتجر) — مُضمَّنة في total لا في subtotal، وقيد
+    // SALE يعترف بها ضمن revenue. تُخزَّن صراحةً (هجرة 0070) ليعكسها المرتجع الكامل بدقّة فيبقى
+    // Σ(revenue)=Σ(profit)=0 (مراجعة عدائية ١٢/٧: عكسٌ بلا هذا العمود كان يترك إيراد شحنٍ وهميّاً).
+    deliveryFee: decimal("deliveryFee", { precision: 15, scale: 2 }).default("0").notNull(),
     status: mysqlEnum("invoiceStatus", ["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).default("PENDING").notNull(),
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     // returnedTotal: مجموع ما أُرجِع من إجمالي الفاتورة (تراكميّ عبر مرتجعات جزئية).

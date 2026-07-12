@@ -299,6 +299,20 @@ describe("courier «توصيلاتي» — تحصيل COD لطلب متجر", ()
     await reconcileClean();
   });
 
+  it("تعذّر التسليم بأجرة شحن: العكس يشمل الشحن ⇒ ذمّة صفر + صفر إيرادٍ وهميّ + مطابِقات نظيفة", async () => {
+    const { partyA } = await seedParties();
+    const o = await shippedOrder(2, "ORD-FF1", partyA, "3000"); // subtotal 20 + شحن 3000 = 3020، AR 3020
+    expect(await customerBalance(1)).toBe("3020.00");
+    await failCourierDelivery({ onlineOrderId: o.orderId, reason: "الزبون رفض الاستلام" }, { userId: 3 });
+    expect((await order(o.orderId)).status).toBe("CANCELLED");
+    expect((await invoice(o.invoiceId)).status).toBe("RETURNED");
+    expect(await customerBalance(1)).toBe("0.00"); // الذمّة صُفّرت بالكامل (السلعة + الشحن)
+    // الدفتر يتصافر: SALE(20+3000) + RETURN(−3020) = 0 — لا إيراد شحنٍ وهميّ على طلبٍ مُلغى.
+    const revRows = await db().select({ v: s.accountingEntries.revenue }).from(s.accountingEntries).where(eq(s.accountingEntries.invoiceId, o.invoiceId));
+    expect(revRows.reduce((t, r) => t + Number(r.v), 0)).toBe(0);
+    await reconcileClean();
+  });
+
   it("dispatchOnlineOrder: طلبٌ مؤكَّد ⇒ فاتورة ONLINE + خصم مخزون + SHIPPED + أجرة على الفاتورة + مطابِقات نظيفة", async () => {
     const { partyA } = await seedParties();
     const stockBefore = await stockOf(1);
