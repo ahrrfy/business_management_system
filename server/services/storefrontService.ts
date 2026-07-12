@@ -92,6 +92,7 @@ export interface StorefrontCategory {
 const sellable = and(
   eq(products.isActive, true),
   eq(products.isService, false),
+  eq(products.showInStore, true), // إخفاء المدير للمنتج من واجهة المتجر (لوحة hPanel)
   eq(productVariants.isActive, true),
   eq(productUnits.isActive, true),
   eq(productUnits.isBaseUnit, true),
@@ -237,7 +238,7 @@ export async function storefrontCatalog(opts: {
   }
   const rows = await safeSelect(db, branchId)
     .where(and(...conds))
-    .orderBy(desc(sql`${branchStock.quantity} > 0`), desc(sql`${productImages.url} is not null`), asc(products.name))
+    .orderBy(desc(products.isFeatured), desc(sql`${branchStock.quantity} > 0`), desc(sql`${productImages.url} is not null`), asc(products.name))
     .limit(cap * 3);
 
   const seen = new Set<number>();

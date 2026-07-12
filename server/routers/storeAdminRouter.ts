@@ -34,6 +34,14 @@ import {
   setCategoryStoreVisibility,
   updateCategory,
 } from "../services/categoryService";
+import {
+  listStoreCatalog,
+  setProductFeatured,
+  setProductPrimaryImage,
+  setProductStoreVisible,
+  setStoreProductStock,
+} from "../services/storeAdmin/storeCatalogService";
+import { resolveStorefrontBranchId } from "../services/storefrontService";
 
 const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]);
 
@@ -215,9 +223,58 @@ const categoriesRouter = router({
     }),
 });
 
+/** كتالوج المتجر (عرض/تحكّم — مخزون/صورة/تمييز/إظهار). المخزون عبر قيد ADJUST الذرّي. */
+const catalogRouter = router({
+  list: storeReadProcedure
+    .input(z.object({
+      branchId: z.number().int().positive().nullish(),
+      q: z.string().max(120).optional(),
+      categoryId: z.number().int().min(0).nullish(),
+      featuredOnly: z.boolean().optional(),
+      hiddenOnly: z.boolean().optional(),
+      missingImageOnly: z.boolean().optional(),
+      limit: z.number().int().positive().max(200).default(50),
+      offset: z.number().int().min(0).default(0),
+    }))
+    .query(async ({ input, ctx }) => {
+      const branchId = await resolveStorefrontBranchId(input.branchId ?? ctx.scopedBranchId ?? undefined);
+      return listStoreCatalog({ ...input, branchId });
+    }),
+  setFeatured: storeManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), isFeatured: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const r = await setProductFeatured(input);
+      await logAudit(ctx, { action: "store.catalog.featured", entityType: "product", entityId: input.productId, newValue: { isFeatured: input.isFeatured } });
+      return r;
+    }),
+  setVisible: storeManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), showInStore: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const r = await setProductStoreVisible(input);
+      await logAudit(ctx, { action: "store.catalog.visibility", entityType: "product", entityId: input.productId, newValue: { showInStore: input.showInStore } });
+      return r;
+    }),
+  setStock: storeManagerProcedure
+    .input(z.object({ variantId: z.number().int().positive(), branchId: z.number().int().positive().nullish(), targetQuantity: z.number().int().min(0), notes: z.string().max(200).optional() }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = await resolveStorefrontBranchId(input.branchId ?? undefined);
+      const r = await setStoreProductStock({ variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, createdBy: ctx.user.id, notes: input.notes });
+      await logAudit(ctx, { action: "store.catalog.stock", entityType: "stock", entityId: input.variantId, newValue: { branchId, target: input.targetQuantity, delta: r.delta } });
+      return r;
+    }),
+  setImage: storeManagerProcedure
+    .input(z.object({ productId: z.number().int().positive(), url: z.string().max(5_000_000).nullable() }))
+    .mutation(async ({ input, ctx }) => {
+      const r = await setProductPrimaryImage(input);
+      await logAudit(ctx, { action: "store.catalog.image", entityType: "product", entityId: input.productId, newValue: { hasImage: input.url != null } });
+      return r;
+    }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
   settings: settingsRouter,
   categories: categoriesRouter,
+  catalog: catalogRouter,
 });

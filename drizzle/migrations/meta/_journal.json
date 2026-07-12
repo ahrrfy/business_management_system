@@ -505,6 +505,13 @@
       "when": 1783760007000,
       "tag": "0071_category_store_fields",
       "breakpoints": true
+    },
+    {
+      "idx": 72,
+      "version": "5",
+      "when": 1783760008000,
+      "tag": "0072_product_store_merchandising",
+      "breakpoints": true
     }
   ]
 }

@@ -361,6 +361,9 @@ export const products = mysqlTable(
     // النَسْت مَمنوع (مكوّن البكج لا يكون بكجاً) — يُفرض خادمياً في bundleService.
     isBundle: boolean("isBundle").default(false).notNull(),
     isActive: boolean("isActive").default(true),
+    // لوحة hPanel للمتجر (١٢/٧، هجرة 0072): تمييز المنتج (يتصدّر) + إظهاره/إخفاؤه من واجهة المتجر.
+    isFeatured: boolean("isFeatured").default(false).notNull(),
+    showInStore: boolean("showInStore").default(true).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     // D2 (٣٠/٦): عمود مولَّد STORED بتطبيع عربي. يُنشَأ عبر هَجرة 0035 (GENERATED ALWAYS AS).
