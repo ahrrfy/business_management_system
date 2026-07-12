@@ -1,7 +1,7 @@
 // قائمة إدارة المنتجات + تفعيل/تعطيل منتج.
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull, or, sql, type SQL } from "drizzle-orm";
-import { branchStock, categories, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { branchStock, categories, productPrices, productUnitBarcodes, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { type Actor, withTx } from "../tx";
 import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
@@ -31,6 +31,8 @@ export interface AdminProductRow {
   unitIsActive: boolean | null;
   price: string | null; // RETAIL — للعرض فقط
   stockBase: number;
+  /** الباركودات البديلة للوحدة (productUnitBarcodes) — تظهر في التصدير وبجوار الباركود الأساسي. */
+  barcodeAliases: string[];
 }
 
 export interface ListProductsAdminInput {
@@ -114,6 +116,26 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
     .limit(limit)
     .offset(offset);
 
+  // البدائل باستعلام دفعي ثانٍ على وحدات الصفحة فقط (≤500) — لا يمسّ الاستعلام الرئيسي ولا العدّ
+  // (LEFT JOIN مباشر كان سيضاعف الصفوف لكل بديل فيكسر التقسيم).
+  const unitIds = Array.from(
+    new Set(rows.map((r) => (r.productUnitId != null ? Number(r.productUnitId) : null)).filter((id): id is number => id != null)),
+  );
+  const aliasRows = unitIds.length
+    ? await db
+        .select({ productUnitId: productUnitBarcodes.productUnitId, barcode: productUnitBarcodes.barcode })
+        .from(productUnitBarcodes)
+        .where(inArray(productUnitBarcodes.productUnitId, unitIds))
+        .orderBy(asc(productUnitBarcodes.id))
+    : [];
+  const aliasesByUnit = new Map<number, string[]>();
+  for (const a of aliasRows) {
+    const k = Number(a.productUnitId);
+    const list = aliasesByUnit.get(k);
+    if (list) list.push(a.barcode);
+    else aliasesByUnit.set(k, [a.barcode]);
+  }
+
   // العدّ الإجمالي بنفس FROM/WHERE لكن بلا جوينات الأسعار/المخزون (كلاهما 1:0..1 لا يغيّر عدد الصفوف).
   const totalRow = (
     await db
@@ -145,6 +167,7 @@ export async function listProductsAdmin(input: ListProductsAdminInput): Promise<
       unitIsActive: r.unitIsActive != null ? !!r.unitIsActive : null,
       price: r.price ?? null,
       stockBase: r.stockBase ?? 0,
+      barcodeAliases: r.productUnitId != null ? (aliasesByUnit.get(Number(r.productUnitId)) ?? []) : [],
     })),
     total: Number(totalRow?.n ?? 0),
   };

@@ -92,12 +92,13 @@ export default function Products() {
     const picked = rows.filter((r) => sel.isSelected(rowKey(r)));
     if (picked.length === 0) return;
     const tsv = formatTableAsTSV(
-      ["المنتج", "المتغيّر", "الوحدة", "الباركود", "السعر", "المخزون"],
+      ["المنتج", "المتغيّر", "الوحدة", "الباركود", "بدائل الباركود", "السعر", "المخزون"],
       picked.map((r) => ({
         "المنتج": r.productName,
         "المتغيّر": r.variantName ?? r.color ?? r.sku ?? "",
         "الوحدة": r.unitName ?? "",
         "الباركود": r.barcode ?? "",
+        "بدائل الباركود": (r.barcodeAliases ?? []).join("، "),
         "السعر": r.price != null ? String(r.price) : "",
         "المخزون": r.stockBase ?? 0,
       })),
@@ -257,6 +258,7 @@ export default function Products() {
                 { key: "variantName", header: "المتغيّر", map: (r) => r.variantName ?? r.color ?? r.sku ?? "" },
                 { key: "unitName", header: "الوحدة" },
                 { key: "barcode", header: "الباركود" },
+                { key: "barcodeAliases", header: "بدائل الباركود", map: (r) => (r.barcodeAliases ?? []).join("، ") },
                 { key: "price", header: "السعر مفرد", map: (r) => (r.price != null ? Number(r.price) : "") },
                 { key: "stockBase", header: "المخزون", map: (r) => Number(r.stockBase ?? 0) },
                 { key: "productIsActive", header: "نشط", map: (r) => (r.productIsActive ? "نعم" : "لا") },
@@ -318,6 +320,14 @@ export default function Products() {
                     <td className="p-2">{r.unitName ?? "—"}</td>
                     <td className="p-2">
                       <CopyInline value={r.barcode ?? ""} />
+                      {(r.barcodeAliases?.length ?? 0) > 0 && (
+                        <span
+                          className="ms-1 text-xs text-muted-foreground whitespace-nowrap"
+                          title={`بدائل: ${r.barcodeAliases.join("، ")}`}
+                        >
+                          +{r.barcodeAliases.length} بديل
+                        </span>
+                      )}
                     </td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">
                       {fmtAr(r.price)}
