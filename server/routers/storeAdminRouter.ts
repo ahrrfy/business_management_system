@@ -24,6 +24,16 @@ import {
   updateBanner,
 } from "../services/storeAdmin/bannerService";
 import { getStoreSettings, updateStoreSettings } from "../services/storeAdmin/storeSettingsService";
+import {
+  createCategory,
+  deleteCategory,
+  listCategoriesAdmin,
+  listProductsForAssign,
+  reassignProducts,
+  reorderCategories,
+  setCategoryStoreVisibility,
+  updateCategory,
+} from "../services/categoryService";
 
 const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]);
 
@@ -149,8 +159,65 @@ const settingsRouter = router({
     }),
 });
 
+/** فئات المتجر (إدارة — إنشاء/تعديل/حذف/ترتيب/إظهار + إسناد منتجات). يلفّ categoryService المُختبَر. */
+const categoriesRouter = router({
+  list: storeReadProcedure.query(() => listCategoriesAdmin()),
+  create: storeManagerProcedure
+    .input(z.object({ name: z.string().min(1).max(255), description: z.string().max(1000).nullish() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
+      const r = await createCategory(input, actor);
+      await logAudit(ctx, { action: "store.category.create", entityType: "storeCategory", entityId: r.id, newValue: { name: input.name } });
+      return r;
+    }),
+  update: storeManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), name: z.string().min(1).max(255).optional(), description: z.string().max(1000).nullish(), isActive: z.boolean().optional() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
+      const r = await updateCategory(input, actor);
+      await logAudit(ctx, { action: "store.category.update", entityType: "storeCategory", entityId: input.id, newValue: input });
+      return r;
+    }),
+  remove: storeManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), reassignToId: z.number().int().positive().nullish() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
+      const r = await deleteCategory(input, actor);
+      await logAudit(ctx, { action: "store.category.delete", entityType: "storeCategory", entityId: input.id });
+      return r;
+    }),
+  setVisibility: storeManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), showInStore: z.boolean() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
+      const r = await setCategoryStoreVisibility(input, actor);
+      await logAudit(ctx, { action: "store.category.visibility", entityType: "storeCategory", entityId: input.id, newValue: { showInStore: input.showInStore } });
+      return r;
+    }),
+  reorder: storeManagerProcedure
+    .input(z.object({ orderedIds: z.array(z.number().int().positive()).min(1).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
+      const r = await reorderCategories(input, actor);
+      await logAudit(ctx, { action: "store.category.reorder", entityType: "storeCategory", entityId: 0 });
+      return r;
+    }),
+  listProducts: storeReadProcedure
+    .input(z.object({ q: z.string().max(120).optional(), categoryId: z.number().int().min(0).nullish(), limit: z.number().int().positive().max(500).default(100) }))
+    .query(({ input }) => listProductsForAssign(input)),
+  assignProducts: storeManagerProcedure
+    .input(z.object({ productIds: z.array(z.number().int().positive()).min(1).max(2000), categoryId: z.number().int().positive().nullable() }))
+    .mutation(async ({ input, ctx }) => {
+      const actor = { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0, role: ctx.user.role };
+      const r = await reassignProducts(input, actor);
+      await logAudit(ctx, { action: "store.category.assignProducts", entityType: "storeCategory", entityId: input.categoryId ?? 0, newValue: { count: input.productIds.length } });
+      return r;
+    }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
   settings: settingsRouter,
+  categories: categoriesRouter,
 });

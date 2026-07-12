@@ -325,6 +325,9 @@ export const categories = mysqlTable("categories", {
   name: varchar("name", { length: 255 }).notNull().unique(),
   description: text("description"),
   isActive: boolean("isActive").default(true),
+  // لوحة hPanel للمتجر (١٢/٧، هجرة 0071): ترتيب عرض القسم في المتجر + إظهار/إخفاؤه من واجهة الزبون.
+  sortOrder: int("sortOrder").default(0).notNull(),
+  showInStore: boolean("showInStore").default(true).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 

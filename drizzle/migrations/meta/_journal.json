@@ -498,6 +498,13 @@
       "when": 1783760006000,
       "tag": "0070_invoice_delivery_fee",
       "breakpoints": true
+    },
+    {
+      "idx": 71,
+      "version": "5",
+      "when": 1783760007000,
+      "tag": "0071_category_store_fields",
+      "breakpoints": true
     }
   ]
 }

@@ -51,6 +51,7 @@ const EXTRA_MIGRATIONS = [
   // ١٢/٧/٢٦: سبب إلغاء طلب المتجر (cancelReason) — «تعذّر التسليم» للمندوب. عمود عادي محروس idempotently.
   "drizzle/migrations/0069_online_order_cancel_reason.sql",
   "drizzle/migrations/0070_invoice_delivery_fee.sql",
+  "drizzle/migrations/0071_category_store_fields.sql",
 ];
 
 const url = process.env.DATABASE_URL;

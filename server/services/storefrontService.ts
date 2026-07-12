@@ -272,9 +272,10 @@ export async function storefrontCategories(): Promise<StorefrontCategory[]> {
     )
     .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
     .innerJoin(categories, eq(products.categoryId, categories.id))
-    .where(and(eq(products.isActive, true), eq(products.isService, false)))
-    .groupBy(categories.id, categories.name)
-    .orderBy(asc(categories.name));
+    // showInStore: يحترم إخفاء المدير للقسم من واجهة المتجر (لوحة hPanel)؛ والترتيب بـsortOrder.
+    .where(and(eq(products.isActive, true), eq(products.isService, false), eq(categories.showInStore, true)))
+    .groupBy(categories.id, categories.name, categories.sortOrder)
+    .orderBy(asc(categories.sortOrder), asc(categories.name));
   return rows.map((r) => ({ id: Number(r.id), name: r.name, productCount: Number(r.productCount) }));
 }
 

@@ -12,7 +12,7 @@
  * نفحص التكرار مسبقاً برسالة عربية واضحة، والقيد هو الحارس الأخير.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { categories, products } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -23,6 +23,8 @@ export interface CategoryAdminRow {
   name: string;
   description: string | null;
   isActive: boolean;
+  sortOrder: number;
+  showInStore: boolean;
   productCount: number;
   createdAt: Date;
 }
@@ -37,20 +39,76 @@ export async function listCategoriesAdmin(): Promise<CategoryAdminRow[]> {
       name: categories.name,
       description: categories.description,
       isActive: categories.isActive,
+      sortOrder: categories.sortOrder,
+      showInStore: categories.showInStore,
       createdAt: categories.createdAt,
       productCount: sql<number>`COUNT(${products.id})`,
     })
     .from(categories)
     .leftJoin(products, eq(products.categoryId, categories.id))
     .groupBy(categories.id)
-    .orderBy(asc(categories.name));
+    .orderBy(asc(categories.sortOrder), asc(categories.name));
   return rows.map((r) => ({
     id: Number(r.id),
     name: r.name,
     description: r.description ?? null,
     isActive: r.isActive == null ? true : !!r.isActive,
+    sortOrder: Number(r.sortOrder ?? 0),
+    showInStore: r.showInStore == null ? true : !!r.showInStore,
     productCount: Number(r.productCount ?? 0),
     createdAt: r.createdAt,
+  }));
+}
+
+/** إظهار/إخفاء قسمٍ من واجهة المتجر (لوحة hPanel). لا يمسّ المنتجات ولا الـERP. */
+export async function setCategoryStoreVisibility(input: { id: number; showInStore: boolean }, _actor: Actor) {
+  const db = getDb();
+  if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
+  const cur = (await db.select({ id: categories.id }).from(categories).where(eq(categories.id, input.id)).limit(1))[0];
+  if (!cur) throw new TRPCError({ code: "NOT_FOUND", message: "الفئة غير موجودة." });
+  await db.update(categories).set({ showInStore: input.showInStore }).where(eq(categories.id, input.id));
+  return { id: input.id, showInStore: input.showInStore };
+}
+
+/** ترتيب عرض الأقسام في المتجر — يُسنِد sortOrder=الفهرس لكل معرّف بالترتيب المُمرَّر، ذرّياً. */
+export async function reorderCategories(input: { orderedIds: number[] }, _actor: Actor) {
+  return withTx(async (tx) => {
+    for (let i = 0; i < input.orderedIds.length; i++) {
+      await tx.update(categories).set({ sortOrder: i }).where(eq(categories.id, input.orderedIds[i]));
+    }
+    return { count: input.orderedIds.length };
+  });
+}
+
+export interface ProductForAssign {
+  id: number;
+  name: string;
+  categoryId: number | null;
+  categoryName: string | null;
+}
+
+/** منتقي منتجات لإسنادها لقسم (بوّابة store، لا تحتاج وحدة products). categoryId=0/null ⇒ «بلا فئة». */
+export async function listProductsForAssign(input: { q?: string; categoryId?: number | null; limit?: number }): Promise<ProductForAssign[]> {
+  const db = getDb();
+  if (!db) return [];
+  const limit = Math.min(input.limit ?? 100, 500);
+  const conds = [];
+  if (input.categoryId === 0 || input.categoryId === null) conds.push(isNull(products.categoryId));
+  else if (input.categoryId != null) conds.push(eq(products.categoryId, input.categoryId));
+  const q = input.q?.trim();
+  if (q) conds.push(sql`(${products.name} LIKE ${"%" + q + "%"} OR ${products.searchNorm} LIKE ${"%" + q + "%"})`);
+  const rows = await db
+    .select({ id: products.id, name: products.name, categoryId: products.categoryId, categoryName: categories.name })
+    .from(products)
+    .leftJoin(categories, eq(categories.id, products.categoryId))
+    .where(conds.length ? and(...conds) : undefined)
+    .orderBy(asc(products.name))
+    .limit(limit);
+  return rows.map((r) => ({
+    id: Number(r.id),
+    name: r.name,
+    categoryId: r.categoryId != null ? Number(r.categoryId) : null,
+    categoryName: r.categoryName ?? null,
   }));
 }
 
