@@ -150,6 +150,18 @@ export default function Storefront() {
     return () => clearTimeout(t);
   }, [rawSearch]);
 
+  // ثيم تسويقيّ فاتح دائماً للمتجر (ملاحظة المالك ١٢/٧): الوضع الداكن يُتحكَّم به عبر class="dark" على
+  // <html>؛ لكن واجهة الزبون يجب أن تبقى مضيئةً جذّابة تُشجّع الشراء بصرف النظر عن إعداد جهازه. نُزيل
+  // الوضع الداكن ما دام المتجر معروضاً، ونُعيده عند المغادرة (لئلّا نؤثّر على واجهة الموظّف/الدخول).
+  useEffect(() => {
+    const html = document.documentElement;
+    const hadDark = html.classList.contains("dark");
+    html.classList.remove("dark");
+    return () => {
+      if (hadDark) html.classList.add("dark");
+    };
+  }, []);
+
   // استمرار السلة + بيانات التوصيل عبر تحديث الصفحة/إغلاق التطبيق (localStorage).
   useEffect(() => {
     saveCart(cart);
@@ -274,7 +286,7 @@ export default function Storefront() {
     <div className="min-h-dvh bg-emerald-50/50 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
       {/* الترويسة */}
       <header className="sticky top-0 z-20 border-b border-emerald-100/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/85">
-        <div className="mx-auto flex max-w-2xl items-center gap-3 px-4 py-3">
+        <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
           <div className="flex size-10 shrink-0 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-sm shadow-emerald-600/30">
             <ShoppingBag aria-hidden className="size-5" />
           </div>
@@ -303,7 +315,7 @@ export default function Storefront() {
           </Link>
         </div>
 
-        <div className="mx-auto max-w-2xl px-4 pb-3">
+        <div className="mx-auto max-w-6xl px-4 pb-3">
           <div className="relative">
             <Search aria-hidden className="pointer-events-none absolute right-3.5 top-1/2 size-4 -translate-y-1/2 text-slate-400" />
             <input
@@ -317,7 +329,7 @@ export default function Storefront() {
         </div>
 
         {cats.length > 0 && (
-          <div className="mx-auto max-w-2xl overflow-x-auto px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="mx-auto max-w-6xl overflow-x-auto px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <div className="flex w-max gap-2">
               <button onClick={() => setCategoryId(null)} className={chip(categoryId == null)}>
                 الكل
@@ -334,7 +346,7 @@ export default function Storefront() {
       </header>
 
       {/* المحتوى */}
-      <main className="mx-auto max-w-2xl px-4 py-4 pb-28">
+      <main className="mx-auto max-w-6xl px-4 py-4 pb-28">
         {/* شريط إعلان الموظف */}
         {announcement && (
           <div className="mb-3 flex items-center gap-2 rounded-2xl bg-amber-100 px-4 py-2.5 text-sm font-bold text-amber-900 dark:bg-amber-500/15 dark:text-amber-300">
@@ -476,7 +488,7 @@ export default function Storefront() {
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
             {items.map((p) => {
               const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
               const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
@@ -545,7 +557,7 @@ export default function Storefront() {
       {/* شريط السلة العائم */}
       {cartCount > 0 && panel == null && (
         <div className="fixed inset-x-0 bottom-0 z-20 border-t border-emerald-100 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95">
-          <div className="mx-auto max-w-2xl px-4 py-3">
+          <div className="mx-auto max-w-6xl px-4 py-3">
             <button
               onClick={() => setPanel("cart")}
               className="flex w-full items-center justify-between rounded-2xl bg-emerald-600 px-4 py-3.5 text-white shadow-lg shadow-emerald-600/25 transition motion-safe:active:scale-[0.98] hover:bg-emerald-700"
@@ -861,7 +873,7 @@ export default function Storefront() {
 /** غلاف لوح بملء الشاشة (سلة/دفع/تأكيد) — ترويسة ثابتة + محتوى قابل للتمرير. */
 function PanelShell({ title, onClose, children }: { title: string; onClose: () => void; children: React.ReactNode }) {
   return (
-    <div className="fixed inset-0 z-50 flex flex-col bg-emerald-50/50 dark:bg-slate-950" dir="rtl">
+    <div className="fixed inset-0 z-50 flex flex-col bg-emerald-50 dark:bg-slate-950" dir="rtl">
       <header className="sticky top-0 flex items-center gap-3 border-b border-emerald-100 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900">
         <button onClick={onClose} aria-label="رجوع" className="flex size-9 items-center justify-center rounded-full transition hover:bg-slate-100 dark:hover:bg-slate-800">
           <ArrowRight aria-hidden className="size-5 rotate-180 text-slate-600 dark:text-slate-300" />
