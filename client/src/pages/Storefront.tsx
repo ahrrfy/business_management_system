@@ -24,7 +24,10 @@ import {
   LogIn,
   MessageCircle,
   Minus,
+  LayoutGrid,
   Package,
+  Store,
+  TrendingUp,
   Phone,
   Plus,
   Search,
@@ -131,6 +134,104 @@ function ProductImage({ url, alt, className }: { url: string | null; alt: string
   return <img src={url} alt={alt} loading="lazy" className={`object-cover ${className ?? ""}`} />;
 }
 
+/** «تسوّق حسب القسم» — بطاقات فئات بصرية تقود التصفّح (نمط تجاريّ عالميّ). */
+function CategoryTiles({ cats, onPick }: { cats: { id: number; name: string }[]; onPick: (id: number) => void }) {
+  if (cats.length === 0) return null;
+  return (
+    <section className="mb-5">
+      <h3 className="mb-2.5 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">
+        <LayoutGrid aria-hidden className="size-4 text-emerald-600" /> تسوّق حسب القسم
+      </h3>
+      <div className="grid grid-cols-3 gap-2.5 sm:grid-cols-4 md:grid-cols-6">
+        {cats.map((c) => (
+          <button
+            key={c.id}
+            onClick={() => onPick(c.id)}
+            className="group flex flex-col items-center gap-2 rounded-2xl bg-white p-3 text-center ring-1 ring-slate-100 transition motion-safe:hover:-translate-y-0.5 hover:ring-emerald-300 dark:bg-slate-900 dark:ring-slate-800 dark:hover:ring-emerald-500/40"
+          >
+            <span className="flex size-12 items-center justify-center rounded-2xl bg-emerald-50 text-emerald-600 transition group-hover:bg-emerald-600 group-hover:text-white dark:bg-emerald-500/10 dark:text-emerald-400">
+              <Store aria-hidden className="size-6" />
+            </span>
+            <span className="line-clamp-2 text-[11px] font-bold leading-tight text-slate-700 dark:text-slate-200">{c.name}</span>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** بطاقة منتج مُصغَّرة لصفوف العرض الأفقية («عروض حصرية»، «الأكثر مبيعاً»). */
+type RowProduct = {
+  productUnitId: number;
+  productId: number;
+  productName: string;
+  price: string | null;
+  salePrice?: string | null;
+  imageUrl: string | null;
+  unitName: string;
+  inStock?: boolean;
+};
+function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () => void; onAdd: () => void }) {
+  const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
+  const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
+  return (
+    <div className="flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+      <button onClick={onSelect} className="relative block text-right">
+        <ProductImage url={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
+        {onSale && pct > 0 && (
+          <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
+        )}
+        {p.inStock === false && (
+          <span className="absolute inset-x-0 bottom-0 bg-slate-900/70 py-1 text-center text-[11px] font-bold text-white">غير متوفّر</span>
+        )}
+      </button>
+      <div className="flex flex-1 flex-col gap-1 p-2.5">
+        <button onClick={onSelect} className="text-right">
+          <span className="line-clamp-2 min-h-[2.4em] text-xs font-bold leading-tight text-slate-800 dark:text-slate-100">{p.productName}</span>
+        </button>
+        <div className="flex items-baseline gap-1.5">
+          <span className="text-sm font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(p.salePrice ?? p.price)}</span>
+          {onSale && <span className="text-[11px] text-slate-400 line-through">{money(p.price)}</span>}
+        </div>
+        <button
+          onClick={onAdd}
+          disabled={p.inStock === false}
+          className="mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-1.5 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+        >
+          <Plus aria-hidden className="size-3.5" /> {p.inStock === false ? "غير متوفّر" : "أضف"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** صفّ منتجات أفقيّ بعنوان وأيقونة (يُخفى إن فرغ). */
+function ProductRow({
+  title,
+  icon,
+  products,
+  onSelect,
+  onAdd,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  products: RowProduct[];
+  onSelect: (id: number) => void;
+  onAdd: (p: RowProduct) => void;
+}) {
+  if (products.length === 0) return null;
+  return (
+    <section className="mb-5">
+      <h3 className="mb-2.5 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">{icon} {title}</h3>
+      <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {products.map((p) => (
+          <ProductRowCard key={p.productId} p={p} onSelect={() => onSelect(p.productId)} onAdd={() => onAdd(p)} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 type Panel = null | "cart" | "checkout" | "confirmation";
 
 export default function Storefront() {
@@ -202,6 +303,17 @@ export default function Storefront() {
   const activeCatName = useMemo(
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
+  );
+
+  // تنظيم تسويقيّ عالميّ: عروض حصرية (منتجات مخصومة فعلاً) + الأكثر مبيعاً (بحسب soldCount) — يُشتقّان
+  // من الكتالوج نفسه، فيظهران على الواجهة الأولى فقط (بلا بحث/فئة) ويُخفَيان تلقائياً إن لم يوجد محتوى.
+  const dealProducts = useMemo(
+    () => items.filter((p) => p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
+    [items]
+  );
+  const bestSellers = useMemo(
+    () => [...items].filter((p) => (p.soldCount ?? 0) > 0).sort((a, b) => (b.soldCount ?? 0) - (a.soldCount ?? 0)).slice(0, 12),
+    [items]
   );
 
   const cartLines = useMemo(() => Array.from(cart.values()), [cart]);
@@ -429,6 +541,9 @@ export default function Storefront() {
               ))}
             </section>
 
+            {/* تسوّق حسب القسم */}
+            <CategoryTiles cats={cats} onPick={(id) => setCategoryId(id)} />
+
             {/* عروض اليوم */}
             {offers.length > 0 && (
               <section className="mb-5">
@@ -454,7 +569,27 @@ export default function Storefront() {
               </section>
             )}
 
-            <h3 className="mb-3 text-sm font-extrabold text-slate-800 dark:text-slate-200">تصفّح المنتجات</h3>
+            {/* عروض حصرية — منتجات مخصومة فعلاً (إلحاحٌ يرفع التحويل) */}
+            <ProductRow
+              title="عروض حصرية"
+              icon={<Flame aria-hidden className="size-4 text-rose-500" />}
+              products={dealProducts}
+              onSelect={setSelectedId}
+              onAdd={addToCart}
+            />
+
+            {/* الأكثر مبيعاً — دليلٌ اجتماعيّ يبني الثقة */}
+            <ProductRow
+              title="الأكثر مبيعاً"
+              icon={<TrendingUp aria-hidden className="size-4 text-emerald-600" />}
+              products={bestSellers}
+              onSelect={setSelectedId}
+              onAdd={addToCart}
+            />
+
+            <h3 className="mb-3 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">
+              <ShoppingBag aria-hidden className="size-4 text-emerald-600" /> كل المنتجات
+            </h3>
           </>
         )}
 
