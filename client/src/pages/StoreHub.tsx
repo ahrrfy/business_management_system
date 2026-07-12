@@ -8,6 +8,7 @@ const OrderFulfillment = lazy(() => import("@/pages/OrderFulfillment"));
 const StoreCategories = lazy(() => import("@/pages/store/StoreCategories"));
 const StoreCatalog = lazy(() => import("@/pages/store/StoreCatalog"));
 const StorePromotions = lazy(() => import("@/pages/store/StorePromotions"));
+const StoreAnalytics = lazy(() => import("@/pages/store/StoreAnalytics"));
 const BannerManager = lazy(() => import("@/pages/store/BannerManager"));
 const StoreSettingsPanel = lazy(() => import("@/pages/store/StoreSettingsPanel"));
 
@@ -17,6 +18,7 @@ const TABS: HubTab[] = [
   { value: "categories", label: "الفئات", gate: { managerOnly: true }, Component: StoreCategories },
   { value: "catalog", label: "الكتالوج والعرض", gate: { managerOnly: true }, Component: StoreCatalog },
   { value: "promotions", label: "العروض", gate: { managerOnly: true }, Component: StorePromotions },
+  { value: "analytics", label: "التحليلات", gate: { managerOnly: true }, Component: StoreAnalytics },
   { value: "banners", label: "البنرات", gate: { managerOnly: true }, Component: BannerManager },
   { value: "settings", label: "الإعدادات", gate: { managerOnly: true }, Component: StoreSettingsPanel },
 ];

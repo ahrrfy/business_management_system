@@ -46,6 +46,7 @@ import {
   deactivateStorePromotion,
   listStorePromotions,
 } from "../services/storeAdmin/storePromotionService";
+import { getStoreAnalytics } from "../services/storeAdmin/storeAnalyticsService";
 import { resolveStorefrontBranchId } from "../services/storefrontService";
 import { withTx } from "../services/tx";
 
@@ -331,6 +332,26 @@ const promotionsRouter = router({
     }),
 });
 
+/** تحليلات المتجر (لوحة hPanel) — أداء الطلبات الإلكترونية على مدى فترة (بلا تكلفة/ربح — §٦). */
+const analyticsRouter = router({
+  summary: storeReadProcedure
+    .input(z.object({
+      fromYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح"),
+      toYmd: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح"),
+    })
+      // النطاق محدودٌ بـ٩٢ يوماً (سقف ملء فجوات الاتّجاه في الخدمة) كي يغطّي المخطّطُ اليوميّ نفسَ
+      // نافذة المؤشّرات دائماً — وإلا لاقتُطع الاتّجاه صامتاً بينما تشمل المؤشّرات كامل المدى (مراجعة ١٣/٧).
+      .refine((v) => v.toYmd >= v.fromYmd, { message: "تاريخ الانتهاء أقدم من البدء" })
+      .refine(
+        (v) => (Date.parse(`${v.toYmd}T00:00:00Z`) - Date.parse(`${v.fromYmd}T00:00:00Z`)) / 86_400_000 <= 91,
+        { message: "النطاق يتجاوز ٩٢ يوماً" },
+      ))
+    .query(async ({ input, ctx }) => {
+      // عزل الفرع كبقيّة راوتر الطلبات: المرتفع (admin/manager) scopedBranchId=null ⇒ كل المتجر.
+      return getStoreAnalytics({ scopedBranchId: ctx.scopedBranchId ?? null, fromYmd: input.fromYmd, toYmd: input.toYmd });
+    }),
+});
+
 export const storeAdminRouter = router({
   orders: ordersRouter,
   banners: bannersRouter,
@@ -338,4 +359,5 @@ export const storeAdminRouter = router({
   categories: categoriesRouter,
   catalog: catalogRouter,
   promotions: promotionsRouter,
+  analytics: analyticsRouter,
 });
