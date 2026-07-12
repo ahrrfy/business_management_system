@@ -31,6 +31,7 @@ import { getTreasurySummary, getExpensesReport, getCashOrphansReport } from "../
 import { getProductionReport, getWorkOrdersReport } from "../services/reportsProductionService";
 import { workOrderProfitability } from "../services/reports/workOrderProfitability";
 import { getMonthlyClosePack } from "../services/reports/monthlyClosePack";
+import { getCourierPerformance } from "../services/reports/courierPerformance";
 import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
@@ -666,5 +667,17 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
       return getWorkOrdersReport({ from: input.from, to: input.to, branchId });
+    }),
+
+  /**
+   * أداء المناديب / جهات التوصيل — لطلبات المتجر الإلكتروني (COD) خلال فترة بتاريخ الطلب:
+   * المُسنَد/المُسلَّم/قيد التوصيل/المتعذّر + قيمة المُسلَّم + COD المُحصَّل + معدّل التعذّر + العهدة القائمة.
+   * يكشف قيمة/تحصيل النقد ⇒ نفس بوّابة التقارير (reportViewerProcedure) + عزل الفرع بـscopedBranchId.
+   */
+  courierPerformance: reportsBranchScoped
+    .input(z.object({ from: ymdStr.optional(), to: ymdStr.optional(), branchId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getCourierPerformance({ from: input?.from, to: input?.to, branchId });
     }),
 });
