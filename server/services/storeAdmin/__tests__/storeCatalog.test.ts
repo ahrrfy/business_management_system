@@ -94,6 +94,34 @@ describe("listStoreCatalog — التجميع والترتيب", () => {
   });
 });
 
+describe("listStoreCatalog — sellableTotal (العدد الحقيقي الظاهر للزبون، بمعزل عن total)", () => {
+  it("بلا فلاتر: total=4 (كل المنتجات) لكن sellableTotal=3 (يستبعد المخفيّ #3 فقط — لا يشترط مخزوناً>0)", async () => {
+    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1, limit: 50 });
+    expect(total).toBe(4);
+    expect(sellableTotal).toBe(3);
+  });
+
+  it("hiddenOnly يُصفّي total للمخفيّ فقط، لكن sellableTotal يبقى يعكس القابل للبيع فعلياً (لا يتناقض معه)", async () => {
+    const { rows, total, sellableTotal } = await listStoreCatalog({ branchId: 1, hiddenOnly: true });
+    expect(rows.map((r) => r.productId)).toEqual([3]);
+    expect(total).toBe(1);
+    expect(sellableTotal).toBe(3); // معيار مستقلّ عن فلتر العرض hiddenOnly
+  });
+
+  it("categoryId=1 يُضيّق كلا العدَدين لنفس القسم", async () => {
+    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1, categoryId: 1 });
+    expect(total).toBe(2);
+    expect(sellableTotal).toBe(2); // دفتر + قلم مميّز، كلاهما ظاهر وله سعر
+  });
+
+  it("منتج بلا سعر مفرد (RETAIL) لا يُحتسب ضمن sellableTotal رغم isActive/showInStore", async () => {
+    await db().delete(s.productPrices).where(eq(s.productPrices.productUnitId, 1));
+    const { total, sellableTotal } = await listStoreCatalog({ branchId: 1 });
+    expect(total).toBe(4); // total لا يفحص وجود سعر
+    expect(sellableTotal).toBe(2); // فقدَ الدفتر أهليته
+  });
+});
+
 describe("listStoreCatalog — الفلاتر", () => {
   it("featuredOnly ⇒ المميّز فقط", async () => {
     const { rows, total } = await listStoreCatalog({ branchId: 1, featuredOnly: true });

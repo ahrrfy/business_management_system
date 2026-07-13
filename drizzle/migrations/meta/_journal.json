@@ -519,6 +519,13 @@
       "when": 1783760009000,
       "tag": "0073_promotion_store_managed",
       "breakpoints": true
+    },
+    {
+      "idx": 74,
+      "version": "5",
+      "when": 1783966548380,
+      "tag": "0074_banner_placement",
+      "breakpoints": true
     }
   ]
 }

@@ -131,6 +131,8 @@ const bannerInput = z.object({
   effectiveFrom: dateStr.nullish(),
   effectiveTo: dateStr.nullish(),
   branchId: z.number().int().positive().nullish(),
+  // موضع العرض (0074): رئيسي/جانبي طولي/فاصل بين المنتجات.
+  placement: z.enum(["HERO", "SIDE", "INLINE"]).optional(),
 });
 
 /** بنرات المتجر (إدارة — storeManagerProcedure). */

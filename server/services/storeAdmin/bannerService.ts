@@ -14,6 +14,8 @@ function todayYmdBaghdad(): string {
   return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
+export type BannerPlacement = "HERO" | "SIDE" | "INLINE";
+
 export interface BannerInput {
   title: string;
   subtitle?: string | null;
@@ -25,6 +27,8 @@ export interface BannerInput {
   effectiveFrom?: string | null;
   effectiveTo?: string | null;
   branchId?: number | null;
+  /** موضع العرض في المتجر — HERO (كاروسيل، الافتراضي) / SIDE (جانبي طولي) / INLINE (فاصل بين المنتجات). */
+  placement?: BannerPlacement;
 }
 
 /** كل البنرات (لوحة الإدارة) — مرتّبة بالترتيب ثم الأحدث. */
@@ -41,9 +45,11 @@ export interface PublicBanner {
   imageUrl: string | null;
   ctaLabel: string | null;
   ctaUrl: string | null;
+  placement: BannerPlacement;
 }
 
-/** البنرات الفعّالة للمتجر (علني، آمن): مفعّلة + ضمن النافذة الزمنية + الفرع. */
+/** البنرات الفعّالة للمتجر (علني، آمن): مفعّلة + ضمن النافذة الزمنية + الفرع — بكل المواضع،
+ *  والعميل يوزّعها (HERO كاروسيل / SIDE جوانب / INLINE فواصل). السقف 24 يتّسع للمواضع الثلاثة. */
 export async function listActiveBanners(branchIdInput?: number): Promise<PublicBanner[]> {
   const db = getDb();
   if (!db) return [];
@@ -57,6 +63,7 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
       imageUrl: storeBanners.imageUrl,
       ctaLabel: storeBanners.ctaLabel,
       ctaUrl: storeBanners.ctaUrl,
+      placement: storeBanners.placement,
     })
     .from(storeBanners)
     .where(
@@ -68,7 +75,7 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
       )
     )
     .orderBy(asc(storeBanners.sortOrder), desc(storeBanners.id))
-    .limit(12);
+    .limit(24);
   return rows.map((r) => ({
     id: Number(r.id),
     title: r.title,
@@ -76,6 +83,7 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
     imageUrl: r.imageUrl ?? null,
     ctaLabel: r.ctaLabel ?? null,
     ctaUrl: r.ctaUrl ?? null,
+    placement: (r.placement as BannerPlacement) ?? "HERO",
   }));
 }
 
@@ -92,6 +100,7 @@ export async function createBanner(input: BannerInput, userId: number): Promise<
       effectiveFrom: input.effectiveFrom || null,
       effectiveTo: input.effectiveTo || null,
       branchId: input.branchId ?? null,
+      placement: input.placement ?? "HERO",
       createdBy: userId,
     });
     return { id: extractInsertId(res) };
@@ -111,6 +120,7 @@ export async function updateBanner(id: number, input: Partial<BannerInput>): Pro
     if (input.effectiveFrom !== undefined) patch.effectiveFrom = input.effectiveFrom || null;
     if (input.effectiveTo !== undefined) patch.effectiveTo = input.effectiveTo || null;
     if (input.branchId !== undefined) patch.branchId = input.branchId ?? null;
+    if (input.placement !== undefined) patch.placement = input.placement;
     if (Object.keys(patch).length) await tx.update(storeBanners).set(patch).where(eq(storeBanners.id, id));
     return { id };
   });

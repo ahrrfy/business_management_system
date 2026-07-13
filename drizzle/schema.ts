@@ -1538,6 +1538,9 @@ export const storeBanners = mysqlTable(
     imageUrl: mediumtext("imageUrl"),
     ctaLabel: varchar("ctaLabel", { length: 120 }),
     ctaUrl: varchar("ctaUrl", { length: 500 }),
+    // موضع البنر في المتجر (هجرة 0074): HERO كاروسيل أعلى المتجر (الافتراضي = سلوك ما قبل العمود)،
+    // SIDE بنر طولي بجوانب الشاشات العريضة، INLINE فاصل عرضي بين صفوف المنتجات.
+    placement: mysqlEnum("placement", ["HERO", "SIDE", "INLINE"]).default("HERO").notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
     effectiveFrom: date("effectiveFrom", { mode: "string" }),

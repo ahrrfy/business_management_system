@@ -1,18 +1,19 @@
 // اختبارات قائمة إدارة المنتجات (listProductsAdmin) — LEFT JOIN يُظهر الناقص،
 // includeInactive يُظهر المعطّل، البحث الذكي NULL-safe، تقسيم صفحات حتمي،
 // + تفعيل/تعطيل المنتج (setProductActive) وانعكاسه على POS.
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { listForPos, listProductsAdmin, setProductActive } from "../catalogService";
+import { deleteProduct, listForPos, listProductsAdmin, setProductActive } from "../catalogService";
+import { getProductUsage } from "../entityUsage";
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
 async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of ["branchStock", "productPrices", "productUnits", "productVariants", "products", "branches"]) {
+  for (const t of ["inventoryMovements", "branchStock", "productPrices", "productUnits", "productVariants", "products", "branches"]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
   }
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
@@ -128,5 +129,43 @@ describe("setProductActive — التعطيل يخفي من POS والقائمة
     expect(names(restored.rows)).toContain("قلم جاف أزرق فاخر");
 
     await expect(setProductActive(999999, false, actor)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+describe("getProductUsage/deleteProduct — الحذف النهائي مسموح فقط للمنتج «النظيف»", () => {
+  it("منتج بلا أيّ ارتباط: نظيف ويُحذف نهائياً فعلاً من القاعدة", async () => {
+    const usage = await getProductUsage(2);
+    expect(usage.clean).toBe(true);
+    expect(usage.total).toBe(0);
+
+    const res = await deleteProduct(2);
+    expect(res).toEqual({ productId: 2, deleted: true });
+    const [gone] = await db().select().from(s.products).where(eq(s.products.id, 2)).limit(1);
+    expect(gone).toBeUndefined();
+  });
+
+  it("منتج له حركة مخزون: غير نظيف، يُمنع حذفه برسالة عربية تسرد فئة «حركات مخزون»", async () => {
+    await db().insert(s.inventoryMovements).values([
+      { variantId: 1, branchId: 1, movementType: "IN", quantity: 5 },
+    ]);
+    const usage = await getProductUsage(1);
+    expect(usage.clean).toBe(false);
+    expect(usage.categories.find((c) => c.key === "movements")?.count).toBe(1);
+
+    await expect(deleteProduct(1)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    const [stillThere] = await db().select().from(s.products).where(eq(s.products.id, 1)).limit(1);
+    expect(stillThere).toBeTruthy();
+  });
+
+  it("منتج برصيد مخزون حالي ≠ صفر (بلا حركات مسجَّلة صراحةً): يُمنع حذفه أيضاً — حارس رصيد لا حركة فقط", async () => {
+    await db().insert(s.branchStock).values([{ variantId: 2, branchId: 1, quantity: 3 }]);
+    const usage = await getProductUsage(2);
+    expect(usage.clean).toBe(false);
+    expect(usage.categories.find((c) => c.key === "stockOnHand")?.count).toBe(1);
+    await expect(deleteProduct(2)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("منتج غير موجود ⇒ NOT_FOUND", async () => {
+    await expect(deleteProduct(999999)).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 });

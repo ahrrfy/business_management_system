@@ -1,6 +1,7 @@
 /**
  * BannerManager — إدارة البنرات الإعلانية للمتجر (لوحة hPanel، تبويب «البنرات»).
- * إضافة/تعديل/تفعيل/حذف بنر بعنوان + صورة + زرّ (CTA) + ترتيب + نافذة تاريخ. تظهر فوراً في المتجر.
+ * إضافة/تعديل/تفعيل/حذف بنر بعنوان + صورة + زرّ (CTA) + ترتيب + نافذة تاريخ + **موضع**
+ * (رئيسي/جانبي طولي/فاصل بين المنتجات). تظهر فوراً في المتجر.
  */
 import { useState } from "react";
 import { ImagePlus, Loader2, Pencil, Plus, Save, Trash2, X } from "lucide-react";
@@ -8,6 +9,27 @@ import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+
+type Placement = "HERO" | "SIDE" | "INLINE";
+
+/** مواصفات كل موضع: تسمية للمدير + مقاس الصورة الموصى به (يُبنى عليه العرض في المتجر). */
+const PLACEMENTS: Record<Placement, { label: string; hint: string; badge: string }> = {
+  HERO: {
+    label: "رئيسي — كاروسيل أعلى المتجر",
+    hint: "المقاس المثالي ١٦٠٠×٥٠٠ بكسل (نسبة ٣.٢:١ تقريباً) — صورة أفقية، تُضغط تلقائياً",
+    badge: "رئيسي",
+  },
+  SIDE: {
+    label: "جانبي طولي — جوانب الشاشات العريضة",
+    hint: "المقاس المثالي ٦٠٠×١٢٠٠ بكسل (نسبة ١:٢ طولية) — يظهر على الشاشات العريضة فقط، تُضغط تلقائياً",
+    badge: "جانبي",
+  },
+  INLINE: {
+    label: "فاصل تسويقي — شريط عرضي بين صفوف المنتجات",
+    hint: "المقاس المثالي ١٢٠٠×٢٠٠ بكسل (نسبة ٦:١ عريضة) — يظهر كل عشرة منتجات تقريباً، تُضغط تلقائياً",
+    badge: "فاصل",
+  },
+};
 
 interface FormState {
   id: number | null;
@@ -20,11 +42,12 @@ interface FormState {
   effectiveFrom: string;
   effectiveTo: string;
   images: ImageItem[];
+  placement: Placement;
 }
 
 const EMPTY: FormState = {
   id: null, title: "", subtitle: "", ctaLabel: "", ctaUrl: "", sortOrder: "0",
-  isActive: true, effectiveFrom: "", effectiveTo: "", images: [],
+  isActive: true, effectiveFrom: "", effectiveTo: "", images: [], placement: "HERO",
 };
 
 export default function BannerManager() {
@@ -54,6 +77,7 @@ export default function BannerManager() {
       effectiveFrom: b.effectiveFrom ?? "",
       effectiveTo: b.effectiveTo ?? "",
       images: b.imageUrl ? [{ id: "cur", dataUrl: b.imageUrl, isPrimary: true }] : [],
+      placement: (b.placement as Placement) ?? "HERO",
     });
   }
 
@@ -71,6 +95,7 @@ export default function BannerManager() {
       isActive: form.isActive,
       effectiveFrom: form.effectiveFrom || null,
       effectiveTo: form.effectiveTo || null,
+      placement: form.placement,
     };
     if (form.id == null) createM.mutate(payload);
     else updateM.mutate({ id: form.id, ...payload });
@@ -102,6 +127,14 @@ export default function BannerManager() {
             </button>
           </div>
           <div className="grid gap-3 md:grid-cols-2">
+            <label className="text-sm md:col-span-2">
+              <span className="mb-1 block font-medium text-muted-foreground">موضع البنر في المتجر</span>
+              <select value={form.placement} onChange={(e) => setForm({ ...form, placement: e.target.value as Placement })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30">
+                {(Object.keys(PLACEMENTS) as Placement[]).map((p) => (
+                  <option key={p} value={p}>{PLACEMENTS[p].label}</option>
+                ))}
+              </select>
+            </label>
             <label className="text-sm">
               <span className="mb-1 block font-medium text-muted-foreground">العنوان *</span>
               <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30" />
@@ -137,7 +170,7 @@ export default function BannerManager() {
           </div>
           <div className="mt-3">
             <span className="mb-1 flex items-center gap-1.5 text-sm font-medium text-muted-foreground"><ImagePlus aria-hidden className="size-4" /> صورة البنر</span>
-            <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={1} singlePrimary={false} hint="صورة أفقية جذّابة (تُضغط تلقائياً)" />
+            <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={1} singlePrimary={false} hint={PLACEMENTS[form.placement].hint} />
           </div>
           <button onClick={save} disabled={saving} className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
             {saving ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />} حفظ
@@ -160,6 +193,9 @@ export default function BannerManager() {
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
                   <p className="truncate text-sm font-bold">{b.title}</p>
+                  <span className="shrink-0 rounded-full bg-primary/10 px-2 py-0.5 text-[10px] font-bold text-primary">
+                    {PLACEMENTS[(b.placement as Placement) ?? "HERO"]?.badge ?? "رئيسي"}
+                  </span>
                   {!b.isActive && <span className="rounded-full bg-muted px-2 py-0.5 text-[10px] font-bold text-muted-foreground">معطّل</span>}
                 </div>
                 {b.subtitle && <p className="truncate text-xs text-muted-foreground">{b.subtitle}</p>}

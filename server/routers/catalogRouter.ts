@@ -2,7 +2,7 @@ import { z } from "zod";
 import { asc } from "drizzle-orm";
 import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { assignBarcode, checkBarcodesTaken, createProduct, getProductForEdit, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
+import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
 import { addUnitBarcodeAlias, listUnitBarcodes, removeUnitBarcodeAlias, resolveProductUnitId } from "../services/catalog/barcodeAliases";
 import {
@@ -14,6 +14,7 @@ import {
   updateCategory,
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
+import { getProductUsage } from "../services/entityUsage";
 import { productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 
@@ -126,6 +127,19 @@ export const catalogRouter = router({
         entityId: input.productId,
         newValue: { isActive: input.isActive },
       });
+      return res;
+    }),
+
+  // ملخّص ارتباطات المنتج (نشاط + سبب منع الحذف النهائي إن وُجد ارتباط).
+  usage: productsReadProcedure.input(z.object({ productId: z.number().int().positive() })).query(({ input }) => getProductUsage(input.productId)),
+
+  // حذف نهائي — للمنتج «النظيف» فقط (يُمنع مع رسالة عربية تسرد الارتباطات إن وُجدت). مدير فأعلى —
+  // نفس مستوى setProductActive (تغيير جذري في الكتالوج).
+  delete: productsManagerProcedure
+    .input(z.object({ productId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await deleteProduct(input.productId);
+      await logAudit(ctx, { action: "product.delete", entityType: "product", entityId: input.productId });
       return res;
     }),
 

@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { branchStock, categories, productPrices, productUnitBarcodes, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
+import { getProductUsage, isFkBlocked, usageBlockMessage } from "../entityUsage";
 import { type Actor, withTx } from "../tx";
 import { buildCatalogSearchOrder, buildCatalogSearchWhere } from "./search";
 
@@ -183,5 +184,33 @@ export async function setProductActive(productId: number, isActive: boolean, _ac
     if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
     await tx.update(products).set({ isActive }).where(eq(products.id, productId));
     return { productId, isActive };
+  });
+}
+
+/**
+ * حذف منتج نهائياً — مسموح فقط لمنتج «نظيف» (بلا حركة مخزون/رصيد/فاتورة/أمر شراء أو شغل/جرد/إنتاج
+ * أو أيّ ارتباط آخر — `getProductUsage`). غير النظيف يُمنع حذفه وتُعرض فئات الارتباط بدل ذلك؛
+ * البديل الآمن القابل للتراجع هو «تعطيل» (`setProductActive`). قيد FK حارس نهائي ضدّ التيتيم.
+ */
+export async function deleteProduct(productId: number) {
+  return withTx(async (tx) => {
+    const p = (await tx.select().from(products).where(eq(products.id, productId)).for("update").limit(1))[0];
+    if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
+    const usage = await getProductUsage(productId, tx);
+    if (!usage.clean) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: usageBlockMessage("هذا المنتج", usage) });
+    }
+    try {
+      await tx.delete(products).where(eq(products.id, productId));
+    } catch (err) {
+      if (isFkBlocked(err)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "تعذّر الحذف: المنتج مرتبط بسجلّات في النظام — عطّله بدل حذفه.",
+        });
+      }
+      throw err;
+    }
+    return { productId, deleted: true };
   });
 }
