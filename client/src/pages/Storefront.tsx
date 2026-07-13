@@ -11,7 +11,7 @@
  *   • هيرو + شريط ثقة + شارات خصم — سمات المتجر الناجح. مقصور على المتجر (لا يمسّ نظام الموظفين).
  *   • متجاوب أولوية-الجوال، ثيم فاتح/داكن، خطّ Cairo (ودود كـNunito الموصى به).
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "wouter";
 import {
   ArrowRight,
@@ -234,7 +234,89 @@ function ProductRow({
 
 /** بنر إعلانيّ ديناميكيّ: كاروسيل يتبدّل تلقائياً كل ٥ث (crossfade آمنٌ لـRTL) + نقاط تنقّل +
  *  ارتفاعٌ متجاوب (auto-scale). يُشتقّ من بنرات لوحة hPanel؛ بنرٌ واحد ⇒ يُعرَض ثابتاً بلا نقاط. */
-type BannerItem = { id: number; title: string; subtitle?: string | null; imageUrl?: string | null; ctaLabel?: string | null; ctaUrl?: string | null };
+type BannerItem = { id: number; title: string; subtitle?: string | null; imageUrl?: string | null; ctaLabel?: string | null; ctaUrl?: string | null; placement?: "HERO" | "SIDE" | "INLINE" };
+
+/**
+ * بنرات جانبية طولية (placement=SIDE): تملأ فراغَي جانبَي عمود المحتوى (max-w-6xl=1152px) على
+ * الشاشات العريضة فقط (≥1600px حيث تتوفّر ≥224px لكل جانب). مثبّتة أثناء التمرير (نمط
+ * skyscraper/half-page العالمي)، تتوزّع بالتناوب: الأول يمين (بداية RTL) والثاني يسار، بحدّ
+ * بنرَين لكل جانب. لا تُزاحم المحتوى أبداً — موضعها محسوب من مركز الشاشة + نصف عرض العمود.
+ */
+function SideRails({ banners }: { banners: BannerItem[] }) {
+  if (banners.length === 0) return null;
+  const right = banners.filter((_, i) => i % 2 === 0).slice(0, 2);
+  const left = banners.filter((_, i) => i % 2 === 1).slice(0, 2);
+  const rail = (list: BannerItem[], sideStyle: CSSProperties) =>
+    list.length > 0 && (
+      <div className="fixed top-1/2 z-10 hidden w-44 -translate-y-1/2 flex-col gap-3 min-[1600px]:flex" style={sideStyle} aria-hidden={false}>
+        {list.map((b) => {
+          const inner = (
+            <>
+              {b.imageUrl ? (
+                <img src={b.imageUrl} alt={b.title} className="h-full w-full object-cover" />
+              ) : (
+                <div className="h-full w-full bg-gradient-to-b from-emerald-600 via-emerald-500 to-teal-500" />
+              )}
+              <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-black/20 to-transparent p-3 text-white">
+                <p className="text-sm font-extrabold leading-tight">{b.title}</p>
+                {b.subtitle && <p className="mt-0.5 line-clamp-2 text-[11px] text-white/90">{b.subtitle}</p>}
+                {b.ctaLabel && (
+                  <span className="mt-1.5 inline-flex w-fit items-center rounded-full bg-amber-400 px-2.5 py-1 text-[11px] font-extrabold text-amber-950 shadow">
+                    {b.ctaLabel}
+                  </span>
+                )}
+              </div>
+            </>
+          );
+          return (
+            <div key={b.id} className="relative aspect-[1/2] w-full overflow-hidden rounded-2xl shadow-md ring-1 ring-slate-200/60">
+              {b.ctaUrl ? <a href={b.ctaUrl} className="block h-full w-full">{inner}</a> : inner}
+            </div>
+          );
+        })}
+      </div>
+    );
+  return (
+    <>
+      {/* CSS left/right فيزيائيتان لا منطقيتان: جهة البداية في RTL = يمين الشاشة = `left: 50%+592px`. */}
+      {rail(right, { left: "calc(50% + 592px)" })}
+      {rail(left, { right: "calc(50% + 592px)" })}
+    </>
+  );
+}
+
+/**
+ * فاصل تسويقي عرضي داخل شبكة المنتجات (placement=INLINE) — يقطع سيل المنتجات كل عشرة أصناف
+ * بشريط ترويجي (نمط in-feed banner العالمي: أمازون/علي إكسبرس). `col-span-full` يمتدّ على كامل
+ * أعمدة الشبكة أياً كان عددها المتجاوب.
+ */
+function InlineStrip({ banner, tone = "emerald" }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
+  const inner = (
+    <>
+      {banner.imageUrl ? (
+        <img src={banner.imageUrl} alt={banner.title} className="h-full w-full object-cover" />
+      ) : (
+        <div className={`h-full w-full ${tone === "amber" ? "bg-gradient-to-l from-amber-500 to-orange-500" : "bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500"}`} />
+      )}
+      <div className="absolute inset-0 flex items-center justify-between gap-3 bg-gradient-to-l from-black/60 via-black/25 to-transparent p-4 text-white sm:p-6">
+        <div className="min-w-0">
+          <p className="text-base font-extrabold leading-tight sm:text-xl">{banner.title}</p>
+          {banner.subtitle && <p className="mt-0.5 line-clamp-1 text-xs text-white/90 sm:text-sm">{banner.subtitle}</p>}
+        </div>
+        {banner.ctaLabel && (
+          <span className="shrink-0 rounded-full bg-amber-400 px-4 py-1.5 text-xs font-extrabold text-amber-950 shadow sm:text-sm">
+            {banner.ctaLabel}
+          </span>
+        )}
+      </div>
+    </>
+  );
+  return (
+    <div className="relative col-span-full h-28 overflow-hidden rounded-2xl shadow-sm sm:h-32 md:h-36">
+      {banner.ctaUrl ? <a href={banner.ctaUrl} className="block h-full w-full">{inner}</a> : inner}
+    </div>
+  );
+}
 function BannerCarousel({ banners }: { banners: BannerItem[] }) {
   const [cur, setCur] = useState(0);
   useEffect(() => {
@@ -359,12 +441,27 @@ export default function Storefront() {
   const cats = categoriesQ.data ?? [];
   const offers = offersQ.data ?? [];
   const banners = bannersQ.data ?? [];
+  // توزيع البنرات على مواضعها الثلاثة (الصفوف القديمة بلا placement = رئيسي).
+  const heroBanners = useMemo(() => banners.filter((b) => (b.placement ?? "HERO") === "HERO"), [banners]);
+  const sideBanners = useMemo(() => banners.filter((b) => b.placement === "SIDE"), [banners]);
+  const inlineBanners = useMemo(() => banners.filter((b) => b.placement === "INLINE"), [banners]);
   const announcement = settingsQ.data?.announcement ?? null;
   const storeOpen = settingsQ.data?.isOpen ?? true;
   const activeCatName = useMemo(
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
   );
+  // فواصل السيل التسويقية: بنرات INLINE المُدارة أولاً، وعند غيابها تُشتقّ من عروض اليوم الفعّالة
+  // (فلسفة in-feed العالمية: لا يمرّ الزبون بأكثر من ~عشرة منتجات دون محفّز شراء).
+  const feedStrips = useMemo<BannerItem[]>(() => {
+    if (inlineBanners.length) return inlineBanners;
+    return offers.slice(0, 4).map((o) => ({
+      id: -o.id,
+      title: o.name,
+      subtitle: o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`,
+      ctaLabel: "عرض اليوم",
+    }));
+  }, [inlineBanners, offers]);
 
   // تنظيم تسويقيّ عالميّ: عروض حصرية (منتجات مخصومة فعلاً) + الأكثر مبيعاً (بحسب soldCount) — يُشتقّان
   // من الكتالوج نفسه، فيظهران على الواجهة الأولى فقط (بلا بحث/فئة) ويُخفَيان تلقائياً إن لم يوجد محتوى.
@@ -537,8 +634,8 @@ export default function Storefront() {
         {!search && categoryId == null && (
           <>
             {/* البنرات المُدارة (لوحة hPanel) — أو الهيرو الافتراضي إن لم توجد */}
-            {banners.length > 0 ? (
-              <BannerCarousel banners={banners} />
+            {heroBanners.length > 0 ? (
+              <BannerCarousel banners={heroBanners} />
             ) : (
               <section className="relative mb-4 overflow-hidden rounded-3xl bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500 p-5 text-white shadow-lg shadow-emerald-600/20">
                 <Sparkles aria-hidden className="absolute -left-3 -top-3 size-24 opacity-15" />
@@ -655,10 +752,10 @@ export default function Storefront() {
           </div>
         ) : (
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-            {items.map((p) => {
+            {items.flatMap((p, idx) => {
               const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
               const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
-              return (
+              const card = (
                 <div
                   key={p.productId}
                   className={`flex flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
@@ -715,10 +812,22 @@ export default function Storefront() {
                   </div>
                 </div>
               );
+              // فاصل تسويقي كل عشرة منتجات (لا وسط نتائج البحث — الزبون الباحث يريد نتائجه صافية).
+              const nodes: ReactNode[] = [card];
+              if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < items.length) {
+                const k = ((idx + 1) / 10 - 1) % feedStrips.length;
+                nodes.push(
+                  <InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />
+                );
+              }
+              return nodes;
             })}
           </div>
         )}
       </main>
+
+      {/* بنرات جانبية طولية (شاشات عريضة فقط) — خارج عمود المحتوى، لا تُزاحمه */}
+      <SideRails banners={sideBanners} />
 
       {/* شريط السلة العائم */}
       {cartCount > 0 && panel == null && (
