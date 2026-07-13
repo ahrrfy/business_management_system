@@ -137,7 +137,7 @@ export default function BannerManager() {
           </div>
           <div className="mt-3">
             <span className="mb-1 flex items-center gap-1.5 text-sm font-medium text-muted-foreground"><ImagePlus aria-hidden className="size-4" /> صورة البنر</span>
-            <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={1} singlePrimary={false} hint="صورة أفقية جذّابة (تُضغط تلقائياً)" />
+            <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={1} singlePrimary={false} hint="المقاس المثالي ١٦٠٠×٥٠٠ بكسل (نسبة ٣.٢:١ تقريباً) — صورة أفقية، تُضغط تلقائياً" />
           </div>
           <button onClick={save} disabled={saving} className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
             {saving ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />} حفظ

@@ -6,6 +6,7 @@ import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { SelectionBar, useRowSelection } from "@/components/list/SelectionBar";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
+import { UsagePanel } from "@/components/UsagePanel";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import {
@@ -55,6 +56,7 @@ export default function Products() {
   const [importOpen, setImportOpen] = useState(false);
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveTo, setMoveTo] = useState<number | null>(null);
+  const [deleteFor, setDeleteFor] = useState<{ productId: number; name: string } | null>(null);
   const importMut = trpc.imports.products.useMutation();
   const categoriesQ = trpc.catalog.categories.useQuery();
   const dq = useDebouncedValue(q, 200);
@@ -377,6 +379,12 @@ export default function Products() {
                             disabled: setActive.isPending,
                             onSelect: () => void toggle(r.productId, r.productIsActive, r.productName),
                           },
+                          {
+                            key: "delete",
+                            label: "حذف نهائي",
+                            variant: "destructive",
+                            onSelect: () => setDeleteFor({ productId: r.productId, name: r.productName }),
+                          },
                         ]}
                       />
                     </td>
@@ -446,6 +454,64 @@ export default function Products() {
           </Button>
         </div>
       )}
+
+      <DeleteProductDialog
+        target={deleteFor}
+        onClose={() => setDeleteFor(null)}
+        onDone={() => { utils.catalog.adminList.invalidate(); utils.catalog.posList.invalidate(); }}
+      />
     </div>
+  );
+}
+
+/**
+ * حوار الحذف النهائي — يقرأ ملخّص ارتباطات المنتج (`catalog.usage`) عند الفتح ويعرضه عبر
+ * UsagePanel؛ زرّ الحذف معطَّل حتى «نظيف». البديل الآمن القابل للتراجع: «تعطيل» من قائمة الإجراءات.
+ */
+function DeleteProductDialog({
+  target,
+  onClose,
+  onDone,
+}: {
+  target: { productId: number; name: string } | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const utils = trpc.useUtils();
+  const usage = trpc.catalog.usage.useQuery({ productId: target?.productId ?? 0 }, { enabled: !!target });
+  const del = trpc.catalog.delete.useMutation({
+    onSuccess: () => {
+      notify.ok("حُذف المنتج نهائياً");
+      void utils.catalog.usage.invalidate();
+      onDone();
+      onClose();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  return (
+    <Dialog open={!!target} onOpenChange={(o) => !o && onClose()}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle className="text-destructive">حذف نهائي: {target?.name}</DialogTitle>
+          <DialogDescription>
+            حذفٌ لا يمكن التراجع عنه — متاح فقط لمنتج «نظيف» بلا أيّ حركة مخزون أو فاتورة أو أمر شراء/شغل
+            أو جرد أو ارتباط آخر. البديل الآمن القابل للتراجع: «تعطيل» من قائمة الإجراءات.
+          </DialogDescription>
+        </DialogHeader>
+        <UsagePanel usage={usage.data} cleanText="لا نشاط مسجّل — نظيف، يمكن حذفه نهائياً." />
+        <DialogFooter>
+          <Button variant="outline" size="sm" onClick={onClose}>إلغاء</Button>
+          <Button
+            variant="destructive"
+            size="sm"
+            disabled={usage.isLoading || !usage.data?.clean || del.isPending}
+            onClick={() => target && del.mutate({ productId: target.productId })}
+          >
+            {del.isPending ? "جارٍ الحذف…" : "حذف نهائياً"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }

@@ -52,7 +52,9 @@ export default function StoreCatalog() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-lg font-bold"><Boxes aria-hidden className="size-5 text-primary" /> الكتالوج والعرض</h2>
-        <span className="text-xs text-muted-foreground">{total} منتج في المتجر</span>
+        <span className="text-xs text-muted-foreground">
+          {fmtInt(total)} منتج بالكتالوج (يشمل المعطّل/المخفيّ) · <span className="font-bold text-foreground">{fmtInt(listQ.data?.sellableTotal ?? 0)}</span> ظاهر فعلياً للزبون في المتجر
+        </span>
       </div>
 
       {/* شريط الفلترة */}

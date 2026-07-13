@@ -38,10 +38,19 @@ export interface StoreCatalogListInput {
   offset?: number;
 }
 
-/** قائمة منتجات المتجر بحبيبة المنتج (تجميع على products.id) + حالة المخزون/الصورة/الأعلام. */
-export async function listStoreCatalog(input: StoreCatalogListInput): Promise<{ rows: StoreCatalogRow[]; total: number }> {
+/**
+ * قائمة منتجات المتجر بحبيبة المنتج (تجميع على products.id) + حالة المخزون/الصورة/الأعلام.
+ *
+ * `total` = عدد المنتجات المطابقة للبحث/الفئة بلا أي شرط ظهور (تشمل المعطّل/المخفيّ — تصفّحها
+ * المدير هنا لضبطها)؛ `sellableTotal` = العدد الحقيقي الظاهر فعلاً لزبون المتجر العلني الآن، بنفس
+ * معايير `storefrontService.sellable` (نشط + ليس خدمة + غير مخفيّ + متغيّر/وحدة نشطان + سعر مفرد
+ * موجود). الفرق بين الاثنين هو ما يوضّح لماذا «منتج بالكتالوج» ≠ «ظاهر في المتجر فعلياً».
+ */
+export async function listStoreCatalog(
+  input: StoreCatalogListInput,
+): Promise<{ rows: StoreCatalogRow[]; total: number; sellableTotal: number }> {
   const db = getDb();
-  if (!db) return { rows: [], total: 0 };
+  if (!db) return { rows: [], total: 0, sellableTotal: 0 };
   const limit = Math.min(input.limit ?? 50, 200);
   const offset = Math.max(input.offset ?? 0, 0);
 
@@ -97,7 +106,30 @@ export async function listStoreCatalog(input: StoreCatalogListInput): Promise<{ 
   if (input.missingImageOnly) rows = rows.filter((r) => !r.hasImage);
 
   const [cnt] = await db.select({ n: sql<number>`COUNT(*)` }).from(products).where(whereClause);
-  return { rows, total: Number(cnt?.n ?? 0) };
+
+  // العدد الحقيقي «الظاهر فعلياً» — نفس شرط sellable في storefrontService، بنفس فلترة الفئة/البحث
+  // (لا فلاتر العرض featuredOnly/hiddenOnly/missingImageOnly — تلك أدوات تصفّح للمدير لا معيار بيع).
+  const sellableConds = [
+    eq(products.isActive, true),
+    eq(products.isService, false),
+    eq(products.showInStore, true),
+    eq(productVariants.isActive, true),
+    eq(productUnits.isActive, true),
+    eq(productUnits.isBaseUnit, true),
+    sql`${productPrices.price} is not null`,
+  ];
+  if (input.categoryId === 0 || input.categoryId === null) sellableConds.push(isNull(products.categoryId));
+  else if (input.categoryId != null) sellableConds.push(eq(products.categoryId, input.categoryId));
+  if (q) sellableConds.push(sql`(${products.name} LIKE ${"%" + q + "%"} OR ${products.searchNorm} LIKE ${"%" + q + "%"})`);
+  const [sellableCnt] = await db
+    .select({ n: sql<number>`COUNT(DISTINCT ${products.id})` })
+    .from(products)
+    .innerJoin(productVariants, eq(productVariants.productId, products.id))
+    .innerJoin(productUnits, eq(productUnits.variantId, productVariants.id))
+    .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")))
+    .where(and(...sellableConds));
+
+  return { rows, total: Number(cnt?.n ?? 0), sellableTotal: Number(sellableCnt?.n ?? 0) };
 }
 
 /** تمييز منتج (يتصدّر العرض في المتجر). */
