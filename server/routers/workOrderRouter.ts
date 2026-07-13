@@ -65,6 +65,9 @@ export const workOrderRouter = router({
           assigneeName: users.name,
           customerName: customers.name,
           customerPhone: customers.phone,
+          // لملصق الشحن من بطاقة اللوحة (طباعة عنوان التوصيل بلا فتح التفاصيل).
+          hasDelivery: workOrders.hasDelivery,
+          deliveryAddress: workOrders.deliveryAddress,
         })
         .from(workOrders)
         .leftJoin(customers, eq(workOrders.customerId, customers.id))
@@ -116,6 +119,8 @@ export const workOrderRouter = router({
           deposit: workOrders.deposit,
           dueDate: workOrders.dueDate,
           invoiceId: workOrders.invoiceId,
+          hasDelivery: workOrders.hasDelivery,
+          deliveryAddress: workOrders.deliveryAddress,
           assignedTo: workOrders.assignedTo,
           assigneeName: users.name,
           // شَريحة #4: مؤقّت تَنفيذ حَقيقي بَدل اشتقاق من auditLogs.

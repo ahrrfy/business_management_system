@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { AlertTriangle, Check, RotateCcw, Truck } from "lucide-react";
+import { AlertTriangle, Check, Printer, RotateCcw, Truck } from "lucide-react";
 import { PageHeader } from "@/components/PageHeader";
 import { EmptyState } from "@/components/EmptyState";
 import { ErrorState } from "@/components/PageState";
@@ -14,6 +14,8 @@ import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
+import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
+import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 
 /**
  * إدارة التوصيل (COD) — شاشة مكرّسة (D5):
@@ -45,6 +47,29 @@ function printDeliverySlip(order: ReadyOrder, party: Party | undefined, r: { con
     footer: "يُسلَّم المبلغ للمكتبة عند التوريد",
     barcodeSet: { barcode128: r.consignmentNumber, qrPayload: r.consignmentNumber, displayLabel: r.consignmentNumber },
   });
+}
+/** ملصق شحن للطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم): قبل الإرسال برقم الأمر، وبعده
+ *  برقم الإرسالية واسم الجهة (نفس ملصق طلبات المتجر — تكامل وظيفي واحد). */
+async function printReadyOrderLabel(
+  order: ReadyOrder,
+  opts?: { partyName?: string | null; trackingNumber?: string; cod?: string; into?: Window | null },
+) {
+  const cod = opts?.cod ?? String(Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0)));
+  const res = await printShippingLabel(
+    {
+      orderNumber: opts?.trackingNumber ?? order.orderNumber,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      governorate: null,
+      addressText: order.deliveryAddress,
+      total: cod,
+      deliveryPartyName: opts?.partyName ?? null,
+      createdAt: new Date(),
+      items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
+    },
+    opts && "into" in opts ? { into: opts.into } : undefined,
+  );
+  if (!res.ok) notify.err("افسح مانع النوافذ المنبثقة لطباعة ملصق الشحن");
 }
 /** إيصال تسوية توصيل حراري عند التوريد. */
 function printRemittanceReceipt(partyName: string, r: { remittanceNumber: string; collectedTotal: string; feesTotal: string; netRemitted: string; shortfallTotal: string }) {
@@ -78,9 +103,12 @@ export default function DeliveryHub() {
         description="تعيين المناديب للطلبات الجاهزة (COD) وتسوية تحصيلاتهم بخصم الأجرة وتوريد الصافي."
         icon={<Truck className="size-6 text-primary" aria-hidden />}
         actions={
-          <Button variant="outline" asChild>
-            <a href="/delivery/parties">جهات التوصيل وذممها</a>
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <ShippingLabelSizeSelect />
+            <Button variant="outline" asChild>
+              <a href="/delivery/parties">جهات التوصيل وذممها</a>
+            </Button>
+          </div>
         }
       />
       <div className="flex gap-2">
@@ -149,12 +177,17 @@ function DispatchTab() {
                     <td className="p-3 text-left tabular-nums text-emerald-600" dir="ltr">{Number(o.deposit ?? 0) > 0 ? fmt(o.deposit) : "—"}</td>
                     <td className="p-3 text-left font-bold tabular-nums" dir="ltr">{fmt(String(cod))}</td>
                     <td className="p-3 text-center">
-                      {/* #26A: التسليم بعقد الخادم (cashier/manager) — accountant/auditor يصلان /delivery قراءةً فقط. */}
-                      {canDispatch ? (
-                        <Button size="sm" onClick={() => setTarget(o)}>تسليم لمندوب</Button>
-                      ) : (
-                        <span className="text-xs text-muted-foreground">عرض فقط</span>
-                      )}
+                      <div className="inline-flex items-center gap-1.5">
+                        <Button size="sm" variant="outline" title="طباعة ملصق الشحن للطرد" onClick={() => void printReadyOrderLabel(o)}>
+                          <Printer aria-hidden className="size-3.5" /> ملصق
+                        </Button>
+                        {/* #26A: التسليم بعقد الخادم (cashier/manager) — accountant/auditor يصلان /delivery قراءةً فقط. */}
+                        {canDispatch ? (
+                          <Button size="sm" onClick={() => setTarget(o)}>تسليم لمندوب</Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">عرض فقط</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 );
@@ -171,10 +204,16 @@ function DispatchTab() {
         onConfirm={async (partyId, fee) => {
           const ord = target!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
+          // نافذة الملصق تُفتح هنا **متزامنةً مع نقرة التأكيد** (قبل await الإرسال) وإلا حجبها
+          // مانع النوافذ على المتصفّحات المتشدّدة — تُملأ بعد نجاح الإرسال وتُغلق عند فشله.
+          const labelWin = preopenShippingLabelWindow();
           try {
             const r = await dispatch.mutateAsync({ workOrderId: ord.id, partyId, deliveryFee: fee, deliveryAddress: ord.deliveryAddress ?? undefined, clientRequestId: crypto.randomUUID() });
+            void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
             printDeliverySlip(ord, party, r);
-          } catch { /* عُولج في onError */ }
+          } catch {
+            labelWin?.close(); // عُولج الخطأ في onError — لا تُترك نافذة انتظار يتيمة
+          }
         }}
       />
     </div>
