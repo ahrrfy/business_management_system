@@ -11,6 +11,8 @@ import { fmtAr, fmtInt } from "@/lib/money";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
+import { printShippingLabel, type ShippingLabelData } from "@/lib/printing/shippingLabel";
+import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { RowActions } from "@/components/list";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
@@ -144,6 +146,34 @@ function printWoFromCard(o: WO) {
   });
 }
 
+/** ملصق شحن للطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم) — نفس ملصق المتجر/التوصيل، تكامل واحد.
+ *  يعمل من بيانات البطاقة (WO) أو الدُرج (Detail) — كلاهما يحمل عنوان التوصيل بعد إضافة الخادم. */
+function printWoShippingLabel(o: {
+  orderNumber: string;
+  customerName: string | null;
+  customerPhone: string | null;
+  deliveryAddress?: string | null;
+  salePrice: string;
+  deposit: string | null;
+  quantity: number;
+  title: string;
+  createdAt: Date | string | null;
+}) {
+  const data: ShippingLabelData = {
+    orderNumber: o.orderNumber,
+    customerName: o.customerName,
+    customerPhone: o.customerPhone,
+    governorate: null,
+    addressText: o.deliveryAddress ?? null,
+    total: String(Math.max(0, Number(o.salePrice) - Number(o.deposit ?? 0))),
+    createdAt: o.createdAt,
+    items: [{ productName: o.title, unitName: "", quantity: String(o.quantity) }],
+  };
+  void printShippingLabel(data).then((r) => {
+    if (!r.ok) notify.err("افسح مانع النوافذ المنبثقة لطباعة ملصق الشحن");
+  });
+}
+
 /** طباعة حرارية 80مم لطلب الخدمة من بيانات البطاقة — نفس مسار التذكرة (جسر/WebUSB/متصفّح). */
 function printWoThermalFromCard(o: WO) {
   void printWorkOrderReceipt({
@@ -209,6 +239,7 @@ function Card({ o, onPointerDown, dragging, ghost, inboxAssign, staff, assignPen
               actions={[
                 { key: "print", label: "طباعة A4", onSelect: () => printWoFromCard(o) },
                 { key: "print-thermal", label: "طباعة حرارية (80مم)", onSelect: () => printWoThermalFromCard(o) },
+                { key: "print-label", label: "ملصق شحن", onSelect: () => printWoShippingLabel(o) },
                 { key: "open", label: "فتح التفاصيل", href: `/work-orders/${o.id}` },
               ]}
             />
@@ -549,6 +580,11 @@ function Drawer({
                   total: d.salePrice,
                 })}
               ><Receipt aria-hidden className="size-4 inline-block align-text-bottom me-1" /> حراري 80مم</button>
+              <button
+                className="wob-btn wob-btn-ghost"
+                title="ملصق شحن يُلصَق على الطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم)"
+                onClick={() => printWoShippingLabel(d)}
+              ><Package aria-hidden className="size-4 inline-block align-text-bottom me-1" /> ملصق شحن</button>
               {d.customerPhone && (
                 <a className="wob-wa-lg" href={waUrl(d.customerPhone, d.customerName, d)} target="_blank" rel="noopener noreferrer"><WaIcon size={18} /> راسل العميل</a>
               )}
@@ -738,6 +774,7 @@ export default function WorkOrders() {
           <div className="wob-sub">من الاستلام إلى التسليم — اسحب البطاقة بين المراحل. فاتورة تلقائية عند التسليم.</div>
         </div>
         <div className="wob-head-actions">
+          <ShippingLabelSizeSelect />
           <button className="wob-btn wob-btn-ghost" disabled={filtered.length === 0}
             onClick={() => exportRows(filtered, {
               filename: "طلبات-خدمة-العملاء",

@@ -1,8 +1,10 @@
 /**
- * ملصق شحن ١٠٠×١٥٠مم (4×6 إنش) — الملصق القياسي العالميّ للطرود، يُلصَق على الطرد قبل تسليمه للمندوب.
+ * ملصق شحن بقياسٍ يحدّده المستخدم (الافتراضي ٨٠×١٢٠مم) — يُلصَق على الطرد قبل تسليمه للمندوب.
  *
- * يُطبع على طابعة ملصقات 4×6 (Zebra/Xprinter عبر تعريف Windows) أو أي طابعة/PDF عبر نافذة المتصفّح
- * (`@page{size:100mm 150mm}`). تصميم متّجه مباشر (HTML + SVG، بلا نقطية) ⇒ حِدّة قصوى للباركود والنصّ.
+ * يُطبع على طابعة ملصقات (Zebra/Xprinter عبر تعريف Windows) أو أي طابعة/PDF عبر نافذة المتصفّح
+ * (`@page{size:<w>mm <h>mm}`). تصميم متّجه مباشر (HTML + SVG، بلا نقطية) مبنيّ على لوحة مرجعية
+ * بعرض 100مم تُحجَّم موحَّداً بمعامل `عرض/100` (transform: scale) ⇒ نفس التسلسل البصري بأي قياس
+ * وبحدّة كاملة (المتجهات تُحجَّم بلا فقد). فرق نسبة الارتفاع يمتصّه شريط الباركود المرن (flex:1).
  *
  * التسلسل الهرميّ (فلسفة الملصق التجاريّ): **المستلِم** أبرز كتلة (المندوب يحتاجه)، ثم **مبلغ COD**
  * بصندوقٍ ضخم (الأهمّ ماليّاً)، ثم **باركود Code128 + QR** لرقم الطلب (مسحٌ ⇒ ربط الطرد بالطلب بلا
@@ -12,6 +14,11 @@ import { governorateById } from "@shared/governorates";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg } from "./qr";
 import { CAIRO_FONT, CO, esc, fmt, openPrintWindow } from "./brand";
+import {
+  DEFAULT_SHIPPING_LABEL_SIZE,
+  getSavedShippingLabelSize,
+  type ShippingLabelSize,
+} from "./shippingLabelSize";
 
 export interface ShippingLabelItem {
   productName: string;
@@ -42,8 +49,17 @@ function fmtDate(d: Date | string | null | undefined): string {
   }
 }
 
-/** يبني وثيقة HTML كاملة لملصق شحن ١٠٠×١٥٠مم (تُطبع تلقائياً بعد جهوز الخطّ). */
-export async function shippingLabelHtml(o: ShippingLabelData): Promise<string> {
+/** يبني وثيقة HTML كاملة لملصق شحن بالقياس المطلوب (تُطبع تلقائياً بعد جهوز الخطّ). */
+export async function shippingLabelHtml(
+  o: ShippingLabelData,
+  size: ShippingLabelSize = DEFAULT_SHIPPING_LABEL_SIZE,
+): Promise<string> {
+  // اللوحة المرجعية بعرض 100مم؛ نُحجّمها موحَّداً لعرض الملصق، والارتفاع الداخلي = h/s
+  // بحيث يملأ الملصق كاملاً بعد التحجيم (المرونة الرأسية في شريط الباركود).
+  const w = size.widthMm;
+  const h = size.heightMm;
+  const s = w / 100;
+  const innerH = (h / s).toFixed(3);
   const govName = o.governorate ? governorateById(o.governorate)?.name ?? o.governorate : "";
   let barcode = "";
   try {
@@ -64,13 +80,16 @@ export async function shippingLabelHtml(o: ShippingLabelData): Promise<string> {
 
   const addressLine = [govName, o.addressText].filter(Boolean).join(" — ");
 
-  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ملصق شحن ${esc(o.orderNumber)}</title>
+  return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ملصق شحن ${esc(o.orderNumber)} (${w}×${h}مم)</title>
 ${CAIRO_FONT}
 <style>
   html,body{margin:0;padding:0;background:#fff;color:#000}
-  @page{size:100mm 150mm;margin:0}
+  @page{size:${w}mm ${h}mm;margin:0}
   *{box-sizing:border-box;margin:0;padding:0;font-family:'Cairo',sans-serif}
-  .lb{width:100mm;height:150mm;padding:3mm;display:flex;flex-direction:column;color:#000;background:#fff;direction:rtl}
+  /* صفحة الملصق الفعلية: إطارٌ بقياس الطلب يحوي اللوحة المرجعية 100مم مُحجَّمة بمعامل ${s} */
+  .pg{position:relative;width:${w}mm;height:${h}mm;overflow:hidden;background:#fff}
+  .lb{position:absolute;top:0;right:0;transform:scale(${s});transform-origin:top right;
+    width:100mm;height:${innerH}mm;padding:3mm;display:flex;flex-direction:column;color:#000;background:#fff;direction:rtl}
   .row{display:flex;align-items:center;justify-content:space-between;gap:2mm}
   /* ترويسة المُرسِل */
   .from{display:flex;align-items:flex-start;justify-content:space-between;gap:2mm;padding-bottom:1.5mm;border-bottom:2px solid #000}
@@ -106,6 +125,7 @@ ${CAIRO_FONT}
     display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
 </style></head>
 <body>
+  <div class="pg">
   <div class="lb">
     <div class="from">
       <div>
@@ -144,6 +164,7 @@ ${CAIRO_FONT}
       </div>
     </div>
   </div>
+  </div>
   <script>
     window.addEventListener('load', function () {
       var ready = (document.fonts && document.fonts.ready) ? document.fonts.ready : Promise.resolve();
@@ -154,10 +175,17 @@ ${CAIRO_FONT}
 </body></html>`;
 }
 
-/** يطبع ملصق شحن ١٠٠×١٥٠مم عبر نافذة المتصفّح (طابعة الملصقات 4×6 بتعريف Windows أو PDF).
+/** يطبع ملصق شحن عبر نافذة المتصفّح (طابعة الملصقات بتعريف Windows أو PDF) بالقياس المُمرَّر،
+ *  أو بالقياس المحفوظ في الإعداد المشترك (الافتراضي ٨٠×١٢٠مم) إن لم يُمرَّر.
  *  يعيد `{ ok }` — false إن حُجبت النافذة المنبثقة (ليُبلَّغ المستخدم). */
-export async function printShippingLabel(o: ShippingLabelData): Promise<{ ok: boolean }> {
-  const html = await shippingLabelHtml(o);
-  const ok = openPrintWindow(html, "width=460,height=680");
+export async function printShippingLabel(
+  o: ShippingLabelData,
+  size?: ShippingLabelSize,
+): Promise<{ ok: boolean }> {
+  const effective = size ?? getSavedShippingLabelSize();
+  const html = await shippingLabelHtml(o, effective);
+  // نافذة المعاينة تحاكي نسبة الملصق (لا تؤثّر على @page الفعلية).
+  const winH = Math.round(460 * (effective.heightMm / effective.widthMm)) + 120;
+  const ok = openPrintWindow(html, `width=460,height=${Math.min(winH, 900)}`);
   return { ok };
 }

@@ -17,6 +17,7 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 import { printShippingLabel } from "@/lib/printing/shippingLabel";
 
 type Status = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
@@ -113,7 +114,7 @@ export default function OrderFulfillment() {
         createdAt: d.createdAt,
         items: d.items.map((it) => ({ productName: it.productName, unitName: it.unitName, quantity: it.quantity })),
       });
-      notify.ok(res.ok ? "فُتحت نافذة طباعة ملصق الشحن (١٠٠×١٥٠مم)" : "افسح مانع النوافذ المنبثقة لطباعة الملصق");
+      notify.ok(res.ok ? "فُتحت نافذة طباعة ملصق الشحن" : "افسح مانع النوافذ المنبثقة لطباعة الملصق");
     } catch (e) {
       notify.err(e);
     } finally {
@@ -123,7 +124,12 @@ export default function OrderFulfillment() {
 
   return (
     <div className="space-y-4">
-      <PageHeader title="طلبات المتجر الإلكتروني" description="تثبيت الطلبات الواردة وطباعة ملصق التوصيل" icon={<Store aria-hidden className="size-5" />} />
+      <PageHeader
+        title="طلبات المتجر الإلكتروني"
+        description="تثبيت الطلبات الواردة وطباعة ملصق التوصيل"
+        icon={<Store aria-hidden className="size-5" />}
+        actions={<ShippingLabelSizeSelect />}
+      />
 
       {/* بطاقات الحالة */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">

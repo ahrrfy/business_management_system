@@ -9,8 +9,10 @@ import { cn } from "@/lib/utils";
 import { trpc } from "@/lib/trpc";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
+import { printShippingLabel } from "@/lib/printing/shippingLabel";
+import { notify } from "@/lib/notify";
 import { openWhatsApp, buildWorkOrderStatusMessage } from "@/lib/whatsapp";
-import { Printer, MessageCircle } from "lucide-react";
+import { Printer, MessageCircle, Truck } from "lucide-react";
 import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatWorkOrderAsWhatsApp } from "@/lib/copy/formatters";
@@ -221,6 +223,28 @@ export default function WorkOrderDetail() {
           >
             <Printer className="h-3.5 w-3.5" />
             طباعة حرارية
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="gap-1"
+            title="ملصق شحن يُلصَق على الطرد (بالقياس المحفوظ — الافتراضي ٨٠×١٢٠مم)"
+            onClick={async () => {
+              const res = await printShippingLabel({
+                orderNumber: data.orderNumber,
+                customerName: data.customerName,
+                customerPhone: data.customerPhone,
+                governorate: null,
+                addressText: data.deliveryAddress ?? null,
+                total: String(Math.max(0, Number(data.salePrice) - Number(data.deposit ?? 0))),
+                createdAt: data.createdAt,
+                items: [{ productName: data.title, unitName: "", quantity: String(data.quantity) }],
+              });
+              if (!res.ok) notify.err("افسح مانع النوافذ المنبثقة لطباعة ملصق الشحن");
+            }}
+          >
+            <Truck className="h-3.5 w-3.5" />
+            ملصق شحن
           </Button>
           <Link href="/work-orders" className="text-sm text-muted-foreground">← رجوع للقائمة</Link>
         </div>
