@@ -29,7 +29,10 @@ export function shippingLabelSizeKey(s: ShippingLabelSize): string {
   return `${s.widthMm}x${s.heightMm}`;
 }
 
-/** يفسّر «80x120» أو «٨٠×١٢٠» أو «80*120» (فاصل ×/x/X/*) — null إن لم يصلُح أو خرج عن الحدود. */
+/** يفسّر «80x120» أو «٨٠×١٢٠» أو «80*120» (فاصل ×/x/X/*) — null إن لم يصلُح أو خرج عن الحدود.
+ *  الملصق **طوليّ**: يُرفَض ارتفاعٌ أقلّ من العرض (قياس أفقي مثل 250x40 يمرّ بالحدود لكن
+ *  اللوحة المرجعية 100مم تُحجَّم من العرض فيتبقّى ارتفاعٌ داخليّ أقصر من المحتوى الثابت
+ *  فيُقتصّ التذييل — مراجعة Codex على PR #185). المربّع (100x100) مُثبَتٌ اتّساعه. */
 export function parseShippingLabelSize(raw: string): ShippingLabelSize | null {
   const normalized = raw
     .trim()
@@ -42,7 +45,8 @@ export function parseShippingLabelSize(raw: string): ShippingLabelSize | null {
   const heightMm = Number(m[2]);
   if (
     widthMm < SHIPPING_LABEL_MM_MIN || widthMm > SHIPPING_LABEL_MM_MAX ||
-    heightMm < SHIPPING_LABEL_MM_MIN || heightMm > SHIPPING_LABEL_MM_MAX
+    heightMm < SHIPPING_LABEL_MM_MIN || heightMm > SHIPPING_LABEL_MM_MAX ||
+    heightMm < widthMm
   ) {
     return null;
   }

@@ -13,7 +13,7 @@
 import { governorateById } from "@shared/governorates";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg } from "./qr";
-import { CAIRO_FONT, CO, esc, fmt, openPrintWindow } from "./brand";
+import { CAIRO_FONT, CO, esc, fmt } from "./brand";
 import {
   DEFAULT_SHIPPING_LABEL_SIZE,
   getSavedShippingLabelSize,
@@ -175,17 +175,48 @@ ${CAIRO_FONT}
 </body></html>`;
 }
 
+/** يفتح نافذة الملصق **متزامناً مع إيماءة النقر** (قبل أي await) بمحتوى انتظار مؤقّت —
+ *  مانع النوافذ المنبثقة يسمح فقط بما فُتح داخل مكدّس نداء الإيماءة، وأيّ await قبله
+ *  (طلب شبكة/توليد QR) يُفقده الإيماءة على Safari والمتصفّحات المتشدّدة (مراجعة Codex PR #185).
+ *  مرّر الناتج لـ`printShippingLabel({ into })` ليُملأ بعد جهوز البيانات. */
+export function preopenShippingLabelWindow(size?: ShippingLabelSize): Window | null {
+  if (typeof window === "undefined") return null;
+  const effective = size ?? getSavedShippingLabelSize();
+  // نافذة المعاينة تحاكي نسبة الملصق (لا تؤثّر على @page الفعلية).
+  const winH = Math.round(460 * (effective.heightMm / effective.widthMm)) + 120;
+  const w = window.open("", "_blank", `width=460,height=${Math.min(winH, 900)}`);
+  if (w) {
+    try {
+      w.document.write(
+        `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>ملصق الشحن</title></head>` +
+        `<body style="font-family:sans-serif;padding:2rem;color:#444">جارٍ تجهيز ملصق الشحن…</body></html>`,
+      );
+    } catch { /* نافذة بلا وثيقة قابلة للكتابة — تُملأ لاحقاً */ }
+  }
+  return w;
+}
+
 /** يطبع ملصق شحن عبر نافذة المتصفّح (طابعة الملصقات بتعريف Windows أو PDF) بالقياس المُمرَّر،
  *  أو بالقياس المحفوظ في الإعداد المشترك (الافتراضي ٨٠×١٢٠مم) إن لم يُمرَّر.
+ *  تُفتَح النافذة **قبل** بناء المحتوى (متزامنة مع إيماءة النقر عند النداء المباشر منها)؛
+ *  وعند النداء بعد await (كتأكيد الإرسال) مرّر نافذةً سبق فتحها عبر `into` من `preopenShippingLabelWindow`.
  *  يعيد `{ ok }` — false إن حُجبت النافذة المنبثقة (ليُبلَّغ المستخدم). */
 export async function printShippingLabel(
   o: ShippingLabelData,
-  size?: ShippingLabelSize,
+  opts?: { size?: ShippingLabelSize; into?: Window | null },
 ): Promise<{ ok: boolean }> {
-  const effective = size ?? getSavedShippingLabelSize();
+  const effective = opts?.size ?? getSavedShippingLabelSize();
+  // `into` مُمرَّرة (ولو null = حُجبت عند الفتح المسبق) ⇒ لا نفتح ثانية؛ غيابها ⇒ افتح الآن فوراً.
+  const win = opts && "into" in opts ? opts.into : preopenShippingLabelWindow(effective);
   const html = await shippingLabelHtml(o, effective);
-  // نافذة المعاينة تحاكي نسبة الملصق (لا تؤثّر على @page الفعلية).
-  const winH = Math.round(460 * (effective.heightMm / effective.widthMm)) + 120;
-  const ok = openPrintWindow(html, `width=460,height=${Math.min(winH, 900)}`);
-  return { ok };
+  if (!win || win.closed) return { ok: false };
+  try {
+    win.document.open();
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
 }

@@ -26,7 +26,7 @@ export function ShippingLabelSizeSelect({ className }: { className?: string }) {
   const applyDraft = () => {
     const parsed = parseShippingLabelSize(draft);
     if (!parsed) {
-      notify.err(`قياس غير صالح — اكتب «عرض×ارتفاع» بالمم (${SHIPPING_LABEL_MM_MIN}–${SHIPPING_LABEL_MM_MAX})، مثل 90x130`);
+      notify.err(`قياس غير صالح — اكتب «عرض×ارتفاع» بالمم (${SHIPPING_LABEL_MM_MIN}–${SHIPPING_LABEL_MM_MAX}) والملصق طوليّ (الارتفاع ≥ العرض)، مثل 90x130`);
       setDraft(shippingLabelSizeKey(size));
       return;
     }

@@ -14,7 +14,7 @@ import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
 import { printDoc } from "@/lib/printing/print";
-import { printShippingLabel } from "@/lib/printing/shippingLabel";
+import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
 
 /**
@@ -52,20 +52,23 @@ function printDeliverySlip(order: ReadyOrder, party: Party | undefined, r: { con
  *  برقم الإرسالية واسم الجهة (نفس ملصق طلبات المتجر — تكامل وظيفي واحد). */
 async function printReadyOrderLabel(
   order: ReadyOrder,
-  opts?: { partyName?: string | null; trackingNumber?: string; cod?: string },
+  opts?: { partyName?: string | null; trackingNumber?: string; cod?: string; into?: Window | null },
 ) {
   const cod = opts?.cod ?? String(Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0)));
-  const res = await printShippingLabel({
-    orderNumber: opts?.trackingNumber ?? order.orderNumber,
-    customerName: order.customerName,
-    customerPhone: order.customerPhone,
-    governorate: null,
-    addressText: order.deliveryAddress,
-    total: cod,
-    deliveryPartyName: opts?.partyName ?? null,
-    createdAt: new Date(),
-    items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
-  });
+  const res = await printShippingLabel(
+    {
+      orderNumber: opts?.trackingNumber ?? order.orderNumber,
+      customerName: order.customerName,
+      customerPhone: order.customerPhone,
+      governorate: null,
+      addressText: order.deliveryAddress,
+      total: cod,
+      deliveryPartyName: opts?.partyName ?? null,
+      createdAt: new Date(),
+      items: [{ productName: order.title, unitName: "", quantity: String(order.quantity ?? 1) }],
+    },
+    opts && "into" in opts ? { into: opts.into } : undefined,
+  );
   if (!res.ok) notify.err("افسح مانع النوافذ المنبثقة لطباعة ملصق الشحن");
 }
 /** إيصال تسوية توصيل حراري عند التوريد. */
@@ -201,12 +204,16 @@ function DispatchTab() {
         onConfirm={async (partyId, fee) => {
           const ord = target!;
           const party = (parties.data ?? []).find((p) => p.id === partyId);
+          // نافذة الملصق تُفتح هنا **متزامنةً مع نقرة التأكيد** (قبل await الإرسال) وإلا حجبها
+          // مانع النوافذ على المتصفّحات المتشدّدة — تُملأ بعد نجاح الإرسال وتُغلق عند فشله.
+          const labelWin = preopenShippingLabelWindow();
           try {
             const r = await dispatch.mutateAsync({ workOrderId: ord.id, partyId, deliveryFee: fee, deliveryAddress: ord.deliveryAddress ?? undefined, clientRequestId: crypto.randomUUID() });
-            // ملصق الطرد أولاً (نافذة متصفّح — أسرع التقاطاً لإيماءة المستخدم)، ثم البوليصة الحرارية.
-            void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount });
+            void printReadyOrderLabel(ord, { partyName: party?.name ?? null, trackingNumber: r.consignmentNumber, cod: r.codAmount, into: labelWin });
             printDeliverySlip(ord, party, r);
-          } catch { /* عُولج في onError */ }
+          } catch {
+            labelWin?.close(); // عُولج الخطأ في onError — لا تُترك نافذة انتظار يتيمة
+          }
         }}
       />
     </div>

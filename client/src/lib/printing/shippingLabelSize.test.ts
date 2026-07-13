@@ -27,6 +27,12 @@ describe("قياس ملصق الشحن", () => {
     expect(parseShippingLabelSize("80x120x40")).toBeNull();
   });
 
+  it("يرفض القياس الأفقي (ارتفاع < عرض) — يقصّ التذييل (Codex P2 على PR #185)، ويقبل المربّع", () => {
+    expect(parseShippingLabelSize("250x40")).toBeNull(); // أفقي مسطّح — كان يمرّ ويُقتصّ
+    expect(parseShippingLabelSize("120x80")).toBeNull(); // مقلوب
+    expect(parseShippingLabelSize("100x100")).toEqual({ widthMm: 100, heightMm: 100 }); // مربّع مُثبَت
+  });
+
   it("مفتاح التخزين ذهاب-إياب", () => {
     const s = { widthMm: 95, heightMm: 145 };
     expect(parseShippingLabelSize(shippingLabelSizeKey(s))).toEqual(s);

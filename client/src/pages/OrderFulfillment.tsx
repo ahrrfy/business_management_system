@@ -18,7 +18,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ShippingLabelSizeSelect } from "@/components/ShippingLabelSizeSelect";
-import { printShippingLabel } from "@/lib/printing/shippingLabel";
+import { preopenShippingLabelWindow, printShippingLabel } from "@/lib/printing/shippingLabel";
 
 type Status = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" | "CANCELLED";
 
@@ -97,25 +97,32 @@ export default function OrderFulfillment() {
   }
   async function printLabel(id: number) {
     setPrintingId(id);
+    // النافذة تُفتح متزامنةً مع النقرة (قبل await جلب التفاصيل) وإلا حجبها مانع النوافذ المتشدّد.
+    const labelWin = preopenShippingLabelWindow();
     try {
       const d = await utils.storeAdmin.orders.detail.fetch({ id });
       if (!d) {
+        labelWin?.close();
         notify.err("تعذّر جلب تفاصيل الطلب");
         return;
       }
-      const res = await printShippingLabel({
-        orderNumber: d.orderNumber,
-        customerName: d.customerName,
-        customerPhone: d.customerPhone,
-        governorate: d.governorate,
-        addressText: d.addressText,
-        total: d.total,
-        deliveryPartyName: d.deliveryPartyName,
-        createdAt: d.createdAt,
-        items: d.items.map((it) => ({ productName: it.productName, unitName: it.unitName, quantity: it.quantity })),
-      });
+      const res = await printShippingLabel(
+        {
+          orderNumber: d.orderNumber,
+          customerName: d.customerName,
+          customerPhone: d.customerPhone,
+          governorate: d.governorate,
+          addressText: d.addressText,
+          total: d.total,
+          deliveryPartyName: d.deliveryPartyName,
+          createdAt: d.createdAt,
+          items: d.items.map((it) => ({ productName: it.productName, unitName: it.unitName, quantity: it.quantity })),
+        },
+        { into: labelWin },
+      );
       notify.ok(res.ok ? "فُتحت نافذة طباعة ملصق الشحن" : "افسح مانع النوافذ المنبثقة لطباعة الملصق");
     } catch (e) {
+      labelWin?.close();
       notify.err(e);
     } finally {
       setPrintingId(null);
