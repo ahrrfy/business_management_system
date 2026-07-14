@@ -1,7 +1,10 @@
 // StoreHub — لوحة تحكّم المتجر الإلكتروني (نمط hPanel): لوحة + طلبات + بنرات + إعدادات.
 // البنرات/الإعدادات مديرية (storeManagerProcedure)؛ اللوحة/الطلبات لحاملي وحدة store.
+import { ExternalLink } from "lucide-react";
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { PageTabs, type HubTab } from "@/components/PageTabs";
+import { Button } from "@/components/ui/button";
+import { storefrontUrl } from "@/lib/siteHosts";
 
 const StoreDashboard = lazy(() => import("@/pages/store/StoreDashboard"));
 const OrderFulfillment = lazy(() => import("@/pages/OrderFulfillment"));
@@ -26,5 +29,24 @@ const TABS: HubTab[] = [
 ];
 
 export default function StoreHub() {
-  return <PageTabs tabs={TABS} ariaLabel="أقسام المتجر" />;
+  // زرّ ثابت في كل التبويبات: يفتح متجر الزبون كما يراه الناس تماماً — على الدومين العام
+  // (alarabiya.online) لا على دومين النظام، بتبويب جديد كي لا تُفقَد اللوحة.
+  return (
+    <PageTabs
+      tabs={TABS}
+      ariaLabel="أقسام المتجر"
+      actions={
+        <Button
+          variant="outline"
+          size="sm"
+          className="gap-1.5"
+          onClick={() => window.open(storefrontUrl(), "_blank", "noopener,noreferrer")}
+          title="يفتح المتجر العلني (alarabiya.online) في تبويب جديد"
+        >
+          <ExternalLink aria-hidden className="size-4" />
+          فتح المتجر
+        </Button>
+      }
+    />
+  );
 }
