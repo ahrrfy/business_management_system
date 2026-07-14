@@ -47,6 +47,7 @@ const SECTIONS: Section[] = [
     items: [
       { title: "لوحة التحكم", desc: "مؤشّرات اليوم والوردية والتنبيهات", href: "/", icon: Home, gate: "all", status: "ready" },
       { title: "لوحة المؤشّرات التنفيذية", desc: "إيراد/ربح/هامش/نقد + اتّجاهات ومقارنة فترات", href: "/reports/executive", icon: BarChart3, gate: "manager", status: "ready" },
+      { title: "رقيب الشذوذ", desc: "كواشف تسرّب الأموال: دون الكلفة/خصومات/مرتجعات/عجوزات/عكوس/تسلسل", href: "/reports/anomaly-watch", icon: ShieldCheck, gate: "manager", status: "ready" },
     ],
   },
   {

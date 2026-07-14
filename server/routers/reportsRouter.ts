@@ -34,6 +34,7 @@ import { getMonthlyClosePack } from "../services/reports/monthlyClosePack";
 import { getCourierPerformance } from "../services/reports/courierPerformance";
 import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
+import { getAnomalyWatch } from "../services/reports/anomalyWatch";
 import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
 import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
@@ -78,6 +79,15 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getManagementAlerts({ branchId, isAdmin: ctx.user.role === "admin" });
+    }),
+
+  /** رقيب الشذوذ — ٦ كواشف حتمية لمنع تسرّب الأموال (دون الكلفة/خصومات/مرتجعات/عجوزات/عكوس/تسلسل).
+   *  بيانات كلفة وربح ⇒ بوابة reportViewerProcedure الحمراء نفسها + عزل الفرع. */
+  anomalyWatch: reportsBranchScoped
+    .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getAnomalyWatch({ from: input.from, to: input.to, branchId });
     }),
 
   /** التعرّض الائتماني للعملاء — أرصدة/متأخّر/حدّ ائتمان/تصنيف خطر. manager + عزل الفرع. */
