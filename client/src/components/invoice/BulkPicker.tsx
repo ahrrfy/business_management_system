@@ -211,6 +211,10 @@ export function BulkPicker({ open, onClose, onAddItems, invoiceType, branchId, t
                   <Checkbox
                     checked={isSelected}
                     onCheckedChange={() => toggle(p.productUnitId)}
+                    // العلّة (١٤/٧): الصفّ كلّه onClick=toggle والمربّع onCheckedChange=toggle ⇒ النقر
+                    // على المربّع نفسه كان يبدّل مرّتين (يبطل نفسه) فلا يُحدَّد شيء. نوقف الانتشار
+                    // ⇒ نقرة المربّع = تبديل واحد، ونقرة بقية الصفّ تبقى تعمل، والمسافة/التبويب أيضاً.
+                    onClick={(e) => e.stopPropagation()}
                     aria-label={`اختيار ${p.name}`}
                     className="shrink-0"
                   />
