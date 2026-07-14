@@ -9,7 +9,15 @@ import { z } from "zod";
 import { branches, branchStock, inventoryMovements, productVariants, products, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { applyMovement, convertToBaseQuantity, setStock, transferBetweenBranches } from "../services/inventoryService";
+import { applyMovement, convertToBaseQuantity, setStock } from "../services/inventoryService";
+import {
+  cancelStockTransfer,
+  createStockTransfer,
+  getStockTransfer,
+  listStockTransfers,
+  pendingIncomingCount,
+  receiveStockTransfer,
+} from "../services/transferService";
 import { createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
 import { findIdempotentRefId, recordIdempotencyKey } from "../services/idempotency";
 import { withTx } from "../services/tx";
@@ -70,10 +78,18 @@ export const inventoryRouter = router({
         }
         fromBranchId = Number(ctx.user.branchId);
       }
-      // DEADLOCK-RETRY (تدقيق ٢/٧): التحويل يقفل صفّي مخزون بترتيب branchId تصاعدي (آمن للفرعين)،
-      // لكن تحويلان متزامنان قد يتعارضان على قفل قاعدة عام؛ نعيد المحاولة على deadlock (العملية ذرّية).
+      // منذ ١٤/٧ (تحويل بخطوتين): هذا الغلاف المفرد ينشئ سنداً «بالطريق» بسطر واحد — الوجهة
+      // تستلمه بمطابقة من شاشة التحويلات. أُبقي الـendpoint لاستقرار الـAPI (rbac tests قائمة).
       const res = await retryOnDup(() =>
-        withTx((tx) => transferBetweenBranches(tx, { ...input, fromBranchId, createdBy: ctx.user.id })),
+        withTx((tx) =>
+          createStockTransfer(tx, {
+            fromBranchId,
+            toBranchId: input.toBranchId,
+            items: [{ variantId: input.variantId, baseQuantity: input.baseQuantity }],
+            notes: input.notes,
+            createdBy: ctx.user.id,
+          }),
+        ),
       );
       // entityType='transfer' لأن العملية تُعدّل صفّي مخزون (out+in) ومرجعها منطقياً «حدث نقل»
       // لا صفّ stock مفرد؛ المفاتيح بصيغة كاملة (fromBranchId/toBranchId) لاتساق سجلّ التدقيق
@@ -131,74 +147,146 @@ export const inventoryRouter = router({
         }
         fromBranchId = Number(ctx.user.branchId);
       }
-      if (fromBranchId === input.toBranchId) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن التحويل لنفس الفرع" });
-      }
-      // رفض تكرار المتغيّر في السند الواحد (لبس في الكمية + قفل مزدوج بلا داعٍ).
-      const seen = new Set<number>();
-      for (const it of input.items) {
-        if (seen.has(it.variantId)) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "صنف مكرّر في السند — ادمج كميته في سطر واحد." });
-        }
-        seen.add(it.variantId);
-      }
-      const noteLine = [input.reason ? TRANSFER_REASONS[input.reason] : null, input.notes?.trim() || null]
-        .filter(Boolean)
-        .join(" — ") || undefined;
-
-      // معاملة واحدة لكل الأسطر ⇒ ذرّية (فشل أي سطر يُرجِع كل السند).
-      // idempotency: المفتاح يُربط بأوّل movementId. على replay نَرفض بـCONFLICT بدل
-      // إعادة تنفيذ الحركات (السند الواحد له «خروج» واحد لا قابل لإعادة الإصدار).
-      const { lines, idempotentReplay } = await withTx(async (tx) => {
-        if (input.clientRequestId) {
-          const existing = await findIdempotentRefId(tx, "inventory.transferBatch", input.clientRequestId);
-          if (existing != null) {
-            // السند نُفِّذ مسبقاً — لا نُعيد الكتابة. الواجهة تستطيع استعلام movementsRich لرؤية النتيجة.
-            return { lines: input.items.length, idempotentReplay: true as const };
-          }
-        }
-        const out: Array<{ variantId: number }> = [];
-        let firstMovementId = 0;
-        // LOCK-ORDER (تدقيق ٢/٧): ترتيب الأصناف حسب variantId قبل القفل ⇒ سندان متزامنان متداخلان
-        // يقفلان صفوف branchStock بالترتيب نفسه فلا deadlock من انعكاس الترتيب. (retryOnDup ليس هنا،
-        // لكن الترتيب الحتمي يمنع سبب الـdeadlock أصلاً.)
-        const sortedItems = [...input.items].sort((a, b) => a.variantId - b.variantId);
-        for (const it of sortedItems) {
-          const res = await transferBetweenBranches(tx, {
-            variantId: it.variantId,
+      // منذ ١٤/٧ (تحويل بخطوتين): الإنشاء يخصم المصدر ويضع السند «بالطريق»؛ الوجهة تستلم
+      // بمطابقة عبر transferReceive. الذرّية والقفل الحتمي وidempotency داخل الخدمة.
+      const res = await retryOnDup(() =>
+        withTx((tx) =>
+          createStockTransfer(tx, {
             fromBranchId,
             toBranchId: input.toBranchId,
-            baseQuantity: it.baseQuantity,
-            notes: noteLine,
+            items: input.items,
+            reason: input.reason,
+            notes: input.notes,
+            clientRequestId: input.clientRequestId,
             createdBy: ctx.user.id,
-          });
-          if (firstMovementId === 0) firstMovementId = Number(res.from.movementId);
-          out.push({ variantId: it.variantId });
-        }
-        if (input.clientRequestId && firstMovementId > 0) {
-          // الـUNIQUE على (operation, key) يَلتقط السباق المتزامن بنفس المفتاح ⇒ ER_DUP_ENTRY يُرجِع كل السند.
-          await recordIdempotencyKey(tx, "inventory.transferBatch", input.clientRequestId, firstMovementId);
-        }
-        return { lines: out.length, idempotentReplay: false as const };
-      });
+          }),
+        ),
+      );
 
       // لا نَكتب audit log على replay (السند مُسجَّل مسبقاً) — يَمنع تضخّم السجلّ بمحاولات مكرّرة.
-      if (!idempotentReplay) {
+      if (!res.idempotentReplay) {
         await logAudit(ctx, {
           action: "inventory.transferBatch",
           entityType: "transfer",
-          entityId: fromBranchId,
+          entityId: res.transferId,
           newValue: {
+            transferNumber: res.transferNumber,
             fromBranchId,
             toBranchId: input.toBranchId,
             reason: input.reason ?? null,
             notes: input.notes ?? null,
-            itemCount: lines,
+            itemCount: res.lines,
             items: input.items,
           },
         });
       }
-      return { lines, idempotentReplay };
+      return res;
+    }),
+
+  /** قائمة سندات التحويل بنطاق الفرع (وارد/صادر/الكل) — قراءة، keyset. */
+  transfersList: inventoryReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive().nullish(),
+        // «dir» لا «direction» — tRPC يحجز مفتاح direction في useInfiniteQuery (ReservedInfiniteQueryKeys).
+        dir: z.enum(["in", "out", "all"]).optional(),
+        status: z.enum(["IN_TRANSIT", "RECEIVED", "CANCELLED", "all"]).optional(),
+        cursor: z.number().int().positive().nullish(),
+        limit: z.number().int().min(1).max(100).optional(),
+      })
+    )
+    .query(({ input, ctx }) =>
+      listStockTransfers({
+        actor: { userId: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId) },
+        branchId: input.branchId,
+        direction: input.dir,
+        status: input.status,
+        cursor: input.cursor,
+        limit: input.limit,
+      })
+    ),
+
+  /** تفاصيل سند بأسطره — بنفس نطاق عزل القائمة (السند يخصّ أحد فرعَي المستخدم غير المرفوع). */
+  transferGet: inventoryReadProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .query(({ input, ctx }) =>
+      getStockTransfer(input.id, {
+        userId: ctx.user.id,
+        role: ctx.user.role,
+        branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId),
+      })
+    ),
+
+  /** عدد الوارد «بالطريق» — شارة بانتظار الاستلام في شاشة التحويلات. */
+  transfersPendingIncoming: inventoryReadProcedure
+    .input(z.object({ branchId: z.number().int().positive().nullish() }).optional())
+    .query(({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const own = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
+      const scope = elevated ? (input?.branchId ?? null) : own;
+      if (!elevated && scope == null) return 0;
+      return pendingIncomingCount(scope);
+    }),
+
+  /**
+   * استلام سند «بالطريق» في الفرع الوجهة بمطابقة فعلية: كمية مستلَمة لكل سطر (0..المرسَل)
+   * وملاحظة إلزامية عند الفرق. يُقفل السند نهائياً (RECEIVED) والعجز يبقى موثَّقاً عليه.
+   */
+  transferReceive: inventoryWarehouseProcedure
+    .input(
+      z.object({
+        transferId: z.number().int().positive(),
+        lines: z
+          .array(
+            z.object({
+              lineId: z.number().int().positive(),
+              quantityReceived: z.number().int().min(0),
+              note: z.string().max(255).optional(),
+            })
+          )
+          .min(1)
+          .max(200),
+        receiveNotes: z.string().max(500).optional(),
+        clientRequestId: z.string().min(1).max(80).optional(),
+      })
+    )
+    .mutation(async ({ input, ctx }) => {
+      const res = await retryOnDup(() =>
+        withTx((tx) =>
+          receiveStockTransfer(tx, {
+            ...input,
+            actor: { userId: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId) },
+          }),
+        ),
+      );
+      if (!res.idempotentReplay) {
+        await logAudit(ctx, {
+          action: "inventory.transferReceive",
+          entityType: "transfer",
+          entityId: input.transferId,
+          newValue: { lines: input.lines, discrepancyUnits: res.discrepancyUnits, receiveNotes: input.receiveNotes ?? null },
+        });
+      }
+      return res;
+    }),
+
+  /** إلغاء سند «بالطريق» (المرسل تراجع) — يعيد الكمية كاملة لرصيد المصدر. */
+  transferCancel: inventoryWarehouseProcedure
+    .input(z.object({ transferId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await withTx((tx) =>
+        cancelStockTransfer(tx, {
+          transferId: input.transferId,
+          actor: { userId: ctx.user.id, role: ctx.user.role, branchId: ctx.user.branchId == null ? null : Number(ctx.user.branchId) },
+        }),
+      );
+      await logAudit(ctx, {
+        action: "inventory.transferCancel",
+        entityType: "transfer",
+        entityId: input.transferId,
+        newValue: { transferNumber: res.transferNumber },
+      });
+      return res;
     }),
 
   adjust: inventoryWarehouseProcedure

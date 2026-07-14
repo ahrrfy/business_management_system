@@ -696,6 +696,64 @@ export const inventoryMovements = mysqlTable(
 export type InventoryMovement = typeof inventoryMovements.$inferSelect;
 export type InsertInventoryMovement = typeof inventoryMovements.$inferInsert;
 
+/* ============================ تحويلات المخزون بخطوتين (بالطريق ← استلام) ============================ */
+
+/**
+ * سند تحويل بين فرعين بخطوتين: الإرسال يخصم من المصدر فوراً (TRANSFER_OUT) ويضع البضاعة
+ * «بالطريق» (لا تُحتسب في رصيد أي فرع)، والاستلام في الفرع الوجهة يطابق الكميات فعلياً
+ * (TRANSFER_IN بالمستلَم فقط) — العجز يبقى موثَّقاً على السند سطراً بسطر.
+ */
+export const stockTransfers = mysqlTable(
+  "stockTransfers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    transferNumber: varchar("transferNumber", { length: 24 }).notNull().unique("uq_transfer_number"),
+    fromBranchId: bigint("fromBranchId", { mode: "number" }).notNull().references(() => branches.id),
+    toBranchId: bigint("toBranchId", { mode: "number" }).notNull().references(() => branches.id),
+    status: mysqlEnum("transferStatus", ["IN_TRANSIT", "RECEIVED", "CANCELLED"]).default("IN_TRANSIT").notNull(),
+    reason: varchar("reason", { length: 24 }),
+    notes: text("notes"),
+    // مجاميع بالوحدة الأساس (تُعرَض في القوائم بلا join على الأسطر).
+    totalSentBase: int("totalSentBase").default(0).notNull(),
+    totalReceivedBase: int("totalReceivedBase"),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    receivedBy: int("receivedBy").references(() => users.id),
+    receivedAt: timestamp("receivedAt"),
+    receiveNotes: text("receiveNotes"),
+    cancelledBy: int("cancelledBy").references(() => users.id),
+    cancelledAt: timestamp("cancelledAt"),
+  },
+  (table) => ({
+    fromStatusIdx: index("idx_transfer_from_status").on(table.fromBranchId, table.status),
+    toStatusIdx: index("idx_transfer_to_status").on(table.toBranchId, table.status),
+    dateIdx: index("idx_transfer_date").on(table.createdAt),
+  })
+);
+
+export type StockTransfer = typeof stockTransfers.$inferSelect;
+
+export const stockTransferLines = mysqlTable(
+  "stockTransferLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    transferId: bigint("transferId", { mode: "number" }).notNull().references(() => stockTransfers.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    quantitySent: int("quantitySent").notNull(),
+    // NULL حتى الاستلام؛ بعده = ما وصل فعلاً (0..المرسَل). الفرق = عجز نقل موثَّق.
+    quantityReceived: int("quantityReceived"),
+    // ملاحظة السطر (إلزامية خادمياً عند وجود فرق بين المرسَل والمستلَم).
+    note: varchar("note", { length: 255 }),
+  },
+  (table) => ({
+    transferIdx: index("idx_tline_transfer").on(table.transferId),
+    variantIdx: index("idx_tline_variant").on(table.variantId),
+    transferVariantUq: unique("uq_tline_transfer_variant").on(table.transferId, table.variantId),
+  })
+);
+
+export type StockTransferLine = typeof stockTransferLines.$inferSelect;
+
 /* ============================ ورديات الكاشير ============================ */
 
 export const shifts = mysqlTable(

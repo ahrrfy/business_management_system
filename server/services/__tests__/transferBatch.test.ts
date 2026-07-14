@@ -11,7 +11,7 @@ import { appRouter } from "../../routers";
  *  - عزل الفرع: warehouse لا يحوّل من فرع ليس فرعه.
  *  - يرفض الصنف المكرّر ونفس الفرع مصدراً ووجهة.
  */
-const TABLES = ["auditLogs", "inventoryMovements", "branchStock", "productVariants", "products", "users", "branches"];
+const TABLES = ["auditLogs", "idempotencyKeys", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "productVariants", "products", "users", "branches"];
 
 function db() {
   const d = getDb();
@@ -58,17 +58,33 @@ async function wh2() { return (await db().select().from(s.users).where(eq(s.user
 beforeEach(async () => { await reset(); await seed(); });
 
 describe("inventory.transferBatch", () => {
-  it("ينقل عدّة أصناف ذرّياً من فرع لآخر", async () => {
+  it("خطوتان: الإنشاء يخصم المصدر ويضع السند «بالطريق»، والاستلام المطابق يضيف للوجهة", async () => {
     const caller = appRouter.createCaller(makeCtx(await admin()));
     const r = await caller.inventory.transferBatch({
       fromBranchId: 1, toBranchId: 2, reason: "REBALANCE",
       items: [{ variantId: 1, baseQuantity: 8 }, { variantId: 2, baseQuantity: 4 }],
     });
     expect(r.lines).toBe(2);
+    expect(r.transferNumber).toMatch(/^TRF-/);
+    // بعد الإرسال: المصدر مخصوم والوجهة لم تتغيّر (البضاعة بالطريق — لا تُباع مرّتين).
     expect(await stockOf(1, 1)).toBe(12); // 20-8
-    expect(await stockOf(1, 2)).toBe(13); // 5+8
+    expect(await stockOf(1, 2)).toBe(5);  // لم تصل بعد
     expect(await stockOf(2, 1)).toBe(6);  // 10-4
+    expect(await stockOf(2, 2)).toBe(0);
+
+    // الاستلام المطابق في الفرع الوجهة (warehouse ف٢) يضيف الكميات كاملة ويقفل السند.
+    const receiver = appRouter.createCaller(makeCtx(await wh2()));
+    const doc = await receiver.inventory.transferGet({ id: r.transferId });
+    expect(doc.status).toBe("IN_TRANSIT");
+    await receiver.inventory.transferReceive({
+      transferId: r.transferId,
+      lines: doc.lines.map((l: any) => ({ lineId: Number(l.id), quantityReceived: l.quantitySent })),
+    });
+    expect(await stockOf(1, 2)).toBe(13); // 5+8
     expect(await stockOf(2, 2)).toBe(4);  // 0+4
+    const after = await receiver.inventory.transferGet({ id: r.transferId });
+    expect(after.status).toBe("RECEIVED");
+    expect(Number(after.totalReceivedBase)).toBe(12);
   });
 
   it("ذرّية: فشل سطر (نقص مخزون) يُرجِع كل السند", async () => {
