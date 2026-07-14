@@ -526,6 +526,13 @@
       "when": 1783966548380,
       "tag": "0074_banner_placement",
       "breakpoints": true
+    },
+    {
+      "idx": 75,
+      "version": "5",
+      "when": 1784027405722,
+      "tag": "0075_stock_transfers_two_step",
+      "breakpoints": true
     }
   ]
 }

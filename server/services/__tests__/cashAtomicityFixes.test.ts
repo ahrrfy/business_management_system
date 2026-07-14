@@ -24,6 +24,8 @@ const TABLES = [
   "auditLogs",
   "accountingEntries",
   "receipts",
+  "stockTransferLines",
+  "stockTransfers",
   "inventoryMovements",
   "invoiceItems",
   "invoices",
@@ -312,16 +314,22 @@ describe("inventory.transferBatch idempotency", () => {
     });
     expect(r1.idempotentReplay).toBe(false);
     expect(r2.idempotentReplay).toBe(true);
+    expect(r2.transferId).toBe(r1.transferId);
 
-    // المخزون انتقل مرّة واحدة فقط (50−5=45، 10+5=15).
+    // خطوتان (١٤/٧): الإنشاء يخصم المصدر مرّة واحدة فقط (50−5=45) والوجهة لا تتغيّر حتى الاستلام.
     const at1 = (await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0];
     const at2 = (await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 2))))[0];
     expect(at1.quantity).toBe(45);
-    expect(at2.quantity).toBe(15);
+    expect(at2.quantity).toBe(10);
 
-    // حركتان (out + in) فقط، لا أربع.
+    // حركة خروج واحدة فقط (لا اثنتان) — TRANSFER_IN تُكتب عند الاستلام لا الإنشاء.
     const movs = await db().select().from(s.inventoryMovements);
-    expect(movs).toHaveLength(2);
+    expect(movs).toHaveLength(1);
+    expect(movs[0].movementType).toBe("TRANSFER_OUT");
+    // سند واحد «بالطريق».
+    const docs = await db().select().from(s.stockTransfers);
+    expect(docs).toHaveLength(1);
+    expect(docs[0].status).toBe("IN_TRANSIT");
   });
 
   it("مفاتيح مختلفة ⇒ سندان منفصلان (تأكيد عدم الإفراط)", async () => {
@@ -332,8 +340,11 @@ describe("inventory.transferBatch idempotency", () => {
     await caller.inventory.transferBatch({
       fromBranchId: 1, toBranchId: 2, items: [{ variantId: 1, baseQuantity: 2 }], clientRequestId: "k-B",
     });
-    const at2 = (await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 2))))[0];
-    expect(at2.quantity).toBe(15); // 10 + 3 + 2
+    // خطوتان: سندان مستقلان «بالطريق» خصما المصدر (50−3−2=45) — الوجهة تُضاف عند الاستلام.
+    const at1 = (await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1))))[0];
+    expect(at1.quantity).toBe(45);
+    const docs = await db().select().from(s.stockTransfers);
+    expect(docs).toHaveLength(2);
   });
 });
 

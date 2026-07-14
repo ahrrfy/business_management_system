@@ -7,9 +7,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { confirm } from "@/lib/confirm";
 import { fmtInt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
-import { ArrowRightLeft, Search, Trash2 } from "lucide-react";
+import { ArrowRightLeft, Inbox, PackagePlus, Search, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
+import TransfersLog from "@/pages/TransfersLog";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -45,6 +46,8 @@ export default function Transfers() {
   const me = trpc.auth.me.useQuery();
   const utils = trpc.useUtils();
   const branches = trpc.branches.list.useQuery();
+  const [tab, setTab] = useState<"new" | "log">("new");
+  const pending = trpc.inventory.transfersPendingIncoming.useQuery(undefined, { refetchInterval: 60_000 });
 
   const [fromBranchId, setFromBranchId] = useState<number | "">("");
   const [toBranchId, setToBranchId] = useState<number | "">("");
@@ -125,13 +128,15 @@ export default function Transfers() {
 
   const transfer = trpc.inventory.transferBatch.useMutation({
     onSuccess: async (res) => {
-      setDone(`تمّ تنفيذ سند التحويل (${res.lines} صنف) من ${fromName} إلى ${toName}.`);
+      setDone(`أُرسل السند ${res.transferNumber} (${res.lines} صنف) من ${fromName} إلى ${toName} — بالطريق حتى يستلمه الفرع الوجهة بالمطابقة.`);
       setError("");
       setCart([]); setNotes(""); setTrf(genTrf()); setReqId(crypto.randomUUID());
       await Promise.all([
         utils.catalog.forPurchase.invalidate(),
         utils.inventory.movements.invalidate(),
         utils.inventory.movementsRich?.invalidate?.(),
+        utils.inventory.transfersList.invalidate(),
+        utils.inventory.transfersPendingIncoming.invalidate(),
       ]);
     },
     onError: (e) => { setError(e.message); setDone(""); },
@@ -183,10 +188,37 @@ export default function Transfers() {
     <div className="space-y-4">
       <PageHeader
         title="تحويل بين الفروع"
-        description="سند تحويل مخزني بأسطر متعددة (TRANSFER_OUT/IN) — ذرّي، بلا قيد محاسبي."
+        description="بخطوتين: الإرسال يخصم المصدر ويضع البضاعة «بالطريق»، والفرع الوجهة يستلمها بمطابقة فعلية — العجز يُوثَّق على السند."
         actions={<Link href="/inventory" className="text-sm text-muted-foreground">حركات المخزون ←</Link>}
       />
 
+      {/* تبويبا الشاشة: إنشاء سند | سجلّ السندات (مع شارة الوارد بالطريق) */}
+      <div className="flex items-center gap-2 border-b">
+        <button
+          type="button"
+          onClick={() => setTab("new")}
+          className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px ${tab === "new" ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+        >
+          <PackagePlus aria-hidden className="size-4" /> إنشاء تحويل
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab("log")}
+          className={`inline-flex items-center gap-1.5 px-3 py-2 text-sm border-b-2 -mb-px ${tab === "log" ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground"}`}
+        >
+          <Inbox aria-hidden className="size-4" /> سجلّ التحويلات
+          {(pending.data ?? 0) > 0 && (
+            <span className="rounded-full bg-amber-500/15 text-amber-700 dark:text-amber-400 text-xs px-2 py-0.5 tabular-nums">
+              {fmtInt(pending.data ?? 0)} بانتظار الاستلام
+            </span>
+          )}
+        </button>
+      </div>
+
+      {tab === "log" && <TransfersLog />}
+
+      {tab === "new" && (
+      <>
       {/* الفروع: من → إلى + عكس */}
       <Card>
         <CardHeader><CardTitle className="text-base">الفروع</CardTitle></CardHeader>
@@ -343,6 +375,8 @@ export default function Transfers() {
           </CardContent>
         </Card>
       </div>
+      </>
+      )}
     </div>
   );
 }
