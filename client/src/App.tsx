@@ -167,16 +167,20 @@ function HostPolicy() {
   return null;
 }
 
-/** مسار الجذر: على الدومين العام ⇒ المتجر دائماً؛ المندوب ⇒ «توصيلاتي»؛ بقية الموظفين ⇒ لوحتهم. */
+/**
+ * مسار الجذر: المندوب ⇒ «توصيلاتي» (**قبل كل شيء**)؛ ثم الدومين العام ⇒ المتجر؛ وإلا لوحة الموظف.
+ *
+ * ⚠️ ترتيب الفحوص حرِج (مراجعة عدائية ١٤/٧): بداية تطبيق المناديب على Play هي «/» على الدومين
+ * العام (`twa-manifest.json: startUrl "/"`). فحصُ المضيف قبل الدور كان يقذف المندوب المسجَّل إلى
+ * متجر الزبون بلا أي رابط يعيده لشاشته (رابط «دخول الفريق» مخفيّ هناك) ⇒ تطبيقٌ منشور بلا مخرج.
+ * لذا نجلب الجلسة على المضيفَين معاً ونفحص الدور أولاً.
+ */
 function RootRoute() {
   const storeHost = onPublicHost();
-  // على الدومين العام لا جلسة أصلاً (الدخول محصور بدومين الشركة) ⇒ لا نجلب auth.me هناك إطلاقاً.
-  // على دومين الشركة تلزم الجلسة لتوجيه المندوب لشاشته الذاتية (مراجعة عدائية ١٢/٧).
-  const me = trpc.auth.me.useQuery(undefined, { retry: false, enabled: !storeHost });
-  if (storeHost) return <Redirect to="/store" />;
+  const me = trpc.auth.me.useQuery(undefined, { retry: false });
   if (me.isLoading) return <RouteFallback />;
-  // المندوب يهبط على «توصيلاتي» بدل لوحة الموظف — مكمِّل لتوجيه الدخول في Login.
   if (me.data?.role === "courier") return <Redirect to="/my-deliveries" />;
+  if (storeHost) return <Redirect to="/store" />; // زائر (أو موظف دخل خطأً) على الدومين العام ⇒ المتجر
   return (
     <Shell>
       <Dashboard />

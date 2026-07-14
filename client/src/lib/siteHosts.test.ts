@@ -37,12 +37,16 @@ describe("resolveHostRedirect", () => {
     expect(resolveHostRedirect(PUB, "/store-admin")).toBe("internal");
     expect(resolveHostRedirect(PUB_WWW, "/reports")).toBe("internal");
   });
-  it("مسارا تطبيق المناديب (TWA على الدومين العام) مشتركان — لا يُحوَّلان في أي اتجاه", () => {
+  it("مسارات تطبيق المناديب (TWA على الدومين العام) مشتركة — لا تُحوَّل في أي اتجاه", () => {
     expect(resolveHostRedirect(PUB, "/login")).toBeNull();
     expect(resolveHostRedirect(PUB, "/my-deliveries")).toBeNull();
     expect(resolveHostRedirect(PUB_WWW, "/my-deliveries")).toBeNull();
+    // «حسابي» مشترك: أول دخولٍ لأي مستخدم جديد يقوده إلى /account?mustChange=1 — تحويله
+    // كان يقذف المندوب لمضيفٍ بلا جلسة (الكوكي مقصور بالمضيف) فينتهي بنموذج دخول فارغ.
+    expect(resolveHostRedirect(PUB, "/account")).toBeNull();
     expect(resolveHostRedirect(INT, "/login")).toBeNull();
     expect(resolveHostRedirect(INT, "/my-deliveries")).toBeNull();
+    expect(resolveHostRedirect(INT, "/account")).toBeNull();
   });
   it("صفحة عامة على دومين الشركة ⇒ تُحوَّل للدومين العام", () => {
     expect(resolveHostRedirect(INT, "/apply")).toBe("public");
@@ -68,6 +72,14 @@ describe("resolveHostRedirect", () => {
     expect(resolveHostRedirect(INT, "/pos")).toBeNull(); // وصل ⇒ يستقرّ
     expect(resolveHostRedirect(INT, "/apply")).toBe("public");
     expect(resolveHostRedirect(PUB, "/apply")).toBeNull(); // وصل ⇒ يستقرّ
+  });
+});
+
+describe("حارس سوء الضبط", () => {
+  it("لا شرطة مائلة مزدوجة في وجهة التحويل (الأصل يُقلَّم)", () => {
+    expect(redirectTargetUrl("internal", { pathname: "/pos", search: "", hash: "" })).not.toContain("//pos");
+    expect(PUBLIC_ORIGIN.endsWith("/")).toBe(false);
+    expect(INTERNAL_ORIGIN.endsWith("/")).toBe(false);
   });
 });
 

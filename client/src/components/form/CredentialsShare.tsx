@@ -1,6 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { buildCredentialsMessage, whatsappLink } from "@/lib/credentialsMessage";
+import { INTERNAL_ORIGIN, PUBLIC_ORIGIN } from "@/lib/siteHosts";
 import { AlertTriangle, CheckCircle2, CheckIcon, CopyIcon, MessageCircleIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
@@ -19,11 +20,16 @@ export interface CredentialsShareProps {
   jobTitle?: string | null;
   /** هل سيُجبَر على تغيير الكلمة عند أول دخول (يضبط نصّ التعليمات). */
   mustChangePassword?: boolean;
+  /** مفتاح الدور (لا تسميته) — يحدّد **الدومين** المُرسَل: المندوب يعمل على تطبيق الدومين العام. */
+  roleKey?: string | null;
   appUrl?: string;
   onClose?: () => void;
 }
 
-const DEFAULT_URL = "https://srv1548487.hstgr.cloud";
+/** رابط الدخول المُرسَل للمستخدم الجديد: المندوب ⇒ دومين تطبيقه العام؛ بقية الموظفين ⇒ نظام الشركة. */
+function defaultAppUrl(roleKey?: string | null): string {
+  return roleKey === "courier" ? PUBLIC_ORIGIN : INTERNAL_ORIGIN;
+}
 
 /**
  * بطاقة مشاركة بيانات حساب مستخدم جديد — تعرض معلوماته وبيانات دخوله، وتُرسلها جاهزةً
@@ -39,17 +45,19 @@ export function CredentialsShare({
   branchName,
   jobTitle,
   mustChangePassword = true,
-  appUrl = DEFAULT_URL,
+  roleKey,
+  appUrl,
   onClose,
 }: CredentialsShareProps) {
   const [copied, setCopied] = useState(false);
+  const resolvedUrl = appUrl ?? defaultAppUrl(roleKey);
 
   const message = buildCredentialsMessage({
     name,
     email,
     username,
     password,
-    appUrl,
+    appUrl: resolvedUrl,
     roleLabel,
     branchName,
     jobTitle,
@@ -101,7 +109,7 @@ export function CredentialsShare({
             <div><span className="text-muted-foreground text-xs">البريد: </span><span dir="ltr">{email}</span></div>
           ) : null}
           <div><span className="text-muted-foreground text-xs">كلمة المرور: </span><span dir="ltr" className="font-bold tracking-wider">{password}</span></div>
-          <div><span className="text-muted-foreground text-xs">الرابط: </span><span dir="ltr">{appUrl}</span></div>
+          <div><span className="text-muted-foreground text-xs">الرابط: </span><span dir="ltr">{resolvedUrl}</span></div>
           {mustChangePassword && (
             <p className="text-xs text-amber-600 mt-1 inline-flex items-center gap-1"><AlertTriangle aria-hidden className="size-3.5" /> سيُطلب تغيير كلمة المرور عند أول دخول (صالحة 72 ساعة)</p>
           )}

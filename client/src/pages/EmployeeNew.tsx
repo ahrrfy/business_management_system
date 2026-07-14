@@ -65,7 +65,7 @@ export default function EmployeeNew() {
   const [autoSuggestSignal, setAutoSuggestSignal] = useState(0);
   const [createdInfo, setCreatedInfo] = useState<{
     name: string; email: string; username?: string; password: string; phone?: string;
-    roleLabel?: string; branchName?: string | null; jobTitle?: string | null; mustChangePassword?: boolean; employeeId: number | null;
+    roleLabel?: string; roleKey?: string | null; branchName?: string | null; jobTitle?: string | null; mustChangePassword?: boolean; employeeId: number | null;
   } | null>(null);
   const employeeFullName = [form.firstName, form.fatherName, form.lastName].map((s) => s.trim()).filter(Boolean).join(" ");
 
@@ -126,6 +126,8 @@ export default function EmployeeNew() {
       password: cred.password,
       phone: form.phone.trim() || undefined,
       roleLabel: cred.customRoleId ? "دور مخصّص" : roleLabelOf(cred.role),
+      // مفتاح الدور يحدّد دومين رابط الدعوة (المندوب ⇒ تطبيق الدومين العام).
+      roleKey: cred.customRoleId ? null : cred.role,
       branchName: accBranchId ? opts.data?.branches.find((b) => b.id === accBranchId)?.name ?? null : null,
       jobTitle: form.position.trim() || null,
       mustChangePassword: cred.mustChangePassword,
@@ -242,6 +244,7 @@ export default function EmployeeNew() {
           branchName={createdInfo.branchName}
           jobTitle={createdInfo.jobTitle}
           mustChangePassword={createdInfo.mustChangePassword}
+          roleKey={createdInfo.roleKey}
           onClose={() => navigate(dest)}
         />
         <div className="flex gap-2">

@@ -21,7 +21,7 @@ export default function UserNew() {
   const [error, setError] = useState("");
   const [createdInfo, setCreatedInfo] = useState<{
     name: string; email: string; username?: string; password: string; phone?: string;
-    roleLabel?: string; branchName?: string | null; jobTitle?: string | null; mustChangePassword?: boolean;
+    roleLabel?: string; roleKey?: string | null; branchName?: string | null; jobTitle?: string | null; mustChangePassword?: boolean;
   } | null>(null);
 
   const branches = trpc.branches.list.useQuery();
@@ -49,6 +49,8 @@ export default function UserNew() {
         roleLabel: vars.customRoleId
           ? (customRoles.find((r: any) => Number(r.id) === vars.customRoleId)?.label ?? "دور مخصّص")
           : (ROLE_OPTIONS.find((r) => r.value === vars.role)?.label ?? vars.role),
+        // مفتاح الدور يحدّد دومين رابط الدعوة (المندوب ⇒ تطبيق الدومين العام).
+        roleKey: vars.customRoleId ? null : vars.role,
         branchName: vars.branchId ? branches.data?.find((b: any) => b.id === vars.branchId)?.name ?? null : null,
         jobTitle: vars.jobTitle ?? null,
         mustChangePassword: vars.mustChangePassword,
@@ -103,6 +105,7 @@ export default function UserNew() {
           branchName={createdInfo.branchName}
           jobTitle={createdInfo.jobTitle}
           mustChangePassword={createdInfo.mustChangePassword}
+          roleKey={createdInfo.roleKey}
           onClose={() => navigate("/users")}
         />
         <div className="flex gap-2">

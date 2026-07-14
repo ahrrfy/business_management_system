@@ -11,13 +11,18 @@
 // الجذر «/» استثناء مقصود: معناه يختلف بالمضيف (العام ⇒ المتجر، الشركة ⇒ لوحة الموظف) فلا يُحوَّل.
 // على مضيف غير معروف (localhost/تطوير/معاينة) لا سياسة إطلاقاً — التطوير المحلي يعمل كما هو.
 
+/** يزيل الشرطة المائلة الذيلية (وإلا بنَينا `https://host//pos`). */
+const trimSlash = (s: string): string => s.replace(/\/+$/, "");
+
 /** أصل الدومين العام (قابل للتجاوز ببيئة البناء عند تغيير الدومين مستقبلاً). */
-export const PUBLIC_ORIGIN: string =
-  (import.meta.env?.VITE_PUBLIC_SITE_ORIGIN as string | undefined) ?? "https://alarabiya.online";
+export const PUBLIC_ORIGIN: string = trimSlash(
+  (import.meta.env?.VITE_PUBLIC_SITE_ORIGIN as string | undefined) ?? "https://alarabiya.online",
+);
 
 /** أصل دومين الشركة (النظام الداخلي). */
-export const INTERNAL_ORIGIN: string =
-  (import.meta.env?.VITE_INTERNAL_SITE_ORIGIN as string | undefined) ?? "https://srv1548487.hstgr.cloud";
+export const INTERNAL_ORIGIN: string = trimSlash(
+  (import.meta.env?.VITE_INTERNAL_SITE_ORIGIN as string | undefined) ?? "https://srv1548487.hstgr.cloud",
+);
 
 function hostOf(origin: string): string {
   try {
@@ -41,11 +46,18 @@ export const PUBLIC_PATHS = ["/store", "/apply"] as const;
 /**
  * مسارات **مشتركة**: مسموحة على المضيفَين ولا تُحوَّل أبداً — لأن **تطبيق المناديب على Play (TWA)
  * مبنيٌّ على alarabiya.online** ويحوي اختصار «توصيلاتي» (`twa/twa-manifest.json`): المندوب يسجّل
- * دخوله ويعمل **داخل** التطبيق على الدومين العام. تحويلهما لدومين الشركة كان سيقذف المندوب خارج
- * نطاق التطبيق (شريط متصفّح + جلسة جديدة) ⇒ كسرٌ لتطبيقٍ منشور. الاستثناء مقصود وضيّق:
- * لا يُوسَّع لأي شاشة موظفين أخرى (الكاشير/التقارير/لوحة المتجر… كلها داخلية وتُحوَّل).
+ * دخوله ويعمل **داخل** التطبيق على الدومين العام. تحويلها لدومين الشركة يقذف المندوب خارج نطاق
+ * التطبيق (شريط متصفّح + جلسة جديدة — الكوكي مقصور على المضيف بلا `domain`) ⇒ كسرُ تطبيقٍ منشور.
+ *
+ * القائمة = ما يحتاجه المندوب **داخل تطبيقه** حصراً، لا أكثر (مراجعة عدائية ١٤/٧):
+ *  • `/login`         — الدخول داخل التطبيق.
+ *  • `/my-deliveries` — شاشته الذاتية (اختصار التطبيق).
+ *  • `/account`       — «حسابي»: تغيير كلمة المرور. إلزاميّ: كل مستخدم جديد يُنشأ بـmustChangePassword
+ *                        فأول دخول يقوده إلى `/account?mustChange=1` — تحويله كان يقذفه لمضيفٍ بلا
+ *                        جلسة فينتهي بنموذج دخول فارغ بلا رجعة.
+ * لا يُوسَّع لأي شاشة موظفين أخرى (الكاشير/التقارير/لوحة المتجر… داخلية وتُحوَّل).
  */
-export const SHARED_PATHS = ["/login", "/my-deliveries"] as const;
+export const SHARED_PATHS = ["/login", "/my-deliveries", "/account"] as const;
 
 function matches(pathname: string, list: readonly string[]): boolean {
   return list.some((p) => pathname === p || pathname.startsWith(`${p}/`));
@@ -73,6 +85,8 @@ export function isInternalHost(hostname: string): boolean {
  * `null` = ابقَ حيث أنت (مضيف تطوير غير معروف، أو المسار في مكانه الصحيح، أو الجذر).
  */
 export function resolveHostRedirect(hostname: string, pathname: string): "public" | "internal" | null {
+  // حارس سوء ضبط: أصلان بنفس المضيف (أو أصل غير صالح) ⇒ التحويل سيقود لنفس الرابط = إعادة تحميل لا نهائية.
+  if (!PUBLIC_HOST || !INTERNAL_HOST || PUBLIC_HOST === INTERNAL_HOST) return null;
   const onPublic = isPublicHost(hostname);
   const onInternal = isInternalHost(hostname);
   if (!onPublic && !onInternal) return null; // تطوير/معاينة — لا سياسة
