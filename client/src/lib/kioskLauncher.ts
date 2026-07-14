@@ -12,6 +12,8 @@
  * الرمز في **جزء العنوان (#fragment)** ⇒ لا يصل الخادم ولا سجلّات nginx (نفس مبدأ السلامة السابق).
  */
 
+import { saveFileAs } from "@/lib/export";
+
 /** رابط تشغيل الكشك (الرمز في الـfragment، لا يصل الخادم). */
 export function kioskUrl(origin: string, token: string): string {
   const base = origin.replace(/\/+$/, "");
@@ -159,12 +161,9 @@ export function buildInstallerCmd(info: InstallerInfo): string {
 /** تنزيل المُشغّل الكوني كملف .cmd (UTF-8 مع BOM ليقرأ Windows العربية في التعليقات). */
 export function downloadInstallerCmd(info: InstallerInfo): void {
   const content = "﻿" + buildInstallerCmd(info);
-  const blob = new Blob([content], { type: "application/octet-stream" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `qari-alroya-setup.cmd`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  saveFileAs(new Blob([content], { type: "application/octet-stream" }), {
+    filename: "qari-alroya-setup.cmd",
+    description: "مُشغّل الكشك",
+    mime: "application/octet-stream",
+  });
 }
