@@ -14,6 +14,8 @@ import type { Tx } from "../db";
 import { getDb } from "../db";
 import { applyMovement } from "./inventoryService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
+import { postEntry } from "./ledgerService";
+import { money } from "./money";
 import { extractInsertId } from "../lib/insertId";
 
 export type TransferActor = { userId: number; role: string; branchId: number | null };
@@ -164,9 +166,13 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
   // ترتيب حتمي بالمتغيّر (نفس منطق الإنشاء) لتفادي deadlock مع سندات متزامنة.
   const sortedIn = [...a.lines].sort((x, y) => Number(byId.get(x.lineId)!.variantId) - Number(byId.get(y.lineId)!.variantId));
   let totalReceivedBase = 0;
+  const shortages: Array<{ variantId: number; qty: number }> = [];
   for (const l of sortedIn) {
     const dl = byId.get(l.lineId)!;
     totalReceivedBase += l.quantityReceived;
+    if (l.quantityReceived < dl.quantitySent) {
+      shortages.push({ variantId: Number(dl.variantId), qty: dl.quantitySent - l.quantityReceived });
+    }
     if (l.quantityReceived > 0) {
       await applyMovement(tx, {
         variantId: Number(dl.variantId),
@@ -187,6 +193,30 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
       .update(stockTransferLines)
       .set({ quantityReceived: l.quantityReceived, note: l.note?.trim() || null })
       .where(eq(stockTransferLines.id, l.lineId));
+  }
+
+  // قيد خسارة نقل بقيمة التكلفة (قرار مالك ١٤/٧): العجز خرج من رصيد المصدر ولم يصل الوجهة ⇒
+  // مصروف حقيقي في P&L (نمط قيد تسوية الجرد: cost موجب/profit سالب، بلا نقد). يُنسب لفرع
+  // **المصدر** — البضاعة كانت في عهدته حتى تسليمها، وعنده يبدأ تحقيق العجز. dedupeKey يمنع الازدواج.
+  if (shortages.length) {
+    const ids = shortages.map((s) => s.variantId);
+    const costs = await tx
+      .select({ id: productVariants.id, costPrice: productVariants.costPrice })
+      .from(productVariants)
+      .where(inArray(productVariants.id, ids));
+    const costOf = new Map(costs.map((c) => [Number(c.id), c.costPrice ?? "0"]));
+    const lossValue = shortages.reduce((acc, s) => acc.plus(money(costOf.get(s.variantId) ?? "0").times(s.qty)), money(0));
+    if (!lossValue.isZero()) {
+      await postEntry(tx, {
+        entryType: "ADJUST",
+        branchId: Number(doc.fromBranchId),
+        cost: lossValue,
+        profit: lossValue.neg(),
+        amount: money(0),
+        dedupeKey: `TRANSFER_LOSS:${a.transferId}`,
+        notes: `عجز نقل — سند ${doc.transferNumber} (${shortages.reduce((s, x) => s + x.qty, 0)} وحدة)`,
+      });
+    }
   }
 
   await tx

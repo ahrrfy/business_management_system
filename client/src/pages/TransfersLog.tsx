@@ -15,7 +15,8 @@ import { fmtDateTime } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
-import { CheckCheck, PackageCheck, Undo2 } from "lucide-react";
+import { printTransferDoc } from "@/lib/printing/printTransferDoc";
+import { CheckCheck, PackageCheck, Printer, Undo2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 const selectCls =
@@ -146,6 +147,33 @@ export default function TransfersLog() {
     });
   }
 
+  /** طباعة مستند التحويل — متزامنة داخل النقرة (window.open يُحجب بعد await) والبيانات محمَّلة أصلاً. */
+  function printDocument() {
+    if (!doc || doc.status === "CANCELLED") return;
+    printTransferDoc({
+      transferNumber: doc.transferNumber,
+      status: doc.status,
+      fromBranchName: doc.fromBranchName,
+      toBranchName: doc.toBranchName,
+      reasonLabel: doc.reason ? (REASON_LABELS[doc.reason] ?? doc.reason) : null,
+      notes: doc.notes,
+      createdByName: doc.createdByName,
+      createdAt: fmtDateTime(doc.createdAt),
+      receivedByName: doc.receivedByName,
+      receivedAt: doc.receivedAt ? fmtDateTime(doc.receivedAt) : null,
+      receiveNotes: doc.receiveNotes,
+      lines: doc.lines.map((l) => ({
+        productName: l.productName,
+        variantName: l.variantName,
+        color: l.color,
+        sku: l.sku,
+        quantitySent: l.quantitySent,
+        quantityReceived: l.quantityReceived == null ? null : Number(l.quantityReceived),
+        note: l.note,
+      })),
+    });
+  }
+
   async function submitCancel() {
     if (!doc) return;
     const ok = await confirm({
@@ -242,6 +270,14 @@ export default function TransfersLog() {
             <LoadingState />
           ) : (
             <div className="space-y-3">
+              {doc.status !== "CANCELLED" && (
+                <div className="flex justify-start">
+                  <Button variant="outline" size="sm" onClick={printDocument}>
+                    <Printer aria-hidden className="size-4" />
+                    {doc.status === "IN_TRANSIT" ? "طباعة مستند النقل (يرافق السائق)" : "طباعة محضر المطابقة"}
+                  </Button>
+                </div>
+              )}
               {doc.notes && <p className="text-sm text-muted-foreground">ملاحظات الإرسال: {doc.notes}</p>}
               {doc.status === "RECEIVED" && (
                 <p className="text-sm">

@@ -13,7 +13,7 @@ import { appRouter } from "../../routers";
  *  I5: عزل الفرع — الاستلام حصريّ للوجهة والإلغاء حصريّ للمصدر (غير المرفوعين).
  *  I6: لا استلام/إلغاء مزدوج (سند مقفل يرفض)، والاستلام idempotent بالمفتاح.
  */
-const TABLES = ["auditLogs", "idempotencyKeys", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "productVariants", "products", "users", "branches"];
+const TABLES = ["auditLogs", "idempotencyKeys", "accountingEntries", "stockTransferLines", "stockTransfers", "inventoryMovements", "branchStock", "productVariants", "products", "users", "branches"];
 
 function db() {
   const d = getDb();
@@ -122,6 +122,28 @@ describe("I2+I3: الاستلام الجزئي والعجز الموثَّق", (
     const afterL1 = after.lines.find((l: any) => Number(l.variantId) === 1)!;
     expect(Number(afterL1.quantityReceived)).toBe(6);
     expect(afterL1.note).toContain("تالف");
+
+    // قيد خسارة النقل (قرار مالك ١٤/٧): عجز 2 ورق × تكلفة 5.00 = 10.00 — قيد ADJUST واحد
+    // بفرع المصدر (cost موجب/profit سالب، بلا نقد) وdedupeKey يمنع الازدواج.
+    const entries = await db().select().from(s.accountingEntries);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].entryType).toBe("ADJUST");
+    expect(Number(entries[0].branchId)).toBe(1);
+    expect(Number(entries[0].cost)).toBe(10);
+    expect(Number(entries[0].profit)).toBe(-10);
+    expect(Number(entries[0].amount)).toBe(0);
+    expect(entries[0].dedupeKey).toBe(`TRANSFER_LOSS:${r.transferId}`);
+    expect(entries[0].notes).toContain(doc.transferNumber);
+  });
+
+  it("استلام مطابق كامل ⇒ لا قيد محاسبياً إطلاقاً", async () => {
+    const { r, doc } = await createStd();
+    const wh2 = appRouter.createCaller(makeCtx(await userById(3)));
+    await wh2.inventory.transferReceive({
+      transferId: r.transferId,
+      lines: doc.lines.map((l: any) => ({ lineId: Number(l.id), quantityReceived: Number(l.quantitySent) })),
+    });
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
   });
 
   it("سطر بفارق بلا ملاحظة ⇒ رفض، ولا كتابة جزئية", async () => {
