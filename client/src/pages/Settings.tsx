@@ -12,6 +12,7 @@ import { confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { getServerBridgeStatus, serverPrintTest } from "@/lib/printing/print";
+import { saveFileAs } from "@/lib/export";
 import { fmtDateTime } from "@/lib/date";
 import { Download, RotateCcw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -27,13 +28,17 @@ function fileToB64(file: File): Promise<string> {
     r.readAsDataURL(file);
   });
 }
+const SQL_SAVE = { description: "نسخة قاعدة SQL", mime: "application/sql" } as const;
+
+async function fetchBackupBlob(name: string): Promise<Blob> {
+  const res = await fetch(`/api/backups/download?name=${encodeURIComponent(name)}`);
+  if (!res.ok) throw new Error(`تعذّر تنزيل النسخة الاحتياطية (${res.status})`);
+  return res.blob();
+}
+
+/** تنزيل نسخة قائمة بحوار «حفظ باسم» — يُستدعى متزامناً داخل النقرة (قيد transient activation). */
 function downloadBackup(name: string) {
-  const a = document.createElement("a");
-  a.href = `/api/backups/download?name=${encodeURIComponent(name)}`;
-  a.download = name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  saveFileAs(() => fetchBackupBlob(name), { filename: name, ...SQL_SAVE });
 }
 
 type DangerAction =
@@ -129,11 +134,15 @@ export default function Settings() {
 
   const confirmToken = info.data?.confirmToken ?? info.data?.db.name ?? "";
 
-  async function backupAndDownload() {
-    try {
-      const r = await backupNow.mutateAsync();
-      if (r.created) downloadBackup(r.created.name);
-    } catch { /* toast من onError */ }
+  function backupAndDownload() {
+    // حوار «حفظ باسم» يُفتح فوراً داخل النقرة باسم متوقَّع (نمط تسمية الخادم UTC) بينما تجري
+    // النسخة بالتوازي؛ الاسم الفعلي من الخادم يصحّح مسار السقوط التقليدي والتوست.
+    const suggested = `erp-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.sql`;
+    saveFileAs(async () => {
+      const r = await backupNow.mutateAsync().catch(() => null); // toast من onError
+      if (!r?.created) return null;
+      return { blob: await fetchBackupBlob(r.created.name), filename: r.created.name };
+    }, { filename: suggested, ...SQL_SAVE });
   }
   async function onPickFile(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];

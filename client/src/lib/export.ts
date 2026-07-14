@@ -294,6 +294,37 @@ export function exportSheets(filename: string, sheetsOrFetch: SheetSpec[] | (() 
   })();
 }
 
+/* ──────────── حفظ عام بحوار «حفظ باسم» — للتنزيلات غير الجدولية (نسخ احتياطية، سكربتات…) ──────────── */
+
+type SaveResult = Blob | { blob: Blob; filename?: string } | null;
+
+/**
+ * يحفظ ملفاً واحداً عبر نفس مصرف التصدير (حوار «حفظ باسم» في Chrome/Edge، تنزيل تقليدي عند
+ * التعذّر). **استدعِه متزامناً داخل إيماءة النقر** — يقبل Blob جاهزاً أو دالة جلب تُنفَّذ
+ * بالتوازي مع الحوار. الدالة قد تعيد { blob, filename } لتصحيح الاسم النهائي المعروف بعد
+ * النقرة (كاسم نسخةٍ يولّده الخادم)، أو null للإلغاء بصمت (خطأ عولج توستُه لدى المستدعي).
+ */
+export function saveFileAs(
+  source: Blob | (() => Promise<SaveResult>),
+  opts: { filename: string; description: string; mime: string },
+): void {
+  const dot = opts.filename.lastIndexOf(".");
+  const ext = dot > 0 ? opts.filename.slice(dot) : "";
+  const sink: SaveSink = ext ? acquireSaveSink(opts.filename, opts.description, opts.mime, ext) : { kind: "anchor" };
+  void (async () => {
+    try {
+      const res = typeof source === "function" ? await source() : source;
+      if (res === null) return;
+      const blob = res instanceof Blob ? res : res.blob;
+      const filename = (res instanceof Blob ? undefined : res.filename) ?? opts.filename;
+      await writeToSink(sink, blob, filename);
+    } catch (e) {
+      console.error("[saveFileAs] failed:", e);
+      notify.err(e);
+    }
+  })();
+}
+
 function downloadBlob(blob: Blob, filename: string): void {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
