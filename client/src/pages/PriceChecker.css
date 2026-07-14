@@ -74,12 +74,14 @@
     padding: 0 64px; border-bottom: 1px solid var(--border);
   }
   .logo { display: flex; align-items: center; gap: 20px; }
-  /* إطار الشعار الحقيقي (صورة) — كان مربّعاً متدرّجاً بحرفَي «ر.ع» مصطنعَين. */
+  /* إطار الشعار الحقيقي (صورة) — كان مربّعاً متدرّجاً بحرفَي «ر.ع» مصطنعَين.
+     overflow:hidden إلزاميّ: خلفية ملف الشعار بيضاء معتمة وborder-radius لا يقصّ الأبناء ⇒ بدونه
+     يظهر مربّع أبيض حادّ الزوايا (بارزٌ في الوضع الداكن للكشك). */
   .logo-mark {
     width: 74px; height: 74px; border-radius: 18px;
     background: #fff; border: 1px solid var(--border);
     display: flex; align-items: center; justify-content: center;
-    padding: 6px; box-shadow: var(--shadow-md);
+    padding: 6px; overflow: hidden; box-shadow: var(--shadow-md);
   }
   .logo-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .logo-text { display: flex; flex-direction: column; line-height: 1.18; }

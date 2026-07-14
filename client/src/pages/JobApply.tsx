@@ -57,14 +57,12 @@ type Vacancy = {
 
 /* ============================ الأنماط (مُحقَّنة مرّة) ============================ */
 const CSS = `
-/* أوزان Cairo الثقيلة (800/900) — مستضافة ذاتياً في /fonts (CSP: font-src 'self').
-   حزمة التطبيق تحمّل 400–700 فقط ⇒ بدونها يُصطنَع العريض ويفقد العنوان حدّته. */
-@font-face{font-family:"Cairo Display";font-weight:800;font-style:normal;font-display:swap;
-  src:url("/fonts/cairo-arabic-800-normal.woff2") format("woff2")}
+/* وزن Cairo الثقيل (900) للعناوين — مستضاف ذاتياً في /fonts (CSP: font-src 'self').
+   حزمة التطبيق تحمّل 400–700 فقط ⇒ بدونه يُصطنَع العريض ويفقد العنوان حدّته.
+   ترتيب الإعلان مقصود: العربيّ أوّلاً بلا unicode-range (يغطّي الكل)، واللاتينيّ آخِراً بمداه —
+   والأخير يفوز عند التقاطع ⇒ اللاتينيّ للاتينيّ والعربيّ لما سواه. */
 @font-face{font-family:"Cairo Display";font-weight:900;font-style:normal;font-display:swap;
   src:url("/fonts/cairo-arabic-900-normal.woff2") format("woff2")}
-@font-face{font-family:"Cairo Display";font-weight:800;font-style:normal;font-display:swap;
-  src:url("/fonts/cairo-latin-800-normal.woff2") format("woff2");unicode-range:U+0000-00FF,U+2000-206F}
 @font-face{font-family:"Cairo Display";font-weight:900;font-style:normal;font-display:swap;
   src:url("/fonts/cairo-latin-900-normal.woff2") format("woff2");unicode-range:U+0000-00FF,U+2000-206F}
 
@@ -75,9 +73,10 @@ const CSS = `
   --green-soft:#E7F3EE;--green-mist:#F2F9F6;
   --clay:#C4611C;--clay-d:#A8500F;--clay-soft:#FBEDE2;
   --line:#E6E2D9;--ok:#0F8A6D;
+  /* لا overflow-x:hidden هنا: يجعل الجذر حاوية تمرير فيبطل الشريط العلوي اللاصق (sticky يتّكئ على
+     أقرب scrollport) — والأقسام التي قد تفيض (البطل/الشريط المتحرّك) تقصّ نفسها بنفسها. */
   min-height:100vh;background:var(--paper);color:var(--ink);direction:rtl;
-  font-family:"Cairo",system-ui,sans-serif;overflow-x:hidden;-webkit-font-smoothing:antialiased;
-  scroll-behavior:smooth}
+  font-family:"Cairo",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
 .cj-root *{box-sizing:border-box}
 .cj-root h1,.cj-root h2,.cj-root .cj-stat b,.cj-root .cj-ctitle{font-family:"Cairo Display","Cairo",system-ui,sans-serif}
 .cj-wrap{max-width:1160px;margin:0 auto;padding:0 clamp(16px,4vw,40px)}
@@ -87,9 +86,11 @@ const CSS = `
   border-bottom:1px solid var(--line)}
 .cj-nav-in{display:flex;align-items:center;justify-content:space-between;gap:14px;height:72px}
 .cj-brand{display:flex;align-items:center;gap:12px;min-width:0;text-decoration:none}
-/* الشعار الحقيقي — إطار ورقيّ يحفظ نسبته ويمنحه مساحة تنفّس (clear space) */
+/* الشعار الحقيقي — إطار ورقيّ يحفظ نسبته ويمنحه مساحة تنفّس (clear space).
+   overflow:hidden إلزاميّ: خلفية ملف الشعار **بيضاء معتمة**، وborder-radius لا يقصّ الأبناء ⇒ بدونه
+   يظهر مربّعٌ أبيض حادّ الزوايا فوق الحواف المستديرة (يُرى بوضوح على التذييل الأخضر الداكن). */
 .cj-logo{width:48px;height:48px;flex-shrink:0;border-radius:12px;background:#fff;border:1px solid var(--line);
-  padding:5px;display:grid;place-items:center;box-shadow:0 6px 18px -12px rgba(13,59,46,.5)}
+  padding:5px;display:grid;place-items:center;overflow:hidden;box-shadow:0 6px 18px -12px rgba(13,59,46,.5)}
 .cj-logo img{width:100%;height:100%;object-fit:contain;display:block}
 .cj-logo.lg{width:64px;height:64px;border-radius:16px;padding:7px}
 .cj-bt{display:flex;flex-direction:column;line-height:1.3;min-width:0}
@@ -202,8 +203,11 @@ const CSS = `
 
 /* شريط الأرقام (أخضر عميق + علامة الشعار المائية) */
 .cj-stats{background:var(--green-deep);color:#fff;position:relative;overflow:hidden}
+/* علامة مائية للشعار: الأصل خلفيّته **بيضاء معتمة** (لا شفافة) ⇒ grayscale+brightness كان يقصّ
+   كل البكسلات إلى الأبيض فيظهر مستطيلٌ باهت لا شعار. invert يجعل الخلفية سوداء والرسمَ فاتحاً،
+   وscreen يُسقط الأسود تماماً على الشريط الأخضر ⇒ ظِلّ الشعار وحده يظهر. */
 .cj-stats::before{content:"";position:absolute;inset:0;background:url("${LOGO}") no-repeat left -60px center/220px auto;
-  opacity:.07;filter:grayscale(1) brightness(2.6);pointer-events:none}
+  opacity:.12;filter:grayscale(1) invert(1);mix-blend-mode:screen;pointer-events:none}
 .cj-stats::after{content:"";position:absolute;inset:0;opacity:.5;
   background-image:radial-gradient(rgba(255,255,255,.05) 1px,transparent 1px);background-size:22px 22px}
 .cj-stats-in{position:relative;z-index:1;display:grid;grid-template-columns:repeat(4,1fr);gap:18px;
@@ -294,7 +298,7 @@ const CSS = `
 .cj-field label i{color:#A02F23;font-style:normal}
 .cj-input{height:48px;border-radius:11px;border:1.5px solid var(--line);background:#fff;padding:0 13px;
   font-family:inherit;font-size:15px;color:var(--ink);outline:none;width:100%;transition:border-color .16s,box-shadow .16s}
-.cj-input::placeholder{color:#9AA7A1}
+.cj-input::placeholder{color:#6E7B76}
 .cj-input:focus{border-color:var(--green);box-shadow:0 0 0 3px rgba(13,107,82,.16)}
 textarea.cj-input{height:auto;min-height:98px;padding:11px 13px;resize:vertical;line-height:1.8}
 .cj-submit{margin-top:20px;width:100%;min-height:54px;border-radius:13px;border:none;color:#fff;font-family:inherit;
@@ -324,7 +328,9 @@ textarea.cj-input{height:auto;min-height:98px;padding:11px 13px;resize:vertical;
 @keyframes cj-pop{from{opacity:0;transform:translateY(14px) scale(.97)}to{opacity:1;transform:none}}
 @keyframes cj-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-9px)}}
 @keyframes cj-drift{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-18px,16px) scale(1.06)}}
-@keyframes cj-marquee{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+/* ⇐ موجب لا سالب: في RTL يفيض المسار **يساراً** والنسخة المكرّرة تقع على يسار الأصل، فالإزاحة
+   السالبة كانت تدفع الشريط خارج النافذة ويفرغ تدريجياً (شريط أبيض) بدل أن يدور. */
+@keyframes cj-marquee{from{transform:translateX(0)}to{transform:translateX(50%)}}
 
 @media(max-width:880px){
   .cj-hero-in{grid-template-columns:1fr}
@@ -348,6 +354,9 @@ textarea.cj-input{height:auto;min-height:98px;padding:11px 13px;resize:vertical;
   .cj-eyebrow i,.cj-skel::after,.cj-art-card,.cj-orb,.cj-track{animation:none}
   .cj-track{width:auto;flex-wrap:wrap;justify-content:center}
   .cj-marquee{overflow:visible}
+  /* بلا حركة يُعرض المسار كاملاً — والنصف الثاني نسخةٌ مكرّرة للدوران ⇒ يُخفى بصرياً أيضاً
+     (aria-hidden كان يُخفيه عن قارئ الشاشة فقط، فيرى مستخدمُ تقليل الحركة كل تخصّص مرّتين). */
+  .cj-track > [aria-hidden="true"]{display:none}
   .cj-btn:hover,.cj-vcard:hover,.cj-card:hover,.cj-submit:hover:not(:disabled){transform:none}
   .cj-card:hover .cj-card-img img{transform:none}
 }
@@ -419,6 +428,40 @@ function useCountUp(end: number, run: boolean, dur = 1100) {
 }
 
 const ar = (n: number) => n.toLocaleString("ar-IQ-u-nu-latn");
+
+/**
+ * شريط الأرقام معزولٌ في مكوّنه: العدّ التصاعدي يُحدّث حالته ~٦٠ مرّة/ثانية، ولو سكن في مكوّن
+ * الصفحة لأعاد React تصيير **الشجرة كلها** (الترويسة/البطل/كل البطاقات) في كل إطار — أسوأ لحظة
+ * على هاتفٍ متواضع (المستخدم يمرّر حينها). العزل يحصر إعادة التصيير في هذا الشريط وحده.
+ */
+function StatsBand({ openNow }: { openNow: number }) {
+  const [statsIn, setStatsIn] = useState(false);
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (typeof IntersectionObserver === "undefined") { setStatsIn(true); return; }
+    const io = new IntersectionObserver(
+      (entries) => { for (const e of entries) if (e.isIntersecting) { setStatsIn(true); io.disconnect(); } },
+      { threshold: 0.12, rootMargin: "0px 0px -40px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
+  const branches = useCountUp(2, statsIn);
+  const openCount = useCountUp(openNow, statsIn);
+  const depts = useCountUp(7, statsIn);
+  return (
+    <section className="cj-stats" aria-label="أرقام الشركة" ref={ref}>
+      <div className="cj-wrap cj-stats-in">
+        <div className="cj-stat"><b>{ar(branches)}</b><span>فرعان في الخدمة</span></div>
+        <div className="cj-stat"><b>{openNow ? ar(openCount) : "—"}</b><span>وظائف مفتوحة الآن</span></div>
+        <div className="cj-stat"><b>{ar(depts)}<span className="a">+</span></b><span>أقسام وتخصّصات</span></div>
+        <div className="cj-stat"><b className="a">IQD</b><span>رواتب منتظمة</span></div>
+      </div>
+    </section>
+  );
+}
 
 /* ============================ بطاقة وظيفة ============================ */
 function VacancyCard({ v, onApply, i }: { v: Vacancy; onApply: () => void; i: number }) {
@@ -579,17 +622,15 @@ export default function JobApply() {
     return () => { document.title = prev; };
   }, []);
 
-  // كشف العناصر عند التمرير (IntersectionObserver) + تشغيل عدّ الأرقام عند ظهور الشريط.
+  // كشف العناصر عند التمرير (IntersectionObserver).
   const rootRef = useRef<HTMLDivElement>(null);
-  const [statsIn, setStatsIn] = useState(false);
   useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
     // شبكة أمان: الكشف عند التمرير يُخفي المحتوى (opacity:0) ثم يُظهره المراقب. إن غاب المراقب
     // (متصفّح قديم/بيئة بلا IO) فالصفحة تبقى فارغة بصرياً ⇒ نُظهر كل شيء فوراً بدل ذلك.
     if (typeof IntersectionObserver === "undefined") {
-      root.querySelectorAll(".reveal, .cj-stats").forEach((el) => el.classList.add("in"));
-      setStatsIn(true);
+      root.querySelectorAll(".reveal").forEach((el) => el.classList.add("in"));
       return;
     }
     const io = new IntersectionObserver(
@@ -597,25 +638,29 @@ export default function JobApply() {
         for (const e of entries) {
           if (!e.isIntersecting) continue;
           e.target.classList.add("in");
-          if (e.target.classList.contains("cj-stats")) setStatsIn(true);
           io.unobserve(e.target);
         }
       },
       { threshold: 0.12, rootMargin: "0px 0px -40px 0px" },
     );
-    root.querySelectorAll(".reveal, .cj-stats").forEach((el) => io.observe(el));
+    // نراقب غير المكشوف فقط، والاعتماد على `q.data` لا على العدد: تحديثٌ يُبدّل الوظائف بعددٍ
+    // مماثل يُنشئ عُقَداً جديدة (مفتاحها v.id) لا يراقبها أحد فتبقى شفافة (opacity:0).
+    root.querySelectorAll(".reveal:not(.in)").forEach((el) => io.observe(el));
     return () => io.disconnect();
-  }, [vacancies.length, q.isLoading]);
+  }, [q.data, q.isLoading]);
 
-  const branches = useCountUp(2, statsIn);
-  const openCount = useCountUp(vacancies.length, statsIn);
-  const depts = useCountUp(7, statsIn);
-
-  // شريط التخصّصات: نُكرّر القائمة مرّتين ليكون التمرير لا نهائياً بلا قفزة (‎-50%).
-  const marquee = useMemo(() => [...SPECIALTIES, ...SPECIALTIES], []);
+  // شريط التخصّصات: نصفٌ أصليّ ونصفٌ مكرّر (الحركة تُزيح 50% فيبدو الدوران بلا قفزة).
+  // كل نصف يُكرّر القائمة مرّتين كي يتجاوز عرضُه أعرضَ شاشة (وإلا ظهرت فجوة على الشاشات الكبيرة).
+  const marquee = useMemo(() => {
+    const half = [...SPECIALTIES, ...SPECIALTIES];
+    return [...half, ...half];
+  }, []);
+  const HALF = SPECIALTIES.length * 2; // حدّ النصف الأصلي (ما بعده نسخةٌ مكرّرة تُخفى عن قارئ الشاشة)
 
   function scrollToJobs() {
-    document.getElementById("cj-jobs")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    // احترام تقليل الحركة: التمرير الناعم حركةٌ أيضاً (behavior:"smooth" يتجاوز CSS).
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    document.getElementById("cj-jobs")?.scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "start" });
   }
 
   return (
@@ -679,20 +724,13 @@ export default function JobApply() {
       <section className="cj-marquee" aria-label="تخصّصاتنا">
         <div className="cj-track">
           {marquee.map((s, i) => (
-            <span className="cj-chip" key={`${s}-${i}`} aria-hidden={i >= SPECIALTIES.length}><i />{s}</span>
+            <span className="cj-chip" key={`${s}-${i}`} aria-hidden={i >= HALF}><i />{s}</span>
           ))}
         </div>
       </section>
 
-      {/* شريط الأرقام */}
-      <section className="cj-stats" aria-label="أرقام الشركة">
-        <div className="cj-wrap cj-stats-in">
-          <div className="cj-stat"><b>{ar(branches)}</b><span>فرعان في الخدمة</span></div>
-          <div className="cj-stat"><b>{vacancies.length ? ar(openCount) : "—"}</b><span>وظائف مفتوحة الآن</span></div>
-          <div className="cj-stat"><b>{ar(depts)}<span className="a">+</span></b><span>أقسام وتخصّصات</span></div>
-          <div className="cj-stat"><b className="a">IQD</b><span>رواتب منتظمة</span></div>
-        </div>
-      </section>
+      {/* شريط الأرقام (مكوّن معزول — عدّاده لا يُعيد تصيير الصفحة) */}
+      <StatsBand openNow={vacancies.length} />
 
       {/* لماذا تعمل معنا */}
       <section className="cj-section alt" id="cj-why">
