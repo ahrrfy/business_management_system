@@ -49,7 +49,16 @@ const tabClass = cn(
   "data-[state=active]:border-primary data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-sm data-[state=active]:hover:bg-primary",
 );
 
-export function PageTabs({ tabs, ariaLabel }: { tabs: HubTab[]; ariaLabel?: string }) {
+export function PageTabs({
+  tabs,
+  ariaLabel,
+  actions,
+}: {
+  tabs: HubTab[];
+  ariaLabel?: string;
+  /** إجراءات على مستوى الوحدة كلّها (تظهر بمحاذاة شريط التبويبات، خارج tablist حفاظاً على الإتاحة). */
+  actions?: React.ReactNode;
+}) {
   const [loc, navigate] = useLocation();
   const search = useSearch();
   const me = trpc.auth.me.useQuery();
@@ -75,17 +84,21 @@ export function PageTabs({ tabs, ariaLabel }: { tabs: HubTab[]; ariaLabel?: stri
 
   return (
     <TabsPrimitive.Root value={active.value} onValueChange={selectTab} dir="rtl" className="space-y-4">
-      {/* شريط الأزرار — RTL يَبدأ يميناً؛ تمرير أفقي على الشاشات الضيّقة (٧ تبويبات) بلا كسر */}
-      <TabsPrimitive.List
-        aria-label={ariaLabel}
-        className="flex items-center gap-2 overflow-x-auto pb-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-      >
-        {visible.map((t) => (
-          <TabsPrimitive.Trigger key={t.value} value={t.value} className={tabClass}>
-            {t.label}
-          </TabsPrimitive.Trigger>
-        ))}
-      </TabsPrimitive.List>
+      {/* شريط الأزرار — RTL يَبدأ يميناً؛ تمرير أفقي على الشاشات الضيّقة (٧ تبويبات) بلا كسر.
+          الإجراءات (إن وُجدت) خارج tablist: role=tablist لا يَصحّ أن يَحوي غير tabs. */}
+      <div className="flex items-center gap-3">
+        <TabsPrimitive.List
+          aria-label={ariaLabel}
+          className="flex flex-1 items-center gap-2 overflow-x-auto pb-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {visible.map((t) => (
+            <TabsPrimitive.Trigger key={t.value} value={t.value} className={tabClass}>
+              {t.label}
+            </TabsPrimitive.Trigger>
+          ))}
+        </TabsPrimitive.List>
+        {actions && <div className="shrink-0">{actions}</div>}
+      </div>
       {visible.map((t) => {
         const Active = t.Component;
         return (

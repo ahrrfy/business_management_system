@@ -540,6 +540,8 @@ export default function JobApply() {
           <div className="cj-nav-links">
             <a className="cj-nlink" href="#cj-why">لماذا نحن</a>
             <a className="cj-nlink" href="#cj-jobs">الوظائف</a>
+            {/* الموقعان العامّان (المتجر والوظائف) يعيشان على الدومين نفسه ⇒ رابط متبادل بينهما */}
+            <a className="cj-nlink" href="/store">متجرنا</a>
             <button className="cj-btn cj-btn-accent cj-btn-sm" onClick={() => setTarget("general")}>قدّم الآن</button>
           </div>
         </div>

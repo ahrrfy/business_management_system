@@ -11,7 +11,7 @@
 // حَدّ Suspense واحد حَول `Switch` (لا حَول كل Route) ⇒ تَنقّل المَسارات يُظهر fallback
 // مَرّة واحدة فَقط أثناء جَلب chunk الوِجهة، والـAppLayout (الشَريط الجانبي/الترويسة) يَبقى
 // مَرسوماً. fallback نَفس نَصّ `Protected` ⇒ تَتابع بصري سَلِس.
-import { Suspense } from "react";
+import { Suspense, useEffect } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { RequireRole } from "@/components/RequireRole";
@@ -20,8 +20,9 @@ import { RouteFallback } from "@/components/RouteFallback";
 import { lazyWithRetry as lazy } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import Login from "@/pages/Login";
-import { Redirect, Route, Switch } from "wouter";
+import { Redirect, Route, Switch, useLocation } from "wouter";
 import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
+import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
 
 const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
 const CustomerEdit = lazy(() => import("@/pages/CustomerEdit"));
@@ -144,25 +145,42 @@ function NotFound() {
   return <div className="p-10 text-center text-muted-foreground">404 — الصفحة غير موجودة</div>;
 }
 
-/**
- * نطاقات المتجر: على هذه المضيفات، جذر «/» يفتح المتجر للزائر (غير المسجَّل) مباشرةً —
- * فـalarabiya.online = واجهة الزبون، بينما نطاق النظام (hstgr.cloud) يبقى للوحة الموظف.
- * (يعمل فقط عند تقديم التطبيق عبر هذا المضيف؛ حتى ضبط DNS يبقى بلا أثر.)
- */
-const STORE_HOSTS = ["alarabiya.online", "www.alarabiya.online"];
-function isStoreHost(): boolean {
-  return typeof window !== "undefined" && STORE_HOSTS.includes(window.location.hostname);
+/** هل نحن على الدومين العام (متجر/وظائف)؟ — السياسة كاملةً في `@/lib/siteHosts`. */
+function onPublicHost(): boolean {
+  return typeof window !== "undefined" && isPublicHost(window.location.hostname);
 }
 
-/** مسار الجذر: على نطاق المتجر ⇒ الزائر يُوجَّه للمتجر؛ المندوب ⇒ «توصيلاتي»؛ بقية الموظفين ⇒ لوحتهم. */
+/**
+ * حارس سياسة الدومينَين (قرار المالك ١٤/٧): العام للناس على alarabiya.online، والخاص بالشركة
+ * على دومين الخادم. أي مسار داخليّ فُتح على الدومين العام يُنقَل لدومين الشركة والعكس — بحفظ
+ * المسار والاستعلام (الروابط القديمة تُحوَّل لا تنكسر). على مضيف تطوير: لا أثر إطلاقاً.
+ * `replace` لا `assign` ⇒ لا يُسمَّم زرّ الرجوع بمحطة عابرة.
+ */
+function HostPolicy() {
+  const [loc] = useLocation();
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const { hostname, pathname, search, hash } = window.location;
+    const kind = resolveHostRedirect(hostname, pathname);
+    if (kind) window.location.replace(redirectTargetUrl(kind, { pathname, search, hash }));
+  }, [loc]);
+  return null;
+}
+
+/**
+ * مسار الجذر: المندوب ⇒ «توصيلاتي» (**قبل كل شيء**)؛ ثم الدومين العام ⇒ المتجر؛ وإلا لوحة الموظف.
+ *
+ * ⚠️ ترتيب الفحوص حرِج (مراجعة عدائية ١٤/٧): بداية تطبيق المناديب على Play هي «/» على الدومين
+ * العام (`twa-manifest.json: startUrl "/"`). فحصُ المضيف قبل الدور كان يقذف المندوب المسجَّل إلى
+ * متجر الزبون بلا أي رابط يعيده لشاشته (رابط «دخول الفريق» مخفيّ هناك) ⇒ تطبيقٌ منشور بلا مخرج.
+ * لذا نجلب الجلسة على المضيفَين معاً ونفحص الدور أولاً.
+ */
 function RootRoute() {
-  const storeHost = isStoreHost();
-  // نجلب الجلسة دائماً (لا storeHost فقط): يلزم لتوجيه المندوب من الجذر لشاشته الذاتية (مراجعة عدائية ١٢/٧).
+  const storeHost = onPublicHost();
   const me = trpc.auth.me.useQuery(undefined, { retry: false });
   if (me.isLoading) return <RouteFallback />;
-  if (storeHost && !me.data) return <Redirect to="/store" />;
-  // المندوب يهبط على «توصيلاتي» بدل لوحة الموظف (أينما كان الجذر) — مكمِّل لتوجيه الدخول في Login.
   if (me.data?.role === "courier") return <Redirect to="/my-deliveries" />;
+  if (storeHost) return <Redirect to="/store" />; // زائر (أو موظف دخل خطأً) على الدومين العام ⇒ المتجر
   return (
     <Shell>
       <Dashboard />
@@ -173,6 +191,7 @@ function RootRoute() {
 export default function App() {
   return (
     <ErrorBoundary>
+    <HostPolicy />
     <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />

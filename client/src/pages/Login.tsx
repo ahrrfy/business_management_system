@@ -7,6 +7,7 @@ import { InputOTP, InputOTPGroup, InputOTPSlot } from "@/components/ui/input-otp
 import { Label } from "@/components/ui/label";
 import { translateLoginError } from "@/lib/loginErrors";
 import { trpc } from "@/lib/trpc";
+import { INTERNAL_ORIGIN, isPublicHost } from "@/lib/siteHosts";
 import { REGEXP_ONLY_DIGITS } from "input-otp";
 import { useEffect, useState } from "react";
 import { useLocation } from "wouter";
@@ -55,10 +56,22 @@ export default function Login() {
     // refetch (not invalidate): force-await the fresh session so the route
     // guard sees the authenticated user immediately, avoiding a redirect race.
     await utils.auth.me.refetch();
-    // كلمة مرور مؤقتة تستوجب التغيير الفوري → وجّه لصفحة الحساب
+    const role = utils.auth.me.getData()?.role;
+    // سياسة الدومينَين: الدخول من الدومين العام مقصورٌ فعلياً على المندوب (تطبيقه مبنيّ عليه).
+    // موظّفٌ آخر دخل من هناك يحصل على جلسةٍ لا تُقرأ على دومين الشركة (الكوكي مقصور بالمضيف) ⇒
+    // كل شاشة داخلية تقذفه لدخولٍ ثانٍ. نُنهي اللبس فوراً: ننقله لدخول دومين الشركة صراحةً.
+    if (
+      role !== "courier" &&
+      typeof window !== "undefined" &&
+      isPublicHost(window.location.hostname)
+    ) {
+      window.location.replace(`${INTERNAL_ORIGIN}/login`);
+      return;
+    }
+    // كلمة مرور مؤقتة تستوجب التغيير الفوري → وجّه لصفحة الحساب (مسار مشترك ⇒ يبقى داخل تطبيق المندوب)
     if (data.mustChangePassword) {
       navigate("/account?mustChange=1");
-    } else if (utils.auth.me.getData()?.role === "courier") {
+    } else if (role === "courier") {
       // المندوب يهبط مباشرةً على شاشته الذاتية «توصيلاتي» بدل لوحة التحكم.
       navigate("/my-deliveries");
     } else {
