@@ -17,6 +17,13 @@ import {
   reconcileInventory,
   reconcileLedgerProfit,
 } from "./reconcileService";
+import { getAnomalyWatch } from "./reports/anomalyWatch";
+
+/** YYYY-MM-DD من مكوّنات محلية (نمط dateRange — لا toISOString كي لا ينزاح اليوم قرب منتصف الليل). */
+function localYmd(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
 
 function rowsOf(res: unknown): any[] {
   const data = (res as any)?.[0] ?? res;
@@ -167,6 +174,13 @@ export async function getManagementAlerts(opts: {
     null,
   );
 
+  // ── (ط) رقيب الشذوذ — مؤشرات آخر ٧ أيام (دون الكلفة/خصومات/مرتجعات/عجوزات/عكوس/تسلسل) ──
+  const anomalyP = (() => {
+    const today = new Date();
+    const weekAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6);
+    return safe(getAnomalyWatch({ from: localYmd(weekAgo), to: localYmd(today), branchId }), null);
+  })();
+
   // ── (ح) انحراف أرصدة (reconcile) — admin فقط ──
   const reconP = opts.isAdmin
     ? safe(
@@ -175,8 +189,8 @@ export async function getManagementAlerts(opts: {
       )
     : Promise.resolve(null);
 
-  const [arRes, stockRes, creditRes, shiftRes, woRes, apRes, deadRes, reconRes] = await Promise.all([
-    arP, stockP, creditP, shiftP, woP, apP, deadP, reconP,
+  const [arRes, stockRes, creditRes, shiftRes, woRes, apRes, deadRes, reconRes, anomalyRes] = await Promise.all([
+    arP, stockP, creditP, shiftP, woP, apP, deadP, reconP, anomalyP,
   ]);
 
   // (أ) أعمار الذمم — ثلاث شرائح، الأقدم أخطر.
@@ -233,6 +247,29 @@ export async function getManagementAlerts(opts: {
   const ap = apRes ? rowsOf(apRes)[0] : null;
   if (ap && Number(ap.cnt ?? 0) > 0) {
     alerts.push({ key: "ap-due", severity: "info", title: "موردون مستحقّون (دائنون لنا)", count: Number(ap.cnt), amount: toDbMoney(money(ap.total ?? 0)), href: "/ap-aging", actionLabel: "أعمار الموردين" });
+  }
+
+  // (ط) رقيب الشذوذ — عدّ المؤشرات النشطة؛ حرج عند عبثٍ بالتسلسل أو بيعٍ دون الكلفة.
+  if (anomalyRes) {
+    const k = anomalyRes.kpis;
+    const indicators =
+      (k.belowCostLines > 0 ? 1 : 0) +
+      (k.flaggedDiscountCashiers > 0 ? 1 : 0) +
+      (k.flaggedReturnSellers > 0 ? 1 : 0) +
+      (k.flaggedShortageCashiers > 0 ? 1 : 0) +
+      (k.reversedVouchers > 0 ? 1 : 0) +
+      (k.sequenceGapDays > 0 ? 1 : 0);
+    if (indicators > 0) {
+      alerts.push({
+        key: "anomaly-watch",
+        severity: k.sequenceGapDays > 0 || k.belowCostLines > 0 ? "critical" : "warning",
+        title: "مؤشرات شذوذ (آخر ٧ أيام): بيع دون الكلفة/خصومات/مرتجعات/عجوزات",
+        count: indicators,
+        amount: money(k.belowCostLoss).gt(0) ? k.belowCostLoss : null,
+        href: "/reports/anomaly-watch",
+        actionLabel: "رقيب الشذوذ",
+      });
+    }
   }
 
   // (ح) انحراف reconcile — admin فقط.
