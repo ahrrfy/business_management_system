@@ -24,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { EmpAvatar } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
+import { careersUrl } from "@/lib/siteHosts";
 import { trpc } from "@/lib/trpc";
 import {
   APPLICANT_SOURCES,
@@ -97,6 +98,11 @@ function Stars({ rating }: { rating: number | null }) {
   );
 }
 
+/**
+ * رابط معرض الوظائف الذي يُشارَك مع المتقدّمين — **الدومين العام** (alarabiya.online) لا دومين
+ * الشركة: صفحة التقديم خدمة عامة للناس (سياسة الدومينَين). كان يُبنى من `window.location.origin`
+ * فيُنسَخ رابطُ نظامٍ داخليّ ويُنشر في إعلانات التوظيف.
+ */
 const PUBLIC_PATH = "/apply";
 
 export default function Recruitment() {
@@ -118,7 +124,7 @@ export default function Recruitment() {
   const list = trpc.recruitment.list.useQuery(input);
   const rows = (list.data ?? []) as Applicant[];
 
-  const publicUrl = (typeof window !== "undefined" ? window.location.origin : "") + PUBLIC_PATH;
+  const publicUrl = careersUrl();
 
   const externalCount = rows.filter((a) => a.source === "external").length;
   const paperCount = rows.filter((a) => a.source === "paper" || a.source === "archive").length;
@@ -190,7 +196,7 @@ export default function Recruitment() {
                 <Copy className="size-3.5" /> نسخ
               </Button>
               <Button size="sm" variant="outline" asChild>
-                <a href={PUBLIC_PATH} target="_blank" rel="noopener noreferrer">
+                <a href={publicUrl} target="_blank" rel="noopener noreferrer">
                   <ExternalLink className="size-3.5" /> فتح
                 </a>
               </Button>

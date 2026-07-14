@@ -4,6 +4,7 @@ import {
   INTERNAL_ORIGIN,
   PUBLIC_ORIGIN,
   careersUrl,
+  internalUrl,
   isPublicPath,
   redirectTargetUrl,
   resolveHostRedirect,
@@ -92,14 +93,23 @@ describe("redirectTargetUrl", () => {
   });
 });
 
-describe("روابط الوجهة العامة", () => {
-  it("من مضيف إنتاجي ⇒ الدومين العام مطلقاً (هو ما يُشارَك مع الزبائن)", () => {
+describe("الروابط المُشارَكة — لا تتبع المضيف الذي يتصفّحه الموظف", () => {
+  it("الروابط العامة (متجر/وظائف) ⇒ الدومين العام مطلقاً، حتى وأنت داخل نظام الشركة", () => {
+    // العلّة التي أمسكها المالك: «نسخ رابط التقديم» كان ينسخ srv…/apply لأنه بُني من المضيف الحالي.
+    expect(careersUrl(INT)).toBe(`${PUBLIC_ORIGIN}/apply`);
+    expect(careersUrl(PUB)).toBe(`${PUBLIC_ORIGIN}/apply`);
     expect(storefrontUrl(INT)).toBe(`${PUBLIC_ORIGIN}/store`);
     expect(storefrontUrl(PUB)).toBe(`${PUBLIC_ORIGIN}/store`);
-    expect(careersUrl(INT)).toBe(`${PUBLIC_ORIGIN}/apply`);
   });
-  it("من مضيف تطوير ⇒ رابط نسبي يعمل محلياً", () => {
+  it("الروابط الداخلية (بوّابة العدّ/الكشك) ⇒ دومين الشركة مطلقاً، حتى وأنت على الدومين العام", () => {
+    expect(internalUrl("/count/AB12", PUB)).toBe(`${INTERNAL_ORIGIN}/count/AB12`);
+    expect(internalUrl("/count/AB12", INT)).toBe(`${INTERNAL_ORIGIN}/count/AB12`);
+    expect(internalUrl("", INT)).toBe(INTERNAL_ORIGIN);
+  });
+  it("على مضيف تطوير ⇒ الأصل الحالي (لا يُسرَّب دومين إنتاجي في التطوير)", () => {
+    // window غير معرَّف في بيئة الاختبار ⇒ الأصل فارغ والمسار نسبيّ (يعمل محلياً).
     expect(storefrontUrl("localhost")).toBe("/store");
     expect(careersUrl("localhost")).toBe("/apply");
+    expect(internalUrl("/count/AB12", "localhost")).toBe("/count/AB12");
   });
 });

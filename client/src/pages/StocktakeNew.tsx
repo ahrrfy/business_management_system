@@ -27,6 +27,7 @@ import { Switch } from "@/components/ui/switch";
 import { PageHeader } from "@/components/PageHeader";
 import { formatIqd } from "@/lib/money";
 import { notify } from "@/lib/notify";
+import { internalUrl } from "@/lib/siteHosts";
 import { trpc } from "@/lib/trpc";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { useMemo, useState } from "react";
@@ -924,7 +925,7 @@ export default function StocktakeNew() {
 /* ───────────── شاشة النجاح: الروابط ورموز الدخول ───────────── */
 
 function CreatedLinksScreen({ created, sessionName }: { created: CreateResult; sessionName: string }) {
-  const countLink = `${window.location.origin}/count/${created.code}`;
+  const countLink = internalUrl(`/count/${created.code}`); // بوّابة عدّ داخلية ⇒ دومين الشركة حتماً
 
   async function copyText(text: string, okMsg: string) {
     try {
