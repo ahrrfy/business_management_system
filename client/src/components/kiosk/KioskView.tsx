@@ -365,7 +365,16 @@ export default function KioskView({
           <header className="kiosk-header">
             {settings.showLogo ? (
               <div className="logo">
-                <div className="logo-mark"><span>ر.ع</span></div>
+                {/* الشعار الحقيقي (icon-512.png = نفس logo.png بحجمٍ خفيف) بدل مربّع «ر.ع» المصطنع */}
+                <div className="logo-mark">
+                  <img
+                    src="/icon-512.png"
+                    alt="شعار المكتبة العربية للطباعة والقرطاسية"
+                    width={74}
+                    height={74}
+                    onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+                  />
+                </div>
                 <div className="logo-text">
                   <strong>الرؤية العربية</strong>
                   <span>للطباعة والقرطاسية</span>
