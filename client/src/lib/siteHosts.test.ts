@@ -35,7 +35,14 @@ describe("resolveHostRedirect", () => {
   it("مسار داخليّ على الدومين العام ⇒ يُحوَّل لدومين الشركة", () => {
     expect(resolveHostRedirect(PUB, "/pos")).toBe("internal");
     expect(resolveHostRedirect(PUB, "/store-admin")).toBe("internal");
-    expect(resolveHostRedirect(PUB_WWW, "/login")).toBe("internal");
+    expect(resolveHostRedirect(PUB_WWW, "/reports")).toBe("internal");
+  });
+  it("مسارا تطبيق المناديب (TWA على الدومين العام) مشتركان — لا يُحوَّلان في أي اتجاه", () => {
+    expect(resolveHostRedirect(PUB, "/login")).toBeNull();
+    expect(resolveHostRedirect(PUB, "/my-deliveries")).toBeNull();
+    expect(resolveHostRedirect(PUB_WWW, "/my-deliveries")).toBeNull();
+    expect(resolveHostRedirect(INT, "/login")).toBeNull();
+    expect(resolveHostRedirect(INT, "/my-deliveries")).toBeNull();
   });
   it("صفحة عامة على دومين الشركة ⇒ تُحوَّل للدومين العام", () => {
     expect(resolveHostRedirect(INT, "/apply")).toBe("public");

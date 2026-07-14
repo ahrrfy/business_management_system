@@ -35,12 +35,30 @@ export const PUBLIC_HOSTS: string[] = PUBLIC_HOST ? [PUBLIC_HOST, `www.${PUBLIC_
 /** مضيفات دومين الشركة. */
 export const INTERNAL_HOSTS: string[] = INTERNAL_HOST ? [INTERNAL_HOST] : [];
 
-/** الصفحات العامة (تُخدَم على الدومين العام). أي مسار آخر = داخليّ بحكم التعريف. */
+/** الصفحات العامة (بيتها الدومين العام) — تُحوَّل إليه إن فُتحت على دومين الشركة. */
 export const PUBLIC_PATHS = ["/store", "/apply"] as const;
+
+/**
+ * مسارات **مشتركة**: مسموحة على المضيفَين ولا تُحوَّل أبداً — لأن **تطبيق المناديب على Play (TWA)
+ * مبنيٌّ على alarabiya.online** ويحوي اختصار «توصيلاتي» (`twa/twa-manifest.json`): المندوب يسجّل
+ * دخوله ويعمل **داخل** التطبيق على الدومين العام. تحويلهما لدومين الشركة كان سيقذف المندوب خارج
+ * نطاق التطبيق (شريط متصفّح + جلسة جديدة) ⇒ كسرٌ لتطبيقٍ منشور. الاستثناء مقصود وضيّق:
+ * لا يُوسَّع لأي شاشة موظفين أخرى (الكاشير/التقارير/لوحة المتجر… كلها داخلية وتُحوَّل).
+ */
+export const SHARED_PATHS = ["/login", "/my-deliveries"] as const;
+
+function matches(pathname: string, list: readonly string[]): boolean {
+  return list.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
 
 /** هل المسار صفحة عامة؟ (يشمل المسارات الفرعية مثل /store/xyz) */
 export function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+  return matches(pathname, PUBLIC_PATHS);
+}
+
+/** هل المسار مشترك بين المضيفَين (لا يُحوَّل في أي اتجاه)؟ */
+export function isSharedPath(pathname: string): boolean {
+  return matches(pathname, SHARED_PATHS);
 }
 
 export function isPublicHost(hostname: string): boolean {
@@ -59,6 +77,7 @@ export function resolveHostRedirect(hostname: string, pathname: string): "public
   const onInternal = isInternalHost(hostname);
   if (!onPublic && !onInternal) return null; // تطوير/معاينة — لا سياسة
   if (pathname === "/") return null; // الجذر يعني شيئاً مختلفاً على كل مضيف (مقصود)
+  if (isSharedPath(pathname)) return null; // تطبيق المناديب (TWA) يعيش على الدومين العام
   if (onPublic && !isPublicPath(pathname)) return "internal";
   if (onInternal && isPublicPath(pathname)) return "public";
   return null;
