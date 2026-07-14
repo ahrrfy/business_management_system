@@ -22,6 +22,9 @@ export default defineConfig({
       workbox: {
         // حزمة التطبيق أكبر من 2MiB ⇒ ارفع حدّ precache كي يُخبّأ التطبيق كاملاً (عمل دون اتصال).
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+        // ‏woff2 مُضافة للنمط الافتراضي (js/wasm/css/html): خطوط Cairo المستضافة ذاتياً في /fonts
+        // تستعملها المطبوعات (brand.ts) وصفحة الوظائف — بدونها تُجلَب من الشبكة كل زيارة وتفشل دون اتصال.
+        globPatterns: ["**/*.{js,wasm,css,html,woff2}"],
         // حقن معالج Web Push المخصَّص في SW المولَّد (دون التخلّي عن generateSW — يُبقي
         // آليّة autoUpdate وworkbox precache/runtimeCaching كما هي). الملف في public/ ⇒ يُنسَخ
         // إلى /push-handler.js حرفياً، فيصير مُتاحاً لـimportScripts داخل SW.

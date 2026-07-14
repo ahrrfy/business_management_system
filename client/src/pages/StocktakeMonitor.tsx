@@ -27,6 +27,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
+import { internalUrl } from "@/lib/siteHosts";
 import { confirm } from "@/lib/confirm";
 import { openWhatsApp } from "@/lib/whatsapp";
 import { fmtInt } from "@/lib/money";
@@ -274,7 +275,7 @@ export default function StocktakeMonitor() {
   }
 
   function remind(a: { name: string; zone: string | null; counted: number; total: number }) {
-    const link = `${window.location.origin}/count/${s.code}`;
+    const link = internalUrl(`/count/${s.code}`); // بوّابة عدّ داخلية ⇒ دومين الشركة حتماً
     openWhatsApp(
       null,
       [
@@ -291,7 +292,7 @@ export default function StocktakeMonitor() {
   }
 
   async function copyCountLink() {
-    const link = `${window.location.origin}/count/${s.code}`;
+    const link = internalUrl(`/count/${s.code}`); // بوّابة عدّ داخلية ⇒ دومين الشركة حتماً
     const ok = await copyText(link);
     if (ok) notify.ok("نُسخ رابط بوابة العدّ", link);
     else notify.warn("تعذّر النسخ — انسخه يدوياً", link);
@@ -709,7 +710,7 @@ export default function StocktakeMonitor() {
               variant="outline"
               onClick={async () => {
                 if (!newPin) return;
-                const link = `${window.location.origin}/count/${s.code}`;
+                const link = internalUrl(`/count/${s.code}`); // بوّابة عدّ داخلية ⇒ دومين الشركة حتماً
                 const ok = await copyText(`رابط العدّ: ${link}\nPIN: ${newPin.pin}`);
                 notify[ok ? "ok" : "warn"](ok ? "نُسخ الرابط مع الرمز" : "تعذّر النسخ — انسخه يدوياً");
               }}

@@ -74,13 +74,16 @@
     padding: 0 64px; border-bottom: 1px solid var(--border);
   }
   .logo { display: flex; align-items: center; gap: 20px; }
+  /* إطار الشعار الحقيقي (صورة) — كان مربّعاً متدرّجاً بحرفَي «ر.ع» مصطنعَين.
+     overflow:hidden إلزاميّ: خلفية ملف الشعار بيضاء معتمة وborder-radius لا يقصّ الأبناء ⇒ بدونه
+     يظهر مربّع أبيض حادّ الزوايا (بارزٌ في الوضع الداكن للكشك). */
   .logo-mark {
     width: 74px; height: 74px; border-radius: 18px;
-    background: linear-gradient(150deg, var(--brand), color-mix(in srgb, var(--brand) 60%, #000 22%));
+    background: #fff; border: 1px solid var(--border);
     display: flex; align-items: center; justify-content: center;
-    color: #fff; box-shadow: var(--shadow-md);
+    padding: 6px; overflow: hidden; box-shadow: var(--shadow-md);
   }
-  .logo-mark span { font-weight: 900; font-size: 30px; letter-spacing: -1px; }
+  .logo-mark img { width: 100%; height: 100%; object-fit: contain; display: block; }
   .logo-text { display: flex; flex-direction: column; line-height: 1.18; }
   .logo-text strong { font-size: 34px; font-weight: 800; }
   .logo-text span { font-size: 22px; color: var(--muted-fg); font-weight: 500; }

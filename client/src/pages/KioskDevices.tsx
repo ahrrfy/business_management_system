@@ -16,12 +16,15 @@ import { downloadInstallerCmd, kioskUrl } from "@/lib/kioskLauncher";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
+import { internalUrl } from "@/lib/siteHosts";
 import { Download, X } from "lucide-react";
 import { useState } from "react";
 
 type Reveal = { deviceId: number; label: string; branchName: string | null; rawToken: string };
 
-const origin = typeof window !== "undefined" ? window.location.origin : "";
+// أصل الخادم المحقون في مُشغّل الكشك: **دومين الشركة** حتماً (سياسة الدومينَين) — لا المضيف
+// الذي صادف أن المدير يتصفّحه، فالجهاز يعمل بلا إشراف ولا يصحّ أن يمرّ بتحويل بين الدومينَين.
+const origin = internalUrl();
 
 function copy(text: string, msg: string) {
   navigator.clipboard?.writeText(text).then(() => notify.ok(msg)).catch(() => notify.err("تعذّر النسخ"));

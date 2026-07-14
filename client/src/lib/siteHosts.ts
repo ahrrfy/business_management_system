@@ -106,15 +106,34 @@ export function redirectTargetUrl(
   return `${origin}${loc.pathname}${loc.search}${loc.hash}`;
 }
 
+const currentHost = (): string => (typeof window !== "undefined" ? window.location.hostname : "");
+const currentOrigin = (): string => (typeof window !== "undefined" ? window.location.origin : "");
+const isKnownHost = (hostname: string): boolean => isPublicHost(hostname) || isInternalHost(hostname);
+
 /**
- * رابط المتجر للزبون: على مضيف معروف (إنتاج) ⇒ الدومين العام دائماً (هو ما يُشارَك مع الزبائن)؛
- * على مضيف تطوير ⇒ رابط نسبي كي يعمل محلياً.
+ * أصل الروابط **العامة** التي تُشارَك مع الناس (تُنسَخ/تُرسَل/تُطبَع): على مضيف إنتاجي ⇒ الدومين
+ * العام **دائماً** — حتى لو كان الموظف يتصفّح دومين الشركة، فالرابط المنشور للناس يجب أن يحمل
+ * `alarabiya.online`. على مضيف تطوير ⇒ الأصل الحالي (كي تعمل الروابط محلياً).
  */
-export function storefrontUrl(hostname: string = typeof window !== "undefined" ? window.location.hostname : ""): string {
-  return isPublicHost(hostname) || isInternalHost(hostname) ? `${PUBLIC_ORIGIN}/store` : "/store";
+function publicOriginFor(hostname: string): string {
+  return isKnownHost(hostname) ? PUBLIC_ORIGIN : currentOrigin();
 }
 
-/** رابط صفحة الوظائف العامة — بنفس منطق رابط المتجر. */
-export function careersUrl(hostname: string = typeof window !== "undefined" ? window.location.hostname : ""): string {
-  return isPublicHost(hostname) || isInternalHost(hostname) ? `${PUBLIC_ORIGIN}/apply` : "/apply";
+/**
+ * أصل الروابط **الداخلية** التي تُشارَك مع الموظفين (بوّابة الجرد، مُشغّل الكشك…): على مضيف
+ * إنتاجي ⇒ دومين الشركة **دائماً** (لا يتبع المضيف الذي صادف أن الموظف يتصفّحه)؛ وفي التطوير ⇒
+ * الأصل الحالي.
+ */
+export function internalUrl(path = "", hostname: string = currentHost()): string {
+  return `${isKnownHost(hostname) ? INTERNAL_ORIGIN : currentOrigin()}${path}`;
+}
+
+/** رابط المتجر للزبون (يُشارَك/يُفتح) — الدومين العام. */
+export function storefrontUrl(hostname: string = currentHost()): string {
+  return `${publicOriginFor(hostname)}/store`;
+}
+
+/** رابط صفحة الوظائف العامة (يُنسَخ ويُنشر في إعلانات التوظيف) — الدومين العام. */
+export function careersUrl(hostname: string = currentHost()): string {
+  return `${publicOriginFor(hostname)}/apply`;
 }
