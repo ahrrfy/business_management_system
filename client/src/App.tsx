@@ -104,6 +104,7 @@ const ItemLedger = lazy(() => import("@/pages/ItemLedger"));
 const AbcAnalysis = lazy(() => import("@/pages/AbcAnalysis"));
 const TreasuryReport = lazy(() => import("@/pages/TreasuryReport"));
 const ExpensesReport = lazy(() => import("@/pages/ExpensesReport"));
+const AnomalyWatch = lazy(() => import("@/pages/AnomalyWatch"));
 const CashOrphanReport = lazy(() => import("@/pages/CashOrphanReport"));
 const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
 const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
@@ -313,6 +314,7 @@ export default function App() {
       <Route path="/reports/abc"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AbcAnalysis /></RequireRole></Shell></Route>
       <Route path="/reports/treasury"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><TreasuryReport /></RequireRole></Shell></Route>
       <Route path="/reports/expenses"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ExpensesReport /></RequireRole></Shell></Route>
+      <Route path="/reports/anomaly-watch"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AnomalyWatch /></RequireRole></Shell></Route>
       <Route path="/reports/cash-orphans"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CashOrphanReport /></RequireRole></Shell></Route>
       <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
       <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
