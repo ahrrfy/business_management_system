@@ -251,10 +251,10 @@ function SideRails({ banners }: { banners: BannerItem[] }) {
   const left = banners.filter((_, i) => i % 2 === 1).slice(0, 1);
   const rail = (list: BannerItem[], sideStyle: CSSProperties) =>
     list.length > 0 && (
-      <div className="fixed top-1/2 z-10 hidden min-w-[208px] max-w-56 w-[13vw] -translate-y-1/2 flex-col gap-3 min-[1600px]:flex" style={sideStyle} aria-hidden={false}>
+      <div className="fixed top-1/2 z-10 hidden min-w-56 max-w-64 w-[15vw] -translate-y-1/2 flex-col gap-3 min-[1600px]:flex" style={sideStyle} aria-hidden={false}>
         {list.map((b) => {
           return (
-            <div key={b.id} className="relative aspect-[2/5] w-full overflow-hidden rounded-2xl shadow-md ring-1 ring-slate-200/60">
+            <div key={b.id} className="relative aspect-[1/2] w-full overflow-hidden rounded-2xl shadow-md ring-1 ring-slate-200/60">
               <BannerFrame banner={b} slot="SIDE" />
             </div>
           );
@@ -277,7 +277,7 @@ function SideRails({ banners }: { banners: BannerItem[] }) {
  */
 function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
   return (
-    <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-2xl shadow-sm sm:aspect-[6/1]">
+    <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-2xl shadow-sm">
       <BannerFrame banner={banner} slot="INLINE" />
     </div>
   );
@@ -293,7 +293,7 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
   const active = cur % banners.length;
   return (
     <section className="mb-4">
-      <div className="relative aspect-[2/1] overflow-hidden rounded-3xl shadow-md sm:aspect-[16/5]">
+      <div className="relative aspect-[2/1] overflow-hidden rounded-3xl shadow-md">
         {banners.map((b, i) => {
           const inner = <BannerFrame banner={b} slot="HERO" active={i === active} />;
           return (

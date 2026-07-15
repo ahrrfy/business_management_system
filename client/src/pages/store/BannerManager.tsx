@@ -3,7 +3,7 @@
  * إضافة/تعديل/تفعيل/حذف بنر بعنوان + صورة + زرّ (CTA) + ترتيب + نافذة تاريخ + **موضع**
  * (رئيسي/جانبي طولي/فاصل بين المنتجات). تظهر فوراً في المتجر.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ImagePlus, Loader2, Pencil, Plus, Save, Trash2, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
@@ -13,24 +13,45 @@ import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 type Placement = "HERO" | "SIDE" | "INLINE";
 type RenderMode = "SMART_CROP" | "PRESERVE_FULL" | "LAYERED";
 
-/** مواصفات كل موضع: تسمية للمدير + مقاس الصورة الموصى به (يُبنى عليه العرض في المتجر). */
-const PLACEMENTS: Record<Placement, { label: string; hint: string; badge: string }> = {
+/** هذه النسب هي مساحة العرض الفعلية في المتجر، وليست مجرد مقاسات إرشادية. */
+const PLACEMENTS: Record<Placement, { label: string; hint: string; mobileHint?: string; badge: string; ratio: number }> = {
   HERO: {
     label: "رئيسي — كاروسيل أعلى المتجر",
-    hint: "المقاس المثالي ١٦٠٠×٥٠٠ بكسل (نسبة ٣.٢:١ تقريباً) — صورة أفقية، تُضغط تلقائياً",
+    hint: "مساحة العرض الفعلية: ١٦٠٠×٨٠٠ بكسل (نسبة ٢:١) — صمّم عليها لكي يملأ البنر كاملاً بلا قص أو تمويه",
+    mobileHint: "١٢٠٠×٦٠٠ للهاتف (٢:١) — نفس نسبة سطح المكتب",
     badge: "رئيسي",
+    ratio: 2,
   },
   SIDE: {
     label: "جانبي طولي — جوانب الشاشات العريضة",
-    hint: "المقاس المثالي ٦٠٠×١٢٠٠ بكسل (نسبة ١:٢ طولية) — يظهر على الشاشات العريضة فقط، تُضغط تلقائياً",
+    hint: "مساحة العرض الفعلية: ٦٠٠×١٢٠٠ بكسل (نسبة ١:٢ طولية) — يظهر كبيراً على الشاشات العريضة فقط",
     badge: "جانبي",
+    ratio: 1 / 2,
   },
   INLINE: {
     label: "فاصل تسويقي — شريط عرضي بين صفوف المنتجات",
-    hint: "المقاس المثالي ١٢٠٠×٢٠٠ بكسل (نسبة ٦:١ عريضة) — يظهر كل عشرة منتجات تقريباً، تُضغط تلقائياً",
+    hint: "مساحة العرض الفعلية: ١٥٠٠×٥٠٠ بكسل (نسبة ٣:١) — يظهر بين صفوف المنتجات بلا ضغط أو أشرطة جانبية",
+    mobileHint: "١٢٠٠×٤٠٠ للهاتف (٣:١) — نفس نسبة سطح المكتب",
     badge: "فاصل",
+    ratio: 3,
   },
 };
+
+type ImageDimensions = { width: number; height: number };
+
+function useImageDimensions(source: string | undefined) {
+  const [dimensions, setDimensions] = useState<ImageDimensions | null>(null);
+  useEffect(() => {
+    if (!source) { setDimensions(null); return; }
+    setDimensions(null);
+    const image = new Image();
+    image.onload = () => setDimensions({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => setDimensions(null);
+    image.src = source;
+    return () => { image.onload = null; image.onerror = null; };
+  }, [source]);
+  return dimensions;
+}
 
 interface FormState {
   id: number | null;
@@ -69,6 +90,12 @@ export default function BannerManager() {
 
   const banners = listQ.data ?? [];
   const saving = createM.isPending || updateM.isPending;
+  const imageSource = form?.images[0]?.dataUrl ?? form?.images[0]?.url;
+  const imageDimensions = useImageDimensions(imageSource);
+  const selectedPlacement = form ? PLACEMENTS[form.placement] : null;
+  const sourceRatio = imageDimensions ? imageDimensions.width / imageDimensions.height : null;
+  const hasRatioMismatch = sourceRatio != null && selectedPlacement != null
+    && Math.abs(Math.log(sourceRatio / selectedPlacement.ratio)) > 0.12;
 
   function edit(b: (typeof banners)[number]) {
     setForm({
@@ -197,9 +224,16 @@ export default function BannerManager() {
           <div className="mt-3">
             <span className="mb-1 flex items-center gap-1.5 text-sm font-medium text-muted-foreground"><ImagePlus aria-hidden className="size-4" /> صورة البنر</span>
             <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={1} singlePrimary={false} hint={PLACEMENTS[form.placement].hint} />
+            {imageDimensions && selectedPlacement && (
+              <div className={`mt-2 rounded-xl border px-3 py-2 text-xs ${hasRatioMismatch ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200" : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200"}`}>
+                الصورة المرفوعة: {imageDimensions.width}×{imageDimensions.height} ({sourceRatio!.toFixed(2)}:١). {hasRatioMismatch
+                  ? <>لا تطابق مساحة «{selectedPlacement.badge}» ({selectedPlacement.ratio === 0.5 ? "١:٢" : `${selectedPlacement.ratio}:١`})؛ سيُحفظ التصميم كاملاً لكن قد تظهر خلفية ممتدة. لأفضل نتيجة ارفع صورة بالمقاس المقترح أو غيّر الموضع.</>
+                  : <>مطابقة لمساحة «{selectedPlacement.badge}»؛ ستملأ الإطار كاملاً بلا قص أو تمويه.</>}
+              </div>
+            )}
             {form.placement !== "SIDE" && <div className="mt-3">
               <span className="mb-1 block text-sm font-medium text-muted-foreground">نسخة الهاتف (اختيارية، موصى بها للحملات النصية)</span>
-              <ImageUploader value={form.mobileImages} onChange={(imgs) => setForm({ ...form, mobileImages: imgs })} maxItems={1} singlePrimary={false} hint={form.placement === "HERO" ? "1200×600 للهاتف (2:1)" : "1080×360 للهاتف (3:1)"} />
+              <ImageUploader value={form.mobileImages} onChange={(imgs) => setForm({ ...form, mobileImages: imgs })} maxItems={1} singlePrimary={false} hint={PLACEMENTS[form.placement].mobileHint!} />
             </div>}
           </div>
           <button onClick={save} disabled={saving} className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
