@@ -56,6 +56,7 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0073_promotion_store_managed.sql",
   // ١٣/٧/٢٦: موضع البنر (HERO/SIDE/INLINE) — enum بعمود جديد محروس idempotently.
   "drizzle/migrations/0074_banner_placement.sql",
+  "drizzle/migrations/0076_banner_smart_rendering.sql",
 ];
 
 const url = process.env.DATABASE_URL;

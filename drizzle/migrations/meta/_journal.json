@@ -533,6 +533,13 @@
       "when": 1784027405722,
       "tag": "0075_stock_transfers_two_step",
       "breakpoints": true
+    },
+    {
+      "idx": 76,
+      "version": "5",
+      "when": 1784160000000,
+      "tag": "0076_banner_smart_rendering",
+      "breakpoints": true
     }
   ]
 }

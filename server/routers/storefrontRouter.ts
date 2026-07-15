@@ -16,6 +16,7 @@ import { createOnlineOrder, trackOnlineOrder } from "../services/onlineOrderServ
 import { retryOnDup } from "../lib/retryDup";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
+import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
 
 export const storefrontRouter = router({
   /** فئات المتجر (لأشرطة الفلترة). */
@@ -30,6 +31,15 @@ export const storefrontRouter = router({
   banners: publicProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(({ input }) => listActiveBanners(input?.branchId)),
+
+  /** مؤشرات مجمّعة للبنر فقط؛ لا تحفظ هوية العميل أو عنوانه. */
+  trackBanner: publicProcedure
+    .input(z.object({
+      bannerId: z.number().int().positive(),
+      placement: z.enum(["HERO", "SIDE", "INLINE"]),
+      event: z.enum(["IMPRESSION", "CLICK"]),
+    }))
+    .mutation(({ input }) => recordBannerMetric(input)),
 
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
   settings: publicProcedure.query(() => getStoreSettings()),
