@@ -27,7 +27,11 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
 const ACCESS_VALUES: AccessLevel[] = ["FULL", "READ", "NONE"];
-const MODULE_KEYS = new Set(PERMISSION_MODULES.map((m) => m.key));
+// `customers` remains a storage/API compatibility key for existing custom roles.
+// It is intentionally absent from PERMISSION_MODULES so the UI exposes CRM as the
+// single functional owner instead of presenting a second, scattered module.
+const LEGACY_PERMISSION_KEYS = ["customers"] as const;
+const MODULE_KEYS = new Set([...PERMISSION_MODULES.map((m) => m.key), ...LEGACY_PERMISSION_KEYS]);
 const BUILTIN_KEYS = new Set<string>(ALL_ROLES);
 /** مفاتيح الأدوار المبنية محجوزة — لا يجوز لدور مخصّص أن ينتحلها. */
 
@@ -81,6 +85,15 @@ function normalizePermissions(input: RolePermissions | null | undefined): Permis
   for (const m of PERMISSION_MODULES) {
     const v = input?.[m.key];
     out[m.key] = ACCESS_VALUES.includes(v as AccessLevel) ? (v as AccessLevel) : "NONE";
+  }
+  const legacyCustomers = input?.customers;
+  out.customers = ACCESS_VALUES.includes(legacyCustomers as AccessLevel)
+    ? (legacyCustomers as AccessLevel)
+    : "NONE";
+  // Old clients and stored payloads may know only `customers`; carry that level
+  // into CRM when no explicit CRM decision exists.
+  if (!ACCESS_VALUES.includes(input?.crm as AccessLevel) && ACCESS_VALUES.includes(legacyCustomers as AccessLevel)) {
+    out.crm = legacyCustomers as AccessLevel;
   }
   // ارفض مفاتيح غير معروفة صراحةً (لا تتجاهلها بصمت — قد تدلّ على خطأ عقد).
   for (const k of Object.keys(input ?? {})) {

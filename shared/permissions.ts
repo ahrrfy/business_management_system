@@ -207,6 +207,9 @@ export function resolvePermissions(
   // بهذا لا تمنح الترقية وصولاً لعميل حُجب عنه العملاء سابقاً، مع إزالة الوحدة المكررة من المصفوفة.
   const legacyCustomer = override.customers;
   const explicitCrm = override.crm;
+  if (legacyCustomer === "FULL" || legacyCustomer === "READ" || legacyCustomer === "NONE") {
+    out.customers = legacyCustomer;
+  }
   if (!(explicitCrm === "FULL" || explicitCrm === "READ" || explicitCrm === "NONE") &&
       (legacyCustomer === "FULL" || legacyCustomer === "READ" || legacyCustomer === "NONE")) {
     out.crm = legacyCustomer;
@@ -225,6 +228,12 @@ export function diffFromTemplate(
   const base = ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
   const diff: PermissionMap = {};
   let changed = 0;
+  const legacyCustomers = permissions.customers;
+  if ((legacyCustomers === "FULL" || legacyCustomers === "READ" || legacyCustomers === "NONE") &&
+      legacyCustomers !== base.customers) {
+    diff.customers = legacyCustomers;
+    changed++;
+  }
   for (const m of PERMISSION_MODULES) {
     const v = permissions[m.key];
     if (v && v !== base[m.key]) { diff[m.key] = v; changed++; }
