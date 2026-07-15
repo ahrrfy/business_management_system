@@ -102,7 +102,9 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
   // المتجر مغلق مؤقتاً (إعداد الموظف) ⇒ لا يُقبل طلب (إنفاذ خادمي فوق حجب الواجهة).
   const storeSettings = await getStoreSettings();
   if (!storeSettings.isOpen) throw new TRPCError({ code: "BAD_REQUEST", message: "المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً" });
-  const branchId = await resolveStorefrontBranchId(input.branchId);
+  // A public order always targets the store branch configured by the business.
+  // Never let a caller route an order to an arbitrary branch through the public API.
+  const branchId = await resolveStorefrontBranchId();
 
   return withTx(async (tx) => {
     // ① idempotency: أعِد الطلب نفسه إن تكرّر المفتاح (بلا إنشاء ثانٍ).
@@ -146,6 +148,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
       unitPrice: string;
       lineTotal: string;
     }[] = [];
+    const requestedBaseByVariant = new Map<number, number>();
     const todayYmd = todayYmdBaghdad();
     for (const line of input.lines) {
       const qty = Math.floor(line.quantity);
@@ -164,6 +167,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
             unitActive: productUnits.isActive,
             variantActive: productVariants.isActive,
             productActive: products.isActive,
+            showInStore: products.showInStore,
             isService: products.isService,
             price: productPrices.price,
             stockQty: branchStock.quantity,
@@ -185,6 +189,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
       if (
         !row ||
         !row.productActive ||
+        !row.showInStore ||
         row.isService ||
         !row.variantActive ||
         !row.unitActive ||
@@ -213,8 +218,14 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
       const unitPrice = round2(retail.minus(discount).lt(0) ? money(0) : retail.minus(discount));
       const lineTotal = round2(unitPrice.times(qty));
       const baseQuantity = Number(money(qty).times(row.conversionFactor ?? 1).toFixed(0));
+      const variantId = Number(row.variantId);
+      const requestedBase = (requestedBaseByVariant.get(variantId) ?? 0) + baseQuantity;
+      if (Number(row.stockQty ?? 0) < requestedBase) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `«${row.productName}» لا تتوفر منه الكمية المطلوبة حالياً` });
+      }
+      requestedBaseByVariant.set(variantId, requestedBase);
       items.push({
-        variantId: Number(row.variantId),
+        variantId,
         productUnitId: Number(row.productUnitId),
         quantity: qty,
         baseQuantity,

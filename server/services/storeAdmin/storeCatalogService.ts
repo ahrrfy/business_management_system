@@ -4,7 +4,7 @@
  * الذرّي — لا كتابة branchStock عارية). الصورة على مستوى المنتج (primary). كلّه بوّابة store.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { withTx } from "../tx";
@@ -127,6 +127,7 @@ export async function listStoreCatalog(
     .innerJoin(productVariants, eq(productVariants.productId, products.id))
     .innerJoin(productUnits, eq(productUnits.variantId, productVariants.id))
     .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")))
+    .innerJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId), gt(branchStock.quantity, 0)))
     .where(and(...sellableConds));
 
   return { rows, total: Number(cnt?.n ?? 0), sellableTotal: Number(sellableCnt?.n ?? 0) };

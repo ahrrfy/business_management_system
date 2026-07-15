@@ -24,14 +24,10 @@ export const storefrontRouter = router({
   categories: publicProcedure.query(() => storefrontCategories()),
 
   /** العروض والخصومات الفعّالة اليوم (بنرات مشتقّة تلقائياً). */
-  offers: publicProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
-    .query(({ input }) => storefrontOffers(input?.branchId)),
+  offers: publicProcedure.query(() => storefrontOffers()),
 
   /** البنرات الترويجية التي يديرها الموظف (لوحة hPanel) — فعّالة فقط. */
-  banners: publicProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
-    .query(({ input }) => listActiveBanners(input?.branchId)),
+  banners: publicProcedure.query(() => listActiveBanners()),
 
   /** مؤشرات مجمّعة للبنر فقط؛ لا تحفظ هوية العميل أو عنوانه. */
   trackBanner: publicProcedure
@@ -54,7 +50,6 @@ export const storefrontRouter = router({
   catalog: publicProcedure
     .input(
       z.object({
-        branchId: z.number().int().positive().optional(),
         categoryId: z.number().int().positive().nullish(),
         search: z.string().max(64).optional(),
         limit: z.number().int().min(1).max(120).default(60),
@@ -62,7 +57,6 @@ export const storefrontRouter = router({
     )
     .query(({ input }) =>
       storefrontCatalog({
-        branchId: input.branchId,
         categoryId: input.categoryId ?? null,
         search: input.search,
         limit: input.limit,
@@ -71,13 +65,13 @@ export const storefrontRouter = router({
 
   /** صفحة منتج واحد (تشمل محتويات البكج إن كان بكجاً). */
   product: publicProcedure
-    .input(z.object({ productId: z.number().int().positive(), branchId: z.number().int().positive().optional() }))
-    .query(({ input }) => storefrontProduct(input.productId, input.branchId)),
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => storefrontProduct(input.productId)),
 
   /** منتجات ذات صلة (cross-sell «يُشترى معه») — نفس الفئة، متوفّرة. */
   related: publicProcedure
-    .input(z.object({ productId: z.number().int().positive(), branchId: z.number().int().positive().optional() }))
-    .query(({ input }) => storefrontRelated(input.productId, input.branchId)),
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => storefrontRelated(input.productId)),
 
   /**
    * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.
@@ -87,7 +81,6 @@ export const storefrontRouter = router({
   createOrder: publicProcedure
     .input(
       z.object({
-        branchId: z.number().int().positive().optional(),
         customerName: z.string().trim().min(1).max(255),
         customerPhone: z.string().trim().min(5).max(20),
         governorate: z.string().trim().min(1).max(40),

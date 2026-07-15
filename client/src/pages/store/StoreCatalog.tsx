@@ -53,7 +53,7 @@ export default function StoreCatalog() {
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="flex items-center gap-2 text-lg font-bold"><Boxes aria-hidden className="size-5 text-primary" /> الكتالوج والعرض</h2>
         <span className="text-xs text-muted-foreground">
-          {fmtInt(total)} منتج بالكتالوج (يشمل المعطّل/المخفيّ) · <span className="font-bold text-foreground">{fmtInt(listQ.data?.sellableTotal ?? 0)}</span> ظاهر فعلياً للزبون في المتجر
+          {fmtInt(total)} منتج بالكتالوج (يشمل المعطّل/المخفيّ) · <span className="font-bold text-foreground">{fmtInt(listQ.data?.sellableTotal ?? 0)}</span> قابل للشراء الآن في المتجر
         </span>
       </div>
 
@@ -112,8 +112,8 @@ export default function StoreCatalog() {
                     {p.categoryName ?? "بلا قسم"}
                     {p.retailPrice != null && <> · <span className="font-medium tabular-nums text-foreground">{fmt(p.retailPrice)}</span> د.ع</>}
                   </p>
-                  <button onClick={() => p.variantId && setStockFor({ productId: p.productId, variantId: p.variantId, name: p.name, stockBase: p.stockBase })} disabled={!p.variantId} className={`mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 ${stockLow ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
-                    <Boxes aria-hidden className="size-3" /> المخزون: {fmtInt(p.stockBase)}{stockLow && " — نافد"}
+                  <button onClick={() => p.variantId && setStockFor({ productId: p.productId, variantId: p.variantId, name: p.name, stockBase: p.stockBase })} disabled={!p.variantId} title={stockLow ? "لن يظهر هذا المنتج في واجهة الزبون حتى يتوفر رصيد" : "متاح للشراء في واجهة الزبون"} className={`mt-1 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-bold transition hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 ${stockLow ? "text-rose-600 dark:text-rose-400" : "text-emerald-600 dark:text-emerald-400"}`}>
+                    <Boxes aria-hidden className="size-3" /> المخزون: {fmtInt(p.stockBase)}{stockLow ? " — نافد (مخفي عن الزبون)" : " — متاح للشراء"}
                   </button>
                 </div>
 
