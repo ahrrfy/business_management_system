@@ -43,7 +43,7 @@ async function seedItem(orderId: number, variantId: number, baseQty: number, tot
 
 beforeEach(async () => {
   orderSeq = 0;
-  await truncateTables(["onlineOrderItems", "onlineOrders", "productVariants", "products", "customers", "branches", "users"]);
+  await truncateTables(["onlineOrderItems", "onlineOrders", "storeConversionDailyMetrics", "productVariants", "products", "customers", "branches", "users"]);
   await db().insert(s.branches).values([
     { id: STORE, name: "الرئيسي", code: "MAIN", type: "MAIN" },
     { id: OTHER, name: "المبيعات", code: "SALES", type: "SALES" },
@@ -55,6 +55,22 @@ beforeEach(async () => {
     { id: 1, productId: 1, sku: "V1", costPrice: "0" },
     { id: 2, productId: 2, sku: "V2", costPrice: "0" },
   ]);
+});
+
+describe("getStoreAnalytics conversion funnel", () => {
+  it("aggregates only the requested branch and date window", async () => {
+    await db().insert(s.storeConversionDailyMetrics).values([
+      { branchId: STORE, metricDate: "2026-07-02", productViews: 100, cartAdds: 25, checkoutStarts: 12, completedOrders: 9 },
+      { branchId: STORE, metricDate: "2026-07-05", productViews: 50, cartAdds: 10, checkoutStarts: 4, completedOrders: 3 },
+      { branchId: OTHER, metricDate: "2026-07-02", productViews: 999, cartAdds: 999, checkoutStarts: 999, completedOrders: 999 },
+      { branchId: STORE, metricDate: "2026-06-20", productViews: 999, cartAdds: 999, checkoutStarts: 999, completedOrders: 999 },
+    ]);
+    const a = await getStoreAnalytics({ scopedBranchId: STORE, fromYmd: FROM, toYmd: TO });
+    expect(a.conversionFunnel).toMatchObject({ productViews: 150, cartAdds: 35, checkoutStarts: 16, completedOrders: 12 });
+    expect(a.conversionFunnel.viewToCartRate).toBeCloseTo(35 / 150);
+    expect(a.conversionFunnel.cartToCheckoutRate).toBeCloseTo(16 / 35);
+    expect(a.conversionFunnel.checkoutToOrderRate).toBeCloseTo(12 / 16);
+  });
 });
 
 /** سيناريو أساسيّ على فرع المتجر داخل النافذة + طلب فرعٍ آخر + طلب خارج النطاق. */

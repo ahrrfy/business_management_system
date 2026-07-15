@@ -202,6 +202,20 @@ async function startServer() {
     })
   );
 
+  // مؤشرات البنرات/التحويل عامة وبلا هوية، لكنها كتابة؛ حدّ مستقل يمنع تضخيم
+  // لوحة التسويق حتى مع دفعات tRPC أو سكربتات خارجية، من دون تعطيل التصفح الطبيعي.
+  app.use(
+    "/api/trpc",
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: Number(process.env.STOREFRONT_ANALYTICS_RATE_LIMIT_MAX ?? 120),
+      standardHeaders: "draft-7",
+      legacyHeaders: false,
+      skip: (req) => !req.path.includes("storefront.trackBanner") && !req.path.includes("storefront.trackConversion"),
+      handler: rateLimitHandler("طلبات قياس كثيرة، انتظر قليلاً ثم أعد المحاولة."),
+    })
+  );
+
   // حدّ صارم على دخول بوابة العدّ الخارجية (تخمين PIN) — فوق قفل المحاولات في القاعدة.
   app.use(
     "/api/trpc",
@@ -295,7 +309,11 @@ async function startServer() {
   // ضمن طلب واحد قبل اصطدامه بحدّ المعدّل. الحدّ التالي للنقاط العامة الحرجة لا يسمح بأكثر من
   // نداء واحد لكلّ طلب HTTP، فحدّ المعدّل القائم يعمل بدقّته الحقيقية بلا تمييع.
   app.use("/api/trpc", (req, res, next) => {
-    const PUBLIC_SENSITIVE = ["auth.login", "count.auth", "kiosk.deviceLogin", "recruitment.submit", "platformAdmin.login"];
+    const PUBLIC_SENSITIVE = [
+      "auth.login", "count.auth", "kiosk.deviceLogin", "recruitment.submit", "platformAdmin.login",
+      // أحداث القياس كتابة علنية؛ نمنع حشو عشرات العدادات في دفعة HTTP واحدة.
+      "storefront.trackBanner", "storefront.trackConversion",
+    ];
     // مسار البَتش يبدأ بـ"/api/trpc/x," مع فاصلة بين أسماء الإجراءات الموحَّدة.
     const path = req.path || "";
     if (path.includes(",")) {

@@ -4,7 +4,7 @@
  * قُمع الحالات + أعلى المنتجات + التوزيع الجغرافيّ. إيرادٌ فقط — بلا تكلفة/ربح (خطّ §٦).
  */
 import { useMemo, useState } from "react";
-import { BarChart3, Loader2, MapPin, PackageCheck, ShoppingBag, TrendingUp, Trophy, XCircle } from "lucide-react";
+import { BarChart3, Eye, Loader2, MapPin, PackageCheck, ShoppingBag, ShoppingCart, TrendingUp, Trophy, XCircle } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { fmt, fmtInt } from "@/lib/money";
 
@@ -62,7 +62,7 @@ export default function StoreAnalytics() {
 
       {q.isLoading ? (
         <div className="flex justify-center py-20 text-muted-foreground"><Loader2 aria-hidden className="size-6 animate-spin" /></div>
-      ) : !d || d.kpis.totalOrders === 0 ? (
+      ) : !d || (d.kpis.totalOrders === 0 && d.conversionFunnel.productViews === 0 && d.conversionFunnel.cartAdds === 0 && d.conversionFunnel.checkoutStarts === 0) ? (
         <div className="rounded-2xl border border-dashed border-border py-20 text-center text-sm text-muted-foreground">
           <BarChart3 aria-hidden className="mx-auto mb-2 size-8 opacity-40" />
           لا طلبات في هذه الفترة — ستظهر التحليلات مع أوّل طلب.
@@ -77,6 +77,8 @@ export default function StoreAnalytics() {
             <Kpi icon={PackageCheck} label="نسبة التسليم" value={pct(d.kpis.fulfillmentRate)} tone="positive" hint={`${fmtInt(d.kpis.deliveredOrders)} مُسلَّم`} />
             <Kpi icon={XCircle} label="نسبة الإلغاء" value={pct(d.kpis.cancellationRate)} tone={d.kpis.cancellationRate > 0.2 ? "danger" : "muted"} hint={`${fmtInt(d.kpis.cancelledOrders)} ملغى`} />
           </div>
+
+          <ConversionFunnel funnel={d.conversionFunnel} pct={pct} />
 
           {/* الاتّجاه اليوميّ */}
           <TrendChart trend={d.trend} />
@@ -147,6 +149,29 @@ export default function StoreAnalytics() {
         </>
       )}
     </div>
+  );
+}
+
+function ConversionFunnel({ funnel, pct }: { funnel: { productViews: number; cartAdds: number; checkoutStarts: number; completedOrders: number; viewToCartRate: number; cartToCheckoutRate: number; checkoutToOrderRate: number }; pct: (v: number) => string }) {
+  const steps = [
+    { label: "مشاهدات المنتج", value: funnel.productViews, icon: Eye, hint: "حدث مجمّع بلا هوية زائر" },
+    { label: "إضافة للسلة", value: funnel.cartAdds, icon: ShoppingCart, hint: `من المشاهدة: ${pct(funnel.viewToCartRate)}` },
+    { label: "بدء الدفع", value: funnel.checkoutStarts, icon: ShoppingBag, hint: `من السلة: ${pct(funnel.cartToCheckoutRate)}` },
+    { label: "طلبات مكتملة", value: funnel.completedOrders, icon: PackageCheck, hint: `من الدفع: ${pct(funnel.checkoutToOrderRate)}` },
+  ];
+  return (
+    <section className="rounded-2xl border border-border bg-card p-4">
+      <div className="mb-3 flex items-center gap-1.5 text-sm font-bold text-muted-foreground"><TrendingUp aria-hidden className="size-4" /> قمع التحويل</div>
+      <div className="grid gap-2 sm:grid-cols-4">
+        {steps.map(({ label, value, icon: Icon, hint }) => (
+          <div key={label} className="rounded-xl bg-muted/50 p-3">
+            <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground"><Icon aria-hidden className="size-3.5" /> {label}</div>
+            <div className="mt-1 text-xl font-bold tabular-nums">{fmtInt(value)}</div>
+            <div className="mt-0.5 text-[10px] text-muted-foreground">{hint}</div>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 

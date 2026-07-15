@@ -11,7 +11,7 @@
  *   • هيرو + شريط ثقة + شارات خصم — سمات المتجر الناجح. مقصور على المتجر (لا يمسّ نظام الموظفين).
  *   • متجاوب أولوية-الجوال، ثيم فاتح/داكن، خطّ Cairo (ودود كـNunito الموصى به).
  */
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "wouter";
 import {
   ArrowRight,
@@ -366,6 +366,7 @@ export default function Storefront() {
   const [form, setForm] = useState<CheckoutForm>(loadForm);
   const [clientRequestId, setClientRequestId] = useState<string>("");
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
+  const viewedProductIds = useRef(new Set<number>());
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(rawSearch.trim()), 350);
@@ -402,6 +403,17 @@ export default function Storefront() {
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
+  const trackConversion = trpc.storefront.trackConversion.useMutation();
+
+  // كل فتح متعمد لتفاصيل منتج = مشاهدة؛ لا نرسل اسم المنتج أو هويّة/جلسة الزائر.
+  useEffect(() => {
+    if (selectedId != null && !viewedProductIds.current.has(selectedId)) {
+      viewedProductIds.current.add(selectedId);
+      trackConversion.mutate({ event: "PRODUCT_VIEW" });
+    }
+  // useMutation يعيد مرجعاً مستقراً؛ ربط الحدث بالمُنتج فقط يمنع إعادة عدّه عند كل render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   const createOrder = trpc.storefront.createOrder.useMutation({
     onSuccess: (res) => {
@@ -512,6 +524,7 @@ export default function Storefront() {
   }) {
     const eff = p.salePrice ?? p.price;
     if (eff == null || p.inStock === false) return;
+    trackConversion.mutate({ event: "ADD_TO_CART" });
     setCart((prev) => {
       const next = new Map(prev);
       const existing = next.get(p.productUnitId);
@@ -547,6 +560,7 @@ export default function Storefront() {
   function openCheckout() {
     if (!storeOpen) return; // المتجر مغلق — الإشعار ظاهر أعلى الصفحة
     setClientRequestId(`sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
+    trackConversion.mutate({ event: "BEGIN_CHECKOUT" });
     setPanel("checkout");
   }
   function submitOrder() {

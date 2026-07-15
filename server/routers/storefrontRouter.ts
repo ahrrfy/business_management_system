@@ -17,6 +17,7 @@ import { retryOnDup } from "../lib/retryDup";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
+import { recordStoreConversionMetric } from "../services/storeAdmin/storeConversionMetricsService";
 
 export const storefrontRouter = router({
   /** فئات المتجر (لأشرطة الفلترة). */
@@ -40,6 +41,11 @@ export const storefrontRouter = router({
       event: z.enum(["IMPRESSION", "CLICK"]),
     }))
     .mutation(({ input }) => recordBannerMetric(input)),
+
+  /** قمع التحويل المجمع: حدث بلا IP أو جلسة أو بيانات الطلب/العميل. */
+  trackConversion: publicProcedure
+    .input(z.object({ event: z.enum(["PRODUCT_VIEW", "ADD_TO_CART", "BEGIN_CHECKOUT"]) }))
+    .mutation(({ input }) => recordStoreConversionMetric(input)),
 
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
   settings: publicProcedure.query(() => getStoreSettings()),
@@ -99,15 +105,21 @@ export const storefrontRouter = router({
     // retryOnDup: نقرة مزدوجة متزامنة بنفس clientRequestId قد يمرّ فحصُها الاستباقي معاً قبل الالتزام،
     // فيصطدم الإدراج الثاني بقيد uq_online_order_client_req (ER_DUP_ENTRY). إعادة المحاولة تلتقط الطلب
     // المُلتزَم فتُعيد replay بدل 500 (مراجعة عدائية ١٢/٧).
-    .mutation(({ input }) =>
-      retryOnDup(() =>
+    .mutation(async ({ input }) => {
+      const result = await retryOnDup(() =>
         createOnlineOrder({
           ...input,
           latitude: input.latitude ?? null,
           longitude: input.longitude ?? null,
-        }),
-      )
-    ),
+        })
+      );
+      // نجاح إنشاء الطلب هو المصدر الموثوق لهذا الحدث؛ لا نأخذه من متصفح العميل.
+      // الخدمة أفضل-جهد ولا تلمس بيانات الطلب أو العميل.
+      if (!result.idempotentReplay) {
+        void recordStoreConversionMetric({ event: "ORDER_COMPLETED", branchId: input.branchId });
+      }
+      return result;
+    }),
 
   /** تتبّع طلب: يتطلّب رقم الطلب + الهاتف معاً (خصوصية). */
   trackOrder: publicProcedure
