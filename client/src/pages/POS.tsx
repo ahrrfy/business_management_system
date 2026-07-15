@@ -1645,7 +1645,12 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
             <button disabled={!cartLen || !couponInput.trim() || couponPending} onClick={onApplyCoupon} style={{ height: 40, padding: "0 12px", border: 0, borderRadius: 8, background: C.primary, color: C.primaryFg, fontFamily: "inherit", fontWeight: 800, cursor: "pointer" }}>{couponPending ? "تحقق…" : "تطبيق"}</button>
           )}
         </div>
-        {couponCode && <div style={{ fontSize: 11, color: C.success, fontWeight: 800, marginTop: 2 }}>✓ {couponLabel ?? couponCode}</div>}
+        {couponCode && (
+          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: C.success, fontWeight: 800, marginTop: 2 }}>
+            <Check size={13} aria-hidden="true" />
+            <span>{couponLabel ?? couponCode}</span>
+          </div>
+        )}
       </div>
 
       {/* Payment method */}
