@@ -423,15 +423,26 @@ export default function Storefront() {
     }));
   }, [inlineBanners, offers]);
 
-  // تنظيم تسويقيّ عالميّ: عروض حصرية (منتجات مخصومة فعلاً) + الأكثر مبيعاً (بحسب soldCount) — يُشتقّان
-  // من الكتالوج نفسه، فيظهران على الواجهة الأولى فقط (بلا بحث/فئة) ويُخفَيان تلقائياً إن لم يوجد محتوى.
+  // أقسام البيع الموجّه تُشتق من الكتالوج الحي فقط. لا نعرض في صفٍّ تسويقي منتجاً لا يمكن شراؤه؛
+  // فلا تتحول حملة «الأكثر مبيعاً» أو «الباقات» إلى طريق مسدود للزبون.
   const dealProducts = useMemo(
-    () => items.filter((p) => p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
+    () => items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
     [items]
   );
+  const dealProductIds = useMemo(() => new Set(dealProducts.map((p) => p.productId)), [dealProducts]);
   const bestSellers = useMemo(
-    () => [...items].filter((p) => (p.soldCount ?? 0) > 0).sort((a, b) => (b.soldCount ?? 0) - (a.soldCount ?? 0)).slice(0, 12),
-    [items]
+    () => [...items]
+      .filter((p) => p.inStock && !dealProductIds.has(p.productId) && (p.soldCount ?? 0) > 0)
+      .sort((a, b) => (b.soldCount ?? 0) - (a.soldCount ?? 0))
+      .slice(0, 12),
+    [dealProductIds, items]
+  );
+  const bundleProducts = useMemo(
+    () => [...items]
+      .filter((p) => p.inStock && p.isBundle && !dealProductIds.has(p.productId))
+      .sort((a, b) => (b.soldCount ?? 0) - (a.soldCount ?? 0))
+      .slice(0, 12),
+    [dealProductIds, items]
   );
 
   const cartLines = useMemo(() => Array.from(cart.values()), [cart]);
@@ -477,6 +488,9 @@ export default function Storefront() {
   }
   function offerLabel(o: { type: "PERCENT" | "AMOUNT"; discountPercent: string; discountAmount: string }): string {
     return o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`;
+  }
+  function offerScopeLabel(scope: "ALL" | "CATEGORIES" | "PRODUCTS"): string {
+    return scope === "ALL" ? "على كل المنتجات" : scope === "CATEGORIES" ? "على فئات مختارة" : "على منتجات مختارة";
   }
 
   function openCheckout() {
@@ -653,7 +667,7 @@ export default function Storefront() {
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-extrabold leading-tight">{o.name}</p>
-                        <p className="mt-0.5 text-xs font-bold text-amber-50">{offerLabel(o)}</p>
+                        <p className="mt-0.5 text-xs font-bold text-amber-50">{offerLabel(o)} · {offerScopeLabel(o.scope)}</p>
                       </div>
                     </div>
                   ))}
@@ -675,6 +689,15 @@ export default function Storefront() {
               title="الأكثر مبيعاً"
               icon={<TrendingUp aria-hidden className="size-4 text-emerald-600" />}
               products={bestSellers}
+              onSelect={setSelectedId}
+              onAdd={addToCart}
+            />
+
+            {/* باقات حقيقية مُعرّفة في النظام؛ نعرضها كحلول جاهزة لا كتركيبٍ وهمي للمنتجات. */}
+            <ProductRow
+              title="باقات جاهزة"
+              icon={<Package aria-hidden className="size-4 text-emerald-600" />}
+              products={bundleProducts}
               onSelect={setSelectedId}
               onAdd={addToCart}
             />
