@@ -122,7 +122,7 @@ const ordersRouter = router({
 });
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح");
-const bannerInput = z.object({
+const bannerInputFields = z.object({
   title: z.string().trim().min(1).max(255),
   subtitle: z.string().max(500).nullish(),
   imageUrl: z.string().max(3_000_000).nullish(), // data-URL مضغوط
@@ -139,14 +139,16 @@ const bannerInput = z.object({
   branchId: z.number().int().positive().nullish(),
   // موضع العرض (0074): رئيسي/جانبي طولي/فاصل بين المنتجات.
   placement: z.enum(["HERO", "SIDE", "INLINE"]).optional(),
-}).refine((v) => !v.effectiveFrom || !v.effectiveTo || v.effectiveFrom <= v.effectiveTo, {
+});
+
+const bannerInput = bannerInputFields.refine((v) => !v.effectiveFrom || !v.effectiveTo || v.effectiveFrom <= v.effectiveTo, {
   message: "تاريخ انتهاء البنر أقدم من تاريخ بدايته",
   path: ["effectiveTo"],
 });
 
 function assertSafeBannerInput(input: Partial<z.infer<typeof bannerInput>>) {
-  assertValidImageDataUrl(input.imageUrl, 2_000_000);
-  assertValidImageDataUrl(input.mobileImageUrl, 2_000_000);
+  assertValidImageDataUrl(input.imageUrl, 2_000_000, true);
+  assertValidImageDataUrl(input.mobileImageUrl, 2_000_000, true);
   assertSafeBannerCtaUrl(input.ctaUrl);
 }
 
@@ -160,7 +162,7 @@ const bannersRouter = router({
     return r;
   }),
   update: storeManagerProcedure
-    .input(z.object({ id: z.number().int().positive() }).and(bannerInput.partial()))
+    .input(z.object({ id: z.number().int().positive() }).and(bannerInputFields.partial()))
     .mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
       assertSafeBannerInput(rest);
