@@ -4,13 +4,22 @@
 #       scripts saved as UTF-8 without BOM (proven 2026-06-10).
 #
 # Manual run:      pnpm backup:pull-vps
-# Daily schedule (once, as admin):
-#   schtasks /Create /TN "AlRoya ERP - Pull VPS Backup" /SC DAILY /ST 07:30 /F ^
-#     /TR "powershell -NoProfile -ExecutionPolicy Bypass -File D:\business_management_system\scripts\pull-vps-backup.ps1"
-#   Then FIX THE DEFAULT TASK SETTINGS or it silently refuses to run on battery and never
+# Daily schedule: this script is action [0] of ONE task "AlRoya ERP - Pull VPS Backup";
+#   health-check-local.ps1 is action [1] of the SAME task. Task Scheduler runs a task's
+#   actions sequentially (each in its own process) => the health check can never read the
+#   backup folder mid-download. Do NOT give the health check its own separate timer: when
+#   the machine is asleep at the scheduled hour, BOTH catch-up runs (StartWhenAvailable)
+#   fire at the same second on wake and the check reads a half-pulled folder => a false
+#   "backup stale" toast (proven 2026-07-15). Provision once, as admin, settings baked in:
+#     $pull  = New-ScheduledTaskAction -Execute powershell -Argument "-NoProfile -ExecutionPolicy Bypass -File D:\business_management_system\scripts\pull-vps-backup.ps1"
+#     $check = New-ScheduledTaskAction -Execute powershell -Argument "-NoProfile -ExecutionPolicy Bypass -File D:\business_management_system\scripts\health-check-local.ps1"
+#     $trig  = New-ScheduledTaskTrigger -Daily -At 7:30AM
+#     $set   = New-ScheduledTaskSettingsSet -StartWhenAvailable -WakeToRun -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+#     Register-ScheduledTask -TaskName "AlRoya ERP - Pull VPS Backup" -Action $pull,$check -Trigger $trig -Settings $set -RunLevel Limited
+#   WHY these settings: default schtasks silently refuses to run on battery and never
 #   catches up runs missed while the machine was off/asleep (bit us 2026-07-03..06: three
-#   days with no offsite pull, Last Result 0x800710E0). One-liner (already applied live):
-#     powershell -NoProfile -Command "$t=Get-ScheduledTask 'AlRoya ERP - Pull VPS Backup'; $s=$t.Settings; $s.StartWhenAvailable=$true; $s.DisallowStartIfOnBatteries=$false; $s.StopIfGoingOnBatteries=$false; Set-ScheduledTask 'AlRoya ERP - Pull VPS Backup' -Settings $s"
+#   days with no offsite pull, Last Result 0x800710E0). WakeToRun also wakes the machine
+#   from sleep so the pull happens at 07:30 instead of hours late on the next wake.
 # Requires: SSH key for the VPS + Host alias in ~/.ssh/config (default: alroya-erp).
 param(
   [string]$SshHost = "alroya-erp",
