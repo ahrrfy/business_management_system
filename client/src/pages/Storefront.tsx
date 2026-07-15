@@ -19,6 +19,7 @@ import {
   BadgePercent,
   Briefcase,
   Check,
+  ChevronDown,
   Flame,
   ImageOff,
   Loader2,
@@ -336,11 +337,28 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
 }
 
 type Panel = null | "cart" | "checkout" | "confirmation";
+type AvailabilityFilter = "IN_STOCK" | "ALL";
+type PriceFilter = "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
+type CatalogSort = "RECOMMENDED" | "PRICE_ASC" | "PRICE_DESC" | "BEST_SELLERS";
+
+function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
+  switch (filter) {
+    case "UNDER_5000": return price < 5_000;
+    case "FROM_5000_TO_15000": return price >= 5_000 && price <= 15_000;
+    case "OVER_15000": return price > 15_000;
+    default: return true;
+  }
+}
 
 export default function Storefront() {
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<number | null>(null);
+  // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
+  const [availability, setAvailability] = useState<AvailabilityFilter>("IN_STOCK");
+  const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
+  const [brand, setBrand] = useState("");
+  const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
   const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
@@ -411,6 +429,39 @@ export default function Storefront() {
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
   );
+  const brands = useMemo(
+    () => Array.from(new Set(items.map((p) => p.brand?.trim()).filter((value): value is string => Boolean(value)))).sort((a, b) => a.localeCompare(b, "ar")),
+    [items]
+  );
+  const filteredItems = useMemo(() => {
+    const filtered = items.filter((p) => {
+      if (availability === "IN_STOCK" && !p.inStock) return false;
+      if (brand && p.brand !== brand) return false;
+      return matchesPriceFilter(Number(p.salePrice ?? p.price ?? 0), priceFilter);
+    });
+    if (sort === "RECOMMENDED") return filtered;
+    return [...filtered].sort((a, b) => {
+      if (sort === "BEST_SELLERS") return (b.soldCount ?? 0) - (a.soldCount ?? 0);
+      const aPrice = Number(a.salePrice ?? a.price ?? 0);
+      const bPrice = Number(b.salePrice ?? b.price ?? 0);
+      return sort === "PRICE_ASC" ? aPrice - bPrice : bPrice - aPrice;
+    });
+  }, [availability, brand, items, priceFilter, sort]);
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED";
+
+  function scrollToResults() {
+    window.setTimeout(() => document.getElementById("store-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+  function selectCategory(id: number | null) {
+    setCategoryId(id);
+    scrollToResults();
+  }
+  function clearRefinements() {
+    setAvailability("IN_STOCK");
+    setPriceFilter("ALL");
+    setBrand("");
+    setSort("RECOMMENDED");
+  }
   // فواصل السيل التسويقية: بنرات INLINE المُدارة أولاً، وعند غيابها تُشتقّ من عروض اليوم الفعّالة
   // (فلسفة in-feed العالمية: لا يمرّ الزبون بأكثر من ~عشرة منتجات دون محفّز شراء).
   const feedStrips = useMemo<BannerItem[]>(() => {
@@ -571,19 +622,29 @@ export default function Storefront() {
               value={rawSearch}
               onChange={(e) => setRawSearch(e.target.value)}
               placeholder="ابحث عن منتج أو ماركة…"
-              className="w-full rounded-2xl border-0 bg-white py-3 pr-11 pl-3 text-sm text-slate-900 shadow-sm ring-1 ring-slate-200 outline-none transition placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700"
+              className="w-full rounded-2xl border-0 bg-white py-3 pr-11 pl-10 text-sm text-slate-900 shadow-sm ring-1 ring-slate-200 outline-none transition placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700"
             />
+            {rawSearch && (
+              <button
+                type="button"
+                onClick={() => { setRawSearch(""); setSearch(""); }}
+                aria-label="مسح البحث"
+                className="absolute left-2.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+              >
+                <X aria-hidden className="size-4" />
+              </button>
+            )}
           </div>
         </div>
 
         {cats.length > 0 && (
           <div className="mx-auto max-w-6xl overflow-x-auto px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <div className="flex w-max gap-2">
-              <button onClick={() => setCategoryId(null)} className={chip(categoryId == null)}>
+              <button onClick={() => selectCategory(null)} className={chip(categoryId == null)}>
                 الكل
               </button>
               {cats.map((c) => (
-                <button key={c.id} onClick={() => setCategoryId(c.id)} className={chip(categoryId === c.id)}>
+                <button key={c.id} onClick={() => selectCategory(c.id)} className={chip(categoryId === c.id)}>
                   {c.name}
                   <span className="mr-1 opacity-60">{c.productCount}</span>
                 </button>
@@ -608,6 +669,70 @@ export default function Storefront() {
             المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً. تصفّح المنتجات وعُد لاحقاً.
           </div>
         )}
+
+        {/* مصفاة قصيرة وواضحة: تبقي العميل داخل مسار الاكتشاف بدلاً من تمرير كتالوج غير منتهٍ. */}
+        <section aria-label="تصفية وترتيب المنتجات" className="mb-4 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-emerald-100/80 dark:bg-slate-900 dark:ring-slate-800">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-extrabold text-slate-700 dark:text-slate-200">تسوّق بسهولة</p>
+            {(hasRefinements || categoryId != null || search) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setRawSearch("");
+                  setSearch("");
+                  setCategoryId(null);
+                  clearRefinements();
+                }}
+                className="text-xs font-bold text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400"
+              >
+                مسح الكل
+              </button>
+            )}
+          </div>
+          <div className="mt-2.5 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <button
+              type="button"
+              onClick={() => {
+                setAvailability((value) => value === "IN_STOCK" ? "ALL" : "IN_STOCK");
+                scrollToResults();
+              }}
+              aria-pressed={availability === "IN_STOCK"}
+              className={chip(availability === "IN_STOCK")}
+            >
+              {availability === "IN_STOCK" ? "متوفر الآن" : "كل المنتجات"}
+            </button>
+            <label className="relative shrink-0">
+              <span className="sr-only">نطاق السعر</span>
+              <select value={priceFilter} onChange={(e) => { setPriceFilter(e.target.value as PriceFilter); scrollToResults(); }} className="appearance-none rounded-full bg-slate-50 py-1.5 pr-3 pl-7 text-xs font-bold text-slate-700 ring-1 ring-slate-200 outline-none transition focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700">
+                <option value="ALL">كل الأسعار</option>
+                <option value="UNDER_5000">أقل من 5,000 د.ع</option>
+                <option value="FROM_5000_TO_15000">5,000 – 15,000 د.ع</option>
+                <option value="OVER_15000">أكثر من 15,000 د.ع</option>
+              </select>
+              <ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            </label>
+            {brands.length > 0 && (
+              <label className="relative shrink-0">
+                <span className="sr-only">الماركة</span>
+                <select value={brand} onChange={(e) => { setBrand(e.target.value); scrollToResults(); }} className="appearance-none rounded-full bg-slate-50 py-1.5 pr-3 pl-7 text-xs font-bold text-slate-700 ring-1 ring-slate-200 outline-none transition focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700">
+                  <option value="">كل الماركات</option>
+                  {brands.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+                <ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+              </label>
+            )}
+            <label className="relative shrink-0">
+              <span className="sr-only">ترتيب النتائج</span>
+              <select value={sort} onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }} className="appearance-none rounded-full bg-slate-50 py-1.5 pr-3 pl-7 text-xs font-bold text-slate-700 ring-1 ring-slate-200 outline-none transition focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700">
+                <option value="RECOMMENDED">الترتيب المقترح</option>
+                <option value="BEST_SELLERS">الأكثر مبيعاً</option>
+                <option value="PRICE_ASC">السعر: الأقل أولاً</option>
+                <option value="PRICE_DESC">السعر: الأعلى أولاً</option>
+              </select>
+              <ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            </label>
+          </div>
+        </section>
 
         {!search && categoryId == null && (
           <>
@@ -648,7 +773,7 @@ export default function Storefront() {
             </section>
 
             {/* تسوّق حسب القسم */}
-            <CategoryTiles cats={cats} onPick={(id) => setCategoryId(id)} />
+            <CategoryTiles cats={cats} onPick={selectCategory} />
 
             {/* عروض اليوم */}
             {offers.length > 0 && (
@@ -708,9 +833,10 @@ export default function Storefront() {
           </>
         )}
 
-        {(activeCatName || search) && (
-          <p className="mb-3 text-sm font-medium text-slate-500 dark:text-slate-400">
-            {search ? <>نتائج «{search}»</> : <>فئة «{activeCatName}»</>}
+        {(activeCatName || search || hasRefinements) && (
+          <p className="mb-3 flex items-center justify-between gap-3 text-sm font-medium text-slate-500 dark:text-slate-400">
+            <span>{search ? <>نتائج «{search}»</> : activeCatName ? <>فئة «{activeCatName}»</> : <>المنتجات المتاحة</>}</span>
+            <span className="shrink-0 text-xs font-bold text-emerald-700 dark:text-emerald-400">{filteredItems.length} منتج</span>
             {catalogQ.isFetching && <Loader2 aria-hidden className="mr-2 inline size-3.5 animate-spin align-middle" />}
           </p>
         )}
@@ -720,26 +846,27 @@ export default function Storefront() {
             <Loader2 aria-hidden className="size-8 animate-spin text-emerald-500" />
             <p className="mt-3 text-sm">جارٍ تحميل المنتجات…</p>
           </div>
-        ) : items.length === 0 ? (
+        ) : filteredItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-center text-slate-400">
             <Package aria-hidden className="size-10 opacity-50" />
-            <p className="mt-3 text-sm">لا توجد منتجات مطابقة</p>
-            {(search || categoryId != null) && (
+            <p className="mt-3 text-sm">لا توجد منتجات مطابقة للتصفية الحالية</p>
+            {(search || categoryId != null || hasRefinements) && (
               <button
                 onClick={() => {
                   setRawSearch("");
                   setSearch("");
                   setCategoryId(null);
+                  clearRefinements();
                 }}
                 className="mt-3 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95"
               >
-                عرض كل المنتجات
+                عرض المنتجات المتاحة
               </button>
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-            {items.flatMap((p, idx) => {
+          <div id="store-results" className="scroll-mt-40 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+            {filteredItems.flatMap((p, idx) => {
               const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
               const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
               const card = (
@@ -801,7 +928,7 @@ export default function Storefront() {
               );
               // فاصل تسويقي كل عشرة منتجات (لا وسط نتائج البحث — الزبون الباحث يريد نتائجه صافية).
               const nodes: ReactNode[] = [card];
-              if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < items.length) {
+              if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) {
                 const k = ((idx + 1) / 10 - 1) % feedStrips.length;
                 nodes.push(
                   <InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />
