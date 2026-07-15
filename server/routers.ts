@@ -57,6 +57,7 @@ import { platformAdminRouter } from "./routers/platformAdminRouter";
 import { storefrontRouter } from "./routers/storefrontRouter";
 import { storeAdminRouter } from "./routers/storeAdminRouter";
 import { courierRouter } from "./routers/courierRouter";
+import { crmRouter } from "./routers/crmRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -131,6 +132,8 @@ export const appRouter = router({
   // salesPromotions v2 (٨/٧/٢٦): العروض على catalog/pos.ts (فلسفة «نقطة العرض = نقطة الفرض»).
   // NOTE: مفتاح `salesPromotions` مختلف عن `promotions` (ترقيات HR).
   salesPromotions: promotionsV2Router,
+  // CRM هو نقطة الملكية الموحدة للحملات والعروض والكوبونات؛ الوحدات الأخرى مستهلكة للأحداث فقط.
+  crm: crmRouter,
   // تعدد الشركات — شاشة إدارة المنصّة (منفصلة تماماً عن جلسة/أدوار أي شركة).
   platformAdmin: platformAdminRouter,
 });

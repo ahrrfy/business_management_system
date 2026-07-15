@@ -32,6 +32,8 @@ export interface CreateSaleInput {
   taxRatePercent?: string | null;
   payment?: { amount: string; method: PaymentMethod } | null;
   clientRequestId?: string | null;
+  /** رمز كوبون CRM؛ يُقفل ويُتحقق ويُستهلك ذرّياً مع الفاتورة. */
+  couponCode?: string | null;
   notes?: string | null;
   /** موافقة مدير على تجاوز حدّ الائتمان (يضبطها الراوتر بعد التحقّق من هوية المدير).
    *  B5: إن كانت true يجب توفير إمّا creditApprovalId (تدفّق UI جديد) أو managerOverrideByUserId (تدفّق router قديم). */

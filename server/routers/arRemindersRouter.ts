@@ -9,7 +9,7 @@ import {
   logReminderSkipped,
 } from "../services/arRemindersService";
 import { logAudit } from "../services/auditService";
-import { customersManagerProcedure, router } from "../trpc";
+import { collectionsManagerProcedure, router } from "../trpc";
 
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح");
 const moneyStr = z.string().min(1);
@@ -78,7 +78,7 @@ function openingWriteBranch(
 export const arRemindersRouter = router({
   /** قائمة اليوم: عملاء بذمّة >٠ متأخّرة ≥٧ أيام، لم يُذكَّروا آخر ٧ أيام. admin يعبُر بـbranchId صريح.
    *  `openingScope` (أدمن حصراً) ⇒ **مدينو الرصيد الافتتاحي فقط** مجمَّعين عبر الفروع (نطاق مستقلّ). */
-  queue: customersManagerProcedure
+  queue: collectionsManagerProcedure
     .input(z.object({ branchId: optionalBranch, openingScope: z.boolean().optional() }).optional())
     .query(({ ctx, input }) => {
       if (input?.openingScope) {
@@ -94,7 +94,7 @@ export const arRemindersRouter = router({
    *  `openingScope` (أدمن حصراً) ⇒ سجلّ مجمَّع عبر كل الفروع — مرآة queue.openingScope. لا عمود
    *  يُميِّز صفوف الرصيد الافتتاحي في `arReminders` (تُكتَب بفرع حقيقي عبر openingWriteBranch)،
    *  فالتجميع الكامل هو أصدق تمثيل متاح لسياق «مراجعة مدينِي الافتتاحي» دون تضليل بفرع واحد فقط. */
-  history: customersManagerProcedure
+  history: collectionsManagerProcedure
     .input(
       z
         .object({
@@ -115,7 +115,7 @@ export const arRemindersRouter = router({
     }),
 
   /** تسجيل تذكير أُرسِل — يستدعيه الزبون فور عودة المستخدم من فتح wa.me وتأكيده الإرسال. */
-  logSent: customersManagerProcedure
+  logSent: collectionsManagerProcedure
     .input(
       z.object({
         customerId: z.number().int().positive(),
@@ -149,7 +149,7 @@ export const arRemindersRouter = router({
     }),
 
   /** تسجيل تخطٍّ — العميل وعد بالدفع، أو قرار مؤقّت بعدم الإرسال. */
-  logSkipped: customersManagerProcedure
+  logSkipped: collectionsManagerProcedure
     .input(
       z.object({
         customerId: z.number().int().positive(),

@@ -30,6 +30,7 @@ export interface PromotionTargetInput {
 }
 
 export interface CreatePromotionInput {
+  campaignId?: number | null;
   name: string;
   description?: string | null;
   type: SalesPromotionType;
@@ -45,6 +46,8 @@ export interface CreatePromotionInput {
   targets?: PromotionTargetInput[];
   /** 0073: true = عرض متجر إلكترونيّ (أونلاين فقط — يُستثنى من تسعير الكاشير). افتراضي false. */
   isStoreManaged?: boolean;
+  /** AUTO يُحلّ تلقائياً؛ COUPON لا يدخل التسعير إلا بعد تحقق الكوبون داخل معاملة البيع. */
+  applicationMode?: "AUTO" | "COUPON";
 }
 
 function assertShape(input: CreatePromotionInput) {
@@ -90,6 +93,7 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
   assertTargets(input);
 
   const res = await tx.insert(promotions).values({
+    campaignId: input.campaignId ?? null,
     name: input.name.trim(),
     description: input.description?.trim() || null,
     type: input.type,
@@ -103,6 +107,7 @@ export async function createPromotion(tx: Tx, input: CreatePromotionInput, actor
     minLineAmount: toDbMoney(input.minLineAmount ?? "0"),
     priority: input.priority ?? 0,
     isActive: true,
+    applicationMode: input.applicationMode ?? "AUTO",
     isStoreManaged: input.isStoreManaged ?? false,
     createdBy: actorUserId,
   });
@@ -130,7 +135,7 @@ export interface ResolvedPromotion {
   discountForUnit: string; // خصم لكل وحدة (بعد قصّه لسعر الوحدة عند الحاجة)
 }
 
-interface ResolveLineInput {
+export interface ResolveLineInput {
   branchId: number;
   customerTier: PriceTier;
   productId: number;
@@ -143,6 +148,9 @@ interface ResolveLineInput {
   todayYmd: string;
   /** 0073: هل تُدرَج عروض المتجر (isStoreManaged)؟ الكاشير=false (أونلاين فقط)، المتجر=true. افتراضي false. */
   includeStoreManaged?: boolean;
+  /** داخلي: لحل عرض كوبون محدد من دون إدخاله في المنافسة التلقائية. */
+  requiredApplicationMode?: "AUTO" | "COUPON";
+  specificPromotionId?: number;
 }
 
 /**
@@ -182,6 +190,8 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
     .where(
       and(
         eq(promotions.isActive, true),
+        eq(promotions.applicationMode, input.requiredApplicationMode ?? "AUTO"),
+        input.specificPromotionId != null ? eq(promotions.id, input.specificPromotionId) : undefined,
         sql`${promotions.effectiveFrom} <= DATE(${todayYmd})`,
         or(isNull(promotions.effectiveTo), sql`${promotions.effectiveTo} >= DATE(${todayYmd})`)!,
         or(isNull(promotions.branchId), eq(promotions.branchId, input.branchId))!,
@@ -246,6 +256,10 @@ export async function resolvePromotionForLine(tx: Tx, input: ResolveLineInput): 
   });
   const win = scored[0];
   return { promotionId: win.id, promotionName: win.name, discountForUnit: toDbMoney(win.discountForUnit) };
+}
+
+export function resolveCouponPromotionForLine(tx: Tx, promotionId: number, input: ResolveLineInput) {
+  return resolvePromotionForLine(tx, { ...input, requiredApplicationMode: "COUPON", specificPromotionId: promotionId });
 }
 
 export async function listPromotions(tx: Tx, includeInactive = false) {

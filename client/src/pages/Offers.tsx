@@ -11,10 +11,12 @@ import { MoneyInput } from "@/components/form/MoneyInput";
 import { Field } from "@/components/product/variantBits";
 import { PageHeader } from "@/components/PageHeader";
 import { trpc } from "@/lib/trpc";
+import { canSeeGate } from "@/lib/navVisibility";
 
 type PromoType = "PERCENT" | "AMOUNT";
 type PromoScope = "ALL" | "CATEGORIES" | "PRODUCTS";
 type Tier = "RETAIL" | "WHOLESALE" | "GOVERNMENT" | "";
+type ApplicationMode = "AUTO" | "COUPON";
 
 interface TargetPick {
   kind: "category" | "product";
@@ -30,8 +32,11 @@ function todayYmd(): string {
 
 export default function Offers() {
   const utils = trpc.useUtils();
+  const me = trpc.auth.me.useQuery();
+  const canManage = canSeeGate({ roles: ["manager"], module: "campaigns", level: "FULL" }, me.data?.role, (me.data?.permissionsOverride ?? null) as any);
   const [includeInactive, setIncludeInactive] = useState(false);
   const listQ = trpc.salesPromotions.list.useQuery({ includeInactive });
+  const campaignsQ = trpc.crm.campaigns.list.useQuery();
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState("");
 
@@ -46,6 +51,9 @@ export default function Offers() {
   const [customerTier, setCustomerTier] = useState<Tier>("");
   const [minLineAmount, setMinLineAmount] = useState("");
   const [priority, setPriority] = useState("0");
+  const [campaignId, setCampaignId] = useState("");
+  const [applicationMode, setApplicationMode] = useState<ApplicationMode>("AUTO");
+  const [channel, setChannel] = useState<"POS" | "STORE">("POS");
   const [targets, setTargets] = useState<TargetPick[]>([]);
   const [productPicker, setProductPicker] = useState("");
 
@@ -68,6 +76,7 @@ export default function Offers() {
     setName(""); setDescription(""); setType("PERCENT"); setDiscountPercent("10"); setDiscountAmount("");
     setScope("ALL"); setEffectiveFrom(todayYmd()); setEffectiveTo(""); setCustomerTier(""); setMinLineAmount("");
     setPriority("0"); setTargets([]); setProductPicker(""); setError("");
+    setCampaignId(""); setApplicationMode("AUTO"); setChannel("POS");
   }
 
   function addProductTarget(productId: number, label: string) {
@@ -112,6 +121,9 @@ export default function Offers() {
       customerTier: customerTier || null,
       minLineAmount: minLineAmount || undefined,
       priority: parseInt(priority, 10) || 0,
+      campaignId: campaignId ? Number(campaignId) : null,
+      applicationMode,
+      channel,
       targets: scope === "ALL" ? undefined : targets.map((t) => ({
         categoryId: t.kind === "category" ? t.id : null,
         productId: t.kind === "product" ? t.id : null,
@@ -126,11 +138,11 @@ export default function Offers() {
     <div className="max-w-6xl mx-auto space-y-4 pb-8">
       <PageHeader
         title="العروض والخصومات"
-        description="خصمٌ تلقائي في الكاشير — يُطبَّق آلياً على السعر المعروض للعميل. السعر التعاقدي يفوز دائماً."
-        actions={
+        description="محرك موحّد لعروض نقطة البيع والمتجر والكوبونات، مرتبط بالحملة وقابل للتدقيق. السعر التعاقدي يفوز دائماً."
+        actions={canManage ?
           <Button onClick={() => setShowForm((v) => !v)}>
             {showForm ? <><X aria-hidden className="size-4" /> إلغاء</> : <><Plus aria-hidden className="size-4" /> عرض جديد</>}
-          </Button>
+          </Button> : undefined
         }
       />
 
@@ -161,6 +173,24 @@ export default function Offers() {
             )}
             <Field label="أولوية" hint="الأعلى يفوز عند تعارض عروض">
               <Input type="number" min={0} max={999} value={priority} onChange={(e) => setPriority(e.target.value)} />
+            </Field>
+            <Field label="الحملة (اختياري)">
+              <select value={campaignId} onChange={(e) => setCampaignId(e.target.value)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                <option value="">عرض مستقل</option>
+                {(campaignsQ.data ?? []).map((campaign) => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
+              </select>
+            </Field>
+            <Field label="طريقة التطبيق" hint="الكوبون لا يعمل تلقائياً">
+              <select value={applicationMode} onChange={(e) => setApplicationMode(e.target.value as ApplicationMode)} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                <option value="AUTO">تلقائي</option>
+                <option value="COUPON">بكوبون صالح فقط</option>
+              </select>
+            </Field>
+            <Field label="قناة العرض">
+              <select value={channel} onChange={(e) => setChannel(e.target.value as "POS" | "STORE")} className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm">
+                <option value="POS">نقطة البيع</option>
+                <option value="STORE">المتجر الإلكتروني</option>
+              </select>
             </Field>
             <Field label="من تاريخ" required>
               <Input type="date" value={effectiveFrom} onChange={(e) => setEffectiveFrom(e.target.value)} />
@@ -278,7 +308,7 @@ export default function Offers() {
                         {p.isActive ? <Badge variant="default">نشط</Badge> : <Badge variant="secondary">معطَّل</Badge>}
                       </td>
                       <td className="px-3 py-2 text-left">
-                        {p.isActive && (
+                        {canManage && p.isActive && (
                           <Button size="sm" variant="ghost" onClick={() => deactivateM.mutate({ promotionId: Number(p.id) })} disabled={deactivateM.isPending}>
                             تعطيل
                           </Button>
