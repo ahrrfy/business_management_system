@@ -11,7 +11,7 @@
 //
 // العنوان: الـ hub لا يَرسم h1 خاصّاً به — كل صفحة مُضمَّنة تَحتفظ بـ PageHeader خاصّها،
 // فلا ازدواج عناوين (شريط تبويبات + PageHeader واحد).
-import { Suspense } from "react";
+import { Suspense, useEffect, useRef } from "react";
 import { useLocation, useSearch } from "wouter";
 import * as TabsPrimitive from "@radix-ui/react-tabs";
 import { cn } from "@/lib/utils";
@@ -73,6 +73,17 @@ export function PageTabs({
 
   const requested = new URLSearchParams(search).get("tab");
   const active = visible.find((t) => t.value === requested) ?? visible[0];
+  const activeTriggerRef = useRef<HTMLButtonElement>(null);
+
+  // On narrow screens the tabs stay on one scrollable row. Deep links can open
+  // a tab that starts outside the visible portion, so keep the active trigger
+  // fully in view without changing the page's vertical position.
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      activeTriggerRef.current?.scrollIntoView({ block: "nearest", inline: "nearest" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [active.value]);
 
   function selectTab(value: string) {
     if (value === active.value) return;
@@ -86,13 +97,18 @@ export function PageTabs({
     <TabsPrimitive.Root value={active.value} onValueChange={selectTab} dir="rtl" className="space-y-4">
       {/* شريط الأزرار — RTL يَبدأ يميناً؛ تمرير أفقي على الشاشات الضيّقة (٧ تبويبات) بلا كسر.
           الإجراءات (إن وُجدت) خارج tablist: role=tablist لا يَصحّ أن يَحوي غير tabs. */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-start gap-3">
         <TabsPrimitive.List
           aria-label={ariaLabel}
-          className="flex flex-1 items-center gap-2 overflow-x-auto pb-1.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="flex min-w-0 flex-1 flex-nowrap items-center gap-2 overflow-x-auto px-1 pb-1.5 scroll-px-1 [scrollbar-width:none] md:flex-wrap md:overflow-x-visible [&::-webkit-scrollbar]:hidden"
         >
           {visible.map((t) => (
-            <TabsPrimitive.Trigger key={t.value} value={t.value} className={tabClass}>
+            <TabsPrimitive.Trigger
+              key={t.value}
+              ref={t.value === active.value ? activeTriggerRef : undefined}
+              value={t.value}
+              className={tabClass}
+            >
               {t.label}
             </TabsPrimitive.Trigger>
           ))}
