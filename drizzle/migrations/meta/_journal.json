@@ -547,6 +547,13 @@
       "when": 1784246400000,
       "tag": "0077_store_conversion_metrics",
       "breakpoints": true
+    },
+    {
+      "idx": 78,
+      "version": "5",
+      "when": 1784332800000,
+      "tag": "0078_crm_campaigns_coupons",
+      "breakpoints": true
     }
   ]
 }

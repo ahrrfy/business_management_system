@@ -2,7 +2,7 @@
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
-import { customers, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
+import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import {
   computeInvoiceCost,
   computeInvoiceTotals,
@@ -23,9 +23,11 @@ import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { resolveContractPrices } from "../contractPriceService";
 import {
   getProductCategoryIds,
+  resolveCouponPromotionForLine,
   resolvePromotionForLine,
   type ResolvedPromotion,
 } from "../salesPromotionService";
+import { consumeCoupon, hashCouponCode, lockCouponForSale } from "../couponService";
 import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
@@ -99,6 +101,16 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
             message: "تعارض idempotency: المفتاح مستعمَل لبيع بأصناف أو كميات مختلفة",
           });
         }
+        // الكوبون جزء من بصمة البيع: لا يجوز لمفتاح إعادة المحاولة نفسه تبديل الكوبون أو إسقاطه.
+        const redemption = (await tx.select({ codeHash: coupons.codeHash })
+          .from(couponRedemptions)
+          .innerJoin(coupons, eq(couponRedemptions.couponId, coupons.id))
+          .where(eq(couponRedemptions.invoiceId, ex.id))
+          .limit(1))[0];
+        const requestedCouponHash = input.couponCode ? hashCouponCode(input.couponCode) : null;
+        if ((redemption?.codeHash ?? null) !== requestedCouponHash) {
+          throw new TRPCError({ code: "CONFLICT", message: "تعارض idempotency: الكوبون مختلف عن البيع الأصلي" });
+        }
         return {
           invoiceId: Number(ex.id),
           invoiceNumber: ex.invoiceNumber,
@@ -151,6 +163,14 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       customerTier = c[0].defaultPriceTier as PriceTier;
     }
     const tier = resolveTier({ override: input.priceTier ?? null, customerTier });
+
+    // يوم بغداد هو مرجع صلاحية العرض والكوبون معاً؛ يُحسَب مرة واحدة داخل المعاملة.
+    const _now = new Date();
+    const _bag = new Date(_now.getTime() + 3 * 60 * 60 * 1000);
+    const todayYmd = _bag.toISOString().slice(0, 10);
+    const lockedCoupon = input.couponCode
+      ? await lockCouponForSale(tx, { code: input.couponCode, branchId: input.branchId, customerId: input.customerId ?? null, todayYmd })
+      : null;
 
     // 4. Price/cost/convert each line.
     // D1 (٣٠/٦): حلّ N+1 — قراءة كل المتغيّرات بـinArray دفعةً واحدةً قبل الحلقة بدل
@@ -248,11 +268,6 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       const productIds = Array.from(new Set(productRows.map((r) => Number(r.productId))));
       categoryByProduct = await getProductCategoryIds(tx, productIds);
     }
-    // حبيبة اليوم المحلي (Baghdad UTC+3) — نفس دلالة pos.ts.
-    const _now = new Date();
-    const _bag = new Date(_now.getTime() + 3 * 60 * 60 * 1000);
-    const todayYmd = _bag.toISOString().slice(0, 10);
-
     const computed = [];
     for (const l of input.lines) {
       const v = variantById.get(l.variantId);
@@ -292,7 +307,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         const productId = productIdByVariant.get(l.variantId);
         if (productId != null && productId > 0) {
           const categoryId = categoryByProduct.get(productId) ?? null;
-          const resolved: ResolvedPromotion | null = await resolvePromotionForLine(tx, {
+          const resolveInput = {
             branchId: input.branchId,
             customerTier: tier,
             productId,
@@ -302,13 +317,20 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
             lineAmount: unitPrice.mul(money(l.quantity)).toFixed(2),
             hasContractPrice: contractPrice != null,
             todayYmd,
-          });
+          };
+          const isCouponPromotion = !!lockedCoupon && Number(l.promotionId) === lockedCoupon.promotionId;
+          const resolved: ResolvedPromotion | null = isCouponPromotion
+            ? await resolveCouponPromotionForLine(tx, lockedCoupon.promotionId, resolveInput)
+            : await resolvePromotionForLine(tx, resolveInput);
           if (resolved && Number(resolved.promotionId) === Number(l.promotionId)) {
             const expected = money(resolved.discountForUnit).mul(money(l.quantity));
             const actual = money(lineRes.discountAmount);
-            if (actual.minus(expected).abs().lte("1")) {
+            // IQD في POS يُعرض كعدد صحيح لكل وحدة. فرق التقريب المشروع أقصاه دينار واحد لكل وحدة؛
+            // للكوبون نسجل الخصم المعروض فعلياً (كي يطابق الإجمالي المقبوض)، وللتلقائي نبقي السلوك القديم.
+            const tolerance = isCouponPromotion ? money(l.quantity) : money(1);
+            if (actual.minus(expected).abs().lte(tolerance)) {
               recordedPromotionId = Number(l.promotionId);
-              recordedPromoDiscount = expected.toFixed(2);
+              recordedPromoDiscount = isCouponPromotion ? actual.toFixed(2) : expected.toFixed(2);
             }
           }
         }
@@ -327,6 +349,15 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         promotionId: recordedPromotionId,
         promotionDiscount: recordedPromoDiscount,
       });
+    }
+
+    const couponDiscount = lockedCoupon
+      ? computed
+          .filter((line) => line.promotionId === lockedCoupon.promotionId)
+          .reduce((sum, line) => sum.plus(money(line.promotionDiscount)), money(0))
+      : money(0);
+    if (lockedCoupon && couponDiscount.lte(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الكوبون صالح لكنه لا ينطبق على أصناف الفاتورة" });
     }
 
     // 5. Deterministic lock order: sort by variantId ascending.
@@ -469,6 +500,17 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
           });
         }
       }
+    }
+
+    // الاسترداد جزء من نفس المعاملة: فشل أي قيد/مخزون لاحق يعيد الكوبون كما كان تلقائياً.
+    if (lockedCoupon) {
+      await consumeCoupon(tx, lockedCoupon, {
+        invoiceId,
+        customerId: input.customerId ?? null,
+        branchId: input.branchId,
+        discountAmount: couponDiscount.toFixed(2),
+        userId: actor.userId,
+      });
     }
 
     // 10. Deduct stock (OUT) per line.

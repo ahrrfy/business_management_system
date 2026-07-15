@@ -35,7 +35,7 @@ const NAV_LINKS: NavLink[] = [
   { href: "/pos", label: "نقطة البيع", icon: ShoppingCart },
   { href: "/price-checker", label: "قارئ الأسعار", icon: ScanLine },
   { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer },
-  { href: "/customers", label: "العملاء", icon: Users },
+  { href: "/crm", label: "CRM والعلاقات", icon: Users, module: "crm" },
   { href: "/invoices", label: "المبيعات", icon: Receipt },
   // (ب) يومي مالي/تشغيلي
   // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط

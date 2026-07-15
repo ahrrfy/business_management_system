@@ -203,6 +203,7 @@ export const saleRouter = router({
         // تقريب نقدي IQD للبيع النقدي الكامل (يُحسب على الخادم، يُسجَّل ADJUST لفرق التقريب).
         cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),
+        couponCode: z.string().trim().min(3).max(64).optional(),
         notes: z.string().optional(),
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
         managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),

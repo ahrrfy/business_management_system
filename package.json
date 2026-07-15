@@ -12,6 +12,7 @@
     "prepare": "husky",
     "format": "prettier --write .",
     "test": "cross-env TZ=UTC vitest run",
+    "test:unit": "cross-env TZ=UTC vitest run --config vitest.unit.config.ts",
     "audit": "pnpm audit --prod --audit-level high",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

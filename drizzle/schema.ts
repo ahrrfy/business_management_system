@@ -900,6 +900,38 @@ export const invoiceItems = mysqlTable(
 export type InvoiceItem = typeof invoiceItems.$inferSelect;
 export type InsertInvoiceItem = typeof invoiceItems.$inferInsert;
 
+/* ============================ CRM — الحملات التجارية ============================ */
+
+/** الحملة هي المظلّة التجارية التي تربط الجمهور بالعروض والكوبونات والنتائج.
+ *  تبقى `promotions` محرك التسعير الفعلي، بينما تملك الحملة الهدف ودورة الاعتماد. */
+export const crmCampaigns = mysqlTable(
+  "crmCampaigns",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    name: varchar("name", { length: 255 }).notNull(),
+    objective: text("objective"),
+    status: mysqlEnum("crmCampaignStatus", ["DRAFT", "REVIEW", "APPROVED", "SCHEDULED", "ACTIVE", "PAUSED", "ENDED"])
+      .default("DRAFT")
+      .notNull(),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id, { onDelete: "set null" }),
+    startsOn: date("startsOn"),
+    endsOn: date("endsOn"),
+    ownerUserId: int("ownerUserId").references(() => users.id, { onDelete: "set null" }),
+    approvedBy: int("approvedBy").references(() => users.id, { onDelete: "set null" }),
+    approvedAt: timestamp("approvedAt"),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    branchStatusIdx: index("idx_crm_campaign_branch_status").on(table.branchId, table.status),
+    datesIdx: index("idx_crm_campaign_dates").on(table.startsOn, table.endsOn),
+  }),
+);
+
+export type CrmCampaign = typeof crmCampaigns.$inferSelect;
+export type InsertCrmCampaign = typeof crmCampaigns.$inferInsert;
+
 /* ============================ العروض والخصومات على المبيعات (Promotions v2) ============================ */
 
 /**
@@ -919,6 +951,7 @@ export const promotions = mysqlTable(
   "promotions",
   {
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    campaignId: bigint("campaignId", { mode: "number" }).references(() => crmCampaigns.id, { onDelete: "set null" }),
     name: varchar("name", { length: 255 }).notNull(),
     description: text("description"),
     type: mysqlEnum("promotionType", ["PERCENT", "AMOUNT"]).notNull(),
@@ -933,6 +966,8 @@ export const promotions = mysqlTable(
     minLineAmount: decimal("minLineAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     priority: int("priority").default(0).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
+    // AUTO = يطبّق تلقائياً في القناة. COUPON = لا يُطبّق إلا بعد تحقق كوبون صالح في معاملة البيع.
+    applicationMode: mysqlEnum("promotionApplicationMode", ["AUTO", "COUPON"]).default("AUTO").notNull(),
     // قناة العرض (0073): true = عرض متجر إلكترونيّ (من لوحة hPanel، أونلاين فقط — يُستثنى من تسعير
     // الكاشير). false = عرض كاشير/إدارة عامّ (السلوك السابق). يميّز القناتين إذ يتطابق branch+tier.
     isStoreManaged: boolean("isStoreManaged").default(false).notNull(),
@@ -944,6 +979,8 @@ export const promotions = mysqlTable(
     activeDatesIdx: index("idx_promo_active_dates").on(table.isActive, table.effectiveFrom, table.effectiveTo),
     scopeIdx: index("idx_promo_scope").on(table.scope),
     branchIdx: index("idx_promo_branch").on(table.branchId),
+    campaignIdx: index("idx_promo_campaign").on(table.campaignId),
+    applicationIdx: index("idx_promo_application").on(table.applicationMode, table.isActive),
   })
 );
 
@@ -974,6 +1011,84 @@ export const promotionTargets = mysqlTable(
 
 export type PromotionTarget = typeof promotionTargets.$inferSelect;
 export type InsertPromotionTarget = typeof promotionTargets.$inferInsert;
+
+/* ============================ CRM — برامج الكوبونات والإصدارات والاسترداد ============================ */
+
+export const couponPrograms = mysqlTable(
+  "couponPrograms",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    campaignId: bigint("campaignId", { mode: "number" }).references(() => crmCampaigns.id, { onDelete: "set null" }),
+    promotionId: bigint("promotionId", { mode: "number" }).notNull().references(() => promotions.id),
+    name: varchar("name", { length: 255 }).notNull(),
+    status: mysqlEnum("couponProgramStatus", ["DRAFT", "ACTIVE", "PAUSED", "ENDED"]).default("DRAFT").notNull(),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id, { onDelete: "set null" }),
+    validFrom: date("validFrom").notNull(),
+    validTo: date("validTo"),
+    perCouponLimit: int("perCouponLimit").default(1).notNull(),
+    perCustomerLimit: int("perCustomerLimit").default(1).notNull(),
+    codePrefix: varchar("codePrefix", { length: 12 }).default("CRM").notNull(),
+    // لقطة تصميم قابلة للإصدار؛ تغيير القالب لاحقاً لا يغيّر بطاقة سبق إصدارها.
+    designJson: json("designJson"),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (table) => ({
+    campaignIdx: index("idx_coupon_program_campaign").on(table.campaignId),
+    promoIdx: index("idx_coupon_program_promo").on(table.promotionId),
+    branchStatusIdx: index("idx_coupon_program_branch_status").on(table.branchId, table.status),
+    datesIdx: index("idx_coupon_program_dates").on(table.validFrom, table.validTo),
+  }),
+);
+
+export const coupons = mysqlTable(
+  "coupons",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    programId: bigint("programId", { mode: "number" }).notNull().references(() => couponPrograms.id, { onDelete: "cascade" }),
+    code: varchar("code", { length: 64 }).notNull(),
+    codeHash: varchar("codeHash", { length: 64 }).notNull(),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id, { onDelete: "set null" }),
+    status: mysqlEnum("couponStatus", ["ACTIVE", "REDEEMED", "VOID"]).default("ACTIVE").notNull(),
+    redemptionCount: int("redemptionCount").default(0).notNull(),
+    issuedAt: timestamp("issuedAt").defaultNow().notNull(),
+    voidedAt: timestamp("voidedAt"),
+    voidedBy: int("voidedBy").references(() => users.id, { onDelete: "set null" }),
+  },
+  (table) => ({
+    codeUq: unique("uq_coupon_code").on(table.code),
+    hashUq: unique("uq_coupon_hash").on(table.codeHash),
+    programIdx: index("idx_coupon_program").on(table.programId),
+    customerIdx: index("idx_coupon_customer").on(table.customerId),
+    statusIdx: index("idx_coupon_status").on(table.status),
+  }),
+);
+
+export const couponRedemptions = mysqlTable(
+  "couponRedemptions",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    couponId: bigint("couponId", { mode: "number" }).notNull().references(() => coupons.id),
+    programId: bigint("programId", { mode: "number" }).notNull().references(() => couponPrograms.id),
+    invoiceId: bigint("invoiceId", { mode: "number" }).notNull().references(() => invoices.id),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id, { onDelete: "set null" }),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    discountAmount: decimal("discountAmount", { precision: 15, scale: 2 }).notNull(),
+    redeemedBy: int("redeemedBy").notNull().references(() => users.id),
+    redeemedAt: timestamp("redeemedAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    invoiceUq: unique("uq_coupon_redemption_invoice").on(table.invoiceId),
+    couponInvoiceUq: unique("uq_coupon_redemption_coupon_invoice").on(table.couponId, table.invoiceId),
+    programCustomerIdx: index("idx_coupon_redemption_program_customer").on(table.programId, table.customerId),
+    redeemedAtIdx: index("idx_coupon_redemption_at").on(table.redeemedAt),
+  }),
+);
+
+export type CouponProgram = typeof couponPrograms.$inferSelect;
+export type Coupon = typeof coupons.$inferSelect;
+export type CouponRedemption = typeof couponRedemptions.$inferSelect;
 
 /* ============================ عروض الأسعار (Quotations) ============================ */
 

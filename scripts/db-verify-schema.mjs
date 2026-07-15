@@ -79,6 +79,10 @@ try {
     ["auditLogs", "idx_audit_user_action_date"],
     ["auditLogs", "idx_audit_entity"],
     ["branchStock", "idx_stock_branch_qty"],
+    ["crmCampaigns", "idx_crm_campaign_branch_status"],
+    ["promotions", "idx_promo_application"],
+    ["coupons", "uq_coupon_hash"],
+    ["couponRedemptions", "uq_coupon_redemption_invoice"],
   ];
   const [idxRows] = await conn.query(
     "SELECT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = ? GROUP BY TABLE_NAME, INDEX_NAME",
@@ -100,7 +104,7 @@ try {
   //    طريقة قديمة (drizzle-kit migrate) كانت تُسجّل هجراتٍ «مُطبَّقة» دون تنفيذ SQL فعلاً ⇒ انحراف
   //    صامت (كائن غائب رغم تسجيل الهجرة) لم يكن db:verify يمسكه ⇒ ثقة كاذبة. نفحصها صراحةً هنا.
   //    (هجرة 0041 المصالحة تُعيد إنشاء أي مفقود idempotently.)
-  const CRITICAL_TABLES = ["voucherCategories", "exchangeHouses", "exchangeTransactions"];
+  const CRITICAL_TABLES = ["voucherCategories", "exchangeHouses", "exchangeTransactions", "crmCampaigns", "couponPrograms", "coupons", "couponRedemptions"];
   const CRITICAL_COLUMNS = [
     ["products", "searchNorm"], ["customers", "searchNorm"], ["suppliers", "searchNorm"], // 0035/0039
     ["receipts", "voucherCategoryId"], ["receipts", "counterpartyName"], ["receipts", "voucherDate"], // 0036
@@ -108,6 +112,7 @@ try {
     ["receipts", "receiptApprovalStatus"], ["receipts", "approvedBy"], ["receipts", "approvedAt"],
     ["accountingEntries", "exchangeHouseId"], // 0037
     ["purchaseOrders", "poCurrency"], ["purchaseOrders", "usdTotal"], ["purchaseOrders", "agreedRate"], // 0038
+    ["promotions", "campaignId"], ["promotions", "promotionApplicationMode"], // 0076 CRM
   ];
   const missingCritTables = CRITICAL_TABLES.filter((t) => !actual[t]);
   const missingCritCols = CRITICAL_COLUMNS.filter(([t, c]) => !actual[t] || !actual[t].has(c)).map(([t, c]) => `${t}.${c}`);
