@@ -126,15 +126,31 @@ function priceLabel(price: string | null): string {
   return `${money(price)} د.ع`;
 }
 
-function ProductImage({ url, alt, className }: { url: string | null; alt: string; className?: string }) {
+function ProductImage({
+  url,
+  alt,
+  className,
+  showFallbackLabel = false,
+}: {
+  url: string | null;
+  alt: string;
+  className?: string;
+  /** The catalogue grid has room to explain an absent image; compact rows do not. */
+  showFallbackLabel?: boolean;
+}) {
   if (!url) {
     return (
-      <div className={`flex items-center justify-center bg-emerald-50 text-emerald-300 dark:bg-slate-800 dark:text-slate-600 ${className ?? ""}`}>
+      <div
+        className={`store-product-image-placeholder flex flex-col items-center justify-center gap-2 bg-emerald-50 text-emerald-700 dark:bg-slate-800 dark:text-emerald-300 ${className ?? ""}`}
+        role="img"
+        aria-label={`لا توجد صورة متاحة حالياً للمنتج: ${alt}`}
+      >
         <ImageOff aria-hidden className="size-8" />
+        {showFallbackLabel && <span className="text-center text-[11px] font-bold">صورة المنتج قريباً</span>}
       </div>
     );
   }
-  return <img src={url} alt={alt} loading="lazy" className={`object-cover ${className ?? ""}`} />;
+  return <img src={url} alt={alt} loading="lazy" className={`store-product-image object-cover ${className ?? ""}`} />;
 }
 
 /** «تسوّق حسب القسم» — بطاقات فئات بصرية تقود التصفّح (نمط تجاريّ عالميّ). */
@@ -178,9 +194,9 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   return (
-    <div className="flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+    <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
       <button onClick={onSelect} className="relative block text-right">
-        <ProductImage url={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
+        <ProductImage url={p.imageUrl} alt={p.productName} className="store-product-media aspect-square w-full" />
         {onSale && pct > 0 && (
           <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
         )}
@@ -199,7 +215,7 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
         <button
           onClick={onAdd}
           disabled={p.inStock === false}
-          className="mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-1.5 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+          className="store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-1.5 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
         >
           <Plus aria-hidden className="size-3.5" /> {p.inStock === false ? "غير متوفّر" : "أضف"}
         </button>
@@ -497,7 +513,7 @@ export default function Storefront() {
     }`;
 
   return (
-    <div className="min-h-dvh bg-emerald-50/50 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
+    <div className="storefront min-h-dvh bg-emerald-50/50 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
       {/* الترويسة */}
       <header className="sticky top-0 z-20 border-b border-emerald-100/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/85">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
@@ -706,12 +722,12 @@ export default function Storefront() {
               const card = (
                 <div
                   key={p.productId}
-                  className={`flex flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
+                  className={`store-product-card flex flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
                     p.inStock ? "hover:shadow-md hover:ring-emerald-200 dark:hover:ring-emerald-500/30" : "opacity-70"
                   }`}
                 >
                   <button onClick={() => setSelectedId(p.productId)} className="relative block text-right">
-                    <ProductImage url={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
+                    <ProductImage url={p.imageUrl} alt={p.productName} showFallbackLabel className="store-product-media aspect-square w-full" />
                     {onSale && pct > 0 && (
                       <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">
                         −{pct}٪
@@ -752,7 +768,7 @@ export default function Storefront() {
                     <button
                       onClick={() => addToCart(p)}
                       disabled={!p.inStock}
-                      className="mt-1 flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+                      className="store-primary-action store-mobile-action mt-1 flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                     >
                       <Plus aria-hidden className="size-3.5" />
                       {p.inStock ? "أضف للسلة" : "غير متوفّر"}
@@ -850,7 +866,7 @@ export default function Storefront() {
             ) : detailQ.data ? (
               <div>
                 <div className="flex gap-4">
-                  <ProductImage url={detailQ.data.imageUrl} alt={detailQ.data.productName} className="size-28 shrink-0 rounded-2xl" />
+                  <ProductImage url={detailQ.data.imageUrl} alt={detailQ.data.productName} className="store-product-media size-28 shrink-0 rounded-2xl" />
                   <div className="min-w-0 flex-1">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
@@ -887,7 +903,7 @@ export default function Storefront() {
                     setSelectedId(null);
                   }}
                   disabled={!detailQ.data.inStock || detailQ.data.price == null}
-                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+                  className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                 >
                   <Plus aria-hidden className="size-4" />
                   {detailQ.data.inStock ? "أضف إلى السلة" : "غير متوفّر"}
@@ -916,14 +932,14 @@ export default function Storefront() {
                     <h3 className="mb-2 text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
                     <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                       {relatedQ.data!.map((rp) => (
-                        <div key={rp.productId} className="flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                        <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                           <button onClick={() => setSelectedId(rp.productId)} className="text-right">
-                            <ProductImage url={rp.imageUrl} alt={rp.productName} className="aspect-square w-full" />
+                            <ProductImage url={rp.imageUrl} alt={rp.productName} className="store-product-media aspect-square w-full" />
                           </button>
                           <div className="flex flex-1 flex-col gap-1 p-2">
                             <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
                             <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-                            <button onClick={() => addToCart(rp)} className="mt-0.5 flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600">
+                            <button onClick={() => addToCart(rp)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600">
                               <Plus aria-hidden className="size-3" /> أضف
                             </button>
                           </div>
@@ -995,7 +1011,7 @@ export default function Storefront() {
               <button
                 onClick={openCheckout}
                 disabled={!storeOpen}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+                className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
               >
                 {storeOpen ? (
                   <>
@@ -1084,7 +1100,7 @@ export default function Storefront() {
             <button
               onClick={submitOrder}
               disabled={!canSubmit || createOrder.isPending}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+              className="store-primary-action store-mobile-action flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
             >
               {createOrder.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}
               تأكيد الطلب (الدفع عند الاستلام)

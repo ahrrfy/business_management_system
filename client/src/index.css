@@ -191,6 +191,107 @@
 }
 
 @layer components {
+  /* Storefront only: a deliberately small marketing palette.  Green carries trust,
+     while gold is reserved for a customer action that moves the order forward. */
+  .storefront {
+    --store-brand: #087e6b;
+    --store-brand-strong: #056455;
+    --store-accent: #e99b00;
+    --store-accent-strong: #bd7600;
+    --store-canvas: #f5fbf8;
+    --store-ink: #15312c;
+    --store-muted: #637873;
+    --store-sale: #c23a2b;
+    background-color: var(--store-canvas);
+    color: var(--store-ink);
+  }
+
+  .storefront .store-product-card {
+    border: 1px solid color-mix(in srgb, var(--store-brand) 9%, white);
+    box-shadow: 0 1px 2px rgb(21 49 44 / 5%);
+  }
+
+  .storefront .store-product-card:hover {
+    border-color: color-mix(in srgb, var(--store-brand) 32%, white);
+    box-shadow: 0 12px 24px rgb(21 49 44 / 10%);
+    transform: translateY(-2px);
+  }
+
+  .storefront .store-product-media {
+    background: radial-gradient(circle at 50% 28%, #fff 0, #edf8f3 62%, #d7eee4 100%);
+  }
+
+  .storefront .store-product-image {
+    transition: transform 180ms ease;
+  }
+
+  .storefront .store-product-card:hover .store-product-image {
+    transform: scale(1.025);
+  }
+
+  .storefront .store-product-image-placeholder {
+    background: linear-gradient(145deg, #effaf5, #d9f1e6);
+    color: var(--store-brand);
+  }
+
+  .storefront .store-primary-action {
+    background-color: var(--store-accent);
+    color: #fff;
+    box-shadow: 0 6px 14px rgb(233 155 0 / 20%);
+  }
+
+  .storefront .store-primary-action:hover:not(:disabled) {
+    background-color: var(--store-accent-strong);
+    box-shadow: 0 8px 18px rgb(189 118 0 / 24%);
+  }
+
+  .storefront .store-primary-action:disabled {
+    box-shadow: none;
+  }
+
+  /* Thumb-friendly CTAs: purchase controls stay comfortably tappable without
+     expanding desktop cards unnecessarily. */
+  @media (max-width: 639px) {
+    .storefront .store-mobile-action {
+      min-height: 44px;
+    }
+
+    .storefront .store-product-card {
+      border-radius: 1rem;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .storefront .store-product-card,
+    .storefront .store-product-image {
+      transition: none;
+      transform: none;
+    }
+  }
+
+  .dark .storefront {
+    --store-canvas: #0b1714;
+    --store-ink: #edf7f2;
+  }
+
+  .dark .storefront .store-product-card {
+    border-color: rgb(255 255 255 / 9%);
+    box-shadow: 0 1px 2px rgb(0 0 0 / 16%);
+  }
+
+  .dark .storefront .store-product-card:hover {
+    border-color: rgb(52 211 153 / 36%);
+    box-shadow: 0 12px 24px rgb(0 0 0 / 24%);
+  }
+
+  .dark .storefront .store-product-media {
+    background: radial-gradient(circle at 50% 28%, #1f3831 0, #152821 62%, #0f1d19 100%);
+  }
+
+  .dark .storefront .store-product-image-placeholder {
+    background: linear-gradient(145deg, #19362c, #10251e);
+  }
+
   .container {
     width: 100%;
     margin-inline: auto;
