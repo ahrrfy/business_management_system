@@ -7,13 +7,12 @@
 #       scripts saved as UTF-8 without BOM (proven 2026-06-10).
 #
 # Manual run:      pnpm health:check
-# Daily schedule (once; run *after* the 07:30 pull task):
-#   schtasks /Create /TN "AlRoya ERP - Health Check" /SC DAILY /ST 08:00 /F ^
-#     /TR "powershell -NoProfile -ExecutionPolicy Bypass -File D:\business_management_system\scripts\health-check-local.ps1"
-#   Then (IMPORTANT - default task settings silently refuse to run on battery / miss runs
-#   while the machine is off; proven 2026-07-06 when the pull task sat broken for 3 days):
-#     - allow start on batteries + StartWhenAvailable (catch up missed runs). One-liner:
-#       powershell -NoProfile -Command "$t=Get-ScheduledTask 'AlRoya ERP - Health Check'; $s=$t.Settings; $s.StartWhenAvailable=$true; $s.DisallowStartIfOnBatteries=$false; $s.StopIfGoingOnBatteries=$false; Set-ScheduledTask 'AlRoya ERP - Health Check' -Settings $s"
+# Schedule: do NOT give this its own daily trigger. It runs as action [1] of the single
+#   "AlRoya ERP - Pull VPS Backup" task, right after the pull action, so it always reads a
+#   fully-downloaded backup folder. A separate timer here races the pull on catch-up wakes
+#   (both fire at once when the machine boots after being asleep) and fires false "backup
+#   stale" toasts (proven 2026-07-15). See the head of scripts/pull-vps-backup.ps1 for the
+#   one-shot Register-ScheduledTask that wires pull + check into one task.
 param(
   [string]$SiteUrl = "https://srv1548487.hstgr.cloud/healthz",
   [string]$BackupDir = "$env:USERPROFILE\erp-vps-backups",
