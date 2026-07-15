@@ -53,4 +53,15 @@ describe("createOnlineOrder availability guards", () => {
     const order = (await db().select({ branchId: s.onlineOrders.branchId }).from(s.onlineOrders).where(eq(s.onlineOrders.id, created.orderId)))[0];
     expect(order?.branchId).toBe(1);
   });
+
+  it("replays only an identical order key and rejects a collision or altered cart", async () => {
+    const request = { ...baseOrder, clientRequestId: "store-order-key-1", lines: [{ productUnitId: 1, quantity: 1 }] };
+    const created = await createOnlineOrder(request);
+    const replay = await createOnlineOrder(request);
+    expect(replay.orderId).toBe(created.orderId);
+    expect(replay.idempotentReplay).toBe(true);
+
+    await expect(createOnlineOrder({ ...request, customerPhone: "07801234567" })).rejects.toMatchObject({ code: "CONFLICT" });
+    await expect(createOnlineOrder({ ...request, lines: [{ productUnitId: 1, quantity: 2 }] })).rejects.toMatchObject({ code: "CONFLICT" });
+  });
 });

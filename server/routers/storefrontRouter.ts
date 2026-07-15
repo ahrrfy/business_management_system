@@ -109,7 +109,7 @@ export const storefrontRouter = router({
       // نجاح إنشاء الطلب هو المصدر الموثوق لهذا الحدث؛ لا نأخذه من متصفح العميل.
       // الخدمة أفضل-جهد ولا تلمس بيانات الطلب أو العميل.
       if (!result.idempotentReplay) {
-        void recordStoreConversionMetric({ event: "ORDER_COMPLETED", branchId: input.branchId });
+        void recordStoreConversionMetric({ event: "ORDER_COMPLETED", branchId: result.branchId });
       }
       return result;
     }),

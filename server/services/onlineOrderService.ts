@@ -61,6 +61,8 @@ export interface CreateOnlineOrderInput {
 export interface CreateOnlineOrderResult {
   orderId: number;
   orderNumber: string;
+  /** The server-resolved storefront branch; never supplied by the browser. */
+  branchId: number;
   subtotal: string;
   deliveryFee: string;
   total: string;
@@ -99,6 +101,17 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
   if (!phone) throw new TRPCError({ code: "BAD_REQUEST", message: "رقم الهاتف مطلوب" });
   const address = input.addressText.trim();
   if (!address) throw new TRPCError({ code: "BAD_REQUEST", message: "العنوان مطلوب" });
+  const requestedLineQuantities = new Map<number, number>();
+  for (const line of input.lines) {
+    const qty = Math.floor(line.quantity);
+    if (!Number.isSafeInteger(line.productUnitId) || !Number.isFinite(qty) || qty <= 0) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "كمية أو منتج غير صحيح" });
+    }
+    requestedLineQuantities.set(line.productUnitId, (requestedLineQuantities.get(line.productUnitId) ?? 0) + qty);
+  }
+  const requestedShippingAddress = input.notes && input.notes.trim()
+    ? `${address}\nملاحظة: ${input.notes.trim()}`
+    : address;
   // المتجر مغلق مؤقتاً (إعداد الموظف) ⇒ لا يُقبل طلب (إنفاذ خادمي فوق حجب الواجهة).
   const storeSettings = await getStoreSettings();
   if (!storeSettings.isOpen) throw new TRPCError({ code: "BAD_REQUEST", message: "المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً" });
@@ -114,26 +127,49 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
           .select({
             id: onlineOrders.id,
             orderNumber: onlineOrders.orderNumber,
+            branchId: onlineOrders.branchId,
+            customerPhone: customers.phone,
             subtotal: onlineOrders.subtotal,
             shippingCost: onlineOrders.shippingCost,
             total: onlineOrders.total,
+            governorate: onlineOrders.governorate,
+            shippingAddress: onlineOrders.shippingAddress,
           })
           .from(onlineOrders)
+          .innerJoin(customers, eq(onlineOrders.customerId, customers.id))
           .where(eq(onlineOrders.clientRequestId, input.clientRequestId))
           .limit(1)
       )[0];
       if (existing) {
-        const cnt = await tx
-          .select({ id: onlineOrderItems.id })
+        const existingLines = await tx
+          .select({ productUnitId: onlineOrderItems.productUnitId, quantity: onlineOrderItems.quantity })
           .from(onlineOrderItems)
           .where(eq(onlineOrderItems.onlineOrderId, Number(existing.id)));
+        const storedLineQuantities = new Map<number, number>();
+        for (const line of existingLines) {
+          const unitId = Number(line.productUnitId);
+          storedLineQuantities.set(unitId, (storedLineQuantities.get(unitId) ?? 0) + Number(line.quantity));
+        }
+        const sameLines = storedLineQuantities.size === requestedLineQuantities.size
+          && Array.from(requestedLineQuantities.entries()).every(([unitId, quantity]) => storedLineQuantities.get(unitId) === quantity);
+        // A request key is a replay key, not an order-lookup key.  Reject every
+        // mismatch to prevent a guessed/colliding key from exposing another order.
+        if (
+          normalizeStorePhone(existing.customerPhone ?? "") !== phone
+          || existing.governorate !== input.governorate
+          || existing.shippingAddress !== requestedShippingAddress
+          || !sameLines
+        ) {
+          throw new TRPCError({ code: "CONFLICT", message: "رمز الطلب استُخدم لطلب مختلف — أعد تحميل السلة وحاول مجدداً" });
+        }
         return {
           orderId: Number(existing.id),
           orderNumber: existing.orderNumber,
+          branchId: Number(existing.branchId),
           subtotal: String(existing.subtotal),
           deliveryFee: String(existing.shippingCost),
           total: String(existing.total),
-          itemCount: cnt.length,
+          itemCount: existingLines.length,
           idempotentReplay: true,
         };
       }
@@ -277,9 +313,6 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     }
 
     // ④ إنشاء الطلب (PENDING) — رقمٌ مؤقّت فريد ثم ORD-{id} (بلا سباق ترقيم).
-    const shippingAddress = input.notes && input.notes.trim()
-      ? `${address}\nملاحظة: ${input.notes.trim()}`
-      : address;
     const insOrder = await tx.insert(onlineOrders).values({
       orderNumber: `TMP-${randomUUID()}`,
       customerId,
@@ -289,7 +322,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
       taxAmount: "0",
       total: toDbMoney(total),
       status: "PENDING",
-      shippingAddress,
+      shippingAddress: requestedShippingAddress,
       governorate: input.governorate,
       latitude: input.latitude != null ? String(input.latitude) : null,
       longitude: input.longitude != null ? String(input.longitude) : null,
@@ -315,6 +348,7 @@ export async function createOnlineOrder(input: CreateOnlineOrderInput): Promise<
     return {
       orderId,
       orderNumber,
+      branchId,
       subtotal: toDbMoney(subtotal),
       deliveryFee: toDbMoney(deliveryFee),
       total: toDbMoney(total),
