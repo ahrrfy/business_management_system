@@ -190,6 +190,13 @@
   height: 22px;
 }
 
+/* رسائل الخطأ التشخيصية متعددة الأسطر (errorMap.ar: الحقل/القيمة/السبب/الإجراء كل على سطر)
+   — sonner يطمس \n افتراضياً فتتكدّس الأسطر في سطر واحد؛ pre-line يعيد فواصلها. */
+[data-sonner-toast] [data-title],
+[data-sonner-toast] [data-description] {
+  white-space: pre-line;
+}
+
 @layer components {
   /* Storefront only: a deliberately small marketing palette.  Green carries trust,
      while gold is reserved for a customer action that moves the order forward. */
