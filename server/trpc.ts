@@ -245,10 +245,18 @@ export const purchasesWarehouseProcedure = moduleProcedure(["warehouse", "manage
 export const inventoryReadProcedure = branchScopedProcedure.use(requireModule("inventory", "READ"));
 export const inventoryWarehouseProcedure = moduleProcedure(["warehouse", "manager"], "inventory", "FULL");
 export const inventoryManagerProcedure = moduleProcedure(["manager"], "inventory", "FULL");
-// customers — «مندوب مبيعات» قالبه customers=FULL ووصفه «متابعة عملاء».
-export const customersReadProcedure = protectedProcedure.use(requireModule("customers", "READ"));
-export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep"], "customers", "FULL");
-export const customersManagerProcedure = moduleProcedure(["manager"], "customers", "FULL");
+// أسماء توافقية للراوترات القائمة؛ سلطة ملف العميل انتقلت فعلياً إلى وحدة CRM.
+export const customersReadProcedure = protectedProcedure.use(requireModule("crm", "READ"));
+export const customersCashierProcedure = moduleProcedure(["cashier", "manager", "sales_rep"], "crm", "FULL");
+export const customersManagerProcedure = moduleProcedure(["manager"], "crm", "FULL");
+
+// CRM هو مالك رحلة العميل؛ تبقى وحدات المبيعات/القنوات/الخزينة مزوّدات أحداث عبر حدود واضحة.
+export const crmReadProcedure = branchScopedProcedure.use(requireModule("crm", "READ"));
+export const crmWriteProcedure = moduleProcedure(["cashier", "manager", "sales_rep"], "crm", "FULL");
+export const campaignsReadProcedure = branchScopedProcedure.use(requireModule("campaigns", "READ"));
+export const campaignsManagerProcedure = moduleProcedure(["manager"], "campaigns", "FULL");
+export const collectionsReadProcedure = branchScopedProcedure.use(requireModule("collections", "READ"));
+export const collectionsManagerProcedure = moduleProcedure(["manager", "accountant"], "collections", "FULL");
 
 // المتجر الإلكتروني (وحدة store): قراءة الطلبات/البنرات، تثبيت الطلبات وطباعة الملصقات (تشغيلي)،
 // وإدارة البنرات/الإعدادات (مديري). branchScopedProcedure للقراءة ⇒ عزل فرع لغير المرتفعين.

@@ -30,7 +30,7 @@ const SupplierNew = lazy(() => import("@/pages/SupplierNew"));
 const SupplierEdit = lazy(() => import("@/pages/SupplierEdit"));
 // صَفحات الوحدات بتبويبات ثانوية (hubs): تَجمع شاشات الوحدة في صفحة واحدة بشريط ?tab=،
 // وتُسطّح الشريط الجانبي إلى مَدخل واحد لكل وحدة. المسارات القَديمة للقوائم تُعيد التوجيه.
-const CustomersHub = lazy(() => import("@/pages/CustomersHub"));
+const CrmHub = lazy(() => import("@/pages/CrmHub"));
 const SuppliersHub = lazy(() => import("@/pages/SuppliersHub"));
 const InventoryHub = lazy(() => import("@/pages/InventoryHub"));
 const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
@@ -227,8 +227,8 @@ export default function App() {
       <Route path="/products/:id/edit"><Shell><ProductEdit /></Shell></Route>
       {/* gstack B10 (٧/٧/٢٦): موجات الأسعار — تبويب داخل InventoryHub. المسار المستقلّ يبقى للحفاظ على الروابط. */}
       <Route path="/price-waves"><Redirect to="/inventory?tab=price-waves" /></Route>
-      {/* promotions v2 (٨/٧/٢٦): العروض والخصومات — تبويب في InventoryHub. */}
-      <Route path="/offers"><Redirect to="/inventory?tab=offers" /></Route>
+      {/* العروض والحملات والكوبونات مملوكة لوحدة CRM؛ الرابط القديم محفوظ. */}
+      <Route path="/offers"><Redirect to="/crm?tab=offers" /></Route>
       {/* labels (٨/٧/٢٦): مسار مختصر لشاشة طباعة ملصقات الباركود (النموذج الرئيسي في InventoryHub). */}
       <Route path="/labels/print"><Redirect to="/inventory?tab=barcodes" /></Route>
       <Route path="/categories"><Redirect to="/inventory?tab=categories" /></Route>
@@ -236,11 +236,12 @@ export default function App() {
       <Route path="/invoices"><Shell><SalesHub /></Shell></Route>
       <Route path="/sales/new"><Shell><RequireRole roles={["admin","manager","cashier"]} module="sales" level="FULL"><SalesInvoiceNew /></RequireRole></Shell></Route>
       <Route path="/invoices/:id"><Shell><InvoiceDetail /></Shell></Route>
-      <Route path="/quotations"><Redirect to="/invoices?tab=quotations" /></Route>
+      <Route path="/quotations"><Redirect to="/crm?tab=quotations" /></Route>
       {/* إنشاء عرض السعر salesManagerProcedure(["manager"],"sales","FULL") — مرآة بوّابة الخادم (الكاشير كان يصل لمحرّر يفشل حفظه بـ403) */}
       <Route path="/quotations/new"><Shell><RequireRole roles={["manager"]} module="sales" level="FULL"><QuotationNew /></RequireRole></Shell></Route>
       <Route path="/quotations/:id"><Shell><QuotationDetail /></Shell></Route>
-      <Route path="/customers"><Shell><CustomersHub /></Shell></Route>
+      <Route path="/crm"><Shell><CrmHub /></Shell></Route>
+      <Route path="/customers"><Redirect to="/crm?tab=customers" /></Route>
       <Route path="/customers/new"><Shell><CustomerNew /></Shell></Route>
       <Route path="/customers/:id/edit"><Shell><CustomerEdit /></Shell></Route>
       <Route path="/returns"><Shell><Returns /></Shell></Route>
@@ -265,7 +266,7 @@ export default function App() {
       {/* إعادة توجيه قَديمة: /work-orders/reception ⇒ /pos?mode=RECEPTION */}
       <Route path="/work-orders/reception"><Redirect to="/pos?mode=RECEPTION" /></Route>
       <Route path="/work-orders/station"><Redirect to="/work-orders?tab=station" /></Route>
-      <Route path="/inbox"><Redirect to="/invoices?tab=inbox" /></Route>
+      <Route path="/inbox"><Redirect to="/crm?tab=inbox" /></Route>
       <Route path="/settings/integrations"><Redirect to="/settings?tab=integrations" /></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>

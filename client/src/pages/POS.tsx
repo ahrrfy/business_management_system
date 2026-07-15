@@ -29,6 +29,8 @@ type PosRow = RouterOutputs["catalog"]["posList"][number];
 
 type CartItem = {
   row: PosRow;
+  /** لقطة السعر/العرض التلقائي قبل تطبيق كوبون، لاستعادتها عند تغيّر السلة أو إزالة الكوبون. */
+  preCouponRow?: PosRow;
   qty: number;
   disc?: number;      // خصم % (0–100)
   origPrice?: number; // السعر الأصلي قبل الخصم
@@ -45,6 +47,9 @@ type POSTab = {
   customerId: number | null;
   tierOverride: Tier | null;
   clientRequestId: string; // مفتاح idempotency مستقلّ لكل تبويب — عزل مالي بين الفواتير
+  couponInput: string;
+  couponCode: string | null;
+  couponLabel: string | null;
 };
 
 type Receipt = {
@@ -155,6 +160,7 @@ const createTab = (id: number, label?: string): POSTab => ({
   selId: null, numMode: "PAY",
   customerId: null, tierOverride: null,
   clientRequestId: newClientRequestId(),
+  couponInput: "", couponCode: null, couponLabel: null,
 });
 
 // ─── useSmartScanInput ────────────────────────────────────────────────────────
@@ -336,7 +342,15 @@ export default function POS() {
   const setSelId   = (v: number | null) => patchActive({ selId: v });
   const setNumMode = (v: NumMode)        => patchActive({ numMode: v });
   const setMethod  = (v: PaymentMethod)  => patchActive({ method: v });
-  const setCustId  = (v: number | null)  => patchActive({ customerId: v, tierOverride: null });
+  const resetCouponItems = (items: CartItem[]) => items.map((item) => item.preCouponRow ? { ...item, row: item.preCouponRow, preCouponRow: undefined, disc: undefined } : item);
+  const clearAppliedCoupon = () => {
+    setCart((items) => resetCouponItems(items));
+    patchActive({ couponCode: null, couponLabel: null });
+  };
+  const setCustId  = (v: number | null)  => {
+    clearAppliedCoupon();
+    patchActive({ customerId: v, tierOverride: null });
+  };
   const setTierOvr = (v: Tier | null)    => patchActive({ tierOverride: v });
 
   function addTab() {
@@ -450,7 +464,9 @@ export default function POS() {
       return;
     }
     if (receipt) setReceipt(null);
-    setCart((prev) => {
+    if (activeTab.couponCode) patchActive({ couponCode: null, couponLabel: null });
+    setCart((raw) => {
+      const prev = resetCouponItems(raw);
       const i = prev.findIndex((c) => c.row.productUnitId === row.productUnitId);
       if (i >= 0) {
         const next = [...prev];
@@ -465,6 +481,7 @@ export default function POS() {
   }
 
   function changeQty(id: number, qty: number) {
+    if (activeTab.couponCode) clearAppliedCoupon();
     if (qty <= 0) {
       setCart((prev) => prev.filter((c) => c.row.productUnitId !== id));
       if (activeTab.selId === id) setSelId(null);
@@ -474,6 +491,7 @@ export default function POS() {
   }
 
   function removeRow(id: number) {
+    if (activeTab.couponCode) clearAppliedCoupon();
     setCart((prev) => prev.filter((c) => c.row.productUnitId !== id));
     if (activeTab.selId === id) setSelId(null);
   }
@@ -594,7 +612,7 @@ export default function POS() {
       clearCartDraft(branchId);
       notify.ok(`تم البيع — فاتورة ${r.invoiceNumber}`, "افتح من شريط «آخر فاتورة» أعلاه أو من صفحة الفواتير");
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
-      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, clientRequestId: newClientRequestId() });
+      patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
 
       await printReceipt(buildBrandedReceipt(alignedRec));
       await Promise.all([
@@ -616,6 +634,52 @@ export default function POS() {
       else { notify.errBig(e); setSaleError(e.message); }
     },
   });
+
+  const couponPreview = trpc.crm.coupons.preview.useMutation({
+    onSuccess: (result) => {
+      const byUnit = new Map(result.lines.map((line) => [Number(line.productUnitId), line]));
+      setCart((items) => items.map((item) => {
+        const base = item.preCouponRow ?? item.row;
+        const applied = byUnit.get(Number(base.productUnitId));
+        if (!applied) return { ...item, row: base, preCouponRow: undefined };
+        return {
+          ...item,
+          disc: undefined,
+          preCouponRow: base,
+          row: {
+            ...base,
+            promotionId: applied.promotionId,
+            promotionName: applied.promotionName,
+            promotionDiscountForUnit: applied.promotionDiscountForUnit,
+            promotionEffectivePrice: applied.promotionEffectivePrice,
+          },
+        };
+      }));
+      patchActive({ couponInput: result.code, couponCode: result.code, couponLabel: result.programName });
+      notify.ok(`تم تطبيق الكوبون — ${result.programName}`);
+    },
+    onError: (error) => notify.err(error),
+  });
+
+  function applyCoupon() {
+    const code = activeTab.couponInput.trim();
+    if (!code || !cart.length) return;
+    const baseItems = resetCouponItems(cart);
+    couponPreview.mutate({
+      code,
+      branchId,
+      customerId: activeTab.customerId ?? undefined,
+      customerTier: effectiveTier,
+      lines: baseItems.map((item) => ({
+        productId: item.row.productId,
+        variantId: item.row.variantId,
+        productUnitId: item.row.productUnitId,
+        unitPrice: String(item.row.price ?? "0"),
+        quantity: item.qty,
+        hasContractPrice: item.row.isContractPrice,
+      })),
+    });
+  }
 
   // §٥: لقطة مبالغ/منتجات البيع بدقّة Decimal لحظة الإرسال (لا وقت النجاح) ⇒ تثبّت على التبويب
   // المُباع ولا تنجرف لو بدّل الكاشير التبويب. نفس صيغ الحساب القديمة (لا تغيير سلوك).
@@ -665,6 +729,7 @@ export default function POS() {
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
       payment: { amount: payAmount, method: activeTab.method },
+      ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
       ...(cashFull ? { cashRoundIQD: true } : {}),
       ...(approval ? { managerApproval: approval } : {}),
     });
@@ -682,6 +747,7 @@ export default function POS() {
       priceTier: effectiveTier,
       lines: cart.map(buildSaleLine),
       payment: { amount: payAmount, method: "CASH" },
+      ...(activeTab.couponCode ? { couponCode: activeTab.couponCode } : {}),
     });
   }
 
@@ -850,6 +916,13 @@ export default function POS() {
           hasCustomer={selectedCustomer != null}
           saleError={saleError}
           onDismissError={() => setSaleError(null)}
+          couponInput={activeTab.couponInput}
+          couponCode={activeTab.couponCode}
+          couponLabel={activeTab.couponLabel}
+          setCouponInput={(value) => patchActive({ couponInput: value })}
+          onApplyCoupon={applyCoupon}
+          onClearCoupon={clearAppliedCoupon}
+          couponPending={couponPreview.isPending}
         />
 
         {/* Cart Panel */}
@@ -1433,9 +1506,12 @@ interface PaymentPanelProps {
   isPending: boolean; canPay: boolean; hasCustomer: boolean;
   saleError: string | null; onDismissError: () => void;
   stacked: boolean;
+  couponInput: string; couponCode: string | null; couponLabel: string | null;
+  setCouponInput: (value: string) => void; onApplyCoupon: () => void; onClearCoupon: () => void;
+  couponPending: boolean;
 }
 
-function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked }: PaymentPanelProps) {
+function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, isChange, isOwing, method, setMethod, numMode, setNumMode, numPress, onPay, onQuickPay, cartLen, isPending, canPay, hasCustomer, saleError, onDismissError, stacked, couponInput, couponCode, couponLabel, setCouponInput, onApplyCoupon, onClearCoupon, couponPending }: PaymentPanelProps) {
 
   const modeStyle = (active: boolean): React.CSSProperties => ({
     display: "flex", alignItems: "center", justifyContent: "center",
@@ -1549,6 +1625,32 @@ function PaymentPanel({ C, total, payInput, setPayInput, paid, change, credit, i
           <button style={numKeyStyle()}     onClick={() => numPress("0")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>0</button>
           <button style={{ ...numKeyStyle(), fontSize: 13 }} onClick={() => numPress("+/-")} onMouseDown={(e) => (e.currentTarget.style.transform = "scale(.94)")} onMouseUp={(e) => (e.currentTarget.style.transform = "")}>+/-</button>
         </div>
+      </div>
+
+      {/* كوبون CRM — تحقق خادمي ثم إعادة تحقق ذرّية عند البيع */}
+      <div style={{ padding: "4px 11px 3px", flexShrink: 0 }}>
+        <div style={{ fontSize: 11.5, color: C.mutedFg, fontWeight: 700, marginBottom: 4 }}>كوبون خصم</div>
+        <div style={{ display: "flex", gap: 5 }}>
+          <input
+            value={couponInput}
+            onChange={(e) => setCouponInput(e.target.value.toUpperCase())}
+            onKeyDown={(e) => { if (e.key === "Enter") onApplyCoupon(); }}
+            placeholder="اكتب أو امسح الرمز"
+            disabled={!cartLen || couponPending}
+            style={{ minWidth: 0, flex: 1, height: 40, border: `1.5px solid ${couponCode ? C.success : C.border}`, borderRadius: 8, background: C.muted, color: C.fg, padding: "0 9px", fontFamily: "inherit", fontWeight: 800, direction: "ltr" }}
+          />
+          {couponCode ? (
+            <button onClick={onClearCoupon} style={{ height: 40, padding: "0 10px", border: `1px solid ${C.danger}`, borderRadius: 8, background: C.dangerSoft, color: C.danger, fontFamily: "inherit", fontWeight: 800, cursor: "pointer" }}>إزالة</button>
+          ) : (
+            <button disabled={!cartLen || !couponInput.trim() || couponPending} onClick={onApplyCoupon} style={{ height: 40, padding: "0 12px", border: 0, borderRadius: 8, background: C.primary, color: C.primaryFg, fontFamily: "inherit", fontWeight: 800, cursor: "pointer" }}>{couponPending ? "تحقق…" : "تطبيق"}</button>
+          )}
+        </div>
+        {couponCode && (
+          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: C.success, fontWeight: 800, marginTop: 2 }}>
+            <Check size={13} aria-hidden="true" />
+            <span>{couponLabel ?? couponCode}</span>
+          </div>
+        )}
       </div>
 
       {/* Payment method */}

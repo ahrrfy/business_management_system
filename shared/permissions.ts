@@ -53,6 +53,9 @@ export interface PermissionModule {
 }
 
 export const PERMISSION_MODULES: PermissionModule[] = [
+  { key: "crm",          label: "إدارة علاقات العملاء", description: "الملف الموحد للعميل، المتابعات، المحادثات، عروض الأسعار والفرص" },
+  { key: "campaigns",    label: "الحملات والعروض والكوبونات", description: "تخطيط الحملات واعتمادها وإدارة العروض والكوبونات وقياس نتائجها" },
+  { key: "collections",  label: "التحصيل والذمم", description: "متابعة الاستحقاقات والوعود والتحصيل وربطها بحساب العميل" },
   { key: "pos",          label: "نقطة البيع",        description: "بيع نقدي/آجل، إصدار فواتير، طباعة إيصال" },
   { key: "sales",        label: "المبيعات والفواتير", description: "عرض/تعديل الفواتير، المرتجعات، الذمم" },
   { key: "purchases",    label: "المشتريات",         description: "أوامر شراء، استلام، دفعات موردين" },
@@ -61,7 +64,6 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "channels",     label: "القنوات والوارد",     description: "صندوق الوارد الموحّد (واتساب/إنستغرام/المتجر) والمحادثات" },
   { key: "store",        label: "المتجر الإلكتروني",   description: "طلبات المتجر الإلكترونية: تثبيتها وطباعة الملصقات، والبنرات وإعدادات المتجر" },
   { key: "treasury",     label: "الخزينة والمدفوعات",  description: "لوحة الخزينة، السندات، التحويلات النقدية، الورديات" },
-  { key: "customers",    label: "العملاء",            description: "إدارة العملاء وكشوف الحساب" },
   { key: "suppliers",    label: "الموردون",           description: "إدارة الموردين وكشوف الحساب" },
   { key: "products",     label: "المنتجات",           description: "إدارة المنتجات والأسعار والوحدات" },
   { key: "expenses",     label: "المصروفات",          description: "إدخال وتعديل المصروفات اليومية" },
@@ -78,6 +80,7 @@ export type PermissionMap = Record<string, AccessLevel>;
 
 export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   admin: {
+    crm: "FULL", campaigns: "FULL", collections: "FULL", store: "FULL",
     assets: "FULL",
     hr: "FULL",
     commissions: "FULL",
@@ -86,6 +89,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "FULL", settings: "FULL",
   },
   manager: {
+    crm: "FULL", campaigns: "FULL", collections: "FULL",
     store: "FULL",
     assets: "FULL",
     hr: "FULL",
@@ -95,6 +99,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   accountant: {
+    crm: "READ", campaigns: "READ", collections: "FULL",
     store: "READ",
     assets: "READ",
     hr: "READ",
@@ -105,6 +110,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   cashier: {
+    crm: "FULL", campaigns: "READ", collections: "READ",
     store: "FULL",
     assets: "NONE",
     hr: "NONE",
@@ -118,6 +124,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   warehouse: {
+    crm: "READ", campaigns: "NONE", collections: "NONE",
     assets: "READ",
     hr: "NONE",
     commissions: "NONE",
@@ -130,6 +137,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   purchasing: {
+    crm: "NONE", campaigns: "NONE", collections: "NONE",
     assets: "NONE",
     hr: "NONE",
     commissions: "NONE",
@@ -138,6 +146,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   print_operator: {
+    crm: "READ", campaigns: "READ", collections: "NONE",
     assets: "NONE",
     hr: "NONE",
     commissions: "NONE",
@@ -146,6 +155,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   sales_rep: {
+    crm: "FULL", campaigns: "READ", collections: "READ",
     store: "FULL",
     assets: "NONE",
     hr: "NONE",
@@ -156,6 +166,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   auditor: {
+    crm: "READ", campaigns: "READ", collections: "READ",
     store: "READ",
     assets: "READ",
     hr: "READ",
@@ -165,6 +176,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   user: {
+    crm: "READ", campaigns: "NONE", collections: "NONE",
     assets: "NONE",
     hr: "NONE",
     commissions: "NONE",
@@ -173,6 +185,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   courier: {
+    crm: "NONE", campaigns: "NONE", collections: "NONE",
     // مندوب توصيل ذاتي الخدمة: يرى «توصيلاتي» فقط (courier=FULL). كل الوحدات الأخرى NONE —
     // بياناته (اسم/هاتف/عنوان الزبون + COD) تأتي من نقاط courier الذاتية لا من وحدات العملاء/المبيعات.
     courier: "FULL",
@@ -190,6 +203,17 @@ export function resolvePermissions(
   const base = ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
   if (!override) return { ...base };
   const out: PermissionMap = { ...base };
+  // ترحيل ناعم: أي تخصيص قديم لوحدة customers يظلّ حاكماً لـCRM إلى أن يُحفظ تخصيص CRM صريح.
+  // بهذا لا تمنح الترقية وصولاً لعميل حُجب عنه العملاء سابقاً، مع إزالة الوحدة المكررة من المصفوفة.
+  const legacyCustomer = override.customers;
+  const explicitCrm = override.crm;
+  if (legacyCustomer === "FULL" || legacyCustomer === "READ" || legacyCustomer === "NONE") {
+    out.customers = legacyCustomer;
+  }
+  if (!(explicitCrm === "FULL" || explicitCrm === "READ" || explicitCrm === "NONE") &&
+      (legacyCustomer === "FULL" || legacyCustomer === "READ" || legacyCustomer === "NONE")) {
+    out.crm = legacyCustomer;
+  }
   for (const m of PERMISSION_MODULES) {
     const v = override[m.key];
     if (v === "FULL" || v === "READ" || v === "NONE") out[m.key] = v;
@@ -204,6 +228,12 @@ export function diffFromTemplate(
   const base = ROLE_TEMPLATES[role] ?? ROLE_TEMPLATES.user;
   const diff: PermissionMap = {};
   let changed = 0;
+  const legacyCustomers = permissions.customers;
+  if ((legacyCustomers === "FULL" || legacyCustomers === "READ" || legacyCustomers === "NONE") &&
+      legacyCustomers !== base.customers) {
+    diff.customers = legacyCustomers;
+    changed++;
+  }
   for (const m of PERMISSION_MODULES) {
     const v = permissions[m.key];
     if (v && v !== base[m.key]) { diff[m.key] = v; changed++; }
