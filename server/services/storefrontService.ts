@@ -229,7 +229,9 @@ export async function storefrontCatalog(opts: {
   if (!db) return { items: [] };
   const branchId = await resolveStorefrontBranchId(opts.branchId);
   const cap = Math.min(Math.max(opts.limit ?? 60, 1), 120);
-  const conds = [sellable];
+  // شبكة المتجر واجهة تحويل لا فهرس أرشيف: لا تعرض إلا ما يمكن شراؤه الآن.
+  // صفحة المنتج المباشرة تبقي حالة «غير متوفر» واضحة إن وصل إليها الزائر من رابط سابق.
+  const conds = [sellable, gt(branchStock.quantity, 0)];
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
   const s = String(opts.search ?? "").trim();
   if (s) {
@@ -239,7 +241,7 @@ export async function storefrontCatalog(opts: {
   }
   const rows = await safeSelect(db, branchId)
     .where(and(...conds))
-    .orderBy(desc(products.isFeatured), desc(sql`${branchStock.quantity} > 0`), desc(sql`${productImages.url} is not null`), asc(products.name))
+    .orderBy(desc(products.isFeatured), desc(sql`${productImages.url} is not null`), asc(products.name))
     .limit(cap * 3);
 
   const seen = new Set<number>();
@@ -257,9 +259,10 @@ export async function storefrontCatalog(opts: {
 }
 
 /** فئات المتجر: الفئات التي فيها منتج واحد على الأقل قابل للاقتناء. */
-export async function storefrontCategories(): Promise<StorefrontCategory[]> {
+export async function storefrontCategories(branchIdInput?: number): Promise<StorefrontCategory[]> {
   const db = getDb();
   if (!db) return [];
+  const branchId = await resolveStorefrontBranchId(branchIdInput);
   const rows = await db
     .select({
       id: categories.id,
@@ -273,9 +276,10 @@ export async function storefrontCategories(): Promise<StorefrontCategory[]> {
       and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isActive, true), eq(productUnits.isBaseUnit, true))
     )
     .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
+    .innerJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId), gt(branchStock.quantity, 0)))
     .innerJoin(categories, eq(products.categoryId, categories.id))
     // showInStore: يحترم إخفاء المدير للقسم من واجهة المتجر (لوحة hPanel)؛ والترتيب بـsortOrder.
-    .where(and(eq(products.isActive, true), eq(products.isService, false), eq(categories.showInStore, true)))
+    .where(and(eq(products.isActive, true), eq(products.isService, false), eq(products.showInStore, true), eq(categories.showInStore, true)))
     .groupBy(categories.id, categories.name, categories.sortOrder)
     .orderBy(asc(categories.sortOrder), asc(categories.name));
   return rows.map((r) => ({ id: Number(r.id), name: r.name, productCount: Number(r.productCount) }));

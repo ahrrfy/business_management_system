@@ -17,20 +17,17 @@ import { retryOnDup } from "../lib/retryDup";
 import { listActiveBanners } from "../services/storeAdmin/bannerService";
 import { getStoreSettings } from "../services/storeAdmin/storeSettingsService";
 import { recordBannerMetric } from "../services/storeAdmin/bannerMetricsService";
+import { recordStoreConversionMetric } from "../services/storeAdmin/storeConversionMetricsService";
 
 export const storefrontRouter = router({
   /** فئات المتجر (لأشرطة الفلترة). */
   categories: publicProcedure.query(() => storefrontCategories()),
 
   /** العروض والخصومات الفعّالة اليوم (بنرات مشتقّة تلقائياً). */
-  offers: publicProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
-    .query(({ input }) => storefrontOffers(input?.branchId)),
+  offers: publicProcedure.query(() => storefrontOffers()),
 
   /** البنرات الترويجية التي يديرها الموظف (لوحة hPanel) — فعّالة فقط. */
-  banners: publicProcedure
-    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
-    .query(({ input }) => listActiveBanners(input?.branchId)),
+  banners: publicProcedure.query(() => listActiveBanners()),
 
   /** مؤشرات مجمّعة للبنر فقط؛ لا تحفظ هوية العميل أو عنوانه. */
   trackBanner: publicProcedure
@@ -41,6 +38,11 @@ export const storefrontRouter = router({
     }))
     .mutation(({ input }) => recordBannerMetric(input)),
 
+  /** قمع التحويل المجمع: حدث بلا IP أو جلسة أو بيانات الطلب/العميل. */
+  trackConversion: publicProcedure
+    .input(z.object({ event: z.enum(["PRODUCT_VIEW", "ADD_TO_CART", "BEGIN_CHECKOUT"]) }))
+    .mutation(({ input }) => recordStoreConversionMetric(input)),
+
   /** إعدادات المتجر العامة (فتح/إغلاق + إعلان + واتساب) — آمنة للعرض. */
   settings: publicProcedure.query(() => getStoreSettings()),
 
@@ -48,7 +50,6 @@ export const storefrontRouter = router({
   catalog: publicProcedure
     .input(
       z.object({
-        branchId: z.number().int().positive().optional(),
         categoryId: z.number().int().positive().nullish(),
         search: z.string().max(64).optional(),
         limit: z.number().int().min(1).max(120).default(60),
@@ -56,7 +57,6 @@ export const storefrontRouter = router({
     )
     .query(({ input }) =>
       storefrontCatalog({
-        branchId: input.branchId,
         categoryId: input.categoryId ?? null,
         search: input.search,
         limit: input.limit,
@@ -65,13 +65,13 @@ export const storefrontRouter = router({
 
   /** صفحة منتج واحد (تشمل محتويات البكج إن كان بكجاً). */
   product: publicProcedure
-    .input(z.object({ productId: z.number().int().positive(), branchId: z.number().int().positive().optional() }))
-    .query(({ input }) => storefrontProduct(input.productId, input.branchId)),
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => storefrontProduct(input.productId)),
 
   /** منتجات ذات صلة (cross-sell «يُشترى معه») — نفس الفئة، متوفّرة. */
   related: publicProcedure
-    .input(z.object({ productId: z.number().int().positive(), branchId: z.number().int().positive().optional() }))
-    .query(({ input }) => storefrontRelated(input.productId, input.branchId)),
+    .input(z.object({ productId: z.number().int().positive() }))
+    .query(({ input }) => storefrontRelated(input.productId)),
 
   /**
    * إنشاء طلب (الدفع عند الاستلام). **كتابة علنية** ⇒ محدودة معدّلاً بصرامة في index.ts.
@@ -81,7 +81,6 @@ export const storefrontRouter = router({
   createOrder: publicProcedure
     .input(
       z.object({
-        branchId: z.number().int().positive().optional(),
         customerName: z.string().trim().min(1).max(255),
         customerPhone: z.string().trim().min(5).max(20),
         governorate: z.string().trim().min(1).max(40),
@@ -99,15 +98,21 @@ export const storefrontRouter = router({
     // retryOnDup: نقرة مزدوجة متزامنة بنفس clientRequestId قد يمرّ فحصُها الاستباقي معاً قبل الالتزام،
     // فيصطدم الإدراج الثاني بقيد uq_online_order_client_req (ER_DUP_ENTRY). إعادة المحاولة تلتقط الطلب
     // المُلتزَم فتُعيد replay بدل 500 (مراجعة عدائية ١٢/٧).
-    .mutation(({ input }) =>
-      retryOnDup(() =>
+    .mutation(async ({ input }) => {
+      const result = await retryOnDup(() =>
         createOnlineOrder({
           ...input,
           latitude: input.latitude ?? null,
           longitude: input.longitude ?? null,
-        }),
-      )
-    ),
+        })
+      );
+      // نجاح إنشاء الطلب هو المصدر الموثوق لهذا الحدث؛ لا نأخذه من متصفح العميل.
+      // الخدمة أفضل-جهد ولا تلمس بيانات الطلب أو العميل.
+      if (!result.idempotentReplay) {
+        void recordStoreConversionMetric({ event: "ORDER_COMPLETED", branchId: result.branchId });
+      }
+      return result;
+    }),
 
   /** تتبّع طلب: يتطلّب رقم الطلب + الهاتف معاً (خصوصية). */
   trackOrder: publicProcedure

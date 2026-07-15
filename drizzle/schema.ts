@@ -1641,6 +1641,28 @@ export const storeBannerDailyMetrics = mysqlTable(
   }),
 );
 
+/**
+ * قمع تحويل المتجر اليومي. لا يخزّن أي معرّف زائر أو عنوان أو بيانات عميل؛
+ * إنه عداد عمل تشغيلي لكل فرع/يوم فقط، كي لا تتحول التحليلات التسويقية إلى
+ * سجل تصفح فردي.
+ */
+export const storeConversionDailyMetrics = mysqlTable(
+  "storeConversionDailyMetrics",
+  {
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id, { onDelete: "cascade" }),
+    metricDate: date("metricDate", { mode: "string" }).notNull(),
+    productViews: int("productViews").default(0).notNull(),
+    cartAdds: int("cartAdds").default(0).notNull(),
+    checkoutStarts: int("checkoutStarts").default(0).notNull(),
+    completedOrders: int("completedOrders").default(0).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.branchId, t.metricDate], name: "pk_store_conversion_daily" }),
+    dateIdx: index("idx_store_conversion_date").on(t.metricDate),
+  }),
+);
+export type StoreConversionDailyMetric = typeof storeConversionDailyMetrics.$inferSelect;
+
 /** إعدادات المتجر (صفّ مفرد، نمط taxSettings): فتح/إغلاق المتجر، شريط إعلان، رقم واتساب. */
 export const storeSettings = mysqlTable("storeSettings", {
   id: int("id").autoincrement().primaryKey(),

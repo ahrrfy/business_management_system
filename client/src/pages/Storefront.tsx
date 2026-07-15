@@ -11,7 +11,7 @@
  *   • هيرو + شريط ثقة + شارات خصم — سمات المتجر الناجح. مقصور على المتجر (لا يمسّ نظام الموظفين).
  *   • متجاوب أولوية-الجوال، ثيم فاتح/داكن، خطّ Cairo (ودود كـNunito الموصى به).
  */
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "wouter";
 import {
   ArrowRight,
@@ -19,6 +19,7 @@ import {
   BadgePercent,
   Briefcase,
   Check,
+  ChevronDown,
   Flame,
   ImageOff,
   Loader2,
@@ -126,15 +127,31 @@ function priceLabel(price: string | null): string {
   return `${money(price)} د.ع`;
 }
 
-function ProductImage({ url, alt, className }: { url: string | null; alt: string; className?: string }) {
+function ProductImage({
+  url,
+  alt,
+  className,
+  showFallbackLabel = false,
+}: {
+  url: string | null;
+  alt: string;
+  className?: string;
+  /** The catalogue grid has room to explain an absent image; compact rows do not. */
+  showFallbackLabel?: boolean;
+}) {
   if (!url) {
     return (
-      <div className={`flex items-center justify-center bg-emerald-50 text-emerald-300 dark:bg-slate-800 dark:text-slate-600 ${className ?? ""}`}>
+      <div
+        className={`store-product-image-placeholder flex flex-col items-center justify-center gap-2 bg-emerald-50 text-emerald-700 dark:bg-slate-800 dark:text-emerald-300 ${className ?? ""}`}
+        role="img"
+        aria-label={`لا توجد صورة متاحة حالياً للمنتج: ${alt}`}
+      >
         <ImageOff aria-hidden className="size-8" />
+        {showFallbackLabel && <span className="text-center text-[11px] font-bold">صورة المنتج قريباً</span>}
       </div>
     );
   }
-  return <img src={url} alt={alt} loading="lazy" className={`object-cover ${className ?? ""}`} />;
+  return <img src={url} alt={alt} loading="lazy" className={`store-product-image object-cover ${className ?? ""}`} />;
 }
 
 /** «تسوّق حسب القسم» — بطاقات فئات بصرية تقود التصفّح (نمط تجاريّ عالميّ). */
@@ -178,9 +195,9 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
   const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
   const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
   return (
-    <div className="flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+    <div className="store-product-card flex w-40 shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
       <button onClick={onSelect} className="relative block text-right">
-        <ProductImage url={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
+        <ProductImage url={p.imageUrl} alt={p.productName} className="store-product-media aspect-square w-full" />
         {onSale && pct > 0 && (
           <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">−{pct}٪</span>
         )}
@@ -199,7 +216,7 @@ function ProductRowCard({ p, onSelect, onAdd }: { p: RowProduct; onSelect: () =>
         <button
           onClick={onAdd}
           disabled={p.inStock === false}
-          className="mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-1.5 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+          className="store-primary-action store-mobile-action mt-auto flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-1.5 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
         >
           <Plus aria-hidden className="size-3.5" /> {p.inStock === false ? "غير متوفّر" : "أضف"}
         </button>
@@ -320,11 +337,28 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
 }
 
 type Panel = null | "cart" | "checkout" | "confirmation";
+type AvailabilityFilter = "IN_STOCK" | "ALL";
+type PriceFilter = "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
+type CatalogSort = "RECOMMENDED" | "PRICE_ASC" | "PRICE_DESC" | "BEST_SELLERS";
+
+function matchesPriceFilter(price: number, filter: PriceFilter): boolean {
+  switch (filter) {
+    case "UNDER_5000": return price < 5_000;
+    case "FROM_5000_TO_15000": return price >= 5_000 && price <= 15_000;
+    case "OVER_15000": return price > 15_000;
+    default: return true;
+  }
+}
 
 export default function Storefront() {
   const [rawSearch, setRawSearch] = useState("");
   const [search, setSearch] = useState("");
   const [categoryId, setCategoryId] = useState<number | null>(null);
+  // البدء بالمتوفر يحمي نية الشراء: لا نُغرق العميل ببطاقات لا يمكن إضافتها للسلة.
+  const [availability, setAvailability] = useState<AvailabilityFilter>("IN_STOCK");
+  const [priceFilter, setPriceFilter] = useState<PriceFilter>("ALL");
+  const [brand, setBrand] = useState("");
+  const [sort, setSort] = useState<CatalogSort>("RECOMMENDED");
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
   const [cart, setCart] = useState<Map<number, CartLine>>(loadCart);
@@ -332,6 +366,7 @@ export default function Storefront() {
   const [form, setForm] = useState<CheckoutForm>(loadForm);
   const [clientRequestId, setClientRequestId] = useState<string>("");
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
+  const viewedProductIds = useRef(new Set<number>());
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(rawSearch.trim()), 350);
@@ -368,6 +403,17 @@ export default function Storefront() {
   );
   const detailQ = trpc.storefront.product.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
   const relatedQ = trpc.storefront.related.useQuery({ productId: selectedId ?? 0 }, { enabled: selectedId != null });
+  const trackConversion = trpc.storefront.trackConversion.useMutation();
+
+  // كل فتح متعمد لتفاصيل منتج = مشاهدة؛ لا نرسل اسم المنتج أو هويّة/جلسة الزائر.
+  useEffect(() => {
+    if (selectedId != null && !viewedProductIds.current.has(selectedId)) {
+      viewedProductIds.current.add(selectedId);
+      trackConversion.mutate({ event: "PRODUCT_VIEW" });
+    }
+  // useMutation يعيد مرجعاً مستقراً؛ ربط الحدث بالمُنتج فقط يمنع إعادة عدّه عند كل render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId]);
 
   const createOrder = trpc.storefront.createOrder.useMutation({
     onSuccess: (res) => {
@@ -395,6 +441,39 @@ export default function Storefront() {
     () => (categoryId == null ? null : cats.find((c) => c.id === categoryId)?.name ?? null),
     [categoryId, cats]
   );
+  const brands = useMemo(
+    () => Array.from(new Set(items.map((p) => p.brand?.trim()).filter((value): value is string => Boolean(value)))).sort((a, b) => a.localeCompare(b, "ar")),
+    [items]
+  );
+  const filteredItems = useMemo(() => {
+    const filtered = items.filter((p) => {
+      if (availability === "IN_STOCK" && !p.inStock) return false;
+      if (brand && p.brand !== brand) return false;
+      return matchesPriceFilter(Number(p.salePrice ?? p.price ?? 0), priceFilter);
+    });
+    if (sort === "RECOMMENDED") return filtered;
+    return [...filtered].sort((a, b) => {
+      if (sort === "BEST_SELLERS") return (b.soldCount ?? 0) - (a.soldCount ?? 0);
+      const aPrice = Number(a.salePrice ?? a.price ?? 0);
+      const bPrice = Number(b.salePrice ?? b.price ?? 0);
+      return sort === "PRICE_ASC" ? aPrice - bPrice : bPrice - aPrice;
+    });
+  }, [availability, brand, items, priceFilter, sort]);
+  const hasRefinements = availability !== "IN_STOCK" || priceFilter !== "ALL" || brand !== "" || sort !== "RECOMMENDED";
+
+  function scrollToResults() {
+    window.setTimeout(() => document.getElementById("store-results")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+  }
+  function selectCategory(id: number | null) {
+    setCategoryId(id);
+    scrollToResults();
+  }
+  function clearRefinements() {
+    setAvailability("IN_STOCK");
+    setPriceFilter("ALL");
+    setBrand("");
+    setSort("RECOMMENDED");
+  }
   // فواصل السيل التسويقية: بنرات INLINE المُدارة أولاً، وعند غيابها تُشتقّ من عروض اليوم الفعّالة
   // (فلسفة in-feed العالمية: لا يمرّ الزبون بأكثر من ~عشرة منتجات دون محفّز شراء).
   const feedStrips = useMemo<BannerItem[]>(() => {
@@ -407,15 +486,26 @@ export default function Storefront() {
     }));
   }, [inlineBanners, offers]);
 
-  // تنظيم تسويقيّ عالميّ: عروض حصرية (منتجات مخصومة فعلاً) + الأكثر مبيعاً (بحسب soldCount) — يُشتقّان
-  // من الكتالوج نفسه، فيظهران على الواجهة الأولى فقط (بلا بحث/فئة) ويُخفَيان تلقائياً إن لم يوجد محتوى.
+  // أقسام البيع الموجّه تُشتق من الكتالوج الحي فقط. لا نعرض في صفٍّ تسويقي منتجاً لا يمكن شراؤه؛
+  // فلا تتحول حملة «الأكثر مبيعاً» أو «الباقات» إلى طريق مسدود للزبون.
   const dealProducts = useMemo(
-    () => items.filter((p) => p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
+    () => items.filter((p) => p.inStock && p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price)).slice(0, 12),
     [items]
   );
+  const dealProductIds = useMemo(() => new Set(dealProducts.map((p) => p.productId)), [dealProducts]);
   const bestSellers = useMemo(
-    () => [...items].filter((p) => (p.soldCount ?? 0) > 0).sort((a, b) => (b.soldCount ?? 0) - (a.soldCount ?? 0)).slice(0, 12),
-    [items]
+    () => [...items]
+      .filter((p) => p.inStock && !dealProductIds.has(p.productId) && (p.soldCount ?? 0) > 0)
+      .sort((a, b) => (b.soldCount ?? 0) - (a.soldCount ?? 0))
+      .slice(0, 12),
+    [dealProductIds, items]
+  );
+  const bundleProducts = useMemo(
+    () => [...items]
+      .filter((p) => p.inStock && p.isBundle && !dealProductIds.has(p.productId))
+      .sort((a, b) => (b.soldCount ?? 0) - (a.soldCount ?? 0))
+      .slice(0, 12),
+    [dealProductIds, items]
   );
 
   const cartLines = useMemo(() => Array.from(cart.values()), [cart]);
@@ -434,6 +524,7 @@ export default function Storefront() {
   }) {
     const eff = p.salePrice ?? p.price;
     if (eff == null || p.inStock === false) return;
+    trackConversion.mutate({ event: "ADD_TO_CART" });
     setCart((prev) => {
       const next = new Map(prev);
       const existing = next.get(p.productUnitId);
@@ -462,10 +553,14 @@ export default function Storefront() {
   function offerLabel(o: { type: "PERCENT" | "AMOUNT"; discountPercent: string; discountAmount: string }): string {
     return o.type === "PERCENT" ? `خصم ${Number(o.discountPercent)}٪` : `خصم ${money(o.discountAmount)} د.ع`;
   }
+  function offerScopeLabel(scope: "ALL" | "CATEGORIES" | "PRODUCTS"): string {
+    return scope === "ALL" ? "على كل المنتجات" : scope === "CATEGORIES" ? "على فئات مختارة" : "على منتجات مختارة";
+  }
 
   function openCheckout() {
     if (!storeOpen) return; // المتجر مغلق — الإشعار ظاهر أعلى الصفحة
     setClientRequestId(`sf-${Date.now()}-${Math.floor(Math.random() * 1e9)}`);
+    trackConversion.mutate({ event: "BEGIN_CHECKOUT" });
     setPanel("checkout");
   }
   function submitOrder() {
@@ -497,7 +592,7 @@ export default function Storefront() {
     }`;
 
   return (
-    <div className="min-h-dvh bg-emerald-50/50 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
+    <div className="storefront min-h-dvh bg-emerald-50/50 text-slate-900 dark:bg-slate-950 dark:text-slate-100" dir="rtl">
       {/* الترويسة */}
       <header className="sticky top-0 z-20 border-b border-emerald-100/70 bg-white/85 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/85">
         <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 py-3">
@@ -541,19 +636,29 @@ export default function Storefront() {
               value={rawSearch}
               onChange={(e) => setRawSearch(e.target.value)}
               placeholder="ابحث عن منتج أو ماركة…"
-              className="w-full rounded-2xl border-0 bg-white py-3 pr-11 pl-3 text-sm text-slate-900 shadow-sm ring-1 ring-slate-200 outline-none transition placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700"
+              className="w-full rounded-2xl border-0 bg-white py-3 pr-11 pl-10 text-sm text-slate-900 shadow-sm ring-1 ring-slate-200 outline-none transition placeholder:text-slate-400 focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-100 dark:ring-slate-700"
             />
+            {rawSearch && (
+              <button
+                type="button"
+                onClick={() => { setRawSearch(""); setSearch(""); }}
+                aria-label="مسح البحث"
+                className="absolute left-2.5 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-full text-slate-400 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-100"
+              >
+                <X aria-hidden className="size-4" />
+              </button>
+            )}
           </div>
         </div>
 
         {cats.length > 0 && (
           <div className="mx-auto max-w-6xl overflow-x-auto px-4 pb-3 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             <div className="flex w-max gap-2">
-              <button onClick={() => setCategoryId(null)} className={chip(categoryId == null)}>
+              <button onClick={() => selectCategory(null)} className={chip(categoryId == null)}>
                 الكل
               </button>
               {cats.map((c) => (
-                <button key={c.id} onClick={() => setCategoryId(c.id)} className={chip(categoryId === c.id)}>
+                <button key={c.id} onClick={() => selectCategory(c.id)} className={chip(categoryId === c.id)}>
                   {c.name}
                   <span className="mr-1 opacity-60">{c.productCount}</span>
                 </button>
@@ -578,6 +683,70 @@ export default function Storefront() {
             المتجر مغلق مؤقتاً — لا يمكن استلام الطلبات حالياً. تصفّح المنتجات وعُد لاحقاً.
           </div>
         )}
+
+        {/* مصفاة قصيرة وواضحة: تبقي العميل داخل مسار الاكتشاف بدلاً من تمرير كتالوج غير منتهٍ. */}
+        <section aria-label="تصفية وترتيب المنتجات" className="mb-4 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-emerald-100/80 dark:bg-slate-900 dark:ring-slate-800">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-xs font-extrabold text-slate-700 dark:text-slate-200">تسوّق بسهولة</p>
+            {(hasRefinements || categoryId != null || search) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setRawSearch("");
+                  setSearch("");
+                  setCategoryId(null);
+                  clearRefinements();
+                }}
+                className="text-xs font-bold text-emerald-700 underline-offset-2 hover:underline dark:text-emerald-400"
+              >
+                مسح الكل
+              </button>
+            )}
+          </div>
+          <div className="mt-2.5 flex gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <button
+              type="button"
+              onClick={() => {
+                setAvailability((value) => value === "IN_STOCK" ? "ALL" : "IN_STOCK");
+                scrollToResults();
+              }}
+              aria-pressed={availability === "IN_STOCK"}
+              className={chip(availability === "IN_STOCK")}
+            >
+              {availability === "IN_STOCK" ? "متوفر الآن" : "كل المنتجات"}
+            </button>
+            <label className="relative shrink-0">
+              <span className="sr-only">نطاق السعر</span>
+              <select value={priceFilter} onChange={(e) => { setPriceFilter(e.target.value as PriceFilter); scrollToResults(); }} className="appearance-none rounded-full bg-slate-50 py-1.5 pr-3 pl-7 text-xs font-bold text-slate-700 ring-1 ring-slate-200 outline-none transition focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700">
+                <option value="ALL">كل الأسعار</option>
+                <option value="UNDER_5000">أقل من 5,000 د.ع</option>
+                <option value="FROM_5000_TO_15000">5,000 – 15,000 د.ع</option>
+                <option value="OVER_15000">أكثر من 15,000 د.ع</option>
+              </select>
+              <ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            </label>
+            {brands.length > 0 && (
+              <label className="relative shrink-0">
+                <span className="sr-only">الماركة</span>
+                <select value={brand} onChange={(e) => { setBrand(e.target.value); scrollToResults(); }} className="appearance-none rounded-full bg-slate-50 py-1.5 pr-3 pl-7 text-xs font-bold text-slate-700 ring-1 ring-slate-200 outline-none transition focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700">
+                  <option value="">كل الماركات</option>
+                  {brands.map((name) => <option key={name} value={name}>{name}</option>)}
+                </select>
+                <ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+              </label>
+            )}
+            <label className="relative shrink-0">
+              <span className="sr-only">ترتيب النتائج</span>
+              <select value={sort} onChange={(e) => { setSort(e.target.value as CatalogSort); scrollToResults(); }} className="appearance-none rounded-full bg-slate-50 py-1.5 pr-3 pl-7 text-xs font-bold text-slate-700 ring-1 ring-slate-200 outline-none transition focus:ring-2 focus:ring-emerald-400 dark:bg-slate-800 dark:text-slate-200 dark:ring-slate-700">
+                <option value="RECOMMENDED">الترتيب المقترح</option>
+                <option value="BEST_SELLERS">الأكثر مبيعاً</option>
+                <option value="PRICE_ASC">السعر: الأقل أولاً</option>
+                <option value="PRICE_DESC">السعر: الأعلى أولاً</option>
+              </select>
+              <ChevronDown aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-slate-400" />
+            </label>
+          </div>
+        </section>
 
         {!search && categoryId == null && (
           <>
@@ -618,7 +787,7 @@ export default function Storefront() {
             </section>
 
             {/* تسوّق حسب القسم */}
-            <CategoryTiles cats={cats} onPick={(id) => setCategoryId(id)} />
+            <CategoryTiles cats={cats} onPick={selectCategory} />
 
             {/* عروض اليوم */}
             {offers.length > 0 && (
@@ -637,7 +806,7 @@ export default function Storefront() {
                       </div>
                       <div className="min-w-0">
                         <p className="truncate text-sm font-extrabold leading-tight">{o.name}</p>
-                        <p className="mt-0.5 text-xs font-bold text-amber-50">{offerLabel(o)}</p>
+                        <p className="mt-0.5 text-xs font-bold text-amber-50">{offerLabel(o)} · {offerScopeLabel(o.scope)}</p>
                       </div>
                     </div>
                   ))}
@@ -663,15 +832,25 @@ export default function Storefront() {
               onAdd={addToCart}
             />
 
+            {/* باقات حقيقية مُعرّفة في النظام؛ نعرضها كحلول جاهزة لا كتركيبٍ وهمي للمنتجات. */}
+            <ProductRow
+              title="باقات جاهزة"
+              icon={<Package aria-hidden className="size-4 text-emerald-600" />}
+              products={bundleProducts}
+              onSelect={setSelectedId}
+              onAdd={addToCart}
+            />
+
             <h3 className="mb-3 flex items-center gap-1.5 text-sm font-extrabold text-slate-800 dark:text-slate-200">
               <ShoppingBag aria-hidden className="size-4 text-emerald-600" /> كل المنتجات
             </h3>
           </>
         )}
 
-        {(activeCatName || search) && (
-          <p className="mb-3 text-sm font-medium text-slate-500 dark:text-slate-400">
-            {search ? <>نتائج «{search}»</> : <>فئة «{activeCatName}»</>}
+        {(activeCatName || search || hasRefinements) && (
+          <p className="mb-3 flex items-center justify-between gap-3 text-sm font-medium text-slate-500 dark:text-slate-400">
+            <span>{search ? <>نتائج «{search}»</> : activeCatName ? <>فئة «{activeCatName}»</> : <>المنتجات المتاحة</>}</span>
+            <span className="shrink-0 text-xs font-bold text-emerald-700 dark:text-emerald-400">{filteredItems.length} منتج</span>
             {catalogQ.isFetching && <Loader2 aria-hidden className="mr-2 inline size-3.5 animate-spin align-middle" />}
           </p>
         )}
@@ -681,37 +860,38 @@ export default function Storefront() {
             <Loader2 aria-hidden className="size-8 animate-spin text-emerald-500" />
             <p className="mt-3 text-sm">جارٍ تحميل المنتجات…</p>
           </div>
-        ) : items.length === 0 ? (
+        ) : filteredItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-24 text-center text-slate-400">
             <Package aria-hidden className="size-10 opacity-50" />
-            <p className="mt-3 text-sm">لا توجد منتجات مطابقة</p>
-            {(search || categoryId != null) && (
+            <p className="mt-3 text-sm">لا توجد منتجات مطابقة للتصفية الحالية</p>
+            {(search || categoryId != null || hasRefinements) && (
               <button
                 onClick={() => {
                   setRawSearch("");
                   setSearch("");
                   setCategoryId(null);
+                  clearRefinements();
                 }}
                 className="mt-3 rounded-xl bg-emerald-600 px-4 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95"
               >
-                عرض كل المنتجات
+                عرض المنتجات المتاحة
               </button>
             )}
           </div>
         ) : (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-            {items.flatMap((p, idx) => {
+          <div id="store-results" className="scroll-mt-40 grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+            {filteredItems.flatMap((p, idx) => {
               const onSale = p.salePrice != null && p.price != null && Number(p.salePrice) < Number(p.price);
               const pct = onSale ? Math.round((1 - Number(p.salePrice) / Number(p.price)) * 100) : 0;
               const card = (
                 <div
                   key={p.productId}
-                  className={`flex flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
+                  className={`store-product-card flex flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 transition dark:bg-slate-900 dark:ring-slate-800 ${
                     p.inStock ? "hover:shadow-md hover:ring-emerald-200 dark:hover:ring-emerald-500/30" : "opacity-70"
                   }`}
                 >
                   <button onClick={() => setSelectedId(p.productId)} className="relative block text-right">
-                    <ProductImage url={p.imageUrl} alt={p.productName} className="aspect-square w-full" />
+                    <ProductImage url={p.imageUrl} alt={p.productName} showFallbackLabel className="store-product-media aspect-square w-full" />
                     {onSale && pct > 0 && (
                       <span className="absolute right-2 top-2 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-extrabold text-white shadow">
                         −{pct}٪
@@ -752,7 +932,7 @@ export default function Storefront() {
                     <button
                       onClick={() => addToCart(p)}
                       disabled={!p.inStock}
-                      className="mt-1 flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+                      className="store-primary-action store-mobile-action mt-1 flex items-center justify-center gap-1 rounded-xl bg-amber-500 py-2 text-xs font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                     >
                       <Plus aria-hidden className="size-3.5" />
                       {p.inStock ? "أضف للسلة" : "غير متوفّر"}
@@ -762,7 +942,7 @@ export default function Storefront() {
               );
               // فاصل تسويقي كل عشرة منتجات (لا وسط نتائج البحث — الزبون الباحث يريد نتائجه صافية).
               const nodes: ReactNode[] = [card];
-              if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < items.length) {
+              if (!search && feedStrips.length > 0 && (idx + 1) % 10 === 0 && idx + 1 < filteredItems.length) {
                 const k = ((idx + 1) / 10 - 1) % feedStrips.length;
                 nodes.push(
                   <InlineStrip key={`strip-${idx}`} banner={feedStrips[k]} tone={inlineBanners.length ? "emerald" : "amber"} />
@@ -776,6 +956,13 @@ export default function Storefront() {
 
       {/* بنرات جانبية طولية (شاشات عريضة فقط) — خارج عمود المحتوى، لا تُزاحمه */}
       <SideRails banners={sideBanners} />
+
+      <div className="mx-auto max-w-6xl px-4">
+        <StoreTrustAndHelp
+          whatsappNumber={settingsQ.data?.whatsappNumber}
+          freeShippingThreshold={freeThreshold}
+        />
+      </div>
 
       {/* تذييل الموقع العام: كل ما يخدم الناس يعيش على هذا الدومين — المتجر والوظائف.
           هامش سفلي إضافي كي لا يحجبه شريط السلة العائم. */}
@@ -843,7 +1030,7 @@ export default function Storefront() {
             ) : detailQ.data ? (
               <div>
                 <div className="flex gap-4">
-                  <ProductImage url={detailQ.data.imageUrl} alt={detailQ.data.productName} className="size-28 shrink-0 rounded-2xl" />
+                  <ProductImage url={detailQ.data.imageUrl} alt={detailQ.data.productName} className="store-product-media size-28 shrink-0 rounded-2xl" />
                   <div className="min-w-0 flex-1">
                     {detailQ.data.brand && <p className="text-xs font-medium text-slate-400">{detailQ.data.brand}</p>}
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
@@ -880,7 +1067,7 @@ export default function Storefront() {
                     setSelectedId(null);
                   }}
                   disabled={!detailQ.data.inStock || detailQ.data.price == null}
-                  className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
+                  className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-3.5 text-sm font-extrabold text-white transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:bg-slate-200 disabled:text-slate-400 dark:disabled:bg-slate-800"
                 >
                   <Plus aria-hidden className="size-4" />
                   {detailQ.data.inStock ? "أضف إلى السلة" : "غير متوفّر"}
@@ -909,14 +1096,14 @@ export default function Storefront() {
                     <h3 className="mb-2 text-sm font-extrabold text-slate-800 dark:text-slate-200">قد يعجبك أيضاً</h3>
                     <div className="flex gap-3 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                       {relatedQ.data!.map((rp) => (
-                        <div key={rp.productId} className="flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                        <div key={rp.productId} className="store-product-card flex min-w-[120px] max-w-[130px] shrink-0 flex-col overflow-hidden rounded-2xl bg-white ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
                           <button onClick={() => setSelectedId(rp.productId)} className="text-right">
-                            <ProductImage url={rp.imageUrl} alt={rp.productName} className="aspect-square w-full" />
+                            <ProductImage url={rp.imageUrl} alt={rp.productName} className="store-product-media aspect-square w-full" />
                           </button>
                           <div className="flex flex-1 flex-col gap-1 p-2">
                             <span className="line-clamp-2 min-h-[2.2em] text-[11px] font-bold leading-tight">{rp.productName}</span>
                             <span className="text-xs font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(rp.salePrice ?? rp.price)}</span>
-                            <button onClick={() => addToCart(rp)} className="mt-0.5 flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600">
+                            <button onClick={() => addToCart(rp)} className="store-primary-action store-mobile-action mt-0.5 flex items-center justify-center gap-1 rounded-lg bg-amber-500 py-1.5 text-[11px] font-bold text-white transition motion-safe:active:scale-95 hover:bg-amber-600">
                               <Plus aria-hidden className="size-3" /> أضف
                             </button>
                           </div>
@@ -988,7 +1175,7 @@ export default function Storefront() {
               <button
                 onClick={openCheckout}
                 disabled={!storeOpen}
-                className="mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+                className="store-primary-action store-mobile-action mt-4 flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
               >
                 {storeOpen ? (
                   <>
@@ -1077,7 +1264,7 @@ export default function Storefront() {
             <button
               onClick={submitOrder}
               disabled={!canSubmit || createOrder.isPending}
-              className="flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
+              className="store-primary-action store-mobile-action flex w-full items-center justify-center gap-2 rounded-2xl bg-amber-500 py-4 text-sm font-extrabold text-white shadow-lg shadow-amber-500/25 transition motion-safe:active:scale-[0.98] hover:bg-amber-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 disabled:shadow-none dark:disabled:bg-slate-800"
             >
               {createOrder.isPending ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Check aria-hidden className="size-4" />}
               تأكيد الطلب (الدفع عند الاستلام)
@@ -1121,6 +1308,89 @@ export default function Storefront() {
         </PanelShell>
       )}
     </div>
+  );
+}
+
+/**
+ * طبقة الثقة والمساعدة في واجهة المتجر.
+ *
+ * لا تَعِد هذه البطاقة بمدة تسليم أو استبدال غير مُعتمدين في إعدادات المتجر؛
+ * بل تشرح فقط ما يطبّقه مسار الطلب فعلياً: الدفع عند الاستلام، احتساب التوصيل
+ * قبل التأكيد، واتصال الفريق لتأكيد الطلب. هذا يمنع «الثقة التسويقية» الوهمية.
+ */
+function StoreTrustAndHelp({
+  whatsappNumber,
+  freeShippingThreshold,
+}: {
+  whatsappNumber?: string | null;
+  freeShippingThreshold: number;
+}) {
+  const whatsappHref = whatsappNumber ? `https://wa.me/${whatsappNumber.replace(/[^\d]/g, "")}` : null;
+
+  return (
+    <section aria-labelledby="store-help-title" className="mt-8 rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400">تسوّق بوضوح</p>
+          <h2 id="store-help-title" className="mt-0.5 text-base font-extrabold text-slate-900 dark:text-white">معلومات تساعدك قبل الطلب</h2>
+        </div>
+        {whatsappHref && (
+          <a
+            href={whatsappHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2"
+          >
+            <MessageCircle aria-hidden className="size-3.5" /> اسألنا عبر واتساب
+          </a>
+        )}
+      </div>
+
+      <div className="mt-4 grid gap-2.5 sm:grid-cols-3">
+        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+          <Banknote aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
+          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">الدفع عند الاستلام</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">ادفع نقداً للمندوب بعد تأكيد طلبك.</p>
+        </div>
+        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+          <Truck aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
+          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">التوصيل محسوب بوضوح</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">اختر محافظتك لترى الأجرة قبل تأكيد الطلب.</p>
+        </div>
+        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+          <ShieldCheck aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
+          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">تأكيد قبل الإرسال</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">نتواصل معك لتأكيد بيانات الطلب والتوصيل.</p>
+        </div>
+      </div>
+
+      <div className="mt-4 divide-y divide-slate-100 rounded-2xl border border-slate-100 px-3 dark:divide-slate-800 dark:border-slate-800">
+        <details className="group py-3" open>
+          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
+            <span className="flex items-center justify-between gap-3">كيف أعرف السعر النهائي؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
+          </summary>
+          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">يعرض المتجر سعر المنتجات وأجرة التوصيل والإجمالي في شاشة الدفع قبل زر تأكيد الطلب.</p>
+        </details>
+        <details className="group py-3">
+          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
+            <span className="flex items-center justify-between gap-3">هل يوجد توصيل مجاني؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
+          </summary>
+          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
+            {freeShippingThreshold > 0
+              ? `يصبح التوصيل مجانياً تلقائياً عندما تبلغ قيمة المنتجات ${money(freeShippingThreshold)} د.ع، ويظهر لك مقدار المتبقي في السلة.`
+              : "تظهر أجرة التوصيل حسب المحافظة التي تختارها قبل تأكيد الطلب."}
+          </p>
+        </details>
+        <details className="group py-3">
+          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
+            <span className="flex items-center justify-between gap-3">كيف أعدّل الطلب أو أستفسر عن الاستبدال؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
+          </summary>
+          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
+            {whatsappHref ? "راسلنا عبر واتساب مع رقم الطلب، وسيراجع الفريق الحالة معك قبل اتخاذ الإجراء المناسب." : "تواصل مع فريق المتجر وأرسل رقم الطلب ليتمكن من مراجعة الحالة معك."}
+          </p>
+        </details>
+      </div>
+    </section>
   );
 }
 
