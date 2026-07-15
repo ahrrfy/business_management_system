@@ -1594,6 +1594,15 @@ export const storeBanners = mysqlTable(
     title: varchar("title", { length: 255 }).notNull(),
     subtitle: varchar("subtitle", { length: 500 }),
     imageUrl: mediumtext("imageUrl"),
+    /** نسخة هاتف اختيارية؛ تمنع إجبار تصميم سطح المكتب على مساحة الهاتف. */
+    mobileImageUrl: mediumtext("mobileImageUrl"),
+    /**
+     * SMART_CROP للصور الفوتوغرافية، PRESERVE_FULL للتصاميم التي تحتوي نصاً داخل الصورة
+     * (الأصل كامل فوق خلفية ممتدة)، وLAYERED للحملات التي يركب فيها النص من الحقول.
+     */
+    renderMode: mysqlEnum("renderMode", ["SMART_CROP", "PRESERVE_FULL", "LAYERED"]).default("PRESERVE_FULL").notNull(),
+    focusX: int("focusX").default(50).notNull(),
+    focusY: int("focusY").default(50).notNull(),
     ctaLabel: varchar("ctaLabel", { length: 120 }),
     ctaUrl: varchar("ctaUrl", { length: 500 }),
     // موضع البنر في المتجر (هجرة 0074): HERO كاروسيل أعلى المتجر (الافتراضي = سلوك ما قبل العمود)،
@@ -1615,6 +1624,22 @@ export const storeBanners = mysqlTable(
 );
 export type StoreBanner = typeof storeBanners.$inferSelect;
 export type InsertStoreBanner = typeof storeBanners.$inferInsert;
+
+/** مؤشرات يومية مجمّعة للبنرات؛ لا تحتفظ بأي معرّف زائر أو بيانات شخصية. */
+export const storeBannerDailyMetrics = mysqlTable(
+  "storeBannerDailyMetrics",
+  {
+    bannerId: bigint("bannerId", { mode: "number" }).notNull().references(() => storeBanners.id, { onDelete: "cascade" }),
+    metricDate: date("metricDate", { mode: "string" }).notNull(),
+    placement: mysqlEnum("placement", ["HERO", "SIDE", "INLINE"]).notNull(),
+    impressions: int("impressions").default(0).notNull(),
+    clicks: int("clicks").default(0).notNull(),
+  },
+  (t) => ({
+    pk: primaryKey({ columns: [t.bannerId, t.metricDate, t.placement], name: "pk_banner_daily_metric" }),
+    dateIdx: index("idx_banner_metric_date").on(t.metricDate),
+  }),
+);
 
 /** إعدادات المتجر (صفّ مفرد، نمط taxSettings): فتح/إغلاق المتجر، شريط إعلان، رقم واتساب. */
 export const storeSettings = mysqlTable("storeSettings", {

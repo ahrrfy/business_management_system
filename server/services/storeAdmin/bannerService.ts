@@ -9,17 +9,23 @@ import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { withTx } from "../tx";
 import { resolveStorefrontBranchId } from "../storefrontService";
+import { normalizeInternalBannerUrl } from "../../lib/bannerSafety";
 
 function todayYmdBaghdad(): string {
   return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
 }
 
 export type BannerPlacement = "HERO" | "SIDE" | "INLINE";
+export type BannerRenderMode = "SMART_CROP" | "PRESERVE_FULL" | "LAYERED";
 
 export interface BannerInput {
   title: string;
   subtitle?: string | null;
   imageUrl?: string | null;
+  mobileImageUrl?: string | null;
+  renderMode?: BannerRenderMode;
+  focusX?: number;
+  focusY?: number;
   ctaLabel?: string | null;
   ctaUrl?: string | null;
   sortOrder?: number;
@@ -43,6 +49,10 @@ export interface PublicBanner {
   title: string;
   subtitle: string | null;
   imageUrl: string | null;
+  mobileImageUrl: string | null;
+  renderMode: BannerRenderMode;
+  focusX: number;
+  focusY: number;
   ctaLabel: string | null;
   ctaUrl: string | null;
   placement: BannerPlacement;
@@ -61,6 +71,10 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
       title: storeBanners.title,
       subtitle: storeBanners.subtitle,
       imageUrl: storeBanners.imageUrl,
+      mobileImageUrl: storeBanners.mobileImageUrl,
+      renderMode: storeBanners.renderMode,
+      focusX: storeBanners.focusX,
+      focusY: storeBanners.focusY,
       ctaLabel: storeBanners.ctaLabel,
       ctaUrl: storeBanners.ctaUrl,
       placement: storeBanners.placement,
@@ -81,8 +95,12 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
     title: r.title,
     subtitle: r.subtitle ?? null,
     imageUrl: r.imageUrl ?? null,
+    mobileImageUrl: r.mobileImageUrl ?? null,
+    renderMode: (r.renderMode as BannerRenderMode) ?? "PRESERVE_FULL",
+    focusX: Math.min(100, Math.max(0, r.focusX ?? 50)),
+    focusY: Math.min(100, Math.max(0, r.focusY ?? 50)),
     ctaLabel: r.ctaLabel ?? null,
-    ctaUrl: r.ctaUrl ?? null,
+    ctaUrl: normalizeInternalBannerUrl(r.ctaUrl),
     placement: (r.placement as BannerPlacement) ?? "HERO",
   }));
 }
@@ -93,8 +111,12 @@ export async function createBanner(input: BannerInput, userId: number): Promise<
       title: input.title.trim(),
       subtitle: input.subtitle ?? null,
       imageUrl: input.imageUrl ?? null,
+      mobileImageUrl: input.mobileImageUrl ?? null,
+      renderMode: input.renderMode ?? "PRESERVE_FULL",
+      focusX: input.focusX ?? 50,
+      focusY: input.focusY ?? 50,
       ctaLabel: input.ctaLabel ?? null,
-      ctaUrl: input.ctaUrl ?? null,
+      ctaUrl: normalizeInternalBannerUrl(input.ctaUrl),
       sortOrder: input.sortOrder ?? 0,
       isActive: input.isActive ?? true,
       effectiveFrom: input.effectiveFrom || null,
@@ -113,8 +135,12 @@ export async function updateBanner(id: number, input: Partial<BannerInput>): Pro
     if (input.title !== undefined) patch.title = input.title.trim();
     if (input.subtitle !== undefined) patch.subtitle = input.subtitle ?? null;
     if (input.imageUrl !== undefined) patch.imageUrl = input.imageUrl ?? null;
+    if (input.mobileImageUrl !== undefined) patch.mobileImageUrl = input.mobileImageUrl ?? null;
+    if (input.renderMode !== undefined) patch.renderMode = input.renderMode;
+    if (input.focusX !== undefined) patch.focusX = input.focusX;
+    if (input.focusY !== undefined) patch.focusY = input.focusY;
     if (input.ctaLabel !== undefined) patch.ctaLabel = input.ctaLabel ?? null;
-    if (input.ctaUrl !== undefined) patch.ctaUrl = input.ctaUrl ?? null;
+    if (input.ctaUrl !== undefined) patch.ctaUrl = normalizeInternalBannerUrl(input.ctaUrl);
     if (input.sortOrder !== undefined) patch.sortOrder = input.sortOrder;
     if (input.isActive !== undefined) patch.isActive = input.isActive;
     if (input.effectiveFrom !== undefined) patch.effectiveFrom = input.effectiveFrom || null;

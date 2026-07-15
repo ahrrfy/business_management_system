@@ -47,6 +47,7 @@ import { fmtInt } from "@/lib/money";
 import { isPublicHost } from "@/lib/siteHosts";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
 import { buildStorefrontCartMessage, openWhatsApp } from "@/lib/whatsapp";
+import { BannerFrame, type StoreBannerCreative } from "@/components/store/BannerFrame";
 
 const STORE_NAME = "المكتبة العربية";
 const STORE_TAGLINE = "قرطاسية • طباعة • هدايا — يصلك أينما كنت في العراق";
@@ -236,7 +237,7 @@ function ProductRow({
 
 /** بنر إعلانيّ ديناميكيّ: كاروسيل يتبدّل تلقائياً كل ٥ث (crossfade آمنٌ لـRTL) + نقاط تنقّل +
  *  ارتفاعٌ متجاوب (auto-scale). يُشتقّ من بنرات لوحة hPanel؛ بنرٌ واحد ⇒ يُعرَض ثابتاً بلا نقاط. */
-type BannerItem = { id: number; title: string; subtitle?: string | null; imageUrl?: string | null; ctaLabel?: string | null; ctaUrl?: string | null; placement?: "HERO" | "SIDE" | "INLINE" };
+type BannerItem = StoreBannerCreative;
 
 /**
  * بنرات جانبية طولية (placement=SIDE): تملأ فراغَي جانبَي عمود المحتوى (max-w-6xl=1152px) على
@@ -246,33 +247,15 @@ type BannerItem = { id: number; title: string; subtitle?: string | null; imageUr
  */
 function SideRails({ banners }: { banners: BannerItem[] }) {
   if (banners.length === 0) return null;
-  const right = banners.filter((_, i) => i % 2 === 0).slice(0, 2);
-  const left = banners.filter((_, i) => i % 2 === 1).slice(0, 2);
+  const right = banners.filter((_, i) => i % 2 === 0).slice(0, 1);
+  const left = banners.filter((_, i) => i % 2 === 1).slice(0, 1);
   const rail = (list: BannerItem[], sideStyle: CSSProperties) =>
     list.length > 0 && (
-      <div className="fixed top-1/2 z-10 hidden w-44 -translate-y-1/2 flex-col gap-3 min-[1600px]:flex" style={sideStyle} aria-hidden={false}>
+      <div className="fixed top-1/2 z-10 hidden min-w-[208px] max-w-56 w-[13vw] -translate-y-1/2 flex-col gap-3 min-[1600px]:flex" style={sideStyle} aria-hidden={false}>
         {list.map((b) => {
-          const inner = (
-            <>
-              {b.imageUrl ? (
-                <img src={b.imageUrl} alt={b.title} className="h-full w-full object-cover" />
-              ) : (
-                <div className="h-full w-full bg-gradient-to-b from-emerald-600 via-emerald-500 to-teal-500" />
-              )}
-              <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-black/20 to-transparent p-3 text-white">
-                <p className="text-sm font-extrabold leading-tight">{b.title}</p>
-                {b.subtitle && <p className="mt-0.5 line-clamp-2 text-[11px] text-white/90">{b.subtitle}</p>}
-                {b.ctaLabel && (
-                  <span className="mt-1.5 inline-flex w-fit items-center rounded-full bg-amber-400 px-2.5 py-1 text-[11px] font-extrabold text-amber-950 shadow">
-                    {b.ctaLabel}
-                  </span>
-                )}
-              </div>
-            </>
-          );
           return (
-            <div key={b.id} className="relative aspect-[1/2] w-full overflow-hidden rounded-2xl shadow-md ring-1 ring-slate-200/60">
-              {b.ctaUrl ? <a href={b.ctaUrl} className="block h-full w-full">{inner}</a> : inner}
+            <div key={b.id} className="relative aspect-[2/5] w-full overflow-hidden rounded-2xl shadow-md ring-1 ring-slate-200/60">
+              <BannerFrame banner={b} slot="SIDE" />
             </div>
           );
         })}
@@ -292,30 +275,10 @@ function SideRails({ banners }: { banners: BannerItem[] }) {
  * بشريط ترويجي (نمط in-feed banner العالمي: أمازون/علي إكسبرس). `col-span-full` يمتدّ على كامل
  * أعمدة الشبكة أياً كان عددها المتجاوب.
  */
-function InlineStrip({ banner, tone = "emerald" }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
-  const inner = (
-    <>
-      {banner.imageUrl ? (
-        <img src={banner.imageUrl} alt={banner.title} className="h-full w-full object-cover" />
-      ) : (
-        <div className={`h-full w-full ${tone === "amber" ? "bg-gradient-to-l from-amber-500 to-orange-500" : "bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500"}`} />
-      )}
-      <div className="absolute inset-0 flex items-center justify-between gap-3 bg-gradient-to-l from-black/60 via-black/25 to-transparent p-4 text-white sm:p-6">
-        <div className="min-w-0">
-          <p className="text-base font-extrabold leading-tight sm:text-xl">{banner.title}</p>
-          {banner.subtitle && <p className="mt-0.5 line-clamp-1 text-xs text-white/90 sm:text-sm">{banner.subtitle}</p>}
-        </div>
-        {banner.ctaLabel && (
-          <span className="shrink-0 rounded-full bg-amber-400 px-4 py-1.5 text-xs font-extrabold text-amber-950 shadow sm:text-sm">
-            {banner.ctaLabel}
-          </span>
-        )}
-      </div>
-    </>
-  );
+function InlineStrip({ banner }: { banner: BannerItem; tone?: "emerald" | "amber" }) {
   return (
-    <div className="relative col-span-full h-28 overflow-hidden rounded-2xl shadow-sm sm:h-32 md:h-36">
-      {banner.ctaUrl ? <a href={banner.ctaUrl} className="block h-full w-full">{inner}</a> : inner}
+    <div className="relative col-span-full aspect-[3/1] overflow-hidden rounded-2xl shadow-sm sm:aspect-[6/1]">
+      <BannerFrame banner={banner} slot="INLINE" />
     </div>
   );
 }
@@ -330,33 +293,12 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
   const active = cur % banners.length;
   return (
     <section className="mb-4">
-      <div className="relative h-44 overflow-hidden rounded-3xl shadow-md sm:h-56 md:h-64 lg:h-72">
+      <div className="relative aspect-[2/1] overflow-hidden rounded-3xl shadow-md sm:aspect-[16/5]">
         {banners.map((b, i) => {
-          const inner = (
-            <>
-              {b.imageUrl ? (
-                <img src={b.imageUrl} alt={b.title} className="h-full w-full object-cover" />
-              ) : (
-                <div className="h-full w-full bg-gradient-to-l from-emerald-600 via-emerald-500 to-teal-500" />
-              )}
-              <div className="absolute inset-0 flex flex-col justify-end bg-gradient-to-t from-black/70 via-black/25 to-transparent p-5 text-white sm:p-7">
-                <p className="text-lg font-extrabold leading-tight sm:text-2xl md:text-3xl">{b.title}</p>
-                {b.subtitle && <p className="mt-1 max-w-[90%] text-xs text-white/90 sm:text-sm md:text-base">{b.subtitle}</p>}
-                {b.ctaLabel && (
-                  <span className="mt-2.5 inline-flex w-fit items-center gap-1 rounded-full bg-amber-400 px-4 py-1.5 text-xs font-extrabold text-amber-950 shadow sm:text-sm">
-                    {b.ctaLabel}
-                  </span>
-                )}
-              </div>
-            </>
-          );
+          const inner = <BannerFrame banner={b} slot="HERO" active={i === active} />;
           return (
             <div key={b.id} className={`absolute inset-0 transition-opacity duration-700 ${i === active ? "opacity-100" : "pointer-events-none opacity-0"}`}>
-              {b.ctaUrl ? (
-                <a href={b.ctaUrl} className="block h-full w-full">{inner}</a>
-              ) : (
-                <div className="h-full w-full">{inner}</div>
-              )}
+              {inner}
             </div>
           );
         })}

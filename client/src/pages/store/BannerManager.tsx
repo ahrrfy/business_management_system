@@ -11,6 +11,7 @@ import { confirm } from "@/lib/confirm";
 import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 
 type Placement = "HERO" | "SIDE" | "INLINE";
+type RenderMode = "SMART_CROP" | "PRESERVE_FULL" | "LAYERED";
 
 /** مواصفات كل موضع: تسمية للمدير + مقاس الصورة الموصى به (يُبنى عليه العرض في المتجر). */
 const PLACEMENTS: Record<Placement, { label: string; hint: string; badge: string }> = {
@@ -42,12 +43,16 @@ interface FormState {
   effectiveFrom: string;
   effectiveTo: string;
   images: ImageItem[];
+  mobileImages: ImageItem[];
   placement: Placement;
+  renderMode: RenderMode;
+  focusX: number;
+  focusY: number;
 }
 
 const EMPTY: FormState = {
   id: null, title: "", subtitle: "", ctaLabel: "", ctaUrl: "", sortOrder: "0",
-  isActive: true, effectiveFrom: "", effectiveTo: "", images: [], placement: "HERO",
+  isActive: true, effectiveFrom: "", effectiveTo: "", images: [], mobileImages: [], placement: "HERO", renderMode: "PRESERVE_FULL", focusX: 50, focusY: 50,
 };
 
 export default function BannerManager() {
@@ -77,7 +82,11 @@ export default function BannerManager() {
       effectiveFrom: b.effectiveFrom ?? "",
       effectiveTo: b.effectiveTo ?? "",
       images: b.imageUrl ? [{ id: "cur", dataUrl: b.imageUrl, isPrimary: true }] : [],
+      mobileImages: b.mobileImageUrl ? [{ id: "mobile", dataUrl: b.mobileImageUrl, isPrimary: true }] : [],
       placement: (b.placement as Placement) ?? "HERO",
+      renderMode: (b.renderMode as RenderMode) ?? "PRESERVE_FULL",
+      focusX: b.focusX ?? 50,
+      focusY: b.focusY ?? 50,
     });
   }
 
@@ -89,6 +98,7 @@ export default function BannerManager() {
       title,
       subtitle: form.subtitle.trim() || null,
       imageUrl: form.images[0]?.dataUrl ?? form.images[0]?.url ?? null,
+      mobileImageUrl: form.mobileImages[0]?.dataUrl ?? form.mobileImages[0]?.url ?? null,
       ctaLabel: form.ctaLabel.trim() || null,
       ctaUrl: form.ctaUrl.trim() || null,
       sortOrder: Number(form.sortOrder) || 0,
@@ -96,6 +106,9 @@ export default function BannerManager() {
       effectiveFrom: form.effectiveFrom || null,
       effectiveTo: form.effectiveTo || null,
       placement: form.placement,
+      renderMode: form.renderMode,
+      focusX: form.focusX,
+      focusY: form.focusY,
     };
     if (form.id == null) createM.mutate(payload);
     else updateM.mutate({ id: form.id, ...payload });
@@ -135,6 +148,19 @@ export default function BannerManager() {
                 ))}
               </select>
             </label>
+            <label className="text-sm md:col-span-2">
+              <span className="mb-1 block font-medium text-muted-foreground">معالجة الصورة تلقائياً</span>
+              <select value={form.renderMode} onChange={(e) => setForm({ ...form, renderMode: e.target.value as RenderMode })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30">
+                <option value="PRESERVE_FULL">حفظ التصميم كاملاً — خلفية ممتدة، بلا قص للنص أو الشعار</option>
+                <option value="SMART_CROP">ملء ذكي — للصور التي لا تحتوي نصاً داخلها</option>
+                <option value="LAYERED">تصميم طبقات — الصورة خلفية والنص والزر من حقول المتجر</option>
+              </select>
+              <span className="mt-1 block text-xs text-muted-foreground">الوضع الآمن الافتراضي يحافظ على الصورة كاملة ويملأ الفراغ من الخلفية نفسها.</span>
+            </label>
+            {form.renderMode !== "PRESERVE_FULL" && <div className="grid gap-3 md:col-span-2 md:grid-cols-2">
+              <label className="text-sm"><span className="mb-1 block font-medium text-muted-foreground">تركيز أفقي: {form.focusX}%</span><input className="w-full" type="range" min="0" max="100" value={form.focusX} onChange={(e) => setForm({ ...form, focusX: Number(e.target.value) })} /></label>
+              <label className="text-sm"><span className="mb-1 block font-medium text-muted-foreground">تركيز عمودي: {form.focusY}%</span><input className="w-full" type="range" min="0" max="100" value={form.focusY} onChange={(e) => setForm({ ...form, focusY: Number(e.target.value) })} /></label>
+            </div>}
             <label className="text-sm">
               <span className="mb-1 block font-medium text-muted-foreground">العنوان *</span>
               <input value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} className="w-full rounded-lg border border-border bg-background px-3 py-2 outline-none focus:ring-2 focus:ring-primary/30" />
@@ -171,6 +197,10 @@ export default function BannerManager() {
           <div className="mt-3">
             <span className="mb-1 flex items-center gap-1.5 text-sm font-medium text-muted-foreground"><ImagePlus aria-hidden className="size-4" /> صورة البنر</span>
             <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={1} singlePrimary={false} hint={PLACEMENTS[form.placement].hint} />
+            {form.placement !== "SIDE" && <div className="mt-3">
+              <span className="mb-1 block text-sm font-medium text-muted-foreground">نسخة الهاتف (اختيارية، موصى بها للحملات النصية)</span>
+              <ImageUploader value={form.mobileImages} onChange={(imgs) => setForm({ ...form, mobileImages: imgs })} maxItems={1} singlePrimary={false} hint={form.placement === "HERO" ? "1200×600 للهاتف (2:1)" : "1080×360 للهاتف (3:1)"} />
+            </div>}
           </div>
           <button onClick={save} disabled={saving} className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2.5 text-sm font-bold text-primary-foreground transition hover:opacity-90 disabled:opacity-50">
             {saving ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Save aria-hidden className="size-4" />} حفظ

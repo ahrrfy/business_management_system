@@ -50,6 +50,8 @@ import { getStoreAnalytics } from "../services/storeAdmin/storeAnalyticsService"
 import { getStoreCustomers } from "../services/storeAdmin/storeCustomerService";
 import { resolveStorefrontBranchId } from "../services/storefrontService";
 import { withTx } from "../services/tx";
+import { assertValidImageDataUrl } from "../lib/imageValidation";
+import { assertSafeBannerCtaUrl } from "../lib/bannerSafety";
 
 const statusEnum = z.enum(["PENDING", "CONFIRMED", "PROCESSING", "SHIPPED", "DELIVERED", "CANCELLED"]);
 
@@ -126,6 +128,10 @@ const bannerInput = z.object({
   imageUrl: z.string().max(3_000_000).nullish(), // data-URL مضغوط
   ctaLabel: z.string().max(120).nullish(),
   ctaUrl: z.string().max(500).nullish(),
+  mobileImageUrl: z.string().max(3_000_000).nullish(),
+  renderMode: z.enum(["SMART_CROP", "PRESERVE_FULL", "LAYERED"]).optional(),
+  focusX: z.number().int().min(0).max(100).optional(),
+  focusY: z.number().int().min(0).max(100).optional(),
   sortOrder: z.number().int().min(0).max(9999).optional(),
   isActive: z.boolean().optional(),
   effectiveFrom: dateStr.nullish(),
@@ -133,12 +139,22 @@ const bannerInput = z.object({
   branchId: z.number().int().positive().nullish(),
   // موضع العرض (0074): رئيسي/جانبي طولي/فاصل بين المنتجات.
   placement: z.enum(["HERO", "SIDE", "INLINE"]).optional(),
+}).refine((v) => !v.effectiveFrom || !v.effectiveTo || v.effectiveFrom <= v.effectiveTo, {
+  message: "تاريخ انتهاء البنر أقدم من تاريخ بدايته",
+  path: ["effectiveTo"],
 });
+
+function assertSafeBannerInput(input: Partial<z.infer<typeof bannerInput>>) {
+  assertValidImageDataUrl(input.imageUrl, 2_000_000);
+  assertValidImageDataUrl(input.mobileImageUrl, 2_000_000);
+  assertSafeBannerCtaUrl(input.ctaUrl);
+}
 
 /** بنرات المتجر (إدارة — storeManagerProcedure). */
 const bannersRouter = router({
   list: storeReadProcedure.query(() => listBanners()),
   create: storeManagerProcedure.input(bannerInput).mutation(async ({ input, ctx }) => {
+    assertSafeBannerInput(input);
     const r = await createBanner(input, ctx.user.id);
     await logAudit(ctx, { action: "store.banner.create", entityType: "storeBanner", entityId: r.id, newValue: { title: input.title } });
     return r;
@@ -147,6 +163,7 @@ const bannersRouter = router({
     .input(z.object({ id: z.number().int().positive() }).and(bannerInput.partial()))
     .mutation(async ({ input, ctx }) => {
       const { id, ...rest } = input;
+      assertSafeBannerInput(rest);
       const r = await updateBanner(id, rest);
       await logAudit(ctx, { action: "store.banner.update", entityType: "storeBanner", entityId: id, newValue: rest });
       return r;
