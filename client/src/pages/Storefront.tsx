@@ -777,6 +777,13 @@ export default function Storefront() {
       {/* بنرات جانبية طولية (شاشات عريضة فقط) — خارج عمود المحتوى، لا تُزاحمه */}
       <SideRails banners={sideBanners} />
 
+      <div className="mx-auto max-w-6xl px-4">
+        <StoreTrustAndHelp
+          whatsappNumber={settingsQ.data?.whatsappNumber}
+          freeShippingThreshold={freeThreshold}
+        />
+      </div>
+
       {/* تذييل الموقع العام: كل ما يخدم الناس يعيش على هذا الدومين — المتجر والوظائف.
           هامش سفلي إضافي كي لا يحجبه شريط السلة العائم. */}
       <footer className="mt-10 border-t border-emerald-100 bg-white/70 pb-24 dark:border-slate-800 dark:bg-slate-900/60">
@@ -1121,6 +1128,89 @@ export default function Storefront() {
         </PanelShell>
       )}
     </div>
+  );
+}
+
+/**
+ * طبقة الثقة والمساعدة في واجهة المتجر.
+ *
+ * لا تَعِد هذه البطاقة بمدة تسليم أو استبدال غير مُعتمدين في إعدادات المتجر؛
+ * بل تشرح فقط ما يطبّقه مسار الطلب فعلياً: الدفع عند الاستلام، احتساب التوصيل
+ * قبل التأكيد، واتصال الفريق لتأكيد الطلب. هذا يمنع «الثقة التسويقية» الوهمية.
+ */
+function StoreTrustAndHelp({
+  whatsappNumber,
+  freeShippingThreshold,
+}: {
+  whatsappNumber?: string | null;
+  freeShippingThreshold: number;
+}) {
+  const whatsappHref = whatsappNumber ? `https://wa.me/${whatsappNumber.replace(/[^\d]/g, "")}` : null;
+
+  return (
+    <section aria-labelledby="store-help-title" className="mt-8 rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900 sm:p-5">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold text-emerald-700 dark:text-emerald-400">تسوّق بوضوح</p>
+          <h2 id="store-help-title" className="mt-0.5 text-base font-extrabold text-slate-900 dark:text-white">معلومات تساعدك قبل الطلب</h2>
+        </div>
+        {whatsappHref && (
+          <a
+            href={whatsappHref}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-3 py-2 text-xs font-extrabold text-white transition hover:bg-emerald-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2"
+          >
+            <MessageCircle aria-hidden className="size-3.5" /> اسألنا عبر واتساب
+          </a>
+        )}
+      </div>
+
+      <div className="mt-4 grid gap-2.5 sm:grid-cols-3">
+        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+          <Banknote aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
+          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">الدفع عند الاستلام</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">ادفع نقداً للمندوب بعد تأكيد طلبك.</p>
+        </div>
+        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+          <Truck aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
+          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">التوصيل محسوب بوضوح</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">اختر محافظتك لترى الأجرة قبل تأكيد الطلب.</p>
+        </div>
+        <div className="rounded-2xl bg-emerald-50 p-3 dark:bg-emerald-500/10">
+          <ShieldCheck aria-hidden className="size-4 text-emerald-700 dark:text-emerald-400" />
+          <p className="mt-1.5 text-xs font-extrabold text-slate-800 dark:text-slate-100">تأكيد قبل الإرسال</p>
+          <p className="mt-0.5 text-[11px] leading-relaxed text-slate-600 dark:text-slate-300">نتواصل معك لتأكيد بيانات الطلب والتوصيل.</p>
+        </div>
+      </div>
+
+      <div className="mt-4 divide-y divide-slate-100 rounded-2xl border border-slate-100 px-3 dark:divide-slate-800 dark:border-slate-800">
+        <details className="group py-3" open>
+          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
+            <span className="flex items-center justify-between gap-3">كيف أعرف السعر النهائي؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
+          </summary>
+          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">يعرض المتجر سعر المنتجات وأجرة التوصيل والإجمالي في شاشة الدفع قبل زر تأكيد الطلب.</p>
+        </details>
+        <details className="group py-3">
+          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
+            <span className="flex items-center justify-between gap-3">هل يوجد توصيل مجاني؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
+          </summary>
+          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
+            {freeShippingThreshold > 0
+              ? `يصبح التوصيل مجانياً تلقائياً عندما تبلغ قيمة المنتجات ${money(freeShippingThreshold)} د.ع، ويظهر لك مقدار المتبقي في السلة.`
+              : "تظهر أجرة التوصيل حسب المحافظة التي تختارها قبل تأكيد الطلب."}
+          </p>
+        </details>
+        <details className="group py-3">
+          <summary className="cursor-pointer list-none text-sm font-bold text-slate-800 marker:content-none dark:text-slate-100">
+            <span className="flex items-center justify-between gap-3">كيف أعدّل الطلب أو أستفسر عن الاستبدال؟<span className="text-emerald-600 transition group-open:rotate-45">＋</span></span>
+          </summary>
+          <p className="pt-2 text-xs leading-6 text-slate-600 dark:text-slate-300">
+            {whatsappHref ? "راسلنا عبر واتساب مع رقم الطلب، وسيراجع الفريق الحالة معك قبل اتخاذ الإجراء المناسب." : "تواصل مع فريق المتجر وأرسل رقم الطلب ليتمكن من مراجعة الحالة معك."}
+          </p>
+        </details>
+      </div>
+    </section>
   );
 }
 
