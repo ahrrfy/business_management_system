@@ -1,5 +1,5 @@
 import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "@shared/const";
-import { toArabicMessage } from "@shared/errorMap.ar";
+import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
 import { canSeeCost as _canSeeCost, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
@@ -9,7 +9,7 @@ import { logger } from "./logger";
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
   errorFormatter({ shape, error, ctx, path }) {
-    const arabic = toArabicMessage({
+    let arabic = toArabicMessage({
       trpcCode: error.code,
       originalMessage: error.message,
       cause: error.cause,
@@ -17,6 +17,13 @@ const t = initTRPC.context<TrpcContext>().create({
     const correlationId = (ctx?.req as { id?: string } | undefined)?.id ?? null;
     if (error.code === "INTERNAL_SERVER_ERROR") {
       logger.error({ err: error.cause ?? error, path, correlationId }, `tRPC error: ${path}`);
+      // ترقية تشخيصية (١٥/٧/٢٦): الخطأ غير المتوقّع يحمل رمز متابعة يطابق سطر الخطأ في
+      // سجلّ الخادم (genReqId في index.ts) — المستخدم يرسله للدعم فيُحدَّد موضع الخطأ فوراً.
+      // يُلحق بالرسالة العامة فقط: رفض قواعد الأعمال (Error عربي من الخدمات يصعد INTERNAL)
+      // رسالتُه مفهومة بذاتها، وإلحاق الرمز به يحوّل رفضاً سليماً لبلاغ عطل (alert fatigue).
+      if (correlationId && arabic === GENERIC_INTERNAL_AR) {
+        arabic += `\nرمز المتابعة: ${correlationId} — أرسله للدعم لتحديد موضع الخطأ في سجلّ الخادم.`;
+      }
     } else if (error.code === "FORBIDDEN" || error.code === "UNAUTHORIZED") {
       // F5 (تدقيق ١٤/٦/٢٦): محاولات التجاوز الفاشلة كانت تمرّ صامتة ⇒ لا أثر forensic.
       // نُسجِّل في pino البنيوي (best-effort، خفيف، بلا i/o إضافي على القاعدة).
@@ -26,7 +33,8 @@ const t = initTRPC.context<TrpcContext>().create({
         `authz denied: ${path}`,
       );
     }
-    return { ...shape, message: arabic, data: { ...shape.data, correlationId } };
+    // dbCode: رمز خطأ MySQL (إن وُجد) — يتيح للواجهة تمييز نوع الفشل برمجياً (تكرار/قفل/اتصال).
+    return { ...shape, message: arabic, data: { ...shape.data, correlationId, dbCode: mysqlCodeFrom(error.cause) } };
   },
 });
 
