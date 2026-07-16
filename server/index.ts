@@ -23,6 +23,7 @@ import { registerWellKnown } from "./wellKnown";
 import { csrfGuard } from "./middleware/csrf";
 import { isTrpcSurface, sendTrpcError, trpcAwareRateLimitHandler } from "./middleware/trpcError";
 import { printRouter } from "./printRoute";
+import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
 import { channelWebhooksRouter, companyChannelWebhooksRouter } from "./routes/channelWebhooks";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
@@ -350,6 +351,12 @@ async function startServer() {
   // محمي بالمصادقة (كوكي الجلسة) + csrfGuard (فحص Origin) — دفاع عميق فوق sameSite:"strict"
   // لأن /raw و /test يغيّران الحالة (طباعة فعلية + قد يُشغّلان copy للمشاركة).
   app.use("/api/print", tenancy, csrfGuard, printRouter());
+
+  // صور المتجر كموارد HTTP مستقلّة (لا داخل JSON) — راجع رأس imageRoute.ts للقياس والسبب.
+  // ⚠️ **بلا csrfGuard وبلا مصادقة عمداً:** قراءة GET محضة لصورٍ علنية أصلاً (البنرات تُعرض لكل
+  // زائر عبر storefront.banners بلا كوكي) ⇒ اشتراط كوكي/Origin هنا يكسر المتجر العلني ولا يحمي
+  // شيئاً. `tenancy` يبقى ليُوجَّه الطلب لقاعدة الشركة الصحيحة في وضع تعدّد الشركات.
+  app.use("/api/img", tenancy, imageRouter());
 
   // تنزيل النسخ الاحتياطية لجهاز المدير (GET stream، محمي بالمدير + مسار آمن). في وضع تعدد
   // الشركات: backupRoutes.ts/systemRouter.ts يُقيَّدان لملفات الشركة الحالية فقط (بادئة اسم

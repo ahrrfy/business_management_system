@@ -10,6 +10,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { withTx } from "../tx";
 import { resolveStorefrontBranchId } from "../storefrontService";
 import { normalizeInternalBannerUrl } from "../../lib/bannerSafety";
+import { bannerImageUrl, decodeDataUrl } from "../../imageRoute";
 
 function todayYmdBaghdad(): string {
   return new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString().slice(0, 10);
@@ -73,6 +74,22 @@ export interface PublicBanner {
   imageIndex?: number;
 }
 
+/**
+ * يحوّل صورة البنر المخزَّنة إلى ما يُرسَل للمتجر. ثلاث حالات **متمايزة عمداً**:
+ *   • data URL صورة صالحة ⇒ **رابط النقطة** (`/api/img/...`) — هذا هو التوفير.
+ *   • قيمة ليست data URL (مسار/رابط خارجيّ من صفٍّ قديم أو مستورَد) ⇒ **تُمرَّر كما هي**:
+ *     هي رابطٌ يعمل في المتصفّح أصلاً. تحويلها إلى null كان **انحداراً**: صورةٌ تختفي من
+ *     المتجر بصمت (أمسكه اختبار #207 القائم — نفس صنف علّة #203 التي عالجناها اليوم).
+ *   • `null` (بنر نصّي — قرار المالك) أو data URL **ليست صورةً صالحة** ⇒ `null`: الأخيرة نفايةٌ
+ *     لا تُعرَض، وشحنها base64 داخل JSON يُبطل الغرض كلّه.
+ */
+function toPublicImage(bannerId: number, slot: string, value: string | null | undefined): string | null {
+  if (!value) return null;
+  const isDataUrl = /^data:/i.test(value.trim());
+  if (!isDataUrl) return value;
+  return decodeDataUrl(value) ? bannerImageUrl(bannerId, slot, value) : null;
+}
+
 function activeBannerImages(value: unknown, today: string): BannerImageInput[] {
   if (!Array.isArray(value)) return [];
   return value.filter((image): image is BannerImageInput => {
@@ -126,8 +143,12 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
     id: Number(r.id),
     title: r.title,
     subtitle: r.subtitle ?? null,
-    imageUrl: image.url ?? null,
-    mobileImageUrl: r.mobileImageUrl ?? null,
+    // **رابط** لا data URL (١٦/٧): كان الردّ يحمل الصور base64 داخله ⇒ ١٫٣٢ م.ب مضغوطة في كل
+    // تحميلٍ للمتجر، بلا كاش (الـSW يضع /api/* على NetworkOnly عمداً). الآن مورد HTTP مستقلّ
+    // بـimmutable+ETag ⇒ الردّ ~٢ ك.ب، والصورة تُجلَب مرّةً واحدة للأبد وتُحمَّل كسولاً.
+    // ⚠️ العلني فقط — `listBanners` (لوحة الإدارة) يبقى data URL لأن المحرّر يعرضها ويعدّلها.
+    imageUrl: toPublicImage(Number(r.id), `main-${imageIndex}`, image.url),
+    mobileImageUrl: toPublicImage(Number(r.id), "mobile", r.mobileImageUrl),
     renderMode: (r.renderMode as BannerRenderMode) ?? "PRESERVE_FULL",
     focusX: Math.min(100, Math.max(0, r.focusX ?? 50)),
     focusY: Math.min(100, Math.max(0, r.focusY ?? 50)),
