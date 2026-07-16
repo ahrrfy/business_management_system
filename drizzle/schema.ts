@@ -1709,6 +1709,7 @@ export const storeBanners = mysqlTable(
     title: varchar("title", { length: 255 }).notNull(),
     subtitle: varchar("subtitle", { length: 500 }),
     imageUrl: mediumtext("imageUrl"),
+    images: json("images"),
     /** نسخة هاتف اختيارية؛ تمنع إجبار تصميم سطح المكتب على مساحة الهاتف. */
     mobileImageUrl: mediumtext("mobileImageUrl"),
     /**

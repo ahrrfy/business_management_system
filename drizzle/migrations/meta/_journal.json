@@ -555,5 +555,12 @@
       "tag": "0078_crm_campaigns_coupons",
       "breakpoints": true
     }
+    ,{
+      "idx": 79,
+      "version": "5",
+      "when": 1784419200000,
+      "tag": "0079_banner_multiple_images",
+      "breakpoints": true
+    }
   ]
 }

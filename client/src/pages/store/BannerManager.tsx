@@ -64,6 +64,7 @@ interface FormState {
   effectiveFrom: string;
   effectiveTo: string;
   images: ImageItem[];
+  imageSettings: Record<string, { effectiveFrom: string; effectiveTo: string; isActive: boolean }>;
   mobileImages: ImageItem[];
   placement: Placement;
   renderMode: RenderMode;
@@ -73,7 +74,7 @@ interface FormState {
 
 const EMPTY: FormState = {
   id: null, title: "", subtitle: "", ctaLabel: "", ctaUrl: "", sortOrder: "0",
-  isActive: true, effectiveFrom: "", effectiveTo: "", images: [], mobileImages: [], placement: "HERO", renderMode: "PRESERVE_FULL", focusX: 50, focusY: 50,
+  isActive: true, effectiveFrom: "", effectiveTo: "", images: [], imageSettings: {}, mobileImages: [], placement: "HERO", renderMode: "PRESERVE_FULL", focusX: 50, focusY: 50,
 };
 
 export default function BannerManager() {
@@ -98,6 +99,12 @@ export default function BannerManager() {
     && Math.abs(Math.log(sourceRatio / selectedPlacement.ratio)) > 0.12;
 
   function edit(b: (typeof banners)[number]) {
+    const storedImages = Array.isArray(b.images) ? b.images as Array<{ url: string; effectiveFrom?: string | null; effectiveTo?: string | null; isActive?: boolean }> : [];
+    const images = storedImages.length
+      ? storedImages.map((image, index) => ({ id: `stored-${index}`, dataUrl: image.url, isPrimary: index === 0 }))
+      : (b.imageUrl ? [{ id: "cur", dataUrl: b.imageUrl, isPrimary: true }] : []);
+    const sourceImages: Array<{ url: string; effectiveFrom?: string | null; effectiveTo?: string | null; isActive?: boolean }> = storedImages.length ? storedImages : images.map((image) => ({ url: image.dataUrl }));
+    const imageSettings = Object.fromEntries(sourceImages.map((image, index) => [`${storedImages.length ? `stored-${index}` : "cur"}`, { effectiveFrom: image.effectiveFrom ?? "", effectiveTo: image.effectiveTo ?? "", isActive: image.isActive !== false }]));
     setForm({
       id: b.id,
       title: b.title,
@@ -108,7 +115,8 @@ export default function BannerManager() {
       isActive: !!b.isActive,
       effectiveFrom: b.effectiveFrom ?? "",
       effectiveTo: b.effectiveTo ?? "",
-      images: b.imageUrl ? [{ id: "cur", dataUrl: b.imageUrl, isPrimary: true }] : [],
+      images,
+      imageSettings,
       mobileImages: b.mobileImageUrl ? [{ id: "mobile", dataUrl: b.mobileImageUrl, isPrimary: true }] : [],
       placement: (b.placement as Placement) ?? "HERO",
       renderMode: (b.renderMode as RenderMode) ?? "PRESERVE_FULL",
@@ -125,6 +133,7 @@ export default function BannerManager() {
       title,
       subtitle: form.subtitle.trim() || null,
       imageUrl: form.images[0]?.dataUrl ?? form.images[0]?.url ?? null,
+      images: form.images.map((image, index) => ({ url: image.dataUrl || image.url || "", ...(form.imageSettings[image.id] ?? { isActive: true }), sortOrder: index })).filter((image) => image.url),
       mobileImageUrl: form.mobileImages[0]?.dataUrl ?? form.mobileImages[0]?.url ?? null,
       ctaLabel: form.ctaLabel.trim() || null,
       ctaUrl: form.ctaUrl.trim() || null,
@@ -223,7 +232,17 @@ export default function BannerManager() {
           </div>
           <div className="mt-3">
             <span className="mb-1 flex items-center gap-1.5 text-sm font-medium text-muted-foreground"><ImagePlus aria-hidden className="size-4" /> صورة البنر</span>
-            <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={1} singlePrimary={false} hint={PLACEMENTS[form.placement].hint} />
+            <ImageUploader value={form.images} onChange={(imgs) => setForm({ ...form, images: imgs })} maxItems={20} singlePrimary={false} hint={`${PLACEMENTS[form.placement].hint} يمكنك رفع حتى 20 صورة.`} />
+            {form.images.length > 0 && <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {form.images.map((image, index) => {
+                const settings = form.imageSettings[image.id] ?? { effectiveFrom: "", effectiveTo: "", isActive: true };
+                const updateSettings = (patch: Partial<typeof settings>) => setForm({ ...form, imageSettings: { ...form.imageSettings, [image.id]: { ...settings, ...patch } } });
+                return <div key={image.id} className="rounded-xl border border-border bg-muted/20 p-2">
+                  <div className="mb-2 flex items-center justify-between text-xs font-bold"><span>الصورة {index + 1}</span><label className="flex items-center gap-1"><input type="checkbox" checked={settings.isActive} onChange={(e) => updateSettings({ isActive: e.target.checked })} /> فعالة</label></div>
+                  <div className="grid grid-cols-2 gap-2"><label className="text-[11px] text-muted-foreground">تظهر من<input type="date" value={settings.effectiveFrom} onChange={(e) => updateSettings({ effectiveFrom: e.target.value })} className="mt-1 w-full rounded border border-border bg-background px-2 py-1" /></label><label className="text-[11px] text-muted-foreground">تتوقف في<input type="date" value={settings.effectiveTo} onChange={(e) => updateSettings({ effectiveTo: e.target.value })} className="mt-1 w-full rounded border border-border bg-background px-2 py-1" /></label></div>
+                </div>;
+              })}
+            </div>}
             {imageDimensions && selectedPlacement && (
               <div className={`mt-2 rounded-xl border px-3 py-2 text-xs ${hasRatioMismatch ? "border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-200" : "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-500/10 dark:text-emerald-200"}`}>
                 الصورة المرفوعة: {imageDimensions.width}×{imageDimensions.height} ({sourceRatio!.toFixed(2)}:١). {hasRatioMismatch

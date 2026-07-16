@@ -3,6 +3,7 @@ import { trpc } from "@/lib/trpc";
 
 export type StoreBannerCreative = {
   id: number;
+  imageIndex?: number;
   title: string;
   subtitle?: string | null;
   imageUrl?: string | null;

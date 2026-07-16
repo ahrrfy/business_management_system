@@ -122,10 +122,18 @@ const ordersRouter = router({
 });
 
 const dateStr = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صحيح");
+const bannerImage = z.object({
+  url: z.string().max(3_000_000),
+  effectiveFrom: dateStr.nullish(),
+  effectiveTo: dateStr.nullish(),
+  isActive: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).max(9999).optional(),
+}).refine((v) => !v.effectiveFrom || !v.effectiveTo || v.effectiveFrom <= v.effectiveTo, { path: ["effectiveTo"] });
 const bannerInputFields = z.object({
   title: z.string().trim().min(1).max(255),
   subtitle: z.string().max(500).nullish(),
   imageUrl: z.string().max(3_000_000).nullish(), // data-URL مضغوط
+  images: z.array(bannerImage).max(20).optional(),
   ctaLabel: z.string().max(120).nullish(),
   ctaUrl: z.string().max(500).nullish(),
   mobileImageUrl: z.string().max(3_000_000).nullish(),
@@ -149,6 +157,7 @@ const bannerInput = bannerInputFields.refine((v) => !v.effectiveFrom || !v.effec
 function assertSafeBannerInput(input: Partial<z.infer<typeof bannerInput>>) {
   assertValidImageDataUrl(input.imageUrl, 2_000_000, true);
   assertValidImageDataUrl(input.mobileImageUrl, 2_000_000, true);
+  for (const image of input.images ?? []) assertValidImageDataUrl(image.url, 2_000_000, true);
   assertSafeBannerCtaUrl(input.ctaUrl);
 }
 
