@@ -55,7 +55,10 @@ export default defineConfig({
             handler: "CacheFirst",
             options: {
               cacheName: "store-images",
-              expiration: { maxEntries: 120, maxAgeSeconds: 60 * 60 * 24 * 60 }, // ٦٠ يوماً
+              // ٣٠٠ مُدخَلاً (كان ١٢٠ حين كانت البنرات وحدها): صور المنتجات انضمّت ⇒ صفحةُ
+              // كتالوجٍ واحدة تجلب حتى ٦٠ صورة، فسقفُ ١٢٠ يطرد صور البنرات بعد تصفّح صفحتين
+              // (LRU) فتُجلَب من جديد ⇒ يُبطل نصف المكسب بصمت. والطرد يبقى مضبوطاً بالسقف والعمر.
+              expiration: { maxEntries: 300, maxAgeSeconds: 60 * 60 * 24 * 60 }, // ٦٠ يوماً
               cacheableResponse: { statuses: [0, 200] },
             },
           },
