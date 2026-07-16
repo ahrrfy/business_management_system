@@ -24,10 +24,29 @@ export const attendanceRouter = router({
           employeeId: z.number().int().positive().optional(),
           period: periodStr.optional(),
           source: z.enum(["fingerprint", "manual"]).optional(),
+          // بحث خادميّ (اسم/تاريخ/يوم) — كان محلّياً على الصفوف المُحمَّلة وحدها.
+          q: z.string().trim().min(1).optional(),
+          // ترقيم خادميّ: كانت تُحمَّل كل السجلّات المطابقة دفعةً (وبلا شهر = كل التاريخ).
+          limit: z.number().int().positive().max(500).default(50),
+          offset: z.number().int().min(0).default(0),
         })
         .optional(),
     )
     .query(({ input }) => svc.listAttendance(input)),
+
+  /** مؤشّرات الشاشة — مجاميع كل المطابق للفلتر (لا الصفحة). تُستدعى بلا q: البطاقات مؤشّر
+   *  الشهر/الفلتر، والبحث يُصفّي الجدول وتذييله فقط (سلوك محفوظ). */
+  summary: hrRead
+    .input(
+      z
+        .object({
+          employeeId: z.number().int().positive().optional(),
+          period: periodStr.optional(),
+          source: z.enum(["fingerprint", "manual"]).optional(),
+        })
+        .optional(),
+    )
+    .query(({ input }) => svc.attendanceSummary(input)),
 
   formOptions: hrRead.query(() => svc.formOptions()),
 

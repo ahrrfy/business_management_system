@@ -570,10 +570,15 @@ export const reportsRouter = router({
       variantId: z.number().int().positive(),
       branchId: z.number().int().positive().optional(),
       from: ymdStr.optional(), to: ymdStr.optional(),
+      limit: z.number().int().positive().max(500).default(100),
+      offset: z.number().int().min(0).default(0),
     }))
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input.branchId);
-      return getItemLedger({ variantId: input.variantId, branchId, from: input.from, to: input.to });
+      return getItemLedger({
+        variantId: input.variantId, branchId, from: input.from, to: input.to,
+        limit: input.limit, offset: input.offset,
+      });
     }),
 
   /** تحليل ABC — تصنيف المنتجات حسب الإيراد (باريتو). manager + عزل الفرع. */

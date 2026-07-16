@@ -16,10 +16,15 @@ import { allocateLineTax } from "@/components/invoice";
 import { round2 } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 
 type Row = RouterOutputs["sales"]["list"][number];
+
+/** حجم صفحة القائمة — الخادم يُرقّم، والمعروض هو المُحمَّل. */
+const PAGE_SIZE = 50;
 
 const STATUS: Record<string, string> = {
   PENDING: "معلّقة", PARTIALLY_PAID: "مدفوعة جزئياً", PAID: "مدفوعة",
@@ -37,10 +42,17 @@ const selectCls =
 export default function Invoices() {
   const utils = trpc.useUtils();
   const [, navigate] = useLocation();
-  // فلاتر خادمية (لا فلترة محلية تُخفي صفحات الخادم): فترة invoiceDate + الحالة.
+  // فلاتر خادمية (لا فلترة محلية تُخفي صفحات الخادم): فترة invoiceDate + الحالة + بحث نصّي.
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [status, setStatus] = useState("");
+  // البحث خادميّ (رقم الفاتورة/اسم العميل): كان محلّياً على الصفحة المُحمَّلة وحدها ⇒ يقول
+  // «لا نتائج» عن فاتورة موجودة خارج السقف. debounce ليكتب المستخدم بلا طلب لكل حرف.
+  const [q, setQ] = useState("");
+  const qDebounced = useDebouncedValue(q.trim(), 300);
+
+  // الترقيم خادميّ: الصفحة المعروضة فقط تُحمَّل (كان يُحمَّل ٢٠٠ صفّاً دفعةً بلا وصول لما بعدها).
+  const [page, setPage] = useState(0);
 
   // تَحديد مُتَعَدِّد لِلصُفوف (نَسخ/تَصدير المُحَدَّد فَقَط).
   const sel = useRowSelection<number>();
@@ -51,20 +63,29 @@ export default function Invoices() {
   // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
   const taxSettings = trpc.system.getTaxSettings.useQuery();
 
-  const rows = trpc.sales.list.useQuery({
-    limit: 200,
-    from: from || undefined,
-    to: to || undefined,
-    status: (status || undefined) as Row["status"] | undefined,
-  });
+  // مدخلات الفلترة المشتركة (بلا limit/offset) — للقائمة وللمجاميع وللتصدير الشامل ⇒ الثلاثة
+  // ترى نفس المجموعة حتماً (لا تصدير يخالف ما على الشاشة).
+  const filterInput = useMemo(
+    () => ({
+      from: from || undefined,
+      to: to || undefined,
+      status: (status || undefined) as Row["status"] | undefined,
+      q: qDebounced || undefined,
+    }),
+    [from, to, status, qDebounced],
+  );
+
+  // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر
+  // فظهرت صفحة فارغة).
+  useEffect(() => { setPage(0); }, [filterInput]);
+
+  const rows = trpc.sales.list.useQuery({ ...filterInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
   const data = rows.data ?? [];
 
   // مجاميع كل النتائج المطابقة للفلتر (خادمياً، لا الصفحة المعروضة فقط) — نفس قيم فلتر list حتماً.
-  const summary = trpc.sales.listSummary.useQuery({
-    from: from || undefined,
-    to: to || undefined,
-    status: (status || undefined) as Row["status"] | undefined,
-  });
+  // count منها = إجمالي الترقيم (نفس buildSalesListConds ⇒ مطابقة مضمونة بالبناء).
+  const summary = trpc.sales.listSummary.useQuery(filterInput);
+  const total = summary.data?.count;
 
   // طباعة A4 من القائمة: نجلب التفاصيل (sales.get) ثم نطبع بنفس قالب شاشة الفاتورة.
   async function printA4(invoiceId: number) {
@@ -148,13 +169,13 @@ export default function Invoices() {
   async function exportAll() {
     setExporting(true);
     try {
-      const all = await utils.sales.list.fetch({
-        from: from || undefined,
-        to: to || undefined,
-        status: (status || undefined) as Row["status"] | undefined,
-        limit: 100000,
-      });
-      const allRows = (all ?? []) as Row[];
+      // كل الصفحات المطابقة للفلتر **والبحث** (لا الصفحة المعروضة ولا استعلام عملاق واحد):
+      // نفس filterInput ⇒ المُصدَّر = ما تراه على الشاشة موسَّعاً، لا مجموعة أخرى.
+      const allRows = await fetchAllPaged<Row>(
+        (offset, limit) =>
+          utils.sales.list.fetch({ ...filterInput, limit, offset }).then((r) => ({ rows: (r ?? []) as Row[] })),
+        { pageSize: 500 },
+      );
       exportRows(allRows, {
         filename: "المبيعات",
         columns: [
@@ -286,13 +307,15 @@ export default function Invoices() {
       <DataTable
         columns={columns}
         data={data}
-        searchPlaceholder="بحث في الفواتير…"
+        searchPlaceholder="بحث برقم الفاتورة أو اسم العميل…"
         loading={rows.isLoading}
         emptyText="لا فواتير مطابقة."
         selection={sel}
         getRowId={(r) => r.id}
+        serverSearch={{ value: q, onChange: setQ }}
+        serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
         toolbar={
-          <Button variant="outline" size="sm" disabled={!data.length || exporting}
+          <Button variant="outline" size="sm" disabled={!total || exporting}
             onClick={() => void exportAll()}>
             {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
           </Button>

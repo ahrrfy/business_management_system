@@ -18,6 +18,43 @@ const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
 
 // المشتريات تحمل التكلفة (unitPrice = سعر الشراء) ⇒ مدير فأعلى للإنشاء والعرض، والمخزن للاستلام.
+/** مدخلات فلترة قائمة المشتريات (بلا limit/offset/cursor) — يتقاسمها list وlistCount. */
+type PurchasesListFilters = {
+  from?: string;
+  to?: string;
+  supplierId?: number;
+  branchId?: number;
+  status?: "DRAFT" | "SENT" | "CONFIRMED" | "RECEIVED" | "CANCELLED";
+  q?: string;
+} | undefined;
+
+/** يبني شروط WHERE لقائمة المشتريات — مستخدم في list وlistCount معاً ⇒ الإجمالي المعروض في
+ *  الترقيم يطابق الصفوف حتماً (نفس عزل الفرع ونفس البحث). نمط buildSalesListConds نفسه.
+ *  ⚠️ يُشير لـsuppliers.name عند البحث ⇒ كل مستهلك يلزمه join على suppliers. */
+export function buildPurchasesListConds(input: PurchasesListFilters, scopedBranchId: number | null) {
+  const conds = [];
+  // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
+  if (input?.from) conds.push(gte(purchaseOrders.orderDate, localDayStart(input.from)));
+  if (input?.to) conds.push(lt(purchaseOrders.orderDate, localNextDayStart(input.to)));
+  if (input?.supplierId) conds.push(eq(purchaseOrders.supplierId, input.supplierId));
+  if (input?.status) conds.push(eq(purchaseOrders.status, input.status));
+  // عزل الفرع: غير المرتفعين يُقتصرون على فرعهم (يُغلَب على input.branchId).
+  // admin/manager يحترمان input.branchId إن مُرِّر (تقارير عبر-الفروع).
+  const branchId = scopedBranchId != null ? scopedBranchId : input?.branchId;
+  if (branchId != null) conds.push(eq(purchaseOrders.branchId, branchId));
+  // بحث نصّي آمن (escLike + ESCAPE '!') عبر رقم الأمر/اسم المورد/الملاحظات.
+  if (input?.q) {
+    const pat = `%${escLike(input.q)}%`;
+    const cond = or(
+      sql`${purchaseOrders.poNumber} LIKE ${pat} ESCAPE '!'`,
+      sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
+      sql`${purchaseOrders.notes} LIKE ${pat} ESCAPE '!'`,
+    );
+    if (cond) conds.push(cond);
+  }
+  return conds;
+}
+
 export const purchaseRouter = router({
   createOrder: purchasesManagerProcedure
     .input(
@@ -139,26 +176,7 @@ export const purchaseRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      const conds = [];
-      // نصف مفتوح [from, to+يوم) بمنتصف ليلٍ محلي (Date("YYYY-MM-DD") = UTC ⇒ انزياح +03:00).
-      if (input?.from) conds.push(gte(purchaseOrders.orderDate, localDayStart(input.from)));
-      if (input?.to) conds.push(lt(purchaseOrders.orderDate, localNextDayStart(input.to)));
-      if (input?.supplierId) conds.push(eq(purchaseOrders.supplierId, input.supplierId));
-      if (input?.status) conds.push(eq(purchaseOrders.status, input.status));
-      // عزل الفرع: غير المرتفعين يُقتصرون على فرعهم (يُغلَب على input.branchId).
-      // admin/manager يحترمان input.branchId إن مُرِّر (تقارير عبر-الفروع).
-      const branchId = ctx.scopedBranchId != null ? ctx.scopedBranchId : input?.branchId;
-      if (branchId != null) conds.push(eq(purchaseOrders.branchId, branchId));
-      // بحث نصّي آمن (escLike + ESCAPE '!') عبر رقم الأمر/اسم المورد/الملاحظات.
-      if (input?.q) {
-        const pat = `%${escLike(input.q)}%`;
-        const cond = or(
-          sql`${purchaseOrders.poNumber} LIKE ${pat} ESCAPE '!'`,
-          sql`${suppliers.name} LIKE ${pat} ESCAPE '!'`,
-          sql`${purchaseOrders.notes} LIKE ${pat} ESCAPE '!'`,
-        );
-        if (cond) conds.push(cond);
-      }
+      const conds = buildPurchasesListConds(input, ctx.scopedBranchId);
       // /simplify ٣٠/٦: paginateKeyset يُدير cursor/limit/offset/hasMore بدل التَكرار اليَدوي.
       const { rows } = await paginateKeyset({
         cursor: input?.cursor,
@@ -191,6 +209,37 @@ export const purchaseRouter = router({
         return rows.map((row) => ({ ...row, total: null, paidAmount: null }));
       }
       return rows;
+    }),
+
+  /** عدد أوامر الشراء المطابقة للفلتر — لِترقيم القائمة («عرض ١–٥٠ من N»).
+   *  يتقاسم buildPurchasesListConds مع list ⇒ العدد يطابق الصفوف حتماً، ولا يُسرّب أي مبلغ
+   *  (عدد فقط ⇒ لا حجب تكلفة مطلوباً؛ نفس صلاحية قراءة القائمة). */
+  listCount: purchasesReadProcedure
+    .input(
+      z
+        .object({
+          from: ymd.optional(),
+          to: ymd.optional(),
+          supplierId: z.number().int().positive().optional(),
+          branchId: z.number().int().positive().optional(),
+          status: z.enum(["DRAFT", "SENT", "CONFIRMED", "RECEIVED", "CANCELLED"]).optional(),
+          q: z.string().trim().min(1).optional(),
+        })
+        .optional()
+    )
+    .query(async ({ input, ctx }) => {
+      const db = getDb();
+      if (!db) return { count: 0 };
+      const conds = buildPurchasesListConds(input, ctx.scopedBranchId);
+      const row = (
+        await db
+          .select({ count: sql<number>`COUNT(*)` })
+          .from(purchaseOrders)
+          // join إلزاميّ: الشروط قد تُشير لـsuppliers.name عند البحث بـq.
+          .leftJoin(suppliers, eq(purchaseOrders.supplierId, suppliers.id))
+          .where(conds.length ? and(...conds) : undefined)
+      )[0];
+      return { count: Number(row?.count ?? 0) };
     }),
 
   get: purchasesReadProcedure.input(z.object({ purchaseOrderId: z.number().int().positive() })).query(async ({ input, ctx }) => {

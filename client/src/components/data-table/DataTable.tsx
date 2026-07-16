@@ -1,5 +1,19 @@
 // جدول بيانات موحّد فوق @tanstack/react-table — فرز بنقرة + بحث فوري + حالة فارغة.
 // headless ⇒ يلتزم Tailwind/shadcn وRTL. الأعمدة typed عبر ColumnDef<T>.
+//
+// وضعان للترقيم والبحث:
+//   • **محلّي (الافتراضي):** الصفوف كلّها في `data`؛ الترقيم والبحث في المتصفّح. صالح فقط
+//     للقوائم المحدودة بطبيعتها (فروع/فئات/مستخدمون).
+//   • **خادميّ (`serverPagination`):** `data` = صفحة واحدة جاءت من الخادم؛ الترقيم يُدار خارجاً.
+//
+// ⚠️ لماذا وُجد الوضع الخادميّ: كانت الشاشات الطويلة تمرّر `limit` **بلا `offset`** ثم تترك هذا
+// المكوّن يُرقّم محلّياً فوق المقتطَع ⇒ الجدول *يبدو* مُرقَّماً بينما الصفوف بعد السقف **غير
+// موجودة أصلاً** بلا أي مؤشّر (الفاتورة ٢٠١ من سقف ٢٠٠ لا تُرى ولا تُبحَث).
+//
+// ⚠️ **قاعدة مُلزِمة:** البحث المحلّي يُصفّي `data` وحدها = الصفحة المعروضة. فمع `serverPagination`
+// **يجب** تمرير `serverSearch` (بحث خادميّ على كامل المجموعة) وإلا كان البحث أكذبَ من الاقتطاع
+// (يقول «لا نتائج» وهي في صفحة أخرى). المكوّن يفرض ذلك: مع الترقيم الخادميّ يُعطَّل البحث
+// المحلّي، ويُعرض حقل البحث **فقط** إن مُرِّر serverSearch.
 import { Input } from "@/components/ui/input";
 import {
   flexRender,
@@ -17,6 +31,7 @@ import { Button } from "@/components/ui/button";
 import { CopyContextMenu } from "@/lib/copy/CopyContextMenu";
 import { TableSkeleton } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { TablePager } from "@/components/table/TablePager";
 
 // نَصّ تَرويسة قابِل لِلنَسخ مِن تَعريف العَمود — لو الـheader نَصّ نَستَعمِله، وإلّا نَرجِع لِـid.
 function columnHeaderText(col: { columnDef: { header?: unknown }; id: string }): string {
@@ -58,12 +73,28 @@ type DataTableProps<T, K = string> = {
   getRowId?: (row: T) => K; // مُلزِم لو selection مُعَطاة
   // نَقرة الصَفّ تُغَيِّر التَحديد (افتِراضياً: false — فقط Shift+Click أَو الـcheckbox)
   rowClickSelects?: boolean;
-  /** حجم الصفحة لِلتَرقيم (افتِراضياً ٥٠). مَرِّر Infinity لِتَعطيل التَرقيم (عَرض الكُل). */
+  /** حجم الصفحة لِلتَرقيم المحلّي (افتِراضياً ٥٠). مَرِّر Infinity لِتَعطيل التَرقيم (عَرض الكُل).
+   *  يُتجاهَل مَع serverPagination (حجم الصفحة عندئذٍ من الخادم). */
   pageSize?: number;
   /** حَبس الجَدول في حاوية بِحَجم الشاشة (ترويسة لاصقة + تَمرير داخِلي). افتِراضياً true. */
   bounded?: boolean;
   /** صنف الارتِفاع الأقصى لِلحاوية المَحبوسة (يُمَرَّر لِـScrollTableShell). */
   maxHeightClass?: string;
+  /** الترقيم الخادميّ: `data` = صفحة واحدة. يُعطِّل الترقيم والبحث المحلّيين. */
+  serverPagination?: {
+    page: number; // بدءاً من ٠
+    onPageChange: (page: number) => void;
+    pageSize: number;
+    /** الإجمالي حين يكون معلوماً (COUNT) — يُعطي «من N» وعدد الصفحات. */
+    total?: number;
+    /** بديل الإجمالي في وضع keyset (بلا COUNT). */
+    hasMore?: boolean;
+  };
+  /** البحث الخادميّ — **إلزاميّ عملياً مع serverPagination** (انظر رأس الملف). */
+  serverSearch?: {
+    value: string;
+    onChange: (value: string) => void;
+  };
 };
 
 /** يَختار حاوية الجَدول: محبوسة بِحَجم الشاشة (ترويسة لاصقة) أَو تَمرير أُفُقي بَسيط. */
@@ -94,24 +125,40 @@ export function DataTable<T, K = string>({
   pageSize = 50,
   bounded = true,
   maxHeightClass,
+  serverPagination,
+  serverSearch,
 }: DataTableProps<T, K>) {
   const [sorting, setSorting] = useState<SortingState>([]);
   const [globalFilter, setGlobalFilter] = useState("");
   const [lastIndex, setLastIndex] = useState<number | null>(null);
 
-  const paginated = Number.isFinite(pageSize);
+  // مَع الترقيم الخادميّ: `data` صفحةٌ جاهزة ⇒ لا ترقيم ولا تصفية محلّيان (كلاهما يعمل على
+  // الصفحة وحدها فيُخفي صفوف الخادم ويكذب على المستخدم).
+  const serverMode = !!serverPagination;
+  const paginated = !serverMode && Number.isFinite(pageSize);
   const table = useReactTable({
     data,
     columns,
-    state: { sorting, globalFilter },
+    state: serverMode ? { sorting } : { sorting, globalFilter },
     onSortingChange: setSorting,
-    onGlobalFilterChange: setGlobalFilter,
+    ...(serverMode ? {} : { onGlobalFilterChange: setGlobalFilter }),
     getCoreRowModel: getCoreRowModel(),
     getSortedRowModel: getSortedRowModel(),
-    getFilteredRowModel: getFilteredRowModel(),
+    ...(serverMode ? {} : { getFilteredRowModel: getFilteredRowModel() }),
     ...(paginated ? { getPaginationRowModel: getPaginationRowModel() } : {}),
     initialState: paginated ? { pagination: { pageSize } } : undefined,
   });
+
+  // حِراسة تَطوير: ترقيم خادميّ + بحث محلّيّ = بحثٌ يرى الصفحة وحدها (أسوأ من لا بحث).
+  if (serverMode && searchable && !serverSearch) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      "DataTable: serverPagination بلا serverSearch — حقل البحث مُخفى (البحث المحلّي كان سيرى الصفحة وحدها). مرِّر serverSearch أو searchable={false}.",
+    );
+  }
+
+  // البحث يظهر إن طُلب — ومع الترقيم الخادميّ **فقط** إن كان خادمياً (لا بحثَ يرى الصفحة وحدها).
+  const showSearch = searchable && (!serverMode || !!serverSearch);
 
   const selectionEnabled = !!selection && !!getRowId;
   if (selection && !getRowId) {
@@ -183,14 +230,16 @@ export function DataTable<T, K = string>({
 
   return (
     <div className="space-y-3">
-      {(searchable || toolbar) && (
+      {(showSearch || toolbar) && (
         <div className="flex items-center gap-2 justify-between flex-wrap">
-          {searchable ? (
+          {showSearch ? (
             <Input
               className="max-w-xs"
               placeholder={searchPlaceholder}
-              value={globalFilter}
-              onChange={(e) => setGlobalFilter(e.target.value)}
+              value={serverSearch ? serverSearch.value : globalFilter}
+              onChange={(e) =>
+                serverSearch ? serverSearch.onChange(e.target.value) : setGlobalFilter(e.target.value)
+              }
             />
           ) : <span />}
           {toolbar}
@@ -306,7 +355,26 @@ export function DataTable<T, K = string>({
           </tbody>
         </table>
       </TableShell>
-      {data.length > 0 && (
+      {serverMode ? (
+        <>
+          {selectionEnabled && selection!.count > 0 && (
+            <div className="text-xs text-muted-foreground">
+              مُحَدَّد: {selection!.count.toLocaleString("ar-IQ-u-nu-latn")}
+            </div>
+          )}
+          {/* شريط الترقيم الموحّد — نفس الصيغة والاتجاه في كل جداول النظام. */}
+          <TablePager
+            page={serverPagination!.page}
+            onPageChange={serverPagination!.onPageChange}
+            pageSize={serverPagination!.pageSize}
+            rowsOnPage={data.length}
+            total={serverPagination!.total}
+            hasMore={serverPagination!.hasMore}
+            isLoading={loading}
+            className="border-t-0 p-0 pt-1"
+          />
+        </>
+      ) : data.length > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
           <span>
             {table.getFilteredRowModel().rows.length.toLocaleString("ar-IQ-u-nu-latn")} من {data.length.toLocaleString("ar-IQ-u-nu-latn")} صفّ

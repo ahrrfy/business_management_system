@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { ListToolbar, RowActions } from "@/components/list";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { TablePager } from "@/components/table/TablePager";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -28,6 +29,9 @@ const PO_STATUS: Record<string, string> = {
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
+/** حجم صفحة القائمة — الخادم يُرقّم. */
+const PAGE_SIZE = 50;
+
 export default function Purchases() {
   const utils = trpc.useUtils();
   const [q, setQ] = useState("");
@@ -36,6 +40,8 @@ export default function Purchases() {
   const [to, setTo] = useState("");
   const [supplierId, setSupplierId] = useState<number | "">("");
   const [status, setStatus] = useState("");
+  // الترقيم خادميّ: كانت تُحمَّل ٢٠٠ دفعةً بلا offset ⇒ الأمر ٢٠١ غير قابل للوصول.
+  const [page, setPage] = useState(0);
 
   // الميل الأخير للبحث الشامل: عند الوصول بـ?q=&focus= نبذر البحث (يُصفّي للأمر) ثمّ نُبرز صفّه.
   const { seedQuery, rowProps } = useFocusHighlight();
@@ -55,8 +61,16 @@ export default function Purchases() {
   };
 
   const suppliers = trpc.suppliers.list.useQuery();
-  const query = trpc.purchases.list.useQuery({ ...listInput, limit: 200 });
+  const query = trpc.purchases.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
   const rows: PurchaseRow[] = query.data ?? [];
+  // الإجمالي من listCount (نفس buildPurchasesListConds ⇒ مطابق للصفوف بالبناء) — لا rows.length
+  // الذي صار طول الصفحة بعد الترقيم.
+  const countQ = trpc.purchases.listCount.useQuery(listInput);
+  const total = countQ.data?.count;
+
+  // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى.
+  const filterKey = JSON.stringify(listInput);
+  useEffect(() => { setPage(0); }, [filterKey]);
 
   const cancelMut = trpc.purchases.cancel.useMutation({
     onSuccess: async () => {
@@ -120,7 +134,7 @@ export default function Purchases() {
         <CardHeader>
           <ListToolbar
             title="القائمة"
-            count={rows.length}
+            count={total}
             loading={query.isLoading}
             search={{
               value: q,
@@ -246,6 +260,14 @@ export default function Purchases() {
           </table>
           </ScrollTableShell>
         </CardContent>
+        <TablePager
+          page={page}
+          onPageChange={setPage}
+          pageSize={PAGE_SIZE}
+          rowsOnPage={rows.length}
+          total={total}
+          isLoading={query.isFetching}
+        />
       </Card>
     </div>
   );

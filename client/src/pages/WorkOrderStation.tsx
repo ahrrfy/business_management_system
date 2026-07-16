@@ -386,20 +386,24 @@ function StationDetail({ id, onChanged }: { id: number; onChanged: () => void })
   );
 }
 
+// الحالات النشطة — مرآة WO_ACTIVE_STATUSES في workOrderRouter (الحالات غير النهائية).
+const ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
+
 export default function WorkOrderStation() {
   const me = trpc.auth.me.useQuery();
-  const list = trpc.workOrders.list.useQuery({ limit: 200 });
   const utils = trpc.useUtils();
   const [selId, setSelId] = useState<number | null>(null);
 
-  const myId = me.data?.id ? Number(me.data.id) : null;
-  const all = list.data ?? [];
+  // ترشيح **خادميّ** لقائمتَي المحطة بدل تصفية نافذةٍ مقتطعة في المتصفّح.
+  // كان: list({limit:200}) ثمّ filter محلّي ⇒ الأوامر تُرتَّب desc(id) والمُسلَّمة/الملغاة تتراكم
+  // بلا سقف، فتمتلئ نافذة الـ٢٠٠ بالتاريخ ويسقط **عملٌ نشط** من الشاشة بصمت (أمرٌ في الطابور
+  // لا يراه الفنّي = ضرر تشغيليّ). الآن كل قائمة استعلامها الخاصّ المُرشَّح ⇒ كاملة دائماً
+  // وصغيرة بطبيعتها (العمل النشط محدود، بخلاف التاريخ).
+  const mineQ = trpc.workOrders.list.useQuery({ statuses: [...ACTIVE_STATUSES], assignedToMe: true, limit: 200 });
+  const queueQ = trpc.workOrders.list.useQuery({ statuses: ["RECEIVED"], unassignedOnly: true, limit: 200 });
 
-  const mine = useMemo(
-    () => all.filter((o) => o.assignedTo && myId != null && Number(o.assignedTo) === myId && o.status !== "DELIVERED" && o.status !== "CANCELLED"),
-    [all, myId],
-  );
-  const queue = useMemo(() => all.filter((o) => o.status === "RECEIVED" && !o.assignedTo), [all]);
+  const mine = mineQ.data ?? [];
+  const queue = queueQ.data ?? [];
 
   useEffect(() => {
     if (selId == null && mine.length) setSelId(mine[0].id);

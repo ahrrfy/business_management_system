@@ -6,16 +6,23 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { ListToolbar } from "@/components/list";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { matchQuery } from "@/components/search/filter";
+import { TablePager } from "@/components/table/TablePager";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { D } from "@/lib/money";
 import { notify } from "@/lib/notify";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { Clock, Fingerprint, PenLine, Wallet } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+
+type AttendanceRow = RouterOutputs["attendance"]["list"]["rows"][number];
+
+/** حجم صفحة السجلّ — الخادم يُرقّم (سقفه ٥٠٠). */
+const PAGE_SIZE = 50;
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -71,7 +78,9 @@ export default function Attendance() {
 
   const utils = trpc.useUtils();
   const opts = trpc.attendance.formOptions.useQuery();
-  const input = useMemo(
+
+  // فلتر البطاقات (بلا بحث): البطاقات مؤشّرُ الشهر/الفلتر — سلوك محفوظ كما كان.
+  const filterInput = useMemo(
     () => ({
       employeeId: employeeId ? Number(employeeId) : undefined,
       period: period || undefined,
@@ -79,30 +88,41 @@ export default function Attendance() {
     }),
     [employeeId, period, source],
   );
-  const list = trpc.attendance.list.useQuery(input);
-  const rows = list.data ?? [];
 
-  // المؤشرات أعلى الشاشة على كامل الشهر؛ البحث النصّي يُصفّي الجدول فقط (اسم/يوم/تاريخ/مصدر).
-  const visibleRows = useMemo(
-    () => rows.filter((r) => matchQuery(query, [r.employeeName, r.dayName, String(r.attendanceDate ?? ""), r.source === "fingerprint" ? "بصمة" : "يدوي"])),
-    [rows, query],
-  );
+  // البحث خادميّ الآن (اسم/تاريخ/يوم): كان يُصفّي الصفوف المُحمَّلة وحدها (سقف ٣٠٠) ⇒ يقول
+  // «لا نتائج» عن سجلٍّ موجود خارج السقف. debounce ليكتب المستخدم بلا طلبٍ لكل حرف.
+  const dq = useDebouncedValue(query.trim(), 300);
+  const listInput = useMemo(() => ({ ...filterInput, q: dq || undefined }), [filterInput, dq]);
 
-  // المجاميع عبر decimal (لا جمع float على المبالغ — §5)؛ ثمّ تُعرَض عبر iqd()/toFixed.
-  const totalHours = rows.reduce((s, r) => s.plus(D(r.hours ?? 0)), D(0));
-  const totalAmount = rows.reduce((s, r) => s.plus(D(r.amount ?? 0)), D(0));
-  const fingerprintCount = rows.filter((r) => r.source === "fingerprint").length;
-  const manualCount = rows.filter((r) => r.source !== "fingerprint").length;
-  // مجاميع ذيل الجدول تتبع المعروض (المُصفّى) كي يتطابق التذييل مع الصفوف الظاهرة.
-  const visHours = visibleRows.reduce((s, r) => s.plus(D(r.hours ?? 0)), D(0));
-  const visAmount = visibleRows.reduce((s, r) => s.plus(D(r.amount ?? 0)), D(0));
+  // الترقيم خادميّ: كانت تُحمَّل كل السجلّات المطابقة دفعةً — وبإفراغ منتقي الشهر تُمسح كل
+  // سجلّات الحضور مدى الحياة (موظفون × أيام × سنوات) في حمولةٍ واحدة.
+  const [page, setPage] = useState(0);
+  const filterKey = JSON.stringify(listInput);
+  useEffect(() => { setPage(0); }, [filterKey]);
+
+  const list = trpc.attendance.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
+  const rows = list.data?.rows ?? [];
+  const total = list.data?.total ?? 0;
+
+  // بطاقات المؤشّرات — مجاميع خادمية لكل المطابق للفلتر (كانت تُحسب من الصفوف المُحمَّلة ⇒ تكذب
+  // بمجرّد تجاوز السقف). المبالغ نصّية من SUM على decimal ⇒ تمرّ عبر D() بلا parseFloat (§٥).
+  const summary = trpc.attendance.summary.useQuery(filterInput);
+  const totalHours = D(summary.data?.hours ?? 0);
+  const totalAmount = D(summary.data?.amount ?? 0);
+  const fingerprintCount = summary.data?.fingerprintCount ?? 0;
+  const manualCount = summary.data?.manualCount ?? 0;
+
+  // مجاميع ذيل الجدول تتبع المطابق للفلتر **والبحث** (لا الصفحة) — خادمية بنفس شروط الصفوف.
+  const visHours = D(list.data?.totals.hours ?? 0);
+  const visAmount = D(list.data?.totals.amount ?? 0);
 
   const record = trpc.attendance.record.useMutation({
     onSuccess: async () => {
       notify.ok("تم تسجيل الحضور");
       setOpen(false);
       setForm(emptyForm());
-      await utils.attendance.list.invalidate();
+      // البطاقات صارت خادمية ⇒ تُبطَّل مع القائمة وإلا بقيت مجاميعها قديمة بعد الإدخال.
+      await Promise.all([utils.attendance.list.invalidate(), utils.attendance.summary.invalidate()]);
     },
     onError: (e) => notify.err(e),
   });
@@ -147,7 +167,7 @@ export default function Attendance() {
         <CardHeader>
           <ListToolbar
             title="سجل الحضور"
-            count={visibleRows.length}
+            count={total}
             loading={list.isLoading}
             search={{ value: query, onChange: setQuery, placeholder: "بحث باسم الموظف أو اليوم…" }}
             filters={
@@ -168,7 +188,17 @@ export default function Attendance() {
             }
             exportSpec={{
               filename: `الحضور-${period}`,
-              rows: visibleRows,
+              rows,
+              // كل الصفحات المطابقة للفلتر **والبحث** — لا الصفحة المعروضة (وإلا خالف الملفُ
+              // ما تراه العين بصمت، وهو ما كان يحدث فعلاً عند تجاوز سقف الـ٣٠٠).
+              fetchAll: () =>
+                fetchAllPaged<AttendanceRow>(
+                  (offset, limit) =>
+                    utils.attendance.list
+                      .fetch({ ...listInput, limit, offset })
+                      .then((r) => ({ rows: r.rows as AttendanceRow[], total: r.total })),
+                  { pageSize: 500 },
+                ),
               columns: [
                 { key: "employeeName", header: "الموظف", map: (r) => r.employeeName ?? "" },
                 { key: "dayName", header: "اليوم", map: (r) => r.dayName ?? "" },
@@ -199,7 +229,7 @@ export default function Attendance() {
                 </tr>
               </thead>
               <tbody>
-                {visibleRows.map((r) => {
+                {rows.map((r) => {
                   const weekend = r.dayName === "الجمعة" || r.dayName === "السبت";
                   return (
                     <tr key={r.id} className="border-t hover:bg-accent/40">
@@ -232,10 +262,10 @@ export default function Attendance() {
                 {list.isError && (
                   <tr><td colSpan={9}><ErrorState message="تعذّر تحميل سجلّات الحضور." onRetry={() => list.refetch()} /></td></tr>
                 )}
-                {!list.isLoading && !list.isError && visibleRows.length === 0 && (
+                {!list.isLoading && !list.isError && rows.length === 0 && (
                   <TableEmptyRow colSpan={9} message={query ? "لا سجلات مطابقة للبحث." : "لا سجلات حضور في هذه الفترة. غيّر الفلاتر أو سجّل إدخالاً يدوياً."} />
                 )}
-                {visibleRows.length > 0 && (
+                {rows.length > 0 && (
                   <tr className="border-t-2 border-border bg-muted/40 font-bold">
                     <td className="p-2.5" colSpan={5}>الإجمالي</td>
                     <td className="p-2.5 text-center tabular-nums">{visHours.toNumber().toLocaleString("en-US")}</td>
@@ -248,6 +278,14 @@ export default function Attendance() {
             </table>
           </ScrollTableShell>
         </CardContent>
+        <TablePager
+          page={page}
+          onPageChange={setPage}
+          pageSize={PAGE_SIZE}
+          rowsOnPage={rows.length}
+          total={total}
+          isLoading={list.isFetching}
+        />
       </Card>
 
       {/* نافذة الإدخال اليدوي */}
