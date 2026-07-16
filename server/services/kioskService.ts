@@ -9,6 +9,7 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { decodeDataUrl, kioskProductImageUrl } from "../imageRoute";
 import { resolveBarcodeOwner } from "./catalog/barcodeAliases";
 
 /** صفّ عرض آمن للزبون — لا تكلفة ولا كمية مخزون. */
@@ -50,6 +51,7 @@ function kioskSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number
       unitName: productUnits.unitName,
       price: productPrices.price,
       barcode: productUnits.barcode,
+      imageId: productImages.id,
       imageUrl: productImages.url,
       stockBase: branchStock.quantity,
     })
@@ -64,6 +66,22 @@ function kioskSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number
     .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
 }
 
+/**
+ * صورة منتج الكشك كما تُرسَل للشاشة — **رابط** لا data URL (١٦/٧).
+ *
+ * السبب (أضخم من المتجر): `kioskBanner` سقفه **٥٠٠ منتج** وترتيبه «ذوات الصور أولاً» ⇒ ~٣٥٠ ك.ب
+ * لكلٍّ ≈ **١٧٥ م.ب في ردٍّ JSON واحد** حين يمتلئ الكتالوج. رابطٌ بـ`immutable` يجعلها بايتاتٍ
+ * تُجلَب مرّةً واحدة للأبد، والنافذة في `KioskView` تجلب المرئيّ منها فقط.
+ *
+ * العقد الثلاثيّ نفسه (درس #207): data URL ⇒ رابط | قيمة أخرى ⇒ **كما هي** | تالفة ⇒ null.
+ */
+function toKioskImage(imageId: number | null | undefined, value: string | null): string | null {
+  if (!value) return null;
+  if (!/^data:/i.test(value.trim())) return value;
+  if (imageId == null) return null;
+  return decodeDataUrl(value) ? kioskProductImageUrl(Number(imageId), value) : null;
+}
+
 function toKioskProduct(r: any): KioskProduct {
   return {
     productId: Number(r.productId),
@@ -74,7 +92,7 @@ function toKioskProduct(r: any): KioskProduct {
     unitName: r.unitName,
     price: r.price ?? null,
     barcode: r.barcode ?? null,
-    imageUrl: r.imageUrl ?? null,
+    imageUrl: toKioskImage(r.imageId, r.imageUrl ?? null),
   };
 }
 

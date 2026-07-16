@@ -88,8 +88,27 @@ const IconSearchX = ({ s = 64 }: { s?: number }) => (
   </svg>
 );
 
+/**
+ * نافذة تحميل صور الكاروسيل: الشريحة الحالية + المجاورتان (بالتفاف الطرفين).
+ *
+ * **لماذا نافذةٌ لا `loading="lazy"`:** الشرائح كلّها مرسومة معاً ومكدّسة (`.slide{position:absolute;
+ * inset:0}`) وتُخفى بـ**`opacity:0` لا `display:none`** ⇒ كلّها «داخل الشاشة» عند مراقب التقاطع،
+ * فـ`lazy` **لا يؤجّل شيئاً** ويُحمّل الخمسمئة فوراً. حذف الـ`<img>` نفسه هو الوحيد الذي يمنع الطلب.
+ *
+ * والمجاورتان مقصودتان: الشريحة التالية تُحمَّل **قبل** ظهورها (الدورة ثوانٍ) فلا تومض فارغةً
+ * عند التبديل — وهي شاشةُ معرضٍ أمام الزبون.
+ */
+function isNearActive(i: number, idx: number, n: number): boolean {
+  if (n <= 3) return true;
+  const forward = (i - idx + n) % n;
+  const backward = (idx - i + n) % n;
+  return Math.min(forward, backward) <= 1;
+}
+
 // ── صورة المنتج أو خانة بديلة ────────────────────────────────────────────────
-function KioskImage({ p }: { p: KProduct }) {
+function KioskImage({ p, defer = false }: { p: KProduct; defer?: boolean }) {
+  // شريحةٌ بعيدة: لا `<img>` إطلاقاً ⇒ لا طلب. وهي بـopacity:0 أصلاً فلا أثر بصريّ.
+  if (defer) return <div className="kpc-ph" aria-hidden="true" />;
   if (p.imageUrl) return <img className="kpc-img" src={p.imageUrl} alt={p.productName} />;
   return (
     <div className="kpc-ph">
@@ -148,7 +167,7 @@ function Banner({ products, rotateSec, priceScale, paused }: { products: KProduc
       <div className="slides">
         {products.map((p, i) => (
           <div key={p.productId} className={"slide" + (i === idx ? " is-active" : "")} aria-hidden={i !== idx}>
-            <div className="slide-media"><KioskImage p={p} /></div>
+            <div className="slide-media"><KioskImage p={p} defer={!isNearActive(i, idx, n)} /></div>
             <div className="slide-info">
               <div className="brand-chip">{[p.brand, p.category].filter(Boolean).join(" · ") || "منتج"}</div>
               <h1 className="prod-name">{p.productName}</h1>
