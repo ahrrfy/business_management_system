@@ -5,9 +5,10 @@
  * (employeeId, attendanceDate). المبالغ عبر money.ts (toDbMoney) — لا parseFloat.
  * القراءة hr/READ والكتابة hr/FULL (تُفرض في الموجّه).
  * ========================================================================== */
-import { and, desc, eq, getTableColumns, like, sql } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, like, or, sql, type SQL } from "drizzle-orm";
 import { DAY_RATES_DEFAULT, WEEK_DAYS, fullEmployeeName } from "@shared/hr";
 import { attendance, employees } from "../../drizzle/schema";
+import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, round2, toDbMoney } from "./money";
@@ -41,15 +42,50 @@ export interface AttendanceFilters {
   period?: string;
   /** مصدر التسجيل: fingerprint | manual. */
   source?: string;
+  /** بحث نصّي: اسم الموظف (رباعيّ) أو التاريخ أو اسم اليوم العربي. */
+  q?: string;
 }
 
-/** سجلّ الحضور المدمج مع اسم الموظف واسم اليوم المحسوب — مرتّب بالأحدث تاريخاً. */
-export async function listAttendance(filters?: AttendanceFilters) {
-  const db = requireDb();
-  const conds = [];
+/**
+ * شروط WHERE لسجلّ الحضور — يتقاسمها listAttendance وattendanceSummary ⇒ المجاميع المعروضة
+ * تطابق الصفوف حتماً (لا مجموعٌ لمجموعةٍ وصفوفٌ لأخرى).
+ * ⚠️ يُشير لأعمدة employees عند البحث بالاسم ⇒ كل مستهلك يلزمه join على employees.
+ */
+function buildAttendanceConds(filters?: AttendanceFilters): SQL[] {
+  const conds: SQL[] = [];
   if (filters?.employeeId) conds.push(eq(attendance.employeeId, filters.employeeId));
   if (filters?.period) conds.push(like(attendance.attendanceDate, `${filters.period}%`));
   if (filters?.source) conds.push(eq(attendance.source, filters.source));
+  const q = filters?.q?.trim();
+  if (q) {
+    const pat = `%${escLike(q)}%`;
+    // الاسم: مطابقة خام على الأجزاء الأربعة (لا searchNorm على employees ⇒ لا تطبيع عربي هنا؛
+    // تطبيعُ الاستعلام وحده دون العمود كان سيكسر المطابقة بدل أن يوسّعها).
+    const parts: SQL[] = [
+      sql`${employees.firstName} LIKE ${pat} ESCAPE '!'`,
+      sql`${employees.fatherName} LIKE ${pat} ESCAPE '!'`,
+      sql`${employees.grandfatherName} LIKE ${pat} ESCAPE '!'`,
+      sql`${employees.lastName} LIKE ${pat} ESCAPE '!'`,
+      // التاريخ كنصّ (يسمح بـ«2026-07» أو يوم بعينه).
+      sql`CAST(${attendance.attendanceDate} AS CHAR) LIKE ${pat} ESCAPE '!'`,
+    ];
+    // اسم اليوم العربي محسوب في JS (لا عمود له) ⇒ نُترجم الاستعلام إلى رقم يوم الأسبوع.
+    // WEEK_DAYS: الأحد=0، وMySQL DAYOFWEEK: الأحد=1 ⇒ الفهرس+1. attendanceDate من نوع date
+    // ⇒ لا انزياح منطقة زمنية (مطابقٌ لحساب arabicDayName بتقويم UTC ثابت).
+    const dayIdx = WEEK_DAYS.findIndex((d) => d === q);
+    if (dayIdx >= 0) parts.push(sql`DAYOFWEEK(${attendance.attendanceDate}) = ${dayIdx + 1}`);
+    conds.push(or(...parts)!);
+  }
+  return conds;
+}
+
+/** سجلّ الحضور المدمج مع اسم الموظف واسم اليوم المحسوب — مرتّب بالأحدث تاريخاً، **مُرقَّم**.
+ *  يُعيد صفوف الصفحة + إجمالي المطابق (للترقيم) + مجاميع المطابق (لتذييل الجدول). */
+export async function listAttendance(filters?: AttendanceFilters & { limit?: number; offset?: number }) {
+  const db = requireDb();
+  const limit = Math.min(Math.max(filters?.limit ?? 50, 1), 500);
+  const offset = Math.max(filters?.offset ?? 0, 0);
+  const conds = buildAttendanceConds(filters);
   const where = conds.length ? and(...conds) : undefined;
 
   const rows = await db
@@ -65,17 +101,67 @@ export async function listAttendance(filters?: AttendanceFilters) {
     .from(attendance)
     .leftJoin(employees, eq(attendance.employeeId, employees.id))
     .where(where)
-    .orderBy(desc(attendance.attendanceDate), desc(attendance.id));
+    .orderBy(desc(attendance.attendanceDate), desc(attendance.id))
+    .limit(limit)
+    .offset(offset);
 
-  return rows.map((r) => {
-    const dateStr = toDateStr(r.attendanceDate);
-    return {
-      ...r,
-      attendanceDate: dateStr,
-      employeeName: fullEmployeeName(r),
-      dayName: dateStr ? arabicDayName(dateStr) : "",
-    };
-  });
+  // الإجمالي + مجاميع المطابق كلّه (لا الصفحة) — بنفس الشروط ونفس الـjoin.
+  // المبالغ نصّية كما يعيدها mysql2 (SUM على decimal) — لا parseFloat (§٥).
+  const agg = (
+    await db
+      .select({
+        count: sql<number>`COUNT(*)`,
+        hours: sql<string>`COALESCE(SUM(${attendance.hours}), 0)`,
+        amount: sql<string>`COALESCE(SUM(${attendance.amount}), 0)`,
+      })
+      .from(attendance)
+      .leftJoin(employees, eq(attendance.employeeId, employees.id))
+      .where(where)
+  )[0];
+
+  return {
+    rows: rows.map((r) => {
+      const dateStr = toDateStr(r.attendanceDate);
+      return {
+        ...r,
+        attendanceDate: dateStr,
+        employeeName: fullEmployeeName(r),
+        dayName: dateStr ? arabicDayName(dateStr) : "",
+      };
+    }),
+    total: Number(agg?.count ?? 0),
+    totals: { hours: String(agg?.hours ?? "0"), amount: String(agg?.amount ?? "0") },
+  };
+}
+
+/**
+ * مؤشّرات شاشة الحضور (بطاقات الأعلى) — مجاميع **كل** المطابق للفلتر لا الصفحة المعروضة.
+ * كانت تُحسب في المتصفّح من الصفوف المُحمَّلة (سقف ٣٠٠) ⇒ تكذب بمجرّد تجاوز السقف.
+ * ملاحظة دلالة (سلوك محفوظ كما كان): الشاشة تستدعيها **بلا q** — البطاقات مؤشّرُ الشهر/الفلتر،
+ * والبحث النصّي يُصفّي الجدول وتذييله فقط (listAttendance.totals).
+ */
+export async function attendanceSummary(filters?: AttendanceFilters) {
+  const db = requireDb();
+  const conds = buildAttendanceConds(filters);
+  const where = conds.length ? and(...conds) : undefined;
+  const row = (
+    await db
+      .select({
+        hours: sql<string>`COALESCE(SUM(${attendance.hours}), 0)`,
+        amount: sql<string>`COALESCE(SUM(${attendance.amount}), 0)`,
+        fingerprintCount: sql<number>`COALESCE(SUM(CASE WHEN ${attendance.source} = 'fingerprint' THEN 1 ELSE 0 END), 0)`,
+        manualCount: sql<number>`COALESCE(SUM(CASE WHEN ${attendance.source} <> 'fingerprint' THEN 1 ELSE 0 END), 0)`,
+      })
+      .from(attendance)
+      .leftJoin(employees, eq(attendance.employeeId, employees.id))
+      .where(where)
+  )[0];
+  return {
+    hours: String(row?.hours ?? "0"),
+    amount: String(row?.amount ?? "0"),
+    fingerprintCount: Number(row?.fingerprintCount ?? 0),
+    manualCount: Number(row?.manualCount ?? 0),
+  };
 }
 
 /** خيارات نموذج التسجيل اليدوي: الموظفون بالساعة على رأس العمل فقط. */
