@@ -35,7 +35,41 @@ export interface ItemLedgerResult {
   variant: { variantId: number; productName: string; label: string; sku: string } | null;
   rows: ItemLedgerRow[];
   openingBalance: number; // الرصيد قبل أول حركة في النطاق (= مجموع الحركات قبل from)
-  closingBalance: number; // الرصيد بعد آخر حركة معروضة
+  closingBalance: number; // الرصيد بعد آخر حركة **في النطاق كلّه** (لا آخر صفحة معروضة)
+  total: number; // عدد حركات النطاق كلّه (للترقيم) — قد يفوق rows.length
+}
+
+/**
+ * صافي الحركات المُوقَّع لمجموعة صفوف — بحمولة صغيرة.
+ * الأنواع الموجَّهة إشارتها معروفة بـSQL (IN/RETURN/TRANSFER_IN=+، OUT/TRANSFER_OUT=−) فتُجمَع في
+ * القاعدة؛ وADJUST وحده يُخزَّن مطلقاً واتجاهه في نصّ الملاحظة (INV-001) ⇒ صفوفه فقط تُسحَب
+ * وتُجمَع بـsignedMoveQty. المجموع مطابق عددياً للجمع الكامل في JS.
+ * `scope` = جملة FROM كاملة تُسمّي الصفوف باسم im (جدولاً مباشرةً أو استعلاماً فرعياً محدوداً).
+ */
+async function netSignedOver(db: NonNullable<ReturnType<typeof getDb>>, scope: ReturnType<typeof sql>) {
+  const directionalRow = rowsOf(
+    await db.execute(sql`
+      SELECT COALESCE(SUM(CASE
+        WHEN im.movementType IN ('IN','RETURN','TRANSFER_IN') THEN im.quantity
+        WHEN im.movementType IN ('OUT','TRANSFER_OUT')        THEN -im.quantity
+        ELSE 0 END), 0) AS signedQty
+      FROM ${scope}
+      WHERE im.movementType <> 'ADJUST'
+    `),
+  )[0];
+  let net = Number(directionalRow?.signedQty ?? 0);
+
+  const adjustRows = rowsOf(
+    await db.execute(sql`
+      SELECT im.movementType AS movementType, im.quantity AS quantity, im.notes AS notes
+      FROM ${scope}
+      WHERE im.movementType = 'ADJUST'
+    `),
+  );
+  for (const r of adjustRows) {
+    net += signedMoveQty(String(r.movementType), Number(r.quantity ?? 0), r.notes != null ? String(r.notes) : null);
+  }
+  return net;
 }
 
 /**
@@ -44,16 +78,26 @@ export interface ItemLedgerResult {
  * - from/to (YYYY-MM-DD) اختياريان ⇒ يُرشِّحان النطاق المعروض. الرصيد الافتتاحي = صافي كل حركة
  *   **قبل** from (لتظلّ البطاقة متّسقة حين تُحدَّد فترة)؛ بلا from يكون الافتتاحي صفراً.
  * - الترتيب createdAt ASC ثم id ASC (id يفكّ تعادل نفس الطابع الزمني).
+ * - **مُرقَّم** (limit/offset): كان يُعيد كل حركات المتغيّر مدى الحياة في حمولة واحدة (صنف قديم
+ *   كثير الحركة = عشرات الآلاف من الصفوف ⇒ تجمّد الشاشة). الرصيد المتحرّك تراكميّ فلا يصحّ قصّه
+ *   بـLIMIT وحده: رصيد أول صفّ في صفحةٍ ما يعتمد كلَّ ما قبله ⇒ نحسب «افتتاحيّ الصفحة» =
+ *   الافتتاحيّ + صافي صفوف النطاق السابقة لها (netSignedOver على استعلام فرعيّ محدود بـoffset).
+ *   وopeningBalance/closingBalance/total تبقى مقاييسَ **للنطاق كلّه** لا للصفحة (وإلا كذبت البطاقة).
  */
 export async function getItemLedger(opts: {
   variantId: number;
   branchId?: number;
   from?: string;
   to?: string;
+  limit?: number;
+  offset?: number;
 }): Promise<ItemLedgerResult> {
   const db = getDb();
-  const empty: ItemLedgerResult = { variant: null, rows: [], openingBalance: 0, closingBalance: 0 };
+  const empty: ItemLedgerResult = { variant: null, rows: [], openingBalance: 0, closingBalance: 0, total: 0 };
   if (!db) return empty;
+
+  const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
+  const offset = Math.max(opts.offset ?? 0, 0);
 
   // ترويسة المتغيّر (الاسم + وصف مركّب لون/قياس + sku).
   const head = rowsOf(
@@ -81,70 +125,69 @@ export async function getItemLedger(opts: {
     sku: String(head.sku ?? ""),
   };
 
-  const branchCond = opts.branchId ? sql`AND im.branchId = ${opts.branchId}` : sql``;
+  const branchCond = opts.branchId ? sql`AND im0.branchId = ${opts.branchId}` : sql``;
+  const dateFrom = opts.from ? sql`AND DATE(im0.createdAt) >= ${opts.from}` : sql``;
+  const dateTo = opts.to ? sql`AND DATE(im0.createdAt) <= ${opts.to}` : sql``;
 
-  // الرصيد الافتتاحي: صافي كل الحركات قبل from (DATE(createdAt) < from).
-  // REP-09: لتقليل الحمولة لا نَسحب كل الحركات السابقة إلى JS. الإشارة معروفة بـSQL لكل الأنواع
-  // الموجَّهة (IN/RETURN/TRANSFER_IN=+، OUT/TRANSFER_OUT=−) ⇒ نجمعها مُوقَّعةً في القاعدة. ADJUST
-  // وحده يحتاج إشارةً من نصّ الملاحظة (signedMoveQty/«(فرق ±D)») ⇒ نَسحب صفوفه فقط ونجمعها في JS.
-  // المجموع مطابق عددياً للجمع الكامل في JS (الكمية بالوحدة الأساس عدد صحيح؛ الأنواع غير المعروفة = 0
-  // في كلا المسارين). [⚠️ صفوف ADJUST السابقة لا تزال تُسحَب كاملةً — عادةً قليلة جداً.]
-  let openingBalance = 0;
-  if (opts.from) {
-    const directionalRow = rowsOf(
-      await db.execute(sql`
-        SELECT COALESCE(SUM(CASE
-          WHEN im.movementType IN ('IN','RETURN','TRANSFER_IN') THEN im.quantity
-          WHEN im.movementType IN ('OUT','TRANSFER_OUT')        THEN -im.quantity
-          ELSE 0 END), 0) AS signedQty
-        FROM inventoryMovements im
-        WHERE im.variantId = ${opts.variantId}
-          AND im.movementType <> 'ADJUST'
-          AND DATE(im.createdAt) < ${opts.from}
-          ${branchCond}
-      `),
-    )[0];
-    openingBalance += Number(directionalRow?.signedQty ?? 0);
+  /** الحقول التي يحتاجها الجمع المُوقَّع فقط — حمولة صغيرة مهما كبر النطاق. */
+  const signFields = sql`im0.movementType AS movementType, im0.quantity AS quantity, im0.notes AS notes`;
 
-    const adjustRows = rowsOf(
-      await db.execute(sql`
-        SELECT im.movementType AS movementType, im.quantity AS quantity, im.notes AS notes
-        FROM inventoryMovements im
-        WHERE im.variantId = ${opts.variantId}
-          AND im.movementType = 'ADJUST'
-          AND DATE(im.createdAt) < ${opts.from}
-          ${branchCond}
-      `),
-    );
-    for (const r of adjustRows) {
-      // INV-001: ADJUST يُخزَّن مطلقاً والاتجاه في النص ⇒ نستعيد إشارته من «(فرق ±D)» عبر signedMoveQty.
-      openingBalance += signedMoveQty(String(r.movementType), Number(r.quantity ?? 0), r.notes != null ? String(r.notes) : null);
-    }
-  }
+  // الرصيد الافتتاحي: صافي كل الحركات قبل from (DATE(createdAt) < from). بلا from ⇒ صفر.
+  // REP-09: الجمع هجين (موجَّه بـSQL + ADJUST بـJS) عبر netSignedOver — انظر تعليقه.
+  const openingBalance = opts.from
+    ? await netSignedOver(
+        db,
+        sql`(SELECT ${signFields} FROM inventoryMovements im0
+             WHERE im0.variantId = ${opts.variantId} AND DATE(im0.createdAt) < ${opts.from} ${branchCond}) im`,
+      )
+    : 0;
 
-  // الحركات في النطاق المعروض.
-  const dateFrom = opts.from ? sql`AND DATE(im.createdAt) >= ${opts.from}` : sql``;
-  const dateTo = opts.to ? sql`AND DATE(im.createdAt) <= ${opts.to}` : sql``;
+  // نطاق العرض (بين from وto) — يُعاد استعماله للعدّ والإغلاق والصفحة.
+  const rangeWhere = sql`WHERE im0.variantId = ${opts.variantId} ${branchCond} ${dateFrom} ${dateTo}`;
+
+  // إجمالي حركات النطاق (للترقيم) — COUNT لا يَسحب صفوفاً.
+  const totalRow = rowsOf(
+    await db.execute(sql`SELECT COUNT(*) AS n FROM inventoryMovements im0 ${rangeWhere}`),
+  )[0];
+  const total = Number(totalRow?.n ?? 0);
+
+  // الرصيد الختامي = افتتاحيّ النطاق + صافي النطاق كلّه (مستقلّ عن الصفحة المعروضة).
+  const closingBalance =
+    openingBalance +
+    (await netSignedOver(db, sql`(SELECT ${signFields} FROM inventoryMovements im0 ${rangeWhere}) im`));
+
+  // افتتاحيّ الصفحة = افتتاحيّ النطاق + صافي صفوف النطاق **السابقة** لهذه الصفحة.
+  // نستعمل استعلاماً فرعياً بنفس ترتيب الصفحة محدوداً بـoffset (لا مقارنة tuple على createdAt —
+  // تفادياً لفخّ المناطق الزمنية في mysql2 عند إعادة تمرير Date وسيطاً).
+  const pageOpening =
+    offset > 0
+      ? openingBalance +
+        (await netSignedOver(
+          db,
+          sql`(SELECT ${signFields} FROM inventoryMovements im0 ${rangeWhere}
+               ORDER BY im0.createdAt ASC, im0.id ASC LIMIT ${offset}) im`,
+        ))
+      : openingBalance;
+
+  // صفوف الصفحة المعروضة وحدها.
   const moveRows = rowsOf(
     await db.execute(sql`
       SELECT
-        im.id AS id,
-        DATE_FORMAT(im.createdAt, '%Y-%m-%d') AS date,
-        im.movementType AS movementType,
-        im.quantity AS quantity,
-        im.notes AS notes,
-        im.referenceType AS referenceType,
-        im.referenceId AS referenceId
-      FROM inventoryMovements im
-      WHERE im.variantId = ${opts.variantId}
-        ${branchCond}
-        ${dateFrom}
-        ${dateTo}
-      ORDER BY im.createdAt ASC, im.id ASC
+        im0.id AS id,
+        DATE_FORMAT(im0.createdAt, '%Y-%m-%d') AS date,
+        im0.movementType AS movementType,
+        im0.quantity AS quantity,
+        im0.notes AS notes,
+        im0.referenceType AS referenceType,
+        im0.referenceId AS referenceId
+      FROM inventoryMovements im0
+      ${rangeWhere}
+      ORDER BY im0.createdAt ASC, im0.id ASC
+      LIMIT ${limit} OFFSET ${offset}
     `),
   );
 
-  let running = openingBalance;
+  let running = pageOpening;
   const rows: ItemLedgerRow[] = moveRows.map((r) => {
     const signed = signedMoveQty(String(r.movementType), Number(r.quantity ?? 0), r.notes != null ? String(r.notes) : null);
     running += signed;
@@ -165,7 +208,8 @@ export async function getItemLedger(opts: {
     variant,
     rows,
     openingBalance,
-    closingBalance: running,
+    closingBalance,
+    total,
   };
 }
 

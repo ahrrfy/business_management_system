@@ -1,7 +1,7 @@
 // بطاقة المنتج (Kardex) — حركات متغيّر واحد زمنياً مع رصيد متحرّك.
 // منتقي المتغيّر يعيد استعمال trpc.catalog.posList (نفس بحث الكاشير/حركات المخزون) + فلتر فرع + فترة اختيارية.
 // عرض: ترويسة المتغيّر + مؤشّرات (رصيد افتتاحي/ختامي) + جدول (تاريخ/نوع/كمية بإشارة/رصيد/مرجع) + تصدير/طباعة.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
@@ -12,6 +12,8 @@ import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { TablePager } from "@/components/table/TablePager";
+import { fetchAllPaged } from "@/lib/fetchAllRows";
 
 type PosRow = RouterOutputs["catalog"]["posList"][number];
 type LedgerRow = RouterOutputs["reports"]["itemLedger"]["rows"][number];
@@ -26,6 +28,9 @@ const MTYPE_LABEL: Record<string, string> = {
 };
 const POSITIVE = new Set(["IN", "RETURN", "TRANSFER_IN"]);
 const NEGATIVE = new Set(["OUT", "TRANSFER_OUT"]);
+
+/** حجم صفحة البطاقة — سقف الخادم ٥٠٠. */
+const PAGE_SIZE = 100;
 
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -91,26 +96,54 @@ export default function ItemLedger() {
     return Array.from(byVariant.values());
   }, [searchResults.data]);
 
-  const ledger = trpc.reports.itemLedger.useQuery(
-    {
+  // الترقيم: بطاقة صنف قديم قد تحمل عشرات الآلاف من الحركات ⇒ صفحة صفحة.
+  const [page, setPage] = useState(0);
+
+  // مدخلات الفلترة (بلا limit/offset) — للاستعلام وللتصدير/الطباعة الشاملين.
+  const filterInput = useMemo(
+    () => ({
       variantId: picked?.variantId ?? 0,
       branchId: branchId ?? undefined,
       from: usePeriod ? period.from : undefined,
       to: usePeriod ? period.to : undefined,
-    },
+    }),
+    [picked?.variantId, branchId, usePeriod, period.from, period.to],
+  );
+
+  // أي تغيير في الفلاتر (صنف/فرع/فترة) يعيدنا للصفحة الأولى — وإلا بقي offset قديماً على نطاق
+  // أصغر فظهرت صفحة فارغة.
+  useEffect(() => { setPage(0); }, [filterInput]);
+
+  const utils = trpc.useUtils();
+  const [busy, setBusy] = useState(false);
+
+  const ledger = trpc.reports.itemLedger.useQuery(
+    { ...filterInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE },
     { enabled: picked != null && picked.variantId > 0 },
   );
+
+  /** كل صفوف النطاق (لا الصفحة) — للتصدير والطباعة: المستند يجب أن يطابق الفلتر لا العرض. */
+  const fetchAllRows = () =>
+    fetchAllPaged<LedgerRow>(
+      (offset, limit) =>
+        utils.reports.itemLedger
+          .fetch({ ...filterInput, limit, offset })
+          .then((r) => ({ rows: r.rows as LedgerRow[], total: r.total })),
+      { pageSize: 500 },
+    );
 
   const rows: LedgerRow[] = ledger.data?.rows ?? [];
   const variant = ledger.data?.variant ?? null;
   const opening = ledger.data?.openingBalance ?? 0;
   const closing = ledger.data?.closingBalance ?? 0;
+  const total = ledger.data?.total ?? 0;
 
   const kpis: KpiItem[] = picked
     ? [
         { label: "رصيد افتتاحي", value: fmtInt(opening), tone: "info" },
         { label: "رصيد ختامي", value: fmtInt(closing), tone: "positive" },
-        { label: "عدد الحركات", value: rows.length },
+        // الإجمالي للنطاق كلّه لا للصفحة المعروضة.
+        { label: "عدد الحركات", value: fmtInt(total) },
       ]
     : [];
 
@@ -124,51 +157,63 @@ export default function ItemLedger() {
     setUsePeriod(true);
   }
 
-  function onExport() {
-    if (!rows.length) return;
-    exportRows(rows, {
-      filename: `بطاقة-المنتج-${variant?.sku ?? picked?.variantId ?? ""}`,
-      columns: [
-        { key: "date", header: "التاريخ" },
-        { key: "type", header: "النوع", map: (r) => MTYPE_LABEL[r.type] ?? r.type },
-        { key: "signedQty", header: "الكمية", map: (r) => r.signedQty },
-        { key: "balance", header: "الرصيد", map: (r) => r.balance },
-        { key: "reference", header: "المرجع", map: (r) => r.reference ?? "" },
-      ],
-    });
+  async function onExport() {
+    if (!total || busy) return;
+    setBusy(true);
+    try {
+      const all = await fetchAllRows();
+      exportRows(all, {
+        filename: `بطاقة-المنتج-${variant?.sku ?? picked?.variantId ?? ""}`,
+        columns: [
+          { key: "date", header: "التاريخ" },
+          { key: "type", header: "النوع", map: (r) => MTYPE_LABEL[r.type] ?? r.type },
+          { key: "signedQty", header: "الكمية", map: (r) => r.signedQty },
+          { key: "balance", header: "الرصيد", map: (r) => r.balance },
+          { key: "reference", header: "المرجع", map: (r) => r.reference ?? "" },
+        ],
+      });
+    } finally {
+      setBusy(false);
+    }
   }
 
-  function onPrint() {
-    if (!rows.length) return;
-    printReportDoc({
-      title: "بطاقة المنتج (Kardex)",
-      headerExtra: [
-        { label: "المنتج", value: variant?.label ?? "—" },
-        { label: "SKU", value: variant?.sku ?? "—" },
-        { label: "الفرع", value: branchLabel },
-        { label: "الفترة", value: periodLabel },
-        { label: "رصيد افتتاحي", value: fmtInt(opening) },
-        { label: "رصيد ختامي", value: fmtInt(closing) },
-      ],
-      columns: [
-        { key: "date", label: "التاريخ" },
-        { key: "type", label: "النوع" },
-        { key: "qty", label: "الكمية", align: "left" },
-        { key: "balance", label: "الرصيد", align: "left" },
-        { key: "ref", label: "المرجع" },
-      ],
-      rows: rows.map((r) => ({
-        date: r.date,
-        type: MTYPE_LABEL[r.type] ?? r.type,
-        qty: signedDisplay(r.signedQty),
-        balance: fmtInt(r.balance),
-        ref: r.reference ?? "—",
-      })),
-      summary: [
-        { label: "رصيد افتتاحي", value: fmtInt(opening) },
-        { label: "رصيد ختامي", value: fmtInt(closing), large: true, bold: true },
-      ],
-    });
+  async function onPrint() {
+    if (!total || busy) return;
+    setBusy(true);
+    try {
+      const all = await fetchAllRows();
+      printReportDoc({
+        title: "بطاقة المنتج (Kardex)",
+        headerExtra: [
+          { label: "المنتج", value: variant?.label ?? "—" },
+          { label: "SKU", value: variant?.sku ?? "—" },
+          { label: "الفرع", value: branchLabel },
+          { label: "الفترة", value: periodLabel },
+          { label: "رصيد افتتاحي", value: fmtInt(opening) },
+          { label: "رصيد ختامي", value: fmtInt(closing) },
+        ],
+        columns: [
+          { key: "date", label: "التاريخ" },
+          { key: "type", label: "النوع" },
+          { key: "qty", label: "الكمية", align: "left" },
+          { key: "balance", label: "الرصيد", align: "left" },
+          { key: "ref", label: "المرجع" },
+        ],
+        rows: all.map((r) => ({
+          date: r.date,
+          type: MTYPE_LABEL[r.type] ?? r.type,
+          qty: signedDisplay(r.signedQty),
+          balance: fmtInt(r.balance),
+          ref: r.reference ?? "—",
+        })),
+        summary: [
+          { label: "رصيد افتتاحي", value: fmtInt(opening) },
+          { label: "رصيد ختامي", value: fmtInt(closing), large: true, bold: true },
+        ],
+      });
+    } finally {
+      setBusy(false);
+    }
   }
 
   return (
@@ -178,8 +223,8 @@ export default function ItemLedger() {
       kpis={kpis}
       onExport={onExport}
       onPrint={onPrint}
-      exportDisabled={!rows.length}
-      printDisabled={!rows.length}
+      exportDisabled={!total || busy}
+      printDisabled={!total || busy}
       filters={
         <div className="flex flex-wrap items-end gap-3">
           {/* منتقي المتغيّر */}
@@ -315,6 +360,16 @@ export default function ItemLedger() {
             </ScrollTableShell>
           )}
         </CardContent>
+        {picked && (
+          <TablePager
+            page={page}
+            onPageChange={setPage}
+            pageSize={PAGE_SIZE}
+            rowsOnPage={rows.length}
+            total={total}
+            isLoading={ledger.isFetching}
+          />
+        )}
       </Card>
     </ReportShell>
   );
