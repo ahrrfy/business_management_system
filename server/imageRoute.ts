@@ -98,18 +98,33 @@ export function kioskProductImageUrl(imageId: number, dataUrl: string): string {
  * **`visibility` ليس تفصيلاً تجميلياً:** ردٌّ يعتمد على **المصادقة** لا يجوز أن يحمل `public`
  * (تخزّنه ذاكرةٌ وسيطة مشتركة — proxy/CDN — فتقدّمه لمجهولٍ لاحقاً). `private` تُبقي كاش
  * المتصفّح — وهو كلّ ما نحتاجه — وتمنع المشتركة. لذلك تُمرَّر صراحةً لا افتراضاً.
+ *
+ * **ولا تكفي `private` وحدها (مراجعة Codex، P1):** كاش المتصفّح مُفتَّحٌ بالـ**رابط** لا بالجلسة،
+ * و`immutable` تعني «لا تُعِد التحقّق **سنةً**» ⇒ بعد خروج الجهاز أو إبطال كوكيه، طلبٌ لاحقٌ
+ * لنفس الرابط من نفس المتصفّح يُخدَم **من الكاش بلا مرورٍ بـ`kioskViewerAllowed`** — فتُعمَّر
+ * صلاحيةُ الرؤية بعد انتهاء الجلسة. `Vary: Cookie` يجعل مفتاح الكاش = (الرابط + الكوكي) ⇒
+ * تغيّر/زوال الكوكي = مفتاحٌ آخر = **إخفاقُ كاشٍ ⇒ شبكة ⇒ ٤٠١**. والفائدة تبقى: كوكي الجهاز
+ * ثابتٌ طوال عمله فتُصاب الصور من الكاش كما هو مقصود.
+ *
+ * ⚠️ **للعلنيّ فقط `public` بلا `Vary`:** إضافتها هناك تُجزّئ الكاش المشترك بلا مقابل (الردّ لا
+ * يعتمد على الكوكي أصلاً) فتُضعف مكسب #212/#213.
  */
 function sendImage(req: Request, res: Response, dataUrl: string | null, visibility: "public" | "private"): Response {
   const img = decodeDataUrl(dataUrl);
   if (!img) return res.status(404).end();
 
   const etag = `"${imageHash(dataUrl!)}"`;
+
+  // ترويسات التخبئة **قبل** فحص 304: الردّ ٣٠٤ يجب أن يحمل ما يحمله ٢٠٠ منها (خصوصاً `Vary`)
+  // وإلّا حدّث الكاش مُدخَله من ردٍّ لا يصف تجزئته. (RFC 7232 §4.1)
+  res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
+  if (visibility === "private") res.setHeader("Vary", "Cookie");
+  res.setHeader("ETag", etag);
+
   // إعادة تحقّق رخيصة للمتصفّحات التي تتجاهل immutable (أو بعد انتهاء السنة).
   if (req.headers["if-none-match"] === etag) return res.status(304).end();
 
   res.setHeader("Content-Type", img.mime);
-  res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
-  res.setHeader("ETag", etag);
   // الصورة ليست مستنداً: نمنع أيّ محاولة تفسيرٍ كـHTML مهما كان المحتوى.
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Length", String(img.bytes.length));

@@ -150,12 +150,43 @@ describe("GET /api/img/kiosk-product/:id — قابلية التخبئة", () =>
     });
   });
 
-  it("العلنيّ يبقى public (لم ينحرف بإضافة الكشك)", async () => {
+  /**
+   * 🛡️ مراجعة Codex (P1): `private` **وحدها لا تكفي**. كاش المتصفّح مُفتَّحٌ بالـ**رابط** لا
+   * بالجلسة، و`immutable` تعني «لا تُعِد التحقّق سنةً» ⇒ بعد خروج الجهاز/إبطال كوكيه يُخدَم
+   * نفس الرابط **من الكاش بلا مرورٍ بـ`kioskViewerAllowed`** فتُعمَّر الرؤية بعد الجلسة.
+   * `Vary: Cookie` يجعل المفتاح = (الرابط + الكوكي) ⇒ زوال الكوكي = مفتاحٌ آخر = شبكة = ٤٠١.
+   */
+  it("⭐ الردّ يحمل Vary: Cookie — وإلا عُمِّرت رؤية الصورة في الكاش بعد انتهاء الجلسة", async () => {
+    const id = await seedProduct({ productId: 71 });
+    const cookie = await kioskDeviceCookie();
+    await withServer(async (base) => {
+      const res = await fetch(`${base}/api/img/kiosk-product/${id}`, { headers: { cookie } });
+      expect(res.headers.get("vary")).toMatch(/cookie/i);
+    });
+  });
+
+  it("⭐ حتى الردّ 304 يحمل Vary وCache-Control (وإلا حدّث الكاش مُدخَله من ردٍّ لا يصف تجزئته)", async () => {
+    const id = await seedProduct({ productId: 72 });
+    const cookie = await kioskDeviceCookie();
+    await withServer(async (base) => {
+      const first = await fetch(`${base}/api/img/kiosk-product/${id}`, { headers: { cookie } });
+      const second = await fetch(`${base}/api/img/kiosk-product/${id}`, {
+        headers: { cookie, "If-None-Match": first.headers.get("etag")! },
+      });
+      expect(second.status).toBe(304);
+      expect(second.headers.get("vary")).toMatch(/cookie/i);
+      expect(second.headers.get("cache-control")).toContain("private");
+    });
+  });
+
+  it("العلنيّ يبقى public **وبلا Vary** (إضافتها تُجزّئ الكاش المشترك بلا مقابل ⇒ تُضعف #212/#213)", async () => {
     const id = await seedProduct({ productId: 8 });
     await withServer(async (base) => {
-      const cc = (await fetch(`${base}/api/img/product/${id}`)).headers.get("cache-control")!;
+      const res = await fetch(`${base}/api/img/product/${id}`);
+      const cc = res.headers.get("cache-control")!;
       expect(cc).toContain("public");
       expect(cc).not.toContain("private");
+      expect(res.headers.get("vary")).toBeNull();
     });
   });
 

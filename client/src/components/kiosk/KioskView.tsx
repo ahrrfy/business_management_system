@@ -98,10 +98,16 @@ const IconSearchX = ({ s = 64 }: { s?: number }) => (
  * والمجاورتان مقصودتان: الشريحة التالية تُحمَّل **قبل** ظهورها (الدورة ثوانٍ) فلا تومض فارغةً
  * عند التبديل — وهي شاشةُ معرضٍ أمام الزبون.
  */
-function isNearActive(i: number, idx: number, n: number): boolean {
+export function isNearActive(i: number, idx: number, n: number): boolean {
   if (n <= 3) return true;
-  const forward = (i - idx + n) % n;
-  const backward = (idx - i + n) % n;
+  // **تطبيع `idx` إلزاميّ لا احترازيّ:** قد يتجاوز `n` لحظةَ تقلّص القائمة (إعادة جلب البنر كل
+  // ٥ د، أو تبديل الفرع) لأن `useEffect` الذي يُصفّره يعمل **بعد** الرسم. وباقي القسمة في
+  // جافاسكربت يحمل إشارة المقسوم ⇒ `(i - idx + n) % n` يصير **سالباً** فيمرّ `<= 1` لكل الشرائح
+  // تقريباً: قياسٌ فعليّ عند idx=499 وn=100 ⇒ **100/100** شريحة تُرسَم بدل 3 — أي انفجارُ
+  // الطلبات نفسه الذي وُجدت النافذة لتمنعه، في اللحظة نفسها التي تُختبَر فيها.
+  const active = ((idx % n) + n) % n;
+  const forward = (i - active + n) % n;
+  const backward = (active - i + n) % n;
   return Math.min(forward, backward) <= 1;
 }
 
