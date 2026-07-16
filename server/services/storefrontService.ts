@@ -24,6 +24,7 @@ import {
   promotions,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
+import { decodeDataUrl, productImageUrl } from "../imageRoute";
 import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
 import { getProductCategoryIds, resolvePromotionForLine } from "./salesPromotionService";
@@ -112,6 +113,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number)
       categoryId: products.categoryId,
       unitName: productUnits.unitName,
       price: productPrices.price,
+      imageId: productImages.id,
       imageUrl: productImages.url,
       isBundle: products.isBundle,
       stockQty: branchStock.quantity, // داخلي فقط ⇒ inStock
@@ -125,10 +127,29 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number)
     .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)));
 }
 
+/**
+ * صورة المنتج كما تُرسَل للمتجر — **رابط** لا data URL (١٦/٧، تعميم نمط البنرات).
+ *
+ * السقف الافتراضي ٦٠ منتجاً × ~٣٥٠ ك.ب صورةً base64 ≈ **٢١ م.ب في ردٍّ واحد**، بلا كاش
+ * (الـSW يضع `/api/*` على NetworkOnly) وبلا تحميلٍ كسول. الكتالوج فارغٌ اليوم ⇒ هذه **وقايةٌ
+ * قبل النشر** لا إصلاحُ عطل: بعد نشر المنتجات تصير العلّة متجراً بطيئاً يراه الزبائن.
+ *
+ * العقد الثلاثيّ (نفس `toPublicImage` في bannerService — وانحداره أمسكه اختبار #207):
+ *   • data URL صورة صالحة ⇒ رابط النقطة (`/api/img/product/...`).
+ *   • قيمة ليست data URL (مسار/رابط مستورَد) ⇒ **تُمرَّر كما هي** — تحويلها لـnull يُخفي صورةً تعمل.
+ *   • null أو data URL تالفة/نوعٌ غير مسموح ⇒ null (شحنها base64 يُبطل الغرض كلّه).
+ */
+function toPublicProductImage(imageId: number | null | undefined, value: string | null): string | null {
+  if (!value) return null;
+  if (!/^data:/i.test(value.trim())) return value;
+  if (imageId == null) return null;
+  return decodeDataUrl(value) ? productImageUrl(Number(imageId), value) : null;
+}
+
 function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
   category: string | null; categoryId: number | null; unitName: string; price: string | null;
-  imageUrl: string | null; isBundle: boolean | null; stockQty: number | null;
+  imageId?: number | null; imageUrl: string | null; isBundle: boolean | null; stockQty: number | null;
 }): StorefrontProduct {
   return {
     productId: Number(r.productId),
@@ -143,7 +164,7 @@ function toStorefront(r: {
     salePrice: null,
     promotionName: null,
     inStock: Number(r.stockQty ?? 0) > 0,
-    imageUrl: r.imageUrl ?? null,
+    imageUrl: toPublicProductImage(r.imageId, r.imageUrl ?? null),
     isBundle: !!r.isBundle,
     stockLeft: Number(r.stockQty ?? 0) > 0 && Number(r.stockQty) <= LOW_STOCK_THRESHOLD ? Number(r.stockQty) : null,
     soldCount: 0,
