@@ -46,6 +46,20 @@ export default defineConfig({
         ],
         runtimeCaching: [
           {
+            // ٠) /api/img/* — **استثناء وحيد مقصود** من قاعدة «لا تخبئة لـ/api» أدناه.
+            // ليست بيانات: بايتات صورةٍ علنية للمتجر، ورابطها يحمل بصمة محتواها (v=<hash>)
+            // ⇒ تغيّر الصورة = تغيّر الرابط = مفتاح كاش جديد، فلا تقادم ممكن أصلاً.
+            // لولا هذا الاستثناء لظلّت الصور تُجلَب في كل تحميل رغم ترويسة immutable (السطر
+            // التالي NetworkOnly كان يبتلع كل ما تحت /api). راجع server/imageRoute.ts.
+            urlPattern: ({ url }) => url.pathname.startsWith("/api/img/"),
+            handler: "CacheFirst",
+            options: {
+              cacheName: "store-images",
+              expiration: { maxEntries: 120, maxAgeSeconds: 60 * 60 * 24 * 60 }, // ٦٠ يوماً
+              cacheableResponse: { statuses: [0, 200] },
+            },
+          },
+          {
             // ١) /api/* — شبكة فقط مطلقاً (لا تَخبئة طلبات الـAPI تحت أي ظرف).
             urlPattern: ({ url }) => url.pathname.startsWith("/api"),
             handler: "NetworkOnly",
