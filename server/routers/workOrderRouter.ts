@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import {
   auditLogs,
@@ -29,11 +29,33 @@ import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
+/** حالات أمر الشغل — مطابقة حرفياً لـmysqlEnum("workOrderStatus") في drizzle/schema.ts:1443. */
+const woStatus = z.enum(["RECEIVED", "IN_PROGRESS", "READY", "DELIVERED", "CANCELLED"]);
+/** الحالات النشطة (غير النهائية) — ما يعنى به الفنّي في محطة التنفيذ. */
+export const WO_ACTIVE_STATUSES = ["RECEIVED", "IN_PROGRESS", "READY"] as const;
+
 export const workOrderRouter = router({
   // §٧ IDOR: الكاشير لا يجب أن يرى أوامر فروع أخرى. branchScopedProcedure يحقن
   // scopedBranchId=null للمدير/admin، ورقم الفرع لغيرهما.
   list: workordersReadProcedure
-    .input(z.object({ limit: z.number().default(100), branchId: z.number().int().positive().optional() }).optional())
+    .input(
+      z
+        .object({
+          limit: z.number().default(100),
+          branchId: z.number().int().positive().optional(),
+          // ترشيح خادميّ بالحالة — لمحطة التنفيذ ولأي شاشة تريد «العمل النشط» وحده.
+          // ⚠️ لماذا: القائمة تُرتَّب desc(id) وتُقتطع بـlimit، والحالات النهائية (DELIVERED/
+          // CANCELLED) تتراكم بلا سقف ⇒ نافذة الـN الأحدث تمتلئ بالتاريخ فيسقط **عملٌ نشط**
+          // من الشاشة بصمت (أمرٌ في الطابور لا يظهر للفنّي = ضرر تشغيليّ لا مجرّد بطء).
+          // الترشيح خادمياً يجعل مجموعة العمل النشط صغيرةً بطبيعتها وكاملةً دائماً.
+          statuses: z.array(woStatus).min(1).optional(),
+          /** أوامر مُسنَدة للمستخدم الحالي فقط (هوية من ctx — لا تُقبل من العميل: منع IDOR). */
+          assignedToMe: z.boolean().optional(),
+          /** أوامر غير مُسنَدة لأحد (الطابور العام المشترك). */
+          unassignedOnly: z.boolean().optional(),
+        })
+        .optional()
+    )
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
@@ -42,11 +64,27 @@ export const workOrderRouter = router({
       const branchCond = effectiveBranchId != null ? eq(workOrders.branchId, effectiveBranchId) : undefined;
       // عزل الموظف: غير المرتفعين يرون أوامرهم فقط — ما أنشأوه (الكاشير) أو المُسنَد إليهم (الفني).
       // admin/manager (scopedOwnerId=null) يرون كل أوامر النطاق.
+      // ⚠️ استثناء الطابور غير المُسنَد من **عزل الموظف** (عزل الفرع يبقى ساريًا دائماً):
+      // «الطابور العام» في محطة التنفيذ أوامرُ **لا مالك لها بعد** (assignedTo IS NULL)، ينشئها
+      // الكاشير ليسحبها أيّ فنّي. عزل الموظف (PR #57، ٢٤/٦) طُبّق على workOrders.list في نفس يوم
+      // إطلاق المحطة فصار الشرط `createdBy=me OR assignedTo=me` يُخفي هذا الطابور عن الفنّيين
+      // كلياً — بينما `claim` يسمح لهم بسحبه (workordersExecProcedure) ⇒ زرُّ سحبٍ لعملٍ لا يُرى.
+      // العطل صامت (طابور فارغ يبدو «لا عمل» لا «عملٌ محجوب»). الاستثناء ضيّق عمداً: يسري فقط
+      // حين unassignedOnly=true ⇒ لا يكشف سجلَّ أيّ موظفٍ آخر (الأمر بلا مالك بحكم التعريف).
+      // سياسة عزل سجلّات الموظف (٢٤/٦) تبقى كما هي لكل ما عداه.
+      const sharedQueue = input?.unassignedOnly === true;
       const ownerCond =
-        ctx.scopedOwnerId != null
+        ctx.scopedOwnerId != null && !sharedQueue
           ? or(eq(workOrders.createdBy, ctx.scopedOwnerId), eq(workOrders.assignedTo, ctx.scopedOwnerId))
           : undefined;
-      const whereCond = branchCond && ownerCond ? and(branchCond, ownerCond) : (ownerCond ?? branchCond);
+      const extra = [
+        input?.statuses?.length ? inArray(workOrders.status, input.statuses) : undefined,
+        // الهوية من ctx حصراً — لا userId من العميل (وإلا قرأ فنّيٌّ أوامر غيره).
+        input?.assignedToMe ? eq(workOrders.assignedTo, Number(ctx.user!.id)) : undefined,
+        sharedQueue ? isNull(workOrders.assignedTo) : undefined,
+      ].filter(Boolean) as SQL[];
+      const allConds = [branchCond, ownerCond, ...extra].filter(Boolean) as SQL[];
+      const whereCond = allConds.length ? and(...allConds) : undefined;
       // لوحة الكانبان: نُرجع كل ما تحتاجه البطاقة (أولوية/قناة/مسؤول/هاتف العميل/عربون).
       const rows = await db
         .select({
