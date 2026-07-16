@@ -31,6 +31,12 @@ export default defineConfig({
       // صراحةً دائماً (راجع .github/workflows/ci.yml) فلا يتأثّر بهذا التغيير.
       DATABASE_URL: process.env.TEST_DATABASE_URL ?? "mysql://root:testpw@127.0.0.1:3310/erp_test",
       JWT_SECRET: process.env.JWT_SECRET ?? "test_secret",
+      // barcodeService.getSecret يرمي صراحةً بلا هذا المتغيّر ⇒ أيّ إجراء يُولّد باركود/QR
+      // (customers.get، المنتجات، الفواتير، أوامر الشغل…) كان **غير قابل للاختبار** أصلاً:
+      // يمرّ محلياً (المتغيّر موجود في .env المطوّر) ويسقط في CI وحدها — فخّ بيئة يتنكّر في زيّ
+      // علّة كود (أسقط اختبار منتقي العميل ١٦/٧ بعد نجاحه محلياً). قيمة اختبار حرفية منخفضة
+      // العشوائية عمداً: GitGuardian يفحص كامل مدى الـPR ويعلّم القيم عالية العشوائية كأسرار.
+      BARCODE_SECRET: process.env.BARCODE_SECRET ?? "test_barcode_secret",
     },
   },
 });
