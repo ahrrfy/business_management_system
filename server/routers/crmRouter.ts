@@ -304,14 +304,41 @@ export const crmRouter = router({
       return { codes: issued };
     }),
 
-    listIssued: campaignsReadProcedure.input(z.object({ programId: z.number().int().positive() })).query(async ({ input, ctx }) => {
-      const db = requireDb();
-      const program = (await db.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
-      if (!program) throw new TRPCError({ code: "NOT_FOUND", message: "برنامج الكوبونات غير موجود" });
-      ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
-      const rows = await db.select().from(coupons).where(eq(coupons.programId, input.programId)).orderBy(desc(coupons.id));
-      return rows.map((row) => ({ ...row, id: Number(row.id), programId: Number(row.programId), customerId: row.customerId == null ? null : Number(row.customerId) }));
-    }),
+    /**
+     * كوبونات برنامجٍ ما — **مُرقَّمة**. كانت `SELECT *` بلا LIMIT: برنامجٌ يُصدر كوبوناً لكل
+     * عميل (عملاء × حملات) يُعيد كل إصداراته دفعةً واحدة. الحالة/الإجمالي يأتيان من عدٍّ خادميّ
+     * لا من طول الصفحة (`status` عمودُه في DB **couponStatus** — §٥: لا تخمين أسماء الأعمدة).
+     */
+    listIssued: campaignsReadProcedure
+      .input(z.object({
+        programId: z.number().int().positive(),
+        limit: z.number().int().positive().max(500).default(50),
+        offset: z.number().int().min(0).default(0),
+      }))
+      .query(async ({ input, ctx }) => {
+        const db = requireDb();
+        const program = (await db.select().from(couponPrograms).where(eq(couponPrograms.id, input.programId)).limit(1))[0];
+        if (!program) throw new TRPCError({ code: "NOT_FOUND", message: "برنامج الكوبونات غير موجود" });
+        ownBranch(ctx, program.branchId == null ? null : Number(program.branchId));
+        const where = eq(coupons.programId, input.programId);
+        const rows = await db.select().from(coupons).where(where).orderBy(desc(coupons.id)).limit(input.limit).offset(input.offset);
+        const agg = (
+          await db
+            .select({
+              total: sql<number>`COUNT(*)`,
+              // عدّ النشطة خادمياً: زرّ «طباعة النشطة» كان يعتمد على وجودها في الصفوف المُحمَّلة
+              // ⇒ بعد الترقيم يُعطَّل زوراً إن لم تكن نشطةٌ في الصفحة الأولى.
+              activeCount: sql<number>`COALESCE(SUM(CASE WHEN ${coupons.status} = 'ACTIVE' THEN 1 ELSE 0 END), 0)`,
+            })
+            .from(coupons)
+            .where(where)
+        )[0];
+        return {
+          rows: rows.map((row) => ({ ...row, id: Number(row.id), programId: Number(row.programId), customerId: row.customerId == null ? null : Number(row.customerId) })),
+          total: Number(agg?.total ?? 0),
+          activeCount: Number(agg?.activeCount ?? 0),
+        };
+      }),
 
     void: campaignsManagerProcedure.input(z.object({ couponId: z.number().int().positive() })).mutation(async ({ input, ctx }) => {
       await withTx(async (tx) => {
