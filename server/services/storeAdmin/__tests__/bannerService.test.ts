@@ -75,3 +75,92 @@ describe("listActiveBanners — إرجاع الموضع مع فلاتر الفع
     expect(list.find((b) => b.title === "فاصل فعّال")?.placement).toBe("INLINE");
   });
 });
+
+/**
+ * انحدار #203 (صور متعددة مجدولة) — عولج بـ#205 «return active text-only banners».
+ *
+ * الخلل: `listActiveBanners` صارت flatMap على مصادر الصور، وكان
+ * `sources = images.length ? images : (imageUrl ? [...] : [])` ⇒ بنرٌ بلا صور **وبلا** imageUrl
+ * يُنتج **صفراً** من الصفوف فيختفي من المتجر **بصمت** (كان يُعرض بعنوانه/زرّه)، بينما تبقى
+ * لوحة الإدارة تعرضه (BannerManager يرسم أيقونةً بديلة للبنر بلا صورة) ⇒ المستخدم يراه في
+ * اللوحة ولا يجده في الموقع. أحمَر ذلك `main` عبر اختبار المواضع أعلاه.
+ *
+ * **لماذا هذه الاختبارات (#205 لم يُضِف أيّاً):** اختبار المواضع كان يحرس هذا **بالصدفة** (بذرته
+ * بلا صور) ⇒ أيّ تعديلٍ لبذرته يُسقط الحراسة **صامتاً**. هنا نُسمّي الثوابت صراحةً.
+ *
+ * 📌 قاعدة عامّة: تحويل `map` إلى `flatMap` يُدخل حالة «صفر صفوف» لم تكن ممكنة ⇒ اسأل دائماً:
+ *    متى تعود `[]`؟ وهل الاختفاء مقصود أم صامت؟
+ */
+describe("انحدار #203 — بنر بلا صورة لا يختفي (سلوك #205)", () => {
+  it("بلا صور وبلا imageUrl ⇒ صفٌّ واحد بـimageUrl=null (لا يختفي)", async () => {
+    await createBanner({ title: "بنر نصّي بلا صورة" }, 1);
+    const list = await listActiveBanners();
+    const hits = list.filter((b) => b.title === "بنر نصّي بلا صورة");
+    expect(hits).toHaveLength(1); // كان 0 ⇒ اختفاء صامت
+    expect(hits[0].imageUrl).toBeNull();
+  });
+
+  it("imageUrl وحده (النمط القديم) ⇒ صفٌّ واحد بصورته", async () => {
+    await createBanner({ title: "بنر أحادي", imageUrl: "/img/a.jpg" }, 1);
+    const hits = (await listActiveBanners()).filter((b) => b.title === "بنر أحادي");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].imageUrl).toBe("/img/a.jpg");
+  });
+
+  it("صور متعددة فعّالة ⇒ صفٌّ لكل صورة بالترتيب (ميزة #203 سليمة)", async () => {
+    await createBanner(
+      {
+        title: "بنر متعدّد",
+        images: [
+          { url: "/img/2.jpg", sortOrder: 1 },
+          { url: "/img/1.jpg", sortOrder: 0 },
+        ],
+      },
+      1,
+    );
+    const hits = (await listActiveBanners()).filter((b) => b.title === "بنر متعدّد");
+    expect(hits.map((b) => b.imageUrl)).toEqual(["/img/1.jpg", "/img/2.jpg"]); // مرتّبة بـsortOrder
+    expect(hits.map((b) => b.imageIndex)).toEqual([0, 1]);
+  });
+
+  /**
+   * ⚠️ قرار سلوكيّ يوثّقه هذا الاختبار (سلوك #205 المدموج، لا تفضيلي):
+   * بنرٌ **فعّال** كلُّ صوره مجدولة خارج نافذة اليوم ⇒ يُعرض **نصّياً** (imageUrl=null، وBannerFrame
+   * يرسم تدرّجاً بديلاً) لا يُخفى. المنطق: نافذة **البنر** (effectiveFrom/To على الصفّ) هي التي
+   * تقرّر ظهوره، وجدولة الصور تختار **أيّها** يُعرض داخل حياته لا **إن كان** يظهر.
+   * لو أُريد إخفاؤه في هذه الحالة (بديلٌ مطروح) فالمكان هنا — والاختبار يكشف التغيير بدل أن يمرّ صامتاً.
+   */
+  it("صور كلّها خارج النافذة ⇒ يُعرض نصّياً (نافذة البنر تحكم الظهور، لا جدولة الصور)", async () => {
+    await createBanner(
+      { title: "بنر مجدول لاحقاً", images: [{ url: "/img/soon.jpg", effectiveFrom: "2999-01-01" }] },
+      1,
+    );
+    const hits = (await listActiveBanners()).filter((b) => b.title === "بنر مجدول لاحقاً");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].imageUrl).toBeNull(); // لا تُسرَّب صورة خارج نافذتها
+  });
+
+  it("بنرٌ خارج نافذته هو (لا صوره) ⇒ مُخفيّ فعلاً", async () => {
+    await createBanner(
+      { title: "بنر منتهٍ", imageUrl: "/img/x.jpg", effectiveTo: "2020-01-01" },
+      1,
+    );
+    const titles = (await listActiveBanners()).map((b) => b.title);
+    expect(titles).not.toContain("بنر منتهٍ");
+  });
+
+  it("صورة معطّلة داخل بنر فعّال تُستبعَد وحدها دون البنر", async () => {
+    await createBanner(
+      {
+        title: "بنر بصورتين إحداهما معطّلة",
+        images: [
+          { url: "/img/on.jpg", sortOrder: 0 },
+          { url: "/img/off.jpg", sortOrder: 1, isActive: false },
+        ],
+      },
+      1,
+    );
+    const hits = (await listActiveBanners()).filter((b) => b.title === "بنر بصورتين إحداهما معطّلة");
+    expect(hits.map((b) => b.imageUrl)).toEqual(["/img/on.jpg"]);
+  });
+});
