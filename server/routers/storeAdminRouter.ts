@@ -176,6 +176,12 @@ const bannersRouter = router({
       const { id, ...rest } = input;
       assertSafeBannerInput(rest);
       const r = await updateBanner(id, rest);
+      // ⚠️ `rest` يحمل حقولاً data-URL ضخمة (imageUrl/mobileImageUrl سقف ٣ م.ب لكلٍّ + images
+      // حتى ٢٠ × ٢ م.ب). كان تمريره خاماً هنا يكتب ميغابايتات base64 في صفّ تدقيقٍ واحد،
+      // فيقتل شاشة سجلّ التدقيق **كلّها** بـ`Out of sort memory` (عطلٌ إنتاجيّ ١٤–١٦/٧).
+      // آمنٌ الآن: `logAudit` يُعقّم مركزياً (`redactAuditValue`) فتصير الصور علاماتٍ تصف حجمها.
+      // نمرّره كاملاً عمداً — التعقيم يُبقي **أيّ الحقول تغيّرت** وهو جوهر التدقيق، بينما ملخّصٌ
+      // يدويّ (نمط `create` أعلاه) يُخفي ذلك ويُكرّر منطق الحجب في موضعٍ ثانٍ يَنحرف لاحقاً.
       await logAudit(ctx, { action: "store.banner.update", entityType: "storeBanner", entityId: id, newValue: rest });
       return r;
     }),

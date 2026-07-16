@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, lte, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 import { auditLogs, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -47,26 +47,54 @@ export const auditRouter = router({
         defaultLimit: 50,
         idCol: auditLogs.id,
         baseConds: conds,
-        runQuery: (where, lim, off) => db
-          .select({
-            id: auditLogs.id,
-            userId: auditLogs.userId,
-            userName: users.name,
-            branchId: auditLogs.branchId,
-            action: auditLogs.action,
-            entityType: auditLogs.entityType,
-            entityId: auditLogs.entityId,
-            oldValue: auditLogs.oldValue,
-            newValue: auditLogs.newValue,
-            ipAddress: auditLogs.ipAddress,
-            createdAt: auditLogs.createdAt,
-          })
-          .from(auditLogs)
-          .leftJoin(users, eq(auditLogs.userId, users.id))
-          .where(where)
-          .orderBy(desc(auditLogs.id))
-          .limit(lim)
-          .offset(off),
+        runQuery: async (where, lim, off) => {
+          /**
+           * ═══ جلبٌ بخطوتين — تحصينٌ ضدّ `Out of sort memory` (عطلٌ إنتاجيّ ١٤–١٦/٧) ═══
+           *
+           * الاستعلام الواحد (فرزٌ + أعمدة JSON معاً) كان يسقط كلّما حوى **صفٌّ واحد** حمولةً
+           * عريضة: `ORDER BY id DESC` يُجبر MySQL على `filesort`، وحقلُ الفرز يحمل الأعمدة
+           * المُختارة (addon fields) فيجب أن يتّسع **لأعرض صفّ**. صفُّ بنرٍ بصورة base64
+           * (١٫٣ م.ب = ٥٫٣× `sort_buffer_size` الافتراضي) ⇒ يسقط الجدول **كلّه** لا صفُّه.
+           *
+           * ① نفرز **المعرّفات وحدها** (صفٌّ ضيّق ⇒ يستحيل أن يعجز الفرز مهما اتّسعت الحمولة).
+           * ② نجلب الصفوف بـ`IN (...)` **بلا `ORDER BY`** ⇒ لا فرزَ لصفوفٍ عريضة إطلاقاً،
+           *    ثم نرتّبها في الذاكرة على ترتيب الخطوة ①.
+           *
+           * التعقيم المركزيّ (`redactAuditValue`) يمنع الحمولات الجديدة، لكنه لا يكفي وحده:
+           * الصفوف القديمة، والاستيراد، وأيّ كتابةٍ خارج `logAudit` تبقى ممكنة. هذه الطبقة
+           * تجعل الشاشة صامدةً **مهما كانت البيانات** — والدفاع في العمق ليس تكراراً.
+           */
+          const ids = await db
+            .select({ id: auditLogs.id })
+            .from(auditLogs)
+            .where(where)
+            .orderBy(desc(auditLogs.id))
+            .limit(lim)
+            .offset(off);
+          if (!ids.length) return [];
+          const ordered = ids.map((r) => Number(r.id));
+
+          const fetched = await db
+            .select({
+              id: auditLogs.id,
+              userId: auditLogs.userId,
+              userName: users.name,
+              branchId: auditLogs.branchId,
+              action: auditLogs.action,
+              entityType: auditLogs.entityType,
+              entityId: auditLogs.entityId,
+              oldValue: auditLogs.oldValue,
+              newValue: auditLogs.newValue,
+              ipAddress: auditLogs.ipAddress,
+              createdAt: auditLogs.createdAt,
+            })
+            .from(auditLogs)
+            .leftJoin(users, eq(auditLogs.userId, users.id))
+            .where(inArray(auditLogs.id, ordered));
+
+          const byId = new Map(fetched.map((r) => [Number(r.id), r]));
+          return ordered.map((id) => byId.get(id)).filter((r): r is (typeof fetched)[number] => r != null);
+        },
       });
       const total = await countIfOffset(usingCursor, async () => {
         const baseWhere = conds.length ? and(...conds) : undefined;
