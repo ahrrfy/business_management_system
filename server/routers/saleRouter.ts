@@ -1,6 +1,8 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, lt, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
+import { escLike } from "../lib/sqlLike";
+import { normalizeSearchText } from "@shared/searchNormalize";
 import { z } from "zod";
 import {
   customers,
@@ -164,6 +166,9 @@ const salesListInput = z
     to: ymd.optional(),
     status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
     customerId: z.number().int().positive().optional(),
+    // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
+    // (سقف ٢٠٠) ⇒ فاتورة أقدم تُعطي «لا نتائج» وهي موجودة. خادميّ ⇒ يطال كل المطابق للفلتر.
+    q: z.string().trim().min(1).optional(),
   })
   .optional();
 
@@ -181,6 +186,19 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+  if (input?.q) {
+    // رقم الفاتورة يُطابَق خاماً (رموز/أرقام لا معنى للتطبيع العربي فيها)، واسم العميل عبر
+    // customers.searchNorm المطبَّع عربياً (D2 ١/٧ — «احمد» يجد «أحمد»)، نفس نمط customerService.
+    // ⚠️ يتطلّب join على customers في **كل** مستهلك لهذه الشروط (list وlistSummary معاً).
+    const raw = `%${escLike(input.q)}%`;
+    const folded = `%${escLike(normalizeSearchText(input.q))}%`;
+    conds.push(
+      or(
+        sql`${invoices.invoiceNumber} LIKE ${raw} ESCAPE '!'`,
+        sql`coalesce(${customers.searchNorm}, '') LIKE ${folded} ESCAPE '!'`,
+      )!,
+    );
+  }
   return conds;
 }
 
@@ -408,6 +426,10 @@ export const saleRouter = router({
               THEN CAST(${invoices.total} AS DECIMAL(15,2)) - CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - CAST(${invoices.returnedTotal} AS DECIMAL(15,2)) ELSE 0 END), 0)`,
           })
           .from(invoices)
+          // join إلزاميّ: buildSalesListConds قد يُشير لـcustomers.searchNorm عند البحث بـq.
+          // leftJoin على مفتاح أجنبيّ أحاديّ ⇒ لا يُضاعف صفوف الفواتير ⇒ المجاميع تبقى صحيحة،
+          // وcount يبقى مطابقاً تماماً لعدد صفوف list (نفس الشروط ونفس الجداول).
+          .leftJoin(customers, eq(invoices.customerId, customers.id))
           .where(conds.length ? and(...conds) : undefined)
       )[0];
       return {

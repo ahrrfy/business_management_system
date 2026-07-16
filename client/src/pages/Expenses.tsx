@@ -4,6 +4,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { TablePager } from "@/components/table/TablePager";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
@@ -17,7 +18,7 @@ import { printDoc } from "@/lib/printing/print";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { Loader2, Search } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "wouter";
 
 const selectCls =
@@ -58,6 +59,9 @@ const STATUS_CLS: Record<string, string> = {
 };
 const STATUS_LABEL: Record<string, string> = { ACTIVE: "نافذ", CANCELLED: "مُلغى" };
 
+/** حجم صفحة القائمة — الخادم يُرقّم (سقفه ١٠٠٠). */
+const PAGE_SIZE = 50;
+
 type ExpenseRow = RouterOutputs["expenses"]["list"]["rows"][number];
 
 /** إيصال صرف عبر printDoc العام — نفس نواقل الطباعة الثلاثة (جسر الخادم/WebUSB/متصفح). */
@@ -91,6 +95,9 @@ export default function Expenses() {
   const [to, setTo] = useState("");
   const [query, setQuery] = useState("");
   const [exporting, setExporting] = useState(false);
+  // الترقيم خادميّ: كانت تُحمَّل أحدث ٣٠٠ دفعةً والباقي غير قابل للوصول (بينما التصدير يرى الكل
+  // ⇒ تناقض صامت بين ملف Excel والشاشة). الآن صفحة صفحة، والتصدير يبقى شاملاً صراحةً.
+  const [page, setPage] = useState(0);
   // إبراز المصروف القادم من البحث الشامل (?focus=) — القائمة تُحمَّل أحدث ٣٠٠، فالأقرب زمنياً يُبرَز.
   const { rowProps } = useFocusHighlight();
 
@@ -104,8 +111,13 @@ export default function Expenses() {
     to: to || undefined,
     q: dq.trim() || undefined,
   };
-  const list = trpc.expenses.list.useQuery({ ...listInput, limit: 300 });
+  const list = trpc.expenses.list.useQuery({ ...listInput, limit: PAGE_SIZE, offset: page * PAGE_SIZE });
   const rows = list.data?.rows ?? [];
+  const total = list.data?.totals.count ?? 0;
+
+  // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى (وإلا offset قديم على مجموعة أصغر = صفحة فارغة).
+  const filterKey = JSON.stringify(listInput);
+  useEffect(() => { setPage(0); }, [filterKey]);
 
   // أعمدة التصدير (مشتركة بين زرّ التصدير وجلب-الكل).
   const exportColumns: ExportColumn<ExpenseRow>[] = [
@@ -307,6 +319,14 @@ export default function Expenses() {
           </table>
           </ScrollTableShell>
         </CardContent>
+        <TablePager
+          page={page}
+          onPageChange={setPage}
+          pageSize={PAGE_SIZE}
+          rowsOnPage={rows.length}
+          total={total}
+          isLoading={list.isFetching}
+        />
       </Card>
       {cancel.error && <p className="text-sm text-destructive">{cancel.error.message}</p>}
     </div>
