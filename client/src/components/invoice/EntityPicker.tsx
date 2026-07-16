@@ -2,38 +2,45 @@
  * EntityPicker — customer (for SALE/QUOTATION/SALE_RETURN) or supplier (for PURCHASE/*_RETURN).
  *
  * الرصيد: "لنا عليه" (أخضر) أو "له علينا" (أحمر) حسب اتجاه الدين.
+ *
+ * **بحث خادميّ (١٦/٧)** — كان يُحمّل `customers.list`/`suppliers.list` عند الإقلاع، وكلاهما
+ * **مقصوص عند ٥٠٠ صفّاً بلا بحث ولا offset**، ثمّ يُصفّي محلّياً. النتيجة: العميل رقم ٥٠١
+ * **غير موجود** في المنتقي — لا يُرى ولا يُبحَث ولا يُختار، بلا أيّ مؤشّر (نفس نمط «ترقيم عميل
+ * فوق بياناتٍ مقتطعة»). الآن: `search` خادميّ (q + limit) لا يُطلَق إلا عند فتح القائمة،
+ * و`get` لاسم/رصيد المختار (فقد يكون خارج نتائج البحث الحالية).
  */
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { fmtNum } from "./totals";
 import { BalanceBadge, getBalanceDirection } from "@/components/BalanceBadge";
 import { TIER_OPTIONS, type EntityRow, type InvoiceType } from "./types";
 
+/** سقف نتائج البحث المعروضة — القائمة منسدلة قصيرة، والبحث يضيّق لا يستعرض. */
+const SEARCH_LIMIT = 20;
+
 export interface EntityPickerProps {
   type: InvoiceType;
   selectedId: number | null;
   onSelect: (id: number | null) => void;
+  /** نصّ الزرّ حين لا اختيار. الافتراضي «— اختر العميل/المورد —»؛ في سياق **الفلترة** مرّر
+   *  «— كل العملاء —» ليدلّ على أن غياب الاختيار = بلا تضييق (لا «لم تختر بعد»). */
+  placeholder?: string;
+  /** نصّ زرّ إلغاء الاختيار. الافتراضي «إلغاء اختيار …». */
+  clearLabel?: string;
 }
 
 function isSaleSide(t: InvoiceType): boolean {
   return t === "SALE" || t === "QUOTATION" || t === "SALE_RETURN";
 }
 
-export function EntityPicker({ type, selectedId, onSelect }: EntityPickerProps) {
+export function EntityPicker({ type, selectedId, onSelect, placeholder, clearLabel }: EntityPickerProps) {
   const isSale = isSaleSide(type);
   const entityLabel = isSale ? "العميل" : "المورد";
-
-  const customers = trpc.customers.list.useQuery(undefined, { enabled: isSale });
-  const suppliers = trpc.suppliers.list.useQuery(undefined, { enabled: !isSale });
-
-  const rows: EntityRow[] = useMemo(() => {
-    if (isSale) return (customers.data ?? []) as EntityRow[];
-    return (suppliers.data ?? []) as EntityRow[];
-  }, [isSale, customers.data, suppliers.data]);
 
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
@@ -47,15 +54,34 @@ export function EntityPicker({ type, selectedId, onSelect }: EntityPickerProps) 
     return () => document.removeEventListener("mousedown", h);
   }, []);
 
-  const selected = useMemo(() => rows.find((r) => r.id === selectedId) ?? null, [rows, selectedId]);
+  // البحث خادميّ (يطال كل السجلّات لا أوّل ٥٠٠) ولا يُطلَق إلا والقائمة مفتوحة ⇒ لا تحميل
+  // عند الإقلاع. debounce ليكتب المستخدم بلا طلبٍ لكل حرف. الاسم يُطابَق مطبَّعاً عربياً
+  // خادمياً (searchNorm) ⇒ «احمد» يجد «أحمد» — وهو ما لم تكن الفلترة المحلّية تفعله.
+  const dq = useDebouncedValue(q.trim(), 250);
+  const searchInput = { q: dq || undefined, limit: SEARCH_LIMIT };
+  const customersQ = trpc.customers.search.useQuery(searchInput, { enabled: isSale && open, staleTime: 30_000 });
+  const suppliersQ = trpc.suppliers.search.useQuery(searchInput, { enabled: !isSale && open, staleTime: 30_000 });
 
-  const filtered = useMemo(() => {
-    if (!q.trim()) return rows;
-    const needle = q.trim().toLowerCase();
-    return rows.filter(
-      (r) => r.name.toLowerCase().includes(needle) || (r.phone ?? "").includes(needle)
-    );
-  }, [rows, q]);
+  const isLoading = isSale ? customersQ.isFetching : suppliersQ.isFetching;
+  const rows: EntityRow[] = useMemo(
+    () => ((isSale ? customersQ.data?.rows : suppliersQ.data?.rows) ?? []) as EntityRow[],
+    [isSale, customersQ.data, suppliersQ.data],
+  );
+
+  // المختار يُجلَب بـid مستقلاً عن نتائج البحث: قد يكون خارجها (أو خارج أيّ سقف) ⇒ لولا هذا
+  // لأفرغ اسمُه وشارةُ رصيده بمجرّد الكتابة في البحث. استعلامٌ واحد رخيص + cache ٦٠ث.
+  const customerGet = trpc.customers.get.useQuery(
+    { customerId: selectedId ?? 0 },
+    { enabled: isSale && selectedId != null, staleTime: 60_000 },
+  );
+  const supplierGet = trpc.suppliers.get.useQuery(
+    { supplierId: selectedId ?? 0 },
+    { enabled: !isSale && selectedId != null, staleTime: 60_000 },
+  );
+  const selected = useMemo(
+    () => (selectedId == null ? null : (((isSale ? customerGet.data : supplierGet.data) ?? null) as EntityRow | null)),
+    [selectedId, isSale, customerGet.data, supplierGet.data],
+  );
 
   const balance = selected?.currentBalance ? Number(selected.currentBalance) : 0;
 
@@ -74,7 +100,7 @@ export function EntityPicker({ type, selectedId, onSelect }: EntityPickerProps) 
             : "border-input bg-background font-medium text-muted-foreground hover:border-input/80"
         )}
       >
-        <span className="truncate">{selected ? selected.name : `— اختر ${entityLabel} —`}</span>
+        <span className="truncate">{selected ? selected.name : (placeholder ?? `— اختر ${entityLabel} —`)}</span>
         <ChevronDown aria-hidden className="size-3.5 shrink-0" />
       </button>
 
@@ -104,13 +130,13 @@ export function EntityPicker({ type, selectedId, onSelect }: EntityPickerProps) 
             />
           </div>
           <div className="max-h-52 overflow-y-auto">
-            {(isSale ? customers.isLoading : suppliers.isLoading) && (
-              <div className="px-3 py-4 text-center text-xs text-muted-foreground">جارٍ التحميل…</div>
+            {isLoading && rows.length === 0 && (
+              <div className="px-3 py-4 text-center text-xs text-muted-foreground">جارٍ البحث…</div>
             )}
-            {filtered.length === 0 && !(isSale ? customers.isLoading : suppliers.isLoading) && (
+            {rows.length === 0 && !isLoading && (
               <div className="px-3 py-4 text-center text-xs text-muted-foreground">لا نتائج</div>
             )}
-            {filtered.map((e) => {
+            {rows.map((e) => {
               const bal = e.currentBalance ? Number(e.currentBalance) : 0;
               return (
                 <div
@@ -166,7 +192,7 @@ export function EntityPicker({ type, selectedId, onSelect }: EntityPickerProps) 
                   setOpen(false);
                 }}
               >
-                إلغاء اختيار {entityLabel}
+                {clearLabel ?? `إلغاء اختيار ${entityLabel}`}
               </Button>
             </div>
           )}

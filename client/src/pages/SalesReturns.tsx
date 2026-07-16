@@ -1,4 +1,4 @@
-import { balanceOptionText } from "@/components/BalanceBadge";
+import { EntityPicker } from "@/components/invoice/EntityPicker";
 import { ListToolbar, RowActions } from "@/components/list";
 import { ErrorState } from "@/components/PageState";
 import { Button } from "@/components/ui/button";
@@ -33,7 +33,6 @@ export default function SalesReturns() {
   const [page, setPage] = useState(0);
 
   const utils = trpc.useUtils();
-  const customers = trpc.customers.list.useQuery();
   const branches = trpc.branches.list.useQuery();
   // مدخلات الفلترة بلا limit/offset — مشتركة بين الاستعلام الصفحي وتصدير الكل.
   const filterInput = {
@@ -88,19 +87,16 @@ export default function SalesReturns() {
             loading={list.isLoading}
             filters={
               <>
-                <select
-                  className={selectCls}
-                  value={customerId}
-                  onChange={(e) => setFilter(setCustomerId, e.target.value ? Number(e.target.value) : "")}
-                >
-                  <option value="">— كل العملاء —</option>
-                  {(customers.data ?? []).map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.name}
-                      {balanceOptionText((c as { currentBalance?: string | null }).currentBalance, "customer")}
-                    </option>
-                  ))}
-                </select>
+                {/* بحث خادميّ بدل قائمة مقصوصة عند ٥٠٠ (العميل ٥٠١ كان غير قابل للاختيار). */}
+                <div className="min-w-[200px]">
+                  <EntityPicker
+                    type="SALE_RETURN"
+                    selectedId={customerId === "" ? null : Number(customerId)}
+                    onSelect={(id) => setFilter(setCustomerId, id ?? "")}
+                    placeholder="— كل العملاء —"
+                    clearLabel="عرض كل العملاء"
+                  />
+                </div>
                 <select
                   className={selectCls}
                   value={branchId}
