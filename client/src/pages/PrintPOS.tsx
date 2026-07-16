@@ -11,6 +11,7 @@ import {
   getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData,
 } from "@/lib/printing/print";
 import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices";
+import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
@@ -118,7 +119,6 @@ export default function PrintPOS() {
 
   const servicesQ = trpc.printPos.services.useQuery({ tier: "RETAIL" });
   const services = useMemo(() => servicesQ.data ?? [], [servicesQ.data]);
-  const customers = trpc.customers.list.useQuery();
 
   // الفئات (تبويبات) مشتقّة من الخدمات مع حفظ ترتيب أول ظهور.
   // print-catalog: تبويب «أخرى» (id=0) للخدمات بلا فئة — وإلا تُحجَب من الشبكة كُلّياً
@@ -166,10 +166,14 @@ export default function PrintPOS() {
   } | null>(null);
 
   const effectiveCatId = catId ?? cats[0]?.id ?? null;
-  const selectedCustomer = useMemo(
-    () => (customers.data ?? []).find((c) => c.id === tab.customerId) ?? null,
-    [customers.data, tab.customerId]
+  // اسم العميل للإيصال — بـid مباشرةً لا بحثاً في قائمةٍ مقصوصة عند ٥٠٠: العميل ٥٠١ كان يُطبَع
+  // إيصاله **بلا اسم** بصمت. (لا خطر «وميض تسعير» هنا بخلاف الكاشير الرئيسي: هذه الشاشة تُثبّت
+  // priceTier="RETAIL" ولا تشتقّ فئة السعر من العميل.)
+  const selectedCustomerQ = trpc.customers.get.useQuery(
+    { customerId: tab.customerId ?? 0 },
+    { enabled: tab.customerId != null, staleTime: 60_000 },
   );
+  const selectedCustomer = tab.customerId == null ? null : selectedCustomerQ.data ?? null;
 
   // ── تبويبات ──
   const patch = (p: Partial<Tab>) => setTabs((prev) => prev.map((t) => (t.id === activeId ? { ...t, ...p } : t)));
@@ -407,7 +411,7 @@ export default function PrintPOS() {
           selUid={tab.selUid} setSelUid={(id) => patch({ selUid: id })}
           changeQty={changeQty} removeRow={removeRow} onClear={clearCart}
           setPrice={setPrice} editPriceUid={editPriceUid} setEditPriceUid={setEditPriceUid}
-          customers={customers.data ?? []} customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
+          customerId={tab.customerId} setCustomerId={(id) => patch({ customerId: id })}
           payInput={tab.payInput} setPayInput={setPayInput} method={tab.method} setMethod={(m) => patch({ method: m })}
           numPress={numPress} onPay={() => submit(false)} onQuickPay={() => submit(true)} isPending={sale.isPending}
         />
@@ -575,12 +579,101 @@ function ServiceGrid({ C, services, loading, cats, catId, setCatId, search, onAd
   );
 }
 
+/**
+ * منتقي عميل مضغوط ببحثٍ **خادميّ** — بديل `<select>` كان يُغذّى من `customers.list` المقصوصة
+ * عند ٥٠٠ صفّاً: العميل رقم ٥٠١ لم يكن يظهر في القائمة إطلاقاً ⇒ **يتعذّر بيعه آجلاً** من هذه
+ * الشاشة (البيع الآجل يشترط عميلاً — انظر حارس `isCredit && customerId == null`)، بلا أيّ مؤشّر.
+ * مُنسَّق بـinline styles على توكنات `C` لأن هذه الشاشة لمسية بتصميمها الخاص (لا Tailwind).
+ */
+function CustomerCombo({ C, customerId, setCustomerId }: { C: C; customerId: number | null; setCustomerId: (id: number | null) => void }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const dq = useDebouncedValue(q.trim(), 250);
+
+  useEffect(() => {
+    const h = (e: MouseEvent) => { if (!boxRef.current?.contains(e.target as Node)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, []);
+
+  // البحث لا يُطلَق إلا والقائمة مفتوحة ⇒ صفر تحميل عند الإقلاع (كان يجلب ٥٠٠ عميل دائماً).
+  const search = trpc.customers.search.useQuery(
+    { q: dq || undefined, limit: 20 },
+    { enabled: open, staleTime: 30_000 },
+  );
+  // اسم المختار بـid مستقلاً عن نتائج البحث (قد يكون خارجها أو خارج أيّ سقف).
+  const picked = trpc.customers.get.useQuery(
+    { customerId: customerId ?? 0 },
+    { enabled: customerId != null, staleTime: 60_000 },
+  );
+  const rows = search.data?.rows ?? [];
+  const label = customerId == null ? "عميل نقدي" : (picked.data?.name ?? `#${customerId}`);
+  const active = customerId != null;
+
+  return (
+    <div ref={boxRef} style={{ position: "relative" }}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-label="اختيار العميل"
+        style={{ height: 36, borderRadius: 9, border: `1.5px solid ${active ? C.primary : C.border}`, background: active ? C.primarySoft : C.card, color: active ? C.primary : C.mutedFg, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "0 8px", outline: "none", cursor: "pointer", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+      >
+        {label}
+      </button>
+      {open && (
+        <div role="listbox" style={{ position: "absolute", top: 40, left: 0, minWidth: 240, zIndex: 50, background: C.card, border: `1px solid ${C.border}`, borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,.18)", overflow: "hidden" }}>
+          <div style={{ padding: 7 }}>
+            <input
+              autoFocus
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="ابحث بالاسم أو الهاتف…"
+              style={{ width: "100%", height: 32, borderRadius: 7, border: `1px solid ${C.border}`, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 12.5, padding: "0 8px", outline: "none" }}
+            />
+          </div>
+          <div style={{ maxHeight: 210, overflowY: "auto" }}>
+            <div
+              role="option"
+              aria-selected={customerId == null}
+              onClick={() => { setCustomerId(null); setOpen(false); setQ(""); }}
+              style={{ padding: "8px 10px", cursor: "pointer", fontSize: 12.5, fontWeight: 700, color: C.mutedFg, borderBottom: `1px solid ${C.border}` }}
+            >
+              عميل نقدي
+            </div>
+            {search.isFetching && rows.length === 0 && (
+              <div style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, color: C.mutedFg }}>جارٍ البحث…</div>
+            )}
+            {!search.isFetching && rows.length === 0 && (
+              <div style={{ padding: "12px 10px", textAlign: "center", fontSize: 12, color: C.mutedFg }}>لا نتائج</div>
+            )}
+            {rows.map((c) => (
+              <div
+                key={c.id}
+                role="option"
+                aria-selected={c.id === customerId}
+                onClick={() => { setCustomerId(c.id); setOpen(false); setQ(""); }}
+                style={{ padding: "8px 10px", cursor: "pointer", fontSize: 12.5, borderBottom: `1px solid ${C.border}`, background: c.id === customerId ? C.primarySoft : "transparent", color: C.fg }}
+              >
+                <div style={{ fontWeight: 700 }}>{c.name}</div>
+                <div style={{ fontSize: 11, color: C.mutedFg }}>{c.phone || "بلا هاتف"}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── CheckoutColumn = CartList (فوق) + PaymentBlock (تحت) ─────────────────────
 interface CheckoutProps {
   C: C; cart: CartLine[]; total: number; selUid: number | null; setSelUid: (id: number | null) => void;
   changeQty: (uid: number, q: number) => void; removeRow: (uid: number) => void; onClear: () => void;
   setPrice: (uid: number, p: number) => void; editPriceUid: number | null; setEditPriceUid: (id: number | null) => void;
-  customers: RouterOutputs["customers"]["list"]; customerId: number | null; setCustomerId: (id: number | null) => void;
+  customerId: number | null; setCustomerId: (id: number | null) => void;
   payInput: string; setPayInput: (u: string | ((s: string) => string)) => void; method: PaymentMethod; setMethod: (m: PaymentMethod) => void;
   numPress: (k: string) => void; onPay: () => void; onQuickPay: () => void; isPending: boolean;
 }
@@ -595,7 +688,7 @@ function CheckoutColumn(props: CheckoutProps) {
   );
 }
 
-function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, setPrice, editPriceUid, setEditPriceUid, customers, customerId, setCustomerId }: CheckoutProps) {
+function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, setPrice, editPriceUid, setEditPriceUid, customerId, setCustomerId }: CheckoutProps) {
   const items = cart.reduce((s, c) => s + c.qty, 0);
   return (
     <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", background: C.card, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
@@ -606,12 +699,7 @@ function CartList({ C, cart, selUid, setSelUid, changeQty, removeRow, onClear, s
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ display: "inline-flex", alignItems: "center", gap: 5, color: customerId != null ? C.primary : C.mutedFg }} aria-hidden><User size={14} /></span>
-          <select value={customerId ?? ""} onChange={(e) => setCustomerId(e.target.value ? Number(e.target.value) : null)}
-            aria-label="اختيار العميل"
-            style={{ height: 36, borderRadius: 9, border: `1.5px solid ${customerId != null ? C.primary : C.border}`, background: customerId != null ? C.primarySoft : C.card, color: customerId != null ? C.primary : C.mutedFg, fontFamily: "inherit", fontSize: 12.5, fontWeight: 700, padding: "0 8px", outline: "none", cursor: "pointer", maxWidth: 160 }}>
-            <option value="">عميل نقدي</option>
-            {customers.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
-          </select>
+          <CustomerCombo C={C} customerId={customerId} setCustomerId={setCustomerId} />
           {cart.length > 0 && <button onClick={onClear} style={{ height: 36, padding: "0 11px", background: "none", border: `1px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontSize: 12.5, color: C.danger, fontFamily: "inherit", fontWeight: 700 }}>تفريغ</button>}
         </div>
       </div>
