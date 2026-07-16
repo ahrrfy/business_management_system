@@ -90,7 +90,7 @@ function labelInnerHtml(item: LabelRenderItem, size: LabelSize, opts: LabelRende
   const pricePt = scaledPt(PRICE_PT, w);
   const nameFs = showName ? nameFontPt(String(item.name), w) : 0;
   const nameLines = showName ? estNameLines(String(item.name), w, nameFs) : 0;
-  const showBottom = showPrice || !!item.sku;
+  const showBottom = showPrice || !!item.sku || !!item.tierLabel;
   const bottomPt = showBottom ? (showPrice ? pricePt : pt8) : 0;
 
   const nameHtml = showName
@@ -102,13 +102,26 @@ function labelInnerHtml(item: LabelRenderItem, size: LabelSize, opts: LabelRende
   const bcHtml = bc ? `<div class="lbl-bc" style="height:${barMm}mm">${bc}</div>` : "";
   const bnHtml = `<div class="lbl-bn" style="font-size:${pt8}pt">${esc(item.barcode)}</div>`;
 
+  // الصفّ السفليّ = مجموعتان: [الرمز + شارة الفئة] يميناً | [السعر القديم مشطوباً + السعر] يساراً.
   const skuHtml = item.sku ? `<span class="lbl-sk" style="font-size:${pt8}pt">${esc(item.sku)}</span>` : "";
+  const tierHtml = item.tierLabel
+    ? `<span class="lbl-tr" style="font-size:${pt8}pt">${esc(item.tierLabel)}</span>`
+    : "";
+  const startHtml = skuHtml || tierHtml ? `<span class="lbl-gp">${skuHtml}${tierHtml}</span>` : "";
+
+  // السعر القديم يُطبع مشطوباً **فقط** مع سعرٍ فعّال أصغر منه (عرض سارٍ) — يرى الزبون قيمة الخصم.
+  const showBase = showPrice && item.basePrice != null && item.basePrice !== "";
+  const baseHtml = showBase
+    ? `<span class="lbl-ob" style="font-size:${pt8}pt">${esc(fmtC(item.basePrice))}</span>`
+    : "";
   const priceHtml = showPrice
     ? `<span class="lbl-pr" style="font-size:${pricePt}pt">${esc(fmtC(item.price))}</span>`
     : "";
+  const endHtml = baseHtml || priceHtml ? `<span class="lbl-gp">${baseHtml}${priceHtml}</span>` : "";
+
   const bottomHtml =
-    skuHtml || priceHtml
-      ? `<div class="lbl-bt">${skuHtml || "<span></span>"}${priceHtml || "<span></span>"}</div>`
+    startHtml || endHtml
+      ? `<div class="lbl-bt">${startHtml || "<span></span>"}${endHtml || "<span></span>"}</div>`
       : "";
 
   return `${nameHtml}${bcHtml}${bnHtml}${bottomHtml}`;
@@ -133,7 +146,16 @@ function labelCss(size: LabelSize): string {
       font-variant-numeric:tabular-nums}
     .lbl-bt{display:flex;justify-content:space-between;align-items:baseline;gap:2mm;
       width:100%;line-height:1.05}
-    .lbl-sk{font-weight:700} .lbl-pr{font-weight:900}
+    .lbl-gp{display:inline-flex;align-items:baseline;gap:1mm;white-space:nowrap}
+    /* الرمز يتقلّص ويُقصّ بـ«…» — السعر لا يتقلّص أبداً (الحقل الحرج على ملصق الرفّ). */
+    .lbl-bt>.lbl-gp:first-child{min-width:0;overflow:hidden}
+    .lbl-bt>.lbl-gp:last-child{flex:0 0 auto}
+    .lbl-sk{font-weight:700;overflow:hidden;text-overflow:ellipsis} .lbl-pr{font-weight:900}
+    /* شارة الفئة مطموسة بأسود صافٍ لا بإطارٍ رفيع: الإطار الرفيع يضيع على 203dpi الحراري. */
+    .lbl-tr{font-weight:900;background:#000;color:#fff;padding:0 0.8mm;border-radius:0.5mm;
+      -webkit-print-color-adjust:exact;print-color-adjust:exact}
+    /* شطبٌ سميك صراحةً (~2 نقطة @203dpi) — الافتراضي شعرةٌ تختفي في الطباعة الحرارية. */
+    .lbl-ob{font-weight:700;text-decoration:line-through;text-decoration-thickness:0.25mm}
   `;
 }
 

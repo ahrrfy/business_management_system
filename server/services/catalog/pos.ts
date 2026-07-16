@@ -289,6 +289,48 @@ export async function lookupByBarcode(
   return row ?? null;
 }
 
+/**
+ * قراءة دفعيّة لصفوف الكاشير بمعرّفات الوحدات — **نفس خطّ `lookupByBarcode` بالضبط**
+ * (سعر الفئة ← التعاقديّ ← توفّر البكج ← العروض)، بحبيبة قائمةِ معرّفات واستعلامٍ واحد.
+ *
+ * سبب وجودها (١٦/٧، شاشة الملصقات): تبديل فئة السعر يجب أن يُعيد تسعير قائمة الطباعة.
+ * الفتح بالباركود متعذّر هناك — الباركود الداخليّ (`ALR…`) غير المحفوظ ليس في القاعدة أصلاً —
+ * والفتح صفّاً صفّاً N+1. وإعادةُ حساب السعر في الواجهة كانت ستفصل سعر الملصق عن سعر الكاشير،
+ * وهي العلّة نفسها التي تُصلحها تلك الشاشة (ملصق يقول ١٠٠٠ وكاشير يحصّل ٨٠٠).
+ */
+export async function listByUnitIds(
+  productUnitIds: number[],
+  branchId: number,
+  tier: PriceTier,
+): Promise<PosRow[]> {
+  const db = getDb();
+  if (!db || !productUnitIds.length) return [];
+  const rows = await baseSelect(db, branchId, tier).where(and(activeOnly, inArray(productUnits.id, productUnitIds)));
+  const priced = await applyContractPrices(db, normalize(rows), null);
+  const withAvail = await applyBundleAvailability(db, priced, branchId);
+  return applyPromotions(withAvail, branchId, tier);
+}
+
+/**
+ * كلّ الصفوف القابلة للبيع (متغيّر × وحدة) لمنتجاتٍ بعينها — تُغذّي «أضِف كلّ ألوان/وحدات
+ * المنتج» في شاشة الملصقات دفعةً واحدة. نفس الخطّ أعلاه. الترتيب: المنتج ← المتغيّر ←
+ * وحدة الأساس أوّلاً (الأكثر طباعةً على الرفّ).
+ */
+export async function listByProductIds(
+  productIds: number[],
+  branchId: number,
+  tier: PriceTier,
+): Promise<PosRow[]> {
+  const db = getDb();
+  if (!db || !productIds.length) return [];
+  const rows = await baseSelect(db, branchId, tier)
+    .where(and(activeOnly, inArray(products.id, productIds)))
+    .orderBy(products.id, productVariants.id, desc(productUnits.isBaseUnit));
+  const priced = await applyContractPrices(db, normalize(rows), null);
+  const withAvail = await applyBundleAvailability(db, priced, branchId);
+  return applyPromotions(withAvail, branchId, tier);
+}
+
 /** List sellable rows for the POS, optionally filtered by a text query.
  *  includeReceptionServices=true يُظهر خدمات الطباعة المفعَّل عليها showInReception (كاشير الاستقبال).
  *  opts.customerId (بند 12ب): يُطبّق الأسعار التعاقدية النشطة للعميل على الصفوف المطابقة. */
