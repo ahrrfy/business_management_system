@@ -13,8 +13,8 @@ import { useCallback, useRef, useState } from "react";
  * ودفع البطاقة (إيصال التحويل). للأخيرتين لا نحتاج «رئيسية» — يمكن إخفاء الزرّ بـ`singlePrimary={false}`.
  *
  * import-integration: تُضغط الصور تلقائياً قبل التخزين (canvas، بُعد أقصى ١٦٠٠px،
- * JPEG 0.82 على خلفية بيضاء، وإعادة محاولة 0.7 ثم 0.6/١٢٨٠ حتى ≤٧٠٠KB) — العلاج
- * الجذري لعلّة «قيمة أطول من المسموح» عند حفظ data URLs كبيرة في القاعدة.
+ * **WebP** 0.82 على خلفية بيضاء (وJPEG لمن لا يدعمها)، وإعادة محاولة 0.7 ثم 0.6/١٢٨٠
+ * حتى ≤٧٠٠KB) — العلاج الجذري لعلّة «قيمة أطول من المسموح» عند حفظ data URLs كبيرة.
  */
 export interface ImageItem {
   id: string;
@@ -90,8 +90,55 @@ function loadImage(dataUrl: string): Promise<HTMLImageElement> {
 }
 
 /**
- * يضغط صورة data URL إلى JPEG على خلفية بيضاء (الشفافية تتحوّل بيضاء لا سوداء)
- * وفق سلّم المحاولات حتى ≤ الحجم المستهدف. يعيد الأصل كما هو إن فشل الضغط
+ * هل يدعم المتصفّح ترميز WebP؟ — يُفحَص مرّةً على canvas ١×١ ويُخبّأ.
+ *
+ * ⚠️ **الفخّ:** `toDataURL("image/webp")` في متصفّحٍ لا يدعمها **لا يفشل ولا يرمي** — بل يعود
+ * بـ**PNG** (السلوك المُواصَف: نوعٌ غير مدعوم ⇒ الافتراضي `image/png`). وPNG لصورةٍ فوتوغرافية
+ * **أكبر من JPEG بأضعاف** ⇒ «تحسينٌ» يُضاعف الحجم على سفاري القديم. الحكم على **بادئة الناتج**
+ * لا على نجاح النداء. (والفحص المسبق يمنع أيضاً ترميز PNG ضخمٍ يُرمى — بطءٌ وذاكرةٌ بلا مقابل.)
+ */
+let webpSupportCache: boolean | null = null;
+export function webpSupported(): boolean {
+  if (webpSupportCache !== null) return webpSupportCache;
+  try {
+    const probe = document.createElement("canvas");
+    probe.width = 1;
+    probe.height = 1;
+    webpSupportCache = probe.toDataURL("image/webp").startsWith("data:image/webp");
+  } catch {
+    webpSupportCache = false;
+  }
+  return webpSupportCache;
+}
+
+/** للاختبار فقط — يُصفّر الكاش كي تُعاد المحاولة تحت بيئةٍ مختلفة. */
+export function __resetEncoderCache(): void {
+  webpSupportCache = null;
+}
+
+/**
+ * يُرمّز اللوحة بأصغر ناتجٍ فعليّ: **يُجرّب WebP وJPEG ويأخذ الأصغر قياساً لا ترجيحاً.**
+ *
+ * **القياس على صور الإنتاج الحقيقية (١٦/٧، بنراتك الأربعة):** WebP أصغر **٢٦٪** (١٠٥٤ ⇐ ٧٨٥ ك.ب،
+ * متّسقاً ٢٣–٢٧٪ لكلٍّ). والخادم يقبلها أصلاً (`imageValidation` يُجيز webp ويتحقّق من بصمة
+ * `RIFF…WEBP`، ونقطة `/api/img` تُدرجها في قائمتها البيضاء)، ولا jsPDF ⇒ الطباعة ترسمها أصلاً.
+ *
+ * ⚠️ **ولماذا نقيس بدل أن نفترض:** WebP **ليس أصغر دائماً**. قِيس فعلياً على صورةٍ عالية
+ * الضوضاء: WebP **أكبر ٤٨٪** من JPEG بنفس الجودة (٣٧٧ مقابل ٢٥٥ ك.ب) — الضوضاء البكسليّة تُبطل
+ * تنبّؤ WebP. مثل هذه الصور نادرة في كتالوج قرطاسية، لكنّ «الأصغر فعلياً» يجعل التحسين **مُبرهناً
+ * لا مُرجَّحاً**: مستحيلٌ أن يُخرج هذا المسار ملفاً أكبر ممّا كان قبله. الثمن ترميزٌ ثانٍ (~عشرات
+ * المللي ثانية) على فعلٍ يبادر به المستخدم — لا يُحسّ.
+ */
+function encodeSmallest(canvas: HTMLCanvasElement, quality: number): string {
+  const jpeg = canvas.toDataURL("image/jpeg", quality);
+  if (!webpSupported()) return jpeg;
+  const webp = canvas.toDataURL("image/webp", quality);
+  return webp.length < jpeg.length ? webp : jpeg;
+}
+
+/**
+ * يضغط صورة data URL على خلفية بيضاء (الشفافية تتحوّل بيضاء لا سوداء) بصيغة WebP إن أمكن
+ * وإلّا JPEG، وفق سلّم المحاولات حتى ≤ الحجم المستهدف. يعيد الأصل كما هو إن فشل الضغط
  * أو كان الأصل أصغر من الناتج (صور مضغوطة جيداً أصلاً).
  */
 export async function compressImageDataUrl(
@@ -111,7 +158,7 @@ export async function compressImageDataUrl(
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
-      best = canvas.toDataURL("image/jpeg", step.quality);
+      best = encodeSmallest(canvas, step.quality);
       if (dataUrlSizeKB(best) <= COMPRESSION_TARGET_KB) break;
     }
     if (!best) return { dataUrl: original, sizeKB: originalKB };
