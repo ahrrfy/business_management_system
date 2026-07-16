@@ -22,8 +22,10 @@ import { Router } from "express";
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { productImages, products, storeBanners } from "../drizzle/schema";
+import { getSessionContext } from "./auth/session";
 import { getDb } from "./db";
 import { logger } from "./logger";
+import { resolveKioskDevice } from "./services/kioskDeviceService";
 import type { Request, Response } from "express";
 
 /** سنة كاملة — آمنة لأن الرابط يحمل بصمة المحتوى (تغيّر المحتوى ⇒ تغيّر الرابط). */
@@ -78,24 +80,72 @@ export function productImageUrl(imageId: number, dataUrl: string): string {
 }
 
 /**
+ * رابط صورة منتجٍ **لكشك المعرض** — مسارٌ منفصل عن العلنيّ عمداً، لا ترفاً:
+ *
+ * بنر الكشك يعرض `isActive && !isService` **بلا** `showInStore` (قرار المالك ٨/٧: الكشك يعرض
+ * الكتالوج كاملاً) ⇒ لو خُدِمت صوره من النقطة العلنية للزم **تليين بوّابتها** حتى تشمل ما أخفاه
+ * المالك عن المتجر، فيكفي تخمين عددٍ صحيح لسحبه. الفصل يُبقي العلنيّ **علنياً بحقّ** ويجعل
+ * **الرابط نفسه يُعلن جمهوره** ⇒ لا لبس في قابلية تخبئته: هذا `private` وذاك `public`.
+ */
+export function kioskProductImageUrl(imageId: number, dataUrl: string): string {
+  return `/api/img/kiosk-product/${imageId}?v=${imageHash(dataUrl)}`;
+}
+
+/**
  * دلالة الكاش المشتركة لكل الصور — **موضعٌ واحد عمداً**: البنر والمنتج (وأيّ صورة لاحقة) يجب
  * أن يتشاركوا `immutable`+`ETag`+`nosniff` بالضبط. تكرارها لكل نقطة يجعل انحراف إحداها مسألة وقت.
+ *
+ * **`visibility` ليس تفصيلاً تجميلياً:** ردٌّ يعتمد على **المصادقة** لا يجوز أن يحمل `public`
+ * (تخزّنه ذاكرةٌ وسيطة مشتركة — proxy/CDN — فتقدّمه لمجهولٍ لاحقاً). `private` تُبقي كاش
+ * المتصفّح — وهو كلّ ما نحتاجه — وتمنع المشتركة. لذلك تُمرَّر صراحةً لا افتراضاً.
+ *
+ * **ولا تكفي `private` وحدها (مراجعة Codex، P1):** كاش المتصفّح مُفتَّحٌ بالـ**رابط** لا بالجلسة،
+ * و`immutable` تعني «لا تُعِد التحقّق **سنةً**» ⇒ بعد خروج الجهاز أو إبطال كوكيه، طلبٌ لاحقٌ
+ * لنفس الرابط من نفس المتصفّح يُخدَم **من الكاش بلا مرورٍ بـ`kioskViewerAllowed`** — فتُعمَّر
+ * صلاحيةُ الرؤية بعد انتهاء الجلسة. `Vary: Cookie` يجعل مفتاح الكاش = (الرابط + الكوكي) ⇒
+ * تغيّر/زوال الكوكي = مفتاحٌ آخر = **إخفاقُ كاشٍ ⇒ شبكة ⇒ ٤٠١**. والفائدة تبقى: كوكي الجهاز
+ * ثابتٌ طوال عمله فتُصاب الصور من الكاش كما هو مقصود.
+ *
+ * ⚠️ **للعلنيّ فقط `public` بلا `Vary`:** إضافتها هناك تُجزّئ الكاش المشترك بلا مقابل (الردّ لا
+ * يعتمد على الكوكي أصلاً) فتُضعف مكسب #212/#213.
  */
-function sendImage(req: Request, res: Response, dataUrl: string | null): Response {
+function sendImage(req: Request, res: Response, dataUrl: string | null, visibility: "public" | "private"): Response {
   const img = decodeDataUrl(dataUrl);
   if (!img) return res.status(404).end();
 
   const etag = `"${imageHash(dataUrl!)}"`;
+
+  // ترويسات التخبئة **قبل** فحص 304: الردّ ٣٠٤ يجب أن يحمل ما يحمله ٢٠٠ منها (خصوصاً `Vary`)
+  // وإلّا حدّث الكاش مُدخَله من ردٍّ لا يصف تجزئته. (RFC 7232 §4.1)
+  res.setHeader("Cache-Control", `${visibility}, max-age=${ONE_YEAR}, immutable`);
+  if (visibility === "private") res.setHeader("Vary", "Cookie");
+  res.setHeader("ETag", etag);
+
   // إعادة تحقّق رخيصة للمتصفّحات التي تتجاهل immutable (أو بعد انتهاء السنة).
   if (req.headers["if-none-match"] === etag) return res.status(304).end();
 
   res.setHeader("Content-Type", img.mime);
-  res.setHeader("Cache-Control", `public, max-age=${ONE_YEAR}, immutable`);
-  res.setHeader("ETag", etag);
   // الصورة ليست مستنداً: نمنع أيّ محاولة تفسيرٍ كـHTML مهما كان المحتوى.
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Content-Length", String(img.bytes.length));
   return res.end(img.bytes);
+}
+
+/**
+ * هل للطالب حقّ رؤية كتالوج الكشك؟ **نفس شرط `kioskRead` في kioskRouter حرفياً**: مستخدم نظام
+ * مسجَّل **أو** كوكي جهاز كشك. كلا الدالّتين تقرأ `req.headers.cookie` بنفسها ⇒ تُستعمَلان هنا
+ * بلا وسيط إضافي، ولا نُعيد تنفيذ منطق المصادقة (تكراره = انحرافه لاحقاً).
+ *
+ * الكوكي تُرسَل تلقائياً مع طلب `<img>` لأنه **نفس الأصل** ⇒ لا يلزم تعديل الواجهة.
+ */
+async function kioskViewerAllowed(req: Request): Promise<boolean> {
+  try {
+    const { user } = await getSessionContext(req);
+    if (user) return true;
+  } catch {
+    // جلسة تالفة/منتهية ⇒ جرّب مسار الجهاز
+  }
+  return (await resolveKioskDevice(req)) != null;
 }
 
 /** يختار الـdata URL المطلوب من صفّ البنر حسب الفتحة (main-<i> أو mobile). */
@@ -135,7 +185,7 @@ export function imageRouter(): Router {
       )[0];
       if (!row) return res.status(404).end();
 
-      return sendImage(req, res, pickSlot(row, String(req.params.slot)));
+      return sendImage(req, res, pickSlot(row, String(req.params.slot)), "public");
     } catch (e) {
       logger.error({ err: e, bannerId: id }, "img: banner fetch failed");
       return res.status(500).end();
@@ -185,9 +235,44 @@ export function imageRouter(): Router {
       )[0];
       if (!row) return res.status(404).end();
 
-      return sendImage(req, res, row.url);
+      return sendImage(req, res, row.url, "public");
     } catch (e) {
       logger.error({ err: e, productImageId: id }, "img: product image fetch failed");
+      return res.status(500).end();
+    }
+  });
+
+  /**
+   * صورة منتجٍ لكشك المعرض — **خلف مصادقة** (مستخدم نظام أو كوكي جهاز)، بخلاف النقطة العلنية.
+   *
+   * البوّابة هنا = رؤية **الكشك** (`isActive && !isService`، بلا `showInStore`) لأن بنره يعرض
+   * الكتالوج كاملاً بقرار المالك. وهذا بالضبط سبب فصل المسار: توسيعُ العلنيّ ليشمله كان
+   * سيكشف صور ما أُخفي عن المتجر لأيّ مجهولٍ يخمّن عدداً.
+   *
+   * والردّ `private` لا `public`: يعتمد على المصادقة ⇒ لا تخزّنه ذاكرةٌ وسيطة مشتركة.
+   */
+  r.get("/kiosk-product/:id", async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).end();
+    const db = getDb();
+    if (!db) return res.status(503).end();
+
+    try {
+      if (!(await kioskViewerAllowed(req))) return res.status(401).end();
+
+      const row = (
+        await db
+          .select({ url: productImages.url })
+          .from(productImages)
+          .innerJoin(products, eq(products.id, productImages.productId))
+          .where(and(eq(productImages.id, id), eq(products.isActive, true), eq(products.isService, false)))
+          .limit(1)
+      )[0];
+      if (!row) return res.status(404).end();
+
+      return sendImage(req, res, row.url, "private");
+    } catch (e) {
+      logger.error({ err: e, productImageId: id }, "img: kiosk product image fetch failed");
       return res.status(500).end();
     }
   });
