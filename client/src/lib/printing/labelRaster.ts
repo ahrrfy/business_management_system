@@ -10,12 +10,19 @@
 import { EscPos, imageDataToRaster, type Raster } from "./escpos";
 import { code128Svg } from "./barcode";
 import { fmtC } from "./brand";
+import { wrapTwoLines } from "./labelItem";
 import { labelHeightDots, labelWidthDots, type LabelSize } from "./labelSize";
 
 export interface LabelRenderItem {
+  /** اسم العرض الكامل — يشمل اللون/القياس/الوحدة مدموجةً (انظر `labelName`). */
   name?: string;
   sku?: string;
+  /** السعر المطبوع فعلاً: سعر العرض الساري إن وُجد، وإلا سعر الفئة. */
   price?: string | number | null;
+  /** السعر قبل خصم العرض — يُطبع مشطوباً بجانب `price`. غيابه ⇒ لا عرض. */
+  basePrice?: string | number | null;
+  /** شارة فئة السعر («جملة»/«حكومي») — تُترك فارغةً للمفرد فلا تُطبع. */
+  tierLabel?: string;
   barcode: string;
 }
 
@@ -56,7 +63,7 @@ async function ensureFonts(): Promise<void> {
 
 /**
  * يرسم ملصقاً واحداً على Canvas بمقاس الملصق (نقاطاً). يعيد اللوحة أو null خارج المتصفّح.
- * التخطيط عمودياً: [اسم اختياري] ← [قضبان Code128] ← [أرقام الباركود] ← [SKU يمين | سعر يسار].
+ * التخطيط عمودياً: [اسم اختياري حتى سطرين] ← [قضبان Code128] ← [أرقام الباركود] ← [SKU+فئة يمين | سعر يسار].
  */
 export async function labelToCanvas(
   item: LabelRenderItem,
@@ -82,23 +89,31 @@ export async function labelToCanvas(
   ctx.textBaseline = "alphabetic";
 
   const showName = opts.showName !== false && !!item.name;
-  const priceText = opts.showPrice !== false && item.price != null && item.price !== "" ? fmtC(item.price) : "";
+  const showPrice = opts.showPrice !== false;
+  const priceText = showPrice && item.price != null && item.price !== "" ? fmtC(item.price) : "";
+  const baseText = showPrice && item.basePrice != null && item.basePrice !== "" ? fmtC(item.basePrice) : "";
   const skuText = item.sku ?? "";
-  const hasBottom = !!skuText || !!priceText;
+  const tierText = item.tierLabel ?? "";
+  const hasBottom = !!skuText || !!priceText || !!tierText;
 
   let y = PAD;
 
-  // ───── ١) اسم المنتج (اختياري، سطر واحد بقصّ …) ─────
+  // ───── ١) اسم المنتج (اختياري، حتى سطرين ثم قصّ …) ─────
+  // يلتفّ سطرين مطابقةً للتصميم المتّجه (`labelDesign` بـ`-webkit-line-clamp:2`) وللمعاينة الحيّة —
+  // §٥: تصميم واحد على كل النواقل. القصّ سطرٍ واحد هنا كان يبتر الاسم على الطابعة الحرارية بينما
+  // تُظهره المعاينة كاملاً بسطرين (خرق وعد «ما تراه هو ما يُطبع» — أمسكته المراجعة العدائية).
   const nameFs = Math.min(18, Math.max(12, Math.round(H * 0.09)));
   if (showName) {
     ctx.font = `700 ${nameFs}px Cairo, sans-serif`;
     ctx.textAlign = "center";
-    let label = String(item.name);
     const maxW = W - PAD * 2;
-    while (label.length > 2 && ctx.measureText(label).width > maxW) label = label.slice(0, -2) + "…";
-    y += nameFs;
-    ctx.fillText(label, W / 2, y);
-    y += 4;
+    const lines = wrapTwoLines(String(item.name), maxW, (s) => ctx.measureText(s).width);
+    for (const line of lines) {
+      y += nameFs;
+      ctx.fillText(line, W / 2, y);
+      y += 2;
+    }
+    y += 2;
   }
 
   // ───── ٣) صفّ سفليّ (SKU + سعر) — نحجز ارتفاعه أولاً ─────
@@ -140,27 +155,61 @@ export async function labelToCanvas(
   }
 
   // ───── الصفّ السفليّ فعلياً ─────
+  // مطابقٌ لتخطيط `labelDesign.ts` (§٥ تصميم واحد على كل النواقل): مجموعتان —
+  // [السعر + السعر القديم مشطوباً] يساراً | [شارة الفئة + الرمز] يميناً.
   // السعر هو الحقل الحرج (يُبقى كاملاً)؛ يُقصّ SKU بـ«…» ليلائم ما تبقّى ⇒ لا تداخل على الملصقات الضيّقة.
   if (hasBottom) {
     const baseY = H - PAD;
     const gap = 8;
-    ctx.font = `700 ${bottomFs}px Cairo, sans-serif`;
-    const priceW = priceText ? ctx.measureText(priceText).width : 0;
+    const smallFs = Math.max(9, Math.round(bottomFs * 0.62));
+
+    // ① السعر (يسار) ثم السعر القديم مشطوباً على يمينه — يرى الزبون قيمة الخصم.
+    let priceGroupW = 0;
+    if (priceText) {
+      ctx.font = `700 ${bottomFs}px Cairo, sans-serif`;
+      ctx.textAlign = "left";
+      ctx.fillText(priceText, PAD, baseY);
+      priceGroupW = ctx.measureText(priceText).width;
+    }
+    if (baseText) {
+      ctx.font = `600 ${smallFs}px Cairo, sans-serif`;
+      ctx.textAlign = "left";
+      const x = PAD + priceGroupW + (priceText ? 4 : 0);
+      const w = ctx.measureText(baseText).width;
+      ctx.fillText(baseText, x, baseY);
+      // شطبٌ سميك (٢ نقطة) — شعرة `line-through` الافتراضية تختفي على 203dpi الحراري.
+      ctx.fillRect(x, Math.round(baseY - smallFs * 0.3), w, 2);
+      priceGroupW = x - PAD + w;
+    }
+
+    // ② الرمز (أقصى اليمين) ثم شارة الفئة على يساره — نحجز عرض الشارة قبل قصّ الرمز.
+    const tierW = tierText
+      ? (ctx.font = `800 ${smallFs}px Cairo, sans-serif`, ctx.measureText(tierText).width + 6)
+      : 0;
+    let rightCursor = W - PAD;
     if (skuText) {
       ctx.font = `600 ${bottomFs}px Cairo, sans-serif`;
-      const skuMaxW = W - PAD * 2 - priceW - (priceText ? gap : 0);
+      const skuMaxW = W - PAD * 2 - priceGroupW - tierW - gap;
       let sku = skuText;
       if (ctx.measureText(sku).width > skuMaxW) {
         while (sku.length > 1 && ctx.measureText(sku + "…").width > skuMaxW) sku = sku.slice(0, -1);
         sku = sku + "…";
       }
       ctx.textAlign = "right";
-      ctx.fillText(sku, W - PAD, baseY);
+      ctx.fillText(sku, rightCursor, baseY);
+      rightCursor -= ctx.measureText(sku).width + 4;
     }
-    if (priceText) {
-      ctx.font = `700 ${bottomFs}px Cairo, sans-serif`;
+    if (tierText) {
+      // شارة مطموسة (أسود صافٍ + نصّ أبيض): عتبة `imageDataToRaster` هي lum<128 ⇒ الأسود
+      // يُطبع والأبيض يُترك ⇒ تخرج الشارة معكوسةً كما في التصميم المتّجه، بلا إطارٍ رفيع يضيع.
+      const bx = rightCursor - tierW;
+      ctx.fillStyle = "#000";
+      ctx.fillRect(bx, baseY - smallFs - 1, tierW, smallFs + 4);
+      ctx.fillStyle = "#fff";
+      ctx.font = `800 ${smallFs}px Cairo, sans-serif`;
       ctx.textAlign = "left";
-      ctx.fillText(priceText, PAD, baseY);
+      ctx.fillText(tierText, bx + 3, baseY);
+      ctx.fillStyle = "#000";
     }
   }
 

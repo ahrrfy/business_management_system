@@ -2,9 +2,9 @@ import { z } from "zod";
 import { asc } from "drizzle-orm";
 import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
+import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listByProductIds, listByUnitIds, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
-import { addUnitBarcodeAlias, listUnitBarcodes, removeUnitBarcodeAlias, resolveProductUnitId } from "../services/catalog/barcodeAliases";
+import { addUnitBarcodeAlias, listUnitBarcodes, listUnitBarcodesMany, removeUnitBarcodeAlias, resolveProductUnitId } from "../services/catalog/barcodeAliases";
 import {
   createCategory,
   deleteCategory,
@@ -99,6 +99,29 @@ export const catalogRouter = router({
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
     .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
     .query(({ input, ctx }) => listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined })),
+
+  // شاشة الملصقات (١٦/٧): إعادة تسعير قائمة الطباعة عند تبديل فئة السعر — استعلامٌ واحد
+  // على نفس خطّ الكاشير (فئة/تعاقديّ/بكج/عروض) ⇒ سعر الملصق = سعر الكاشير دائماً.
+  byUnitIds: productsReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        tier,
+        productUnitIds: z.array(z.number().int().positive()).max(500),
+      })
+    )
+    .query(({ input, ctx }) => listByUnitIds(input.productUnitIds, scopeBranch(ctx, input.branchId), input.tier)),
+
+  // شاشة الملصقات: «أضِف كلّ ألوان/وحدات المنتج» — كلّ صفوف (متغيّر × وحدة) لمنتجٍ واحد.
+  byProductIds: productsReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        tier,
+        productIds: z.array(z.number().int().positive()).max(50),
+      })
+    )
+    .query(({ input, ctx }) => listByProductIds(input.productIds, scopeBranch(ctx, input.branchId), input.tier)),
 
   // قائمة إدارة المنتجات: LEFT JOIN يُظهر حتى المنتجات الناقصة (بلا متغيّرات/وحدات) +
   // تقسيم صفحات خادمي. protectedProcedure لأن /products متاحة لكل الأدوار والمخرَج بلا تكلفة.
@@ -356,6 +379,11 @@ export const catalogRouter = router({
   listUnitBarcodes: productsReadProcedure
     .input(z.object({ productUnitId: z.number().int().positive() }))
     .query(({ input }) => listUnitBarcodes(input.productUnitId)),
+
+  /** بدائل عدّة وحدات دفعةً واحدة — منتقي «أيّ باركود يُطبع؟» في شاشة الملصقات (بلا N+1). */
+  listUnitBarcodesMany: productsReadProcedure
+    .input(z.object({ productUnitIds: z.array(z.number().int().positive()).max(500) }))
+    .query(({ input }) => listUnitBarcodesMany(input.productUnitIds)),
 
   /** يحلّ (variantId + unitName) إلى productUnitId — يُستعمَل من الواجهة لفتح شاشة البدائل. */
   resolveProductUnitId: productsReadProcedure

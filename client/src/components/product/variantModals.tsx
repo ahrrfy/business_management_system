@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { printLabel, type LabelRenderItem } from "@/lib/printing/print";
+import { labelName } from "@/lib/printing/labelItem";
 import {
   isValidEan13,
   onlyDigits,
@@ -198,7 +199,13 @@ export function LabelPrintModal({
   function doPrint() {
     const items: LabelRenderItem[] = labels.flatMap((l) => {
       const n = parseInt(l.qty, 10) || 0;
-      const fullName = [baseName, l.variant.color, l.variant.size].filter(Boolean).join(" ") + ` — ${l.unit.name || "وحدة"}`;
+      // نفس دالّة صفحة الملصقات — مصدر واحد لاسم الملصق فلا يتفرّق الموضعان مجدّداً.
+      const fullName = labelName({
+        productName: baseName,
+        color: l.variant.color,
+        size: l.variant.size,
+        unitName: l.unit.name || "وحدة",
+      });
       return Array.from({ length: n }, () => ({
         name: fullName,
         sku: l.variant.sku,

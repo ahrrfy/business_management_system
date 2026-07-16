@@ -222,6 +222,36 @@ export async function listUnitBarcodes(productUnitId: number) {
   };
 }
 
+/**
+ * البدائل لعدّة وحداتٍ دفعةً واحدة (استعلامٌ واحد) — تُغذّي منتقي «أيّ باركود يُطبع؟» في شاشة
+ * الملصقات. الفتح صفّاً صفّاً عبر `listUnitBarcodes` كان سيصير N+1 على قائمة طباعةٍ طويلة،
+ * وإخفاء المنتقي بلا معرفةٍ مسبقة كان سيُخفي البدائل أصلاً. الوحدات بلا بدائل تغيب عن الخريطة
+ * ⇒ الواجهة لا تعرض منتقياً حيث لا خيار (لا زرٌّ يقول «لا بدائل» على كلّ صفّ).
+ */
+export async function listUnitBarcodesMany(
+  productUnitIds: number[],
+): Promise<Record<number, Array<{ id: number; barcode: string; note: string | null }>>> {
+  const db = getDb();
+  const ids = Array.from(new Set(productUnitIds.filter((n) => Number.isInteger(n) && n > 0)));
+  if (!db || !ids.length) return {};
+  const rows = await db
+    .select({
+      id: productUnitBarcodes.id,
+      productUnitId: productUnitBarcodes.productUnitId,
+      barcode: productUnitBarcodes.barcode,
+      note: productUnitBarcodes.note,
+    })
+    .from(productUnitBarcodes)
+    .where(inArray(productUnitBarcodes.productUnitId, ids))
+    .orderBy(productUnitBarcodes.createdAt);
+  const out: Record<number, Array<{ id: number; barcode: string; note: string | null }>> = {};
+  for (const r of rows) {
+    const key = Number(r.productUnitId);
+    (out[key] ??= []).push({ id: Number(r.id), barcode: r.barcode, note: r.note });
+  }
+  return out;
+}
+
 /** يضيف باركوداً بديلاً — يفحص التفرّد العالميّ قبل الإدراج. */
 export async function addUnitBarcodeAlias(
   productUnitId: number,
