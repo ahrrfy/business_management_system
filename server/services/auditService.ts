@@ -68,6 +68,21 @@ function redactDeep(value: unknown, depth: number, ancestors: Set<object>): unkn
 
   ancestors.add(value);
   try {
+    /**
+     * كائنٌ يعرف كيف يُسلسِل نفسه (`Date`, `Decimal`, …) ⇒ خُذ تمثيله ثم عقّمه.
+     *
+     * ⚠️ **انحدارٌ أمسكته مراجعة Codex:** المسار العامّ أدناه يبني الكائن من `Object.entries`،
+     * و`Object.entries(new Date())` = **`[]`** ⇒ كلّ `Date` كانت ستُسجَّل `{}`. أصابَ ذلك
+     * أحداثاً قائمة فعلاً: `user.revokeSessions` (`revokedAt`) و`stocktake.firstSign`
+     * (`firstSignAt`) — يفقدان تاريخهما بصمت. وهذا `toJSON` هو ما كان drizzle سيستدعيه لولا
+     * أنّنا سبقناه بالتفكيك.
+     *
+     * (لو أعاد `toJSON` الكائن نفسه — حالة مَرَضيّة — أمسكه فحصُ الأجداد أعلاه لأنّنا أضفناه قبله.)
+     */
+    const serializable = value as { toJSON?: () => unknown };
+    if (typeof serializable.toJSON === "function") {
+      return redactDeep(serializable.toJSON(), depth + 1, ancestors);
+    }
     if (Array.isArray(value)) return value.map((v) => redactDeep(v, depth + 1, ancestors));
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = redactDeep(v, depth + 1, ancestors);
@@ -88,8 +103,14 @@ export function redactAuditValue(value: unknown): unknown {
   } catch {
     return { _unserializable: true };
   }
-  if (serialized && serialized.length > MAX_AUDIT_VALUE_BYTES) {
-    return { _truncated: true, _originalBytes: serialized.length, _preview: serialized.slice(0, 512) };
+  // ⚠️ **بالبايتات لا بالأحرف** (مراجعة Codex): `String.length` يعدّ وحدات UTF-16، و`LENGTH()`
+  // في MySQL تعدّ بايتات UTF-8. والعربية **حرفان لكل حرف** ⇒ نصٌّ من ٥٠٠٠ حرف = ١٠٠٠٠ بايت.
+  // بالعدّ الحرفيّ كان صفٌّ عربيّ يمرّ الحارس (٨٠٠٠ حرف < ٨١٩٢) ثم تراه SQL ١٦٠٠٠ بايت:
+  // فيلتقطه سكربت التطهير ويعجز عن تصغيره (يقيس بالأحرف أيضاً) فيخرج بفشلٍ لا يتقارب أبداً —
+  // في نظامٍ عربيّ بالكامل. الوحدة الآن واحدة على الطرفين.
+  const bytes = serialized ? Buffer.byteLength(serialized, "utf8") : 0;
+  if (bytes > MAX_AUDIT_VALUE_BYTES) {
+    return { _truncated: true, _originalBytes: bytes, _preview: serialized!.slice(0, 512) };
   }
   return redacted;
 }

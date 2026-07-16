@@ -21,7 +21,8 @@ import mysql from "mysql2/promise";
 import "dotenv/config";
 
 const APPLY = process.argv.includes("--apply");
-const THRESHOLD = 8 * 1024; // نفس MAX_AUDIT_VALUE_BYTES
+const THRESHOLD = 8 * 1024; // بايتات — نفس MAX_AUDIT_VALUE_BYTES وبنفس وحدة `LENGTH()` في SQL
+const BATCH = 25; // صفوف لكل دفعة: صفٌّ مسموم قد يبلغ ميغابايتات ⇒ لا نُحمّلها كلّها معاً
 const DATA_URL_RE = /^data:[a-z0-9.+/-]+;base64,/i;
 const MAX_STR = 1024;
 
@@ -39,6 +40,8 @@ function redactDeep(value, depth = 0, ancestors = new Set()) {
   if (depth >= 32) return "<تداخلٌ مفرط>";
   ancestors.add(value);
   try {
+    // كائنٌ يُسلسِل نفسه (Date…) ⇒ خُذ تمثيله؛ وإلّا فرّغه Object.entries إلى {} — طابِق auditService.
+    if (typeof value.toJSON === "function") return redactDeep(value.toJSON(), depth + 1, ancestors);
     if (Array.isArray(value)) return value.map((v) => redactDeep(v, depth + 1, ancestors));
     const out = {};
     for (const [k, v] of Object.entries(value)) out[k] = redactDeep(v, depth + 1, ancestors);
@@ -52,35 +55,55 @@ function redactValue(value) {
   if (value == null) return null;
   const redacted = redactDeep(value, 0, new Set());
   const s = JSON.stringify(redacted);
-  if (s && s.length > THRESHOLD) return { _truncated: true, _originalBytes: s.length, _preview: s.slice(0, 512) };
+  // بالبايتات لا بالأحرف — نفس وحدة `LENGTH()` في SQL (العربية حرفان لكل حرف).
+  if (s && Buffer.byteLength(s, "utf8") > THRESHOLD) {
+    return { _truncated: true, _originalBytes: Buffer.byteLength(s, "utf8"), _preview: s.slice(0, 512) };
+  }
   return redacted;
 }
 
+const mb = (n) => (n / 1048576).toFixed(2);
+
 const main = async () => {
+  /**
+   * وضع تعدّد الشركات: كل شركة قاعدةٌ منفصلة تُوجَّه عبر `ensureTenantDb`، و`DATABASE_URL` وحده
+   * لا يمثّلها. التطهير الجزئيّ **أسوأ من عدمه**: يُبلغ «نظيف» بينما تبقى شاشة التدقيق مكسورة
+   * عند كل شركةٍ أخرى. نرفض بصوتٍ عالٍ بدل أن ننجح كذباً (الوضع معطَّل على النشر الحالي).
+   */
+  if (process.env.CONTROL_DATABASE_URL) {
+    console.error(
+      "⛔ وضع تعدّد الشركات مُفعَّل (CONTROL_DATABASE_URL).\n" +
+        "   هذا السكربت يُطهّر DATABASE_URL وحدها ⇒ ستبقى قواعد الشركات الأخرى مسمومة بصمت.\n" +
+        "   شغّله لكل شركة بـDATABASE_URL الخاصّ بها (نمط db:backup:all-companies)."
+    );
+    process.exit(2);
+  }
+
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL غير مضبوط");
   const c = await mysql.createConnection(url);
 
-  const [rows] = await c.query(
-    `SELECT id, action, LENGTH(oldValue) oldLen, LENGTH(newValue) newLen, oldValue, newValue
+  // المسح الأوّليّ يقرأ **الأطوال فقط** لا القيم: صفوفٌ بميغابايتات لا تُحمَّل في الذاكرة إطلاقاً.
+  const [meta] = await c.query(
+    `SELECT id, action, COALESCE(LENGTH(oldValue),0) oldLen, COALESCE(LENGTH(newValue),0) newLen
        FROM auditLogs
       WHERE LENGTH(oldValue) > ? OR LENGTH(newValue) > ?
       ORDER BY id DESC`,
     [THRESHOLD, THRESHOLD]
   );
 
-  if (!rows.length) {
-    console.log("✓ لا صفوف مسمومة (لا شيء يتجاوز 8 ك.ب). الجدول نظيف.");
+  if (!meta.length) {
+    console.log(`✓ لا صفوف مسمومة (لا شيء يتجاوز ${THRESHOLD / 1024} ك.ب). الجدول نظيف.`);
     await c.end();
     return;
   }
 
-  const totalBytes = rows.reduce((s, r) => s + (r.oldLen ?? 0) + (r.newLen ?? 0), 0);
-  console.log(`وُجد ${rows.length} صفّاً مسموماً — إجمالي ${(totalBytes / 1048576).toFixed(2)} م.ب`);
+  const totalBytes = meta.reduce((s, r) => s + r.oldLen + r.newLen, 0);
+  console.log(`وُجد ${meta.length} صفّاً مسموماً — إجمالي ${mb(totalBytes)} م.ب`);
   const byAction = {};
-  for (const r of rows) byAction[r.action] = (byAction[r.action] ?? 0) + 1;
+  for (const r of meta) byAction[r.action] = (byAction[r.action] ?? 0) + 1;
   for (const [a, n] of Object.entries(byAction).sort((x, y) => y[1] - x[1])) console.log(`  ${a}: ${n}`);
-  console.log(`  أكبر صفّ: ${(Math.max(...rows.map((r) => Math.max(r.oldLen ?? 0, r.newLen ?? 0))) / 1048576).toFixed(2)} م.ب`);
+  console.log(`  أكبر صفّ: ${mb(Math.max(...meta.map((r) => Math.max(r.oldLen, r.newLen))))} م.ب`);
 
   if (!APPLY) {
     console.log("\n(فحصٌ فقط — لم يُكتب شيء. أعد التشغيل بـ--apply للتطبيق.)");
@@ -88,25 +111,31 @@ const main = async () => {
     return;
   }
 
+  // دفعاتٌ محدودة بمعرّفاتٍ معروفة سلفاً: يمنع نفاد الذاكرة، ويضمن التقدّم حتى لو تعذّر
+  // تصغير صفٍّ ما (لا حلقة «أعِد المسح» التي قد لا تتقارب أبداً).
+  const ids = meta.map((r) => r.id);
   let done = 0;
   let after = 0;
-  for (const r of rows) {
-    // mysql2 يُعيد أعمدة JSON مُحلَّلة أصلاً؛ نتحمّل النصّ أيضاً احتياطاً.
-    const parse = (v) => (typeof v === "string" ? JSON.parse(v) : v);
-    const oldV = redactValue(parse(r.oldValue));
-    const newV = redactValue(parse(r.newValue));
-    const oldS = oldV == null ? null : JSON.stringify(oldV);
-    const newS = newV == null ? null : JSON.stringify(newV);
-    await c.query("UPDATE auditLogs SET oldValue = ?, newValue = ? WHERE id = ?", [oldS, newS, r.id]);
-    after += (oldS?.length ?? 0) + (newS?.length ?? 0);
-    done++;
+  for (let i = 0; i < ids.length; i += BATCH) {
+    const chunk = ids.slice(i, i + BATCH);
+    const [rows] = await c.query(`SELECT id, oldValue, newValue FROM auditLogs WHERE id IN (${chunk.map(() => "?").join(",")})`, chunk);
+    for (const r of rows) {
+      // mysql2 يُعيد أعمدة JSON مُحلَّلة أصلاً؛ نتحمّل النصّ أيضاً احتياطاً.
+      const parse = (v) => (typeof v === "string" ? JSON.parse(v) : v);
+      const oldS = r.oldValue == null ? null : JSON.stringify(redactValue(parse(r.oldValue)));
+      const newS = r.newValue == null ? null : JSON.stringify(redactValue(parse(r.newValue)));
+      await c.query("UPDATE auditLogs SET oldValue = ?, newValue = ? WHERE id = ?", [oldS, newS, r.id]);
+      after += Buffer.byteLength(oldS ?? "", "utf8") + Buffer.byteLength(newS ?? "", "utf8");
+      done++;
+    }
+    console.log(`  … ${Math.min(i + BATCH, ids.length)}/${ids.length}`);
   }
 
   const [[check]] = await c.query(
     "SELECT COUNT(*) n FROM auditLogs WHERE LENGTH(oldValue) > ? OR LENGTH(newValue) > ?",
     [THRESHOLD, THRESHOLD]
   );
-  console.log(`\n✓ طُهِّر ${done} صفّاً: ${(totalBytes / 1048576).toFixed(2)} م.ب ⇐ ${(after / 1024).toFixed(1)} ك.ب`);
+  console.log(`\n✓ طُهِّر ${done} صفّاً: ${mb(totalBytes)} م.ب ⇐ ${(after / 1024).toFixed(1)} ك.ب`);
   console.log(`✓ صفوفٌ ما زالت تتجاوز السقف: ${check.n} (يجب أن تكون صفراً)`);
   await c.end();
   if (check.n > 0) process.exitCode = 1;

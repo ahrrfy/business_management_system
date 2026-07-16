@@ -98,6 +98,36 @@ describe("redactAuditValue — الحارس المركزيّ (الكتابة)", 
     expect(out.a).toEqual({ tier: "RETAIL" });
     expect(out.b).toEqual({ tier: "RETAIL" }); // لا يُعلَّم «دائرياً» ظلماً
   });
+
+  /**
+   * 🛡️ انحدارٌ أمسكته مراجعة Codex: المسار العامّ يبني الكائن من `Object.entries`،
+   * و`Object.entries(new Date())` = **`[]`** ⇒ كلّ `Date` تصير `{}`. أصاب ذلك أحداثاً قائمة:
+   * `user.revokeSessions` (`revokedAt`) و`stocktake.firstSign` (`firstSignAt`) — تفقد تاريخها بصمت.
+   */
+  it("⭐ Date يُحفَظ تاريخاً (كان يصير {} — الحقل يفقد معناه بصمت)", () => {
+    const d = new Date("2026-07-16T20:00:00.000Z");
+    const out = redactAuditValue({ revokedAt: d, by: "admin" }) as Record<string, string>;
+    expect(out.revokedAt).toBe("2026-07-16T20:00:00.000Z");
+    expect(out.by).toBe("admin");
+  });
+
+  it("أيّ كائنٍ بـtoJSON يُحترَم تمثيله (Decimal وأمثاله)", () => {
+    const money = { toJSON: () => "5000.00" };
+    expect((redactAuditValue({ total: money }) as Record<string, string>).total).toBe("5000.00");
+  });
+
+  /**
+   * 🛡️ انحدارٌ أمسكته مراجعة Codex: السقف كان يعدّ **أحرف UTF-16** بينما `LENGTH()` في MySQL
+   * تعدّ **بايتات UTF-8**، والعربية حرفان لكل حرف ⇒ صفٌّ عربيّ يمرّ الحارس (٨٠٠٠ حرف < ٨١٩٢)
+   * ثم تراه SQL ١٦٠٠٠ بايت: يلتقطه سكربت التطهير ويعجز عن تصغيره فلا يتقارب أبداً.
+   */
+  it("⭐ السقف بالبايتات لا بالأحرف (نظامٌ عربيّ: ٢ بايت للحرف)", () => {
+    // ٦٠٠٠ حرف عربي = ٦٠٠٠ وحدة UTF-16 (تمرّ لو عددنا الأحرف) لكن ١٢٠٠٠ بايت (يجب أن تُقتطَع)
+    const arabic = Array.from({ length: 6 }, (_, i) => [`k${i}`, "ن".repeat(1000)]);
+    const out = redactAuditValue(Object.fromEntries(arabic)) as Record<string, unknown>;
+    expect(out._truncated).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(out), "utf8")).toBeLessThanOrEqual(8 * 1024);
+  });
 });
 
 describe("logAudit — الصفّ المكتوب فعلاً في القاعدة", () => {
