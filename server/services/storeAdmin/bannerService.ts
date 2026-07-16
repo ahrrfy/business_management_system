@@ -117,7 +117,11 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
     .limit(24);
   return rows.flatMap((r) => {
     const images = activeBannerImages(r.images, today);
-    const sources = images.length ? images : (r.imageUrl ? [{ url: r.imageUrl }] : []);
+    // A banner may intentionally be text-only; BannerFrame renders a gradient
+    // fallback when imageUrl is null, so do not drop active banners without an image.
+    const sources: Array<{ url: string | null }> = images.length
+      ? images
+      : [{ url: r.imageUrl ?? null }];
     return sources.map((image, imageIndex) => ({
     id: Number(r.id),
     title: r.title,
