@@ -117,7 +117,18 @@ export async function listActiveBanners(branchIdInput?: number): Promise<PublicB
     .limit(24);
   return rows.flatMap((r) => {
     const images = activeBannerImages(r.images, today);
-    const sources = images.length ? images : (r.imageUrl ? [{ url: r.imageUrl }] : []);
+    // ⚠️ انحدار #203: كان `sources = images.length ? images : (r.imageUrl ? [...] : [])` ⇒ بنرٌ
+    // بلا صور **وبلا** imageUrl يُنتج صفراً من الصفوف فيختفي من المتجر بصمت (كان قبلها يُعرض
+    // بعنوانه/زرّه). نفرّق بين حالتين مختلفتين جوهرياً:
+    //   • له صور مُهيّأة لكن لا فعّالة اليوم ⇒ **مُخفيّ بقرار الجدولة** (هذا هو معنى الجدولة).
+    //   • بلا صور مُهيّأة أصلاً ⇒ بنر أحادي/بلا صورة ⇒ صفٌّ واحد بـimageUrl (أو null) — سلوك
+    //     ما قبل #203 حرفياً. الواجهة تتعامل مع imageUrl=null أصلاً (النوع `string | null`).
+    const hasConfiguredImages = Array.isArray(r.images) && r.images.length > 0;
+    const sources: Array<{ url: string | null }> = images.length
+      ? images
+      : hasConfiguredImages
+        ? []
+        : [{ url: r.imageUrl ?? null }];
     return sources.map((image, imageIndex) => ({
     id: Number(r.id),
     title: r.title,

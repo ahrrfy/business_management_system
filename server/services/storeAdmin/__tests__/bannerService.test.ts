@@ -75,3 +75,67 @@ describe("listActiveBanners — إرجاع الموضع مع فلاتر الفع
     expect(list.find((b) => b.title === "فاصل فعّال")?.placement).toBe("INLINE");
   });
 });
+
+/**
+ * انحدار #203 (صور متعددة مجدولة): `listActiveBanners` صارت flatMap على مصادر الصور، وكان
+ * `sources = images.length ? images : (imageUrl ? [...] : [])` ⇒ بنرٌ بلا صور **وبلا** imageUrl
+ * يُنتج **صفراً** من الصفوف فيختفي من المتجر **بصمت** (كان يُعرض بعنوانه/زرّه). أسقط ذلك اختبار
+ * المواضع أعلاه وأحمر `main`. الاختبارات هنا تُثبّت التمييز صراحةً لئلّا يعود الخلل حين تُعدَّل
+ * بذرة اختبار المواضع (فتُخفي الحراسة ضمناً).
+ */
+describe("انحدار #203 — بنر بلا صورة لا يختفي، والجدولة تبقى عاملة", () => {
+  it("بلا صور وبلا imageUrl ⇒ صفٌّ واحد بـimageUrl=null (لا يختفي)", async () => {
+    await createBanner({ title: "بنر نصّي بلا صورة" }, 1);
+    const list = await listActiveBanners();
+    const hits = list.filter((b) => b.title === "بنر نصّي بلا صورة");
+    expect(hits).toHaveLength(1); // كان 0 ⇒ اختفاء صامت
+    expect(hits[0].imageUrl).toBeNull();
+  });
+
+  it("imageUrl وحده (النمط القديم) ⇒ صفٌّ واحد بصورته", async () => {
+    await createBanner({ title: "بنر أحادي", imageUrl: "/img/a.jpg" }, 1);
+    const hits = (await listActiveBanners()).filter((b) => b.title === "بنر أحادي");
+    expect(hits).toHaveLength(1);
+    expect(hits[0].imageUrl).toBe("/img/a.jpg");
+  });
+
+  it("صور متعددة فعّالة ⇒ صفٌّ لكل صورة بالترتيب (ميزة #203 سليمة)", async () => {
+    await createBanner(
+      {
+        title: "بنر متعدّد",
+        images: [
+          { url: "/img/2.jpg", sortOrder: 1 },
+          { url: "/img/1.jpg", sortOrder: 0 },
+        ],
+      },
+      1,
+    );
+    const hits = (await listActiveBanners()).filter((b) => b.title === "بنر متعدّد");
+    expect(hits.map((b) => b.imageUrl)).toEqual(["/img/1.jpg", "/img/2.jpg"]); // مرتّبة بـsortOrder
+    expect(hits.map((b) => b.imageIndex)).toEqual([0, 1]);
+  });
+
+  it("صور كلّها خارج النافذة ⇒ البنر مُخفيّ (الجدولة تعمل — لا يُعرض بلا صورة)", async () => {
+    await createBanner(
+      { title: "بنر مجدول لاحقاً", images: [{ url: "/img/soon.jpg", effectiveFrom: "2999-01-01" }] },
+      1,
+    );
+    const titles = (await listActiveBanners()).map((b) => b.title);
+    expect(titles).not.toContain("بنر مجدول لاحقاً");
+  });
+
+  it("صورة معطّلة داخل بنر فعّال تُستبعَد وحدها دون البنر", async () => {
+    await createBanner(
+      {
+        title: "بنر بصورتين إحداهما معطّلة",
+        images: [
+          { url: "/img/on.jpg", sortOrder: 0 },
+          { url: "/img/off.jpg", sortOrder: 1, isActive: false },
+        ],
+      },
+      1,
+    );
+    const hits = (await listActiveBanners()).filter((b) => b.title === "بنر بصورتين إحداهما معطّلة");
+    expect(hits.map((b) => b.imageUrl)).toEqual(["/img/on.jpg"]);
+  });
+});
