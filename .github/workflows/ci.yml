@@ -52,6 +52,12 @@ jobs:
         run: pnpm check
       - name: حارِس الإيموجي UI
         run: pnpm check:emoji
+      - name: حارِس المخطّطات المالية (z.string العارية)
+        run: pnpm check:money-schemas
+      - name: حارِس الفرع الافتراضي الصامت
+        run: pnpm check:branch
+      - name: حارِس الإجراءات اليتيمة (DoD)
+        run: pnpm check:orphans
       - name: الاختبارات
         run: pnpm test
       - name: بناء الإنتاج

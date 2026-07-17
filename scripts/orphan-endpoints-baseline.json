@@ -1,0 +1,21 @@
+{
+  "generatedNote": "يتامى قائمون مسموحون مؤقّتاً (تدقيق ١٧/٧) — قلّصها بحذف الميت أو وصله بواجهة. لا تُوسِّعها.",
+  "orphans": [
+    "auth.register",
+    "catalog.getForEdit",
+    "catalog.productImages",
+    "catalog.updateProduct",
+    "delivery.consignments",
+    "delivery.getParty",
+    "delivery.setPartyActive",
+    "delivery.updateParty",
+    "inventory.stockByBranch",
+    "inventory.transfer",
+    "priceWaves.unitHistory",
+    "sales.listPage",
+    "salesPromotions.activeToday",
+    "salesPromotions.getById",
+    "storefront.trackOrder",
+    "system.health"
+  ]
+}
