@@ -36,7 +36,6 @@ import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getAnomalyWatch } from "../services/reports/anomalyWatch";
 import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
-import Decimal from "decimal.js";
 import { money, toDbMoney } from "../services/money";
 import { adminProcedure, protectedProcedure, reportViewerProcedure, router } from "../trpc";
 
@@ -242,14 +241,13 @@ export const reportsRouter = router({
       if (input.statuses && input.statuses.length > 0) {
         conditions.push(inArray(invoices.status, input.statuses));
       }
-      // مؤشّر keyset: id < cursor (الترتيب desc(id) ⇒ الصفحة التالية أقدم).
-      // اخترنا keyset بدل offset لأن offset كبير على جدول الفواتير = مسح كامل ثم رمي،
-      // أما lt(id, cursor) فيستفيد من فهرس المفتاح الأساسي مباشرةً.
-      if (input.cursor !== undefined) {
-        conditions.push(lt(invoices.id, input.cursor));
-      }
-
-      const where = conditions.length > 0 ? and(...conditions) : undefined;
+      // فلتر الإجماليات = كامل النطاق (from/to/branch/source/status) بلا مؤشّر الصفحة.
+      const filterWhere = conditions.length > 0 ? and(...conditions) : undefined;
+      // مؤشّر keyset للصفوف فقط: id < cursor (الترتيب desc(id) ⇒ الصفحة التالية أقدم).
+      // keyset بدل offset: lt(id, cursor) يستفيد من فهرس المفتاح الأساسي مباشرةً.
+      const rowConditions =
+        input.cursor !== undefined ? [...conditions, lt(invoices.id, input.cursor)] : conditions;
+      const where = rowConditions.length > 0 ? and(...rowConditions) : undefined;
 
       const rows = await db
         .select({
@@ -271,20 +269,26 @@ export const reportsRouter = router({
         .orderBy(desc(invoices.id))
         .limit(input.limit);
 
-      // قاعدة §٥: لا parseFloat على المال — كله عبر decimal.js لتفادي انجراف 0.01 على آلاف الفواتير.
-      const totals = rows.reduce(
-        (acc, r) => {
-          const total = money(r.total ?? "0");
-          const paid = money(r.paidAmount ?? "0");
-          const unpaid = Decimal.max(total.minus(paid), 0);
-          acc.total = acc.total.plus(total);
-          acc.paid = acc.paid.plus(paid);
-          acc.unpaid = acc.unpaid.plus(unpaid);
-          acc.count += 1;
-          return acc;
-        },
-        { count: 0, total: new Decimal(0), paid: new Decimal(0), unpaid: new Decimal(0) },
-      );
+      // الإجماليات على كامل نطاق الفلتر لا الصفحة المجلوبة (تدقيق ١٧/٧، خطر #5): كانت تُحسب بـreduce
+      // على صفوف الصفحة (≤ limit) فتُعطي المحاسب إجماليات ناقصة تبدو نهائية لنطاق يتجاوز الحدّ. الآن
+      // SUM خادميّ على كل المطابق. قاعدة §٥: CAST AS CHAR ثم decimal.js — لا parseFloat على المال.
+      const totalsRow = (
+        await db
+          .select({
+            cnt: sql<number>`COUNT(*)`,
+            total: sql<string>`CAST(COALESCE(SUM(${invoices.total}), 0) AS CHAR)`,
+            paid: sql<string>`CAST(COALESCE(SUM(${invoices.paidAmount}), 0) AS CHAR)`,
+            unpaid: sql<string>`CAST(COALESCE(SUM(GREATEST(${invoices.total} - ${invoices.paidAmount}, 0)), 0) AS CHAR)`,
+          })
+          .from(invoices)
+          .where(filterWhere)
+      )[0] ?? { cnt: 0, total: "0", paid: "0", unpaid: "0" };
+      const totals = {
+        count: Number(totalsRow.cnt ?? 0),
+        total: money(totalsRow.total ?? "0"),
+        paid: money(totalsRow.paid ?? "0"),
+        unpaid: money(totalsRow.unpaid ?? "0"),
+      };
 
       // nextCursor = آخر id في الصفحة إن امتلأت ⇒ ربما بعدها المزيد.
       // أقل من limit ⇒ نهاية النتائج.

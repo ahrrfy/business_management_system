@@ -8,6 +8,7 @@ import { escLike } from "../lib/sqlLike";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { postEntry } from "./ledgerService";
+import { getActiveLock } from "./periodLockService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { shiftIdForCashTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
@@ -312,6 +313,20 @@ export async function cancelExpense(expenseId: number, actor: Actor) {
     // تلاعب «إنشاء مصروف ثم إلغاؤه» لإخفاء حركة نقد. الأدمن مستثنى (سلطة عليا للتصحيح الإداري).
     if (role !== "admin" && exp.createdBy != null && Number(exp.createdBy) === actor.userId) {
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز إلغاء مصروف أنشأته بنفسك — يلزم مدير آخر (فصل المهام)." });
+    }
+
+    // قفل الفترة (تدقيق ١٧/٧): الإلغاء يقلب الحالة إلى CANCELLED فيختفي المصروف من P&L لشهره (الفلتر
+    // ACTIVE بتاريخ expenseDate). لو كان المصروف مؤرَّخاً داخل فترة مُقفَلة تتغيّر أرقامها بأثر رجعي.
+    // نرفض ونطلب فتح الفترة أوّلاً. expenseDate عمود DATE (drizzle string / mysql2 Date وقت التشغيل).
+    const lock = await getActiveLock(tx);
+    if (lock) {
+      const expDay = exp.expenseDate ? new Date(exp.expenseDate).toISOString().slice(0, 10) : "";
+      if (expDay && expDay <= lock.cutoffDate) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `الفترة المالية مُقفَلة حتى ${lock.cutoffDate} — لا يمكن إلغاء مصروف مؤرَّخ داخلها. يلزم فتح الفترة أوّلاً (admin).`,
+        });
+      }
     }
 
     if (exp.shiftId) {

@@ -194,6 +194,9 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
         customerId: input.partyType === "CUSTOMER" ? (input.partyId ?? null) : null,
         supplierId: input.partyType === "SUPPLIER" ? (input.partyId ?? null) : null,
         amount,
+        // يُفرض قفل الفترة على تاريخ السند الفعلي لا تاريخ اليوم — سند بتاريخ رجعي داخل فترة مُقفَلة
+        // كان يمرّ لأن postEntry يأخذ new Date() افتراضاً (تدقيق ١٧/٧: قفل الفترة مخترَق عبر السندات).
+        entryDate: new Date(voucherDate),
       });
 
       if (input.partyType === "CUSTOMER" && input.partyId) {

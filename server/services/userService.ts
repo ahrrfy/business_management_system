@@ -357,6 +357,11 @@ export async function resetUserPassword(
       sessionsValidFrom: new Date(),
       mustChangePassword: mustChange,
       tempPasswordExpiresAt: expiresAt,
+      // فكّ قفل الحساب عند إعادة التعيين اليدوية من المدير (تدقيق ١٧/٧): إعادة التعيين تحقّق هوية أقوى
+      // من انتظار انقضاء القفل، وكان المستخدم المقفل يبقى مرفوضاً ١٥د حتى بكلمة المرور الجديدة الصحيحة.
+      failedLoginAttempts: 0,
+      lockedUntil: null,
+      lastFailedLoginAt: null,
     }).where(eq(users.id, userId));
     return { userId, success: true };
   });

@@ -59,7 +59,9 @@ export interface ProfitLossResult {
   previous?: PLSnapshot;
 }
 
-async function plSnapshot(from: string, to: string, branchId?: number): Promise<PLSnapshot> {
+// مُصدَّرة (تدقيق ١٧/٧): مصدر الحقيقة الوحيد لصيغة الربح — يستعملها الإقفال السنوي (yearEndService)
+// كي لا تنحرف أرقام الإقفال عن قائمة الدخل المعروضة للمالك.
+export async function plSnapshot(from: string, to: string, branchId?: number): Promise<PLSnapshot> {
   const db = getDb();
   const empty: PLSnapshot = {
     revenue: "0", cogs: "0", grossProfit: "0", grossMarginPct: "0.00",
