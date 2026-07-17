@@ -714,6 +714,12 @@ export default function POS() {
   function submitSale(approval?: { email: string; password: string }) {
     setSaleError(null);
     if (!shift || !cart.length) return;
+    // تدقيق ١٧/٧: «0» صريح في حقل المقبوض كان يُسجّل البيع مدفوعاً نقداً بالكامل (isCredit=false ⇒
+    // payAmount=total) بلا قبض فعليّ ⇒ عجز درج عند Z-report. ارفضه صراحةً بدل الإسقاط الصامت.
+    if (activeTab.payInput.trim() !== "" && D(activeTab.payInput).eq(0)) {
+      notify.err("أدخل المبلغ المقبوض، أو امسح الحقل للدفع النقدي الكامل. للبيع الآجل اختر عميلاً وأدخل المقدَّم.");
+      return;
+    }
     if (isCredit && activeTab.customerId == null) {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
       return;
@@ -864,7 +870,11 @@ export default function POS() {
   }
 
   // ── Main UI ───────────────────────────────────────────────────────────────
-  const canPay = cart.length > 0 && (activeTab.payInput === "" || paid >= total);
+  // تدقيق ١٧/٧: أتِح زرّ الدفع للبيع الآجل الجزئي عند اختيار عميل — كان معطَّلاً لأي دفعة أقل من الإجمالي
+  // فيستحيل إتمام الآجل الجزئي باللمس/الفأرة (F4 وحده كان يتجاوزه، وهو غائب على اللوحي).
+  const canPay =
+    cart.length > 0 &&
+    (activeTab.payInput === "" || paid >= total || (isCredit && activeTab.customerId != null));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden", background: C.bg, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif", color: C.fg }}>
