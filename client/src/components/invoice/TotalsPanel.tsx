@@ -21,6 +21,10 @@ export interface TotalsPanelProps {
   showOtherExpenses?: boolean;
   /** true = show the invoice-level tax toggle + rate field (e.g. SALE for customers needing a tax invoice). Default false to preserve existing screens. */
   showTaxToggle?: boolean;
+  /** false = hide the global-discount editor (backend doesn't persist it — e.g. purchase/return). Default true. */
+  showDiscount?: boolean;
+  /** false = hide the payment block (method + paid amount) — screens that persist payment elsewhere (purchase receive) or via a dedicated control (return settlement). Default true. */
+  showPayment?: boolean;
 }
 
 export function TotalsPanel({
@@ -30,6 +34,8 @@ export function TotalsPanel({
   showShipping = true,
   showOtherExpenses = true,
   showTaxToggle = false,
+  showDiscount = true,
+  showPayment = true,
 }: TotalsPanelProps) {
   const t = calcTotals(items, state);
   const currSym = state.currency === "USD" ? "$" : "د.ع";
@@ -58,14 +64,15 @@ export function TotalsPanel({
         </div>
 
         {/* Item discounts */}
-        {Number(t.totalDiscount) > 0 && (
+        {showDiscount && Number(t.totalDiscount) > 0 && (
           <div className={rowCls}>
             <span className={cn(labelCls, "text-rose-600")}>خصم المنتجات (−)</span>
             <span className={cn(valueCls, "text-rose-600")} dir="ltr">−{fmtNum(t.totalDiscount)}</span>
           </div>
         )}
 
-        {/* Global discount editor */}
+        {/* Global discount editor — يُخفى في شاشات لا تحفظه (شراء/مرتجع) فلا يظهر إجمالي مخالف للمحفوظ */}
+        {showDiscount && (
         <div className={cn(rowCls, "border-b border-dashed pb-2")}>
           <div className="flex items-center gap-2">
             <span className={labelCls}>خصم إجمالي</span>
@@ -97,6 +104,7 @@ export function TotalsPanel({
             <span className={cn(valueCls, "text-rose-600")} dir="ltr">−{fmtNum(t.globalDiscAmt)}</span>
           )}
         </div>
+        )}
 
         {/* Invoice-level tax toggle (optional — applied on (subtotal − discounts) عند الحاجة) */}
         {showTaxToggle && (
@@ -178,7 +186,8 @@ export function TotalsPanel({
         </div>
       </div>
 
-      {/* Payment section */}
+      {/* Payment section — يُخفى في شاشات تحفظ الدفع في مكان آخر (استلام الشراء) أو عبر مفتاح مخصّص (تسوية المرتجع) */}
+      {showPayment && (
       <div className="border-t-2 px-4 py-3">
         <div className="mb-2 flex items-center gap-1.5 text-xs font-extrabold">
           <CreditCard aria-hidden className="size-4" /> الدفع
@@ -259,6 +268,7 @@ export function TotalsPanel({
           </>
         )}
       </div>
+      )}
     </section>
   );
 }

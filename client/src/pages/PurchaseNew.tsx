@@ -272,7 +272,17 @@ export default function PurchaseNew() {
         </div>
 
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          <TotalsPanel items={state.items} state={state} dispatch={dispatch} />
+          {/* تدقيق ١٧/٧ (خطر #2): إخفاء الحقول التي لا يحفظها purchases.createOrder (شحن/مصاريف/خصم/دفع)
+              كي لا يظهر للمستخدم إجماليّ يختلف عن المحفوظ ولا دفعة تُهمَل بصمت. الدفع يتمّ عند الاستلام. */}
+          <TotalsPanel
+            items={state.items}
+            state={state}
+            dispatch={dispatch}
+            showShipping={false}
+            showOtherExpenses={false}
+            showDiscount={false}
+            showPayment={false}
+          />
           <ActionButtons
             invoiceType={INVOICE_TYPE}
             items={state.items}

@@ -410,7 +410,17 @@ export default function PurchaseReturnNew() {
           />
         </div>
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          <TotalsPanel items={state.items} state={state} dispatch={dispatch} />
+          {/* تدقيق ١٧/٧ (خطر #2): إخفاء الحقول غير المحفوظة في مرتجع الشراء (شحن/مصاريف/خصم/دفع) —
+              التسوية عبر مفتاح «تسوية المرتجع» أدناه لا قسم الدفع العام. */}
+          <TotalsPanel
+            items={state.items}
+            state={state}
+            dispatch={dispatch}
+            showShipping={false}
+            showOtherExpenses={false}
+            showDiscount={false}
+            showPayment={false}
+          />
 
           {/* تسوية المرتجع الصريحة (تدقيق ١٧/٧): الافتراض «خصم من ذمة المورد» ⇒ لا قبض نقديّ وهميّ. */}
           <div className="rounded-md border px-3 py-2 text-xs">
