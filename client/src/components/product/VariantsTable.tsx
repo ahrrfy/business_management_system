@@ -17,7 +17,7 @@ import {
   type ClientUnit,
   type ClientVariant,
 } from "@/lib/variants";
-import { ColorDot, Field, ImageSlot, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
+import { ColorPickerDot, Field, ImageSlot, MarginBadge, MiniBarcode, ScanButton } from "./variantBits";
 import { UnitBarcodeAliases } from "./UnitBarcodeAliases";
 import { ChevronLeft, X } from "lucide-react";
 
@@ -187,7 +187,7 @@ function VariantRow({
         <td className="px-3 py-2 text-center text-xs text-muted-foreground tabular-nums">{toArabicDigits(idx + 1)}</td>
         <td className="px-3 py-2">
           <div className="flex items-center gap-2">
-            <ColorDot name={v.color} />
+            <ColorPickerDot name={v.color} hex={v.colorHex} onChange={(colorHex) => patch({ colorHex })} />
             <span className="text-sm font-medium whitespace-nowrap">{v.color || "—"}</span>
           </div>
         </td>

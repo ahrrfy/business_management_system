@@ -174,6 +174,7 @@ export default function ProductNew() {
     return {
       id: `${color}|${size}|${Math.random().toString(36).slice(2, 8)}`,
       color,
+      colorHex: null, // تلقائيّ: يُستنتَج من اسم اللون حتى يختار المستخدم لوناً صريحاً
       size,
       sku: deriveSku(baseSku, color, size),
       unitBarcodes: {},
@@ -318,6 +319,7 @@ export default function ProductNew() {
         return {
           sku: v.sku.trim(),
           color: v.color.trim() || undefined,
+          colorHex: v.colorHex || undefined,
           size: v.size.trim() || undefined,
           costPrice: overrideCost,
           minStock: clampInt(v.minStock),
@@ -549,7 +551,7 @@ export default function ProductNew() {
                 {variants.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5 pt-1 border-t">
                     <span className="text-[11px] text-muted-foreground">{toArabicDigits(variants.length)} متغيّر:</span>
-                    {variants.slice(0, 10).map((v) => <ColorDot key={v.id} name={v.color} />)}
+                    {variants.slice(0, 10).map((v) => <ColorDot key={v.id} name={v.color} hex={v.colorHex} />)}
                   </div>
                 )}
               </div>

@@ -180,6 +180,27 @@ function CategoryTiles({ cats, onPick }: { cats: { id: number; name: string }[];
   );
 }
 
+/** سواتش ألوان المنتج المتاحة (اسم + لون حقيقي «#RRGGBB») — صفّ نقاط صغيرة على البطاقة/التفاصيل. */
+function ColorSwatches({ colors, max = 6, size = 12 }: { colors?: { name: string; hex: string }[]; max?: number; size?: number }) {
+  if (!colors || colors.length === 0) return null;
+  const shown = colors.slice(0, max);
+  const extra = colors.length - shown.length;
+  return (
+    <div className="flex items-center gap-1" title={`ألوان المنتج: ${colors.map((c) => c.name).join("، ")}`}>
+      {shown.map((c) => (
+        <span
+          key={c.hex}
+          className="inline-block shrink-0 rounded-full ring-1 ring-black/20 dark:ring-white/25"
+          style={{ width: size, height: size, background: c.hex }}
+          title={c.name}
+          aria-label={c.name}
+        />
+      ))}
+      {extra > 0 && <span className="text-[9px] font-bold text-slate-400">+{extra}</span>}
+    </div>
+  );
+}
+
 /** بطاقة منتج مُصغَّرة لصفوف العرض الأفقية («عروض حصرية»، «الأكثر مبيعاً»). */
 type RowProduct = {
   productUnitId: number;
@@ -921,6 +942,7 @@ export default function Storefront() {
                       </span>
                       {onSale && <span className="text-[11px] text-slate-400 line-through">{money(p.price)}</span>}
                     </div>
+                    <ColorSwatches colors={p.colors} />
                     <div className="flex min-h-[0.9rem] flex-wrap items-center gap-x-2 text-[10px] leading-none">
                       {p.stockLeft != null && <span className="font-bold text-amber-600 dark:text-amber-400">بقي {p.stockLeft} فقط</span>}
                       {p.soldCount >= 10 ? (
@@ -1036,6 +1058,12 @@ export default function Storefront() {
                     <h3 className="text-base font-extrabold leading-snug text-slate-900 dark:text-white">{detailQ.data.productName}</h3>
                     {detailQ.data.category && <p className="mt-1 text-xs text-slate-500">الفئة: {detailQ.data.category}</p>}
                     <p className="mt-0.5 text-xs text-slate-500">الوحدة: {detailQ.data.unitName}</p>
+                    {detailQ.data.colors && detailQ.data.colors.length > 0 && (
+                      <div className="mt-1.5 flex items-center gap-1.5 text-xs text-slate-500">
+                        <span>ألوان المنتج:</span>
+                        <ColorSwatches colors={detailQ.data.colors} max={12} size={16} />
+                      </div>
+                    )}
                     <div className="mt-3 flex items-baseline gap-2">
                       <p className="text-xl font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(detailQ.data.salePrice ?? detailQ.data.price)}</p>
                       {detailQ.data.salePrice != null && detailQ.data.price != null && Number(detailQ.data.salePrice) < Number(detailQ.data.price) && (

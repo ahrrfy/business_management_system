@@ -154,12 +154,9 @@ export function clampInt(s: string): number {
 
 /* ============================ خرائط الألوان ============================ */
 
-export const COLOR_HEX: Record<string, string> = {
-  "أزرق": "#2563eb", "أسود": "#1f2937", "أحمر": "#dc2626", "أخضر": "#16a34a",
-  "أصفر": "#eab308", "أبيض": "#f8fafc", "برتقالي": "#ea580c", "بنفسجي": "#7c3aed",
-  "وردي": "#ec4899", "رمادي": "#6b7280", "بني": "#92400e", "ذهبي": "#d4af37",
-  "فضي": "#cbd5e1", "سماوي": "#06b6d4", "كحلي": "#1e3a8a", "نبيتي": "#7f1d1d",
-};
+// اللون الحقيقي لاسم اللون يأتي من بنك الألوان المشترك (≈١٥٢ لوناً + تطبيع + معدِّلات درجة فاتح/غامق).
+// مصدر حقيقة واحد للعميل والخادم؛ ColorDot يستعمل resolveColorHex للتمييز التلقائي.
+export { resolveColorHex, normalizeColorName, normalizeHex } from "@shared/colorBank";
 
 export const COLOR_CODE: Record<string, string> = {
   "أزرق": "BLU", "أسود": "BLK", "أحمر": "RED", "أخضر": "GRN", "أصفر": "YEL",
@@ -168,7 +165,7 @@ export const COLOR_CODE: Record<string, string> = {
 };
 
 /** ألوان شائعة تُعرض كاقتراحات سريعة في مُدخل الألوان. */
-export const COLOR_PRESETS = ["أزرق", "أسود", "أحمر", "أخضر", "أصفر", "أبيض", "رمادي", "كحلي"];
+export const COLOR_PRESETS = ["أزرق", "أحمر", "أخضر", "أصفر", "أسود", "أبيض", "رمادي", "كحلي", "بني", "برتقالي", "بنفسجي", "وردي"];
 
 /* ============================ نماذج الحالة (الواجهة) ============================ */
 
@@ -188,6 +185,11 @@ export interface ClientUnit {
 export interface ClientVariant {
   id: string;
   color: string;
+  /**
+   * لون العرض الحقيقي «#RRGGBB» — اختيار صريح من منتقي اللون. إن غاب (null/undefined)
+   * يُستنتَج تلقائياً من اسم اللون عبر بنك الألوان (`@shared/colorBank`). مصدر التمييز الحقيقي.
+   */
+  colorHex?: string | null;
   size: string;
   sku: string;
   /** باركود مستقل لكل وحدة (مفتاحه `ClientUnit.id`). */
