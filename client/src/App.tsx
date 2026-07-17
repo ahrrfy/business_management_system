@@ -353,7 +353,7 @@ export default function App() {
       {/* التذكيرات ليست تقارير قراءة — راوتراها على وحدتَي العملاء/الموردين بمستوى FULL. */}
       <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager"]} module="customers" level="FULL"><ARReminders /></RequireRole></Shell></Route>
       <Route path="/reports/ap-reminders"><Shell><RequireRole roles={["admin","manager"]} module="suppliers" level="FULL"><APReminders /></RequireRole></Shell></Route>
-      {/* أُدمجت في وحدة العملاء (CustomersHub) — إعادة توجيه تَحفظ الروابط القديمة */}
+      {/* أُدمجت في محور CRM (CrmHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       {/* تدقيق ١٧/٧: توجيه مباشر لـ/crm — كان يمرّ عبر /customers الذي يُعيد التوجيه لـ/crm?tab=customers
           فيُسقط tab ومعرّف العميل (?id=) ⇒ يهبط المستخدم على قائمة العملاء بدل الكشف/الأعمار. */}
       <Route path="/ar-aging"><Redirect to="/crm?tab=aging" /></Route>
