@@ -79,6 +79,16 @@
   --sidebar-accent-foreground: oklch(0.141 0.005 285.823);
   --sidebar-border: oklch(0.922 0.004 247.858);
   --sidebar-ring: oklch(0.488 0.243 264.376);
+  /* ── الشريط الجانبي المصمَّت (أزرق) + الشريحة النشطة بمنحنى ── (الفاتح)
+     منفصلة عن رموز shadcn أعلاه (--sidebar…) لأنها لوحة كاملة بلون العلامة لا سطحاً محايداً. */
+  --sidebar-solid: oklch(0.488 0.243 264.376);      /* الأزرق الأساسي = لوحة كاملة */
+  --sidebar-on: oklch(1 0 0 / 0.80);                 /* نصّ العناصر غير النشطة على الأزرق */
+  --sidebar-on-strong: oklch(1 0 0 / 0.97);          /* نصّ بارز (العنوان/التحويم) */
+  --sidebar-soft: oklch(1 0 0 / 0.12);               /* خلفية زرّ/تحويم شفّافة */
+  --sidebar-soft-hover: oklch(1 0 0 / 0.20);
+  --sidebar-line: oklch(1 0 0 / 0.17);               /* فواصل/حدود على الأزرق */
+  --sidebar-pill: oklch(0.977 0.004 247.858);        /* = لون خلفية المحتوى (bg-muted/30) ⇒ تتدفّق الخلفية خلال الشريحة */
+  --sidebar-pill-on: oklch(0.44 0.21 264.376);       /* نصّ/أيقونة الشريحة = بلون الشريط الأزرق (تباين ≥٤٫٥:١) */
 }
 
 .dark {
@@ -115,6 +125,15 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.623 0.214 264.376);
+  /* الشريط الأزرق (الداكن): أزرق عميق مريح + شريحة تندمج بلون المحتوى الداكن */
+  --sidebar-solid: oklch(0.33 0.13 264.376);
+  --sidebar-on: oklch(1 0 0 / 0.80);
+  --sidebar-on-strong: oklch(1 0 0 / 0.97);
+  --sidebar-soft: oklch(1 0 0 / 0.12);
+  --sidebar-soft-hover: oklch(1 0 0 / 0.20);
+  --sidebar-line: oklch(1 0 0 / 0.15);
+  --sidebar-pill: oklch(0.181 0.006 286.0);          /* = لون خلفية المحتوى الداكن ⇒ تتدفّق الخلفية خلال الشريحة */
+  --sidebar-pill-on: oklch(0.82 0.13 264);           /* نصّ أزرق فاتح للتباين على الشريحة الداكنة */
 }
 
 @layer base {
@@ -323,4 +342,61 @@
 @utility flex-safe {
   min-height: 0;
   min-width: 0;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   الشريط الجانبي المصمَّت (أزرق) + الشريحة النشطة المتّصلة بمنحنى — القائمة النشطة.
+   قواعد غير مُطبَّقة في طبقة (unlayered) عمداً: تَغلِب أدوات Tailwind (مثل hover:bg-accent)
+   على العناصر المُعاد تلوينها بلا حاجة إلى !important.
+   ⚠️ التطبيق دائماً RTL (body{direction:rtl}) ⇒ يسار = حافة المحتوى، يمين = داخل اللوحة.
+   لذا نستعمل left/right الفيزيائيَّين صراحةً (أوضح وأضمن من الخصائص المنطقية هنا).
+   ═══════════════════════════════════════════════════════════════════════════ */
+.app-sidebar { background: var(--sidebar-solid); color: var(--sidebar-on-strong); }
+.app-sidebar .sb-header { border-bottom: 1px solid var(--sidebar-line); }
+.app-sidebar .sb-header button:hover { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+
+.app-sidebar .sb-search { background: var(--sidebar-soft); color: var(--sidebar-on); border: 1px solid var(--sidebar-line); }
+.app-sidebar .sb-search:hover { background: var(--sidebar-soft-hover); color: var(--sidebar-on-strong); }
+.app-sidebar .sb-search kbd { background: var(--sidebar-soft); border: 1px solid var(--sidebar-line); color: var(--sidebar-on-strong); opacity: 1; }
+
+.app-sidebar .sb-divider { height: 1px; background: var(--sidebar-line); border: 0; }
+
+/* عناصر التنقّل غير النشطة */
+.app-sidebar .sb-item { color: var(--sidebar-on); }
+.app-sidebar .sb-item:hover { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+
+/* الشريحة النشطة: بيضاء تندمج بالمحتوى، محدّبة نحو الداخل، ومقعّرة عند حافة المحتوى */
+.app-sidebar .sb-active {
+  position: relative;
+  background: var(--sidebar-pill);
+  color: var(--sidebar-pill-on);
+  margin: 2px 8px 2px 0;                 /* يمين ٨px إبقاءً للإزاحة الداخلية، يسار ٠ التصاقاً بالمحتوى */
+  border-radius: 0 16px 16px 0;          /* محدّبة يميناً (الداخل)، ملتصقة يساراً (المحتوى) — بلا ظلّ */
+}
+.app-sidebar .sb-active:hover { background: var(--sidebar-pill); color: var(--sidebar-pill-on); }
+/* الزاويتان المقعّرتان — اللوحة الزرقاء تنحني داخل الشريحة البيضاء */
+.app-sidebar .sb-active::before,
+.app-sidebar .sb-active::after {
+  content: ""; position: absolute; left: 0; width: 16px; height: 16px;
+  background: var(--sidebar-solid); pointer-events: none;
+}
+.app-sidebar .sb-active::before { top: 0; border-bottom-right-radius: 16px; }
+.app-sidebar .sb-active::after { bottom: 0; border-top-right-radius: 16px; }
+
+/* التذييل: بطاقة الحساب + الخروج على اللوحة الزرقاء */
+.app-sidebar .sb-footer { border-top: 1px solid var(--sidebar-line); }
+.app-sidebar .sb-account { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+.app-sidebar .sb-account:hover { background: var(--sidebar-soft-hover); }
+.app-sidebar .sb-account-active { background: var(--sidebar-pill); color: var(--sidebar-pill-on); }
+.app-sidebar .sb-avatar { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+.app-sidebar .sb-sub { color: var(--sidebar-on); }
+.app-sidebar .sb-logout { color: var(--sidebar-on); }
+.app-sidebar .sb-logout:hover { background: var(--sidebar-soft); color: var(--sidebar-on-strong); }
+
+/* شريط تمرير رفيع (في RTL يقع يساراً = جهة المحتوى) كي لا يفصل الشريحةَ عن الحافة */
+.app-sidebar .sb-scroll { scrollbar-width: none; }
+.app-sidebar .sb-scroll::-webkit-scrollbar { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-sidebar .sb-item, .app-sidebar .sb-active { transition: none; }
 }
