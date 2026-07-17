@@ -36,8 +36,10 @@ export const auditRouter = router({
         const pat = `%${escLike(i.action.trim())}%`;
         conds.push(sql`${auditLogs.action} LIKE ${pat} ESCAPE '!'`);
       }
-      if (i.from) conds.push(gte(auditLogs.createdAt, new Date(i.from + "T00:00:00")));
-      if (i.to) conds.push(lte(auditLogs.createdAt, new Date(i.to + "T23:59:59")));
+      // تدقيق ١٧/٧: «Z» صريحة ⇒ UTC حتمياً (مطابق لتخزين createdAt وضبط الاتصال timezone:"Z"). بدونها
+      // يُفسَّر التاريخ بمنطقة عملية Node فينزاح فلترة السجلّ على أي جهاز يعمل بغير TZ=UTC.
+      if (i.from) conds.push(gte(auditLogs.createdAt, new Date(i.from + "T00:00:00Z")));
+      if (i.to) conds.push(lte(auditLogs.createdAt, new Date(i.to + "T23:59:59Z")));
 
       // /simplify ٣٠/٦: paginateKeyset + countIfOffset.
       const { rows, hasMore, nextCursor, usingCursor } = await paginateKeyset({

@@ -23,9 +23,10 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { branches, employeeAdvances, employees, receipts, voucherCategories } from "../../drizzle/schema";
+import { branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { recordIdempotencyKey } from "./idempotency";
 import { money, round2, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { cancelVoucher, createVoucher, getApprovalThreshold, getAttachmentThreshold } from "./voucherService";
@@ -101,6 +102,8 @@ export interface GrantAdvanceInput {
   note?: string | null;
   /** مُرفق سند الصرف (صورة data URL أو رابط) — إلزامي خادمياً للمبالغ ≥ عتبة المُرفق (vouchers-pro). */
   attachmentUrl?: string | null;
+  /** idempotency (تدقيق ١٧/٧): إعادة إرسال بنفس المفتاح ⇒ لا سند/صرف ثانٍ (منع الصرف النقدي المزدوج). */
+  clientRequestId?: string | null;
 }
 
 /** فئة السند الافتراضية للسلف: «رواتب» (OUT، من بذرة 0036). غيابها لا يمنع المنح (فئة اختيارية). */
@@ -150,6 +153,26 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
   }
   const empName = fullEmployeeName(emp);
 
+  // idempotency (تدقيق ١٧/٧، صرف نقدي مزدوج): إعادة إرسال بنفس المفتاح ⇒ أعِد السلفة القائمة بلا
+  // إنشاء سند صرف ثانٍ. الفحص قبل createVoucher كي لا يخرج نقدٌ مرّتين. (سباق الطلبين المتزامنين
+  // يحسمه القيد الفريد على idempotencyKeys داخل معاملة السلفة أدناه ⇒ الخاسر يُلغى سنده تعويضياً.)
+  if (input.clientRequestId) {
+    const [hit] = await db
+      .select({ refId: idempotencyKeys.refId })
+      .from(idempotencyKeys)
+      .where(and(eq(idempotencyKeys.operation, "advance.grant"), eq(idempotencyKeys.clientRequestId, input.clientRequestId)))
+      .limit(1);
+    if (hit) {
+      const [row] = await db.select().from(employeeAdvances).where(eq(employeeAdvances.id, Number(hit.refId))).limit(1);
+      if (row) {
+        const rc = row.receiptId
+          ? await db.select({ vn: receipts.voucherNumber }).from(receipts).where(eq(receipts.id, Number(row.receiptId))).limit(1)
+          : [];
+        return { ...row, employeeName: empName, voucherNumber: rc[0]?.vn ?? "" };
+      }
+    }
+  }
+
   // ١) سند الصرف الحقيقي (ذرّي بكامل أثره: receipt + قيد PAYMENT_OUT + دلو الخزينة).
   const voucher = await createVoucher(
     {
@@ -188,6 +211,8 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
         createdBy: actor.userId,
       });
       const advanceId = extractInsertId(res);
+      // ختم المفتاح داخل نفس معاملة السلفة ⇒ سباق طلبين متزامنين يصطدم بالقيد الفريد فيُلغى الخاسر (catch).
+      if (input.clientRequestId) await recordIdempotencyKey(tx, "advance.grant", input.clientRequestId, advanceId);
       const [row] = await tx.select().from(employeeAdvances).where(eq(employeeAdvances.id, advanceId)).limit(1);
       return { ...row!, employeeName: empName, voucherNumber: voucher.voucherNumber };
     });

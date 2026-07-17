@@ -336,8 +336,9 @@ export default function App() {
       <Route path="/reports/expenses"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ExpensesReport /></RequireRole></Shell></Route>
       <Route path="/reports/anomaly-watch"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AnomalyWatch /></RequireRole></Shell></Route>
       <Route path="/reports/cash-orphans"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CashOrphanReport /></RequireRole></Shell></Route>
-      <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
-      <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
+      {/* تدقيق ١٧/٧: أُضيف accountant — الخادم reportViewerProcedure يخوّله فكان محجوباً واجهياً فقط. */}
+      <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
+      <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
       {/* تقارير الموارد البشرية تستدعي راوترات hr (requireModule("hr","READ")) لا reports —
           فتُبوَّب بوحدة hr كي يفتحها مَن مُنح الموارد البشرية لا مَن مُنح التقارير (مراجعة Codex).
           قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة

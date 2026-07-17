@@ -21,7 +21,7 @@ import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { D } from "@/lib/money";
 import { HandCoins, Plus, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -213,8 +213,12 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
   const overApproval = amountNum >= approvalThreshold;
   const needsAttachment = amountNum > 0 && amountNum >= attachmentThreshold;
 
+  // idempotency (تدقيق ١٧/٧): مفتاح ثابت لكل محاولة منح — يُبقى عند الفشل (إعادة المحاولة idempotent
+  // فلا صرف نقدي مزدوج) ويتجدّد بعد النجاح فقط.
+  const reqIdRef = useRef<string>(crypto.randomUUID());
   const grantM = trpc.payroll.advanceGrant.useMutation({
     onSuccess: (res) => {
+      reqIdRef.current = crypto.randomUUID();
       notify.ok(`مُنحت السلفة وصدر سند الصرف ${res.voucherNumber}`);
       setEmployeeId(""); setAmount(""); setMonthly(""); setNote(""); setAttachmentImages([]);
       onClose();
@@ -289,6 +293,7 @@ function GrantDialog({ open, onClose, onDone }: { open: boolean; onClose: () => 
                 monthlyDeduction: monthly.trim() ? D(monthly).toFixed(2) : null,
                 note: note.trim() || null,
                 attachmentUrl: attachmentUrl || null,
+                clientRequestId: reqIdRef.current,
               });
             }}
             disabled={!canSave}

@@ -109,6 +109,24 @@ describe("advancesService — المنح", () => {
     expect(bal.activeCount).toBe(1);
   });
 
+  it("idempotency (تدقيق ١٧/٧): نفس clientRequestId لا يُصدر سنداً/سلفةً ثانية — منع صرف نقدي مزدوج", async () => {
+    const emp = await seedEmployee();
+    const inp = { employeeId: emp.id, branchId: 1, amount: "200000", note: "سلفة", attachmentUrl: "https://files.example/r.jpg", clientRequestId: "adv-req-1" };
+    const first = await grantAdvance(inp, ACTOR);
+    const replay = await grantAdvance(inp, ACTOR); // إعادة إرسال بنفس المفتاح
+
+    expect(replay.id).toBe(first.id); // نفس السلفة تعود
+    expect(Number(replay.receiptId)).toBe(Number(first.receiptId)); // نفس السند
+
+    // لا ازدواج: سلفة واحدة + سند صرف واحد + قيد PAYMENT_OUT واحد + الرصيد لم يتضاعف.
+    const advs = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.employeeId, emp.id));
+    expect(advs.length).toBe(1);
+    const payOut = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(payOut.length).toBe(1);
+    const bal = await employeeBalance(emp.id);
+    expect(Number(bal.balance)).toBe(200000);
+  });
+
   it("قرار Maker-Checker: مبلغ يبلغ عتبة الاعتماد الثنائي يُرفض قبل إنشاء أي سند أو سلفة", async () => {
     const emp = await seedEmployee();
     await expect(grantAdvance({ employeeId: emp.id, branchId: 1, amount: "1000000" }, ACTOR)).rejects.toThrow(/عتبة الاعتماد/);
