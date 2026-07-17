@@ -111,15 +111,15 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             onClick={openSearch}
-            className="flex w-full items-center gap-2 rounded-md border border-border/60 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="sb-search flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-xs transition-colors"
           >
             <Search className="size-3.5 shrink-0" />
             <span className="flex-1 text-start">بحث…</span>
-            <kbd className="rounded border border-border/50 bg-background px-1 font-mono text-[10px] opacity-70">Ctrl+K</kbd>
+            <kbd className="rounded px-1 font-mono text-[10px]">Ctrl+K</kbd>
           </button>
         </div>
 
-        <nav className="flex-1 overflow-y-auto py-2">
+        <nav className="sb-scroll flex-1 overflow-y-auto py-2">
           {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب: شاشته «توصيلاتي» فقط) */}
           {!isCourier && (
             <>
@@ -127,14 +127,14 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 href="/"
                 aria-current={loc === "/" ? "page" : undefined}
                 className={cn(
-                  "flex items-center gap-2 rounded-md mx-2 px-3 py-2 min-h-[40px] text-sm transition",
-                  loc === "/" ? "bg-primary text-primary-foreground font-semibold" : "hover:bg-accent",
+                  "flex items-center gap-2 px-3 py-2 min-h-[40px] text-sm transition",
+                  loc === "/" ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
                 )}
               >
                 <Home className="size-4 shrink-0" aria-hidden />
                 <span className="truncate">لوحة التحكم</span>
               </Link>
-              <div className="my-1 mx-2 border-b border-border/50" />
+              <div className="my-1 mx-2 sb-divider" />
             </>
           )}
 
@@ -149,8 +149,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 title={m.label}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "flex items-center gap-2 rounded-md mx-2 mb-0.5 px-3 py-2 min-h-[40px] text-sm transition",
-                  active ? "bg-primary text-primary-foreground font-semibold" : "text-foreground/90 hover:bg-accent",
+                  "flex items-center gap-2 mb-0.5 px-3 py-2 min-h-[40px] text-sm transition",
+                  active ? "sb-active font-semibold" : "sb-item rounded-md mx-2",
                 )}
               >
                 <Icon className="size-4 shrink-0" aria-hidden />
@@ -163,21 +163,19 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         {/* معلومات المستخدم والخروج — كارت واضح النقر (مدخل «حسابي») + زرّ الخروج.
             كان الرابط سابقاً نصّاً خافتاً بلا أيقونة ⇒ المالك لم يجد كيف يفتح /account (٦/٧).
             الآن: أيقونة مُلوَّنة + الاسم/الدور بوضوح + شارة nav-item + hover واضح + aria-current. */}
-        <div className="border-t p-2 space-y-1">
+        <div className="sb-footer p-2 space-y-1">
           <Link
             href="/account"
             aria-label="حسابي"
             aria-current={loc === "/account" ? "page" : undefined}
             className={cn(
               "flex items-center gap-2 rounded-md px-2 py-2 text-sm transition",
-              loc === "/account"
-                ? "bg-primary text-primary-foreground font-semibold"
-                : "bg-muted/40 hover:bg-accent text-foreground",
+              loc === "/account" ? "sb-account-active font-semibold" : "sb-account",
             )}
           >
             <div className={cn(
               "flex size-9 shrink-0 items-center justify-center rounded-full",
-              loc === "/account" ? "bg-primary-foreground/20" : "bg-primary/10 text-primary",
+              loc === "/account" ? "bg-primary/10 text-primary" : "sb-avatar",
             )}>
               <UserCircle2 className="size-5" aria-hidden />
             </div>
@@ -185,7 +183,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
               <div className="truncate font-medium leading-tight">{me.data?.name ?? me.data?.email ?? "—"}</div>
               <div className={cn(
                 "truncate text-[11px] leading-tight",
-                loc === "/account" ? "opacity-80" : "text-muted-foreground",
+                loc === "/account" ? "opacity-80" : "sb-sub",
               )}>
                 حسابي{me.data?.role ? ` · ${me.data.role}` : ""}
               </div>
@@ -195,7 +193,7 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <Button
             variant="ghost"
             size="sm"
-            className="w-full justify-start gap-2"
+            className="sb-logout w-full justify-start gap-2"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
           >
@@ -209,8 +207,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen flex flex-col lg:flex-row bg-muted/30" dir="rtl">
       {/* الشريط الجانبي — سطح المكتب (≥lg) */}
-      <aside className="hidden lg:flex w-64 shrink-0 border-s bg-card flex-col">
-        <div className="px-4 py-4 border-b flex items-center justify-between gap-2">
+      <aside className="hidden lg:flex w-64 shrink-0 flex-col app-sidebar">
+        <div className="sb-header px-4 py-4 flex items-center justify-between gap-2">
           <span className="font-semibold text-base leading-tight">الرؤية العربية</span>
           <ThemeToggle />
         </div>
@@ -235,9 +233,9 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
           <ThemeToggle />
         </header>
 
-        <SheetContent side="right" dir="rtl" className="w-72 p-0">
-          <SheetHeader className="border-b px-4 py-4 text-start">
-            <SheetTitle>الرؤية العربية</SheetTitle>
+        <SheetContent side="right" dir="rtl" className="app-sidebar w-72 p-0">
+          <SheetHeader className="sb-header px-4 py-4 text-start">
+            <SheetTitle className="text-[color:var(--sidebar-on-strong)]">الرؤية العربية</SheetTitle>
           </SheetHeader>
           {sidebarInner}
         </SheetContent>
