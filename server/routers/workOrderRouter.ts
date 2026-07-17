@@ -23,7 +23,7 @@ import {
 import { logAudit } from "../services/auditService";
 import { canSeeCostForUser, protectedProcedure, router, workordersCashierProcedure, workordersExecProcedure, workordersManagerProcedure, workordersReadProcedure } from "../trpc";
 import { workOrderBarcodeSet } from "../services/barcodeService";
-import { positiveMoneyString } from "../lib/schemas";
+import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -305,8 +305,9 @@ export const workOrderRouter = router({
         materials: z
           .array(z.object({ variantId: z.number().int().positive(), baseQuantity: z.number().int().positive() }))
           .default([]),
-        laborCost: z.string().default("0"),
-        salePrice: z.string(),
+        // تدقيق ١٧/٧: تحقّق مالي خادميّ — كانت سلاسل حرّة تقبل السالب (عربون/عمالة سالبان يشوّهان الذمم/الربح).
+        laborCost: nonNegMoneyString.default("0"),
+        salePrice: positiveMoneyString,
         dueDate: z.string().nullish(), // YYYY-MM-DD
         notes: z.string().nullish(),
         // المنفّذ المسؤول عند الإنشاء (workOrders.assignedTo).
@@ -316,13 +317,13 @@ export const workOrderRouter = router({
         channelHandle: z.string().max(120).nullish(),
         // v3-add-screens(100%): أولوية + دفع + توصيل.
         priority: z.enum(["LOW", "NORMAL", "URGENT"]).nullish(),
-        deposit: z.string().nullish(),
+        deposit: nonNegMoneyString.nullish(),
         paymentMethod: z.enum(["CASH", "CARD"]).nullish(),
         paymentReference: z.string().max(100).nullish(),
         paymentReceiptUrl: z.string().nullish(),
         hasDelivery: z.boolean().nullish(),
         deliveryAddress: z.string().nullish(),
-        deliveryCost: z.string().nullish(),
+        deliveryCost: nonNegMoneyString.nullish(),
         // ملاحظة سلامة (٢١/٦/٢٦): أُزيل `items` (أصناف البيع المصغّرة) — كانت تُخزَّن بلا خصم
         // مخزون ولا COGS. الأصناف الجاهزة تُباع الآن بفاتورة مستقلّة عبر saleRouter (القرار أ).
         // v3-add-screens(100%): صور نموذج العمل.

@@ -1,4 +1,5 @@
 // FI-02 الإهلاك الشهري: يُرحّل إهلاك شهرٍ واحد لكل أصل غير مُستبعَد (نهج catch-up + idempotent).
+import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq, notInArray } from "drizzle-orm";
 import { fixedAssets } from "../../../drizzle/schema";
@@ -25,6 +26,16 @@ export interface DepreciationRunResult {
  */
 export async function postMonthlyDepreciation(year: number, month: number, actor: Actor): Promise<DepreciationRunResult> {
   const period = `${year}-${String(month).padStart(2, "0")}`;
+  // صمّام (تدقيق ١٧/٧): يُمنع ترحيل إهلاك شهرٍ مستقبليّ. نهج catch-up كان يرحّل كامل الإهلاك المتبقّي
+  // لكل الأصول دفعةً واحدة بقيود مؤرَّخة مستقبلاً عند خطأ كتابيّ في السنة (كان input.year يقبل حتى 2200).
+  // الأقصى المسموح = الشهر الجاري (بتوقيت UTC، مطابق لبقيّة النظام).
+  const now = new Date();
+  if (year * 12 + month > now.getUTCFullYear() * 12 + (now.getUTCMonth() + 1)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `لا يمكن ترحيل إهلاك شهرٍ لم يبدأ بعد (${period}) — أقصى شهر مسموح هو الشهر الجاري.`,
+    });
+  }
   // asOf = نهاية الشهر (أوّل لحظة من الشهر التالي ⇒ يَشمل كامل إهلاك الشهر) لاحتساب المتراكم.
   // entryDate = آخر يوم في الشهر (Date.UTC صفر-أساس ⇒ يوم 0 من month١-١٢) ليَقع القيد ضمن شهره في P&L.
   const asOf = new Date(Date.UTC(year, month, 1));

@@ -251,6 +251,7 @@ export default function WorkOrderNew() {
   const createWO = trpc.workOrders.create.useMutation({
     onSuccess: async (res, _vars, ctx) => {
       setClientRequestId(crypto.randomUUID());
+      setSaleRequestId(crypto.randomUUID()); // التدفّق اكتمل بنجاح ⇒ مفتاح بيع جديد للطلب التالي.
       await utils.workOrders.list.invalidate();
       const id = (res as any)?.workOrderId ?? (res as any)?.id;
       // معالجة الطباعة بعد الحفظ.
@@ -332,7 +333,8 @@ export default function WorkOrderNew() {
           cashRoundIQD: paymentMethod === "CASH",
           clientRequestId: saleRequestId,
         } as any);
-        setSaleRequestId(crypto.randomUUID());
+        // تدقيق ١٧/٧: لا تُدوّر مفتاح idempotency للبيع هنا — إبقاؤه ثابتاً يجعل إعادة المحاولة بعد فشل
+        // إنشاء أمر الشغل تُعيد الفاتورة نفسها (idempotent) بدل فاتورة بيع مكرّرة بخصم مخزون ونقد مزدوجين.
         await utils.shifts.current.invalidate();
       } catch (e: any) {
         setError(e?.message || "تعذّر إتمام بيع الأصناف الجاهزة.");

@@ -270,4 +270,20 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
     const stmt = await getSupplierStatement(1, { from: FROM });
     expect(stmt!.summary.openingBalance).toBe("0.00");
   });
+
+  it("أمر ملغى (CANCELLED) يُستبعَد من قائمة الكشف وإجمالي المشتريات (تدقيق ١٧/٧، خطر #10)", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+    // أمر مؤكَّد مستلَم: إجمالي ١٠٠ (يظهر في الكشف).
+    await poReceived(1, 10, "10.00");
+    // أمر ثانٍ يُلغى — كان يُدرَج بكامل قيمته في totalPurchases فلا يتّزن الكشف مع currentBalance.
+    const cancelled = await createPurchaseOrder(
+      { supplierId: 1, branchId: 1, taxRatePercent: "0", status: "CONFIRMED", items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "10.00" }] },
+      actor
+    );
+    await db().update(s.purchaseOrders).set({ status: "CANCELLED" }).where(eq(s.purchaseOrders.id, cancelled.purchaseOrderId));
+
+    const stmt = await getSupplierStatement(1);
+    expect(stmt!.purchaseOrders).toHaveLength(1); // الملغى غائب
+    expect(stmt!.summary.totalPurchases).toBe("100.00"); // ١٠٠ فقط لا ١٥٠
+  });
 });

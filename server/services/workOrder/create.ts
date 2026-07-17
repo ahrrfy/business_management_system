@@ -34,6 +34,10 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
     const qty = Math.trunc(input.quantity ?? 1);
     if (!Number.isInteger(qty) || qty <= 0)
       throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية يجب أن تكون عدداً صحيحاً موجباً" });
+    // تدقيق ١٧/٧: العربون لا يتجاوز سعر البيع الإجمالي (السعر ثابت لحظة الإنشاء) — عربون أكبر كان يُقبل
+    // ثم يجعل الأمر غير قابل للتسليم نهائياً (deliver يرفض totalPaid > salePrice). الإشارة السالبة مصدودة بـzod.
+    if (round2(money(input.deposit ?? "0")).gt(money(input.salePrice)))
+      throw new TRPCError({ code: "BAD_REQUEST", message: "العربون لا يمكن أن يتجاوز سعر البيع الإجمالي للأمر" });
 
     // v3-add-screens(100%): baseVariantId اختياري — طلب خدمة قد يكون خدمة تخصيص بلا منتج خام.
     if (input.baseVariantId != null) {

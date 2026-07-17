@@ -186,6 +186,20 @@ describe("userService.resetUserPassword", () => {
     const { userId } = await createUser({ name: "ز", email: "z3@a.local", password: "Pass1234!Aaa" }, actor);
     await expect(resetUserPassword(userId, "weak", actor)).rejects.toThrow();
   });
+
+  it("يفكّ قفل الحساب عند إعادة التعيين (تدقيق ١٧/٧)", async () => {
+    const { userId } = await createUser({ name: "مقفل", email: "locked@a.local", password: "Pass1234!Aaa" }, actor);
+    // حاكِ حساباً مقفلاً بعد ٥ محاولات فاشلة.
+    await db()
+      .update(s.users)
+      .set({ failedLoginAttempts: 5, lockedUntil: new Date(Date.now() + 15 * 60_000), lastFailedLoginAt: new Date() })
+      .where(eq(s.users.id, userId));
+    await resetUserPassword(userId, "NewPass99!Aaa", actor);
+    const row = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
+    expect(row.failedLoginAttempts).toBe(0);
+    expect(row.lockedUntil).toBeNull();
+    expect(row.lastFailedLoginAt).toBeNull();
+  });
 });
 
 describe("userService.revokeUserSessions", () => {

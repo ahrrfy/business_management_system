@@ -5,6 +5,7 @@ import { receipts, shifts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
+import { getActiveLock } from "../periodLockService";
 import { type Actor, withTx } from "../tx";
 import { assertBranchOwnership } from "./helpers";
 
@@ -47,6 +48,23 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
       throw new TRPCError({ code: "FORBIDDEN", message: "لا يجوز إلغاء سند أنشأته بنفسك — يلزم مدير آخر (فصل المهام)." });
     }
     await assertBranchOwnership(tx, actor, r.branchId != null ? Number(r.branchId) : null, "سند");
+
+    // قفل الفترة (تدقيق ١٧/٧): الإلغاء يقلب الأصل إلى REVERSED فيختفي من تدفّق الشهر النقدي — لو كان
+    // السند مؤرَّخاً داخل فترة مُقفَلة تتغيّر أرقامها بأثر رجعي. نرفض الإلغاء ونطلب فتح الفترة أولاً
+    // (يبقى مبدأ العكس بقيد مؤرَّخ اليوم للحالات المفتوحة فقط — مطابق لدلالة assertPeriodOpen).
+    const lock = await getActiveLock(tx);
+    if (lock) {
+      // voucherDate عمود DATE: drizzle يُصنّفه string لكن mysql2 يعيد Date وقت التشغيل ⇒ new Date()
+      // يعمل للحالتين، ثم toISOString (UTC) مطابقاً لدلالة assertPeriodOpen.
+      const vDay = r.voucherDate ? new Date(r.voucherDate).toISOString().slice(0, 10) : "";
+      if (vDay && vDay <= lock.cutoffDate) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: `الفترة المالية مُقفَلة حتى ${lock.cutoffDate} — لا يمكن إلغاء سند مؤرَّخ داخلها. يلزم فتح الفترة أوّلاً (admin).`,
+        });
+      }
+    }
+
     if (r.shiftId != null) {
       const sh = (
         await tx.select({ status: shifts.status }).from(shifts).where(eq(shifts.id, Number(r.shiftId))).limit(1)

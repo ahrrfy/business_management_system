@@ -15,7 +15,6 @@
  * فتح الإقفال: لا fn — يلزم تدخل admin يدوي (unlockLatestPeriod + DELETE snapshot).
  */
 import { TRPCError } from "@trpc/server";
-import Decimal from "decimal.js";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
 import { accountingEntries, financialPeriods, yearEndSnapshots } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
@@ -23,6 +22,7 @@ import type { Tx } from "../db";
 import { money, round2, toDbMoney } from "./money";
 import { postEntry } from "./ledgerService";
 import { lockPeriod } from "./periodLockService";
+import { plSnapshot } from "./reportsFinancialService";
 
 export interface CloseYearInput {
   year: number; // مثل 2025
@@ -40,41 +40,6 @@ export interface CloseYearResult {
   totalCogs: string;
   totalExpenses: string;
   netProfit: string;
-}
-
-/** يحسب أرقام السنة من dedicated SELECT — لا يخرّب القيود.
- *  revenue/cogs من SALE+RETURN (RETURN بقيم سالبة فتُطرَح طبيعياً عبر SUM).
- *  expenses من PAYMENT_OUT (مصاريف نقدية) + INTERNAL_USE + WASTAGE (مصاريف مخزنية بالكلفة). */
-async function computeYearTotals(tx: Tx, year: number, branchId: number | null): Promise<{
-  revenue: Decimal; cogs: Decimal; expenses: Decimal;
-}> {
-  const branchFilter = branchId != null ? sql`AND branchId = ${branchId}` : sql``;
-  const start = `${year}-01-01`;
-  const end = `${year}-12-31`;
-  const rows = await tx.execute(sql`
-    SELECT
-      COALESCE(SUM(CASE WHEN entryType IN ('SALE','RETURN') THEN CAST(revenue AS DECIMAL(15,2)) ELSE 0 END), 0) AS revenue,
-      COALESCE(SUM(CASE WHEN entryType IN ('SALE','RETURN') THEN CAST(cost AS DECIMAL(15,2)) ELSE 0 END), 0) AS cogs,
-      COALESCE(SUM(CASE WHEN entryType = 'PAYMENT_OUT' AND invoiceId IS NULL AND supplierId IS NULL THEN CAST(amount AS DECIMAL(15,2)) ELSE 0 END), 0) AS cashExpenses,
-      COALESCE(SUM(CASE WHEN entryType IN ('INTERNAL_USE','WASTAGE') THEN CAST(cost AS DECIMAL(15,2)) ELSE 0 END), 0) AS stockExpenses,
-      COALESCE(SUM(CASE WHEN entryType = 'EXCHANGE_FEE' THEN CAST(cost AS DECIMAL(15,2)) ELSE 0 END), 0) AS exchangeFee,
-      COALESCE(SUM(CASE WHEN entryType = 'EXCHANGE_FX_DIFF' THEN CAST(amount AS DECIMAL(15,2)) ELSE 0 END), 0) AS exchangeFx
-    FROM accountingEntries
-    WHERE entryDate >= ${start}
-      AND entryDate <= ${end}
-    ${branchFilter}
-  `);
-  const data = (((rows as any)[0] ?? rows) as Array<any>) ?? [];
-  const r = data[0] ?? {};
-  return {
-    revenue: money(String(r.revenue ?? "0")),
-    cogs: money(String(r.cogs ?? "0")),
-    // exchange-house: + عمولات الصيرفة (مصروف) − صافي فرق الصرف (مكسب يَخفض المصروف/خسارة تَرفعه).
-    expenses: money(String(r.cashExpenses ?? "0"))
-      .plus(money(String(r.stockExpenses ?? "0")))
-      .plus(money(String(r.exchangeFee ?? "0")))
-      .minus(money(String(r.exchangeFx ?? "0"))),
-  };
 }
 
 export async function closeYear(tx: Tx, input: CloseYearInput): Promise<CloseYearResult> {
@@ -101,9 +66,16 @@ export async function closeYear(tx: Tx, input: CloseYearInput): Promise<CloseYea
     });
   }
 
-  // ١. احسب الإجماليات
-  const { revenue, cogs, expenses } = await computeYearTotals(tx, year, branchId);
-  const netProfit = round2(revenue.minus(cogs).minus(expenses));
+  // ١. احسب الإجماليات — مصدر الحقيقة الوحيد = نفس محرّك قائمة الدخل P&L (تدقيق ١٧/٧).
+  //    كانت صيغة مستقلّة هنا تنحرف عن P&L المعروضة للمالك: تُدرج مرتجعات الشراء في COGS،
+  //    وتُغفل الإهلاك وفروقات الجرد وتقريب IQD وأجور التوصيل وربح/خسارة بيع الأصول، وتحسب
+  //    المصروف الملغى مرّتين (تجمع PAYMENT_OUT الخام لا سجلّ المصروفات ACTIVE). التوحيد يمنع
+  //    تثبيت قيد Retained Earnings واللقطة المؤرشفة بأرقام خاطئة.
+  const snap = await plSnapshot(`${year}-01-01`, `${year}-12-31`, branchId ?? undefined);
+  const revenue = money(snap.revenue);
+  const cogs = money(snap.cogs);
+  const expenses = money(snap.totalExpenses);
+  const netProfit = round2(money(snap.netProfit));
 
   // ٢. قفل الفترة (cutoffDate = Dec 31)
   // #closing-2 (تدقيق التثبيت): كان lockPeriod يرفض cutoffDate ≤ قفل قائم ⇒ إقفال شهر ديسمبر

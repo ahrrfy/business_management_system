@@ -14,7 +14,7 @@ import { resolveBarcodeOwner } from "../services/catalog/barcodeAliases";
 import { getBundleDefinitions, replaceBundleComponents } from "../services/bundleService";
 import { getDb } from "../db";
 import { withTx } from "../services/tx";
-import { productsManagerProcedure, productsReadProcedure, router } from "../trpc";
+import { canSeeCostForUser, productsManagerProcedure, productsReadProcedure, router } from "../trpc";
 
 const componentInputSchema = z.object({
   componentVariantId: z.number().int().positive(),
@@ -121,9 +121,12 @@ export const bundlesRouter = router({
   /** قراءة وصفة بكج بمعرّف المتغيّر الأب. تُستعمَل في شاشة إدارة البكج + POS للعرض. */
   getComponents: productsReadProcedure
     .input(z.object({ bundleVariantId: z.number().int().positive() }))
-    .query(async ({ input }) => {
+    .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return { components: [] };
+      // حجب التكلفة عن غير المخوَّل (تدقيق ١٧/٧): البوّابة READ فيصلها الكاشير عبر API مباشرة ⇒ كان
+      // يقرأ تكلفة شراء أيّ بكج. نُبقي البوّابة READ (لا نكسر أيّ مستهلك) ونُقنّع componentCostPrice.
+      const showCost = canSeeCostForUser(ctx.user);
       const parent = await db
         .select({ isBundle: products.isBundle, productId: productVariants.productId, productName: products.name })
         .from(productVariants)
@@ -161,7 +164,7 @@ export const bundlesRouter = router({
           notes: r.notes,
           componentProductName: r.productName,
           componentSku: r.sku,
-          componentCostPrice: String(r.costPrice ?? "0"),
+          componentCostPrice: showCost ? String(r.costPrice ?? "0") : "0",
           isActive: !!r.isActive,
         }))
         .sort((a, b) => a.sortOrder - b.sortOrder);

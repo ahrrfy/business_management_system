@@ -188,6 +188,10 @@ export async function getSupplierStatement(
   const { from, to, branchId } = period;
 
   const poConds = [eq(purchaseOrders.supplierId, supplierId)];
+  // تدقيق ١٧/٧: اقصر الكشف على الأوامر الملتزمة مالياً (CONFIRMED/RECEIVED) — مطابقةً لـsupplierOpeningBalance
+  // وreconcileSupplierBalances. كان يُدرج DRAFT/SENT/CANCELLED بكامل قيمتها في totalPurchases ودفتر الحركات
+  // فلا يتّزن الكشف مع currentBalance بمجرّد وجود أمر ملغى أو مسودّة.
+  poConds.push(inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]));
   if (from) poConds.push(sql`${purchaseOrders.orderDate} >= ${`${from} 00:00:00`}`);
   if (to) poConds.push(sql`${purchaseOrders.orderDate} < ${`${nextDayStr(to)} 00:00:00`}`);
   if (branchId) poConds.push(eq(purchaseOrders.branchId, branchId));

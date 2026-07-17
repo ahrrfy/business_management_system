@@ -15,7 +15,7 @@ import { useEffect, useMemo, useRef, useState, useReducer } from "react";
 import { Link, useLocation } from "wouter";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Download } from "lucide-react";
+import { AlertTriangle, Download } from "lucide-react";
 import { confirm } from "@/lib/confirm";
 import { D, round2 } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
@@ -75,6 +75,10 @@ export default function PurchaseReturnNew() {
 
   // 3) ───── BulkPicker state ─────────────────────────────────────────────────
   const [bulkOpen, setBulkOpen] = useState(false);
+
+  // تسوية المرتجع صريحة (تدقيق ١٧/٧): الافتراض CREDIT = خصم من ذمة المورد. كانت التسوية تُشتقّ من
+  // paymentTerms العام الذي يفترض CASH ⇒ كل مرتجع يُحفَظ بالافتراضي يسجّل قبض نقد كامل من المورد لم يحدث.
+  const [settlement, setSettlement] = useState<"CREDIT" | "CASH">("CREDIT");
 
   // 4) ───── RBAC: التكلفة مرئية للمدير دائماً في مرتجع الشراء ─────────────────
   const showCost = true;
@@ -221,10 +225,7 @@ export default function PurchaseReturnNew() {
     })();
 
     const paymentMethod = state.paymentMethod;
-    const settlement: "CASH" | "CREDIT" =
-      state.paymentTerms === "CREDIT" || state.paymentTerms === "INSTALLMENT"
-        ? "CREDIT"
-        : "CASH";
+    // تدقيق ١٧/٧: التسوية من المفتاح الصريح لا من paymentTerms العام (كان افتراضه CASH يسجّل قبضاً وهمياً).
 
     const payload = {
       clientRequestId,
@@ -335,6 +336,7 @@ export default function PurchaseReturnNew() {
           regenerateRequestId();
           setRefLastFetchedId(null);
           setRefLookupError(null);
+          setSettlement("CREDIT");
         }
       } else if (e.key === "Escape") {
         if (!isEditing && !isFnKey) {
@@ -408,7 +410,51 @@ export default function PurchaseReturnNew() {
           />
         </div>
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          <TotalsPanel items={state.items} state={state} dispatch={dispatch} />
+          {/* تدقيق ١٧/٧ (خطر #2): إخفاء الحقول غير المحفوظة في مرتجع الشراء (شحن/مصاريف/خصم/دفع) —
+              التسوية عبر مفتاح «تسوية المرتجع» أدناه لا قسم الدفع العام. */}
+          <TotalsPanel
+            items={state.items}
+            state={state}
+            dispatch={dispatch}
+            showShipping={false}
+            showOtherExpenses={false}
+            showDiscount={false}
+            showPayment={false}
+          />
+
+          {/* تسوية المرتجع الصريحة (تدقيق ١٧/٧): الافتراض «خصم من ذمة المورد» ⇒ لا قبض نقديّ وهميّ. */}
+          <div className="rounded-md border px-3 py-2 text-xs">
+            <div className="mb-1.5 font-semibold text-muted-foreground">تسوية المرتجع</div>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                onClick={() => setSettlement("CREDIT")}
+                aria-pressed={settlement === "CREDIT"}
+                className={`flex-1 rounded px-2 py-1.5 font-semibold transition-colors ${
+                  settlement === "CREDIT" ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
+                }`}
+              >
+                خصم من ذمة المورد
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettlement("CASH")}
+                aria-pressed={settlement === "CASH"}
+                className={`flex-1 rounded px-2 py-1.5 font-semibold transition-colors ${
+                  settlement === "CASH" ? "bg-primary text-primary-foreground" : "bg-muted hover:bg-muted/80"
+                }`}
+              >
+                استلام نقديّ من المورد
+              </button>
+            </div>
+            {settlement === "CASH" && (
+              <div className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-amber-600">
+                <AlertTriangle aria-hidden className="size-3" />
+                سيُسجَّل قبضٌ نقديّ فعليّ في الصندوق بكامل قيمة المرتجع.
+              </div>
+            )}
+          </div>
+
           <ActionButtons
             invoiceType={TYPE}
             items={state.items}

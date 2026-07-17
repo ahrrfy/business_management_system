@@ -85,6 +85,10 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
       customerId: partyType === "CUSTOMER" ? partyId : null,
       supplierId: partyType === "SUPPLIER" ? partyId : null,
       amount,
+      // قفل الفترة على تاريخ السند الفعلي لا لحظة الاعتماد (تدقيق ١٧/٧) — يمنع اعتماد سند بتاريخ رجعي
+      // داخل فترة مُقفَلة. voucherDate عمود DATE (drizzle يُصنّفه string لكن mysql2 يعيد Date) ⇒ new Date
+      // يعمل للحالتين، وtoDateStr = toISOString.slice(0,10) مطابق لدلالة assertPeriodOpen.
+      entryDate: new Date(r.voucherDate ? toDateStr(new Date(r.voucherDate)) : toDateStr()),
     });
     if (partyType === "CUSTOMER" && partyId) {
       await adjustCustomerBalance(tx, partyId, direction === "IN" ? amount.neg() : amount);
