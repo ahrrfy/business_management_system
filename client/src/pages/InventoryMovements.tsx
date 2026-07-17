@@ -23,7 +23,7 @@ import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 /* ============================ Constants & helpers ============================ */
 
@@ -212,8 +212,12 @@ export default function InventoryMovements() {
     setMError("");
   }
 
+  // idempotency (تدقيق ١٧/٧): مفتاح ثابت لكل محاولة حركة — يُبقى عند الفشل (إعادة المحاولة لا تكرّر
+  // الخصم/الإضافة) ويتجدّد بعد النجاح فقط.
+  const manualReqIdRef = useRef<string>(crypto.randomUUID());
   const createManual = trpc.inventory.createManualMovement.useMutation({
     onSuccess: async () => {
+      manualReqIdRef.current = crypto.randomUUID();
       setPageMsg("تمت إضافة الحركة بنجاح.");
       setOpen(false);
       resetDialog();
@@ -251,6 +255,7 @@ export default function InventoryMovements() {
       quantity: String(n),
       reason: mReason,
       notes: mNotes.trim() || undefined,
+      clientRequestId: manualReqIdRef.current,
     });
   }
 
