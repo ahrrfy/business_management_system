@@ -73,6 +73,11 @@ function displayBarcode(item: CountItem): string | null {
   return base?.barcode ?? item.units.find((u) => u.barcode)?.barcode ?? null;
 }
 
+/** مطابقة حرفية لباركود الوحدة — الأساسيّ أو أيّ بديل (فضاء تفرّد واحد كما في الكاشير). */
+function unitHasBarcode(u: CountItem["units"][number], code: string): boolean {
+  return (u.barcode != null && u.barcode === code) || u.aliases.includes(code);
+}
+
 function CenterScreen({ children }: { children: ReactNode }) {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 px-8 py-10 text-center">
@@ -285,7 +290,12 @@ export default function CountPortal() {
         i.productName.toLowerCase().includes(needle) ||
         (i.variantName ?? "").toLowerCase().includes(needle) ||
         (i.sku ?? "").toLowerCase().includes(needle) ||
-        i.units.some((u) => (u.barcode ?? "").includes(needle))
+        // الباركودات تُخفَّض أيضاً — الإبرة مُخفَّضة سلفاً، وباركود بحروف كبيرة كان لا يُطابَق أبداً.
+        i.units.some(
+          (u) =>
+            (u.barcode ?? "").toLowerCase().includes(needle) ||
+            u.aliases.some((a) => a.toLowerCase().includes(needle)),
+        )
       );
     },
     [needle],
@@ -332,7 +342,7 @@ export default function CountPortal() {
     (raw: string) => {
       const scanned = raw.trim();
       if (!scanned) return;
-      const hit = items.find((i) => i.units.some((u) => u.barcode != null && u.barcode === scanned));
+      const hit = items.find((i) => i.units.some((u) => unitHasBarcode(u, scanned)));
       if (!hit) {
         notify.warn("الباركود غير موجود ضمن منتجات هذه الجلسة", scanned);
         return;
@@ -353,7 +363,7 @@ export default function CountPortal() {
     const exact = q.trim();
     if (!exact) return;
     const hit =
-      items.find((i) => i.units.some((u) => u.barcode != null && u.barcode === exact)) ??
+      items.find((i) => i.units.some((u) => unitHasBarcode(u, exact))) ??
       items.find((i) => (i.sku ?? "") === exact);
     if (hit) {
       setQ("");

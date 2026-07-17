@@ -4,6 +4,7 @@ import { asc, eq, inArray } from "drizzle-orm";
 import {
   branches,
   products,
+  productUnitBarcodes,
   productUnits,
   productVariants,
   stocktakeCounts,
@@ -17,6 +18,8 @@ export type PortalUnit = {
   /** عدد الوحدات الأساس في هذه الوحدة — معامل تحويل وليس مالاً (Number مشروع هنا). */
   factor: number;
   barcode: string | null;
+  /** الباركودات البديلة للوحدة (`productUnitBarcodes`) — تُطابَق عند المسح كما في الكاشير. */
+  aliases: string[];
 };
 
 export type PortalItem = {
@@ -93,6 +96,7 @@ export async function getPortalState(identity: PortalIdentity) {
   const unitRows = variantIds.length
     ? await db
         .select({
+          id: productUnits.id,
           variantId: productUnits.variantId,
           unitName: productUnits.unitName,
           conversionFactor: productUnits.conversionFactor,
@@ -103,12 +107,33 @@ export async function getPortalState(identity: PortalIdentity) {
         .where(inArray(productUnits.variantId, variantIds))
         .orderBy(asc(productUnits.id))
     : [];
+  const activeUnits = unitRows.filter((u) => u.isActive !== false);
+  // الباركودات البديلة للوحدات النشطة — العدّاد يمسح أيّ باركود ملصوق على البضاعة (أساسيّاً أو بديلاً).
+  const activeUnitIds = activeUnits.map((u) => Number(u.id));
+  const aliasRows = activeUnitIds.length
+    ? await db
+        .select({ productUnitId: productUnitBarcodes.productUnitId, barcode: productUnitBarcodes.barcode })
+        .from(productUnitBarcodes)
+        .where(inArray(productUnitBarcodes.productUnitId, activeUnitIds))
+        .orderBy(asc(productUnitBarcodes.id))
+    : [];
+  const aliasesByUnit = new Map<number, string[]>();
+  for (const a of aliasRows) {
+    const uid = Number(a.productUnitId);
+    const arr = aliasesByUnit.get(uid) ?? [];
+    arr.push(a.barcode);
+    aliasesByUnit.set(uid, arr);
+  }
   const unitsByVariant = new Map<number, PortalUnit[]>();
-  for (const u of unitRows) {
-    if (u.isActive === false) continue;
+  for (const u of activeUnits) {
     const vid = Number(u.variantId);
     const arr = unitsByVariant.get(vid) ?? [];
-    arr.push({ unitName: u.unitName, factor: Number(u.conversionFactor), barcode: u.barcode ?? null });
+    arr.push({
+      unitName: u.unitName,
+      factor: Number(u.conversionFactor),
+      barcode: u.barcode ?? null,
+      aliases: aliasesByUnit.get(Number(u.id)) ?? [],
+    });
     unitsByVariant.set(vid, arr);
   }
   // الوحدات الكبرى أولاً (كرتون ثم درزن ثم قطعة) — كما في نموذج التصميم jrd-count.
