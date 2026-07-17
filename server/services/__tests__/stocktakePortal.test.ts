@@ -40,6 +40,7 @@ const TABLES = [
   "inventoryMovements",
   "branchStock",
   "productPrices",
+  "productUnitBarcodes",
   "productUnits",
   "productVariants",
   "products",
@@ -62,7 +63,7 @@ async function reset() {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 
-/** بذرة أساس خاصة بالاختبار: فرع + مستخدمان + ٣ متغيّرات (الأول بوحدتين وباركودين). */
+/** بذرة أساس خاصة بالاختبار: فرع + مستخدمان + ٣ متغيّرات (الأول بوحدتين وباركودين + بديل لوحدة القطعة). */
 async function seedBase() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "الفرع الرئيسي", code: "MAIN", type: "MAIN" }]);
@@ -86,6 +87,8 @@ async function seedBase() {
     { id: 3, variantId: 2, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
     { id: 4, variantId: 3, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true },
   ]);
+  // باركود بديل لوحدة القطعة — يجب أن يصل لبوابة العدّ ليتعرّف عليه مسح العدّاد (كما في الكاشير).
+  await d.insert(s.productUnitBarcodes).values([{ productUnitId: 1, barcode: "BC-PEN-ALT" }]);
   await d.insert(s.branchStock).values([
     { variantId: 1, branchId: 1, quantity: 100 },
     { variantId: 2, branchId: 1, quantity: 50 },
@@ -292,10 +295,11 @@ describe("الجرد الأعمى (state)", () => {
     expect(JSON.stringify(stateB.items)).not.toMatch(/"qty"/);
     expect(jsonB).not.toContain("عامل أ"); // اسم العادّ الزميل لا يصل
 
-    // الوحدات بباركوداتها مرتّبة الكبرى أولاً (للمسح والإدخال متعدد الوحدات).
+    // الوحدات بباركوداتها مرتّبة الكبرى أولاً (للمسح والإدخال متعدد الوحدات)،
+    // ومع البدائل (productUnitBarcodes) كي يتعرّف مسح البوابة على أيّ باركود ملصوق.
     expect(item1.units).toEqual([
-      { unitName: "درزن", factor: 12, barcode: "BC-PEN-12" },
-      { unitName: "قطعة", factor: 1, barcode: "BC-PEN-1" },
+      { unitName: "درزن", factor: 12, barcode: "BC-PEN-12", aliases: [] },
+      { unitName: "قطعة", factor: 1, barcode: "BC-PEN-1", aliases: ["BC-PEN-ALT"] },
     ]);
 
     // منظور أ: يرى كميته هو فقط (myCount) مع تفصيل الوحدات.
