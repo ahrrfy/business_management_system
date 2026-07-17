@@ -125,6 +125,8 @@ export const payrollRouter = router({
         note: z.string().trim().max(255).nullish(),
         // مُرفق سند الصرف (صورة مضغوطة data URL أو رابط) — نفس سقف voucherRouter.
         attachmentUrl: z.string().max(4_000_000).nullish(),
+        // idempotency (تدقيق ١٧/٧): منع صرف نقدي مزدوج عند إعادة الإرسال.
+        clientRequestId: z.string().min(1).max(64).nullish(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
