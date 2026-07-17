@@ -134,6 +134,7 @@ export default function ProductEdit() {
       return {
         id: `${DB_PREFIX}${v.id}`,
         color: v.color ?? "",
+        colorHex: v.colorHex ?? null,
         size: v.size ?? "",
         sku: v.sku,
         unitBarcodes,
@@ -218,7 +219,7 @@ export default function ProductEdit() {
   function makeVariant(color: string, size: string): ClientVariant {
     return {
       id: `new|${color}|${size}|${Math.random().toString(36).slice(2, 8)}`,
-      color, size, sku: deriveSku(baseSku, color, size),
+      color, colorHex: null, size, sku: deriveSku(baseSku, color, size),
       unitBarcodes: {}, stockByBranch: {}, minStock: "0", reorderPoint: "0",
       priceOverride: false, costPrice: "", retail: "", isActive: true, image: null,
     };
@@ -339,6 +340,7 @@ export default function ProductEdit() {
           id: v.id.startsWith(DB_PREFIX) ? Number(v.id.slice(DB_PREFIX.length)) : undefined,
           sku: v.sku.trim(),
           color: v.color.trim() || null,
+          colorHex: v.colorHex || null, // "" أو null ⇒ null (يتّسق مع ProductNew ويجنّب رفض zod للفراغ)
           size: v.size.trim() || null,
           costPrice: v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim(),
           baseRetail: v.priceOverride && v.retail.trim() ? v.retail.trim() : undefined,
@@ -473,7 +475,7 @@ export default function ProductEdit() {
               <div className="p-3 space-y-2">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[11px] text-muted-foreground">{toArabicDigits(variants.length)} متغيّر ({toArabicDigits(activeCount)} مفعّل):</span>
-                  {variants.slice(0, 10).map((v) => <ColorDot key={v.id} name={v.color} />)}
+                  {variants.slice(0, 10).map((v) => <ColorDot key={v.id} name={v.color} hex={v.colorHex} />)}
                 </div>
               </div>
             </div>

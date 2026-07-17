@@ -6,17 +6,78 @@ import { useRef, useState, useId, cloneElement, isValidElement, type ChangeEvent
 import { cn } from "@/lib/utils";
 import { code128Svg } from "@/lib/printing/barcode";
 import { compressImageDataUrl } from "@/components/form/ImageUploader";
-import { COLOR_HEX, marginPercent, toArabicDigits } from "@/lib/variants";
+import { marginPercent, toArabicDigits } from "@/lib/variants";
+import { resolveColorHex, normalizeHex } from "@shared/colorBank";
 
-/* ── ColorDot — نقطة لون من خريطة الألوان ─────────────── */
-export function ColorDot({ name, size = 14 }: { name: string; size?: number }) {
-  const hex = COLOR_HEX[name] || "#cbd5e1";
+/* ── ColorDot — نقطة اللون الحقيقي ─────────────────────── */
+/**
+ * يعرض اللون الحقيقي: `hex` الصريح (اختيار المستخدم) إن وُجد، وإلّا يُستنتَج من `name` عبر بنك
+ * الألوان المشترك، وإلّا رماديّ محايد. هكذا يظهر أيّ لون يُكتَب بلونه الحقيقي تلقائياً.
+ */
+export function ColorDot({ name, hex, size = 14 }: { name?: string; hex?: string | null; size?: number }) {
+  const resolved = normalizeHex(hex) || resolveColorHex(name);
+  const bg = resolved || "#cbd5e1";
   return (
     <span
       className="inline-block shrink-0 rounded-full border"
-      style={{ width: size, height: size, background: hex, borderColor: "oklch(0 0 0 / .15)" }}
-      title={name}
+      style={{ width: size, height: size, background: bg, borderColor: "oklch(0 0 0 / .15)" }}
+      title={name || resolved || ""}
     />
+  );
+}
+
+/* ── ColorPickerDot — سواتش قابل للنقر يفتح منتقي لون النظام ─────────────── */
+/**
+ * يظهر اللون الحالي (المخصّص أو المُستنتَج من الاسم) كسواتش، والنقر يفتح `<input type=color>`.
+ * `onChange(hex)` يضبط لوناً مخصّصاً، و«×» يعيد للتلقائي (null ⇒ يُستنتَج من الاسم).
+ */
+export function ColorPickerDot({
+  name,
+  hex,
+  onChange,
+  size = 20,
+}: {
+  name?: string;
+  hex?: string | null;
+  onChange: (hex: string | null) => void;
+  size?: number;
+}) {
+  const explicit = normalizeHex(hex);
+  const resolved = explicit || resolveColorHex(name);
+  const current = resolved || "#cbd5e1";
+  const inputVal = /^#[0-9a-fA-F]{6}$/.test(current) ? current : "#000000";
+  const title = explicit
+    ? `لون مخصّص ${current} — انقر لتغييره`
+    : resolved
+      ? `لون تلقائي ${current} (من الاسم) — انقر لتخصيصه`
+      : "لون غير معروف — انقر لضبط لونه الحقيقي";
+  return (
+    <span className="inline-flex items-center gap-0.5">
+      <span
+        className="relative inline-block rounded-full border shadow-sm overflow-hidden hover:ring-2 hover:ring-ring/40 transition-shadow"
+        style={{ width: size, height: size, background: current, borderColor: "oklch(0 0 0 / .2)" }}
+        title={title}
+      >
+        <input
+          type="color"
+          value={inputVal}
+          onChange={(e) => onChange(e.target.value.toUpperCase())}
+          aria-label={`اللون الحقيقي${name ? ` لـ${name}` : ""}`}
+          className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+        />
+      </span>
+      {explicit && (
+        <button
+          type="button"
+          onClick={() => onChange(null)}
+          title="عودة للون التلقائي (من اسم اللون)"
+          aria-label="إزالة اللون المخصّص"
+          className="text-muted-foreground hover:text-destructive leading-none text-sm"
+        >
+          ×
+        </button>
+      )}
+    </span>
   );
 }
 

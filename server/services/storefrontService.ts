@@ -28,6 +28,7 @@ import { decodeDataUrl, productImageUrl } from "../imageRoute";
 import { withTx } from "./tx";
 import { money, toDbMoney } from "./money";
 import { getProductCategoryIds, resolvePromotionForLine } from "./salesPromotionService";
+import { resolveColorHex, normalizeHex } from "@shared/colorBank";
 
 const RETAIL = "RETAIL" as const;
 
@@ -79,6 +80,8 @@ export interface StorefrontProduct {
   stockLeft: number | null;
   /** الدليل الاجتماعي: عدد مرّات بيع المنتج فعلياً (من الفواتير). */
   soldCount: number;
+  /** ألوان المنتج المتاحة (اسم + لون حقيقي «#RRGGBB») — سواتش تسويقية للزبون. تُملأ إن وُجد ≥ لون معروف. */
+  colors?: { name: string; hex: string }[];
 }
 
 /** عتبة «كمية محدودة» — الكمية تُكشَف للزبون فقط عندها فأقلّ (ندرة، لا تسريب مخزون كامل). */
@@ -189,6 +192,46 @@ async function attachSoldCounts(
 }
 
 /**
+ * يُرفق ألوان المنتج المتاحة (اسم + لون حقيقي «#RRGGBB») لكل بطاقة — استعلام مجمَّع واحد للدفعة.
+ * اللون الحقيقي = colorHex الصريح إن وُجد، وإلّا يُستنتَج من الاسم عبر بنك الألوان؛ الاسم غير
+ * المعروف بلا لون صريح يُتجاهَل (لا نخترع لوناً). فريدٌ بالاسم لكل منتج بسقف ١٢ لوناً.
+ */
+async function attachVariantColors(
+  db: NonNullable<ReturnType<typeof getDb>>,
+  items: StorefrontProduct[]
+): Promise<void> {
+  if (!items.length) return;
+  const productIds = items.map((i) => i.productId);
+  const rows = await db
+    .select({ productId: productVariants.productId, color: productVariants.color, colorHex: productVariants.colorHex })
+    .from(productVariants)
+    .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
+    .orderBy(asc(productVariants.id));
+  const byProduct = new Map<number, { name: string; hex: string }[]>();
+  const seenHex = new Map<number, Set<string>>();
+  for (const r of rows) {
+    const pid = Number(r.productId);
+    const name = (r.color ?? "").trim();
+    if (!name) continue;
+    const hex = normalizeHex(r.colorHex) ?? resolveColorHex(name);
+    if (!hex) continue; // اسم غير معروف بلا لون صريح ⇒ لا سواتش (لا اختراع)
+    // التفرّد باللون الفعليّ لا بالاسم: يمنع تكرار سواتش متطابقة (احمر + أحمر فاقع)
+    // ويُبقي لونين مختلفين لنفس الاسم (أزرق #000080 و#0000FF).
+    let set = seenHex.get(pid);
+    if (!set) { set = new Set(); seenHex.set(pid, set); }
+    if (set.has(hex)) continue;
+    set.add(hex);
+    let arr = byProduct.get(pid);
+    if (!arr) { arr = []; byProduct.set(pid, arr); }
+    if (arr.length < 12) arr.push({ name, hex });
+  }
+  for (const it of items) {
+    const arr = byProduct.get(it.productId);
+    if (arr && arr.length) it.colors = arr;
+  }
+}
+
+/**
  * يطبّق العروض على قائمة منتجات (نفس محرّك POS ⇒ العرض = الفرض). حارس أداء: إن لا عرض
  * فعّال اليوم ⇒ يعود بلا مسح لكل منتج (استعلام واحد رخيص). وإلّا يحلّ العرض الأنسب لكلٍّ.
  */
@@ -276,6 +319,7 @@ export async function storefrontCatalog(opts: {
   }
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
+  await attachVariantColors(db, items);
   return { items };
 }
 
@@ -318,6 +362,7 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   const item = toStorefront(rows[0]);
   await applyStorefrontPromotions([item], branchId);
   await attachSoldCounts(db, [item]);
+  await attachVariantColors(db, [item]);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
   return item;
 }
@@ -368,6 +413,7 @@ export async function storefrontRelated(
   }
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
+  await attachVariantColors(db, items);
   return items;
 }
 

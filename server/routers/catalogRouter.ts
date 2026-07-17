@@ -47,6 +47,8 @@ const variantSchema = z.object({
   sku: z.string().min(1),
   variantName: z.string().optional(),
   color: z.string().optional(),
+  // بنك الألوان: لون العرض الحقيقي «#RRGGBB» (اختيار صريح؛ إن غاب يُستنتَج من الاسم).
+  colorHex: z.string().regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح").nullish(),
   size: z.string().optional(),
   costPrice: z.string(),
   // v3-add-screens.
@@ -75,6 +77,8 @@ const editVariantSchema = z.object({
   id: z.number().int().positive().optional(),
   sku: z.string().min(1),
   color: z.string().nullish(),
+  // بنك الألوان: لون العرض الحقيقي «#RRGGBB» (اختيار صريح؛ إن غاب يُستنتَج من الاسم).
+  colorHex: z.string().regex(/^#[0-9a-fA-F]{6}$/, "لون غير صالح").nullish(),
   size: z.string().nullish(),
   costPrice: z.string(),
   baseRetail: z.string().optional(),

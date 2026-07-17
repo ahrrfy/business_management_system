@@ -51,6 +51,7 @@ export interface CreateProductInput {
     sku: string;
     variantName?: string | null;
     color?: string | null;
+    colorHex?: string | null;
     size?: string | null;
     costPrice: string;
     minStock?: number;
@@ -201,6 +202,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
         sku: v.sku.trim(),
         variantName: v.variantName ?? null,
         color: v.color ?? null,
+        colorHex: v.colorHex?.trim() || null,
         size: v.size ?? null,
         costPrice: toDbMoney(v.costPrice),
         minStock: v.minStock != null ? Math.max(0, Math.trunc(v.minStock)) : 0,

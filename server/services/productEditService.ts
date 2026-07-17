@@ -34,6 +34,8 @@ export interface VariantEditRow {
   id: number;
   sku: string;
   color: string | null;
+  /** لون العرض الحقيقي «#RRGGBB» (اختيار صريح) أو null ⇒ يُستنتَج من الاسم. */
+  colorHex: string | null;
   size: string | null;
   costPrice: string;
   /** سعر مفرد وحدة الأساس لهذا المتغيّر — لكشف «السعر الخاص» عند التحميل (يمنع طمسه عند الحفظ). */
@@ -118,6 +120,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       id: Number(v.id),
       sku: v.sku,
       color: v.color,
+      colorHex: v.colorHex ?? null,
       size: v.size,
       costPrice: v.costPrice,
       baseRetail,
@@ -173,6 +176,7 @@ export interface UpdateVariantRow {
   id?: number; // موجود ⇒ تحديث؛ غائب ⇒ إضافة
   sku: string;
   color?: string | null;
+  colorHex?: string | null;
   size?: string | null;
   costPrice: string;
   /** سعر خاص لمفرد وحدة الأساس لهذا المتغيّر — فارغ ⇒ يتبع سعر القالب المشترك. */
@@ -355,6 +359,7 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       const vals = {
         sku: v.sku.trim(),
         color: v.color?.trim() || null,
+        colorHex: v.colorHex?.trim() || null,
         size: v.size?.trim() || null,
         costPrice: toDbMoney(v.costPrice),
         minStock: v.minStock != null ? Math.max(0, Math.trunc(v.minStock)) : 0,

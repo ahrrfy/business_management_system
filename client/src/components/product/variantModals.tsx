@@ -237,7 +237,7 @@ export function LabelPrintModal({
                 <div key={l.key} className="rounded-lg border bg-card p-3 flex flex-col gap-1.5">
                   <div className="flex items-center justify-between">
                     <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-                      <ColorDot name={l.variant.color} size={11} />
+                      <ColorDot name={l.variant.color} hex={l.variant.colorHex} size={11} />
                       {l.variant.color || "—"}{l.variant.size ? ` · ${l.variant.size}` : ""}
                     </span>
                     <span className="text-[10px] rounded bg-secondary px-1.5 py-0.5 text-secondary-foreground">{l.unit.name || "وحدة"}</span>

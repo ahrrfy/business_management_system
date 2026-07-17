@@ -393,6 +393,9 @@ export const productVariants = mysqlTable(
     sku: varchar("sku", { length: 60 }).notNull(),
     variantName: varchar("variantName", { length: 255 }),
     color: varchar("color", { length: 60 }),
+    // بنك الألوان (colorHex): لون العرض الحقيقي «#RRGGBB» — اختيار صريح من المستخدم؛ إن null
+    // يُستنتَج تلقائياً من اسم اللون عبر @shared/colorBank. هجرة 0080. (9 خانات تتّسع لـ#RRGGBBAA مستقبلاً.)
+    colorHex: varchar("colorHex", { length: 9 }),
     size: varchar("size", { length: 60 }),
     // 0018: DB-level CHECK (costPrice >= 0) أُضيف في migration 0018.
     costPrice: decimal("costPrice", { precision: 15, scale: 2 }).default("0").notNull(),
