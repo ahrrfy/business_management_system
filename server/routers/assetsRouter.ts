@@ -176,7 +176,7 @@ export const assetsRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const a = await svc.addMaintenance(input.assetId, input);
+      const a = await svc.addMaintenance(input.assetId, input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, { action: "asset.maintenance", entityType: "fixedAsset", entityId: input.assetId, newValue: { type: input.type, cost: input.cost ?? "0" } });
       return a;
     }),
