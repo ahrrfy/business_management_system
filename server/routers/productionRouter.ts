@@ -110,12 +110,17 @@ export const productionRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      if (ctx.user.branchId == null) {
+      // عزل الفرع (تدقيق ١٧/٧): createProduction كان يستعمل input.branchId مباشرةً (ترقيم/استهلاك/إنتاج)
+      // ⇒ دورٌ مُنح inventory=FULL (غير مدير) يُنتج/يستهلك في فرعٍ آخر. غير admin/manager يُجبَر على فرعه.
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
       }
+      const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      const enforcedInput = { ...input, branchId: effectiveBranchId };
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createProduction(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) });
+          const res = await createProduction(enforcedInput, { userId: ctx.user.id, branchId: effectiveBranchId });
           if (!(res as { idempotent?: boolean }).idempotent) {
             await logAudit(ctx, {
               action: "production.create",

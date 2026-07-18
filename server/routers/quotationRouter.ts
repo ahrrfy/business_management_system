@@ -77,16 +77,18 @@ export const quotationRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // §٧: نُغلق ثغرة `ctx.user.branchId ?? input.branchId` (لو كان branchId خام null لقبل
-      // أيّ فرع). الآن المرتفعون فقط يصلون هنا ⇒ يمكن الاعتماد على input.branchId مع fallback صلب.
-      // Q1 (تدقيق ١٤/٦/٢٦): دفاع متعمّق — مدير بـbranchId=null لا يُسمح له بإنشاء عروض على أي فرع.
-      if (ctx.user.branchId == null) {
+      // عزل الفرع (تدقيق ١٧/٧): createQuotation كان يستعمل input.branchId مباشرةً في الترقيم والتخزين
+      // لا actor.branchId ⇒ مدير على salesManagerProcedure يُنشئ عرضاً على فرعٍ آخر، خلافاً لصرامة
+      // convert/setStatus (admin فقط يعبُر). الآن: غير الأدمن يُجبَر على فرعه ويُتجاهَل input.branchId.
+      const elevated = ctx.user.role === "admin";
+      if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء عرض سعر" });
       }
+      const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم العرض (QUO) يحرّر GET_LOCK قبل الالتزام ⇒ عرضان متزامنان
       // قد يحسبان نفس الرقم؛ القيد الفريد يرفض الثاني. نعيد المحاولة على التصادم (createQuotation ذرّية).
       const res = await retryOnDup(() =>
-        createQuotation(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) }),
+        createQuotation({ ...input, branchId: effectiveBranchId }, { userId: ctx.user.id, branchId: effectiveBranchId }),
       );
       // لا نُسجّل تدقيقاً على إعادة idempotent (لا إنشاء فعليّاً حدث).
       if (!(res as { idempotentReplay?: boolean }).idempotentReplay) {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { asc } from "drizzle-orm";
 import { categories } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -26,7 +27,12 @@ const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
 function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
   const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
   if (elevated) return requested;
-  return ctx.user.branchId != null ? Number(ctx.user.branchId) : requested;
+  // عزل صارم (تدقيق ١٧/٧): غير المرتفع بلا فرع مُسنَد كان يقرأ مخزون الفرع المطلوب من العميل ⇒ تسريب
+  // كميات أي فرع عبر posList/adminList/byBarcode. نرفض بدل الوثوق بمدخل العميل (اتفاقية scopedBranch).
+  if (ctx.user.branchId == null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+  }
+  return Number(ctx.user.branchId);
 }
 
 const priceSchema = z.object({ priceTier: z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]), price: z.string() });
