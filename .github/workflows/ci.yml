@@ -58,6 +58,8 @@ jobs:
         run: pnpm check:branch
       - name: حارِس الإجراءات اليتيمة (DoD)
         run: pnpm check:orphans
+      - name: حارِس حدود اليوم المحلية (TZ #٧)
+        run: pnpm check:date-boundaries
       - name: الاختبارات
         run: pnpm test
       - name: بناء الإنتاج

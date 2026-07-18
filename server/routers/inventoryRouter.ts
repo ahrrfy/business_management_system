@@ -497,12 +497,11 @@ export const inventoryRouter = router({
         if (!isNaN(from.getTime())) conds.push(gte(inventoryMovements.createdAt, from));
       }
       if (i.toDate) {
-        // شامل لليوم: < اليوم التالي.
+        // شامل لليوم: < بداية اليوم التالي بـUTC. البناء بـDate.UTC حتميّ ومستقلّ عن منطقة عملية
+        // Node (تدقيق ١٧/٧، مخاطرة جهازية #٧) — كان setDate/setHours المحليّان يَنزاحان على أي جهاز بغير TZ=UTC.
         const to = new Date(i.toDate);
         if (!isNaN(to.getTime())) {
-          const next = new Date(to);
-          next.setDate(next.getDate() + 1);
-          next.setHours(0, 0, 0, 0);
+          const next = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), to.getUTCDate() + 1));
           conds.push(lt(inventoryMovements.createdAt, next));
         }
       }

@@ -9,6 +9,7 @@ export default defineConfig({
     include: [
       "client/src/lib/printing/couponCard.test.ts",
       "server/services/__tests__/couponService.test.ts",
+      "server/services/__tests__/businessDay.test.ts",
     ],
   },
 });

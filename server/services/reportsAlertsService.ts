@@ -18,12 +18,7 @@ import {
   reconcileLedgerProfit,
 } from "./reconcileService";
 import { getAnomalyWatch } from "./reports/anomalyWatch";
-
-/** YYYY-MM-DD من مكوّنات محلية (نمط dateRange — لا toISOString كي لا ينزاح اليوم قرب منتصف الليل). */
-function localYmd(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
+import { todayUtcDate, utcTodayStart } from "./businessDay";
 
 function rowsOf(res: unknown): any[] {
   const data = (res as any)?.[0] ?? res;
@@ -176,9 +171,10 @@ export async function getManagementAlerts(opts: {
 
   // ── (ط) رقيب الشذوذ — مؤشرات آخر ٧ أيام (دون الكلفة/خصومات/مرتجعات/عجوزات/عكوس/تسلسل) ──
   const anomalyP = (() => {
-    const today = new Date();
-    const weekAgo = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 6);
-    return safe(getAnomalyWatch({ from: localYmd(weekAgo), to: localYmd(today), branchId }), null);
+    // نافذة آخر ٧ أيام بحدود UTC حتميّة (تدقيق ١٧/٧، #٧) — كان البناء بمكوّناتٍ محلية يَنزاح على غير TZ=UTC.
+    const todayYmd = todayUtcDate();
+    const weekAgoYmd = new Date(utcTodayStart().getTime() - 6 * 86_400_000).toISOString().slice(0, 10);
+    return safe(getAnomalyWatch({ from: weekAgoYmd, to: todayYmd, branchId }), null);
   })();
 
   // ── (ح) انحراف أرصدة (reconcile) — admin فقط ──

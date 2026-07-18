@@ -10,6 +10,7 @@ import {
   stocktakeDecisions,
   stocktakeSessions,
 } from "../../../drizzle/schema";
+import { utcTodayStart } from "../businessDay";
 import { money, toDbMoney } from "../money";
 import { requireDb } from "../tx";
 
@@ -127,10 +128,10 @@ export interface IraStatsResult {
  */
 export async function getIraStats(): Promise<IraStatsResult> {
   const db = requireDb();
-  const monthStart = new Date();
-  monthStart.setDate(1);
-  monthStart.setHours(0, 0, 0, 0);
-  monthStart.setMonth(monthStart.getMonth() - 5);
+  // أول الشهر قبل ٥ أشهر بـUTC (النافذة = ٦ أشهر شاملةً الحاليّ). البناء بـDate.UTC حتميّ ومستقلّ
+  // عن منطقة عملية Node (تدقيق ١٧/٧، #٧) — كان setDate/setHours/setMonth المحليّة تَنزاح على غير TZ=UTC.
+  const now = utcTodayStart();
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 5, 1));
 
   const sessions = await db
     .select({
@@ -143,13 +144,13 @@ export async function getIraStats(): Promise<IraStatsResult> {
     .leftJoin(branches, eq(stocktakeSessions.branchId, branches.id))
     .where(and(eq(stocktakeSessions.status, "APPROVED"), gte(stocktakeSessions.approvedAt, monthStart)));
 
-  const ymOf = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  const ymOf = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
   const months: string[] = [];
   {
     const cur = new Date(monthStart);
     for (let i = 0; i < 6; i++) {
       months.push(ymOf(cur));
-      cur.setMonth(cur.getMonth() + 1);
+      cur.setUTCMonth(cur.getUTCMonth() + 1);
     }
   }
 
