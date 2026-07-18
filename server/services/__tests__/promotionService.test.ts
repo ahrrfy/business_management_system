@@ -9,10 +9,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createEmployee } from "../employeeService";
-import { approvePromotion, completeTermination, createPromotion, createTermination } from "../promotionService";
+import { applyDuePromotions, approvePromotion, completeTermination, createPromotion, createTermination } from "../promotionService";
 import { approveVoucher } from "../voucher/approval";
+import { withTx } from "../tx";
 
-const ACTOR = { userId: 1, branchId: 1 };
+const ACTOR = { userId: 1, branchId: 1, role: "admin" };
 // مديران لاختبار فصل المهام (SOD-04): admin مُستثنى فلا يصلح لاختبار الرفض. المُنشئ ≠ المُعتمِد.
 const MANAGER_A = { userId: 2, branchId: 1, role: "manager" };
 const MANAGER_B = { userId: 3, branchId: 1, role: "manager" };
@@ -56,7 +57,7 @@ beforeEach(async () => {
 describe("promotionService — الترقيات", () => {
   it("اعتماد الترقية يحدّث مسمّى الموظف وراتبه", async () => {
     const emp = await createEmployee({ firstName: "علي", lastName: "الكناني", payType: "monthly", salary: "800000", position: "محاسب", branchId: 1 });
-    const p = await createPromotion({ employeeId: emp!.id, toTitle: "محاسب أول", toSalary: "1000000", effectiveDate: "2026-06-01" });
+    const p = await createPromotion({ employeeId: emp!.id, toTitle: "محاسب أول", toSalary: "1000000", effectiveDate: "2026-06-01" }, ACTOR);
     await approvePromotion(p!.id, ACTOR);
     const [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
     expect(e2.position).toBe("محاسب أول");
@@ -67,8 +68,50 @@ describe("promotionService — الترقيات", () => {
     const emp = await createEmployee({ firstName: "نور", lastName: "الساعدي", payType: "monthly", salary: "700000", branchId: 1 });
     const t = await createTermination({ employeeId: emp!.id, terminationType: "فصل", lastDay: "2026-06-30", settlement: "0" });
     await completeTermination(t!.id, ACTOR);
-    const p = await createPromotion({ employeeId: emp!.id, toTitle: "أمين مخزن", effectiveDate: "2026-07-01" });
+    const p = await createPromotion({ employeeId: emp!.id, toTitle: "أمين مخزن", effectiveDate: "2026-07-01" }, ACTOR);
     await expect(approvePromotion(p!.id, ACTOR)).rejects.toThrow();
+  });
+
+  it("فصل المهام (تدقيق ١٧/٧): المُنشئ غير الأدمن لا يعتمد ترقيته بنفسه", async () => {
+    const emp = await createEmployee({ firstName: "زيد", lastName: "الحسيني", payType: "monthly", salary: "800000", position: "بائع", branchId: 1 });
+    const p = await createPromotion({ employeeId: emp!.id, toTitle: "مشرف", toSalary: "1100000", effectiveDate: "2026-01-01" }, MANAGER_A);
+    await expect(approvePromotion(p!.id, MANAGER_A)).rejects.toThrow(/فصل المهام/);
+    const [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
+    expect(e2.position).toBe("بائع"); // لم تُطبَّق
+    expect(Number(e2.salary)).toBe(800000);
+  });
+
+  it("فصل المهام: مديرٌ آخر يعتمد الترقية ⇒ تُطبَّق", async () => {
+    const emp = await createEmployee({ firstName: "ليث", lastName: "الدليمي", payType: "monthly", salary: "800000", position: "بائع", branchId: 1 });
+    const p = await createPromotion({ employeeId: emp!.id, toTitle: "مشرف", toSalary: "1100000", effectiveDate: "2026-01-01" }, MANAGER_A);
+    await approvePromotion(p!.id, MANAGER_B);
+    const [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
+    expect(e2.position).toBe("مشرف");
+    expect(Number(e2.salary)).toBe(1100000);
+  });
+
+  it("effectiveDate مستقبليّ (تدقيق ١٧/٧): الاعتماد يؤجّل التطبيق (appliedAt=null) حتى تُطبّقه كنسة applyDuePromotions", async () => {
+    const emp = await createEmployee({ firstName: "مروان", lastName: "الزبيدي", payType: "monthly", salary: "800000", position: "بائع", branchId: 1 });
+    const p = await createPromotion({ employeeId: emp!.id, toTitle: "مدير فرع", toSalary: "1500000", effectiveDate: "2030-01-01" }, MANAGER_A);
+    await approvePromotion(p!.id, MANAGER_B);
+
+    // معتمَدة لكن مؤجَّلة: راتب الموظف لم يتغيّر، appliedAt=null.
+    const [row] = await db().select().from(s.employeePromotions).where(eq(s.employeePromotions.id, p!.id));
+    expect(row.status).toBe("approved");
+    expect(row.appliedAt).toBeNull();
+    expect(Number((await db().select().from(s.employees).where(eq(s.employees.id, emp!.id)))[0].salary)).toBe(800000);
+
+    // كنسة بتاريخٍ قبل effectiveDate ⇒ لا تطبيق.
+    expect(await withTx((tx) => applyDuePromotions(tx, "2029-12-31"))).toBe(0);
+    expect(Number((await db().select().from(s.employees).where(eq(s.employees.id, emp!.id)))[0].salary)).toBe(800000);
+
+    // كنسة عند/بعد effectiveDate ⇒ تُطبَّق مرّة واحدة.
+    expect(await withTx((tx) => applyDuePromotions(tx, "2030-01-01"))).toBe(1);
+    const [e2] = await db().select().from(s.employees).where(eq(s.employees.id, emp!.id));
+    expect(Number(e2.salary)).toBe(1500000);
+    expect(e2.position).toBe("مدير فرع");
+    // appliedAt خُتم ⇒ كنسة ثانية لا تُعيد التطبيق.
+    expect(await withTx((tx) => applyDuePromotions(tx, "2030-01-01"))).toBe(0);
   });
 });
 

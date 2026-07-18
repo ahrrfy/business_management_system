@@ -2872,6 +2872,10 @@ export const employeePromotions = mysqlTable(
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     approvedAt: timestamp("approvedAt"),
     approvedBy: int("approvedBy").references(() => users.id),
+    // SOD (تدقيق ١٧/٧): مُنشئ الترقية لفرض «المعتمِد ≠ المُنشئ»؛ appliedAt يميّز المطبَّقة على راتب
+    // الموظف عن المؤجَّلة (effectiveDate مستقبليّ) التي تُطبَّق عند بلوغ تاريخها.
+    createdBy: int("createdBy").references(() => users.id),
+    appliedAt: timestamp("appliedAt"),
   },
   (t) => ({ empIdx: index("idx_promo_emp").on(t.employeeId) })
 );

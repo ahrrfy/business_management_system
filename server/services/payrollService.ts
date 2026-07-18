@@ -31,6 +31,7 @@ import { money, round2, toDateStr, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
+import { applyDuePromotions } from "./promotionService";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -132,6 +133,13 @@ export async function generatePayroll(period: string, actor: Actor) {
     // رفض التكرار: مسيّر واحد لكل شهر (القاعدة تفرض UNIQUE أيضاً، نتحقّق مبكراً برسالة عربية).
     const [exists] = await tx.select({ id: payrollRuns.id }).from(payrollRuns).where(eq(payrollRuns.period, p)).limit(1);
     if (exists) throw new TRPCError({ code: "CONFLICT", message: `يوجد مسيّر رواتب لشهر ${p} بالفعل` });
+
+    // كنسة الترقيات المستحقّة (تدقيق ١٧/٧): تُطبّق الترقيات المعتمَدة المؤجَّلة (effectiveDate مستقبليّ
+    // عند الاعتماد) التي بلغ تاريخُها آخرَ يوم في فترة المسيّر — **قبل** قراءة الرواتب أدناه ⇒ تسري
+    // الزيادة في شهرها. (لا أثر إن لم توجد ترقياتٌ مستحقّة.)
+    const [py, pm] = p.split("-").map(Number);
+    const periodEndYmd = new Date(Date.UTC(py, pm, 0)).toISOString().slice(0, 10);
+    await applyDuePromotions(tx, periodEndYmd);
 
     // كل الموظفين غير منتهي الخدمة (نشطون + في إجازة).
     const emps = await tx
