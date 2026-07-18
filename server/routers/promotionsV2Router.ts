@@ -18,6 +18,7 @@ import {
 } from "../services/salesPromotionService";
 import { getDb } from "../db";
 import { withTx } from "../services/tx";
+import { baghdadToday } from "../services/businessDay";
 import { campaignsManagerProcedure, campaignsReadProcedure, router } from "../trpc";
 
 const moneyStr = z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح");
@@ -166,10 +167,11 @@ export const promotionsV2Router = router({
         throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكن قراءة عروض فرع آخر" });
       }
       // B8: مقارنة حبيبة اليوم (بغداد UTC+3) بدل datetime — «اليوم الأخير» يعمل.
-      const now = new Date();
-      const bag = new Date(now.getTime() + 3 * 60 * 60 * 1000);
-      const todayYmd = bag.toISOString().slice(0, 10);
-      const todayDate = new Date(todayYmd + "T00:00:00");
+      const todayYmd = baghdadToday();
+      // ⚠️ لاحقة Z إلزامية: بلا Z يُفسَّر منتصف الليل بمنطقة عملية Node، فيَنزاح على أي جهاز بغير TZ=UTC
+      // (جهاز متجرٍ ببغداد ⇒ يصير أمسِ ٢١:٠٠Z، فعرضٌ يبدأ «اليوم» يُستبعَد يومَه كاملاً — تدقيق ١٧/٧ #٧).
+      // مطابقٌ لكل نظائره (auditRouter/cashTransferService/exchange) التي تحمل Z، وبيتُ التعريف businessDay.
+      const todayDate = new Date(todayYmd + "T00:00:00Z");
       const rows = await db
         .select()
         .from(promotions)
