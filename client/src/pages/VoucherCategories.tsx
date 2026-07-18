@@ -205,7 +205,7 @@ export default function VoucherCategories() {
                       <span className={`inline-block rounded-full px-2 py-0.5 ${
                         r.direction === "IN" ? "bg-emerald-100 text-emerald-800"
                         : r.direction === "OUT" ? "bg-rose-100 text-rose-800"
-                        : "bg-blue-100 text-blue-800"
+                        : "bg-[var(--sem-info-bg)] text-[var(--sem-info)]"
                       }`}>
                         {DIR_LABEL[r.direction]}
                       </span>

@@ -740,7 +740,7 @@ export function ImportDialog<TRow>({
           <div className="space-y-3">
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               <SummaryPill label="مُنشأ" value={summary.created} cls="text-emerald-700 bg-emerald-50" />
-              <SummaryPill label="محدَّث" value={summary.updated} cls="text-sky-700 bg-sky-50" />
+              <SummaryPill label="محدَّث" value={summary.updated} cls="text-[var(--sem-info)] bg-[var(--sem-info-bg)]" />
               <SummaryPill label="متجاوَز" value={summary.skipped} cls="text-amber-700 bg-amber-50" />
               <SummaryPill label="فاشل" value={summary.failed} cls="text-rose-700 bg-rose-50" />
             </div>
@@ -759,7 +759,7 @@ export function ImportDialog<TRow>({
               </div>
             )}
             {summary.failed === 0 && writtenCount === 0 && !batchNote && (
-              <div className="flex items-center gap-2 rounded-md bg-sky-50 px-3 py-2 text-xs text-sky-700">
+              <div className="flex items-center gap-2 rounded-md bg-[var(--sem-info-bg)] px-3 py-2 text-xs text-[var(--sem-info)]">
                 <CheckCircle2 className="size-4 shrink-0" />
                 لا جديد: كل الصفوف موجودة مسبقاً وتُخطّيت — إعادة الاستيراد لا تكرّر البيانات ولا الأرصدة.
               </div>

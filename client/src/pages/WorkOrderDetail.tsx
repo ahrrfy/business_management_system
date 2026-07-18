@@ -29,7 +29,7 @@ const STATUS_LABEL: Record<string, string> = {
 };
 const STATUS_CLS: Record<string, string> = {
   RECEIVED: "bg-muted text-foreground/70",
-  IN_PROGRESS: "bg-blue-100 text-blue-700",
+  IN_PROGRESS: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
   READY: "bg-amber-100 text-amber-700",
   DELIVERED: "bg-emerald-100 text-emerald-700",
   CANCELLED: "bg-rose-100 text-rose-700",

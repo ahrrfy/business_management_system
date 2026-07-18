@@ -24,7 +24,7 @@ interface BranchBalanceCardProps {
 const SEVERITY_CLS = {
   warning: "bg-amber-50 text-amber-800 border-amber-200 dark:bg-amber-950/30 dark:text-amber-300 dark:border-amber-900",
   danger: "bg-rose-50 text-rose-800 border-rose-200 dark:bg-rose-950/30 dark:text-rose-300 dark:border-rose-900",
-  info: "bg-sky-50 text-sky-800 border-sky-200 dark:bg-sky-950/30 dark:text-sky-300 dark:border-sky-900",
+  info: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]",
 };
 
 export function BranchBalanceCard({

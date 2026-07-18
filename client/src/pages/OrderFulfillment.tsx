@@ -24,8 +24,8 @@ type Status = "PENDING" | "CONFIRMED" | "PROCESSING" | "SHIPPED" | "DELIVERED" |
 
 const STATUS_META: Record<Status, { label: string; pill: string }> = {
   PENDING: { label: "وارد", pill: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300" },
-  CONFIRMED: { label: "مثبَّت", pill: "bg-blue-100 text-blue-800 dark:bg-blue-500/15 dark:text-blue-300" },
-  PROCESSING: { label: "قيد التجهيز", pill: "bg-indigo-100 text-indigo-800 dark:bg-indigo-500/15 dark:text-indigo-300" },
+  CONFIRMED: { label: "مثبَّت", pill: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
+  PROCESSING: { label: "قيد التجهيز", pill: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
   SHIPPED: { label: "مع المندوب", pill: "bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300" },
   DELIVERED: { label: "سُلّم", pill: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" },
   CANCELLED: { label: "ملغى", pill: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400" },

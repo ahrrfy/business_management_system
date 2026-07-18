@@ -677,7 +677,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
         // minHeight ٢٤٠ + minWidth:0 (بِلا aspect-ratio) لِتَوحيد ارتِفاع الصَفّ ومَنع تَمَدُّد
         // العَرض فَوق مَسار 1fr الضَيّق ⇒ تَراكُب (شَكوى المالك ١٢/٧).
         minWidth: 0,
-        minHeight: 240,
+        minHeight: 150,
         borderRadius: 16,
         overflow: "hidden",
         display: "flex",
@@ -711,14 +711,14 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          gap: 12,
-          padding: "18px 12px 12px",
+          gap: 7,
+          padding: "12px 10px 8px",
           textAlign: "center",
           textDecoration: "none",
         }}
       >
-        <Shape id={m.id} sec={m.sec} isPos={m.id === "pos"} size={72} />
-        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+        <Shape id={m.id} sec={m.sec} isPos={m.id === "pos"} size={50} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
           <div
             style={{
               fontSize: 13,
@@ -742,7 +742,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           style={{
             display: "flex",
             alignItems: "stretch",
-            height: 48,
+            height: 44,
             flexShrink: 0,
             borderTop: `1px solid ${T.cardBord}`,
           }}
@@ -766,7 +766,7 @@ function PlaceholderCard() {
         // مُطابِق لِـModuleCard: ارتِفاع ثابِت ٢٤٠ + minWidth:0 (بِلا aspect-ratio) لِتَوحيد ارتِفاع
         // الصَفّ وَمَنع تَمَدُّد العَرض فَوق مَسار 1fr الضَيّق ⇒ تَراكُب (راجِع تَعليق ModuleCard).
         minWidth: 0,
-        minHeight: 240,
+        minHeight: 150,
         borderRadius: 16,
         border: `1.5px dashed ${T.secLine}`,
         display: "flex",

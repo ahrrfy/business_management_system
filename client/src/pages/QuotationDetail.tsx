@@ -28,7 +28,7 @@ const STATUS: Record<string, string> = {
 const TIER: Record<string, string> = { RETAIL: "مفرد", WHOLESALE: "جملة", GOVERNMENT: "حكومي" };
 const STATUS_CLS: Record<string, string> = {
   DRAFT: "bg-muted text-foreground/70",
-  SENT: "bg-blue-100 text-blue-700",
+  SENT: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
   ACCEPTED: "bg-emerald-100 text-emerald-700",
   REJECTED: "bg-rose-100 text-rose-700",
   CONVERTED: "bg-violet-100 text-violet-700",

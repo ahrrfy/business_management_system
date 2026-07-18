@@ -9,7 +9,7 @@ type Accent = "green" | "red" | "blue" | "amber" | "purple";
 const ACCENT_BG: Record<Accent, string> = {
   green: "bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300",
   red: "bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300",
-  blue: "bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300",
+  blue: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
   amber: "bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300",
   purple: "bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-300",
 };

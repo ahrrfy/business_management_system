@@ -451,7 +451,7 @@ function QueueTab({
                           </span>
                         )}
                         {row.isOpeningBalance && (
-                          <span className="inline-flex items-center gap-1 rounded-md bg-sky-500/15 px-2 py-0.5 text-[11px] font-bold text-sky-800">
+                          <span className="inline-flex items-center gap-1 rounded-md bg-[var(--sem-info-bg)] px-2 py-0.5 text-[11px] font-bold text-[var(--sem-info)]">
                             <Landmark className="size-3" aria-hidden />
                             رصيد مُدوَّر
                           </span>

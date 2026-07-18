@@ -26,8 +26,8 @@ type Conv = RouterOutputs["conversations"]["list"][number];
 const CHANNEL_META: Record<string, { label: string; Icon: typeof MessageSquare; cls: string }> = {
   WHATSAPP: { label: "واتساب", Icon: MessageSquare, cls: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400" },
   INSTAGRAM: { label: "انستغرام", Icon: User, cls: "bg-pink-500/10 text-pink-700 dark:text-pink-400" },
-  TIKTOK: { label: "تيك توك", Icon: User, cls: "bg-slate-500/10 text-slate-700 dark:text-slate-300" },
-  STORE: { label: "المتجر", Icon: ShoppingBag, cls: "bg-sky-500/10 text-sky-700 dark:text-sky-400" },
+  TIKTOK: { label: "تيك توك", Icon: User, cls: "bg-muted text-muted-foreground" },
+  STORE: { label: "المتجر", Icon: ShoppingBag, cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
   PHONE: { label: "اتصال", Icon: Phone, cls: "bg-amber-500/10 text-amber-700 dark:text-amber-400" },
   WALK_IN: { label: "حُضوري", Icon: Store, cls: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
   OTHER: { label: "أخرى", Icon: MessageSquare, cls: "bg-muted text-muted-foreground" },

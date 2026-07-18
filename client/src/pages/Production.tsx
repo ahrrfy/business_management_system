@@ -124,7 +124,7 @@ export default function Production() {
                     </span>
                   </td>
                   <td className="p-2 text-xs whitespace-nowrap">{fmtDateTime(r.createdAt)}</td>
-                  <td className="p-2 text-center"><Link href={`/production/${Number(r.id)}`} className="text-sky-700 text-sm">فتح</Link></td>
+                  <td className="p-2 text-center"><Link href={`/production/${Number(r.id)}`} className="text-primary text-sm">فتح</Link></td>
                 </tr>
               ))}
               {!list.isLoading && filtered.length === 0 && (
