@@ -100,7 +100,15 @@ export default function Promotions() {
     onError: (e) => notify.err(e),
   });
   const completeTerm = trpc.promotions.completeTermination.useMutation({
-    onSuccess: async () => { notify.ok("اكتمل إنهاء الخدمة وأُنهيت خدمة الموظف"); await Promise.all([utils.promotions.listTerminations.invalidate(), utils.employees.list.invalidate()]); },
+    onSuccess: async (data) => {
+      if (data?.settlementVoucher) {
+        // تسوية المستحقات صارت سند صرفٍ مُعلَّق يعتمده مديرٌ آخر (فصل مهام #٦) — أبلِغ المستخدم بوجهة الفعل.
+        notify.ok(`اكتمل إنهاء الخدمة. تسوية المستحقات صُدِّرت كسند صرف مُعلَّق (${data.settlementVoucher.voucherNumber}) — يعتمده مديرٌ آخر من شاشة السندات.`);
+      } else {
+        notify.ok("اكتمل إنهاء الخدمة وأُنهيت خدمة الموظف");
+      }
+      await Promise.all([utils.promotions.listTerminations.invalidate(), utils.employees.list.invalidate()]);
+    },
     onError: (e) => notify.err(e),
   });
 

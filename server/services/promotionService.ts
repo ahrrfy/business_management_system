@@ -12,7 +12,7 @@ import { employeePromotions, employees, employeeTerminations, receipts } from ".
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { money, toDbMoney } from "./money";
-import { postEntry } from "./ledgerService";
+import { nextVoucherNumber } from "./voucher/helpers";
 
 /* ===== الترقيات ===== */
 
@@ -196,7 +196,12 @@ export async function completeTermination(id: number, actor: Actor) {
     if (t.status === "completed") throw new Error("إنهاء الخدمة مكتمل مسبقاً");
 
     const [emp] = await tx
-      .select({ branchId: employees.branchId, employmentStatus: employees.employmentStatus })
+      .select({
+        branchId: employees.branchId,
+        employmentStatus: employees.employmentStatus,
+        firstName: employees.firstName,
+        lastName: employees.lastName,
+      })
       .from(employees)
       .where(eq(employees.id, t.employeeId))
       .for("update")
@@ -216,36 +221,37 @@ export async function completeTermination(id: number, actor: Actor) {
       })
       .where(eq(employees.id, t.employeeId));
 
-    // تسوية المستحقات النهائية تُصرف من الخزينة وتُرحَّل للدفتر (PAYMENT_OUT) إن كانت موجبة،
-    // بفرع الموظف، بمفتاح dedupe فريد TERMINATION:<id> ⇒ يمنع ازدواج الصرف عند إعادة المحاولة.
+    // تسوية المستحقات النهائية = صرفُ نقدٍ لموظف = **عملية حسّاسة** ⇒ فصل مهام إلزاميّ (المخاطرة الجهازية
+    // #٦، قرار المالك ١٨/٧: العمليات الحسّاسة تمرّ باعتمادٍ ثنائيّ بلا عتبة). تُصدَر **سند صرف مُعلَّق**
+    // (PENDING_APPROVAL، بلا أثرٍ ماليّ) حتى يعتمده مديرٌ آخر عبر approveVoucher (SOD-04: المُعتمِد ≠ المُنشئ)
+    // فيُرحَّل حينها PAYMENT_OUT للخزينة. يظهر في طابور اعتماد السندات القائم (voucherNumber != null) بلا واجهةٍ جديدة.
+    // كان يُصرَف COMPLETED بفاعلٍ واحد بلا سقف (البند ٩ في «أخطر ١٢»، تدقيق ١٧/٧).
     const settlement = money(t.settlement ?? 0);
+    let settlementVoucher: { receiptId: number; voucherNumber: string } | null = null;
     if (settlement.gt(0)) {
-      // TREASURY-OUT (تدقيق ٢/٧): تسوية نهاية الخدمة تُخرج نقداً من الخزينة فعلاً ⇒ إيصال OUT/TREASURY
-      // (كان القيد يُرحَّل بلا receipt فلا ينقص رصيد الخزينة المعروض). dedupeKey على القيد يمنع الازدواج.
+      const branchId = Number(emp.branchId ?? 1);
+      const voucherNumber = await nextVoucherNumber(tx, "PAYMENT", branchId);
       const rRes = await tx.insert(receipts).values({
         invoiceId: null,
-        branchId: emp.branchId ?? null,
-        shiftId: null,
-        cashBucket: "TREASURY",
+        branchId,
+        shiftId: null, // PENDING: لا وردية/دلو حتى الاعتماد (approveVoucher يحسمهما بوردية المُعتمِد)
+        cashBucket: null,
         direction: "OUT",
         amount: toDbMoney(settlement),
         paymentMethod: "CASH",
         status: "COMPLETED",
+        voucherNumber,
         partyType: "OTHER",
+        partyId: null,
+        counterpartyName: fullEmployeeName(emp),
         description: `تسوية نهاية خدمة — ${t.terminationType}`,
+        voucherDate: new Date(`${t.lastDay}T00:00:00Z`),
         createdBy: actor.userId,
+        approvalStatus: "PENDING_APPROVAL", // دائماً (عملية حسّاسة، بلا عتبة) — الأثر الماليّ عند الاعتماد فقط
       });
-      await postEntry(tx, {
-        entryType: "PAYMENT_OUT",
-        branchId: emp.branchId ?? null,
-        receiptId: extractInsertId(rRes),
-        amount: settlement,
-        entryDate: new Date(`${t.lastDay}T00:00:00Z`),
-        dedupeKey: `TERMINATION:${id}`,
-        notes: `تسوية نهاية خدمة — ${t.terminationType}`,
-      });
+      settlementVoucher = { receiptId: extractInsertId(rRes), voucherNumber };
     }
 
-    return id;
+    return { terminationId: id, settlementVoucher };
   });
 }

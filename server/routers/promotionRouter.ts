@@ -81,8 +81,9 @@ export const promotionRouter = router({
   completeTermination: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const id = await svc.completeTermination(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "termination.complete", entityType: "employeeTermination", entityId: id });
-      return { id };
+      const res = await svc.completeTermination(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "termination.complete", entityType: "employeeTermination", entityId: res.terminationId });
+      // settlementVoucher != null ⇒ صُدِّر سند صرف مُعلَّق للتسوية ينتظر اعتماد مديرٍ آخر (فصل مهام #٦).
+      return { id: res.terminationId, settlementVoucher: res.settlementVoucher };
     }),
 });
