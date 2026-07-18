@@ -9,129 +9,157 @@
 :root {
   /* WCAG AA (الوضع الفاتح): أُظلِمت قِيَم L لتصمد الألوان كنصّ (≥٤.٥) وكشارات (نصّ ملوّن على تظليل ≥٤.٥).
    * كانت تفشل: stock-low نصّ ٢.٧٣/شارة ٢.٤٢، stock-ok شارة ٤.٠٣، status-pending شارة ٤.٢٥، money-positive نصّ ٤.٥٦ (شعرة). */
-  --money-positive: oklch(0.52 0.13 155); /* أخضر هادئ */
-  --money-negative: oklch(0.55 0.17 25); /* أحمر طوبيّ */
+  --money-positive: oklch(0.505 0.120 152); /* أخضر هادئ */
+  --money-negative: oklch(0.530 0.170 27); /* أحمر طوبيّ */
   --money-neutral: var(--muted-foreground);
-  --stock-ok: oklch(0.50 0.13 155);
-  --stock-low: oklch(0.52 0.15 75); /* كهرماني غامق */
-  --stock-out: oklch(0.55 0.20 25); /* أحمر */
-  --status-pending: oklch(0.50 0.08 250); /* أزرق رمادي */
-  --status-active: oklch(0.50 0.13 155);
-  --status-done: oklch(0.50 0.10 200);
+  --stock-ok: oklch(0.505 0.120 152);
+  --stock-low: oklch(0.520 0.110 80); /* كهرماني هادئ */
+  --stock-out: oklch(0.530 0.170 27); /* أحمر طوبيّ */
+  --status-pending: oklch(0.505 0.120 240); /* أزرق معلوماتي */
+  --status-active: oklch(0.505 0.120 152);
+  --status-done: oklch(0.505 0.110 200);
   --status-cancelled: var(--muted-foreground);
   /* علامات تجارية و قراءة مُعزَّزة (P1 من تَدقيق CSS العَدائي) */
   --brand-whatsapp: oklch(0.66 0.18 145); /* WhatsApp green — مَوحَّد */
-  --strong-muted: oklch(0.42 0.015 65); /* نَصّ ثانوي قابل للقراءة (بَديل عن opacity-70 الذي يَنتَهك WCAG) */
+  --strong-muted: oklch(0.430 0.011 70); /* نَصّ ثانوي قابل للقراءة دافئ (صَفا) */
   /* ألوان رسوم بَيانية ذات دَلالة سيمياء — مَوحَّدة عَبر Treasury/Recharts */
-  --chart-cash: oklch(0.62 0.16 155); /* أخضر — نَقد/داخل */
-  --chart-card: oklch(0.60 0.15 245); /* أزرق — بِطاقة */
-  --chart-check: oklch(0.55 0.18 295); /* بَنفسجي — صَكّ */
-  --chart-transfer: oklch(0.70 0.15 75); /* كَهرماني — حَوالة */
-  --chart-wallet: oklch(0.62 0.20 0); /* وَردي — مَحفظة */
-  --chart-out: oklch(0.62 0.20 25); /* أحمر — صَرف/خَارج */
-  /* لَوحة Dashboard — مَربوطة بـtokens لِإلغاء MutationObserver في JSX */
-  --dash-bg: oklch(0.963 0.012 75);
-  --dash-card-bg: oklch(1 0 0);
-  --dash-card-bord: oklch(0 0 0 / 0.09);
-  --dash-sec-line: oklch(0 0 0 / 0.10);
-  --dash-sec-label: oklch(0.40 0.08 262);
-  --dash-text: oklch(0.18 0.014 65);
-  --dash-sub: oklch(0.48 0.012 65);
-  --dash-muted: oklch(0.62 0.010 65);
-  --dash-stat-bg: oklch(1 0 0);
-  --dash-stat-bord: oklch(0 0 0 / 0.08);
-  --dash-alert-bg: oklch(0.62 0.24 22 / 0.08);
-  --dash-featured-bg: oklch(0.62 0.24 22 / 0.07);
-  --dash-featured-bd: oklch(0.62 0.24 22 / 0.35);
-  --dash-metrics-bg: oklch(0.985 0.007 75);
-  --dash-metrics-bord: oklch(0 0 0 / 0.08);
+  --chart-cash: oklch(0.55 0.12 152); /* أخضر — نَقد/داخل */
+  --chart-card: oklch(0.55 0.12 262); /* أزرق — بِطاقة */
+  --chart-check: oklch(0.55 0.11 300); /* بَنفسجي — صَكّ */
+  --chart-transfer: oklch(0.62 0.11 70); /* كَهرماني — حَوالة */
+  --chart-wallet: oklch(0.55 0.12 340); /* وَردي — مَحفظة */
+  --chart-out: oklch(0.55 0.15 27); /* أحمر — صَرف/خَارج */
+  /* ═══ نظام «صَفا» (Ṣafā) v2 — لوحة تحكم هادئة منظَّمة: «اللون هُويّةُ قسمٍ لا طلاءُ سطح» ═══
+     كانفاسٌ ورقيّ دافئ (لا أبيض/أسود نقيّ)، اللونُ المُشبَع محجوزٌ في رقاقة الأيقونة + شريط القسم؛
+     ٥ عائلات لونية (عائلة لكل قسم) بمباعدة هيو ≥٦٠° تصمد تحت عمى الألوان؛ WCAG AA مُتحقَّق بمحرّك اللمعان النسبيّ الحقيقيّ. */
+  --dash-bg: oklch(0.958 0.010 82);
+  --dash-card-bg: oklch(0.976 0.006 82);
+  --dash-card-bord: oklch(0.900 0.008 78);
+  --dash-sec-line: oklch(0.922 0.007 78);
+  --dash-sec-label: oklch(0.505 0.010 72);
+  --dash-text: oklch(0.260 0.012 70);
+  --dash-sub: oklch(0.450 0.011 70);
+  --dash-muted: oklch(0.515 0.012 70);
+  --dash-stat-bg: oklch(0.976 0.006 82);
+  --dash-stat-bord: oklch(0.900 0.008 78);
+  --dash-alert-bg: oklch(0.955 0.022 27);
+  --dash-featured-bg: oklch(0.960 0.035 262);
+  --dash-featured-bd: oklch(0.60 0.11 262);
+  --dash-metrics-bg: oklch(0.966 0.008 82);
+  --dash-metrics-bord: oklch(0.922 0.007 78);
+  /* عائلات الأقسام: ink=نصّ/إجراء أساسي، icon=غليف الأيقونة، chip=خلفية الرقاقة، chipbd=حدّ الرقاقة */
+  --sec1-ink: oklch(0.50 0.12 262);  --sec1-icon: oklch(0.50 0.12 262);  --sec1-chip: oklch(0.952 0.055 262);  --sec1-chipbd: color-mix(in oklch, var(--sec1-icon) 16%, transparent);
+  --sec2-ink: oklch(0.50 0.11 200);  --sec2-icon: oklch(0.50 0.11 200);  --sec2-chip: oklch(0.954 0.050 200);  --sec2-chipbd: color-mix(in oklch, var(--sec2-icon) 16%, transparent);
+  --sec3-ink: oklch(0.49 0.12 340);  --sec3-icon: oklch(0.49 0.12 340);  --sec3-chip: oklch(0.955 0.045 340);  --sec3-chipbd: color-mix(in oklch, var(--sec3-icon) 16%, transparent);
+  --sec4-ink: oklch(0.45 0.10 55);   --sec4-icon: oklch(0.50 0.10 55);   --sec4-chip: oklch(0.955 0.050 55);   --sec4-chipbd: color-mix(in oklch, var(--sec4-icon) 16%, transparent);
+  --sec5-ink: oklch(0.50 0.035 260); --sec5-icon: oklch(0.50 0.035 260); --sec5-chip: oklch(0.950 0.022 260); --sec5-chipbd: color-mix(in oklch, var(--sec5-icon) 22%, transparent);
+  /* استثناء الكاشير المُشبَع الوحيد المسموح (POS) — الهدف اللونيّ الأقوى حيث يُحتاج أكثر */
+  --dash-pos-chip: oklch(0.48 0.14 262);
+  --dash-pos-glyph: oklch(0.99 0.006 262);
+  /* ألوان دلالية للوحة (حالة فقط): تِنت خفيف ٨٪ + حبر عالي التباين — لا تعبئة مُشبَعة */
+  --sem-pos: oklch(0.505 0.120 152);  --sem-pos-bg: oklch(0.952 0.035 152);
+  --sem-neg: oklch(0.530 0.170 27);   --sem-neg-bg: oklch(0.955 0.022 27);
+  --sem-warn: oklch(0.520 0.110 80);  --sem-warn-bg: oklch(0.958 0.038 80);
+  --sem-info: oklch(0.505 0.120 240); --sem-info-bg: oklch(0.955 0.024 240);
   /* لَوحة POS — مَربوطة بـtokens لِإلغاء MutationObserver */
-  --pos-bg: oklch(0.985 0.002 247.858);
-  --pos-card: oklch(1 0 0);
-  --pos-border: oklch(0.922 0.004 247.858);
-  --pos-muted: oklch(0.962 0.004 247.858);
-  --pos-muted-fg: oklch(0.552 0.016 285.938);
-  --pos-fg: oklch(0.235 0.015 65);
-  --pos-primary: oklch(0.488 0.243 264.376);
-  --pos-primary-h: oklch(0.43 0.243 264.376);
+  --pos-bg: oklch(0.958 0.010 82);
+  --pos-card: oklch(0.976 0.006 82);
+  --pos-border: oklch(0.900 0.008 78);
+  --pos-muted: oklch(0.940 0.008 82);
+  --pos-muted-fg: oklch(0.515 0.012 70);
+  --pos-fg: oklch(0.260 0.012 70);
+  --pos-primary: oklch(0.48 0.15 262);
+  --pos-primary-h: oklch(0.42 0.15 262);
   --pos-primary-fg: oklch(1 0 0);
-  --pos-primary-soft: oklch(0.94 0.04 264.376);
-  --pos-success: oklch(0.50 0.13 155);
-  --pos-success-h: oklch(0.44 0.13 155);
-  --pos-amber: oklch(0.65 0.15 75);
-  --pos-amber-soft: oklch(0.955 0.045 75);
-  --pos-danger: oklch(0.577 0.245 27.325);
-  --pos-danger-soft: oklch(0.955 0.035 27.325);
-  --pos-mode-active: oklch(0.90 0.10 72);
-  --pos-mode-bord: oklch(0.72 0.14 72);
-  --pos-mode-fg: oklch(0.38 0.14 60);
-  --pos-numkey: oklch(0.962 0.004 247.858);
-  --pos-numkey-hov: oklch(0.93 0.004 247.858);
-  --pos-delkey: oklch(0.92 0.05 20);
-  --pos-del-fg: oklch(0.50 0.22 25);
-  --pos-overlay: oklch(0.15 0.01 265 / .88);
-  --pos-branch-bg: oklch(0.96 0.012 264);
-  --pos-branch-bord: oklch(0.88 0.04 264);
+  --pos-primary-soft: oklch(0.945 0.030 262);
+  --pos-success: oklch(0.505 0.120 152);
+  --pos-success-h: oklch(0.44 0.120 152);
+  --pos-amber: oklch(0.62 0.110 80);
+  --pos-amber-soft: oklch(0.958 0.038 80);
+  --pos-danger: oklch(0.55 0.190 27);
+  --pos-danger-soft: oklch(0.955 0.033 27);
+  --pos-mode-active: oklch(0.90 0.08 80);
+  --pos-mode-bord: oklch(0.70 0.12 80);
+  --pos-mode-fg: oklch(0.42 0.11 70);
+  --pos-numkey: oklch(0.940 0.008 82);
+  --pos-numkey-hov: oklch(0.915 0.010 82);
+  --pos-delkey: oklch(0.955 0.033 27);
+  --pos-del-fg: oklch(0.55 0.190 27);
+  --pos-overlay: oklch(0.15 0.01 75 / .88);
+  --pos-branch-bg: oklch(0.945 0.030 262);
+  --pos-branch-bord: oklch(0.86 0.055 262);
 }
 
 .dark {
-  --money-positive: oklch(0.72 0.15 155);
-  --money-negative: oklch(0.70 0.17 25);
-  --stock-ok: oklch(0.72 0.15 155);
-  --stock-low: oklch(0.80 0.16 80);
-  --stock-out: oklch(0.70 0.18 25);
-  --status-pending: oklch(0.70 0.09 250);
-  --status-active: oklch(0.72 0.15 155);
-  --status-done: oklch(0.68 0.11 200);
+  --money-positive: oklch(0.740 0.140 152);
+  --money-negative: oklch(0.725 0.150 27);
+  --stock-ok: oklch(0.740 0.140 152);
+  --stock-low: oklch(0.800 0.130 80);
+  --stock-out: oklch(0.725 0.150 27);
+  --status-pending: oklch(0.740 0.100 240);
+  --status-active: oklch(0.740 0.140 152);
+  --status-done: oklch(0.740 0.100 200);
   --brand-whatsapp: oklch(0.74 0.18 145);
-  --strong-muted: oklch(0.72 0.015 65);
-  --chart-cash: oklch(0.74 0.16 155);
-  --chart-card: oklch(0.72 0.15 245);
-  --chart-check: oklch(0.70 0.18 295);
-  --chart-transfer: oklch(0.80 0.16 80);
-  --chart-wallet: oklch(0.74 0.20 0);
-  --chart-out: oklch(0.74 0.20 25);
-  --dash-bg: oklch(0.14 0.010 65);
-  --dash-card-bg: oklch(0.20 0.012 65);
-  --dash-card-bord: oklch(1 0 0 / 0.10);
-  --dash-sec-line: oklch(1 0 0 / 0.22);
-  --dash-sec-label: oklch(0.88 0.10 262);
-  --dash-text: oklch(1 0 0);
-  --dash-sub: oklch(0.90 0.005 75);
-  --dash-muted: oklch(0.80 0.005 75);
-  --dash-stat-bg: oklch(0.20 0.012 65);
-  --dash-stat-bord: oklch(1 0 0 / 0.10);
-  --dash-alert-bg: oklch(0.62 0.24 22 / 0.14);
-  --dash-featured-bg: oklch(0.62 0.24 22 / 0.14);
-  --dash-featured-bd: oklch(0.62 0.24 22 / 0.50);
-  --dash-metrics-bg: oklch(0.17 0.010 65);
-  --dash-metrics-bord: oklch(1 0 0 / 0.10);
-  --pos-bg: oklch(0.14 0.010 65);
-  --pos-card: oklch(0.20 0.012 65);
-  --pos-border: oklch(1 0 0 / 0.12);
-  --pos-muted: oklch(0.22 0.012 65);
-  --pos-muted-fg: oklch(0.72 0.010 247);
-  --pos-fg: oklch(1 0 0);
-  --pos-primary: oklch(0.55 0.22 264);
-  --pos-primary-h: oklch(0.50 0.22 264);
+  --strong-muted: oklch(0.742 0.008 82);
+  --chart-cash: oklch(0.74 0.13 152);
+  --chart-card: oklch(0.72 0.13 262);
+  --chart-check: oklch(0.72 0.13 300);
+  --chart-transfer: oklch(0.80 0.13 70);
+  --chart-wallet: oklch(0.74 0.13 340);
+  --chart-out: oklch(0.74 0.15 27);
+  /* «صَفا» v2 — الوضع الداكن: فحمٌ دافئ مرفوع (لا أسود نقيّ)، الارتفاع بالحدود لا الظلال، نصٌّ مخفوض الهالة. */
+  --dash-bg: oklch(0.185 0.007 75);
+  --dash-card-bg: oklch(0.225 0.009 75);
+  --dash-card-bord: oklch(0.325 0.010 75);
+  --dash-sec-line: oklch(0.295 0.009 75);
+  --dash-sec-label: oklch(0.660 0.010 80);
+  --dash-text: oklch(0.885 0.007 82);
+  --dash-sub: oklch(0.742 0.008 82);
+  --dash-muted: oklch(0.660 0.009 82);
+  --dash-stat-bg: oklch(0.225 0.009 75);
+  --dash-stat-bord: oklch(0.325 0.010 75);
+  --dash-alert-bg: oklch(0.315 0.058 27);
+  --dash-featured-bg: oklch(0.27 0.05 262);
+  --dash-featured-bd: oklch(0.50 0.09 262);
+  --dash-metrics-bg: oklch(0.200 0.008 75);
+  --dash-metrics-bord: oklch(0.295 0.009 75);
+  --sec1-ink: oklch(0.76 0.11 262);  --sec1-icon: oklch(0.76 0.11 262);  --sec1-chip: oklch(0.335 0.050 262);  --sec1-chipbd: oklch(0.400 0.045 262);
+  --sec2-ink: oklch(0.75 0.10 200);  --sec2-icon: oklch(0.75 0.10 200);  --sec2-chip: oklch(0.335 0.048 200);  --sec2-chipbd: oklch(0.400 0.043 200);
+  --sec3-ink: oklch(0.74 0.11 340);  --sec3-icon: oklch(0.74 0.11 340);  --sec3-chip: oklch(0.335 0.048 340);  --sec3-chipbd: oklch(0.400 0.043 340);
+  --sec4-ink: oklch(0.78 0.12 58);   --sec4-icon: oklch(0.78 0.12 58);   --sec4-chip: oklch(0.340 0.052 58);   --sec4-chipbd: oklch(0.420 0.045 58);
+  --sec5-ink: oklch(0.80 0.035 260); --sec5-icon: oklch(0.80 0.035 260); --sec5-chip: oklch(0.335 0.035 260); --sec5-chipbd: oklch(0.420 0.030 260);
+  --dash-pos-chip: oklch(0.47 0.12 262);
+  --dash-pos-glyph: oklch(0.97 0.01 262);
+  --sem-pos: oklch(0.740 0.140 152);  --sem-pos-bg: oklch(0.300 0.048 152);
+  --sem-neg: oklch(0.725 0.150 27);   --sem-neg-bg: oklch(0.315 0.058 27);
+  --sem-warn: oklch(0.800 0.130 80);  --sem-warn-bg: oklch(0.315 0.050 80);
+  --sem-info: oklch(0.740 0.100 240); --sem-info-bg: oklch(0.300 0.045 240);
+  --pos-bg: oklch(0.185 0.007 75);
+  --pos-card: oklch(0.225 0.009 75);
+  --pos-border: oklch(0.325 0.010 75);
+  --pos-muted: oklch(0.255 0.009 75);
+  --pos-muted-fg: oklch(0.660 0.009 82);
+  --pos-fg: oklch(0.885 0.007 82);
+  --pos-primary: oklch(0.55 0.15 262);
+  --pos-primary-h: oklch(0.49 0.15 262);
   --pos-primary-fg: oklch(1 0 0);
-  --pos-primary-soft: oklch(0.28 0.06 264);
-  --pos-success: oklch(0.55 0.14 155);
-  --pos-success-h: oklch(0.49 0.14 155);
-  --pos-amber: oklch(0.72 0.15 75);
-  --pos-amber-soft: oklch(0.32 0.07 75);
-  --pos-danger: oklch(0.65 0.22 27);
-  --pos-danger-soft: oklch(0.30 0.08 27);
-  --pos-mode-active: oklch(0.30 0.10 72);
-  --pos-mode-bord: oklch(0.55 0.14 72);
-  --pos-mode-fg: oklch(0.85 0.12 72);
-  --pos-numkey: oklch(0.24 0.010 65);
-  --pos-numkey-hov: oklch(0.28 0.010 65);
-  --pos-delkey: oklch(0.26 0.05 20);
-  --pos-del-fg: oklch(0.75 0.22 25);
-  --pos-overlay: oklch(0.08 0.01 265 / .92);
-  --pos-branch-bg: oklch(0.28 0.05 264);
-  --pos-branch-bord: oklch(0.38 0.08 264);
+  --pos-primary-soft: oklch(0.30 0.06 262);
+  --pos-success: oklch(0.740 0.140 152);
+  --pos-success-h: oklch(0.66 0.140 152);
+  --pos-amber: oklch(0.800 0.130 80);
+  --pos-amber-soft: oklch(0.315 0.050 80);
+  --pos-danger: oklch(0.725 0.150 27);
+  --pos-danger-soft: oklch(0.315 0.058 27);
+  --pos-mode-active: oklch(0.32 0.08 80);
+  --pos-mode-bord: oklch(0.55 0.13 80);
+  --pos-mode-fg: oklch(0.85 0.12 80);
+  --pos-numkey: oklch(0.255 0.009 75);
+  --pos-numkey-hov: oklch(0.295 0.009 75);
+  --pos-delkey: oklch(0.315 0.058 27);
+  --pos-del-fg: oklch(0.725 0.150 27);
+  --pos-overlay: oklch(0.10 0.01 75 / .92);
+  --pos-branch-bg: oklch(0.30 0.06 262);
+  --pos-branch-bord: oklch(0.42 0.09 262);
 }
 
 @layer utilities {

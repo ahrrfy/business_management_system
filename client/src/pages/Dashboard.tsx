@@ -30,11 +30,11 @@ const useT = () => T;
 /* ═══════════ SECTIONS & MODULES ═══════════ */
 
 const SECTIONS = [
-  { id: 1, name: "المبيعات والتحصيل",  accent: "oklch(0.62 0.24 22)" },
-  { id: 2, name: "المخزون والمشتريات", accent: "oklch(0.58 0.22 168)" },
-  { id: 3, name: "المالية والحسابات",  accent: "oklch(0.58 0.20 178)" },
-  { id: 4, name: "التشغيل",            accent: "oklch(0.65 0.20 128)" },
-  { id: 5, name: "الإدارة والنظام",    accent: "oklch(0.58 0.18 262)" },
+  { id: 1, name: "المبيعات والتحصيل",  accent: "var(--sec1-ink)" },
+  { id: 2, name: "المخزون والمشتريات", accent: "var(--sec2-ink)" },
+  { id: 3, name: "المالية والحسابات",  accent: "var(--sec3-ink)" },
+  { id: 4, name: "التشغيل",            accent: "var(--sec4-ink)" },
+  { id: 5, name: "الإدارة والنظام",    accent: "var(--sec5-ink)" },
 ];
 
 type ModuleDef = {
@@ -49,31 +49,31 @@ type ModuleDef = {
 };
 
 const MODULES: ModuleDef[] = [
-  { id: "pos",           href: "/pos",                 name: "نقطة البيع",       desc: "مبيعات وورديات",    sec: 1, color: "oklch(0.62 0.24 22)",  featured: true },
-  { id: "sales",         href: "/invoices",            name: "المبيعات",          desc: "فواتير ومدفوعات",   sec: 1, color: "oklch(0.68 0.20 52)" },
-  { id: "quotations",    href: "/quotations",          name: "عروض الأسعار",      desc: "تسعير وعروض",       sec: 1, color: "oklch(0.60 0.22 288)" },
-  { id: "customers",     href: "/customers",           name: "العملاء",           desc: "إدارة العملاء",     sec: 1, color: "oklch(0.62 0.20 340)" },
-  { id: "returns",       href: "/returns",             name: "المرتجعات",         desc: "تسجيل المرتجعات",   sec: 1, color: "oklch(0.58 0.20 14)" },
-  { id: "products",      href: "/products",            name: "المنتجات",          desc: "منتجات وأسعار",      sec: 2, color: "oklch(0.58 0.22 168)" },
-  { id: "purchases",     href: "/purchases",           name: "المشتريات",         desc: "أوامر وموردين",     sec: 2, color: "oklch(0.55 0.22 248)" },
-  { id: "inventory",     href: "/inventory",           name: "المخزون والأرصدة",  desc: "أرصدة + تسوية",     sec: 2, color: "oklch(0.58 0.18 198)" },
-  { id: "movements",     href: "/inventory-movements", name: "حركات المخزون",     desc: "وارد وصادر يدوي",   sec: 2, color: "oklch(0.55 0.20 208)" },
-  { id: "transfers",     href: "/transfers",           name: "التحويلات",         desc: "نقل بين الفروع",    sec: 2, color: "oklch(0.60 0.18 218)" },
-  { id: "barcode",       href: "/barcode-labels",      name: "الباركود",          desc: "طباعة الملصقات",    sec: 2, color: "oklch(0.55 0.14 278)" },
-  { id: "suppliers",     href: "/suppliers",           name: "الموردون",          desc: "إدارة الموردين",    sec: 2, color: "oklch(0.62 0.18 46)" },
-  { id: "purchaseReturns", href: "/purchase-returns",  name: "مرتجعات الشراء",    desc: "سجلّ المرتجعات",    sec: 2, color: "oklch(0.55 0.20 14)" },
-  { id: "expenses",      href: "/expenses",            name: "المصروفات",         desc: "مصروفات يومية",     sec: 3, color: "oklch(0.65 0.18 72)" },
-  { id: "vouchers",      href: "/vouchers",            name: "السندات",           desc: "قبض وصرف",          sec: 3, color: "oklch(0.62 0.18 160)" },
-  { id: "shifts",        href: "/shifts",              name: "سجلّ الورديات",     desc: "إغلاقات وZ-report", sec: 3, color: "oklch(0.60 0.16 250)" },
-  { id: "arAging",       href: "/ar-aging",            name: "الذمم المدينة",     desc: "أعمار ومتابعة",     sec: 3, color: "oklch(0.58 0.20 178)" },
-  { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "oklch(0.58 0.22 148)" },
-  { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "oklch(0.60 0.18 322)" },
-  { id: "suppStatement", href: "/suppliers-statement", name: "كشف حساب مورد",     desc: "حسابات الموردين",   sec: 3, color: "oklch(0.62 0.18 262)" },
-  { id: "salesReport",   href: "/sales-report",        name: "تقرير المبيعات",    desc: "ملخّص وأرباح",      sec: 3, color: "oklch(0.60 0.20 215)" },
-  { id: "workOrders",    href: "/work-orders",         name: "خدمة العملاء",      desc: "طلبات الطباعة والتخصيص",  sec: 4, color: "oklch(0.65 0.20 128)" },
-  { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "oklch(0.58 0.18 262)", adminOnly: true },
-  { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "oklch(0.56 0.16 300)", adminOnly: true },
-  { id: "reconcile",     href: "/reconcile",           name: "تدقيق التوافق",     desc: "كشف الانحراف",      sec: 5, color: "oklch(0.55 0.20 25)",  adminOnly: true },
+  { id: "pos",           href: "/pos",                 name: "نقطة البيع",       desc: "مبيعات وورديات",    sec: 1, color: "var(--sec1-ink)",  featured: true },
+  { id: "sales",         href: "/invoices",            name: "المبيعات",          desc: "فواتير ومدفوعات",   sec: 1, color: "var(--sec1-ink)" },
+  { id: "quotations",    href: "/quotations",          name: "عروض الأسعار",      desc: "تسعير وعروض",       sec: 1, color: "var(--sec1-ink)" },
+  { id: "customers",     href: "/customers",           name: "العملاء",           desc: "إدارة العملاء",     sec: 1, color: "var(--sec1-ink)" },
+  { id: "returns",       href: "/returns",             name: "المرتجعات",         desc: "تسجيل المرتجعات",   sec: 1, color: "var(--sec1-ink)" },
+  { id: "products",      href: "/products",            name: "المنتجات",          desc: "منتجات وأسعار",      sec: 2, color: "var(--sec2-ink)" },
+  { id: "purchases",     href: "/purchases",           name: "المشتريات",         desc: "أوامر وموردين",     sec: 2, color: "var(--sec2-ink)" },
+  { id: "inventory",     href: "/inventory",           name: "المخزون والأرصدة",  desc: "أرصدة + تسوية",     sec: 2, color: "var(--sec2-ink)" },
+  { id: "movements",     href: "/inventory-movements", name: "حركات المخزون",     desc: "وارد وصادر يدوي",   sec: 2, color: "var(--sec2-ink)" },
+  { id: "transfers",     href: "/transfers",           name: "التحويلات",         desc: "نقل بين الفروع",    sec: 2, color: "var(--sec2-ink)" },
+  { id: "barcode",       href: "/barcode-labels",      name: "الباركود",          desc: "طباعة الملصقات",    sec: 2, color: "var(--sec2-ink)" },
+  { id: "suppliers",     href: "/suppliers",           name: "الموردون",          desc: "إدارة الموردين",    sec: 2, color: "var(--sec2-ink)" },
+  { id: "purchaseReturns", href: "/purchase-returns",  name: "مرتجعات الشراء",    desc: "سجلّ المرتجعات",    sec: 2, color: "var(--sec2-ink)" },
+  { id: "expenses",      href: "/expenses",            name: "المصروفات",         desc: "مصروفات يومية",     sec: 3, color: "var(--sec3-ink)" },
+  { id: "vouchers",      href: "/vouchers",            name: "السندات",           desc: "قبض وصرف",          sec: 3, color: "var(--sec3-ink)" },
+  { id: "shifts",        href: "/shifts",              name: "سجلّ الورديات",     desc: "إغلاقات وZ-report", sec: 3, color: "var(--sec3-ink)" },
+  { id: "arAging",       href: "/ar-aging",            name: "الذمم المدينة",     desc: "أعمار ومتابعة",     sec: 3, color: "var(--sec3-ink)" },
+  { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "var(--sec3-ink)" },
+  { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "var(--sec3-ink)" },
+  { id: "suppStatement", href: "/suppliers-statement", name: "كشف حساب مورد",     desc: "حسابات الموردين",   sec: 3, color: "var(--sec3-ink)" },
+  { id: "salesReport",   href: "/sales-report",        name: "تقرير المبيعات",    desc: "ملخّص وأرباح",      sec: 3, color: "var(--sec3-ink)" },
+  { id: "workOrders",    href: "/work-orders",         name: "خدمة العملاء",      desc: "طلبات الطباعة والتخصيص",  sec: 4, color: "var(--sec4-ink)" },
+  { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "var(--sec5-ink)", adminOnly: true },
+  { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "var(--sec5-ink)", adminOnly: true },
+  { id: "reconcile",     href: "/reconcile",           name: "تدقيق التوافق",     desc: "كشف الانحراف",      sec: 5, color: "var(--sec5-ink)",  adminOnly: true },
 ];
 
 /* ═══════════ QUICK ACTIONS ═══════════
@@ -129,9 +129,9 @@ const ActIco: Record<string, (sz?: number) => React.JSX.Element> = {
 
 /* ═══════════ SVG SHAPES ═══════════ */
 
-function Shape({ id, color: c, size = 106 }: { id: string; color: string; size?: number }) {
+function Shape({ id, sec, isPos = false, size = 76 }: { id: string; sec: number; isPos?: boolean; size?: number }) {
   const sw = 1.5;
-  const w = "white";
+  const w = "currentColor";
 
   type PathMap = Record<string, React.ReactNode>;
   const paths: PathMap = {
@@ -325,11 +325,15 @@ function Shape({ id, color: c, size = 106 }: { id: string; color: string; size?:
 
   const icon = paths[id] ?? <circle cx="12" cy="12" r="9" stroke={w} strokeWidth={sw} />;
 
+  // «صَفا»: رقاقة أيقونة ثنائية اللون (خلفية تِنت العائلة + غليف بحبر العائلة) بدل المربّع المُشبَع اللمّاع.
+  // الغليف يرث لون العائلة عبر currentColor (color على الـsvg الخارجي).
+  const chipBg = isPos ? "var(--dash-pos-chip)" : `var(--sec${sec}-chip)`;
+  const chipBd = isPos ? "transparent" : `var(--sec${sec}-chipbd)`;
+  const glyph = isPos ? "var(--dash-pos-glyph)" : `var(--sec${sec}-icon)`;
+
   return (
-    <svg style={{ width: size, height: size, display: "block", flexShrink: 0 }} viewBox="0 0 52 52" fill="none">
-      <rect x="0" y="0" width="52" height="52" rx="14" fill={c} />
-      <rect x="3" y="3" width="46" height="25" rx="11" fill="white" fillOpacity="0.16" />
-      <rect x="0" y="34" width="52" height="18" fill="black" fillOpacity="0.05" />
+    <svg style={{ width: size, height: size, display: "block", flexShrink: 0, color: glyph }} viewBox="0 0 52 52" fill="none">
+      <rect x="0.75" y="0.75" width="50.5" height="50.5" rx="15" fill={chipBg} stroke={chipBd} strokeWidth="1.5" />
       <svg x="10" y="10" width="32" height="32" viewBox="0 0 24 24" fill="none" overflow="visible">
         {icon}
       </svg>
@@ -407,9 +411,9 @@ function MetricsBar() {
   // نبض المبيعات (خلفية) — مبيعات أمس مقابل معدّل ٧ أيام + اتجاه بلون/سهم.
   const pulse = metrics.data?.salesPulse;
   const pulseColor =
-    pulse?.direction === "up" ? "oklch(0.58 0.20 155)" // أخضر — أعلى من المعدّل
-    : pulse?.direction === "down" ? "oklch(0.58 0.22 25)" // أحمر — أدنى
-    : "oklch(0.62 0.03 260)"; // رمادي — قرب المعدّل
+    pulse?.direction === "up" ? "var(--sem-pos)" // أخضر — أعلى من المعدّل
+    : pulse?.direction === "down" ? "var(--sem-neg)" // أحمر — أدنى
+    : "var(--dash-muted)"; // رمادي — قرب المعدّل
   const pulseArrow = pulse?.direction === "up" ? "↑" : pulse?.direction === "down" ? "↓" : "=";
   const hasBaseline = !!pulse && Number(pulse.avg7d) > 0;
 
@@ -419,16 +423,16 @@ function MetricsBar() {
       value: fmtAr(todaysTotal),
       unit: "د.ع",
       copyText: `مبيعات اليوم: ${fmtAr(todaysTotal)} د.ع`,
-      ico: <TrendIco color="oklch(0.60 0.22 155)" />,
-      iBg: "oklch(0.60 0.22 155 / 0.15)",
+      ico: <TrendIco color="var(--sem-pos)" />,
+      iBg: "var(--sem-pos-bg)",
     },
     {
       label: "فواتير اليوم",
       value: String(todays.length),
       unit: "فاتورة",
       copyText: `فواتير اليوم: ${todays.length} فاتورة`,
-      ico: <TrendIco color="oklch(0.60 0.22 155)" />,
-      iBg: "oklch(0.60 0.22 155 / 0.15)",
+      ico: <TrendIco color="var(--sem-pos)" />,
+      iBg: "var(--sem-pos-bg)",
     },
     // بطاقة نبض المبيعات: بلا معدّل ٧ أيام (لا مبيعات سابقة) = لا نص حشو — تُخفى كاملاً
     // (تدقيق الفجوات ٥/٧، بند ١٢) — نفس اصطلاح إخفاء بطاقة الجرد أدناه عبر spread شرطي.
@@ -444,7 +448,7 @@ function MetricsBar() {
               ? ""
               : `مبيعات أمس: ${fmtAr(Number(pulse.yesterday))} د.ع (${pulseArrow}${fmtAr(Math.abs(pulse.changePct))}٪ عن معدّل ٧ أيام = ${fmtAr(Number(pulse.avg7d))} د.ع)`,
             ico: <TrendIco color={pulseColor} />,
-            iBg: pulseColor.replace(")", " / 0.15)"),
+            iBg: `color-mix(in oklch, ${pulseColor} 15%, transparent)`,
           },
         ]
       : []),
@@ -455,8 +459,8 @@ function MetricsBar() {
       copyText: shift.data
         ? `الوردية الحالية: مفتوحة ${shiftSince}`.trim()
         : "الوردية الحالية: لا وردية",
-      ico: <ShiftIco color="oklch(0.62 0.22 200)" />,
-      iBg: "oklch(0.62 0.22 200 / 0.15)",
+      ico: <ShiftIco color="var(--sem-info)" />,
+      iBg: "var(--sem-info-bg)",
     },
     {
       label: "مخزون منخفض",
@@ -465,10 +469,10 @@ function MetricsBar() {
       copyText: metrics.isLoading
         ? ""
         : `مخزون منخفض: ${fmtAr(metrics.data?.lowStockCount ?? 0)} منتج`,
-      ico: <WarnIco color="oklch(0.72 0.18 75)" />,
-      iBg: "oklch(0.72 0.18 75 / 0.15)",
+      ico: <WarnIco color="var(--sem-warn)" />,
+      iBg: "var(--sem-warn-bg)",
       isAlert: true,
-      alertC: "oklch(0.60 0.18 75)",
+      alertC: "var(--sem-warn)",
       href: "/inventory",
     },
     {
@@ -480,10 +484,10 @@ function MetricsBar() {
         : overdueCount > 0
           ? `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل — ${overdueTotalShort} د.ع`
           : `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل`,
-      ico: <WarnIco color="oklch(0.62 0.24 22)" />,
-      iBg: "oklch(0.62 0.24 22 / 0.12)",
+      ico: <WarnIco color="var(--sem-neg)" />,
+      iBg: "var(--sem-neg-bg)",
       isAlert: true,
-      alertC: "oklch(0.52 0.22 25)",
+      alertC: "var(--sem-neg)",
       href: "/ar-aging",
     },
     // بطاقة الجرد: تظهر للأدوار المخوّلة فقط، وتتحوّل تنبيهاً عند وجود جلسات بانتظار المراجعة.
@@ -498,10 +502,10 @@ function MetricsBar() {
               : `جرد بانتظار المراجعة: ${fmtAr(stk.data?.review ?? 0)} جلسة${
                   stk.data?.counting ? ` — ${fmtAr(stk.data.counting)} قيد العدّ` : ""
                 }`,
-            ico: <WarnIco color="oklch(0.55 0.2 264)" />,
-            iBg: "oklch(0.55 0.2 264 / 0.12)",
+            ico: <WarnIco color="var(--sem-info)" />,
+            iBg: "var(--sem-info-bg)",
             isAlert: (stk.data?.review ?? 0) > 0,
-            alertC: "oklch(0.5 0.2 264)",
+            alertC: "var(--sem-info)",
             href: "/stocktakes",
           },
         ]
@@ -520,6 +524,9 @@ function MetricsBar() {
       }}
     >
       {stats.map((s, i) => {
+        // بطاقة تنبيه في «صَفا»: تِنت خفيف بلون حالتها (كل تنبيه بلونه لا أحمر موحّد) + حدّ ملوّن رقيق.
+        const abg = s.isAlert ? `color-mix(in oklch, ${s.iBg} 62%, var(--dash-card-bg))` : T.statBg;
+        const abd = s.isAlert ? `color-mix(in oklch, ${s.alertC} 42%, ${T.statBord})` : T.statBord;
         const card = (
           <div
             key={i}
@@ -533,8 +540,8 @@ function MetricsBar() {
               display: "flex",
               alignItems: "center",
               gap: 10,
-              background: s.isAlert ? T.alertBg : T.statBg,
-              border: `1px solid ${s.isAlert ? (s.alertC + "40") : T.statBord}`,
+              background: abg,
+              border: `1px solid ${abd}`,
               boxShadow: "0 1px 4px oklch(0 0 0 / 0.04)",
               cursor: s.href ? "pointer" : "default",
               textDecoration: "none",
@@ -604,7 +611,8 @@ function MetricsBar() {
 
 function ActionButton({ a, primary, color }: { a: Action; primary: boolean; color: string }) {
   const T = useT();
-  const tint = (op: number) => color.replace(")", ` / ${op})`);
+  // color = رمز حبر العائلة var(--secN-ink) ⇒ التظليل عبر color-mix (لا string.replace على المتغيّر).
+  const tint = (op: number) => `color-mix(in oklch, ${color} ${Math.round(op * 100)}%, transparent)`;
   const base = primary ? color : T.sub;
   return (
     <Link
@@ -656,18 +664,18 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
   const me = trpc.auth.me.useQuery(); // مُخزَّن مؤقتاً (deduped) — لا طلب شبكة إضافي.
   const elevated = me.data?.role === "admin" || me.data?.role === "manager";
   const acts = (ACTIONS[m.id] ?? []).filter((a) => !a.adminOnly || elevated);
-  const cShadow = m.color.replace(")", " / 0.35)");
   const bord = m.featured ? T.featuredBd : T.cardBord;
+  // «صَفا»: بطاقة محايدة دافئة (بلا لمعان ولا ظلٍّ ملوّن صارخ) — الهوية في رقاقة الأيقونة وشريط القسم.
+  // ارتفاعٌ بظلٍّ محايد ناعم؛ عند التحويم يميل الحدّ نحو حبر العائلة (إشارة لطيفة).
+  const restShadow = "0 1px 2px oklch(0 0 0 / 0.05), 0 1px 3px oklch(0 0 0 / 0.03)";
+  const hoverShadow = "0 4px 16px oklch(0 0 0 / 0.08)";
+  const hoverBord = `color-mix(in oklch, ${m.color} 32%, ${T.cardBord})`;
 
   return (
     <div
       style={{
-        // العَرض = عَرض عَمود 1fr، وَالارتِفاع ≥ ٢٤٠px (يَسَع Shape 94 + نَصّ + شَريط إجراءات 48
-        // + حَواشي ≈ 206). **لا aspect-ratio**: كان `aspectRatio:1 + minHeight:240` يُثَبِّت عَرض
-        // البِطاقة عَلى ٢٤٠px (aspect-ratio يَشتَقّ العَرض مِن الارتِفاع المَفروض ٢٤٠)، فَحين يَهبُط
-        // عَمود 1fr دون ٢٤٠px (لَوحي/قابِل لِلطَيّ ٤ أعمِدة والشَريط الجانبيّ يَقتَطِع العَرض ⇒ ~٢٢٣px)
-        // تَفيض البِطاقة فَوق مَسارها فَتَتَراكَب مَع جارَتِها (شَكوى المالك ١٢/٧). minWidth:0 يَضمَن
-        // انكِماشها لِعَرض المَسار، وَ minHeight (مَع تَمَدُّد الشَبكة align:stretch) يُوَحِّد ارتِفاع الصَفّ.
+        // minHeight ٢٤٠ + minWidth:0 (بِلا aspect-ratio) لِتَوحيد ارتِفاع الصَفّ ومَنع تَمَدُّد
+        // العَرض فَوق مَسار 1fr الضَيّق ⇒ تَراكُب (شَكوى المالك ١٢/٧).
         minWidth: 0,
         minHeight: 240,
         borderRadius: 16,
@@ -676,19 +684,21 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
         flexDirection: "column",
         cursor: "pointer",
         background: m.featured ? T.featuredBg : T.cardBg,
-        border: `1px solid ${bord}`,
-        boxShadow: "0 2px 12px oklch(0 0 0 / 0.05)",
-        transition: "box-shadow 0.18s, transform 0.18s",
+        border: `${m.featured ? 2 : 1}px solid ${bord}`,
+        boxShadow: restShadow,
+        transition: "box-shadow 0.18s, transform 0.18s, border-color 0.18s",
       }}
       onMouseEnter={(e) => {
         const el = e.currentTarget as HTMLDivElement;
-        el.style.boxShadow = `0 6px 24px ${cShadow}`;
+        el.style.boxShadow = hoverShadow;
         el.style.transform = "translateY(-2px)";
+        if (!m.featured) el.style.borderColor = hoverBord;
       }}
       onMouseLeave={(e) => {
         const el = e.currentTarget as HTMLDivElement;
-        el.style.boxShadow = "0 2px 12px oklch(0 0 0 / 0.05)";
+        el.style.boxShadow = restShadow;
         el.style.transform = "none";
+        if (!m.featured) el.style.borderColor = T.cardBord as string;
       }}
     >
       {/* المنطقة الرئيسية — رابط الوحدة */}
@@ -701,29 +711,20 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
           flexDirection: "column",
           alignItems: "center",
           justifyContent: "center",
-          gap: 9,
-          padding: "15px 12px 9px",
+          gap: 12,
+          padding: "18px 12px 12px",
           textAlign: "center",
           textDecoration: "none",
         }}
       >
-        <div
-          style={{
-            width: 94,
-            height: 94,
-            flexShrink: 0,
-            filter: `drop-shadow(0 6px 14px ${cShadow})`,
-          }}
-        >
-          <Shape id={m.id} color={m.color} size={94} />
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+        <Shape id={m.id} sec={m.sec} isPos={m.id === "pos"} size={72} />
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
           <div
             style={{
               fontSize: 13,
               fontWeight: 700,
               lineHeight: 1.3,
-              color: m.featured ? m.color : T.text,
+              color: T.text,
               letterSpacing: "-0.01em",
             }}
           >
@@ -735,7 +736,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
         </div>
       </Link>
 
-      {/* شريط الإجراءات السريعة — حد أقصى 3 أزرار */}
+      {/* شريط الإجراءات السريعة — حد أقصى 3 أزرار (خلفية محايدة، الإجراء الأساسي بحبر العائلة) */}
       {acts.length > 0 && (
         <div
           style={{
@@ -743,8 +744,7 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
             alignItems: "stretch",
             height: 48,
             flexShrink: 0,
-            borderTop: `1px solid ${bord}`,
-            background: m.color.replace(")", " / 0.04)"),
+            borderTop: `1px solid ${T.cardBord}`,
           }}
         >
           {acts.slice(0, 3).map((a, i) => (
@@ -871,7 +871,7 @@ function BriefCard({
         minWidth: 0,
       }}
       onMouseEnter={(e) => {
-        (e.currentTarget as HTMLAnchorElement).style.boxShadow = `0 4px 14px ${accent.replace(")", " / 0.18)")}`;
+        (e.currentTarget as HTMLAnchorElement).style.boxShadow = `0 4px 16px color-mix(in oklch, ${accent} 16%, transparent)`;
         (e.currentTarget as HTMLAnchorElement).style.transform = "translateY(-1px)";
       }}
       onMouseLeave={(e) => {
@@ -954,9 +954,9 @@ function MorningBrief() {
             label="عملاء موعودون اليوم"
             count={brief.promisedToday}
             sub="راجع الوعود المستحقّة قبل نهاية اليوم"
-            accent="oklch(0.65 0.20 60)"
-            iconBg="oklch(0.65 0.20 60 / 0.15)"
-            icon={<PromiseIco color="oklch(0.55 0.22 55)" />}
+            accent="var(--sem-warn)"
+            iconBg="var(--sem-warn-bg)"
+            icon={<PromiseIco color="var(--sem-warn)" />}
           />
         )}
         {brief.arRemindersDue > 0 && (
@@ -965,9 +965,9 @@ function MorningBrief() {
             label="تذكيرات ذمم مستحقّة"
             count={brief.arRemindersDue}
             sub="عملاء متأخّرون ≥٧ أيام يحتاجون رسالة"
-            accent="oklch(0.58 0.20 178)"
-            iconBg="oklch(0.58 0.20 178 / 0.15)"
-            icon={<ARIco color="oklch(0.48 0.22 178)" />}
+            accent="var(--sem-info)"
+            iconBg="var(--sem-info-bg)"
+            icon={<ARIco color="var(--sem-info)" />}
           />
         )}
         {brief.overdueWorkOrders > 0 && (
@@ -976,9 +976,9 @@ function MorningBrief() {
             label="أوامر شغل متأخّرة"
             count={brief.overdueWorkOrders}
             sub="تجاوزت التاريخ المتوقّع للتسليم"
-            accent="oklch(0.60 0.22 22)"
-            iconBg="oklch(0.60 0.22 22 / 0.15)"
-            icon={<WOIco color="oklch(0.50 0.24 22)" />}
+            accent="var(--sem-neg)"
+            iconBg="var(--sem-neg-bg)"
+            icon={<WOIco color="var(--sem-neg)" />}
           />
         )}
       </div>
