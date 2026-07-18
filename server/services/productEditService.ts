@@ -359,21 +359,24 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       const vals = {
         sku: v.sku.trim(),
         color: v.color?.trim() || null,
-        colorHex: v.colorHex?.trim() || null,
         size: v.size?.trim() || null,
         costPrice: toDbMoney(v.costPrice),
         minStock: v.minStock != null ? Math.max(0, Math.trunc(v.minStock)) : 0,
         reorderPoint: v.reorderPoint != null ? Math.max(0, Math.trunc(v.reorderPoint)) : 0,
         isActive: v.isActive ?? true,
       };
+      // colorHex بدلالة الصورة (أدناه): undefined ⇒ **لا نلمسها** فيُصان اللون الصريح المخزَّن — تعديلٌ لا
+      // يرسل colorHex (كشاشة «السلعة البسيطة» SimpleProductEditForm) كان يمسحه إلى null صامتاً؛ null/"" ⇒
+      // تُزال (المستخدم أعادها للتلقائي)؛ hex ⇒ تُعيَّن. عند الإدراج نُثبّتها (لا قيمة محفوظة لنصونها).
+      const colorHexPatch = v.colorHex !== undefined ? { colorHex: v.colorHex?.trim() || null } : {};
       let variantId: number;
       if (v.id) {
         const owned = (await tx.select({ id: productVariants.id }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
         if (!owned) throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
         variantId = v.id;
-        await tx.update(productVariants).set(vals).where(eq(productVariants.id, variantId));
+        await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
       } else {
-        const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals });
+        const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals, colorHex: v.colorHex?.trim() || null });
         variantId = extractInsertId(res);
         added++;
       }
