@@ -298,7 +298,11 @@ function VariantRow({
                   {units.map((u) => {
                     const code = v.unitBarcodes[u.id] || "";
                     const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
-                    const unitCost = (parseFloat(costPrice) || 0) * factor;
+                    // التكلفة الأساس = تكلفة اللون الخاصّة عند تفعيل السعر الخاص (مطابقةً لـbuildPayload/جانب البيع
+                    // في السطر التالي)، وإلّا المشتركة. كان يستعمل المشتركة دائماً ⇒ هامشٌ معروضٌ خاطئ عند سعرٍ
+                    // خاصّ بتكلفةٍ مختلفة (عرضٌ فقط — لا يُخزَّن ولا يدخل الدفتر).
+                    const baseCost = v.priceOverride && v.costPrice.trim() ? parseFloat(v.costPrice) || 0 : parseFloat(costPrice) || 0;
+                    const unitCost = baseCost * factor;
                     const unitSell = u.isBase && v.priceOverride && v.retail ? v.retail : u.retail;
                     return (
                       <div key={u.id} className="rounded-lg border bg-muted/20 p-3 w-[210px] flex flex-col gap-2">
