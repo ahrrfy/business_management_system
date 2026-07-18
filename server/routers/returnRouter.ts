@@ -6,6 +6,7 @@ import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { listSalesReturns, returnSale } from "../services/returnService";
 import { router, salesManagerProcedure } from "../trpc";
+import { nonNegMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
@@ -19,7 +20,7 @@ export const returnRouter = router({
       z.object({
         invoiceId: z.number().int().positive(),
         lines: z.array(z.object({ invoiceItemId: z.number().int().positive(), baseQuantity: z.number().int().positive() })).min(1),
-        refund: z.object({ amount: z.string(), method }).optional(),
+        refund: z.object({ amount: nonNegMoneyString, method }).optional(),
         restock: z.boolean().optional(),
         // idempotency: نفس المفتاح ⇒ مرتجع واحد (لا استرداد/إرجاع/خصم AR مزدوج عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),

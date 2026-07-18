@@ -83,11 +83,18 @@ export const purchaseRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // G3 (١٩/٦/٢٦): استبدال fallback `?? 1` الصامت — لا أمر شراء بلا فرع مُسنَد.
-      if (ctx.user.branchId == null) {
+      // عزل الفرع (تدقيق ١٧/٧، AUTHZ-2): createPurchaseOrder كان يستعمل input.branchId في الترقيم
+      // والتخزين لا actor.branchId ⇒ دور purchasing في فرع SALES يُنشئ أمراً على MAIN بتمرير branchId
+      // مغاير. غير admin/manager يُجبَر على فرعه المُسنَد ويُتجاهَل input.branchId (نمط saleRouter).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء أمر شراء" });
       }
-      const res = await createPurchaseOrder(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId) });
+      const effectiveBranchId = elevated ? input.branchId : Number(ctx.user.branchId);
+      const res = await createPurchaseOrder(
+        { ...input, branchId: effectiveBranchId },
+        { userId: ctx.user.id, branchId: effectiveBranchId },
+      );
       await logAudit(ctx, { action: "purchase.createOrder", entityType: "purchaseOrder", entityId: (res as { purchaseOrderId?: number })?.purchaseOrderId, newValue: { supplierId: input.supplierId, items: input.items.length } });
       return res;
     }),

@@ -449,7 +449,7 @@ export const inventoryRouter = router({
     }),
 
   movements: inventoryReadProcedure
-    .input(z.object({ variantId: z.number().int().positive().optional(), branchId: z.number().int().positive().optional(), limit: z.number().default(100) }))
+    .input(z.object({ variantId: z.number().int().positive().optional(), branchId: z.number().int().positive().optional(), limit: z.number().int().positive().max(500).default(100) }))
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
@@ -458,7 +458,12 @@ export const inventoryRouter = router({
       if (ctx.user.role === "manager" && input.branchId != null && input.branchId !== Number(ctx.user.branchId)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة حركات فرع آخر" });
       }
-      const branchId = ctx.scopedBranchId ?? input.branchId;
+      // عزل المدير (تدقيق ١٧/٧): scopedBranchId=null للمدير ⇒ عند غياب input.branchId كان يمسح حركات
+      // كل الفروع. الافتراضي فرعه المُسنَد (لا سقوط إلى null)؛ admin وحده يرى الكل بلا فرع صريح.
+      const branchId =
+        ctx.scopedBranchId ??
+        input.branchId ??
+        (ctx.user.role === "manager" ? Number(ctx.user.branchId) : undefined);
       if (input.variantId) conds.push(eq(inventoryMovements.variantId, input.variantId));
       if (branchId) conds.push(eq(inventoryMovements.branchId, branchId));
       const q = db.select().from(inventoryMovements);

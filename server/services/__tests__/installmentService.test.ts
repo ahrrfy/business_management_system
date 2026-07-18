@@ -269,6 +269,46 @@ describe("bounceCheck", () => {
     await bounceCheck({ lineId: plan.lines[1].id }, actor);
     await expect(bounceCheck({ lineId: plan.lines[1].id }, actor)).rejects.toThrow(/معلَّق/);
   });
+
+  it("شيك محصَّل (PAID) يرتدّ ⇒ إيصال عكسٍ OUT مكتمل شيفت-محايد + استعادة ذمّة العميل، بلا إبطال رجعيّ لإيصال الأصل", async () => {
+    const { planId } = await seedPlan();
+    const plan = await getPlan(planId);
+    const checkLine = plan.lines[1]; // شيك 50000
+    const pay = await payLine({ lineId: checkLine.id }, actor);
+    expect(pay.status).toBe("PAID");
+    expect(await customerBalance()).toBe("850000.00"); // 900000 − 50000
+
+    const res = await bounceCheck({ lineId: checkLine.id, note: "ارتدّ من المصرف" }, actor);
+    expect(res.reversed).toBe(true);
+
+    // AR-BOUNCE: إيصال الأصل يبقى مكتملاً (لا إبطال رجعيّ يشوّه Z-report وردية سابقة).
+    const orig = (await db().select().from(s.receipts).where(eq(s.receipts.id, pay.receiptId)))[0];
+    expect(orig.status).toBe("COMPLETED");
+    expect(orig.direction).toBe("IN");
+
+    // إيصال عكسٍ OUT مكتمل جديد بمرجع BOUNCE-CHK، على الخزينة، بلا وردية (شيفت-محايد).
+    const comp = (
+      await db().select().from(s.receipts).where(eq(s.receipts.referenceNumber, `BOUNCE-CHK-${checkLine.id}`))
+    )[0];
+    expect(comp).toBeTruthy();
+    expect(comp.direction).toBe("OUT");
+    expect(comp.status).toBe("COMPLETED");
+    expect(comp.amount).toBe("50000.00");
+    expect(comp.cashBucket).toBe("TREASURY");
+    expect(comp.shiftId).toBeNull();
+    expect(comp.approvalStatus).toBe("APPROVED");
+
+    // قيد PAYMENT_OUT مربوط بالإيصال التعويضي الجديد لا بالأصل.
+    const outEnt = (
+      await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.receiptId, Number(comp.id)))
+    )[0];
+    expect(outEnt.entryType).toBe("PAYMENT_OUT");
+    expect(outEnt.amount).toBe("50000.00");
+
+    // ذمّة العميل استُعيدت (+50000 ⇒ عادت 900000)، والقسط BOUNCED.
+    expect(await customerBalance()).toBe("900000.00");
+    expect((await getPlan(planId)).lines[1].status).toBe("BOUNCED");
+  });
 });
 
 describe("cancelPlan", () => {
