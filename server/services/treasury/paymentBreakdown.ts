@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { PAY_METHOD_AR, isCashier, rowsOf } from "./helpers";
+import { utcTodayStart } from "../businessDay";
 
 export interface MethodSlice {
   key: string;
@@ -15,25 +16,16 @@ export interface MethodSlice {
 export type DashboardPeriod = "today" | "yesterday" | "week" | "month";
 
 function periodRange(period: DashboardPeriod): { from: Date; to: Date } {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const tomorrow = new Date(today);
-  tomorrow.setDate(tomorrow.getDate() + 1);
+  // تدقيق ١٧/٧ (#٧): منتصف ليل UTC حتميّ + إزاحات UTC ثابتة (بدل new Date();setHours/setDate المحلي
+  // التابع لمنطقة Node). مطابقٌ تماماً تحت TZ=UTC، وصحيحٌ على أي جهاز.
+  const today = utcTodayStart();
+  const addDays = (base: Date, n: number) => new Date(base.getTime() + n * 86_400_000);
+  const tomorrow = addDays(today, 1);
   if (period === "today") return { from: today, to: tomorrow };
-  if (period === "yesterday") {
-    const yesterday = new Date(today);
-    yesterday.setDate(yesterday.getDate() - 1);
-    return { from: yesterday, to: today };
-  }
-  if (period === "week") {
-    const weekAgo = new Date(today);
-    weekAgo.setDate(weekAgo.getDate() - 7);
-    return { from: weekAgo, to: tomorrow };
-  }
+  if (period === "yesterday") return { from: addDays(today, -1), to: today };
+  if (period === "week") return { from: addDays(today, -7), to: tomorrow };
   // month
-  const monthAgo = new Date(today);
-  monthAgo.setDate(monthAgo.getDate() - 30);
-  return { from: monthAgo, to: tomorrow };
+  return { from: addDays(today, -30), to: tomorrow };
 }
 
 export async function getPaymentMethodBreakdown(
