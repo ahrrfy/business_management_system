@@ -125,6 +125,27 @@ describe("inventory.createManualMovement", () => {
     expect(v.branchId).toBe(1);
   });
 
+  it("idempotency (تدقيق ١٧/٧): نفس clientRequestId لا يكرّر الحركة ولا قيد ADJUST", async () => {
+    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
+    const inp = {
+      variantId: 1, branchId: 1, movementType: "IN" as const, productUnitId: 1,
+      quantity: "5", reason: "STOCK_TAKE" as const, notes: "إعادة إرسال", clientRequestId: "mv-req-1",
+    };
+    const first = await caller.inventory.createManualMovement(inp);
+    const replay = await caller.inventory.createManualMovement(inp); // إعادة إرسال بنفس المفتاح
+
+    expect(first.newQuantity).toBe(25); // 20 + 5
+    expect(replay.movementId).toBe(first.movementId); // نفس الحركة تعود
+    expect(replay.newQuantity).toBe(25); // لم تُضَف 5 ثانية
+    expect(await stockOf(1, 1)).toBe(25); // الرصيد لم يتضاعف
+
+    // حركة MANUAL_IN واحدة فقط + قيد ADJUST واحد (لا ازدواج).
+    const moves = await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.referenceType, "MANUAL_IN"));
+    expect(moves.length).toBe(1);
+    const adjusts = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    expect(adjusts.length).toBe(1);
+  });
+
   it("IN بدرزن واحد يضاعف بمعامل التحويل (12 وحدة أساس)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userRow(1)));
     const r = await caller.inventory.createManualMovement({

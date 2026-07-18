@@ -691,6 +691,8 @@ export const inventoryRouter = router({
         quantity: z.string().min(1),
         reason: z.enum(REASON_KEYS),
         notes: z.string().max(500).optional(),
+        // idempotency (تدقيق ١٧/٧): إعادة إرسال شبكية تكرّر الخصم/الإضافة + قيد ADJUST — نمنعها بمفتاح.
+        clientRequestId: z.string().min(1).max(64).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -710,7 +712,19 @@ export const inventoryRouter = router({
         : reasonLabel;
       const referenceType = `MANUAL_${input.movementType}`; // ≤ 16 chars ⇒ آمن (الحدّ 24).
 
-      const { result, baseQty } = await withTx(async (tx) => {
+      const { result, baseQty, replayed } = await withTx(async (tx) => {
+        // idempotency: إعادة إرسال بنفس المفتاح تعيد الحركة الأولى بدل خصم/إضافة مكرّرة + قيد ADJUST ثانٍ
+        // (نمط inventory.transferCreate). المفتاح يُسجَّل داخل نفس المعاملة ⇒ سباق متزامن يُحسَم بالقيد الفريد.
+        if (input.clientRequestId) {
+          const existing = await findIdempotentRefId(tx, "inventory.manualMovement", input.clientRequestId);
+          if (existing != null) {
+            const st = (
+              await tx.select({ q: branchStock.quantity }).from(branchStock)
+                .where(and(eq(branchStock.variantId, input.variantId), eq(branchStock.branchId, branchId))).limit(1)
+            )[0];
+            return { result: { movementId: existing, newQuantity: Number(st?.q ?? 0) }, baseQty: 0, replayed: true as const };
+          }
+        }
         const conv = await convertToBaseQuantity(tx, input.productUnitId, input.quantity, input.variantId);
         const res = await applyMovement(tx, {
           variantId: input.variantId,
@@ -738,10 +752,13 @@ export const inventoryRouter = router({
             notes: `حركة مخزون يدوية (${input.movementType}) — ${notesLine}`,
           });
         }
-        return { result: res, baseQty: conv.baseQuantity };
+        if (input.clientRequestId) {
+          await recordIdempotencyKey(tx, "inventory.manualMovement", input.clientRequestId, res.movementId);
+        }
+        return { result: res, baseQty: conv.baseQuantity, replayed: false as const };
       });
 
-      await logAudit(ctx, {
+      if (!replayed) await logAudit(ctx, {
         action: "inventory.manualMovement",
         entityType: "stock",
         entityId: input.variantId,
