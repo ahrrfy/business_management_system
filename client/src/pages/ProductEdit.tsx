@@ -17,6 +17,7 @@ import {
   isValidEan13,
   marginPercent,
   onlyDigits,
+  syncColorChipsOnRename,
   toArabicDigits,
   variantStockTotal,
   type ClientUnit,
@@ -244,6 +245,9 @@ export default function ProductEdit() {
     });
   }
   const patchVariant = (id: string, patch: Partial<ClientVariant>) => setVariants((vs) => vs.map((v) => (v.id === id ? { ...v, ...patch } : v)));
+  // إعادة تسمية لون بالصفّ ⇒ مزامنة رقائق المصفوفة (كما في ProductNew، منطقٌ نقيّ مُختبَر).
+  const commitColorRename = (oldColor: string, newColor: string) =>
+    setColors((cs) => syncColorChipsOnRename(cs, oldColor, newColor, variants.map((v) => v.color)));
   // الموجود (db:) لا يُحذف — يُعطَّل؛ الجديد يُحذف من النموذج.
   const removeVariant = (id: string) =>
     setVariants((vs) =>
@@ -568,6 +572,7 @@ export default function ProductEdit() {
             patchVariant={patchVariant}
             removeVariant={removeVariant}
             onScan={onScan}
+            onColorCommit={commitColorRename}
             stockEditable={false}
             emptyHint="لا متغيّرات — أضِف عبر المولّد أعلاه."
           />

@@ -3,7 +3,7 @@
  * عمود باركود لكل وحدة (تحقّق لحظي) · مخزون الفرع المختار · SKU بكشف تكرار ·
  * تبديل نشط · صفّ توسيع (باركودات كل وحدة + مخزون كل فرع + نقطة الطلب + سعر خاص).
  */
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -46,6 +46,7 @@ export function VariantsTable({
   patchVariant,
   removeVariant,
   onScan,
+  onColorCommit,
   stockEditable = true,
   localAliases = false,
   emptyHint = "لا متغيّرات بعد — استخدم المولّد أعلاه (اكتب لوناً ثم «ولّد المتغيّرات»).",
@@ -60,6 +61,11 @@ export function VariantsTable({
   patchVariant: (id: string, patch: Partial<ClientVariant>) => void;
   removeVariant: (id: string) => void;
   onScan: (variantId: string, unitId: number) => void;
+  /**
+   * يُستدعى عند **إتمام** إعادة تسمية لون متغيّر بالصفّ (blur) بقيمتيه القديمة والجديدة — ليزامن النموذج
+   * الأب رقائقَ مصفوفة الألوان فيبقى «ولّد المتغيّرات» متّسقاً. اختياريّ (الشاشات بلا مصفوفة تتركه).
+   */
+  onColorCommit?: (oldColor: string, newColor: string) => void;
   /** في التعديل: المخزون قراءة فقط (يُدار عبر شاشات الجرد/الحركات). */
   stockEditable?: boolean;
   /**
@@ -134,6 +140,7 @@ export function VariantsTable({
               patch={(patch) => patchVariant(v.id, patch)}
               remove={() => removeVariant(v.id)}
               onScan={(unitId) => onScan(v.id, unitId)}
+              onColorCommit={onColorCommit}
               stockEditable={stockEditable}
               localAliases={localAliases}
             />
@@ -157,6 +164,7 @@ function VariantRow({
   patch,
   remove,
   onScan,
+  onColorCommit,
   stockEditable,
   localAliases,
 }: {
@@ -172,10 +180,13 @@ function VariantRow({
   patch: (patch: Partial<ClientVariant>) => void;
   remove: () => void;
   onScan: (unitId: number) => void;
+  onColorCommit?: (oldColor: string, newColor: string) => void;
   stockEditable: boolean;
   localAliases: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  // لون الصفّ عند بدء التحرير (focus) — لمقارنته عند الإتمام (blur) فنزامن رقائق المصفوفة عند إعادة التسمية.
+  const colorAtFocus = useRef("");
   const fullName = [baseName, v.color, v.size].filter(Boolean).join(" ");
   const setBc = (uid: number, val: string) => patch({ unitBarcodes: { ...v.unitBarcodes, [uid]: val } });
   const setStock = (bid: number, val: string) => patch({ stockByBranch: { ...v.stockByBranch, [bid]: onlyDigits(val) } });
@@ -188,7 +199,16 @@ function VariantRow({
         <td className="px-3 py-2">
           <div className="flex items-center gap-2">
             <ColorPickerDot name={v.color} hex={v.colorHex} onChange={(colorHex) => patch({ colorHex })} />
-            <span className="text-sm font-medium whitespace-nowrap">{v.color || "—"}</span>
+            <Input
+              value={v.color}
+              onChange={(e) => patch({ color: e.target.value })}
+              onFocus={() => { colorAtFocus.current = v.color; }}
+              onBlur={() => { if (onColorCommit && colorAtFocus.current !== v.color) onColorCommit(colorAtFocus.current, v.color); }}
+              placeholder="اللون"
+              dir="auto"
+              aria-label={`اسم لون المتغيّر ${idx + 1}`}
+              className="h-8 text-sm w-28 font-medium"
+            />
           </div>
         </td>
         <td className="px-3 py-2 text-sm" dir="ltr">
