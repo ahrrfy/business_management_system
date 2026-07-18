@@ -40,6 +40,9 @@ export interface ReplayOfflineSaleInput {
   offlineReceiptNumber: string;
   /** معرّف جهاز الالتقاط — للتدقيق الآن، ولسجلّ الأجهزة في ش٥. */
   deviceId?: string | null;
+  /** ش٤: سلطة البيع تحت التكلفة لعنصرٍ عُلِّق FORBIDDEN — يضبطها الراوتر بعد
+   *  verifyManagerApproval (أو تلقائياً للمدير/الأدمن المرحِّل). */
+  priceOverrideApproved?: boolean;
 }
 
 export async function replayOfflineSale(
@@ -86,6 +89,7 @@ export async function replayOfflineSale(
         offlineReceiptNumber: input.offlineReceiptNumber,
       },
       allowNegativeStock: true,
+      priceOverrideApproved: input.priceOverrideApproved ?? false,
     },
     actor,
   );

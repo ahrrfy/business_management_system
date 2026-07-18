@@ -206,9 +206,39 @@ describe("replayOfflineSale — نافذة الالتقاط والحرّاس", (
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("وردية مغلقة ⇒ BAD_REQUEST (ش٤ ستضيف مسار المزامنة المتأخرة الموسوم)", async () => {
-    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null }).where(eq(s.shifts.id, 1));
-    await expect(replayOfflineSale(baseInput(), cashier1)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  it("ش٤ — مزامنة متأخرة: التُقط قبل الإغلاق ووصل بعده ⇒ يُقبل في الوردية المغلقة", async () => {
+    // الالتقاط قبل ساعة (baseInput) ثم أُغلقت الوردية الآن ⇒ النقد كان بالدرج عند العدّ.
+    await db().update(s.shifts).set({ status: "CLOSED", openGuard: null, closedAt: new Date() }).where(eq(s.shifts.id, 1));
+    const res = await replayOfflineSale(baseInput({ clientRequestId: "offline-latesync-1", offlineReceiptNumber: "OFF-1-ab12-8" }), cashier1);
+    expect(res.status).toBe("PAID");
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, res.invoiceId)))[0];
+    expect(Number(inv.shiftId)).toBe(1);
+    expect(!!inv.originatedOffline).toBe(true);
+  });
+
+  it("ش٤ — التُقط بعد إغلاق الوردية ⇒ BAD_REQUEST (شذوذ يستحق مراجعة لا ترحيلاً)", async () => {
+    // أُغلقت قبل ساعتين والالتقاط قبل ساعة (بعد الإغلاق) ⇒ يُرفض ويُعلَّق لدى العميل.
+    await db().update(s.shifts)
+      .set({ status: "CLOSED", openGuard: null, closedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+      .where(eq(s.shifts.id, 1));
+    await expect(
+      replayOfflineSale(baseInput({ clientRequestId: "offline-latesync-2", offlineReceiptNumber: "OFF-1-ab12-9" }), cashier1),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("ش٤ — سعر تحت التكلفة مع priceOverrideApproved (اعتماد مدير مُتحقَّق) ⇒ يُرحَّل موسوماً", async () => {
+    const res = await replayOfflineSale(
+      baseInput({
+        lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "50.00" }],
+        payment: { amount: "50.00", method: "CASH" },
+        clientRequestId: "offline-belowcost-approved",
+        offlineReceiptNumber: "OFF-1-ab12-10",
+        priceOverrideApproved: true,
+      }),
+      cashier1,
+    );
+    expect(res.status).toBe("PAID");
+    expect(res.priceOverride).toBe(true);
   });
 });
 

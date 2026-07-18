@@ -19,6 +19,7 @@ import {
   buildStockSnapshot,
 } from "../services/offline/catalogSnapshot";
 import { replayOfflineSale } from "../services/offline/replaySale";
+import { verifyManagerApproval } from "./saleRouter";
 import { customersReadProcedure, productsReadProcedure, router, salesCashierProcedure } from "../trpc";
 
 /** نفس حارس IDOR في catalogRouter: غير المرتفعين محصورون بفرعهم المُسنَد. */
@@ -73,6 +74,9 @@ export const offlineRouter = router({
         capturedAt: z.string().min(10).max(40),
         offlineReceiptNumber: z.string().min(4).max(40),
         deviceId: z.string().max(40).optional(),
+        // ش٤: اعتماد مدير لترحيل عنصرٍ معلَّق تحت التكلفة (بريد + كلمة مرور، تُتحقَّق خادمياً
+        // بنفس مسار saleRouter المحصَّن: rate-limit + توقيت ثابت + SOD + تدقيق).
+        managerApproval: z.object({ email: z.string().min(1), password: z.string().min(1) }).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -86,9 +90,18 @@ export const offlineRouter = router({
         effectiveBranchId = Number(ctx.user.branchId);
       }
       const actor = { userId: ctx.user.id, branchId: effectiveBranchId, role: ctx.user.role };
+      // سلطة تحت-التكلفة: المدير/الأدمن المرحِّل يملكها ذاتياً؛ الكاشير عبر managerApproval
+      // مُتحقَّق (مرآة saleRouter.create — SALES-01/02).
+      const { managerApproval, ...replayInput } = input;
+      let approvedBy: number | null = null;
+      if (managerApproval) approvedBy = await verifyManagerApproval(managerApproval, ctx, effectiveBranchId);
+      const priceOverrideApprovedBy: number | null = approvedBy ?? (elevated ? ctx.user.id : null);
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await replayOfflineSale({ ...input, branchId: effectiveBranchId }, actor);
+          const res = await replayOfflineSale(
+            { ...replayInput, branchId: effectiveBranchId, priceOverrideApproved: priceOverrideApprovedBy != null },
+            actor,
+          );
           if (!res.idempotentReplay) {
             await logAudit(ctx, {
               action: "sale.offlineReplay",
@@ -101,6 +114,15 @@ export const offlineRouter = router({
                 lines: input.lines.length,
               },
             });
+            // SALES-01/02: أثر تدقيقي صريح للترحيل تحت التكلفة المعتمَد (مرآة saleRouter).
+            if (res.priceOverride) {
+              await logAudit(ctx, {
+                action: "sale.priceOverride",
+                entityType: "invoice",
+                entityId: res.invoiceId,
+                newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role, offlineReplay: true },
+              });
+            }
           }
           return res;
         } catch (e: unknown) {

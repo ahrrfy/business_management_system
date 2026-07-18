@@ -14,7 +14,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale } from "@/lib/offline/outbox";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -2014,6 +2014,25 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const [counted, setCounted] = useState("");
   const utils = trpc.useUtils();
 
+  // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
+  // فواتير في Z ⇒ محجوب افتراضياً؛ المدير/الأدمن يتجاوز بإقرار صريح (تُرحَّل لاحقاً وتدخل
+  // الوردية موسومةً «مُزامنة لاحقاً» في التقرير).
+  const [outboxQueued, setOutboxQueued] = useState({ count: 0, total: 0 });
+  const [overrideAck, setOverrideAck] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      void readOutboxSummary().then((s) => {
+        if (alive) setOutboxQueued({ count: s.queued, total: s.queuedTotal });
+      });
+    };
+    load();
+    const off = subscribeOutbox(load);
+    return () => { alive = false; off(); };
+  }, []);
+  const isElevated = me?.role === "admin" || me?.role === "manager";
+  const closeBlocked = outboxQueued.count > 0 && !(isElevated && overrideAck);
+
   const reportQ = trpc.shifts.report.useQuery(
     { shiftId: shift!.id },
     { enabled: !!shift }
@@ -2052,7 +2071,9 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const cashInD     = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "IN" ).reduce((s, p) => s.plus(D(p.total)), D(0));
   const cashOutD    = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s.plus(D(p.total)), D(0));
   const openingD    = D(shift?.openingBalance ?? 0);
-  const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD) : null;
+  // ش٤: النقد غير المُزامَن موجود فيزيائياً بالدرج ⇒ يدخل المتوقع المعروض للعدّ (الخادم عند
+  // الإغلاق يحسب المُزامَن فقط، والفرق يُفسَّر لاحقاً بقسم «مُزامنة لاحقاً» في التقرير).
+  const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD).plus(D(outboxQueued.total)) : null;
   const countedD    = counted ? D(counted) : null;
   const diffD       = expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
@@ -2082,7 +2103,10 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               ["عدد الفواتير",     `${report?.invoiceCount ?? 0} فاتورة`],
               ["إجمالي المبيعات",  `${fmt(Number(report?.salesTotal ?? 0))} د.ع`],
               ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`],
-              ...(report != null ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut)} د.ع`] as [string, string]] : []),
+              ...(outboxQueued.count > 0
+                ? [["مبيعات غير مُزامنة (نقدها بالدرج)", `${outboxQueued.count} فاتورة · ${fmt(outboxQueued.total)} د.ع`] as [string, string]]
+                : []),
+              ...(report != null ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut + outboxQueued.total)} د.ع`] as [string, string]] : []),
             ] as [string, string][]).map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
                 <span style={{ color: C.mutedFg }}>{l}</span>
@@ -2121,16 +2145,36 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               )}
             </div>
 
+            {/* ش٤ أوفلاين: حارس الطابور غير المُزامَن — حجب الإغلاق (تجاوز مديري بإقرار صريح). */}
+            {outboxQueued.count > 0 && (
+              <div style={{ marginTop: 14, padding: "10px 12px", background: C.amberSoft, border: `1.5px solid ${C.amber}`, borderRadius: 9, fontSize: 12.5, color: C.fg }}>
+                <div style={{ fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <AlertTriangle aria-hidden size={15} /> توجد {outboxQueued.count} فاتورة غير مُزامنة ({fmt(outboxQueued.total)} د.ع)
+                </div>
+                <div style={{ marginTop: 4, color: C.mutedFg }}>
+                  أكمل المزامنة قبل الإغلاق (شارة المزامنة أسفل الشاشة) — نقدها في الدرج ولن تظهر في Z قبل الترحيل.
+                </div>
+                {isElevated ? (
+                  <label style={{ display: "flex", alignItems: "flex-start", gap: 7, marginTop: 8, cursor: "pointer", fontWeight: 700 }}>
+                    <input type="checkbox" checked={overrideAck} onChange={(e) => setOverrideAck(e.target.checked)} style={{ marginTop: 3 }} />
+                    <span>إغلاق رغم ذلك — تُرحَّل لاحقاً وتدخل الوردية موسومةً «مُزامنة لاحقاً» في التقرير</span>
+                  </label>
+                ) : (
+                  <div style={{ marginTop: 6, fontWeight: 700 }}>يستطيع المدير الإغلاق متجاوزاً عند الضرورة.</div>
+                )}
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose}
                 style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending}
+                disabled={!counted || closeShift.isPending || closeBlocked}
                 onClick={() => shift && closeShift.mutate({ shiftId: shift.id, countedCash: counted })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending ? C.muted : C.danger, color: !counted || closeShift.isPending ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
-                {closeShift.isPending ? "جارٍ الإغلاق…" : "إغلاق وطباعة Z"}
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
+                {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : "إغلاق وطباعة Z"}
               </button>
             </div>
           </>

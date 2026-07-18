@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { invoices, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
@@ -99,7 +99,6 @@ export async function closeShift(
     const rows = await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1);
     const sh = rows[0];
     if (!sh) throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
-    if (sh.status !== "OPEN") throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية مغلقة بالفعل" });
 
     const role = actor.role ?? "cashier";
     if (role === "admin") {
@@ -115,6 +114,22 @@ export async function closeShift(
       if (Number(sh.branchId) !== actor.branchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا يمكنك إغلاق وردية فرع آخر" });
       }
+    }
+
+    // أوفلاين (ش٤) — إغلاق idempotent: انقطاعٌ منتصف الإغلاق (الالتزام تمّ والردّ ضاع) كان
+    // يجعل إعادة المحاولة تفشل بـ«مغلقة بالفعل» فيظن الكاشير أن الإغلاق لم يتم. الآن نعيد
+    // اللقطة الملتزمة كما هي (بلا أي كتابة — countedCash الجديدة تُهمَل عمداً: الحقيقة هي أول
+    // إغلاق ملتزم، وإعادة العدّ لا تُعدّل Z-report بأثر رجعي). فحوص الملكية أعلاه تسبق هذا.
+    if (sh.status !== "OPEN") {
+      return {
+        shiftId: input.shiftId,
+        openingBalance: toDbMoney(money(sh.openingBalance)),
+        expectedCash: toDbMoney(money(sh.expectedCash ?? "0")),
+        countedCash: toDbMoney(money(sh.countedCash ?? "0")),
+        variance: toDbMoney(money(sh.variance ?? "0")),
+        handover: null,
+        alreadyClosed: true as const,
+      };
     }
 
     const expected = await computeExpectedCash(tx, input.shiftId, sh.openingBalance);
@@ -195,11 +210,33 @@ export async function getShiftReport(shiftId: number) {
       .where(eq(invoices.shiftId, shiftId))
   )[0];
 
+  // أوفلاين (ش٤) — «مبيعات مُزامنة لاحقاً»: فواتير أوفلاينية رُحِّلت **بعد** إغلاق الوردية
+  // (createdAt > closedAt). تفسّر زيادة الدرج عند العدّ (النقد قُبض قبل الإغلاق والفاتورة
+  // وصلت بعده) فلا يُتَّهم الكاشير بفائض مجهول ولا يُساء قراءة Z-report.
+  let lateSynced = { count: 0, total: "0.00" };
+  if (sh.closedAt) {
+    const late = (
+      await db
+        .select({ count: sql<number>`COUNT(*)`, total: sql<string>`COALESCE(SUM(${invoices.total}), 0)` })
+        .from(invoices)
+        .where(
+          and(
+            eq(invoices.shiftId, shiftId),
+            eq(invoices.originatedOffline, true),
+            gt(invoices.createdAt, sh.closedAt),
+          ),
+        )
+    )[0];
+    lateSynced = { count: Number(late?.count ?? 0), total: late?.total ?? "0.00" };
+  }
+
   return {
     shift: sh,
     payments,
     invoiceCount: Number(inv?.count ?? 0),
     salesTotal: inv?.total ?? "0.00",
+    lateSyncedCount: lateSynced.count,
+    lateSyncedTotal: lateSynced.total,
   };
 }
 

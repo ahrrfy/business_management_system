@@ -4,6 +4,7 @@ import {
   flushOutbox,
   listOutboxItems,
   readOutboxSummary,
+  replayParkedWithApproval,
   requeueParkedItem,
   subscribeOutbox,
   type OutboxSummary,
@@ -26,6 +27,11 @@ export function OfflineSyncChip() {
   const [summary, setSummary] = useState<OutboxSummary | null>(null);
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<OfflineOutboxItem[]>([]);
+  // ش٤: اعتماد مدير لعنصر معلَّق (تحت التكلفة) — نموذج مصغّر داخل بطاقة العنصر.
+  const [approvalFor, setApprovalFor] = useState<string | null>(null);
+  const [mgrEmail, setMgrEmail] = useState("");
+  const [mgrPwd, setMgrPwd] = useState("");
+  const [approvalBusy, setApprovalBusy] = useState(false);
 
   const api: ReplaySaleApi = useCallback(
     (args) =>
@@ -189,15 +195,78 @@ export function OfflineSyncChip() {
                   {item.status === "PARKED" ? (
                     <div className="mt-1 space-y-1">
                       {item.lastError ? <p className="text-red-700 dark:text-red-400">{item.lastError}</p> : null}
-                      <button
-                        type="button"
-                        onClick={() => {
-                          void requeueParkedItem(item.clientRequestId).then(() => flushNow(true));
-                        }}
-                        className="rounded border px-2 py-0.5 text-[11px] font-semibold"
-                      >
-                        إعادة المحاولة
-                      </button>
+                      <div className="flex flex-wrap gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void requeueParkedItem(item.clientRequestId).then(() => flushNow(true));
+                          }}
+                          className="rounded border px-2 py-0.5 text-[11px] font-semibold"
+                        >
+                          إعادة المحاولة
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setApprovalFor((cur) => (cur === item.clientRequestId ? null : item.clientRequestId));
+                            setMgrEmail("");
+                            setMgrPwd("");
+                          }}
+                          className="rounded border px-2 py-0.5 text-[11px] font-semibold"
+                        >
+                          اعتماد مدير
+                        </button>
+                      </div>
+                      {approvalFor === item.clientRequestId ? (
+                        <div className="mt-1 space-y-1 rounded-md border bg-muted/40 p-2">
+                          <p className="text-[10px] text-muted-foreground">
+                            لترحيل بيعٍ رُفض (كسعرٍ تحت التكلفة) — تُتحقَّق هوية المدير خادمياً وتُدقَّق.
+                          </p>
+                          <input
+                            type="email"
+                            dir="ltr"
+                            value={mgrEmail}
+                            onChange={(e) => setMgrEmail(e.target.value)}
+                            placeholder="بريد المدير"
+                            className="w-full rounded border bg-background px-2 py-1 text-[11px]"
+                          />
+                          <input
+                            type="password"
+                            dir="ltr"
+                            value={mgrPwd}
+                            onChange={(e) => setMgrPwd(e.target.value)}
+                            placeholder="كلمة المرور"
+                            className="w-full rounded border bg-background px-2 py-1 text-[11px]"
+                          />
+                          <button
+                            type="button"
+                            disabled={!mgrEmail || !mgrPwd || approvalBusy || offline}
+                            onClick={() => {
+                              setApprovalBusy(true);
+                              const approvalApi: ReplaySaleApi = (args) =>
+                                utils.client.offline.replaySale.mutate({
+                                  ...(args.payload as never as object),
+                                  capturedAt: args.capturedAt,
+                                  offlineReceiptNumber: args.offlineReceiptNumber,
+                                  deviceId: args.deviceId,
+                                  managerApproval: { email: mgrEmail, password: mgrPwd },
+                                } as never);
+                              void replayParkedWithApproval(item.clientRequestId, approvalApi).then((r) => {
+                                setApprovalBusy(false);
+                                if (r.ok) {
+                                  setApprovalFor(null);
+                                  setMgrEmail("");
+                                  setMgrPwd("");
+                                }
+                                refresh();
+                              });
+                            }}
+                            className="w-full rounded bg-sky-600 px-2 py-1 text-[11px] font-bold text-white disabled:opacity-50"
+                          >
+                            {approvalBusy ? "جارٍ الترحيل…" : "اعتماد وترحيل"}
+                          </button>
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

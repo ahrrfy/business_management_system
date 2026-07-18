@@ -301,3 +301,43 @@ export async function requeueParkedItem(clientRequestId: string): Promise<void> 
   await offlineDb.outbox.update(clientRequestId, { status: "QUEUED", lastError: null });
   notifyOutboxChanged();
 }
+
+/**
+ * ش٤ — ترحيل عنصرٍ معلَّق واحد بسلطة مدير (تحت التكلفة FORBIDDEN): الشارة تبني نداءً
+ * يحمل managerApproval ويُتحقَّق خادمياً (rate-limit + توقيت ثابت + SOD + تدقيق).
+ * لا يمرّ بمحرّك FIFO — عنصر واحد بقرار بشري صريح.
+ */
+export async function replayParkedWithApproval(
+  clientRequestId: string,
+  api: ReplaySaleApi,
+): Promise<{ ok: boolean; error?: string }> {
+  const item = await offlineDb.outbox.get(clientRequestId);
+  if (!item || item.status !== "PARKED") return { ok: false, error: "العنصر لم يعد معلَّقاً" };
+  await offlineDb.outbox.update(clientRequestId, { status: "SENDING" });
+  notifyOutboxChanged();
+  try {
+    const deviceId = await getDeviceCode();
+    const res = await api({
+      payload: item.payload as OfflineSalePayload,
+      capturedAt: item.capturedAt,
+      offlineReceiptNumber: item.offlineReceiptNumber,
+      deviceId,
+    });
+    await offlineDb.outbox.update(clientRequestId, {
+      status: "SENT",
+      lastError: null,
+      ...(res.invoiceNumber ? ({ resultInvoiceNumber: res.invoiceNumber } as Partial<OfflineOutboxItem>) : {}),
+    });
+    notifyOutboxChanged();
+    return { ok: true };
+  } catch (err) {
+    const cls = classifyTrpcError(err);
+    await offlineDb.outbox.update(clientRequestId, {
+      status: "PARKED",
+      attempts: item.attempts + 1,
+      lastError: cls.message,
+    });
+    notifyOutboxChanged();
+    return { ok: false, error: cls.message };
+  }
+}

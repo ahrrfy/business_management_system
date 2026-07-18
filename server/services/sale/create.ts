@@ -142,8 +142,23 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         .where(eq(shifts.id, input.shiftId))
         .for("update")
         .limit(1);
-      if (!s[0] || s[0].status !== "OPEN" || Number(s[0].branchId) !== input.branchId) {
+      if (!s[0] || Number(s[0].branchId) !== input.branchId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
+      }
+      if (s[0].status !== "OPEN") {
+        // أوفلاين (ش٤): بيع التُقط دون اتصال **قبل** إغلاق الوردية ووصل ترحيله بعده ⇒ يُقبل
+        // في وردية مغلقة (النقد كان فعلياً في الدرج عند العدّ — الرفض يترك نقداً بلا فاتورة).
+        // يُميَّز في Z-report بقسم «مبيعات مُزامنة لاحقاً» (invoices.createdAt > closedAt +
+        // originatedOffline). سماحية ٥ دقائق لانحراف ساعة الجهاز. ما التُقط بعد الإغلاق يُرفض
+        // (واجهة POS لا تبيع بلا وردية مفتوحة — التقاطٌ كهذا شذوذ يستحق مراجعة لا ترحيلاً).
+        const closedAtMs = s[0].closedAt ? new Date(s[0].closedAt).getTime() : null;
+        const lateSyncOk =
+          !!input.offlineCapture &&
+          closedAtMs != null &&
+          input.offlineCapture.capturedAt.getTime() <= closedAtMs + 5 * 60_000;
+        if (!lateSyncOk) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
+        }
       }
       // SHIFT-OWN (تدقيق ٢/٧): فرض ملكية الوردية — كما في processPayment. غياب هذا الفحص كان
       // يُتيح لكاشير تمرير shiftId لوردية زميلٍ في نفس الفرع فيُنسَب نقده لدرج الزميل (عجز مزوّر عند
