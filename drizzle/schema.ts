@@ -3541,4 +3541,22 @@ export const employeeAdvances = mysqlTable(
     empStatusIdx: index("idx_advance_emp_status").on(t.employeeId, t.status),
   })
 );
+
+/**
+ * تسويات السلف المرتبطة بمسيّر الرواتب (تدقيق ١٧/٧) — لمنع الخصم المضاعف. تُكتب صفٌّ لكل سلفة
+ * تُسوّى عند دفع المسيّر (settleAdvancesOnPayTx)؛ وتُستعاد أرصدتها عند **حذف** المسيّر (لا عكسه).
+ */
+export const advanceSettlements = mysqlTable(
+  "advanceSettlements",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    runId: bigint("runId", { mode: "number" }).notNull().references(() => payrollRuns.id, { onDelete: "cascade" }),
+    advanceId: bigint("advanceId", { mode: "number" }).notNull().references(() => employeeAdvances.id),
+    employeeId: bigint("employeeId", { mode: "number" }).notNull(),
+    amount: decimal("amount", { precision: 15, scale: 2 }).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({ runIdx: index("idx_advsettle_run").on(t.runId) }),
+);
+export type AdvanceSettlement = typeof advanceSettlements.$inferSelect;
 export type EmployeeAdvance = typeof employeeAdvances.$inferSelect;

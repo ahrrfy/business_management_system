@@ -23,7 +23,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../drizzle/schema";
+import { advanceSettlements, branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { recordIdempotencyKey } from "./idempotency";
@@ -310,7 +310,11 @@ export async function suggestDeductionsForPeriod(employeeIds: number[]): Promise
  * إن عجزت السلف النشطة عن استيعاب المبلغ (أُلغيت سلفة بين التوليد والدفع) ⇒ CONFLICT
  * يُدحرج معاملة الدفع كلها — أعد المسيّر لمسودة وولّده من جديد ليتّسق الاستقطاع.
  */
-export async function settleAdvancesOnPayTx(tx: Tx, items: { employeeId: number; amount: Decimal }[]): Promise<void> {
+export async function settleAdvancesOnPayTx(
+  tx: Tx,
+  items: { employeeId: number; amount: Decimal }[],
+  runId: number,
+): Promise<void> {
   for (const item of items) {
     let left = round2(item.amount);
     if (left.lte(0)) continue;
@@ -331,6 +335,13 @@ export async function settleAdvancesOnPayTx(tx: Tx, items: { employeeId: number;
         .update(employeeAdvances)
         .set({ remaining: toDbMoney(newRemaining), status: newRemaining.lte(0) ? "SETTLED" : "ACTIVE" })
         .where(eq(employeeAdvances.id, Number(adv.id)));
+      // تسجيل التسوية مربوطةً بالمسيّر (تدقيق ١٧/٧) ⇒ استعادةٌ دقيقة عند حذف المسيّر تمنع الخصم المضاعف.
+      await tx.insert(advanceSettlements).values({
+        runId,
+        advanceId: Number(adv.id),
+        employeeId: item.employeeId,
+        amount: toDbMoney(take),
+      });
     }
     if (left.gt(0)) {
       throw new TRPCError({
@@ -339,5 +350,31 @@ export async function settleAdvancesOnPayTx(tx: Tx, items: { employeeId: number;
       });
     }
   }
+}
+
+/**
+ * استعادة تسويات سلف مسيّرٍ عند **حذفه** (تدقيق ١٧/٧): تُعيد remaining لكل سلفة سُوّيت بهذا المسيّر
+ * وتُعيدها ACTIVE، ثم تحذف سجلّات التسوية. لا تُستدعى عند **عكس** الدفع (إعادة الدفع لا تُعيد التسوية
+ * عبر isFirstPay) — فقط عند الحذف النهائيّ، وإلا أعاد توليدُ مسيّرٍ جديد خصماً مضاعفاً على السلفة.
+ */
+export async function restoreAdvanceSettlementsTx(tx: Tx, runId: number): Promise<void> {
+  const settlements = await tx.select().from(advanceSettlements).where(eq(advanceSettlements.runId, runId));
+  for (const st of settlements) {
+    const [adv] = await tx
+      .select()
+      .from(employeeAdvances)
+      .where(eq(employeeAdvances.id, Number(st.advanceId)))
+      .for("update")
+      .limit(1);
+    if (!adv) continue;
+    // القيمة الأصلية amount سقفٌ (لا تتجاوزه الاستعادة). remaining يعود موجباً ⇒ ACTIVE (السلفة لا
+    // تُلغى بعد أيّ خصم، فحالة CANCELLED غير واردة هنا).
+    const restored = Decimal.min(round2(money(adv.remaining).plus(money(st.amount))), money(adv.amount));
+    await tx
+      .update(employeeAdvances)
+      .set({ remaining: toDbMoney(restored), status: restored.gt(0) ? "ACTIVE" : adv.status })
+      .where(eq(employeeAdvances.id, Number(adv.id)));
+  }
+  await tx.delete(advanceSettlements).where(eq(advanceSettlements.runId, runId));
 }
 
