@@ -9,6 +9,7 @@
     "delivery.getParty",
     "delivery.setPartyActive",
     "delivery.updateParty",
+    "exchange.reverse",
     "inventory.stockByBranch",
     "inventory.transfer",
     "priceWaves.unitHistory",
