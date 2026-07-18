@@ -699,6 +699,32 @@ export const inventoryMovements = mysqlTable(
 export type InventoryMovement = typeof inventoryMovements.$inferSelect;
 export type InsertInventoryMovement = typeof inventoryMovements.$inferInsert;
 
+/** طلبات تسوية المخزون المُعلَّقة (فصل مهام #٦، الشريحة ٢): التسوية المباشرة عملية حسّاسة ⇒ تُنشأ
+ *  **معلَّقةً بلا تغيير مخزون** ويعتمدها مديرٌ آخر (SOD: المُعتمِد ≠ المُنشئ) فيُطبَّق setStock + قيد ADJUST. */
+export const stockAdjustmentRequests = mysqlTable(
+  "stockAdjustmentRequests",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    targetQuantity: int("targetQuantity").notNull(),
+    notes: varchar("notes", { length: 500 }),
+    status: mysqlEnum("stockAdjustmentStatus", ["PENDING_APPROVAL", "APPROVED", "REJECTED"]).default("PENDING_APPROVAL").notNull(),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    approvedBy: int("approvedBy").references(() => users.id), // المُعتمِد (≠ المُنشئ) — NULL حتى الحسم
+    approvedAt: timestamp("approvedAt"),
+    appliedMovementId: bigint("appliedMovementId", { mode: "number" }), // حركة المخزون المُطبَّقة عند الاعتماد
+    rejectionReason: varchar("rejectionReason", { length: 500 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    statusBranchIdx: index("idx_stockadj_status_branch").on(table.status, table.branchId),
+    variantIdx: index("idx_stockadj_variant").on(table.variantId),
+  })
+);
+
+export type StockAdjustmentRequest = typeof stockAdjustmentRequests.$inferSelect;
+
 /* ============================ تحويلات المخزون بخطوتين (بالطريق ← استلام) ============================ */
 
 /**

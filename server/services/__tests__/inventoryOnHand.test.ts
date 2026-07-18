@@ -110,13 +110,19 @@ describe("inventory.onHand", () => {
   });
 });
 
-describe("inventory.adjust (تسوية ذرّية)", () => {
-  it("يضبط الرصيد المطلق ويكتب حركة ADJUST + تدقيق", async () => {
+describe("inventory.adjust (طلب معلَّق ثم اعتماد — فصل مهام #٦)", () => {
+  it("adjust يُنشئ طلباً معلَّقاً بلا تغيير، والاعتماد يضبط الرصيد + حركة ADJUST + تدقيق", async () => {
     const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    await caller.inventory.adjust({ variantId: 1, branchId: 1, targetQuantity: 30, notes: "جرد" });
+    const qOf = async () => (await caller.inventory.onHand({ branchId: 1 })).find((r) => Number(r.variantId) === 1)!.quantity;
+    const initial = await qOf();
 
-    const after = await caller.inventory.onHand({ branchId: 1 });
-    expect(after.find((r) => Number(r.variantId) === 1)!.quantity).toBe(30);
+    const req = await caller.inventory.adjust({ variantId: 1, branchId: 1, targetQuantity: 30, notes: "جرد" });
+    expect(req.status).toBe("PENDING_APPROVAL");
+    expect(await qOf()).toBe(initial); // لا تغيير مخزون قبل الاعتماد
+
+    // admin يعتمد طلبه (مُستثنى من SOD) ⇒ يُطبَّق.
+    await caller.inventory.approveAdjustment({ id: req.requestId });
+    expect(await qOf()).toBe(30);
 
     const mv = await db()
       .select()
@@ -124,12 +130,12 @@ describe("inventory.adjust (تسوية ذرّية)", () => {
       .where(and(eq(s.inventoryMovements.variantId, 1), eq(s.inventoryMovements.movementType, "ADJUST")))
       .limit(1);
     expect(mv).toHaveLength(1);
-    expect(mv[0].quantity).toBe(25); // |30 - 5|
+    expect(mv[0].quantity).toBe(Math.abs(30 - initial));
 
     const audit = await db()
       .select()
       .from(s.auditLogs)
-      .where(eq(s.auditLogs.action, "inventory.adjust"))
+      .where(eq(s.auditLogs.action, "inventory.adjustApprove"))
       .limit(1);
     expect(audit).toHaveLength(1);
   });

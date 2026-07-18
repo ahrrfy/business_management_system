@@ -575,6 +575,13 @@
       "when": 1784592000000,
       "tag": "0081_idempotency_payload_hash",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "5",
+      "when": 1784678400000,
+      "tag": "0082_stock_adjustment_requests",
+      "breakpoints": true
     }
   ]
 }

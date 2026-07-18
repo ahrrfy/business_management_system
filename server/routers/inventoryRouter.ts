@@ -9,7 +9,7 @@ import { z } from "zod";
 import { branches, branchStock, inventoryMovements, productVariants, products, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { applyMovement, convertToBaseQuantity, setStock } from "../services/inventoryService";
+import { applyMovement, convertToBaseQuantity } from "../services/inventoryService";
 import {
   cancelStockTransfer,
   createStockTransfer,
@@ -19,12 +19,18 @@ import {
   receiveStockTransfer,
 } from "../services/transferService";
 import { createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
+import {
+  requestStockAdjustment,
+  approveStockAdjustment,
+  rejectStockAdjustment,
+  listStockAdjustmentRequests,
+} from "../services/inventory/adjustmentApproval";
 import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../services/idempotency";
 import { withTx } from "../services/tx";
 import { postEntry } from "../services/ledgerService";
 import { money } from "../services/money";
 import { retryOnDup } from "../lib/retryDup";
-import { inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
+import { inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
 
 /** تسميات عربية لأسباب الحركة اليدوية — تكتب في notes. */
 const REASON_LABELS = {
@@ -289,6 +295,8 @@ export const inventoryRouter = router({
       return res;
     }),
 
+  // فصل مهام #٦ (الشريحة ٢، قرار المالك ١٨/٧): التسوية المباشرة عملية حسّاسة ⇒ لم تعُد تُطبَّق فوراً؛
+  // تُنشئ **طلباً معلَّقاً** (بلا تغيير مخزون) يعتمده مديرٌ آخر عبر approveAdjustment (SOD-04).
   adjust: inventoryWarehouseProcedure
     .input(
       z.object({
@@ -299,8 +307,7 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // عزل الفرع: warehouse يُجبَر على فرعه — يمنع تسوية مخزون فرع آخر عبر API مباشر.
-      // admin/manager يحترمان branchId المُرسَل (نفس نمط createManualMovement).
+      // عزل الفرع: warehouse يُجبَر على فرعه — يمنع طلب تسوية فرع آخر عبر API مباشر.
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       let branchId = input.branchId;
       if (!elevated) {
@@ -309,30 +316,37 @@ export const inventoryRouter = router({
         }
         branchId = Number(ctx.user.branchId);
       }
-      const res = await withTx(async (tx) => {
-        const r = await setStock(tx, { ...input, branchId, createdBy: ctx.user.id });
-        // INV-ADJUST-LEDGER (تدقيق ٢/٧): التسوية اليدوية كانت تغيّر قيمة المخزون بلا أي قيد ⇒ الشطب/
-        // الزيادة لا يظهران في الدفتر ولا P&L. نُرحّل قيد ADJUST بقيمة الفرق × التكلفة (نمط الجرد تماماً:
-        // نقص ⇒ cost موجب/profit سالب؛ زيادة ⇒ العكس). dedupeKey على معرّف الحركة يمنع الازدواج.
-        if (r.delta && r.delta !== 0) {
-          const v = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1))[0];
-          const adjustValue = money(v?.costPrice ?? "0").times(r.delta); // موقَّع: موجب=زيادة قيمة
-          if (!adjustValue.isZero()) {
-            await postEntry(tx, {
-              entryType: "ADJUST",
-              branchId,
-              cost: adjustValue.neg(),
-              profit: adjustValue,
-              amount: money(0),
-              dedupeKey: `INV_ADJUST:${r.movementId}`,
-              notes: `تسوية مخزون يدوية${input.notes ? ` — ${input.notes}` : ""}`,
-            });
-          }
-        }
-        return r;
-      });
-      await logAudit(ctx, { action: "inventory.adjust", entityType: "stock", entityId: input.variantId, newValue: { branchId, target: input.targetQuantity, delta: res.delta } });
+      const res = await requestStockAdjustment(
+        { variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, notes: input.notes },
+        { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role },
+      );
+      await logAudit(ctx, { action: "inventory.adjustRequest", entityType: "stockAdjustmentRequest", entityId: res.requestId, newValue: { variantId: input.variantId, branchId, target: input.targetQuantity } });
+      return { requestId: res.requestId, status: "PENDING_APPROVAL" as const };
+    }),
+
+  // اعتماد طلب تسوية معلَّق — مديرٌ آخر (SOD-04) ⇒ يطبّق setStock + قيد ADJUST.
+  approveAdjustment: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await approveStockAdjustment(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role });
+      await logAudit(ctx, { action: "inventory.adjustApprove", entityType: "stockAdjustmentRequest", entityId: input.id, newValue: { movementId: res.movementId, delta: res.delta } });
       return res;
+    }),
+
+  rejectAdjustment: inventoryManagerProcedure
+    .input(z.object({ id: z.number().int().positive(), reason: z.string().min(1).max(500) }))
+    .mutation(async ({ input, ctx }) => {
+      await rejectStockAdjustment(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1, role: ctx.user.role }, input.reason);
+      await logAudit(ctx, { action: "inventory.adjustReject", entityType: "stockAdjustmentRequest", entityId: input.id, newValue: { reason: input.reason } });
+      return { ok: true };
+    }),
+
+  // قائمة طلبات التسوية (المعلَّقة افتراضياً) — معزولةٌ بالفرع (admin يرى الكل).
+  pendingAdjustments: inventoryReadProcedure
+    .input(z.object({ status: z.enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? null : ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
+      return listStockAdjustmentRequests({ branchId, status: input?.status ?? "PENDING_APPROVAL" });
     }),
 
   /**

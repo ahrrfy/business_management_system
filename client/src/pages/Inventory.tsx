@@ -10,7 +10,9 @@ import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { CheckCircle2, XCircle } from "lucide-react";
 import { useState } from "react";
 
 const MTYPE: Record<string, string> = {
@@ -62,15 +64,49 @@ export default function Inventory() {
   const [target, setTarget] = useState("");
   const [notes, setNotes] = useState("");
 
+  // فصل مهام #٦: التسوية صارت طلباً معلَّقاً يعتمده مديرٌ آخر ⇒ لا تغيير مخزون فوريّ.
   const adjust = trpc.inventory.adjust.useMutation({
     onSuccess: async () => {
       setEditing(null);
       setTarget("");
       setNotes("");
-      await Promise.all([utils.inventory.onHand.invalidate(), utils.inventory.movements.invalidate()]);
+      notify.ok("سُجِّل طلب تسوية معلَّق — يعتمده مديرٌ آخر (فصل مهام).");
+      await utils.inventory.pendingAdjustments.invalidate();
     },
     onError: (e) => setErr(e.message),
   });
+
+  // اعتماد/رفض طلبات التسوية المعلَّقة (للمدير/الأدمن — على طلبات غيره، SOD-04).
+  const canApprove = role === "admin" || role === "manager";
+  const pending = trpc.inventory.pendingAdjustments.useQuery(
+    { status: "PENDING_APPROVAL" },
+    { enabled: canApprove && me.data != null },
+  );
+  const pendingRows = pending.data ?? [];
+  const approveAdj = trpc.inventory.approveAdjustment.useMutation({
+    onSuccess: async () => {
+      notify.ok("اعتُمدت التسوية وطُبِّقت على المخزون.");
+      await Promise.all([
+        utils.inventory.pendingAdjustments.invalidate(),
+        utils.inventory.onHand.invalidate(),
+        utils.inventory.movements.invalidate(),
+      ]);
+    },
+    onError: (e) => notify.err(e),
+  });
+  const rejectAdj = trpc.inventory.rejectAdjustment.useMutation({
+    onSuccess: async () => { notify.ok("رُفض طلب التسوية."); await utils.inventory.pendingAdjustments.invalidate(); },
+    onError: (e) => notify.err(e),
+  });
+  async function approveFlow(id: number) {
+    if (!(await confirm({ title: "اعتماد التسوية", description: "ستُطبَّق التسوية على المخزون ويُرحَّل قيد ADJUST. متابعة؟", confirmText: "اعتماد" }))) return;
+    approveAdj.mutate({ id });
+  }
+  async function rejectFlow(id: number) {
+    const reason = window.prompt("سبب رفض التسوية (للسجل التدقيقي):");
+    if (reason == null || !reason.trim()) return;
+    rejectAdj.mutate({ id, reason: reason.trim() });
+  }
 
   function startAdjust(r: { variantId: number; quantity: number }) {
     setErr("");
@@ -88,9 +124,9 @@ export default function Inventory() {
     if (
       !(await confirm({
         variant: "danger",
-        title: "تأكيد تسوية الرصيد",
-        description: `تعديل الرصيد إلى ${t.toLocaleString("ar-IQ-u-nu-latn")} تغيير مالي مباشر بلا رجوع. متابعة؟`,
-        confirmText: "تعديل",
+        title: "طلب تسوية الرصيد",
+        description: `يُسجَّل طلبٌ لتعديل الرصيد إلى ${t.toLocaleString("ar-IQ-u-nu-latn")} — لا يُطبَّق حتى يعتمده مديرٌ آخر (فصل مهام). متابعة؟`,
+        confirmText: "إرسال الطلب",
       }))
     )
       return;
@@ -143,6 +179,50 @@ export default function Inventory() {
       </Card>
 
       {err && <p className="text-sm text-destructive">{err}</p>}
+
+      {canApprove && pendingRows.length > 0 && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">طلبات تسوية معلَّقة ({fmtInt(pendingRows.length)})</CardTitle></CardHeader>
+          <CardContent className="p-0">
+            <ScrollTableShell bordered={false}>
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50">
+                  <tr>
+                    <th className="p-2 text-start">المنتج</th>
+                    <th className="p-2 text-center">التغيير</th>
+                    <th className="p-2 text-start">ملاحظات</th>
+                    <th className="p-2 text-start">طلبها</th>
+                    <th className="p-2 text-center">إجراء</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingRows.map((r) => {
+                    const mine = r.createdBy != null && Number(r.createdBy) === Number(me.data?.id);
+                    return (
+                      <tr key={r.id} className="border-t">
+                        <td className="p-2">{r.productName} — {r.variantName ?? r.sku}</td>
+                        <td className="p-2 text-center">من {fmtInt(Number(r.currentQuantity ?? 0))} إلى {fmtInt(r.targetQuantity)}</td>
+                        <td className="p-2 text-muted-foreground">{r.notes || "—"}</td>
+                        <td className="p-2">{r.createdByName ?? "—"}</td>
+                        <td className="p-2 text-center">
+                          {mine ? (
+                            <span className="text-xs text-muted-foreground">أنت المُنشئ — يعتمده غيرك (فصل مهام)</span>
+                          ) : (
+                            <div className="flex items-center justify-center gap-2">
+                              <Button size="sm" onClick={() => approveFlow(r.id)} disabled={approveAdj.isPending}><CheckCircle2 aria-hidden className="size-4 ml-1" /> اعتماد</Button>
+                              <Button size="sm" variant="outline" onClick={() => rejectFlow(r.id)} disabled={rejectAdj.isPending}><XCircle aria-hidden className="size-4 ml-1" /> رفض</Button>
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </ScrollTableShell>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="flex-row items-center justify-between">

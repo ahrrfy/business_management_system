@@ -35,6 +35,9 @@ const ACTION_AR: Record<string, string> = {
   // المخزون
   "inventory.transfer": "تحويل مخزون",
   "inventory.adjust": "تسوية مخزون",
+  "inventory.adjustRequest": "طلب تسوية مخزون",
+  "inventory.adjustApprove": "اعتماد تسوية مخزون",
+  "inventory.adjustReject": "رفض تسوية مخزون",
   "inventory.movement": "حركة مخزون يدوية",
   // الكاتالوج
   "product.create": "إنشاء منتج",
