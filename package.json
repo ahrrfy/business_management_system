@@ -95,6 +95,7 @@
     "cors": "^2.8.6",
     "date-fns": "^4.1.0",
     "decimal.js": "^10.4.3",
+    "dexie": "^4.4.4",
     "dotenv": "^17.2.2",
     "drizzle-orm": "^0.45.2",
     "embla-carousel-react": "^8.6.0",

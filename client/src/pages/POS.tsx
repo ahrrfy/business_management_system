@@ -12,6 +12,8 @@ import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printRec
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -274,6 +276,11 @@ export default function POS() {
   const branchId = me.data?.branchId ?? 1;
   const utils    = trpc.useUtils();
 
+  // ش٢ أوفلاين: حالة الاتصال + مزامنة النموذج المحلي (كتالوج/مخزون/عملاء) دورياً وعند العودة.
+  const connState = useConnectivity();
+  const offline = isDisconnected(connState);
+  useOfflineCatalogSync(me.data ? branchId : null);
+
   // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة الزبائن RECEPTION).
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
   const shift  = shiftQ.data;
@@ -451,11 +458,32 @@ export default function POS() {
     // بند 12ب (٧/٧): تمرير العميل — صاحب سعر تعاقدي يرى سعره (يثبَّت لاحقاً override بمسار POS-ROUND القائم).
     { branchId, tier: effectiveTier, query: debouncedSearch, limit: 20, customerId: activeTab.customerId },
     {
-      enabled: debouncedSearch.trim().length >= 2,
+      enabled: !offline && debouncedSearch.trim().length >= 2,
       placeholderData: keepPreviousData,
       staleTime: 15_000,
     }
   );
+  // ش٢ أوفلاين: أثناء الانقطاع يُخدَم البحث من النموذج المحلي (Dexie) بنفس شكل PosRow —
+  // بقية الشاشة (addRow/السلة/الأسعار) لا تعرف الفرق. العروض/التعاقدي معطّلة أوفلاين بالخطة.
+  const [offlineResults, setOfflineResults] = useState<PosRow[]>([]);
+  const [offlineSearching, setOfflineSearching] = useState(false);
+  useEffect(() => {
+    if (!offline || debouncedSearch.trim().length < 2) {
+      setOfflineResults([]);
+      setOfflineSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setOfflineSearching(true);
+    void offlineSearchCatalog(debouncedSearch, effectiveTier, { limit: 20 }).then((rows) => {
+      if (cancelled) return;
+      setOfflineResults(rows as PosRow[]);
+      setOfflineSearching(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [offline, debouncedSearch, effectiveTier]);
 
   // ── Cart ops ──────────────────────────────────────────────────────────────
   function addRow(row: PosRow) {
@@ -500,14 +528,17 @@ export default function POS() {
   const lookupBarcode = useCallback(async (code: string) => {
     if (!code) return;
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
+      // ش٢ أوفلاين: أثناء الانقطاع تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
+      const row = offline
+        ? await offlineFindByBarcode(code, effectiveTier)
+        : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
       if (!row) notify.err(`باركود غير معروف: ${code}`);
-      else addRow(row);
+      else addRow(row as PosRow);
     } catch (e: unknown) {
       notify.err(e, "خطأ في المسح");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, effectiveTier, activeTab.customerId]);
+  }, [branchId, effectiveTier, activeTab.customerId, offline]);
 
   const { handleKeyDown: handleScanKeyDown } = useSmartScanInput(lookupBarcode);
 
@@ -884,9 +915,9 @@ export default function POS() {
         C={C}
         search={search} setSearch={setSearch}
         showDrop={showDrop} setShowDrop={setShowDrop}
-        results={search.trim().length >= 2 ? (searchResults.data ?? []) : []}
-        searching={searchResults.isFetching}
-        searchSettled={!searchResults.isFetching && debouncedSearch.trim() === search.trim() && search.trim().length >= 2}
+        results={search.trim().length >= 2 ? (offline ? offlineResults : (searchResults.data ?? [])) : []}
+        searching={offline ? offlineSearching : searchResults.isFetching}
+        searchSettled={(offline ? !offlineSearching : !searchResults.isFetching) && debouncedSearch.trim() === search.trim() && search.trim().length >= 2}
         addToCart={addRow}
         searchRef={searchRef}
         handleScanKeyDown={handleScanKeyDown}
