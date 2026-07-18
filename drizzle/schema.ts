@@ -1934,6 +1934,9 @@ export const idempotencyKeys = mysqlTable(
     operation: varchar("operation", { length: 40 }).notNull(), // مثل "sale.pay" / "sale.return" / "purchase.receive"
     clientRequestId: varchar("clientRequestId", { length: 64 }).notNull(),
     refId: bigint("refId", { mode: "number" }).notNull(), // المعرّف الناتج (إيصال/استرداد/استلام)
+    // hash الحمولة القانونيّ (sha256، #٥): يكشف «نفس المفتاح بحمولةٍ مختلفة» ⇒ CONFLICT. nullable
+    // للتوافق الخلفيّ (صفوف/مسارات بلا hash تبقى تُعيد refId المخزّن كالسابق).
+    payloadHash: varchar("payloadHash", { length: 64 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({

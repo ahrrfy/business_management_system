@@ -19,7 +19,7 @@ import {
   receiveStockTransfer,
 } from "../services/transferService";
 import { createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
-import { findIdempotentRefId, recordIdempotencyKey } from "../services/idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../services/idempotency";
 import { withTx } from "../services/tx";
 import { postEntry } from "../services/ledgerService";
 import { money } from "../services/money";
@@ -715,7 +715,7 @@ export const inventoryRouter = router({
         // idempotency: إعادة إرسال بنفس المفتاح تعيد الحركة الأولى بدل خصم/إضافة مكرّرة + قيد ADJUST ثانٍ
         // (نمط inventory.transferCreate). المفتاح يُسجَّل داخل نفس المعاملة ⇒ سباق متزامن يُحسَم بالقيد الفريد.
         if (input.clientRequestId) {
-          const existing = await findIdempotentRefId(tx, "inventory.manualMovement", input.clientRequestId);
+          const existing = await checkIdempotency(tx, "inventory.manualMovement", input.clientRequestId, idempotencyHash(input));
           if (existing != null) {
             const st = (
               await tx.select({ q: branchStock.quantity }).from(branchStock)
@@ -752,7 +752,7 @@ export const inventoryRouter = router({
           });
         }
         if (input.clientRequestId) {
-          await recordIdempotencyKey(tx, "inventory.manualMovement", input.clientRequestId, res.movementId);
+          await recordIdempotencyKey(tx, "inventory.manualMovement", input.clientRequestId, res.movementId, idempotencyHash(input));
         }
         return { result: res, baseQty: conv.baseQuantity, replayed: false as const };
       });
