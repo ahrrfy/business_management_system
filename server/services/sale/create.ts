@@ -462,6 +462,11 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       paymentMethod: input.payment?.method ?? null,
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
+      // أوفلاين (ش٣): وسم المنشأ + الرقم المؤقّت المطبوع + لحظة الالتقاط الحقيقية —
+      // يضبطها offline.replaySale حصراً (saleRouter لا يعرض offlineCapture).
+      originatedOffline: !!input.offlineCapture,
+      offlineReceiptNumber: input.offlineCapture?.offlineReceiptNumber ?? null,
+      capturedAt: input.offlineCapture?.capturedAt ?? null,
       createdBy: actor.userId,
     });
     const invoiceId = extractInsertId(insRes);
@@ -553,6 +558,9 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         referenceType: "INVOICE",
         referenceId: invoiceId,
         createdBy: actor.userId,
+        // أوفلاين (ش٣): البيع الملتقَط دون اتصال يُسجَّل ولو هبط الرصيد تحت الصفر — البضاعة
+        // خرجت فعلاً (قرار مالك: سالب موسوم بـoriginatedOffline، يظهر في تقرير المراجعة).
+        allowNegative: input.allowNegativeStock ?? false,
       });
     }
 

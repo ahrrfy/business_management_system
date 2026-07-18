@@ -14,6 +14,8 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale } from "@/lib/offline/outbox";
+import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -654,11 +656,20 @@ export default function POS() {
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd(""); setSaleError(null);
     },
     onError: (e) => {
+      const code = (e.data as unknown as { code?: string })?.code;
+      // ش٣ أوفلاين — تدهور سلس: فشل نقل (لا كود tRPC بنيوي = الطلب لم يصل أصلاً) في أول بيعة
+      // بعد انقطاعٍ لم يكتشفه المسبار بعد ⇒ حوّل تلقائياً للالتقاط المحلي بدل خطأ محيّر للكاشير.
+      // نفس clientRequestId يبقى ⇒ لو كان الطلب وصل الخادم فعلاً وضاع الردّ، الترحيل اللاحق
+      // يطابقه idempotent-ياً (لا ازدواج) ويعرض ربط OFF ↔ INV في درج المزامنة.
+      if (!code) {
+        saleCtxRef.current = null;
+        void captureOfflineSale();
+        return;
+      }
       // #6 (تدقيق التثبيت): بوّابتا حدّ الائتمان (server/lib/credit.ts) والبيع دون التكلفة
       // (sale/create.ts) ترميان FORBIDDEN لا PRECONDITION_FAILED، فكان حوار موافقة المدير لا يُفتَح
       // على الكاشير الرئيسي (بخلاف PrintPOS عبر printSaleService) ⇒ يتعذّر البيع المُصرَّح ولو حضر
       // المدير. نطابق الرسالة كـSalesInvoiceNew:179 (مع إبقاء PRECONDITION_FAILED دفاعاً).
-      const code = (e.data as unknown as { code?: string })?.code;
       if (code === "PRECONDITION_FAILED" || (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة"))))
         setCreditPrompt(e.message);
       // خطأ بيع حرج (نقص مخزون/رفض) ⇒ تنبيه بارز أكبر وأوضح يلتقطه الكاشير فوراً.
@@ -742,6 +753,69 @@ export default function POS() {
     };
   }
 
+  // ── التقاط البيع دون اتصال (ش٣) ─────────────────────────────────────────────
+  // نقدي كامل فقط (قرار مالك): يُحفظ البيع في طابور Dexie بنفس clientRequestId الذي كان
+  // سيستعمله أونلاين، يُطبع إيصال مؤقّت OFF-... بنفس التصميم، ويُرحَّل تلقائياً عند عودة
+  // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
+  async function captureOfflineSale() {
+    if (!shift || !cart.length) return;
+    if (activeTab.method !== "CASH" || isCredit) {
+      notify.errBig("أثناء انقطاع الاتصال: البيع النقدي الكامل فقط — الآجل والبطاقة يتطلبان اتصالاً بالخادم.");
+      return;
+    }
+    if (activeTab.couponCode) {
+      notify.errBig("الكوبونات والعروض غير متاحة دون اتصال — أزل الكوبون أولاً.");
+      return;
+    }
+    // صمّاما الأمان: عمر الأسعار المحلية + سقف قيمة الطابور.
+    const gate = await assertCanCapture(cashRoundedTotal);
+    if (!gate.ok) {
+      notify.errBig(gate.reason);
+      return;
+    }
+    const ctx = captureSaleCtx();
+    const receiptNumber = await allocateOfflineReceiptNumber(branchId);
+    const ok = await enqueueOfflineSale({
+      payload: {
+        branchId,
+        shiftId: shift.id,
+        customerId: activeTab.customerId ?? undefined,
+        priceTier: effectiveTier,
+        // promotionId يُسقَط عمداً — العروض معطّلة أوفلاين (الخادم يرفض غير المعروف في مخططه).
+        lines: cart.map(buildSaleLine).map(({ promotionId: _p, ...rest }) => rest),
+        payment: { amount: money(total), method: "CASH" },
+        clientRequestId: activeTab.clientRequestId,
+        cashRoundIQD: true,
+      },
+      offlineReceiptNumber: receiptNumber,
+      total: money(cashRoundedTotal),
+    });
+    if (!ok) {
+      notify.errBig("تعذّر حفظ البيع محلياً (مساحة المتصفح؟) — لا تُسلّم البضاعة قبل عودة الاتصال.");
+      return;
+    }
+    const now = new Date();
+    const rec: Receipt = {
+      invoiceNumber: receiptNumber,
+      invoiceId: 0, // لا فاتورة رسمية بعد — الطباعة تستعمل الرقم فقط.
+      date: now.toLocaleString("ar-IQ-u-nu-latn"),
+      printDate: now.toLocaleDateString("en-GB"),
+      printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+      cashierName: ctx.cashierName,
+      customerName: ctx.customerName,
+      lines: ctx.lines,
+      total: ctx.total, received: ctx.received, change: ctx.change,
+      credit: ctx.credit, isCredit: ctx.isCredit,
+      method: ctx.method,
+    };
+    setReceipt(rec);
+    setLastInv({ num: receiptNumber, total: ctx.total });
+    clearCartDraft(branchId);
+    notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
+    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
+    await printReceipt(buildBrandedReceipt(rec));
+  }
+
   function submitSale(approval?: { email: string; password: string }) {
     setSaleError(null);
     if (!shift || !cart.length) return;
@@ -753,6 +827,11 @@ export default function POS() {
     }
     if (isCredit && activeTab.customerId == null) {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
+      return;
+    }
+    // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل.
+    if (offline) {
+      void captureOfflineSale();
       return;
     }
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
@@ -775,6 +854,11 @@ export default function POS() {
   function quickPay() {
     setSaleError(null);
     if (!shift || !cart.length) return;
+    // ش٣ أوفلاين: الدفع السريع نقدي كامل بطبيعته ⇒ مؤهَّل للالتقاط المحلي مباشرة.
+    if (offline) {
+      void captureOfflineSale();
+      return;
+    }
     // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
     saleCtxRef.current = captureSaleCtx();
     const payAmount = money(total);
@@ -934,6 +1018,9 @@ export default function POS() {
 
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
+
+      {/* ش٣ أوفلاين: شارة/درج مزامنة المبيعات الملتقطة (تظهر فقط حين يوجد طابور/معلّقات). */}
+      <OfflineSyncChip />
 
       {/* Body */}
       <div style={{ flex: 1, display: "flex", flexDirection: stacked ? "column-reverse" : "row", overflow: "hidden", padding: "7px 8px 8px", gap: 7, minHeight: 0 }}>

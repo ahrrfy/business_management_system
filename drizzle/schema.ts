@@ -861,6 +861,13 @@ export const invoices = mysqlTable(
     paymentMethod: varchar("paymentMethod", { length: 20 }),
     paymentDate: timestamp("paymentDate"),
     notes: text("notes"),
+    // أوفلاين (هجرة 0084، ش٣ من خطة الأوفلاين): فاتورة التُقطت على جهاز الكاشير أثناء انقطاع
+    // الاتصال وأُعيد تشغيلها عبر offline.replaySale. الرقم المؤقّت OFF-... هو المطبوع على
+    // الإيصال الحراري وقت الالتقاط — يبقى قابلاً للبحث (مرتجعات/استفسار بورقة الزبون)،
+    // وcapturedAt لحظة البيع الحقيقية (قيود الدفتر تبقى بوقت الخادم — سلامة قفل الفترة).
+    originatedOffline: boolean("originatedOffline").default(false).notNull(),
+    offlineReceiptNumber: varchar("offlineReceiptNumber", { length: 40 }),
+    capturedAt: timestamp("capturedAt"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -884,6 +891,8 @@ export const invoices = mysqlTable(
     dateStatusIdx: index("idx_invoice_date_status").on(table.invoiceDate, table.status),
     branchDateStatusIdx: index("idx_invoice_branch_date_status").on(table.branchId, table.invoiceDate, table.status),
     sourceUq: unique("uq_invoice_source").on(table.sourceType, table.sourceId),
+    // أوفلاين (0084): بحث بالرقم المؤقّت المطبوع على إيصال الزبون (مرتجع/استفسار).
+    offlineReceiptIdx: index("idx_invoice_offline_receipt").on(table.offlineReceiptNumber),
   })
 );
 

@@ -28,6 +28,8 @@ export interface OfflineOutboxItem {
   lastError: string | null;
   /** إجمالي الفاتورة نصاً decimal — لصمّام سقف قيمة الطابور. */
   total: string;
+  /** الرقم الرسمي INV بعد الترحيل الناجح — درج المزامنة يعرض ربط OFF ↔ INV. */
+  resultInvoiceNumber?: string;
 }
 
 class OfflineDb extends Dexie {

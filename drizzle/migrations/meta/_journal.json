@@ -589,6 +589,13 @@
       "when": 1784764800000,
       "tag": "0083_promotion_sod",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "5",
+      "when": 1784851200000,
+      "tag": "0084_offline_sale_capture",
+      "breakpoints": true
     }
   ]
 }
