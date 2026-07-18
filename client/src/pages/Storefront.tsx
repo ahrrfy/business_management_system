@@ -180,23 +180,30 @@ function CategoryTiles({ cats, onPick }: { cats: { id: number; name: string }[];
   );
 }
 
-/** سواتش ألوان المنتج المتاحة (اسم + لون حقيقي «#RRGGBB») — صفّ نقاط صغيرة على البطاقة/التفاصيل. */
-function ColorSwatches({ colors, max = 6, size = 12 }: { colors?: { name: string; hex: string }[]; max?: number; size?: number }) {
+/**
+ * سواتش ألوان المنتج (اسم + لون حقيقي «#RRGGBB» + توفّر) — صفّ نقاط صغيرة على البطاقة/التفاصيل.
+ * تُعرَض ألوان المنتج **كاملةً** بما فيها النافدة، لكنّ النافد يظهر **باهتاً بلا تشبّع** مع وسم «نافد»
+ * في التلميح/قارئ الشاشة — فيرى الزبون نطاق الألوان كاملاً دون أن يُضلَّل عن توفّرها.
+ */
+function ColorSwatches({ colors, max = 6, size = 12 }: { colors?: { name: string; hex: string; inStock: boolean }[]; max?: number; size?: number }) {
   if (!colors || colors.length === 0) return null;
   const shown = colors.slice(0, max);
   const extra = colors.length - shown.length;
   return (
-    <div className="flex items-center gap-1" title={`ألوان المنتج: ${colors.map((c) => c.name).join("، ")}`}>
-      {shown.map((c) => (
-        <span
-          key={`${c.hex}-${c.name}`}
-          role="img"
-          className="inline-block shrink-0 rounded-full ring-1 ring-black/20 dark:ring-white/25"
-          style={{ width: size, height: size, background: c.hex }}
-          title={c.name}
-          aria-label={c.name}
-        />
-      ))}
+    <div className="flex items-center gap-1" title={`ألوان المنتج: ${colors.map((c) => (c.inStock ? c.name : `${c.name} (نافد)`)).join("، ")}`}>
+      {shown.map((c) => {
+        const label = c.inStock ? c.name : `${c.name} — نافد`;
+        return (
+          <span
+            key={`${c.hex}-${c.name}`}
+            role="img"
+            className={`inline-block shrink-0 rounded-full ring-1 ring-black/20 dark:ring-white/25${c.inStock ? "" : " opacity-30 grayscale"}`}
+            style={{ width: size, height: size, background: c.hex }}
+            title={label}
+            aria-label={label}
+          />
+        );
+      })}
       {extra > 0 && <span className="text-[9px] font-bold text-slate-400">+{extra}</span>}
     </div>
   );
