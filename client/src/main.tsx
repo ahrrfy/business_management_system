@@ -1,6 +1,7 @@
 import { CommandPalette } from "@/components/CommandPalette";
 import { ConfirmHost } from "@/components/ConfirmHost";
 import { Toaster } from "@/components/ui/sonner";
+import { initConnectivity, noteRequestFailure, noteRequestSuccess } from "@/lib/offline/connectivity";
 import { trpc } from "@/lib/trpc";
 import { UNAUTHED_ERR_MSG } from "@shared/const";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -76,13 +77,29 @@ queryClient.getMutationCache().subscribe((event) => {
   }
 });
 
+// ش١ أوفلاين: عند عودة الاتصال أبطل الاستعلامات مرة واحدة كي تنتعش الشاشات الراكدة
+// (refetchOnReconnect معطَّل أعلاه عمداً — الإنعاش هنا مضبوط بانتقال الحالة الفعلي لا بحدث
+// المتصفح غير الموثوق). في الشريحة ٣ سيسبق تفريغُ طابور المبيعات هذا الإبطال.
+initConnectivity({ onBackOnline: () => void queryClient.invalidateQueries() });
+
 const trpcClient = trpc.createClient({
   links: [
     httpBatchLink({
       url: "/api/trpc",
       transformer: superjson,
+      // كل نداء tRPC يغذّي كاشف الاتصال: وصول أي ردّ HTTP (ولو 4xx/5xx) = الشبكة والخادم
+      // موصولان؛ رفض fetch نفسه (بلا ردّ) = انقطاع. AbortError إلغاء داخلي لا إشارة شبكة.
       fetch(input, init) {
-        return fetch(input, { ...(init ?? {}), credentials: "include" });
+        return fetch(input, { ...(init ?? {}), credentials: "include" }).then(
+          (res) => {
+            noteRequestSuccess();
+            return res;
+          },
+          (err: unknown) => {
+            if (!(err instanceof DOMException && err.name === "AbortError")) noteRequestFailure();
+            throw err;
+          },
+        );
       },
     }),
   ],
