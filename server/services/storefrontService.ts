@@ -80,8 +80,12 @@ export interface StorefrontProduct {
   stockLeft: number | null;
   /** الدليل الاجتماعي: عدد مرّات بيع المنتج فعلياً (من الفواتير). */
   soldCount: number;
-  /** ألوان المنتج المتاحة (اسم + لون حقيقي «#RRGGBB») — سواتش تسويقية للزبون. تُملأ إن وُجد ≥ لون معروف. */
-  colors?: { name: string; hex: string }[];
+  /**
+   * ألوان المنتج (اسم + لون حقيقي «#RRGGBB» + توفّر) — سواتش تسويقية للزبون. تُملأ إن وُجد ≥ لون معروف.
+   * تشمل الألوان **النافدة** (inStock=false) لعرض نطاق الألوان كاملاً؛ الواجهة تميّزها بصرياً (باهتة + «نافد»)
+   * فلا تُضلِّل الزبون. التوفّر = رصيد الفرع > 0 لأيّ متغيّر يحمل هذا اللون (تجميعٌ عبر القياسات).
+   */
+  colors?: { name: string; hex: string; inStock: boolean }[];
 }
 
 /** عتبة «كمية محدودة» — الكمية تُكشَف للزبون فقط عندها فأقلّ (ندرة، لا تسريب مخزون كامل). */
@@ -198,36 +202,44 @@ async function attachSoldCounts(
  */
 async function attachVariantColors(
   db: NonNullable<ReturnType<typeof getDb>>,
-  items: StorefrontProduct[]
+  items: StorefrontProduct[],
+  branchId: number
 ): Promise<void> {
   if (!items.length) return;
   const productIds = items.map((i) => i.productId);
+  // نضمّ رصيد الفرع لكل متغيّر (leftJoin ⇒ اللون بلا صفّ رصيد = صفر = نافد) لحساب توفّر كل لون.
   const rows = await db
-    .select({ productId: productVariants.productId, color: productVariants.color, colorHex: productVariants.colorHex })
+    .select({
+      productId: productVariants.productId,
+      color: productVariants.color,
+      colorHex: productVariants.colorHex,
+      stockQty: branchStock.quantity,
+    })
     .from(productVariants)
+    .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId)))
     .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
     .orderBy(asc(productVariants.id));
-  const byProduct = new Map<number, { name: string; hex: string }[]>();
-  const seenHex = new Map<number, Set<string>>();
+  // لكل منتج: خريطة hex → {name, inStock}. التفرّد باللون الفعليّ لا بالاسم (يمنع تكرار سواتش
+  // متطابقة: احمر + أحمر فاقع، ويُبقي لونين مختلفين لنفس الاسم). التوفّر **يُجمَّع** عبر كل متغيّرات
+  // اللون (لونٌ بعدّة قياسات = متوفّرٌ إن توفّر أيّ قياس منه). أوّل اسم يفوز، والترتيب ثابت بترتيب الظهور.
+  const byProduct = new Map<number, Map<string, { name: string; inStock: boolean }>>();
   for (const r of rows) {
     const pid = Number(r.productId);
     const name = (r.color ?? "").trim();
     if (!name) continue;
     const hex = normalizeHex(r.colorHex) ?? resolveColorHex(name);
     if (!hex) continue; // اسم غير معروف بلا لون صريح ⇒ لا سواتش (لا اختراع)
-    // التفرّد باللون الفعليّ لا بالاسم: يمنع تكرار سواتش متطابقة (احمر + أحمر فاقع)
-    // ويُبقي لونين مختلفين لنفس الاسم (أزرق #000080 و#0000FF).
-    let set = seenHex.get(pid);
-    if (!set) { set = new Set(); seenHex.set(pid, set); }
-    if (set.has(hex)) continue;
-    set.add(hex);
-    let arr = byProduct.get(pid);
-    if (!arr) { arr = []; byProduct.set(pid, arr); }
-    if (arr.length < 12) arr.push({ name, hex });
+    let m = byProduct.get(pid);
+    if (!m) { m = new Map(); byProduct.set(pid, m); }
+    const inStock = Number(r.stockQty ?? 0) > 0;
+    const cur = m.get(hex);
+    if (cur) cur.inStock ||= inStock; // تجميع التوفّر عبر متغيّرات نفس اللون
+    else if (m.size < 12) m.set(hex, { name, inStock });
   }
   for (const it of items) {
-    const arr = byProduct.get(it.productId);
-    if (arr && arr.length) it.colors = arr;
+    const m = byProduct.get(it.productId);
+    if (!m || m.size === 0) continue;
+    it.colors = Array.from(m, ([hex, v]) => ({ name: v.name, hex, inStock: v.inStock }));
   }
 }
 
@@ -319,7 +331,7 @@ export async function storefrontCatalog(opts: {
   }
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
-  await attachVariantColors(db, items);
+  await attachVariantColors(db, items, branchId);
   return { items };
 }
 
@@ -362,7 +374,7 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   const item = toStorefront(rows[0]);
   await applyStorefrontPromotions([item], branchId);
   await attachSoldCounts(db, [item]);
-  await attachVariantColors(db, [item]);
+  await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
   return item;
 }
@@ -413,7 +425,7 @@ export async function storefrontRelated(
   }
   await applyStorefrontPromotions(items, branchId);
   await attachSoldCounts(db, items);
-  await attachVariantColors(db, items);
+  await attachVariantColors(db, items, branchId);
   return items;
 }
 
