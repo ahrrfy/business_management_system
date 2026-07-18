@@ -36,7 +36,11 @@ export const promotionRouter = router({
       }),
     )
     .mutation(async ({ input, ctx }) => {
-      const p = await svc.createPromotion(input as svc.PromotionInput);
+      const p = await svc.createPromotion(input as svc.PromotionInput, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
       await logAudit(ctx, {
         action: "promotion.create",
         entityType: "employeePromotion",
@@ -49,7 +53,11 @@ export const promotionRouter = router({
   approvePromotion: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const id = await svc.approvePromotion(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      const id = await svc.approvePromotion(input.id, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 1,
+        role: ctx.user.role,
+      });
       await logAudit(ctx, { action: "promotion.approve", entityType: "employeePromotion", entityId: id });
       return { id };
     }),

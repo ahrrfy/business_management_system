@@ -6,8 +6,11 @@
  *    + terminationDate=lastDay + terminationReason=reason).
  * المبالغ كلها عبر money.ts (toDbMoney). الكتابات متعددة الأطراف داخل withTx.
  * ========================================================================== */
-import { desc, eq } from "drizzle-orm";
+import { TRPCError } from "@trpc/server";
+import { and, desc, eq, isNull, lte } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
+import type { Tx } from "../db";
+import { todayUtcDate } from "./businessDay";
 import { employeePromotions, employees, employeeTerminations, receipts } from "../../drizzle/schema";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -61,7 +64,7 @@ export interface PromotionInput {
   reason?: string | null;
 }
 
-export async function createPromotion(input: PromotionInput) {
+export async function createPromotion(input: PromotionInput, actor: Actor) {
   const newId = await withTx(async (tx) => {
     const [emp] = await tx.select().from(employees).where(eq(employees.id, input.employeeId)).for("update").limit(1);
     if (!emp) throw new Error("الموظف غير موجود");
@@ -80,6 +83,8 @@ export async function createPromotion(input: PromotionInput) {
       effectiveDate: input.effectiveDate,
       reason: input.reason?.trim() || null,
       status: "pending",
+      // SOD (تدقيق ١٧/٧): نُثبّت المُنشئ لفرض «المعتمِد ≠ المُنشئ» عند الاعتماد.
+      createdBy: actor.userId,
     });
     return extractInsertId(res);
   });
@@ -100,6 +105,15 @@ export async function approvePromotion(id: number, actor: Actor) {
     if (!p) throw new Error("سجل الترقية غير موجود");
     if (p.status === "approved") throw new Error("الترقية معتمدة مسبقاً");
 
+    // فصل المهام (تدقيق ١٧/٧): مرآةُ اعتماد الرواتب/السندات — المعتمِد ≠ المُنشئ (admin مُستثنى
+    // للتصحيح الإداري). كان اعتماد ترقيةٍ (زيادة راتب) بفاعلٍ واحد ممكناً ⇒ إثراءٌ ذاتيّ.
+    if (actor.role !== "admin" && p.createdBy != null && Number(p.createdBy) === actor.userId) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "لا يجوز اعتماد ترقية أنشأتها بنفسك — يلزم مديرٌ آخر (فصل المهام).",
+      });
+    }
+
     // حارس حالة الموظف: لا تُعتمد ترقية موظف منتهي الخدمة.
     const [emp] = await tx
       .select({ employmentStatus: employees.employmentStatus })
@@ -110,17 +124,48 @@ export async function approvePromotion(id: number, actor: Actor) {
     if (!emp) throw new Error("الموظف غير موجود");
     if (emp.employmentStatus === "terminated") throw new Error("لا يمكن ترقية موظف منتهي الخدمة");
 
+    // effectiveDate (تدقيق ١٧/٧): كان يطبّق الراتب فوراً متجاهلاً تاريخاً مستقبلياً. الآن نطبّقه على
+    // الموظف فقط إن حان التاريخ (≤ اليوم UTC)؛ وإلا نعتمد الترقية ونؤجّل التطبيق (appliedAt=null)
+    // فتُطبَّق تلقائياً عند بلوغ تاريخها ضمن كنسة توليد الرواتب (applyDuePromotions).
+    const due = p.effectiveDate <= todayUtcDate();
     await tx
       .update(employeePromotions)
-      .set({ status: "approved", approvedAt: new Date(), approvedBy: actor.userId })
+      .set({ status: "approved", approvedAt: new Date(), approvedBy: actor.userId, appliedAt: due ? new Date() : null })
       .where(eq(employeePromotions.id, id));
 
-    const empPatch: { position: string; salary?: string } = { position: p.toTitle };
-    if (p.toSalary != null) empPatch.salary = toDbMoney(p.toSalary);
-    await tx.update(employees).set(empPatch).where(eq(employees.id, p.employeeId));
+    if (due) {
+      const empPatch: { position: string; salary?: string } = { position: p.toTitle };
+      if (p.toSalary != null) empPatch.salary = toDbMoney(p.toSalary);
+      await tx.update(employees).set(empPatch).where(eq(employees.id, p.employeeId));
+    }
 
     return id;
   });
+}
+
+/**
+ * كنسة الترقيات المستحقّة (تدقيق ١٧/٧): تُطبّق كل ترقيةٍ معتمَدةٍ مؤجَّلةٍ (appliedAt=null) بلغ
+ * تاريخُها (effectiveDate ≤ asOf) على راتب/مسمّى الموظف، وتَختم appliedAt. تُستدعى داخل معاملة توليد
+ * الرواتب (asOf = آخر يوم في فترة المسيّر) قبل قراءة الرواتب ⇒ الترقية تسري في شهرها بلا تدخّل يدويّ.
+ */
+export async function applyDuePromotions(tx: Tx, asOf: string): Promise<number> {
+  const due = await tx
+    .select()
+    .from(employeePromotions)
+    .where(
+      and(
+        eq(employeePromotions.status, "approved"),
+        isNull(employeePromotions.appliedAt),
+        lte(employeePromotions.effectiveDate, asOf),
+      ),
+    );
+  for (const p of due) {
+    const empPatch: { position: string; salary?: string } = { position: p.toTitle };
+    if (p.toSalary != null) empPatch.salary = toDbMoney(p.toSalary);
+    await tx.update(employees).set(empPatch).where(eq(employees.id, p.employeeId));
+    await tx.update(employeePromotions).set({ appliedAt: new Date() }).where(eq(employeePromotions.id, p.id));
+  }
+  return due.length;
 }
 
 /* ===== إنهاء الخدمات ===== */
