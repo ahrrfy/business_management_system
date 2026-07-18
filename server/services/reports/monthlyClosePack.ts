@@ -81,14 +81,13 @@ export async function getMonthlyClosePack(input: MonthlyClosePackInput): Promise
   const lower = `${from} 00:00:00`;
 
   // الأقسام مستقلة القراءة ⇒ توازٍ كامل (نمط getSessionContext بعد ملاحظة أداء ٣/٧).
-  const [salesRow, register, purchases, expenses, treasury, arRows, apRows, woRow] = await Promise.all([
+  const [salesRow, register, purchases, expenses, treasury, arRows, apRows, woRow, returnsRow] = await Promise.all([
     db.execute(sql`
       SELECT
         COUNT(*) AS cnt,
         CAST(COALESCE(SUM(subtotal), 0) AS CHAR) AS subtotal,
         CAST(COALESCE(SUM(taxAmount), 0) AS CHAR) AS tax,
-        CAST(COALESCE(SUM(total), 0) AS CHAR) AS total,
-        CAST(COALESCE(SUM(returnedTotal), 0) AS CHAR) AS returned
+        CAST(COALESCE(SUM(total), 0) AS CHAR) AS total
       FROM invoices
       WHERE invoiceDate >= ${lower} AND invoiceDate < ${upper}
         AND invoiceStatus NOT IN ('CANCELLED')
@@ -106,11 +105,22 @@ export async function getMonthlyClosePack(input: MonthlyClosePackInput): Promise
         AND deliveredAt >= ${lower} AND deliveredAt < ${upper}
         ${branchCond}
     `),
+    // مرتجعات المبيعات بتاريخ **الإرجاع** (entryDate) لا تاريخ الفاتورة (تدقيق ١٧/٧): كان SUM(returnedTotal)
+    // بـinvoiceDate يعدّل رقم شهرٍ سبق إقفاله بأثر رجعيّ عند أيّ إرجاعٍ لاحق، ويناقض P&L/الدفتر اللذين
+    // يقيّدان RETURN في شهر حدوثه. نمط plSnapshot: RETURN + supplierId IS NULL (استبعاد مرتجع الشراء)؛
+    // المبلغ سالب ⇒ الموجب = -SUM(amount).
+    db.execute(sql`
+      SELECT CAST(COALESCE(-SUM(amount), 0) AS CHAR) AS returned
+      FROM accountingEntries
+      WHERE entryType = 'RETURN' AND supplierId IS NULL
+        AND entryDate >= ${from} AND entryDate <= ${to}
+        ${branchCond}
+    `),
   ]);
 
   const s = rowsOf(salesRow)[0] ?? {};
   const total = money(s.total ?? 0);
-  const returned = money(s.returned ?? 0);
+  const returned = money(rowsOf(returnsRow)[0]?.returned ?? 0);
 
   const arTotal = arRows.reduce((acc, r) => acc.add(money(r.currentBalance ?? 0)), money(0));
   const apTotal = apRows.reduce((acc, r) => acc.add(money(r.currentBalance ?? 0)), money(0));

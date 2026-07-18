@@ -14,7 +14,7 @@
 //   W5  استقرار SORT: نطبّق بترتيب productUnitId → priceTier كي تكون النتيجة حتميّة (تكرار المعاينة = التطبيق).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, inArray, like, or } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, like, or } from "drizzle-orm";
 import {
   priceChangeLog,
   priceUpdateWaves,
@@ -229,22 +229,20 @@ export async function applyPriceWave(
 
 /** قائمة الموجات المطبَّقة (للتاريخ في الشاشة). */
 export async function listPriceWaves(tx: Tx, limit = 50) {
-  const rows = await tx
-    .select()
-    .from(priceUpdateWaves)
-    .orderBy(asc(priceUpdateWaves.appliedAt))
-    .limit(limit);
-  // يعيدها الأحدث أولاً في المستدعي — درسنا هنا asc + reverse ليعمل مع orderBy بلا SQL DESC.
-  return rows.reverse();
+  // تدقيق ١٧/٧: كان asc + limit + reverse يقتطع **أقدم** ٥٠ موجةً ثم يعكس ترتيب عرضها ⇒ الموجات
+  // الجديدة تختفي بعد تجاوز ٥٠. الصحيح: desc + limit ⇒ أحدث ٥٠ موجةً فعلاً. desc(id) يكسر تعادل
+  // appliedAt (موجتان في الثانية نفسها) حتمياً ⇒ الأحدث إدراجاً أوّلاً.
+  return tx.select().from(priceUpdateWaves).orderBy(desc(priceUpdateWaves.appliedAt), desc(priceUpdateWaves.id)).limit(limit);
 }
 
 /** سجلّ تغييرات سعرٍ محدَّد (لعرض «تاريخ السعر» على شاشة تعديل المنتج). */
 export async function getPriceUnitHistory(tx: Tx, productUnitId: number, limit = 50) {
+  // تدقيق ١٧/٧: كان asc ⇒ أقدم ٥٠ تغييراً؛ الصحيح desc ⇒ أحدث التغييرات أولاً (desc(id) لكسر تعادل الوقت).
   return tx
     .select()
     .from(priceChangeLog)
     .where(eq(priceChangeLog.productUnitId, productUnitId))
-    .orderBy(asc(priceChangeLog.createdAt))
+    .orderBy(desc(priceChangeLog.createdAt), desc(priceChangeLog.id))
     .limit(limit);
 }
 
