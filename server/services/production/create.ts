@@ -6,7 +6,7 @@ import { branchStock, productVariants, productionLines, productionOrders } from 
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement } from "../inventoryService";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { postEntry } from "../ledgerService";
 import { money, round2 } from "../money";
 import { type Actor, withTx } from "../tx";
@@ -18,7 +18,7 @@ import type { CreateProductionInput, CreateProductionResult, ResolvedLine, Spoil
 export async function createProduction(input: CreateProductionInput, actor: Actor): Promise<CreateProductionResult> {
   return withTx(async (tx) => {
     // ① إعادة idempotent.
-    const replayId = await findIdempotentRefId(tx, "production.create", input.clientRequestId);
+    const replayId = await checkIdempotency(tx, "production.create", input.clientRequestId, idempotencyHash(input));
     if (replayId) {
       const ex = (
         await tx.select({ docNumber: productionOrders.docNumber, totalCost: productionOrders.totalCost })
@@ -51,7 +51,7 @@ export async function createProduction(input: CreateProductionInput, actor: Acto
     });
     const productionOrderId = extractInsertId(insRes);
     // سجّل مفتاح idempotency فوراً ⇒ طلب متزامن مكرّر يصطدم بالقيد الفريد فيُلغى قبل أي حركة مخزون.
-    if (input.clientRequestId) await recordIdempotencyKey(tx, "production.create", input.clientRequestId, productionOrderId);
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "production.create", input.clientRequestId, productionOrderId, idempotencyHash(input));
 
     // ④ المدخلات: snapshot التكلفة + حركات OUT (تصاعدياً بـvariantId لقفل حتمي).
     const materialsCost = await consumeInputs(tx, input.branchId, productionOrderId, inLines, actor);
