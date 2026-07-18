@@ -44,96 +44,96 @@
 }
 
 :root {
-  --primary: oklch(0.488 0.243 264.376);
+  --primary: oklch(0.48 0.15 262);
   --primary-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary: oklch(0.48 0.15 262);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.714);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
+  --chart-1: oklch(0.55 0.12 262);
+  --chart-2: oklch(0.58 0.11 200);
+  --chart-3: oklch(0.55 0.12 152);
+  --chart-4: oklch(0.62 0.11 70);
+  --chart-5: oklch(0.58 0.12 340);
   --radius: 0.625rem;
-  --background: oklch(0.985 0.002 247.858);
-  --foreground: oklch(0.235 0.015 65);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.235 0.015 65);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.235 0.015 65);
-  --secondary: oklch(0.97 0.005 247.858);
-  --secondary-foreground: oklch(0.4 0.015 65);
-  --muted: oklch(0.96 0.005 247.858);
+  --background: oklch(0.958 0.010 82);
+  --foreground: oklch(0.260 0.012 70);
+  --card: oklch(0.976 0.006 82);
+  --card-foreground: oklch(0.260 0.012 70);
+  --popover: oklch(0.976 0.006 82);
+  --popover-foreground: oklch(0.260 0.012 70);
+  --secondary: oklch(0.945 0.008 82);
+  --secondary-foreground: oklch(0.450 0.011 70);
+  --muted: oklch(0.940 0.008 82);
   /* WCAG AA: كان 0.552 (٤.٦٣ على الأبيض، يهبط ٤.٣٠ على أي سطح مُلوَّن). أُظلِم ليصمد ≥٤.٥ على bg-muted/accent. */
-  --muted-foreground: oklch(0.50 0.016 285.938);
-  --accent: oklch(0.96 0.005 247.858);
-  --accent-foreground: oklch(0.141 0.005 285.823);
+  --muted-foreground: oklch(0.515 0.012 70);
+  --accent: oklch(0.940 0.008 82);
+  --accent-foreground: oklch(0.260 0.012 70);
   --destructive: oklch(0.577 0.245 27.325);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.922 0.004 247.858);
+  --border: oklch(0.900 0.008 78);
   /* WCAG 1.4.11 (حدود عناصر التحكم ≥٣:١): كان 0.922 (١.٢١:١، الحقل الفارغ شبه مخفيّ). حدّ الإدخال أُظلِم لـ≈٣.٥:١؛ حدّ البطاقات/الفواصل (--border) يبقى أنعم. */
-  --input: oklch(0.62 0.004 247.858);
-  --ring: oklch(0.488 0.243 264.376);
-  --sidebar: oklch(0.978 0.004 247.858);
-  --sidebar-foreground: oklch(0.235 0.015 65);
-  --sidebar-accent: oklch(0.96 0.005 247.858);
-  --sidebar-accent-foreground: oklch(0.141 0.005 285.823);
-  --sidebar-border: oklch(0.922 0.004 247.858);
-  --sidebar-ring: oklch(0.488 0.243 264.376);
+  --input: oklch(0.62 0.010 78);
+  --ring: oklch(0.48 0.15 262);
+  --sidebar: oklch(0.966 0.008 82);
+  --sidebar-foreground: oklch(0.260 0.012 70);
+  --sidebar-accent: oklch(0.940 0.008 82);
+  --sidebar-accent-foreground: oklch(0.260 0.012 70);
+  --sidebar-border: oklch(0.900 0.008 78);
+  --sidebar-ring: oklch(0.48 0.15 262);
   /* ── الشريط الجانبي المصمَّت (أزرق) + الشريحة النشطة بمنحنى ── (الفاتح)
      منفصلة عن رموز shadcn أعلاه (--sidebar…) لأنها لوحة كاملة بلون العلامة لا سطحاً محايداً. */
-  --sidebar-solid: oklch(0.488 0.243 264.376);      /* الأزرق الأساسي = لوحة كاملة */
+  --sidebar-solid: oklch(0.360 0.055 262);          /* «صَفا»: نيليّ عميق مُطفأ (خُفِض التشبّع ٠٫٢٤٣→٠٫٠٥٥) — لوحة هادئة لساعات طويلة؛ نصّ أبيض ≈٩٫٣:١ */
   --sidebar-on: oklch(1 0 0 / 0.80);                 /* نصّ العناصر غير النشطة على الأزرق */
   --sidebar-on-strong: oklch(1 0 0 / 0.97);          /* نصّ بارز (العنوان/التحويم) */
   --sidebar-soft: oklch(1 0 0 / 0.12);               /* خلفية زرّ/تحويم شفّافة */
   --sidebar-soft-hover: oklch(1 0 0 / 0.20);
   --sidebar-line: oklch(1 0 0 / 0.17);               /* فواصل/حدود على الأزرق */
-  --sidebar-pill: oklch(0.977 0.004 247.858);        /* = لون خلفية المحتوى (bg-muted/30) ⇒ تتدفّق الخلفية خلال الشريحة */
-  --sidebar-pill-on: oklch(0.44 0.21 264.376);       /* نصّ/أيقونة الشريحة = بلون الشريط الأزرق (تباين ≥٤٫٥:١) */
+  --sidebar-pill: oklch(0.962 0.009 82);             /* = لون خلفية المحتوى الدافئ (صَفا) ⇒ تتدفّق الخلفية خلال الشريحة */
+  --sidebar-pill-on: oklch(0.44 0.14 262);            /* نصّ/أيقونة الشريحة النشطة (نيليّ مُطفأ على الشريحة الفاتحة، تباين ≈٧٫٤:١) */
 }
 
 .dark {
   /* WCAG AA: كان 0.623 (نصّ الزرّ الأبيض ٣.٦٥:١). أُظلِم لـ٤.٨٨:١ — يشمل كل زرّ primary وعنصر التنقّل النشِط في الوضع الداكن. */
-  --primary: oklch(0.55 0.214 264.376);
+  --primary: oklch(0.55 0.15 262);
   --primary-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.55 0.214 264.376);
+  --sidebar-primary: oklch(0.55 0.15 262);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --background: oklch(0.141 0.005 285.823);
-  --foreground: oklch(0.85 0.005 65);
-  --card: oklch(0.21 0.006 285.885);
-  --card-foreground: oklch(0.85 0.005 65);
-  --popover: oklch(0.21 0.006 285.885);
-  --popover-foreground: oklch(0.85 0.005 65);
-  --secondary: oklch(0.24 0.006 286.033);
-  --secondary-foreground: oklch(0.7 0.005 65);
-  --muted: oklch(0.274 0.006 286.033);
-  --muted-foreground: oklch(0.705 0.015 286.067);
-  --accent: oklch(0.274 0.006 286.033);
-  --accent-foreground: oklch(0.92 0.005 65);
+  --background: oklch(0.185 0.007 75);
+  --foreground: oklch(0.885 0.007 82);
+  --card: oklch(0.225 0.009 75);
+  --card-foreground: oklch(0.885 0.007 82);
+  --popover: oklch(0.225 0.009 75);
+  --popover-foreground: oklch(0.885 0.007 82);
+  --secondary: oklch(0.255 0.009 75);
+  --secondary-foreground: oklch(0.742 0.008 82);
+  --muted: oklch(0.255 0.009 75);
+  --muted-foreground: oklch(0.660 0.009 82);
+  --accent: oklch(0.255 0.009 75);
+  --accent-foreground: oklch(0.885 0.007 82);
   --destructive: oklch(0.704 0.191 22.216);
   --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.623 0.214 264.376);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.714);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.21 0.006 285.885);
-  --sidebar-foreground: oklch(0.85 0.005 65);
-  --sidebar-accent: oklch(0.274 0.006 286.033);
+  --border: oklch(0.325 0.010 75);
+  --input: oklch(0.52 0.012 75);
+  --ring: oklch(0.60 0.15 262);
+  --chart-1: oklch(0.55 0.12 262);
+  --chart-2: oklch(0.58 0.11 200);
+  --chart-3: oklch(0.55 0.12 152);
+  --chart-4: oklch(0.62 0.11 70);
+  --chart-5: oklch(0.58 0.12 340);
+  --sidebar: oklch(0.225 0.009 75);
+  --sidebar-foreground: oklch(0.885 0.007 82);
+  --sidebar-accent: oklch(0.255 0.009 75);
   --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.623 0.214 264.376);
+  --sidebar-border: oklch(0.325 0.010 75);
+  --sidebar-ring: oklch(0.60 0.15 262);
   /* الشريط الأزرق (الداكن): أزرق عميق مريح + شريحة تندمج بلون المحتوى الداكن */
-  --sidebar-solid: oklch(0.33 0.13 264.376);
+  --sidebar-solid: oklch(0.225 0.028 262);
   --sidebar-on: oklch(1 0 0 / 0.80);
   --sidebar-on-strong: oklch(1 0 0 / 0.97);
   --sidebar-soft: oklch(1 0 0 / 0.12);
   --sidebar-soft-hover: oklch(1 0 0 / 0.20);
   --sidebar-line: oklch(1 0 0 / 0.15);
-  --sidebar-pill: oklch(0.181 0.006 286.0);          /* = لون خلفية المحتوى الداكن ⇒ تتدفّق الخلفية خلال الشريحة */
-  --sidebar-pill-on: oklch(0.82 0.13 264);           /* نصّ أزرق فاتح للتباين على الشريحة الداكنة */
+  --sidebar-pill: oklch(0.190 0.007 75);             /* = لون خلفية المحتوى الداكن الدافئ ⇒ تتدفّق الخلفية خلال الشريحة */
+  --sidebar-pill-on: oklch(0.82 0.11 262);           /* نصّ أزرق فاتح للتباين على الشريحة الداكنة */
 }
 
 @layer base {
