@@ -709,6 +709,15 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      // فصل مهام #٦ (مراجعة عدائية MF-1): الحركة المُنقِصة للمخزون (OUT/شطب: تلف/عيّنة/تصحيح…) عمليةٌ
+      // حسّاسة قد تُخفي عجزاً/سرقة بفاعلٍ واحد — كانت باب تجاوزٍ للاعتماد الثنائيّ. تُوحَّد الآن في مسار
+      // «تسوية الرصيد» المعتمَد (inventory.adjust ⇒ طلبٌ معلَّق يعتمده مديرٌ آخر). الإضافة (IN/RETURN) تبقى.
+      if (input.movementType === "OUT") {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "شطب المخزون يمرّ بطلب تسوية معتمَد (فصل مهام) — استعمل «تسوية الرصيد» من شاشة المخزون بالكمية المستهدفة، يعتمده مديرٌ آخر.",
+        });
+      }
       // عزل الفرع: warehouse يُجبَر على فرعه؛ admin/manager يحترمان branchId المُرسَل.
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       let branchId = input.branchId;

@@ -157,28 +157,15 @@ describe("inventory.createManualMovement", () => {
     expect(mv.quantity).toBe(12);
   });
 
-  it("(ب) OUT يدوي يخصم؛ يُرفض إن تجاوز المخزون", async () => {
+  it("(ب) OUT (شطب) يُرفَض على الحركة اليدوية — يُوجَّه لتسوية معتمَدة (فصل مهام #٦)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    const r = await caller.inventory.createManualMovement({
-      variantId: 1, branchId: 1, movementType: "OUT",
-      productUnitId: 1, quantity: "7", reason: "DAMAGE", notes: "كسر شحنة",
-    });
-    expect(r.newQuantity).toBe(13);
-    expect(await stockOf(1, 1)).toBe(13);
-
-    const mv = (await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.id, r.movementId)))[0];
-    expect(mv.movementType).toBe("OUT");
-    expect(mv.referenceType).toBe("MANUAL_OUT");
-    expect(mv.quantity).toBe(7);
-
-    // محاولة سحب أكثر من المتاح ⇒ ترفض ولا تغيّر المخزون.
     await expect(
       caller.inventory.createManualMovement({
         variantId: 1, branchId: 1, movementType: "OUT",
-        productUnitId: 1, quantity: "1000", reason: "DAMAGE",
+        productUnitId: 1, quantity: "7", reason: "DAMAGE", notes: "كسر شحنة",
       })
-    ).rejects.toThrow();
-    expect(await stockOf(1, 1)).toBe(13); // بلا تغيير.
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await stockOf(1, 1)).toBe(20); // بلا تغيير — الشطب لا يُطبَّق بفاعلٍ واحد
   });
 
   it("(ج) RETURN يدوي يزيد المخزون مع referenceType=MANUAL_RETURN", async () => {
@@ -236,9 +223,9 @@ describe("inventory.createManualMovement", () => {
 describe("inventory.movementsRich", () => {
   async function seedMovements() {
     const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    // ٣ حركات في فرع ١، ١ حركة في فرع ٢ (مع أمين مخزن مختلف).
+    // ٣ حركات في فرع ١، ١ في فرع ٢ (OUT اليدويّ صار يمرّ بالتسوية المعتمَدة #٦ ⇒ استُبدِل بـRETURN).
     await caller.inventory.createManualMovement({ variantId: 1, branchId: 1, movementType: "IN", productUnitId: 1, quantity: "2", reason: "STOCK_TAKE" });
-    await caller.inventory.createManualMovement({ variantId: 1, branchId: 1, movementType: "OUT", productUnitId: 1, quantity: "1", reason: "DAMAGE" });
+    await caller.inventory.createManualMovement({ variantId: 1, branchId: 1, movementType: "RETURN", productUnitId: 1, quantity: "1", reason: "OTHER" });
     await caller.inventory.createManualMovement({ variantId: 1, branchId: 1, movementType: "RETURN", productUnitId: 1, quantity: "3", reason: "OTHER" });
     await caller.inventory.createManualMovement({ variantId: 1, branchId: 2, movementType: "IN", productUnitId: 1, quantity: "5", reason: "CORRECTION" });
   }
@@ -261,10 +248,9 @@ describe("inventory.movementsRich", () => {
   it("(د2) فلترة بنوع الحركة", async () => {
     await seedMovements();
     const admin = appRouter.createCaller(makeCtx(await userRow(1)));
+    // OUT اليدويّ مُوحَّد في التسوية المعتمَدة ⇒ لا حركات OUT من هذا المسار.
     const out = await admin.inventory.movementsRich({ movementType: "OUT" });
-    expect(out.total).toBe(1);
-    expect(out.rows[0].movementType).toBe("OUT");
-    expect(out.rows[0].quantity).toBe(1);
+    expect(out.total).toBe(0);
 
     const ins = await admin.inventory.movementsRich({ movementType: "IN" });
     expect(ins.total).toBe(2);
