@@ -1,7 +1,8 @@
 /**
  * colorHex — دوام «لون العرض الحقيقي» عبر الإنشاء/التعديل (بنك الألوان).
- * يقفل خيط colorHex end-to-end: يُخزَّن الاختيار الصريح، يُقرأ للتعبئة، ويبقى عند إعادة الإرسال،
- * وغيابه ⇒ null (يُستنتَج لاحقاً من الاسم عبر @shared/colorBank في طبقة العرض).
+ * يقفل خيط colorHex end-to-end: يُخزَّن الاختيار الصريح، يُقرأ للتعبئة، ويبقى عند إعادة الإرسال.
+ * دلالة التعديل (كالصورة): `undefined` (غائب عن الحمولة، كشاشة السلعة البسيطة) ⇒ **يُصان المخزَّن**؛
+ * `null` صريح ⇒ يُمحى (المستخدم أعاده للتلقائي، يُستنتَج لاحقاً من الاسم عبر @shared/colorBank).
  */
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -96,5 +97,34 @@ describe("colorHex — الدوام عبر التعديل/الإضافة", () =>
     const row = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
     expect(row.colorHex).toBe("#ABCDEF");
     expect(row.costPrice).toBe("600.00");
+  });
+
+  it("تعديلٌ لا يُرسل colorHex إطلاقاً (نمط السلعة البسيطة) ⇒ يُصان اللون الصريح المخزَّن — لا يُمحى", async () => {
+    // اضبط لوناً صريحاً على المتغيّر.
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: tmpl(), variants: [{ id: 1, sku: "NB-1", color: "أزرق", colorHex: "#ABCDEF", costPrice: "500", unitBarcodes: { قطعة: "BC-1" } }] },
+      actor,
+    );
+    // عدّل بحمولةٍ بلا colorHex إطلاقاً (color=null كما ترسله SimpleProductEditForm) ⇒ يجب أن يبقى اللون.
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: tmpl(), variants: [{ id: 1, sku: "NB-1", color: null, costPrice: "700", unitBarcodes: { قطعة: "BC-1" } }] },
+      actor,
+    );
+    const row = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
+    expect(row.colorHex).toBe("#ABCDEF"); // مصونٌ رغم غيابه من الحمولة (كان يُمحى صامتاً قبل الإصلاح)
+    expect(row.costPrice).toBe("700.00"); // بقيّة الحقول تُحدَّث طبيعياً
+  });
+
+  it("colorHex = null صريحاً ⇒ يُمحى (المستخدم أعاده للتلقائي)", async () => {
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: tmpl(), variants: [{ id: 1, sku: "NB-1", color: "أزرق", colorHex: "#ABCDEF", costPrice: "500", unitBarcodes: { قطعة: "BC-1" } }] },
+      actor,
+    );
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: tmpl(), variants: [{ id: 1, sku: "NB-1", color: "أزرق", colorHex: null, costPrice: "500", unitBarcodes: { قطعة: "BC-1" } }] },
+      actor,
+    );
+    const row = (await db().select().from(s.productVariants).where(eq(s.productVariants.id, 1)))[0];
+    expect(row.colorHex).toBeNull(); // null صريح ⇒ مسحٌ متعمَّد (لا صيانة)
   });
 });
