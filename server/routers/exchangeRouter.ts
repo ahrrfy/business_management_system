@@ -10,6 +10,7 @@ import {
   getExchangeStatement,
   listExchangeHouses,
   reconcileExchange,
+  reverseExchangeTransaction,
   setExchangeActive,
   settleSupplierViaExchange,
   updateExchangeHouse,
@@ -227,6 +228,20 @@ export const exchangeRouter = router({
         }
       }
       throw new TRPCError({ code: "CONFLICT", message: "تعذّر تسجيل التسديد (تكرار)" });
+    }),
+
+  reverse: treasuryManagerProcedure
+    .input(z.object({ txnId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = ctx.user.branchId == null ? 0 : Number(ctx.user.branchId);
+      const res = await reverseExchangeTransaction(input.txnId, actorOf(ctx, branchId));
+      await logAudit(ctx, {
+        action: "exchange.reverse",
+        entityType: "exchangeTransaction",
+        entityId: input.txnId,
+        newValue: { txnNumber: res.txnNumber },
+      });
+      return res;
     }),
 
   statement: treasuryManagerReadProcedure
