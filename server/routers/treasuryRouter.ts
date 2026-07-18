@@ -53,6 +53,7 @@ export const treasuryRouter = router({
       return getRecentMovements(input ?? {}, {
         scopedBranchId: (ctx as { scopedBranchId: number | null }).scopedBranchId,
         role: ctx.user.role,
+        userId: ctx.user.id,
       });
     }),
 

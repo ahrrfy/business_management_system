@@ -14,6 +14,7 @@ import {
 } from "../../../drizzle/schema";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
 import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
+import { assertValidUnitFactors } from "./unitFactors";
 import { getDb } from "../../db";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
@@ -197,6 +198,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       if (!v.units.some((u) => u.isBaseUnit)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} يحتاج وحدة أساس واحدة (isBaseUnit)` });
       }
+      assertValidUnitFactors(v.units);
       const vRes = await tx.insert(productVariants).values({
         productId,
         sku: v.sku.trim(),

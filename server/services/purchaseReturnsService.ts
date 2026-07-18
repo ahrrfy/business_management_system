@@ -62,10 +62,19 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       const existingRefId = await findIdempotentRefId(tx, "purchase.return", input.clientRequestId);
       if (existingRefId != null) {
         const prior = (await tx
-          .select({ amount: accountingEntries.amount })
+          .select({
+            amount: accountingEntries.amount,
+            supplierId: accountingEntries.supplierId,
+            branchId: accountingEntries.branchId,
+          })
           .from(accountingEntries)
           .where(eq(accountingEntries.id, existingRefId))
           .limit(1))[0];
+        // تحقّق البصمة (تدقيق ١٧/٧): نفس مفتاح idempotency بمورّد/فرع مختلف ⇒ CONFLICT — لا نعيد نتيجة
+        // مرتجعٍ آخر (كان returnService يتحقّق بينما مسار الشراء يعيد الأول عمياءً). مرآةٌ لـsale.pay.
+        if (prior && (Number(prior.supplierId) !== input.supplierId || Number(prior.branchId) !== input.branchId)) {
+          throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مُستعمَل بمورّد أو فرع مختلف" });
+        }
         return {
           purchaseReturnEntryId: existingRefId,
           returnedTotal: money(prior?.amount ?? "0").neg().toFixed(2),

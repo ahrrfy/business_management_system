@@ -3,6 +3,7 @@ import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
 import { productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
+import { assertValidUnitFactors } from "./unitFactors";
 import { toDbMoney } from "../money";
 import type { PriceTier } from "../pricing";
 import { type Actor, withTx } from "../tx";
@@ -87,6 +88,9 @@ export async function updateProduct(input: UpdateProductInput, _actor: Actor) {
           costPrice: toDbMoney(v.costPrice),
         })
         .where(eq(productVariants.id, v.id));
+
+      // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١.
+      assertValidUnitFactors(v.units);
 
       // Existing units for this variant.
       const existing = await tx.select().from(productUnits).where(eq(productUnits.variantId, v.id));

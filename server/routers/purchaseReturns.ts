@@ -95,7 +95,16 @@ export const purchaseReturnsRouter = router({
         .optional()
     )
     .query(async ({ input, ctx }) => {
-      const branchId = ctx.user.role === "admin" ? input?.branchId : (ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined);
+      // عزل الفرع (تدقيق ١٧/٧): غير الأدمن بلا فرع مُسنَد كان يمرّر undefined ⇒ كل الفروع تُعرَض.
+      // نرفض صراحةً مطابقةً لمرآة returnRouter.list (مرتجع البيع).
+      let branchId: number | undefined;
+      if (ctx.user.role === "admin") {
+        branchId = input?.branchId;
+      } else if (ctx.user.branchId != null) {
+        branchId = Number(ctx.user.branchId);
+      } else {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
       return listPurchaseReturns({ ...(input ?? {}), branchId });
     }),
 });
