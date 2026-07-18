@@ -686,9 +686,10 @@ export default function InventoryMovements() {
                   onChange={(e) => setMType(e.target.value as ManualType)}
                 >
                   <option value="IN">وارد (IN)</option>
-                  <option value="OUT">صادر (OUT)</option>
                   <option value="RETURN">مرتجع (RETURN)</option>
                 </select>
+                {/* فصل مهام #٦: الشطب (OUT) يمرّ بتسوية معتمَدة لا حركةً فوريّة. */}
+                <p className="text-[11px] text-muted-foreground">للشطب/النقص استعمل «تسوية الرصيد» من شاشة المخزون (يعتمده مديرٌ آخر).</p>
               </div>
 
               <div className="space-y-1">

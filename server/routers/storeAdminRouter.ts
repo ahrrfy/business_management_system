@@ -302,9 +302,10 @@ const catalogRouter = router({
     .input(z.object({ variantId: z.number().int().positive(), branchId: z.number().int().positive().nullish(), targetQuantity: z.number().int().min(0), notes: z.string().max(200).optional() }))
     .mutation(async ({ input, ctx }) => {
       const branchId = await resolveStorefrontBranchId(input.branchId ?? undefined);
-      const r = await setStoreProductStock({ variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, createdBy: ctx.user.id, notes: input.notes });
-      await logAudit(ctx, { action: "store.catalog.stock", entityType: "stock", entityId: input.variantId, newValue: { branchId, target: input.targetQuantity, delta: r.delta } });
-      return r;
+      // فصل مهام #٦: يُنشئ طلب تسوية معلَّقاً يعتمده مديرٌ آخر (بدل ضبطٍ فوريّ بفاعلٍ واحد).
+      const r = await setStoreProductStock({ variantId: input.variantId, branchId, targetQuantity: input.targetQuantity, createdBy: ctx.user.id, role: ctx.user.role, notes: input.notes });
+      await logAudit(ctx, { action: "store.catalog.stockRequest", entityType: "stockAdjustmentRequest", entityId: r.requestId, newValue: { branchId, target: input.targetQuantity } });
+      return { requestId: r.requestId, status: "PENDING_APPROVAL" as const };
     }),
   setImage: storeManagerProcedure
     .input(z.object({ productId: z.number().int().positive(), url: z.string().max(5_000_000).nullable() }))

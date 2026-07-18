@@ -8,9 +8,7 @@ import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { withTx } from "../tx";
-import { setStock } from "../inventoryService";
-import { postEntry } from "../ledgerService";
-import { money } from "../money";
+import { requestStockAdjustment } from "../inventory/adjustmentApproval";
 import { assertValidImageDataUrl } from "../../lib/imageValidation";
 
 export interface StoreCatalogRow {
@@ -169,25 +167,17 @@ export async function setProductPrimaryImage(input: { productId: number; url: st
   });
 }
 
-/** ضبط مخزون منتج (على متغيّره) إلى كميةٍ مستهدفة — ذرّي مع قيد ADJUST (نمط inventory.adjust). */
-export async function setStoreProductStock(input: { variantId: number; branchId: number; targetQuantity: number; createdBy: number; notes?: string }) {
-  return withTx(async (tx) => {
-    const r = await setStock(tx, { variantId: input.variantId, branchId: input.branchId, targetQuantity: input.targetQuantity, createdBy: input.createdBy, notes: input.notes });
-    if (r.delta && r.delta !== 0) {
-      const v = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1))[0];
-      const adjustValue = money(v?.costPrice ?? "0").times(r.delta);
-      if (!adjustValue.isZero()) {
-        await postEntry(tx, {
-          entryType: "ADJUST",
-          branchId: input.branchId,
-          cost: adjustValue.neg(),
-          profit: adjustValue,
-          amount: money(0),
-          dedupeKey: `INV_ADJUST:${r.movementId}`,
-          notes: `تسوية مخزون من لوحة المتجر${input.notes ? ` — ${input.notes}` : ""}`,
-        });
-      }
-    }
-    return r;
-  });
+/** لوحة المتجر: **طلب** ضبط مخزون — يمرّ بالاعتماد الثنائيّ نفسه (فصل مهام #٦): يُنشئ طلباً معلَّقاً
+ *  (بلا تغيير مخزون) يعتمده مديرٌ آخر عبر approveStockAdjustment. كان يطبّق setStock فوراً بفاعلٍ واحد
+ *  (بابُ تجاوزٍ للضبط — مراجعة عدائية). */
+export async function setStoreProductStock(input: { variantId: number; branchId: number; targetQuantity: number; createdBy: number; role?: string; notes?: string }) {
+  return requestStockAdjustment(
+    {
+      variantId: input.variantId,
+      branchId: input.branchId,
+      targetQuantity: input.targetQuantity,
+      notes: input.notes ? `لوحة المتجر — ${input.notes}` : "لوحة المتجر",
+    },
+    { userId: input.createdBy, branchId: input.branchId, role: input.role },
+  );
 }
