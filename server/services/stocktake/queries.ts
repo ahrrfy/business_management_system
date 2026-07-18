@@ -54,6 +54,7 @@ export async function listStocktakeSessions(opts: ListStocktakesOpts = {}) {
       branchName: branches.name,
       scopeType: stocktakeSessions.scopeType,
       scopeDetail: stocktakeSessions.scopeDetail,
+      sessionType: stocktakeSessions.sessionType,
       status: stocktakeSessions.status,
       createdAt: stocktakeSessions.createdAt,
       createdByName: users.name,

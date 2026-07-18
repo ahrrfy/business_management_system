@@ -62,6 +62,7 @@ interface SessionRow {
   branchName: string;
   scopeType: StScope;
   scopeLabel: string;
+  sessionType?: "NORMAL" | "OPENING";
   status: StStatus;
   itemCount: number;
   countedCount: number;
@@ -380,7 +381,14 @@ export default function Stocktakes() {
                         {s.code}
                       </td>
                       <td className="p-2.5">
-                        <p className="font-bold">{s.name}</p>
+                        <p className="font-bold">
+                          {s.name}
+                          {s.sessionType === "OPENING" && (
+                            <span className="mr-2 inline-block rounded-md border border-amber-500/50 bg-amber-500/10 px-1.5 py-0.5 text-[11px] font-bold text-amber-700 dark:text-amber-400">
+                              افتتاحي
+                            </span>
+                          )}
+                        </p>
                         <p className="text-xs text-muted-foreground">
                           {s.branchName} · أنشأها {s.createdByName}
                         </p>

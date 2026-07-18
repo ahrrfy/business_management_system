@@ -30,6 +30,7 @@ async function loadSessionHeader(db: DbLike, sessionId: number) {
       branchName: branches.name,
       scopeType: stocktakeSessions.scopeType,
       scopeDetail: stocktakeSessions.scopeDetail,
+      sessionType: stocktakeSessions.sessionType,
       status: stocktakeSessions.status,
       blind: stocktakeSessions.blind,
       thresholdPct: stocktakeSessions.thresholdPct,

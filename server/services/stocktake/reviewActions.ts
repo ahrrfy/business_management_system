@@ -230,8 +230,12 @@ export async function firstSignStocktake(
       throw new TRPCError({ code: "CONFLICT", message: "وُقّع توقيع أول مسبقاً من مستخدم آخر" });
     }
     // أعد الحساب داخل المعاملة: التوقيع الأول لا معنى له بلا فرق سيُسوّى فوق حد التوقيعين.
+    // ⚠️ الجلسة الافتتاحية: التوقيعان إلزاميان دائماً ⇒ التوقيع الأول مقبول دائماً — بلا هذا الفرع
+    // كانت جلسة OPENING كل قيمها تحت dualThreshold تُقفَل نهائياً (finalize يشترط توقيعاً أولاً
+    // وهذا الحارس يرفض تسجيله = جمود مثبَت في المراجعة العدائية ١٨/٧).
     const { rows, directUnderThreshold } = await loadReviewCore(tx, sessionId, true);
-    const needed = rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
+    const needed =
+      s.sessionType === "OPENING" || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
     if (!needed) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا فروقات تتجاوز حدّ التوقيعين — الاعتماد المباشر يكفي" });
     }

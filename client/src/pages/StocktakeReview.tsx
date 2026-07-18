@@ -459,6 +459,14 @@ export default function StocktakeReview() {
       </div>
 
       {/* لافتات الحالة والحواجز */}
+      {s.sessionType === "OPENING" && (
+        <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 px-4 py-2.5 text-sm text-amber-800 dark:text-amber-300">
+          <span className="font-bold">جرد افتتاحي — تأسيس الأرصدة:</span> يُعتمد العدّ كرصيد افتتاحي
+          <b> بلا أي قيد عجز/زيادة على الأرباح</b>، وكل صنف معدود يُختم «مُفتتَحاً» فيُقفل عليه البيع
+          بالسالب فوراً. توقيعان إلزاميان دائماً (الموقّع الأول ≠ المعتمد، ومنشئ الجلسة أو من كُلّف
+          بالعدّ لا يعتمد). صنفٌ بِيع بالسالب فوق عدّه يُعتمد برصيده السالب الحقيقي ويظهر في تقرير السوالب.
+        </div>
+      )}
       {s.status === "COUNTING" && (
         <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)] px-4 py-2.5 text-sm text-[var(--sem-info)]">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />

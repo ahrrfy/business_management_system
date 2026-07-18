@@ -48,10 +48,11 @@ export default function Inventory() {
 
   const [q, setQ] = useState("");
   const [lowOnly, setLowOnly] = useState(false);
+  const [negativeOnly, setNegativeOnly] = useState(false);
   const [err, setErr] = useState("");
 
   const onHand = trpc.inventory.onHand.useQuery(
-    { branchId, q: q.trim() || undefined, lowOnly },
+    { branchId, q: q.trim() || undefined, lowOnly, negativeOnly },
     { enabled: me.data != null },
   );
   const movements = trpc.inventory.movements.useQuery(
@@ -174,6 +175,10 @@ export default function Inventory() {
           <label className="flex items-center gap-2 h-9 text-sm">
             <input type="checkbox" className="size-4" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} />
             <span className="text-muted-foreground">تحت الحد الأدنى فقط</span>
+          </label>
+          <label className="flex items-center gap-2 h-9 text-sm">
+            <input type="checkbox" className="size-4" checked={negativeOnly} onChange={(e) => setNegativeOnly(e.target.checked)} />
+            <span className="text-muted-foreground">السوالب فقط (بانتظار الجرد الافتتاحي)</span>
           </label>
         </CardContent>
       </Card>
