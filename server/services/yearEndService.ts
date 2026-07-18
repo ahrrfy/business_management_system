@@ -23,6 +23,7 @@ import { money, round2, toDbMoney } from "./money";
 import { postEntry } from "./ledgerService";
 import { lockPeriod } from "./periodLockService";
 import { plSnapshot } from "./reportsFinancialService";
+import { todayUtcDate } from "./businessDay";
 
 export interface CloseYearInput {
   year: number; // مثل 2025
@@ -47,6 +48,46 @@ export async function closeYear(tx: Tx, input: CloseYearInput): Promise<CloseYea
   const branchId = input.branchId ?? null;
   if (year < 2020 || year > 2100) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "السنة خارج النطاق المعقول" });
+  }
+
+  // حارس السنة الجارية/المستقبلية (تدقيق ١٧/٧): إقفال 2026 في منتصفها يضع cutoff=2026-12-31 فيقفل
+  // كل قيود البيع/الشراء/الدفع حتى نهاية السنة (assertPeriodOpen) — تعطّل تشغيليّ شامل بنقرة واحدة.
+  // «اليوم التجاري = يوم UTC» (إطار businessDay) ⇒ السنة الجارية = سنة UTC. لا يُقفَل إلا سنةٌ منتهية.
+  const currentYear = Number(todayUtcDate().slice(0, 4));
+  if (year >= currentYear) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `لا يمكن إقفال سنة لم تنتهِ بعد (${year}) — أقصى سنة قابلة للإقفال ${currentYear - 1}`,
+    });
+  }
+
+  // منع ازدواج ترحيل الربح (تدقيق ١٧/٧): إقفال الشركة (branchId=null) وإقفال فرعٍ لنفس السنة يُنتجان
+  // قيدَي Retained Earnings منفصلين (dedupeKey يميّز branchId) ⇒ ربحٌ مزدوَج في يناير. نمنع خلط
+  // المستويين لنفس السنة (فرعٌ + فرعٌ آخر مسموحان — نطاقان منفصلان لا ازدواج بينهما).
+  if (branchId == null) {
+    const anyBranch = await tx
+      .select({ id: yearEndSnapshots.id })
+      .from(yearEndSnapshots)
+      .where(and(eq(yearEndSnapshots.year, year), sql`${yearEndSnapshots.branchId} IS NOT NULL`))
+      .limit(1);
+    if (anyBranch[0]) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `أُقفلت فروعٌ لسنة ${year} مسبقاً — لا يجوز خلط إقفال الشركة مع إقفال الفروع لنفس السنة (ازدواج ربح)`,
+      });
+    }
+  } else {
+    const companyLevel = await tx
+      .select({ id: yearEndSnapshots.id })
+      .from(yearEndSnapshots)
+      .where(and(eq(yearEndSnapshots.year, year), sql`${yearEndSnapshots.branchId} IS NULL`))
+      .limit(1);
+    if (companyLevel[0]) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `السنة ${year} مُقفَلة على مستوى الشركة مسبقاً — لا يمكن إقفالها فرعياً (ازدواج ربح)`,
+      });
+    }
   }
 
   // اقفال مكرّر؟ UNIQUE(year, branchId) سيرفع DUP_ENTRY — نلتقطها بصياغة TRPCError مفهومة.

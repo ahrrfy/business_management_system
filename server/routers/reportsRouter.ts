@@ -3,6 +3,7 @@ import { and, asc, desc, eq, inArray, lt, sql } from "drizzle-orm";
 import { z } from "zod";
 import { customers, invoices, suppliers } from "../../drizzle/schema";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
+import { maskBankFields } from "../lib/redact";
 import { getDb } from "../db";
 import {
   getAPAging,
@@ -132,7 +133,11 @@ export const reportsRouter = router({
   customerStatement: reportsBranchScoped
     .input(z.object({ customerId: z.number().int().positive(), from: ymdStr.optional(), to: ymdStr.optional() }))
     .query(async ({ input, ctx }) => {
-      const branchId = ctx.user.role === "admin" ? undefined : Number(ctx.user.branchId ?? 0) || undefined;
+      // عزل الفرع (تدقيق ١٧/٧): النمط القديم Number(branchId ?? 0) || undefined كان يمنح غير الأدمن
+      // بلا فرعٍ مُسنَد كشفاً بكل الفروع صامتاً. نوحّده مع بقية التقارير عبر scopedBranchId (FORBIDDEN
+      // لغير الأدمن بلا فرع). ملاحظة مالك مؤجَّلة (§٧.٣): الكشف الفرعيّ للطرف ذي الرصيد العالميّ
+      // غير متّزن بنيوياً (الدفعات/المُرحَّل عالميّة) — قرار العزل عبر الفروع بيد المالك.
+      const branchId = scopedBranchId(ctx);
       return getCustomerStatement(input.customerId, { from: input.from, to: input.to, branchId });
     }),
 
@@ -160,8 +165,13 @@ export const reportsRouter = router({
   supplierStatement: reportsBranchScoped
     .input(z.object({ supplierId: z.number().int().positive(), from: ymdStr.optional(), to: ymdStr.optional() }))
     .query(async ({ input, ctx }) => {
-      const branchId = ctx.user.role === "admin" ? undefined : Number(ctx.user.branchId ?? 0) || undefined;
-      return getSupplierStatement(input.supplierId, { from: input.from, to: input.to, branchId });
+      // عزل الفرع (تدقيق ١٧/٧): توحيدٌ مع scopedBranchId (كان النمط القديم يُسرّب كل الفروع لغير
+      // الأدمن بلا فرع). رصيد المورّد عالميّ ⇒ الكشف الفرعيّ غير متّزن (ملاحظة مالك §٧.٣ مؤجَّلة).
+      const branchId = scopedBranchId(ctx);
+      const res = await getSupplierStatement(input.supplierId, { from: input.from, to: input.to, branchId });
+      // حجب الحقول المصرفية (iban/bankName/swift) عن غير المرتفعين (محاسب/مدقّق) — الكشف كان يُرجع
+      // صفّ المورّد كاملاً خاماً، التفافاً على الحجب المطبَّق في suppliers.get (تدقيق ١٧/٧).
+      return res && { ...res, supplier: maskBankFields(res.supplier, ctx.user.role) };
     }),
 
   /** Lightweight supplier index for the statement picker. */

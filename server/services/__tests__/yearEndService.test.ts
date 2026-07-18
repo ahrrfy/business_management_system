@@ -120,6 +120,23 @@ describe("yearEndService — إقفال سنوي + رولوفر Retained Earning
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
+  // تدقيق ١٧/٧: حارس السنة الجارية/المستقبلية — إقفالها يقفل كل قيود السنة الباقية (تعطّل تشغيليّ).
+  it("closeYear للسنة الجارية ⇒ BAD_REQUEST (لا تُقفَل سنة لم تنتهِ)", async () => {
+    const currentYear = new Date().getUTCFullYear();
+    await expect(
+      withTx(async (tx) => closeYear(tx, { year: currentYear, branchId: 1, closedBy: 1 })),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  // تدقيق ١٧/٧: منع ازدواج ترحيل الربح — إقفال فرع ثم إقفال الشركة لنفس السنة كان يمرّ فيُنشَر الربح مرّتين.
+  it("خلط إقفال الفرع ثم الشركة لنفس السنة ⇒ CONFLICT (منع ازدواج الربح)", async () => {
+    await seedEntries(2025);
+    await withTx(async (tx) => closeYear(tx, { year: 2025, branchId: 1, closedBy: 1 }));
+    await expect(
+      withTx(async (tx) => closeYear(tx, { year: 2025, branchId: null, closedBy: 1 })),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+  });
+
   // تدقيق ١٧/٧ (خطر #1): الإقفال السنوي يجب أن يطابق قائمة الدخل P&L تماماً — كانت صيغته المستقلّة تنحرف.
   it("مطابقة (tie-out): أرقام closeYear = plSnapshot لنفس السنة، مع استبعاد مرتجع الشراء من COGS", async () => {
     const { plSnapshot } = await import("../reportsFinancialService");

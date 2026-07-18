@@ -20,7 +20,7 @@ import {
   branches,
 } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
-import { adjustCustomerBalance, postEntry } from "./ledgerService";
+import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, sumMoney, toDbMoney, toDateStr } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { createVoucher } from "./voucherService";
@@ -377,7 +377,6 @@ export async function bounceCheck(
 
     let reversed = false;
     if (row.line.status === "PAID" && row.line.receiptId != null) {
-      // عكس محاسبيّ للتحصيل السابق: نقفل الإيصال، قيد معاكس، استعادة رصيد العميل.
       const [rec] = await tx
         .select()
         .from(receipts)
@@ -386,11 +385,33 @@ export async function bounceCheck(
         .limit(1);
       if (rec && rec.status === "COMPLETED") {
         const amount = money(rec.amount);
-        await tx.update(receipts).set({ status: "REVERSED" }).where(eq(receipts.id, Number(rec.id)));
+        const branchId = rec.branchId != null ? Number(rec.branchId) : Number(row.plan.branchId);
+        // AR-BOUNCE (تدقيق ١٧/٧): كان يُعلَّم الإيصال الأصل REVERSED ⇒ إبطال إيصال وردية سابقة
+        // (غالباً مغلقة) يغيّر مجاميع Z-report/الدرج بأثر رجعي، والقيد المعاكس بلا إيصال OUT فعليّ.
+        // بدلاً منه: نُبقي الأصل (حدثٌ وقع فعلاً) ونُصدر إيصال عكسٍ **أماميّ** مكتمل — شيفت-محايد
+        // (TREASURY، لا درج): ارتداد الشيك حدثٌ خزينيّ/ذمميّ لا سحبَ نقدٍ من درج الوردية الجارية،
+        // فلا يشوّه أيّ Z-report ويسمح بارتداد شيكٍ حُصِّل في وردية مغلقة (الحالة الأشيع).
+        const compRes = await tx.insert(receipts).values({
+          invoiceId: rec.invoiceId ?? null,
+          branchId,
+          shiftId: null,
+          cashBucket: "TREASURY",
+          direction: "OUT",
+          amount: toDbMoney(amount),
+          paymentMethod: rec.paymentMethod,
+          status: "COMPLETED",
+          referenceNumber: `BOUNCE-CHK-${input.lineId}`,
+          partyType: "CUSTOMER",
+          partyId: Number(row.plan.customerId),
+          description: `ارتداد شيك — القسط #${row.line.seq} من خطة #${row.plan.id}`,
+          createdBy: actor.userId,
+          approvalStatus: "APPROVED",
+        });
+        const compReceiptId = extractInsertId(compRes);
         await postEntry(tx, {
           entryType: "PAYMENT_OUT",
-          branchId: rec.branchId != null ? Number(rec.branchId) : Number(row.plan.branchId),
-          receiptId: Number(rec.id),
+          branchId,
+          receiptId: compReceiptId,
           customerId: Number(row.plan.customerId),
           amount,
           revenue: money(0),
@@ -400,17 +421,24 @@ export async function bounceCheck(
         await adjustCustomerBalance(tx, Number(row.plan.customerId), amount);
         reversed = true;
       }
-      // إن كان القسط مرتبطاً بفاتورة، نُعكِّس paidAmount عليها أيضاً (invoice.paidAmount -= amount)
-      // كي يتّسق «المتبقّي» = total − returnedTotal − paidAmount عبر كل قنوات العرض.
+      // إن كان القسط مرتبطاً بفاتورة، نُعكِّس paidAmount عليها + نحسب الحالة الصحيحة عبر
+      // computeInvoiceStatus (كان يُسمَّر PARTIALLY_PAID ⇒ فاتورة عاد سدادها للصفر تبقى «مدفوعة جزئياً»).
       if (rec && row.plan.invoiceId != null) {
-        const amt = money(rec.amount);
-        await tx
-          .update(invoices)
-          .set({
-            paidAmount: sql`GREATEST(CAST(${invoices.paidAmount} AS DECIMAL(15,2)) - ${amt.toFixed(2)}, 0)`,
-            status: "PARTIALLY_PAID",
-          })
-          .where(eq(invoices.id, Number(row.plan.invoiceId)));
+        const [inv] = await tx
+          .select()
+          .from(invoices)
+          .where(eq(invoices.id, Number(row.plan.invoiceId)))
+          .for("update")
+          .limit(1);
+        if (inv) {
+          const newPaid = money(inv.paidAmount).minus(money(rec.amount));
+          const paidClamped = newPaid.lt(0) ? money(0) : newPaid;
+          const status = computeInvoiceStatus(inv.total, paidClamped.toFixed(2), inv.returnedTotal ?? "0");
+          await tx
+            .update(invoices)
+            .set({ paidAmount: toDbMoney(paidClamped), status })
+            .where(eq(invoices.id, Number(inv.id)));
+        }
       }
     }
 

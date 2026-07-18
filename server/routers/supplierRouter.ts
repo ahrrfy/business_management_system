@@ -74,8 +74,13 @@ export const supplierRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const r = await createSupplier(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "supplier.create", entityType: "supplier", entityId: r.supplierId, newValue: { name: input.name, openingBalanceSet: !!input.openingBalance } });
+      // AUTHZ-3 (تدقيق ١٧/٧): الرصيد الافتتاحي حقلٌ ماليّ للمدير — لا يَضبطه المخزن/المشتريات كتابةً
+      // (suppliersManagerProcedure يسمح لهما بالعبور). نُجرّده (null ⇒ لا قيد افتتاحي) لغير المرتفعين،
+      // مطابقةً لنمط customerRouter. الرصيد الافتتاحي «علينا له» يُنشئ ذمّة دائنة يجب أن يعتمدها المدير.
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const safeInput = elevated ? input : { ...input, openingBalance: null };
+      const r = await createSupplier(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, { action: "supplier.create", entityType: "supplier", entityId: r.supplierId, newValue: { name: input.name, openingBalanceSet: elevated && !!input.openingBalance } });
       return r;
     }),
 

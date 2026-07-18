@@ -751,7 +751,7 @@ describe("عروض الأسعار (Quotations)", () => {
     const qRow = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
     expect(qRow.status).toBe("DRAFT");
 
-    // اقبل ثم حوّل بدفعة كاملة 100 (TRANSFER لأنّ convertQuotation لا يُمرّر shiftId الذي يَلزم CASH بعد M8).
+    // اقبل ثم حوّل بدفعة كاملة 100 (TRANSFER — لا يَلزم وردية مفتوحة؛ التحويل النقدي يَحلّ الوردية الآن).
     await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
     const conv = await convertQuotation({ quotationId: q.quotationId, payment: { amount: "100.00", method: "TRANSFER" } }, actor);
     expect(conv.alreadyConverted).toBe(false);
@@ -769,6 +769,28 @@ describe("عروض الأسعار (Quotations)", () => {
     const after = (await db().select().from(s.quotations).where(eq(s.quotations.id, q.quotationId)))[0];
     expect(after.status).toBe("CONVERTED");
     expect(Number(after.convertedInvoiceId)).toBe(conv.invoiceId);
+  });
+
+  it("التحويل يحمل خصم الأسطر وخصم الفاتورة ⇒ إجمالي الفاتورة = إجمالي العرض (tie-out، تدقيق ١٧/٧)", async () => {
+    await setStock(1, 1, 24);
+    await db().insert(s.customers).values({ id: 1, name: "عميل خصم", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    // درزن بسعر 1000، خصم سطر 100، خصم فاتورة 50 ⇒ (1000−100)−50 = 850.
+    const q = await createQuotation(
+      {
+        branchId: 1,
+        customerId: 1,
+        taxRatePercent: "0",
+        invoiceDiscount: "50.00",
+        lines: [{ variantId: 1, productUnitId: 2, quantity: "1", unitPriceOverride: "1000.00", discountAmount: "100.00" }],
+      },
+      actor,
+    );
+    expect(q.total).toBe("850.00");
+    await setQuotationStatus(q.quotationId, "ACCEPTED", { ...actor, role: "admin" });
+    const conv = await convertQuotation({ quotationId: q.quotationId }, actor);
+    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, conv.invoiceId!)))[0];
+    // الثابت: الفاتورة = العرض الملتزَم به. قبل الإصلاح كان يُسقط الخصمين ⇒ 1000.
+    expect(inv.total).toBe("850.00");
   });
 
   it("التحويل idempotent: لا فاتورة مكررة عند التحويل مرتين", async () => {

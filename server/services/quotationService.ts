@@ -17,6 +17,7 @@ import { convertToBaseQuantity } from "./inventoryService";
 import { money, toDateStr } from "./money";
 import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { createSale } from "./saleService";
+import { getOpenShift } from "./shiftService";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -235,10 +236,37 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
   const items = await db.select().from(quotationItems).where(eq(quotationItems.quotationId, input.quotationId));
   if (!items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "عرض السعر بلا بنود" });
 
-  // أنشئ بيعاً يحفظ الأسعار المعروضة كما هي (unitPriceOverride). ORDER يسمح بالآجل مع عميل.
+  // (تدقيق ١٧/٧) التحويل كان يُسقط خصومات الأسطر وخصم الفاتورة والضريبة ⇒ إجمالي الفاتورة ≠ إجمالي
+  // العرض الملتزَم به. نُعيد بناء نفس مدخلات computeInvoiceTotals: خصم كل بند (it.discountAmount)،
+  // وخصم الفاتورة (q.discountAmount)، ونسبة الضريبة المشتقّة من taxAmount المخزَّن (السوق 0% افتراضاً
+  // فالمشتقّ null). الاشتقاق دقيق: rate = taxAmount ÷ (subtotal − invoiceDiscount) × 100 ⇒
+  // computeInvoiceTotals يعيد نفس taxAmount المخزَّن بالضبط (round2 مستقرّ).
+  const invoiceDiscount = q.discountAmount ?? "0";
+  const taxAmt = money(q.taxAmount ?? "0");
+  const taxableBase = money(q.subtotal ?? "0").minus(money(invoiceDiscount));
+  const taxRatePercent =
+    taxAmt.gt(0) && taxableBase.gt(0) ? taxAmt.div(taxableBase).times(100).toString() : null;
+
+  // وردية مفتوحة للدفع النقدي (تدقيق ١٧/٧): createSale يرفض CASH بلا shiftId. نحلّ وردية المُحوِّل
+  // المفتوحة على فرع العرض؛ إن غابت نرفض برسالة واضحة بدل PRECONDITION_FAILED الغامض.
+  let shiftId: number | null = null;
+  const isCashPayment = input.payment?.method === "CASH" && money(input.payment?.amount ?? "0").gt(0);
+  if (isCashPayment) {
+    const sh = await getOpenShift(actor.userId, Number(q.branchId));
+    if (!sh) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "لا توجد وردية مفتوحة — افتح وردية قبل تحصيل دفعة نقدية عند التحويل، أو اختر طريقة دفع أخرى.",
+      });
+    }
+    shiftId = sh.id;
+  }
+
+  // أنشئ بيعاً يحفظ الأسعار والخصومات المعروضة كما هي. ORDER يسمح بالآجل مع عميل.
   const sale = await createSale(
     {
       branchId: Number(q.branchId),
+      shiftId,
       customerId: q.customerId ? Number(q.customerId) : null,
       priceTier: q.priceTier as PriceTier,
       sourceType: "ORDER",
@@ -248,7 +276,10 @@ export async function convertQuotation(input: ConvertQuotationInput, actor: Acto
         productUnitId: Number(it.productUnitId),
         quantity: it.quantity,
         unitPriceOverride: it.unitPrice,
+        discountAmount: it.discountAmount ?? null,
       })),
+      invoiceDiscount,
+      taxRatePercent,
       payment: input.payment ?? null,
       notes: `محوّل من عرض السعر ${q.quoteNumber}`,
       // SALES-01/02: التحويل إجراء مدير (convert=managerProcedure) والأسعار أُقِرّت عند إنشاء العرض
