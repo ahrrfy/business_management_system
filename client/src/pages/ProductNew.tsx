@@ -21,6 +21,7 @@ import {
   isValidEan13,
   marginPercent,
   onlyDigits,
+  syncColorChipsOnRename,
   toArabicDigits,
   variantStockTotal,
   type ClientUnit,
@@ -249,6 +250,9 @@ export default function ProductNew() {
   const patchVariant = (id: string, patch: Partial<ClientVariant>) =>
     setVariants((vs) => vs.map((v) => (v.id === id ? { ...v, ...patch } : v)));
   const removeVariant = (id: string) => setVariants((vs) => vs.filter((v) => v.id !== id));
+  // إعادة تسمية لون بالصفّ ⇒ مزامنة رقائق المصفوفة كي يبقى «ولّد المتغيّرات» متّسقاً (منطقٌ نقيّ مُختبَر).
+  const commitColorRename = (oldColor: string, newColor: string) =>
+    setColors((cs) => syncColorChipsOnRename(cs, oldColor, newColor, variants.map((v) => v.color)));
   const onScan = (vid: string, uid: number) =>
     setVariants((vs) => vs.map((v) => (v.id === vid ? { ...v, unitBarcodes: { ...v.unitBarcodes, [uid]: genEan13("621") } } : v)));
 
@@ -690,6 +694,7 @@ export default function ProductNew() {
             patchVariant={patchVariant}
             removeVariant={removeVariant}
             onScan={onScan}
+            onColorCommit={commitColorRename}
             localAliases
           />
           {variants.length > 0 && (
