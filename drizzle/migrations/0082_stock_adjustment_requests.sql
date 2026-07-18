@@ -6,6 +6,7 @@ CREATE TABLE IF NOT EXISTS `stockAdjustmentRequests` (
   `variantId` BIGINT NOT NULL,
   `branchId` BIGINT NOT NULL,
   `targetQuantity` INT NOT NULL,
+  `expectedQuantity` INT NOT NULL,
   `notes` VARCHAR(500) DEFAULT NULL,
   `stockAdjustmentStatus` ENUM('PENDING_APPROVAL','APPROVED','REJECTED') NOT NULL DEFAULT 'PENDING_APPROVAL',
   `createdBy` INT NOT NULL,

@@ -708,6 +708,9 @@ export const stockAdjustmentRequests = mysqlTable(
     variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
     branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
     targetQuantity: int("targetQuantity").notNull(),
+    // لقطة الرصيد لحظة الطلب — يُرفَض الاعتماد إن اختلف الرصيد الحيّ عنها (تفاؤليّ) لمنع محو حركاتٍ
+    // وقعت في نافذة الاعتماد وترحيل ربحٍ/خسارةٍ وهميّة (المراجعة العدائية C1).
+    expectedQuantity: int("expectedQuantity").notNull(),
     notes: varchar("notes", { length: 500 }),
     status: mysqlEnum("stockAdjustmentStatus", ["PENDING_APPROVAL", "APPROVED", "REJECTED"]).default("PENDING_APPROVAL").notNull(),
     createdBy: int("createdBy").notNull().references(() => users.id),

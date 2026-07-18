@@ -92,6 +92,14 @@ describe("تسوية المخزون بفصل مهام (#٦ الشريحة ٢)", 
     expect(String(ents[0].dedupeKey)).toBe(`INV_ADJUST:${res.movementId}`);
   });
 
+  it("C1: تغيّر المخزون بين الطلب والاعتماد ⇒ CONFLICT (لا محو حركات ولا ربح وهميّ)", async () => {
+    const { requestId } = await requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, WH1);
+    // محاكاة بيع/حركة وقعت في نافذة الاعتماد.
+    await db().update(s.branchStock).set({ quantity: 10 }).where(and(eq(s.branchStock.variantId, 1), eq(s.branchStock.branchId, 1)));
+    await expect(approveStockAdjustment(requestId, MGR1)).rejects.toThrow(/تغيّر المخزون منذ الطلب/);
+    expect(await stockOf(1, 1)).toBe(10); // بلا تطبيق — لا محو للبيع ولا ربح وهميّ
+  });
+
   it("المُنشئ لا يعتمد طلبه بنفسه (SOD-04)", async () => {
     const { requestId } = await requestStockAdjustment({ variantId: 1, branchId: 1, targetQuantity: 15 }, WH1);
     await expect(approveStockAdjustment(requestId, WH1)).rejects.toThrow(/فصل المهام/);

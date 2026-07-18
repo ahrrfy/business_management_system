@@ -14,7 +14,7 @@ import {
   users,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { setStock } from "../inventoryService";
+import { setStock, isBundleVariant, isServiceVariant } from "../inventoryService";
 import { postEntry } from "../ledgerService";
 import { money } from "../money";
 import { requireDb } from "../tx";
@@ -37,10 +37,24 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
       await tx.select({ id: productVariants.id }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1)
     )[0];
     if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
+    // C2 (مراجعة عدائية): مرآة حراس setStock عند الطلب — لا نُنشئ طلباً يستحيل اعتماده (البكج يُرفَض عند
+    // الاعتماد فيبقى معلَّقاً للأبد؛ الخِدميّ لا مخزون له). البكج يُسوَّى بمكوّناته لا مباشرةً.
+    if (await isBundleVariant(tx, input.variantId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُسوَّى مخزون بكجٍ مباشرةً — سوِّ مكوّناته" });
+    }
+    if (await isServiceVariant(tx, input.variantId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج الخِدميّ لا مخزون له — لا تُسوَّى كميّته" });
+    }
+    // C1 (مراجعة عدائية): لقطة الرصيد الحاليّ لحظة الطلب — يُكشَف بها الانحراف عند الاعتماد.
+    const cur = (
+      await tx.select({ q: branchStock.quantity }).from(branchStock)
+        .where(and(eq(branchStock.variantId, input.variantId), eq(branchStock.branchId, input.branchId))).limit(1)
+    )[0];
     const res = await tx.insert(stockAdjustmentRequests).values({
       variantId: input.variantId,
       branchId: input.branchId,
       targetQuantity: input.targetQuantity,
+      expectedQuantity: Number(cur?.q ?? 0),
       notes: input.notes?.trim() || null,
       status: "PENDING_APPROVAL",
       createdBy: actor.userId,
@@ -75,6 +89,19 @@ export async function approveStockAdjustment(
     assertApprover({ createdBy: r.createdBy != null ? Number(r.createdBy) : null, branchId: Number(r.branchId) }, actor, "اعتماد");
 
     const branchId = Number(r.branchId);
+    // C1 (مراجعة عدائية): تفاؤليّ — الهدف مطلق، فلو تغيّر الرصيد بين الطلب والاعتماد (بيع/شراء/تحويل)
+    // لكان الاعتماد يمحو تلك الحركات ويُرحّل ربحاً/خسارةً وهميّة. نرفض إن انحرف الرصيد الحيّ عن لقطة الطلب.
+    const cur = (
+      await tx.select({ q: branchStock.quantity }).from(branchStock)
+        .where(and(eq(branchStock.variantId, Number(r.variantId)), eq(branchStock.branchId, branchId))).for("update").limit(1)
+    )[0];
+    const liveQty = Number(cur?.q ?? 0);
+    if (liveQty !== Number(r.expectedQuantity)) {
+      throw new TRPCError({
+        code: "CONFLICT",
+        message: `تغيّر المخزون منذ الطلب (كان ${r.expectedQuantity}، الآن ${liveQty}) — أعد الطلب بالرصيد الحاليّ`,
+      });
+    }
     // يطبّق المخزون الآن (لحظة الاعتماد) — setStock يفرض حراس الخدمة/البكج. قد يرمي ⇒ يُلغى الاعتماد كلّه.
     const stockRes = await setStock(tx, {
       variantId: Number(r.variantId),
@@ -148,6 +175,7 @@ export async function listStockAdjustmentRequests(scope: {
       variantId: stockAdjustmentRequests.variantId,
       branchId: stockAdjustmentRequests.branchId,
       targetQuantity: stockAdjustmentRequests.targetQuantity,
+      expectedQuantity: stockAdjustmentRequests.expectedQuantity,
       currentQuantity: branchStock.quantity,
       notes: stockAdjustmentRequests.notes,
       status: stockAdjustmentRequests.status,

@@ -100,8 +100,8 @@ describe("F2 — بوّابة الطفرات (FULL)", () => {
   it("manager + {inventory: NONE} ⇒ inventory.adjust FORBIDDEN (طفرة تتطلّب FULL)", async () => {
     await expect(
       caller("manager", { inventory: "NONE" }).inventory.adjust({
-        variantId: 1, branchId: 1, newQuantity: 10, reason: "correction",
-      } as any),
+        variantId: 1, branchId: 1, targetQuantity: 10,
+      }),
     ).rejects.toThrow(FORBIDDEN);
   });
 });

@@ -7,7 +7,7 @@ import type { DecimalInput } from "./money";
 import { extractInsertId } from "../lib/insertId";
 
 /** يَتحقّق إن كان المُتغيّر يَنتمي لمُنتج خِدمي (لا مَخزون). يُستعمَل لِتجاوز inventoryMovements/branchStock. */
-async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
+export async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
   const rows = await tx
     .select({ isService: products.isService })
     .from(productVariants)
@@ -19,7 +19,7 @@ async function isServiceVariant(tx: Tx, variantId: number): Promise<boolean> {
 
 /** bundles (٧/٧/٢٦): يتحقّق إن كان المتغيّر يخصّ منتج بكج (لا branchStock له — يُوسَّع لمكوّناته).
  *  استُدعي كحاجز دفاعي على applyMovement كي لا يُعبَّى صفّ رصيدٍ وهميّ للبكج (تدوين خطأ خفيّ في التقارير). */
-async function isBundleVariant(tx: Tx, variantId: number): Promise<boolean> {
+export async function isBundleVariant(tx: Tx, variantId: number): Promise<boolean> {
   const rows = await tx
     .select({ isBundle: products.isBundle })
     .from(productVariants)
