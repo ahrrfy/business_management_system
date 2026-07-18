@@ -96,7 +96,7 @@ export default function ProductionDetail() {
           </div>
           <div><div className="text-xs text-muted-foreground">كلفة المواد</div><div className="tabular-nums" dir="ltr">{fmt(doc.materialsCost)}</div></div>
           <div><div className="text-xs text-muted-foreground">العمالة</div><div className="tabular-nums" dir="ltr">{fmt(doc.laborCost)}</div></div>
-          <div><div className="text-xs text-muted-foreground">الكلفة الكلية</div><div className="font-bold text-sky-700 tabular-nums" dir="ltr">{fmt(doc.totalCost)}</div></div>
+          <div><div className="text-xs text-muted-foreground">الكلفة الكلية</div><div className="font-bold text-primary tabular-nums" dir="ltr">{fmt(doc.totalCost)}</div></div>
           <div><div className="text-xs text-muted-foreground">التاريخ</div><div className="text-xs">{fmtDateTime(doc.createdAt)}</div></div>
           {doc.recipeName && <div><div className="text-xs text-muted-foreground">وصفة</div><div>{doc.recipeName}</div></div>}
           {doc.notes && <div className="col-span-2"><div className="text-xs text-muted-foreground">ملاحظة</div><div>{doc.notes}</div></div>}
@@ -151,7 +151,7 @@ export default function ProductionDetail() {
                   <td className="p-2">{l.productName}{l.variantName ? ` — ${l.variantName}` : ""}</td>
                   <td className="p-2 font-mono text-xs" dir="ltr">{l.sku}</td>
                   <td className="p-2 text-center tabular-nums" dir="ltr">{fmtInt(l.baseQuantity)}</td>
-                  <td className="p-2 text-right tabular-nums text-sky-700" dir="ltr">{fmt(l.unitCost)}</td>
+                  <td className="p-2 text-right tabular-nums text-primary" dir="ltr">{fmt(l.unitCost)}</td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(l.allocatedCost)}</td>
                 </tr>
               ))}

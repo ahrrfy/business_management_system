@@ -191,7 +191,7 @@ export default function ProductionNew() {
             </select>
           </div>
           <div className="col-span-2"><Input dir="ltr" value={l.qty} onChange={(e) => setLine(list, setList, l.key, { qty: e.target.value })} /></div>
-          <div className="col-span-2 text-left text-sm tabular-nums" dir="ltr">{kind === "in" ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : <span className="text-sky-700">{fmt(unitOutCost.toString())}/و</span>}</div>
+          <div className="col-span-2 text-left text-sm tabular-nums" dir="ltr">{kind === "in" ? fmt(round2(D(l.costPriceBase).times(base)).toString()) : <span className="text-[var(--sem-info)]">{fmt(unitOutCost.toString())}/و</span>}</div>
           <div className="col-span-1 text-left"><button type="button" className="text-destructive text-sm" onClick={() => setList(list.filter((x) => x.key !== l.key))}>حذف</button></div>
           {!valid && <div className="col-span-12 text-xs text-destructive">الكمية يجب أن تُنتج عدداً صحيحاً موجباً من الوحدة الأساس.</div>}
           {over && <div className="col-span-12 text-xs text-[var(--stock-low)]">المتاح {Number(l.stockBase).toLocaleString("en-US")} فقط — سيُرفض إن لم يكفِ.</div>}
@@ -216,7 +216,7 @@ export default function ProductionNew() {
 
       <Card>
         <CardContent className="pt-4">
-          <button type="button" className="text-sm text-sky-700" onClick={() => setShowHelp((s) => !s)}>؟ متى أستخدم هذه الشاشة؟</button>
+          <button type="button" className="text-sm text-[var(--sem-info)]" onClick={() => setShowHelp((s) => !s)}>؟ متى أستخدم هذه الشاشة؟</button>
           {showHelp && (
             <div className="mt-2 text-xs text-muted-foreground space-y-1 leading-6">
               <p>• أبيع نفس الورق بوحدة أكبر/أصغر؟ ← <b>ليس إنتاجاً</b>: أضِف وحدة قياس للورق (ورقة/ربطة/كرتون).</p>
@@ -346,13 +346,13 @@ export default function ProductionNew() {
                 </div>
               </>
             ) : (
-              <Card><CardContent className="p-6 text-center text-muted-foreground">اختر وصفة لبدء التشغيل، أو <Link href="/production-recipes" className="text-sky-700 underline">أنشئ وصفة جديدة</Link>.</CardContent></Card>
+              <Card><CardContent className="p-6 text-center text-muted-foreground">اختر وصفة لبدء التشغيل، أو <Link href="/production-recipes" className="text-[var(--sem-info)] underline">أنشئ وصفة جديدة</Link>.</CardContent></Card>
             )}
           </div>
 
           {/* العمود الجانبي: الكلفة + WAVG */}
           <div className="space-y-4 lg:sticky lg:top-4">
-            <Card className="border-sky-200">
+            <Card className="border-[var(--sem-info)]">
               <CardHeader><CardTitle className="text-base">الكلفة وتوزيعها</CardTitle></CardHeader>
               <CardContent className="space-y-2 text-sm">
                 <div className="flex justify-between"><span className="text-muted-foreground">كلفة المواد</span><b dir="ltr">{fmt(pv?.materialsCost ?? 0)}</b></div>
@@ -385,7 +385,7 @@ export default function ProductionNew() {
                     <div className="text-[11px] text-muted-foreground" dir="ltr">{fmt(pv?.wavg.oldCost ?? 0)}</div>
                   </div>
                   <div className="flex items-center text-muted-foreground">←</div>
-                  <div className="flex-1 text-center p-2 rounded-md bg-sky-50">
+                  <div className="flex-1 text-center p-2 rounded-md bg-[var(--sem-info-bg)]">
                     <div className="text-[10px] text-muted-foreground font-bold">يُضاف</div>
                     <div className="text-base font-bold" dir="ltr">+{fmt(pv?.wavg.addQty ?? 0)}</div>
                     <div className="text-[11px] text-muted-foreground" dir="ltr">{fmt(pv?.unitCost ?? 0)}</div>
@@ -445,7 +445,7 @@ export default function ProductionNew() {
             <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
               <div><div className="text-xs text-muted-foreground">كلفة المواد</div><div className="font-semibold tabular-nums" dir="ltr">{fmt(totalInputCost.toString())}</div></div>
               <div><div className="text-xs text-muted-foreground">العمالة</div><div className="font-semibold tabular-nums" dir="ltr">{fmt(mLabor)}</div></div>
-              <div><div className="text-xs text-muted-foreground">الكلفة الكلية</div><div className="font-bold text-sky-700 tabular-nums" dir="ltr">{fmt(mTotalCost.toString())}</div></div>
+              <div><div className="text-xs text-muted-foreground">الكلفة الكلية</div><div className="font-bold text-[var(--sem-info)] tabular-nums" dir="ltr">{fmt(mTotalCost.toString())}</div></div>
               <div><div className="text-xs text-muted-foreground">كلفة الوحدة الناتجة</div><div className="font-semibold tabular-nums" dir="ltr">{fmt(unitOutCost.toString())}</div></div>
             </CardContent>
           </Card>

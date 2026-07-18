@@ -188,7 +188,7 @@ export default function ARAging() {
           <Bucket label="61–90 يوم" value={totals.d61_90} color="bg-orange-50 text-orange-700" />
           <Bucket label="أكثر من 90" value={totals.d91p} color="bg-rose-50 text-rose-700" />
           <Bucket label="إجمالي غير المدفوع" value={totals.unpaidTotal} color="bg-muted" emphasis />
-          <Bucket label="غير مفوتر/افتتاحي" value={totals.unbilled} color="bg-sky-50 text-sky-800" />
+          <Bucket label="غير مفوتر/افتتاحي" value={totals.unbilled} color="bg-[var(--sem-info-bg)] text-[var(--sem-info)]" />
           <Bucket label="إجمالي ما لنا عليهم" value={totals.currentBalance} color="bg-emerald-50 text-emerald-800" emphasis />
         </CardContent>
       </Card>
@@ -240,7 +240,7 @@ export default function ARAging() {
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d61_90)}</td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.d91p)}</td>
                   <td className="p-2 text-right tabular-nums font-semibold" dir="ltr">{fmt(r.unpaidTotal)}</td>
-                  <td className="p-2 text-right tabular-nums text-sky-800" dir="ltr">{fmt(unbilledOf(r).toFixed(2))}</td>
+                  <td className="p-2 text-right tabular-nums text-[var(--sem-info)]" dir="ltr">{fmt(unbilledOf(r).toFixed(2))}</td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.currentBalance)}</td>
                   <td className="p-2 text-xs" dir="ltr">{r.oldestInvoiceDate ?? "—"}</td>
                   <td className="p-2 text-center">

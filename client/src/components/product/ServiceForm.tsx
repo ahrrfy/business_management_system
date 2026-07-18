@@ -180,7 +180,7 @@ export default function ServiceForm() {
           <label className="flex items-start gap-3 rounded-lg border p-3 cursor-pointer hover:bg-muted/30">
             <Switch checked={showInPrintPos} onCheckedChange={setShowInPrintPos} className="mt-0.5" />
             <span className="flex items-center gap-2 text-sm">
-              <Printer aria-hidden className="size-4 text-sky-600" />
+              <Printer aria-hidden className="size-4 text-[var(--sem-info)]" />
               <span>
                 <b>نقطة بيع الطباعة والاستنساخ</b>
                 <span className="block text-xs text-muted-foreground">
@@ -321,7 +321,7 @@ export default function ServiceForm() {
       <div className="flex items-center justify-between gap-3 rounded-lg border bg-card px-4 py-3">
         <div className="text-xs text-muted-foreground hidden sm:flex items-center gap-2">
           ستُحفظ خِدمة واحدة
-          {showInPrintPos && <Badge variant="secondary" className="bg-sky-500/10 text-sky-700">نقطة الطباعة</Badge>}
+          {showInPrintPos && <Badge variant="secondary" className="bg-[var(--sem-info-bg)] text-[var(--sem-info)]">نقطة الطباعة</Badge>}
           {consumesMaterials && <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-700">{toArabicDigits(lines.filter((l) => l.variantId !== "").length)} مادة</Badge>}
         </div>
         <Button type="button" size="sm" onClick={save} disabled={create.isPending}>

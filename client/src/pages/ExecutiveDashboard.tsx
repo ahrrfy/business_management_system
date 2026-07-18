@@ -266,7 +266,7 @@ export default function ExecutiveDashboard() {
                       </div>
                       <div className="relative h-6 flex-1 overflow-hidden rounded-md bg-muted/50">
                         <div
-                          className="absolute inset-y-0 right-0 rounded-md bg-sky-500/80"
+                          className="absolute inset-y-0 right-0 rounded-md bg-primary/80"
                           style={{ width: `${widthPct}%` }}
                         />
                       </div>

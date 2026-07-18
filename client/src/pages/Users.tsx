@@ -36,18 +36,18 @@ function RoleBadge({ role }: { role: string }) {
   const colors: Record<string, string> = {
     admin:          "bg-red-100 text-red-700",
     manager:        "bg-purple-100 text-purple-700",
-    accountant:     "bg-blue-100 text-blue-700",
+    accountant:     "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
     cashier:        "bg-emerald-100 text-emerald-700",
     warehouse:      "bg-amber-100 text-amber-700",
     purchasing:     "bg-orange-100 text-orange-700",
     print_operator: "bg-cyan-100 text-cyan-700",
     sales_rep:      "bg-teal-100 text-teal-700",
-    auditor:        "bg-slate-100 text-slate-700",
+    auditor:        "bg-muted text-foreground",
     courier:        "bg-lime-100 text-lime-700",
-    user:           "bg-gray-100 text-gray-600",
+    user:           "bg-muted text-muted-foreground",
   };
   return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${colors[role] ?? "bg-gray-100 text-gray-600"}`}>
+    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${colors[role] ?? "bg-muted text-muted-foreground"}`}>
       {ROLE_LABEL[role] ?? role}
     </span>
   );

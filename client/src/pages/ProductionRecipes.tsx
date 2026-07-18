@@ -261,7 +261,7 @@ export default function ProductionRecipes() {
 
           {/* العمود الجانبي: كلفة حيّة + معاينة BOM */}
           <div className="space-y-4 lg:sticky lg:top-4">
-            <Card className="border-sky-200">
+            <Card className="border-[var(--sem-info)]">
               <CardHeader>
                 <CardTitle className="text-base">الكلفة المعيارية — بأسعار اليوم</CardTitle>
                 <p className="text-xs text-muted-foreground">تُحدَّث فوراً مع كل تعديل. تشمل امتصاص الهدر الطبيعي ({pct(cost.waste.toString())}).</p>
@@ -271,9 +271,9 @@ export default function ProductionRecipes() {
                 <div className="flex justify-between"><span className="text-muted-foreground">العمالة / وحدة</span><b dir="ltr">{fmt(cost.labor.toString())}</b></div>
                 <div className="flex justify-between border-t border-dashed pt-2"><span className="font-semibold">كلفة مباشرة (بلا هدر)</span><b dir="ltr">{fmt(cost.direct.toString())}</b></div>
                 <div className="flex justify-between text-amber-600"><span>+ امتصاص الهدر الطبيعي ({pct(cost.waste.toString())})</span><b dir="ltr">{fmt(cost.absorb.toString())}</b></div>
-                <div className="flex justify-between items-center mt-2 px-3 py-2 rounded-md bg-sky-50">
+                <div className="flex justify-between items-center mt-2 px-3 py-2 rounded-md bg-[var(--sem-info-bg)]">
                   <span className="font-semibold">الكلفة المعيارية / وحدة</span>
-                  <b className="text-lg text-sky-700" dir="ltr">{fmt(cost.stdUnit.toString())}</b>
+                  <b className="text-lg text-[var(--sem-info)]" dir="ltr">{fmt(cost.stdUnit.toString())}</b>
                 </div>
                 {cost.delta != null && (
                   <div className={`text-xs text-center ${cost.delta.gt(0) ? "text-money-negative" : cost.delta.lt(0) ? "text-money-positive" : "text-muted-foreground"}`}>
@@ -287,7 +287,7 @@ export default function ProductionRecipes() {
               <CardHeader><CardTitle className="text-base">معاينة الوصفة</CardTitle></CardHeader>
               <CardContent className="space-y-2">
                 <div className="flex items-center gap-2 text-sm font-semibold">
-                  <span className="inline-block rounded-full px-2 py-0.5 text-xs bg-sky-100 text-sky-700">ناتج</span>
+                  <span className="inline-block rounded-full px-2 py-0.5 text-xs bg-[var(--sem-info-bg)] text-[var(--sem-info)]">ناتج</span>
                   <span>{out?.productName ?? "—"} {out && <span className="text-xs text-muted-foreground font-normal">(1 {out.unitName})</span>}</span>
                 </div>
                 <div className="text-center text-xs text-muted-foreground">↑ يتطلّب</div>
@@ -335,8 +335,8 @@ export default function ProductionRecipes() {
                     {r.isActive
                       ? <Link href={`/production/new?recipe=${Number(r.id)}`}><Button size="sm">إنتاج بهذه الوصفة ←</Button></Link>
                       : <Button size="sm" disabled>إنتاج بهذه الوصفة ←</Button>}
-                    <button className="text-sky-700 text-xs font-semibold" onClick={() => startEdit(Number(r.id))}>تعديل</button>
-                    <button className="text-muted-foreground hover:text-sky-700 text-xs font-semibold" onClick={() => duplicate(r)}>تكرار</button>
+                    <button className="text-primary text-xs font-semibold" onClick={() => startEdit(Number(r.id))}>تعديل</button>
+                    <button className="text-muted-foreground hover:text-primary text-xs font-semibold" onClick={() => duplicate(r)}>تكرار</button>
                     <button className="text-amber-700 text-xs font-semibold" onClick={async () => {
                       if (r.isActive && !(await confirm({ variant: "warning", title: "تعطيل الوصفة", description: `تعطيل وصفة «${r.name}»؟ الوصفات المعطَّلة لا تُستخدم للإنتاج. متابعة؟`, confirmText: "تعطيل" }))) return;
                       setActive.mutate({ id: Number(r.id), active: !r.isActive });

@@ -49,7 +49,7 @@ const EMPTY_CUSTOMER: SmartCustomerValue = { customerId: null, name: "", phone: 
 
 const PLAN_STATUS_AR: Record<string, { label: string; cls: string }> = {
   ACTIVE: { label: "نشطة", cls: "bg-emerald-100 text-emerald-700" },
-  COMPLETED: { label: "مكتملة", cls: "bg-sky-100 text-sky-700" },
+  COMPLETED: { label: "مكتملة", cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]" },
   CANCELLED: { label: "ملغاة", cls: "bg-muted text-muted-foreground" },
 };
 const LINE_STATUS_AR: Record<string, { label: string; cls: string }> = {

@@ -1008,7 +1008,7 @@ export default function Reception() {
                                   className={cn(
                                     "rounded-md border px-2 py-0.5 text-[11px] font-bold",
                                     l.custom!.priority === "URGENT" && "bg-destructive/10 text-destructive border-destructive/30",
-                                    l.custom!.priority === "NORMAL" && "bg-sky-500/10 text-sky-700 border-sky-500/30",
+                                    l.custom!.priority === "NORMAL" && "bg-[var(--sem-info)]/10 text-[var(--sem-info)] border-[var(--sem-info)]/30",
                                     l.custom!.priority === "LOW" && "bg-emerald-500/10 text-emerald-700 border-emerald-500/30",
                                   )}
                                 >

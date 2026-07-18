@@ -49,7 +49,7 @@ const MODES: { v: Mode; label: string; subtitle: string; Icon: typeof ShoppingCa
     label: "خدمات طباعة",
     subtitle: "نسخ • تجليد • طباعة فورية",
     Icon: Printer,
-    activeCls: "border-sky-500 bg-sky-50 text-sky-700",
+    activeCls: "border-[var(--sem-info)] bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
   },
   {
     v: "RECEPTION",

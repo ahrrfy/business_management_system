@@ -48,7 +48,7 @@ import {
 
 /* ───────── ثوابت العرض ───────── */
 const STATUS_META: Record<string, { label: string; cls: string }> = {
-  COUNTING: { label: "قيد العدّ", cls: "bg-blue-50 text-blue-700 border-blue-200" },
+  COUNTING: { label: "قيد العدّ", cls: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30" },
   REVIEW: { label: "قيد المراجعة", cls: "bg-amber-50 text-amber-800 border-amber-200" },
   APPROVED: { label: "معتمدة ومُسوّاة", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
   CANCELLED: { label: "ملغاة", cls: "bg-rose-50 text-rose-700 border-rose-200" },
@@ -103,7 +103,7 @@ function StatusBadge({ status }: { status: string }) {
 function Pill({ tone, children, title }: { tone: "muted" | "blue" | "amber" | "green" | "emerald" | "rose" | "violet"; children: ReactNode; title?: string }) {
   const tones: Record<string, string> = {
     muted: "bg-muted text-muted-foreground border-border",
-    blue: "bg-blue-50 text-blue-700 border-blue-200",
+    blue: "bg-[var(--sem-info-bg)] text-[var(--sem-info)] border-[var(--sem-info)]/30",
     amber: "bg-amber-50 text-amber-800 border-amber-200",
     green: "bg-green-50 text-green-700 border-green-200",
     emerald: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -118,7 +118,7 @@ function Pill({ tone, children, title }: { tone: "muted" | "blue" | "amber" | "g
 }
 function Stat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: "blue" | "amber" | "emerald" | "rose" }) {
   const tones: Record<string, string> = {
-    blue: "text-blue-700",
+    blue: "text-[var(--sem-info)]",
     amber: "text-amber-700",
     emerald: "text-emerald-700",
     rose: "text-rose-700",
@@ -460,7 +460,7 @@ export default function StocktakeReview() {
 
       {/* لافتات الحالة والحواجز */}
       {s.status === "COUNTING" && (
-        <div className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2.5 text-sm text-blue-800">
+        <div className="flex items-start gap-2 rounded-lg border border-[var(--sem-info)]/30 bg-[var(--sem-info-bg)] px-4 py-2.5 text-sm text-[var(--sem-info)]">
           <Info aria-hidden className="mt-0.5 size-4 shrink-0" />
           <span>
             الجلسة ما تزال قيد العدّ — هذه معاينة حية. الاعتماد يتاح بعد تسليم العدّ أو إغلاقه من{" "}
@@ -776,7 +776,7 @@ export default function StocktakeReview() {
                         <span className="text-xs text-muted-foreground">—</span>
                       ) : (
                         <span
-                          className="inline-flex cursor-help items-center rounded-md bg-blue-50 px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-blue-700"
+                          className="inline-flex cursor-help items-center rounded-md bg-[var(--sem-info-bg)] px-1.5 py-0.5 font-mono text-xs font-semibold tabular-nums text-[var(--sem-info)]"
                           dir="ltr"
                           title={movesTitle}
                         >
@@ -784,7 +784,7 @@ export default function StocktakeReview() {
                         </span>
                       )}
                       {r.netAfter !== 0 && (
-                        <p className={`mt-0.5 text-[10px] ${autoAdjust ? "text-blue-600" : "font-bold text-rose-600"}`}>
+                        <p className={`mt-0.5 text-[10px] ${autoAdjust ? "text-[var(--sem-info)]" : "font-bold text-rose-600"}`}>
                           {autoAdjust ? "مُصحَّحة آلياً" : "غير محتسبة!"}
                         </p>
                       )}
@@ -802,7 +802,7 @@ export default function StocktakeReview() {
                           }
                         >
                           {nf(r.adjustedCount)}
-                          {r.netAfter !== 0 && autoAdjust && <span className="text-[10px] text-blue-600">*</span>}
+                          {r.netAfter !== 0 && autoAdjust && <span className="text-[10px] text-[var(--sem-info)]">*</span>}
                         </span>
                       )}
                     </td>
@@ -812,7 +812,7 @@ export default function StocktakeReview() {
                     <td
                       className={`p-2.5 text-center font-mono font-bold tabular-nums ${
                         r.diff != null && r.diff > 0
-                          ? "text-blue-700"
+                          ? "text-[var(--sem-info)]"
                           : r.diff != null && r.diff < 0
                             ? "text-rose-700"
                             : "text-emerald-700"
@@ -830,7 +830,7 @@ export default function StocktakeReview() {
                         r.value != null && D(r.value).isNegative()
                           ? "text-rose-700"
                           : r.value != null && D(r.value).gt(0)
-                            ? "text-blue-700"
+                            ? "text-[var(--sem-info)]"
                             : "text-muted-foreground"
                       }`}
                       dir="ltr"

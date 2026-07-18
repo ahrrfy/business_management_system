@@ -25,7 +25,7 @@ const toneCls: Record<KpiTone, string> = {
   positive: "text-money-positive",
   negative: "text-money-negative",
   warning: "text-stock-low",
-  info: "text-sky-600 dark:text-sky-400",
+  info: "text-[var(--sem-info)]",
 };
 
 export function ReportShell({
