@@ -345,7 +345,12 @@ export const inventoryRouter = router({
   pendingAdjustments: inventoryReadProcedure
     .input(z.object({ status: z.enum(["PENDING_APPROVAL", "APPROVED", "REJECTED"]).optional() }).optional())
     .query(async ({ input, ctx }) => {
-      const branchId = ctx.user.role === "admin" ? null : ctx.user.branchId != null ? Number(ctx.user.branchId) : null;
+      // S3 (مراجعة عدائية): غير الأدمن بلا فرع مُسنَد كان يقرأ طلبات كل الفروع (branchId=null) — تسريب.
+      // نطاق القراءة يساوي نطاق الاعتماد: admin=الكل، وإلّا فرعه، وبلا فرع ⇒ FORBIDDEN (نمط reorderAlerts).
+      if (ctx.user.role !== "admin" && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد — لا يمكن عرض طلبات التسوية" });
+      }
+      const branchId = ctx.user.role === "admin" ? null : Number(ctx.user.branchId);
       return listStockAdjustmentRequests({ branchId, status: input?.status ?? "PENDING_APPROVAL" });
     }),
 
