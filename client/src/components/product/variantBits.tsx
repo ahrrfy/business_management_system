@@ -42,6 +42,9 @@ export function ColorPickerDot({
   onChange: (hex: string | null) => void;
   size?: number;
 }) {
+  // مرجع منتقي اللون لإدارة التركيز: زرّ «×» يُفكَّك بمجرّد الضغط (يُعرَض فقط مع لونٍ صريح) فيسقط التركيز
+  // للـbody — ننقله للمنتقي قبل التفكيك (WCAG 2.4.3 إدارة التركيز).
+  const inputRef = useRef<HTMLInputElement>(null);
   const explicit = normalizeHex(hex);
   const resolved = explicit || resolveColorHex(name);
   const current = resolved || "#cbd5e1";
@@ -61,6 +64,7 @@ export function ColorPickerDot({
         {/* input type=color شفّاف (opacity-0) يُخفي مخطّط تركيزه ⇒ نُظهر التركيز على السواتش الحاوي
             عبر focus-within (WCAG 2.4.7 — تركيز لوحة المفاتيح كان غير مرئيّ). */}
         <input
+          ref={inputRef}
           type="color"
           value={inputVal}
           onChange={(e) => onChange(e.target.value.toUpperCase())}
@@ -71,7 +75,7 @@ export function ColorPickerDot({
       {explicit && (
         <button
           type="button"
-          onClick={() => onChange(null)}
+          onClick={() => { onChange(null); inputRef.current?.focus(); }}
           title="عودة للون التلقائي (من اسم اللون)"
           aria-label="إزالة اللون المخصّص"
           className="text-muted-foreground hover:text-destructive leading-none text-sm"
@@ -280,9 +284,12 @@ export function ImageSlot({
   }
   return (
     <div className="flex items-center gap-3">
-      <div
+      {/* زرّ حقيقيّ لا div — دعمٌ أصيل للوحة المفاتيح (Enter/Space) + تركيز + اسمٌ متاح (كان div بنقرٍ فقط). */}
+      <button
+        type="button"
         onClick={() => ref.current?.click()}
-        className="relative shrink-0 rounded-lg border overflow-hidden cursor-pointer hover:opacity-90 flex items-center justify-center bg-muted/30"
+        aria-label={value ? "تغيير صورة هذا اللون" : "رفع صورة هذا اللون"}
+        className="relative shrink-0 rounded-lg border overflow-hidden cursor-pointer hover:opacity-90 flex items-center justify-center bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         style={{ width: size, height: size }}
       >
         {value ? (
@@ -290,7 +297,7 @@ export function ImageSlot({
         ) : (
           <span className="font-mono text-[9px] text-muted-foreground">+ صورة</span>
         )}
-      </div>
+      </button>
       <div className="text-xs text-muted-foreground">
         <div>{label}</div>
         {busy ? (
