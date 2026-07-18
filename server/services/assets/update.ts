@@ -5,6 +5,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { type Actor, withTx } from "../tx";
+import { computeDepreciation } from "./depreciation";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
 
@@ -114,6 +115,56 @@ export async function updateAsset(id: number, input: UpdateAssetInput, actor?: A
         warrantyEnd: input.warrantyEnd ?? null,
       })
       .where(eq(fixedAssets.id, id));
+
+    // DEPR-REVAL (تدقيق ١٧/٧): تعديل القيمة/التخريدية/العمر/الطريقة بعد ترحيل إهلاكٍ لا يصحّح المتراكم
+    // ⇒ عند خفض القيمة يبقى المتراكم > (القيمة−التخريدية) فيصير NBV سالباً، وكنسة catch-up تتخطّاه
+    // للأبد (monthDep≤0). نُعيد حساب المتراكم الصحيح بالبارامترات الجديدة حتى اليوم (computeDepreciation
+    // يقصُره على الأساس)، ونُرحّل قيد ADJUST تعويضيّاً بالفرق (مصروف الإهلاك يتبع المتراكم). نقتصر على
+    // أصلٍ سبق إهلاكه (accum>0)؛ عديم الإهلاك تُغطّيه كنسة الإهلاك الشهريّ الطبيعيّة (لا خطر NBV سالب).
+    const oldAccum = money(a.accumulatedDepreciation ?? "0");
+    const depParamsChanged =
+      !money(a.purchaseValue ?? "0").eq(newVal) ||
+      !money(a.salvageValue ?? "0").eq(money(input.salvageValue ?? "0")) ||
+      Number(a.usefulLifeYears) !== input.usefulLifeYears ||
+      (((a.depreciationMethod as string) ?? "sl") !== (input.depreciationMethod ?? "sl"));
+    if (depParamsChanged && oldAccum.gt(0)) {
+      const correctAccum = money(
+        computeDepreciation(
+          {
+            purchaseValue: input.purchaseValue,
+            salvageValue: input.salvageValue ?? "0",
+            usefulLifeYears: input.usefulLifeYears,
+            depreciationMethod: input.depreciationMethod ?? "sl",
+            purchaseDate: input.purchaseDate,
+            status: a.status,
+          },
+          new Date(),
+        ).accumulated,
+      );
+      const deprDelta = correctAccum.sub(oldAccum);
+      if (!deprDelta.isZero()) {
+        const depBranch = input.branchId ?? (a.branchId != null ? Number(a.branchId) : null) ?? actor?.branchId ?? null;
+        const priorAdj = await tx
+          .select({ c: sql<number>`COUNT(*)` })
+          .from(accountingEntries)
+          .where(like(accountingEntries.dedupeKey, `DEPR_ADJ:${id}:%`));
+        const seq = Number(priorAdj[0]?.c ?? 0) + 1;
+        await postEntry(tx, {
+          entryType: "ADJUST",
+          branchId: depBranch,
+          cost: deprDelta,
+          profit: deprDelta.neg(), // مصروف: revenue(0) − cost = ربح سالب (يجتاز reconcileLedgerProfit)
+          amount: deprDelta,
+          entryDate: new Date(),
+          dedupeKey: `DEPR_ADJ:${id}:${seq}`,
+          notes: `تصحيح إهلاك متراكم عند تعديل أصل ${a.code ?? id}`,
+        });
+        await tx
+          .update(fixedAssets)
+          .set({ accumulatedDepreciation: toDbMoney(correctAccum) })
+          .where(eq(fixedAssets.id, id));
+      }
+    }
   });
   return getAsset(id);
 }

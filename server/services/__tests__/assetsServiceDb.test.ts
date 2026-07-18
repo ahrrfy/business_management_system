@@ -7,12 +7,14 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, updateAsset } from "../assetsService";
+import { computeDepreciation } from "../assets/depreciation";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
 // FI-01: createAsset يأخذ Actor الآن (لترحيل قيد الاقتناء) — مُغلِّف يُمرّره عن كل الاختبارات القائمة.
 const mkAsset = (input: Parameters<typeof createAsset>[0]) => createAsset(input, ACTOR);
 
 const TABLES = [
+  "accountingEntries",
   "assetMaintenance",
   "assetCustodyLog",
   "assetDocuments",
@@ -213,5 +215,52 @@ describe("assetsService — FI-01 اقتناء يُرحَّل للدفتر (DB)"
     expect(Number(acq.amount)).toBe(150000);
     const [r] = await db().select().from(s.receipts).where(eq(s.receipts.direction, "OUT"));
     expect(Number(r.amount)).toBe(150000);
+  });
+});
+
+describe("updateAsset — تصحيح الإهلاك المتراكم (DEPR-REVAL، تدقيق ١٧/٧)", () => {
+  const PARAMS = {
+    name: "آلة طباعة", category: "computers", purchaseDate: "2024-01-01",
+    salvageValue: "0", usefulLifeYears: 5, depreciationMethod: "sl" as const, branchId: 1,
+  };
+
+  it("خفض القيمة دون المتراكم ⇒ يُصحَّح المتراكم للقيمة التحليلية (NBV غير سالب) + قيد ADJUST تعويضيّ", async () => {
+    const asset = await mkAsset({ ...PARAMS, purchaseValue: "1200000" });
+    // نُثبّت متراكماً مُرحَّلاً كبيراً (٨٠٠ألف) كأن الكنسة الشهريّة رحّلته على القيمة القديمة.
+    await db().update(s.fixedAssets).set({ accumulatedDepreciation: "800000.00" }).where(eq(s.fixedAssets.id, asset!.id));
+
+    // نخفض القيمة إلى ٣٠٠ألف (المتراكم ٨٠٠ألف يتجاوز الأساس ⇒ كان NBV = −٥٠٠ألف عالقاً للأبد).
+    await updateAsset(asset!.id, { ...PARAMS, purchaseValue: "300000" }, ACTOR);
+
+    const [a2] = await db().select().from(s.fixedAssets).where(eq(s.fixedAssets.id, asset!.id));
+    const expected = computeDepreciation(
+      { purchaseValue: "300000", salvageValue: "0", usefulLifeYears: 5, depreciationMethod: "sl", purchaseDate: PARAMS.purchaseDate, status: "active" },
+      new Date(),
+    ).accumulated;
+    expect(Number(a2.accumulatedDepreciation)).toBe(expected);
+    expect(expected).toBeLessThanOrEqual(300000); // مقصور على الأساس — لا إهلاك زائد
+    expect(Number(a2.purchaseValue) - Number(a2.accumulatedDepreciation)).toBeGreaterThanOrEqual(0); // NBV غير سالب
+
+    // قيد ADJUST تعويضيّ بالفرق (expected − ٨٠٠ألف، سالب = عكس الإهلاك الزائد).
+    const adj = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(and(eq(s.accountingEntries.entryType, "ADJUST"), sql`${s.accountingEntries.dedupeKey} LIKE ${`DEPR_ADJ:${asset!.id}:%`}`));
+    expect(adj).toHaveLength(1);
+    expect(Number(adj[0].cost)).toBe(expected - 800000);
+    expect(Number(adj[0].amount)).toBe(expected - 800000);
+  });
+
+  it("تعديلٌ لا يمسّ بارامترات الإهلاك (الاسم فقط) ⇒ لا تصحيح ولا قيد", async () => {
+    const asset = await mkAsset({ ...PARAMS, purchaseValue: "1200000" });
+    await db().update(s.fixedAssets).set({ accumulatedDepreciation: "480000.00" }).where(eq(s.fixedAssets.id, asset!.id));
+    await updateAsset(asset!.id, { ...PARAMS, name: "آلة طباعة (محدّثة)", purchaseValue: "1200000" }, ACTOR);
+    const [a2] = await db().select().from(s.fixedAssets).where(eq(s.fixedAssets.id, asset!.id));
+    expect(Number(a2.accumulatedDepreciation)).toBe(480000); // بلا تغيير
+    const adj = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(sql`${s.accountingEntries.dedupeKey} LIKE ${`DEPR_ADJ:${asset!.id}:%`}`);
+    expect(adj).toHaveLength(0);
   });
 });
