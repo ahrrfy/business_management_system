@@ -36,6 +36,8 @@ export async function getExchangeStatement(input: StatementInput) {
   let totalFxDiff = new Decimal(0);
   let totalUsdBought = new Decimal(0);
   for (const t of txns) {
+    // العمليات المعكوسة (REVERSED) تظهر في السجلّ لكنها تُستثنى من الإجماليات (تدقيق ١٧/٧).
+    if (t.status === "REVERSED") continue;
     // إيداع/سحب دولار مباشر: iqdAmount=0 دائماً (محفظتان معزولتان) ⇒ مجموع IQD لا يتأثّر.
     if (t.type === "DEPOSIT") {
       totalDepositIqd = totalDepositIqd.plus(money(t.iqdAmount));

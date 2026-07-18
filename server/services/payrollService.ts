@@ -30,7 +30,7 @@ import { postEntry } from "./ledgerService";
 import { money, round2, toDateStr, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
+import { restoreAdvanceSettlementsTx, settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
 import { applyDuePromotions } from "./promotionService";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
@@ -472,6 +472,7 @@ export async function payRun(id: number, actor: Actor) {
       await settleAdvancesOnPayTx(
         tx,
         items.map((it) => ({ employeeId: Number(it.employeeId), amount: money(it.advanceDeduction) })),
+        id,
       );
     }
 
@@ -505,6 +506,10 @@ export async function cancelRun(id: number, actor: Actor) {
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
 
     if (run.status === "draft") {
+      // استعادة تسويات السلف (تدقيق ١٧/٧): إن كان المسيّر قد دُفع سابقاً ثم عُكس فأُعيد لمسودة، فحذفه
+      // يُلغي أثره نهائياً ⇒ نُعيد remaining للسلف قبل الحذف، وإلا خصمها توليدُ مسيّرٍ جديد مرّةً ثانية.
+      // (المسيّر الذي لم يُدفع قطّ لا يحمل سجلّات تسوية ⇒ لا أثر.)
+      await restoreAdvanceSettlementsTx(tx, id);
       await tx.delete(payrollItems).where(eq(payrollItems.runId, id));
       await tx.delete(payrollRuns).where(eq(payrollRuns.id, id));
       return { id, deleted: true, status: "deleted" as const };
@@ -555,11 +560,10 @@ export async function cancelRun(id: number, actor: Actor) {
         notes: `عكس راتب — مسيّر ${run.period}`,
       });
     }
-    // #6 (تصحيح — كان الفهم خاطئاً): سياسة موثَّقة صراحةً: عكس مسيّر مدفوع لا يستعيد أرصدة السلف
-    // (advancesService.test.ts:«عكس مسيّر مدفوع ثم إعادة دفعه لا يخصم السلفة مرّتين»). محاولة
-    // الاستعادة كسرت هذا الاختبار — الاستعادة تُنشئ سيناريو الخصم المزدوج عند إعادة الدفع. سيناريو
-    // الحذف+التوليد الذي وصفه التدقيق يحتاج فحص isFirstPay على مستوى الفترة/الموظف (لا runId)،
-    // أو تسجيل تسويات السلف بربطها بـrunId ⇒ استعادة عند حذف المسيّر لا عند عكسه. مؤجَّل.
+    // عكس مسيّر مدفوع لا يستعيد أرصدة السلف (remaining) — قرار موثَّق: التسوية وقعت على راتبٍ صُرف،
+    // وإعادة الدفع اللاحقة لا تخصمها ثانيةً (isFirstPay). الاستعادة تحدث عند **حذف** المسيّر فقط
+    // (draft ⇒ restoreAdvanceSettlementsTx، تدقيق ١٧/٧) عبر سجلّات advanceSettlements المربوطة بالمسيّر
+    // ⇒ حذف+إعادة توليد لم يعُد يخصم السلفة مضاعفاً.
     await tx.update(payrollRuns).set({ status: "approved", paidAt: null }).where(eq(payrollRuns.id, id));
     return { id, deleted: false, status: "approved" as const };
   });

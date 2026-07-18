@@ -594,7 +594,14 @@
       "idx": 84,
       "version": "5",
       "when": 1784851200000,
-      "tag": "0084_offline_sale_capture",
+      "tag": "0084_advance_settlements",
+      "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "5",
+      "when": 1784937600000,
+      "tag": "0085_offline_sale_capture",
       "breakpoints": true
     }
   ]

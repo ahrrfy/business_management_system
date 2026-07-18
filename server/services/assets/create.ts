@@ -1,6 +1,6 @@
 // إنشاء أصل: ترقيم AST-#### + قيد اقتناء (AP لمورّد أو نقد خزينة) + عهدة ابتدائية اختيارية.
-import { desc } from "drizzle-orm";
-import { assetCustodyLog, fixedAssets, receipts } from "../../../drizzle/schema";
+import { desc, eq } from "drizzle-orm";
+import { assetCustodyLog, employees, fixedAssets, receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
@@ -91,7 +91,20 @@ export async function createAsset(input: CreateAssetInput, actor: Actor) {
     }
 
     // إن سُلّم بعهدة عند الإنشاء، افتح سطر عهدة جارية من تاريخ الشراء.
+    // حرّاس العهدة (تدقيق ١٧/٧): كان الإسناد يُدرَج بلا فحص، فيُمكن فتح عهدة على موظف منتهي الخدمة أو من
+    // فرعٍ آخر — بينما handoverCustody يرفضهما. نطبّق نفس الحارسين هنا (نشط + توافق الفرع) لتوحيد الضمان.
     if (input.custodianId) {
+      const [emp] = await tx
+        .select({ status: employees.employmentStatus, branchId: employees.branchId })
+        .from(employees)
+        .where(eq(employees.id, input.custodianId))
+        .limit(1);
+      if (!emp) throw new Error("الموظف (صاحب العهدة) غير موجود");
+      if (emp.status !== "active") throw new Error("لا يمكن تسليم عهدة لموظف ليس على رأس العمل");
+      const assetBranch = input.branchId ?? null;
+      if (assetBranch != null && emp.branchId != null && Number(assetBranch) !== Number(emp.branchId)) {
+        throw new Error("لا يمكن تسليم عهدة لموظف من فرع مختلف عن فرع الأصل");
+      }
       await tx.insert(assetCustodyLog).values({
         assetId: newId,
         employeeId: input.custodianId,
