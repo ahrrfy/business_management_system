@@ -15,8 +15,11 @@ import {
   setStoreProductStock,
 } from "../storeCatalogService";
 import { truncateTables } from "../../__tests__/__testUtils__";
+import { approveStockAdjustment } from "../../inventory/adjustmentApproval";
 
 const TINY_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg";
+// فصل مهام #٦: ضبط مخزون المتجر صار طلباً معلَّقاً؛ admin يعتمد (مُستثنى SOD-04) ليُطبَّق الأثر.
+const APPROVER = { userId: 1, branchId: 1, role: "admin" };
 
 function db() {
   const d = getDb();
@@ -201,32 +204,36 @@ describe("setProductPrimaryImage", () => {
 });
 
 describe("setStoreProductStock — ضبط ذرّي + قيد ADJUST", () => {
-  it("رفع المخزون ⇒ حركة ADJUST + قيد بإشارة كلفة سالبة (delta×cost)", async () => {
-    const r = await setStoreProductStock({ variantId: 2, branchId: 1, targetQuantity: 30, createdBy: 1 });
-    expect(r.delta).toBe(30);
-    expect(r.newQuantity).toBe(30);
+  it("رفع المخزون ⇒ طلبٌ معلَّق بلا أثر، والاعتماد ⇒ حركة ADJUST + قيد بإشارة كلفة سالبة", async () => {
+    const req = await setStoreProductStock({ variantId: 2, branchId: 1, targetQuantity: 30, createdBy: 1, role: "admin" });
+    // لا تغيير مخزون ولا قيد قبل الاعتماد.
+    let entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    expect(entries).toHaveLength(0);
 
+    const res = await approveStockAdjustment(req.requestId, APPROVER);
+    expect(res.delta).toBe(30);
     const stock = (await db().select({ q: s.branchStock.quantity }).from(s.branchStock).where(and(eq(s.branchStock.variantId, 2), eq(s.branchStock.branchId, 1))))[0];
     expect(stock.q).toBe(30);
-
-    const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
+    entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
     expect(entries).toHaveLength(1);
-    expect(entries[0].dedupeKey).toBe(`INV_ADJUST:${r.movementId}`);
+    expect(entries[0].dedupeKey).toBe(`INV_ADJUST:${res.movementId}`);
     expect(Number(entries[0].cost)).toBe(-60); // 30 × 2.00 مُنفَى
     expect(Number(entries[0].profit)).toBe(60);
   });
 
-  it("خفض المخزون ⇒ delta سالب + كلفة موجبة (استرداد قيمة)", async () => {
-    const r = await setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: 20, createdBy: 1 }); // 50→20
-    expect(r.delta).toBe(-30);
+  it("خفض المخزون ⇒ اعتماد ⇒ delta سالب + كلفة موجبة (استرداد قيمة)", async () => {
+    const req = await setStoreProductStock({ variantId: 1, branchId: 1, targetQuantity: 20, createdBy: 1, role: "admin" }); // 50→20
+    const res = await approveStockAdjustment(req.requestId, APPROVER);
+    expect(res.delta).toBe(-30);
     const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
     expect(entries).toHaveLength(1);
     expect(Number(entries[0].cost)).toBe(120); // −(−30 × 4.00) = +120
   });
 
-  it("دلتا صفر (نفس الكمية) ⇒ لا قيد محاسبي", async () => {
-    const r = await setStoreProductStock({ variantId: 3, branchId: 1, targetQuantity: 10, createdBy: 1 }); // 10→10
-    expect(r.delta).toBe(0);
+  it("دلتا صفر (نفس الكمية) ⇒ اعتماد بلا قيد محاسبي", async () => {
+    const req = await setStoreProductStock({ variantId: 3, branchId: 1, targetQuantity: 10, createdBy: 1, role: "admin" }); // 10→10
+    const res = await approveStockAdjustment(req.requestId, APPROVER);
+    expect(res.delta).toBe(0);
     const entries = await db().select().from(s.accountingEntries);
     expect(entries).toHaveLength(0);
   });
