@@ -21,7 +21,7 @@ export interface MovementRow {
 
 export async function getRecentMovements(
   input: { branchId?: number; limit?: number },
-  scope: { scopedBranchId: number | null; role: string },
+  scope: { scopedBranchId: number | null; role: string; userId?: number },
 ): Promise<MovementRow[]> {
   const db = getDb();
   if (!db) return [];
@@ -34,6 +34,11 @@ export async function getRecentMovements(
   // ⚠️ أسماء أعمدة DB الخام: receipts.cashBucket / expenses.expenseCashBucket / expenses.expensePaymentMethod.
   const bucketFilterR = isCashier(scope.role) ? sql`AND (r.cashBucket = 'DRAWER' OR r.cashBucket IS NULL)` : sql``;
   const bucketFilterE = isCashier(scope.role) ? sql`AND (e.expenseCashBucket = 'DRAWER' OR e.expenseCashBucket IS NULL)` : sql``;
+  // عزل درج الكاشير (تدقيق ١٧/٧): كان الكاشير يرى حركات دروج زملائه في الفرع نفسه (مبالغ + أرقام
+  // سندات + مصروفات لم يُنشئها). درجُه = ورديّاتُه ⇒ نقصره على حركات ورديّةٍ يملكها هو (shiftId).
+  const isolateCashier = isCashier(scope.role) && scope.userId != null;
+  const ownShiftR = isolateCashier ? sql`AND r.shiftId IN (SELECT s.id FROM shifts s WHERE s.userId = ${scope.userId})` : sql``;
+  const ownShiftE = isolateCashier ? sql`AND e.shiftId IN (SELECT s.id FROM shifts s WHERE s.userId = ${scope.userId})` : sql``;
 
   const rows = rowsOf(
     await db.execute(sql`
@@ -55,6 +60,7 @@ export async function getRecentMovements(
         WHERE r.receiptStatus = 'COMPLETED'
           ${branchFilterR}
           ${bucketFilterR}
+          ${ownShiftR}
       )
       UNION ALL
       (
@@ -75,6 +81,7 @@ export async function getRecentMovements(
         WHERE e.expenseStatus = 'ACTIVE'
           ${branchFilterE}
           ${bucketFilterE}
+          ${ownShiftE}
       )
       ORDER BY createdAt DESC
       LIMIT ${limit}
