@@ -104,6 +104,11 @@ describe("monthlyClosePack", () => {
       { branchId: 1, direction: "IN", amount: "8000.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED", partyType: "OTHER", description: "قبض", referenceNumber: "R-1", createdBy: 1, receiptDate: new Date(IN_MONTH) },
       { branchId: 1, direction: "OUT", amount: "3000.00", paymentMethod: "CASH", cashBucket: "TREASURY", status: "COMPLETED", partyType: "OTHER", description: "صرف", referenceNumber: "R-2", createdBy: 1, receiptDate: new Date(IN_MONTH) },
     ]);
+    // مرتجع بيع مُقيَّد بتاريخ الإرجاع (entryDate) — تدقيق ١٧/٧: المرتجعات تُنسب لشهر الإرجاع لا الفاتورة.
+    await d.insert(s.accountingEntries).values({
+      entryType: "RETURN", branchId: 1, customerId: 10, supplierId: null,
+      revenue: "-1000.00", cost: "-400.00", profit: "-600.00", amount: "-1000.00", entryDate: new Date(IN_MONTH),
+    });
 
     const pack = await getMonthlyClosePack({ month: MONTH });
 
@@ -135,6 +140,24 @@ describe("monthlyClosePack", () => {
 
     const all = await getMonthlyClosePack({ month: MONTH });
     expect(all.sales.total).toBe("10000.00");
+  });
+
+  it("المرتجعات تُنسب لشهر الإرجاع (entryDate) لا شهر الفاتورة، وتستبعد مرتجع الشراء (تدقيق ١٧/٧)", async () => {
+    const d = db();
+    // فاتورة من شهرٍ سابق — لا تدخل مبيعات هذا الشهر.
+    await seedInvoice({ id: 220, date: OUT_MONTH, total: "8000.00", cost: "3000.00" });
+    await d.insert(s.accountingEntries).values([
+      // إرجاع بيع داخل الشهر ⇒ يُحسَب (٥٠٠) رغم أن الفاتورة الأصل خارجه.
+      { entryType: "RETURN", branchId: 1, customerId: 10, supplierId: null, revenue: "-500.00", cost: "-200.00", profit: "-300.00", amount: "-500.00", entryDate: new Date(IN_MONTH) },
+      // إرجاع بيع خارج الشهر ⇒ لا يُحسَب.
+      { entryType: "RETURN", branchId: 1, customerId: 10, supplierId: null, revenue: "-700.00", cost: "-300.00", profit: "-400.00", amount: "-700.00", entryDate: new Date(OUT_MONTH) },
+      // مرتجع شراء (supplierId مضبوط) داخل الشهر ⇒ يُستبعَد من مرتجعات المبيعات.
+      { entryType: "RETURN", branchId: 1, supplierId: 20, revenue: "0.00", cost: "-900.00", profit: "900.00", amount: "-900.00", entryDate: new Date(IN_MONTH) },
+    ]);
+
+    const pack = await getMonthlyClosePack({ month: MONTH });
+    expect(pack.sales.returnedTotal).toBe("500.00"); // فقط إرجاع البيع داخل الشهر
+    expect(pack.sales.invoiceCount).toBe(0); // لا فواتير مؤرَّخة في الشهر
   });
 
   it("شهر فارغ ⇒ أصفار سليمة بلا أخطاء", async () => {

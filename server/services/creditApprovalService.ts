@@ -17,7 +17,7 @@
 import { TRPCError } from "@trpc/server";
 import type Decimal from "decimal.js";
 import { and, eq, gt, isNull, sql } from "drizzle-orm";
-import { creditApprovals } from "../../drizzle/schema";
+import { creditApprovals, customers } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { money } from "./money";
@@ -44,6 +44,17 @@ export async function createApproval(tx: Tx, input: CreateApprovalInput): Promis
   const expiresAt = new Date(Date.now() + ttl * 60 * 1000);
   if (money(input.maxAmount).lte(0)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "سقف الموافقة يجب أن يكون موجباً" });
+  }
+  // تدقيق ١٧/٧: كان يُدرِج بلا قراءة العميل ⇒ معرّف غير موجود يفشل بخطأ FK خام، وموافقة تُنشأ
+  // لعميل معطَّل ثم تفشل عند البيع. نتحقّق داخل المعاملة.
+  const [cust] = await tx
+    .select({ id: customers.id, isActive: customers.isActive })
+    .from(customers)
+    .where(eq(customers.id, input.customerId))
+    .limit(1);
+  if (!cust) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+  if (cust.isActive === false) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا موافقة ائتمان لعميل معطَّل" });
   }
   const res = await tx.insert(creditApprovals).values({
     customerId: input.customerId,

@@ -206,6 +206,29 @@ describe("حواجز الإلغاء", () => {
     expect(outs).toHaveLength(0);
   });
 
+  it("سند مستقل مربوط بفاتورة بيع (invoiceId) يُلغى بأمان — تدقيق ١٧/٧ (كان الحارس يمنع كلّ سندٍ مربوط)", async () => {
+    await openShift();
+    const invRes = await db().insert(s.invoices).values({
+      invoiceNumber: "INV-VL", sourceType: "POS", sourceId: "t-vl", branchId: 1, customerId: 1,
+      priceTier: "RETAIL", subtotal: "30.00", total: "30.00", costTotal: "0.00", paidAmount: "0.00",
+      status: "PENDING", invoiceDate: new Date(),
+    });
+    const invoiceId = insertId(invRes);
+    const v = await createVoucher(
+      { voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, invoiceId, description: "دفعة مربوطة بفاتورة" },
+      actor,
+    );
+    // السند مربوط بالفاتورة توثيقياً فعلاً.
+    const rv = (await db().select().from(s.receipts).where(eq(s.receipts.id, v.receiptId)))[0];
+    expect(Number(rv.invoiceId)).toBe(invoiceId);
+
+    // الإلغاء يمرّ الآن (الحارس القديم كان يرفض كلّ سندٍ يحمل invoiceId ⇒ يستحيل عكسه إطلاقاً).
+    const res = await cancelVoucher(v.receiptId, actor);
+    expect(res.status).toBe("REVERSED");
+    const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
+    expect(money(cust.currentBalance).eq(money("100.00"))).toBe(true); // عاد الرصيد كاملاً
+  });
+
   it("إيصال غير سند (voucherNumber=null) يُرفض NOT_FOUND", async () => {
     const r = await db().insert(s.receipts).values({
       branchId: 1, direction: "IN", amount: "15.00", paymentMethod: "CASH", status: "COMPLETED",

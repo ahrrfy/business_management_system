@@ -35,7 +35,12 @@ export async function cancelVoucher(receiptId: number, actor: Actor): Promise<Ca
     if (!r || r.voucherNumber == null) {
       throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
     }
-    if (r.invoiceId != null || r.workOrderId != null) {
+    // تدقيق ١٧/٧: السند المستقل قد يُربَط توثيقياً بفاتورة بيع (ميزة ٥/٧، receipts.invoiceId) — والربط
+    // توثيقيٌّ بحت لا يمسّ invoice.paidAmount (createVoucher يُخزّن الرابط فقط)، فعكسه آمنٌ بمرآة الإنشاء
+    // (استعادة رصيد العميل + قيد معاكس). الحارس القديم كان يمنع كلّ سندٍ مربوط ⇒ يستحيل عكسه إطلاقاً.
+    // نمنع فقط الإيصالات **غير-السندية** المرتبطة (مدفوعات فاتورة/تسليم أمر شغل) — وهي لا تبلغ هنا أصلاً
+    // (السطر أعلاه يرفض voucherNumber == null)، فالشرط دفاعٌ متعمّق موثِّق للنيّة.
+    if (r.voucherNumber == null && (r.invoiceId != null || r.workOrderId != null)) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إلغاء إيصال مرتبط بفاتورة/طلب خدمة من هنا" });
     }
     if (r.status === "REVERSED") {

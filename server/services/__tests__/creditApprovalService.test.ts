@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { withTx } from "../tx";
@@ -39,6 +40,16 @@ describe("creditApprovalService — B5: ربط الموافقة بـ(customer, a
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
     await expect(
       withTx(async (tx) => createApproval(tx, { customerId: 1, maxAmount: "-100", approvedBy: 1 })),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("createApproval يرفض عميلاً غير موجود (NOT_FOUND) أو معطَّلاً (BAD_REQUEST) — تدقيق ١٧/٧", async () => {
+    await expect(
+      withTx(async (tx) => createApproval(tx, { customerId: 999, maxAmount: "500.00", approvedBy: 1 })),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+    await db().update(s.customers).set({ isActive: false }).where(eq(s.customers.id, 2));
+    await expect(
+      withTx(async (tx) => createApproval(tx, { customerId: 2, maxAmount: "500.00", approvedBy: 1 })),
     ).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 

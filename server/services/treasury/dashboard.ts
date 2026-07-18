@@ -159,13 +159,25 @@ export async function getDashboard(
     `),
   );
 
+  // تحويلات واردة «بالطريق» للفرع (تدقيق ١٧/٧: كان صفراً ثابتاً رغم اكتمال وحدة التحويلات ⇒ المدير
+  // المستلِم لا يرى تنبيهاً بنقدٍ/بضاعةٍ في الطريق إليه). العمود transferStatus (mysqlEnum) + فهرس
+  // idx_transfer_to_status. admin بلا فرع يرى الكل بالطريق.
+  const pendingTransfers = rowsOf(
+    await db.execute(sql`
+      SELECT COUNT(*) AS cnt
+      FROM stockTransfers
+      WHERE transferStatus = 'IN_TRANSIT'
+        ${effectiveBranch != null ? sql`AND toBranchId = ${effectiveBranch}` : sql``}
+    `),
+  );
+
   return {
     drawerBalances,
     treasuryBalances,
     openShiftsCount,
     todayReceiptsTotal: toDbMoney(money(todayReceipts[0]?.total ?? 0)),
     todayExpensesTotal: toDbMoney(money(todayExpenses[0]?.total ?? 0)),
-    pendingIncomingTransfers: 0, // المرحلة ٢
+    pendingIncomingTransfers: Number(pendingTransfers[0]?.cnt ?? 0),
     hideTreasury: isCashier(scope.role),
     generatedAt: new Date().toISOString(),
   };
