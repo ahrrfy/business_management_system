@@ -1,8 +1,10 @@
 // دورة حياة الأصل بعد الإنشاء: تسليم عهدة + تسجيل/إنهاء صيانة.
 import { and, eq, isNull } from "drizzle-orm";
-import { assetCustodyLog, assetMaintenance, employees, fixedAssets } from "../../../drizzle/schema";
-import { toDateStr, toDbMoney } from "../money";
-import { withTx } from "../tx";
+import { assetCustodyLog, assetMaintenance, employees, fixedAssets, receipts } from "../../../drizzle/schema";
+import { extractInsertId } from "../../lib/insertId";
+import { postEntry } from "../ledgerService";
+import { money, toDateStr, toDbMoney } from "../money";
+import { type Actor, withTx } from "../tx";
 import { loadForUpdate } from "./helpers";
 import { getAsset } from "./queries";
 
@@ -48,18 +50,47 @@ export interface MaintenanceInput {
   maintDate?: string;
 }
 
-export async function addMaintenance(assetId: number, m: MaintenanceInput) {
+export async function addMaintenance(assetId: number, m: MaintenanceInput, actor: Actor) {
   await withTx(async (tx) => {
     const a = await loadForUpdate(tx, assetId);
     if (a.status === "disposed") throw new Error("لا يمكن تسجيل صيانة لأصل مُستبعَد");
-    await tx.insert(assetMaintenance).values({
+    const cost = money(m.cost ?? "0");
+    const maintDate = m.maintDate ?? toDateStr();
+    const res = await tx.insert(assetMaintenance).values({
       assetId,
-      maintDate: m.maintDate ?? toDateStr(),
+      maintDate,
       type: m.type,
       vendor: m.vendor ?? null,
-      cost: toDbMoney(m.cost ?? "0"),
+      cost: toDbMoney(cost),
       note: m.note ?? null,
     });
+    const maintId = extractInsertId(res);
+    // قيد تلقائيّ عند كل دفع (§٥، تدقيق ١٧/٧): تكلفة الصيانة النقدية تخرج نقداً من الخزينة بإيصال OUT +
+    // قيد PAYMENT_OUT (نمط اقتناء الأصل النقديّ create.ts). كان صفّ الصيانة يُدرَج بلا أثرٍ ماليّ ⇒
+    // مالٌ يُدفَع بلا قيد دفتريّ ولا نقصٍ في الخزينة. الصيانة الصفرية (كفالة) لا تُرحّل قيداً.
+    if (cost.gt(0)) {
+      const branchId = a.branchId != null ? Number(a.branchId) : (actor.branchId ?? null);
+      const rRes = await tx.insert(receipts).values({
+        branchId,
+        cashBucket: "TREASURY",
+        direction: "OUT",
+        amount: toDbMoney(cost),
+        paymentMethod: "CASH",
+        status: "COMPLETED",
+        createdBy: actor.userId,
+        description: `صيانة أصل ${a.code ?? assetId}`,
+      });
+      const receiptId = extractInsertId(rRes);
+      await postEntry(tx, {
+        entryType: "PAYMENT_OUT",
+        branchId,
+        receiptId,
+        amount: cost,
+        entryDate: new Date(maintDate),
+        dedupeKey: `ASSET_MAINT:${maintId}`,
+        notes: `صيانة أصل ${a.code ?? assetId} — ${m.type}`,
+      });
+    }
     // الأصل قيد الصيانة الآن (إن لم يكن مُستبعَداً).
     if (a.status !== "retired") {
       await tx.update(fixedAssets).set({ status: "maintenance" }).where(eq(fixedAssets.id, assetId));

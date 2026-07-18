@@ -6,7 +6,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, updateAsset } from "../assetsService";
+import { addMaintenance, createAsset, disposalLog, disposeAsset, getAsset, handoverCustody, updateAsset } from "../assetsService";
 import { computeDepreciation } from "../assets/depreciation";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" as const };
@@ -262,5 +262,42 @@ describe("updateAsset — تصحيح الإهلاك المتراكم (DEPR-REVAL
       .from(s.accountingEntries)
       .where(sql`${s.accountingEntries.dedupeKey} LIKE ${`DEPR_ADJ:${asset!.id}:%`}`);
     expect(adj).toHaveLength(0);
+  });
+});
+
+describe("addMaintenance — ترحيل تكلفة الصيانة للدفتر والخزينة (تدقيق ١٧/٧)", () => {
+  const A = { name: "مكيّف", category: "computers", purchaseDate: "2025-01-01", purchaseValue: "500000", usefulLifeYears: 5, branchId: 1 };
+
+  it("صيانة بتكلفة ⇒ إيصال TREASURY/OUT + قيد PAYMENT_OUT (ASSET_MAINT) + حالة maintenance", async () => {
+    const asset = await mkAsset(A);
+    await addMaintenance(asset!.id, { type: "تنظيف", vendor: "ورشة", cost: "50000", maintDate: "2026-07-10" }, ACTOR);
+
+    const [a2] = await db().select().from(s.fixedAssets).where(eq(s.fixedAssets.id, asset!.id));
+    expect(a2.status).toBe("maintenance");
+
+    const [ent] = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(sql`${s.accountingEntries.dedupeKey} LIKE ${`ASSET_MAINT:%`}`);
+    expect(ent).toBeTruthy();
+    expect(ent.entryType).toBe("PAYMENT_OUT");
+    expect(Number(ent.amount)).toBe(50000);
+
+    const [rc] = await db().select().from(s.receipts).where(eq(s.receipts.id, Number(ent.receiptId)));
+    expect(rc.direction).toBe("OUT");
+    expect(rc.cashBucket).toBe("TREASURY");
+    expect(Number(rc.amount)).toBe(50000);
+  });
+
+  it("صيانة بتكلفة صفر (كفالة) ⇒ لا إيصال ولا قيد، لكن صفّ الصيانة يُدرَج", async () => {
+    const asset = await mkAsset(A);
+    await addMaintenance(asset!.id, { type: "فحص كفالة", cost: "0" }, ACTOR);
+    const maintEntries = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(sql`${s.accountingEntries.dedupeKey} LIKE ${`ASSET_MAINT:%`}`);
+    expect(maintEntries).toHaveLength(0);
+    const maint = await db().select().from(s.assetMaintenance).where(eq(s.assetMaintenance.assetId, asset!.id));
+    expect(maint).toHaveLength(1);
   });
 });
