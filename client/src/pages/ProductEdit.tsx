@@ -296,6 +296,12 @@ export default function ProductEdit() {
     if (!composedName && !originalName.trim()) return "اسم المنتج مطلوب (نوع/ماركة/موديل).";
     if (!costPrice.trim()) return "سعر التكلفة المشترك مطلوب.";
     if (units.some((u) => !u.name.trim())) return "كل وحدة في القالب تحتاج اسماً.";
+    // اسم الوحدة مفتاح مطابقة في مسار الحفظ (unitBarcodes[u.name.trim()]) ⇒ وحدتان بنفس الاسم تتصادمان
+    // فيُطمَس باركود/سعر إحداهما (والخادم assertEditUniqueness يرفض لاحقاً) — نمسكه هنا برسالةٍ أوضح وأبكر
+    // (مطابقةً لحارس ProductNew).
+    const unitNames = units.map((u) => u.name.trim());
+    const dupUnitName = unitNames.find((n, i) => n && unitNames.indexOf(n) !== i);
+    if (dupUnitName) return `اسم وحدة مكرّر في القالب: «${dupUnitName}» — لكل وحدة اسمٌ فريد.`;
     if (units.filter((u) => u.isBase).length !== 1) return "حدّد وحدة أساس واحدة فقط في قالب الوحدات.";
     if (!variants.length) return "المنتج يحتاج متغيّراً واحداً على الأقل.";
     if (variants.some((v) => !v.sku.trim())) return "كل متغيّر يحتاج SKU.";
