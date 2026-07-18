@@ -189,7 +189,8 @@ function ColorSwatches({ colors, max = 6, size = 12 }: { colors?: { name: string
     <div className="flex items-center gap-1" title={`ألوان المنتج: ${colors.map((c) => c.name).join("، ")}`}>
       {shown.map((c) => (
         <span
-          key={c.hex}
+          key={`${c.hex}-${c.name}`}
+          role="img"
           className="inline-block shrink-0 rounded-full ring-1 ring-black/20 dark:ring-white/25"
           style={{ width: size, height: size, background: c.hex }}
           title={c.name}
