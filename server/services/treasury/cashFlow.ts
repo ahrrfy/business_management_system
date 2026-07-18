@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { money, toDbMoney } from "../money";
 import { isCashier, rowsOf } from "./helpers";
+import { utcTodayStart } from "../businessDay";
 
 export interface DailyPoint {
   day: string; // YYYY-MM-DD
@@ -52,12 +53,10 @@ export async function getCashFlowSeries(
 
   // ملء الأيام الفارغة بأصفار حتى يَكون الـchart متّسقاً.
   const out: DailyPoint[] = [];
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // تدقيق ١٧/٧ (#٧): مفاتيح أيام UTC حتمية (منتصف ليل UTC + إزاحة ثابتة) بدل new Date();setHours المحلي.
+  const today = utcTodayStart();
   for (let i = days - 1; i >= 0; i--) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    const key = d.toISOString().slice(0, 10);
+    const key = new Date(today.getTime() - i * 86_400_000).toISOString().slice(0, 10);
     const v = byDay.get(key) ?? { inflow: "0.00", outflow: "0.00" };
     const net = money(v.inflow).minus(money(v.outflow));
     out.push({ day: key, inflow: v.inflow, outflow: v.outflow, net: toDbMoney(net) });
