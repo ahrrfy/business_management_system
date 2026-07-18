@@ -54,10 +54,12 @@ export function ColorPickerDot({
   return (
     <span className="inline-flex items-center gap-0.5">
       <span
-        className="relative inline-block rounded-full border shadow-sm overflow-hidden hover:ring-2 hover:ring-ring/40 transition-shadow"
+        className="relative inline-block rounded-full border shadow-sm overflow-hidden transition-shadow hover:ring-2 hover:ring-ring/40 focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-1"
         style={{ width: size, height: size, background: current, borderColor: "oklch(0 0 0 / .2)" }}
         title={title}
       >
+        {/* input type=color شفّاف (opacity-0) يُخفي مخطّط تركيزه ⇒ نُظهر التركيز على السواتش الحاوي
+            عبر focus-within (WCAG 2.4.7 — تركيز لوحة المفاتيح كان غير مرئيّ). */}
         <input
           type="color"
           value={inputVal}

@@ -6,6 +6,8 @@
  * المكوّنات البصرية تستوردها؛ هكذا يبقى المنطق مفصولاً عن العرض ومضموناً باختبار.
  */
 
+import { colorSkuCode, skuToken } from "@shared/colorBank";
+
 /* ============================ EAN-13 ============================ */
 
 /** خانة التحقّق القياسية لـEAN-13 (وزن ١ للمواضع الفردية، ٣ للزوجية). */
@@ -42,13 +44,29 @@ export function incEan13(code: string): string {
 
 /* ============================ اشتقاق SKU ============================ */
 
-/** `<baseSku>-<colorCode>-<size>` (مثال: PG-G2 + أزرق + 0.7 ⇒ PG-G2-BLU-0.7). */
+/**
+ * `<baseSku>-<colorCode>-<size>` (مثال: PG-G2 + أزرق + 0.7 ⇒ PG-G2-BLU-0.7).
+ * كود اللون: الخريطة القصيرة المنسّقة (BLU/RED/GLD…) أولاً، وإلّا `colorSkuCode` من بنك الألوان —
+ * وهو **لا يعود فارغاً أبداً** (يشتقّ من مرادف إنكليزيّ أو رمزٍ ثابت)، فيمنع تصادم SKU بين ألوان
+ * عربية خارج الخريطة (كان كلّها يسقط لكودٍ فارغ ⇒ «SKU مكرّر بين المتغيّرات» يمنع الحفظ).
+ */
 export function deriveSku(baseSku: string, color?: string, size?: string): string {
-  const cc =
-    COLOR_CODE[(color ?? "").trim()] ||
-    (color ?? "").trim().slice(0, 3).toUpperCase().replace(/[^A-Z0-9]/g, "");
-  const sz = (size ?? "").trim().toUpperCase().replace(/[^A-Z0-9.]/g, "");
+  const c = (color ?? "").trim();
+  const cc = COLOR_CODE[c] || colorSkuCode(c);
+  const sz = sizeSkuCode(size);
   return [baseSku || "PR", cc, sz].filter(Boolean).join("-");
+}
+
+/**
+ * رمز القياس للـSKU: الحروف اللاتينية والأرقام والنقطة كما هي (M/XL/0.7)، وإن كان القياس غير لاتينيّ
+ * (صغير/كبير أو أرقام عربية ٣٨/٤٠) يعطي رمزاً ثابتاً غير فارغ («S» + رمز) — وإلّا لَسقط لفراغٍ فيتصادم
+ * قياسان عربيّان للون واحد على نفس الـSKU («PR-RED») فيُمنع الحفظ (نفس صنف علّة كود اللون).
+ */
+function sizeSkuCode(size?: string): string {
+  const raw = (size ?? "").trim();
+  if (!raw) return "";
+  const latin = raw.toUpperCase().replace(/[^A-Z0-9.]/g, "");
+  return latin || "S" + skuToken(raw);
 }
 
 /* ============================ حالة الباركود اللحظية ============================ */
@@ -155,8 +173,9 @@ export function clampInt(s: string): number {
 /* ============================ خرائط الألوان ============================ */
 
 // اللون الحقيقي لاسم اللون يأتي من بنك الألوان المشترك (≈١٥٢ لوناً + تطبيع + معدِّلات درجة فاتح/غامق).
-// مصدر حقيقة واحد للعميل والخادم؛ ColorDot يستعمل resolveColorHex للتمييز التلقائي.
-export { resolveColorHex, normalizeColorName, normalizeHex } from "@shared/colorBank";
+// مصدر حقيقة واحد للعميل والخادم؛ ColorDot يستعمل resolveColorHex للتمييز التلقائي، وderiveSku يستعمل
+// colorSkuCode (مستورَد أعلى الملف) لاشتقاق رمز لاتينيّ غير فارغ لأيّ اسم لون (يمنع تصادم SKU).
+export { resolveColorHex, normalizeColorName, normalizeHex, colorSkuCode } from "@shared/colorBank";
 
 export const COLOR_CODE: Record<string, string> = {
   "أزرق": "BLU", "أسود": "BLK", "أحمر": "RED", "أخضر": "GRN", "أصفر": "YEL",

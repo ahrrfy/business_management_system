@@ -350,3 +350,79 @@ export function normalizeHex(input: string | null | undefined): string | null {
   const raw = String(input).trim();
   return HEX6.test(raw) ? `#${raw.replace("#", "").toUpperCase()}` : null;
 }
+
+/* ============================ رمز SKU لاتينيّ من اسم اللون ============================ */
+
+// خريطة الاسم/المرادف المُطبّع → إدخال البنك (لاشتقاق رمز SKU لاتينيّ من مرادفه الإنكليزيّ).
+const ENTRY_LOOKUP: Map<string, ColorEntry> = (() => {
+  const m = new Map<string, ColorEntry>();
+  for (const c of COLOR_BANK) {
+    const put = (raw: string) => {
+      const k = normalizeColorName(raw);
+      if (k && !m.has(k)) m.set(k, c);
+    };
+    put(c.name);
+    for (const a of c.aliases ?? []) put(a);
+  }
+  return m;
+})();
+
+/**
+ * رمز ثابت قصير (djb2 → base36) من نصّ — لاتينيّ، حتميّ عبر المنصّات، وغير فارغ لأيّ اسم.
+ * `len` يضبط طوله (افتراضي ٢ ⇒ ١٢٩٦ خانة). يأخذ الخانات **الدُّنيا** (الأكثر عشوائيةً) لا العُليا
+ * (التي تتكدّس لأسماء متقاربة الطول) — تمييزاً أفضل بين أسماء تتشارك البادئة المقروءة.
+ */
+export function skuToken(s: string, len = 2): string {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36).toUpperCase().slice(-len).padStart(len, "0");
+}
+
+/** أوّل بادئة لاتينية (٣ محارف) من قائمة أسماء/مرادفات (يتخطّى العربيّ لأنه يُفرَّغ من ASCII)، أو "". */
+function latinPrefix(names: string[]): string {
+  for (const n of names) {
+    const p = n.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3);
+    if (p) return p;
+  }
+  return "";
+}
+
+/**
+ * كود SKU فريد محسوب مرّةً لكلّ لون في البنك (اسمه المعياريّ → كود): بادئة مقروءة من مرادفه الإنكليزيّ،
+ * تبقى **نظيفة** حين تكون فريدة (برونزي→BRO، بترولي→PET)، وتُلحَق برمزٍ ثابتٍ أدنى فقط عند تصادم البادئة
+ * (خوخي/طاووسي/لؤلؤي تتشارك PEA) حتى التفرّد التامّ عبر البنك كلّه. الترتيب حتميّ (ترتيب COLOR_BANK) ⇒
+ * الكود ثابت. هكذا يُضمَن **حقنٌ حقيقيّ** (لا لونان في البنك بنفس الكود) بأقصر شكلٍ مقروء.
+ */
+const ENTRY_CODE: Map<string, string> = (() => {
+  const used = new Set<string>();
+  const m = new Map<string, string>();
+  for (const c of COLOR_BANK) {
+    const prefix = latinPrefix([c.name, ...(c.aliases ?? [])]) || "C" + skuToken(c.name);
+    let code = prefix;
+    for (let salt = 1; used.has(code); salt++) code = prefix + skuToken(c.name + (salt > 1 ? salt : ""));
+    used.add(code);
+    m.set(c.name, code);
+  }
+  return m;
+})();
+
+/**
+ * يشتقّ **رمز SKU لاتينيّاً غير فارغ ومميّزاً لكلّ اسم لون مختلف**:
+ *   • لونٌ معروف في البنك ⇒ كوده الفريد المحسوب (`ENTRY_CODE`) — نظيفٌ ما أمكن، ومتطابق لكلّ مرادفات
+ *     نفس اللون (برونزي == bronze) ومميّزٌ عن كلّ لونٍ آخر في البنك.
+ *   • لونٌ غير معروف (كـ«الوان») ⇒ بادئة لاتينية إن كُتب لاتينياً وإلّا "C" + رمز ثابت من الاسم المُطبّع.
+ *
+ * السبب (٨ يوليو): الاشتقاق القديم كان يسقط لكودٍ **فارغ** لأيّ اسم عربيّ خارج خريطة الـ١٦ لوناً القصيرة،
+ * فتشترك عدّة ألوان في نفس الـSKU الأساس ⇒ «SKU مكرّر بين المتغيّرات» يمنع الحفظ. وقصُّ المرادف الإنكليزيّ
+ * إلى ٣ محارف وحده لا يكفي (خوخي/طاووسي→PEA، جزري/كراميلي→CAR تتصادم) — فالتفرّد محسوبٌ عبر البنك كلّه.
+ */
+export function colorSkuCode(name: string | null | undefined): string {
+  const raw = (name ?? "").trim();
+  if (!raw) return "";
+  const norm = normalizeColorName(raw);
+  const entry = ENTRY_LOOKUP.get(norm);
+  if (entry) return ENTRY_CODE.get(entry.name)!;
+  // لونٌ غير معروف: بادئة لاتينية إن وُجدت وإلّا "C" + رمز ثابت من الاسم المُطبّع ⇒ تمييز غير فارغ دائماً.
+  const prefix = raw.toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 3) || "C";
+  return prefix + skuToken(norm || raw);
+}

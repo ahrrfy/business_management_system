@@ -60,12 +60,49 @@ describe("deriveSku", () => {
   });
 
   it("يتعامل مع لون غير معروف وبادئة فارغة", () => {
-    // لون عربي غير معروف (بلا كود ولا لاتينية): الكود يسقط ⇒ يبقى الأساس فقط.
-    expect(deriveSku("BASE", "تركواز")).toBe("BASE");
+    // لون عربي معروف في بنك الألوان (تركوازي) ⇒ كود من مرادفه الإنكليزيّ (turquoise).
+    expect(deriveSku("BASE", "تركواز")).toBe("BASE-TUR");
     // بادئة فارغة ⇒ "PR" الافتراضية.
     expect(deriveSku("", "أزرق")).toBe("PR-BLU");
     // لون لاتيني غير معروف: أوّل ٣ محارف بحروف كبيرة.
     expect(deriveSku("X", "Teal")).toBe("X-TEA");
+  });
+
+  it("يضمن كوداً لاتينيّاً غير فارغ ومميّزاً لكلّ لون عربيّ خارج الخريطة القصيرة (منع تكرار SKU)", () => {
+    // كان أيّ اسم عربيّ غير مُخرَّط يسقط لكودٍ فارغ ⇒ عدّة ألوان تشترك في نفس الـSKU الأساس
+    // ⇒ «SKU مكرّر بين المتغيّرات» يمنع الحفظ (العلّة الفعلية: برونزي/الوان كلاهما «PR»).
+    const bronze = deriveSku("PR", "برونزي");
+    const assorted = deriveSku("PR", "الوان");
+    const gold = deriveSku("PR", "ذهبي");
+    expect(bronze).toBe("PR-BRO"); // من مرادف bronze في بنك الألوان
+    expect(gold).toBe("PR-GLD"); // من الخريطة القصيرة المنسّقة
+    expect(assorted).not.toBe("PR"); // لم يعُد يسقط لكودٍ فارغ
+    expect(new Set([bronze, assorted, gold]).size).toBe(3); // كلّها مميّزة ⇒ لا تكرار
+
+    // ألوان عربية شائعة أخرى كانت تتصادم كلّها على «PR» — الآن أكواد مميّزة.
+    const rich = ["بترولي", "زيتي", "خمري", "نحاسي", "فيروزي"].map((c) => deriveSku("PR", c));
+    expect(rich.every((s) => s !== "PR")).toBe(true);
+    expect(new Set(rich).size).toBe(rich.length);
+
+    // اتّساق: الاسم العربيّ ومرادفه الإنكليزيّ يعطيان نفس الكود.
+    expect(deriveSku("PR", "bronze")).toBe(deriveSku("PR", "برونزي"));
+  });
+
+  it("يميّز ألواناً تتشارك بادئة إنكليزية (خوخي/طاووسي) في نفس المنتج", () => {
+    // كلاهما peach/peacock ⇒ كانا يعطيان PR-PEA ⇒ «SKU مكرّر» يمنع الحفظ.
+    const peach = deriveSku("PR", "خوخي");
+    const peacock = deriveSku("PR", "طاووسي");
+    expect(peach).not.toBe(peacock);
+  });
+
+  it("يميّز قياسات غير لاتينية للون واحد (صغير/كبير/٣٨) — منع تكرار SKU في بُعد القياس", () => {
+    // القياس العربيّ كان يُفرَّغ (replace غير اللاتيني) ⇒ صغير وكبير كلاهما PR-RED ⇒ يُمنع الحفظ.
+    const sizes = ["صغير", "كبير", "٣٨"];
+    const skus = sizes.map((s) => deriveSku("PR", "أحمر", s));
+    expect(skus.every((s) => s !== "PR-RED")).toBe(true); // لم يعُد القياس يسقط لفراغ
+    expect(new Set(skus).size).toBe(sizes.length); // كلّها مميّزة
+    // القياس اللاتينيّ يبقى كما هو (لا انحدار).
+    expect(deriveSku("PR", "أحمر", "M")).toBe("PR-RED-M");
   });
 });
 

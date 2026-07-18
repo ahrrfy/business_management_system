@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { resolveColorHex, normalizeColorName, normalizeHex, COLOR_BANK } from "./colorBank";
+import { resolveColorHex, normalizeColorName, normalizeHex, colorSkuCode, COLOR_BANK } from "./colorBank";
 
 describe("normalizeColorName", () => {
   it("يوحّد الهمزة والألف", () => {
@@ -145,5 +145,60 @@ describe("normalizeHex", () => {
     expect(normalizeHex("#xyz")).toBeNull();
     expect(normalizeHex("blue")).toBeNull();
     expect(normalizeHex(null)).toBeNull();
+  });
+});
+
+describe("colorSkuCode", () => {
+  it("يشتقّ كوداً لاتينياً من المرادف الإنكليزيّ لأيّ لون عربيّ في البنك", () => {
+    expect(colorSkuCode("برونزي")).toBe("BRO"); // bronze
+    expect(colorSkuCode("تركوازي")).toBe("TUR"); // turquoise
+    expect(colorSkuCode("بترولي")).toBe("PET"); // petrol
+    expect(colorSkuCode("زيتي")).toBe("OLI"); // olive
+  });
+
+  it("يقصّ الحروف اللاتينية المكتوبة أصلاً إلى ٣", () => {
+    expect(colorSkuCode("Teal")).toBe("TEA");
+    expect(colorSkuCode("bronze")).toBe("BRO");
+  });
+
+  it("لا يعود فارغاً أبداً لاسمٍ غير فارغ (يمنع تصادم SKU)", () => {
+    // «الوان» ليس لوناً في البنك — يجب أن يعطي كوداً ثابتاً غير فارغ لا «».
+    const code = colorSkuCode("الوان");
+    expect(code).not.toBe("");
+    expect(code).toMatch(/^[A-Z0-9]+$/); // لاتينيّ صرف
+  });
+
+  it("حاقن تامّ: كلّ ألوان البنك (١٥٢) ⇒ أكواد فريدة تماماً (الحقيقة الجوهرية لمنع التكرار)", () => {
+    // الحارس الحقيقي: تفرّد على كامل البنك لا على عيّنة منتقاة (العيّنة القديمة أعطت ثقة زائفة).
+    const codes = COLOR_BANK.map((c) => colorSkuCode(c.name));
+    const dups = codes.filter((c, i) => codes.indexOf(c) !== i);
+    expect(dups).toEqual([]); // أيّ تصادم يظهر باسمه بدل رقمٍ مبهم
+    expect(new Set(codes).size).toBe(COLOR_BANK.length);
+  });
+
+  it("يميّز الأزواج التي كانت تتشارك بادئة إنكليزية من ٣ محارف (سبب انحدار سابق)", () => {
+    // هذه المجموعات كانت كلّها تسقط لكودٍ واحد عند قصّ المرادف الإنكليزيّ إلى ٣ محارف.
+    const groups = [
+      ["خوخي", "طاووسي", "لؤلؤي"], // PEA*
+      ["جزري", "كراميلي", "قرنفلي"], // CAR*
+      ["عنبي", "عشبي", "جرافيت"], // GRA*
+      ["طباشيري", "شامبانيا", "شارتروز", "فحمي"], // CHA*
+      ["بيبي بينك", "بيبي بلو"], // BAB*
+    ];
+    for (const g of groups) {
+      const codes = g.map(colorSkuCode);
+      expect(new Set(codes).size).toBe(g.length);
+    }
+  });
+
+  it("ثابت: نفس الاسم يعطي نفس الكود دائماً", () => {
+    expect(colorSkuCode("الوان")).toBe(colorSkuCode("الوان"));
+    expect(colorSkuCode("سمني")).toBe(colorSkuCode("سمني"));
+  });
+
+  it("فراغ ⇒ فراغ", () => {
+    expect(colorSkuCode("")).toBe("");
+    expect(colorSkuCode(null)).toBe("");
+    expect(colorSkuCode(undefined)).toBe("");
   });
 });
