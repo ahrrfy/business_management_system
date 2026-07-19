@@ -33,6 +33,8 @@ export type { MaintenanceInput } from "./assets/lifecycle";
 export { handoverCustody, addMaintenance, returnFromMaintenance } from "./assets/lifecycle";
 export type { DisposeInput } from "./assets/dispose";
 export { disposeAsset } from "./assets/dispose";
+export type { AddAssetDocumentInput } from "./assets/documents";
+export { addAssetDocument, deleteAssetDocument } from "./assets/documents";
 export type { DepreciationRunResult } from "./assets/monthlyDepreciation";
 export { postMonthlyDepreciation } from "./assets/monthlyDepreciation";
 export { dashboard, custodyReport, disposalLog } from "./assets/reports";

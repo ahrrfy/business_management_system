@@ -207,4 +207,28 @@ export const assetsRouter = router({
       await logAudit(ctx, { action: "asset.dispose", entityType: "fixedAsset", entityId: input.assetId, newValue: { kind: input.kind, value: input.value ?? null } });
       return a;
     }),
+
+  // مستندات الأصل: رفع صورة (data URL مضغوطة، حدّ الجسم ٣mb في server/index.ts) وحذفها. القراءة
+  // عبر assets.get (a.docs). كلٌّ assetWrite (assets/FULL) + تدقيق.
+  addDocument: assetWrite
+    .input(
+      z.object({
+        assetId: z.number().int().positive(),
+        title: z.string().trim().min(1, "عنوان المستند مطلوب").max(255),
+        dataUrl: z.string().min(1).max(3_500_000),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const doc = await svc.addAssetDocument(input.assetId, { title: input.title, dataUrl: input.dataUrl });
+      await logAudit(ctx, { action: "asset.document.add", entityType: "fixedAsset", entityId: input.assetId, newValue: { title: input.title } });
+      return doc;
+    }),
+
+  deleteDocument: assetWrite
+    .input(z.object({ docId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await svc.deleteAssetDocument(input.docId);
+      await logAudit(ctx, { action: "asset.document.delete", entityType: "fixedAsset", entityId: res.assetId, oldValue: { docId: input.docId } });
+      return res;
+    }),
 });
