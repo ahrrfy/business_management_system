@@ -5,7 +5,8 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
-import { fmtAr } from "@/lib/money";
+import { fmtAr, D, round2 } from "@/lib/money";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
@@ -83,7 +84,7 @@ export default function PurchaseReceive() {
       const remaining = it.baseQuantity - (it.receivedBaseQuantity ?? 0);
       if (want > remaining) return setError(`الكمية المستلمة للمنتج «${it.productName}» تتجاوز المتبقّي (${remaining}).`);
     }
-    const payment = Number(payAmount) > 0 ? { amount: String(Number(payAmount)), method: payMethod } : undefined;
+    const payment = D(payAmount).gt(0) ? { amount: round2(D(payAmount)).toFixed(2), method: payMethod } : undefined;
     if (
       !(await confirm({
         variant: "info",
@@ -172,7 +173,7 @@ export default function PurchaseReceive() {
           <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
             <div className="space-y-1">
               <Label>المبلغ المدفوع الآن</Label>
-              <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder="0" />
+              <MoneyInput value={payAmount} onChange={setPayAmount} placeholder="0" />
             </div>
             <div className="space-y-1">
               <Label>طريقة الدفع</Label>

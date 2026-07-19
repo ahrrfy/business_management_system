@@ -7,7 +7,8 @@ import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/p
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
-import { fmtAr, fmtInt } from "@/lib/money";
+import { fmtAr, fmtInt, D, positiveDiff, round2 } from "@/lib/money";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { fmtDate, fmtDateTime } from "@/lib/date";
 import { printWorkOrder } from "@/lib/printing/printTemplates";
 import { printWorkOrderReceipt } from "@/lib/printing/print";
@@ -350,15 +351,15 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
   useEffect(() => {
     if (order) {
       // تعبئة المتبقّي تلقائياً = سعر البيع − العربون المقبوض (لا طرح يدويّ من الموظّف).
-      const dueInit = Math.max(0, Number(order.salePrice) - Number(order.deposit ?? 0));
-      setAmount(dueInit > 0 ? String(dueInit) : "");
+      const dueInit = positiveDiff(order.salePrice, order.deposit ?? 0);
+      setAmount(dueInit.gt(0) ? dueInit.toFixed(2) : "");
       setMethodV("CASH");
     }
   }, [order?.id]); // eslint-disable-line
   if (!order) return null;
-  const amt = Number(amount);
-  const dep = Number(order.deposit ?? 0);
-  const due = Math.max(0, Number(order.salePrice) - dep);
+  const amtD = D(amount);
+  const hasDep = D(order.deposit ?? 0).gt(0);
+  const due = positiveDiff(order.salePrice, order.deposit ?? 0);
   return (
     <Dialog open onOpenChange={(o) => { if (!o) onClose(); }}>
       <DialogContent>
@@ -372,12 +373,12 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
         <div className="grid gap-3 py-1">
           <div className="space-y-1 rounded-md border bg-muted/30 p-3 text-sm">
             <div className="flex justify-between"><span className="text-muted-foreground">سعر البيع</span><span dir="ltr" className="tabular-nums">{fmtAr(order.salePrice)} د.ع</span></div>
-            {dep > 0 && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmtAr(dep)} د.ع</span></div>}
-            <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmtAr(due)} د.ع</span></div>
+            {hasDep && <div className="flex justify-between"><span className="text-muted-foreground">العربون المقبوض</span><span dir="ltr" className="tabular-nums text-emerald-600">−{fmtAr(order.deposit)} د.ع</span></div>}
+            <div className="flex justify-between border-t pt-1 font-bold"><span>الرصيد المستحق</span><span dir="ltr" className="tabular-nums">{fmtAr(due.toFixed(2))} د.ع</span></div>
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">المبلغ المدفوع الآن (الافتراضي = الرصيد المستحق؛ أقل = آجل)</label>
-            <input dir="ltr" inputMode="decimal" className={dlgInput} value={amount} onChange={(e) => setAmount(e.target.value)} placeholder={`0 – ${fmtAr(due)}`} />
+            <MoneyInput value={amount} onChange={setAmount} className={dlgInput} placeholder={`0 – ${fmtAr(due.toFixed(2))}`} />
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">طريقة الدفع</label>
@@ -392,7 +393,7 @@ function DeliverDialog({ order, onClose, onConfirm, pending }: { order: DeliverT
         <DialogFooter>
           <button className="wob-btn wob-btn-ghost" onClick={onClose} disabled={pending}>إلغاء</button>
           <button className="wob-btn wob-btn-primary" disabled={pending}
-            onClick={() => onConfirm(amt > 0 ? { amount: String(amt), method: methodV } : undefined)}>
+            onClick={() => onConfirm(amtD.gt(0) ? { amount: round2(amtD).toFixed(2), method: methodV } : undefined)}>
             {pending ? "جارٍ…" : "تسليم وإصدار الفاتورة"}
           </button>
         </DialogFooter>
