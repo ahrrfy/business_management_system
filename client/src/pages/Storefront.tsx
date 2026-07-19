@@ -43,7 +43,18 @@ import {
   User,
   X,
 } from "lucide-react";
-import { trpc } from "@/lib/trpc";
+import { trpc, type RouterOutputs } from "@/lib/trpc";
+
+/** حالات الطلب بالعربية + لونها — لعرض تتبّع الطلب العلنيّ. */
+const TRACK_STATUS: Record<string, { label: string; cls: string }> = {
+  PENDING: { label: "قيد المراجعة", cls: "bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-300" },
+  CONFIRMED: { label: "تمّ التأكيد", cls: "bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-300" },
+  PROCESSING: { label: "قيد التجهيز", cls: "bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-300" },
+  SHIPPED: { label: "مع المندوب", cls: "bg-teal-100 text-teal-800 dark:bg-teal-500/15 dark:text-teal-300" },
+  DELIVERED: { label: "تمّ التسليم", cls: "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-300" },
+  CANCELLED: { label: "ملغى", cls: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400" },
+};
+type TrackData = NonNullable<RouterOutputs["storefront"]["trackOrder"]>;
 import { fmtInt } from "@/lib/money";
 import { isPublicHost } from "@/lib/siteHosts";
 import { GOVERNORATES, deliveryFeeFor } from "@shared/governorates";
@@ -365,7 +376,7 @@ function BannerCarousel({ banners }: { banners: BannerItem[] }) {
   );
 }
 
-type Panel = null | "cart" | "checkout" | "confirmation";
+type Panel = null | "cart" | "checkout" | "confirmation" | "track";
 type AvailabilityFilter = "IN_STOCK" | "ALL";
 type PriceFilter = "ALL" | "UNDER_5000" | "FROM_5000_TO_15000" | "OVER_15000";
 type CatalogSort = "RECOMMENDED" | "PRICE_ASC" | "PRICE_DESC" | "BEST_SELLERS";
@@ -396,6 +407,32 @@ export default function Storefront() {
   const [clientRequestId, setClientRequestId] = useState<string>("");
   const [confirmation, setConfirmation] = useState<{ orderNumber: string; total: string } | null>(null);
   const viewedProductIds = useRef(new Set<number>());
+
+  // تتبّع الطلب العلنيّ — نموذجٌ برقم الطلب + الهاتف يستدعي storefront.trackOrder عند الطلب.
+  const utils = trpc.useUtils();
+  const [trackForm, setTrackForm] = useState<{ orderNumber: string; phone: string }>({ orderNumber: "", phone: "" });
+  const [trackResult, setTrackResult] = useState<TrackData | null>(null);
+  const [trackState, setTrackState] = useState<"idle" | "loading" | "notfound" | "error">("idle");
+  const openTrack = (orderNumber = "") => {
+    setTrackForm({ orderNumber, phone: "" });
+    setTrackResult(null);
+    setTrackState("idle");
+    setPanel("track");
+  };
+  const doTrack = async () => {
+    const orderNumber = trackForm.orderNumber.trim();
+    const phone = trackForm.phone.trim();
+    if (!orderNumber || !phone) return;
+    setTrackState("loading");
+    setTrackResult(null);
+    try {
+      const r = await utils.storefront.trackOrder.fetch({ orderNumber, phone });
+      if (r) { setTrackResult(r); setTrackState("idle"); }
+      else { setTrackState("notfound"); }
+    } catch {
+      setTrackState("error");
+    }
+  };
 
   useEffect(() => {
     const t = setTimeout(() => setSearch(rawSearch.trim()), 350);
@@ -1003,6 +1040,14 @@ export default function Storefront() {
             <p className="mt-0.5 text-[11px] text-slate-500 dark:text-slate-400">{STORE_TAGLINE}</p>
           </div>
           <nav className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={() => openTrack()}
+              className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-600 ring-1 ring-slate-200 transition hover:text-emerald-700 hover:ring-emerald-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700"
+            >
+              <Package aria-hidden className="size-3.5" />
+              تتبّع طلبي
+            </button>
             <Link
               href="/apply"
               className="flex items-center gap-1.5 rounded-xl bg-white px-3 py-2 text-xs font-bold text-slate-600 ring-1 ring-slate-200 transition hover:text-emerald-700 hover:ring-emerald-300 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700"
@@ -1340,6 +1385,89 @@ export default function Storefront() {
             >
               متابعة التسوّق
             </button>
+            <button
+              onClick={() => openTrack(confirmation.orderNumber)}
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-2xl bg-white py-3.5 text-sm font-extrabold text-emerald-700 ring-1 ring-emerald-200 transition hover:bg-emerald-50 dark:bg-slate-900 dark:text-emerald-400 dark:ring-slate-700"
+            >
+              <Package aria-hidden className="size-4" /> تتبّع هذا الطلب
+            </button>
+          </div>
+        </PanelShell>
+      )}
+
+      {panel === "track" && (
+        <PanelShell title="تتبّع طلبك" onClose={() => setPanel(null)}>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-500 dark:text-slate-400">أدخل رقم طلبك ورقم هاتفك لعرض حالته.</p>
+            <div className="space-y-3 rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-600 dark:text-slate-300">رقم الطلب</label>
+                <input
+                  dir="ltr"
+                  value={trackForm.orderNumber}
+                  onChange={(e) => setTrackForm((f) => ({ ...f, orderNumber: e.target.value }))}
+                  placeholder="ORD-…"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-slate-600 dark:text-slate-300">رقم الهاتف</label>
+                <input
+                  dir="ltr"
+                  inputMode="tel"
+                  value={trackForm.phone}
+                  onChange={(e) => setTrackForm((f) => ({ ...f, phone: e.target.value }))}
+                  placeholder="07XXXXXXXXX"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-sm outline-none focus:border-emerald-400 dark:border-slate-700 dark:bg-slate-800 dark:text-white"
+                />
+              </div>
+              <button
+                onClick={doTrack}
+                disabled={!trackForm.orderNumber.trim() || !trackForm.phone.trim() || trackState === "loading"}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 py-3 text-sm font-extrabold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+              >
+                {trackState === "loading" ? <Loader2 aria-hidden className="size-4 animate-spin" /> : <Search aria-hidden className="size-4" />}
+                تتبّع الطلب
+              </button>
+            </div>
+
+            {trackState === "notfound" && (
+              <div className="rounded-2xl bg-amber-50 p-4 text-center text-sm font-bold text-amber-700 ring-1 ring-amber-200 dark:bg-amber-500/10 dark:text-amber-300 dark:ring-amber-500/20">
+                لا يوجد طلبٌ بهذا الرقم والهاتف. تأكّد من رقم الطلب والهاتف المُستخدَم عند الطلب.
+              </div>
+            )}
+            {trackState === "error" && (
+              <div className="rounded-2xl bg-rose-50 p-4 text-center text-sm font-bold text-rose-700 ring-1 ring-rose-200 dark:bg-rose-500/10 dark:text-rose-300 dark:ring-rose-500/20">
+                تعذّر جلب الحالة الآن — حاول مرّةً أخرى.
+              </div>
+            )}
+
+            {trackResult && (
+              <div className="space-y-3 rounded-2xl bg-white p-4 ring-1 ring-slate-100 dark:bg-slate-900 dark:ring-slate-800">
+                <div className="flex items-center justify-between">
+                  <span className="font-extrabold tracking-wider text-slate-900 dark:text-white" dir="ltr">{trackResult.orderNumber}</span>
+                  <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-bold ${TRACK_STATUS[trackResult.status]?.cls ?? "bg-slate-100 text-slate-600"}`}>
+                    {TRACK_STATUS[trackResult.status]?.label ?? trackResult.status}
+                  </span>
+                </div>
+                <div className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {trackResult.items.map((it, i) => (
+                    <div key={i} className="flex items-center justify-between py-2 text-sm">
+                      <span className="min-w-0 flex-1 truncate text-slate-700 dark:text-slate-200">{it.productName} <span className="text-slate-400">×{it.quantity}</span></span>
+                      <span className="tabular-nums text-slate-500" dir="ltr">{money(it.total)} د.ع</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex justify-between border-t border-slate-100 pt-2 text-sm dark:border-slate-800">
+                  <span className="text-slate-500">أجرة التوصيل</span>
+                  <span className="tabular-nums text-slate-700 dark:text-slate-200" dir="ltr">{money(trackResult.deliveryFee)} د.ع</span>
+                </div>
+                <div className="flex justify-between text-base font-extrabold">
+                  <span className="text-slate-900 dark:text-white">الإجمالي</span>
+                  <span className="tabular-nums text-emerald-600 dark:text-emerald-400" dir="ltr">{money(trackResult.total)} د.ع</span>
+                </div>
+              </div>
+            )}
           </div>
         </PanelShell>
       )}
