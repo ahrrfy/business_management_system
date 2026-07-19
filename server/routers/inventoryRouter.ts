@@ -366,6 +366,7 @@ export const inventoryRouter = router({
           branchId: z.number().int().positive().optional(),
           q: z.string().optional(),
           lowOnly: z.boolean().default(false),
+          negativeOnly: z.boolean().default(false),
           limit: z.number().int().positive().max(1000).default(300),
         })
         .optional()
@@ -389,6 +390,11 @@ export const inventoryRouter = router({
       }
       if (input?.lowOnly) {
         conds.push(sql`${productVariants.minStock} > 0 AND ${branchStock.quantity} <= ${productVariants.minStock}`);
+      }
+      // «وضع الافتتاح» (١٨/٧): السوالب فقط — كميات بلا تكلفة (أمين المخزن يقود بها العدّ الافتتاحي؛
+      // تقرير الانكشاف بالقيمة خلف بوّابة التقارير الحمراء reports.negativeStock).
+      if (input?.negativeOnly) {
+        conds.push(sql`${branchStock.quantity} < 0`);
       }
 
       const rows = await db

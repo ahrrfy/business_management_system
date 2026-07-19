@@ -210,11 +210,17 @@ export interface SetStockArgs {
   referenceId?: number;
   notes?: string;
   createdBy?: number;
+  /**
+   * «الجرد الافتتاحي» حصراً (١٨/٧): يسمح بهدفٍ سالب — صنفٌ عُدّ ثم بِيع بالسالب أكثر من عدّه قبل
+   * الاعتماد يُفتتَح برصيده السالب الحقيقي (فيتحوّل فوراً للصرامة ويظهر في تقرير السوالب) بدل حجب
+   * اعتماد الجلسة كلّها بصنفٍ واحد (علّة livelock — مراجعة عدائية ١٨/٧). لا تستعمله لغير هذا المسار.
+   */
+  allowNegativeTarget?: boolean;
 }
 
 /** Absolute stock adjustment (ADJUST). Records abs(delta) and the direction in notes. */
 export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementResult> {
-  if (!Number.isInteger(a.targetQuantity) || a.targetQuantity < 0) {
+  if (!Number.isInteger(a.targetQuantity) || (a.targetQuantity < 0 && !a.allowNegativeTarget)) {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
   }
   // مُنتج خِدمي: لا تَسوية مَخزون لـ«ما لا مَخزون له». نَتجاهل بِنَتيجة اصطناعية.
@@ -261,6 +267,16 @@ export async function setStock(tx: Tx, a: SetStockArgs): Promise<ApplyMovementRe
     .insert(branchStock)
     .values({ variantId: a.variantId, branchId: a.branchId, quantity: a.targetQuantity })
     .onDuplicateKeyUpdate({ set: { quantity: a.targetQuantity } });
+
+  // «الافتتاح التدريجي» (١٨/٧): تسوية بمرجع OPENING = تثبيت رصيدٍ افتتاحي ⇒ يُختَم openedAt مركزياً
+  // هنا (مصدر حقيقة واحد يغطي إنشاء المنتج/الاستيراد/البذرة/الجرد الافتتاحي). COALESCE يصون تاريخ
+  // الافتتاح الأول عند إعادة تشغيلٍ idempotent (البذرة) — الافتتاح مرّة واحدة لكل (صنف×فرع).
+  if (a.referenceType === "OPENING") {
+    await tx
+      .update(branchStock)
+      .set({ openedAt: sql`COALESCE(${branchStock.openedAt}, NOW())` })
+      .where(and(eq(branchStock.variantId, a.variantId), eq(branchStock.branchId, a.branchId)));
+  }
   return { movementId: extractInsertId(res), newQuantity: a.targetQuantity, delta };
 }
 

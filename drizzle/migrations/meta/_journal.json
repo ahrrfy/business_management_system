@@ -601,6 +601,20 @@
       "idx": 85,
       "version": "5",
       "when": 1784937600000,
+      "tag": "0086_opening_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "5",
+      "when": 1784937600001,
+      "tag": "0087_stocktake_session_type",
+      "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "5",
+      "when": 1784937600002,
       "tag": "0085_offline_sale_capture",
       "breakpoints": true
     }

@@ -97,6 +97,44 @@ export default function Settings() {
     });
   }
 
+  /* ─── وضع الافتتاح (الافتتاح التدريجي ١٨/٧) ─────────────────────── */
+  const openingMode = trpc.system.getOpeningMode.useQuery();
+  const openingProgress = trpc.system.getOpeningProgress.useQuery();
+  const [omEnabled, setOmEnabled] = useState(false);
+  const [omEndsYmd, setOmEndsYmd] = useState("");
+  const [omMaxQty, setOmMaxQty] = useState("100");
+  const omLoadedRef = useRef(false);
+  useEffect(() => {
+    if (!omLoadedRef.current && openingMode.data) {
+      setOmEnabled(openingMode.data.enabled);
+      setOmEndsYmd(openingMode.data.endsAtYmd ?? "");
+      setOmMaxQty(String(openingMode.data.maxNegativeQtyPerLine));
+      omLoadedRef.current = true;
+    }
+  }, [openingMode.data]);
+  const updateOpeningMode = trpc.system.updateOpeningMode.useMutation({
+    onSuccess: async (r) => {
+      notify.ok(r.settings.enabled ? "فُعِّل وضع الافتتاح" : "أُطفئ وضع الافتتاح");
+      setOmEnabled(r.settings.enabled);
+      setOmEndsYmd(r.settings.endsAtYmd ?? "");
+      setOmMaxQty(String(r.settings.maxNegativeQtyPerLine));
+      await Promise.all([utils.system.getOpeningMode.invalidate(), utils.system.getOpeningProgress.invalidate()]);
+    },
+    onError: (e) => notify.err(e.message || "تعذّر حفظ وضع الافتتاح"),
+  });
+  function saveOpeningMode() {
+    if (omEnabled && !omEndsYmd) {
+      notify.err("تفعيل وضع الافتتاح يتطلّب تاريخ انتهاء صريحاً");
+      return;
+    }
+    const maxQty = Number(omMaxQty);
+    if (!Number.isInteger(maxQty) || maxQty < 1 || maxQty > 10000) {
+      notify.err("سقف كمية السطر السالب يجب أن يكون عدداً صحيحاً بين 1 و10000");
+      return;
+    }
+    updateOpeningMode.mutate({ enabled: omEnabled, endsAtYmd: omEndsYmd || null, maxNegativeQtyPerLine: maxQty });
+  }
+
   const refresh = async () => {
     await Promise.all([utils.system.systemInfo.invalidate(), utils.system.listBackups.invalidate()]);
   };
@@ -344,6 +382,116 @@ export default function Settings() {
           {isAdmin ? (
             <Button onClick={saveTaxSettings} disabled={updateTax.isPending || taxSettings.isLoading}>
               {updateTax.isPending ? "جارٍ الحفظ…" : "حفظ إعدادات الضريبة"}
+            </Button>
+          ) : (
+            <p className="text-xs text-muted-foreground">هذه الإعدادات للمدير فقط — للاطّلاع لديك صلاحية عرض فقط.</p>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* وضع الافتتاح — الافتتاح التدريجي (١٨/٧) */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-base">وضع الافتتاح (الافتتاح التدريجي)</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-muted-foreground">
+            نافذة مؤقّتة لإطلاق النظام: يُسمح خلالها ببيع الصنف <b>غير المجرود افتتاحياً</b> نقداً بالكامل حتى لو
+            كان رصيده صفراً (ينزل بالسالب)، إلى أن يُجرد جرداً افتتاحياً يثبّت رصيده الحقيقي فيُقفل عليه السالب
+            تلقائياً. البيع الآجل يبقى صارماً دائماً، والتفعيل يتطلّب تاريخ انتهاء (بحدّ أقصى 60 يوماً).
+          </p>
+          {openingMode.isLoading ? (
+            <LoadingState />
+          ) : openingMode.isError ? (
+            <ErrorState message="تعذّر تحميل وضع الافتتاح." onRetry={() => openingMode.refetch()} />
+          ) : (
+            <>
+              <div
+                className={`rounded-lg border p-3 text-sm font-bold ${
+                  openingMode.data?.active
+                    ? "border-amber-500/50 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                    : "border-border text-muted-foreground"
+                }`}
+              >
+                {openingMode.data?.active
+                  ? `الوضع فعّال الآن — البيع بالسالب مسموح للأصناف غير المجرودة حتى نهاية يوم ${openingMode.data.endsAtYmd}`
+                  : openingMode.data?.enabled
+                    ? "الوضع مفعَّل لكن نافذته منقضية — البيع بالسالب متوقّف"
+                    : "الوضع مطفأ — كل البيع يخضع لفحص المخزون الصارم"}
+              </div>
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="flex items-center justify-between gap-3 rounded-lg border p-3 sm:col-span-1">
+                  <div>
+                    <Label htmlFor="om-enabled" className="text-sm font-bold">تفعيل وضع الافتتاح</Label>
+                    <p className="mt-0.5 text-xs text-muted-foreground">بيع نقدي بالسالب لغير المجرود</p>
+                  </div>
+                  <Switch
+                    id="om-enabled"
+                    checked={omEnabled}
+                    disabled={!isAdmin}
+                    onCheckedChange={setOmEnabled}
+                    aria-label="تفعيل وضع الافتتاح"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="om-ends" className="text-sm">آخر يوم مشمول بالنافذة</Label>
+                  <Input
+                    id="om-ends"
+                    type="date"
+                    dir="ltr"
+                    value={omEndsYmd}
+                    disabled={!isAdmin}
+                    onChange={(e) => setOmEndsYmd(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="om-maxqty" className="text-sm">سقف كمية السطر السالب (وحدة أساس)</Label>
+                  <Input
+                    id="om-maxqty"
+                    dir="ltr"
+                    inputMode="numeric"
+                    value={omMaxQty}
+                    disabled={!isAdmin}
+                    onChange={(e) => setOmMaxQty(e.target.value)}
+                    placeholder="100"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <p className="text-sm font-bold">تقدّم الافتتاح لكل فرع</p>
+                {openingProgress.isLoading ? (
+                  <LoadingState />
+                ) : openingProgress.isError ? (
+                  <ErrorState message="تعذّر تحميل مؤشر التقدّم." onRetry={() => openingProgress.refetch()} />
+                ) : (
+                  <div className="grid gap-2 sm:grid-cols-2">
+                    {(openingProgress.data ?? []).map((b) => {
+                      const pct = b.totalVariants > 0 ? Math.round((b.openedVariants / b.totalVariants) * 100) : 0;
+                      return (
+                        <div key={b.branchId} className="rounded-lg border p-3">
+                          <div className="flex items-center justify-between text-sm">
+                            <span className="font-bold">{b.branchName}</span>
+                            <span className="tabular-nums text-muted-foreground">
+                              {b.openedVariants.toLocaleString("ar-IQ")} / {b.totalVariants.toLocaleString("ar-IQ")} مُفتتَح ({pct}%)
+                            </span>
+                          </div>
+                          <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+                            <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${pct}%` }} />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                <p className="text-xs text-muted-foreground">
+                  عند بلوغ الافتتاح 100% في كل الفروع أطفئ الوضع — وسيُطفأ حكماً بانقضاء التاريخ حتى لو نُسي.
+                </p>
+              </div>
+            </>
+          )}
+          {isAdmin ? (
+            <Button onClick={saveOpeningMode} disabled={updateOpeningMode.isPending || openingMode.isLoading}>
+              {updateOpeningMode.isPending ? "جارٍ الحفظ…" : "حفظ وضع الافتتاح"}
             </Button>
           ) : (
             <p className="text-xs text-muted-foreground">هذه الإعدادات للمدير فقط — للاطّلاع لديك صلاحية عرض فقط.</p>

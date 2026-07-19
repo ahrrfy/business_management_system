@@ -1,13 +1,14 @@
 // إنشاء جلسة الجرد: حلّ النطاق + اللقطة الذرّية للرصيد والتكلفة + التكليفات (PIN crypto) + التوزيع.
 import { TRPCError } from "@trpc/server";
 import { randomBytes, randomInt } from "node:crypto";
-import { and, desc, eq, gte, inArray, like } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, like } from "drizzle-orm";
 import { mysqlCodeFrom } from "../../../shared/errorMap.ar";
 import {
   branches,
   branchStock,
   categories,
   inventoryMovements,
+  openingModeSettings,
   products,
   productVariants,
   stocktakeAssignments,
@@ -72,6 +73,8 @@ export interface CreateAssignmentInput {
 export interface CreateStocktakeInput {
   name: string;
   branchId: number;
+  /** NORMAL (افتراضي) = جرد دوري؛ OPENING = «جرد افتتاحي» (مدير فأعلى + نافذة وضع الافتتاح فعّالة). */
+  sessionType?: "NORMAL" | "OPENING";
   scopeType: "FULL" | "MOVING" | "CATEGORY" | "MANUAL";
   movingDays?: number;
   categoryIds?: number[];
@@ -226,14 +229,95 @@ export async function createStocktakeSession(
 type StkScope = Awaited<ReturnType<typeof resolveScope>>;
 
 async function createSessionInTx(tx: Tx, input: CreateStocktakeInput, actor: StkActor): Promise<CreateStocktakeResult> {
-  // الفرع موجود وفعّال.
-  const br = (await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).limit(1))[0];
+  const sessionType = input.sessionType ?? "NORMAL";
+
+  // الفرع موجود — FOR UPDATE يسلسل إنشاء الجلسات لنفس الفرع ⇒ حارس الحصر المتبادل أدناه بلا سباق
+  // (إنشاءان متزامنان لولا القفل يمرّان كلاهما من فحص «لا جلسة نشطة»).
+  const br = (
+    await tx.select({ id: branches.id }).from(branches).where(eq(branches.id, input.branchId)).for("update").limit(1)
+  )[0];
   if (!br) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
+
+  // ── حوكمة «الجرد الافتتاحي» (مراجعة عدائية ١٨/٧) ──
+  if (sessionType === "OPENING") {
+    // (أ) مدير فأعلى: نوع الجلسة قرار حوكمي (يلغي العتبات الصنفية ويتخطى قيدَي العجز/الزيادة) —
+    // لا يُترك لأمين المخزن وإن كان إنشاء الجرد الدوري من صلاحياته.
+    if (actor.role !== "admin" && actor.role !== "manager") {
+      throw new TRPCError({ code: "FORBIDDEN", message: "إنشاء جلسة جرد افتتاحي محصور بمدير فأعلى" });
+    }
+    // (ب) النافذة فعّالة: بلا هذا الشرط تبقى جلسات OPENING قناة تسويةٍ دائمة بلا أثر P&L بعد الإطلاق.
+    const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
+    const windowActive = !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
+    if (!windowActive) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "وضع الافتتاح غير فعّال — الجرد الافتتاحي محصور بنافذته (فعِّله من الإعدادات أولاً)",
+      });
+    }
+  }
+
+  // (ج) الحصر المتبادل لكل الفرع: جلسة OPENING لا تُنشأ وثمة أي جلسة نشطة، ولا تُنشأ أي جلسة
+  // وثمة OPENING نشطة — تداخل NORMAL+OPENING على صنف يسرّب تسوية الافتتاح إلى netAfter للجلسة
+  // الأخرى فيرحَّل «زيادة جرد» وهمية لقائمة الدخل (سيناريو رقمي مثبَت في المراجعة العدائية).
+  const activeSessions = await tx
+    .select({ id: stocktakeSessions.id, code: stocktakeSessions.code, sessionType: stocktakeSessions.sessionType })
+    .from(stocktakeSessions)
+    .where(and(eq(stocktakeSessions.branchId, input.branchId), inArray(stocktakeSessions.status, ["COUNTING", "REVIEW"])));
+  if (sessionType === "OPENING" && activeSessions.length) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `توجد جلسة جرد نشطة على الفرع (${activeSessions[0].code}) — اعتمدها أو ألغِها قبل بدء جرد افتتاحي`,
+    });
+  }
+  const activeOpening = activeSessions.find((a) => a.sessionType === "OPENING");
+  if (sessionType === "NORMAL" && activeOpening) {
+    throw new TRPCError({
+      code: "CONFLICT",
+      message: `جلسة جرد افتتاحي نشطة على الفرع (${activeOpening.code}) — اعتمدها أو ألغِها قبل جردٍ آخر`,
+    });
+  }
 
   // النطاق.
   const scope = await resolveScope(tx, input);
+
+  // (د) الافتتاح مرّة واحدة لكل (صنف×فرع): الصنف المُفتتَح (openedAt ≠ NULL) لا يدخل جلسة OPENING —
+  // إعادة افتتاحه = إعادة تأسيس رصيده بلا أي قيد دفتري (باب محو عجز حقيقي). يُجرَد دورياً بكامل قيوده.
+  if (sessionType === "OPENING") {
+    const openedSet = new Set<number>();
+    for (const part of chunk(scope.variantIds)) {
+      const rows = await tx
+        .select({ variantId: branchStock.variantId })
+        .from(branchStock)
+        .where(
+          and(
+            eq(branchStock.branchId, input.branchId),
+            inArray(branchStock.variantId, part),
+            isNotNull(branchStock.openedAt),
+          ),
+        );
+      for (const r of rows) openedSet.add(Number(r.variantId));
+    }
+    if (openedSet.size) {
+      if (input.scopeType === "MANUAL") {
+        // اختيار يدوي صريح لصنف مُفتتَح ⇒ رفض ناطق لا استبعاد صامت (المستخدم سمّاه قصداً).
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `${openedSet.size} من الأصناف المختارة سبق افتتاحها — تُجرَد جرداً دورياً لا افتتاحياً`,
+        });
+      }
+      scope.variantIds = scope.variantIds.filter((v) => !openedSet.has(v));
+      scope.label = `${scope.label} — استُبعد ${openedSet.size} صنفاً مُفتتَحاً`;
+    }
+  }
+
   if (!scope.variantIds.length) {
-    throw new TRPCError({ code: "BAD_REQUEST", message: "نطاق الجرد لا يحوي أي صنف — راجع النطاق المحدد" });
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        sessionType === "OPENING"
+          ? "كل أصناف النطاق مُفتتَحة مسبقاً — لا شيء يُجرَد افتتاحياً"
+          : "نطاق الجرد لا يحوي أي صنف — راجع النطاق المحدد",
+    });
   }
   const scopeSet = new Set(scope.variantIds);
 
@@ -335,6 +419,7 @@ async function insertSession(
     name: input.name,
     branchId: input.branchId,
     scopeType: input.scopeType,
+    sessionType: input.sessionType ?? "NORMAL",
     scopeDetail: JSON.stringify({ ...scope.detail, label: scope.label }),
     status: "COUNTING",
     createdBy: actor.userId,

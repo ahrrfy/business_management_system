@@ -13,7 +13,7 @@ import { Link } from "wouter";
    الأرصدة المُشتقّة والمسجَّلة في ثلاثة محاور: ذمم العملاء، المخزون، الدفتر.
 ═══════════════════════════════════════════════════════════════ */
 
-type Row = { entity: string; id: number; expected: string; actual: string; drift: string };
+type Row = { entity: string; id: number; expected: string; actual: string; drift: string; note?: string };
 
 export default function Reconcile() {
   const me = trpc.auth.me.useQuery();
@@ -205,6 +205,11 @@ function DriftSection({
                   </td>
                   <td className="p-2 text-right font-semibold tabular-nums text-money-negative" dir="ltr">
                     {val(r.drift)}
+                    {r.note && (
+                      <span dir="rtl" className="mr-2 inline-block rounded-md border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[11px] font-bold text-amber-800">
+                        {r.note}
+                      </span>
+                    )}
                   </td>
                   {link && (
                     <td className="p-2 text-center">

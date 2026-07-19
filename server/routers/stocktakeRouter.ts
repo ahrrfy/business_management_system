@@ -60,6 +60,9 @@ export const stocktakeRouter = router({
       z.object({
         name: z.string().trim().min(1, "اسم الجلسة مطلوب").max(255),
         branchId: idNum,
+        // OPENING = «جرد افتتاحي» (الافتتاح التدريجي ١٨/٧) — الخدمة تفرض: مدير فأعلى + نافذة
+        // وضع الافتتاح فعّالة + استبعاد المُفتتَح + حصر متبادل مع أي جلسة نشطة بالفرع.
+        sessionType: z.enum(["NORMAL", "OPENING"]).optional(),
         scopeType: z.enum(["FULL", "MOVING", "CATEGORY", "MANUAL"]),
         movingDays: z.number().int().positive().max(365).optional(),
         categoryIds: z.array(idNum).optional(),
@@ -97,9 +100,9 @@ export const stocktakeRouter = router({
         delete effective.thresholdValue;
         delete effective.dualThreshold;
       }
-      const res = await createStocktakeSession(effective, { userId: ctx.user.id });
+      const res = await createStocktakeSession(effective, { userId: ctx.user.id, role: ctx.user.role });
       await logAudit(ctx, {
-        action: "stocktake.create",
+        action: input.sessionType === "OPENING" ? "stocktake.openingCreate" : "stocktake.create",
         entityType: "stocktake",
         entityId: res.sessionId,
         newValue: {
@@ -107,6 +110,7 @@ export const stocktakeRouter = router({
           name: input.name,
           branchId: effective.branchId,
           scopeType: input.scopeType,
+          sessionType: input.sessionType ?? "NORMAL",
           itemCount: res.itemCount,
           // لا PIN في سجلّ التدقيق أبداً.
           assignments: res.assignments.map((a) => ({ name: a.name, method: a.method, zone: a.zone, itemCount: a.itemCount })),
@@ -234,7 +238,8 @@ export const stocktakeRouter = router({
   }),
 
   approve: managerProcedure.input(z.object({ sessionId: idNum })).mutation(async ({ input, ctx }) => {
-    const res = await approveStocktake(input.sessionId, { userId: ctx.user.id });
+    // role يلزم حوكمة الاعتماد الافتتاحي (منشئ≠معتمد وعادّ≠معتمد، admin مُستثنى للتصحيح الإداري).
+    const res = await approveStocktake(input.sessionId, { userId: ctx.user.id, role: ctx.user.role });
     // لا تدقيق مكرّراً لإعادة استدعاء idempotent — الاعتماد الفعلي سُجّل في مرّته الأولى.
     if (!res.alreadyApproved) {
       await logAudit(ctx, {

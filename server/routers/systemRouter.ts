@@ -13,6 +13,7 @@ import { logAudit } from "../services/auditService";
 import { getConfiguredTarget, describeTarget } from "../services/printService";
 import * as maint from "../services/maintenanceService";
 import { getTaxSettings, updateTaxSettings } from "../services/taxSettingsService";
+import { getOpeningMode, getOpeningProgress, updateOpeningMode } from "../services/openingModeService";
 
 /** يتحقّق من كلمة مرور المدير الحالية (دفاع ضد النقر الخاطئ/جلسة مسروقة). */
 function assertPassword(ctx: TrpcContext, password: string) {
@@ -169,5 +170,36 @@ export const systemRouter = router({
         newValue: settings,
       });
       return { ok: true as const, settings };
+    }),
+
+  /** «وضع الافتتاح» الحالي (أيّ مُصادَق — يحتاجه POS للافتة والوسوم؛ الحارس الفعلي خادميّ لحظة البيع). */
+  getOpeningMode: protectedProcedure.query(() => getOpeningMode()),
+
+  /** مؤشر تقدّم الافتتاح «X من Y مُفتتَح» لكل فرع (أيّ مُصادَق — كميات بلا أي تكلفة). */
+  getOpeningProgress: protectedProcedure.query(() => getOpeningProgress()),
+
+  /** تفعيل/إطفاء وضع الافتتاح (admin فقط — فعل حوكمة يوازي قفل الفترة). التفعيل يشترط endsAt ≤ ٦٠ يوماً. */
+  updateOpeningMode: adminProcedure
+    .input(
+      z.object({
+        enabled: z.boolean(),
+        endsAtYmd: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/, "صيغة التاريخ YYYY-MM-DD")
+          .optional()
+          .nullable(),
+        maxNegativeQtyPerLine: z.number().int().min(1).max(10_000).optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const { before, after } = await updateOpeningMode(input, { userId: ctx.user.id });
+      await logAudit(ctx, {
+        action: after.enabled ? "openingMode.enable" : "openingMode.disable",
+        entityType: "system",
+        entityId: null,
+        oldValue: before,
+        newValue: after,
+      });
+      return { ok: true as const, settings: after };
     }),
 });

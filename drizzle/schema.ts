@@ -652,6 +652,10 @@ export const branchStock = mysqlTable(
     quantity: int("quantity").default(0).notNull(),
     // آخر جرد معتمد شمل هذا الصنف في هذا الفرع — يغذّي «آخر جرد» والجرد الدوري ABC.
     lastCountedAt: timestamp("lastCountedAt"),
+    // «الافتتاح التدريجي» (١٨/٧): متى ثُبِّت الرصيد الافتتاحي لهذا (الصنف×الفرع) — NULL = غير مُفتتَح
+    // فيُسمح ببيعه بالسالب نقدياً أثناء «وضع الافتتاح» المؤقّت. يُثبَّت من اعتماد جرد افتتاحي أو
+    // إنشاء/استيراد منتج بمخزون افتتاحي، والافتتاح مرّة واحدة لكل (صنف×فرع) — لا يُعاد.
+    openedAt: timestamp("openedAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -2049,6 +2053,10 @@ export const stocktakeSessions = mysqlTable(
     scopeType: mysqlEnum("scopeType", ["FULL", "MOVING", "CATEGORY", "MANUAL"]).notNull(),
     // وصف النطاق (JSON): { days?, categoryIds?, variantIds?, label }
     scopeDetail: text("scopeDetail"),
+    // NORMAL = جرد دوري بكامل قيوده المالية؛ OPENING = «جرد افتتاحي» (الافتتاح التدريجي ١٨/٧): يثبّت
+    // العدّ كرصيد افتتاحي (setStock بمرجع OPENING) **بلا قيدَي عجز/زيادة** ويختم branchStock.openedAt —
+    // محصور بنافذة وضع الافتتاح وبمدير فأعلى وبتوقيعَين دائماً، ويستبعد المُفتتَح (مرّة واحدة لكل صنف×فرع).
+    sessionType: mysqlEnum("sessionType", ["NORMAL", "OPENING"]).default("NORMAL").notNull(),
     status: mysqlEnum("stocktakeStatus", ["COUNTING", "REVIEW", "APPROVED", "CANCELLED"]).default("COUNTING").notNull(),
     // جرد أعمى: بوابة العدّ لا تستلم الرصيد الدفتري إطلاقاً.
     blind: boolean("blind").default(true).notNull(),
@@ -3300,6 +3308,23 @@ export const taxSettings = mysqlTable("taxSettings", {
 });
 export type TaxSettings = typeof taxSettings.$inferSelect;
 export type InsertTaxSettings = typeof taxSettings.$inferInsert;
+
+/** «وضع الافتتاح» المؤقّت (صفّ singleton واحد id=1، نمط taxSettings): أثناء إدخال النظام للخدمة يُسمح
+ *  ببيع الصنف **غير المُفتتَح** (branchStock.openedAt IS NULL) بالسالب نقدياً حتى يُجرَد جرداً افتتاحياً.
+ *  حوكمة صلبة (مراجعة عدائية ١٨/٧): التفعيل يشترط endsAt (إلزامي، ≤ ٦٠ يوماً من لحظة التفعيل)، الكتابة
+ *  admin فقط + حدثا تدقيق enable/disable، والحارس الفعلي خادميّ لحظة البيع (الواجهة مرآة فقط). */
+export const openingModeSettings = mysqlTable("openingModeSettings", {
+  id: int("id").autoincrement().primaryKey(),
+  enabled: boolean("enabled").default(false).notNull(),
+  /** نهاية النافذة — إلزامي منطقياً عند enabled=true (تحقّق خادمي)؛ انقضاؤه = الوضع مطفأ حكماً. */
+  endsAt: timestamp("endsAt"),
+  /** سقف كمية السطر الواحد النازل بالسالب (بالوحدة الأساس) — يصدّ خطأ الإدخال والاحتيال معاً. */
+  maxNegativeQtyPerLine: int("maxNegativeQtyPerLine").default(100).notNull(),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type OpeningModeSettings = typeof openingModeSettings.$inferSelect;
+export type InsertOpeningModeSettings = typeof openingModeSettings.$inferInsert;
 
 /** سجلّ تذكيرات الذمم الآجلة (AR reminders) — كل صفّ = تذكير أُرسِل أو أُخطِّي.
  *  يُملأ حصراً بعد فعل المستخدم في شاشة `/ar-reminders` (لا cron، لا إرسال آلي).
