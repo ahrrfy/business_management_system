@@ -278,6 +278,10 @@ export default function POS() {
   const branchId = me.data?.branchId ?? 1;
   const utils    = trpc.useUtils();
 
+  // «وضع الافتتاح» (ش٥): لافتة + وسم «غير مجرود» — مرآة عرضية فقط، الحارس الفعلي خادميّ في sale/create.
+  const openingModeQ = trpc.system.getOpeningMode.useQuery(undefined, { staleTime: 60_000 });
+  const openingActive = openingModeQ.data?.active === true;
+
   // ش٢ أوفلاين: حالة الاتصال + مزامنة النموذج المحلي (كتالوج/مخزون/عملاء) دورياً وعند العودة.
   const connState = useConnectivity();
   const offline = isDisconnected(connState);
@@ -1056,6 +1060,8 @@ export default function POS() {
         {/* Cart Panel */}
         <CartPanel
           C={C}
+          openingActive={openingActive}
+          openingEndsYmd={openingModeQ.data?.endsAtYmd ?? null}
           cart={cart} total={total}
           selId={activeTab.selId} setSelId={setSelId}
           changeQty={changeQty} removeRow={removeRow}
@@ -1378,9 +1384,12 @@ interface CartPanelProps {
   setCustId: (id: number | null) => void;
   showCustPicker: boolean; setShowCustPicker: (v: boolean) => void;
   onClear: () => void;
+  /** «وضع الافتتاح» فعّال الآن (لافتة + وسم «غير مجرود» بدل «نافذ» المخيف). */
+  openingActive: boolean;
+  openingEndsYmd: string | null;
 }
 
-function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear }: CartPanelProps) {
+function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numMode, setNumMode, customerId, selectedCustomer, tierOverride, effectiveTier, setTierOvr, setCustId, showCustPicker, setShowCustPicker, onClear, openingActive, openingEndsYmd }: CartPanelProps) {
   const itemCount = cart.reduce((s, c) => s + c.qty, 0);
   const TH: React.CSSProperties = { padding: "9px 10px", fontWeight: 700, fontSize: 12.5, color: C.mutedFg, textAlign: "center", borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap", background: C.muted };
   const TD: React.CSSProperties = { padding: "10px 8px", textAlign: "center", fontSize: 14 };
@@ -1493,6 +1502,14 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
         </div>
       </div>
 
+      {/* «وضع الافتتاح» — لافتة دائمة ما دامت النافذة فعّالة */}
+      {openingActive && (
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", background: C.amberSoft, borderBottom: `1px solid ${C.border}`, fontSize: 12, fontWeight: 700, color: "#7a5200", flexShrink: 0 }}>
+          <AlertTriangle aria-hidden size={13} />
+          وضع الافتتاح فعّال{openingEndsYmd ? ` حتى نهاية يوم ${openingEndsYmd}` : ""} — الصنف غير المجرود يُباع نقداً كاملاً حتى لو نفد (ينزل بالسالب حتى جرده الافتتاحي)؛ الآجل وغير النقدي صارمان.
+        </div>
+      )}
+
       {/* Table */}
       <div style={{ flex: 1, overflowY: "auto", overflowX: "auto" }}>
         <table style={{ width: "100%", minWidth: 540, borderCollapse: "collapse" }}>
@@ -1525,8 +1542,11 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
               const selected = selId === c.row.productUnitId;
               // تمييز بصري + نصّ قبل محاولة الدفع (المنطق المُجمَّع للصنف في stockState أعلاه).
               const { isOut, isShort, availInUnit } = stockState(c);
-              const rowBg  = selected ? C.primarySoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : "transparent";
-              const accent = isOut ? C.danger : isShort ? C.amber : "transparent";
+              // «وضع الافتتاح»: الصنف غير المُفتتَح (openedAt فارغ) يُباع نقداً بالسالب — وسم كهرماني
+              // مطمئن بدل «نافذ» الأحمر المخيف (الحارس الفعلي خادميّ؛ الآجل/غير النقدي سيُرفض هناك).
+              const openingSellable = (isOut || isShort) && openingActive && c.row.openedAt == null && !c.row.isService;
+              const rowBg  = selected ? C.primarySoft : openingSellable ? C.amberSoft : isOut ? C.dangerSoft : isShort ? C.amberSoft : "transparent";
+              const accent = openingSellable ? C.amber : isOut ? C.danger : isShort ? C.amber : "transparent";
               return (
                 <tr key={c.row.productUnitId}
                   onClick={() => { setSelId(c.row.productUnitId); setNumMode("QTY"); }}
@@ -1541,12 +1561,17 @@ function CartPanel({ C, cart, total, selId, setSelId, changeQty, removeRow, numM
                     {c.disc != null && c.disc > 0 && (
                       <span style={{ fontSize: 11, color: C.danger, fontWeight: 700, marginRight: 4 }}>−{c.disc}%</span>
                     )}
-                    {isOut && (
+                    {openingSellable && (
+                      <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
+                        <AlertTriangle aria-hidden size={12} /> غير مجرود — يُباع نقداً بالسالب
+                      </span>
+                    )}
+                    {!openingSellable && isOut && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#fff", background: C.danger, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
                         <AlertTriangle aria-hidden size={12} /> نافذ — لا مخزون
                       </span>
                     )}
-                    {isShort && (
+                    {!openingSellable && isShort && (
                       <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11.5, color: "#241900", background: C.amber, fontWeight: 800, borderRadius: 6, padding: "2px 8px", marginRight: 6, whiteSpace: "nowrap" }}>
                         <AlertTriangle aria-hidden size={12} />
                         {availInUnit === 0
