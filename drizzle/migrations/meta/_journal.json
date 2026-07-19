@@ -617,6 +617,13 @@
       "when": 1784937600002,
       "tag": "0085_offline_sale_capture",
       "breakpoints": true
+    },
+    {
+      "idx": 88,
+      "version": "5",
+      "when": 1784937600003,
+      "tag": "0088_asset_documents_dataurl",
+      "breakpoints": true
     }
   ]
 }

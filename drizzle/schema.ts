@@ -2515,8 +2515,10 @@ export const assetDocuments = mysqlTable(
     id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
     assetId: bigint("assetId", { mode: "number" }).notNull().references(() => fixedAssets.id),
     title: varchar("title", { length: 255 }).notNull(),
-    /** مفتاح S3 (النظام يستعمل @aws-sdk/client-s3 مسبقاً). */
+    /** مفتاح S3 — مهمَل (لا بنية S3 في هذا النظام؛ يبقى للتوافق الخلفيّ). */
     fileKey: varchar("fileKey", { length: 512 }),
+    /** المستند نفسه: صورة base64 مضغوطة (data URL) — نمط productImages/receipts.attachmentUrl. */
+    dataUrl: mediumtext("dataUrl"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (t) => ({ assetIdx: index("idx_doc_asset").on(t.assetId) })

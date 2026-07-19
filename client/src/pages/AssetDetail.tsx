@@ -7,6 +7,7 @@ import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { AssetStatusBadge, categoryIcon, iqd } from "@/lib/assets/ui";
 import { printAssetLabel } from "@/lib/assets/print";
@@ -15,7 +16,7 @@ import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { assetCategoryLabel, depreciationMethodLabel } from "@shared/assets";
-import { PlayCircle } from "lucide-react";
+import { PlayCircle, Trash2, Upload, FileText, ExternalLink } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useParams } from "wouter";
 
@@ -51,6 +52,8 @@ export default function AssetDetail() {
   const [mVendor, setMVendor] = useState("");
   const [mCost, setMCost] = useState("");
   const [mNote, setMNote] = useState("");
+  const [docTitle, setDocTitle] = useState("");
+  const [docImages, setDocImages] = useState<ImageItem[]>([]);
   const [mDate, setMDate] = useState(today());
   const [dKind, setDKind] = useState<"retired" | "disposed">("retired");
   const [dDate, setDDate] = useState(today());
@@ -64,6 +67,8 @@ export default function AssetDetail() {
   const handover = trpc.assets.handover.useMutation({ onSuccess: async () => { notify.ok("تم تسليم العهدة"); setOpenHandover(false); setHEmp(""); setHNote(""); await refresh(); }, onError: (e) => notify.err(e) });
   const addMaint = trpc.assets.addMaintenance.useMutation({ onSuccess: async () => { notify.ok("تم تسجيل الصيانة"); setOpenMaint(false); setMType(""); setMVendor(""); setMCost(""); setMNote(""); await refresh(); }, onError: (e) => notify.err(e) });
   const returnMaint = trpc.assets.returnFromMaintenance.useMutation({ onSuccess: async () => { notify.ok("أُعيد الأصل للخدمة"); await refresh(); }, onError: (e) => notify.err(e) });
+  const addDoc = trpc.assets.addDocument.useMutation({ onSuccess: async () => { notify.ok("رُفِع المستند"); setDocTitle(""); setDocImages([]); await refresh(); }, onError: (e) => notify.err(e) });
+  const delDoc = trpc.assets.deleteDocument.useMutation({ onSuccess: async () => { notify.ok("حُذِف المستند"); await refresh(); }, onError: (e) => notify.err(e) });
   const dispose = trpc.assets.dispose.useMutation({ onSuccess: async () => { notify.ok("تم تنفيذ الإخراج/الاستبعاد"); setOpenDispose(false); setDReason(""); setDValue(""); await refresh(); }, onError: (e) => notify.err(e) });
 
   const a = q.data;
@@ -236,13 +241,66 @@ export default function AssetDetail() {
         <TabsContent value="documents">
           <Card>
             <CardHeader><CardTitle className="text-base">المستندات</CardTitle></CardHeader>
-            <CardContent>
+            <CardContent className="space-y-4">
+              {/* رفع مستند جديد (فاتورة شراء/كفالة/محضر…) — صورة مضغوطة تلقائياً */}
+              <div className="rounded-lg border bg-muted/30 p-3 space-y-2">
+                <div className="grid gap-2 sm:grid-cols-[1fr_auto] sm:items-end">
+                  <div className="space-y-1">
+                    <Label htmlFor="doc-title" className="text-xs">عنوان المستند</Label>
+                    <Input id="doc-title" value={docTitle} maxLength={255} onChange={(e) => setDocTitle(e.target.value)} placeholder="مثال: فاتورة الشراء / بطاقة الكفالة" />
+                  </div>
+                  <Button
+                    type="button"
+                    disabled={!docTitle.trim() || !docImages[0]?.dataUrl || addDoc.isPending}
+                    onClick={() => addDoc.mutate({ assetId: id, title: docTitle.trim(), dataUrl: docImages[0]!.dataUrl })}
+                    className="gap-1.5"
+                  >
+                    <Upload aria-hidden className="size-4" /> رفع المستند
+                  </Button>
+                </div>
+                <ImageUploader
+                  value={docImages}
+                  onChange={setDocImages}
+                  maxItems={1}
+                  singlePrimary={false}
+                  hint="صورة المستند (PNG/JPG) — تُضغط تلقائياً قبل الحفظ."
+                />
+              </div>
+
+              {/* المستندات المرفوعة */}
               {a.docs.length === 0 ? (
-                <p className="text-sm text-muted-foreground">لا مستندات مرفقة.</p>
+                <p className="text-sm text-muted-foreground">لا مستندات مرفقة بعد.</p>
               ) : (
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   {a.docs.map((doc) => (
-                    <div key={doc.id} className="rounded-md border p-3 text-sm text-center">{doc.title}</div>
+                    <div key={doc.id} className="flex flex-col gap-2 rounded-md border p-3 text-sm">
+                      <div className="flex items-start gap-1.5 font-medium">
+                        <FileText aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                        <span className="break-words">{doc.title}</span>
+                      </div>
+                      <div className="mt-auto flex items-center justify-between gap-2">
+                        {doc.dataUrl ? (
+                          <a href={doc.dataUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs font-bold text-primary hover:underline">
+                            <ExternalLink aria-hidden className="size-3.5" /> عرض
+                          </a>
+                        ) : (
+                          <span className="text-xs text-muted-foreground">بلا ملف</span>
+                        )}
+                        <button
+                          type="button"
+                          disabled={delDoc.isPending}
+                          onClick={async () => {
+                            if (await confirm({ variant: "danger", title: "حذف المستند؟", description: `«${doc.title}» — لا يمكن التراجع.`, confirmText: "حذف" })) {
+                              delDoc.mutate({ docId: doc.id });
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-50"
+                          aria-label={`حذف المستند ${doc.title}`}
+                        >
+                          <Trash2 aria-hidden className="size-3.5" /> حذف
+                        </button>
+                      </div>
+                    </div>
                   ))}
                 </div>
               )}
