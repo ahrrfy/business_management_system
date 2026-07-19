@@ -1,6 +1,5 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { CopyInline } from "@/components/CopyButton";
@@ -8,7 +7,8 @@ import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatQuotationAsWhatsApp } from "@/lib/copy/formatters";
 import { confirm } from "@/lib/confirm";
 import { buildQuotationMessage } from "@/lib/whatsapp";
-import { D, fmt } from "@/lib/money";
+import { D, fmt, round2 } from "@/lib/money";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { cn } from "@/lib/utils";
 import { printQuotation } from "@/lib/printing/printTemplates";
 import { trpc } from "@/lib/trpc";
@@ -209,7 +209,7 @@ export default function QuotationDetail() {
           <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
             <div className="space-y-1">
               <Label>دفعة عند التحويل (اختياري)</Label>
-              <Input dir="ltr" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} placeholder={data.customerName ? "اتركه فارغاً = آجل" : `أقل من ${fmt(data.total)} يتطلّب عميلاً`} />
+              <MoneyInput value={payAmount} onChange={setPayAmount} placeholder={data.customerName ? "اتركه فارغاً = آجل" : `أقل من ${fmt(data.total)} يتطلّب عميلاً`} />
             </div>
             <div className="space-y-1">
               <Label>طريقة الدفع</Label>
@@ -219,17 +219,17 @@ export default function QuotationDetail() {
             </div>
             <Button
               onClick={async () => {
-                const pay = Number(payAmount) > 0;
+                const pay = D(payAmount).gt(0);
                 if (
                   !(await confirm({
                     variant: "danger",
                     title: "تحويل إلى فاتورة",
-                    description: `تحويل عرض السعر ${data.quoteNumber} إلى فاتورة بإجمالي ${fmt(data.total)}${pay ? ` ودفعة ${fmt(String(Number(payAmount)))}` : " (آجل)"}. لا يمكن التراجع.`,
+                    description: `تحويل عرض السعر ${data.quoteNumber} إلى فاتورة بإجمالي ${fmt(data.total)}${pay ? ` ودفعة ${fmt(payAmount)}` : " (آجل)"}. لا يمكن التراجع.`,
                     confirmText: "تحويل",
                   }))
                 )
                   return;
-                convert.mutate({ quotationId, payment: pay ? { amount: String(Number(payAmount)), method: payMethod } : undefined });
+                convert.mutate({ quotationId, payment: pay ? { amount: round2(D(payAmount)).toFixed(2), method: payMethod } : undefined });
               }}
               disabled={convert.isPending}
             >
