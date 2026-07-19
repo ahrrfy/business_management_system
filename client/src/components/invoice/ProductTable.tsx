@@ -123,6 +123,9 @@ export function ProductTable({
   onNotify,
 }: ProductTableProps) {
   const isPurchase = invoiceType === "PURCHASE" || invoiceType === "PURCHASE_RETURN";
+  // مرتجع البيع: السعر والخصم يُعرَضان للقراءة فقط — الخادم يتجاهل تسعير المحرّر ويحسب الاسترداد
+  // تناسبياً من إجماليّات بنود الفاتورة المصدر المخزَّنة، فتحريرهما وهمٌ يضلّل الموظّف.
+  const readOnlyPricing = invoiceType === "SALE_RETURN";
   const showCostCol = showCost && !isPurchase;
   // عمود «حصة الضريبة» يظهر فقط حين يمرِّر الأبُ حصصاً بطول items وفيها قيمة موجبة واحدة على
   // الأقلّ (لا نُظهر عموداً كامل الأصفار حين تكون الضريبة غير مفعَّلة أو صفريّة).
@@ -288,18 +291,22 @@ export function ProductTable({
                     </td>
                   )}
                   <td className={td}>
-                    <InlineNumberInput
-                      value={isPurchase ? item.costBase || item.price : item.price}
-                      width="w-20"
-                      onChange={(v) => {
-                        if (isPurchase) {
-                          dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: v });
-                          dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
-                        } else {
-                          dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
-                        }
-                      }}
-                    />
+                    {readOnlyPricing ? (
+                      <span dir="ltr" className="text-sm font-bold tabular-nums">{fmtNum(item.price)}</span>
+                    ) : (
+                      <InlineNumberInput
+                        value={isPurchase ? item.costBase || item.price : item.price}
+                        width="w-20"
+                        onChange={(v) => {
+                          if (isPurchase) {
+                            dispatch({ type: "UPDATE_ITEM", idx, field: "costBase", value: v });
+                            dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
+                          } else {
+                            dispatch({ type: "UPDATE_ITEM", idx, field: "price", value: v });
+                          }
+                        }}
+                      />
+                    )}
                   </td>
                   <td className={td}>
                     <QuantityControl
@@ -308,13 +315,17 @@ export function ProductTable({
                     />
                   </td>
                   <td className={td}>
-                    <InlineNumberInput
-                      value={item.discount}
-                      width="w-14"
-                      max={100}
-                      suffix="%"
-                      onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "discount", value: v })}
-                    />
+                    {readOnlyPricing ? (
+                      <span className="text-xs text-muted-foreground tabular-nums">{fmtNum(item.discount)}%</span>
+                    ) : (
+                      <InlineNumberInput
+                        value={item.discount}
+                        width="w-14"
+                        max={100}
+                        suffix="%"
+                        onChange={(v) => dispatch({ type: "UPDATE_ITEM", idx, field: "discount", value: v })}
+                      />
+                    )}
                   </td>
                   {showTaxCol && (
                     <td className={cn(td, "text-xs font-semibold text-muted-foreground")} dir="ltr">
