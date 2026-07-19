@@ -14,6 +14,11 @@ import { getDb } from "../../db";
 import { createHandover } from "../cashHandoverService";
 import { closeShift, openShift } from "../shiftService";
 import { withTx } from "../tx";
+import { appRouter } from "../../routers";
+
+function makeCtx(user: any) {
+  return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as any;
+}
 
 const TABLES = [
   "accountingEntries",
@@ -270,5 +275,30 @@ describe("cashHandoverService.createHandover — استدعاء مباشر (حر
         createHandover(tx, { shiftId, amount: "50", handoverTo: MANAGER1 }, { userId: ADMIN, branchId: 1, role: "admin" }),
       ),
     ).rejects.toThrow(/الوردية مغلقة بالفعل/);
+  });
+});
+
+describe("shifts.handoverRecipients — منتقي المستلِمين (الواجهة)", () => {
+  it("الكاشير يرى المديرين/الإداريين النشطين فقط (لا كاشير، لا معطَّل)، مرتّبين بالاسم", async () => {
+    const caller = appRouter.createCaller(
+      makeCtx({ id: CASHIER1, role: "cashier", branchId: 1, name: "كاشير١" }),
+    );
+    const rows = await caller.shifts.handoverRecipients();
+
+    const ids = rows.map((r) => r.id).sort((a, b) => a - b);
+    // ADMIN + MANAGER1 + MANAGER2 فقط — لا كاشيرين ولا المدير المعطَّل.
+    expect(ids).toEqual([ADMIN, MANAGER1, MANAGER2]);
+    expect(rows.some((r) => r.id === CASHIER1 || r.id === CASHIER2)).toBe(false);
+    expect(rows.some((r) => r.id === DISABLED_MANAGER)).toBe(false);
+    // كل صفّ يحمل اسماً غير فارغ (المنتقي يعرضه).
+    expect(rows.every((r) => typeof r.name === "string" && r.name.length > 0)).toBe(true);
+  });
+
+  it("متاحٌ للمدير أيضاً (نفس بوّابة الإغلاق)", async () => {
+    const caller = appRouter.createCaller(
+      makeCtx({ id: MANAGER1, role: "manager", branchId: 1, name: "مدير الفرع١" }),
+    );
+    const rows = await caller.shifts.handoverRecipients();
+    expect(rows.length).toBe(3);
   });
 });

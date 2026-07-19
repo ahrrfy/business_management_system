@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
+import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -886,9 +887,11 @@ function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number;
 // ─── ShiftCloseDialog (نقد ومبيعات فقط — بلا كلفة) ───────────────────────────
 function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; onClose: () => void; onClosed: () => void }) {
   const [counted, setCounted] = useState("");
+  const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
   const reportQ = trpc.shifts.report.useQuery({ shiftId: shift.id });
   const report = reportQ.data;
+  const recipientsQ = trpc.shifts.handoverRecipients.useQuery();
 
   const closeShift = trpc.shifts.close.useMutation({
     onSuccess: async (r) => {
@@ -947,9 +950,16 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
                 </div>
               )}
             </div>
+            <ShiftHandoverSection
+              C={C}
+              recipients={recipientsQ.data ?? []}
+              value={handover}
+              onChange={setHandover}
+              loading={recipientsQ.isLoading}
+            />
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose} style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>إلغاء</button>
-              <button disabled={!counted || closeShift.isPending} onClick={() => closeShift.mutate({ shiftId: shift.id, countedCash: counted })}
+              <button disabled={!counted || closeShift.isPending || handoverIncomplete(handover)} onClick={() => closeShift.mutate({ shiftId: shift.id, countedCash: counted, handover: buildHandoverPayload(handover) })}
                 style={{ flex: 1, height: 46, background: !counted || closeShift.isPending ? C.muted : C.danger, color: !counted || closeShift.isPending ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeShift.isPending ? "جارٍ الإغلاق…" : "إغلاق وطباعة Z"}</button>
             </div>
           </>
