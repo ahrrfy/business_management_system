@@ -2,7 +2,7 @@
 // تقريب نقدي IQD + حدّ الائتمان + خصم المخزون + قيد SALE + الدفعة/الذمم.
 import { TRPCError } from "@trpc/server";
 import { eq, inArray } from "drizzle-orm";
-import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
+import { couponRedemptions, coupons, customers, invoiceItemBundleComponents, invoiceItems, invoices, openingModeSettings, productVariants, products, receipts, shifts } from "../../../drizzle/schema";
 import {
   computeInvoiceCost,
   computeInvoiceTotals,
@@ -562,21 +562,77 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       aggregated.set(op.variantId, (aggregated.get(op.variantId) ?? 0) + op.baseQuantity);
     }
     const sortedVariantIds = Array.from(aggregated.keys()).sort((a, b) => a - b);
+
+    // «وضع الافتتاح» (ش٢ ١٩/٧): بيعٌ نقدي كامل من قناة POS يُسمح له بالنزول تحت الصفر للصنف
+    // **غير المُفتتَح** (openedAt IS NULL — يُفحص داخل applyMovement تحت القفل) حتى يُجرَد افتتاحياً.
+    // شرطا الأمان الصنفيان (مراجعة عدائية ١٨/٧): تكلفة مُدخلة (>0) — سالبٌ بلا COGS = تسريب غير
+    // قابل للكشف — وسقف كمية للسطر يصدّ خطأ الإدخال والاحتيال. قناة الأوفلاين (allowNegativeStock)
+    // مستقلة تماماً ولا تتراكب. القراءة كسولة: البيع العادي المكتفي المخزون لا يدفع أي استعلام إضافي.
+    const openingBaseEligible =
+      !input.allowNegativeStock &&
+      (input.sourceType ?? "POS") === "POS" &&
+      input.payment?.method === "CASH" &&
+      unpaid.lte(0);
+    const readOpeningWindow = async () => {
+      const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
+      return om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now()
+        ? { maxQty: om.maxNegativeQtyPerLine }
+        : null;
+    };
+    let openingWindow: { maxQty: number } | null = null;
+    const deductCosts = new Map<number, string>();
+    if (openingBaseEligible) {
+      openingWindow = await readOpeningWindow();
+      if (openingWindow && sortedVariantIds.length) {
+        // تكاليف الأصناف المخصومة فعلياً (مكوّنات البكج لا البكج نفسه).
+        const costRows = await tx
+          .select({ id: productVariants.id, cost: productVariants.costPrice })
+          .from(productVariants)
+          .where(inArray(productVariants.id, sortedVariantIds));
+        for (const r of costRows) deductCosts.set(Number(r.id), String(r.cost ?? "0"));
+      }
+    }
+    const negativeDips: { variantId: number; newQuantity: number }[] = [];
+
     for (const vid of sortedVariantIds) {
       const qty = aggregated.get(vid)!;
       if (qty <= 0) continue; // احترازي — تجميع كميّات صفريّة لا يجب أن يحصل.
-      await applyMovement(tx, {
-        variantId: vid,
-        branchId: input.branchId,
-        baseQuantity: qty,
-        movementType: "OUT",
-        referenceType: "INVOICE",
-        referenceId: invoiceId,
-        createdBy: actor.userId,
-        // أوفلاين (ش٣): البيع الملتقَط دون اتصال يُسجَّل ولو هبط الرصيد تحت الصفر — البضاعة
-        // خرجت فعلاً (قرار مالك: سالب موسوم بـoriginatedOffline، يظهر في تقرير المراجعة).
-        allowNegative: input.allowNegativeStock ?? false,
-      });
+      const openingAllow =
+        openingWindow != null && qty <= openingWindow.maxQty && money(deductCosts.get(vid) ?? "0").gt(0);
+      try {
+        const moved = await applyMovement(tx, {
+          variantId: vid,
+          branchId: input.branchId,
+          baseQuantity: qty,
+          movementType: "OUT",
+          referenceType: "INVOICE",
+          referenceId: invoiceId,
+          createdBy: actor.userId,
+          notes: openingAllow ? "وضع الافتتاح — بيع نقدي مسموح بالسالب لصنف غير مُفتتَح" : undefined,
+          // أوفلاين (ش٣): البيع الملتقَط دون اتصال يُسجَّل ولو هبط الرصيد تحت الصفر — البضاعة
+          // خرجت فعلاً (قرار مالك: سالب موسوم بـoriginatedOffline، يظهر في تقرير المراجعة).
+          allowNegative: input.allowNegativeStock ?? false,
+          allowNegativeUnopened: openingAllow,
+        });
+        // معلومة استشارية للمحاولة الفائزة فقط (لا تُعاد في replay الـidempotency — لا حالة دائمة عليها).
+        if (openingAllow && moved.newQuantity < 0) negativeDips.push({ variantId: vid, newQuantity: moved.newQuantity });
+      } catch (e) {
+        // إثراء رسالة الرفض أثناء نافذة الافتتاح: يشرح للكاشير لماذا لم يُسمح بالسالب لهذا السطر.
+        if (e instanceof TRPCError && e.code === "CONFLICT" && e.message.includes("المخزون غير كافٍ")) {
+          const win = openingWindow ?? (await readOpeningWindow());
+          if (win) {
+            const hint = !openingBaseEligible
+              ? "وضع الافتتاح فعّال، لكن البيع بالسالب للصنف غير المجرود يتطلّب بيعاً نقدياً مدفوعاً بالكامل من قناة البيع المباشر — الآجل والدفعة الجزئية وغير النقدي وقنوات الطلبات تبقى صارمة"
+              : qty > win.maxQty
+                ? `الكمية تتجاوز سقف السطر السالب في وضع الافتتاح (${win.maxQty} وحدة أساس)`
+                : !money(deductCosts.get(vid) ?? "0").gt(0)
+                  ? "البيع بالسالب في وضع الافتتاح يتطلّب تكلفة مُدخلة للصنف — أدخِل تكلفته أولاً"
+                  : "الصنف مُفتتَح (مجرود) — رصيده مثبّت والبيع فوقه يخضع للفحص الصارم";
+            throw new TRPCError({ code: "CONFLICT", message: `${e.message} — ${hint}` });
+          }
+        }
+        throw e;
+      }
     }
 
     // 11. SALE ledger entry (revenue = net before tax + أجرة الشحن كإيراد بلا تكلفة).
@@ -641,6 +697,13 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       await adjustCustomerBalance(tx, input.customerId, effectiveTotalD.minus(paidNow));
     }
 
-    return { invoiceId, invoiceNumber, total: toDbMoney(effectiveTotalD), status, priceOverride: belowCost };
+    return {
+      invoiceId,
+      invoiceNumber,
+      total: toDbMoney(effectiveTotalD),
+      status,
+      priceOverride: belowCost,
+      ...(negativeDips.length ? { negativeDips } : {}),
+    };
   });
 }

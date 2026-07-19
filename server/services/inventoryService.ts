@@ -78,6 +78,13 @@ export interface ApplyMovementArgs {
    * الافتراضي false ⇒ السلوك التاريخي (حظر البيع الزائد) محفوظ تماماً لكل المستدعين الحاليين.
    */
   allowNegative?: boolean;
+  /**
+   * «وضع الافتتاح» (ش٢، ١٩/٧): يسمح بالنزول تحت الصفر **فقط إذا كان الصنف غير مُفتتَح**
+   * (branchStock.openedAt IS NULL) — يُفحص تحت قفل FOR UPDATE نفسه فلا سباق مع اعتماد جرد
+   * افتتاحي متزامن (يختم openedAt فيقفل السالب فوراً). مستقلّ تماماً عن allowNegative
+   * (استهلاكيات الطباعة/إعادة تشغيل الأوفلاين — يبقيان بلا شرط openedAt).
+   */
+  allowNegativeUnopened?: boolean;
 }
 export interface ApplyMovementResult {
   movementId: number;
@@ -118,15 +125,18 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
     .onDuplicateKeyUpdate({ set: { variantId: sql`${branchStock.variantId}` } });
 
   const rows = await tx
-    .select({ quantity: branchStock.quantity })
+    .select({ quantity: branchStock.quantity, openedAt: branchStock.openedAt })
     .from(branchStock)
     .where(and(eq(branchStock.variantId, a.variantId), eq(branchStock.branchId, a.branchId)))
     .for("update")
     .limit(1);
   const currentQty = rows[0]?.quantity ?? 0;
+  // «وضع الافتتاح»: السماح المشروط يسري على غير المُفتتَح فقط — openedAt مقروء تحت نفس القفل
+  // (صفٌّ يُنشأ الآن = غير مُفتتَح بداهةً؛ واعتمادُ جردٍ افتتاحي متزامن يتسلسل على هذا القفل).
+  const negativeAllowed = a.allowNegative || (a.allowNegativeUnopened === true && rows[0]?.openedAt == null);
 
   const sign = SIGN[a.movementType];
-  if (DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity && !a.allowNegative) {
+  if (DEDUCTING.has(a.movementType) && currentQty < a.baseQuantity && !negativeAllowed) {
     throw new TRPCError({
       code: "CONFLICT",
       message: `المخزون غير كافٍ: المتاح ${currentQty}، المطلوب ${a.baseQuantity}`,

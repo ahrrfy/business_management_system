@@ -68,4 +68,7 @@ export interface CreateSaleResult {
   idempotentReplay?: boolean;
   /** SALES-01/02: صحيح إن باع بند/فاتورة تحت التكلفة (طُبِّق بموافقة) — للتدقيق. */
   priceOverride?: boolean;
+  /** «وضع الافتتاح» (ش٢): أصناف هبطت تحت الصفر بهذا البيع (معلومة استشارية للمحاولة الفائزة
+   *  فقط — replay الـidempotency لا يعيدها؛ حدث التدقيق sale.openingNegative يقع مرّة واحدة). */
+  negativeDips?: { variantId: number; newQuantity: number }[];
 }

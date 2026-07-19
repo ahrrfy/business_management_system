@@ -113,6 +113,9 @@ export default function SalesInvoiceNew() {
   // حرّاً بتبديلها يدوياً بعدها (لا نُعيد التهيئة عند كل جلب/إعادة رسم).
   const taxDefaultsAppliedRef = useRef(false);
   const taxSettingsQuery = trpc.system.getTaxSettings.useQuery();
+  // «وضع الافتتاح» (ش٥): هذه الشاشة تمرّ بقناة POS نفسها (sourceType الافتراضي) ⇒ بيعٌ نقدي كامل
+  // منها يستفيد من السالب المشروط أيضاً — لافتة توضيحية كي لا يبدو ذلك سلوكاً غريباً.
+  const openingModeQuery = trpc.system.getOpeningMode.useQuery(undefined, { staleTime: 60_000 });
   useEffect(() => {
     if (!taxDefaultsAppliedRef.current && taxSettingsQuery.data) {
       dispatch({ type: "SET_FIELD", field: "taxEnabled", value: taxSettingsQuery.data.enabledByDefault });
@@ -399,6 +402,16 @@ export default function SalesInvoiceNew() {
 
       {/* رأس الفاتورة (بيانات المستند + العميل + الشروط المالية) */}
       <InvoiceHeader state={state} dispatch={dispatch} invoiceType={INVOICE_TYPE} />
+
+      {openingModeQuery.data?.active === true && (
+        <div className="flex items-center gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-800 dark:text-amber-300">
+          <AlertTriangle aria-hidden className="size-3.5 shrink-0" />
+          <span>
+            وضع الافتتاح فعّال حتى نهاية يوم {openingModeQuery.data.endsAtYmd} — البيع النقدي المدفوع بالكامل
+            لصنف غير مجرود افتتاحياً يُسجَّل ولو نفد رصيده (ينزل بالسالب)؛ الآجل وغير النقدي صارمان.
+          </span>
+        </div>
+      )}
 
       {hasZeroPriceLine && (
         <div className="badge-stock-low flex items-center gap-2 rounded-md border px-3 py-1.5 text-xs font-semibold">

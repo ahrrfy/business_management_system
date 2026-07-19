@@ -27,6 +27,8 @@ export interface PosRow {
   isBaseUnit: boolean;
   price: string | null; // null = no price defined for this unit×tier
   stockBase: number; // variant stock in base units at the branch
+  /** «وضع الافتتاح» (ش٥): لحظة تثبيت الرصيد الافتتاحي — null = غير مُفتتَح (يُباع نقداً بالسالب أثناء النافذة). */
+  openedAt: Date | null;
   isService: boolean; // مُنتج خِدمي: لا مَخزون، POS يَتجاوز فَحص نَقص المَخزون.
   // شاشة الاستقبال الهجينة: المنتج المخصّص يفتح نافذة التخصيص بدل الإضافة المباشرة للسلّة.
   isCustomizable: boolean;
@@ -65,6 +67,9 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       isBaseUnit: productUnits.isBaseUnit,
       price: productPrices.price,
       stockBase: branchStock.quantity,
+      // «وضع الافتتاح» (ش٥): يتيح لواجهة POS تمييز الصنف غير المُفتتَح (يُباع نقداً بالسالب
+      // أثناء النافذة) عن «نافذ» الصارم — الحارس الفعلي خادميّ في sale/create بأي حال.
+      openedAt: branchStock.openedAt,
       isService: products.isService,
       isCustomizable: products.isCustomizable,
       productType: products.productType,
@@ -91,6 +96,7 @@ function normalize(rows: any[]): PosRow[] {
     productUnitId: Number(r.productUnitId),
     isBaseUnit: !!r.isBaseUnit,
     stockBase: r.stockBase ?? 0,
+    openedAt: r.openedAt ?? null,
     isService: !!r.isService,
     isCustomizable: !!r.isCustomizable,
     isPrintService: r.productType === PRINT_SERVICE_TYPE,

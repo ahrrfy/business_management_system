@@ -267,6 +267,9 @@ export const saleRouter = router({
             if (approvedBy != null) await logAudit(ctx, { action: "sale.creditOverride", entityType: "invoice", entityId: (res as { invoiceId?: number })?.invoiceId, newValue: { approvedByManagerId: approvedBy } });
             // SALES-01/02: أثر تدقيقي صريح للبيع تحت التكلفة (لا يُكتفى بعدّ الأسطر).
             if (res.priceOverride) await logAudit(ctx, { action: "sale.priceOverride", entityType: "invoice", entityId: res.invoiceId, newValue: { approvedByUserId: priceOverrideApprovedBy, byRole: ctx.user.role } });
+            // «وضع الافتتاح» (ش٢): أثر تدقيقي لكل بيعٍ أنزل صنفاً تحت الصفر — يقع مرّة واحدة على
+            // المحاولة الفائزة (replay لا يعيد negativeDips). مصدر الحقيقة الدائم = حركة المخزون بملاحظتها.
+            if (res.negativeDips?.length) await logAudit(ctx, { action: "sale.openingNegative", entityType: "invoice", entityId: res.invoiceId, newValue: { dips: res.negativeDips } });
           }
           return res;
         } catch (e: any) {
