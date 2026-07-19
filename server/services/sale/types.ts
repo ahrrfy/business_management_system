@@ -50,6 +50,14 @@ export interface CreateSaleInput {
   /** SALES-01/02: موافقة على البيع بأقل من التكلفة (سعر override أو خصم يَنزل بالبند/الفاتورة تحت COGS).
    *  يضبطها الراوتر: مدير/أدمن لهما السلطة ذاتياً، والكاشير يحتاج managerApproval مُتحقَّقاً. */
   priceOverrideApproved?: boolean;
+  /** أوفلاين (ش٣ — داخلي، لا يعرضه saleRouter): بيانات التقاط بيعٍ جرى دون اتصال —
+   *  يضبطها offline.replaySale حصراً. تُخزَّن على الفاتورة (originatedOffline/الرقم المؤقّت/
+   *  لحظة الالتقاط الحقيقية) — قيود الدفتر تبقى بوقت الخادم (سلامة assertPeriodOpen). */
+  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string } | null;
+  /** أوفلاين (ش٣ — داخلي): سماح بمخزون سالب — البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛
+   *  رفض التسجيل يجعل الدفاتر تكذب (قرار مالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق).
+   *  يضبطه offline.replaySale فقط، والوسم = originatedOffline + تقرير المبيعات الأوفلاين. */
+  allowNegativeStock?: boolean;
 }
 
 export interface CreateSaleResult {

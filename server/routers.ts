@@ -58,6 +58,7 @@ import { storefrontRouter } from "./routers/storefrontRouter";
 import { storeAdminRouter } from "./routers/storeAdminRouter";
 import { courierRouter } from "./routers/courierRouter";
 import { crmRouter } from "./routers/crmRouter";
+import { offlineRouter } from "./routers/offlineRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -65,6 +66,8 @@ import { crmRouter } from "./routers/crmRouter";
 export const appRouter = router({
   system: systemRouter,
   auth: authRouter,
+  // العمل دون اتصال (لقطات النموذج المحلي) — الشريحة ٢ من خطة الأوفلاين.
+  offline: offlineRouter,
   users: userRouter,
   roles: roleRouter,
   sales: saleRouter,

@@ -11,9 +11,11 @@
 // حَدّ Suspense واحد حَول `Switch` (لا حَول كل Route) ⇒ تَنقّل المَسارات يُظهر fallback
 // مَرّة واحدة فَقط أثناء جَلب chunk الوِجهة، والـAppLayout (الشَريط الجانبي/الترويسة) يَبقى
 // مَرسوماً. fallback نَفس نَصّ `Protected` ⇒ تَتابع بصري سَلِس.
-import { Suspense, useEffect } from "react";
+import { Suspense, useCallback, useEffect } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
+import { AuthConnectionError, OnlineGate } from "@/components/offline/OfflineGate";
+import { OfflineBanner } from "@/components/offline/OfflineBanner";
 import { RequireRole } from "@/components/RequireRole";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
 import { RouteFallback } from "@/components/RouteFallback";
@@ -123,11 +125,19 @@ const CountPortal = lazy(() => import("@/pages/CountPortal"));
 
 function Protected({ children }: { children: React.ReactNode }) {
   const me = trpc.auth.me.useQuery();
+  const retry = useCallback(() => {
+    void me.refetch();
+  }, [me.refetch]);
+  // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.
+  if (me.data) return <>{children}</>;
   if (me.isLoading) {
     return <div className="min-h-screen flex items-center justify-center text-muted-foreground">جارٍ التحميل…</div>;
   }
-  if (!me.data) return <Redirect to="/login" />;
-  return <>{children}</>;
+  // ش١ أوفلاين: فشل الجلب بلا بيانات (إقلاع والاتصال مقطوع) ليس انتهاء جلسة — قبل هذا الإصلاح
+  // كان أي انقطاع عند الإقلاع يُعامَل كغياب جلسة فيُرمى المستخدم إلى شاشة الدخول.
+  if (me.isError) return <AuthConnectionError onRetry={retry} />;
+  // ردّ الخادم وصل فعلاً وقال «لا جلسة» (data === null) ⇒ الدخول مطلوب حقاً.
+  return <Redirect to="/login" />;
 }
 
 function Shell({ children }: { children: React.ReactNode }) {
@@ -135,7 +145,10 @@ function Shell({ children }: { children: React.ReactNode }) {
     <Protected>
       <AppLayout>
         {/* حدّ خطأ لكل صفحة: عطل شاشة واحدة لا يُعطّل التنقّل/الشريط الجانبي. */}
-        <RouteErrorBoundary>{children}</RouteErrorBoundary>
+        {/* OnlineGate: من فتح الشاشة والاتصال مقطوع يرى رسالة صادقة بدل استعلامات تفشل (ش١ أوفلاين). */}
+        <RouteErrorBoundary>
+          <OnlineGate>{children}</OnlineGate>
+        </RouteErrorBoundary>
       </AppLayout>
     </Protected>
   );
@@ -192,6 +205,8 @@ export default function App() {
   return (
     <ErrorBoundary>
     <HostPolicy />
+    {/* شريط حالة الاتصال — على مستوى App كي يظهر أيضاً في شاشات ملء الشاشة (POS/قارئ الأسعار/الدخول). */}
+    <OfflineBanner />
     <Suspense fallback={<RouteFallback />}>
     <Switch>
       <Route path="/login" component={Login} />

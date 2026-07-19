@@ -12,6 +12,10 @@ import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printRec
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
+import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
+import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
+import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { keepPreviousData } from "@tanstack/react-query";
@@ -274,6 +278,11 @@ export default function POS() {
   const branchId = me.data?.branchId ?? 1;
   const utils    = trpc.useUtils();
 
+  // ش٢ أوفلاين: حالة الاتصال + مزامنة النموذج المحلي (كتالوج/مخزون/عملاء) دورياً وعند العودة.
+  const connState = useConnectivity();
+  const offline = isDisconnected(connState);
+  useOfflineCatalogSync(me.data ? branchId : null);
+
   // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة الزبائن RECEPTION).
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
   const shift  = shiftQ.data;
@@ -451,11 +460,32 @@ export default function POS() {
     // بند 12ب (٧/٧): تمرير العميل — صاحب سعر تعاقدي يرى سعره (يثبَّت لاحقاً override بمسار POS-ROUND القائم).
     { branchId, tier: effectiveTier, query: debouncedSearch, limit: 20, customerId: activeTab.customerId },
     {
-      enabled: debouncedSearch.trim().length >= 2,
+      enabled: !offline && debouncedSearch.trim().length >= 2,
       placeholderData: keepPreviousData,
       staleTime: 15_000,
     }
   );
+  // ش٢ أوفلاين: أثناء الانقطاع يُخدَم البحث من النموذج المحلي (Dexie) بنفس شكل PosRow —
+  // بقية الشاشة (addRow/السلة/الأسعار) لا تعرف الفرق. العروض/التعاقدي معطّلة أوفلاين بالخطة.
+  const [offlineResults, setOfflineResults] = useState<PosRow[]>([]);
+  const [offlineSearching, setOfflineSearching] = useState(false);
+  useEffect(() => {
+    if (!offline || debouncedSearch.trim().length < 2) {
+      setOfflineResults([]);
+      setOfflineSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setOfflineSearching(true);
+    void offlineSearchCatalog(debouncedSearch, effectiveTier, { limit: 20 }).then((rows) => {
+      if (cancelled) return;
+      setOfflineResults(rows as PosRow[]);
+      setOfflineSearching(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [offline, debouncedSearch, effectiveTier]);
 
   // ── Cart ops ──────────────────────────────────────────────────────────────
   function addRow(row: PosRow) {
@@ -500,14 +530,17 @@ export default function POS() {
   const lookupBarcode = useCallback(async (code: string) => {
     if (!code) return;
     try {
-      const row = await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
+      // ش٢ أوفلاين: أثناء الانقطاع تُخدَم المطابقة من النموذج المحلي (الأساسي + البدائل).
+      const row = offline
+        ? await offlineFindByBarcode(code, effectiveTier)
+        : await utils.catalog.byBarcode.fetch({ barcode: code, branchId, tier: effectiveTier, customerId: activeTab.customerId });
       if (!row) notify.err(`باركود غير معروف: ${code}`);
-      else addRow(row);
+      else addRow(row as PosRow);
     } catch (e: unknown) {
       notify.err(e, "خطأ في المسح");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [branchId, effectiveTier, activeTab.customerId]);
+  }, [branchId, effectiveTier, activeTab.customerId, offline]);
 
   const { handleKeyDown: handleScanKeyDown } = useSmartScanInput(lookupBarcode);
 
@@ -623,11 +656,20 @@ export default function POS() {
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd(""); setSaleError(null);
     },
     onError: (e) => {
+      const code = (e.data as unknown as { code?: string })?.code;
+      // ش٣ أوفلاين — تدهور سلس: فشل نقل (لا كود tRPC بنيوي = الطلب لم يصل أصلاً) في أول بيعة
+      // بعد انقطاعٍ لم يكتشفه المسبار بعد ⇒ حوّل تلقائياً للالتقاط المحلي بدل خطأ محيّر للكاشير.
+      // نفس clientRequestId يبقى ⇒ لو كان الطلب وصل الخادم فعلاً وضاع الردّ، الترحيل اللاحق
+      // يطابقه idempotent-ياً (لا ازدواج) ويعرض ربط OFF ↔ INV في درج المزامنة.
+      if (!code) {
+        saleCtxRef.current = null;
+        void captureOfflineSale();
+        return;
+      }
       // #6 (تدقيق التثبيت): بوّابتا حدّ الائتمان (server/lib/credit.ts) والبيع دون التكلفة
       // (sale/create.ts) ترميان FORBIDDEN لا PRECONDITION_FAILED، فكان حوار موافقة المدير لا يُفتَح
       // على الكاشير الرئيسي (بخلاف PrintPOS عبر printSaleService) ⇒ يتعذّر البيع المُصرَّح ولو حضر
       // المدير. نطابق الرسالة كـSalesInvoiceNew:179 (مع إبقاء PRECONDITION_FAILED دفاعاً).
-      const code = (e.data as unknown as { code?: string })?.code;
       if (code === "PRECONDITION_FAILED" || (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة"))))
         setCreditPrompt(e.message);
       // خطأ بيع حرج (نقص مخزون/رفض) ⇒ تنبيه بارز أكبر وأوضح يلتقطه الكاشير فوراً.
@@ -711,6 +753,69 @@ export default function POS() {
     };
   }
 
+  // ── التقاط البيع دون اتصال (ش٣) ─────────────────────────────────────────────
+  // نقدي كامل فقط (قرار مالك): يُحفظ البيع في طابور Dexie بنفس clientRequestId الذي كان
+  // سيستعمله أونلاين، يُطبع إيصال مؤقّت OFF-... بنفس التصميم، ويُرحَّل تلقائياً عند عودة
+  // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
+  async function captureOfflineSale() {
+    if (!shift || !cart.length) return;
+    if (activeTab.method !== "CASH" || isCredit) {
+      notify.errBig("أثناء انقطاع الاتصال: البيع النقدي الكامل فقط — الآجل والبطاقة يتطلبان اتصالاً بالخادم.");
+      return;
+    }
+    if (activeTab.couponCode) {
+      notify.errBig("الكوبونات والعروض غير متاحة دون اتصال — أزل الكوبون أولاً.");
+      return;
+    }
+    // صمّاما الأمان: عمر الأسعار المحلية + سقف قيمة الطابور.
+    const gate = await assertCanCapture(cashRoundedTotal);
+    if (!gate.ok) {
+      notify.errBig(gate.reason);
+      return;
+    }
+    const ctx = captureSaleCtx();
+    const receiptNumber = await allocateOfflineReceiptNumber(branchId);
+    const ok = await enqueueOfflineSale({
+      payload: {
+        branchId,
+        shiftId: shift.id,
+        customerId: activeTab.customerId ?? undefined,
+        priceTier: effectiveTier,
+        // promotionId يُسقَط عمداً — العروض معطّلة أوفلاين (الخادم يرفض غير المعروف في مخططه).
+        lines: cart.map(buildSaleLine).map(({ promotionId: _p, ...rest }) => rest),
+        payment: { amount: money(total), method: "CASH" },
+        clientRequestId: activeTab.clientRequestId,
+        cashRoundIQD: true,
+      },
+      offlineReceiptNumber: receiptNumber,
+      total: money(cashRoundedTotal),
+    });
+    if (!ok) {
+      notify.errBig("تعذّر حفظ البيع محلياً (مساحة المتصفح؟) — لا تُسلّم البضاعة قبل عودة الاتصال.");
+      return;
+    }
+    const now = new Date();
+    const rec: Receipt = {
+      invoiceNumber: receiptNumber,
+      invoiceId: 0, // لا فاتورة رسمية بعد — الطباعة تستعمل الرقم فقط.
+      date: now.toLocaleString("ar-IQ-u-nu-latn"),
+      printDate: now.toLocaleDateString("en-GB"),
+      printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+      cashierName: ctx.cashierName,
+      customerName: ctx.customerName,
+      lines: ctx.lines,
+      total: ctx.total, received: ctx.received, change: ctx.change,
+      credit: ctx.credit, isCredit: ctx.isCredit,
+      method: ctx.method,
+    };
+    setReceipt(rec);
+    setLastInv({ num: receiptNumber, total: ctx.total });
+    clearCartDraft(branchId);
+    notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
+    patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
+    await printReceipt(buildBrandedReceipt(rec));
+  }
+
   function submitSale(approval?: { email: string; password: string }) {
     setSaleError(null);
     if (!shift || !cart.length) return;
@@ -722,6 +827,11 @@ export default function POS() {
     }
     if (isCredit && activeTab.customerId == null) {
       notify.err("البيع الآجل يتطلّب اختيار عميل.");
+      return;
+    }
+    // ش٣ أوفلاين: الاتصال مقطوع ⇒ التقاط محلي (نقدي كامل فقط) بدل نداء سيفشل.
+    if (offline) {
+      void captureOfflineSale();
       return;
     }
     // §٩: التقريب النقدي IQD يُحسب على الخادم للبيع النقدي الكامل (يُسجَّل ADJUST لفرق التقريب).
@@ -744,6 +854,11 @@ export default function POS() {
   function quickPay() {
     setSaleError(null);
     if (!shift || !cart.length) return;
+    // ش٣ أوفلاين: الدفع السريع نقدي كامل بطبيعته ⇒ مؤهَّل للالتقاط المحلي مباشرة.
+    if (offline) {
+      void captureOfflineSale();
+      return;
+    }
     // §٩: quickPay دائماً CASH كامل ⇒ الخادم يقرّب لفئة IQD (لا تقريب على العميل في مبلغ الدفع).
     saleCtxRef.current = captureSaleCtx();
     const payAmount = money(total);
@@ -884,9 +999,9 @@ export default function POS() {
         C={C}
         search={search} setSearch={setSearch}
         showDrop={showDrop} setShowDrop={setShowDrop}
-        results={search.trim().length >= 2 ? (searchResults.data ?? []) : []}
-        searching={searchResults.isFetching}
-        searchSettled={!searchResults.isFetching && debouncedSearch.trim() === search.trim() && search.trim().length >= 2}
+        results={search.trim().length >= 2 ? (offline ? offlineResults : (searchResults.data ?? [])) : []}
+        searching={offline ? offlineSearching : searchResults.isFetching}
+        searchSettled={(offline ? !offlineSearching : !searchResults.isFetching) && debouncedSearch.trim() === search.trim() && search.trim().length >= 2}
         addToCart={addRow}
         searchRef={searchRef}
         handleScanKeyDown={handleScanKeyDown}
@@ -903,6 +1018,9 @@ export default function POS() {
 
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
+
+      {/* ش٣ أوفلاين: شارة/درج مزامنة المبيعات الملتقطة (تظهر فقط حين يوجد طابور/معلّقات). */}
+      <OfflineSyncChip />
 
       {/* Body */}
       <div style={{ flex: 1, display: "flex", flexDirection: stacked ? "column-reverse" : "row", overflow: "hidden", padding: "7px 8px 8px", gap: 7, minHeight: 0 }}>
@@ -1896,6 +2014,25 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const [counted, setCounted] = useState("");
   const utils = trpc.useUtils();
 
+  // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
+  // فواتير في Z ⇒ محجوب افتراضياً؛ المدير/الأدمن يتجاوز بإقرار صريح (تُرحَّل لاحقاً وتدخل
+  // الوردية موسومةً «مُزامنة لاحقاً» في التقرير).
+  const [outboxQueued, setOutboxQueued] = useState({ count: 0, total: 0 });
+  const [overrideAck, setOverrideAck] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      void readOutboxSummary().then((s) => {
+        if (alive) setOutboxQueued({ count: s.queued, total: s.queuedTotal });
+      });
+    };
+    load();
+    const off = subscribeOutbox(load);
+    return () => { alive = false; off(); };
+  }, []);
+  const isElevated = me?.role === "admin" || me?.role === "manager";
+  const closeBlocked = outboxQueued.count > 0 && !(isElevated && overrideAck);
+
   const reportQ = trpc.shifts.report.useQuery(
     { shiftId: shift!.id },
     { enabled: !!shift }
@@ -1934,7 +2071,9 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const cashInD     = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "IN" ).reduce((s, p) => s.plus(D(p.total)), D(0));
   const cashOutD    = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "OUT").reduce((s, p) => s.plus(D(p.total)), D(0));
   const openingD    = D(shift?.openingBalance ?? 0);
-  const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD) : null;
+  // ش٤: النقد غير المُزامَن موجود فيزيائياً بالدرج ⇒ يدخل المتوقع المعروض للعدّ (الخادم عند
+  // الإغلاق يحسب المُزامَن فقط، والفرق يُفسَّر لاحقاً بقسم «مُزامنة لاحقاً» في التقرير).
+  const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD).plus(D(outboxQueued.total)) : null;
   const countedD    = counted ? D(counted) : null;
   const diffD       = expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
@@ -1964,7 +2103,10 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               ["عدد الفواتير",     `${report?.invoiceCount ?? 0} فاتورة`],
               ["إجمالي المبيعات",  `${fmt(Number(report?.salesTotal ?? 0))} د.ع`],
               ["الرصيد الافتتاحي", `${fmt(openingBal)} د.ع`],
-              ...(report != null ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut)} د.ع`] as [string, string]] : []),
+              ...(outboxQueued.count > 0
+                ? [["مبيعات غير مُزامنة (نقدها بالدرج)", `${outboxQueued.count} فاتورة · ${fmt(outboxQueued.total)} د.ع`] as [string, string]]
+                : []),
+              ...(report != null ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut + outboxQueued.total)} د.ع`] as [string, string]] : []),
             ] as [string, string][]).map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
                 <span style={{ color: C.mutedFg }}>{l}</span>
@@ -2003,16 +2145,36 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               )}
             </div>
 
+            {/* ش٤ أوفلاين: حارس الطابور غير المُزامَن — حجب الإغلاق (تجاوز مديري بإقرار صريح). */}
+            {outboxQueued.count > 0 && (
+              <div style={{ marginTop: 14, padding: "10px 12px", background: C.amberSoft, border: `1.5px solid ${C.amber}`, borderRadius: 9, fontSize: 12.5, color: C.fg }}>
+                <div style={{ fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                  <AlertTriangle aria-hidden size={15} /> توجد {outboxQueued.count} فاتورة غير مُزامنة ({fmt(outboxQueued.total)} د.ع)
+                </div>
+                <div style={{ marginTop: 4, color: C.mutedFg }}>
+                  أكمل المزامنة قبل الإغلاق (شارة المزامنة أسفل الشاشة) — نقدها في الدرج ولن تظهر في Z قبل الترحيل.
+                </div>
+                {isElevated ? (
+                  <label style={{ display: "flex", alignItems: "flex-start", gap: 7, marginTop: 8, cursor: "pointer", fontWeight: 700 }}>
+                    <input type="checkbox" checked={overrideAck} onChange={(e) => setOverrideAck(e.target.checked)} style={{ marginTop: 3 }} />
+                    <span>إغلاق رغم ذلك — تُرحَّل لاحقاً وتدخل الوردية موسومةً «مُزامنة لاحقاً» في التقرير</span>
+                  </label>
+                ) : (
+                  <div style={{ marginTop: 6, fontWeight: 700 }}>يستطيع المدير الإغلاق متجاوزاً عند الضرورة.</div>
+                )}
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose}
                 style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending}
+                disabled={!counted || closeShift.isPending || closeBlocked}
                 onClick={() => shift && closeShift.mutate({ shiftId: shift.id, countedCash: counted })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending ? C.muted : C.danger, color: !counted || closeShift.isPending ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
-                {closeShift.isPending ? "جارٍ الإغلاق…" : "إغلاق وطباعة Z"}
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
+                {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : "إغلاق وطباعة Z"}
               </button>
             </div>
           </>
