@@ -207,7 +207,7 @@ export async function getOnlineOrder(id: number, scopedBranchId: number | null):
 
 /** تغيير حالة طلب (بحارس انتقال + عزل فرع). يعيد الحالة السابقة للتدقيق. */
 export async function setOnlineOrderStatus(
-  input: { id: number; status: OnlineOrderStatus; scopedBranchId: number | null },
+  input: { id: number; status: OnlineOrderStatus; scopedBranchId: number | null; cancelReason?: string | null },
   _actorUserId: number
 ): Promise<{ id: number; from: string; to: OnlineOrderStatus }> {
   return withTx(async (tx) => {
@@ -246,7 +246,13 @@ export async function setOnlineOrderStatus(
         throw new TRPCError({ code: "BAD_REQUEST", message: "الطلب أُرسِل وله فاتورة — لا يُلغى بتغيير الحالة. استعمل «تعذّر التسليم» (المندوب) أو إرجاع الفاتورة (المدير) لعكس البيع والمخزون." });
       }
     }
-    await tx.update(onlineOrders).set({ status: input.status }).where(eq(onlineOrders.id, input.id));
+    // نُثبِّت سبب الإلغاء (اختياريّ) عند CANCELLED فقط — كي لا يُطمَس سببٌ سبق أن سجّله المندوب في
+    // مسارٍ آخر عند انتقالات غير الإلغاء. الإلغاء اليدويّ هنا محصورٌ بطلبٍ قبل الإرسال (بلا فاتورة).
+    const patch =
+      input.status === "CANCELLED"
+        ? { status: input.status, cancelReason: input.cancelReason?.trim() ? input.cancelReason.trim().slice(0, 500) : null }
+        : { status: input.status };
+    await tx.update(onlineOrders).set(patch).where(eq(onlineOrders.id, input.id));
     return { id: input.id, from, to: input.status };
   });
 }
