@@ -31,10 +31,13 @@ const STATUS_META: Record<Status, { label: string; pill: string }> = {
   CANCELLED: { label: "ملغى", pill: "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-400" },
 };
 
-/** الخطوة الأمامية بتغيير حالة بحت (بلا أثر مالي). CONFIRMED/PROCESSING تُرسَل عبر منتقي المندوب
- *  (orders.dispatch) الذي يُنشئ الفاتورة — فلا تُدرَج هنا. */
+/** الخطوة الأمامية بتغيير حالة بحت (بلا أثر مالي). الإرسال (SHIPPED) يتمّ عبر منتقي المندوب
+ *  (orders.dispatch) الذي يُنشئ الفاتورة — فلا يُدرَج هنا؛ لكن «بدء التجهيز» (CONFIRMED→PROCESSING)
+ *  خطوةُ حالةٍ بحتةٌ اختياريّة تسبق الإرسال (الخادم يسمح بها في ALLOWED_TRANSITIONS، ومنتقي المندوب
+ *  يقبل CONFIRMED وPROCESSING معاً). */
 const NEXT_STEP: Partial<Record<Status, { to: Status; label: string }>> = {
   PENDING: { to: "CONFIRMED", label: "تثبيت الطلب" },
+  CONFIRMED: { to: "PROCESSING", label: "بدء التجهيز" },
   SHIPPED: { to: "DELIVERED", label: "تم التسليم" },
 };
 
@@ -42,6 +45,7 @@ const FILTERS: { value: Status | null; label: string }[] = [
   { value: null, label: "الكل" },
   { value: "PENDING", label: "وارد" },
   { value: "CONFIRMED", label: "مثبَّت" },
+  { value: "PROCESSING", label: "قيد التجهيز" },
   { value: "SHIPPED", label: "مع المندوب" },
   { value: "DELIVERED", label: "سُلّم" },
 ];
@@ -56,6 +60,7 @@ export default function OrderFulfillment() {
   const [filter, setFilter] = useState<Status | null>(null);
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [dispatchTarget, setDispatchTarget] = useState<OrderRow | null>(null);
+  const [cancelTarget, setCancelTarget] = useState<{ id: number; orderNumber: string } | null>(null);
   const utils = trpc.useUtils();
 
   const me = trpc.auth.me.useQuery();
@@ -69,6 +74,7 @@ export default function OrderFulfillment() {
   const setStatusM = trpc.storeAdmin.orders.setStatus.useMutation({
     onSuccess: (res) => {
       notify.ok(`تم تحديث الطلب إلى «${STATUS_META[res.to].label}»`);
+      setCancelTarget(null);
       void utils.storeAdmin.orders.list.invalidate();
       void utils.storeAdmin.orders.counts.invalidate();
     },
@@ -90,10 +96,6 @@ export default function OrderFulfillment() {
   async function advance(id: number, to: Status, label: string) {
     const ok = await confirm({ title: `${label}؟`, description: `الطلب رقم ${id}` });
     if (ok) setStatusM.mutate({ id, status: to });
-  }
-  async function cancel(id: number) {
-    const ok = await confirm({ title: "إلغاء الطلب؟", description: `الطلب رقم ${id} — لا يمكن التراجع` });
-    if (ok) setStatusM.mutate({ id, status: "CANCELLED" });
   }
   async function printLabel(id: number) {
     setPrintingId(id);
@@ -142,7 +144,7 @@ export default function OrderFulfillment() {
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
         <StatCard label="وارد" value={counts.PENDING ?? 0} icon={ClipboardList} tone="warning" onClick={() => setFilter("PENDING")} />
         <StatCard label="مثبَّت" value={counts.CONFIRMED ?? 0} icon={Check} tone="info" onClick={() => setFilter("CONFIRMED")} />
-        <StatCard label="قيد التجهيز" value={counts.PROCESSING ?? 0} icon={Package} />
+        <StatCard label="قيد التجهيز" value={counts.PROCESSING ?? 0} icon={Package} tone="info" onClick={() => setFilter("PROCESSING")} />
         <StatCard label="مع المندوب" value={counts.SHIPPED ?? 0} icon={Truck} onClick={() => setFilter("SHIPPED")} />
         <StatCard label="سُلّم" value={counts.DELIVERED ?? 0} icon={Check} tone="positive" onClick={() => setFilter("DELIVERED")} />
       </div>
@@ -252,7 +254,7 @@ export default function OrderFulfillment() {
                         )}
                         {(st === "PENDING" || st === "CONFIRMED" || st === "PROCESSING") && (
                           <button
-                            onClick={() => cancel(o.id)}
+                            onClick={() => setCancelTarget({ id: o.id, orderNumber: o.orderNumber })}
                             disabled={isBusy}
                             className="flex items-center gap-1 rounded-lg px-2 py-1.5 text-xs font-medium text-rose-500 transition hover:bg-rose-50 disabled:opacity-50 dark:hover:bg-rose-500/10"
                           >
@@ -278,6 +280,100 @@ export default function OrderFulfillment() {
           onConfirm={(partyId) => dispatchM.mutate({ id: dispatchTarget.id, partyId })}
         />
       )}
+
+      {cancelTarget && (
+        <CancelModal
+          order={cancelTarget}
+          pending={setStatusM.isPending}
+          onClose={() => !setStatusM.isPending && setCancelTarget(null)}
+          onConfirm={(reason) => setStatusM.mutate({ id: cancelTarget.id, status: "CANCELLED", cancelReason: reason || undefined })}
+        />
+      )}
+    </div>
+  );
+}
+
+/** حوار إلغاء طلب المتجر — سببٌ اختياريّ (يظهر لاحقاً في صفّ الطلب الملغى وسجلّ التدقيق). محصورٌ
+ *  بطلبٍ قبل الإرسال (بلا فاتورة) — الإلغاء بعده يكون بإرجاع الفاتورة أو «تعذّر التسليم». */
+const CANCEL_REASONS = ["نفد المخزون", "تعذّر التواصل مع الزبون", "طلب مكرَّر", "رفض الزبون الطلب", "خارج نطاق التوصيل"];
+function CancelModal({
+  order,
+  pending,
+  onClose,
+  onConfirm,
+}: {
+  order: { id: number; orderNumber: string };
+  pending: boolean;
+  onClose: () => void;
+  onConfirm: (reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape" && !pending) onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [pending, onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4"
+      role="dialog"
+      aria-modal="true"
+      aria-label="إلغاء الطلب"
+      onClick={onClose}
+    >
+      <div className="w-full max-w-md rounded-2xl bg-card p-5 shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="mb-1 flex items-center gap-2 text-base font-bold text-rose-600">
+          <X aria-hidden className="size-5" />
+          إلغاء الطلب <span dir="ltr" className="tracking-wider text-foreground">{order.orderNumber}</span>
+        </div>
+        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">
+          لا يمكن التراجع. اذكر سبب الإلغاء (اختياريّ) — يُحفَظ ويظهر في صفّ الطلب وسجلّ التدقيق.
+        </p>
+
+        <div className="mb-2 flex flex-wrap gap-1.5">
+          {CANCEL_REASONS.map((r) => (
+            <button
+              key={r}
+              type="button"
+              onClick={() => setReason(r)}
+              className={`rounded-full px-2.5 py-1 text-xs font-bold transition ${
+                reason === r ? "bg-rose-600 text-white" : "bg-muted text-muted-foreground hover:bg-accent"
+              }`}
+            >
+              {r}
+            </button>
+          ))}
+        </div>
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          maxLength={500}
+          rows={2}
+          placeholder="سبب الإلغاء…"
+          className="mb-3 w-full rounded-lg border border-input bg-transparent px-3 py-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        />
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={pending}
+            className="rounded-lg border border-border px-3.5 py-1.5 text-xs font-bold transition hover:bg-accent disabled:opacity-50"
+          >
+            تراجع
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(reason.trim())}
+            disabled={pending}
+            className="flex items-center gap-1 rounded-lg bg-rose-600 px-3.5 py-1.5 text-xs font-bold text-white transition hover:bg-rose-700 disabled:opacity-50"
+          >
+            {pending ? <Loader2 aria-hidden className="size-3.5 animate-spin" /> : <X aria-hidden className="size-3.5" />}
+            تأكيد الإلغاء
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -79,16 +79,16 @@ const ordersRouter = router({
 
   /** تثبيت/نقل حالة الطلب (بحارس انتقال + تدقيق). */
   setStatus: storeFulfillProcedure
-    .input(z.object({ id: z.number().int().positive(), status: statusEnum }))
+    .input(z.object({ id: z.number().int().positive(), status: statusEnum, cancelReason: z.string().trim().max(500).optional() }))
     .mutation(async ({ input, ctx }) => {
       const scopedBranchId = actorScopedBranch(ctx.user);
-      const res = await setOnlineOrderStatus({ id: input.id, status: input.status, scopedBranchId }, ctx.user.id);
+      const res = await setOnlineOrderStatus({ id: input.id, status: input.status, scopedBranchId, cancelReason: input.cancelReason }, ctx.user.id);
       await logAudit(ctx, {
         action: "store.order.setStatus",
         entityType: "onlineOrder",
         entityId: input.id,
         oldValue: { status: res.from },
-        newValue: { status: res.to },
+        newValue: { status: res.to, ...(input.status === "CANCELLED" && input.cancelReason ? { cancelReason: input.cancelReason } : {}) },
       });
       return res;
     }),
