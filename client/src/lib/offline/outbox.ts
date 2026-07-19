@@ -177,7 +177,9 @@ async function cleanupSent(): Promise<void> {
   try {
     const cutoff = Date.now() - SENT_RETENTION_MS;
     const sent = await offlineDb.outbox.where("status").equals("SENT").toArray();
-    const stale = sent.filter((i) => new Date(i.capturedAt).getTime() < cutoff).map((i) => i.clientRequestId);
+    const stale = sent
+      .filter((i: OfflineOutboxItem) => new Date(i.capturedAt).getTime() < cutoff)
+      .map((i: OfflineOutboxItem) => i.clientRequestId);
     if (stale.length) await offlineDb.outbox.bulkDelete(stale);
   } catch {
     // تنظيف تجميلي — فشله لا يهم.
