@@ -112,7 +112,14 @@ export default function PrintPOS() {
   const C: C = dark ? DARK : LIGHT;
 
   const me = trpc.auth.me.useQuery();
-  const branchId = me.data?.branchId ?? 1;
+  const branches = trpc.branches.list.useQuery();
+  // الأدمن/المدير بلا فرع مُسنَد: اختيار الفرع صريحاً قبل فتح الوردية بدل الإسناد الصامت للفرع ١
+  // (نظريّ — الأدمن المبذور مُسنَد لفرع). لا يمسّ مستخدماً له فرع (الشرط يسقط فيبقى branchId=فرعه).
+  const [pickedBranch, setPickedBranch] = useState<number | null>(null);
+  const branchId = me.data?.branchId ?? pickedBranch ?? 1;
+  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
+  const noAssignedBranch = me.data != null && me.data.branchId == null;
+  const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   const utils = trpc.useUtils();
 
   // قسم الطباعة: بيع فوري عبر درج التجزئة (RETAIL).
@@ -358,13 +365,29 @@ export default function PrintPOS() {
         <div style={{ background: C.card, border: `1px solid ${C.border}`, borderRadius: 16, padding: "32px 36px", width: 380, boxShadow: "0 8px 32px rgb(0 0 0/.16)" }}>
           <div style={{ fontWeight: 900, fontSize: 22, marginBottom: 6, color: C.fg }}>افتح وردية للبدء</div>
           <div style={{ fontSize: 13, color: C.mutedFg, marginBottom: 22 }}>{DEPT} — لا يمكن البيع بدون وردية مفتوحة</div>
+          {noAssignedBranch && isElevatedRole && (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ marginBottom: 8, padding: "8px 12px", background: C.muted, border: `1px solid ${C.amber}`, borderRadius: 9, fontSize: 12, color: C.fg, fontWeight: 700 }}>
+                حسابك بلا فرعٍ مُسنَد — اختر الفرع الذي تعمل منه كي لا تُنسَب المبيعات لفرعٍ خاطئ.
+              </div>
+              <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الفرع</label>
+              <select
+                value={pickedBranch ?? ""}
+                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+                style={{ width: "100%", height: 48, border: `1.5px solid ${pickedBranch == null ? C.danger : C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 15, fontWeight: 700, padding: "0 12px", outline: "none", boxSizing: "border-box", marginBottom: 16 }}
+              >
+                <option value="">— اختر الفرع —</option>
+                {(branches.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+          )}
           <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الرصيد الافتتاحي للصندوق (د.ع)</label>
           <input dir="ltr" value={opening} onChange={(e) => setOpening(e.target.value.replace(/[^0-9]/g, ""))}
             style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box", marginBottom: 16 }} />
           {message && <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : C.danger, marginBottom: 12 }}>{message.text}</div>}
-          <button disabled={openShift.isPending} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "RETAIL" })}
-            style={{ width: "100%", height: 52, background: C.primary, color: C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: "pointer" }}>
-            {openShift.isPending ? "جارٍ الفتح…" : "فتح الوردية"}
+          <button disabled={openShift.isPending || needsBranchChoice} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "RETAIL" })}
+            style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice ? "not-allowed" : "pointer" }}>
+            {openShift.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح الوردية"}
           </button>
           <Link href="/" style={{ display: "block", textAlign: "center", marginTop: 14, fontSize: 13, color: C.mutedFg }}>← الرئيسية</Link>
         </div>
