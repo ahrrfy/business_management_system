@@ -707,8 +707,8 @@ function PlanDetailDialog({
   const [cancelReason, setCancelReason] = useState("");
 
   const bounce = trpc.installments.bounce.useMutation({
-    onSuccess: async () => {
-      notify.ok("سُجِّل ارتجاع الشيك");
+    onSuccess: async (res) => {
+      notify.ok(res.reversed ? "سُجِّل ارتجاع الشيك وعُكِس التحصيل (رُدَّ رصيد العميل)" : "سُجِّل ارتجاع الشيك");
       setBounceTarget(null);
       setBounceNote("");
       await plan.refetch();
@@ -787,7 +787,7 @@ function PlanDetailDialog({
                             <CircleDollarSign className="size-3.5" aria-hidden /> سداد
                           </Button>
                         )}
-                        {p.status === "ACTIVE" && l.kind === "CHECK" && l.status === "PENDING" && (
+                        {p.status !== "CANCELLED" && l.kind === "CHECK" && (l.status === "PENDING" || l.status === "PAID") && (
                           <Button size="sm" variant="ghost" className="gap-1 text-destructive" onClick={() => setBounceTarget(l)}>
                             <Undo2 className="size-3.5" aria-hidden /> ارتجاع
                           </Button>
@@ -821,7 +821,9 @@ function PlanDetailDialog({
             <DialogHeader>
               <DialogTitle>ارتجاع شيك — القسط رقم {bounceTarget?.seq}</DialogTitle>
               <DialogDescription>
-                يُوسم القسط «شيك مرتجع» بلا أي حركة مالية (الشيك لم يُحصَّل أصلاً)، ويبقى قابلاً للسداد لاحقاً.
+                {bounceTarget?.status === "PAID"
+                  ? "الشيك مُحصَّل — سيُصدَر إيصال صرف معاكس (خزينة) ويُستعاد رصيد العميل بمقدار القسط، ثم يُوسم «شيك مرتجع» قابلاً للسداد لاحقاً."
+                  : "يُوسم القسط «شيك مرتجع» بلا أي حركة مالية (الشيك لم يُحصَّل أصلاً)، ويبقى قابلاً للسداد لاحقاً."}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-1">

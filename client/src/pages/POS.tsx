@@ -2092,6 +2092,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
       await utils.shifts.current.invalidate();
       onClosed();
     },
+    onError: (e) => notify.errBig(e),
   });
 
   // النقد المتوقع = رصيد افتتاحي + كل CASH وارد (مبيعات) - كل CASH صادر (مصروفات).

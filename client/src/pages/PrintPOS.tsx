@@ -17,6 +17,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
+import { notify } from "@/lib/notify";
 import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
@@ -913,6 +914,7 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
       await utils.shifts.current.invalidate();
       onClosed();
     },
+    onError: (e) => notify.err(e),
   });
 
   const cashIn = (report?.payments ?? []).filter((p) => p.method === "CASH" && p.direction === "IN").reduce((s, p) => s.plus(D(p.total)), D(0));
