@@ -290,7 +290,7 @@ export async function readOutboxSummary(): Promise<OutboxSummary> {
 export async function listOutboxItems(): Promise<OfflineOutboxItem[]> {
   try {
     const items = await offlineDb.outbox.toArray();
-    return items.sort((a, b) => b.capturedAt.localeCompare(a.capturedAt));
+    return items.sort((a: OfflineOutboxItem, b: OfflineOutboxItem) => b.capturedAt.localeCompare(a.capturedAt));
   } catch {
     return [];
   }
