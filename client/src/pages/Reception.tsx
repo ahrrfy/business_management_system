@@ -40,9 +40,21 @@ import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue, type PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { cn } from "@/lib/utils";
 import { CashCounter } from "@/components/CashCounter";
 import { printShiftClose, printShiftOpen } from "@/lib/printing/print";
+
+// رموز قسم تسليم النقد بمتغيّرات النظام الدلالية (الاستقبال shadcn لا يستعمل رموز الكاشير C).
+const HANDOVER_TOKENS: PosTokens = {
+  card: "var(--card)",
+  border: "var(--border)",
+  muted: "var(--muted)",
+  mutedFg: "var(--muted-foreground)",
+  fg: "var(--foreground)",
+  primary: "var(--primary)",
+  danger: "var(--destructive)",
+};
 
 /**
  * شاشة الاستقبال — نقطة بيع هجينة لخدمة العملاء.
@@ -128,6 +140,8 @@ export default function Reception() {
   const [closing, setClosing] = useState(false);
   const [counted, setCounted] = useState("");
   const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
+  const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
+  const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: closing });
   const branchName = useMemo(
     () => (branchesQ.data ?? []).find((b) => Number(b.id) === branchId)?.name ?? `فرع #${branchId}`,
     [branchesQ.data, branchId],
@@ -175,6 +189,7 @@ export default function Reception() {
       setClosing(false);
       setCounted("");
       setCloseCounts({});
+      setHandover(emptyHandover);
       await utils.shifts.current.invalidate();
     },
     onError: (e) => notify.err(e),
@@ -766,14 +781,21 @@ export default function Reception() {
                     {recDiff < 0 && <span>(عجز)</span>}
                   </div>
                 )}
+                <ShiftHandoverSection
+                  C={HANDOVER_TOKENS}
+                  recipients={recipientsQ.data ?? []}
+                  value={handover}
+                  onChange={setHandover}
+                  loading={recipientsQ.isLoading}
+                />
                 <div className="mt-5 flex gap-2.5">
                   <Button variant="outline" className="flex-1" onClick={() => setClosing(false)}>
                     إلغاء
                   </Button>
                   <Button
                     className="flex-1"
-                    disabled={!counted || closeShiftM.isPending}
-                    onClick={() => closeShiftM.mutate({ shiftId: shift.id, countedCash: counted, countedBreakdown: closeCounts })}
+                    disabled={!counted || closeShiftM.isPending || handoverIncomplete(handover)}
+                    onClick={() => closeShiftM.mutate({ shiftId: shift.id, countedCash: counted, countedBreakdown: closeCounts, handover: buildHandoverPayload(handover) })}
                   >
                     {closeShiftM.isPending ? "جارٍ الإغلاق…" : "إغلاق وطباعة Z"}
                   </Button>

@@ -3,6 +3,7 @@
  * تصميم Odoo 19-style مع multi-tab، حاسبة ذكية، مسح باركود آني، وإدارة وردية كاملة.
  */
 import CustomerPicker from "@/components/CustomerPicker";
+import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
@@ -2037,7 +2038,9 @@ interface ShiftCloseDialogProps {
 function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches }: ShiftCloseDialogProps) {
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
+  const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
+  const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: !!shift });
 
   // ش٤ أوفلاين — حارس الطابور: إغلاق الوردية وثمة مبيعات غير مُزامنة يترك نقداً في الدرج بلا
   // فواتير في Z ⇒ محجوب افتراضياً؛ المدير/الأدمن يتجاوز بإقرار صريح (تُرحَّل لاحقاً وتدخل
@@ -2170,6 +2173,15 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               )}
             </div>
 
+            {/* تسليم نقد الدرج للخزينة (treasury-stage2) — اختياريّ، بيد مديرٍ مستلِم. */}
+            <ShiftHandoverSection
+              C={C}
+              recipients={recipientsQ.data ?? []}
+              value={handover}
+              onChange={setHandover}
+              loading={recipientsQ.isLoading}
+            />
+
             {/* ش٤ أوفلاين: حارس الطابور غير المُزامَن — حجب الإغلاق (تجاوز مديري بإقرار صريح). */}
             {outboxQueued.count > 0 && (
               <div style={{ marginTop: 14, padding: "10px 12px", background: C.amberSoft, border: `1.5px solid ${C.amber}`, borderRadius: 9, fontSize: 12.5, color: C.fg }}>
@@ -2196,8 +2208,8 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending || closeBlocked}
-                onClick={() => shift && closeShift.mutate({ shiftId: shift.id, countedCash: counted })}
+                disabled={!counted || closeShift.isPending || closeBlocked || handoverIncomplete(handover)}
+                onClick={() => shift && closeShift.mutate({ shiftId: shift.id, countedCash: counted, handover: buildHandoverPayload(handover) })}
                 style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
                 {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : "إغلاق وطباعة Z"}
               </button>

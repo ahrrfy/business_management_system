@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gte, lt, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { z } from "zod";
 import { branches, shifts, users } from "../../drizzle/schema";
@@ -168,6 +168,20 @@ export const shiftRouter = router({
       });
       return res;
     }),
+
+  // treasury-stage2: مستلِمو تسليم النقد عند إغلاق الوردية. يطابق تحقّق cashHandoverService
+  // (المستلِم admin/manager نشط) ⇒ نُرجِع فقط الإداريين/المديرين النشطين. متاح للكاشير
+  // (treasuryCashierProcedure نفس بوّابة الإغلاق) كي يختار من يُسلّمه نقد الدرج.
+  handoverRecipients: treasuryCashierProcedure.query(async () => {
+    const db = getDb();
+    if (!db) return [] as { id: number; name: string }[];
+    const rows = await db
+      .select({ id: users.id, name: users.name })
+      .from(users)
+      .where(and(eq(users.isActive, true), inArray(users.role, ["admin", "manager"])))
+      .orderBy(users.name);
+    return rows.map((r) => ({ id: r.id, name: r.name ?? `#${r.id}` }));
+  }),
 
   // §٧ IDOR: كان كاشير من فرع A يستطيع `report` لوردية فرع B بمعرفة shiftId.
   // الآن نفرض ctx.scopedBranchId: إن كانت الوردية في فرع آخر ⇒ FORBIDDEN لغير المرتفعين.
