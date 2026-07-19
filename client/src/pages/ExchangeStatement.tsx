@@ -1,7 +1,7 @@
 // تبويب «كشف الحساب» — حركات الصيرفة بعملتيها + رصيد جارٍ (لقطة بعد كل عملية) + ملخّص.
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { type ColumnDef } from "@tanstack/react-table";
-import { FileText } from "lucide-react";
+import { FileText, Undo2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/DataTable";
@@ -9,6 +9,8 @@ import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { trpc } from "@/lib/trpc";
 import { D, fmtAr } from "@/lib/money";
+import { confirm } from "@/lib/confirm";
+import { notify } from "@/lib/notify";
 import { selectCls, type ExchangeRow } from "@/components/exchange/shared";
 
 const TYPE_AR: Record<string, string> = {
@@ -30,6 +32,7 @@ type TxnRow = {
   commissionIqd: string;
   balanceIqdAfter: string;
   balanceUsdAfter: string;
+  status: string;
   createdAt: string;
 };
 
@@ -45,6 +48,30 @@ export default function ExchangeStatement() {
   const st = trpc.exchange.statement.useQuery(
     { exchangeHouseId: houseId, from: from || undefined, to: to || undefined },
     { enabled: houseId > 0 },
+  );
+
+  // عكس عملية صيرفة خاطئة (فصل مهام خادميّ: مُنشئ ≠ مُنفِّذ). يُعيد الأرصدة وWAVG وذمّة المورد،
+  // ويستثني العملية من إجماليات الكشف. تأكيدٌ صريح لأنه إجراءٌ ماليّ لا يُتراجَع عنه.
+  const utils = trpc.useUtils();
+  const reverseMut = trpc.exchange.reverse.useMutation({
+    onSuccess: (r) => {
+      void utils.exchange.statement.invalidate();
+      void utils.exchange.list.invalidate();
+      notify.ok(`عُكِست العملية ${r.txnNumber}`);
+    },
+    onError: (e) => notify.err(e.message),
+  });
+  const doReverse = useCallback(
+    async (txnId: number, txnNumber: string) => {
+      const ok = await confirm({
+        variant: "danger",
+        title: "عكس عملية صيرفة",
+        description: `ستُعكَس العملية ${txnNumber}: تُعاد أرصدة المحفظة وذمّة المورد (إن وُجدت) والنقد، وتُستثنى من إجماليات الكشف. لا يمكن التراجع، ويلزم منفِّذٌ غير مُنشئ العملية (فصل المهام).`,
+        confirmText: "عكس العملية",
+      });
+      if (ok) reverseMut.mutate({ txnId });
+    },
+    [reverseMut],
   );
 
   const cols: ColumnDef<TxnRow>[] = useMemo(
@@ -65,8 +92,26 @@ export default function ExchangeStatement() {
       { header: "عمولة", accessorKey: "commissionIqd", cell: ({ row }) => <span dir="ltr" className="tabular-nums text-xs">{D(row.original.commissionIqd).isZero() ? "—" : fmtAr(row.original.commissionIqd)}</span> },
       { header: "رصيد دينار", accessorKey: "balanceIqdAfter", cell: ({ row }) => <span dir="ltr" className="tabular-nums text-xs font-medium">{fmtAr(row.original.balanceIqdAfter)}</span> },
       { header: "رصيد دولار", accessorKey: "balanceUsdAfter", cell: ({ row }) => <span dir="ltr" className="tabular-nums text-xs font-medium">{fmtAr(row.original.balanceUsdAfter)}</span> },
+      {
+        header: "إجراء", id: "action",
+        cell: ({ row }) => {
+          const t = row.original;
+          if (t.status === "REVERSED") return <span className="text-xs text-money-negative">معكوسة</span>;
+          if (t.type === "OPENING") return <span className="text-muted-foreground">—</span>;
+          return (
+            <button
+              type="button"
+              onClick={() => doReverse(t.id, t.txnNumber)}
+              disabled={reverseMut.isPending}
+              className="inline-flex items-center gap-1 text-xs text-money-negative hover:underline disabled:opacity-50"
+            >
+              <Undo2 aria-hidden className="size-3" /> عكس
+            </button>
+          );
+        },
+      },
     ],
-    [],
+    [doReverse, reverseMut.isPending],
   );
 
   const sum = st.data?.summary;
