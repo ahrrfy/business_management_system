@@ -289,12 +289,12 @@ export default function App() {
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
       <Route path="/production-recipes"><Redirect to="/work-orders?tab=recipes" /></Route>
       <Route path="/assets"><Shell><RequireRole roles={["admin","manager"]}><AssetsHub /></RequireRole></Shell></Route>
-      <Route path="/assets/new"><Shell><AssetNew /></Shell></Route>
+      <Route path="/assets/new"><Shell><RequireRole roles={["admin","manager"]}><AssetNew /></RequireRole></Shell></Route>
       <Route path="/assets/register"><Redirect to="/assets?tab=register" /></Route>
       <Route path="/assets/custody-report"><Redirect to="/assets?tab=custody" /></Route>
       <Route path="/assets/disposal-log"><Redirect to="/assets?tab=disposal" /></Route>
-      <Route path="/assets/:id/edit"><Shell><AssetEdit /></Shell></Route>
-      <Route path="/assets/:id"><Shell><AssetDetail /></Shell></Route>
+      <Route path="/assets/:id/edit"><Shell><RequireRole roles={["admin","manager"]}><AssetEdit /></RequireRole></Shell></Route>
+      <Route path="/assets/:id"><Shell><RequireRole roles={["admin","manager"]}><AssetDetail /></RequireRole></Shell></Route>
       <Route path="/hr"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><HrHub /></RequireRole></Shell></Route>
       <Route path="/hr/employees"><Redirect to="/hr?tab=employees" /></Route>
       <Route path="/hr/employees/new"><Shell><RequireRole roles={["admin","manager"]} module="hr" level="FULL"><EmployeeNew /></RequireRole></Shell></Route>
