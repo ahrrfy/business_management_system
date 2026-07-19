@@ -49,7 +49,8 @@ function isWorkOrderChannelLine(filePath, line) {
 // نَطاق الإيموجي:
 //   - Variation Selectors U+FE0E/FE0F، Skin tones U+1F3FB-1F3FF، ZWJ U+200D ⇒ نُهمِلها قَبل المُطابَقة
 //   - نَطاق المُحارَف الرَئيسي
-const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}\u{2600}-\u{27BF}]/u;
+// U+231A-231B (⌚⌛) و U+23E9-23FA (وسائط/ساعات: ⏩…⏺ ⏰⏱⏲⏳) — إيموجي فاتت النطاقات أعلاه (تدقيق ١٧/٧).
+const EMOJI_RE = /[\u{1F300}-\u{1FAFF}\u{1F1E6}-\u{1F1FF}\u{2600}-\u{27BF}\u{231A}-\u{231B}\u{23E9}-\u{23FA}]/u;
 // أَيضاً أَسطُر بِها رَموز مُعَيَّنة شائِعة لَيسَت في النَطاق أَعلاه:
 //   ▶ ▼ ◀ ▲ U+25B6/25BC/25C0/25B2 — تَعتَبَر pictographic، نَمنَعُها أَيضاً
 const ARROW_GLYPHS = /[\u{25B0}-\u{25FF}\u{2B00}-\u{2BFF}]/u;

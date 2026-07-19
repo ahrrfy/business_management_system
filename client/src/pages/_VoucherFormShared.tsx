@@ -17,7 +17,7 @@ import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printVoucherReceipt, printVoucherA4 } from "@/lib/printing/voucherPrint";
 import { trpc } from "@/lib/trpc";
-import { AlertTriangle, Building2, Info, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
+import { AlertTriangle, Building2, Hourglass, Info, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 
@@ -170,7 +170,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const create = trpc.vouchers.create.useMutation({
     onSuccess: async (res) => {
       if (res.approvalStatus === "PENDING_APPROVAL") {
-        notify.ok(`أُنشئ السند ${res.voucherNumber} ⏳ بانتظار اعتماد مدير ثانٍ (Maker-Checker).`);
+        notify.ok(`أُنشئ السند ${res.voucherNumber} — بانتظار اعتماد مدير ثانٍ (Maker-Checker).`);
       } else {
         notify.ok(`تَمّ إنشاء ${isReceipt ? "سند القبض" : "سند الصرف"} ${res.voucherNumber}`);
       }
@@ -543,7 +543,7 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
                   <div key={Number(r.id)} className="flex items-center justify-between gap-2 text-muted-foreground">
                     <span className="truncate">
                       {r.voucherNumber} — {r.direction === "IN" ? "قبض" : "صرف"}
-                      {r.approvalStatus === "PENDING_APPROVAL" ? " ⏳" : ""}
+                      {r.approvalStatus === "PENDING_APPROVAL" ? <Hourglass aria-hidden className="inline size-3 ms-1" /> : null}
                     </span>
                     <span className="tabular-nums shrink-0" dir="ltr">{fmt(r.amount)}</span>
                   </div>

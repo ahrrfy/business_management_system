@@ -308,10 +308,10 @@ export default function App() {
       <Route path="/hr/promotions"><Redirect to="/hr?tab=promotions" /></Route>
       {/* أُدمجت في وحدة الخزينة (TreasuryHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       <Route path="/expenses"><Redirect to="/treasury?tab=expenses" /></Route>
-      <Route path="/expenses/new"><Shell><ExpenseNew /></Shell></Route>
+      <Route path="/expenses/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><ExpenseNew /></RequireRole></Shell></Route>
       <Route path="/vouchers"><Redirect to="/treasury?tab=vouchers" /></Route>
-      <Route path="/vouchers/receipt/new"><Shell><VoucherReceiptNew /></Shell></Route>
-      <Route path="/vouchers/payment/new"><Shell><VoucherPaymentNew /></Shell></Route>
+      <Route path="/vouchers/receipt/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherReceiptNew /></RequireRole></Shell></Route>
+      <Route path="/vouchers/payment/new"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury" level="FULL"><VoucherPaymentNew /></RequireRole></Shell></Route>
       <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
@@ -367,7 +367,7 @@ export default function App() {
       <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><SalesReportsHub /></RequireRole></Shell></Route>
       <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AgingReportsHub /></RequireRole></Shell></Route>
       {/* التذكيرات ليست تقارير قراءة — راوتراها على وحدتَي العملاء/الموردين بمستوى FULL. */}
-      <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager"]} module="customers" level="FULL"><ARReminders /></RequireRole></Shell></Route>
+      <Route path="/reports/ar-reminders"><Shell><RequireRole roles={["admin","manager","accountant"]} module="collections" level="FULL"><ARReminders /></RequireRole></Shell></Route>
       <Route path="/reports/ap-reminders"><Shell><RequireRole roles={["admin","manager"]} module="suppliers" level="FULL"><APReminders /></RequireRole></Shell></Route>
       {/* أُدمجت في محور CRM (CrmHub) — إعادة توجيه تَحفظ الروابط القديمة */}
       {/* تدقيق ١٧/٧: توجيه مباشر لـ/crm — كان يمرّ عبر /customers الذي يُعيد التوجيه لـ/crm?tab=customers
