@@ -36,7 +36,7 @@ import { getCourierPerformance } from "../services/reports/courierPerformance";
 import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getAnomalyWatch } from "../services/reports/anomalyWatch";
-import { getDeadStockValue, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
+import { getDeadStockValue, getNegativeStock, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
 import { money, toDbMoney } from "../services/money";
 import { adminProcedure, protectedProcedure, reportViewerProcedure, router } from "../trpc";
 
@@ -104,6 +104,15 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getDeadStockValue({ branchId, sinceDays: input?.sinceDays });
+    }),
+
+  /** السوالب — أرصدة تحت الصفر (وضع الافتتاح ١٨/٧): بوصلة أولوية الجرد الافتتاحي. بقيمة التكلفة
+   *  ⇒ خلف بوّابة التقارير الحمراء حصراً (خط §٦ — الكاشير/المخزن محجوبان). manager + عزل الفرع. */
+  negativeStock: reportsBranchScoped
+    .input(z.object({ branchId: z.number().int().positive().optional(), limit: z.number().int().positive().max(2000).optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input?.branchId);
+      return getNegativeStock({ branchId, limit: input?.limit });
     }),
 
   /** خطر النفاد — مبيعات عالية + رصيد عند/تحت حدّ الطلب. manager + عزل الفرع. */

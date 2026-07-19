@@ -268,3 +268,115 @@ export async function getStocktakeVariance(
 
   return { rows, summary: { count: rows.length, netValue: toDbMoney(net), absValue: toDbMoney(abs) } };
 }
+
+/* ============================ السوالب — أرصدة تحت الصفر (وضع الافتتاح) ============================ */
+
+export interface NegativeStockRow {
+  variantId: number;
+  branchId: number;
+  branchName: string;
+  productName: string;
+  variantLabel: string;
+  categoryName: string | null;
+  /** الرصيد السالب (نصّ عدد صحيح سالب). */
+  quantity: string;
+  costPrice: string;
+  /** قيمة الانكشاف بالتكلفة = |الرصيد| × التكلفة. */
+  negValue: string;
+  /** تكلفة الصنف غير مُدخلة (صفر) — القيمة أدناه غير دالّة، أدخِل التكلفة. */
+  costMissing: boolean;
+  /** الصنف مُفتتَح (openedAt ≠ NULL): سالبه عجزٌ بعد الافتتاح لا انتظارَ جردٍ افتتاحي. */
+  opened: boolean;
+  lastSaleDate: string | null;
+  lastPurchaseDate: string | null;
+}
+
+export interface NegativeStockResult {
+  rows: NegativeStockRow[];
+  summary: { count: number; totalNegValue: string; missingCostCount: number; unopenedCount: number };
+}
+
+/**
+ * تقرير السوالب («الافتتاح التدريجي» ١٨/٧): كل (صنف×فرع) برصيد تحت الصفر — بوصلة أولوية الجرد
+ * الافتتاحي اليومية. الحبيبة (صنف×فرع) عمداً: سالبُ فرعٍ يقابله موجبُ آخر تعاوضٌ وهمي لا يجوز إخفاؤه.
+ * يخدمه الفهرس المركّب القائم idx_stock_branch_qty (لا فهرس جديد)، وآخر بيع/شراء بنداءين مرتبطين
+ * على idx_move_branch_variant_type — يُنفَّذان لصفوف السوالب القليلة فقط.
+ * ⚠️ يعرض قيمة بالتكلفة ⇒ خلف بوّابة التقارير الحمراء حصراً (reportsBranchScoped — خط §٦).
+ */
+export async function getNegativeStock(
+  opts: { branchId?: number; limit?: number } = {},
+): Promise<NegativeStockResult> {
+  const empty: NegativeStockResult = {
+    rows: [],
+    summary: { count: 0, totalNegValue: "0", missingCostCount: 0, unopenedCount: 0 },
+  };
+  const db = getDb();
+  if (!db) return empty;
+  const limit = Math.max(1, Math.min(2000, opts.limit ?? 500));
+  const branchCond = opts.branchId ? sql`AND bs.branchId = ${opts.branchId}` : sql``;
+
+  const raw = rowsOf(
+    await db.execute(sql`
+      SELECT
+        v.id AS variantId,
+        bs.branchId AS branchId,
+        b.name AS branchName,
+        p.name AS productName,
+        ${VARIANT_LABEL} AS variantLabel,
+        c.name AS categoryName,
+        CAST(bs.quantity AS CHAR) AS quantity,
+        CAST(v.costPrice AS CHAR) AS costPrice,
+        CAST(ABS(bs.quantity) * v.costPrice AS CHAR) AS negValue,
+        (bs.openedAt IS NOT NULL) AS opened,
+        DATE_FORMAT(
+          (SELECT MAX(m.createdAt) FROM inventoryMovements m
+            WHERE m.branchId = bs.branchId AND m.variantId = bs.variantId
+              AND m.movementType = 'OUT' AND m.referenceType IN ('INVOICE', 'PRINT_SALE')),
+          '%Y-%m-%d') AS lastSaleDate,
+        DATE_FORMAT(
+          (SELECT MAX(m2.createdAt) FROM inventoryMovements m2
+            WHERE m2.branchId = bs.branchId AND m2.variantId = bs.variantId
+              AND m2.movementType = 'IN' AND m2.referenceType = 'PURCHASE_ORDER'),
+          '%Y-%m-%d') AS lastPurchaseDate
+      FROM branchStock bs
+      JOIN branches b ON b.id = bs.branchId
+      JOIN productVariants v ON v.id = bs.variantId
+      JOIN products p ON p.id = v.productId
+      LEFT JOIN categories c ON c.id = p.categoryId
+      WHERE bs.quantity < 0 ${branchCond}
+      ORDER BY (ABS(bs.quantity) * v.costPrice) DESC, bs.quantity ASC
+      LIMIT ${limit}
+    `),
+  );
+
+  let totalNegValue = money(0);
+  let missingCostCount = 0;
+  let unopenedCount = 0;
+  const rows: NegativeStockRow[] = raw.map((r) => {
+    const costMissing = money(r.costPrice ?? 0).lte(0);
+    if (costMissing) missingCostCount++;
+    const opened = Number(r.opened ?? 0) === 1;
+    if (!opened) unopenedCount++;
+    totalNegValue = totalNegValue.add(money(r.negValue ?? 0));
+    return {
+      variantId: Number(r.variantId),
+      branchId: Number(r.branchId),
+      branchName: String(r.branchName ?? "—"),
+      productName: String(r.productName ?? ""),
+      variantLabel: String(r.variantLabel ?? ""),
+      categoryName: r.categoryName ?? null,
+      quantity: String(r.quantity ?? "0"),
+      costPrice: toDbMoney(money(r.costPrice ?? 0)),
+      negValue: toDbMoney(money(r.negValue ?? 0)),
+      costMissing,
+      opened,
+      lastSaleDate: r.lastSaleDate ?? null,
+      lastPurchaseDate: r.lastPurchaseDate ?? null,
+    };
+  });
+
+  return {
+    rows,
+    summary: { count: rows.length, totalNegValue: toDbMoney(totalNegValue), missingCostCount, unopenedCount },
+  };
+}

@@ -14,19 +14,21 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtInt, fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 
-type View = "reorder" | "dead" | "risk" | "variance";
+type View = "reorder" | "dead" | "risk" | "variance" | "negatives";
 
 const VIEW_LABEL: Record<View, string> = {
   reorder: "إعادة الطلب",
   dead: "راكد عالي القيمة",
   risk: "خطر النفاد",
   variance: "فروقات الجرد",
+  negatives: "السوالب (وضع الافتتاح)",
 };
 const VIEW_DESC: Record<View, string> = {
   reorder: "أصناف نفدت أو تحت حدّ الطلب — اطلبها الآن.",
   dead: "رصيد بلا بيع منذ مدّة — رأس مال مجمّد يجب تحريره.",
   risk: "مبيعات عالية ومخزون منخفض — اطلب عاجلاً قبل النفاد.",
   variance: "فروقات الجرد المعتمدة حسب الفرع والتاريخ.",
+  negatives: "أرصدة تحت الصفر — بوصلة أولوية الجرد الافتتاحي: اجرد الأعلى انكشافاً أولاً.",
 };
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -52,12 +54,14 @@ export default function InventoryOpsReport() {
   const dead = trpc.reports.deadStockValue.useQuery({ branchId: branchArg, sinceDays: deadDays }, { enabled: view === "dead", staleTime: 60_000 });
   const risk = trpc.reports.reorderRisk.useQuery({ branchId: branchArg, sinceDays: riskDays }, { enabled: view === "risk", staleTime: 60_000 });
   const variance = trpc.reports.stocktakeVariance.useQuery({ branchId: branchArg, from, to }, { enabled: view === "variance", staleTime: 60_000 });
+  const negatives = trpc.reports.negativeStock.useQuery({ branchId: branchArg }, { enabled: view === "negatives", staleTime: 60_000 });
 
   const loading =
     (view === "reorder" && reorder.isLoading) ||
     (view === "dead" && dead.isLoading) ||
     (view === "risk" && risk.isLoading) ||
-    (view === "variance" && variance.isLoading);
+    (view === "variance" && variance.isLoading) ||
+    (view === "negatives" && negatives.isLoading);
 
   const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل";
 
@@ -85,8 +89,16 @@ export default function InventoryOpsReport() {
         { label: "إجمالي مطلق", value: formatIqd(variance.data.summary.absValue), tone: "warning" },
       ];
     }
+    if (view === "negatives" && negatives.data) {
+      return [
+        { label: "أصناف سالبة", value: fmtInt(negatives.data.summary.count), tone: "negative" },
+        { label: "قيمة الانكشاف", value: formatIqd(negatives.data.summary.totalNegValue), tone: "negative" },
+        { label: "بانتظار الجرد الافتتاحي", value: fmtInt(negatives.data.summary.unopenedCount), tone: "warning" },
+        { label: "بلا تكلفة", value: fmtInt(negatives.data.summary.missingCostCount), tone: "warning" },
+      ];
+    }
     return [];
-  }, [view, reorder.data, dead.data, risk.data, variance.data]);
+  }, [view, reorder.data, dead.data, risk.data, variance.data, negatives.data]);
 
   // ── التصدير + الطباعة لكل عرض ──
   type AnyRow = Record<string, unknown>;
@@ -148,6 +160,29 @@ export default function InventoryOpsReport() {
         ],
       };
     }
+    if (view === "negatives") {
+      const rows = (negatives.data?.rows ?? []) as unknown as AnyRow[];
+      return {
+        rows,
+        columns: [
+          { key: "productName", header: "المنتج" },
+          { key: "variantLabel", header: "المتغيّر" },
+          { key: "branchName", header: "الفرع", map: (r) => (r.branchName as string) ?? "" },
+          { key: "quantity", header: "الرصيد", map: (r) => Number(r.quantity) },
+          { key: "negValue", header: "قيمة الانكشاف", money: true, map: (r) => Number(r.negValue) },
+          { key: "opened", header: "الحالة", map: (r) => (r.opened ? "مُفتتَح (عجز بعد الافتتاح)" : "بانتظار الجرد الافتتاحي") },
+          { key: "costMissing", header: "التكلفة", map: (r) => (r.costMissing ? "غير مُدخلة" : "مُدخلة") },
+          { key: "lastSaleDate", header: "آخر بيع", map: (r) => (r.lastSaleDate as string) ?? "—" },
+          { key: "lastPurchaseDate", header: "آخر شراء", map: (r) => (r.lastPurchaseDate as string) ?? "—" },
+        ],
+        printCols: [
+          { key: "productName", label: "المنتج" }, { key: "variantLabel", label: "المتغيّر" },
+          { key: "branchName", label: "الفرع" }, { key: "quantity", label: "الرصيد", align: "left" },
+          { key: "negValue", label: "قيمة الانكشاف", align: "left" }, { key: "openedLabel", label: "الحالة" },
+          { key: "lastSaleDate", label: "آخر بيع" },
+        ],
+      };
+    }
     const rows = (variance.data?.rows ?? []) as unknown as AnyRow[];
     return {
       rows,
@@ -195,9 +230,10 @@ export default function InventoryOpsReport() {
         for (const pc of cfg.printCols) {
           const raw = pc.key === "days" ? (r.daysSinceLastSale == null ? "لا بيع" : fmtAr(Number(r.daysSinceLastSale)))
             : pc.key === "status" ? (STATUS_LABEL[r.status as string] ?? String(r.status ?? ""))
+            : pc.key === "openedLabel" ? (r.opened ? "مُفتتَح" : "بانتظار الافتتاح")
             : (r as Record<string, unknown>)[pc.key];
           const v = raw == null ? "" : typeof raw === "number" ? fmtAr(raw) : String(raw);
-          o[pc.key] = ["quantity", "minStock", "qtyInStock", "threshold", "qtySoldRecent", "coverDays", "stockValue", "value", "diffQty"].includes(pc.key)
+          o[pc.key] = ["quantity", "minStock", "qtyInStock", "threshold", "qtySoldRecent", "coverDays", "stockValue", "value", "diffQty", "negValue"].includes(pc.key)
             ? fmtAr(Number((r as Record<string, unknown>)[pc.key] ?? 0))
             : v;
         }
@@ -275,7 +311,7 @@ export default function InventoryOpsReport() {
     >
       <Card>
         <CardContent className="p-0">
-          {loading ? <LoadingState /> : <ViewTable view={view} reorder={reorder.data} dead={dead.data} risk={risk.data} variance={variance.data} riskDays={riskDays} />}
+          {loading ? <LoadingState /> : <ViewTable view={view} reorder={reorder.data} dead={dead.data} risk={risk.data} variance={variance.data} negatives={negatives.data} riskDays={riskDays} />}
         </CardContent>
       </Card>
     </ReportShell>
@@ -290,11 +326,50 @@ function NumTd({ children, cls }: { children: React.ReactNode; cls?: string }) {
 }
 
 function ViewTable({
-  view, reorder, dead, risk, variance, riskDays,
+  view, reorder, dead, risk, variance, negatives, riskDays,
 }: {
   view: View;
-  reorder: any; dead: any; risk: any; variance: any; riskDays: number;
+  reorder: any; dead: any; risk: any; variance: any; negatives: any; riskDays: number;
 }) {
+  if (view === "negatives") {
+    const rows = negatives?.rows ?? [];
+    return (
+      <Table
+        head={<><Th>المنتج</Th><Th>المتغيّر</Th><Th>الفرع</Th><Th>الرصيد</Th><Th>قيمة الانكشاف</Th><Th>الحالة</Th><Th>آخر بيع</Th><Th>آخر شراء</Th></>}
+        empty={!rows.length}
+        colSpan={8}
+        emptyMsg="لا أرصدة سالبة في هذا النطاق — كل المبيع مغطّى بالمخزون."
+      >
+        {rows.map((r: any, i: number) => (
+          <tr key={`${r.variantId}-${r.branchId}-${i}`} className="border-b last:border-0 hover:bg-accent/40">
+            <td className="p-2.5 text-right font-medium">
+              {r.productName}
+              {r.costMissing && (
+                <span className="mr-2 inline-block rounded-md border border-rose-300 bg-rose-50 px-1.5 py-0.5 text-[11px] font-bold text-rose-700">
+                  بلا تكلفة
+                </span>
+              )}
+            </td>
+            <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
+            <td className="p-2.5 text-right text-muted-foreground">{r.branchName}</td>
+            <NumTd cls="text-money-negative font-bold">{fmtAr(r.quantity)}</NumTd>
+            <NumTd cls="text-money-negative">{fmtAr(r.negValue)}</NumTd>
+            <td className="p-2.5 text-right">
+              <span
+                className={`inline-block rounded-full px-2 py-0.5 text-xs ${
+                  r.opened ? "bg-muted text-muted-foreground" : "border border-amber-300 bg-amber-50 text-amber-800"
+                }`}
+              >
+                {r.opened ? "مُفتتَح — عجز بعد الافتتاح" : "بانتظار الجرد الافتتاحي"}
+              </span>
+            </td>
+            <td className="p-2.5 text-right text-muted-foreground">{r.lastSaleDate ?? "—"}</td>
+            <td className="p-2.5 text-right text-muted-foreground">{r.lastPurchaseDate ?? "—"}</td>
+          </tr>
+        ))}
+      </Table>
+    );
+  }
   if (view === "reorder") {
     const rows = reorder?.rows ?? [];
     return (

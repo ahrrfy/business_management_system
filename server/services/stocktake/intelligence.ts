@@ -142,7 +142,15 @@ export async function getIraStats(): Promise<IraStatsResult> {
     })
     .from(stocktakeSessions)
     .leftJoin(branches, eq(stocktakeSessions.branchId, branches.id))
-    .where(and(eq(stocktakeSessions.status, "APPROVED"), gte(stocktakeSessions.approvedAt, monthStart)));
+    // الجلسات الافتتاحية مستبعدة من IRA: رصيدها الدفتري صفر بحكم التعريف فكل diffQty≠0 حكماً —
+    // ضمّها يسحق مؤشر الدقة الشهري ودقة العمّال زوراً (مراجعة عدائية ١٨/٧). ABC/lastCountedAt لا يتأثران.
+    .where(
+      and(
+        eq(stocktakeSessions.status, "APPROVED"),
+        eq(stocktakeSessions.sessionType, "NORMAL"),
+        gte(stocktakeSessions.approvedAt, monthStart),
+      ),
+    );
 
   const ymOf = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
   const months: string[] = [];

@@ -4,6 +4,7 @@ import { randomInt } from "node:crypto";
 import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
+  openingModeSettings,
   stocktakeAssignments,
   stocktakeDecisions,
   stocktakeItems,
@@ -42,6 +43,47 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     }
     if (s.status !== "REVIEW") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "الاعتماد متاح على جلسة قيد المراجعة فقط" });
+    }
+
+    // ── حوكمة اعتماد «الجرد الافتتاحي» (مراجعة عدائية ١٨/٧) ──
+    const isOpening = s.sessionType === "OPENING";
+    if (isOpening) {
+      // (أ) الاعتماد محصور بنافذة وضع الافتتاح — بعدها تبقى القناة (بلا قيدَي عجز/زيادة) مغلقة حكماً.
+      const om = (await tx.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
+      const windowActive = !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
+      if (!windowActive) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "وضع الافتتاح غير فعّال — مدّد النافذة من الإعدادات لاعتماد الجلسة، أو ألغِها وأعد الجرد دورياً",
+        });
+      }
+      // (ب) SOD مرآة تسوية المخزون (SOD-04): منشئ الجلسة لا يعتمدها (admin مُستثنى للتصحيح الإداري).
+      if (actor.role !== "admin" && s.createdBy != null && Number(s.createdBy) === actor.userId) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "أنشأتَ هذه الجلسة الافتتاحية — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
+        });
+      }
+      // (ج) من كُلّف بالعدّ (تكليف USER) لا يعتمد — تركّز العدّ والاعتماد بيدٍ واحدة يفرغ الرقابة.
+      if (actor.role !== "admin") {
+        const myAssignment = await tx
+          .select({ id: stocktakeAssignments.id })
+          .from(stocktakeAssignments)
+          .where(
+            and(
+              eq(stocktakeAssignments.sessionId, sessionId),
+              eq(stocktakeAssignments.method, "USER"),
+              eq(stocktakeAssignments.userId, actor.userId),
+            ),
+          )
+          .limit(1);
+        if (myAssignment[0]) {
+          throw new TRPCError({
+            code: "FORBIDDEN",
+            message: "كُلّفتَ بالعدّ في هذه الجلسة — الاعتماد النهائي لمسؤول آخر (فصل المهام)",
+          });
+        }
+      }
     }
 
     // (١.٥) قفل أرصدة أصناف الجلسة FOR UPDATE قبل إعادة الحساب — يسدّ سباق TOCTOU مع بيع
@@ -94,7 +136,9 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     }
 
     // (٣) التوقيعان: عنصر سيُسوّى |قيمته| > dualThreshold ⇒ توقيع أول موجود + المعتمد شخص مختلف.
-    const dualNeeded = rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
+    // الجلسة الافتتاحية: توقيعان إلزاميان دائماً (حتى بصفر فروقات — الاعتماد يؤسّس الأرصدة ويختم
+    // openedAt بلا أي قيد دفتري، فهو أخفى قناة تزوير محتملة ويحتاج أربع عيون حكماً).
+    const dualNeeded = isOpening || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
     if (dualNeeded) {
       if (s.firstSignBy == null) {
         throw new TRPCError({
@@ -153,7 +197,11 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
       }
 
       if (action === "ADJUST" && r.diff !== 0) {
-        if (r.adjustedCount < 0) {
+        // افتتاحي: العدّ المصحَّح السالب (بيعٌ بالسالب تجاوز العدّ قبل الاعتماد) يُعتمد برصيده
+        // السالب الحقيقي — الصنف يُفتتَح فيتحوّل فوراً للصرامة ويظهر في تقرير السوالب، بدل حجب
+        // اعتماد الجلسة كلها بصنفٍ واحد (livelock مثبَت في المراجعة العدائية — البيع مستمر أثناء
+        // كل «إعادة عدّ»). دوري: الحارس باقٍ كما هو.
+        if (!isOpening && r.adjustedCount < 0) {
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: `العدّ المصحَّح سالب للصنف «${r.productName}» — راجع الحركات اللاحقة قبل الاعتماد`,
@@ -163,15 +211,22 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
           variantId: r.variantId,
           branchId: Number(s.branchId),
           targetQuantity: r.adjustedCount,
-          referenceType: "STOCKTAKE",
+          // افتتاحي: مرجع OPENING (يختم setStock معه openedAt مركزياً) + referenceId=الجلسة —
+          // يلزم لاستبعاد تسويات الجلسة نفسها من netAfter ولإعادة بناء «من فتتح» من السجلات.
+          referenceType: isOpening ? "OPENING" : "STOCKTAKE",
           referenceId: sessionId,
           notes: s.code,
           createdBy: actor.userId,
+          allowNegativeTarget: isOpening,
         });
         adjustedMovements++;
-        const v = money(r.value ?? 0);
-        if (r.diff < 0) shortExpense = shortExpense.plus(v.abs());
-        else overGain = overGain.plus(v);
+        // افتتاحي: لا تُجمَع قيم عجز/زيادة إطلاقاً ⇒ لا يُرحَّل أي قيد دفتري أدناه (الفرق هنا
+        // «تأسيس رصيد افتتاحي» لا عجزاً/زيادة — ترحيله ربحاً كان سينفخ قائمة الدخل بقيمة المخزون كله).
+        if (!isOpening) {
+          const v = money(r.value ?? 0);
+          if (r.diff < 0) shortExpense = shortExpense.plus(v.abs());
+          else overGain = overGain.plus(v);
+        }
       }
 
       upserts.push({
@@ -241,13 +296,28 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
 
     // (٧) آخر جرد معتمد لكل صنف معدود — يغذي «آخر جرد» والجرد الدوري ABC.
     // upsert لا UPDATE: صنف عُدّ صفراً بلا صفّ branchStock يبقى بلا صفّ فيظلّ «لم يُجرد» زوراً.
+    // افتتاحي: نفس الـupsert يختم openedAt لكل معدود (حتى KEEP والمعدود صفراً بلا setStock —
+    // عدُّه = تثبيت أساسه ⇒ يُقفل عليه البيع بالسالب فوراً)؛ COALESCE يصون افتتاحاً أسبق.
     const countedVariantIds = rows.filter((r) => r.rawCount != null).map((r) => r.variantId);
     for (const part of chunk(countedVariantIds)) {
       if (!part.length) continue;
       await tx
         .insert(branchStock)
-        .values(part.map((v) => ({ variantId: v, branchId: Number(s.branchId), quantity: 0, lastCountedAt: now })))
-        .onDuplicateKeyUpdate({ set: { lastCountedAt: now } });
+        .values(
+          part.map((v) => ({
+            variantId: v,
+            branchId: Number(s.branchId),
+            quantity: 0,
+            lastCountedAt: now,
+            ...(isOpening ? { openedAt: now } : {}),
+          })),
+        )
+        .onDuplicateKeyUpdate({
+          set: {
+            lastCountedAt: now,
+            ...(isOpening ? { openedAt: sql`COALESCE(${branchStock.openedAt}, ${now})` } : {}),
+          },
+        });
     }
 
     // (٨) ختم الجلسة.

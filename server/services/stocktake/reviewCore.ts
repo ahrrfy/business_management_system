@@ -214,7 +214,10 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
         )
         .orderBy(asc(inventoryMovements.createdAt), asc(inventoryMovements.id));
       for (const m of rows) {
-        if (m.referenceType === "STOCKTAKE" && Number(m.referenceId) === sessionId) continue; // تسوية الجلسة نفسها
+        // تسوية الجلسة نفسها — بمرجعها الدوري (STOCKTAKE) أو الافتتاحي (OPENING بreferenceId=الجلسة):
+        // بعد الاعتماد تُستبعد من netAfter كي لا يلوّث الاعتمادُ السابق إعادةَ الحساب/التقرير.
+        // (حركات OPENING بلا referenceId — إنشاء منتج/استيراد — تدخل الحساب: تدفّق حقيقي.)
+        if ((m.referenceType === "STOCKTAKE" || m.referenceType === "OPENING") && Number(m.referenceId) === sessionId) continue;
         const v = Number(m.variantId);
         const list = movesByVariant.get(v) ?? [];
         list.push({ ...m, variantId: v, referenceId: m.referenceId == null ? null : Number(m.referenceId) });
@@ -246,7 +249,12 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
   const thresholdPct = money(String(s.thresholdPct));
   const thresholdValue = money(String(s.thresholdValue));
   const dualThreshold = money(String(s.dualThreshold));
-  const directUnderThreshold = !!s.directUnderThreshold;
+  // «الجرد الافتتاحي»: العتبات الصنفية تُحيَّد — الرصيد الدفتري صفر غالباً فكل قيمة عدٍّ = قيمة فرقها
+  // كاملة، وحدُّ القيمة (thresholdValue) سيلتقط كل صنف تقريباً فيُغرق المراجعة بقرارات إلزامية
+  // (فحص النسبة مُعفى أصلاً عند expectedQty=0 — الغارق الحقيقي حدّ القيمة). الحوكمة البديلة:
+  // توقيعان إلزاميان دائماً على مستوى الجلسة (firstSign/finalize) + منشئ≠معتمد + عادّ≠معتمد.
+  const isOpening = s.sessionType === "OPENING";
+  const directUnderThreshold = isOpening ? true : !!s.directUnderThreshold;
 
   const rows: ReviewRow[] = items.map((it) => {
     const v = Number(it.variantId);
@@ -316,9 +324,13 @@ async function loadReviewCore(db: DbLike, sessionId: number, autoAdjust: boolean
     // «ضمن الحد»: pct≤حد النسبة (يُعفى إن تعذّر حسابه expectedQty=0 — كنموذج jrd-data) و|القيمة|≤حد القيمة.
     const pctOk = pctRaw == null || pctRaw.lte(thresholdPct);
     const valueOk = valueDec != null && valueDec.abs().lte(thresholdValue);
-    const withinThreshold = diff != null && pctOk && valueOk;
-    const overThreshold = diff != null && diff !== 0 && !withinThreshold;
-    const requiresDualSign = valueDec != null && valueDec.abs().gt(dualThreshold);
+    // افتتاحي: كل فرق «ضمن الحد» (تسوية تلقائية بلا قرار صنفي) وكل فرق ≠0 يتطلب التوقيعين
+    // (يُبقي شاشة المراجعة متّسقة مع إجبار التوقيعين الجلسي في firstSign/finalize).
+    const withinThreshold = isOpening ? diff != null : diff != null && pctOk && valueOk;
+    const overThreshold = isOpening ? false : diff != null && diff !== 0 && !withinThreshold;
+    const requiresDualSign = isOpening
+      ? diff != null && diff !== 0
+      : valueDec != null && valueDec.abs().gt(dualThreshold);
 
     const d = decisionMap.get(v);
     const decision = d
@@ -438,7 +450,10 @@ function buildBarriers(
     if (r.recount?.status === "PENDING" || r.openConflict) return false; // محسوبة في حاجزها
     return r.overThreshold || !directUnderThreshold;
   }).length;
-  const requiresDualSign = rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
+  // افتتاحي: التوقيعان إلزاميان دائماً على مستوى الجلسة (حتى لو تطابق كل عدٍّ مع الدفتر —
+  // الاعتماد يختم openedAt ويؤسّس الأرصدة بلا أي قيد دفتري، فهو أخفى قناة تحتاج أربع عيون).
+  const requiresDualSign =
+    s.sessionType === "OPENING" || rows.some((r) => r.requiresDualSign && willAdjust(r, directUnderThreshold));
   const firstSigned = s.firstSignBy != null;
   const canApprove =
     s.status === "REVIEW" && pendingRecounts === 0 && openConflicts === 0 && undecidedOverThreshold === 0;
@@ -455,6 +470,7 @@ function buildReviewSession(s: Awaited<ReturnType<typeof loadSessionHeader>>) {
     name: s.name,
     branchId: Number(s.branchId),
     branchName: s.branchName ?? "—",
+    sessionType: s.sessionType,
     status: s.status,
     blind: !!s.blind,
     thresholdPct: String(s.thresholdPct),
@@ -483,7 +499,11 @@ export async function computeStocktakeReview(
     rows: rows.map(({ decidedBy: _db2, openConflict: _oc, ...pub }) => pub),
     totals: buildTotals(rows),
     barriers: buildBarriers(rows, s, directUnderThreshold, opts.viewerId),
-    ledgerPreview: buildLedgerPreview(rows, directUnderThreshold),
+    // افتتاحي: لا قيد عجز/زيادة يُرحَّل أصلاً — معاينة صفرية كي لا تعِد الشاشة بقيدٍ لن يقع.
+    ledgerPreview:
+      s.sessionType === "OPENING"
+        ? { shortExpense: "0.00", overGain: "0.00" }
+        : buildLedgerPreview(rows, directUnderThreshold),
   };
 }
 

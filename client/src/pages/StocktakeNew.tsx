@@ -168,6 +168,12 @@ export default function StocktakeNew() {
   const [dupPolicy, setDupPolicy] = useState<DupPolicy>("VERIFY");
   const [notes, setNotes] = useState("");
 
+  /* «جرد افتتاحي» (الافتتاح التدريجي ١٨/٧): متاح لمدير فأعلى وضمن نافذة وضع الافتتاح الفعّالة فقط —
+     المفتاح يظهر معطَّلاً خارجهما والخادم يفرض الشرطين بأي حال. */
+  const [isOpeningSession, setIsOpeningSession] = useState(false);
+  const openingModeQ = trpc.system.getOpeningMode.useQuery();
+  const openingWindowActive = openingModeQ.data?.active === true;
+
   const [created, setCreated] = useState<CreateResult | null>(null);
 
   /* الفرع الافتراضي: فرع المستخدم ثم أول فرع. دور المخزن مُقيَّد بفرعه (الخادم يُجبره أيضاً). */
@@ -305,6 +311,7 @@ export default function StocktakeNew() {
     createMut.mutate({
       name: name.trim() || `${SCOPE_TYPE_LABEL[scopeType]} — ${branchName}`,
       branchId: effectiveBranchId,
+      sessionType: isOpeningSession ? "OPENING" : undefined,
       scopeType,
       movingDays: scopeType === "MOVING" ? Number(movingDays) : undefined,
       categoryIds: scopeType === "CATEGORY" ? categoryIds : undefined,
@@ -372,6 +379,31 @@ export default function StocktakeNew() {
       {step === 0 && (
         <Card>
           <CardContent className="space-y-5 p-5">
+            {isManagerPlus && (
+              <div
+                className={`flex items-start justify-between gap-3 rounded-lg border p-3 ${
+                  isOpeningSession ? "border-amber-500/50 bg-amber-500/10" : ""
+                }`}
+              >
+                <div className="space-y-0.5">
+                  <Label htmlFor="stk-opening" className="text-sm font-bold">
+                    جرد افتتاحي (تأسيس الأرصدة)
+                  </Label>
+                  <p className="text-xs text-muted-foreground">
+                    يثبّت العدّ كرصيد افتتاحي بلا قيود عجز/زيادة على الأرباح، ويُقفل البيع بالسالب على كل
+                    صنف يُجرد. توقيعان إلزاميان، والأصناف المجرودة افتتاحياً سابقاً تُستبعد تلقائياً.
+                    {!openingWindowActive && " — يتطلب تفعيل «وضع الافتتاح» من الإعدادات أولاً."}
+                  </p>
+                </div>
+                <Switch
+                  id="stk-opening"
+                  checked={isOpeningSession}
+                  disabled={!openingWindowActive}
+                  onCheckedChange={setIsOpeningSession}
+                  aria-label="جرد افتتاحي"
+                />
+              </div>
+            )}
             <div className="grid gap-4 sm:grid-cols-2">
               <div className="space-y-1.5">
                 <Label>اسم الجلسة (اختياري)</Label>

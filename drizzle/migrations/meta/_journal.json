@@ -596,6 +596,20 @@
       "when": 1784851200000,
       "tag": "0084_advance_settlements",
       "breakpoints": true
+    },
+    {
+      "idx": 85,
+      "version": "5",
+      "when": 1784937600000,
+      "tag": "0086_opening_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "5",
+      "when": 1784937600001,
+      "tag": "0087_stocktake_session_type",
+      "breakpoints": true
     }
   ]
 }

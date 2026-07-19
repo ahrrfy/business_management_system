@@ -6,6 +6,7 @@ import {
   deliveryParties,
   inventoryMovements,
   invoices,
+  openingModeSettings,
   receipts,
   suppliers,
 } from "../../drizzle/schema";
@@ -18,6 +19,8 @@ export interface ReconcileResult {
   expected: string;
   actual: string;
   drift: string;
+  /** توسيم اختياري: «متوقع — وضع الافتتاح» للسالب غير المُفتتَح أثناء النافذة الفعّالة (١٨/٧). */
+  note?: string;
 }
 
 /**
@@ -263,12 +266,22 @@ export async function reconcileInventory(): Promise<ReconcileResult[]> {
     .from(branchStock)
     .where(sql`${branchStock.quantity} < 0`);
 
+  // «وضع الافتتاح» (١٨/٧): أثناء النافذة الفعّالة يكون السالبُ غير المُفتتَح متوقَّعاً بحكم التصميم
+  // (بيع نقدي مسموح قبل الجرد الافتتاحي) — يُوسَم لا يُخفى، كي لا يطمس الضجيجُ الانحرافاتِ الحقيقية
+  // (سالبُ صنفٍ مُفتتَح = انحراف فعلي دائماً).
+  let windowActive = false;
+  if (negativeRows.length) {
+    const om = (await db.select().from(openingModeSettings).where(eq(openingModeSettings.id, 1)).limit(1))[0];
+    windowActive = !!om?.enabled && om.endsAt != null && om.endsAt.getTime() > Date.now();
+  }
+
   return negativeRows.map((s) => ({
     entity: "stock",
     id: Number(s.variantId),
     expected: ">=0",
     actual: String(s.quantity),
     drift: String(Math.abs(Number(s.quantity))),
+    ...(windowActive && s.openedAt == null ? { note: "متوقع — وضع الافتتاح (بانتظار الجرد الافتتاحي)" } : {}),
   }));
 }
 
