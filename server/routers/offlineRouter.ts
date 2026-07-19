@@ -19,8 +19,9 @@ import {
   buildStockSnapshot,
 } from "../services/offline/catalogSnapshot";
 import { replayOfflineSale } from "../services/offline/replaySale";
+import { buildOfflineSalesReport } from "../services/offline/salesReport";
 import { verifyManagerApproval } from "./saleRouter";
-import { customersReadProcedure, productsReadProcedure, router, salesCashierProcedure } from "../trpc";
+import { customersReadProcedure, productsReadProcedure, reportViewerProcedure, router, salesCashierProcedure } from "../trpc";
 
 /** نفس حارس IDOR في catalogRouter: غير المرتفعين محصورون بفرعهم المُسنَد. */
 function scopeBranch(ctx: { user: { role: string; branchId?: number | null } }, requested: number): number {
@@ -40,6 +41,18 @@ export const offlineRouter = router({
     .query(({ input, ctx }) => buildStockSnapshot(scopeBranch(ctx, input.branchId))),
 
   customersSnapshot: customersReadProcedure.query(() => buildCustomersSnapshot()),
+
+  /** ش٥ — تقرير «المبيعات الأوفلاين» للإدارة: ربط OFF↔INV + زمن الترحيل + وسم «مُزامنة
+   *  لاحقاً». خلف بوّابة التقارير القياسية (القائمة + المنح الصريح + عزل فرع غير الأدمن). */
+  salesReport: reportViewerProcedure
+    .input(
+      z.object({
+        from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        branchId: z.number().int().positive().optional(),
+      }),
+    )
+    .query(({ input }) => buildOfflineSalesReport(input)),
 
   /**
    * إعادة تشغيل بيعٍ التُقط دون اتصال (ش٣) — غلاف idempotent حول createSale (نفس sourceType

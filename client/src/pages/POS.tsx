@@ -14,7 +14,9 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { isDisconnected, useConnectivity } from "@/lib/offline/connectivity";
 import { offlineFindByBarcode, offlineSearchCatalog, useOfflineCatalogSync } from "@/lib/offline/catalogSync";
-import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
+import { allocateOfflineReceiptNumber, assertCanCapture, enqueueOfflineSale, isOfflineSaleEnabled, readOutboxSummary, subscribeOutbox } from "@/lib/offline/outbox";
+import { getOfflineProfile, saveOfflineProfile } from "@/lib/offline/pinLock";
+import { getMeta, setMeta } from "@/lib/offline/db";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -275,7 +277,6 @@ export default function POS() {
 
   const me       = trpc.auth.me.useQuery();
   const branches = trpc.branches.list.useQuery();
-  const branchId = me.data?.branchId ?? 1;
   const utils    = trpc.useUtils();
 
   // «وضع الافتتاح» (ش٥): لافتة + وسم «غير مجرود» — مرآة عرضية فقط، الحارس الفعلي خادميّ في sale/create.
@@ -285,11 +286,60 @@ export default function POS() {
   // ش٢ أوفلاين: حالة الاتصال + مزامنة النموذج المحلي (كتالوج/مخزون/عملاء) دورياً وعند العودة.
   const connState = useConnectivity();
   const offline = isDisconnected(connState);
+
+  // ش٥ — إقلاع دون اتصال: هوية الجهاز وورديته من آخر جلسة أونلاين معلومة (ملف الجهاز +
+  // كاش آخر وردية مفتوحة) ⇒ الكاشير يواصل البيع بعد إعادة تشغيل الجهاز والقطع مستمر.
+  const [offlineBoot, setOfflineBoot] = useState<{ branchId: number | null; shiftId: number | null; name: string | null } | null>(null);
+  useEffect(() => {
+    if (me.data) { setOfflineBoot(null); return; }
+    void (async () => {
+      const profile = await getOfflineProfile();
+      let cachedShiftId: number | null = null;
+      try {
+        const raw = await getMeta("lastOpenShift");
+        if (raw) cachedShiftId = Number((JSON.parse(raw) as { id?: number }).id) || null;
+      } catch { /* كاش تالف ⇒ بلا وردية بديلة */ }
+      setOfflineBoot({ branchId: profile?.branchId ?? null, shiftId: cachedShiftId, name: profile?.name ?? null });
+    })();
+  }, [me.data]);
+
+  const branchId = me.data?.branchId ?? offlineBoot?.branchId ?? 1;
   useOfflineCatalogSync(me.data ? branchId : null);
+
+  // ش٥: حفظ ملف الجهاز عند كل جلسة أونلاين — وقود بوابة PIN والإقلاع الأوفلايني.
+  useEffect(() => {
+    if (me.data) {
+      void saveOfflineProfile({
+        id: me.data.id,
+        name: me.data.name ?? "",
+        role: me.data.role ?? "",
+        branchId: me.data.branchId ?? null,
+      });
+    }
+  }, [me.data]);
+
+  // ش٥: مفتاح تجربة البيع الأوفلايني (لكل جهاز، افتراضياً معطَّل — قرار مالك).
+  const [offlineSaleOn, setOfflineSaleOn] = useState(false);
+  useEffect(() => {
+    void isOfflineSaleEnabled().then(setOfflineSaleOn);
+    const off = subscribeOutbox(() => void isOfflineSaleEnabled().then(setOfflineSaleOn));
+    return off;
+  }, []);
 
   // كاشير التجزئة: وردية RETAIL خاصّة (منفصلة عن درج خدمة الزبائن RECEPTION).
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
-  const shift  = shiftQ.data;
+  // ش٥: وردية بديلة للإقلاع الأوفلايني — آخر وردية مفتوحة معلومة على هذا الجهاز. تُفعِّل مسارات
+  // الالتقاط فقط (الإغلاق/التقرير أونلاينيان، والخادم يتحقق من الوردية فعلياً عند الترحيل).
+  const shift = shiftQ.data
+    ?? (offline && offlineBoot?.shiftId
+      ? ({ id: offlineBoot.shiftId } as NonNullable<typeof shiftQ.data>)
+      : undefined);
+
+  // ش٥: كاش آخر وردية مفتوحة (يتجدد أونلاين؛ يُمسح عند غيابها كي لا يُلتقط على وردية بائدة).
+  useEffect(() => {
+    if (shiftQ.data?.id) void setMeta("lastOpenShift", JSON.stringify({ id: shiftQ.data.id, branchId }));
+    else if (shiftQ.isSuccess && !shiftQ.data) void setMeta("lastOpenShift", "");
+  }, [shiftQ.data?.id, shiftQ.isSuccess, branchId]);
 
   // ── Multi-tab State ──────────────────────────────────────────────────────
   const [tabs,     setTabs]     = useState<POSTab[]>([createTab(1, "طلب 1")]);
@@ -753,7 +803,7 @@ export default function POS() {
       isCredit,
       method: METHOD_LABEL[activeTab.method],
       customerName: selectedCustomer?.name,
-      cashierName: me.data?.name ?? undefined,
+      cashierName: me.data?.name ?? offlineBoot?.name ?? undefined,
     };
   }
 
@@ -763,6 +813,14 @@ export default function POS() {
   // الاتصال عبر offline.replaySale (idempotent — لا ازدواج حتى مع بيعٍ نصف-ناجح قبل القطع).
   async function captureOfflineSale() {
     if (!shift || !cart.length) return;
+    // ش٥ — بوابة التجربة (قرار مالك): الالتقاط معطَّل افتراضياً ويُفعَّل لكل جهاز على حدة.
+    if (!(await isOfflineSaleEnabled())) {
+      notify.errBig(
+        "البيع دون اتصال غير مفعَّل على هذا الجهاز",
+        "التصفح والاستعلام متاحان. تفعيل الالتقاط قرار إداري من «إعدادات الجهاز» في شارة المزامنة أسفل الشاشة.",
+      );
+      return;
+    }
     if (activeTab.method !== "CASH" || isCredit) {
       notify.errBig("أثناء انقطاع الاتصال: البيع النقدي الكامل فقط — الآجل والبطاقة يتطلبان اتصالاً بالخادم.");
       return;
@@ -1023,8 +1081,8 @@ export default function POS() {
       {/* Tab Bar */}
       <TabBar C={C} tabs={tabs} activeId={activeId} onSwitch={setActiveId} onAdd={addTab} onClose={closeTab} />
 
-      {/* ش٣ أوفلاين: شارة/درج مزامنة المبيعات الملتقطة (تظهر فقط حين يوجد طابور/معلّقات). */}
-      <OfflineSyncChip />
+      {/* ش٣ أوفلاين: شارة/درج مزامنة المبيعات الملتقطة + إعدادات الجهاز (ش٥). */}
+      <OfflineSyncChip userRole={me.data?.role} />
 
       {/* Body */}
       <div style={{ flex: 1, display: "flex", flexDirection: stacked ? "column-reverse" : "row", overflow: "hidden", padding: "7px 8px 8px", gap: 7, minHeight: 0 }}>

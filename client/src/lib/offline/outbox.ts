@@ -13,6 +13,7 @@
 // وسقف عمر للكاش المحلي (أسعار أقدم من ٤٨ ساعة ⇒ قراءة فقط بلا بيع).
 
 import { getLastSyncAt } from "./catalogSync";
+import { decryptJson, encryptJson, isEncryptedEnvelope } from "./crypto";
 import { getMeta, offlineDb, setMeta, type OfflineOutboxItem } from "./db";
 
 export const OFFLINE_QUEUE_CAP_IQD = 5_000_000;
@@ -41,6 +42,21 @@ export interface OfflineSalePayload {
   clientRequestId: string;
   cashRoundIQD?: boolean;
   notes?: string;
+}
+
+// ── مفتاح تجربة البيع الأوفلايني (ش٥ — قرار مالك: تفعيل لكل جهاز، افتراضياً معطَّل) ──
+// يبوّب **الالتقاط (الكتابة)** فقط: النموذج المحلي للقراءة (تصفح/مسح/سعر) يبقى فعّالاً
+// دائماً — قراءةٌ آمنة بلا مخاطرة، والتجربة المُقاسة تخصّ قبول النقد دون اتصال.
+
+const OFFLINE_SALE_FLAG_KEY = "offlineSaleEnabled";
+
+export async function isOfflineSaleEnabled(): Promise<boolean> {
+  return (await getMeta(OFFLINE_SALE_FLAG_KEY)) === "1";
+}
+
+export async function setOfflineSaleEnabled(enabled: boolean): Promise<void> {
+  await setMeta(OFFLINE_SALE_FLAG_KEY, enabled ? "1" : "0");
+  notifyOutboxChanged();
 }
 
 // ── معرّف الجهاز + الترقيم المؤقّت ──────────────────────────────────────────
@@ -118,7 +134,9 @@ export async function enqueueOfflineSale(args: {
     const item: OfflineOutboxItem = {
       clientRequestId: args.payload.clientRequestId,
       kind: "SALE",
-      payload: args.payload,
+      // ش٥: الحمولة (تفاصيل البيع/العميل/المبالغ) مشفَّرة AES-GCM بمفتاح الجهاز غير القابل
+      // للاستخراج — ما يبقى صريحاً على العنصر هو ما تحتاجه الواجهة والصمّامات فقط.
+      payload: await encryptJson(args.payload),
       offlineReceiptNumber: args.offlineReceiptNumber,
       capturedAt: new Date().toISOString(),
       shiftId: args.payload.shiftId,
@@ -135,6 +153,12 @@ export async function enqueueOfflineSale(args: {
     // حصة ممتلئة/وضع خاص — الواجهة تمنع تسليم البضاعة بدل الانفجار.
     return false;
   }
+}
+
+/** يقرأ حمولة العنصر: مغلّفة مشفَّرة (ش٥) تُفكّ؛ وعناصر ما قبل التشفير تُقرأ كما هي (توافق رجعي). */
+export async function readItemPayload(item: OfflineOutboxItem): Promise<OfflineSalePayload> {
+  if (isEncryptedEnvelope(item.payload)) return decryptJson<OfflineSalePayload>(item.payload);
+  return item.payload as OfflineSalePayload;
 }
 
 // ── محرك التفريغ ────────────────────────────────────────────────────────────
@@ -200,9 +224,21 @@ export async function flushOutbox(api: ReplaySaleApi, opts?: { force?: boolean }
       if (!next) break;
       await offlineDb.outbox.update(next.clientRequestId, { status: "SENDING" });
       notifyOutboxChanged();
+      // فشل فكّ التشفير (مفتاح جهاز مُتلَف/مُبدَّل) ليس خطأ شبكة — تعليق فوري لا backoff أبدي.
+      let payload: OfflineSalePayload;
+      try {
+        payload = await readItemPayload(next);
+      } catch {
+        await offlineDb.outbox.update(next.clientRequestId, {
+          status: "PARKED",
+          lastError: "تعذّر فكّ تشفير العنصر محلياً — راجع المدير (مفتاح الجهاز تغيّر؟)",
+        });
+        notifyOutboxChanged();
+        continue;
+      }
       try {
         const res = await api({
-          payload: next.payload as OfflineSalePayload,
+          payload,
           capturedAt: next.capturedAt,
           offlineReceiptNumber: next.offlineReceiptNumber,
           deviceId,
@@ -320,7 +356,7 @@ export async function replayParkedWithApproval(
   try {
     const deviceId = await getDeviceCode();
     const res = await api({
-      payload: item.payload as OfflineSalePayload,
+      payload: await readItemPayload(item),
       capturedAt: item.capturedAt,
       offlineReceiptNumber: item.offlineReceiptNumber,
       deviceId,
