@@ -14,7 +14,7 @@
 import { Suspense, useCallback, useEffect } from "react";
 import { AppLayout } from "@/components/AppLayout";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
-import { AuthConnectionError, OnlineGate } from "@/components/offline/OfflineGate";
+import { OfflineBootGate, OnlineGate } from "@/components/offline/OfflineGate";
 import { OfflineBanner } from "@/components/offline/OfflineBanner";
 import { RequireRole } from "@/components/RequireRole";
 import { RouteErrorBoundary } from "@/components/RouteErrorBoundary";
@@ -108,6 +108,7 @@ const AbcAnalysis = lazy(() => import("@/pages/AbcAnalysis"));
 const TreasuryReport = lazy(() => import("@/pages/TreasuryReport"));
 const ExpensesReport = lazy(() => import("@/pages/ExpensesReport"));
 const AnomalyWatch = lazy(() => import("@/pages/AnomalyWatch"));
+const OfflineSalesReport = lazy(() => import("@/pages/OfflineSalesReport"));
 const CashOrphanReport = lazy(() => import("@/pages/CashOrphanReport"));
 const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
 const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
@@ -135,7 +136,8 @@ function Protected({ children }: { children: React.ReactNode }) {
   }
   // ش١ أوفلاين: فشل الجلب بلا بيانات (إقلاع والاتصال مقطوع) ليس انتهاء جلسة — قبل هذا الإصلاح
   // كان أي انقطاع عند الإقلاع يُعامَل كغياب جلسة فيُرمى المستخدم إلى شاشة الدخول.
-  if (me.isError) return <AuthConnectionError onRetry={retry} />;
+  // ش٥: بوابة PIN — ملف جهاز + رمز مضبوط ⇒ فتح نقطة البيع فقط؛ وإلا شاشة «تعذّر الاتصال».
+  if (me.isError) return <OfflineBootGate onRetry={retry}>{children}</OfflineBootGate>;
   // ردّ الخادم وصل فعلاً وقال «لا جلسة» (data === null) ⇒ الدخول مطلوب حقاً.
   return <Redirect to="/login" />;
 }
@@ -350,6 +352,8 @@ export default function App() {
       <Route path="/reports/treasury"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><TreasuryReport /></RequireRole></Shell></Route>
       <Route path="/reports/expenses"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ExpensesReport /></RequireRole></Shell></Route>
       <Route path="/reports/anomaly-watch"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AnomalyWatch /></RequireRole></Shell></Route>
+      {/* ش٥ أوفلاين: تقرير المبيعات الملتقطة دون اتصال — مرآة بوّابة offline.salesReport (reportViewer). */}
+      <Route path="/reports/offline-sales"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><OfflineSalesReport /></RequireRole></Shell></Route>
       <Route path="/reports/cash-orphans"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CashOrphanReport /></RequireRole></Shell></Route>
       {/* تدقيق ١٧/٧: أُضيف accountant — الخادم reportViewerProcedure يخوّله فكان محجوباً واجهياً فقط. */}
       <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>

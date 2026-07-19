@@ -32,12 +32,33 @@ export interface OfflineOutboxItem {
   resultInvoiceNumber?: string;
 }
 
+/** مفاتيح WebCrypto المخزونة (CryptoKey غير قابل للاستخراج — structured clone يحفظه بلا كشف). */
+export interface OfflineKeyRow {
+  name: string;
+  key: CryptoKey;
+}
+
+/** ملف التعريف الأوفلايني للجهاز (ش٥): هوية آخر مستخدم دخل أونلاين + PIN مجزّأ PBKDF2 —
+ *  حراسة واجهة عند الإقلاع دون اتصال، لا تشفيرَ هوية (يُصارَح المالك). */
+export interface OfflineProfileRow {
+  key: "profile";
+  userId: number;
+  name: string;
+  role: string;
+  branchId: number | null;
+  pinSalt: Uint8Array | null;
+  pinHash: Uint8Array | null;
+  savedAt: string;
+}
+
 class OfflineDb extends Dexie {
   catalog!: Table<OfflineCatalogRow, number>;
   stock!: Table<OfflineStockRow, number>;
   customers!: Table<OfflineCustomerRow, number>;
   meta!: Table<OfflineMetaRow, string>;
   outbox!: Table<OfflineOutboxItem, string>;
+  keys!: Table<OfflineKeyRow, string>;
+  profile!: Table<OfflineProfileRow, string>;
 
   constructor() {
     super("alroya-offline");
@@ -48,6 +69,11 @@ class OfflineDb extends Dexie {
       customers: "id",
       meta: "key",
       outbox: "clientRequestId, status, capturedAt",
+    });
+    // ش٥: مفاتيح التشفير + ملف الجهاز (ترقية جمعية — بيانات النسخة ١ تبقى كما هي).
+    this.version(2).stores({
+      keys: "name",
+      profile: "key",
     });
   }
 }
