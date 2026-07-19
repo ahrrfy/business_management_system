@@ -390,7 +390,9 @@ export async function trackOnlineOrder(orderNumber: string, phone: string): Prom
       })
       .from(onlineOrders)
       .innerJoin(customers, eq(onlineOrders.customerId, customers.id))
-      .where(and(eq(onlineOrders.orderNumber, orderNumber.trim()), eq(customers.phone, phone.trim())))
+      // الهاتف المخزَّن E.164 (normalizeStorePhone عند الإنشاء) ⇒ نُوحِّد المُدخَل قبل المطابقة،
+      // وإلا لم يُطابق زبونٌ يُدخِل رقمه بصيغته المحلّية «0770…» رقمَه المخزَّن «+964770…» أبداً.
+      .where(and(eq(onlineOrders.orderNumber, orderNumber.trim()), eq(customers.phone, normalizeStorePhone(phone))))
       .limit(1)
   )[0];
   if (!order) return null;
