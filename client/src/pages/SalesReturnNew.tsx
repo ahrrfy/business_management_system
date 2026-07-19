@@ -27,7 +27,6 @@ import {
   ShortcutsBar,
   TermsAndNotes,
   TotalsPanel,
-  calcTotals,
   createInitialState,
   invoiceReducer,
   type InvoiceLine,
@@ -47,6 +46,43 @@ interface RefMeta {
   remainingBase: number;
   /** الوحدة الأساس → الكمية المُدخَلة في الوحدة المُختارة تتحوّل ضرباً بهذا. */
   conversionFactor: string;
+  /** إجمالي بند الفاتورة المصدر (نصّ decimal) — أساس التوزيع التناسبيّ المطابق للخادم. */
+  itemTotal: string;
+  /** الكمية المباعة بالأساس لبند الفاتورة المصدر — مقام النسبة. */
+  itemBaseQuantity: number;
+}
+
+/**
+ * إجمالي المرتجع المطابق للخادم (فرع الإرجاع الجزئيّ في `returnService`): توزيعٌ تناسبيّ لإجماليّات
+ * بنود الفاتورة المصدر (`Σ total×(qtyBase/itemBase)`) ثم تطبيق نسبتَي الخصم والضريبة على مستوى
+ * الفاتورة. مصدر حقيقة واحد للعرض وحدّ الاسترداد ⇒ لا «إجمالي» مصطنع من حالة المحرّر (الذي يتجاهل
+ * خصم/ضريبة الفاتورة فيُظهر رقماً خاطئاً كلّما كان للأصل خصمٌ أو ضريبة). §٥: كلّه decimal.js.
+ * (الإرجاع الكامل يختلف على الخادم بمتبقّي تقريبٍ ضئيل + عكس الشحن — عرضٌ فقط، والخادم يحدّ الاسترداد.)
+ */
+export function computeExpectedReturnTotal(
+  items: InvoiceLine[],
+  meta: Record<number, RefMeta>,
+  inv: { subtotal: string; discountAmount: string; taxAmount: string } | null | undefined,
+): string {
+  if (!inv) return "0.00";
+  let grossNet = D(0);
+  for (const item of items) {
+    const m = meta[item.productUnitId];
+    if (!m) continue;
+    const baseDec = round2(D(String(item.qty)).times(D(item.conversionFactor || "1")));
+    const itemBase = D(m.itemBaseQuantity);
+    if (!baseDec.gt(0) || !itemBase.gt(0)) continue;
+    grossNet = grossNet.plus(D(m.itemTotal).times(baseDec.div(itemBase)));
+  }
+  const subtotal = D(inv.subtotal);
+  const discountAmount = D(inv.discountAmount);
+  const taxAmount = D(inv.taxAmount);
+  const discountRatio = subtotal.gt(0) ? discountAmount.div(subtotal) : D(0);
+  const taxable = subtotal.minus(discountAmount);
+  const taxRate = taxable.gt(0) ? taxAmount.div(taxable) : D(0);
+  const returnedRevenue = round2(grossNet.times(D(1).minus(discountRatio)));
+  const returnedTax = round2(returnedRevenue.times(taxRate));
+  return round2(returnedRevenue.plus(returnedTax)).toFixed(2);
 }
 
 export default function SalesReturnNew() {
@@ -139,6 +175,8 @@ export default function SalesReturnNew() {
         invoiceItemId: Number(it.invoiceItemId),
         remainingBase: it.remaining,
         conversionFactor: "1",
+        itemTotal: it.total,
+        itemBaseQuantity: Number(it.baseQuantity),
       };
       added += 1;
     }
@@ -231,7 +269,6 @@ export default function SalesReturnNew() {
     const lines = buildLinesPayload();
     if (!lines) return;
 
-    const totals = calcTotals(state.items, state);
     // مبلغ الاسترداد — إن دفع شيئاً نسجّله؛ غير ذلك يبقى ذمة (سيُسوَّى لاحقاً).
     const paidStr = state.paidAmount.trim();
     let refund: { amount: string; method: "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET" } | undefined;
@@ -241,8 +278,8 @@ export default function SalesReturnNew() {
         return;
       }
       const amt = D(paidStr);
-      if (amt.gt(D(totals.grandTotal))) {
-        notify.err(`مبلغ الاسترداد (${fmt(paidStr)}) يتجاوز إجمالي المرتجع (${fmt(totals.grandTotal)}).`);
+      if (amt.gt(D(expectedReturnTotal))) {
+        notify.err(`مبلغ الاسترداد (${fmt(paidStr)}) يتجاوز إجمالي المرتجع (${fmt(expectedReturnTotal)}).`);
         return;
       }
       if (amt.gt(0)) {
@@ -307,7 +344,11 @@ export default function SalesReturnNew() {
 
   const typeMeta = INVOICE_TYPES["SALE_RETURN"];
   const hasRefLoaded = !!sourceInvoiceId && !!refDetail.data;
-  const totals = useMemo(() => calcTotals(state.items, state), [state]);
+  // إجمالي المرتجع المطابق للخادم (لا حالة المحرّر) — مصدر العرض وحدّ الاسترداد معاً.
+  const expectedReturnTotal = useMemo(
+    () => computeExpectedReturnTotal(state.items, refMeta, refDetail.data),
+    [state.items, refMeta, refDetail.data],
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-3" dir="rtl">
@@ -395,7 +436,15 @@ export default function SalesReturnNew() {
         </div>
 
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          <TotalsPanel items={state.items} state={state} dispatch={dispatch} />
+          <TotalsPanel
+            items={state.items}
+            state={state}
+            dispatch={dispatch}
+            overrideGrandTotal={expectedReturnTotal}
+            showDiscount={false}
+            showShipping={false}
+            showOtherExpenses={false}
+          />
           <ActionButtons
             invoiceType="SALE_RETURN"
             items={state.items}
@@ -436,7 +485,7 @@ export default function SalesReturnNew() {
               req-id: {clientRequestId.slice(0, 8)}…
             </div>
             <div className="mt-0.5 text-[10px]" dir="ltr">
-              إجمالي المرتجع: {fmt(totals.grandTotal)} د.ع
+              إجمالي المرتجع: {fmt(expectedReturnTotal)} د.ع
             </div>
           </div>
         </aside>

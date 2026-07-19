@@ -25,6 +25,10 @@ export interface TotalsPanelProps {
   showDiscount?: boolean;
   /** false = hide the payment block (method + paid amount) — screens that persist payment elsewhere (purchase receive) or via a dedicated control (return settlement). Default true. */
   showPayment?: boolean;
+  /** override the displayed/driving grand total (2dp string). SALE_RETURN passes the server-equivalent
+   *  proportional refund so the panel's total, paid-placeholder and «الكل» button reflect what the server
+   *  actually refunds — not the editor-derived value (which ignores the invoice-level discount/tax). */
+  overrideGrandTotal?: string;
 }
 
 export function TotalsPanel({
@@ -36,10 +40,12 @@ export function TotalsPanel({
   showTaxToggle = false,
   showDiscount = true,
   showPayment = true,
+  overrideGrandTotal,
 }: TotalsPanelProps) {
   const t = calcTotals(items, state);
   const currSym = state.currency === "USD" ? "$" : "د.ع";
-  const grandTotalNum = Number(t.grandTotal);
+  const effectiveGrandTotal = overrideGrandTotal ?? t.grandTotal;
+  const grandTotalNum = Number(effectiveGrandTotal);
   const paidNum = Number(state.paidAmount || "0");
   const remainingNum = grandTotalNum - paidNum;
 
@@ -179,7 +185,7 @@ export function TotalsPanel({
           <span className="text-base font-extrabold">الإجمالي النهائي</span>
           <div className="flex items-baseline gap-1.5">
             <span className="text-3xl font-extrabold leading-none tracking-tight text-primary" dir="ltr">
-              {fmtNum(t.grandTotal)}
+              {fmtNum(effectiveGrandTotal)}
             </span>
             <span className="text-sm font-semibold text-muted-foreground">{currSym}</span>
           </div>
@@ -234,7 +240,7 @@ export function TotalsPanel({
                 <Input
                   dir="ltr"
                   value={state.paidAmount || ""}
-                  placeholder={String(t.grandTotal)}
+                  placeholder={String(effectiveGrandTotal)}
                   onChange={(e) => dispatch({ type: "SET_FIELD", field: "paidAmount", value: e.target.value })}
                   className="h-9 min-w-0 flex-1 text-center text-sm font-extrabold"
                 />
@@ -243,7 +249,7 @@ export function TotalsPanel({
                   size="sm"
                   variant="outline"
                   className="h-9 shrink-0 border-primary bg-primary/10 text-primary"
-                  onClick={() => dispatch({ type: "SET_FIELD", field: "paidAmount", value: t.grandTotal })}
+                  onClick={() => dispatch({ type: "SET_FIELD", field: "paidAmount", value: effectiveGrandTotal })}
                 >
                   الكل
                 </Button>
