@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import {
   consignmentBalancesReport,
@@ -19,7 +20,7 @@ const lineSchema = z.object({
   lineDirection: z.enum(["IN", "OUT"]),
   variantId: z.number().int().positive(),
   productUnitId: z.number().int().positive(),
-  quantity: z.string().min(1),
+  quantity: positiveQtyString,
   notes: z.string().nullish(),
 });
 
@@ -54,7 +55,7 @@ export const consignmentRouter = router({
   createSettlement: treasuryManagerProcedure
     .input(z.object({
       consignorId: z.number().int().positive(),
-      amount: z.string().min(1),
+      amount: positiveMoneyString,
       paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "CHECK"]).default("CASH"),
       branchId: z.number().int().positive(),
       description: z.string().max(500).optional(),
