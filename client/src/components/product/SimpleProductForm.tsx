@@ -14,6 +14,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBarcodeAliases";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { cn } from "@/lib/utils";
 
 /**
@@ -72,6 +73,8 @@ export default function SimpleProductForm() {
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [isActive, setIsActive] = useState(true);
   const [images, setImages] = useState<ImageItem[]>([]);
+  // بضاعة الأمانة (٢٠/٧): وسم السلعة البسيطة + مودِعها (الحصة في costPrice).
+  const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
 
   const [error, setError] = useState("");
 
@@ -200,6 +203,9 @@ export default function SimpleProductForm() {
     }
     const dup = codes.find((c, i) => codes.indexOf(c) !== i);
     if (dup) return `باركود مكرّر داخل النموذج: ${dup} — لكل وحدة/بديل باركود فريد.`;
+    // بضاعة الأمانة: التلازم يُتحقَّق خادمياً، لكن رسالة أبكر أوضح.
+    if (consignment.isConsignment && !consignment.consignorId)
+      return "صنف الأمانة يلزمه مودِع — اختر المودِع أو أطفئ «بضاعة أمانة».";
     return null;
   }
 
@@ -258,6 +264,8 @@ export default function SimpleProductForm() {
       categoryId: categoryId === "" ? undefined : Number(categoryId),
       isCustomizable,
       isService: false,
+      isConsignment: consignment.isConsignment,
+      consignorId: consignment.isConsignment ? consignment.consignorId : null,
       variants: [
         {
           sku: autoSku(),
@@ -345,6 +353,9 @@ export default function SimpleProductForm() {
           </Field>
         </CardContent>
       </Card>
+
+      {/* ── بضاعة الأمانة (وسم + مودِع) ── */}
+      <ConsignmentField value={consignment} onChange={setConsignment} />
 
       {/* ── الوحدات والباركود والأسعار ── */}
       <Card>
@@ -492,7 +503,11 @@ export default function SimpleProductForm() {
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <Field label="سعر التكلفة (د.ع)" required hint="سعر شراء الوحدة الأساس.">
+            <Field
+              label={consignment.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"}
+              required
+              hint={consignment.isConsignment ? "المبلغ الذي يستحقه المودِع عند بيع القطعة." : "سعر شراء الوحدة الأساس."}
+            >
               <MoneyInput id="simple-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
             </Field>
             <Field label="الحد الأدنى" hint="ينبّه عند النزول عنه.">

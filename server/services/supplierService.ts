@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { purchaseOrders, suppliers } from "../../drizzle/schema";
+import { branchStock, productVariants, products, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escapeLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "../../shared/searchNormalize";
@@ -32,6 +32,13 @@ export interface CreateSupplierInput {
   rating?: number | null;
   iban?: string | null;
   bankName?: string | null;
+  // بضاعة الأمانة (٢٠/٧): نوع الطرف + حقول اتفاقية المودِع (CONSIGNOR فقط). راجع docs/consignment-design-2026-07-20.md.
+  supplierKind?: "REGULAR" | "CONSIGNOR";
+  settlementCycle?: string | null;
+  abandonedAfterMonths?: number | null;
+  autoSettleThreshold?: string | null;
+  agreementNotes?: string | null;
+  agreementAttachmentUrl?: string | null;
   // رصيد افتتاحي اختياري (مبلغ غير سالب) + اتجاه الدين. يُنشئ قيد OPENING مرجعياً.
   openingBalance?: string | null;
   openingBalanceDirection?: OpeningDirection;
@@ -47,12 +54,40 @@ export interface ListSuppliersInput {
   includeInactive?: boolean;
   limit?: number;
   offset?: number;
+  // بضاعة الأمانة: فلتر نوع الطرف (منتقي المودِعين + فلتر شاشة الموردين).
+  kind?: "REGULAR" | "CONSIGNOR";
 }
 
 const norm = (s: string | null | undefined): string | null => {
   const t = s?.trim();
   return t || null;
 };
+
+/** بضاعة الأمانة: تطبيع حقول اتفاقية المودِع + التحقّق منها (مشترك بين الإنشاء والتعديل). */
+function normalizeConsignmentFields(input: {
+  settlementCycle?: string | null;
+  abandonedAfterMonths?: number | null;
+  autoSettleThreshold?: string | null;
+  agreementNotes?: string | null;
+  agreementAttachmentUrl?: string | null;
+}) {
+  let abandoned: number | null = null;
+  if (input.abandonedAfterMonths != null) {
+    abandoned = Math.trunc(input.abandonedAfterMonths);
+    if (!Number.isFinite(abandoned) || abandoned < 1 || abandoned > 120)
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مدة البضاعة المتروكة بين 1 و120 شهراً" });
+  }
+  const threshold = input.autoSettleThreshold?.trim();
+  if (threshold && !/^\d+(\.\d{1,2})?$/.test(threshold))
+    throw new TRPCError({ code: "BAD_REQUEST", message: "عتبة التسوية الفورية غير صالحة" });
+  return {
+    settlementCycle: norm(input.settlementCycle) ?? "MONTHLY",
+    abandonedAfterMonths: abandoned ?? 12,
+    autoSettleThreshold: threshold || null,
+    agreementNotes: norm(input.agreementNotes),
+    agreementAttachmentUrl: norm(input.agreementAttachmentUrl),
+  };
+}
 
 async function assertUniquePhone(db: any, phone: string | null, excludeId?: number) {
   if (!phone) return;
@@ -114,6 +149,8 @@ async function createSupplierTx(input: CreateSupplierInput, clientRequestId: str
     const minOrder = input.minOrderAmount?.trim();
     if (minOrder && !/^\d+(\.\d{1,2})?$/.test(minOrder))
       throw new TRPCError({ code: "BAD_REQUEST", message: "الحد الأدنى للطلب غير صالح" });
+    const kind = input.supplierKind === "CONSIGNOR" ? "CONSIGNOR" : "REGULAR";
+    const consignFields = normalizeConsignmentFields(input);
     // رصيد افتتاحي موقَّع (المورّد: موجب = «علينا له»). "0.00" حين لا رصيد.
     const openingBalance = signedOpeningBalance(
       "SUPPLIER",
@@ -141,6 +178,8 @@ async function createSupplierTx(input: CreateSupplierInput, clientRequestId: str
       currentBalance: openingBalance,
       notes: norm(input.notes),
       clientRequestId,
+      supplierKind: kind,
+      ...consignFields,
       isActive: true,
     });
     const supplierId = extractInsertId(res);
@@ -191,6 +230,33 @@ export async function updateSupplier(input: UpdateSupplierInput, _actor: Actor) 
     if (input.iban !== undefined) patch.iban = norm(input.iban);
     if (input.bankName !== undefined) patch.bankName = norm(input.bankName);
     if (input.notes !== undefined) patch.notes = norm(input.notes);
+    // بضاعة الأمانة: حقول الاتفاقية قابلة للتعديل دائماً.
+    if (input.settlementCycle !== undefined) patch.settlementCycle = norm(input.settlementCycle) ?? "MONTHLY";
+    if (input.abandonedAfterMonths !== undefined) {
+      const m = input.abandonedAfterMonths;
+      if (m != null && (!Number.isFinite(m) || Math.trunc(m) < 1 || Math.trunc(m) > 120))
+        throw new TRPCError({ code: "BAD_REQUEST", message: "مدة البضاعة المتروكة بين 1 و120 شهراً" });
+      patch.abandonedAfterMonths = m != null ? Math.trunc(m) : 12;
+    }
+    if (input.autoSettleThreshold !== undefined) {
+      const t = input.autoSettleThreshold?.trim();
+      if (t && !/^\d+(\.\d{1,2})?$/.test(t))
+        throw new TRPCError({ code: "BAD_REQUEST", message: "عتبة التسوية الفورية غير صالحة" });
+      patch.autoSettleThreshold = t || null;
+    }
+    if (input.agreementNotes !== undefined) patch.agreementNotes = norm(input.agreementNotes);
+    if (input.agreementAttachmentUrl !== undefined) patch.agreementAttachmentUrl = norm(input.agreementAttachmentUrl);
+    // نوع الطرف يُقفل بعد أول حركة: لا تحويل مورّد↔مودِع لحساب له أوامر شراء أو أصناف أمانة مربوطة.
+    // (ش٢ ستوسّعه ليشمل سندات الأمانة.) يمنع خلط دلالتين ماليتين على نفس الحساب.
+    if (input.supplierKind !== undefined && input.supplierKind !== existing.supplierKind) {
+      const [hasPo] = await tx.select({ id: purchaseOrders.id }).from(purchaseOrders)
+        .where(eq(purchaseOrders.supplierId, input.supplierId)).limit(1);
+      const [hasProd] = await tx.select({ id: products.id }).from(products)
+        .where(and(eq(products.consignorId, input.supplierId), eq(products.isConsignment, true))).limit(1);
+      if (hasPo || hasProd)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُغيَّر نوع حساب له حركات (أوامر شراء أو أصناف أمانة)" });
+      patch.supplierKind = input.supplierKind;
+    }
     if (Object.keys(patch).length === 0) return { supplierId: input.supplierId, changed: false };
     await tx.update(suppliers).set(patch).where(eq(suppliers.id, input.supplierId));
     return { supplierId: input.supplierId, changed: true };
@@ -214,6 +280,20 @@ export async function deactivateSupplier(supplierId: number, _actor: Actor) {
         .limit(1)
     )[0];
     if (open) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل مورّد له أوامر شراء غير مسوّاة" });
+
+    // بضاعة الأمانة: مودِع له بضاعة متبقية على الرف (رصيد > 0 في أي فرع) لا يُعطَّل — اسحبها بسند سحب أولاً،
+    // وإلا بقيت بضاعة الغير في الأرفف بلا مالك نشط. (حارس §٨ حالات الحافة في التصميم.)
+    if (s.supplierKind === "CONSIGNOR") {
+      const [stock] = await tx
+        .select({ vid: branchStock.variantId })
+        .from(branchStock)
+        .innerJoin(productVariants, eq(productVariants.id, branchStock.variantId))
+        .innerJoin(products, eq(products.id, productVariants.productId))
+        .where(and(eq(products.consignorId, supplierId), eq(products.isConsignment, true), sql`${branchStock.quantity} > 0`))
+        .limit(1);
+      if (stock)
+        throw new TRPCError({ code: "BAD_REQUEST", message: "للمودِع بضاعة متبقية لدينا — أرجعها بسند سحب أولاً ثم عطّله" });
+    }
 
     await tx.update(suppliers).set({ isActive: false }).where(eq(suppliers.id, supplierId));
     return { supplierId, isActive: false };
@@ -249,6 +329,7 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
   const offset = Math.max(input.offset ?? 0, 0);
   const conds: any[] = [];
   if (!input.includeInactive) conds.push(eq(suppliers.isActive, true));
+  if (input.kind) conds.push(eq(suppliers.supplierKind, input.kind));
   if (input.q?.trim()) {
     const q = `%${escapeLike(input.q.trim())}%`;
     // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط المنتجات/العملاء) — «ازرق»
@@ -277,6 +358,8 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
       currentBalance: suppliers.currentBalance,
       // import-integration: «الرقم القديم» يظهر عموداً في الشاشة ويُصدَّر في Excel.
       legacyCode: suppliers.legacyCode,
+      // بضاعة الأمانة: نوع الطرف — لفلتر/شارة الشاشة ومنتقي المودِعين.
+      supplierKind: suppliers.supplierKind,
       isActive: suppliers.isActive,
       createdAt: suppliers.createdAt,
     })

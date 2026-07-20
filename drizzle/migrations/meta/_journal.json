@@ -638,6 +638,13 @@
       "when": 1784937600004,
       "tag": "0090_supplier_client_request_id",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "5",
+      "when": 1784937600006,
+      "tag": "0091_consignment_core",
+      "breakpoints": true
     }
   ]
 }

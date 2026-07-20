@@ -5,6 +5,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { IntlPhoneInput } from "@/components/form/IntlPhoneInput";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { FormError } from "@/components/form/FormError";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -38,6 +39,14 @@ export default function SupplierNew() {
   const utils = trpc.useUtils();
 
   const [name, setName] = useState("");
+  // بضاعة الأمانة (٢٠/٧): نوع الحساب + حقول اتفاقية المودِع (CONSIGNOR فقط).
+  const [supplierKind, setSupplierKind] = useState<"REGULAR" | "CONSIGNOR">("REGULAR");
+  const [settlementCycle, setSettlementCycle] = useState("MONTHLY");
+  const [abandonedAfterMonths, setAbandonedAfterMonths] = useState("12");
+  const [autoSettleThreshold, setAutoSettleThreshold] = useState("");
+  const [agreementNotes, setAgreementNotes] = useState("");
+  const [agreementImages, setAgreementImages] = useState<ImageItem[]>([]);
+  const isConsignor = supplierKind === "CONSIGNOR";
   const [phone, setPhone] = useState("");
   const [phone2, setPhone2] = useState("");
   const [phone3, setPhone3] = useState("");
@@ -134,6 +143,14 @@ export default function SupplierNew() {
       openingBalance: openingAmount.trim() || null,
       openingBalanceDirection: openingDir,
       notes: notes.trim() || null,
+      supplierKind,
+      settlementCycle: isConsignor ? settlementCycle : null,
+      abandonedAfterMonths: isConsignor ? Number(abandonedAfterMonths) || 12 : null,
+      autoSettleThreshold: isConsignor ? (autoSettleThreshold.trim() || null) : null,
+      agreementNotes: isConsignor ? (agreementNotes.trim() || null) : null,
+      agreementAttachmentUrl: isConsignor
+        ? (agreementImages[0]?.url || agreementImages[0]?.dataUrl || null)
+        : null,
       clientRequestId,
     });
   }
@@ -153,7 +170,7 @@ export default function SupplierNew() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, phone, phone2, phone3, address, city, supplierCategory, productTypes, taxId, paymentTerms, leadTimeDays, minOrderAmount, rating, iban, bankName, openingAmount, openingDir, notes]);
+  }, [name, phone, phone2, phone3, address, city, supplierCategory, productTypes, taxId, paymentTerms, leadTimeDays, minOrderAmount, rating, iban, bankName, openingAmount, openingDir, notes, supplierKind, settlementCycle, abandonedAfterMonths, autoSettleThreshold, agreementNotes, agreementImages]);
 
   const wa = whatsappLink(phone);
 
@@ -171,13 +188,47 @@ export default function SupplierNew() {
           <CardTitle className="text-base">البيانات الأساسية</CardTitle>
         </CardHeader>
         <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="space-y-1.5 md:col-span-2">
+            <Label>نوع الحساب</Label>
+            <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="نوع حساب المورّد">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={!isConsignor}
+                onClick={() => setSupplierKind("REGULAR")}
+                className={cn(
+                  "rounded-md border px-3 py-2 text-sm transition-colors",
+                  !isConsignor ? "border-primary bg-primary/10 text-foreground" : "border-input text-muted-foreground hover:bg-muted"
+                )}
+              >
+                مورّد اعتيادي
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={isConsignor}
+                onClick={() => setSupplierKind("CONSIGNOR")}
+                className={cn(
+                  "rounded-md border px-3 py-2 text-sm transition-colors",
+                  isConsignor ? "border-amber-400 bg-amber-50 text-amber-900" : "border-input text-muted-foreground hover:bg-muted"
+                )}
+              >
+                مودِع أمانة (برسم البيع)
+              </button>
+            </div>
+            {isConsignor && (
+              <p className="text-[11px] text-amber-700">
+                لا ينشأ دين عند استلام بضاعته — المستحق يتكوّن عند البيع فقط، وله سحبها في أي وقت بسند موقَّع.
+              </p>
+            )}
+          </div>
           <div className="space-y-1 md:col-span-2">
-            <Label htmlFor="name">اسم المورّد <span className="text-destructive">*</span></Label>
+            <Label htmlFor="name">{isConsignor ? "اسم المودِع" : "اسم المورّد"} <span className="text-destructive">*</span></Label>
             <Input
               id="name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="مثال: مكتبة الرشيد للورق"
+              placeholder={isConsignor ? "مثال: أ. حيدر — ملازم الفيزياء" : "مثال: مكتبة الرشيد للورق"}
               maxLength={255}
               autoFocus
               aria-required="true"
@@ -401,6 +452,44 @@ export default function SupplierNew() {
           </div>
         </CardContent>
       </Card>
+
+      {isConsignor && (
+        <Card className="lg:col-span-2 border-amber-200">
+          <CardHeader>
+            <CardTitle className="text-base text-amber-900">اتفاقية الإيداع (بضاعة الأمانة)</CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="space-y-1">
+              <Label htmlFor="cycle">دورية التسوية</Label>
+              <select id="cycle" className={selectCls} value={settlementCycle} onChange={(e) => setSettlementCycle(e.target.value)}>
+                <option value="MONTHLY">شهرية</option>
+                <option value="WEEKLY">أسبوعية</option>
+                <option value="ON_DEMAND">عند الطلب</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="aband">مدة البضاعة المتروكة (شهر)</Label>
+              <Input id="aband" dir="ltr" inputMode="numeric" maxLength={3} value={abandonedAfterMonths}
+                onChange={(e) => setAbandonedAfterMonths(e.target.value.replace(/\D/g, ""))} placeholder="12" />
+              <p className="text-[11px] text-muted-foreground">بلا بيع خلالها ⇒ تُرشَّح للإرجاع (بين 1 و120).</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="autoSettle">عتبة التسوية الفورية (د.ع)</Label>
+              <MoneyInput id="autoSettle" value={autoSettleThreshold} onChange={setAutoSettleThreshold} placeholder="اختياري" ariaLabel="عتبة التسوية الفورية" />
+            </div>
+            <div className="space-y-1 md:col-span-2 lg:col-span-3">
+              <Label htmlFor="agrNotes">بنود/ملاحظات الاتفاق</Label>
+              <Textarea id="agrNotes" value={agreementNotes} onChange={(e) => setAgreementNotes(e.target.value)} rows={2}
+                placeholder="أي شرط خاص بهذا المودِع (التلف على المكتبة بند ثابت لا يُكتب هنا)…" />
+            </div>
+            <div className="space-y-1 md:col-span-2 lg:col-span-3">
+              <Label>صورة الاتفاقية الموقَّعة (اختياري)</Label>
+              <ImageUploader value={agreementImages} onChange={setAgreementImages} maxItems={1} singlePrimary={false}
+                hint="ارفع صورة نسخة الاتفاقية بعد توقيع الطرفين — تُحفظ في بطاقة المودِع." />
+            </div>
+          </CardContent>
+        </Card>
+      )}
       </div>
 
       <FormError message={error} />

@@ -33,6 +33,8 @@ export const supplierRouter = router({
           // الفجوة ١٦: الحد الأعلى ٢٠٠٠ مطابقاً للخدمة (افتراضي ١٠٠).
           limit: z.number().int().positive().max(2000).default(100),
           offset: z.number().int().min(0).default(0),
+          // بضاعة الأمانة: فلتر نوع الطرف (منتقي المودِعين + فلتر شاشة الموردين).
+          kind: z.enum(["REGULAR", "CONSIGNOR"]).optional(),
         })
         .optional()
     )
@@ -81,6 +83,13 @@ export const supplierRouter = router({
         iban: z.string().max(64).nullish(),
         bankName: z.string().max(120).nullish(),
         notes: z.string().nullish(),
+        // بضاعة الأمانة (٢٠/٧): نوع الطرف + حقول اتفاقية المودِع.
+        supplierKind: z.enum(["REGULAR", "CONSIGNOR"]).optional(),
+        settlementCycle: z.string().max(20).nullish(),
+        abandonedAfterMonths: z.number().int().min(1).max(120).nullish(),
+        autoSettleThreshold: z.string().max(20).nullish(),
+        agreementNotes: z.string().nullish(),
+        agreementAttachmentUrl: z.string().nullish(),
         // رصيد افتتاحي اختياري + اتجاه الدين (المورّد: موجب افتراضاً = «علينا له»).
         openingBalance: z.string().nullish(),
         openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
@@ -124,6 +133,12 @@ export const supplierRouter = router({
         iban: z.string().max(64).nullish(),
         bankName: z.string().max(120).nullish(),
         notes: z.string().nullish(),
+        supplierKind: z.enum(["REGULAR", "CONSIGNOR"]).optional(),
+        settlementCycle: z.string().max(20).nullish(),
+        abandonedAfterMonths: z.number().int().min(1).max(120).nullish(),
+        autoSettleThreshold: z.string().max(20).nullish(),
+        agreementNotes: z.string().nullish(),
+        agreementAttachmentUrl: z.string().nullish(),
       })
     )
     .mutation(async ({ input, ctx }) => {

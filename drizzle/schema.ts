@@ -305,6 +305,17 @@ export const suppliers = mysqlTable(
     // مفتاح idempotency للإنشاء — UUID من نموذج الإضافة، UNIQUE يمنع صفاً ثانياً عند إعادة
     // الإرسال (نقر مزدوج/إعادة محاولة شبكة). NULL متعدّد للمسارات القديمة. هجرة 0090 (نظير 0051).
     clientRequestId: varchar("clientRequestId", { length: 64 }),
+    // بضاعة الأمانة (٢٠/٧، هجرة 0091): نوع الطرف. CONSIGNOR = مودِع أمانة — لا دين عند الاستلام،
+    // المستحق ينشأ لحظة البيع فقط. يرث كل بنى المورّد (كشف/سندات/واتساب/كاشف ازدواج/رصيد افتتاحي)
+    // بصفر تعديل — دلالة currentBalance تبقى AP (موجب = علينا له). راجع docs/consignment-design-2026-07-20.md.
+    supplierKind: mysqlEnum("supplierKind", ["REGULAR", "CONSIGNOR"]).default("REGULAR").notNull(),
+    // حقول اتفاقية المودِع (تظهر لنوع CONSIGNOR فقط): دورية التسوية + مدة البضاعة المتروكة/تجميد الغائب
+    // (افتراضي ١٢ شهراً بقرار المالك) + عتبة تسوية فورية اختيارية + ملاحظات + صورة الاتفاقية الموقَّعة.
+    settlementCycle: varchar("settlementCycle", { length: 20 }).default("MONTHLY"),
+    abandonedAfterMonths: int("abandonedAfterMonths").default(12),
+    autoSettleThreshold: decimal("autoSettleThreshold", { precision: 15, scale: 2 }),
+    agreementNotes: text("agreementNotes"),
+    agreementAttachmentUrl: mediumtext("agreementAttachmentUrl"),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -317,6 +328,8 @@ export const suppliers = mysqlTable(
     phoneIdx: index("idx_supplier_phone").on(table.phone),
     legacyUq: unique("uq_supplier_legacy").on(table.legacyCode),
     clientRequestUq: unique("uq_supplier_client_request").on(table.clientRequestId),
+    // فلتر شاشة الموردين «مودِعو أمانة» + استعلامات الوحدة.
+    kindIdx: index("idx_supplier_kind").on(table.supplierKind, table.isActive),
   })
 );
 
@@ -365,6 +378,11 @@ export const products = mysqlTable(
     // وتكلفته تُحسب لحظة البيع من مجموع تكاليف مكوّناته (WAVG الحيّ)، والمخزون يُخصَم من كل مكوّن.
     // النَسْت مَمنوع (مكوّن البكج لا يكون بكجاً) — يُفرض خادمياً في bundleService.
     isBundle: boolean("isBundle").default(false).notNull(),
+    // بضاعة الأمانة (٢٠/٧، هجرة 0091): وسم المنتج + مودِعه. الحصة تسكن productVariants.costPrice
+    // (قرار المالك) ⇒ الربح=الهامش وحجب canSeeCost مجاناً. الالتزام للمودِع ينشأ لحظة البيع فقط.
+    // تلازم إلزاميّ: isConsignment=true ⇔ consignorId != NULL (suppliers.supplierKind='CONSIGNOR').
+    isConsignment: boolean("isConsignment").default(false).notNull(),
+    consignorId: bigint("consignorId", { mode: "number" }).references(() => suppliers.id),
     isActive: boolean("isActive").default(true),
     // لوحة hPanel للمتجر (١٢/٧، هجرة 0072): تمييز المنتج (يتصدّر) + إظهاره/إخفاؤه من واجهة المتجر.
     isFeatured: boolean("isFeatured").default(false).notNull(),
@@ -383,6 +401,8 @@ export const products = mysqlTable(
     parentIdx: index("idx_product_parent").on(table.parentProductId),
     // bundles: كشف سريع للمنتجات المركّبة (لوحة إدارة البكج، فلترة POS).
     bundleIdx: index("idx_product_is_bundle").on(table.isBundle),
+    // بضاعة الأمانة: كشف أصناف مودِع بعينه (سند الإيداع، التقارير، حارس التعطيل).
+    consignorIdx: index("idx_product_consignor").on(table.consignorId),
   })
 );
 
