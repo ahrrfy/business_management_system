@@ -128,7 +128,16 @@ function buildStockState(cart: CartLine[]) {
 
 export default function Reception() {
   const me = trpc.auth.me.useQuery();
-  const branchId = useMemo(() => Number(me.data?.branchId ?? 1), [me.data?.branchId]);
+  // الأدمن/المدير بلا فرع مُسنَد: يختار الفرع صراحةً قبل فتح وردية الخدمة بدل الإسناد الصامت للفرع ١
+  // (نمط POS/PrintPOS، #274 — الوردية تحمل الفرع والطلبات تتبعها). لا يمسّ مستخدماً له فرع (يبقى فرعه).
+  const [pickedBranch, setPickedBranch] = useState<number | null>(null);
+  const branchId = useMemo(
+    () => Number(me.data?.branchId ?? pickedBranch ?? 1),
+    [me.data?.branchId, pickedBranch],
+  );
+  const isElevatedRole = me.data?.role === "admin" || me.data?.role === "manager";
+  const noAssignedBranch = me.data != null && me.data.branchId == null;
+  const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   const utils = trpc.useUtils();
 
   // وردية خدمة الزبائن (RECEPTION): درج/رصيد افتتاحي/عرابين مستقلّة عن كاشير التجزئة (RETAIL).
@@ -672,6 +681,21 @@ export default function Reception() {
           <p className="mb-5 text-sm text-muted-foreground">
             درجٌ ورصيدٌ افتتاحيٌّ مستقلّ لاستلام الطلبات وقبض العرابين. لا يمكن العمل بدون وردية مفتوحة.
           </p>
+          {/* الأدمن/المدير بلا فرع مُسنَد يختار الفرع صراحةً (#274) — بدل إسناد الطلبات صامتاً للفرع ١. */}
+          {needsBranchChoice && (
+            <div className="mb-3">
+              <label htmlFor="rec-branch" className="mb-1.5 block text-sm font-bold">الفرع <span className="text-destructive">*</span></label>
+              <select
+                id="rec-branch"
+                className="h-12 w-full rounded-md border border-input bg-transparent px-3 text-base shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                value={pickedBranch ?? ""}
+                onChange={(e) => setPickedBranch(e.target.value ? Number(e.target.value) : null)}
+              >
+                <option value="">— اختر الفرع —</option>
+                {(branchesQ.data ?? []).map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+          )}
           <label className="mb-1.5 block text-sm font-bold">الرصيد الافتتاحي للصندوق (د.ع)</label>
           <Input
             dir="ltr"
@@ -691,10 +715,10 @@ export default function Reception() {
           </div>
           <Button
             className="h-12 w-full text-base font-bold"
-            disabled={openShiftM.isPending}
+            disabled={openShiftM.isPending || needsBranchChoice}
             onClick={() => openShiftM.mutate({ branchId, openingBalance: opening || "0", shiftType: "RECEPTION" })}
           >
-            {openShiftM.isPending ? "جارٍ الفتح…" : "فتح وردية خدمة الزبائن"}
+            {openShiftM.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح وردية خدمة الزبائن"}
           </Button>
           <Link href="/" className="mt-3 block text-center text-sm text-muted-foreground">← الرئيسية</Link>
         </div>
