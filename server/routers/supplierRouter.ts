@@ -84,6 +84,8 @@ export const supplierRouter = router({
         // رصيد افتتاحي اختياري + اتجاه الدين (المورّد: موجب افتراضاً = «علينا له»).
         openingBalance: z.string().nullish(),
         openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
+        // مفتاح idempotency من النموذج (UUID لكل فتح) — إعادة الإرسال تعيد نفس المورّد (هجرة 0090).
+        clientRequestId: z.string().min(8).max(64).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -93,7 +95,10 @@ export const supplierRouter = router({
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
       const safeInput = elevated ? input : { ...input, openingBalance: null };
       const r = await createSupplier(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
-      await logAudit(ctx, { action: "supplier.create", entityType: "supplier", entityId: r.supplierId, newValue: { name: input.name, openingBalanceSet: elevated && !!input.openingBalance } });
+      // إعادة تشغيل idempotent = لا كتابة جديدة ⇒ لا نكرّر سجلّ التدقيق (نمط customerRouter).
+      if (!r.idempotentReplay) {
+        await logAudit(ctx, { action: "supplier.create", entityType: "supplier", entityId: r.supplierId, newValue: { name: input.name, openingBalanceSet: elevated && !!input.openingBalance } });
+      }
       return r;
     }),
 

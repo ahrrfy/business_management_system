@@ -12,7 +12,7 @@ import { fmt } from "@/lib/money";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Star, TriangleAlert } from "lucide-react";
 
@@ -57,6 +57,12 @@ export default function SupplierNew() {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
+  // مفتاح idempotency — UUID واحد لكل فتح للنموذج. إعادة الإرسال بنفس المفتاح (نقر مزدوج/انقطاع
+  // شبكة وإعادة محاولة) تعيد المورّد نفسه من الخادم بدل إنشاء صفٍّ مكرّر (هجرة 0090).
+  // مكمّل لكاشف التكرار الحيّ أدناه: ذاك يحذّر من مورّدٍ مشابه *قبل* الحفظ، وهذا يمنع صفّاً
+  // ثانياً من *نفس* الإرسال. الطبقتان متعامدتان.
+  const clientRequestId = useMemo(() => crypto.randomUUID(), []);
+
   // dup-detect (٢٠/٧): تحذير تكرار حيّ — مرآة شاشة إضافة العميل (اسم مطبَّع/لاحقة هاتف بتأخير كتابة).
   const [dupInput, setDupInput] = useState<{ name?: string; phones?: string[] }>({});
   useEffect(() => {
@@ -93,7 +99,7 @@ export default function SupplierNew() {
   });
 
   function submit() {
-    if (create.isPending) return; // يمنع الإرسال المزدوج عبر Ctrl+S/تكرار المفتاح (لا idempotency خادمية بعد).
+    if (create.isPending) return; // حاجز واجهة أول؛ والحاجز البنيوي clientRequestId خادمياً (هجرة 0090).
     setError("");
     if (!name.trim()) {
       setError("اسم المورّد مطلوب.");
@@ -128,6 +134,7 @@ export default function SupplierNew() {
       openingBalance: openingAmount.trim() || null,
       openingBalanceDirection: openingDir,
       notes: notes.trim() || null,
+      clientRequestId,
     });
   }
 
