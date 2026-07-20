@@ -10,7 +10,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, ne } from "drizzle-orm";
-import { branchStock, productImages, productPrices, productUnits, productVariants, products } from "../../drizzle/schema";
+import { branchStock, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
@@ -65,6 +65,10 @@ export interface ProductForVariantEdit {
   /** gstack B12 (٧/٧/٢٦): علم البكج — يُشغّل تبويب وصفة المكوّنات في ProductEdit. */
   isBundle: boolean;
   isActive: boolean;
+  // بضاعة الأمانة (٢٠/٧): الوسم + المودِع (اسمه للعرض) — للبانر العلوي وإعادة تسمية «التكلفة»→«حصة المودِع».
+  isConsignment: boolean;
+  consignorId: number | null;
+  consignorName: string | null;
   /** قالب الوحدات المشترك — مُشتقّ من وحدات أوّل متغيّر فعّال (النموذج يصنعها موحّدة). */
   unitTemplate: VariantEditUnit[];
   variants: VariantEditRow[];
@@ -76,6 +80,18 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
   if (!db) return null;
   const p = (await db.select().from(products).where(eq(products.id, productId)).limit(1))[0];
   if (!p) return null;
+
+  // بضاعة الأمانة: اسم المودِع للعرض (قراءة واحدة عند وجود ربط فقط).
+  let consignorName: string | null = null;
+  if (p.consignorId != null) {
+    const [c] = await db.select({ name: suppliers.name }).from(suppliers).where(eq(suppliers.id, Number(p.consignorId))).limit(1);
+    consignorName = c?.name ?? null;
+  }
+  const consignFields = {
+    isConsignment: !!p.isConsignment,
+    consignorId: p.consignorId != null ? Number(p.consignorId) : null,
+    consignorName,
+  };
 
   const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
   if (!variants.length) {
@@ -91,6 +107,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       isService: !!p.isService,
       isBundle: !!p.isBundle,
       isActive: !!p.isActive,
+      ...consignFields,
       unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
       variants: [],
     };
@@ -159,6 +176,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     isService: !!p.isService,
     isBundle: !!p.isBundle,
     isActive: !!p.isActive,
+    ...consignFields,
     unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
     variants: variantRows,
   };

@@ -39,14 +39,16 @@ export default function Suppliers() {
   const canImport = me.data?.role === "admin" || me.data?.role === "manager";
   const [q, setQ] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
+  // بضاعة الأمانة (٢٠/٧): فلتر نوع الطرف — الكل / موردون اعتياديون / مودِعو أمانة.
+  const [kind, setKind] = useState<"" | "REGULAR" | "CONSIGNOR">("");
   const [page, setPage] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
   const importMut = trpc.imports.suppliers.useMutation();
   const limit = 50;
 
   const input = useMemo(
-    () => ({ q: q.trim() || undefined, includeInactive, limit, offset: page * limit }),
-    [q, includeInactive, page],
+    () => ({ q: q.trim() || undefined, includeInactive, kind: kind || undefined, limit, offset: page * limit }),
+    [q, includeInactive, kind, page],
   );
 
   const list = trpc.suppliers.search.useQuery(input);
@@ -129,15 +131,39 @@ export default function Suppliers() {
               placeholder: "بحث (اسم/هاتف/مدينة/رقم قديم)",
             }}
             filters={
-              <label className="flex items-center gap-2 h-8 text-sm">
-                <input
-                  type="checkbox"
-                  className="size-4"
-                  checked={includeInactive}
-                  onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
-                />
-                <span className="text-muted-foreground">عرض المعطّلين</span>
-              </label>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex items-center gap-1" role="radiogroup" aria-label="نوع الطرف">
+                  {([
+                    { v: "", label: "الكل" },
+                    { v: "REGULAR", label: "موردون" },
+                    { v: "CONSIGNOR", label: "مودِعو أمانة" },
+                  ] as const).map((t) => (
+                    <button
+                      key={t.v}
+                      type="button"
+                      role="radio"
+                      aria-checked={kind === t.v}
+                      onClick={() => { setKind(t.v); setPage(0); }}
+                      className={`h-8 rounded-md border px-2.5 text-xs transition-colors ${
+                        kind === t.v
+                          ? t.v === "CONSIGNOR" ? "border-amber-400 bg-amber-50 text-amber-900" : "border-primary bg-primary/10 text-foreground"
+                          : "border-input text-muted-foreground hover:bg-muted"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
+                </div>
+                <label className="flex items-center gap-2 h-8 text-sm">
+                  <input
+                    type="checkbox"
+                    className="size-4"
+                    checked={includeInactive}
+                    onChange={(e) => { setIncludeInactive(e.target.checked); setPage(0); }}
+                  />
+                  <span className="text-muted-foreground">عرض المعطّلين</span>
+                </label>
+              </div>
             }
             exportSpec={{
               filename: "الموردون",
@@ -187,7 +213,14 @@ export default function Suppliers() {
                 const isActive = !!s.isActive;
                 return (
                   <tr key={id} className={`border-t ${isActive ? "" : "opacity-60"}`}>
-                    <td className="p-2 font-medium">{s.name}</td>
+                    <td className="p-2 font-medium">
+                      {s.name}
+                      {(s as { supplierKind?: string }).supplierKind === "CONSIGNOR" && (
+                        <span className="mr-1.5 inline-flex items-center rounded bg-amber-100 px-1.5 py-0.5 align-middle text-[10px] font-bold text-amber-800">
+                          أمانة
+                        </span>
+                      )}
+                    </td>
                     {hasLegacy && (
                       <td className="p-2 text-xs tabular-nums text-muted-foreground" dir="ltr">
                         {legacyCodeOf(s) ?? "—"}
