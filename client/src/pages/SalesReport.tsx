@@ -135,17 +135,16 @@ export default function SalesReport() {
   const [sinceDays, setSinceDays] = useState(90);
 
   const branches = trpc.branches.list.useQuery();
-  const invoiceQ = trpc.reports.salesReport.useQuery(
-    {
-      from: from || undefined,
-      to: to || undefined,
-      branchId: branchId ? Number(branchId) : undefined,
-      sourceTypes: sourceType
-        ? [sourceType as "POS" | "ONLINE" | "ORDER" | "WORKORDER"]
-        : undefined,
-    },
-    { enabled: tab === "invoices" }
-  );
+  // فلتر الفواتير — مُستخرَج ليُعاد استعماله في التصدير الكامل (جمع كل الصفحات عبر cursor).
+  const invoiceFilters = {
+    from: from || undefined,
+    to: to || undefined,
+    branchId: branchId ? Number(branchId) : undefined,
+    sourceTypes: sourceType
+      ? ([sourceType as "POS" | "ONLINE" | "ORDER" | "WORKORDER"])
+      : undefined,
+  };
+  const invoiceQ = trpc.reports.salesReport.useQuery(invoiceFilters, { enabled: tab === "invoices" });
   const topQ = trpc.reports.topProducts.useQuery(
     {
       from: from || undefined,
@@ -300,6 +299,8 @@ export default function SalesReport() {
           from={from}
           to={to}
           branchLabel={branchId === "" ? "الكل" : branches.data?.find((b) => b.id === Number(branchId))?.name ?? "—"}
+          filters={invoiceFilters}
+          truncated={invoiceQ.data?.nextCursor != null}
         />
       )}
       {tab === "top" && (
@@ -339,6 +340,8 @@ function InvoicesTab({
   from,
   to,
   branchLabel,
+  filters,
+  truncated,
 }: {
   rows: ReportRow[];
   totals: RouterOutputs["reports"]["salesReport"]["totals"] | undefined;
@@ -346,9 +349,44 @@ function InvoicesTab({
   from: string;
   to: string;
   branchLabel: string;
+  filters: {
+    from?: string;
+    to?: string;
+    branchId?: number;
+    sourceTypes?: ("POS" | "ONLINE" | "ORDER" | "WORKORDER")[];
+  };
+  truncated: boolean;
 }) {
+  const utils = trpc.useUtils();
+  const [exporting, setExporting] = useState(false);
+
+  // التصدير/الطباعة الكاملان: حين تتجاوز النتائج حدّ الصفحة (truncated) نجمع كل الصفحات عبر cursor
+  // بدل تصدير أوّل ١٠٠٠ صفٍّ صامتاً (تدقيق ١٧/٧). سقف ٢٠٠ صفحة × ٥٠٠٠ = مليون صفّ حارس ضدّ حلقة لا تنتهي.
+  async function fetchAllRows(): Promise<ReportRow[]> {
+    if (!truncated) return rows;
+    const acc: ReportRow[] = [];
+    let cursor: number | undefined = undefined;
+    for (let page = 0; page < 200; page++) {
+      const res: RouterOutputs["reports"]["salesReport"] = await utils.reports.salesReport.fetch({
+        ...filters,
+        limit: 5000,
+        cursor,
+      });
+      acc.push(...res.rows);
+      if (res.nextCursor == null) break;
+      cursor = res.nextCursor;
+    }
+    return acc;
+  }
+
   return (
     <>
+      {truncated && (
+        <div role="status" className="rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+          النتائج تتجاوز حدّ العرض — البطاقات أعلاه تشمل <strong>كامل النطاق</strong>، أمّا الجدول والطباعة فيعرضان أحدث ١٠٠٠ فاتورة فقط.
+          زرّ «تصدير Excel» يجمع <strong>كلّ</strong> الفواتير المطابقة، أو ضيّق النطاق الزمني لعرضٍ كامل على الشاشة.
+        </div>
+      )}
       {totals && (
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           <Card>
@@ -420,32 +458,39 @@ function InvoicesTab({
             <Button
               variant="outline"
               size="sm"
-              disabled={!rows.length}
-              onClick={() =>
-                exportRows(rows, {
-                  filename: `تقرير-المبيعات-${from}-${to}`,
-                  columns: [
-                    { key: "invoiceNumber", header: "رقم الفاتورة" },
-                    {
-                      key: "invoiceDate",
-                      header: "التاريخ",
-                      map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
-                    },
-                    { key: "customerName", header: "العميل" },
-                    { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
-                    { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
-                    { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
-                    {
-                      key: "costTotal",
-                      header: "التكلفة",
-                      map: (r) => Number(r.costTotal),
-                    },
-                    { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
-                  ],
-                })
-              }
+              disabled={!rows.length || exporting}
+              onClick={async () => {
+                // تصدير كامل: يجمع كل الصفحات حين truncated (لا أوّل ١٠٠٠ فقط) — الملف يطابق البطاقات.
+                setExporting(true);
+                try {
+                  const allRows = await fetchAllRows();
+                  exportRows(allRows, {
+                    filename: `تقرير-المبيعات-${from}-${to}`,
+                    columns: [
+                      { key: "invoiceNumber", header: "رقم الفاتورة" },
+                      {
+                        key: "invoiceDate",
+                        header: "التاريخ",
+                        map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
+                      },
+                      { key: "customerName", header: "العميل" },
+                      { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
+                      { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
+                      { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
+                      {
+                        key: "costTotal",
+                        header: "التكلفة",
+                        map: (r) => Number(r.costTotal),
+                      },
+                      { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },
+                    ],
+                  });
+                } finally {
+                  setExporting(false);
+                }
+              }}
             >
-              تصدير Excel
+              {exporting ? "جارٍ التصدير…" : "تصدير Excel"}
             </Button>
           </>
         }
