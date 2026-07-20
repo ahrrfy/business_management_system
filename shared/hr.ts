@@ -140,8 +140,11 @@ export const DEFAULT_VACANCY_ACCENT = { from: "#3f46d6", to: "#6366f1" } as cons
 export const vacancyAccent = (department?: string | null): { from: string; to: string } =>
   (department && VACANCY_ACCENTS[department]) || DEFAULT_VACANCY_ACCENT;
 
-/* ===== أجهزة البصمة — وجهة الهجرة (خادم الرؤية المملوك، بدل المزوّد المدفوع) ===== */
-export const HR_FINGERPRINT_TARGET = { host: "hr.alroya.iq", port: 7788, label: "خادم الرؤية العربية" } as const;
+/* ===== أجهزة الحضور — وجهة الاتصال (نطاق الرؤية المملوك، بدل المزوّد المدفوع) =====
+ * الأجهزة تُوجَّه إلى هذا النطاق الفرعي في قائمة Server داخلها (Use domainNm=Yes)؛ استعمال نطاق
+ * بدل IP خام يعني أن تغيّر عنوان الخادم يتطلّب تحديث DNS مرّة واحدة لا لمس كل جهاز.
+ * ⚠️ يجب أن يشير سجلّ DNS لـhr.alarabiya.online إلى الـVPS، والمنفذ مفتوحاً على الجدار الناري. */
+export const HR_FINGERPRINT_TARGET = { host: "hr.alarabiya.online", port: 7788, label: "خادم الرؤية العربية" } as const;
 
 /* ===== الترقيات/إنهاء الخدمات ===== */
 export const TERMINATION_TYPES = ["انتهاء عقد", "استقالة", "فصل", "تقاعد"] as const;

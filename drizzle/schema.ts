@@ -10,6 +10,7 @@ import {
   mysqlTable,
   boolean,
   date,
+  datetime,
   json,
   index,
   unique,
@@ -2871,13 +2872,126 @@ export const hrFingerprintDevices = mysqlTable(
     usersCount: int("usersCount").default(0),
     recordsCount: int("recordsCount").default(0),
     firmware: varchar("firmware", { length: 60 }),
+    /* —— مزامنة حقيقية (0089) —— */
+    /** الرقم التسلسلي الفعلي الذي يعرّف الجهاز نفسه به في المصافحة (SN) — مفتاح التوثيق الوحيد. */
+    serialNumber: varchar("serialNumber", { length: 64 }),
+    /** بروتوكول الجهاز: AIFACE_WS (عائلة AI518/AiFace — WebSocket JSON) | ZKTECO_PUSH (iclock HTTP). */
+    protocol: varchar("protocol", { length: 20 }).default("AIFACE_WS").notNull(),
+    /** بوابة القبول: جهاز مجهول SN يُسجَّل تلقائياً معطَّلاً ولا تُقبل بصماته حتى يعتمده مدير. */
+    enabled: boolean("enabled").default(true).notNull(),
+    /** آخر إشارة حياة (مصافحة/نبض/دفعة) — مصدر حالة متصل/منقطع الحقيقية في الشاشة. */
+    lastSeenAt: timestamp("lastSeenAt"),
+    lastHandshakeAt: timestamp("lastHandshakeAt"),
+    /** آخر بصمة مستلمة (توقيت الجهاز المحلي كنص). */
+    lastPunchAt: datetime("lastPunchAt", { mode: "string" }),
+    /** ما أبلغه الجهاز عن نفسه في المصافحة (موديل/عدادات/فيرموير) — عرضٌ صادق بدل الإدخال اليدوي. */
+    devInfo: json("devInfo"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
-  (t) => ({ migratedIdx: index("idx_fpdev_migrated").on(t.migrated) })
+  (t) => ({
+    migratedIdx: index("idx_fpdev_migrated").on(t.migrated),
+    // تفرّد SN على القيم الفعلية فقط (NULL متعدد مسموح للصفوف اليدوية القديمة).
+    serialUq: unique("uq_fpdev_serial").on(t.serialNumber),
+  })
 );
 export type HrFingerprintDevice = typeof hrFingerprintDevices.$inferSelect;
 export type InsertHrFingerprintDevice = typeof hrFingerprintDevices.$inferInsert;
+
+/**
+ * البصمات الخام كما وصلت من الأجهزة — «التخزين الخام أولاً»: لا تضيع بصمة أبداً ولا تتكرّر.
+ * القيد الفريد (serialNumber, enrollId, punchAt) = idempotency: الجهاز يعيد دفع سجلاته
+ * بعد كل انقطاع، والإدراج المكرَّر يُهمَل بصمت (نمط uq_invoice_source في المبيعات).
+ * punchAt توقيت حائط محلي من ساعة الجهاز (datetime نصي — لا تحويل مناطق زمنية، §businessDay).
+ */
+export const hrAttendancePunches = mysqlTable(
+  "hrAttendancePunches",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    deviceId: bigint("deviceId", { mode: "number" }).references(() => hrFingerprintDevices.id),
+    serialNumber: varchar("serialNumber", { length: 64 }).notNull(),
+    /** رقم المستخدم داخل الجهاز (enrollid/PIN) — يُحلّ إلى موظف عبر hrDeviceUsers.employeeId. */
+    enrollId: int("enrollId").notNull(),
+    punchAt: datetime("punchAt", { mode: "string" }).notNull(),
+    /** وسيلة التحقق كما أبلغها الجهاز: face | card | pwd | fp | غيرها. */
+    mode: varchar("mode", { length: 12 }),
+    /** اتجاه التسجيل إن أبلغه الجهاز: in | out (كثير من الأجهزة لا تفرّق — تبقى null). */
+    inOut: varchar("inOut", { length: 8 }),
+    /** الموظف المحلول لحظة الاستلام (null = غير مربوط ⇒ طابور مراجعة، لا يُرمى). */
+    employeeId: bigint("employeeId", { mode: "number" }).references(() => employees.id),
+    /** لحظة الطيّ في سجل attendance (null = بانتظار المعالجة). */
+    processedAt: timestamp("processedAt"),
+    /** سبب تعذّر الطيّ إن حدث (موظف منتهي الخدمة، غير مربوط...) — تشخيص لا تخمين. */
+    processNote: varchar("processNote", { length: 200 }),
+    /** الحمولة الأصلية كما وصلت (تشخيص/إعادة معالجة عند تحسين السائقين). */
+    raw: json("raw"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    punchUq: unique("uq_punch_sn_enroll_time").on(t.serialNumber, t.enrollId, t.punchAt),
+    unprocessedIdx: index("idx_punch_unprocessed").on(t.processedAt),
+    employeeDateIdx: index("idx_punch_employee_time").on(t.employeeId, t.punchAt),
+    deviceIdx: index("idx_punch_device").on(t.deviceId),
+  })
+);
+export type HrAttendancePunch = typeof hrAttendancePunches.$inferSelect;
+
+/**
+ * مرآة مستخدمي كل جهاز + نسخة احتياطية من قوالبهم (وجه/بصمة/بطاقة) + الربط بالموظف.
+ * الربط (deviceId, enrollId) → employeeId هو مصدر حقيقة تحويل البصمة إلى حضور،
+ * والنسخة الاحتياطية للقوالب تعني: جهاز تالف ⇒ جهاز جديد + دفع القوالب إليه، لا إعادة تسجيل أحد.
+ */
+export const hrDeviceUsers = mysqlTable(
+  "hrDeviceUsers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    deviceId: bigint("deviceId", { mode: "number" })
+      .notNull()
+      .references(() => hrFingerprintDevices.id),
+    enrollId: int("enrollId").notNull(),
+    /** الاسم كما هو مخزّن في الجهاز (قد يختلف عن اسم الموظف الرسمي). */
+    name: varchar("name", { length: 120 }),
+    isAdmin: boolean("isAdmin").default(false).notNull(),
+    cardNo: varchar("cardNo", { length: 40 }),
+    /** قوالب التحقق المسحوبة احتياطياً: { "<backupnum>": record } — وجه/بصمة/كلمة مرور. */
+    backupData: json("backupData"),
+    /** الموظف المربوط — التحويل بصمة→حضور يمرّ حصراً من هنا. */
+    employeeId: bigint("employeeId", { mode: "number" }).references(() => employees.id),
+    syncedAt: timestamp("syncedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    deviceEnrollUq: unique("uq_devuser_device_enroll").on(t.deviceId, t.enrollId),
+    employeeIdx: index("idx_devuser_employee").on(t.employeeId),
+  })
+);
+export type HrDeviceUser = typeof hrDeviceUsers.$inferSelect;
+
+/**
+ * طابور أوامر الخادم→الجهاز (مزامنة وقت، سحب السجل الكامل، سحب/دفع مستخدمين، إعادة تشغيل).
+ * الجهاز عميلٌ يبادر بالاتصال (خلف NAT) ⇒ الأوامر تُصفّ هنا وتُدفع إليه لحظة اتصاله/نبضه.
+ */
+export const hrDeviceCommands = mysqlTable(
+  "hrDeviceCommands",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    deviceId: bigint("deviceId", { mode: "number" })
+      .notNull()
+      .references(() => hrFingerprintDevices.id),
+    cmd: varchar("cmd", { length: 30 }).notNull(),
+    payload: json("payload"),
+    status: mysqlEnum("status", ["queued", "sent", "done", "failed"]).default("queued").notNull(),
+    result: json("result"),
+    error: text("error"),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    sentAt: timestamp("sentAt"),
+    doneAt: timestamp("doneAt"),
+  },
+  (t) => ({ deviceStatusIdx: index("idx_devcmd_device_status").on(t.deviceId, t.status) })
+);
+export type HrDeviceCommand = typeof hrDeviceCommands.$inferSelect;
 
 /* الترقيات (اعتمادها يحدّث مسمّى/راتب الموظف). */
 export const employeePromotions = mysqlTable(
