@@ -13,6 +13,7 @@ import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { UnitBarcodeAliases, type LocalAlias } from "@/components/product/UnitBarcodeAliases";
+import { NameAssistant } from "@/components/product/NameAssistant";
 import { cn } from "@/lib/utils";
 
 /**
@@ -312,6 +313,8 @@ export default function SimpleProductForm() {
                 </Button>
               )}
             </div>
+            {/* السلعة البسيطة بلا متغيّرات ⇒ اللون في الاسم مشروع — لا warnColors هنا. */}
+            <NameAssistant name={finalName} onApply={setName} />
           </Field>
           <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً.">
             <Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="كتاب مدرسي" dir="auto" />

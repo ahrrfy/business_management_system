@@ -27,6 +27,7 @@ import {
 import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
+import { NameAssistant } from "@/components/product/NameAssistant";
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import BundleRecipeCard from "@/components/product/BundleRecipeCard";
@@ -457,6 +458,7 @@ export default function ProductEdit() {
                   </Button>
                 )}
               </div>
+              <NameAssistant name={originalName.trim() || composedName} onApply={setOriginalName} excludeProductId={productId} warnColors />
             </Field>
             <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً."><Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" /></Field>
             <Field label="الماركة (اختياري)"><Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="Pilot" dir="auto" /></Field>

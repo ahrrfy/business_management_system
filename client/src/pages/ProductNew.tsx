@@ -10,6 +10,7 @@ import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
 import { AlertCircle, Boxes, Layers, Package, Wrench, X } from "lucide-react";
 import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
+import { NameAssistant } from "@/components/product/NameAssistant";
 import BundleForm from "@/components/product/BundleForm";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
@@ -503,6 +504,7 @@ export default function ProductNew() {
                   </Button>
                 )}
               </div>
+              <NameAssistant name={productName.trim() || composedName} onApply={setProductName} warnColors />
             </Field>
             <Field label="النوع (اختياري)" hint="حقول وصفية للبحث/التصنيف — لا تغيّر الاسم تلقائياً.">
               <Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="قلم جاف" />
