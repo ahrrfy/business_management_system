@@ -83,6 +83,9 @@ export interface CustomerStatementInvoice {
   dueDate: Date | null;
   total: string;
   paidAmount: string;
+  // REP-06: إجمالي المُرتجَع على الفاتورة — يلزم لحساب المتبقّي الصحيح في الواجهة
+  // (total − paidAmount − returnedTotal). إغفاله كان يُظهر متبقّياً موجباً لفاتورة سُدِّد صافيها.
+  returnedTotal: string;
   status: string;
   sourceType: string;
 }
@@ -311,6 +314,7 @@ export async function getCustomerStatement(
       dueDate: i.dueDate,
       total: String(i.total),
       paidAmount: String(i.paidAmount),
+      returnedTotal: String(i.returnedTotal ?? "0"),
       status: i.status,
       sourceType: i.sourceType,
     })),

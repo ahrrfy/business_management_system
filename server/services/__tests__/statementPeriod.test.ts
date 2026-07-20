@@ -10,6 +10,8 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createSale, processPayment } from "../saleService";
+import { returnSale } from "../returnService";
+import { money } from "../money";
 import { createVoucher } from "../voucherService";
 import { getCustomerStatement, getSupplierStatement } from "../reportsService";
 
@@ -198,6 +200,35 @@ describe("كشف حساب العميل بفترة + رصيد مُرحَّل", ()
     expect(stmt!.summary.unpaid).toBe("140.00");
     expect(stmt!.summary.currentBalance).toBe("140.00");
     expect(stmt!.summary.openingBalance).toBe("0.00");
+  });
+
+  it("REP-06: الفاتورة المُرتجَعة جزئياً تكشف returnedTotal، والمتبقّي = total − paid − returned = 0 (لا متبقٍّ وهميّ)", async () => {
+    await db().insert(s.customers).values({ id: 1, name: "عميل مرتجع", defaultPriceTier: "RETAIL", currentBalance: "0" });
+    // بيع آجل درزنان = 240، ثم إرجاع درزن واحد (12 وحدة أساس = 120)، ثم سداد الصافي 120.
+    const sale = await creditSale(1, "2"); // 240
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    await returnSale(
+      { invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 12 }], restock: true, refund: null },
+      actor,
+    );
+    await processPayment({ invoiceId: sale.invoiceId, amount: "120.00", method: "CASH" }, actor);
+
+    const stmt = await getCustomerStatement(1);
+    expect(stmt).not.toBeNull();
+    expect(stmt!.invoices).toHaveLength(1);
+    const inv = stmt!.invoices[0];
+    // الحقل الجديد مكشوف للواجهة.
+    expect(inv.returnedTotal).toBe("120.00");
+    expect(inv.total).toBe("240.00");
+    expect(inv.paidAmount).toBe("120.00");
+    // صيغة الواجهة الصحيحة: positiveDiff(total, paid + returned) = 240 − (120 + 120) = 0.
+    const remaining = money(inv.total).sub(money(inv.paidAmount)).sub(money(inv.returnedTotal));
+    expect((remaining.isNegative() ? money(0) : remaining).toFixed(2)).toBe("0.00");
+    // الصيغة المعطوبة القديمة (total − paid وحدها) كانت تُظهر 120 وهميّاً — نوثّقها كحارس انحدار.
+    expect(money(inv.total).sub(money(inv.paidAmount)).toFixed(2)).toBe("120.00");
+    // الملخّص (REP-06) يستبعد المُرتجَع أصلاً — لا متبقّي ولا رصيد جارٍ.
+    expect(stmt!.summary.unpaid).toBe("0.00");
+    expect(stmt!.summary.currentBalance).toBe("0.00");
   });
 });
 
