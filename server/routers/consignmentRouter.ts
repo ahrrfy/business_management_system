@@ -8,7 +8,8 @@ import {
   listConsignmentNotes,
   listConsignorProducts,
 } from "../services/consignment/noteService";
-import { consignmentReadProcedure, consignmentWriteProcedure, reportViewerProcedure, router } from "../trpc";
+import { createVoucher } from "../services/voucher/create";
+import { consignmentReadProcedure, consignmentWriteProcedure, reportViewerProcedure, router, treasuryManagerProcedure } from "../trpc";
 
 /**
  * بضاعة الأمانة — ش٢: سندات الإيداع/السحب/الاستبدال. راجع docs/consignment-design-2026-07-20.md.
@@ -47,6 +48,27 @@ export const consignmentRouter = router({
   balancesReport: reportViewerProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(({ input }) => consignmentBalancesReport(input?.branchId)),
+
+  // بضاعة الأمانة (ش٥): تسوية مودِع = سند صرف على مستحقّه. مديريّ (treasury) ويُنشأ PENDING **دائماً**
+  // (حارس createVoucher لمودِع أمانة) + سقف ≤ المستحق يُعاد فحصه عند الاعتماد. الفصل محفوظ (اعتماد مدير آخر).
+  createSettlement: treasuryManagerProcedure
+    .input(z.object({
+      consignorId: z.number().int().positive(),
+      amount: z.string().min(1),
+      paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "CHECK"]).default("CASH"),
+      branchId: z.number().int().positive(),
+      description: z.string().max(500).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = ctx.user.role === "admin" ? input.branchId : (ctx.user.branchId ?? input.branchId);
+      const res = await createVoucher({
+        voucherType: "PAYMENT", branchId, amount: input.amount, paymentMethod: input.paymentMethod,
+        partyType: "SUPPLIER", partyId: input.consignorId,
+        description: input.description?.trim() || "تسوية بضاعة أمانة",
+      }, { userId: ctx.user.id, branchId, role: ctx.user.role });
+      await logAudit(ctx, { action: "consignment.settlementCreate", entityType: "receipt", entityId: res.receiptId, newValue: { consignorId: input.consignorId, amount: input.amount } });
+      return res;
+    }),
 
   create: consignmentWriteProcedure
     .input(

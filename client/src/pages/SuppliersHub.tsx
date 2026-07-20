@@ -8,11 +8,14 @@ const Suppliers = lazy(() => import("@/pages/Suppliers"));
 const SupplierStatement = lazy(() => import("@/pages/SupplierStatement"));
 const APAging = lazy(() => import("@/pages/APAging"));
 const ConsignmentNotes = lazy(() => import("@/pages/ConsignmentNotes"));
+const ConsignmentSettlements = lazy(() => import("@/pages/ConsignmentSettlements"));
 
 const TABS: HubTab[] = [
   { value: "list", label: "الموردون", Component: Suppliers },
   // بضاعة الأمانة (ش٢): سندات الإيداع/السحب/الاستبدال — خلف مفتاح consignments.
   { value: "consignment-notes", label: "سندات الأمانة", gate: { module: "consignments", level: "READ" }, Component: ConsignmentNotes },
+  // بضاعة الأمانة (ش٥): تسويات المودِعين — مديريّ (manager/accountant عبر treasury).
+  { value: "consignment-settlements", label: "تسويات الأمانة", gate: { roles: ["manager", "accountant"], module: "treasury", level: "READ" }, Component: ConsignmentSettlements },
   { value: "statement", label: "كشف حساب مورد", gate: { managerOnly: true }, Component: SupplierStatement },
   { value: "aging", label: "أعمار الذمم (دائنة)", gate: { managerOnly: true }, Component: APAging },
 ];

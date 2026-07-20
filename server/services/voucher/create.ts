@@ -109,6 +109,8 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       throw new TRPCError({ code: "BAD_REQUEST", message: "ربط السند بفاتورة مُتاح لسندات العميل فقط" });
     }
 
+    // بضاعة الأمانة (ش٥): يُرفَع لو كان الصرف لمودِع أمانة (اعتماد ثنائيّ دائماً).
+    let forcePendingApproval = false;
     // تَحقّق الطرف: يَجب أن يَكون نشطاً.
     if (input.partyType === "CUSTOMER") {
       if (!input.partyId) throw new TRPCError({ code: "BAD_REQUEST", message: "العميل مطلوب لسند مرتبط بعميل" });
@@ -134,13 +136,22 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
       if (!sup.isActive) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إصدار سند لمورد مُعطَّل" });
       }
+      // بضاعة الأمانة (ش٥): أيّ صرفٍ لمودِع أمانة يمرّ باعتمادٍ ثنائيّ **دائماً** مهما صغُر المبلغ
+      // (قرار المالك ٣ — يغلق التفاف «سند حرّ تحت العتبة بفاعل واحد»). + سقف ≤ المستحق (currentBalance)
+      // يُعاد فحصه عند الاعتماد تحت القفل. §٥ حاصرة ٢.
+      if (direction === "OUT" && sup.supplierKind === "CONSIGNOR") {
+        forcePendingApproval = true;
+        if (money(sup.currentBalance ?? "0").lt(amount)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `مبلغ الصرف يتجاوز مستحقّ المودِع (${money(sup.currentBalance ?? "0").toFixed(2)})` });
+        }
+      }
     } else if (input.partyType === "OTHER") {
       // counterpartyName مَوصى به (تَحذير ناعم بأن يُعرَض في الواجهة) لكنّ ليس إلزامياً —
       // الـdescription يَكفي لتَحديد الهوية. النَموذج المُلزم يَكون عبر فئة الإيجار/الراتب.
     }
 
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
-    const needsApproval = amount.toNumber() >= getApprovalThreshold();
+    const needsApproval = forcePendingApproval || amount.toNumber() >= getApprovalThreshold();
 
     // shiftId + cashBucket — سياسة الخزينة الإدارية vs درج الكاشير (تدقيق ١٧/٦).
     //  - PENDING_APPROVAL: لا نَقفل وردية ولا نُحدّد دلواً (لا تأثير على الصندوق حتى الاعتماد).

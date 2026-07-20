@@ -1,7 +1,7 @@
 // اعتماد/رفض سند مُعلَّق (Maker-Checker، SOD-04: المُعتمِد ≠ المُنشئ إلا الـadmin).
 import { TRPCError } from "@trpc/server";
 import { eq } from "drizzle-orm";
-import { receipts } from "../../../drizzle/schema";
+import { receipts, suppliers } from "../../../drizzle/schema";
 import { adjustCustomerBalance, adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDateStr, toDbMoney } from "../money";
 import { openShiftIdTx, shiftIdForCashTx } from "../shiftService";
@@ -65,6 +65,16 @@ export async function approveVoucher(receiptId: number, actor: Actor): Promise<A
       cashBucket = g.cashBucket;
     } else {
       shiftId = await openShiftIdTx(tx, actor.userId, branchId);
+    }
+
+    // بضاعة الأمانة (ش٥): إعادة فحص السقف تحت قفل صف المودِع — مرتجعٌ بين الإصدار والاعتماد قد يكون
+    // خفّض المستحق فيصير الصرف زائداً (السقف عند الإنشاء صار مسرحياً لولا هذا). §٥ حاصرة ٢/ث٤.
+    if (partyType === "SUPPLIER" && partyId != null && direction === "OUT") {
+      const [sup] = await tx.select({ kind: suppliers.supplierKind, bal: suppliers.currentBalance })
+        .from(suppliers).where(eq(suppliers.id, partyId)).for("update").limit(1);
+      if (sup?.kind === "CONSIGNOR" && money(sup.bal ?? "0").lt(amount)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `مستحقّ المودِع (${money(sup.bal ?? "0").toFixed(2)}) أقلّ من مبلغ الصرف — أعِد توليد كشف التسوية` });
+      }
     }
 
     const voucherDate = (r.voucherDate as string | null) ?? toDateStr();
