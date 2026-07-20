@@ -71,6 +71,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "assets",       label: "الأصول الثابتة",      description: "سجلّ الأصول، العهدة، الإهلاك، الصيانة، الاستبعاد" },
   { key: "hr",           label: "الموارد البشرية",     description: "الموظفون، الحضور، الرواتب، الإجازات، التوظيف" },
   { key: "commissions",  label: "الأهداف والعمولات",   description: "خطط العمولات، الأهداف الشهرية، احتساب واعتماد عمولات البائعين" },
+  { key: "consignments", label: "بضاعة الأمانة",        description: "المودِعون، سندات الإيداع/السحب/الاستبدال، كشوف التسوية — بضاعة برسم البيع" },
   { key: "courier",      label: "توصيلاتي (المندوب)",  description: "شاشة المندوب الذاتية: طلباتي، تأكيد التسليم والتحصيل، عهدتي" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
@@ -84,6 +85,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     assets: "FULL",
     hr: "FULL",
     commissions: "FULL",
+    consignments: "FULL",
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL", channels: "FULL", treasury: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "FULL", settings: "FULL",
@@ -94,6 +96,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     assets: "FULL",
     hr: "FULL",
     commissions: "FULL",
+    consignments: "FULL",
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL", channels: "FULL", treasury: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "READ", settings: "READ",
@@ -105,6 +108,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     hr: "READ",
     // READ: يراجع تشغيلات العمولة والأهداف بلا كتابة (الاحتساب/الاعتماد مديريان).
     commissions: "READ",
+    // FULL: المحاسب يسجّل سندات الأمانة وينشئ كشوف التسوية؛ اعتماد الصرف مديريّ عبر treasury (الفصل محفوظ).
+    consignments: "FULL",
     pos: "NONE", sales: "READ", purchases: "READ", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "FULL",
     customers: "READ", suppliers: "READ", products: "NONE", expenses: "FULL", reports: "FULL",
     users: "NONE", settings: "NONE",
@@ -116,6 +121,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     hr: "NONE",
     // NONE: الكاشير يرى أداءه الذاتي فقط عبر «أدائي» (protectedProcedure) لا عبر الوحدة.
     commissions: "NONE",
+    // NONE: بيع صنف الأمانة من POS لا يتطلب الوحدة — الالتزام للمودِع يُشتق خادمياً.
+    consignments: "NONE",
     // F2 (تدقيق ٢/٧): workorders READ→FULL — الكاشير ينشئ ويُسلّم أوامر الشغل فعلاً في نظام
     // الاستقبال الهجين (workOrders.create/deliver على cashierProcedure)؛ كان القالب READ سهواً
     // فبعد ربط requireModule("workorders","FULL") كان سيُحجب الكاشير القالبي عن سلوكه القائم.
@@ -128,6 +135,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     assets: "READ",
     hr: "NONE",
     commissions: "NONE",
+    // FULL: أمين المخزن يسجّل سندات الإيداع/السحب الكمّية (استلام فعليّ)؛ لا يرى الحصة (ليس canSeeCost).
+    consignments: "FULL",
     pos: "NONE", sales: "READ", purchases: "FULL", inventory: "FULL", workorders: "READ", channels: "NONE", treasury: "NONE",
     // products: READ لا FULL — كتابة الكتالوج «مدير فأعلى» (productsManagerProcedure)؛ كان القالب
     // يَعِد FULL بينما البوّابة تمنعها فتظهر الصلاحية في المصفوفة ثم تفشل كل كتابة (تدقيق التثبيت
@@ -141,6 +150,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     assets: "NONE",
     hr: "NONE",
     commissions: "NONE",
+    // READ: يرى المودِعين كي لا يفتح لهم أمر شراء خطأً؛ لا يكتب سندات أمانة.
+    consignments: "READ",
     pos: "NONE", sales: "NONE", purchases: "FULL", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "NONE",
     customers: "NONE", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
@@ -150,6 +161,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     assets: "NONE",
     hr: "NONE",
     commissions: "NONE",
+    consignments: "NONE",
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "FULL", channels: "READ", treasury: "NONE",
     customers: "READ", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
@@ -161,6 +173,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     hr: "NONE",
     // NONE: كالكاشير — أداؤه الذاتي عبر «أدائي»؛ إدارة الخطط والأهداف مديرية.
     commissions: "NONE",
+    consignments: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "READ", treasury: "NONE",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
@@ -171,6 +184,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     assets: "READ",
     hr: "READ",
     commissions: "READ",
+    consignments: "READ",
     pos: "READ", sales: "READ", purchases: "READ", inventory: "READ", workorders: "READ", channels: "READ", treasury: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "READ", reports: "READ",
     users: "READ", settings: "READ",
@@ -180,6 +194,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     assets: "NONE",
     hr: "NONE",
     commissions: "NONE",
+    consignments: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "READ", workorders: "READ", channels: "NONE", treasury: "NONE",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
@@ -189,7 +204,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // مندوب توصيل ذاتي الخدمة: يرى «توصيلاتي» فقط (courier=FULL). كل الوحدات الأخرى NONE —
     // بياناته (اسم/هاتف/عنوان الزبون + COD) تأتي من نقاط courier الذاتية لا من وحدات العملاء/المبيعات.
     courier: "FULL",
-    store: "NONE", assets: "NONE", hr: "NONE", commissions: "NONE",
+    store: "NONE", assets: "NONE", hr: "NONE", commissions: "NONE", consignments: "NONE",
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "NONE", treasury: "NONE",
     customers: "NONE", suppliers: "NONE", products: "NONE", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",

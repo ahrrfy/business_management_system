@@ -336,6 +336,58 @@ export const suppliers = mysqlTable(
 export type Supplier = typeof suppliers.$inferSelect;
 export type InsertSupplier = typeof suppliers.$inferInsert;
 
+/* ============================ بضاعة الأمانة: السندات (ش٢، هجرة 0092) ============================ */
+
+/** سند حركة أمانة (إيداع/سحب/استبدال) — نهائيّ فور ترحيله (بلا status ولا حذف؛ التصحيح بسند معاكس).
+ *  راجع docs/consignment-design-2026-07-20.md §٧. (productVariants مُعرَّف أدناه — مرجع كسول.) */
+export const consignmentNotes = mysqlTable(
+  "consignmentNotes",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    // CSN-{branchId}-{YYYYMMDD}-{seq5} بنمط nextInvoiceNumber (GET_LOCK) + قيد فريد.
+    noteNumber: varchar("noteNumber", { length: 32 }).notNull(),
+    noteType: mysqlEnum("noteType", ["DEPOSIT", "WITHDRAW", "EXCHANGE"]).notNull(),
+    consignorId: bigint("consignorId", { mode: "number" }).notNull().references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    // idempotency (نمط 0090/0051): UUID لكل فتح نموذج ⇒ إعادة الإرسال تعيد السند نفسه.
+    clientRequestId: varchar("clientRequestId", { length: 64 }),
+    notes: text("notes"),
+    // مرفق صورة السند الموقَّع (إلزاميّ خادمياً للسحب/الاستبدال) — نمط receipts.attachmentUrl (0047).
+    attachmentUrl: mediumtext("attachmentUrl"),
+    createdBy: bigint("createdBy", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    numberUq: unique("uq_consign_note_number").on(t.noteNumber),
+    requestUq: unique("uq_consign_note_request").on(t.clientRequestId),
+    consignorIdx: index("idx_cn_consignor").on(t.consignorId, t.createdAt),
+    branchIdx: index("idx_cn_branch").on(t.branchId, t.createdAt),
+  }),
+);
+export type ConsignmentNote = typeof consignmentNotes.$inferSelect;
+
+/** أسطر سند الأمانة — lineDirection يميّز الاتجاه (الاستبدال: أسطر OUT مسحوبة + أسطر IN مودَعة). */
+export const consignmentNoteLines = mysqlTable(
+  "consignmentNoteLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    noteId: bigint("noteId", { mode: "number" }).notNull().references(() => consignmentNotes.id, { onDelete: "cascade" }),
+    lineDirection: mysqlEnum("lineDirection", ["IN", "OUT"]).notNull(),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull(),
+    quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    // لقطة حصة الوحدة الأساس لحظة السند — توثيقيّة للطباعة فقط (الالتزام الفعلي يُلتقَط لحظة البيع في ش٣).
+    unitShareSnapshot: decimal("unitShareSnapshot", { precision: 15, scale: 2 }).default("0").notNull(),
+    notes: text("notes"),
+  },
+  (t) => ({
+    noteIdx: index("idx_cnl_note").on(t.noteId),
+    variantIdx: index("idx_cnl_variant").on(t.variantId),
+  }),
+);
+export type ConsignmentNoteLine = typeof consignmentNoteLines.$inferSelect;
+
 /* ============================ المنتجات والمتغيرات والوحدات والأسعار ============================ */
 
 export const categories = mysqlTable("categories", {
