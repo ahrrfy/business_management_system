@@ -14,6 +14,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { ErrorState, LoadingState, TableEmptyRow } from "@/components/PageState";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
+import { HR_FINGERPRINT_TARGET } from "@shared/hr";
 import {
   BadgeCheck,
   Clock3,
@@ -120,9 +121,11 @@ export default function HrDevices() {
   const connectedEver = devices.filter((d) => d.lastHandshakeAt).length;
   const pct = total > 0 ? Math.round((connectedEver / total) * 100) : 0;
   const bridgeOn = bridge.data?.enabled ?? false;
-  const bridgePort = bridge.data?.port ?? 7788;
+  const bridgePort = bridge.data?.port ?? HR_FINGERPRINT_TARGET.port;
   const onlineNow = bridge.data?.onlineDeviceIds?.length ?? 0;
-  const myHost = typeof window !== "undefined" ? window.location.hostname : "خادمك";
+  // الوجهة التي تُكتب في الجهاز = النطاق الفرعي المملوك (لا مضيف لوحة الويب) — نطاق ثابت
+  // يقبل تغيّر عنوان الخادم بتحديث DNS واحد بدل لمس كل جهاز.
+  const myHost = HR_FINGERPRINT_TARGET.host;
 
   const employeeOptions = useMemo(() => opts.data?.managers ?? [], [opts.data]);
 
@@ -587,15 +590,22 @@ export default function HrDevices() {
               اضبط: <span dir="ltr" className="font-mono text-xs">Server Req = Yes</span>
             </li>
             <li>
-              ثم: <span dir="ltr" className="font-mono text-xs">Server IP = {myHost}</span> (أو فعّل
-              <span dir="ltr" className="font-mono text-xs"> Use domainNm </span> واكتب النطاق)
+              فعّل النطاق: <span dir="ltr" className="font-mono text-xs">Use domainNm = Yes</span>
+            </li>
+            <li>
+              ثم اكتب: <span dir="ltr" className="font-mono text-xs">DomainNm = {myHost}</span>
             </li>
             <li>
               والمنفذ: <span dir="ltr" className="font-mono text-xs">SerPortNo = {bridgePort}</span>
             </li>
             <li>احفظ وأعد تشغيل الجهاز — سيظهر خلال دقيقة في الجدول أعلاه (متصل / بانتظار الاعتماد).</li>
-            <li>أجهزة ZKTeco: نفس الفكرة من قائمة Cloud Server Setting (ADMS) بنفس العنوان والمنفذ.</li>
+            <li>أجهزة ZKTeco: نفس الفكرة من قائمة Cloud Server Setting (ADMS) بنفس النطاق والمنفذ.</li>
           </ol>
+          <p className="text-[11px] text-muted-foreground">
+            بديلٌ للنطاق: <span dir="ltr" className="font-mono text-xs">Use domainNm = No</span> ثم
+            <span dir="ltr" className="font-mono text-xs"> Server IP = </span> عنوان الخادم الرقمي —
+            لكن النطاق أفضل (تغيّر عنوان الخادم يُحلّ بتحديث DNS واحد بلا لمس الأجهزة).
+          </p>
           <p className="text-[11px] text-muted-foreground">
             ملاحظة: توجيه الجهاز لخادمك يفصله عن المزوّد المدفوع فوراً — سجلاته محفوظة في ذاكرته ويعيد دفعها
             لخادمك تلقائياً، ويمكن سحب التاريخ كاملاً بزر «سحب السجل».
