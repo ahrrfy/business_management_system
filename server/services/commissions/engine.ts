@@ -231,9 +231,11 @@ export async function computeCommissionRun(period: string, actor: Actor): Promis
       const base = baseByUser.get(e.userId);
       const sales = base?.sales ?? new Decimal(0);
       const returns = base?.returns ?? new Decimal(0);
+      // بضاعة الأمانة (ش٣): حصص المودِعين تُخصَم من الوعاء (العمولة على الهامش فقط — قرار المالك ٤).
+      const consigDeduction = base?.consigDeduction ?? new Decimal(0);
       const carryIn = carryByEmployee.get(e.employeeId) ?? new Decimal(0);
 
-      const grossBase = sales.minus(returns).plus(carryIn);
+      const grossBase = sales.minus(returns).minus(consigDeduction).plus(carryIn);
       const effectiveBase = Decimal.max(0, grossBase);
       const carryOut = Decimal.min(0, grossBase);
 
@@ -251,6 +253,7 @@ export async function computeCommissionRun(period: string, actor: Actor): Promis
         branchId: e.branchId,
         baseSales: toDbMoney(sales),
         baseReturns: toDbMoney(returns),
+        baseConsignDeduction: toDbMoney(consigDeduction),
         carryIn: toDbMoney(carryIn),
         effectiveBase: toDbMoney(effectiveBase),
         carryOut: toDbMoney(carryOut),

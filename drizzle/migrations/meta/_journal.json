@@ -652,6 +652,13 @@
       "when": 1784937600007,
       "tag": "0092_consignment_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "5",
+      "when": 1784937600008,
+      "tag": "0094_commission_consign_deduction",
+      "breakpoints": true
     }
   ]
 }

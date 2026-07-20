@@ -2821,6 +2821,8 @@ export const commissionRunLines = mysqlTable(
     branchId: bigint("branchId", { mode: "number" }), // لقطة employees.branchId وقت الاحتساب.
     baseSales: decimal("baseSales", { precision: 15, scale: 2 }).default("0").notNull(), // Σ SALE.revenue (موجب)
     baseReturns: decimal("baseReturns", { precision: 15, scale: 2 }).default("0").notNull(), // Σ |RETURN.revenue| (موجب)
+    // بضاعة الأمانة (ش٣، هجرة 0094): لقطة خصم حصص المودِعين من الوعاء (العمولة على الهامش فقط).
+    baseConsignDeduction: decimal("baseConsignDeduction", { precision: 15, scale: 2 }).default("0").notNull(),
     carryIn: decimal("carryIn", { precision: 15, scale: 2 }).default("0").notNull(), // موقَّع (≤ 0 من عجز سابق)
     effectiveBase: decimal("effectiveBase", { precision: 15, scale: 2 }).default("0").notNull(),
     carryOut: decimal("carryOut", { precision: 15, scale: 2 }).default("0").notNull(), // موقَّع (≤ 0)

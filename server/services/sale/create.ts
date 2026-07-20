@@ -28,7 +28,7 @@ import {
   type ResolvedPromotion,
 } from "../salesPromotionService";
 import { consumeCoupon, hashCouponCode, lockCouponForSale } from "../couponService";
-import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
 import { getUnitPrice, resolveTier, type PriceTier } from "../pricing";
@@ -205,6 +205,16 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     const variantById = new Map<number, { costPrice: string; isActive: boolean | null }>();
     for (const r of variantRows) {
       variantById.set(Number(r.id), { costPrice: String(r.costPrice), isActive: r.isActive });
+    }
+    // بضاعة الأمانة (ش٣): خريطة variantId → consignorId للأصناف الموسومة أمانةً — لالتقاط التزام المودِع
+    // لحظة البيع (قيد PURCHASE يتيم) ولاستثنائها من البيع بالسالب في المسار الحيّ. راجع design §٢-ب/§٥-ج.
+    const consignByVariant = new Map<number, number>();
+    {
+      const crows = await tx
+        .select({ vid: productVariants.id, isConsign: products.isConsignment, cId: products.consignorId })
+        .from(productVariants).innerJoin(products, eq(productVariants.productId, products.id))
+        .where(inArray(productVariants.id, uniqueVariantIds));
+      for (const r of crows) if (r.isConsign && r.cId != null) consignByVariant.set(Number(r.vid), Number(r.cId));
     }
 
     // بند 12ب (٧/٧): الأسعار التعاقدية النشطة للعميل — استعلام واحد (نمط D1 نفسه، لا N+1).
@@ -598,7 +608,9 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       const qty = aggregated.get(vid)!;
       if (qty <= 0) continue; // احترازي — تجميع كميّات صفريّة لا يجب أن يحصل.
       const openingAllow =
-        openingWindow != null && qty <= openingWindow.maxQty && money(deductCosts.get(vid) ?? "0").gt(0);
+        openingWindow != null && qty <= openingWindow.maxQty && money(deductCosts.get(vid) ?? "0").gt(0)
+        // بضاعة الأمانة (§٥-ج): لا بيع بالسالب لصنف أمانة في المسار الحيّ — تلفيقُ التزامٍ لبضاعةٍ لم تُودَع.
+        && !consignByVariant.has(vid);
       try {
         const moved = await applyMovement(tx, {
           variantId: vid,
@@ -650,6 +662,30 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       taxAmount: money(totals.taxAmount),
       amount: money(totals.total),
     });
+
+    // 11.أ بضاعة الأمانة (ش٣): التقاط التزام المودِع لحظة البيع. طريقة الإجمالي — قيد SALE أعلاه لم يُمسّ
+    // (revenue كامل، الربح=الهامش لأن الحصة داخل unitCost). لكل مودِع: قيد PURCHASE **يتيم** بـinvoiceId
+    // (المميّز البنيوي PURCHASE∧invoiceId فارغ تاريخياً) بصفر أثر P&L (amount فقط) + رفع رصيده (AP). §٢-ب.
+    {
+      const byConsignor = new Map<number, ReturnType<typeof money>>();
+      for (const c of computed) {
+        const cId = consignByVariant.get(c.variantId);
+        if (cId == null) continue;
+        const share = money(c.unitCost).times(c.baseQuantity); // الحصة بوحدة الأساس (unitCost×baseQty).
+        byConsignor.set(cId, (byConsignor.get(cId) ?? money(0)).plus(share));
+      }
+      // ترتيب supplierId تصاعدياً — منع deadlock (مرآة ترتيب variantId في حركات المخزون).
+      for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
+        const amount = byConsignor.get(cId)!;
+        if (amount.lte(0)) continue;
+        await postEntry(tx, {
+          entryType: "PURCHASE", supplierId: cId, invoiceId, branchId: input.branchId,
+          amount, revenue: money(0), cost: money(0), profit: money(0),
+          dedupeKey: `CONSIG:${invoiceId}:${cId}`, notes: "استحقاق أمانة",
+        });
+        await adjustSupplierBalance(tx, cId, amount);
+      }
+    }
 
     // 11.b تسوية التقريب النقدي: قيد ADJUST بفرق التقريب ⇒ (SALE.amount + ADJUST.amount) = الإجمالي المقرّب = النقد المستلم.
     // G6 (١٩/٦/٢٦): dedupeKey حارس ضدّ تكرار ADJUST لو حدثت إعادة محاولة بعد ER_DUP_ENTRY
