@@ -199,6 +199,19 @@ export function canSeeCostForUser(user: { role: string; permissionsOverride?: un
   return (map.reports ?? "NONE") !== "NONE";
 }
 
+/**
+ * هل يُسمح لهذا المستخدم برؤية أرقام التقارير المالية (AR/إيراد)؟ — **نفس بوّابة**
+ * `reportViewerProcedure` بالضبط عبر `moduleAccessAllowed` (قائمة manager/accountant/auditor +
+ * منح صريح reports≥READ لأي دور آخر). مستعملة حين يكون endpoint نفسه متاحاً للجميع لكن **جزءاً**
+ * من حمولته ماليّاً يجب حجبه عن أدوار reports=NONE (dashboardMetrics: overdueAR/salesPulse) —
+ * فلا نُسقِط الإجراء كلّه إلى reportViewerProcedure (يُخفي lowStock التشغيليّ عن الكاشير/المخزن).
+ * ملاحظة أمنية: هذا قرار خادميّ — الواجهة تعيد الفحص نفسه لإخفاء البطاقة، لكن الخادم هو الحاجز.
+ */
+export function canViewReports(user: { role: string; permissionsOverride?: unknown }): boolean {
+  const override = user.permissionsOverride as Record<string, AccessLevel> | null | undefined;
+  return moduleAccessAllowed(user.role, override, "reports", "READ", ["manager", "accountant", "auditor"]);
+}
+
 // ─── عزل الفروع (منع IDOR عبر branchId) ─────────────────────────────────
 // F1 (تدقيق ١٤/٦/٢٦): استُبدِل magic value `-1` برميٍ صريح لـFORBIDDEN حين يحاول
 // مستخدم غير-elevated الوصول وهو بلا فرع مُسنَد. كان `-1` يجعل الاستعلامات تُرجع

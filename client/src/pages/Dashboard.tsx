@@ -4,6 +4,7 @@ import { fmtTime } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
 import { CopyButton } from "@/components/CopyButton";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -369,6 +370,18 @@ function MetricsBar() {
   const role = me.data?.role ?? "";
   // المدير/الأدمن يريان الإجمالي عبر الفروع (branchId=undefined) — الموظفون الميدانيون مقيَّدون.
   const elevated = role === "admin" || role === "manager";
+  // رؤية الأرقام المالية (ذمم متأخّرة/نبض المبيعات) — نفس بوّابة reportViewerProcedure/الخادم عبر
+  // moduleAccessAllowed (لا قائمة أدوار حرفية ⇒ لا تباعُد). الخادم يُصفّر هذه الحقول لغير المخوّل؛
+  // هنا نُخفي البطاقة كي لا تُعرَض «٠ ذمم متأخّرة» مضلِّلة لكاشير/مخزن (تدقيق تسريب dashboardMetrics).
+  const canViewReports =
+    !!role &&
+    moduleAccessAllowed(
+      role as RoleKey,
+      (me.data?.permissionsOverride ?? null) as PermissionMap | null,
+      "reports",
+      "READ",
+      ["manager", "accountant", "auditor"],
+    );
   const myBranch = me.data?.branchId ?? 1;
   const branchScope = elevated ? undefined : myBranch;
   const sales = trpc.sales.list.useQuery({ limit: 500 });
@@ -475,21 +488,27 @@ function MetricsBar() {
       alertC: "var(--sem-warn)",
       href: "/inventory",
     },
-    {
-      label: "ذمم متأخّرة",
-      value: overdueValue,
-      unit: overdueUnit,
-      copyText: metrics.isLoading
-        ? ""
-        : overdueCount > 0
-          ? `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل — ${overdueTotalShort} د.ع`
-          : `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل`,
-      ico: <WarnIco color="var(--sem-neg)" />,
-      iBg: "var(--sem-neg-bg)",
-      isAlert: true,
-      alertC: "var(--sem-neg)",
-      href: "/ar-aging",
-    },
+    // بطاقة الذمم المتأخّرة ماليّة ⇒ للمخوّلين برؤية التقارير فقط (الخادم يُصفّرها لغيرهم؛ نُخفيها
+    // هنا كي لا يُعرَض صفرٌ مضلِّل لكاشير/مخزن). نفس بوّابة بطاقة «مبيعات أمس» أعلاه (تُخفى ذاتياً بالصفر).
+    ...(canViewReports
+      ? [
+          {
+            label: "ذمم متأخّرة",
+            value: overdueValue,
+            unit: overdueUnit,
+            copyText: metrics.isLoading
+              ? ""
+              : overdueCount > 0
+                ? `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل — ${overdueTotalShort} د.ع`
+                : `ذمم متأخّرة: ${fmtAr(overdueCount)} عميل`,
+            ico: <WarnIco color="var(--sem-neg)" />,
+            iBg: "var(--sem-neg-bg)",
+            isAlert: true,
+            alertC: "var(--sem-neg)",
+            href: "/ar-aging",
+          },
+        ]
+      : []),
     // بطاقة الجرد: تظهر للأدوار المخوّلة فقط، وتتحوّل تنبيهاً عند وجود جلسات بانتظار المراجعة.
     ...(canSeeStocktakes
       ? [

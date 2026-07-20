@@ -4,8 +4,20 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
 import { getDashboardMetrics } from "../reportsService";
+import type { TrpcContext } from "../../context";
+import { appRouter } from "../../routers";
 
 const actor = { userId: 1, branchId: 1 };
+
+/** مُنادٍ tRPC بدور/فرع محدَّدين — لاختبار وصل الراوتر (canViewReports⇒includeFinancials). */
+function caller(role: string, branchId: number | null = 1) {
+  const ctx = {
+    req: { headers: {} } as unknown as TrpcContext["req"],
+    res: {} as unknown as TrpcContext["res"],
+    user: { id: 1, role, branchId, name: "t", email: "t@t", isActive: true } as unknown as TrpcContext["user"],
+  } as TrpcContext;
+  return appRouter.createCaller(ctx);
+}
 
 const TABLES = [
   "arReminders",
@@ -374,5 +386,79 @@ describe("getDashboardMetrics", () => {
     expect(m.salesPulse.avg7d).toBe("100000.00");
     expect(m.salesPulse.direction).toBe("flat");
     expect(m.salesPulse.changePct).toBe(0);
+  });
+});
+
+// تسريب dashboardMetrics (تدقيق ١٧/٧): الأرقام المالية (overdueAR/salesPulse/عدّادا AR في برنامج
+// اليوم) تُحجب عن أدوار reports=NONE عبر includeFinancials=false (يمرّره الراوتر من canViewReports).
+// lowStockCount + overdueWorkOrders تشغيليّان ⇒ يبقيان محسوبَين. سيناريو واحد يُقاس بالعلَمين.
+describe("getDashboardMetrics — بوّابة includeFinancials (حجب المالي عن reports=NONE)", () => {
+  async function seedFinancialScenario() {
+    const d = db();
+    // (تشغيليّ) متغيّر منخفض المخزون — يجب أن يُعدّ في كلا الحالتين.
+    await d.insert(s.productVariants).values({ id: 2, productId: 1, sku: "PEN-LOW", costPrice: "4.00", minStock: 10 });
+    await d.insert(s.branchStock).values([
+      { variantId: 1, branchId: 1, quantity: 100 },
+      { variantId: 2, branchId: 1, quantity: 3 }, // منخفض ✓
+    ]);
+    // (تشغيليّ) أمر شغل متأخّر — يجب أن يُعدّ في كلا الحالتين.
+    await d.insert(s.customers).values({ id: 1, name: "عميل متأخّر", phone: "07901234567", defaultPriceTier: "RETAIL", currentBalance: "240000" });
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    await d.insert(s.workOrders).values({ id: 1, orderNumber: "WO-OVR", branchId: 1, customerId: 1, status: "IN_PROGRESS", dueDate: yesterday, title: "طلبية", subtotal: "100", total: "100" });
+    // (ماليّ) فاتورة آجلة متأخّرة ٤٥ يوماً ⇒ overdueAR + مؤهّلة لتذكير AR (dueDate قبل ١٥ يوماً).
+    const past15 = new Date(Date.now() - 15 * 86_400_000).toISOString().slice(0, 10);
+    await d.insert(s.invoices).values([
+      { id: 801, invoiceNumber: "INV-OVR", sourceType: "ORDER", sourceId: "t-801", branchId: 1, customerId: 1, priceTier: "RETAIL", subtotal: "240000", total: "240000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(45), dueDate: past15 },
+      // (ماليّ) مبيعات أمس ⇒ salesPulse.
+      { id: 802, invoiceNumber: "INV-YDAY", sourceType: "ORDER", sourceId: "t-802", branchId: 1, priceTier: "RETAIL", subtotal: "300000", total: "300000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(1) },
+    ]);
+  }
+
+  it("(ل) includeFinancials:false ⇒ overdueAR/salesPulse/عدّادا AR أصفار، وlowStock+أوامر متأخّرة محفوظة", async () => {
+    await seedFinancialScenario();
+    const gated = await getDashboardMetrics({ branchId: 1, includeFinancials: false });
+    // المالي محجوب (صفر محايد لا الرقم الحقيقي).
+    expect(gated.overdueAR).toEqual({ count: 0, total: "0.00" });
+    expect(gated.salesPulse.yesterday).toBe("0.00");
+    expect(gated.salesPulse.direction).toBe("flat");
+    expect(gated.morningBrief.arRemindersDue).toBe(0);
+    expect(gated.morningBrief.promisedToday).toBe(0);
+    // التشغيليّ محفوظ.
+    expect(gated.lowStockCount).toBe(1);
+    expect(gated.morningBrief.overdueWorkOrders).toBe(1);
+  });
+
+  it("(م) includeFinancials:true (والافتراضي) ⇒ الأرقام المالية الحقيقية تظهر", async () => {
+    await seedFinancialScenario();
+    const shown = await getDashboardMetrics({ branchId: 1, includeFinancials: true });
+    expect(shown.overdueAR.count).toBe(1);
+    expect(shown.overdueAR.total).toBe("240000.00");
+    expect(shown.salesPulse.yesterday).toBe("300000.00");
+    expect(shown.morningBrief.arRemindersDue).toBe(1);
+    // نفس النتيجة عند حذف العلَم (الافتراضي true للمستدعين المُتحقَّق منهم: المجدول/التنفيذيّة).
+    const dflt = await getDashboardMetrics({ branchId: 1 });
+    expect(dflt.overdueAR.total).toBe("240000.00");
+    // التشغيليّ ثابت بين الحالتين.
+    expect(shown.lowStockCount).toBe(1);
+    expect(shown.morningBrief.overdueWorkOrders).toBe(1);
+  });
+
+  // وصل الراوتر: reports.dashboardMetrics على protectedProcedure يمرّر canViewReports(ctx.user)
+  // إلى includeFinancials ⇒ الدور reports=NONE (كاشير) يتلقّى أصفاراً، والمخوّل (مدير) الأرقام الحقيقية.
+  // هذا هو الحاجز الأمنيّ الفعليّ للتسريب (الواجهة إخفاءٌ تجميليّ فوقه).
+  it("(ن) الراوتر: كاشير (reports=NONE) يتلقّى overdueAR مُصفّراً بينما المدير يراه — مع بقاء lowStock للاثنين", async () => {
+    await seedFinancialScenario();
+    const mgr = await caller("manager", 1).reports.dashboardMetrics({ branchId: 1 });
+    const csh = await caller("cashier", 1).reports.dashboardMetrics({ branchId: 1 });
+    // المدير يرى الرقم الحقيقيّ.
+    expect(mgr.overdueAR).toEqual({ count: 1, total: "240000.00" });
+    expect(mgr.salesPulse.yesterday).toBe("300000.00");
+    // الكاشير محجوب — صفر محايد لا الرقم.
+    expect(csh.overdueAR).toEqual({ count: 0, total: "0.00" });
+    expect(csh.salesPulse.yesterday).toBe("0.00");
+    expect(csh.morningBrief.arRemindersDue).toBe(0);
+    // lowStock تشغيليّ ⇒ يراه الاثنان (اللوحة تبقى متاحة للكاشير بلا تسريب ماليّ).
+    expect(csh.lowStockCount).toBe(1);
+    expect(mgr.lowStockCount).toBe(1);
   });
 });
