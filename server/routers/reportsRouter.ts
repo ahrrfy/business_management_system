@@ -38,7 +38,7 @@ import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getAnomalyWatch } from "../services/reports/anomalyWatch";
 import { getDeadStockValue, getNegativeStock, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
 import { money, toDbMoney } from "../services/money";
-import { adminProcedure, protectedProcedure, reportViewerProcedure, router } from "../trpc";
+import { adminProcedure, canViewReports, protectedProcedure, reportViewerProcedure, router } from "../trpc";
 
 // RBAC-REPORTS (تدقيق ٢/٧): كل تقارير هذا الراوتر (أرباح، دفتر أستاذ، أعمار ذمم، كشوف حساب، مبيعات)
 // قراءةٌ حسّاسة تَخضع لخريطة صلاحية «reports» عبر reportViewerProcedure (manager/accountant/auditor
@@ -353,9 +353,14 @@ export const reportsRouter = router({
       // gap-audit ٥/٧ (HIGH): مدينو الرصيد الافتتاحي (openingScope) للأدمن حصراً — مطابقةً لحصر
       // نطاق openingScope نفسه في arRemindersRouter.ts (لا انتماء فرعيّ لهؤلاء المدينين، ولا مسار
       // للمدير للتصرّف بهم أصلاً — راجع openingWriteBranch).
+      //
+      // تسريب dashboardMetrics (تدقيق ١٧/٧): الـendpoint على protectedProcedure ليبقى عدّاد
+      // lowStock التشغيليّ متاحاً للجميع، لكنّ الأرقام المالية (overdueAR/salesPulse/عدّادا AR في
+      // برنامج اليوم) تُحجب عن أدوار reports=NONE عبر نفس بوّابة reportViewerProcedure.
       return getDashboardMetrics({
         branchId: effectiveBranchId,
         includeOpeningBalance: ctx.user.role === "admin",
+        includeFinancials: canViewReports(ctx.user),
       });
     }),
 

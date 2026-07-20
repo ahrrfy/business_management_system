@@ -43,8 +43,15 @@ export async function getDashboardMetrics(
      *  المستدعي حسب دور المستخدم (أدمن حصراً؛ راجع reportsRouter.ts وmorningPushScheduler.ts). لا
      *  أثر إلا حين branchId=null أيضاً (هؤلاء المدينون بلا انتماء فرعيّ — عرض فرع محدَّد يبقى بلا تغيير). */
     includeOpeningBalance?: boolean;
+    /** أدرِج الأرقام المالية (AR/إيراد): overdueAR + salesPulse + عدّادا برنامج اليوم AR
+     *  (arRemindersDue/promisedToday). يقرّره المستدعي بـ`canViewReports` — أدوار reports=NONE
+     *  (كاشير/مخزن/فنّي/مندوب) تتلقّى أصفاراً محايدة لا الأرقام الحقيقية (تدقيق ١٧/٧، تسريب
+     *  dashboardMetrics). الافتراضي `true` للتوافق مع المستدعين المُتحقَّق منهم (المجدول/التنفيذيّة).
+     *  lowStockCount وoverdueWorkOrders تشغيليّان ⇒ يُحسبان دائماً بلا تقييد. */
+    includeFinancials?: boolean;
   } = {}
 ): Promise<DashboardMetricsResult> {
+  const includeFinancials = opts.includeFinancials ?? true;
   const db = getDb();
   if (!db) {
     return {
@@ -73,18 +80,23 @@ export async function getDashboardMetrics(
     (Array.isArray(lowData) ? lowData[0]?.c : 0) ?? 0
   );
 
-  const arRows = await db.execute(sql`
-    SELECT
-      COUNT(*) AS c,
-      CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS t
-    FROM invoices i
-    WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
-      -- S2 (٢٩/٦/٢٦): مطابق DATEDIFF(NOW(),invoiceDate)>30 تماماً (DATEDIFF يتجاهل الوقت، TZ=UTC) لكنه قابل للفهرسة.
-      AND i.invoiceDate < DATE_SUB(UTC_DATE(), INTERVAL 30 DAY)
-      ${branchFilterInv}
-  `);
-  const arData = (arRows as any)[0] ?? arRows;
-  const arRow = Array.isArray(arData) ? arData[0] : null;
+  // overdueAR ماليّ ⇒ يُحسب فقط لمن يملك رؤية التقارير. غير المخوّل يتلقّى صفراً محايداً (لا الرقم
+  // الحقيقي) — يُغلق تسريب الـendpoint لأدوار reports=NONE مع إبقاء اللوحة متاحة (lowStock).
+  let arRow: { c?: number | string; t?: string } | null = null;
+  if (includeFinancials) {
+    const arRows = await db.execute(sql`
+      SELECT
+        COUNT(*) AS c,
+        CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS t
+      FROM invoices i
+      WHERE i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
+        -- S2 (٢٩/٦/٢٦): مطابق DATEDIFF(NOW(),invoiceDate)>30 تماماً (DATEDIFF يتجاهل الوقت، TZ=UTC) لكنه قابل للفهرسة.
+        AND i.invoiceDate < DATE_SUB(UTC_DATE(), INTERVAL 30 DAY)
+        ${branchFilterInv}
+    `);
+    const arData = (arRows as any)[0] ?? arRows;
+    arRow = Array.isArray(arData) ? arData[0] : null;
+  }
 
   // برنامج اليوم — تذكيرات AR وعدد الموعودين اليوم (يعيد استخدام getReminderQueue الذي يطبّق
   // منطق ≥٧ أيام + تبريد ٧ + وعد اليوم). العزل عبر الفرع (يمرَّر عبر opts.branchId).
@@ -96,7 +108,9 @@ export async function getDashboardMetrics(
   // promisedToday يعدّ فقط الوعود المستحقّة اليوم (isPromiseDue=true).
   let arRemindersDue = 0;
   let promisedToday = 0;
-  try {
+  // عدّادا برنامج اليوم AR ماليّان (ذمم مستحقّة/موعودة) ⇒ محجوبان عن reports=NONE. الواجهة تُخفي
+  // بانر برنامج اليوم أصلاً عن غير المدير، وهذا يُغلق تسريب الـAPI أيضاً (دفاع بالطبقتين).
+  if (includeFinancials) try {
     const queue = await getReminderQueue({ branchId });
     arRemindersDue = queue.length;
     promisedToday = queue.filter((r) => r.isPromiseDue).length;
@@ -131,10 +145,12 @@ export async function getDashboardMetrics(
   // نبض المبيعات: مبيعات أمس (صافي = total − returnedTotal، غير الملغاة) مقابل معدّل آخر ٧ أيام
   // مكتملة (D-7..D-1، بلا اليوم الجاري غير المكتمل). العزل عبر الفرع. avg = مجموع النافذة ÷ ٧
   // (أيام بلا مبيعات تُخفّض المعدّل — تعريف «معدّل ٧ أيام» الحرفيّ). فشل الاستعلام لا يُسقط اللوحة.
+  // نبض المبيعات رقمُ إيرادٍ ⇒ محجوب عن reports=NONE. الأصفار الافتراضية تُبقي البطاقة مُخفاة على
+  // الواجهة (hasBaseline=false حين avg7d=0) — مطابقةً لسلوك «لا مبيعات سابقة» القائم.
   let salesPulse: DashboardMetricsResult["salesPulse"] = {
     yesterday: toDbMoney(money(0)), avg7d: toDbMoney(money(0)), direction: "flat", changePct: 0,
   };
-  try {
+  if (includeFinancials) try {
     const spRows = await db.execute(sql`
       SELECT
         CAST(COALESCE(SUM(CASE WHEN i.invoiceDate >= DATE_SUB(UTC_DATE(), INTERVAL 1 DAY) AND i.invoiceDate < UTC_DATE() THEN i.total - i.returnedTotal ELSE 0 END), 0) AS CHAR) AS yday,
