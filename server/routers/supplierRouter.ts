@@ -5,6 +5,7 @@ import {
   activateSupplier,
   createSupplier,
   deactivateSupplier,
+  findSimilarSuppliers,
   getSupplier,
   listSuppliers,
   updateSupplier,
@@ -46,6 +47,18 @@ export const supplierRouter = router({
       const row = await getSupplier(input.supplierId);
       return maskBankFields(maskSupplierSensitive(row, ctx.user.role), ctx.user.role);
     }),
+
+  /** dup-detect (٢٠/٧): مرشّحو تكرار محتمَل لشاشة الإضافة — تحذير حيّ قبل الحفظ (لا حجب).
+   *  مرآة customers.findSimilar (أغلبية كلمات على searchNorm + لاحقة هاتف + شمول المعطَّلين).
+   *  لا يُعيد أرصدة/حقولاً بنكية ⇒ لا يحتاج حجباً. */
+  findSimilar: suppliersReadProcedure
+    .input(
+      z.object({
+        name: z.string().max(255).optional(),
+        phones: z.array(z.string().max(25)).max(4).optional(),
+      })
+    )
+    .query(({ input }) => findSimilarSuppliers(input)),
 
   create: suppliersManagerProcedure
     .input(

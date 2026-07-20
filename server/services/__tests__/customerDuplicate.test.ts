@@ -167,4 +167,19 @@ describe("findSimilarCustomers (كشف التكرار الحيّ)", () => {
     const rows = await findSimilarCustomers({ name: "كاظم", phones: ["0751 000 0000"] });
     expect(rows).toEqual([]);
   });
+
+  // ترقية ٢٠/٧: أغلبية الكلمات بدل السلسلة المتصلة — حالتان كانت المطابقة القديمة تفوّتهما.
+  it("ترتيب كلمات مختلف يُمسَك: «النور مكتبة» تجد «مكتبة النور الحديثة»", async () => {
+    const c = await createCustomer({ name: "مكتبة النور الحديثة" }, actor);
+    const rows = await findSimilarCustomers({ name: "النور مكتبة" });
+    const hit = rows.find((r) => r.id === c.customerId);
+    expect(hit).toBeTruthy();
+    expect(hit?.matchedOn).toBe("name");
+  });
+
+  it("اسم مكتوب أطول من المخزَّن يُمسَك بالأغلبية: «مكتبة النور الحديثة» تجد «مكتبة النور»", async () => {
+    const c = await createCustomer({ name: "مكتبة النور" }, actor);
+    const rows = await findSimilarCustomers({ name: "مكتبة النور الحديثة" });
+    expect(rows.map((r) => r.id)).toContain(c.customerId);
+  });
 });
