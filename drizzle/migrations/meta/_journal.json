@@ -624,6 +624,13 @@
       "when": 1784937600003,
       "tag": "0088_asset_documents_dataurl",
       "breakpoints": true
+    },
+    {
+      "idx": 89,
+      "version": "5",
+      "when": 1784937600004,
+      "tag": "0089_hr_device_sync",
+      "breakpoints": true
     }
   ]
 }
