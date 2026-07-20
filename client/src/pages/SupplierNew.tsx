@@ -12,7 +12,7 @@ import { fmt } from "@/lib/money";
 import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Star } from "lucide-react";
 
@@ -57,6 +57,10 @@ export default function SupplierNew() {
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
+  // مفتاح idempotency — UUID واحد لكل فتح للنموذج. إعادة الإرسال بنفس المفتاح (نقر مزدوج/انقطاع
+  // شبكة وإعادة محاولة) تعيد المورّد نفسه من الخادم بدل إنشاء صفٍّ مكرّر (هجرة 0090).
+  const clientRequestId = useMemo(() => crypto.randomUUID(), []);
+
   const create = trpc.suppliers.create.useMutation({
     onSuccess: () => {
       notify.ok("تمّ حفظ المورّد");
@@ -71,7 +75,7 @@ export default function SupplierNew() {
   });
 
   function submit() {
-    if (create.isPending) return; // يمنع الإرسال المزدوج عبر Ctrl+S/تكرار المفتاح (لا idempotency خادمية بعد).
+    if (create.isPending) return; // حاجز واجهة أول؛ والحاجز البنيوي clientRequestId خادمياً (هجرة 0090).
     setError("");
     if (!name.trim()) {
       setError("اسم المورّد مطلوب.");
@@ -106,6 +110,7 @@ export default function SupplierNew() {
       openingBalance: openingAmount.trim() || null,
       openingBalanceDirection: openingDir,
       notes: notes.trim() || null,
+      clientRequestId,
     });
   }
 

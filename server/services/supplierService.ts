@@ -1,5 +1,6 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
+import { isDupEntry } from "@shared/errorMap.ar";
 import { purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escapeLike } from "../lib/sqlLike";
@@ -33,6 +34,9 @@ export interface CreateSupplierInput {
   // رصيد افتتاحي اختياري (مبلغ غير سالب) + اتجاه الدين. يُنشئ قيد OPENING مرجعياً.
   openingBalance?: string | null;
   openingBalanceDirection?: OpeningDirection;
+  // مفتاح idempotency — UUID يولّده نموذج الإضافة مرّة لكل فتح. إعادة الإرسال بنفس المفتاح
+  // (نقر مزدوج/إعادة محاولة شبكة) تعيد المورّد نفسه بدل إنشاء صفٍّ مكرّر.
+  clientRequestId?: string | null;
 }
 export interface UpdateSupplierInput extends Partial<CreateSupplierInput> {
   supplierId: number;
@@ -57,12 +61,51 @@ async function assertUniquePhone(db: any, phone: string | null, excludeId?: numb
   if (existing) throw new TRPCError({ code: "CONFLICT", message: `رقم الهاتف ${phone} مسجّل لمورّد آخر` });
 }
 
-/** إنشاء مورّد (ذرّي + تحقّق تكرار الهاتف). */
+/**
+ * إنشاء مورّد (ذرّي + تحقّق تكرار الهاتف + idempotency).
+ *
+ * حين يصل `clientRequestId` (UUID من نموذج الإضافة) يكون الإنشاء idempotent — نظير createCustomer:
+ *  - فحص مسبق داخل المعاملة يعيد المورّد القائم بنفس المفتاح (إعادة إرسال بعد نجاح سابق).
+ *  - سباقان متزامنان بنفس المفتاح: القيد الفريد `uq_supplier_client_request` يحسم — الخاسر
+ *    يتلقّى ER_DUP_ENTRY فنعيد قراءة الفائز ونعيده.
+ *  - إعادة التشغيل لا تكرّر قيد OPENING (الفائز سجّله داخل معاملته الذرّية).
+ */
 export async function createSupplier(input: CreateSupplierInput, _actor: Actor) {
+  const clientRequestId = input.clientRequestId?.trim() || null;
+  try {
+    return await createSupplierTx(input, clientRequestId);
+  } catch (e) {
+    // سباق متزامن على نفس المفتاح: الفائز ملتزم (خطأ التكرار لا يُرمى إلا بعد التزامه) ⇒ اقرأه.
+    // الفحص بمحاولة القراءة لا بتحليل نصّ الخطأ: إن لم نجد صفاً فمصدر التكرار قيدٌ آخر ⇒ نعيد الرمي.
+    if (clientRequestId && isDupEntry(e)) {
+      const db = getDb();
+      const prior = db
+        ? (
+            await db.select({ id: suppliers.id }).from(suppliers)
+              .where(eq(suppliers.clientRequestId, clientRequestId)).limit(1)
+          )[0]
+        : undefined;
+      if (prior) return { supplierId: prior.id, id: prior.id, idempotentReplay: true };
+    }
+    throw e;
+  }
+}
+
+async function createSupplierTx(input: CreateSupplierInput, clientRequestId: string | null) {
   return withTx(async (tx) => {
     const name = input.name?.trim();
     if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المورّد مطلوب" });
     if (name.length > 255) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المورّد طويل جداً (٢٥٥ حرفاً)" });
+
+    // idempotency: إعادة إرسال بنفس المفتاح ⇒ أعد المورّد القائم، لا صفاً جديداً ولا قيداً جديداً.
+    if (clientRequestId) {
+      const prior = (
+        await tx.select({ id: suppliers.id }).from(suppliers)
+          .where(eq(suppliers.clientRequestId, clientRequestId)).limit(1)
+      )[0];
+      if (prior) return { supplierId: prior.id, id: prior.id, idempotentReplay: true };
+    }
+
     const phone = norm(input.phone);
     await assertUniquePhone(tx, phone);
     const rating = input.rating != null ? Math.min(5, Math.max(0, Math.trunc(input.rating))) : null;
@@ -96,6 +139,7 @@ export async function createSupplier(input: CreateSupplierInput, _actor: Actor) 
       bankName: norm(input.bankName),
       currentBalance: openingBalance,
       notes: norm(input.notes),
+      clientRequestId,
       isActive: true,
     });
     const supplierId = extractInsertId(res);
@@ -103,7 +147,7 @@ export async function createSupplier(input: CreateSupplierInput, _actor: Actor) 
     if (!money(openingBalance).isZero()) {
       await postOpeningEntry(tx, "SUPPLIER", supplierId, openingBalance);
     }
-    return { supplierId, id: supplierId };
+    return { supplierId, id: supplierId, idempotentReplay: false };
   });
 }
 
