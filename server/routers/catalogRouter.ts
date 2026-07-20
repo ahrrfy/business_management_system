@@ -6,6 +6,7 @@ import { getDb } from "../db";
 import { assignBarcode, checkBarcodesTaken, createProduct, deleteProduct, getProductForEdit, listByProductIds, listByUnitIds, listForPos, listForPurchase, listMaterialsForRecipe, listProductImages, listProductsAdmin, lookupByBarcode, setProductActive, updateProduct } from "../services/catalogService";
 import { getProductForVariantEdit, updateProductWithVariants } from "../services/productEditService";
 import { addUnitBarcodeAlias, listUnitBarcodes, listUnitBarcodesMany, removeUnitBarcodeAlias, resolveProductUnitId } from "../services/catalog/barcodeAliases";
+import { findSimilarProductNames } from "../services/catalog/similarNames";
 import {
   createCategory,
   deleteCategory,
@@ -186,6 +187,18 @@ export const catalogRouter = router({
   checkBarcodes: productsManagerProcedure
     .input(z.object({ codes: z.array(z.string().min(1)).max(2000) }))
     .query(({ input }) => checkBarcodesTaken(input.codes)),
+
+  // name-assistant: مشابهات اسم حيّة أثناء إضافة/تعديل منتج — تمنع ازدواج الكتالوج عند المصدر
+  // (٩٤٠٠+ صنف مستورد بأسماء غير منضبطة). نفس بوّابة الشاشة (مدير فأعلى)، لا تكشف تكلفة.
+  similarNames: productsManagerProcedure
+    .input(
+      z.object({
+        name: z.string().min(2).max(255),
+        excludeProductId: z.number().int().positive().optional(),
+        limit: z.number().int().positive().max(20).default(8),
+      })
+    )
+    .query(({ input }) => findSimilarProductNames(input.name, { excludeProductId: input.excludeProductId, limit: input.limit })),
 
   // Purchase-side product search: carries COST (not a sell price). أدوار الشراء (مدير/أمين
   // مخزن/مسؤول مشتريات) — تحتاجه لإضافة سطور أمر الشراء الذي تُخوَّل إنشاءه؛ محصور بها فلا

@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
 import { trpc } from "@/lib/trpc";
+import { NameAssistant } from "@/components/product/NameAssistant";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { barcodeState, clampInt, genEan13, onlyDigits, toArabicDigits } from "@/lib/variants";
 import { cn } from "@/lib/utils";
@@ -282,6 +283,8 @@ export default function SimpleProductEditForm({
                 </Button>
               )}
             </div>
+            {/* السلعة البسيطة بلا متغيّرات ⇒ اللون في الاسم مشروع — لا warnColors هنا. */}
+            <NameAssistant name={finalName} onApply={setName} excludeProductId={productId} />
           </Field>
           <Field label="النوع (اختياري)"><Input value={productType} onChange={(e) => setProductType(e.target.value)} placeholder="كتاب مدرسي" dir="auto" /></Field>
           <Field label="الماركة/الناشر (اختياري)"><Input value={brand} onChange={(e) => setBrand(e.target.value)} placeholder="دار المعارف" dir="auto" /></Field>

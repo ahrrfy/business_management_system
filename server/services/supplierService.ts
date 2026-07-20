@@ -8,6 +8,7 @@ import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
+import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
 export interface CreateSupplierInput {
   name: string;
@@ -242,4 +243,70 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
     .offset(offset);
   const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(suppliers).where(where as any))[0];
   return { rows, total: Number(totalRow?.n ?? 0) };
+}
+
+export interface FindSimilarSuppliersInput {
+  name?: string | null;
+  phones?: (string | null | undefined)[] | null;
+  limit?: number;
+}
+
+/**
+ * dup-detect (٢٠/٧): مرشّحو تكرار محتمَل لشاشة إضافة المورّد — تحذير حيّ قبل الحفظ لا حجب
+ * (مرآة findSimilarCustomers على نواة similarMatch المشتركة). الاسم بقاعدة **أغلبية الكلمات**
+ * على `searchNorm` (تمسك ترتيب كلمات مختلفاً واسماً أطول من المخزَّن — «شركة المعارف للطباعة»
+ * تجد «المعارف للطباعة»)، والهواتف الأربعة بمطابقة لاحقة أرقام (محلية 07xx تجد ‎+9647xx‎).
+ * يشمل المعطَّلين عمداً، ولا يُعيد أرصدة (البطاقة التحذيرية لا تعرضها — أقلّ امتيازاً).
+ */
+export async function findSimilarSuppliers(input: FindSimilarSuppliersInput) {
+  const db = getDb();
+  if (!db) return [];
+  const limit = Math.min(Math.max(input.limit ?? 5, 1), 10);
+
+  const nameRaw = input.name?.trim() ?? "";
+  // حارس طول على الفضاء المُطبَّع: حرف واحد مثل «ا» يطابق كل شيء LIKE.
+  const match = normalizeSearchText(nameRaw).length >= 2 ? majorityTokenMatch(sql`${suppliers.searchNorm}`, nameRaw) : null;
+  const suffixes = Array.from(
+    new Set((input.phones ?? []).map(phoneMatchSuffix).filter((s): s is string => !!s)),
+  ).slice(0, 4);
+
+  const conds: ReturnType<typeof sql>[] = [];
+  if (match) conds.push(match.where);
+  for (const suf of suffixes) {
+    const p = `%${escapeLike(suf)}`;
+    conds.push(sql`${suppliers.phone} LIKE ${p}`);
+    conds.push(sql`${suppliers.phone2} LIKE ${p}`);
+    conds.push(sql`${suppliers.phone3} LIKE ${p}`);
+    conds.push(sql`${suppliers.whatsapp} LIKE ${p}`);
+  }
+  if (conds.length === 0) return [];
+
+  const rows = await db
+    .select({
+      id: suppliers.id,
+      name: suppliers.name,
+      phone: suppliers.phone,
+      phone2: suppliers.phone2,
+      phone3: suppliers.phone3,
+      whatsapp: suppliers.whatsapp,
+      city: suppliers.city,
+      supplierCategory: suppliers.supplierCategory,
+      isActive: suppliers.isActive,
+    })
+    .from(suppliers)
+    .where(or(...conds))
+    // ملاءمة الاسم أولاً (تام ثم عدد الكلمات) ثم النشِط ثم أبجدياً.
+    .orderBy(...(match ? match.orderBy : []), desc(suppliers.isActive), asc(suppliers.name))
+    .limit(limit);
+
+  return rows.map((r) => {
+    const rowDigits = [r.phone, r.phone2, r.phone3, r.whatsapp].map((x) => (x ?? "").replace(/\D/g, ""));
+    const phoneHit = suffixes.some((suf) => rowDigits.some((d) => d.length > 0 && d.endsWith(suf)));
+    const nameHit = !!match && majorityTokenHitJs(r.name, nameRaw);
+    const { phone2: _p2, phone3: _p3, whatsapp: _wa, ...pub } = r;
+    return {
+      ...pub,
+      matchedOn: (phoneHit && nameHit ? "both" : phoneHit ? "phone" : "name") as "both" | "phone" | "name",
+    };
+  });
 }

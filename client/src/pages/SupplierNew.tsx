@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { PageHeader } from "@/components/PageHeader";
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { Star } from "lucide-react";
+import { Star, TriangleAlert } from "lucide-react";
 
 /**
  * إضافة مورّد — v3 add-screens (+ تحسينات الأولوية العليا ٤/٧).
@@ -56,6 +56,28 @@ export default function SupplierNew() {
   const [openingDir, setOpeningDir] = useState<"OWED_TO_US" | "OWED_BY_US">("OWED_BY_US");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
+
+  // dup-detect (٢٠/٧): تحذير تكرار حيّ — مرآة شاشة إضافة العميل (اسم مطبَّع/لاحقة هاتف بتأخير كتابة).
+  const [dupInput, setDupInput] = useState<{ name?: string; phones?: string[] }>({});
+  useEffect(() => {
+    const t = setTimeout(() => {
+      const nm = name.trim();
+      const phones = [phone, phone2, phone3]
+        .map((p) => p.trim())
+        .filter((p) => p.replace(/\D/g, "").length >= 7);
+      setDupInput({
+        name: nm.length >= 3 ? nm : undefined,
+        phones: phones.length ? phones : undefined,
+      });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [name, phone, phone2, phone3]);
+  const dupEnabled = !!(dupInput.name || dupInput.phones?.length);
+  const similar = trpc.suppliers.findSimilar.useQuery(dupInput, {
+    enabled: dupEnabled,
+    placeholderData: (prev) => prev,
+  });
+  const dupMatches = dupEnabled ? (similar.data ?? []) : [];
 
   const create = trpc.suppliers.create.useMutation({
     onSuccess: () => {
@@ -201,6 +223,43 @@ export default function SupplierNew() {
           </div>
         </CardContent>
       </Card>
+
+      {dupMatches.length > 0 && (
+        <Card className="lg:col-span-2 border-amber-300 bg-amber-50/60" role="status" aria-live="polite">
+          <CardHeader className="pb-2">
+            <CardTitle className="flex items-center gap-2 text-sm text-amber-800">
+              <TriangleAlert aria-hidden className="size-4" />
+              مورّدون مشابهون موجودون — تأكّد أنك لا تكرّر مورّداً قائماً
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-1.5">
+            {dupMatches.map((m) => (
+              <div key={m.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                <span className="font-medium">{m.name}</span>
+                {m.phone && (
+                  <span dir="ltr" className="text-muted-foreground">{displayE164(m.phone)}</span>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  {m.supplierCategory ?? ""}
+                  {m.city ? ` — ${m.city}` : ""}
+                </span>
+                <span className="rounded border border-amber-300 px-1.5 py-0.5 text-[10px] text-amber-800">
+                  {m.matchedOn === "phone" ? "تطابق هاتف" : m.matchedOn === "both" ? "تطابق اسم وهاتف" : "تشابه اسم"}
+                </span>
+                {!m.isActive && (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">معطَّل</span>
+                )}
+                <Link href={`/suppliers/${m.id}/edit`} className="text-xs text-primary underline">
+                  فتح البطاقة
+                </Link>
+              </div>
+            ))}
+            <p className="text-[11px] text-amber-700">
+              التحذير لا يمنع الحفظ — إن كان هو المورّد نفسه فافتح بطاقته بدل إنشائه من جديد.
+            </p>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="lg:col-span-2">
         <CardHeader>

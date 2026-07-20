@@ -9,6 +9,7 @@ import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
+import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
 export type CustomerType = "فرد" | "تاجر" | "مؤسسة" | "شركة" | "حكومي";
@@ -169,35 +170,28 @@ export interface FindSimilarCustomersInput {
   limit?: number;
 }
 
-/** لاحقة أرقام قابلة للمطابقة من هاتف بأي صيغة كتابة (محلية 07xx أو دولية ‎+9647xx‎):
- *  أرقام فقط، وآخر ١٠ خانات — القاسم المشترك بين الصيغتين. أقل من ٧ أرقام = ضجيج، تُهمل. */
-function phoneMatchSuffix(s: string | null | undefined): string | null {
-  const digits = (s ?? "").replace(/\D/g, "");
-  if (digits.length < 7) return null;
-  return digits.slice(-10);
-}
-
 /**
- * dup-detect (٦/٧): مرشّحو تكرار محتمَل لشاشة إضافة العميل — تحذير حيّ قبل الحفظ لا حجب.
- * المطابقة: الاسم عبر `searchNorm` المطبَّع عربياً (نفس نمط listCustomers)، والهواتف الأربعة
- * بمطابقة لاحقة أرقام (صيغة محلية تجد المخزَّن دولياً). يشمل المعطَّلين عمداً — «موجود لكنه
- * معطَّل» أهم تحذيرات التكرار (الحجب البنيوي للهاتف الأساسي المطابق يبقى في assertUniquePhone).
+ * dup-detect (٦/٧، ترقية ٢٠/٧): مرشّحو تكرار محتمَل لشاشة إضافة العميل — تحذير حيّ قبل الحفظ لا حجب.
+ * المطابقة: الاسم بقاعدة **أغلبية الكلمات** على `searchNorm` (نواة similarMatch المشتركة مع
+ * كاشفَي المنتجات والمورّدين — تمسك ترتيب كلمات مختلفاً واسماً مكتوباً أطول من المخزَّن،
+ * وكانت المطابقة القديمة سلسلةً متصلةً تفوّتهما)، والهواتف الأربعة بمطابقة لاحقة أرقام
+ * (صيغة محلية تجد المخزَّن دولياً). يشمل المعطَّلين عمداً — «موجود لكنه معطَّل» أهم تحذيرات
+ * التكرار (الحجب البنيوي للهاتف الأساسي المطابق يبقى في assertUniquePhone).
  */
 export async function findSimilarCustomers(input: FindSimilarCustomersInput) {
   const db = getDb();
   if (!db) return [];
   const limit = Math.min(Math.max(input.limit ?? 5, 1), 10);
 
-  const nameFolded = input.name?.trim() ? normalizeSearchText(input.name.trim()) : "";
+  const nameRaw = input.name?.trim() ?? "";
+  // حارس طول على الفضاء المُطبَّع (سلوك سابق مصون): حرف واحد مثل «ا» يطابق كل شيء LIKE.
+  const match = normalizeSearchText(nameRaw).length >= 2 ? majorityTokenMatch(sql`${customers.searchNorm}`, nameRaw) : null;
   const suffixes = Array.from(
     new Set((input.phones ?? []).map(phoneMatchSuffix).filter((s): s is string => !!s)),
   ).slice(0, 4);
 
   const conds: ReturnType<typeof sql>[] = [];
-  if (nameFolded.length >= 2) {
-    const likeFolded = `%${escLike(nameFolded)}%`;
-    conds.push(sql`coalesce(${customers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'`);
-  }
+  if (match) conds.push(match.where);
   for (const suf of suffixes) {
     const p = `%${escLike(suf)}`;
     conds.push(sql`${customers.phone} LIKE ${p} ESCAPE '!'`);
@@ -219,18 +213,19 @@ export async function findSimilarCustomers(input: FindSimilarCustomersInput) {
       customerType: customers.customerType,
       currentBalance: customers.currentBalance,
       isActive: customers.isActive,
-      searchNorm: customers.searchNorm,
     })
     .from(customers)
     .where(or(...conds))
-    .orderBy(desc(customers.isActive), asc(customers.name))
+    // ملاءمة الاسم أولاً (تام ثم عدد الكلمات) ثم النشِط ثم أبجدياً — مطابقات الهاتف الصرفة تلي الاسمية.
+    .orderBy(...(match ? match.orderBy : []), desc(customers.isActive), asc(customers.name))
     .limit(limit);
 
   return rows.map((r) => {
     const rowDigits = [r.phone, r.phone2, r.phone3, r.whatsapp].map((x) => (x ?? "").replace(/\D/g, ""));
     const phoneHit = suffixes.some((suf) => rowDigits.some((d) => d.length > 0 && d.endsWith(suf)));
-    const nameHit = nameFolded.length >= 2 && (r.searchNorm ?? "").includes(nameFolded);
-    const { searchNorm: _sn, phone2: _p2, phone3: _p3, whatsapp: _wa, ...pub } = r;
+    // مرآة JS لقاعدة الأغلبية نفسها — تصنيف matchedOn متّسق مع شرط SQL.
+    const nameHit = !!match && majorityTokenHitJs(r.name, nameRaw);
+    const { phone2: _p2, phone3: _p3, whatsapp: _wa, ...pub } = r;
     return {
       ...pub,
       matchedOn: (phoneHit && nameHit ? "both" : phoneHit ? "phone" : "name") as "both" | "phone" | "name",
