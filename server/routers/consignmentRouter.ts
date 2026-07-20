@@ -2,12 +2,13 @@ import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { logAudit } from "../services/auditService";
 import {
+  consignmentBalancesReport,
   createConsignmentNote,
   getConsignmentNote,
   listConsignmentNotes,
   listConsignorProducts,
 } from "../services/consignment/noteService";
-import { consignmentReadProcedure, consignmentWriteProcedure, router } from "../trpc";
+import { consignmentReadProcedure, consignmentWriteProcedure, reportViewerProcedure, router } from "../trpc";
 
 /**
  * بضاعة الأمانة — ش٢: سندات الإيداع/السحب/الاستبدال. راجع docs/consignment-design-2026-07-20.md.
@@ -41,6 +42,11 @@ export const consignmentRouter = router({
   consignorProducts: consignmentReadProcedure
     .input(z.object({ consignorId: z.number().int().positive(), branchId: z.number().int().positive() }))
     .query(({ input }) => listConsignorProducts(input.consignorId, input.branchId)),
+
+  // تقرير أرصدة بضاعة الأمانة — خلف بوّابة التقارير الحمراء (قيمة بالتكلفة/الحصة). §١١.
+  balancesReport: reportViewerProcedure
+    .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
+    .query(({ input }) => consignmentBalancesReport(input?.branchId)),
 
   create: consignmentWriteProcedure
     .input(

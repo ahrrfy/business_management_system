@@ -205,6 +205,39 @@ export async function getConsignmentNote(noteId: number) {
   return { ...note, lines };
 }
 
+/**
+ * تقرير أرصدة بضاعة الأمانة (ش٤): لكل مودِع — عدد الأصناف والكمية المتبقية على الرف + قيمتها بالحصة،
+ * والمستحق الحاليّ (currentBalance = AP). خلف بوّابة التقارير الحمراء (قيمة بالتكلفة). §١١.
+ */
+export async function consignmentBalancesReport(branchId?: number) {
+  const db = getDb();
+  if (!db) return [];
+  const branchCond = branchId ? sql`AND bs.branchId = ${branchId}` : sql``;
+  const rows: any = await db.execute(sql`
+    SELECT
+      s.id AS consignorId, s.name AS consignorName, s.currentBalance AS owed,
+      COUNT(DISTINCT bs.variantId) AS variantCount,
+      CAST(COALESCE(SUM(bs.quantity), 0) AS CHAR) AS remainingQty,
+      CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS remainingValueByShare
+    FROM suppliers s
+      JOIN products p ON p.consignorId = s.id AND p.isConsignment = true
+      JOIN productVariants pv ON pv.productId = p.id
+      LEFT JOIN branchStock bs ON bs.variantId = pv.id ${branchCond}
+    WHERE s.supplierKind = 'CONSIGNOR'
+    GROUP BY s.id, s.name, s.currentBalance
+    ORDER BY s.name
+  `);
+  const list = Array.isArray(rows) ? (rows[0] ?? rows) : rows?.rows ?? [];
+  return (list as any[]).map((r) => ({
+    consignorId: Number(r.consignorId),
+    consignorName: String(r.consignorName),
+    owed: String(r.owed ?? "0"),
+    variantCount: Number(r.variantCount ?? 0),
+    remainingQty: Number(r.remainingQty ?? 0),
+    remainingValueByShare: String(r.remainingValueByShare ?? "0"),
+  }));
+}
+
 /** أصناف مودِع بعينه — لمنتقي أصناف سند الإيداع/السحب (أصناف هذا المودِع فقط + وحدة الأساس). */
 export async function listConsignorProducts(consignorId: number, _branchId: number) {
   const db = getDb();
