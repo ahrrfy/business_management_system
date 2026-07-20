@@ -21,6 +21,7 @@ const TABLES = [
   "payrollItems",
   "payrollRuns",
   "attendance",
+  "leaveRequests",
   "employees",
   "auditLogs",
   "branches",
@@ -80,6 +81,62 @@ describe("payrollService — generate", () => {
     expect(Number(run!.totalNet)).toBe(2000000);
     expect(Number(run!.totalOvertime)).toBe(0);
     expect(Number(run!.totalDeductions)).toBe(0);
+  });
+
+  it("خصم إجازة بلا راتب للموظف الشهريّ = الراتب÷٣٠ × الأيام، مع ملاحظة توضيحيّة (تدقيق ١٧/٧)", async () => {
+    const emp = await createEmployee({ firstName: "سعد", lastName: "الجبوري", payType: "monthly", salary: "900000", allowances: "0" });
+    // إجازة بلا راتب معتمدة ٣ أيام داخل الشهر (٢٠٢٦-٠٦).
+    await db().insert(s.leaveRequests).values({
+      employeeId: emp!.id, leaveType: "بدون راتب", paid: false,
+      fromDate: "2026-06-10", toDate: "2026-06-12", days: 3, status: "approved",
+    });
+    const run = await generatePayroll("2026-06", ACTOR);
+    const item = run!.items[0];
+    // الراتب÷٣٠ = 30,000/يوم × ٣ = 90,000 خصم ⇒ net = 900,000 − 90,000 = 810,000
+    expect(Number(item.deductions)).toBe(90000);
+    expect(Number(item.net)).toBe(810000);
+    expect(item.note ?? "").toContain("إجازة بلا راتب");
+    expect(item.note ?? "").toContain("3");
+  });
+
+  it("إجازة بلا راتب عابرة للشهور تُخصَم أيامها داخل الشهر فقط (تداخل مقصوص)", async () => {
+    const emp = await createEmployee({ firstName: "نور", lastName: "الحسن", payType: "monthly", salary: "900000", allowances: "0" });
+    // ٢٨ مايو ← ٣ يونيو: يخصّ يونيو منها ٣ أيام فقط (١،٢،٣) رغم أنّ days=7.
+    await db().insert(s.leaveRequests).values({
+      employeeId: emp!.id, leaveType: "بدون راتب", paid: false,
+      fromDate: "2026-05-28", toDate: "2026-06-03", days: 7, status: "approved",
+    });
+    const run = await generatePayroll("2026-06", ACTOR);
+    const item = run!.items[0];
+    expect(Number(item.deductions)).toBe(90000); // ٣ أيام × 30,000 لا ٧
+    expect(Number(item.net)).toBe(810000);
+  });
+
+  it("الإجازة المدفوعة أو غير المعتمدة لا تُخصَم", async () => {
+    const emp = await createEmployee({ firstName: "هدى", lastName: "الكناني", payType: "monthly", salary: "900000", allowances: "0" });
+    await db().insert(s.leaveRequests).values([
+      { employeeId: emp!.id, leaveType: "سنوية", paid: true, fromDate: "2026-06-05", toDate: "2026-06-07", days: 3, status: "approved" },
+      { employeeId: emp!.id, leaveType: "بدون راتب", paid: false, fromDate: "2026-06-15", toDate: "2026-06-17", days: 3, status: "pending" },
+    ]);
+    const run = await generatePayroll("2026-06", ACTOR);
+    const item = run!.items[0];
+    expect(Number(item.deductions)).toBe(0);
+    expect(Number(item.net)).toBe(900000);
+    expect(item.note ?? "").not.toContain("إجازة");
+  });
+
+  it("الموظف الساعيّ لا يُطبَّق عليه خصم الإجازة (يُخصَم بغياب الحضور تلقائياً)", async () => {
+    const emp = await createEmployee({ firstName: "كرار", lastName: "الساعدي", payType: "hourly", dayRates: { "الاثنين": 5000 } });
+    await db().insert(s.attendance).values({
+      employeeId: emp!.id, attendanceDate: "2026-06-01", status: "PRESENT", hours: "8.00", hourlyRate: "5000.00", amount: "40000.00", source: "manual",
+    });
+    await db().insert(s.leaveRequests).values({
+      employeeId: emp!.id, leaveType: "بدون راتب", paid: false, fromDate: "2026-06-10", toDate: "2026-06-12", days: 3, status: "approved",
+    });
+    const run = await generatePayroll("2026-06", ACTOR);
+    const item = run!.items[0];
+    expect(Number(item.deductions)).toBe(0); // لا خصم إجازة على الساعيّ
+    expect(Number(item.net)).toBe(40000);
   });
 
   it("يحسب أجر موظف الساعة من مجموع حضور ذلك الشهر", async () => {
