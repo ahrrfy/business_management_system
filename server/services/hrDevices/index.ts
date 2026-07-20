@@ -12,5 +12,5 @@ export {
   PROTOCOL_COMMANDS,
 } from "./commands";
 export { resolveDeviceBySn, touchDevice, onlineDeviceIds, sweepOffline } from "./registry";
-export { DEVICE_COMMANDS, baghdadNow, normalizePunchTime } from "./types";
+export { DEVICE_COMMANDS, HR_DEVICE_DEFAULT_PORT, baghdadNow, normalizePunchTime, resolveBridgeConfig } from "./types";
 export type { RawPunch, RawDeviceUser, DeviceCommandName } from "./types";

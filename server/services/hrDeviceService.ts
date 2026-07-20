@@ -18,6 +18,7 @@ import { fullEmployeeName } from "@shared/hr";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { onlineDeviceIds } from "./hrDevices/registry";
+import { resolveBridgeConfig } from "./hrDevices/types";
 
 /** قائمة الأجهزة مع اسم الفرع. الأحدث أولاً. */
 export async function listDevices() {
@@ -138,12 +139,13 @@ export async function approveDevice(id: number, patch: { name?: string; branchId
   return getDevice(id);
 }
 
-/** حالة الجسر للشاشة: مفعَّل؟ منفذه؟ ومن المتصل الآن فعلاً (وصلات حية بالذاكرة). */
+/** حالة الجسر للشاشة: مفعَّل؟ منفذه (7788 افتراضاً)؟ ومن المتصل الآن فعلاً (وصلات حية بالذاكرة).
+ *  يشارك resolveBridgeConfig نفسه مع مسار الإقلاع فلا يتباعد المعروض عن الفعلي. */
 export function bridgeStatus() {
-  const port = Number(process.env.HR_DEVICE_PORT || "0");
+  const cfg = resolveBridgeConfig();
   return {
-    enabled: Number.isInteger(port) && port > 0 && !process.env.CONTROL_DATABASE_URL,
-    port: port > 0 ? port : null,
+    enabled: cfg.enabled,
+    port: cfg.enabled ? cfg.port : null,
     onlineDeviceIds: onlineDeviceIds(),
   };
 }

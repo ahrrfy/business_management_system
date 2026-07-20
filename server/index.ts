@@ -404,13 +404,15 @@ async function startServer() {
   const { startMorningPushCron } = await import("./services/morningPushScheduler");
   startMorningPushCron();
 
-  // جسر أجهزة الحضور (بصمة الوجه/ZKTeco) — يُفعَّل فقط حين HR_DEVICE_PORT مضبوط في .env.
-  // غيابه ⇒ صفر أثر (نمط CONTROL_DATABASE_URL). منفذ مستقل لأن الأجهزة تتكلم HTTP/WS عارياً.
+  // جسر أجهزة الحضور (بصمة الوجه/ZKTeco) — يُفعَّل بـHR_DEVICE_BRIDGE=1 (منفذ 7788 افتراضاً)
+  // أو HR_DEVICE_PORT لمنفذ مخصّص. غيابهما ⇒ صفر أثر (نمط CONTROL_DATABASE_URL). منفذ مستقل
+  // لأن الأجهزة تتكلم HTTP/WS عارياً. (resolveBridgeConfig مصدر حقيقة واحد مع bridgeStatus.)
   let hrBridge: { stop: () => Promise<void> } | null = null;
-  const hrDevicePort = Number(process.env.HR_DEVICE_PORT || "0");
-  if (Number.isInteger(hrDevicePort) && hrDevicePort > 0) {
+  const { resolveBridgeConfig } = await import("./services/hrDevices/types");
+  const hrCfg = resolveBridgeConfig();
+  if (hrCfg.enabled) {
     const { startHrDeviceBridge } = await import("./services/hrDevices/bridge");
-    hrBridge = startHrDeviceBridge(hrDevicePort);
+    hrBridge = startHrDeviceBridge(hrCfg.port);
   }
 
   // إيقاف رشيق: SIGTERM (من PM2/خدمة Windows عند إعادة التشغيل) وSIGINT (Ctrl+C) ⇒ أغلق

@@ -43,6 +43,22 @@ export interface DeviceLink {
 
 export type DeviceRow = HrFingerprintDevice;
 
+/** المنفذ العلني الافتراضي لجسر الأجهزة — 7788 (نفس ما تعتاده أجهزة IraqSoft/ZKTeco). */
+export const HR_DEVICE_DEFAULT_PORT = 7788;
+
+/**
+ * إعداد الجسر من البيئة (مصدر حقيقة واحد يتقاسمه الإقلاع وbridgeStatus فلا يتباعدان):
+ *   - التفعيل صريح: HR_DEVICE_BRIDGE=1 (المنفذ الافتراضي 7788) أو ضبط HR_DEVICE_PORT لمنفذ مخصّص.
+ *   - غيابهما ⇒ معطَّل (صفر أثر، نمط CONTROL_DATABASE_URL)، ومعطَّل دائماً في وضع تعدد الشركات.
+ */
+export function resolveBridgeConfig(): { enabled: boolean; port: number } {
+  const explicit = Number(process.env.HR_DEVICE_PORT || "0");
+  const hasExplicitPort = Number.isInteger(explicit) && explicit > 0;
+  const enabled =
+    (process.env.HR_DEVICE_BRIDGE === "1" || hasExplicitPort) && !process.env.CONTROL_DATABASE_URL;
+  return { enabled, port: hasExplicitPort ? explicit : HR_DEVICE_DEFAULT_PORT };
+}
+
 /** أوامر الخادم→الجهاز المسموحة (قائمة بيضاء تُفرض في الراوتر والسائقين). */
 export const DEVICE_COMMANDS = [
   "settime",
