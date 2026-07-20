@@ -23,7 +23,7 @@ import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, getTableColumns, isNull, sql } from "drizzle-orm";
 import { fullEmployeeName } from "@shared/hr";
-import { accountingEntries, attendance, commissionRunLines, commissionRuns, employees, payrollItems, payrollRuns, receipts } from "../../drizzle/schema";
+import { accountingEntries, attendance, commissionRunLines, commissionRuns, employees, leaveRequests, payrollItems, payrollRuns, receipts } from "../../drizzle/schema";
 import { and, inArray } from "drizzle-orm";
 import type { Tx } from "../db";
 import { postEntry } from "./ledgerService";
@@ -213,6 +213,28 @@ export async function generatePayroll(period: string, actor: Actor) {
       attRows.map((r) => [Number(r.employeeId), { amount: String(r.sumAmount), hours: String(r.sumHours) }]),
     );
 
+    // أيام الإجازة **بلا راتب** المعتمدة المتداخلة مع الشهر، لكل موظف (تدقيق ١٧/٧: كانت لا تُخصَم).
+    // التداخل يُحسب بالأيام التقويمية داخل حدود الشهر فقط ⇒ إجازة عابرة للشهور تُخصَم أيامها في شهرها.
+    // (الموظف الساعيّ يُخصَم تلقائياً بغياب الحضور؛ الخصم أدناه للشهريّ حصراً.)
+    const monthStart = `${p}-01`;
+    const leaveRows = await tx
+      .select({
+        employeeId: leaveRequests.employeeId,
+        unpaidDays: sql<string>`COALESCE(SUM(GREATEST(DATEDIFF(LEAST(${leaveRequests.toDate}, LAST_DAY(${monthStart})), GREATEST(${leaveRequests.fromDate}, ${monthStart})) + 1, 0)), 0)`,
+      })
+      .from(leaveRequests)
+      .where(
+        and(
+          eq(leaveRequests.paid, false),
+          eq(leaveRequests.status, "approved"),
+          sql`${leaveRequests.fromDate} <= LAST_DAY(${monthStart}) AND ${leaveRequests.toDate} >= ${monthStart}`,
+        ),
+      )
+      .groupBy(leaveRequests.employeeId);
+    const unpaidLeaveDaysMap = new Map<number, number>(
+      leaveRows.map((r) => [Number(r.employeeId), Number(r.unpaidDays)]),
+    );
+
     // advances (بند 12ج، ٧/٧): اقتراح استقطاع السلف من أقدم سلفة نشطة لكل موظف —
     // يُملأ advanceDeduction ويدخل **ضمن** deductions (لا فوقها) فيَنقص net تلقائياً.
     const advanceByEmp = await suggestDeductionsTx(tx, emps.map((e) => Number(e.id)));
@@ -254,10 +276,21 @@ export async function generatePayroll(period: string, actor: Actor) {
       // استقطاع السلفة المقترح جزء من deductions ابتداءً (يُحرَّر لاحقاً عبر updateItem لكن لا
       // يهبط الاستقطاع الكلي دون جزء السلفة — انظر الحارس هناك).
       const advanceDeduction = advanceByEmp.get(Number(e.id))?.suggested ?? new Decimal(0);
-      const deductions = advanceDeduction;
+      // خصم الإجازة بلا راتب (الشهريّ فقط — الساعيّ يُخصَم بغياب الحضور): المعدّل اليوميّ = الراتب
+      // الأساسيّ ÷ ٣٠ (قرار المالك؛ الشائع إقليمياً)، والخصم = المعدّل × أيام الإجازة غير المدفوعة،
+      // مقصوصاً عند gross (لا يتجاوز الأجر المكتسَب). يُطوى في deductions، ويُوثَّق في note للشفافية.
+      const unpaidLeaveDays = monthly && !zeroGross ? (unpaidLeaveDaysMap.get(Number(e.id)) ?? 0) : 0;
+      const dailyRate = round2(money(e.salary ?? 0).div(30));
+      const leaveDeduction =
+        unpaidLeaveDays > 0 ? Decimal.min(round2(dailyRate.times(unpaidLeaveDays)), gross) : new Decimal(0);
+      const leaveNote = leaveDeduction.gt(0)
+        ? `خصم إجازة بلا راتب: ${unpaidLeaveDays} يوم (الراتب÷٣٠ = ${toDbMoney(dailyRate)}/يوم)`
+        : null;
+      const deductions = round2(advanceDeduction.plus(leaveDeduction));
       const net = computeNet(gross, overtime, commission, deductions);
       await tx.insert(payrollItems).values({
         runId,
+        note: leaveNote,
         employeeId: Number(e.id),
         payType: monthly ? "monthly" : "hourly",
         hours,

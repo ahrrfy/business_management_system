@@ -5,9 +5,9 @@
  * (employeeId, attendanceDate). المبالغ عبر money.ts (toDbMoney) — لا parseFloat.
  * القراءة hr/READ والكتابة hr/FULL (تُفرض في الموجّه).
  * ========================================================================== */
-import { and, desc, eq, getTableColumns, like, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, inArray, like, or, sql, type SQL } from "drizzle-orm";
 import { DAY_RATES_DEFAULT, WEEK_DAYS, fullEmployeeName } from "@shared/hr";
-import { attendance, employees } from "../../drizzle/schema";
+import { attendance, employees, payrollRuns } from "../../drizzle/schema";
 import { escLike } from "../lib/sqlLike";
 import { requireDb, withTx } from "./tx";
 import { extractInsertId } from "../lib/insertId";
@@ -214,6 +214,20 @@ export async function recordAttendance(input: RecordAttendanceInput) {
     // لا يُسجَّل حضور لموظف منتهي الخدمة (الحضور بعد الإنهاء يولّد أجراً وهمياً عند توليد المسيّر).
     if (emp.employmentStatus === "terminated") {
       throw new Error("لا يمكن تسجيل حضور لموظف منتهي الخدمة");
+    }
+    // حارس المسيّر المُقفَل (تدقيق ١٧/٧): لا تسجيل/تعديل حضور لشهرٍ مسيّرُه معتمد/مدفوع — الحضور
+    // أساسُ حساب المسيّر (ساعات/غياب/إجازة)، وتغييره بعد الاعتماد يُفسد مسيّراً مُلتزَماً مالياً
+    // (المدفوع قُيّد PAYMENT_OUT فعلاً). التصحيح يمرّ بإلغاء اعتماد المسيّر أولاً (revertRun).
+    const period = String(input.attendanceDate).slice(0, 7); // YYYY-MM
+    const [lockedRun] = await tx
+      .select({ id: payrollRuns.id, status: payrollRuns.status })
+      .from(payrollRuns)
+      .where(and(eq(payrollRuns.period, period), inArray(payrollRuns.status, ["approved", "paid"])))
+      .limit(1);
+    if (lockedRun) {
+      throw new Error(
+        `لا يمكن تسجيل الحضور: مسيّر رواتب شهر ${period} ${lockedRun.status === "paid" ? "مدفوع" : "معتمَد"} — ألغِ اعتماد المسيّر أولاً للتعديل`,
+      );
     }
 
     const hoursDec = money(input.hours);
