@@ -659,6 +659,13 @@
       "when": 1784937600008,
       "tag": "0094_commission_consign_deduction",
       "breakpoints": true
+    },
+    {
+      "idx": 95,
+      "version": "5",
+      "when": 1784937600009,
+      "tag": "0095_product_image_studio",
+      "breakpoints": true
     }
   ]
 }

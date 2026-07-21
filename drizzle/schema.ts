@@ -1674,6 +1674,20 @@ export const productImages = mysqlTable(
     isPrimary: boolean("isPrimary").default(false).notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
+    // image-studio (0095): تخزين هجين معنون-بالمحتوى. NULL = صفّ إرثيّ يُخدَم من `url` (توافق خلفيّ).
+    // القراءة المزدوجة (objectKey ? store : url) والحرّاس (reviewStatus أمام البايتات) في شرائح لاحقة.
+    // راجع docs/product-image-studio-design-2026-07-21.md §١.
+    objectKey: varchar("objectKey", { length: 255 }), // مفتاح مخزن الكائنات للصورة المعالَجة
+    originalKey: varchar("originalKey", { length: 255 }), // مفتاح الأصل غير الممسوس (عكوسيّة قرار ٢)
+    contentHash: varchar("contentHash", { length: 64 }), // sha256 بايتات المعالَجة — بصمة v=/ETag/أوفلاين
+    thumbDataUrl: mediumtext("thumbDataUrl"), // مصغّرة ~64px تبقى في DB (شبكة أمان العرض)
+    mime: varchar("mime", { length: 32 }),
+    width: int("width"),
+    height: int("height"),
+    bytes: int("bytes"),
+    reviewStatus: mysqlEnum("reviewStatus", ["APPROVED", "PENDING_REVIEW", "REJECTED"]).default("APPROVED").notNull(),
+    origin: mysqlEnum("origin", ["ORIGINAL", "STUDIO_FREE", "STUDIO_PRO", "MANUAL"]).default("ORIGINAL").notNull(),
+    migratedAt: timestamp("migratedAt"),
   },
   (table) => ({
     prodIdx: index("idx_pimg_product").on(table.productId),
