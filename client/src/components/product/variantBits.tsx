@@ -9,6 +9,7 @@ import { compressImageDataUrl } from "@/components/form/ImageUploader";
 import { ArrowLeft } from "lucide-react";
 import { marginPercent, toArabicDigits } from "@/lib/variants";
 import { resolveColorHex, normalizeHex } from "@shared/colorBank";
+import { trpc } from "@/lib/trpc";
 
 /* ── ColorDot — نقطة اللون الحقيقي ─────────────────────── */
 /**
@@ -265,14 +266,27 @@ export function ImageSlot({
   const [busy, setBusy] = useState(false);
   const [studioBusy, setStudioBusy] = useState(false);
   const [studioPreview, setStudioPreview] = useState<{ before: string; after: string } | null>(null);
+  const proConfig = trpc.imageStudio.proConfig.useQuery(undefined, { staleTime: 60_000 });
+  const proCutout = trpc.imageStudio.proCutout.useMutation();
   async function runStudio() {
     if (!value) return;
     setStudioBusy(true);
     try {
-      // تحميل كسول لخطّ الاستوديو. المسار الآمن FLATTEN (خلفية بيضاء موحّدة + إطار + ظلّ).
-      const { runFreeStudio } = await import("@/lib/imageStudio/freePipeline");
-      const r = await runFreeStudio(value, { safeOnly: true });
-      setStudioPreview({ before: value, after: r.dataUrl });
+      // تحميل كسول لخطّ الاستوديو (المسار الآمن FLATTEN + إكمال قصّ Pro على القالب).
+      const { runFreeStudio, finishCutFromCutout } = await import("@/lib/imageStudio/freePipeline");
+      let after: string;
+      if (proConfig.data?.proAvailable) {
+        try {
+          const { cutoutDataUrl } = await proCutout.mutateAsync({ imageDataUrl: value });
+          after = (await finishCutFromCutout(cutoutDataUrl, value)).dataUrl;
+        } catch {
+          // فشل Pro (نفاد رصيد/تعطّل) ⇒ تدهور آمن لـFLATTEN.
+          after = (await runFreeStudio(value, { safeOnly: true })).dataUrl;
+        }
+      } else {
+        after = (await runFreeStudio(value, { safeOnly: true })).dataUrl;
+      }
+      setStudioPreview({ before: value, after });
     } finally {
       setStudioBusy(false);
     }

@@ -60,6 +60,7 @@ import { storeAdminRouter } from "./routers/storeAdminRouter";
 import { courierRouter } from "./routers/courierRouter";
 import { crmRouter } from "./routers/crmRouter";
 import { offlineRouter } from "./routers/offlineRouter";
+import { imageStudioRouter } from "./routers/imageStudioRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -124,6 +125,7 @@ export const appRouter = router({
   conversations: conversationRouter,
   // شَريحة #6 (٢٤/٦/٢٦): إدارة tokens التَكاملات في الواجهة (بَدل .env).
   integrations: integrationRouter,
+  imageStudio: imageStudioRouter,
   // delivery-cod (٢٦/٦/٢٦): التوصيل (COD) — جهات التوصيل/العهد/الترحيل.
   delivery: deliveryRouter,
   // courier (١٢/٧/٢٦): شاشة المندوب الذاتية «توصيلاتي» — طلباتي + تأكيد التسليم والتحصيل.

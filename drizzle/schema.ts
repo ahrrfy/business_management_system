@@ -3566,6 +3566,25 @@ export const openingModeSettings = mysqlTable("openingModeSettings", {
 export type OpeningModeSettings = typeof openingModeSettings.$inferSelect;
 export type InsertOpeningModeSettings = typeof openingModeSettings.$inferInsert;
 
+/** إعدادات «استوديو صور المنتجات» (صفّ singleton id=1، نمط taxSettings): مسار Pro المدفوع
+ *  (remove.bg) — مفتاح API مُشفَّراً (AES-256-GCM عبر cryptoService) + مفتاح تفعيل. عند التعطيل أو
+ *  نفاد الرصيد (402) أو تعطّل الخدمة يبقى مسار FLATTEN المجانيّ الآمن هو الافتراضي. المفتاح لا
+ *  يُعرَض نصّاً أبداً (قناع فقط، نمط channelIntegrations). أمانة صارمة: remove.bg قصٌّ لا توليد. */
+export const imageStudioSettings = mysqlTable("imageStudioSettings", {
+  id: int("id").autoincrement().primaryKey(),
+  /** تفعيل مسار Pro (remove.bg). معطَّل افتراضياً ⇒ FLATTEN المجانيّ فقط. */
+  proEnabled: boolean("proEnabled").default(false).notNull(),
+  /** مفتاح remove.bg API مُشفَّراً (صيغة v1:iv:tag:ct) — null=غير مضبوط ⇒ Pro لا يعمل. */
+  encryptedRemovebgKey: text("encryptedRemovebgKey"),
+  /** آخر فحص اتصال ناجح (للعرض) + آخر خطأ (تشخيص، ≤٥٠٠ حرف). */
+  lastVerifiedAt: timestamp("lastVerifiedAt"),
+  lastError: varchar("lastError", { length: 500 }),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type ImageStudioSettings = typeof imageStudioSettings.$inferSelect;
+export type InsertImageStudioSettings = typeof imageStudioSettings.$inferInsert;
+
 /** سجلّ تذكيرات الذمم الآجلة (AR reminders) — كل صفّ = تذكير أُرسِل أو أُخطِّي.
  *  يُملأ حصراً بعد فعل المستخدم في شاشة `/ar-reminders` (لا cron، لا إرسال آلي).
  *  يمنع تكرار التذكير على نفس العميل خلال ٧ أيام (استعلام queue يستبعد من ذُكّر مؤخراً).
