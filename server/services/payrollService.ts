@@ -273,12 +273,10 @@ export async function generatePayroll(period: string, actor: Actor) {
       }
       const overtime = new Decimal(0);
       const commission = commissionByEmp.get(Number(e.id)) ?? new Decimal(0);
-      // استقطاع السلفة المقترح جزء من deductions ابتداءً (يُحرَّر لاحقاً عبر updateItem لكن لا
-      // يهبط الاستقطاع الكلي دون جزء السلفة — انظر الحارس هناك).
-      const advanceDeduction = advanceByEmp.get(Number(e.id))?.suggested ?? new Decimal(0);
       // خصم الإجازة بلا راتب (الشهريّ فقط — الساعيّ يُخصَم بغياب الحضور): المعدّل اليوميّ = الراتب
       // الأساسيّ ÷ ٣٠ (قرار المالك؛ الشائع إقليمياً)، والخصم = المعدّل × أيام الإجازة غير المدفوعة،
       // مقصوصاً عند gross (لا يتجاوز الأجر المكتسَب). يُطوى في deductions، ويُوثَّق في note للشفافية.
+      // يُحسب **قبل** استقطاع السلفة كي يُقصّ الأخيرُ عند الأجر المتاح بعد الإجازة (انظر أدناه).
       const unpaidLeaveDays = monthly && !zeroGross ? (unpaidLeaveDaysMap.get(Number(e.id)) ?? 0) : 0;
       const dailyRate = round2(money(e.salary ?? 0).div(30));
       const leaveDeduction =
@@ -286,6 +284,17 @@ export async function generatePayroll(period: string, actor: Actor) {
       const leaveNote = leaveDeduction.gt(0)
         ? `خصم إجازة بلا راتب: ${unpaidLeaveDays} يوم (الراتب÷٣٠ = ${toDbMoney(dailyRate)}/يوم)`
         : null;
+      // advances (بند 12ج): استقطاع السلفة المقترح من أقدم سلفة نشطة، جزءٌ من deductions ابتداءً
+      // (يُحرَّر لاحقاً عبر updateItem لكن لا يهبط الاستقطاع الكلي دون جزء السلفة — انظر الحارس هناك).
+      // ⚠️ سقف السلامة المالية (حاسم — يمنع خسارة نقدية حقيقية): الاستقطاع لا يتجاوز الأجرَ المتاح
+      // لاستيعابه فعلاً = gross + overtime + commission − إجازة. بدونه: سلفةٌ تفوق الأجر (مثلاً بلا
+      // monthlyDeduction فيُقترَح كامل المتبقّي > الراتب) تُنتج net سالباً، فيتخطّى payRun صرفَها النقديّ
+      // (net ≤ 0) بينما settleAdvancesOnPayTx تُسوّي **كامل** advanceDeduction ⇒ تُشطَب السلفة بلا
+      // استردادٍ من راتبٍ صُرف = خسارة نقدية على الشركة (والمفصول ذو الأجر الصفريّ تُسامَح سلفته كلها).
+      // القصّ يضمن net ≥ 0 ⇒ المُسوّى = المُقتطَع فعلاً، وتُستكمَل البقيّة من رواتب الأشهر التالية.
+      const absorbableWage = Decimal.max(0, round2(gross.plus(overtime).plus(commission).minus(leaveDeduction)));
+      const suggestedAdvance = advanceByEmp.get(Number(e.id))?.suggested ?? new Decimal(0);
+      const advanceDeduction = round2(Decimal.min(suggestedAdvance, absorbableWage));
       const deductions = round2(advanceDeduction.plus(leaveDeduction));
       const net = computeNet(gross, overtime, commission, deductions);
       await tx.insert(payrollItems).values({
@@ -504,7 +513,15 @@ export async function payRun(id: number, actor: Actor) {
     if (isFirstPay) {
       await settleAdvancesOnPayTx(
         tx,
-        items.map((it) => ({ employeeId: Number(it.employeeId), amount: money(it.advanceDeduction) })),
+        items.map((it) => {
+          // سقف دفاعيّ (دفاع في العمق): لا تُسوَّ سلفةٌ بأكثر من الأجر الإجماليّ المكتسَب في البند
+          // (gross + overtime + commission). توليدُ المسيّر يقصّ advanceDeduction عند هذا الأصل بالفعل،
+          // فهذا السطر لا يغيّر شيئاً للبيانات السليمة — لكنه يحمي أيّ مسودة وُلّدت **قبل** إصلاح القصّ
+          // من شطب سلفةٍ بلا استردادٍ نقديّ مقابل. لا يمسّ استقطاعات الغياب/الجزاء اليدوية (خارج هذا الأصل).
+          const earned = Decimal.max(0, money(it.gross).plus(money(it.overtime)).plus(money(it.commission)));
+          const settleAmount = Decimal.min(money(it.advanceDeduction), earned);
+          return { employeeId: Number(it.employeeId), amount: settleAmount };
+        }),
         id,
       );
     }
