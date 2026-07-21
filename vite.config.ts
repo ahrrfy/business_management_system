@@ -25,6 +25,11 @@ export default defineConfig({
         // ‏woff2 مُضافة للنمط الافتراضي (js/wasm/css/html): خطوط Cairo المستضافة ذاتياً في /fonts
         // تستعملها المطبوعات (brand.ts) وصفحة الوظائف — بدونها تُجلَب من الشبكة كل زيارة وتفشل دون اتصال.
         globPatterns: ["**/*.{js,wasm,css,html,woff2}"],
+        // استبعاد أصول ML الضخمة من precache الـSW: wasm الخاصّ بـonnxruntime (يُجمَّع عبر @imgly،
+        // ~24م.ب) + أصول @imgly المستضافة ذاتياً في /imgly-assets — تتجاوز سقف 5م.ب وتُحمَّل عند
+        // الطلب (مسار CUT) لا من الـSW. بدونه يفشل بناء الإنتاج (vite-plugin-pwa). راجع
+        // client/src/lib/imageStudio/README.md.
+        globIgnores: ["**/ort-*.wasm", "**/imgly-assets/**"],
         // حقن معالج Web Push المخصَّص في SW المولَّد (دون التخلّي عن generateSW — يُبقي
         // آليّة autoUpdate وworkbox precache/runtimeCaching كما هي). الملف في public/ ⇒ يُنسَخ
         // إلى /push-handler.js حرفياً، فيصير مُتاحاً لـimportScripts داخل SW.
