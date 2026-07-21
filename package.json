@@ -17,6 +17,7 @@
     "prepare": "husky",
     "format": "prettier --write .",
     "test": "cross-env TZ=UTC vitest run",
+    "imgly:fetch": "node scripts/fetch-imgly-assets.mjs",
     "test:unit": "cross-env TZ=UTC vitest run --config vitest.unit.config.ts",
     "audit": "pnpm audit --prod --audit-level high",
     "db:generate": "drizzle-kit generate",

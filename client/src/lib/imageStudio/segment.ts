@@ -15,7 +15,9 @@ export const IMGLY_ASSETS_PATH = "/imgly-assets/";
 function studioImglyConfig() {
   return {
     publicPath: (typeof window !== "undefined" ? window.location.origin : "") + IMGLY_ASSETS_PATH,
-    model: "isnet_fp16" as const,
+    // isnet_quint8: مكمَّم (أخفّ ~٤٢م.ب، أسرع على CPU/WASM) — يناسب جهاز الكاشير بلا WebGPU.
+    model: "isnet_quint8" as const,
+    device: "cpu" as const, // WASM موثوق في كل مكان (لا يعتمد WebGPU)؛ يطابق الأصول المُهيّأة.
     proxyToWorker: true,
     output: { format: "image/png" as const },
   };
