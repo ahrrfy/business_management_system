@@ -1,7 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertCircle, CheckCircle2, ChevronDown, Copy, Eye, EyeOff, KeyRound, Loader2, Plus, RefreshCw, ShoppingBag, Trash2, User, MessageSquare } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, Copy, Eye, EyeOff, KeyRound, Loader2, Plus, RefreshCw, Scissors, ShoppingBag, Trash2, User, MessageSquare } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
@@ -354,6 +354,121 @@ function NewIntegrationDialog({ onCreated, onClose, branches }: {
   );
 }
 
+/**
+ * بطاقة «استوديو صور المنتجات» (remove.bg) — مسار Pro لقصّ خلفية الصور احترافياً. المفتاح مُشفَّر
+ * (نفس INTEGRATIONS_ENCRYPTION_KEY). عند التعطيل/نفاد الرصيد يعمل المسار المجاني الآمن تلقائياً.
+ * أمانة صارمة: remove.bg قصٌّ لا توليد (بكسلات المنتج تبقى).
+ */
+function ImageStudioIntegrationCard() {
+  const settings = trpc.imageStudio.settings.useQuery();
+  const utils = trpc.useUtils();
+  const [keyDraft, setKeyDraft] = useState("");
+  const update = trpc.imageStudio.updateSettings.useMutation({
+    onSuccess: () => { notify.ok("تَم الحِفظ"); utils.imageStudio.settings.invalidate(); utils.imageStudio.proConfig.invalidate(); setKeyDraft(""); },
+    onError: (e) => notify.err(e),
+  });
+  const verify = trpc.imageStudio.verifyConnection.useMutation({
+    onSuccess: (r) => { (r.ok ? notify.ok : notify.warn)(r.ok ? "المفتاح صالح" : "فَشل الفَحص", r.message); utils.imageStudio.settings.invalidate(); },
+    onError: (e) => notify.err(e),
+  });
+  const s = settings.data;
+
+  return (
+    <Card className="border-violet-500/30 bg-violet-500/[0.03]">
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between gap-2 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="size-10 rounded-lg grid place-items-center flex-shrink-0 border bg-violet-500/10 text-violet-700 dark:text-violet-400 border-violet-500/30">
+              <Scissors aria-hidden className="size-5" />
+            </div>
+            <div className="min-w-0">
+              <CardTitle className="text-base">استوديو صور المنتجات — remove.bg</CardTitle>
+              <div className="text-xs text-muted-foreground mt-0.5">قصّ خلفية احترافيّ لصور المنتجات (Pro اختياريّ مدفوع)</div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <Badge variant="outline" className={s?.proEnabled ? "badge-status-active" : "badge-status-cancelled"}>
+              {s?.proEnabled ? "Pro مُفعَّل" : "Pro مُعطَّل"}
+            </Badge>
+            {s?.lastVerifiedAt && (
+              <span className="text-[10px] text-muted-foreground" dir="ltr">آخر فَحص {fmtDateTime(s.lastVerifiedAt)}</span>
+            )}
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="rounded-md border bg-muted/30 p-2.5 text-xs text-muted-foreground space-y-1">
+          <p>قصٌّ احترافيّ للخلفية عبر remove.bg — <b>قصٌّ لا توليد</b> ⇒ بكسلات منتجك تبقى كما هي. مجانيّ حتى ~٥٠ صورة/شهر (دقّة معاينة منخفضة)، ثمّ مدفوع بالرصيد.</p>
+          <p>المفتاح من: remove.bg ← Dashboard ← <span dir="ltr">API Keys</span>. عند التعطيل أو نفاد الرصيد يعمل المسار المجانيّ الآمن (FLATTEN) تلقائياً.</p>
+        </div>
+
+        {s?.lastError && (
+          <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 text-xs flex items-start gap-2">
+            <AlertCircle aria-hidden className="size-4 text-destructive flex-shrink-0 mt-0.5" />
+            <div className="text-destructive break-words">{s.lastError}</div>
+          </div>
+        )}
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+          <div className="flex-1">
+            <SecretField
+              label="مفتاح remove.bg API"
+              hint="اِلصَق مفتاحاً جديداً لِيُشفَّر ويُحفَظ. اترُكه فارغاً لِإبقاء الحاليّ."
+              masked={s?.removebgKeyMasked ?? null}
+              value={keyDraft}
+              onChange={setKeyDraft}
+              placeholder="اِلصَق مفتاح remove.bg"
+            />
+          </div>
+          <Button onClick={() => update.mutate({ removebgKey: keyDraft.trim() })} disabled={update.isPending || !keyDraft.trim()}>
+            {update.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : null}
+            حِفظ المفتاح
+          </Button>
+        </div>
+
+        <div className="flex gap-2 flex-wrap pt-1">
+          <Button
+            variant="outline"
+            onClick={() => verify.mutate()}
+            disabled={verify.isPending || !s?.hasKey}
+          >
+            {verify.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : <CheckCircle2 aria-hidden className="size-4 me-1" />}
+            فَحص الاتصال والرصيد
+          </Button>
+          {s?.proEnabled ? (
+            <Button variant="outline" onClick={() => update.mutate({ proEnabled: false })} disabled={update.isPending}>
+              تَعطيل Pro
+            </Button>
+          ) : (
+            <Button variant="outline" onClick={() => update.mutate({ proEnabled: true })} disabled={update.isPending || !s?.hasKey} title={!s?.hasKey ? "أَدخِل المفتاح أوّلاً" : undefined}>
+              تَفعيل Pro
+            </Button>
+          )}
+          {s?.hasKey && (
+            <Button
+              variant="ghost"
+              className="text-destructive hover:bg-destructive/10"
+              onClick={async () => {
+                if (!(await confirm({
+                  variant: "danger",
+                  title: "حذف مفتاح remove.bg",
+                  description: "سيُحذَف المفتاح ويُعطَّل مسار Pro. سيعمل المسار المجانيّ الآمن. متابعة؟",
+                  confirmText: "حَذف",
+                  cancelText: "تَراجع",
+                }))) return;
+                update.mutate({ removebgKey: null });
+              }}
+              disabled={update.isPending}
+            >
+              <Trash2 aria-hidden className="size-4 me-1" /> حَذف المفتاح
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function IntegrationsSettings() {
   const cryptoReady = trpc.integrations.cryptoReady.useQuery();
   const list = trpc.integrations.list.useQuery(undefined, { enabled: cryptoReady.data?.ready });
@@ -410,6 +525,8 @@ pnpm prod:deploy
           </Button>
         }
       />
+
+      <ImageStudioIntegrationCard />
 
       {cryptoReady.isLoading || list.isLoading ? (
         <LoadingState />

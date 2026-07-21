@@ -673,6 +673,13 @@
       "when": 1784937600010,
       "tag": "0096_product_image_jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 97,
+      "version": "5",
+      "when": 1784937600011,
+      "tag": "0097_image_studio_settings",
+      "breakpoints": true
     }
   ]
 }
