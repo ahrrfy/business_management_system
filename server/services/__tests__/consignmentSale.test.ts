@@ -8,6 +8,7 @@ import { createSupplier } from "../supplierService";
 import { createConsignmentNote } from "../consignment/noteService";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
+import { replayOfflineSale } from "../offline/replaySale";
 import { computeNetSalesByUser } from "../commissions/base";
 
 /**
@@ -148,6 +149,65 @@ describe("بضاعة الأمانة ش٣ — idempotency", () => {
     await createSale(input, actor); // replay
     expect(await entries("PURCHASE")).toHaveLength(1); // استحقاق واحد
     expect(await balance(cid)).toBe("8000.00");
+  });
+});
+
+describe("بضاعة الأمانة — تقاطع الأوفلاين (لا بيع بالسالب لصنف أمانة)", () => {
+  // الثابت: مسار الأوفلاين (allowNegativeStock=true) يسمح بالسالب لبضاعة المكتبة (سالب موسوم، قرار
+  // مالك ١٨/٧) لكن **لا** لصنف أمانة — بيعُ ما لم يُودَع يُلفّق التزاماً (AP) للمودِع لوحداتٍ لم تصل.
+  // نفس ثابت المسار الحيّ، محروساً الآن على مسار allowNegative لا وضع الافتتاح وحده. راجع create.ts:626.
+  it("ترحيل أوفلايني يتجاوز المُودَع لصنف أمانة ⇒ CONFLICT: يرتدّ بلا التزام مُلفَّق ولا سالب مخزون", async () => {
+    const cid = await mkConsignor();
+    const { variantId, productUnitId } = await mkConsignProduct(cid, "4000", "5000");
+    await deposit(cid, variantId, productUnitId, "2"); // أُودِع ٢ فقط
+    const shiftId = await openShift();
+    // بيع ٣ (> المُودَع) عبر مسار الأوفلاين — لولا الحارس لهبط الرصيد إلى -١ وارتفع AP المودِع 12000.
+    await expect(
+      replayOfflineSale(
+        {
+          branchId: 1,
+          shiftId,
+          lines: [{ variantId, productUnitId, quantity: "3", unitPriceOverride: "5000" }],
+          payment: { amount: "15000", method: "CASH" },
+          clientRequestId: "consig-offline-oversell-1",
+          capturedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+          offlineReceiptNumber: "OFF-1-cz01-1",
+        },
+        actor,
+      ),
+    ).rejects.toMatchObject({ code: "CONFLICT" });
+    // المعاملة ارتدّت بالكامل: صفر استحقاق أمانة، رصيد المودِع صفر، والمخزون كما أُودِع (٢).
+    expect(await entries("PURCHASE")).toHaveLength(0);
+    expect(await balance(cid)).toBe("0.00");
+    const st = (await db().select().from(s.branchStock)
+      .where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, 1))))[0];
+    expect(Number(st.quantity)).toBe(2);
+  });
+
+  it("ترحيل أوفلايني ضمن المُودَع لصنف أمانة ⇒ يُرحَّل ويُلتقط الالتزام (الحارس جراحيّ لا يُفرِط الحجب)", async () => {
+    const cid = await mkConsignor();
+    const { variantId, productUnitId } = await mkConsignProduct(cid, "4000", "5000");
+    await deposit(cid, variantId, productUnitId, "5");
+    const shiftId = await openShift();
+    const res = await replayOfflineSale(
+      {
+        branchId: 1,
+        shiftId,
+        lines: [{ variantId, productUnitId, quantity: "3", unitPriceOverride: "5000" }],
+        payment: { amount: "15000", method: "CASH" },
+        clientRequestId: "consig-offline-ok-1",
+        capturedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+        offlineReceiptNumber: "OFF-1-cz01-2",
+      },
+      actor,
+    );
+    expect(res.status).toBe("PAID");
+    // البيع ضمن المُودَع مسموح: التُقط الالتزام كاملاً (الحصة ٤٠٠٠ × ٣) والمخزون ٥ − ٣ = ٢.
+    expect(await entries("PURCHASE")).toHaveLength(1);
+    expect(await balance(cid)).toBe("12000.00");
+    const st = (await db().select().from(s.branchStock)
+      .where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, 1))))[0];
+    expect(Number(st.quantity)).toBe(2);
   });
 });
 
