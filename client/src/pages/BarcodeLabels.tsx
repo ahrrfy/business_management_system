@@ -16,12 +16,13 @@ import {
 } from "@/lib/printing/print";
 import { labelDocHtml } from "@/lib/printing/labelDesign";
 import { labelName, toLabelItem, TIER_NAME, type LabelTier } from "@/lib/printing/labelItem";
+import { labelContentOf, solveLabelLayout, PART_LABEL_AR } from "@/lib/printing/labelLayout";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Check, Layers, Tag, X } from "lucide-react";
+import { Check, Info, Layers, Tag, TriangleAlert, X } from "lucide-react";
 import { Link } from "wouter";
 
 const PX_PER_MM = 96 / 25.4; // ≈3.78 بكسل/مم @96dpi
@@ -36,6 +37,8 @@ type QueueItem = {
   // اللون/القياس: كانا مُهمَلين فتخرج ملصقات ألوان المنتج الواحد **متطابقةً نصّياً**
   // (أزرق وأحمر بنفس السطر تماماً). يُدمجان في اسم الملصق عبر `labelName`.
   color: string | null;
+  // لون بنك الألوان «#RRGGBB» — يُغذّي رمز اللون في التخطيط المنظّم (null ⇒ لا رمز).
+  colorHex: string | null;
   size: string | null;
   unitName: string;
   // معامل التحويل للوحدة الأساس — «عدد النسخ = المخزون» يقسم عليه، وإلّا طبعنا ١٢٠ ملصق
@@ -65,6 +68,7 @@ function queueItemFromRow(row: PosRow, key: number, rowTier: LabelTier): QueueIt
     productUnitId: row.productUnitId,
     productName: row.productName,
     color: row.color,
+    colorHex: row.colorHex,
     size: row.size,
     unitName: row.unitName,
     conversionFactor: row.conversionFactor,
@@ -104,6 +108,7 @@ function renderItemFor(q: QueueItem, tier: LabelTier): LabelRenderItem {
     {
       productName: q.productName,
       color: q.color,
+      colorHex: q.colorHex,
       size: q.size,
       unitName: q.unitName,
       sku: q.sku,
@@ -156,12 +161,31 @@ export default function BarcodeLabels() {
   // معاينة حيّة بنفس تصميم الطباعة (نفس labelDocHtml ⇒ ما تراه هو ما يُطبع) — أوّل منتج في القائمة
   // أو عيّنة عند الفراغ، متفاعلةً مع المقاس وخياري الاسم/السعر. تُحسَب مرّةً (useMemo) فلا تُعاد
   // بناؤها مع كل ضغطة بحث؛ تُعرَض في iframe بمقاس مليمتريّ فعليّ ثمّ تُكبَّر بصرياً للوضوح.
-  const previewHtml = useMemo(() => {
-    const previewItem: LabelRenderItem = queue.length
-      ? renderItemFor(queue[0], tier)
-      : { name: "اسم منتج تجريبي للمعاينة — درزن", sku: "PR-BLU", price: "500", barcode: "6212442744532" };
-    return labelDocHtml([previewItem], size, { showName, showPrice }, false);
-  }, [queue, size, showName, showPrice, tier]);
+  // عنصر المعاينة (أوّل منتج أو عيّنة) — مصدرٌ واحد للمعاينة الحيّة ولتقرير الملاءمة معاً.
+  const previewItem = useMemo<LabelRenderItem>(
+    () =>
+      queue.length
+        ? renderItemFor(queue[0], tier)
+        : {
+            name: "قلم جاف أزرق — درزن",
+            sku: "PR-BLU",
+            price: "500",
+            barcode: "6212442744532",
+            // عيّنة بخصائص منظّمة لتُظهر المعاينة التخطيط الاحترافي + رمز اللون على المقاسات الواسعة.
+            attrs: { baseName: "قلم جاف", tags: ["أزرق"], colorHex: "#1D4ED8", unitName: "درزن" },
+          },
+    [queue, tier],
+  );
+  const previewHtml = useMemo(
+    () => labelDocHtml([previewItem], size, { showName, showPrice }, false),
+    [previewItem, size, showName, showPrice],
+  );
+  // تقرير ملاءمة المقاس — **نفس الحلّال الذي يقرّر ما يظهر فعلياً** على الملصق ⇒ نُنذر المستخدم
+  // بما سيُخفى (بدل قصٍّ صامت يُفاجئه باختفاء الاسم) ونقترح ارتفاعاً يُظهر الكلّ.
+  const previewFit = useMemo(
+    () => solveLabelLayout(size, labelContentOf(previewItem), { name: showName, price: showPrice }),
+    [previewItem, size, showName, showPrice],
+  );
   const pxW = Math.round(size.widthMm * PX_PER_MM);
   const pxH = Math.round(size.heightMm * PX_PER_MM);
 
@@ -568,6 +592,47 @@ export default function BarcodeLabels() {
                 <p>تُطبع مباشرةً (HTML/SVG) بلا تحويلٍ إلى صورة. عدّل المقاس أو خياري الاسم/السعر لتُحدَّث المعاينة فوراً.</p>
               </div>
             </div>
+
+            {/* المجموعة الإلزامية (الاسم/اللون/الوحدة/السعر/الباركود) لا تختفي أبداً — نطمئن المستخدم
+                بذلك، ونُبلّغه بلطف بما يُخفى (رقم الباركود/الرمز فقط) وبأصغر ارتفاعٍ مريح. إنذارٌ كهرمانيّ
+                فقط في الحالة القصوى النادرة (مقاسٌ ضئيلٌ جداً قد يقتطع طرف الاسم). */}
+            {previewFit.overflow ? (
+              <div
+                role="alert"
+                className="mt-3 flex items-start gap-2 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+              >
+                <TriangleAlert aria-hidden className="size-4 shrink-0 mt-0.5" />
+                <p>
+                  المقاس {size.widthMm}×{size.heightMm}مم ضئيلٌ جداً — قد يُقتطع طرف الاسم الطويل. استخدم ارتفاعاً ≥{" "}
+                  {previewFit.minHeightMmForAll}مم أو ملصقاً أعرض ليظهر كلّ شيء كاملاً.
+                </p>
+              </div>
+            ) : (
+              (previewFit.tiny || previewFit.dropped.length > 0) && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="mt-3 flex items-start gap-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground"
+                >
+                  <Info aria-hidden className="size-4 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="text-foreground">
+                      كلّ المعلومات الأساسية ظاهرة: الاسم واللون والوحدة والسعر والباركود
+                      {previewFit.tiny ? " (بخطٍّ مصغّر مقروء)" : ""}.
+                    </p>
+                    {previewFit.dropped.length > 0 && (
+                      <p>
+                        على هذا المقاس يُخفى فقط {previewFit.dropped.map((p) => PART_LABEL_AR[p]).join("، ")} — والباركود
+                        نفسه يبقى قابلاً للمسح. لعرضٍ أوسع استخدم ارتفاعاً ≥ {previewFit.minHeightMmForAll}مم.
+                      </p>
+                    )}
+                    {previewFit.dropped.length === 0 && previewFit.tiny && (
+                      <p>لوضوحٍ أكبر استخدم ارتفاعاً ≥ {previewFit.minHeightMmForAll}مم.</p>
+                    )}
+                  </div>
+                </div>
+              )
+            )}
           </CardContent>
         </Card>
       </div>

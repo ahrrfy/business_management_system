@@ -45,11 +45,23 @@ export interface LabelSource {
  * الوحدة تبقى دائماً: السعر المطبوع هو **سعر الوحدة**، فملصق «درزن» بلا كلمة «درزن» يقرأه
  * الزبون سعراً للقطعة.
  */
-export function labelName(src: LabelSource): string {
+/** مكوّنات الاسم المنظَّمة — تُغذّي الاسم المدموج (`labelName`) والتخطيط الاحترافي المنظّم معاً. */
+export interface LabelParts {
+  /** اسم المنتج الأساس (كما هو). */
+  baseName: string;
+  /** الوسوم (اللون/القياس) بعد حارس التكرار — ما لا يحتويه الاسم أصلاً. */
+  tags: string[];
+  /** اسم الوحدة (قطعة/درزن…) أو null. */
+  unitName: string | null;
+}
+
+/**
+ * يفكّك المصدر إلى مكوّناته المنظَّمة مع **حارس التكرار**: كثيرٌ من المنتجات يحمل اسمها اللون
+ * أصلاً («قلم جاف أزرق» ولونه «أزرق») — نُلحق الوسم فقط إن لم يكن في الاسم ككلماتٍ مستقلّة
+ * (لا كجزءٍ من كلمةٍ أطول، فلا يبتلع «أحمر» في «أحمرار»). مصدرٌ واحد للاسم المدموج والمنظَّم.
+ */
+export function labelParts(src: LabelSource): LabelParts {
   const nameTokens = tokenize(src.productName);
-  // حارس التكرار: كثيرٌ من المنتجات يحمل اسمها اللون أصلاً («قلم جاف أزرق» ولونه «أزرق») —
-  // الإلحاق الأعمى يُخرج «قلم جاف أزرق أزرق». نُلحق الوسم فقط إن لم يكن في الاسم ككلماتٍ
-  // مستقلّة (لا كجزءٍ من كلمةٍ أطول، فلا يبتلع «أحمر» في «أحمرار»).
   const tags: string[] = [];
   for (const raw of [src.color, src.size]) {
     const tag = raw?.trim();
@@ -57,9 +69,19 @@ export function labelName(src: LabelSource): string {
     if (hasPhrase(nameTokens, tag)) continue;
     tags.push(tag);
   }
-  const base = [src.productName.trim(), ...tags].filter(Boolean).join(" ");
-  const unit = src.unitName?.trim();
-  return unit ? `${base} — ${unit}` : base;
+  return { baseName: src.productName.trim(), tags, unitName: src.unitName?.trim() || null };
+}
+
+/** اسم الملصق المدموج = «المنتج اللون القياس — الوحدة» (يُستعمل حين لا يتّسع المقاس لسطر خصائص منظّم). */
+export function labelName(src: LabelSource): string {
+  const { baseName, tags, unitName } = labelParts(src);
+  const base = [baseName, ...tags].filter(Boolean).join(" ");
+  return unitName ? `${base} — ${unitName}` : base;
+}
+
+/** نصّ سطر الخصائص المنظّم = «اللون · القياس · الوحدة» (بلا الاسم؛ يُعرَض تحت الاسم البارز). */
+export function attrsLineText(parts: { tags: string[]; unitName?: string | null }): string {
+  return [...parts.tags, parts.unitName].filter(Boolean).join(" · ");
 }
 
 /** يقطّع نصّاً إلى كلمات على الفراغات والفواصل الشائعة (عربية ولاتينية). */
@@ -135,11 +157,12 @@ export function ellipsize(text: string, maxW: number, measure: (s: string) => nu
 
 /** يبني عنصر ملصقٍ كاملاً من صفّ كتالوج + فئة السعر + الباركود المختار. */
 export function toLabelItem(
-  src: LabelSource & LabelPriceSource & { sku?: string },
+  src: LabelSource & LabelPriceSource & { sku?: string; colorHex?: string | null },
   barcode: string,
   tier: LabelTier,
 ): LabelRenderItem {
   const { price, basePrice } = labelPrice(src);
+  const parts = labelParts(src);
   return {
     name: labelName(src),
     sku: src.sku,
@@ -149,5 +172,8 @@ export function toLabelItem(
     // (وإلّا خرج ملصقٌ يقول «حكومي» بلا رقم — تشويشٌ لا تمييز).
     tierLabel: price != null && price !== "" ? TIER_LABEL[tier] : "",
     barcode,
+    // مكوّنات منظّمة للتخطيط الاحترافي (اسمٌ بارز + سطر «اللون · القياس · الوحدة» + رمز لون)
+    // حين يتّسع المقاس؛ يتراجع الحلّال للاسم المدموج على الملصقات الضيّقة (بلا فقد معلومة).
+    attrs: { baseName: parts.baseName, tags: parts.tags, colorHex: src.colorHex?.trim() || null, unitName: parts.unitName },
   };
 }
