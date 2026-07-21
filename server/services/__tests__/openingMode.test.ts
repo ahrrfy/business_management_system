@@ -239,4 +239,18 @@ describe("مؤشر تقدّم الافتتاح «X من Y مُفتتَح»", () 
     expect(b1.openedVariants).toBe(1);
     expect(b2.openedVariants).toBe(0);
   });
+
+  it("بضاعة الأمانة مُستبعَدة من المؤشر بسطاً ومقاماً (تُفتتَح بالإيداع لا بالجرد) — §٥-د", async () => {
+    const d = db();
+    // صنف أمانة برصيد مُفتتَح (كأنه أُودِع، openedAt غير فارغ) — يجب ألّا يظهر في الإجمالي ولا المُفتتَح،
+    // وإلا لن يبلغ المؤشر ١٠٠٪ أبداً (صنف الأمانة لا «يُفتتَح» بالجرد الافتتاحيّ الذي يستبعده أصلاً).
+    await d.insert(s.products).values({ id: 5, name: "ملزمة أمانة", isConsignment: true });
+    await d.insert(s.productVariants).values({ id: 6, productId: 5, sku: "CNS-1", costPrice: "400.00" });
+    await d.insert(s.branchStock).values({ variantId: 6, branchId: 1, quantity: 10, openedAt: new Date() });
+
+    const progress = await getOpeningProgress();
+    const b1 = progress.find((p) => p.branchId === 1)!;
+    expect(b1.totalVariants).toBe(1); // الصنف العادي فقط (variant 1) — الأمانة خارج المقام
+    expect(b1.openedVariants).toBe(0); // الأمانة المُفتتَحة خارج البسط أيضاً
+  });
 });

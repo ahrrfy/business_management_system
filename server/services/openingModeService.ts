@@ -177,6 +177,9 @@ export async function getOpeningProgress(): Promise<OpeningProgressBranch[]> {
       and(
         eq(products.isService, false),
         eq(products.isBundle, false),
+        // بضاعة الأمانة (ش٤): تُفتتَح بسند إيداع لا بجرد افتتاحيّ ⇒ خارج مؤشر «افتتاح الكتالوج المملوك»
+        // (بسطاً ومقاماً) وإلا لن يبلغ ١٠٠٪ أبداً (صنف الأمانة بلا رصيد لا «يُفتتَح» بالجرد). §٥-د.
+        eq(products.isConsignment, false),
         eq(products.isActive, true),
         sql`${productVariants.isActive} IS NOT FALSE`,
       ),
@@ -198,6 +201,7 @@ export async function getOpeningProgress(): Promise<OpeningProgressBranch[]> {
         isNotNull(branchStock.openedAt),
         eq(products.isService, false),
         eq(products.isBundle, false),
+        eq(products.isConsignment, false), // مطابقة المقام: الأمانة خارج المؤشر بسطاً ومقاماً (§٥-د).
         eq(products.isActive, true),
         sql`${productVariants.isActive} IS NOT FALSE`,
       ),

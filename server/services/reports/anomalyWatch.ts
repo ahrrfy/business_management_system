@@ -35,6 +35,8 @@ const FLAG_SHORTAGE_MIN_SHIFTS = 2;
 const FLAG_SHORTAGE_TOTAL_IQD = new Decimal("25000");
 /** عكس سندات: يُعلَّم المستخدم الذي عكس ≥ هذا العدد بالفترة. */
 const FLAG_REVERSALS_PER_USER = 2;
+/** سحب بضاعة الأمانة: يُعلَّم مُنشئ ≥ هذا العدد من سندات السحب/الاستبدال بالفترة (SOD فاعل واحد). */
+const FLAG_CONSIGN_WITHDRAWALS_PER_USER = 3;
 /** حدّ أسوأ أسطر البيع دون الكلفة المعروضة. */
 const WORST_LINES_LIMIT = 10;
 
@@ -119,6 +121,18 @@ export interface SequenceGapRow {
   minSeq: number;
   missing: number;
 }
+/** D7: تركّز سحوبات بضاعة الأمانة لكل مُنشئ (ضابط تعويضيّ لـSOD السحب أحاديّ الفاعل). */
+export interface ConsignWithdrawRow {
+  userId: number | null;
+  userName: string;
+  /** عدد سندات السحب + الاستبدال التي أنشأها. */
+  noteCount: number;
+  /** إجمالي الوحدات الأساس المسحوبة (أسطر OUT). */
+  totalQty: number;
+  /** قيمة الحصص المسحوبة بلقطة السند = Σ(baseQuantity × unitShareSnapshot). */
+  totalValue: string;
+  flagged: boolean;
+}
 
 export interface AnomalyWatchResult {
   generatedAt: string;
@@ -132,6 +146,7 @@ export interface AnomalyWatchResult {
     flaggedShortageCashiers: number;
     reversedVouchers: number;
     sequenceGapDays: number;
+    flaggedConsignWithdrawers: number;
   };
   belowCost: { cashiers: BelowCostCashierRow[]; worstLines: BelowCostLineRow[] };
   discounts: { rows: DiscountCashierRow[]; scopeAvgRatePct: string };
@@ -139,6 +154,7 @@ export interface AnomalyWatchResult {
   shiftShortages: { rows: ShiftShortageRow[] };
   reversedVouchers: { rows: ReversedVoucherRow[] };
   sequenceGaps: { rows: SequenceGapRow[] };
+  consignWithdrawals: { rows: ConsignWithdrawRow[] };
 }
 
 const UNKNOWN_USER = "غير معروف";
@@ -176,6 +192,7 @@ export async function getAnomalyWatch(opts: {
       flaggedShortageCashiers: 0,
       reversedVouchers: 0,
       sequenceGapDays: 0,
+      flaggedConsignWithdrawers: 0,
     },
     belowCost: { cashiers: [], worstLines: [] },
     discounts: { rows: [], scopeAvgRatePct: "0.00" },
@@ -183,6 +200,7 @@ export async function getAnomalyWatch(opts: {
     shiftShortages: { rows: [] },
     reversedVouchers: { rows: [] },
     sequenceGaps: { rows: [] },
+    consignWithdrawals: { rows: [] },
   };
   if (!db) return empty;
 
@@ -194,6 +212,7 @@ export async function getAnomalyWatch(opts: {
   const branchShift = branchId ? sql`AND s.branchId = ${branchId}` : sql``;
   const branchReceipt = branchId ? sql`AND r.branchId = ${branchId}` : sql``;
   const branchAudit = branchId ? sql`AND a.branchId = ${branchId}` : sql``;
+  const branchConsign = branchId ? sql`AND n.branchId = ${branchId}` : sql``;
 
   const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
     try {
@@ -379,7 +398,28 @@ export async function getAnomalyWatch(opts: {
     null,
   );
 
-  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes] =
+  // ── D7: تركّز سحوبات بضاعة الأمانة لكل مُنشئ ──
+  // السحب/الاستبدال يعيد بضاعة المودِع بلا فاعلٍ ثانٍ (SOD أحاديّ) ⇒ يُعدّ ويُرتَّب لكل مُنشئ.
+  // العدّ على أسطر OUT (الاستبدال يحمل أسطر IN مودَعة أيضاً — لا تُحسب سحباً). القيمة بلقطة الحصة (توثيقية).
+  const consignWithdrawP = safe(
+    db.execute(sql`
+      SELECT n.createdBy AS userId, u.name AS userName,
+        COUNT(DISTINCT n.id) AS noteCount,
+        CAST(COALESCE(SUM(l.baseQuantity), 0) AS CHAR) AS totalQty,
+        CAST(COALESCE(SUM(l.baseQuantity * l.unitShareSnapshot), 0) AS CHAR) AS totalValue
+      FROM consignmentNotes n
+      JOIN consignmentNoteLines l ON l.noteId = n.id AND l.lineDirection = 'OUT'
+      LEFT JOIN users u ON u.id = n.createdBy
+      WHERE n.noteType IN ('WITHDRAW', 'EXCHANGE')
+        AND n.createdAt >= ${fromTs} AND n.createdAt < ${toTs}
+        ${branchConsign}
+      GROUP BY n.createdBy, u.name
+      ORDER BY COUNT(DISTINCT n.id) DESC
+    `),
+    null,
+  );
+
+  const [belowCashRes, belowLinesRes, discRes, retSellersRes, retProcRes, shortRes, revRes, gapsRes, consignWithdrawRes] =
     await Promise.all([
       belowCostCashiersP,
       belowCostLinesP,
@@ -389,6 +429,7 @@ export async function getAnomalyWatch(opts: {
       shortagesP,
       reversedP,
       gapsP,
+      consignWithdrawP,
     ]);
 
   // ── D1: تجميع ──
@@ -517,6 +558,19 @@ export async function getAnomalyWatch(opts: {
     };
   });
 
+  // ── D7: أعلام سحوبات الأمانة (≥ حدّ لكل مُنشئ بالفترة) ──
+  const consignWithdrawRows: ConsignWithdrawRow[] = rowsOf(consignWithdrawRes).map((r) => {
+    const noteCount = Number(r.noteCount ?? 0);
+    return {
+      userId: r.userId == null ? null : Number(r.userId),
+      userName: r.userName ?? UNKNOWN_USER,
+      noteCount,
+      totalQty: Number(r.totalQty ?? 0),
+      totalValue: toDbMoney(money(r.totalValue ?? 0)),
+      flagged: noteCount >= FLAG_CONSIGN_WITHDRAWALS_PER_USER,
+    };
+  });
+
   return {
     generatedAt,
     from: opts.from,
@@ -529,6 +583,7 @@ export async function getAnomalyWatch(opts: {
       flaggedShortageCashiers: shortageRows.filter((r) => r.flagged).length,
       reversedVouchers: reversedRows.length,
       sequenceGapDays: gapRows.length,
+      flaggedConsignWithdrawers: consignWithdrawRows.filter((r) => r.flagged).length,
     },
     belowCost: { cashiers: belowCostCashiers, worstLines },
     discounts: { rows: discountRows, scopeAvgRatePct: pct(discScopeAvg) },
@@ -536,5 +591,6 @@ export async function getAnomalyWatch(opts: {
     shiftShortages: { rows: shortageRows },
     reversedVouchers: { rows: reversedRows },
     sequenceGaps: { rows: gapRows },
+    consignWithdrawals: { rows: consignWithdrawRows },
   };
 }

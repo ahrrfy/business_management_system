@@ -30,6 +30,11 @@ export function MyPerformanceCard() {
             {Number(d.carryIn) !== 0 && (
               <div className="text-[11px] text-money-negative tabular-nums" dir="ltr">مرحَّل سابق: {iqd(d.carryIn)}</div>
             )}
+            {Number(d.consignDeduction) > 0 && (
+              <div className="text-[11px] text-amber-700 tabular-nums" dir="ltr">
+                يُستثنى: حصص بضاعة الأمانة −{iqd(d.consignDeduction)}
+              </div>
+            )}
           </div>
           <div className="text-start">
             <div className="text-xs text-muted-foreground">{d.target != null ? "الهدف الشهري" : "لا هدف محدَّداً لهذا الشهر"}</div>

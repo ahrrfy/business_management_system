@@ -343,6 +343,12 @@ export async function transferBetweenBranches(tx: Tx, a: TransferArgs) {
     notes: a.notes,
     createdBy: a.createdBy,
   });
+  // بضاعة الأمانة (ش٤ تحسين): استلام تحويل صنف أمانة = عدٌّ مُطابَق ⇒ يُختَم openedAt في الفرع الوجهة،
+  // وإلّا ظهر «غير مُفتتَح» زوراً (يُباع بالسالب أثناء نافذة الافتتاح) بعد انتقاله. الاستلام موقَّع سطرياً.
+  const [cf] = await tx
+    .select({ isConsign: products.isConsignment })
+    .from(productVariants).innerJoin(products, eq(productVariants.productId, products.id))
+    .where(eq(productVariants.id, a.variantId)).limit(1);
   const inn = await applyMovement(tx, {
     variantId: a.variantId,
     branchId: a.toBranchId,
@@ -353,6 +359,7 @@ export async function transferBetweenBranches(tx: Tx, a: TransferArgs) {
     referenceId: a.referenceId,
     notes: a.notes,
     createdBy: a.createdBy,
+    stampOpened: !!cf?.isConsign,
   });
   return { from: out, to: inn };
 }

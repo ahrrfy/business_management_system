@@ -13,6 +13,8 @@ import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useState } from "react";
 import { Handshake, Paperclip, Plus, Printer, X } from "lucide-react";
 import { printConsignmentNote } from "@/lib/printing/printConsignmentNote";
+import { WhatsAppShare } from "@/components/WhatsAppShare";
+import { buildConsignmentWithdrawMessage } from "@/lib/whatsapp";
 
 type NoteType = "DEPOSIT" | "WITHDRAW" | "EXCHANGE";
 type Dir = "IN" | "OUT";
@@ -102,12 +104,15 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
   const [noteType, setNoteType] = useState<NoteType>("DEPOSIT");
   const [consignorId, setConsignorId] = useState<number | null>(null);
   const [consignorName, setConsignorName] = useState("");
+  const [consignorPhone, setConsignorPhone] = useState<string | null>(null);
   const [q, setQ] = useState("");
   const [debounced, setDebounced] = useState("");
   const [lines, setLines] = useState<Line[]>([]);
   const [notes, setNotes] = useState("");
   const [images, setImages] = useState<ImageItem[]>([]);
   const [lineSeq, setLineSeq] = useState(1);
+  // بعد حفظ سحب/استبدال: عرض بطاقة إشعار المودِع بواتساب (ضابط SOD تعويضيّ) قبل العودة للقائمة.
+  const [postSave, setPostSave] = useState<{ message: string; phone: string | null } | null>(null);
   const clientRequestId = useMemo(() => crypto.randomUUID(), []);
   const needsAttachment = noteType !== "DEPOSIT";
 
@@ -119,7 +124,21 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
   );
 
   const create = trpc.consignments.create.useMutation({
-    onSuccess: () => { notify.ok("تم حفظ السند"); onSaved(); },
+    onSuccess: (res) => {
+      notify.ok("تم حفظ السند");
+      // السحب/الاستبدال: أظهر بطاقة إشعار المودِع بواتساب لحظياً (لا تُغلق النموذج فوراً).
+      if (needsAttachment) {
+        const message = buildConsignmentWithdrawMessage({
+          noteNumber: res.noteNumber ?? "",
+          noteType: noteType as "WITHDRAW" | "EXCHANGE",
+          consignorName,
+          lines: lines.map((l) => ({ direction: l.direction, label: l.label, quantity: l.quantity })),
+        });
+        setPostSave({ message, phone: consignorPhone });
+      } else {
+        onSaved();
+      }
+    },
     onError: (e) => notify.err(e),
   });
 
@@ -140,6 +159,31 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
       attachmentUrl: needsAttachment ? (images[0]?.url || images[0]?.dataUrl || null) : null,
       lines: lines.map((l) => ({ lineDirection: l.direction, variantId: l.variantId, productUnitId: l.productUnitId, quantity: l.quantity })),
     });
+  }
+
+  // بعد حفظ سحب/استبدال: بطاقة إشعار المودِع بواتساب (ضابط SOD تعويضيّ) — يفتحها المستخدم بنقرة واحدة.
+  if (postSave) {
+    return (
+      <Card className="border-amber-300">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <Handshake aria-hidden className="size-4 text-amber-600" /> تم حفظ السند — أبلِغ المودِع
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            إشعار المودِع بالسحب فورياً ضابطٌ رقابيّ (يتحقّق المودِع ممّا خرج من بضاعته). يفتح الزرّ واتساب برسالة جاهزة.
+          </p>
+          {!postSave.phone && (
+            <p className="text-xs text-amber-700">لا رقم هاتف مسجَّل لهذا المودِع — سيفتح واتساب لتختار المحادثة يدوياً.</p>
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            <WhatsAppShare phone={postSave.phone} message={postSave.message} label="إشعار المودِع عبر واتساب" size="default" />
+            <Button variant="outline" onClick={() => { setPostSave(null); onSaved(); }}>تخطّي والعودة للقائمة</Button>
+          </div>
+        </CardContent>
+      </Card>
+    );
   }
 
   return (
@@ -163,7 +207,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
             {consignorId ? (
               <div className="flex items-center justify-between rounded-md border border-amber-300 bg-amber-50 px-3 py-2">
                 <span className="text-sm font-medium text-amber-900">{consignorName}</span>
-                <button type="button" onClick={() => { setConsignorId(null); setLines([]); }} aria-label="تغيير المودِع"><X aria-hidden className="size-4 text-amber-700" /></button>
+                <button type="button" onClick={() => { setConsignorId(null); setConsignorPhone(null); setLines([]); }} aria-label="تغيير المودِع"><X aria-hidden className="size-4 text-amber-700" /></button>
               </div>
             ) : (
               <div className="relative">
@@ -171,7 +215,7 @@ function NoteForm({ branchId, onSaved }: { branchId: number; onSaved: () => void
                 {(consignorSearch.data?.rows.length ?? 0) > 0 && (
                   <div className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-md border bg-popover shadow-md">
                     {consignorSearch.data!.rows.map((r) => (
-                      <button key={r.id} type="button" onClick={() => { setConsignorId(Number(r.id)); setConsignorName(r.name ?? ""); }}
+                      <button key={r.id} type="button" onClick={() => { setConsignorId(Number(r.id)); setConsignorName(r.name ?? ""); setConsignorPhone(r.phone ?? null); }}
                         className="flex w-full items-center justify-between px-3 py-2 text-right text-sm hover:bg-muted">
                         <span>{r.name}</span>{r.phone && <span dir="ltr" className="text-xs text-muted-foreground">{r.phone}</span>}
                       </button>
