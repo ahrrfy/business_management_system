@@ -165,6 +165,7 @@ describe("toLabelItem — التركيب الكامل", () => {
       basePrice: "1000.00",
       tierLabel: "جملة",
       barcode: "ALR0000042",
+      attrs: { baseName: "قلم جاف", tags: ["أزرق"], colorHex: null, unitName: "درزن" },
     });
   });
 
