@@ -56,3 +56,9 @@ backups/
 # ومفتاح التوقيع وحُزَم البناء (keystore/AAB/APK لا تُلتزم — أسرار + مخرجات بناء محلّية).
 twa/*
 !twa/twa-manifest.json
+
+# Image studio — أصول @imgly ML (استضافة ذاتية، تُهيَّأ مرّة، ~40MB، لا تُلتزم)
+client/public/imgly-assets/
+
+# Image studio — مخرجات سائق fs لـImageStore (جذر التطوير الافتراضيّ)
+.image-store/
