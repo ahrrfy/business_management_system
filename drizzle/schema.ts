@@ -1674,6 +1674,20 @@ export const productImages = mysqlTable(
     isPrimary: boolean("isPrimary").default(false).notNull(),
     sortOrder: int("sortOrder").default(0).notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
+    // image-studio (0095): تخزين هجين معنون-بالمحتوى. NULL = صفّ إرثيّ يُخدَم من `url` (توافق خلفيّ).
+    // القراءة المزدوجة (objectKey ? store : url) والحرّاس (reviewStatus أمام البايتات) في شرائح لاحقة.
+    // راجع docs/product-image-studio-design-2026-07-21.md §١.
+    objectKey: varchar("objectKey", { length: 255 }), // مفتاح مخزن الكائنات للصورة المعالَجة
+    originalKey: varchar("originalKey", { length: 255 }), // مفتاح الأصل غير الممسوس (عكوسيّة قرار ٢)
+    contentHash: varchar("contentHash", { length: 64 }), // sha256 بايتات المعالَجة — بصمة v=/ETag/أوفلاين
+    thumbDataUrl: mediumtext("thumbDataUrl"), // مصغّرة ~64px تبقى في DB (شبكة أمان العرض)
+    mime: varchar("mime", { length: 32 }),
+    width: int("width"),
+    height: int("height"),
+    bytes: int("bytes"),
+    reviewStatus: mysqlEnum("reviewStatus", ["APPROVED", "PENDING_REVIEW", "REJECTED"]).default("APPROVED").notNull(),
+    origin: mysqlEnum("origin", ["ORIGINAL", "STUDIO_FREE", "STUDIO_PRO", "MANUAL"]).default("ORIGINAL").notNull(),
+    migratedAt: timestamp("migratedAt"),
   },
   (table) => ({
     prodIdx: index("idx_pimg_product").on(table.productId),
@@ -1683,6 +1697,38 @@ export const productImages = mysqlTable(
 
 export type ProductImage = typeof productImages.$inferSelect;
 export type InsertProductImage = typeof productImages.$inferInsert;
+
+/**
+ * image-studio (0096): طابور/سجلّ عمليات الاستوديو. **يحتجز المرشّح المعالَج (`processedUrl`) حتى
+ * الاعتماد** (§٥ #١: لا يُجسَّد كصفّ productImages قابل للخدمة قبل المراجعة، سدّاً لتجاوز البوّابة
+ * بتخمين id). أساس مسار المراجعة/الأسينك (ش٢/Pro/CUT)؛ المسار المتزامن (FLATTEN inline) يُعتمَد بشرياً
+ * في الحال ويُحفَظ صورةً عاديّة. راجع docs/product-image-studio-design-2026-07-21.md §٥.
+ */
+export const productImageJobs = mysqlTable(
+  "productImageJobs",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    productId: bigint("productId", { mode: "number" }).references(() => products.id, { onDelete: "cascade" }),
+    variantId: bigint("variantId", { mode: "number" }).references(() => productVariants.id, { onDelete: "cascade" }),
+    sourceContentHash: varchar("sourceContentHash", { length: 64 }),
+    // المرشّح المحتجَز — لا يُخدَم عبر /api/img حتى الاعتماد (§٥ #١).
+    processedUrl: mediumtext("processedUrl"),
+    mode: mysqlEnum("mode", ["FLATTEN", "CUT", "PRO"]).notNull(),
+    status: mysqlEnum("status", ["PENDING_REVIEW", "APPROVED", "REJECTED", "FAILED"]).default("PENDING_REVIEW").notNull(),
+    templateVersion: int("templateVersion"),
+    createdBy: int("createdBy").references(() => users.id), // users.id = int (لا bigint)
+    reviewedBy: int("reviewedBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    reviewedAt: timestamp("reviewedAt"),
+  },
+  (table) => ({
+    prodIdx: index("idx_pijob_product").on(table.productId),
+    statusIdx: index("idx_pijob_status").on(table.status),
+  })
+);
+
+export type ProductImageJob = typeof productImageJobs.$inferSelect;
+export type InsertProductImageJob = typeof productImageJobs.$inferInsert;
 
 /* ============================ المشتريات ============================ */
 

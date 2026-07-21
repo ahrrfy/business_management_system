@@ -248,6 +248,26 @@ describe("updateProductWithVariants — الكتابة", () => {
     expect(imgs).toHaveLength(0);
   });
 
+  it("صورة اللون: إعادة الحفظ بصورة جديدة تصون productImages.id (لا تتدلّى روابط /api/img)", async () => {
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", image: "data:image/png;base64,AAA", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    );
+    const before = await db().select().from(s.productImages).where(eq(s.productImages.variantId, 1));
+    expect(before).toHaveLength(1);
+    const id0 = before[0].id;
+
+    // إعادة حفظ بصورة مختلفة ⇒ يُحدَّث الصفّ نفسه في مكانه (id ثابت)، لا حذف+إدراج (كان يبدّل الـid).
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: baseTemplate(), variants: [{ id: 1, sku: "NB-100", costPrice: "500", image: "data:image/png;base64,BBB", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }] },
+      actor,
+    );
+    const after = await db().select().from(s.productImages).where(eq(s.productImages.variantId, 1));
+    expect(after).toHaveLength(1);
+    expect(after[0].id).toBe(id0); // ← يفشل مع delete+insert القديم
+    expect(after[0].url).toBe("data:image/png;base64,BBB");
+  });
+
   it("رفض: باركود مكرّر بين متغيّرين داخل نفس الحمولة ⇒ CONFLICT، ولا شيء يتغيّر (rollback)", async () => {
     await expect(
       updateProductWithVariants(

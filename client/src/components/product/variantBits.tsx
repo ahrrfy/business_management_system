@@ -6,6 +6,7 @@ import { useRef, useState, useId, cloneElement, isValidElement, type ChangeEvent
 import { cn } from "@/lib/utils";
 import { code128Svg } from "@/lib/printing/barcode";
 import { compressImageDataUrl } from "@/components/form/ImageUploader";
+import { ArrowLeft } from "lucide-react";
 import { marginPercent, toArabicDigits } from "@/lib/variants";
 import { resolveColorHex, normalizeHex } from "@shared/colorBank";
 
@@ -262,6 +263,20 @@ export function ImageSlot({
 }) {
   const ref = useRef<HTMLInputElement | null>(null);
   const [busy, setBusy] = useState(false);
+  const [studioBusy, setStudioBusy] = useState(false);
+  const [studioPreview, setStudioPreview] = useState<{ before: string; after: string } | null>(null);
+  async function runStudio() {
+    if (!value) return;
+    setStudioBusy(true);
+    try {
+      // تحميل كسول لخطّ الاستوديو. المسار الآمن FLATTEN (خلفية بيضاء موحّدة + إطار + ظلّ).
+      const { runFreeStudio } = await import("@/lib/imageStudio/freePipeline");
+      const r = await runFreeStudio(value, { safeOnly: true });
+      setStudioPreview({ before: value, after: r.dataUrl });
+    } finally {
+      setStudioBusy(false);
+    }
+  }
   async function pick(e: ChangeEvent<HTMLInputElement>) {
     const f = e.target.files?.[0];
     if (f) {
@@ -283,32 +298,48 @@ export function ImageSlot({
     if (ref.current) ref.current.value = "";
   }
   return (
-    <div className="flex items-center gap-3">
-      {/* زرّ حقيقيّ لا div — دعمٌ أصيل للوحة المفاتيح (Enter/Space) + تركيز + اسمٌ متاح (كان div بنقرٍ فقط). */}
-      <button
-        type="button"
-        onClick={() => ref.current?.click()}
-        aria-label={value ? "تغيير صورة هذا اللون" : "رفع صورة هذا اللون"}
-        className="relative shrink-0 rounded-lg border overflow-hidden cursor-pointer hover:opacity-90 flex items-center justify-center bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        style={{ width: size, height: size }}
-      >
-        {value ? (
-          <img src={value} alt="" className="w-full h-full object-cover" />
-        ) : (
-          <span className="font-mono text-[9px] text-muted-foreground">+ صورة</span>
-        )}
-      </button>
-      <div className="text-xs text-muted-foreground">
-        <div>{label}</div>
-        {busy ? (
-          <span className="text-primary">جارٍ الضغط…</span>
-        ) : value ? (
-          <button type="button" onClick={() => onChange(null)} className="text-destructive hover:underline mt-1">إزالة</button>
-        ) : (
-          <button type="button" onClick={() => ref.current?.click()} className="text-primary hover:underline mt-1">رفع صورة</button>
-        )}
+    <div className="space-y-2">
+      <div className="flex items-center gap-3">
+        {/* زرّ حقيقيّ لا div — دعمٌ أصيل للوحة المفاتيح (Enter/Space) + تركيز + اسمٌ متاح (كان div بنقرٍ فقط). */}
+        <button
+          type="button"
+          onClick={() => ref.current?.click()}
+          aria-label={value ? "تغيير صورة هذا اللون" : "رفع صورة هذا اللون"}
+          className="relative shrink-0 rounded-lg border overflow-hidden cursor-pointer hover:opacity-90 flex items-center justify-center bg-muted/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          style={{ width: size, height: size }}
+        >
+          {value ? (
+            <img src={value} alt="" className="w-full h-full object-cover" />
+          ) : (
+            <span className="font-mono text-[9px] text-muted-foreground">+ صورة</span>
+          )}
+        </button>
+        <div className="text-xs text-muted-foreground">
+          <div>{label}</div>
+          {busy ? (
+            <span className="text-primary">جارٍ الضغط…</span>
+          ) : value ? (
+            <div className="mt-1 flex gap-2">
+              <button type="button" onClick={() => onChange(null)} className="text-destructive hover:underline">إزالة</button>
+              <button type="button" onClick={runStudio} disabled={studioBusy} className="text-primary hover:underline">
+                {studioBusy ? "جارٍ…" : "استوديو"}
+              </button>
+            </div>
+          ) : (
+            <button type="button" onClick={() => ref.current?.click()} className="text-primary hover:underline mt-1">رفع صورة</button>
+          )}
+        </div>
+        <input ref={ref} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pick} />
       </div>
-      <input ref={ref} type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={pick} />
+      {studioPreview && (
+        <div className="flex items-center gap-2 rounded-md border p-2">
+          <img src={studioPreview.after} alt="بعد (استوديو)" className="size-12 rounded border object-contain" style={{ background: "#ffffff" }} />
+          <ArrowLeft aria-hidden className="size-3 shrink-0 text-muted-foreground" />
+          <img src={studioPreview.before} alt="قبل" className="size-12 rounded border bg-muted object-contain" />
+          <button type="button" onClick={() => { onChange(studioPreview.after); setStudioPreview(null); }} className="text-xs text-primary hover:underline">اعتماد</button>
+          <button type="button" onClick={() => setStudioPreview(null)} className="text-xs text-muted-foreground hover:underline">إلغاء</button>
+        </div>
+      )}
     </div>
   );
 }

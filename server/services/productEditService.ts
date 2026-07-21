@@ -405,9 +405,26 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
 
       // product-variants: توفيق صورة اللون. image=undefined ⇒ لا نلمسها؛ string ⇒ تُعيَّن؛ null/"" ⇒ تُزال.
       if (v.image !== undefined) {
-        await tx.delete(productImages).where(eq(productImages.variantId, variantId));
         const img = (v.image ?? "").trim();
-        if (img) await tx.insert(productImages).values({ productId: input.productId, variantId, url: img, isPrimary: false, sortOrder: 0 });
+        const existing = await tx
+          .select({ id: productImages.id })
+          .from(productImages)
+          .where(eq(productImages.variantId, variantId))
+          .orderBy(productImages.id);
+        if (img) {
+          if (existing.length > 0) {
+            // تحديث في المكان (يصون productImages.id فلا تتدلّى روابط /api/img المُفتَّحة بالـid:
+            // كاش SW سنة/حافة CF/صفوف الأوفلاين)؛ ?v= يتغيّر فقط عند تغيّر المحتوى ⇒ إبطال صحيح.
+            // راجع docs/product-image-studio-design-2026-07-21.md §٢.ب.
+            await tx.update(productImages).set({ url: img }).where(eq(productImages.id, existing[0].id));
+            if (existing.length > 1)
+              await tx.delete(productImages).where(inArray(productImages.id, existing.slice(1).map((r) => r.id)));
+          } else {
+            await tx.insert(productImages).values({ productId: input.productId, variantId, url: img, isPrimary: false, sortOrder: 0 });
+          }
+        } else if (existing.length > 0) {
+          await tx.delete(productImages).where(eq(productImages.variantId, variantId));
+        }
       }
     }
 
