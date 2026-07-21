@@ -58,20 +58,24 @@ function extractAlpha(img: HTMLImageElement, maxDim = 512): { alpha: Uint8Clampe
 export async function finishCutFromCutout(
   cutoutDataUrl: string,
   sourceDataUrl: string,
-  opts: { forceFlatten?: boolean } = {},
+  opts: { forceFlatten?: boolean; trustCutout?: boolean } = {},
 ): Promise<StudioResult> {
   const cutImg = await loadImageEl(cutoutDataUrl);
   const { alpha, width, height } = extractAlpha(cutImg);
   const confidence = analyzeMask(alpha, width, height, { forceFlatten: opts.forceFlatten });
+  // مسار Pro (remove.bg): `trustCutout` ⇒ نثق بالقصّ **دائماً** — خدمةٌ احترافيّة مدفوعة موثوقة،
+  // لا نُخضعها لحدس analyzeMask المصمَّم لنموذج @imgly المجانيّ الأقلّ موثوقيّة (كان يتردّد على صورةٍ
+  // معقّدة ⇒ يسقط للأصل ⇒ الخلفية تبقى). المسار المجانيّ (بلا trustCutout) يُبقي الحدس + FLATTEN-عند-الشكّ.
+  const useCut = opts.trustCutout || confidence.mode === "CUT";
   let canvas: HTMLCanvasElement;
-  if (confidence.mode === "CUT") {
+  if (useCut) {
     canvas = compositeOnTemplate(cutImg, cutImg.naturalWidth, cutImg.naturalHeight);
   } else {
     const orig = await loadImageEl(sourceDataUrl);
     canvas = compositeOnTemplate(orig, orig.naturalWidth, orig.naturalHeight);
   }
   const { dataUrl, sizeKB } = await encodeCanvas(canvas);
-  return { dataUrl, sizeKB, mode: confidence.mode, confidence, templateVersion: STUDIO_TEMPLATE.version };
+  return { dataUrl, sizeKB, mode: useCut ? "CUT" : "FLATTEN", confidence, templateVersion: STUDIO_TEMPLATE.version };
 }
 
 /** مسار CUT الكامل: عزل الخلفية بـ@imgly ثم إكمال التركيب. يرمي إن تعذّر العزل (يلتقطه runFreeStudio). */

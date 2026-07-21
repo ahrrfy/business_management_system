@@ -278,7 +278,8 @@ export function ImageSlot({
       if (proConfig.data?.proAvailable) {
         try {
           const { cutoutDataUrl } = await proCutout.mutateAsync({ imageDataUrl: value });
-          after = (await finishCutFromCutout(cutoutDataUrl, value)).dataUrl;
+          // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا حدس FLATTEN-عند-الشكّ.
+          after = (await finishCutFromCutout(cutoutDataUrl, value, { trustCutout: true })).dataUrl;
         } catch {
           // فشل Pro (نفاد رصيد/تعطّل) ⇒ تدهور آمن لـFLATTEN.
           after = (await runFreeStudio(value, { safeOnly: true })).dataUrl;
