@@ -78,6 +78,7 @@ export const imageStudioRouter = router({
         return {
           cutoutDataUrl: `data:image/png;base64,${result.cutout.toString("base64")}`,
           creditsCharged: result.creditsCharged,
+          isPreview: result.isPreview ?? false,
         };
       } catch (e) {
         if (e instanceof RemovebgError) {

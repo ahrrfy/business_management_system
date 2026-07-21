@@ -59,6 +59,35 @@ describe("callRemovebg (fetch مُموَّه)", () => {
     const fakeFetch: typeof fetch = async () => new Response(Buffer.alloc(0), { status: 200 });
     await expect(callRemovebg("key", "QUJD", { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "SERVICE" });
   });
+
+  it("402 على الدقّة الكاملة ⇒ يعيد المحاولة بمعاينة ⇒ isPreview=true", async () => {
+    let call = 0;
+    const cut = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const fakeFetch: typeof fetch = async () => {
+      call++;
+      if (call === 1) {
+        return new Response(JSON.stringify({ errors: [{ title: "Insufficient credits" }] }), {
+          status: 402,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      return new Response(cut, { status: 200, headers: { "X-Credits-Charged": "0" } });
+    };
+    const r = await callRemovebg("key", "QUJD", { fetchImpl: fakeFetch });
+    expect(r.isPreview).toBe(true);
+    expect(r.cutout.length).toBe(4);
+    expect(call).toBe(2); // حاول auto ثم تراجع لـpreview
+  });
+
+  it("402 حتى على المعاينة ⇒ يرمي OUT_OF_CREDITS بلا حلقة لا نهائية", async () => {
+    let call = 0;
+    const fakeFetch: typeof fetch = async () => {
+      call++;
+      return new Response(JSON.stringify({ errors: [] }), { status: 402, headers: { "content-type": "application/json" } });
+    };
+    await expect(callRemovebg("key", "QUJD", { fetchImpl: fakeFetch })).rejects.toMatchObject({ kind: "OUT_OF_CREDITS" });
+    expect(call).toBe(2); // auto ثم preview، ثم يستسلم (لا ثالثة)
+  });
 });
 
 describe("getRemovebgAccount", () => {
