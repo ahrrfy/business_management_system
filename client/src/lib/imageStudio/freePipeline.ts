@@ -9,7 +9,6 @@ import { compressImageDataUrl } from "@/components/form/ImageUploader";
 import { STUDIO_TEMPLATE } from "@shared/imageStudio/template";
 import { compositeOnTemplate, loadImageEl } from "./compositor";
 import { analyzeMask, type ConfidenceResult, type StudioMode } from "./confidence";
-import { removeBackgroundToDataUrl } from "./segment";
 
 export interface StudioResult {
   /** الناتج المعالَج (data URL) مرمَّزاً ≤700KB. */
@@ -77,6 +76,8 @@ export async function finishCutFromCutout(
 
 /** مسار CUT الكامل: عزل الخلفية بـ@imgly ثم إكمال التركيب. يرمي إن تعذّر العزل (يلتقطه runFreeStudio). */
 export async function runFreeStudioCut(sourceDataUrl: string, opts: { forceFlatten?: boolean } = {}): Promise<StudioResult> {
+  // تحميل كسول لـsegment/@imgly (النموذج الثقيل) — لا يدخل حزمة المسار الآمن FLATTEN.
+  const { removeBackgroundToDataUrl } = await import("./segment");
   const cutoutDataUrl = await removeBackgroundToDataUrl(sourceDataUrl);
   return finishCutFromCutout(cutoutDataUrl, sourceDataUrl, opts);
 }

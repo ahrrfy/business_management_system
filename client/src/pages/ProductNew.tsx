@@ -6,7 +6,8 @@ import { NumberInput } from "@/components/form/NumberInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { type ImageItem } from "@/components/form/ImageUploader";
+import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
 import { AlertCircle, Boxes, Layers, Package, Wrench, X } from "lucide-react";
 import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
@@ -728,7 +729,7 @@ export default function ProductNew() {
       <Card>
         <CardHeader><CardTitle className="text-base">صور المنتج (مشتركة)</CardTitle></CardHeader>
         <CardContent>
-          <ImageUploader
+          <ImageStudioUploader
             value={images}
             onChange={setImages}
             maxItems={10}
