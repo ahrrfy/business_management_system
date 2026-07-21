@@ -44,6 +44,8 @@ export interface RemovebgResult {
   creditsCharged: number | null;
   width: number | null;
   height: number | null;
+  /** true إن كانت النتيجة بدقّة «معاينة» منخفضة (تراجُعٌ من الدقّة الكاملة لأن المفتاح المجاني رفضها). */
+  isPreview?: boolean;
 }
 
 export interface CallRemovebgOptions {
@@ -53,19 +55,16 @@ export interface CallRemovebgOptions {
   fetchImpl?: typeof fetch;
 }
 
-/**
- * يقصّ خلفية صورة عبر remove.bg. `imageBase64` = base64 خام (بلا بادئة data:).
- * يرمي `RemovebgError` عند أي فشل ⇒ يتدهور المستدعي لـFLATTEN.
- */
-export async function callRemovebg(
+/** محاولة قصٍّ واحدة بحجمٍ محدَّد. داخليّ — يلفّه `callRemovebg` بمنطق التراجع لـpreview. */
+async function callRemovebgOnce(
   apiKey: string,
   imageBase64: string,
-  opts: CallRemovebgOptions = {},
+  size: string,
+  doFetch: typeof fetch,
 ): Promise<RemovebgResult> {
-  const doFetch = opts.fetchImpl ?? fetch;
   const body = new URLSearchParams();
   body.set("image_file_b64", imageBase64);
-  body.set("size", opts.size ?? "auto");
+  body.set("size", size);
   body.set("format", "png"); // PNG ⇒ قناة alpha (شفّاف) لنُركّب نحن على أبيض + ظلّ.
 
   let res: Response;
@@ -115,6 +114,32 @@ export async function callRemovebg(
     res.status === 400 ? "BAD_INPUT" :
     "SERVICE";
   throw new RemovebgError(kind, res.status, detail || `remove.bg ${res.status}`);
+}
+
+/**
+ * يقصّ خلفية صورة عبر remove.bg. `imageBase64` = base64 خام (بلا بادئة data:).
+ * يجرّب الدقّة المطلوبة (auto=الأعلى المتاح حسب الرصيد)؛ فإن رفضها المفتاح المجاني بلا رصيد
+ * (402 نفاد الرصيد) **يُعيد المحاولة بـpreview** (مجانيّة، دقّة منخفضة ٠٫٢٥ميغابكسل) ⇒ ينتج
+ * نتيجةً قابلةً للتقييم بدل الفشل، موسومةً `isPreview=true` ليُشعِر المستخدم بأنّها ليست دقّةً كاملة.
+ * يرمي `RemovebgError` عند أي فشل آخر (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ يتدهور المستدعي لـFLATTEN.
+ */
+export async function callRemovebg(
+  apiKey: string,
+  imageBase64: string,
+  opts: CallRemovebgOptions = {},
+): Promise<RemovebgResult> {
+  const doFetch = opts.fetchImpl ?? fetch;
+  const size = opts.size ?? "auto";
+  try {
+    return await callRemovebgOnce(apiKey, imageBase64, size, doFetch);
+  } catch (e) {
+    // المفتاح المجاني بلا رصيد يرفض الدقّة الكاملة ⇒ تراجُعٌ لـpreview المجانيّة (لا فشل صلب).
+    if (e instanceof RemovebgError && e.kind === "OUT_OF_CREDITS" && size !== "preview") {
+      const r = await callRemovebgOnce(apiKey, imageBase64, "preview", doFetch);
+      return { ...r, isPreview: true };
+    }
+    throw e;
+  }
 }
 
 /** رسالة عربية موجزة لكل تصنيف — للعرض في الواجهة/السجلّ (لا تُسرّب المفتاح). */

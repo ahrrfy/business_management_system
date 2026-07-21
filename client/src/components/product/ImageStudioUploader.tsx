@@ -39,16 +39,18 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
     setError(null);
     setNotice(null);
     let fellBackMsg = "";
+    let lowResPreview = false;
     try {
       const results = await Promise.all(
         value.map(async (it): Promise<StudioPreview> => {
           let r: StudioResult;
           if (proAvailable) {
             try {
-              const { cutoutDataUrl } = await proCutout.mutateAsync({ imageDataUrl: it.dataUrl });
-              r = await finishCutFromCutout(cutoutDataUrl, it.dataUrl);
+              const res = await proCutout.mutateAsync({ imageDataUrl: it.dataUrl });
+              r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl);
+              if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
             } catch (e) {
-              // فشل Pro (نفاد رصيد/تعطّل/مفتاح) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
+              // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
               fellBackMsg = String((e as { message?: string })?.message ?? "");
               r = await runFreeStudio(it.dataUrl, { safeOnly: true });
             }
@@ -60,6 +62,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
       );
       setPreviews(results);
       if (fellBackMsg) setNotice(`تعذّر القصّ الاحترافي (${fellBackMsg}) — استُعمل المسار المجاني الآمن.`);
+      else if (lowResPreview) setNotice("قُصّت الخلفية بدقّة معاينة منخفضة (الباقة المجانيّة). للنتيجة الاحترافيّة كاملة الدقّة، اشحن رصيد remove.bg.");
     } catch (e) {
       setError("تعذّرت معالجة الاستوديو: " + String((e as Error)?.message ?? e));
     } finally {
