@@ -5,6 +5,8 @@ import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   branchStock,
   openingModeSettings,
+  products,
+  productVariants,
   stocktakeAssignments,
   stocktakeDecisions,
   stocktakeItems,
@@ -12,7 +14,7 @@ import {
 } from "../../../drizzle/schema";
 import { hashPassword, verifyPassword } from "../../auth/password";
 import { setStock } from "../inventoryService";
-import { postEntry } from "../ledgerService";
+import { adjustSupplierBalance, postEntry } from "../ledgerService";
 import { money, toDbMoney } from "../money";
 import { withTx } from "../tx";
 import type { StkActor } from "./types";
@@ -163,6 +165,22 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
     type DecisionUpsert = typeof stocktakeDecisions.$inferInsert;
     const upserts: DecisionUpsert[] = [];
 
+    // بضاعة الأمانة (ش٤ تحسين): خريطة variantId → consignorId + تجميع حصص عجز الأمانة لكل مودِع.
+    // قرار المالك ٥: عجز صنف أمانة = خسارة على المكتبة (يبقى ضمن قيد SHORT) **+** التزامٌ للمودِع
+    // (كأنه بِيع بلا إيراد) ⇒ استحقاق يتيم بلا invoiceId. وزيادة الأمانة تُستبعَد من OVER (ليست ربحنا).
+    const consignByVariant = new Map<number, number>();
+    {
+      const vids = Array.from(new Set(rows.map((r) => Number(r.variantId))));
+      if (vids.length) {
+        const crows = await tx
+          .select({ vid: productVariants.id, isConsign: products.isConsignment, cId: products.consignorId })
+          .from(productVariants).innerJoin(products, eq(productVariants.productId, products.id))
+          .where(inArray(productVariants.id, vids));
+        for (const cr of crows) if (cr.isConsign && cr.cId != null && !isOpening) consignByVariant.set(Number(cr.vid), Number(cr.cId));
+      }
+    }
+    const consignShortByConsignor = new Map<number, ReturnType<typeof money>>();
+
     for (const r of rows) {
       if (r.rawCount == null || r.adjustedCount == null || r.diff == null) continue; // غير معدود ⇒ يبقى دفترياً بلا قرار
 
@@ -224,8 +242,15 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         // «تأسيس رصيد افتتاحي» لا عجزاً/زيادة — ترحيله ربحاً كان سينفخ قائمة الدخل بقيمة المخزون كله).
         if (!isOpening) {
           const v = money(r.value ?? 0);
-          if (r.diff < 0) shortExpense = shortExpense.plus(v.abs());
-          else overGain = overGain.plus(v);
+          const cId = consignByVariant.get(Number(r.variantId));
+          if (r.diff < 0) {
+            // العجز خسارة على المكتبة في الحالتين (يبقى ضمن SHORT). لأصناف الأمانة: + استحقاق للمودِع.
+            shortExpense = shortExpense.plus(v.abs());
+            if (cId != null) consignShortByConsignor.set(cId, (consignShortByConsignor.get(cId) ?? money(0)).plus(v.abs()));
+          } else if (cId == null) {
+            // زيادة صنف أمانة تُستبعَد من OVER (بضاعة المودِع الزائدة ليست ربحاً لنا).
+            overGain = overGain.plus(v);
+          }
         }
       }
 
@@ -292,6 +317,20 @@ export async function approveStocktake(sessionId: number, actor: StkActor): Prom
         dedupeKey: `STOCKTAKE:${sessionId}:OVER`,
         entryDate: now,
       });
+    }
+
+    // بضاعة الأمانة (ش٤ تحسين): استحقاق عجز الأمانة لكل مودِع — قيد PURCHASE يتيم (بلا invoiceId ⇒ خارج
+    // فلتر العمولة) بقيمة العجز من **نفس لقطة قيد SHORT** (r.value = unitCost لحظة الإنشاء) + رفع رصيده.
+    // بترتيب supplierId (منع deadlock). dedupeKey يمنع الازدواج على إعادة الاعتماد.
+    for (const cId of Array.from(consignShortByConsignor.keys()).sort((a, b) => a - b)) {
+      const amount = consignShortByConsignor.get(cId)!;
+      if (amount.lte(0)) continue;
+      await postEntry(tx, {
+        entryType: "PURCHASE", supplierId: cId, invoiceId: null, branchId: Number(s.branchId),
+        amount, notes: `جرد ${s.code} — استحقاق عجز أمانة`,
+        dedupeKey: `CONSIG:STK:${sessionId}:${cId}`, entryDate: now,
+      });
+      await adjustSupplierBalance(tx, cId, amount);
     }
 
     // (٧) آخر جرد معتمد لكل صنف معدود — يغذي «آخر جرد» والجرد الدوري ABC.

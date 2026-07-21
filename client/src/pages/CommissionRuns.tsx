@@ -170,6 +170,7 @@ export default function CommissionRuns() {
       tierMode: d.tierMode ?? "TARGET_PCT",
       baseSales: l.baseSales,
       baseReturns: l.baseReturns,
+      consignDeduction: l.baseConsignDeduction,
       carryIn: l.carryIn,
       effectiveBase: l.effectiveBase,
       targetAmount: l.targetAmount,

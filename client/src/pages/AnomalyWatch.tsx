@@ -1,6 +1,7 @@
-// رقيب الشذوذ — ٦ كواشف حتمية لمنع تسرّب الأموال (بلا أي ذكاء اصطناعي):
+// رقيب الشذوذ — ٧ كواشف حتمية لمنع تسرّب الأموال (بلا أي ذكاء اصطناعي):
 // بيع دون الكلفة (لقطة الكلفة التاريخية) · طفرة خصومات لكل كاشير · تركّز المرتجعات ·
-// عجوزات الورديات · عكس السندات · سلامة تسلسل الترقيم (كاشف عبث بقاعدة البيانات).
+// عجوزات الورديات · عكس السندات · سلامة تسلسل الترقيم (كاشف عبث بقاعدة البيانات) ·
+// تركّز سحوبات بضاعة الأمانة (ضابط تعويضيّ لـSOD السحب أحاديّ الفاعل).
 // الجداول تعرض الجميع والأعلام ترتّب لا تحجب. تصدير Excel متعدد الأوراق (ورقة لكل كاشف).
 import { useState } from "react";
 import { AlertTriangle } from "lucide-react";
@@ -90,6 +91,7 @@ export default function AnomalyWatch() {
         { label: "كاشيرية بعجوزات", value: String(aw.kpis.flaggedShortageCashiers), tone: aw.kpis.flaggedShortageCashiers > 0 ? "warning" : "positive" },
         { label: "سندات معكوسة", value: String(aw.kpis.reversedVouchers), tone: aw.kpis.reversedVouchers > 0 ? "info" : "positive" },
         { label: "أيام بفجوة تسلسل", value: String(aw.kpis.sequenceGapDays), tone: aw.kpis.sequenceGapDays > 0 ? "negative" : "positive" },
+        { label: "مُنشئو سحب أمانة مُعلَّمون", value: String(aw.kpis.flaggedConsignWithdrawers), tone: aw.kpis.flaggedConsignWithdrawers > 0 ? "warning" : "positive" },
       ]
     : [];
 
@@ -199,6 +201,19 @@ export default function AnomalyWatch() {
         ],
         rows: aw.sequenceGaps.rows as any[],
       },
+      {
+        sheetName: "سحوبات الأمانة",
+        title: "تركّز سحوبات بضاعة الأمانة حسب المُنشئ",
+        meta,
+        columns: [
+          { key: "userName", header: "المُنشئ" },
+          { key: "noteCount", header: "سندات السحب/الاستبدال" },
+          { key: "totalQty", header: "الوحدات المسحوبة" },
+          { key: "totalValue", header: "قيمة الحصص", money: true, map: (r: any) => Number(r.totalValue) },
+          { key: "flagged", header: "مؤشر", map: (r: any) => (r.flagged ? "نعم" : "") },
+        ],
+        rows: aw.consignWithdrawals.rows as any[],
+      },
     ];
     exportSheets(`رقيب-الشذوذ-${aw.from}-${aw.to}`, sheets);
   }
@@ -206,7 +221,7 @@ export default function AnomalyWatch() {
   return (
     <ReportShell
       title="رقيب الشذوذ"
-      description="كواشف حتمية لمنع تسرّب الأموال: بيع دون الكلفة، خصومات، مرتجعات، عجوزات، عكوس، وسلامة الترقيم."
+      description="كواشف حتمية لمنع تسرّب الأموال: بيع دون الكلفة، خصومات، مرتجعات، عجوزات، عكوس، سلامة الترقيم، وسحوبات الأمانة."
       note={NOTE}
       kpis={kpis}
       onExport={onExport}
@@ -486,6 +501,40 @@ export default function AnomalyWatch() {
                       <td className={tdCls}>{r.createdByName}</td>
                       <td className={tdCls}>{r.reversedByName}</td>
                       <td className={numCls} dir="ltr">{r.reversedAt}</td>
+                      <FlagCell flagged={r.flagged} />
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </SectionCard>
+
+          {/* D7 — تركّز سحوبات بضاعة الأمانة (ضابط تعويضيّ لـSOD السحب أحاديّ الفاعل) */}
+          <SectionCard
+            title="تركّز سحوبات بضاعة الأمانة"
+            subtitle="سندات سحب/استبدال بضاعة أمانة تُعيدها لمودِعها بلا فاعلٍ ثانٍ. المؤشر: مُنشئٌ أنشأ ٣ سندات فأكثر بالفترة."
+            count={aw.kpis.flaggedConsignWithdrawers}
+          >
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b text-xs text-muted-foreground">
+                  <th className={thCls}>المُنشئ</th>
+                  <th className={thCls}>سندات السحب/الاستبدال</th>
+                  <th className={thCls}>الوحدات المسحوبة</th>
+                  <th className={thCls}>قيمة الحصص</th>
+                  <th className={thCls}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {aw.consignWithdrawals.rows.length === 0 ? (
+                  <TableEmptyRow colSpan={5} message="لا سحوبات بضاعة أمانة في الفترة." />
+                ) : (
+                  aw.consignWithdrawals.rows.map((r, i) => (
+                    <tr key={i} className={cn("border-b last:border-0", r.flagged && "bg-amber-500/10")}>
+                      <td className={tdCls}>{r.userName}</td>
+                      <td className={cn(numCls, r.flagged && "font-bold text-destructive")} dir="ltr">{r.noteCount}</td>
+                      <td className={numCls} dir="ltr">{fmtAr(r.totalQty)}</td>
+                      <td className={cn(numCls, "text-muted-foreground")} dir="ltr">{fmtAr(r.totalValue)}</td>
                       <FlagCell flagged={r.flagged} />
                     </tr>
                   ))

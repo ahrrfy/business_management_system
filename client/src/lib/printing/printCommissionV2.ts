@@ -30,6 +30,8 @@ export interface CommissionStatementV2Data {
   tierMode: "TARGET_PCT" | "AMOUNT_SLAB";
   baseSales: string;
   baseReturns: string;
+  /** حصص مودِعي بضاعة الأمانة المستثناة من وعاء العمولة (design §٣، القرار ٤: الهامش فقط). */
+  consignDeduction?: string | null;
   carryIn: string;
   effectiveBase: string;
   targetAmount?: string | null;
@@ -109,6 +111,15 @@ export function printCommissionStatementV2(d: CommissionStatementV2Data): boolea
     { hideIndex: true },
   );
 
+  const consignNote =
+    Number(d.consignDeduction ?? 0) > 0
+      ? `<div style="margin-top:8px;padding:6px 14px;border:1px dashed #B7791F;border-radius:4px;background:#FFFBEB">
+          <span style="font-size:10.75px;font-weight:800;color:#B7791F">يُستثنى من الوعاء — حصص مودِعي الأمانة: </span>
+          <span style="font-size:12.25px;font-weight:800;color:#B7791F;direction:ltr;unicode-bidi:isolate">−${esc(fmt(d.consignDeduction ?? "0"))} د.ع</span>
+          <span style="font-size:10.25px;color:#000"> — العمولة تُحتسب على الهامش لا على قيمة بضاعة الغير المباعة برسم الأمانة.</span>
+        </div>`
+      : "";
+
   const carryNote =
     Number(d.carryOut) !== 0
       ? `<div style="margin-top:8px;padding:6px 14px;border:1px dashed #B42318;border-radius:4px;background:#FEF3F2">
@@ -133,6 +144,6 @@ export function printCommissionStatementV2(d: CommissionStatementV2Data): boolea
   </div>
   <div style="margin-top:10px;font-size:9.75px;color:#8B8E89">الصرف عبر مسيّر الرواتب الشهري — هذا الكشف بيان احتساب لا سند صرف.</div>`;
 
-  const body = `${pageBodyOpen()}${header}${cards}${table}${carryNote}${grand}${tafqit}${signatures}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF CR-${d.runId}/${d.period}` })}`;
+  const body = `${pageBodyOpen()}${header}${cards}${table}${consignNote}${carryNote}${grand}${tafqit}${signatures}${pageBodyClose()}${pageFooter(d.settings, { rightText: `REF CR-${d.runId}/${d.period}` })}`;
   return openPrintWindow(wrapA4Doc(`كشف عمولة ${d.employeeName} — ${d.period}`, body));
 }

@@ -19,6 +19,8 @@ const actor2b2 = { userId: 2, branchId: 2 };
 
 const TABLES = [
   "idempotencyKeys",
+  "consignmentNoteLines",
+  "consignmentNotes",
   "accountingEntries",
   "receipts",
   "inventoryMovements",
@@ -307,5 +309,58 @@ describe("عزل الفرع + RBAC", () => {
     const scoped = await mgrCaller.reports.anomalyWatch({ from: TODAY(), to: TODAY() });
     expect(scoped.belowCost.cashiers).toHaveLength(1);
     expect(scoped.belowCost.cashiers[0].userId).toBe(1); // بيع الفرع 1 (بائعه المستخدم 1) لا بيع الفرع 2
+  });
+});
+
+describe("D7 — تركّز سحوبات بضاعة الأمانة", () => {
+  /** سند سحب/استبدال أمانة بمُنشئ محدَّد + سطر OUT واحد على الصنف 1. */
+  async function withdrawNote(seq: number, createdBy: number, type: "WITHDRAW" | "EXCHANGE" = "WITHDRAW") {
+    const noteId = Number(
+      (await db().insert(s.consignmentNotes).values({
+        noteNumber: `CSN-1-20260721-${String(seq).padStart(5, "0")}`,
+        noteType: type, consignorId: 9, branchId: 1, createdBy,
+      }) as any)?.[0]?.insertId,
+    );
+    await db().insert(s.consignmentNoteLines).values({
+      noteId, lineDirection: "OUT", variantId: 1, productUnitId: 1,
+      quantity: "5", baseQuantity: 5, unitShareSnapshot: "4.00",
+    });
+  }
+
+  it("يُعلَّم مُنشئ ٣ سحوبات فأكثر، ومُنشئ سحبٍ واحد لا يُعلَّم؛ والقيمة بلقطة الحصة", async () => {
+    await db().insert(s.suppliers).values({ id: 9, name: "أ. مودِع", supplierKind: "CONSIGNOR", currentBalance: "0" });
+    // المدير (2): ٣ سحوبات ⇒ مُعلَّم. الأدمن (1): سحبٌ واحد ⇒ غير مُعلَّم.
+    await withdrawNote(1, 2);
+    await withdrawNote(2, 2, "EXCHANGE"); // الاستبدال يُحسب سحباً (سطر OUT)
+    await withdrawNote(3, 2);
+    await withdrawNote(4, 1);
+
+    const aw = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
+    expect(aw.kpis.flaggedConsignWithdrawers).toBe(1);
+    const rows = aw.consignWithdrawals.rows;
+    const mgr = rows.find((r) => r.userId === 2)!;
+    expect(mgr.noteCount).toBe(3);
+    expect(mgr.totalQty).toBe(15); // ٣ سندات × ٥ وحدات
+    expect(mgr.totalValue).toBe("60.00"); // 15 × 4.00
+    expect(mgr.flagged).toBe(true);
+    const admin = rows.find((r) => r.userId === 1)!;
+    expect(admin.noteCount).toBe(1);
+    expect(admin.flagged).toBe(false);
+  });
+
+  it("الإيداع (سطر IN فقط) لا يُحسب سحباً", async () => {
+    await db().insert(s.suppliers).values({ id: 9, name: "أ. مودِع", supplierKind: "CONSIGNOR", currentBalance: "0" });
+    const noteId = Number(
+      (await db().insert(s.consignmentNotes).values({
+        noteNumber: "CSN-1-20260721-00009", noteType: "DEPOSIT", consignorId: 9, branchId: 1, createdBy: 2,
+      }) as any)?.[0]?.insertId,
+    );
+    await db().insert(s.consignmentNoteLines).values({
+      noteId, lineDirection: "IN", variantId: 1, productUnitId: 1, quantity: "5", baseQuantity: 5, unitShareSnapshot: "4.00",
+    });
+
+    const aw = await getAnomalyWatch({ from: TODAY(), to: TODAY() });
+    expect(aw.kpis.flaggedConsignWithdrawers).toBe(0);
+    expect(aw.consignWithdrawals.rows).toHaveLength(0);
   });
 });

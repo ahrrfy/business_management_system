@@ -238,6 +238,40 @@ export function buildReconciliationMessage(d: ReconcileMessageData): string {
 }
 
 // ─────────────────────────────────────────────
+// بضاعة الأمانة: إشعار المودِع بالسحب/الاستبدال (ضابط SOD تعويضيّ — إعلام لا مطالبة)
+// ─────────────────────────────────────────────
+
+export interface ConsignmentWithdrawMessageData {
+  noteNumber: string;
+  noteType: "WITHDRAW" | "EXCHANGE";
+  consignorName?: string | null;
+  lines: Array<{ direction: "IN" | "OUT"; label: string; quantity: string | number }>;
+}
+
+/**
+ * إشعار المودِع بسحب/استبدال بضاعته الأمانة لحظة تسجيل السند — أحد ضوابط SOD الثلاثة التعويضية
+ * لسحبٍ أحاديّ الفاعل (design §5-أ): يفتح المودِعُ الرسالة فيعلم بما خرج من بضاعته فيتحقّق التقاطع.
+ * رسالة إعلامٍ لا مطالبة (لا مبالغ) — بلا إيموجي (تظهر «�» على واتساب، انظر [[whatsapp]]).
+ */
+export function buildConsignmentWithdrawMessage(data: ConsignmentWithdrawMessageData): string {
+  const title = data.noteType === "EXCHANGE" ? "إشعار استبدال بضاعة أمانة" : "إشعار سحب بضاعة أمانة";
+  const out = data.lines.filter((l) => l.direction === "OUT");
+  const inn = data.lines.filter((l) => l.direction === "IN");
+  const L: string[] = [`*${title}*`, COMPANY_NAME, `سند رقم: ${data.noteNumber}`, `التاريخ: ${today()}`, ""];
+  if (data.consignorName) L.push(`عزيزنا ${data.consignorName}،`);
+  if (out.length > 0) {
+    L.push("تمّ سحب الأصناف التالية من بضاعتكم المودَعة لدينا:");
+    for (const l of out.slice(0, 15)) L.push(`  • ${l.label} × ${fmtMoney(l.quantity)}`);
+  }
+  if (inn.length > 0) {
+    L.push("وأُودِعت لديكم الأصناف التالية:");
+    for (const l of inn.slice(0, 15)) L.push(`  • ${l.label} × ${fmtMoney(l.quantity)}`);
+  }
+  L.push("", "للتأكيد أو الاستفسار عن أيّ فرق يُرجى التواصل معنا.", COMPANY_NAME);
+  return L.join("\n");
+}
+
+// ─────────────────────────────────────────────
 // متجر الجوال (B2C): استرداد السلة + متابعة الطلب
 // ─────────────────────────────────────────────
 

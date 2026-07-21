@@ -40,6 +40,7 @@ export async function getRun(id: number) {
       branchId: commissionRunLines.branchId,
       baseSales: commissionRunLines.baseSales,
       baseReturns: commissionRunLines.baseReturns,
+      baseConsignDeduction: commissionRunLines.baseConsignDeduction,
       carryIn: commissionRunLines.carryIn,
       effectiveBase: commissionRunLines.effectiveBase,
       carryOut: commissionRunLines.carryOut,

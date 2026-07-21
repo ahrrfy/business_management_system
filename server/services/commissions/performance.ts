@@ -174,6 +174,8 @@ export interface MyStatusResult {
   tierMode: "TARGET_PCT" | "AMOUNT_SLAB" | null;
   sales: string;
   returns: string;
+  /** حصص بضاعة الأمانة المستثناة من الوعاء (0 إن لا شيء) — القرار ٤: العمولة على الهامش فقط. */
+  consignDeduction: string;
   carryIn: string;
   effectiveBase: string;
   target: string | null;
@@ -266,6 +268,7 @@ export async function getMyStatus(userId: number, period?: string): Promise<MySt
     tierMode,
     sales: toDbMoney(sales),
     returns: toDbMoney(returns),
+    consignDeduction: toDbMoney(consigDeduction),
     carryIn: toDbMoney(carryIn),
     effectiveBase: toDbMoney(effectiveBase),
     target: target ? toDbMoney(target) : null,
