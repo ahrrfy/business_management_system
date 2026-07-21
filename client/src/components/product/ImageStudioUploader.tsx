@@ -47,7 +47,8 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
           if (proAvailable) {
             try {
               const res = await proCutout.mutateAsync({ imageDataUrl: it.dataUrl });
-              r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl);
+              // نثق بقصّ remove.bg دائماً (خدمة مدفوعة) — لا نُخضعه لحدس FLATTEN-عند-الشكّ.
+              r = await finishCutFromCutout(res.cutoutDataUrl, it.dataUrl, { trustCutout: true });
               if (res.isPreview) lowResPreview = true; // مفتاح مجاني ⇒ نتيجة معاينة منخفضة الدقّة.
             } catch (e) {
               // فشل Pro (مفتاح خاطئ/صورة غير صالحة/تعطّل) ⇒ تدهور آمن لـFLATTEN بلا كسر التجربة.
