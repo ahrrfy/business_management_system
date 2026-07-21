@@ -248,8 +248,8 @@ export const catalogRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      for (const v of input.variants) assertValidImageDataUrl(v.image);
-      for (const img of input.images ?? []) assertValidImageDataUrl(img.url);
+      for (const v of input.variants) assertValidImageDataUrl(v.image, 2_000_000, true);
+      for (const img of input.images ?? []) assertValidImageDataUrl(img.url, 2_000_000, true);
       const res = await createProduct({ ...input, name: input.name ?? "" } as any, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, { action: "product.create", entityType: "product", entityId: (res as { productId?: number })?.productId, newValue: { name: input.name, brand: input.brand ?? null, modelName: input.modelName ?? null } });
       return res;
@@ -376,7 +376,7 @@ export const catalogRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      for (const v of input.variants) assertValidImageDataUrl(v.image);
+      for (const v of input.variants) assertValidImageDataUrl(v.image, 2_000_000, true);
       const before = await getProductForVariantEdit(input.productId);
       const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
