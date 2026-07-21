@@ -81,14 +81,21 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
       <ImageUploader {...props} />
 
       {value.length > 0 && !previews && (
-        <Button type="button" variant="outline" size="sm" onClick={runStudio} disabled={busy}>
-          <Sparkles aria-hidden className="size-4" />
-          {busy
-            ? "جارٍ التحويل…"
-            : proAvailable
-              ? "تحويل لخلفية استوديو (قصّ احترافي)"
-              : "تحويل لخلفية استوديو بيضاء"}
-        </Button>
+        <div className="space-y-1">
+          <Button type="button" variant="outline" size="sm" onClick={runStudio} disabled={busy}>
+            <Sparkles aria-hidden className="size-4" />
+            {busy
+              ? "جارٍ التحويل…"
+              : proAvailable
+                ? "قصّ الخلفية (استوديو احترافي)"
+                : "توسيط على خلفية بيضاء"}
+          </Button>
+          {!proAvailable && (
+            <p className="text-[11px] text-muted-foreground">
+              المسار المجانيّ يوسّط الصورة على أبيض فقط (لا يُزيل الخلفية). إزالة الخلفية الاحترافيّة تحتاج تفعيل remove.bg من الإعدادات.
+            </p>
+          )}
+        </div>
       )}
 
       {error && (
