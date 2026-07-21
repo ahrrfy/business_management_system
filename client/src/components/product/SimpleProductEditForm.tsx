@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
-import { AlertCircle, CheckCircle2, Layers, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Handshake, Layers, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -270,6 +270,17 @@ export default function SimpleProductEditForm({
         }
       />
 
+      {/* بضاعة الأمانة (٢٠/٧): وسم للعرض فقط — يُدار وقت الإنشاء ولا يُغيَّر في التعديل. */}
+      {product.data?.isConsignment && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <Handshake aria-hidden className="mt-0.5 size-4 shrink-0 text-amber-600" />
+          <div>
+            <b>بضاعة أمانة</b> — المودِع: {product.data.consignorName ?? `#${product.data.consignorId}`}.
+            خانة «سعر التكلفة» أدناه هي <b>حصة المودِع</b> المستحقّة عند البيع.
+          </div>
+        </div>
+      )}
+
       {/* ── بيانات المنتج ── */}
       <Card>
         <CardHeader><CardTitle className="text-base">بيانات المنتج</CardTitle></CardHeader>
@@ -425,7 +436,11 @@ export default function SimpleProductEditForm({
       <Card>
         <CardHeader><CardTitle className="text-base">التكلفة والضبط</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Field label="سعر التكلفة (د.ع)" required hint="سعر الشراء الموحّد.">
+          <Field
+            label={product.data?.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"}
+            required
+            hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "سعر الشراء الموحّد."}
+          >
             <MoneyInput id="simpleedit-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
           </Field>
           <Field label="الحد الأدنى" hint="ينبّه عند النزول عنه.">

@@ -39,6 +39,9 @@ export interface PosRow {
   // gstack B10 (٧/٧/٢٦): البكج بلا branchStock ذاتي — POS يعرض توفّراً **مشتقاً** = min(floor(componentStock/qty))
   // على مكوّناته. isBundle=true يشغّل الشارة والعدّ عبر `applyBundleAvailability`. المكوّن الأشحّ يحدّد الحدّ.
   isBundle: boolean;
+  // بضاعة الأمانة (٢٠/٧): صنف برسم البيع لطرف خارجي — شارة عرضية في نتيجة بحث POS (تفيد الكاشير
+  // عند أسئلة الزبون/الإرجاع). البيع طبيعيّ تماماً؛ الالتزام للمودِع يُلتقَط خادمياً.
+  isConsignment: boolean;
   // promotions v2 (٨/٧/٢٦، gstack B1+B2): «نقطة العرض = نقطة الفرض». `price` أعلاه = السعر الأصلي
   // (سعر الفئة أو التعاقدي). `promotionDiscountForUnit` هو الخصم لكل وحدة (>0 لو ينطبق عرض).
   // `promotionEffectivePrice` = `price - promotionDiscountForUnit` — الكاشير يعرضه للعميل ويبني منه
@@ -74,6 +77,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       isCustomizable: products.isCustomizable,
       productType: products.productType,
       isBundle: products.isBundle,
+      isConsignment: products.isConsignment,
     })
     .from(productUnits)
     .innerJoin(productVariants, eq(productUnits.variantId, productVariants.id))
@@ -102,6 +106,7 @@ function normalize(rows: any[]): PosRow[] {
     isPrintService: r.productType === PRINT_SERVICE_TYPE,
     isContractPrice: false,
     isBundle: !!r.isBundle,
+    isConsignment: !!r.isConsignment,
     promotionId: null,
     promotionName: null,
     promotionDiscountForUnit: "0.00",

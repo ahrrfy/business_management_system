@@ -1,12 +1,12 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, eq, gte, inArray, isNotNull, isNull, lte, sql } from "drizzle-orm";
-import { accountingEntries, customers, invoiceItemBundleComponents, invoiceItems, invoices, receipts } from "../../drizzle/schema";
+import { accountingEntries, customers, invoiceItemBundleComponents, invoiceItems, invoices, productVariants, products, receipts } from "../../drizzle/schema";
 import { classifyVariants } from "./bundleService";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement } from "./inventoryService";
-import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
+import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
 import { money, round2, toDbMoney } from "./money";
 import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
@@ -314,6 +314,49 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
     });
+
+    // بضاعة الأمانة (ش٣): عكس التزام المودِع — **دائماً** (restock أو تالف)، بقيدٍ PURCHASE سالب بنفس
+    // invoiceId ⇒ يدخل فلتر خصم العمولة فيستردّ حصّة البائع (صافي وعائه = 0). §٥ حاصرة ١.
+    // إن كان تالفاً (restock=false): إعادة استحقاق يتيمة (بلا invoiceId) ⇒ AP صافٍ = 0 (يبقى مستحقاً)
+    // والمكتبة تتحمّل الخسارة (COGS غير معكوس). القيد اليتيم خارج فلتر العمولة (لا يمسّ البائع).
+    {
+      const rvids = Array.from(new Set(work.map((w) => Number(w.item.variantId))));
+      const consignByVariant = new Map<number, number>();
+      if (rvids.length) {
+        const crows = await tx
+          .select({ vid: productVariants.id, isConsign: products.isConsignment, cId: products.consignorId })
+          .from(productVariants).innerJoin(products, eq(productVariants.productId, products.id))
+          .where(inArray(productVariants.id, rvids));
+        for (const r of crows) if (r.isConsign && r.cId != null) consignByVariant.set(Number(r.vid), Number(r.cId));
+      }
+      if (consignByVariant.size) {
+        const byConsignor = new Map<number, Decimal>();
+        for (const { line, item } of work) {
+          const cId = consignByVariant.get(Number(item.variantId));
+          if (cId == null) continue;
+          const share = round2(money(item.unitCost).times(line.baseQuantity)); // مرآة returnedCost الخطية.
+          byConsignor.set(cId, (byConsignor.get(cId) ?? new Decimal(0)).plus(share));
+        }
+        for (const cId of Array.from(byConsignor.keys()).sort((a, b) => a - b)) {
+          const share = byConsignor.get(cId)!;
+          if (share.lte(0)) continue;
+          // عكس دائماً (بنفس invoiceId — يدخل فلتر العمولة).
+          await postEntry(tx, {
+            entryType: "PURCHASE", supplierId: cId, invoiceId: input.invoiceId, branchId: Number(inv.branchId),
+            amount: share.neg(), notes: "عكس استحقاق أمانة — مرتجع",
+          });
+          await adjustSupplierBalance(tx, cId, share.neg());
+          if (!restock) {
+            // تالف: إعادة استحقاق يتيمة (بلا invoiceId) ⇒ الالتزام يبقى، والبائع لا يتأثّر.
+            await postEntry(tx, {
+              entryType: "PURCHASE", supplierId: cId, invoiceId: null, branchId: Number(inv.branchId),
+              amount: share, notes: "استحقاق تلف مرتجع أمانة",
+            });
+            await adjustSupplierBalance(tx, cId, share);
+          }
+        }
+      }
+    }
 
     // G10 (١٩/٦/٢٦): عكس تقريب النقد العراقي (cashRoundingAdjustment) عند المرتجع الكامل
     // — المرتجع الجزئي يترك التقريب على الفاتورة ويُصفّى عند المرتجع المُكمِل. كان عدم عكسه

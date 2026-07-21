@@ -638,6 +638,27 @@
       "when": 1784937600004,
       "tag": "0090_supplier_client_request_id",
       "breakpoints": true
+    },
+    {
+      "idx": 91,
+      "version": "5",
+      "when": 1784937600006,
+      "tag": "0091_consignment_core",
+      "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "5",
+      "when": 1784937600007,
+      "tag": "0092_consignment_notes",
+      "breakpoints": true
+    },
+    {
+      "idx": 94,
+      "version": "5",
+      "when": 1784937600008,
+      "tag": "0094_commission_consign_deduction",
+      "breakpoints": true
     }
   ]
 }

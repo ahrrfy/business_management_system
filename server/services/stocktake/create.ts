@@ -113,7 +113,12 @@ async function resolveScope(
   // gstack B7 (٧/٧/٢٦): البكجات بلا branchStock ⇒ حاجز setStock في finalize يرفضها فيُسقط اعتماد
   // الجرد كاملاً ذرّياً. نستبعدها من كل النطاقات هنا (نقطة الدخول الوحيدة) — البكج «يُجرَد» عبر
   // مكوّناته لا كوحدة قائمة بذاتها.
-  const notBundleCond = eq(products.isBundle, false);
+  // بضاعة الأمانة (ش٤): تُستبعَد من الجرد **الافتتاحي** (OPENING) — تُفتتَح بسند إيداع لا بجرد افتتاحيّ
+  // (لا تأسيس عهدة بضاعة الغير بلا توقيع مودِع). الجرد العادي (NORMAL) يشملها. §٥-د.
+  const notBundleCond =
+    input.sessionType === "OPENING"
+      ? and(eq(products.isBundle, false), eq(products.isConsignment, false))!
+      : eq(products.isBundle, false);
 
   if (input.scopeType === "FULL") {
     const rows = await tx

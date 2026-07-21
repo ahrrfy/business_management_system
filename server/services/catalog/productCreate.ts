@@ -11,6 +11,7 @@ import {
   products,
   productionRecipeLines,
   productionRecipes,
+  suppliers,
 } from "../../../drizzle/schema";
 import { replaceBundleComponents, type BundleComponentInput } from "../bundleService";
 import { checkBarcodesTakenAcrossBoth, findBarcodeClashes } from "./barcodeAliases";
@@ -45,6 +46,11 @@ export interface CreateProductInput {
   isBundle?: boolean;
   // bundles: وصفة البكج — قائمة المكوّنات (متغيّر أساس + كميّة صحيحة بالوحدة الأساس). إلزامية عند isBundle=true.
   bundleComponents?: BundleComponentInput[];
+  // بضاعة الأمانة (٢٠/٧): وسم المنتج + مودِعه. الحصة تسكن variants[].costPrice (قرار المالك).
+  // تلازم إلزاميّ isConsignment ⇔ consignorId (يُتحقَّق supplierKind='CONSIGNOR')، وحصة > 0،
+  // ولا خدمة/بكج. راجع docs/consignment-design-2026-07-20.md §٥-ط.
+  isConsignment?: boolean;
+  consignorId?: number | null;
   // print-catalog: وصفة المواد الخام التي تَستهلكها الخدمة (ورق/حبر…). تُربَط بمتغيّر البَند الأوّل
   // (الخدمات أحاديّة المتغيّر). اختيارية: خدمة بلا مواد (إلكترونية/تصميم) تُترَك بلا وصفة.
   recipe?: Array<{ inputVariantId: number; qtyPerOutputBase: string }>;
@@ -140,6 +146,41 @@ export async function checkBarcodesTaken(codes: string[]): Promise<Array<{ code:
   return checkBarcodesTakenAcrossBoth(codes);
 }
 
+/**
+ * بضاعة الأمانة — الحراس (§٥-ط): تلازم أمانة⇔مودِع، المودِع نوعه CONSIGNOR ونشِط، الحصة (costPrice)
+ * لكل متغيّر > 0، ولا خدمة/بكج. يُستدعى داخل المعاملة قبل أي إدراج. مشترك مفهومياً مع مسار التعديل.
+ */
+export async function assertConsignmentValid(
+  tx: Tx,
+  input: { isConsignment?: boolean; consignorId?: number | null; isService?: boolean; printService?: boolean; isBundle?: boolean },
+  variantCosts: string[],
+) {
+  const isConsign = !!input.isConsignment;
+  const consignorId = input.consignorId ?? null;
+  // تلازم إلزاميّ في الاتجاهين.
+  if (isConsign && !consignorId)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "صنف الأمانة يلزمه مودِع — اختر المودِع" });
+  if (!isConsign && consignorId)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُربط مودِع بصنف غير موسوم أمانة" });
+  if (!isConsign) return;
+  if (input.isService || input.printService)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الخدمة لا تكون بضاعة أمانة" });
+  if (input.isBundle)
+    throw new TRPCError({ code: "BAD_REQUEST", message: "البكج لا يكون بضاعة أمانة" });
+  const [sup] = await tx
+    .select({ id: suppliers.id, kind: suppliers.supplierKind, active: suppliers.isActive })
+    .from(suppliers).where(eq(suppliers.id, consignorId!)).limit(1);
+  if (!sup) throw new TRPCError({ code: "BAD_REQUEST", message: "المودِع غير موجود" });
+  if (sup.kind !== "CONSIGNOR")
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الطرف المختار ليس مودِع أمانة" });
+  if (!sup.active) throw new TRPCError({ code: "BAD_REQUEST", message: "المودِع معطَّل — لا يُربط به صنف جديد" });
+  // الحصة تسكن costPrice ويجب أن تكون موجبة (هي المبلغ المستحق للمودِع عند البيع).
+  for (const c of variantCosts) {
+    if (!(Number(c) > 0))
+      throw new TRPCError({ code: "BAD_REQUEST", message: "حصة المودِع إلزامية وأكبر من صفر لكل متغيّر" });
+  }
+}
+
 /** Create a product with its variants, units and prices in one transaction. */
 export async function createProduct(input: CreateProductInput, actor: Actor) {
   if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
@@ -171,6 +212,7 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
     const composedName = composeProductName(input);
     if (!composedName) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب (اكتبه مباشرةً أو املأ النوع/الماركة/الموديل)" });
     await assertCatalogUniqueness(tx, input);
+    await assertConsignmentValid(tx, input, input.variants.map((v) => v.costPrice));
     // print-catalog: التَوجيه لنقطة الطباعة يَفرض الراية PRINT_SERVICE (تَجُبّ «النوع» الوصفي)
     // ويُلزم isService (خدمة بلا مخزون). غير ذلك ⇒ النوع الوصفي كَما هو.
     const isService = !!(input.isService || input.printService);
@@ -185,6 +227,8 @@ export async function createProduct(input: CreateProductInput, actor: Actor) {
       isService,
       showInReception: !!input.showInReception,
       isBundle,
+      isConsignment: !!input.isConsignment,
+      consignorId: input.isConsignment ? (input.consignorId ?? null) : null,
     });
     const productId = extractInsertId(pRes);
 

@@ -107,8 +107,9 @@ export async function getLeaderboard(period: string): Promise<LeaderboardResult>
     const base = baseByUser.get(e.userId);
     const sales = base?.sales ?? new Decimal(0);
     const returns = base?.returns ?? new Decimal(0);
+    const consigDeduction = base?.consigDeduction ?? new Decimal(0);
     const carryIn = carryByEmployee.get(e.employeeId) ?? new Decimal(0);
-    const grossBase = sales.minus(returns).plus(carryIn);
+    const grossBase = sales.minus(returns).minus(consigDeduction).plus(carryIn);
     const effectiveBase = Decimal.max(0, grossBase);
 
     const target = targetByEmployee.get(e.employeeId) ?? null;
@@ -218,8 +219,9 @@ export async function getMyStatus(userId: number, period?: string): Promise<MySt
   const base = baseByUser.get(userId);
   const sales = base?.sales ?? new Decimal(0);
   const returns = base?.returns ?? new Decimal(0);
+  const consigDeduction = base?.consigDeduction ?? new Decimal(0);
   const carryIn = (await loadCarryIn(db, p)).get(employeeId) ?? new Decimal(0);
-  const effectiveBase = Decimal.max(0, sales.minus(returns).plus(carryIn));
+  const effectiveBase = Decimal.max(0, sales.minus(returns).minus(consigDeduction).plus(carryIn));
   const achievementPct = target && target.gt(0) ? round2(effectiveBase.div(target).times(100)) : null;
 
   let planName: string | null = null;

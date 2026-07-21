@@ -489,10 +489,13 @@ export async function getFinancialPosition(
     FROM suppliers WHERE isActive = TRUE
   `))[0] ?? { c: "0", d: "0" };
 
+  // بضاعة الأمانة (ش٤): تُستبعَد من أصول المخزون — ليست ملك المكتبة (تظهر التزاماً في AP بعد البيع فقط).
   const inv = rowsOf(await db.execute(sql`
     SELECT CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS v
-    FROM branchStock bs JOIN productVariants pv ON pv.id = bs.variantId
-    ${bId ? sql`WHERE bs.branchId = ${bId}` : sql``}
+    FROM branchStock bs
+      JOIN productVariants pv ON pv.id = bs.variantId
+      JOIN products p ON p.id = pv.productId
+    WHERE p.isConsignment = false ${bId ? sql`AND bs.branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 
   const cashRow = rowsOf(await db.execute(sql`

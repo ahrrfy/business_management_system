@@ -1306,6 +1306,9 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
                     {p.isService && (
                       <span style={{ fontSize: 10, fontWeight: 700, color: "#0891b2", background: "#cffafe", padding: "1px 6px", borderRadius: 4, marginRight: 6, verticalAlign: "middle" }}>خِدمة</span>
                     )}
+                    {p.isConsignment && (
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "#b45309", background: "#fef3c7", padding: "1px 6px", borderRadius: 4, marginRight: 6, verticalAlign: "middle" }}>أمانة</span>
+                    )}
                   </div>
                   <div style={{ fontSize: 11.5, color: C.mutedFg, marginTop: 2 }}>
                     {p.sku} · {p.unitName}

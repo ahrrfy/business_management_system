@@ -32,6 +32,7 @@ import {
 import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
+import { ConsignmentField, type ConsignmentValue } from "@/components/product/ConsignmentField";
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { useMemo, useRef, useState } from "react";
@@ -69,6 +70,8 @@ export default function ProductNew() {
   const [costPrice, setCostPrice] = useState("");
   const [defaultMin, setDefaultMin] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
+  // بضاعة الأمانة (٢٠/٧): وسم المنتج + مودِعه (وضع «سلعة بمتغيّرات»؛ السلعة البسيطة لها حقلها الخاص).
+  const [consignment, setConsignment] = useState<ConsignmentValue>({ isConsignment: false, consignorId: null });
   // نوع البَند: سلعة بسيطة (منتج واحد بباركود) | سلعة بمتغيّرات (ألوان/قياسات) | خِدمة.
   // الافتراضي «بسيطة» لأنها الحالة الأشيَع في المكتبة (كتاب/ملزمة/دفتر مفرد).
   const [mode, setMode] = useState<"simple" | "variants" | "service" | "bundle">("simple");
@@ -304,6 +307,9 @@ export default function ProductNew() {
     }
     const dupBc = codes.find((c, i) => codes.indexOf(c) !== i);
     if (dupBc) return `باركود مكرّر داخل النموذج: ${dupBc} — لكل وحدة/لون/بديل باركود فريد.`;
+    // بضاعة الأمانة: التلازم يُتحقَّق خادمياً أيضاً، لكن رسالة أبكر أوضح للمستخدم.
+    if (consignment.isConsignment && !consignment.consignorId)
+      return "صنف الأمانة يلزمه مودِع — اختر المودِع أو أطفئ «بضاعة أمانة».";
     return null;
   }
 
@@ -319,6 +325,9 @@ export default function ProductNew() {
       isCustomizable,
       // سلعة بمتغيّرات = دائماً مخزنيّة (الخدمة تُدار في ServiceForm، والبسيطة في SimpleProductForm).
       isService: false,
+      // بضاعة الأمانة: الوسم + المودِع (الحصة في costPrice لكل متغيّر). التحقّق النهائي خادميّ.
+      isConsignment: consignment.isConsignment,
+      consignorId: consignment.isConsignment ? consignment.consignorId : null,
       variants: variants.map((v) => {
         const overrideCost = v.priceOverride && v.costPrice.trim() ? v.costPrice.trim() : costPrice.trim();
         return {
@@ -536,6 +545,8 @@ export default function ProductNew() {
           </CardContent>
         </Card>
 
+        <ConsignmentField value={consignment} onChange={setConsignment} />
+
         <Card>
           <CardHeader><CardTitle className="text-base">معاينة الكاتالوج</CardTitle></CardHeader>
           <CardContent>
@@ -570,7 +581,11 @@ export default function ProductNew() {
       <Card>
         <CardHeader><CardTitle className="text-base">التسعير والمخزون · مشترك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Field label="سعر التكلفة (د.ع)" required hint="سعر شراء موحّد لكل الألوان.">
+          <Field
+            label={consignment.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"}
+            required
+            hint={consignment.isConsignment ? "المبلغ الذي يستحقه المودِع عند بيع القطعة." : "سعر شراء موحّد لكل الألوان."}
+          >
             <MoneyInput id="product-cost" value={costPrice} onChange={setCostPrice} placeholder="150" />
           </Field>
           <Field label="الحد الأدنى الافتراضي" hint="يُطبَّق على المتغيّرات الجديدة.">

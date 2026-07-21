@@ -26,9 +26,14 @@ export interface InventoryValuationRow {
   totalValue: string; // إجمالي القيمة بالتكلفة (نصّ مالي)
 }
 
+/** بضاعة الأمانة (ش٤): إجمالي منفصل — ليست أصل المكتبة، تُعرَض سطراً إفصاحياً لا ضمن المجموع. */
+export interface ConsignmentValuationTotal { items: number; totalQty: number; totalValue: string }
+
 export interface InventoryValuationResult {
   rows: InventoryValuationRow[];
   totals: { items: number; totalQty: number; totalValue: string };
+  /** بضاعة الأمانة لدى المكتبة (بحصص المودِعين) — إفصاح خارج مجموع الأصول. */
+  consignment: ConsignmentValuationTotal;
 }
 
 /**
@@ -40,10 +45,10 @@ export async function getInventoryValuation(
   opts: { branchId?: number } = {},
 ): Promise<InventoryValuationResult> {
   const db = getDb();
-  if (!db) return { rows: [], totals: { items: 0, totalQty: 0, totalValue: "0" } };
+  if (!db) return { rows: [], totals: { items: 0, totalQty: 0, totalValue: "0" }, consignment: { items: 0, totalQty: 0, totalValue: "0" } };
 
-  const branchCond = opts.branchId ? sql`WHERE bs.branchId = ${opts.branchId}` : sql``;
-
+  const branchCond = opts.branchId ? sql`AND bs.branchId = ${opts.branchId}` : sql``;
+  // بضاعة الأمانة (ش٤): التقييم = أصول المكتبة فقط (isConsignment=false)؛ الأمانة سطرٌ منفصل أدناه.
   const raw = rowsOf(
     await db.execute(sql`
       SELECT
@@ -56,7 +61,7 @@ export async function getInventoryValuation(
       JOIN productVariants pv ON pv.id = bs.variantId
       JOIN products p ON p.id = pv.productId
       LEFT JOIN categories c ON c.id = p.categoryId
-      ${branchCond}
+      WHERE p.isConsignment = false ${branchCond}
       GROUP BY c.id, c.name
       ORDER BY SUM(bs.quantity * pv.costPrice) DESC
     `),
@@ -79,7 +84,22 @@ export async function getInventoryValuation(
         CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS totalValue
       FROM branchStock bs
       JOIN productVariants pv ON pv.id = bs.variantId
-      ${branchCond}
+      JOIN products p ON p.id = pv.productId
+      WHERE p.isConsignment = false ${branchCond}
+    `),
+  )[0] ?? { items: 0, totalQty: 0, totalValue: "0" };
+
+  // بضاعة الأمانة لدى المكتبة (بحصص المودِعين) — سطر إفصاحي منفصل.
+  const consignRow = rowsOf(
+    await db.execute(sql`
+      SELECT
+        COUNT(DISTINCT bs.variantId) AS items,
+        CAST(COALESCE(SUM(bs.quantity), 0) AS CHAR) AS totalQty,
+        CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS totalValue
+      FROM branchStock bs
+      JOIN productVariants pv ON pv.id = bs.variantId
+      JOIN products p ON p.id = pv.productId
+      WHERE p.isConsignment = true ${branchCond}
     `),
   )[0] ?? { items: 0, totalQty: 0, totalValue: "0" };
 
@@ -89,6 +109,11 @@ export async function getInventoryValuation(
       items: Number(totalsRow.items ?? 0),
       totalQty: Number(totalsRow.totalQty ?? 0),
       totalValue: toDbMoney(money(totalsRow.totalValue ?? 0)),
+    },
+    consignment: {
+      items: Number(consignRow.items ?? 0),
+      totalQty: Number(consignRow.totalQty ?? 0),
+      totalValue: toDbMoney(money(consignRow.totalValue ?? 0)),
     },
   };
 }

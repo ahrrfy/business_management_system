@@ -132,6 +132,7 @@ export async function validateBundleComponents(
       productActive: products.isActive,
       productIsBundle: products.isBundle,
       productIsService: products.isService,
+      productIsConsignment: products.isConsignment,
       costPrice: productVariants.costPrice,
       productName: products.name,
       variantSku: productVariants.sku,
@@ -168,6 +169,14 @@ export async function validateBundleComponents(
       throw new TRPCError({
         code: "BAD_REQUEST",
         message: `«${r.productName}» منتج خدمي — لا يصلح مكوّناً في بكج بضاعة`,
+      });
+    }
+    // بضاعة الأمانة (§٥-ط، الحارس ٢): صنف أمانة ليس ملكنا — لقطة مكوّنات البكج تسطّح المودِع وتفسد
+    // التقاط التزامه عند بيع البكج ⇒ لا يُضمَّن في بكج.
+    if (r.productIsConsignment) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `«${r.productName}» بضاعة أمانة — لا تُضمَّن في بكج (تُباع مباشرةً)`,
       });
     }
     validated.push({

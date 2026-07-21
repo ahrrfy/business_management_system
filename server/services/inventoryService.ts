@@ -85,6 +85,12 @@ export interface ApplyMovementArgs {
    * (استهلاكيات الطباعة/إعادة تشغيل الأوفلاين — يبقيان بلا شرط openedAt).
    */
   allowNegativeUnopened?: boolean;
+  /**
+   * بضاعة الأمانة (ش٢): ختم `openedAt` بعد الحركة (COALESCE — مرّة واحدة) — إيداع الأمانة «افتتاحٌ»
+   * للرصيد بكمية موثَّقة موقَّعة، فلا يُترَك الصنف قابلاً للبيع بالسالب أثناء نافذة الافتتاح. يطابق فرع
+   * OPENING في setStock. يُفعَّل من مسار سند الإيداع فقط.
+   */
+  stampOpened?: boolean;
 }
 export interface ApplyMovementResult {
   movementId: number;
@@ -159,9 +165,14 @@ export async function applyMovement(tx: Tx, a: ApplyMovementArgs): Promise<Apply
   const movementId = extractInsertId(res);
 
   // كتابة نسبية تحت القفل: تشفى ذاتياً ولا تطمس تحديثاً متزامناً (بخلاف الكتابة المطلقة السابقة).
+  // بضاعة الأمانة: ختم openedAt ذرّياً مع تحديث الكمية (COALESCE — أول ختم فقط) عند الإيداع.
   await tx
     .update(branchStock)
-    .set({ quantity: sql`${branchStock.quantity} + ${signedDelta}` })
+    .set(
+      a.stampOpened
+        ? { quantity: sql`${branchStock.quantity} + ${signedDelta}`, openedAt: sql`COALESCE(${branchStock.openedAt}, NOW())` }
+        : { quantity: sql`${branchStock.quantity} + ${signedDelta}` },
+    )
     .where(and(eq(branchStock.variantId, a.variantId), eq(branchStock.branchId, a.branchId)));
 
   return { movementId, newQuantity };

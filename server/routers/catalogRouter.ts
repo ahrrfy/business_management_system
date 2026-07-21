@@ -240,6 +240,9 @@ export const catalogRouter = router({
           )
           .max(50)
           .optional(),
+        // بضاعة الأمانة (٢٠/٧): وسم المنتج + مودِعه (الحصة في variants[].costPrice). التحقّق خادمياً.
+        isConsignment: z.boolean().optional(),
+        consignorId: z.number().int().positive().nullish(),
         variants: z.array(variantSchema).min(1),
         images: z.array(imageSchema).max(10).optional(),
       })

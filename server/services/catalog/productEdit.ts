@@ -1,6 +1,6 @@
 // قراءة منتج كاملاً لتغذية شاشة التعديل.
 import { and, eq, inArray } from "drizzle-orm";
-import { bundleComponents, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { bundleComponents, productPrices, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import type { PriceTier } from "../pricing";
 
@@ -12,6 +12,10 @@ export interface ProductForEdit {
   isService: boolean;
   isBundle: boolean;
   isActive: boolean;
+  // بضاعة الأمانة (٢٠/٧): الوسم + المودِع (اسمه للعرض). الوسم يُقفَل في التعديل (يُدار وقت الإنشاء).
+  isConsignment: boolean;
+  consignorId: number | null;
+  consignorName: string | null;
   variants: Array<{
     id: number;
     sku: string;
@@ -104,6 +108,13 @@ export async function getProductForEdit(productId: number): Promise<ProductForEd
       .sort((a, b) => a.sortOrder - b.sortOrder);
   }
 
+  // بضاعة الأمانة: اسم المودِع للعرض (قراءة واحدة عند وجود ربط فقط).
+  let consignorName: string | null = null;
+  if (p.consignorId != null) {
+    const [c] = await db.select({ name: suppliers.name }).from(suppliers).where(eq(suppliers.id, Number(p.consignorId))).limit(1);
+    consignorName = c?.name ?? null;
+  }
+
   return {
     id: Number(p.id),
     name: p.name,
@@ -112,6 +123,9 @@ export async function getProductForEdit(productId: number): Promise<ProductForEd
     isService: !!p.isService,
     isBundle: !!p.isBundle,
     isActive: !!p.isActive,
+    isConsignment: !!p.isConsignment,
+    consignorId: p.consignorId != null ? Number(p.consignorId) : null,
+    consignorName,
     bundleComponents: bundleRows,
     variants: variants.map((v) => ({
       id: Number(v.id),

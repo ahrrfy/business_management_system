@@ -29,6 +29,9 @@ export interface UserMonthBase {
   sales: Decimal;
   /** |Σ إيراد RETURN| (موجب — القيود مخزّنة سالبة). */
   returns: Decimal;
+  /** بضاعة الأمانة (ش٣): Σ حصص المودِعين للمبيعات (قيود PURCHASE∧invoiceId∧supplierId) — تُخصَم من
+   *  الوعاء (قرار المالك ٤: العمولة على الهامش فقط). موجبٌ صافياً (استحقاق البيع − عكس المرتجع). §٤.١. */
+  consigDeduction: Decimal;
   saleEntryCount: number;
   returnEntryCount: number;
 }
@@ -44,6 +47,10 @@ export async function computeNetSalesByUser(runner: DB | Tx, period: string): Pr
       ),
       sales: sql<string>`CAST(COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'SALE' THEN ${accountingEntries.revenue} ELSE 0 END), 0) AS CHAR)`,
       returnsNeg: sql<string>`CAST(COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'RETURN' THEN ${accountingEntries.revenue} ELSE 0 END), 0) AS CHAR)`,
+      // بضاعة الأمانة (ش٣): خصم حصص المودِعين — قيود PURCHASE بـinvoiceId+supplierId (استحقاق البيع
+      // موجب، عكس المرتجع سالب) ⇒ الصافي = حصص البيع القائم. التركيبة (PURCHASE∧invoiceId∧supplierId)
+      // فارغة تاريخياً فلا أثر رجعيّ. قيود التلف/الجرد (بلا invoiceId) خارج الفلتر ⇒ لا تمسّ البائع.
+      consigDeduction: sql<string>`CAST(COALESCE(SUM(CASE WHEN ${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.supplierId} IS NOT NULL THEN ${accountingEntries.amount} ELSE 0 END), 0) AS CHAR)`,
       saleEntryCount: sql<number>`SUM(CASE WHEN ${accountingEntries.entryType} = 'SALE' THEN 1 ELSE 0 END)`,
       returnEntryCount: sql<number>`SUM(CASE WHEN ${accountingEntries.entryType} = 'RETURN' THEN 1 ELSE 0 END)`,
     })
@@ -52,11 +59,14 @@ export async function computeNetSalesByUser(runner: DB | Tx, period: string): Pr
     .leftJoin(workOrders, eq(workOrders.invoiceId, invoices.id))
     .where(
       and(
-        inArray(accountingEntries.entryType, ["SALE", "RETURN"]),
         isNotNull(accountingEntries.invoiceId),
-        isNull(accountingEntries.supplierId),
         sql`${accountingEntries.entryDate} >= ${from}`,
         sql`${accountingEntries.entryDate} < ${toExclusive}`,
+        // SALE/RETURN للبائع (supplierId فارغ)، أو قيد أمانة أُسنِد لفاتورته (PURCHASE بـsupplierId).
+        sql`(
+          (${accountingEntries.entryType} IN ('SALE','RETURN') AND ${accountingEntries.supplierId} IS NULL)
+          OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.supplierId} IS NOT NULL)
+        )`,
       ),
     )
     .groupBy(sql`sellerId`);
@@ -67,6 +77,7 @@ export async function computeNetSalesByUser(runner: DB | Tx, period: string): Pr
     map.set(Number(r.sellerId), {
       sales: money(r.sales),
       returns: money(r.returnsNeg).neg(),
+      consigDeduction: money(r.consigDeduction),
       saleEntryCount: Number(r.saleEntryCount),
       returnEntryCount: Number(r.returnEntryCount),
     });
@@ -77,5 +88,5 @@ export async function computeNetSalesByUser(runner: DB | Tx, period: string): Pr
 /** صافي الوعاء (مبيعات − مرتجعات) لمستخدم واحد — يعيد أصفاراً للخامل. */
 export async function computeNetSalesForUser(runner: DB | Tx, period: string, userId: number): Promise<UserMonthBase> {
   const map = await computeNetSalesByUser(runner, period);
-  return map.get(userId) ?? { sales: money(0), returns: money(0), saleEntryCount: 0, returnEntryCount: 0 };
+  return map.get(userId) ?? { sales: money(0), returns: money(0), consigDeduction: money(0), saleEntryCount: 0, returnEntryCount: 0 };
 }

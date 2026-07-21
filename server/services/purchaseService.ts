@@ -45,6 +45,13 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
 
     if (!input.items.length) throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء بلا أصناف" });
 
+    // بضاعة الأمانة (§٥-ط، الحارس ١ — أخطر باب ازدواج AP): لا أمر شراء لمورّد من نوع CONSIGNOR —
+    // بضاعته تُستلم بسند إيداع لا بأمر شراء (وإلا نشأ دين عند الاستلام + دين ثانٍ عند البيع).
+    const [sup] = await tx.select({ kind: suppliers.supplierKind }).from(suppliers)
+      .where(eq(suppliers.id, input.supplierId)).limit(1);
+    if (sup?.kind === "CONSIGNOR")
+      throw new TRPCError({ code: "BAD_REQUEST", message: "هذا مودِع أمانة — تُستلم بضاعته بسند إيداع من تبويب سندات الأمانة، لا بأمر شراء" });
+
     // gstack B5 (Bundle in PO ⇒ inventory limbo): البكج بلا مخزون ذاتي — تسجيله في أمر شراء يؤدّي إلى
     // فشل الاستلام بحاجز `applyMovement` بعد جهد إدخال كامل، وقد يترك بضاعة على الرصيف بلا AP. نرفض
     // عند الإدخال بدل التعثّر متأخّراً. `listForPurchase` يستبعده من المنتقيات، لكن الدفاع في العمق
@@ -52,7 +59,7 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     const uniqueVariantIds = Array.from(new Set(input.items.map((it) => it.variantId)));
     if (uniqueVariantIds.length) {
       const flags = await tx
-        .select({ isBundle: products.isBundle, productName: products.name, sku: productVariants.sku })
+        .select({ isBundle: products.isBundle, isConsignment: products.isConsignment, productName: products.name, sku: productVariants.sku })
         .from(productVariants)
         .innerJoin(products, eq(productVariants.productId, products.id))
         .where(inArray(productVariants.id, uniqueVariantIds));
@@ -61,6 +68,13 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
           throw new TRPCError({
             code: "BAD_REQUEST",
             message: `لا يُشترى بكج مباشرةً: «${f.productName} — ${f.sku}». اشترِ مكوّناته فرادى.`,
+          });
+        }
+        // بضاعة الأمانة: صنف أمانة يُستلم بسند إيداع لا بأمر شراء (يمنع ازدواج AP).
+        if (f.isConsignment) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `صنف أمانة: «${f.productName} — ${f.sku}» — يُستلم بسند إيداع لا بأمر شراء.`,
           });
         }
       }

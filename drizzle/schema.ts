@@ -305,6 +305,17 @@ export const suppliers = mysqlTable(
     // مفتاح idempotency للإنشاء — UUID من نموذج الإضافة، UNIQUE يمنع صفاً ثانياً عند إعادة
     // الإرسال (نقر مزدوج/إعادة محاولة شبكة). NULL متعدّد للمسارات القديمة. هجرة 0090 (نظير 0051).
     clientRequestId: varchar("clientRequestId", { length: 64 }),
+    // بضاعة الأمانة (٢٠/٧، هجرة 0091): نوع الطرف. CONSIGNOR = مودِع أمانة — لا دين عند الاستلام،
+    // المستحق ينشأ لحظة البيع فقط. يرث كل بنى المورّد (كشف/سندات/واتساب/كاشف ازدواج/رصيد افتتاحي)
+    // بصفر تعديل — دلالة currentBalance تبقى AP (موجب = علينا له). راجع docs/consignment-design-2026-07-20.md.
+    supplierKind: mysqlEnum("supplierKind", ["REGULAR", "CONSIGNOR"]).default("REGULAR").notNull(),
+    // حقول اتفاقية المودِع (تظهر لنوع CONSIGNOR فقط): دورية التسوية + مدة البضاعة المتروكة/تجميد الغائب
+    // (افتراضي ١٢ شهراً بقرار المالك) + عتبة تسوية فورية اختيارية + ملاحظات + صورة الاتفاقية الموقَّعة.
+    settlementCycle: varchar("settlementCycle", { length: 20 }).default("MONTHLY"),
+    abandonedAfterMonths: int("abandonedAfterMonths").default(12),
+    autoSettleThreshold: decimal("autoSettleThreshold", { precision: 15, scale: 2 }),
+    agreementNotes: text("agreementNotes"),
+    agreementAttachmentUrl: mediumtext("agreementAttachmentUrl"),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -317,11 +328,65 @@ export const suppliers = mysqlTable(
     phoneIdx: index("idx_supplier_phone").on(table.phone),
     legacyUq: unique("uq_supplier_legacy").on(table.legacyCode),
     clientRequestUq: unique("uq_supplier_client_request").on(table.clientRequestId),
+    // فلتر شاشة الموردين «مودِعو أمانة» + استعلامات الوحدة.
+    kindIdx: index("idx_supplier_kind").on(table.supplierKind, table.isActive),
   })
 );
 
 export type Supplier = typeof suppliers.$inferSelect;
 export type InsertSupplier = typeof suppliers.$inferInsert;
+
+/* ============================ بضاعة الأمانة: السندات (ش٢، هجرة 0092) ============================ */
+
+/** سند حركة أمانة (إيداع/سحب/استبدال) — نهائيّ فور ترحيله (بلا status ولا حذف؛ التصحيح بسند معاكس).
+ *  راجع docs/consignment-design-2026-07-20.md §٧. (productVariants مُعرَّف أدناه — مرجع كسول.) */
+export const consignmentNotes = mysqlTable(
+  "consignmentNotes",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    // CSN-{branchId}-{YYYYMMDD}-{seq5} بنمط nextInvoiceNumber (GET_LOCK) + قيد فريد.
+    noteNumber: varchar("noteNumber", { length: 32 }).notNull(),
+    noteType: mysqlEnum("noteType", ["DEPOSIT", "WITHDRAW", "EXCHANGE"]).notNull(),
+    consignorId: bigint("consignorId", { mode: "number" }).notNull().references(() => suppliers.id),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    // idempotency (نمط 0090/0051): UUID لكل فتح نموذج ⇒ إعادة الإرسال تعيد السند نفسه.
+    clientRequestId: varchar("clientRequestId", { length: 64 }),
+    notes: text("notes"),
+    // مرفق صورة السند الموقَّع (إلزاميّ خادمياً للسحب/الاستبدال) — نمط receipts.attachmentUrl (0047).
+    attachmentUrl: mediumtext("attachmentUrl"),
+    createdBy: bigint("createdBy", { mode: "number" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    numberUq: unique("uq_consign_note_number").on(t.noteNumber),
+    requestUq: unique("uq_consign_note_request").on(t.clientRequestId),
+    consignorIdx: index("idx_cn_consignor").on(t.consignorId, t.createdAt),
+    branchIdx: index("idx_cn_branch").on(t.branchId, t.createdAt),
+  }),
+);
+export type ConsignmentNote = typeof consignmentNotes.$inferSelect;
+
+/** أسطر سند الأمانة — lineDirection يميّز الاتجاه (الاستبدال: أسطر OUT مسحوبة + أسطر IN مودَعة). */
+export const consignmentNoteLines = mysqlTable(
+  "consignmentNoteLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    noteId: bigint("noteId", { mode: "number" }).notNull().references(() => consignmentNotes.id, { onDelete: "cascade" }),
+    lineDirection: mysqlEnum("lineDirection", ["IN", "OUT"]).notNull(),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull(),
+    quantity: decimal("quantity", { precision: 15, scale: 3 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    // لقطة حصة الوحدة الأساس لحظة السند — توثيقيّة للطباعة فقط (الالتزام الفعلي يُلتقَط لحظة البيع في ش٣).
+    unitShareSnapshot: decimal("unitShareSnapshot", { precision: 15, scale: 2 }).default("0").notNull(),
+    notes: text("notes"),
+  },
+  (t) => ({
+    noteIdx: index("idx_cnl_note").on(t.noteId),
+    variantIdx: index("idx_cnl_variant").on(t.variantId),
+  }),
+);
+export type ConsignmentNoteLine = typeof consignmentNoteLines.$inferSelect;
 
 /* ============================ المنتجات والمتغيرات والوحدات والأسعار ============================ */
 
@@ -365,6 +430,11 @@ export const products = mysqlTable(
     // وتكلفته تُحسب لحظة البيع من مجموع تكاليف مكوّناته (WAVG الحيّ)، والمخزون يُخصَم من كل مكوّن.
     // النَسْت مَمنوع (مكوّن البكج لا يكون بكجاً) — يُفرض خادمياً في bundleService.
     isBundle: boolean("isBundle").default(false).notNull(),
+    // بضاعة الأمانة (٢٠/٧، هجرة 0091): وسم المنتج + مودِعه. الحصة تسكن productVariants.costPrice
+    // (قرار المالك) ⇒ الربح=الهامش وحجب canSeeCost مجاناً. الالتزام للمودِع ينشأ لحظة البيع فقط.
+    // تلازم إلزاميّ: isConsignment=true ⇔ consignorId != NULL (suppliers.supplierKind='CONSIGNOR').
+    isConsignment: boolean("isConsignment").default(false).notNull(),
+    consignorId: bigint("consignorId", { mode: "number" }).references(() => suppliers.id),
     isActive: boolean("isActive").default(true),
     // لوحة hPanel للمتجر (١٢/٧، هجرة 0072): تمييز المنتج (يتصدّر) + إظهاره/إخفاؤه من واجهة المتجر.
     isFeatured: boolean("isFeatured").default(false).notNull(),
@@ -383,6 +453,8 @@ export const products = mysqlTable(
     parentIdx: index("idx_product_parent").on(table.parentProductId),
     // bundles: كشف سريع للمنتجات المركّبة (لوحة إدارة البكج، فلترة POS).
     bundleIdx: index("idx_product_is_bundle").on(table.isBundle),
+    // بضاعة الأمانة: كشف أصناف مودِع بعينه (سند الإيداع، التقارير، حارس التعطيل).
+    consignorIdx: index("idx_product_consignor").on(table.consignorId),
   })
 );
 
@@ -2749,6 +2821,8 @@ export const commissionRunLines = mysqlTable(
     branchId: bigint("branchId", { mode: "number" }), // لقطة employees.branchId وقت الاحتساب.
     baseSales: decimal("baseSales", { precision: 15, scale: 2 }).default("0").notNull(), // Σ SALE.revenue (موجب)
     baseReturns: decimal("baseReturns", { precision: 15, scale: 2 }).default("0").notNull(), // Σ |RETURN.revenue| (موجب)
+    // بضاعة الأمانة (ش٣، هجرة 0094): لقطة خصم حصص المودِعين من الوعاء (العمولة على الهامش فقط).
+    baseConsignDeduction: decimal("baseConsignDeduction", { precision: 15, scale: 2 }).default("0").notNull(),
     carryIn: decimal("carryIn", { precision: 15, scale: 2 }).default("0").notNull(), // موقَّع (≤ 0 من عجز سابق)
     effectiveBase: decimal("effectiveBase", { precision: 15, scale: 2 }).default("0").notNull(),
     carryOut: decimal("carryOut", { precision: 15, scale: 2 }).default("0").notNull(), // موقَّع (≤ 0)

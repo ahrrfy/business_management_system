@@ -6,7 +6,7 @@ import { NumberInput } from "@/components/form/NumberInput";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Badge } from "@/components/ui/badge";
-import { AlertCircle, CheckCircle2, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Handshake, X } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import {
@@ -432,6 +432,17 @@ export default function ProductEdit() {
         }
       />
 
+      {/* بضاعة الأمانة (٢٠/٧): وسم للعرض فقط — يُدار وقت الإنشاء، ولا يُغيَّر في التعديل (نمط قفل §٥-ك). */}
+      {product.data?.isConsignment && (
+        <div className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <Handshake aria-hidden className="mt-0.5 size-4 shrink-0 text-amber-600" />
+          <div>
+            <b>بضاعة أمانة</b> — المودِع: {product.data.consignorName ?? `#${product.data.consignorId}`}.
+            خانة «سعر التكلفة» أدناه هي <b>حصة المودِع</b> (المبلغ المستحقّ له عند البيع). لتغيير المودِع أو الوسم: صفِّر الرصيد ثم أعِد الإنشاء.
+          </div>
+        </div>
+      )}
+
       {/* اسم مركّب + معاينة */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card className="lg:col-span-2">
@@ -499,7 +510,7 @@ export default function ProductEdit() {
       <Card>
         <CardHeader><CardTitle className="text-base">التسعير · مشترك</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Field label="سعر التكلفة (د.ع)" required hint="موحّد لكل الألوان إلا ما له سعر خاص."><Input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} dir="ltr" placeholder="150" /></Field>
+          <Field label={product.data?.isConsignment ? "حصة المودِع (د.ع)" : "سعر التكلفة (د.ع)"} required hint={product.data?.isConsignment ? "المبلغ المستحقّ للمودِع عند البيع." : "موحّد لكل الألوان إلا ما له سعر خاص."}><Input value={costPrice} onChange={(e) => setCostPrice(e.target.value)} dir="ltr" placeholder="150" /></Field>
           <Field label="خِدمة (بِلا مَخزون)" hint="لا يَخصُم مَخزوناً ولا يَنزل سالباً."><div className="flex items-center gap-2 h-9"><Switch checked={isService} onCheckedChange={setIsService} /><span className="text-xs text-muted-foreground">{isService ? "خِدمة" : "سِلعة"}</span></div></Field>
           <Field label="قابل للتخصيص"><div className="flex items-center gap-2 h-9"><Switch checked={isCustomizable} onCheckedChange={setIsCustomizable} disabled={isService} /><span className="text-xs text-muted-foreground">{isCustomizable ? "يدخل كمادة" : "جاهز للبيع"}</span></div></Field>
           <Field label="حالة المنتج"><div className="flex items-center gap-2 h-9"><Switch checked={isActive} onCheckedChange={setIsActive} /><span className="text-xs text-muted-foreground">{isActive ? "مفعّل" : "مخفي"}</span></div></Field>

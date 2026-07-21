@@ -54,7 +54,7 @@ export async function getTargetsGrid(period: string): Promise<TargetGridRow[]> {
 
   return rows.map((r) => {
     const base = r.userId != null ? lastMonth.get(Number(r.userId)) : undefined;
-    const actual = base ? base.sales.minus(base.returns) : money(0);
+    const actual = base ? base.sales.minus(base.returns).minus(base.consigDeduction) : money(0);
     return {
       employeeId: Number(r.employeeId),
       employeeName: fullEmployeeName(r),
