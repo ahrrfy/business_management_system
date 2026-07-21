@@ -7,7 +7,8 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { ImageUploader, type ImageItem } from "@/components/form/ImageUploader";
+import { type ImageItem } from "@/components/form/ImageUploader";
+import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { trpc } from "@/lib/trpc";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
@@ -556,7 +557,7 @@ export default function SimpleProductForm() {
       <Card>
         <CardHeader><CardTitle className="text-base">صور المنتج (اختياري)</CardTitle></CardHeader>
         <CardContent>
-          <ImageUploader
+          <ImageStudioUploader
             value={images}
             onChange={setImages}
             maxItems={10}
