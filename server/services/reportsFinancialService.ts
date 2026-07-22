@@ -127,6 +127,19 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
     `),
   )[0] ?? { amount: "0" };
 
+  // landed-cost على مرتجعات الشراء (متابعة #311، قرار المالك ٢٢/٧/٢٦): الشحن/الكمرك الوارد **غير مسترد**
+  // عند إرجاع البضاعة للمورّد ⇒ نصيبُه من المرتجَع يُقيَّد خسارةً (ADJUST بمفتاح PURCHRET_LANDED، cost موجب).
+  // سطرٌ مستقلّ خارج SALE/RETURN فلا يمسّ إيراد/تكلفة المبيعات، ويَخفض صافي الربح صحيحاً (حيّاً وفي إقفال السنة).
+  const prl = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'PURCHRET_LANDED:%'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   // FA-02 (تكامل الأصول↔P&L، تحقيق عدائي ٢٠/٦): ربح/خسارة التصرّف بالأصول قيدُ ADJUST بمفتاح
   // ASSET_DISP_PL، revenue=الربح موقَّعاً (موجب ربح/سالب خسارة). كان يُهمَل في P&L (يَجمع SALE/RETURN
   // فقط) ⇒ صافي الربح لا يَعكس بيع الأصول. نَجمعه هنا ونُدرجه سطراً غير تشغيليّ في صافي الربح.
@@ -232,6 +245,13 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   if (stockLoss.gt(0)) {
     expenseLines.push({ key: "STOCK_LOSS", label: "نثرية وتلف (مخزون)", amount: toDbMoney(stockLoss) });
     totalExpenses = totalExpenses.add(stockLoss);
+  }
+
+  // خسائر شحن/كمرك مرتجعات الشراء — سطر مستقلّ يَخفض صافي الربح (الشحن الوارد غير مسترد عند الإرجاع).
+  const purchReturnLandedLoss = money(prl.amount ?? 0);
+  if (purchReturnLandedLoss.gt(0)) {
+    expenseLines.push({ key: "PURCH_RETURN_LANDED", label: "خسائر شحن/كمرك مرتجعات الشراء", amount: toDbMoney(purchReturnLandedLoss) });
+    totalExpenses = totalExpenses.add(purchReturnLandedLoss);
   }
 
   // FI-02: مصروف إهلاك الأصول الثابتة (غير نقديّ) — سطر مستقلّ يَخفض صافي الربح.
