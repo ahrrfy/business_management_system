@@ -36,6 +36,7 @@ const CrmHub = lazy(() => import("@/pages/CrmHub"));
 const SuppliersHub = lazy(() => import("@/pages/SuppliersHub"));
 const InventoryHub = lazy(() => import("@/pages/InventoryHub"));
 const TreasuryHub = lazy(() => import("@/pages/TreasuryHub"));
+const CardAccount = lazy(() => import("@/pages/CardAccount"));
 const ExchangeHub = lazy(() => import("@/pages/ExchangeHub"));
 const SalesHub = lazy(() => import("@/pages/SalesHub"));
 const PurchasesHub = lazy(() => import("@/pages/PurchasesHub"));
@@ -318,6 +319,7 @@ export default function App() {
       <Route path="/voucher-categories"><Shell><RequireRole roles={["admin","manager"]} module="treasury" level="FULL"><VoucherCategories /></RequireRole></Shell></Route>
       <Route path="/shifts"><Redirect to="/treasury?tab=shifts" /></Route>
       <Route path="/treasury"><Shell><TreasuryHub /></Shell></Route>
+      <Route path="/card-account"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CardAccount /></RequireRole></Shell></Route>
       <Route path="/exchange"><Shell><RequireRole roles={["admin","manager","accountant"]} module="treasury"><ExchangeHub /></RequireRole></Shell></Route>
       <Route path="/treasury/transfers"><Redirect to="/treasury?tab=transfers" /></Route>
       <Route path="/delivery"><Shell><RequireRole roles={["admin","manager","accountant","cashier","auditor"]}><DeliveryCenter /></RequireRole></Shell></Route>

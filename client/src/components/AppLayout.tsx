@@ -7,7 +7,7 @@ import { openSearch } from "@/lib/searchEvents";
 import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
-  Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign,
+  Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign, CreditCard,
   UserCircle2, ChevronLeft, LogOut, Store, PackageCheck,
   type LucideIcon,
 } from "lucide-react";
@@ -41,6 +41,8 @@ const NAV_LINKS: NavLink[] = [
   // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط
   // أمين المخزن/الفني على hub بلا تبويبات = صفحة فارغة (نفس مبدأ الأصول/الموارد أدناه).
   { href: "/treasury", label: "الخزينة والمدفوعات", icon: Wallet, roles: ["manager", "accountant", "cashier", "auditor"], module: "treasury" },
+  // حساب البطاقة/البنك: رصيد أموال البطاقة (منفصل عن الدرج) — ماليّ يُحجَب عن الكاشير (module=reports كخدمته).
+  { href: "/card-account", label: "حساب البطاقة/البنك", icon: CreditCard, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   { href: "/delivery", label: "التوصيل", icon: Truck, roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
   // شاشة المندوب الذاتية — courier فقط (admin يراها عبر canSeeGate؛ المدير يدير عبر /delivery).
   { href: "/my-deliveries", label: "توصيلاتي", icon: PackageCheck, roles: ["courier"], module: "courier" },
