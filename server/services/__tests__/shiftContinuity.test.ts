@@ -233,6 +233,25 @@ describe("①ج استمرارية نقد الورديات — الخدمة", ()
     expect(res.hasDiscrepancy).toBe(false);
   });
 
+  it("تعدّد الكاشير: وردية ثالثة لا تُطابَق بمتبقٍّ استهلكته وردية مفتوحة سابقة (Codex P2)", async () => {
+    await closeWith({ user: CASHIER1, opening: "500", counted: "500", handover: "200" }); // A: متبقٍّ 300
+    // B تفتح على نفس الدرج بـ300 (تُطابِق وتستهلك المتبقّي) وتبقى مفتوحة
+    const b = await openShift(
+      { branchId: 1, openingBalance: "300", shiftType: "RETAIL" },
+      { userId: CASHIER2, branchId: 1 },
+    );
+    expect(b.hasDiscrepancy).toBe(false);
+    // C (وردية ثالثة متزامنة) ⇒ لا مطابقة (المتبقّي استُهلك) ⇒ أيّ مبلغ بلا سبب، بلا فجوة زائفة
+    const c = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RETAIL" },
+      { userId: ADMIN, branchId: 1 },
+    );
+    expect(c.expectedOpening).toBeNull();
+    expect(c.hasDiscrepancy).toBe(false);
+    // القراءة تعكس ذلك (لا تعرض متبقّياً مُستهلَكاً)
+    expect((await getExpectedOpening(1, "RETAIL")).expected).toBeNull();
+  });
+
   it("getExpectedOpening (خدمة): يعيد المتبقّي، وnull للنوع/الفرع المختلف وحين لا سابقة", async () => {
     expect((await getExpectedOpening(1, "RETAIL")).expected).toBeNull();
     await closeWith({ user: CASHIER1, opening: "500", counted: "500", handover: "200" }); // متبقٍّ 300

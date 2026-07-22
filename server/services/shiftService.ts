@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, sql } from "drizzle-orm";
 import { invoices, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
@@ -29,15 +29,34 @@ export async function lastClosedRemainingTx(
   shiftType: ShiftType,
 ): Promise<string | null> {
   const rows = await tx
-    .select({ remaining: shifts.closingDrawerCash })
+    .select({ remaining: shifts.closingDrawerCash, closedAt: shifts.closedAt })
     .from(shifts)
     .where(
       and(eq(shifts.branchId, branchId), eq(shifts.status, "CLOSED"), eq(shifts.shiftType, shiftType)),
     )
     .orderBy(desc(shifts.closedAt), desc(shifts.id))
     .limit(1);
-  const remaining = rows[0]?.remaining;
-  return remaining == null ? null : toDbMoney(money(remaining));
+  const last = rows[0];
+  if (!last || last.remaining == null) return null;
+  // ①ج تعدّد الكاشير (Codex P2 على #320): إن فُتِحت وردية لنفس (الفرع×النوع) بعد إغلاق هذه ⇒ سبق أن
+  // «استهلكت» المتبقّي، فلا يُعاد لوردية ثالثة متزامنة (وإلّا فجوة استمرارية زائفة). أوّل وردية بعد
+  // الإغلاق (لا مفتوحة بعدُ) تُطابِق المتبقّي كالمعتاد.
+  if (last.closedAt) {
+    const openAfter = await tx
+      .select({ id: shifts.id })
+      .from(shifts)
+      .where(
+        and(
+          eq(shifts.branchId, branchId),
+          eq(shifts.status, "OPEN"),
+          eq(shifts.shiftType, shiftType),
+          gte(shifts.openedAt, last.closedAt),
+        ),
+      )
+      .limit(1);
+    if (openAfter[0]) return null;
+  }
+  return toDbMoney(money(last.remaining));
 }
 
 /**
@@ -48,15 +67,32 @@ export async function getExpectedOpening(branchId: number, shiftType: ShiftType 
   const db = getDb();
   if (!db) return { expected: null as string | null };
   const rows = await db
-    .select({ remaining: shifts.closingDrawerCash })
+    .select({ remaining: shifts.closingDrawerCash, closedAt: shifts.closedAt })
     .from(shifts)
     .where(
       and(eq(shifts.branchId, branchId), eq(shifts.status, "CLOSED"), eq(shifts.shiftType, shiftType)),
     )
     .orderBy(desc(shifts.closedAt), desc(shifts.id))
     .limit(1);
-  const remaining = rows[0]?.remaining;
-  return { expected: remaining == null ? null : toDbMoney(money(remaining)) };
+  const last = rows[0];
+  if (!last || last.remaining == null) return { expected: null as string | null };
+  // مطابقٌ لـlastClosedRemainingTx: وردية مفتوحة فُتِحت بعد الإغلاق استهلكت المتبقّي (عرضٌ فقط).
+  if (last.closedAt) {
+    const openAfter = await db
+      .select({ id: shifts.id })
+      .from(shifts)
+      .where(
+        and(
+          eq(shifts.branchId, branchId),
+          eq(shifts.status, "OPEN"),
+          eq(shifts.shiftType, shiftType),
+          gte(shifts.openedAt, last.closedAt),
+        ),
+      )
+      .limit(1);
+    if (openAfter[0]) return { expected: null as string | null };
+  }
+  return { expected: toDbMoney(money(last.remaining)) };
 }
 
 /** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION). */

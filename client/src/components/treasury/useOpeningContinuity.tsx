@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { D, round2, formatIqd } from "@/lib/money";
@@ -41,6 +41,13 @@ export function useOpeningContinuity(opts: {
     { enabled, refetchOnWindowFocus: false },
   );
   const [reason, setReason] = useState("");
+
+  // ①ج (Codex P2 على #320): امسح السبب عند تغيّر سياق الفتح — فتحُ وردية (enabled ⇒ false) أو تبديل
+  // الفرع/النوع. الـhook يبقى مركَّباً طوال عمر POS، فبدون المسح يبقى سببُ فتحٍ سابقٍ حاضراً ويُرسَل
+  // كأنّه سببُ فتحٍ تالٍ ذي اختلاف (blocked=false بلا إدخال جديد ⇒ تلويث سجلّ التدقيق).
+  useEffect(() => {
+    setReason("");
+  }, [opts.branchId, opts.shiftType, enabled]);
 
   const expected = q.data?.expected ?? null;
   const hasExpected = expected != null;
