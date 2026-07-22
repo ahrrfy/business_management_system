@@ -314,13 +314,23 @@ export async function generatePayroll(period: string, actor: Actor) {
         ? `خصم إجازة بلا راتب: ${unpaidLeaveDays} يوم (الراتب÷٣٠ = ${toDbMoney(dailyRate)}/يوم)`
         : null;
       // المكوّنات القانونية (البند ④): تُحسب **قبل** استقطاع السلفة كي يُقصّ الأخير عند الأجر المتاح بعدها.
-      // معطَّلة افتراضياً ⇒ كلها صفر ⇒ صفر أثر. الوعاء الأساسيّ للشهريّ = الراتب الأساس (بلا مخصّصات)،
-      // وللساعيّ = أجر الفترة (gross). لا مكوّنات على تسوية المفصول ذي الأجر الصفريّ (نهاية خدمته تُسوّى
-      // عند الفصل عبر تسوية نهاية الخدمة القائمة — لا ازدواج، ولا خصم ضمان/ضريبة على أجرٍ صفريّ).
+      // معطَّلة افتراضياً ⇒ كلها صفر ⇒ صفر أثر. لا مكوّنات على تسوية المفصول ذي الأجر الصفريّ (نهاية خدمته
+      // تُسوّى عند الفصل — لا ازدواج، ولا خصم ضمان/ضريبة على أجرٍ صفريّ).
+      // الوعاء الأساسيّ للشهريّ = الراتب الأساس (بلا مخصّصات)، وللساعيّ = أجر الفترة (gross).
       const basicForLegal = monthly ? money(e.salary ?? 0) : gross;
+      // Codex P2: ضمان/ضريبة على **الأجر المكتسَب فعلاً بعد الإجازة بلا راتب** لا على الإجماليّ الكامل —
+      // (١) لا استقطاع على أجرٍ لم يُكتسَب، و(٢) يمنع تجاوز الاستقطاع للأجر ⇒ net سالباً يتعذّر اعتماده
+      // (إجازةٌ تستهلك الشهر كان يُنتج net سالباً). الإجازة تخصّ الشهريّ فقط ⇒ للساعيّ leaveDeduction=0
+      // فالوعاء = gross بلا تغيير. صفر إجازة ⇒ earnedGross=gross وearnedBasic=basicForLegal ⇒ صفر انحدار.
+      const earnedGross = Decimal.max(0, gross.minus(leaveDeduction));
+      const earnedBasic = Decimal.max(0, basicForLegal.minus(leaveDeduction));
+      // Codex P2: معدّل نهاية الخدمة اليوميّ من وعاء الأجر لا من e.salary — الساعيّ راتبه 0 لكنه يكتسب
+      // gross، فكان استحقاقه يُسجَّل صفراً رغم كسبه. basicForLegal÷٣٠ ⇒ للشهريّ = الراتب÷٣٠ (كما كان)،
+      // وللساعيّ = gross÷٣٠. استحقاق نهاية الخدمة التزامٌ تعاقديّ لا يُنقَص بإجازة شهرٍ ⇒ على الوعاء الكامل.
+      const eosDailyRate = round2(basicForLegal.div(30));
       const legal = zeroGross
         ? { socialSecurityEmployee: new Decimal(0), socialSecurityEmployer: new Decimal(0), incomeTax: new Decimal(0), endOfServiceAccrual: new Decimal(0) }
-        : computeLegalComponents(legalSettings, { basic: basicForLegal, gross, dailyRate });
+        : computeLegalComponents(legalSettings, { basic: earnedBasic, gross: earnedGross, dailyRate: eosDailyRate });
       // حصّتا الموظف القانونيّتان (ضمان الموظف + ضريبة الدخل) استقطاعاتٌ إلزاميّة تُضاف إلى deductions
       // وتسبق السلفة في أولوية استيعاب الأجر. حصّة رب العمل واستحقاق نهاية الخدمة خارج deductions/net.
       const statutoryDeduction = round2(legal.socialSecurityEmployee.plus(legal.incomeTax));
