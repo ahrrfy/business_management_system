@@ -115,8 +115,12 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     // المورّد شاملةٌ للشحن/الكمرك ⇒ تُضاف إلى ذمّة المورّد (AP) فيصير إجماليّ الأمر الفعليّ =
     // البضاعة + الضريبة + الشحن + الكمرك. (إن دُفِعا لطرفٍ آخر — شركة شحن/كمرك — يضبطه المالك
     // لاحقاً؛ v1 لا يفصلهما عن المورّد.) الطرحُ خادميٌّ دفاعيٌّ (money لا يرفض السالب وحده).
-    const shippingCost = money(input.shippingCost ?? "0");
-    const customsCost = money(input.customsCost ?? "0");
+    // قرّب المكوّنين إلى ٢dp **قبل** اشتقاق landed/total وقبل التخزين ⇒ الأعمدة المخزَّنة تطابق
+    // القيمة الداخلة في total تماماً. (استدعاءٌ مباشرٌ بقيمٍ دون السنت — import/seed/اختبار يتجاوز حارس
+    // الراوتر nonNegMoneyString — كان يخزّن 0.01+0.01 بينما total يحمل round2(0.005+0.005)=0.01 فقط،
+    // ثم receivePurchase يُعيد الحساب من الأعمدة فيُرحّل AP/مخزوناً لا يطابق po.total — Codex P2.)
+    const shippingCost = round2(money(input.shippingCost ?? "0"));
+    const customsCost = round2(money(input.customsCost ?? "0"));
     if (shippingCost.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "تكلفة الشحن لا تصحّ أن تكون سالبة" });
     if (customsCost.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "تكلفة الكمرك لا تصحّ أن تكون سالبة" });
     const landed = round2(shippingCost.plus(customsCost));
@@ -503,6 +507,10 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       .where(eq(purchaseOrders.id, input.purchaseOrderId));
 
     // PURCHASE ledger entry + AP.
+    // ⚠️ متابعة مؤجَّلة (Codex P2 — تحتاج قرار مالك، خارج نطاق v1): مرتجع الشراء المرجعيّ يعكس AP
+    // بسعر البند المُدخَل (سقفه تكلفة WAVG الشاملة للرسملة في purchaseReturnsService). ردٌّ كامل بسعر
+    // البضاعة وحده يُبقي حصّة الشحن/الكمرك في AP — هل الشحن الوارد مستردٌّ عند الإرجاع؟ قرارُ سياسةٍ
+    // ماليّة يحسمه المالك. v1: الرسملة عند الاستلام فقط (نطاق هذه الشريحة).
     // landed-cost: cost = تكلفة المخزون المُرسمَلة (البضاعة + الشحن/الكمرك) — لا مصروف P&L: قيود
     // PURCHASE لا تدخل حساب الربح (reportsFinancialService يجمع cost لـSALE/RETURN فقط)، وقيمة
     // المخزون تعكس نفس الرسملة عبر costPrice (WAVG) ⇒ لا ازدواج، والاعتراف بالتكلفة مرّةً عند البيع.

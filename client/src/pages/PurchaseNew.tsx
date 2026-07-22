@@ -37,6 +37,16 @@ import {
 
 const INVOICE_TYPE = "PURCHASE" as const;
 
+/** يُحلّل مبلغاً نصّياً بأمان: MoneyInput قد يُصدر قيماً وسيطة مثل «.» أثناء كتابة كسر، وD() الخام
+ *  يرمي حينها فيكسر الرسم (نظير safeD في calcTotals). القيم غير المكتملة ⇒ صفر حتى الحفظ/blur. */
+function safeMoney(v: string) {
+  try {
+    return D(v);
+  } catch {
+    return D(0);
+  }
+}
+
 export default function PurchaseNew() {
   const [, navigate] = useLocation();
   const utils = trpc.useUtils();
@@ -104,7 +114,7 @@ export default function PurchaseNew() {
   // landed-cost: الإجماليّ يشمل الشحن/الكمرك (يُوزَّعان بنسبة القيمة). التوزيع بالقيمة = نسبة رفعٍ
   // موحّدة على كلّ تكلفة وحدة: capUnit = price × (subtotal + شحن + كمرك) / subtotal. للمعاينة فقط.
   const landed = useMemo(() => {
-    const sum = round2(D(shippingCost).plus(D(customsCost)));
+    const sum = round2(safeMoney(shippingCost).plus(safeMoney(customsCost)));
     const subtotalD = D(totals.subtotal);
     const grand = round2(D(totals.grandTotal).plus(sum));
     const uplift = subtotalD.gt(0) ? subtotalD.plus(sum).dividedBy(subtotalD) : D(1);
@@ -155,8 +165,9 @@ export default function PurchaseNew() {
       agreedCurrency: state.currency,
       usdTotal: state.currency === "USD" ? round2(D(state.usdTotal)).toFixed(2) : undefined,
       // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
-      shippingCost: D(shippingCost).gt(0) ? round2(D(shippingCost)).toFixed(2) : undefined,
-      customsCost: D(customsCost).gt(0) ? round2(D(customsCost)).toFixed(2) : undefined,
+      // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
+      shippingCost: safeMoney(shippingCost).gt(0) ? round2(safeMoney(shippingCost)).toFixed(2) : undefined,
+      customsCost: safeMoney(customsCost).gt(0) ? round2(safeMoney(customsCost)).toFixed(2) : undefined,
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -242,8 +253,10 @@ export default function PurchaseNew() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+    // landed-cost: shippingCost/customsCost حالة محلّية خارج state ⇒ يجب إدراجها في التبعيّات وإلّا
+    // قرأ حفظُ F4 قيمةً قديمة (الإغلاق مُلتقَط عند آخر تشغيل للـeffect) فيُسقط الشحن/الكمرك بصمت.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bulkOpen, create.isPending, state]);
+  }, [bulkOpen, create.isPending, state, shippingCost, customsCost]);
 
   /* ─── render ───────────────────────────────────────────────────── */
   const meta = INVOICE_TYPES[INVOICE_TYPE];
