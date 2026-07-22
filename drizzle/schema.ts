@@ -2670,6 +2670,13 @@ export const payrollRuns = mysqlTable(
     totalCommission: decimal("totalCommission", { precision: 15, scale: 2 }).default("0").notNull(),
     totalDeductions: decimal("totalDeductions", { precision: 15, scale: 2 }).default("0").notNull(),
     totalNet: decimal("totalNet", { precision: 15, scale: 2 }).default("0").notNull(),
+    // ── مجاميع المكوّنات القانونية (البند ④، هجرة 0098) — للعرض/التدقيق. 0 ما لم يُفعَّل المكوّن ────
+    // حصّتا الموظف (مُتضمَّنتان في totalDeductions) — عمودان مستقلّان للتفصيل.
+    totalSocialSecurityEmployee: decimal("totalSocialSecurityEmployee", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalIncomeTax: decimal("totalIncomeTax", { precision: 15, scale: 2 }).default("0").notNull(),
+    // كلفة رب العمل + استحقاق نهاية الخدمة (خارج totalNet/totalDeductions — التزامات على الشركة).
+    totalSocialSecurityEmployer: decimal("totalSocialSecurityEmployer", { precision: 15, scale: 2 }).default("0").notNull(),
+    totalEndOfServiceAccrual: decimal("totalEndOfServiceAccrual", { precision: 15, scale: 2 }).default("0").notNull(),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -2713,6 +2720,17 @@ export const payrollItems = mysqlTable(
     // بند 12ج (٧/٧): جزء الاستقطاع الآتي من سلف الموظف (مُتضمَّن في deductions لا إضافة عليها) —
     // يُملأ تلقائياً عند التوليد من employeeAdvances النشطة، وعند صرف التشغيلة يُنقص أرصدتها. هجرة 0056.
     advanceDeduction: decimal("advanceDeduction", { precision: 15, scale: 2 }).default("0").notNull(),
+    // ── المكوّنات القانونية العراقية (البند ④، هجرة 0098) — لقطة قيمة كل مكوّن وقت التوليد ────────
+    // كلها **معطَّلة افتراضياً** (payrollLegalSettings) ⇒ 0 ما لم يُفعّلها المالك ⇒ صفر انحدار.
+    // حصّة الموظف من الضمان الاجتماعي (**مُتضمَّنة في deductions** ⇒ تُنقص net). هجرة 0098.
+    socialSecurityEmployee: decimal("socialSecurityEmployee", { precision: 15, scale: 2 }).default("0").notNull(),
+    // ضريبة الدخل المستقطعة (**مُتضمَّنة في deductions** ⇒ تُنقص net). هجرة 0098.
+    incomeTax: decimal("incomeTax", { precision: 15, scale: 2 }).default("0").notNull(),
+    // حصّة رب العمل من الضمان الاجتماعي — **كلفة على الشركة، لا تُخصَم من الموظف** (خارج deductions/net). عرض فقط.
+    socialSecurityEmployer: decimal("socialSecurityEmployer", { precision: 15, scale: 2 }).default("0").notNull(),
+    // استحقاق مكافأة نهاية الخدمة المتراكم لهذا الشهر — **التزام يُعرَض، لا يُخصَم ولا يُصرَف هنا**
+    // (الصرف الفعليّ عند الفصل عبر تسوية نهاية الخدمة القائمة — لا ازدواج). عرض فقط، خارج deductions/net.
+    endOfServiceAccrual: decimal("endOfServiceAccrual", { precision: 15, scale: 2 }).default("0").notNull(),
     net: decimal("net", { precision: 15, scale: 2 }).default("0").notNull(),
     note: varchar("note", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -3587,6 +3605,43 @@ export const imageStudioSettings = mysqlTable("imageStudioSettings", {
 });
 export type ImageStudioSettings = typeof imageStudioSettings.$inferSelect;
 export type InsertImageStudioSettings = typeof imageStudioSettings.$inferInsert;
+
+/** شريحة تصاعدية لضريبة الدخل: `upTo` حدّ أعلى للشريحة (سلسلة مالية) أو null للشريحة المفتوحة
+ *  العليا («فما فوق»)، `rate` نسبة مئوية (سلسلة). الاحتساب حدّيّ تصاعديّ (كل جزء بنسبة شريحته). */
+export type IncomeTaxBracket = { upTo: string | null; rate: string };
+
+/** إعدادات المكوّنات القانونية العراقية للرواتب (صفّ singleton id=1، نمط taxSettings) — البند ④.
+ *  ثلاثة مكوّنات كلٌّ بمفتاح تفعيل مستقلّ **معطَّل افتراضياً**: ضمان اجتماعي + ضريبة دخل مستقطعة +
+ *  مكافأة نهاية خدمة. **ما لم يُفعَّل المكوّن ⇒ صفر أثر على الرواتب (net/deductions كما هي اليوم).**
+ *  ⚠️ النِّسب/الشرائح **إعداداتٌ يضبطها المالك مع محاسبه القانونيّ** — القيم الافتراضية توضيحية فقط
+ *  (كلها صفر/معطَّلة ابتداءً). يُنشَأ الصفّ كسولاً (ensure-row) عند أوّل تحديث. هجرة 0098. */
+export const payrollLegalSettings = mysqlTable("payrollLegalSettings", {
+  id: int("id").autoincrement().primaryKey(),
+  // ── الضمان الاجتماعي ───────────────────────────────────────────────────────────
+  socialSecurityEnabled: boolean("socialSecurityEnabled").default(false).notNull(),
+  /** نسبة حصّة الموظف (٪) — تُخصَم من أجره. توضيحيّ ~٥٪. */
+  socialSecurityEmployeeRate: decimal("socialSecurityEmployeeRate", { precision: 5, scale: 2 }).default("0").notNull(),
+  /** نسبة حصّة رب العمل (٪) — كلفة على الشركة لا تُخصَم من الموظف. توضيحيّ ~١٢٪. */
+  socialSecurityEmployerRate: decimal("socialSecurityEmployerRate", { precision: 5, scale: 2 }).default("0").notNull(),
+  /** وعاء احتساب الضمان: الأساسيّ (الراتب الأساس) أو الإجماليّ (أساسيّ + مخصّصات). */
+  socialSecurityBase: mysqlEnum("socialSecurityBase", ["basic", "gross"]).default("basic").notNull(),
+  // ── ضريبة الدخل المستقطعة ──────────────────────────────────────────────────────
+  incomeTaxEnabled: boolean("incomeTaxEnabled").default(false).notNull(),
+  /** شرائح تصاعدية قابلة للضبط (قائمة: حدّ + نسبة). null = بلا شرائح مضبوطة بعد. الوعاء الضريبيّ =
+   *  الإجماليّ − حصّة الموظف من الضمان − الإعفاء. */
+  incomeTaxBrackets: json("incomeTaxBrackets").$type<IncomeTaxBracket[]>(),
+  /** إعفاء شخصيّ/عائليّ (مبلغ شهريّ) يُطرح من الوعاء قبل تطبيق الشرائح. */
+  incomeTaxExemption: decimal("incomeTaxExemption", { precision: 15, scale: 2 }).default("0").notNull(),
+  // ── مكافأة نهاية الخدمة (استحقاق متراكم) ───────────────────────────────────────
+  endOfServiceEnabled: boolean("endOfServiceEnabled").default(false).notNull(),
+  /** عدد أيام آخر راتب المستحقّة **لكل سنة خدمة** (المعدّل اليوميّ = الأساسيّ÷٣٠). الاستحقاق الشهريّ
+   *  المتراكم = (أيام × المعدّل اليوميّ) ÷ ١٢. توضيحيّ (مثلاً ٢١). عرض/التزام فقط — لا يُصرَف هنا. */
+  endOfServiceDaysPerYear: decimal("endOfServiceDaysPerYear", { precision: 6, scale: 2 }).default("0").notNull(),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type PayrollLegalSettings = typeof payrollLegalSettings.$inferSelect;
+export type InsertPayrollLegalSettings = typeof payrollLegalSettings.$inferInsert;
 
 /** سجلّ تذكيرات الذمم الآجلة (AR reminders) — كل صفّ = تذكير أُرسِل أو أُخطِّي.
  *  يُملأ حصراً بعد فعل المستخدم في شاشة `/ar-reminders` (لا cron، لا إرسال آلي).

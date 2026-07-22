@@ -32,6 +32,7 @@ import { requireDb, withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { restoreAdvanceSettlementsTx, settleAdvancesOnPayTx, suggestDeductionsTx } from "./advancesService";
 import { applyDuePromotions } from "./promotionService";
+import { computeLegalComponents, getPayrollLegalSettings } from "./payrollLegalService";
 
 const PERIOD_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
 
@@ -97,7 +98,18 @@ export async function getRun(id: number) {
 /** يجمع بنود المسيّر (داخل tx) ويحدّث رأس المسيّر بالمجاميع وعدد الموظفين. */
 async function recomputeRunTotals(tx: Tx, runId: number): Promise<void> {
   const items = await tx
-    .select({ gross: payrollItems.gross, overtime: payrollItems.overtime, commission: payrollItems.commission, deductions: payrollItems.deductions, net: payrollItems.net })
+    .select({
+      gross: payrollItems.gross,
+      overtime: payrollItems.overtime,
+      commission: payrollItems.commission,
+      deductions: payrollItems.deductions,
+      net: payrollItems.net,
+      // المكوّنات القانونية (البند ④) — 0 عند التعطيل ⇒ مجاميعها 0 ⇒ صفر انحدار.
+      ssEmployee: payrollItems.socialSecurityEmployee,
+      incomeTax: payrollItems.incomeTax,
+      ssEmployer: payrollItems.socialSecurityEmployer,
+      eosAccrual: payrollItems.endOfServiceAccrual,
+    })
     .from(payrollItems)
     .where(eq(payrollItems.runId, runId));
   let g = new Decimal(0);
@@ -105,12 +117,20 @@ async function recomputeRunTotals(tx: Tx, runId: number): Promise<void> {
   let com = new Decimal(0);
   let ded = new Decimal(0);
   let net = new Decimal(0);
+  let sse = new Decimal(0);
+  let tax = new Decimal(0);
+  let ssr = new Decimal(0);
+  let eos = new Decimal(0);
   for (const it of items) {
     g = g.plus(money(it.gross));
     ot = ot.plus(money(it.overtime));
     com = com.plus(money(it.commission));
     ded = ded.plus(money(it.deductions));
     net = net.plus(money(it.net));
+    sse = sse.plus(money(it.ssEmployee));
+    tax = tax.plus(money(it.incomeTax));
+    ssr = ssr.plus(money(it.ssEmployer));
+    eos = eos.plus(money(it.eosAccrual));
   }
   await tx
     .update(payrollRuns)
@@ -121,6 +141,10 @@ async function recomputeRunTotals(tx: Tx, runId: number): Promise<void> {
       totalCommission: toDbMoney(com),
       totalDeductions: toDbMoney(ded),
       totalNet: toDbMoney(net),
+      totalSocialSecurityEmployee: toDbMoney(sse),
+      totalIncomeTax: toDbMoney(tax),
+      totalSocialSecurityEmployer: toDbMoney(ssr),
+      totalEndOfServiceAccrual: toDbMoney(eos),
     })
     .where(eq(payrollRuns.id, runId));
 }
@@ -239,6 +263,11 @@ export async function generatePayroll(period: string, actor: Actor) {
     // يُملأ advanceDeduction ويدخل **ضمن** deductions (لا فوقها) فيَنقص net تلقائياً.
     const advanceByEmp = await suggestDeductionsTx(tx, emps.map((e) => Number(e.id)));
 
+    // المكوّنات القانونية العراقية (البند ④): إعدادات مفردة تُقرأ مرّة واحدة داخل المعاملة (لقطة).
+    // **كل مكوّن معطَّل افتراضياً** ⇒ computeLegalComponents تُعيد صفراً ⇒ صفر أثر على deductions/net
+    // (انحدار صفريّ مُثبَت باختبار). النِّسب/الشرائح يضبطها المالك مع محاسبه القانونيّ.
+    const legalSettings = await getPayrollLegalSettings(tx);
+
     // رأس المسيّر (مسودة) — المجاميع تُحدَّث بعد إدراج البنود.
     const runRes = await tx.insert(payrollRuns).values({
       period: p,
@@ -284,18 +313,30 @@ export async function generatePayroll(period: string, actor: Actor) {
       const leaveNote = leaveDeduction.gt(0)
         ? `خصم إجازة بلا راتب: ${unpaidLeaveDays} يوم (الراتب÷٣٠ = ${toDbMoney(dailyRate)}/يوم)`
         : null;
+      // المكوّنات القانونية (البند ④): تُحسب **قبل** استقطاع السلفة كي يُقصّ الأخير عند الأجر المتاح بعدها.
+      // معطَّلة افتراضياً ⇒ كلها صفر ⇒ صفر أثر. الوعاء الأساسيّ للشهريّ = الراتب الأساس (بلا مخصّصات)،
+      // وللساعيّ = أجر الفترة (gross). لا مكوّنات على تسوية المفصول ذي الأجر الصفريّ (نهاية خدمته تُسوّى
+      // عند الفصل عبر تسوية نهاية الخدمة القائمة — لا ازدواج، ولا خصم ضمان/ضريبة على أجرٍ صفريّ).
+      const basicForLegal = monthly ? money(e.salary ?? 0) : gross;
+      const legal = zeroGross
+        ? { socialSecurityEmployee: new Decimal(0), socialSecurityEmployer: new Decimal(0), incomeTax: new Decimal(0), endOfServiceAccrual: new Decimal(0) }
+        : computeLegalComponents(legalSettings, { basic: basicForLegal, gross, dailyRate });
+      // حصّتا الموظف القانونيّتان (ضمان الموظف + ضريبة الدخل) استقطاعاتٌ إلزاميّة تُضاف إلى deductions
+      // وتسبق السلفة في أولوية استيعاب الأجر. حصّة رب العمل واستحقاق نهاية الخدمة خارج deductions/net.
+      const statutoryDeduction = round2(legal.socialSecurityEmployee.plus(legal.incomeTax));
+
       // advances (بند 12ج): استقطاع السلفة المقترح من أقدم سلفة نشطة، جزءٌ من deductions ابتداءً
       // (يُحرَّر لاحقاً عبر updateItem لكن لا يهبط الاستقطاع الكلي دون جزء السلفة — انظر الحارس هناك).
       // ⚠️ سقف السلامة المالية (حاسم — يمنع خسارة نقدية حقيقية): الاستقطاع لا يتجاوز الأجرَ المتاح
-      // لاستيعابه فعلاً = gross + overtime + commission − إجازة. بدونه: سلفةٌ تفوق الأجر (مثلاً بلا
-      // monthlyDeduction فيُقترَح كامل المتبقّي > الراتب) تُنتج net سالباً، فيتخطّى payRun صرفَها النقديّ
-      // (net ≤ 0) بينما settleAdvancesOnPayTx تُسوّي **كامل** advanceDeduction ⇒ تُشطَب السلفة بلا
-      // استردادٍ من راتبٍ صُرف = خسارة نقدية على الشركة (والمفصول ذو الأجر الصفريّ تُسامَح سلفته كلها).
-      // القصّ يضمن net ≥ 0 ⇒ المُسوّى = المُقتطَع فعلاً، وتُستكمَل البقيّة من رواتب الأشهر التالية.
-      const absorbableWage = Decimal.max(0, round2(gross.plus(overtime).plus(commission).minus(leaveDeduction)));
+      // لاستيعابه فعلاً = gross + overtime + commission − إجازة − الاستقطاعات القانونية الإلزامية.
+      // بدونه: سلفةٌ تفوق الأجر المتاح تُنتج net سالباً فيتخطّى payRun صرفَها النقديّ (net ≤ 0) بينما
+      // settleAdvancesOnPayTx تُسوّي **كامل** advanceDeduction ⇒ تُشطَب السلفة بلا استردادٍ نقديّ =
+      // خسارة على الشركة. القصّ يضمن net ≥ 0 ⇒ المُسوّى = المُقتطَع فعلاً، وتُستكمَل البقيّة لاحقاً.
+      // (حين المكوّنات القانونية معطَّلة statutoryDeduction=0 ⇒ الصيغة مطابقة لما كانت — صفر انحدار.)
+      const absorbableWage = Decimal.max(0, round2(gross.plus(overtime).plus(commission).minus(leaveDeduction).minus(statutoryDeduction)));
       const suggestedAdvance = advanceByEmp.get(Number(e.id))?.suggested ?? new Decimal(0);
       const advanceDeduction = round2(Decimal.min(suggestedAdvance, absorbableWage));
-      const deductions = round2(advanceDeduction.plus(leaveDeduction));
+      const deductions = round2(advanceDeduction.plus(leaveDeduction).plus(statutoryDeduction));
       const net = computeNet(gross, overtime, commission, deductions);
       await tx.insert(payrollItems).values({
         runId,
@@ -310,6 +351,12 @@ export async function generatePayroll(period: string, actor: Actor) {
         commission: toDbMoney(commission),
         deductions: toDbMoney(deductions),
         advanceDeduction: toDbMoney(advanceDeduction),
+        // المكوّنات القانونية (البند ④، لقطة): حصّتا الموظف (ضمان+ضريبة) مُتضمَّنتان في deductions أعلاه؛
+        // حصّة رب العمل واستحقاق نهاية الخدمة عرضٌ/التزامٌ فقط (خارج deductions/net). كلها صفر عند التعطيل.
+        socialSecurityEmployee: toDbMoney(legal.socialSecurityEmployee),
+        incomeTax: toDbMoney(legal.incomeTax),
+        socialSecurityEmployer: toDbMoney(legal.socialSecurityEmployer),
+        endOfServiceAccrual: toDbMoney(legal.endOfServiceAccrual),
         net: toDbMoney(net),
       });
     }
@@ -350,10 +397,16 @@ export async function updateItem(itemId: number, input: UpdateItemInput) {
     // الاستقطاعات (غياب/جزاء) فوقه فقط. السماح بالهبوط دونه يفكّ الاتساق مع تسوية السلف عند
     // الدفع (settleAdvancesOnPayTx تُنقص remaining بمقدار advanceDeduction كما وُلّد).
     const advancePart = money(item.advanceDeduction);
-    if (deductions.lt(advancePart)) {
+    // المكوّنات القانونية (البند ④): حصّتا الموظف (ضمان+ضريبة) استقطاعاتٌ إلزاميّة لا تُزال يدوياً —
+    // تُضاف إلى أرضية السلفة. **معطَّلة ⇒ صفر ⇒ الأرضية = جزء السلفة كما كانت (صفر انحدار، ونفس الرسالة).**
+    const statutoryPart = round2(money(item.socialSecurityEmployee).plus(money(item.incomeTax)));
+    const floor = round2(advancePart.plus(statutoryPart));
+    if (deductions.lt(floor)) {
       throw new TRPCError({
         code: "BAD_REQUEST",
-        message: `الاستقطاع لا يقلّ عن استقطاع السلفة المولَّد (${toDbMoney(advancePart)}) — لتغييره ألغِ المسودة وعدِّل السلفة ثم أعد التوليد`,
+        message: statutoryPart.gt(0)
+          ? `الاستقطاع لا يقلّ عن الاستقطاعات المولَّدة إلزاميّاً (سلفة ${toDbMoney(advancePart)} + قانونية ${toDbMoney(statutoryPart)}) — لتغييرها ألغِ المسودة وعدِّل الإعدادات/السلفة ثم أعد التوليد`
+          : `الاستقطاع لا يقلّ عن استقطاع السلفة المولَّد (${toDbMoney(advancePart)}) — لتغييره ألغِ المسودة وعدِّل السلفة ثم أعد التوليد`,
       });
     }
     // العمولة قراءة فقط هنا — تعديلها = إعادة احتساب تشغيلة العمولات قبل توليد المسيّر.

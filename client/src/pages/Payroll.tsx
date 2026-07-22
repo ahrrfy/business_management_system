@@ -359,12 +359,31 @@ export default function Payroll() {
                 {D(slip.advanceDeduction || 0).gt(0) && (
                   <div className="flex justify-between text-xs"><span className="text-muted-foreground ps-3">منها استقطاع سلفة</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.advanceDeduction)}</span></div>
                 )}
+                {/* المكوّنات القانونية (البند ④) — حصّتا الموظف (ضمان/ضريبة) ضمن الاستقطاع، تظهران عند التفعيل. */}
+                {D(slip.socialSecurityEmployee || 0).gt(0) && (
+                  <div className="flex justify-between text-xs"><span className="text-muted-foreground ps-3">منها ضمان اجتماعي (حصّة الموظف)</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.socialSecurityEmployee)}</span></div>
+                )}
+                {D(slip.incomeTax || 0).gt(0) && (
+                  <div className="flex justify-between text-xs"><span className="text-muted-foreground ps-3">منها ضريبة دخل مستقطعة</span><span className="tabular-nums text-money-negative" dir="ltr">−{iqd(slip.incomeTax)}</span></div>
+                )}
                 {slip.note && <div className="flex justify-between"><span className="text-muted-foreground">ملاحظة</span><span>{slip.note}</span></div>}
               </div>
               <div className="flex justify-between items-center py-3 border-t-2">
                 <span className="font-bold">الصافي المستحق</span>
                 <span className="text-xl font-bold text-money-positive tabular-nums" dir="ltr">{iqd(slip.net)}</span>
               </div>
+              {/* التزامات على الشركة (البند ④) — لا تُخصَم من الموظف ولا تؤثّر على الصافي؛ تظهر عند التفعيل فقط. */}
+              {(D(slip.socialSecurityEmployer || 0).gt(0) || D(slip.endOfServiceAccrual || 0).gt(0)) && (
+                <div className="pt-2 space-y-1.5 text-xs border-t">
+                  <div className="font-medium text-muted-foreground">التزامات على الشركة (لا تُخصَم من الموظف)</div>
+                  {D(slip.socialSecurityEmployer || 0).gt(0) && (
+                    <div className="flex justify-between"><span className="text-muted-foreground">ضمان اجتماعي — حصّة رب العمل</span><span className="tabular-nums" dir="ltr">{iqd(slip.socialSecurityEmployer)}</span></div>
+                  )}
+                  {D(slip.endOfServiceAccrual || 0).gt(0) && (
+                    <div className="flex justify-between"><span className="text-muted-foreground">استحقاق نهاية الخدمة (متراكم هذا الشهر)</span><span className="tabular-nums" dir="ltr">{iqd(slip.endOfServiceAccrual)}</span></div>
+                  )}
+                </div>
+              )}
             </div>
           )}
           <DialogFooter>
