@@ -259,6 +259,36 @@ describe("①ج استمرارية نقد الورديات — الخدمة", ()
     expect((await getExpectedOpening(1, "RECEPTION")).expected).toBeNull();
     expect((await getExpectedOpening(2, "RETAIL")).expected).toBeNull();
   });
+
+  it("انحدار #320: كشف «الاستهلاك» بالمعرّف الرتيب لا بالساعة — انزياح openedAt للماضي لا يُعيد المطابقة", async () => {
+    // A تُغلق بمتبقٍّ 300، ثم B تفتح على نفس الدرج وتستهلكه وتبقى مفتوحة.
+    const aId = await closeWith({ user: CASHIER1, opening: "500", counted: "500", handover: "200" });
+    const b = await openShift(
+      { branchId: 1, openingBalance: "300", shiftType: "RETAIL" },
+      { userId: CASHIER2, branchId: 1 },
+    );
+    expect(b.hasDiscrepancy).toBe(false);
+
+    // نحاكي تخلُّف ساعة القاعدة: openedAt للوردية B (defaultNow — ساعة القاعدة) يُقتطَع لثانيةٍ أسبق من
+    // closedAt للوردية A (new Date — ساعة التطبيق). الكشف السليم يجب ألّا يعتمد على هذا التباين: الشيفرة
+    // القديمة (gte openedAt≥closedAt) كانت تُخطئ B فتُعيد مطابقة المتبقّي المُستهلَك لوردية ثالثة (فجوة
+    // استمرارية زائفة متقطّعة على #320). الكشف بالمعرّف الرتيب يُبطِل التباين حتماً — هذا الاختبار يفشل
+    // على الشيفرة القديمة (openShift لِـC يرمي «سبب الاختلاف») ويمرّ على الجديدة.
+    const aRow = await shiftRow(aId);
+    await db()
+      .update(s.shifts)
+      .set({ openedAt: new Date(new Date(aRow.closedAt!).getTime() - 5000) }) // B.openedAt = A.closedAt − 5s
+      .where(eq(s.shifts.id, b.shiftId));
+
+    // C (ثالثة) ⇒ لا مطابقة رغم أنّ openedAt(B) < closedAt(A). المطابقة بالمعرّف لا بالساعة.
+    const c = await openShift(
+      { branchId: 1, openingBalance: "0", shiftType: "RETAIL" },
+      { userId: ADMIN, branchId: 1 },
+    );
+    expect(c.expectedOpening).toBeNull();
+    expect(c.hasDiscrepancy).toBe(false);
+    expect((await getExpectedOpening(1, "RETAIL")).expected).toBeNull();
+  });
 });
 
 describe("①ج استمرارية نقد الورديات — الراوتر (open + expectedOpening + التدقيق)", () => {

@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gt, gte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { invoices, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
@@ -29,7 +29,7 @@ export async function lastClosedRemainingTx(
   shiftType: ShiftType,
 ): Promise<string | null> {
   const rows = await tx
-    .select({ remaining: shifts.closingDrawerCash, closedAt: shifts.closedAt })
+    .select({ id: shifts.id, remaining: shifts.closingDrawerCash, closedAt: shifts.closedAt })
     .from(shifts)
     .where(
       and(eq(shifts.branchId, branchId), eq(shifts.status, "CLOSED"), eq(shifts.shiftType, shiftType)),
@@ -41,6 +41,12 @@ export async function lastClosedRemainingTx(
   // ①ج تعدّد الكاشير (Codex P2 على #320): إن فُتِحت وردية لنفس (الفرع×النوع) بعد إغلاق هذه ⇒ سبق أن
   // «استهلكت» المتبقّي، فلا يُعاد لوردية ثالثة متزامنة (وإلّا فجوة استمرارية زائفة). أوّل وردية بعد
   // الإغلاق (لا مفتوحة بعدُ) تُطابِق المتبقّي كالمعتاد.
+  // انحدار #320 (٢٣/٧): الكشف بالمعرّف الرتيب (autoincrement) لا بمقارنة openedAt≥closedAt. العمودان
+  // يُضبَطان بساعتين مختلفتين — openedAt بساعة القاعدة (defaultNow) وclosedAt بساعة التطبيق (new Date)
+  // وكلاهما بدقّة الثانية. حين تتخلّف ساعة القاعدة ~ثانية (Docker/Windows، وأحياناً عدّاءو CI) تُقتطَع
+  // openedAt للوردية اللاحقة لثانيةٍ أسبق من closedAt فيُخطئها الاستعلام ⇒ فجوة استمرارية زائفة متقطّعة.
+  // المعرّف يُسنَد لحظة الفتح ويعكس ترتيبه ⇒ الكشف مستقلٌّ حتماً عن أيّ ساعة/تباين/دقّة (أيّ وردية
+  // مفتوحة أحدث من آخر مغلقة على الدرج نفسه تكون قد طالبت باستمراريّته).
   if (last.closedAt) {
     const openAfter = await tx
       .select({ id: shifts.id })
@@ -50,7 +56,7 @@ export async function lastClosedRemainingTx(
           eq(shifts.branchId, branchId),
           eq(shifts.status, "OPEN"),
           eq(shifts.shiftType, shiftType),
-          gte(shifts.openedAt, last.closedAt),
+          gt(shifts.id, last.id),
         ),
       )
       .limit(1);
@@ -67,7 +73,7 @@ export async function getExpectedOpening(branchId: number, shiftType: ShiftType 
   const db = getDb();
   if (!db) return { expected: null as string | null };
   const rows = await db
-    .select({ remaining: shifts.closingDrawerCash, closedAt: shifts.closedAt })
+    .select({ id: shifts.id, remaining: shifts.closingDrawerCash, closedAt: shifts.closedAt })
     .from(shifts)
     .where(
       and(eq(shifts.branchId, branchId), eq(shifts.status, "CLOSED"), eq(shifts.shiftType, shiftType)),
@@ -86,7 +92,7 @@ export async function getExpectedOpening(branchId: number, shiftType: ShiftType 
           eq(shifts.branchId, branchId),
           eq(shifts.status, "OPEN"),
           eq(shifts.shiftType, shiftType),
-          gte(shifts.openedAt, last.closedAt),
+          gt(shifts.id, last.id), // بالمعرّف الرتيب لا بالساعة (انحدار #320 — راجع lastClosedRemainingTx)
         ),
       )
       .limit(1);
