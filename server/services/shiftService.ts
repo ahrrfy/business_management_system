@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, eq, gt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, sql } from "drizzle-orm";
 import { invoices, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
@@ -11,9 +11,63 @@ import { isDupEntry } from "@shared/errorMap.ar";
 /** نوع الوردية: تجزئة (كاشير) أو استقبال (خدمة الزبائن — درج/عرابين مستقلّة). */
 export type ShiftType = "RETAIL" | "RECEPTION";
 
+/**
+ * ①ج عتبة اعتبار فرقٍ في الرصيد الافتتاحيّ «اختلافاً» يستوجب سبباً: أيّ فرقٍ مقداره ≥ 0.01 (فلس
+ * واحد). نستعمل نصف الفلس عتبةً كي تُصفَّر ضوضاء الكسور العائمة وتُلتقَط أيّ خانتين عشريتين حقيقيتين.
+ */
+const OPENING_DISCREPANCY_EPSILON = money("0.005");
+
+/**
+ * ①ج المتبقّي فعلياً في الدرج بعد إغلاق آخر وردية مغلقة لنفس (الفرع×النوع) = closingDrawerCash
+ * (المعدود − المُسلَّم للخزينة عند الإغلاق). يُصبح «الرصيد الافتتاحيّ المتوقَّع» للوردية التالية.
+ * يُرجِع null حين لا سابقة مغلقة، أو حين لا تَحمل السابقة المتبقّي (ورديات تاريخية قبل الهجرة) ⇒
+ * لا مطابقة (سلوك «أوّل وردية»، بلا تحذير زائف). النوع فاصلٌ: التجزئة والاستقبال درجان مستقلّان.
+ */
+export async function lastClosedRemainingTx(
+  tx: Tx,
+  branchId: number,
+  shiftType: ShiftType,
+): Promise<string | null> {
+  const rows = await tx
+    .select({ remaining: shifts.closingDrawerCash })
+    .from(shifts)
+    .where(
+      and(eq(shifts.branchId, branchId), eq(shifts.status, "CLOSED"), eq(shifts.shiftType, shiftType)),
+    )
+    .orderBy(desc(shifts.closedAt), desc(shifts.id))
+    .limit(1);
+  const remaining = rows[0]?.remaining;
+  return remaining == null ? null : toDbMoney(money(remaining));
+}
+
+/**
+ * ①ج قراءةٌ للاطّلاع (شاشة فتح الوردية): المتوقَّع لفتح وردية لفرع/نوع. الفرض النهائيّ يبقى خادمياً
+ * داخل openShift (يُعاد الحساب تحت المعاملة) ⇒ هذه للعرض فقط ولا يُوثَق بها الأمان.
+ */
+export async function getExpectedOpening(branchId: number, shiftType: ShiftType = "RETAIL") {
+  const db = getDb();
+  if (!db) return { expected: null as string | null };
+  const rows = await db
+    .select({ remaining: shifts.closingDrawerCash })
+    .from(shifts)
+    .where(
+      and(eq(shifts.branchId, branchId), eq(shifts.status, "CLOSED"), eq(shifts.shiftType, shiftType)),
+    )
+    .orderBy(desc(shifts.closedAt), desc(shifts.id))
+    .limit(1);
+  const remaining = rows[0]?.remaining;
+  return { expected: remaining == null ? null : toDbMoney(money(remaining)) };
+}
+
 /** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION). */
 export async function openShift(
-  input: { branchId: number; openingBalance: string; shiftType?: ShiftType },
+  input: {
+    branchId: number;
+    openingBalance: string;
+    shiftType?: ShiftType;
+    // ①ج سبب اختلاف الرصيد الافتتاحيّ عن المتوقَّع (إلزاميّ عند الاختلاف — يُفرَض خادمياً أدناه).
+    openingDiscrepancyReason?: string | null;
+  },
   actor: Actor,
 ) {
   const shiftType: ShiftType = input.shiftType ?? "RETAIL";
@@ -39,6 +93,31 @@ export async function openShift(
             : "لديك وردية مفتوحة بالفعل في هذا الفرع",
       });
     }
+
+    // ①ج مطابقة الاستمرارية: المتوقَّع = متبقّي آخر وردية مغلقة لنفس (الفرع×النوع). عند اختلاف المُدخَل
+    // عنه ⇒ سببٌ إلزاميّ يُسجَّل (تحذيرٌ لا حظر — قد يبدأ الكاشير برصيدٍ مختلفٍ مشروعاً). أوّل وردية
+    // (لا سابقة) ⇒ لا مطابقة. الفرض خادميّ بحت: يُعاد الحساب هنا تحت المعاملة ولا يُوثَق بما ترسله الواجهة.
+    const expectedStr = await lastClosedRemainingTx(tx, input.branchId, shiftType);
+    const entered = money(input.openingBalance);
+    let hasDiscrepancy = false;
+    let difference: string | null = null;
+    let reasonToStore: string | null = null;
+    if (expectedStr != null) {
+      const diff = entered.minus(money(expectedStr));
+      hasDiscrepancy = diff.abs().gt(OPENING_DISCREPANCY_EPSILON);
+      difference = toDbMoney(diff);
+      if (hasDiscrepancy) {
+        const reason = (input.openingDiscrepancyReason ?? "").trim();
+        if (!reason) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: `الرصيد الافتتاحيّ المُدخَل (${entered.toFixed(2)}) يختلف عن المتبقّي من الوردية السابقة (${money(expectedStr).toFixed(2)}) — أدخل سبب الاختلاف للمتابعة.`,
+          });
+        }
+        reasonToStore = reason.slice(0, 500);
+      }
+    }
+
     try {
       const res = await tx.insert(shifts).values({
         branchId: input.branchId,
@@ -47,9 +126,11 @@ export async function openShift(
         status: "OPEN",
         shiftType,
         openGuard: `${actor.userId}:${input.branchId}:${shiftType}`, // حارس ذرّي ضدّ الفتح المزدوج المتزامن لنفس النوع
+        openingExpectedCash: expectedStr, // null إن لا سابقة ⇒ «أوّل وردية»
+        openingDiscrepancyReason: reasonToStore, // null إن لا اختلاف
       });
       const shiftId = extractInsertId(res);
-      return { shiftId };
+      return { shiftId, expectedOpening: expectedStr, hasDiscrepancy, difference, discrepancyReason: reasonToStore };
     } catch (e: any) {
       if (isDupEntry(e)) {
         throw new TRPCError({ code: "CONFLICT", message: "لديك وردية مفتوحة بالفعل في هذا الفرع" });
@@ -161,6 +242,12 @@ export async function closeShift(
       );
     }
 
+    // ①ج المتبقّي في الدرج بعد الإغلاق = المعدود − المُسلَّم للخزينة عند الإغلاق ⇒ «الرصيد الافتتاحيّ
+    // المتوقَّع» للوردية التالية لنفس (الفرع×النوع). cash drop منتصف الوردية غادر الدرج قبل العدّ فلا
+    // يُطرَح ثانيةً (سبق أن نقص المعدود). handover ≤ counted مضمونٌ أعلاه ⇒ المتبقّي ≥ 0.
+    const handoverAmount = input.handover?.amount ? money(input.handover.amount) : money("0");
+    const closingDrawerCash = counted.minus(handoverAmount);
+
     await tx
       .update(shifts)
       .set({
@@ -171,6 +258,7 @@ export async function closeShift(
         countedCash: toDbMoney(counted),
         variance: toDbMoney(variance),
         countedBreakdown: input.countedBreakdown ?? null,
+        closingDrawerCash: toDbMoney(closingDrawerCash), // ①ج متبقّي الدرج للوردية التالية
       })
       .where(eq(shifts.id, input.shiftId));
 

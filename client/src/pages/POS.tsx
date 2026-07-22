@@ -22,6 +22,7 @@ import { getMeta, setMeta } from "@/lib/offline/db";
 import { OfflineSyncChip } from "@/components/offline/OfflineSyncChip";
 import { parseScan } from "@/lib/scanRouter";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { useOpeningContinuity, OpeningContinuityInline } from "@/components/treasury/useOpeningContinuity";
 import { keepPreviousData } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
@@ -959,6 +960,9 @@ export default function POS() {
     onError: (e) => notify.err(e),
   });
 
+  // ①ج استمرارية نقد الورديات: المتوقَّع = متبقّي آخر وردية RETAIL مغلقة لهذا الفرع (يُطابق المُدخَل).
+  const openingCont = useOpeningContinuity({ branchId, shiftType: "RETAIL", opening, enabled: !shift });
+
   // ── Keyboard ──────────────────────────────────────────────────────────────
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -1060,10 +1064,11 @@ export default function POS() {
               style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box" }}
             />
           </div>
+          <OpeningContinuityInline C={C} oc={openingCont} />
           <button
-            disabled={openShift.isPending || needsBranchChoice}
-            onClick={() => openShift.mutate({ branchId, openingBalance: opening, shiftType: "RETAIL" })}
-            style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice ? "not-allowed" : "pointer" }}
+            disabled={openShift.isPending || needsBranchChoice || openingCont.blocked}
+            onClick={() => openShift.mutate({ branchId, openingBalance: opening, shiftType: "RETAIL", openingDiscrepancyReason: openingCont.reasonPayload })}
+            style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice || openingCont.blocked ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice || openingCont.blocked ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice || openingCont.blocked ? "not-allowed" : "pointer" }}
           >
             {openShift.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح الوردية"}
           </button>

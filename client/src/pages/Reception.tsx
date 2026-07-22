@@ -31,6 +31,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useOpeningContinuity, OpeningContinuityCard } from "@/components/treasury/useOpeningContinuity";
 import { SmartCustomerInput, type SmartCustomerValue } from "@/components/form/SmartCustomerInput";
 import { CustomizationDialog, type CustomizationData, composeCustomizationText, emptyCustomization } from "@/components/CustomizationDialog";
 import { useBarcodeScanner } from "@/hooks/useBarcodeScanner";
@@ -169,6 +170,9 @@ export default function Reception() {
     },
     onError: (e) => notify.err(e),
   });
+
+  // ①ج استمرارية نقد الورديات: المتوقَّع = متبقّي آخر وردية RECEPTION مغلقة لهذا الفرع (يُطابق المُدخَل).
+  const openingCont = useOpeningContinuity({ branchId, shiftType: "RECEPTION", opening, enabled: !shift });
 
   // تقرير الوردية (Z) — يُحمَّل فقط عند فتح نافذة الإغلاق.
   const reportQ = trpc.shifts.report.useQuery({ shiftId: shift?.id ?? 0 }, { enabled: closing && !!shift });
@@ -713,10 +717,11 @@ export default function Reception() {
               }}
             />
           </div>
+          <OpeningContinuityCard oc={openingCont} />
           <Button
             className="h-12 w-full text-base font-bold"
-            disabled={openShiftM.isPending || needsBranchChoice}
-            onClick={() => openShiftM.mutate({ branchId, openingBalance: opening || "0", shiftType: "RECEPTION" })}
+            disabled={openShiftM.isPending || needsBranchChoice || openingCont.blocked}
+            onClick={() => openShiftM.mutate({ branchId, openingBalance: opening || "0", shiftType: "RECEPTION", openingDiscrepancyReason: openingCont.reasonPayload })}
           >
             {openShiftM.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح وردية خدمة الزبائن"}
           </Button>

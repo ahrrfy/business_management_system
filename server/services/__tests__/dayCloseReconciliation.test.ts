@@ -180,13 +180,13 @@ describe("getDayCloseReconciliation — الفرق (drift)", () => {
     await closeShift({ shiftId: a.shiftId, countedCash: "85000" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
 
     // عجز: افتتاحيّ 40000 + بيع 20000 ⇒ متوقَّع 60000، معدود 57000 ⇒ −3000
-    const b = await openShift({ branchId: 1, openingBalance: "40000" }, { userId: CASHIER2, branchId: 1 });
+    const b = await openShift({ branchId: 1, openingBalance: "40000", openingDiscrepancyReason: "تهيئة اختبار" }, { userId: CASHIER2, branchId: 1 });
     const invB = await seedInvoice(1);
     await insertReceipt({ shiftId: b.shiftId, branchId: 1, direction: "IN", amount: "20000.00", invoiceId: invB, createdBy: CASHIER2 });
     await closeShift({ shiftId: b.shiftId, countedCash: "57000" }, { userId: CASHIER2, branchId: 1, role: "cashier" });
 
     // مفتوحة: افتتاحيّ 10000 + بيع 5000 (تبقى مفتوحة) ⇒ counted/drift = null، expected حيّ 15000
-    const c = await openShift({ branchId: 1, openingBalance: "10000" }, { userId: CASHIER1, branchId: 1 });
+    const c = await openShift({ branchId: 1, openingBalance: "10000", openingDiscrepancyReason: "تهيئة اختبار" }, { userId: CASHIER1, branchId: 1 });
     const invC = await seedInvoice(1);
     await insertReceipt({ shiftId: c.shiftId, branchId: 1, direction: "IN", amount: "5000.00", invoiceId: invC });
 
@@ -231,7 +231,7 @@ describe("getDayCloseReconciliation — عزل الفرع وحدود اليوم 
     const bShift = await openShift({ branchId: 2, openingBalance: "5000" }, { userId: MANAGER2, branchId: 2, role: "manager" } as any);
     await closeShift({ shiftId: bShift.shiftId, countedCash: "5000" }, { userId: MANAGER2, branchId: 2, role: "manager" });
     // وردية فرع١ «أمس» — نُزيح openedAt ٣٦ ساعة للوراء (ملف اختبار ⇒ خارج حارس التاريخ)
-    const old = await openShift({ branchId: 1, openingBalance: "9999" }, { userId: CASHIER2, branchId: 1 });
+    const old = await openShift({ branchId: 1, openingBalance: "9999", openingDiscrepancyReason: "تهيئة اختبار" }, { userId: CASHIER2, branchId: 1 });
     await closeShift({ shiftId: old.shiftId, countedCash: "9999" }, { userId: CASHIER2, branchId: 1, role: "cashier" });
     await db().update(s.shifts).set({ openedAt: new Date(Date.now() - 36 * 3600 * 1000) }).where(eq(s.shifts.id, old.shiftId));
 

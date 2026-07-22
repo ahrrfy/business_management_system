@@ -6,7 +6,7 @@ import { branches, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
-import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
+import { closeShift, getExpectedOpening, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { createCashDrop } from "../services/cashDropService";
 import { router, treasuryCashierProcedure, treasuryReadProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
@@ -91,6 +91,9 @@ export const shiftRouter = router({
         openingBalance: z.string().regex(/^\d+(\.\d{1,2})?$/, "الرصيد الافتتاحي مبلغ غير سالب").default("0"),
         // نوع الوردية: RETAIL (كاشير) أو RECEPTION (خدمة الزبائن). يُفتَح من شاشة الاستقبال بـRECEPTION.
         shiftType: z.enum(["RETAIL", "RECEPTION"]).default("RETAIL"),
+        // ①ج سبب اختلاف الرصيد الافتتاحيّ عن المتبقّي من الوردية السابقة (إلزاميّ عند الاختلاف —
+        // يُفرَض داخل openShift خادمياً تحت المعاملة). اختياريّ هنا: أوّل وردية/لا اختلاف لا يَطلبه.
+        openingDiscrepancyReason: z.string().max(500).optional(),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -105,9 +108,42 @@ export const shiftRouter = router({
         }
         actorBranchId = Number(ctx.user.branchId);
       }
-      const res = await openShift({ ...input, branchId: actorBranchId }, { userId: ctx.user.id, branchId: actorBranchId });
-      await logAudit(ctx, { action: "shift.open", entityType: "shift", entityId: (res as { id?: number })?.id, newValue: { openingBalance: input.openingBalance, branchId: actorBranchId, shiftType: input.shiftType } });
+      const res = await openShift(
+        { ...input, branchId: actorBranchId, openingDiscrepancyReason: input.openingDiscrepancyReason ?? null },
+        { userId: ctx.user.id, branchId: actorBranchId },
+      );
+      // ①ج سجلّ فتح الوردية يَكشف فجوة الاستمرارية (المتوقَّع/الفرق/السبب) لا الرصيد المُدخَل وحده.
+      // + إصلاح entityId: openShift يُرجِع shiftId لا id (كان undefined فيَعمى السجلّ عن الوردية).
+      await logAudit(ctx, {
+        action: "shift.open",
+        entityType: "shift",
+        entityId: res.shiftId,
+        newValue: {
+          openingBalance: input.openingBalance,
+          branchId: actorBranchId,
+          shiftType: input.shiftType,
+          expectedOpening: res.expectedOpening,
+          hasDiscrepancy: res.hasDiscrepancy,
+          difference: res.difference,
+          discrepancyReason: res.discrepancyReason,
+        },
+      });
       return res;
+    }),
+
+  // ①ج الرصيد الافتتاحيّ المتوقَّع = متبقّي آخر وردية مغلقة لنفس (الفرع×النوع) — تُعرَض في شاشة فتح
+  // الوردية لمطابقة المُدخَل قبل الفتح (اطّلاعٌ فقط؛ الفرض النهائيّ داخل open، يُعاد الحساب تحت المعاملة).
+  // نفس نمط عزل الفرع في current: الكاشير على فرعه (scopedBranch)، المرتفعون بـinput.branchId.
+  expectedOpening: treasuryReadProcedure
+    .input(
+      z.object({
+        branchId: z.number().int().positive(),
+        shiftType: z.enum(["RETAIL", "RECEPTION"]).default("RETAIL"),
+      }),
+    )
+    .query(({ input, ctx }) => {
+      const effective = ctx.scopedBranchId ?? input.branchId;
+      return getExpectedOpening(effective, input.shiftType);
     }),
 
   close: treasuryCashierProcedure
