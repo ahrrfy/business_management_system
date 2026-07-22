@@ -73,8 +73,10 @@ docker exec -i erp-mysql mysql -uroot -p"$DB_ROOT_PW" < restore.sql
 > و healthcheck في `docker-compose.yml`).
 
 ```bash
-# 1) أنشئ قاعدة مؤقّتة للاختبار — منفصلة تماماً عن الإنتاج erp
-docker exec erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "CREATE DATABASE IF NOT EXISTS erp_restore_test;"'
+# 1) أنشئ قاعدة مؤقّتة نظيفة — احذفها أوّلاً إن بقيت من تشغيلة سابقة توقّفت قبل التنظيف، ثمّ أنشئها.
+#    قاعدة نظيفة كلّ مرّة ضروريّة: النسخة المُنقّاة لا تحوي DROP/CREATE DATABASE، وmysqldump يُسقط
+#    الجداول الموجودة في الملف فقط ⇒ جداول/صفوف قديمة قد تُخفي نقصاً في النسخة الحالية (اختبار زائف).
+docker exec erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "DROP DATABASE IF EXISTS erp_restore_test; CREATE DATABASE erp_restore_test;"'
 
 # 2) استعد آخر نسخة إليها — بعد حذف أسطر تحويل القاعدة (CREATE DATABASE/USE/DROP DATABASE) أوّلاً،
 #    وإلّا فعبارة USE erp تُوجّه الاستيراد إلى الإنتاج وتدمّره (انظر التحذير أعلاه).
