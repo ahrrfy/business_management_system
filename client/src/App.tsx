@@ -110,6 +110,7 @@ const ExpensesReport = lazy(() => import("@/pages/ExpensesReport"));
 const AnomalyWatch = lazy(() => import("@/pages/AnomalyWatch"));
 const OfflineSalesReport = lazy(() => import("@/pages/OfflineSalesReport"));
 const CashOrphanReport = lazy(() => import("@/pages/CashOrphanReport"));
+const DayCloseReport = lazy(() => import("@/pages/DayCloseReport"));
 const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
 const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
 const PayrollReport = lazy(() => import("@/pages/PayrollReport"));
@@ -355,6 +356,7 @@ export default function App() {
       {/* ش٥ أوفلاين: تقرير المبيعات الملتقطة دون اتصال — مرآة بوّابة offline.salesReport (reportViewer). */}
       <Route path="/reports/offline-sales"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><OfflineSalesReport /></RequireRole></Shell></Route>
       <Route path="/reports/cash-orphans"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><CashOrphanReport /></RequireRole></Shell></Route>
+      <Route path="/reports/day-close"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><DayCloseReport /></RequireRole></Shell></Route>
       {/* تدقيق ١٧/٧: أُضيف accountant — الخادم reportViewerProcedure يخوّله فكان محجوباً واجهياً فقط. */}
       <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
       <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
