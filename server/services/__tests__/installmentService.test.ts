@@ -450,6 +450,53 @@ describe("bounceCheck", () => {
     expect(inv.status).toBe("PARTIALLY_PAID");   // بلا إعادة حساب مضلِّلة (كان يصير "PENDING")
     expect(await customerBalance()).toBe("900000.00"); // الذمّة استُعيدت بالكامل (عكس متماثل)
   });
+
+  // الثابت (Codex P1): ارتداد قسطٍ سنده ما يزال PENDING_APPROVAL (Maker-Checker، فوق العتبة) يجب ألّا
+  // يُيتّم مفتاح idempotency — وإلّا لو اعتُمد السند لاحقاً + أُعيد السداد ⇒ تحصيلٌ مزدوج. حذف المفتاح
+  // مشروطٌ بعكسِ تحصيلٍ نافذ (reversed) فقط؛ هنا reversed=false فيبقى المفتاح ويُعيد السداد السندَ نفسه.
+  it("ارتداد قسطٍ سنده PENDING_APPROVAL (فوق العتبة) يُبقي مفتاح idempotency ⇒ لا سند ثانٍ ولا تحصيل مزدوج", async () => {
+    // قسط شيك فوق عتبة الاعتماد ⇒ السند PENDING_APPROVAL والقسط يبقى PENDING (لا أثر ماليّ بعد).
+    const { planId } = await createPlan(
+      {
+        customerId: 1,
+        branchId: 1,
+        totalAmount: "1500000.00",
+        lines: [{ dueDate: ymd(20), amount: "1500000.00", kind: "CHECK", checkNumber: "CHK-BIG", bankName: "الرافدين" }],
+      },
+      actor,
+    );
+    const checkLine = (await getPlan(planId)).lines[0];
+
+    const pay = await payLine({ lineId: checkLine.id, attachmentUrl: "https://example.com/r.jpg" }, actor);
+    expect(pay.status).toBe("PENDING_APPROVAL");
+    expect(await customerBalance()).toBe("900000.00"); // لا أثر ماليّ حتى الاعتماد
+
+    // المفتاح سُجِّل مشيراً للسند المعلَّق (createVoucher يسجّله حتى للسند PENDING_APPROVAL).
+    const keyBefore = (
+      await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}`))
+    )[0];
+    expect(keyBefore).toBeTruthy();
+    expect(Number(keyBefore.refId)).toBe(pay.receiptId);
+
+    // ارتداد القسط PENDING (لا عكس ماليّ — reversed=false).
+    const b = await bounceCheck({ lineId: checkLine.id, note: "ارتدّ قبل الاعتماد" }, actor);
+    expect(b.reversed).toBe(false);
+    expect((await getPlan(planId)).lines[0].status).toBe("BOUNCED");
+    expect(await customerBalance()).toBe("900000.00");
+
+    // ✅ الثابت: المفتاح ما يزال موجوداً ويشير لنفس السند المعلَّق (لم يُيتَّم).
+    const keyAfter = (
+      await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}`))
+    )[0];
+    expect(keyAfter).toBeTruthy();
+    expect(Number(keyAfter.refId)).toBe(pay.receiptId);
+
+    // إعادة السداد تُعيد السند المعلَّق نفسه (replay) لا سنداً ثانياً ⇒ لا ازدواج.
+    const pay2 = await payLine({ lineId: checkLine.id, attachmentUrl: "https://example.com/r.jpg" }, actor);
+    expect(pay2.status).toBe("PENDING_APPROVAL");
+    expect(pay2.receiptId).toBe(pay.receiptId); // نفس السند — لا جديد
+    expect(await db().select().from(s.receipts)).toHaveLength(1); // سند واحد فقط في النظام
+  });
 });
 
 describe("cancelPlan", () => {
