@@ -101,9 +101,12 @@ export const payrollRouter = router({
   /** قراءة إعدادات المكوّنات القانونية (ضمان/ضريبة/نهاية خدمة). hr/READ — القيم غير حسّاسة للاطلاع. */
   legalSettings: hrRead.query(() => legal.getPayrollLegalSettings()),
 
-  /** تحديث الإعدادات — محصور بالمدير/الأدمن (managerProcedure = admin+manager). كل مكوّن بمفتاح
-   *  تفعيل مستقلّ؛ النِّسب/الشرائح يضبطها المالك مع محاسبه. يُدقَّق كامل (logAudit). */
+  /** تحديث الإعدادات — محصور بالمدير/الأدمن **و** يلزمه منح وحدة hr=FULL خادمياً (Codex P2):
+   *  managerProcedure وحده يتجاهل منع hr الصريح (permissionsOverride=NONE) فيَعبُر مديرٌ حُجِبت عنه
+   *  وحدة hr ويغيّر النِّسب القانونية عبر tRPC مباشرةً؛ تركيب requireModule("hr","FULL") يُنفِذ الحجب
+   *  الصريح (مثل بقية كتابات hr). كل مكوّن بمفتاح تفعيل مستقلّ. يُدقَّق كامل (logAudit). */
   updateLegalSettings: managerProcedure
+    .use(requireModule("hr", "FULL"))
     .input(
       z.object({
         socialSecurityEnabled: z.boolean(),

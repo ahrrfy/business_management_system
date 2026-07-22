@@ -355,4 +355,49 @@ describe("generatePayroll — المكوّنات القانونية (DB)", () =>
     expect(Number(it.net)).toBe(0);
     expect(Number(it.net)).toBeGreaterThanOrEqual(0);
   });
+
+  it("(و) نهاية الخدمة للساعيّ تُحسب من أجره المكتسَب لا صفراً (Codex P2)", async () => {
+    await setLegal({ endOfServiceEnabled: true, endOfServiceDaysPerYear: "21" });
+    const emp = await createEmployee({ firstName: "حيدر", lastName: "الزيدي", payType: "hourly", dayRates: { "الأحد": 5000 } });
+    await db().insert(s.attendance).values({
+      employeeId: emp!.id, attendanceDate: "2026-06-01", status: "PRESENT", hours: "8.00", hourlyRate: "5000.00", amount: "300000.00", source: "manual",
+    });
+    const run = await generatePayroll("2026-06", ACTOR);
+    const it = run!.items[0];
+    expect(it.payType).toBe("hourly");
+    expect(Number(it.gross)).toBe(300000);
+    // المعدّل اليوميّ = gross ÷ ٣٠ = 10,000 ⇒ الاستحقاق = 10,000 × 21 ÷ 12 = 17,500 (لا صفر)
+    expect(Number(it.endOfServiceAccrual)).toBe(17500);
+    expect(Number(it.net)).toBe(300000); // لا يؤثّر على net
+  });
+
+  it("(ز) الضمان يُحسب على الأجر بعد الإجازة بلا راتب ⇒ خصمٌ أصغر وnet ≥ 0 (Codex P2)", async () => {
+    await setLegal({ socialSecurityEnabled: true, socialSecurityEmployeeRate: "5", socialSecurityBase: "gross" });
+    const emp = await createEmployee({ firstName: "سجاد", lastName: "الربيعي", payType: "monthly", salary: "900000", allowances: "0" });
+    // إجازة بلا راتب ١٥ يوماً ⇒ خصم = 900,000÷٣٠ × ١٥ = 450,000 ⇒ الأجر المكتسَب = 450,000.
+    await db().insert(s.leaveRequests).values({
+      employeeId: emp!.id, leaveType: "بدون راتب", paid: false, fromDate: "2026-06-01", toDate: "2026-06-15", days: 15, status: "approved",
+    });
+    const run = await generatePayroll("2026-06", ACTOR);
+    const it = run!.items[0];
+    // الضمان على 450,000 (لا 900,000) = 22,500 ⇒ deductions = 450,000 إجازة + 22,500 ضمان = 472,500 ⇒ net = 427,500
+    expect(Number(it.socialSecurityEmployee)).toBe(22500);
+    expect(Number(it.deductions)).toBe(472500);
+    expect(Number(it.net)).toBe(427500);
+    expect(Number(it.net)).toBeGreaterThanOrEqual(0);
+  });
+
+  it("(ح) إجازة تستهلك كامل الشهر + ضمان ⇒ net = 0 لا سالب (يُعتمد مسيّر متعدّد)", async () => {
+    await setLegal({ socialSecurityEnabled: true, socialSecurityEmployeeRate: "5", socialSecurityBase: "gross" });
+    const emp = await createEmployee({ firstName: "عباس", lastName: "الخفاجي", payType: "monthly", salary: "900000", allowances: "0" });
+    // إجازة ٣٠ يوماً ⇒ الخصم مقصوص عند gross ⇒ الأجر المكتسَب 0 ⇒ لا ضمان ⇒ net = 0 (لا سالب).
+    await db().insert(s.leaveRequests).values({
+      employeeId: emp!.id, leaveType: "بدون راتب", paid: false, fromDate: "2026-06-01", toDate: "2026-06-30", days: 30, status: "approved",
+    });
+    const run = await generatePayroll("2026-06", ACTOR);
+    const it = run!.items[0];
+    expect(Number(it.socialSecurityEmployee)).toBe(0); // لا ضمان على أجرٍ لم يُكتسَب
+    expect(Number(it.net)).toBe(0);
+    expect(Number(it.net)).toBeGreaterThanOrEqual(0); // ليس سالباً ⇒ لا يعطّل اعتماد مسيّرٍ متعدّد
+  });
 });
