@@ -12,6 +12,7 @@ import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, like, lte, or, sql } from "drizzle-orm";
 import {
   customers,
+  idempotencyKeys,
   installmentLines,
   installmentPlans,
   invoices,
@@ -20,7 +21,7 @@ import {
   branches,
 } from "../../drizzle/schema";
 import { extractInsertId } from "../lib/insertId";
-import { adjustCustomerBalance, computeInvoiceStatus, postEntry } from "./ledgerService";
+import { adjustCustomerBalance, postEntry } from "./ledgerService";
 import { money, sumMoney, toDbMoney, toDateStr } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
 import { createVoucher } from "./voucherService";
@@ -421,26 +422,26 @@ export async function bounceCheck(
         await adjustCustomerBalance(tx, Number(row.plan.customerId), amount);
         reversed = true;
       }
-      // إن كان القسط مرتبطاً بفاتورة، نُعكِّس paidAmount عليها + نحسب الحالة الصحيحة عبر
-      // computeInvoiceStatus (كان يُسمَّر PARTIALLY_PAID ⇒ فاتورة عاد سدادها للصفر تبقى «مدفوعة جزئياً»).
-      if (rec && row.plan.invoiceId != null) {
-        const [inv] = await tx
-          .select()
-          .from(invoices)
-          .where(eq(invoices.id, Number(row.plan.invoiceId)))
-          .for("update")
-          .limit(1);
-        if (inv) {
-          const newPaid = money(inv.paidAmount).minus(money(rec.amount));
-          const paidClamped = newPaid.lt(0) ? money(0) : newPaid;
-          const status = computeInvoiceStatus(inv.total, paidClamped.toFixed(2), inv.returnedTotal ?? "0");
-          await tx
-            .update(invoices)
-            .set({ paidAmount: toDbMoney(paidClamped), status })
-            .where(eq(invoices.id, Number(inv.id)));
-        }
-      }
+      // تماثُل الارتداد مع التحصيل: لا نمسّ invoices.paidAmount هنا. تحصيل القسط يمرّ عبر createVoucher
+      // (سند «على الحساب») فيخفّض customers.currentBalance فقط ولا يزيد invoices.paidAmount أبداً — الذمّة
+      // تُتابَع على مستوى العميل لا الفاتورة (راجع arRemindersService). كان العكس يطرح rec.amount من
+      // paidAmount التي لم يَزِدها التحصيل قطّ ⇒ يمحو دفعاتٍ مباشرةً مشروعةً على الفاتورة (عربون/سداد مباشر)
+      // ويقلب حالتها خطأً. الاستعادة الصحيحة والمتماثلة جرت أعلاه: adjustCustomerBalance(+amount) فقط.
     }
+
+    // حلّ تعارُض إصلاحين (idempotency): نحرّر مفتاح الـidempotency الثابت instpay-<lineId> الذي سجّله
+    // التحصيل (payLine → createVoucher). دلالة المفتاح «القسط يُسدَّد مرّة واحدة في عمره» صحيحةٌ لإعادة
+    // محاولةٍ داخل محاولة سدادٍ واحدة، لكنّ ارتداد الشيك حدثٌ صريح يُبطل تلك الدفعة ⇒ السطر (BOUNCED)
+    // يقبل تحصيلاً **جديداً** يجب أن يُنشئ سنداً + قيد PAYMENT_IN + خفض ذمّةٍ فعليّاً. بدون الحذف: إعادة
+    // السداد تجد الإيصال الأصل (يبقى COMPLETED عمداً — AR-BOUNCE) فـisDead=false في voucher/create ⇒
+    // replay صامت يسِم القسط PAID بلا نقدٍ مُسجَّل ولا خفض ذمّة (النقد يتبخّر، الذمّة تبقى مرتفعة). no-op
+    // إن لم يوجد مفتاح (شيك معلَّق لم يُحصَّل قطّ).
+    await tx.delete(idempotencyKeys).where(
+      and(
+        eq(idempotencyKeys.operation, "voucher.create"),
+        eq(idempotencyKeys.clientRequestId, `instpay-${Number(input.lineId)}`),
+      ),
+    );
 
     await tx
       .update(installmentLines)
