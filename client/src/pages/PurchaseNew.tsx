@@ -15,7 +15,9 @@
  */
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { Link, useLocation } from "wouter";
-import { D, round2, toBase } from "@/lib/money";
+import { Landmark, Truck } from "lucide-react";
+import { D, fmtAr, round2, toBase } from "@/lib/money";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import {
@@ -77,6 +79,12 @@ export default function PurchaseNew() {
   // معرّف العميل للطلب — جاهز للمستقبل (الراوتر الحالي لا يستهلكه؛ يُحفظ في memory للجلسة).
   const [clientRequestId] = useState(() => crypto.randomUUID());
 
+  /* ─── landed cost (شحن/كمرك) ────────────────────────────────────── */
+  // تُرسمَل في تكلفة المخزون (WAVG) عند الاستلام وتُضاف إلى ذمّة المورّد — لا مصروف P&L. تُوزَّع
+  // على الأصناف بنسبة القيمة خادمياً؛ المعاينة هنا بـdecimal.js فقط (الخادم يُعيد الحساب مرجعياً).
+  const [shippingCost, setShippingCost] = useState("");
+  const [customsCost, setCustomsCost] = useState("");
+
   /* ─── bulk picker overlay ──────────────────────────────────────── */
   const [bulkOpen, setBulkOpen] = useState(false);
 
@@ -92,6 +100,16 @@ export default function PurchaseNew() {
 
   /* ─── validation + submit ──────────────────────────────────────── */
   const totals = useMemo(() => calcTotals(state.items, state), [state]);
+
+  // landed-cost: الإجماليّ يشمل الشحن/الكمرك (يُوزَّعان بنسبة القيمة). التوزيع بالقيمة = نسبة رفعٍ
+  // موحّدة على كلّ تكلفة وحدة: capUnit = price × (subtotal + شحن + كمرك) / subtotal. للمعاينة فقط.
+  const landed = useMemo(() => {
+    const sum = round2(D(shippingCost).plus(D(customsCost)));
+    const subtotalD = D(totals.subtotal);
+    const grand = round2(D(totals.grandTotal).plus(sum));
+    const uplift = subtotalD.gt(0) ? subtotalD.plus(sum).dividedBy(subtotalD) : D(1);
+    return { sum, grand, uplift, hasLanded: sum.gt(0), hasBase: subtotalD.gt(0) };
+  }, [shippingCost, customsCost, totals.subtotal, totals.grandTotal]);
 
   function validate(): string | null {
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
@@ -109,6 +127,10 @@ export default function PurchaseNew() {
     // usd-po-reconcile: عند اختيار الدولار، مبلغ فاتورة المورد الفعلية إلزامي وموجب.
     if (state.currency === "USD" && !(D(state.usdTotal).gt(0))) {
       return "أدخل مبلغ فاتورة المورد بالدولار.";
+    }
+    // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
+    if (landed.hasLanded && !landed.hasBase) {
+      return "أضِف أصنافاً بقيمة موجبة قبل إدخال تكلفة الشحن/الكمرك.";
     }
     return null;
   }
@@ -132,6 +154,9 @@ export default function PurchaseNew() {
       // usd-po-reconcile: مبلغ فاتورة المورد الفعلية بالدولار (إعلامي — لا يمسّ الإجمالي الديناري).
       agreedCurrency: state.currency,
       usdTotal: state.currency === "USD" ? round2(D(state.usdTotal)).toFixed(2) : undefined,
+      // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
+      shippingCost: D(shippingCost).gt(0) ? round2(D(shippingCost)).toFixed(2) : undefined,
+      customsCost: D(customsCost).gt(0) ? round2(D(customsCost)).toFixed(2) : undefined,
       items: state.items.map((l) => ({
         variantId: l.variantId,
         productUnitId: l.productUnitId,
@@ -204,6 +229,9 @@ export default function PurchaseNew() {
         // RESET يُعيد taxEnabled/taxRatePercent للافتراضي المُدرَج في createInitialState (false/"0")
         // — نُعيد تفعيل تطبيق إعدادات الضريبة الفعلية على أمر الشراء التالي في نفس الجلسة.
         taxDefaultsAppliedRef.current = false;
+        // landed-cost حالة محلّية (خارج reducer) ⇒ نُصفّرها يدوياً مع تفريغ السلّة.
+        setShippingCost("");
+        setCustomsCost("");
         return;
       }
       // Esc ⇒ إغلاق Bulk Picker إن كان مفتوحاً
@@ -232,7 +260,7 @@ export default function PurchaseNew() {
           <span className="hidden font-semibold text-muted-foreground sm:inline">
             الإجمالي:{" "}
             <span className="font-extrabold text-foreground" dir="ltr">
-              {totals.grandTotal}
+              {landed.grand.toFixed(2)}
             </span>{" "}
             د.ع
           </span>
@@ -272,8 +300,65 @@ export default function PurchaseNew() {
         </div>
 
         <aside className="flex w-80 shrink-0 flex-col gap-2">
-          {/* تدقيق ١٧/٧ (خطر #2): إخفاء الحقول التي لا يحفظها purchases.createOrder (شحن/مصاريف/خصم/دفع)
-              كي لا يظهر للمستخدم إجماليّ يختلف عن المحفوظ ولا دفعة تُهمَل بصمت. الدفع يتمّ عند الاستلام. */}
+          {/* landed-cost (تدقيق ١٧/٧، خطر #2 — الآن مُنفَّذ لا مُخفى): الشحن/الكمرك يُحفظان ويُرسمَلان
+              في تكلفة المخزون (WAVG) عند الاستلام ويُضافان إلى ذمّة المورّد — لا مصروف P&L. باقي حقول
+              المحرّر (خصم/مصاريف أخرى/دفع) تبقى مخفيّة لأنّ createOrder لا يحفظها؛ الدفع عند الاستلام. */}
+          <section className="overflow-hidden rounded-xl border bg-card">
+            <header className="flex items-center gap-2 border-b bg-muted px-4 py-2.5">
+              <Truck aria-hidden className="size-5" />
+              <span className="text-sm font-extrabold">تكلفة الشحن والكمرك</span>
+            </header>
+            <div className="space-y-2 px-4 py-3">
+              <label className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                  <Truck aria-hidden className="size-4" /> الشحن
+                </span>
+                <MoneyInput
+                  value={shippingCost}
+                  onChange={setShippingCost}
+                  ariaLabel="تكلفة الشحن"
+                  className="h-8 w-32 text-center text-sm font-bold"
+                />
+              </label>
+              <label className="flex items-center justify-between gap-2">
+                <span className="inline-flex items-center gap-1.5 text-sm font-semibold text-muted-foreground">
+                  <Landmark aria-hidden className="size-4" /> الكمرك
+                </span>
+                <MoneyInput
+                  value={customsCost}
+                  onChange={setCustomsCost}
+                  ariaLabel="تكلفة الكمرك"
+                  className="h-8 w-32 text-center text-sm font-bold"
+                />
+              </label>
+
+              {landed.hasLanded && landed.hasBase && (
+                <div className="mt-1 rounded-lg border border-dashed bg-muted/40 p-2.5 text-xs">
+                  <div className="mb-1.5 font-bold text-foreground">التكلفة المُرسمَلة لكلّ وحدة (توزيع بنسبة القيمة)</div>
+                  <ul className="space-y-1">
+                    {state.items.map((l, i) => (
+                      <li key={i} className="flex items-center justify-between gap-2">
+                        <span className="min-w-0 truncate text-muted-foreground">{l.name}</span>
+                        <span dir="ltr" className="shrink-0 font-bold tabular-nums">
+                          {fmtAr(round2(D(l.price).times(landed.uplift)).toFixed(2))}
+                          <span className="font-normal text-muted-foreground">{" "}(من {fmtAr(l.price)})</span>
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-1.5 border-t pt-1.5 text-[11px] text-muted-foreground">
+                    تُضاف إلى ذمّة المورّد وتظهر في تكلفة البضاعة — لا كمصروف مستقلّ.
+                  </div>
+                </div>
+              )}
+              {landed.hasLanded && !landed.hasBase && (
+                <p className="text-[11px] font-semibold text-amber-600">
+                  أضِف أصنافاً بقيمة موجبة لتوزيع الشحن/الكمرك عليها.
+                </p>
+              )}
+            </div>
+          </section>
+
           <TotalsPanel
             items={state.items}
             state={state}
@@ -282,6 +367,7 @@ export default function PurchaseNew() {
             showOtherExpenses={false}
             showDiscount={false}
             showPayment={false}
+            overrideGrandTotal={landed.grand.toFixed(2)}
           />
           <ActionButtons
             invoiceType={INVOICE_TYPE}

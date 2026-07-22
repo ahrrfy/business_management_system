@@ -30,6 +30,10 @@ export interface CreatePurchaseOrderInput {
   agreedCurrency?: "IQD" | "USD";
   /** مبلغ فاتورة المورد الفعلية بالدولار — إلزامي فقط حين agreedCurrency=USD. */
   usdTotal?: string | null;
+  /** landed-cost: تكلفة الشحن الكلّية على أمر الشراء (تُرسمَل في تكلفة المخزون عند الاستلام، لا مصروف P&L). */
+  shippingCost?: string | null;
+  /** landed-cost: تكلفة الكمرك الكلّية على أمر الشراء (تُرسمَل مثل الشحن تماماً). */
+  customsCost?: string | null;
 }
 
 /** تسلسل سعر ضمني لعمود decimal(15,4) — نظير toDbRate في exchangeHouseService. */
@@ -104,7 +108,23 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     if (taxRate.lt(0) || taxRate.gt(100)) throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة الضريبة يجب أن تكون بين ٠ و١٠٠" });
     const subtotal = round2(sumMoney(lineNets));
     const tax = round2(subtotal.times(taxRate).dividedBy(100));
-    const total = round2(subtotal.plus(tax));
+
+    // landed-cost (تكلفة الشحن/الكمرك): تُوزَّع على الأصناف بنسبة القيمة عند الاستلام وتُرسمَل في
+    // تكلفة المخزون (WAVG) ⇒ تظهر لاحقاً في COGS عند البيع — لا تُسجَّل مصروفَ P&L (منعُ ازدواج:
+    // وإلّا احتُسِبت مرّتين، مرّةً في COGS عبر WAVG الأعلى ومرّةً مصروفاً). v1: الافتراض أنّ فاتورة
+    // المورّد شاملةٌ للشحن/الكمرك ⇒ تُضاف إلى ذمّة المورّد (AP) فيصير إجماليّ الأمر الفعليّ =
+    // البضاعة + الضريبة + الشحن + الكمرك. (إن دُفِعا لطرفٍ آخر — شركة شحن/كمرك — يضبطه المالك
+    // لاحقاً؛ v1 لا يفصلهما عن المورّد.) الطرحُ خادميٌّ دفاعيٌّ (money لا يرفض السالب وحده).
+    const shippingCost = money(input.shippingCost ?? "0");
+    const customsCost = money(input.customsCost ?? "0");
+    if (shippingCost.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "تكلفة الشحن لا تصحّ أن تكون سالبة" });
+    if (customsCost.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "تكلفة الكمرك لا تصحّ أن تكون سالبة" });
+    const landed = round2(shippingCost.plus(customsCost));
+    // التوزيع بنسبة القيمة يتطلّب قيمة بضاعة موجبة — لا وعاء للتوزيع عند subtotal=0 (كلّ الأسعار صفر).
+    if (landed.gt(0) && subtotal.lte(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن توزيع الشحن/الكمرك على أمر بقيمة بضاعة صفر" });
+    }
+    const total = round2(subtotal.plus(tax).plus(landed));
 
     // usd-po-reconcile: usdTotal إلزامي وموجب حين agreedCurrency=USD؛ agreedRate ضمني = total/usdTotal
     // (سعر الصرف الذي يجعل الإجمالي الديناري المُدخَل مساوياً لفاتورة المورّد الدولارية الفعلية).
@@ -137,6 +157,8 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       branchId: input.branchId,
       subtotal: subtotal.toFixed(2),
       taxAmount: tax.toFixed(2),
+      shippingCost: shippingCost.toFixed(2),
+      customsCost: customsCost.toFixed(2),
       total: total.toFixed(2),
       status: input.status ?? "CONFIRMED",
       agreedCurrency,
@@ -292,6 +314,32 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     const itemById = new Map(items.map((i) => [Number(i.id), i]));
 
+    // landed-cost: توزيع (الشحن + الكمرك) على بنود الأمر بنسبة قيمة كلّ بند من المجموع الفرعي.
+    // يُحسب من حقول الأمر المخزَّنة على **كلّ** البنود (لا المستلَمة فقط) ⇒ حصّة البند ثابتة طوال
+    // حياته، والاستلام الجزئيّ يُرسمِل نصيبَه منها (انظر cumLanded أدناه). خوارزمية «آخر بندٍ ذي قيمة
+    // يمتصّ فرق التقريب» تضمن ثابتاً صارماً: **Σ الحصص = totalLanded بالضبط** (لا انجراف سنتات).
+    const totalLanded = round2(money(po.shippingCost).plus(money(po.customsCost)));
+    const poSubtotalForLanded = money(po.subtotal);
+    const landedByItemId = new Map<number, Decimal>();
+    for (const it of items) landedByItemId.set(Number(it.id), new Decimal(0));
+    if (totalLanded.gt(0) && poSubtotalForLanded.gt(0)) {
+      const ordered = [...items].sort((a, b) => Number(a.id) - Number(b.id));
+      let lastValued = -1;
+      for (let i = 0; i < ordered.length; i++) if (money(ordered[i].total).gt(0)) lastValued = i;
+      let allocated = new Decimal(0);
+      for (let i = 0; i < ordered.length; i++) {
+        const it = ordered[i];
+        if (money(it.total).lte(0)) continue;
+        if (i === lastValued) {
+          landedByItemId.set(Number(it.id), round2(totalLanded.minus(allocated)));
+        } else {
+          const share = round2(totalLanded.times(money(it.total)).dividedBy(poSubtotalForLanded));
+          landedByItemId.set(Number(it.id), share);
+          allocated = allocated.plus(share);
+        }
+      }
+    }
+
     // Validate, then sort received lines by variantId for deterministic locking.
     const work = input.lines.map((l) => {
       const item = itemById.get(l.purchaseOrderItemId);
@@ -357,9 +405,18 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     const costMap = new Map(variantRows.map((v) => [Number(v.id), v.cost]));
 
     let receivedNet = new Decimal(0);
+    let receivedLanded = new Decimal(0);
     for (const { line, item } of work) {
       const factor = new Decimal(unitFactorMap.get(Number(item.productUnitId)) ?? "1");
       const costPerBase = round2(money(item.unitPrice).dividedBy(factor.lte(0) ? new Decimal(1) : factor));
+
+      // landed-cost: حصّة البند من الشحن/الكمرك ÷ كمية البند الأساس = تكلفة مُرسمَلة لكلّ وحدة أساس،
+      // تُضاف إلى تكلفة الشراء **قبل** حساب المتوسّط المرجّح ⇒ WAVG (ومنه COGS عند البيع) يعكس التكلفة
+      // الحقيقية. تبقى بدقّة كاملة هنا (WAVG مُقرَّب في نهايته على أيّ حال) — نظير costPerBase تماماً.
+      const lineLanded = landedByItemId.get(Number(item.id)) ?? new Decimal(0);
+      const lineBaseQty = new Decimal(item.baseQuantity);
+      const landedPerBase = lineBaseQty.gt(0) ? lineLanded.dividedBy(lineBaseQty) : new Decimal(0);
+      const capCostPerBase = costPerBase.plus(landedPerBase);
 
       // WAVG (المتوسّط المرجّح): المخزون القائم + التكلفة القديمة مُقرآن قبل الحلقة.
       // التكلفة صفة عالمية للصنف ⇒ الوزن بإجمالي الأساس عبر الفروع.
@@ -367,11 +424,11 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       const oldCost = money(costMap.get(Number(item.variantId)) ?? "0");
       const recvQty = new Decimal(line.receivedBaseQuantity);
       const denom = existingQty.plus(recvQty);
-      // لا مخزون قائم (أو تكلفة قديمة صفر) ⇒ المتوسّط = تكلفة الشراء الحالية.
+      // لا مخزون قائم (أو تكلفة قديمة صفر) ⇒ المتوسّط = تكلفة الشراء الحالية (المُرسمَلة).
       const newCost =
         denom.lte(0) || oldCost.lte(0)
-          ? costPerBase
-          : round2(existingQty.times(oldCost).plus(recvQty.times(costPerBase)).dividedBy(denom));
+          ? round2(capCostPerBase)
+          : round2(existingQty.times(oldCost).plus(recvQty.times(capCostPerBase)).dividedBy(denom));
 
       await applyMovement(tx, {
         variantId: Number(item.variantId),
@@ -416,14 +473,23 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         .set({ receivedNet: toDbMoney(priorReceivedNet.plus(lineNet)) })
         .where(eq(purchaseOrderItems.id, Number(item.id)));
       receivedNet = receivedNet.plus(lineNet);
+
+      // landed-cost: حصّة البند من الشحن/الكمرك المُرسمَلة في هذه الدفعة — cumulative مقرَّب بنفس
+      // منطق «آخر استلامٍ يمتصّ الباقي» ⇒ Σ عبر كلّ الاستلامات = حصّة البند بالضبط (لا انجراف).
+      const cumLanded = (k: number): Decimal =>
+        k >= item.baseQuantity ? lineLanded : round2(lineLanded.times(k).dividedBy(item.baseQuantity));
+      receivedLanded = receivedLanded.plus(cumLanded(priorQty + line.receivedBaseQuantity).minus(cumLanded(priorQty)));
     }
     receivedNet = round2(receivedNet);
+    receivedLanded = round2(receivedLanded);
 
     // Proportional tax from the PO's effective rate.
     const poSubtotal = money(po.subtotal);
     const rate = poSubtotal.gt(0) ? money(po.taxAmount).dividedBy(poSubtotal) : new Decimal(0);
     const receivedTax = round2(receivedNet.times(rate));
-    const receivedTotal = round2(receivedNet.plus(receivedTax));
+    // landed-cost: الإجماليّ المستلَم = البضاعة + الضريبة + حصّة الشحن/الكمرك ⇒ AP يعكس التكلفة
+    // الشاملة، ومجموعه عبر الاستلام الكامل يطابق po.total (البضاعة + الضريبة + الشحن + الكمرك).
+    const receivedTotal = round2(receivedNet.plus(receivedTax).plus(receivedLanded));
 
     // Final status: fully received if every item meets its ordered base qty.
     const refreshed = await tx
@@ -437,12 +503,15 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       .where(eq(purchaseOrders.id, input.purchaseOrderId));
 
     // PURCHASE ledger entry + AP.
+    // landed-cost: cost = تكلفة المخزون المُرسمَلة (البضاعة + الشحن/الكمرك) — لا مصروف P&L: قيود
+    // PURCHASE لا تدخل حساب الربح (reportsFinancialService يجمع cost لـSALE/RETURN فقط)، وقيمة
+    // المخزون تعكس نفس الرسملة عبر costPrice (WAVG) ⇒ لا ازدواج، والاعتراف بالتكلفة مرّةً عند البيع.
     await postEntry(tx, {
       entryType: "PURCHASE",
       branchId: Number(po.branchId),
       purchaseOrderId: input.purchaseOrderId,
       supplierId: Number(po.supplierId),
-      cost: receivedNet,
+      cost: round2(receivedNet.plus(receivedLanded)),
       taxAmount: receivedTax,
       amount: receivedTotal,
     });
