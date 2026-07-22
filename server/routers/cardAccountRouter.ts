@@ -6,7 +6,11 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { reportViewerProcedure, router } from "../trpc";
-import { nonNegMoneyString, ymdDate } from "../lib/schemas";
+import { moneyString, ymdDate } from "../lib/schemas";
+
+/** أدوار كتابة المطابقة: المدير/المحاسب (+admin). القراءة أوسع (تشمل المدقّق ومنح reports الصريحة)
+ *  لكنّ الكتابة (سجلّ تدقيقيّ ماليّ) مقصورة على هؤلاء — لا يكفي منحُ «تقارير: قراءة» لدورٍ آخر. */
+const RECON_WRITERS = new Set(["admin", "manager", "accountant"]);
 import {
   createCardReconciliation,
   getCardMovements,
@@ -54,15 +58,18 @@ export const cardAccountRouter = router({
       z.object({
         branchId: branchInput,
         asOfDate: ymdDate,
-        statementBalance: nonNegMoneyString,
+        // موقَّع: الحساب قد يكون بالسالب (صرف البطاقة يفوق دخلها/سحب على المكشوف) — الخدمة/القاعدة
+        // تتعاملان مع systemBalance/difference موقَّعَين.
+        statementBalance: moneyString,
         statementLabel: z.string().max(120).optional(),
         note: z.string().max(1000).optional(),
       }),
     )
     .mutation(({ input, ctx }) => {
-      // المدقّق قارئٌ فقط — لا يُنشئ سجلّات مطابقة (الإنشاء للمدير/المحاسب).
-      if (ctx.user.role === "auditor") {
-        throw new TRPCError({ code: "FORBIDDEN", message: "المدقّق لا يُنشئ سجلّات المطابقة — قراءة فقط." });
+      // بوّابة كتابة صريحة: الإنشاء (سجلّ تدقيقيّ ماليّ) للمدير/المحاسب فقط — منحُ «تقارير: قراءة»
+      // لدورٍ آخر (كاشير/مخزن عبر override) يُتيح القراءة لا الكتابة، والمدقّق قارئٌ فقط.
+      if (!RECON_WRITERS.has(ctx.user.role)) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "إنشاء سجلّ المطابقة للمدير/المحاسب فقط — الوصول القرائيّ لا يكفي." });
       }
       return createCardReconciliation(input, {
         userId: ctx.user.id,

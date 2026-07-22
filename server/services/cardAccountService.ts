@@ -207,7 +207,11 @@ export async function getCardMovements(
   // to شامل ليومه كاملاً (< بداية اليوم التالي).
   const toClause = input.to ? sql`AND r.createdAt < DATE_ADD(${input.to}, INTERVAL 1 DAY)` : sql``;
   const dirClause = input.direction ? sql`AND r.direction = ${input.direction}` : sql``;
-  const filter = sql`${CARD_WHERE} ${branchClause(branchId)} ${fromClause} ${toClause} ${dirClause}`;
+  // نطاق الحساب **بلا** فلتر الاتجاه — عليه يُحسَب الرصيد الجاري كي يبقى صحيحاً (الرصيد بعد كل حركة
+  // يشمل الاتجاهين). فلتر الاتجاه يُطبَّق على الصفوف المعروضة فقط (في الاستعلام الخارجي أدناه).
+  const streamFilter = sql`${CARD_WHERE} ${branchClause(branchId)} ${fromClause} ${toClause}`;
+  // فلتر العرض (يشمل الاتجاه) — للإجماليات/العدّ والصفوف المعروضة.
+  const filter = sql`${streamFilter} ${dirClause}`;
 
   // إجماليات النطاق (كل الصفوف المطابقة، لا الصفحة فقط).
   const totRows = rowsOf(
@@ -273,8 +277,9 @@ export async function getCardMovements(
         LEFT JOIN customers cu ON cu.id = r.partyId AND r.voucherPartyType = 'CUSTOMER'
         LEFT JOIN suppliers su ON su.id = r.partyId AND r.voucherPartyType = 'SUPPLIER'
         LEFT JOIN users u ON u.id = r.createdBy
-        WHERE ${filter}
+        WHERE ${streamFilter}
       ) x
+      ${input.direction ? sql`WHERE x.direction = ${input.direction}` : sql``}
       ORDER BY x.createdAt DESC, x.receiptId DESC
       LIMIT ${limit} OFFSET ${offset}
     `),

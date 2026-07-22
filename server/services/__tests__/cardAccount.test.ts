@@ -190,6 +190,23 @@ describe("حساب البطاقة — الحركات", () => {
     expect(res.rows[0].partyName).toBe("عميل بطاقة");
     expect(res.rows[0].amount).toBe("75.00");
   });
+
+  it("الرصيد الجاري مستقلٌّ عن فلتر الاتجاه (يُحسَب على كل الحركات لا الصفوف المعروضة فقط)", async () => {
+    await seedReceipt({ direction: "IN", amount: "100.00", paymentMethod: "CARD", createdAt: new Date("2026-06-01T10:00:00Z") });
+    await seedReceipt({ direction: "OUT", amount: "30.00", paymentMethod: "CARD", createdAt: new Date("2026-06-02T10:00:00Z") });
+    await seedReceipt({ direction: "IN", amount: "50.00", paymentMethod: "CARD", createdAt: new Date("2026-06-03T10:00:00Z") });
+
+    // فلتر «دخل» فقط: يظهر صفّا IN، لكنّ رصيدهما الجاري يجب أن يشمل صرف الـ30 بينهما.
+    const res = await getCardMovements({ direction: "IN" }, MGR1);
+    expect(res.rows.map((r) => r.direction)).toEqual(["IN", "IN"]); // OUT مخفيّ من العرض
+    // ترتيب تنازليّ: IN@t3 أولاً — رصيده = 100 − 30 + 50 = 120 (لا 150 ⇒ الصرف محسوبٌ في الرصيد).
+    expect(res.rows[0].runningBalance).toBe("120.00");
+    expect(res.rows[1].runningBalance).toBe("100.00"); // IN@t1
+    // الإجماليات تعكس فلتر العرض (دخل فقط).
+    expect(res.totalIn).toBe("150.00");
+    expect(res.totalOut).toBe("0.00");
+    expect(res.count).toBe(2);
+  });
 });
 
 describe("حساب البطاقة — المطابقة", () => {
@@ -229,5 +246,17 @@ describe("حساب البطاقة — المطابقة", () => {
     // لقطات فرع ٢ لا تظهر لمدير فرع ١.
     const listB1 = await listCardReconciliations({}, MGR1);
     expect(listB1.every((r) => r.branchId === 1)).toBe(true);
+  });
+
+  it("رصيد موقَّع: حساب مكشوف (صرف البطاقة يفوق دخلها) يُطابَق بكشفٍ سالب والفرق صحيح", async () => {
+    await seedReceipt({ direction: "OUT", amount: "800.00", paymentMethod: "CARD", createdAt: new Date("2026-01-05T10:00:00Z") });
+    await seedReceipt({ direction: "IN", amount: "300.00", paymentMethod: "CARD", createdAt: new Date("2026-01-06T10:00:00Z") });
+
+    const rec = await createCardReconciliation(
+      { branchId: 1, asOfDate: "2026-02-01", statementBalance: "-480.00" },
+      { userId: 1, role: "manager", branchId: 1 },
+    );
+    expect(rec.systemBalance).toBe("-500.00"); // 300 − 800
+    expect(rec.difference).toBe("-20.00"); // −500 − (−480)
   });
 });

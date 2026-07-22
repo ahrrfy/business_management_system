@@ -43,8 +43,10 @@ const todayStr = () => new Date().toISOString().slice(0, 10);
 export default function CardAccount() {
   const me = trpc.auth.me.useQuery();
   const isAdmin = me.data?.role === "admin";
-  // المدير متعدّد الفروع (بلا فرع مُسنَد) يَختار أيضاً؛ غير-الأدمن ذو فرعٍ مُسنَد يُثبَّت خادمياً بفرعه.
-  const canPickBranch = isAdmin || me.data?.branchId == null;
+  // منتقي الفرع للأدمن فقط: reportViewerProcedure يرفض طلبَ غير-الأدمن أيَّ branchId (حتى للمدير
+  // متعدّد الفروع بـbranchId=null) ⇒ لا نعرض خياراً يرفضه الخادم. غير-الأدمن يُثبَّت خادمياً بفرعه
+  // (ذو الفرع يطابق فرعه، ومتعدّد الفروع يرى المجموع بلا تقييد فرعٍ بعينه).
+  const canPickBranch = isAdmin;
   const branches = trpc.branches.list.useQuery(undefined, { enabled: canPickBranch });
 
   const [branchId, setBranchId] = useState<number | "">("");
@@ -92,7 +94,7 @@ export default function CardAccount() {
       notify.warn("اختر الفرع أوّلاً لتسجيل المطابقة");
       return;
     }
-    if (!statementBalance || D(statementBalance).lt(0)) {
+    if (!statementBalance) {
       notify.warn("أدخل رصيد كشف البنك");
       return;
     }
@@ -106,21 +108,45 @@ export default function CardAccount() {
   }
 
   const mv = movements.data;
-  function onExport() {
-    if (!mv || mv.rows.length === 0) return;
-    exportRows(mv.rows, {
-      filename: `حساب-البطاقة-حركات-${from || "الكل"}-${to || todayStr()}`,
-      columns: [
-        { key: "createdAt", header: "التاريخ", map: (r) => (r.createdAt ? new Date(r.createdAt as string).toISOString().slice(0, 10) : "") },
-        { key: "source", header: "النوع", map: (r) => SOURCE_AR[r.source] ?? r.source },
-        { key: "partyName", header: "الطرف", map: (r) => r.partyName ?? "" },
-        { key: "direction", header: "الاتجاه", map: (r) => (r.direction === "IN" ? "دخل" : "صرف") },
-        { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
-        { key: "runningBalance", header: "الرصيد الجاري", map: (r) => (r.runningBalance != null ? Number(r.runningBalance) : "") },
-        { key: "cardLastFour", header: "آخر ٤", map: (r) => r.cardLastFour ?? "" },
-        { key: "voucherNumber", header: "المرجع", map: (r) => r.voucherNumber ?? r.referenceNumber ?? "" },
-      ],
-    });
+  const [exporting, setExporting] = useState(false);
+  async function onExport() {
+    if (!mv || mv.count === 0) return;
+    setExporting(true);
+    try {
+      // نجمع **كل** صفحات الفلتر الحاليّ (لا الصفحة المعروضة فقط) — تصدير ماليّ يجب أن يكون كاملاً.
+      const all: NonNullable<typeof movements.data>["rows"] = [];
+      let off = 0;
+      for (let guard = 0; guard < 400; guard++) {
+        const res = await utils.cardAccount.movements.fetch({
+          branchId: effBranch,
+          from: from || undefined,
+          to: to || undefined,
+          direction: direction || undefined,
+          limit: 500,
+          offset: off,
+        });
+        all.push(...res.rows);
+        if (!res.hasMore) break;
+        off += 500;
+      }
+      exportRows(all, {
+        filename: `حساب-البطاقة-حركات-${from || "الكل"}-${to || todayStr()}`,
+        columns: [
+          { key: "createdAt", header: "التاريخ", map: (r) => (r.createdAt ? new Date(r.createdAt as string).toISOString().slice(0, 10) : "") },
+          { key: "source", header: "النوع", map: (r) => SOURCE_AR[r.source] ?? r.source },
+          { key: "partyName", header: "الطرف", map: (r) => r.partyName ?? "" },
+          { key: "direction", header: "الاتجاه", map: (r) => (r.direction === "IN" ? "دخل" : "صرف") },
+          { key: "amount", header: "المبلغ", map: (r) => Number(r.amount) },
+          { key: "runningBalance", header: "الرصيد الجاري", map: (r) => (r.runningBalance != null ? Number(r.runningBalance) : "") },
+          { key: "cardLastFour", header: "آخر ٤", map: (r) => r.cardLastFour ?? "" },
+          { key: "voucherNumber", header: "المرجع", map: (r) => r.voucherNumber ?? r.referenceNumber ?? "" },
+        ],
+      });
+    } catch (e) {
+      notify.err(e);
+    } finally {
+      setExporting(false);
+    }
   }
 
   const s = summary.data;
@@ -256,9 +282,9 @@ export default function CardAccount() {
                 <option value="IN">دخل</option>
                 <option value="OUT">صرف</option>
               </select>
-              <Button variant="outline" size="sm" onClick={onExport} disabled={!mv || mv.rows.length === 0}>
+              <Button variant="outline" size="sm" onClick={onExport} disabled={exporting || !mv || mv.count === 0}>
                 <Download aria-hidden className="size-4" />
-                تصدير
+                {exporting ? "جارٍ التصدير…" : "تصدير"}
               </Button>
             </div>
           </div>
@@ -370,7 +396,7 @@ export default function CardAccount() {
             </div>
             <div>
               <Label htmlFor="rec-bal">رصيد كشف البنك</Label>
-              <MoneyInput id="rec-bal" value={statementBalance} onChange={setStatementBalance} placeholder="0" ariaLabel="رصيد كشف البنك" />
+              <MoneyInput id="rec-bal" value={statementBalance} onChange={setStatementBalance} placeholder="0" ariaLabel="رصيد كشف البنك" allowNegative />
             </div>
             <div>
               <Label htmlFor="rec-label">وصف الكشف (اختياري)</Label>
