@@ -1337,6 +1337,9 @@ export const receipts = mysqlTable(
     bucketDateIdx: index("idx_receipt_bucket_date").on(table.cashBucket, table.createdAt),
     invoiceStatusIdx: index("idx_receipt_invoice_status").on(table.invoiceId, table.status),
     branchBucketDateIdx: index("idx_receipt_branch_bucket_date").on(table.branchId, table.cashBucket, table.createdAt),
+    // card-account (0098): مسح مقبوضات/مدفوعات البطاقة لكل فرع×تاريخ (رصيد حساب البطاقة المشتقّ) —
+    // بلا فهرس كان full scan على receipts بفلتر paymentMethod='CARD'.
+    payMethodBranchDateIdx: index("idx_receipt_paymethod_branch_date").on(table.paymentMethod, table.branchId, table.createdAt),
   })
 );
 
@@ -1367,6 +1370,33 @@ export const voucherCategories = mysqlTable(
 
 export type VoucherCategory = typeof voucherCategories.$inferSelect;
 export type InsertVoucherCategory = typeof voucherCategories.$inferInsert;
+
+/* ==================== مطابقة حساب البطاقة/البنك (card-account) ====================
+ * لقطات مطابقة رصيد البطاقة **المشتقّ** (Σ receipts paymentMethod='CARD') مع كشف البنك عند تاريخٍ
+ * محدَّد — سجلٌّ تدقيقيٌّ لا يمسّ أيّ رصيد (لا جدول رصيد مخزَّن؛ نمط الخزينة/الدرج القائم). الهجرة 0098.
+ * راجع server/services/cardAccountService.ts. */
+export const cardReconciliations = mysqlTable(
+  "cardReconciliations",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    asOfDate: date("asOfDate", { mode: "string" }).notNull(), // تاريخ الكشف (رصيد النظام محسوب حتى نهاية يومه)
+    systemBalance: decimal("systemBalance", { precision: 15, scale: 2 }).notNull(), // رصيد النظام المتوقَّع (محسوب خادمياً)
+    statementBalance: decimal("statementBalance", { precision: 15, scale: 2 }).notNull(), // رصيد كشف البنك المُدخَل يدوياً
+    difference: decimal("difference", { precision: 15, scale: 2 }).notNull(), // systemBalance − statementBalance
+    statementLabel: varchar("statementLabel", { length: 120 }),
+    note: text("note"),
+    createdBy: int("createdBy").references(() => users.id),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (table) => ({
+    branchIdx: index("idx_cardrecon_branch").on(table.branchId, table.asOfDate),
+    createdIdx: index("idx_cardrecon_created").on(table.createdAt),
+  }),
+);
+
+export type CardReconciliation = typeof cardReconciliations.$inferSelect;
+export type InsertCardReconciliation = typeof cardReconciliations.$inferInsert;
 
 /* ============================ الدفتر المحاسبي المبسّط ============================ */
 

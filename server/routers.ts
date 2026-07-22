@@ -46,6 +46,7 @@ import { periodLockRouter } from "./routers/periodLockRouter";
 import { creditApprovalRouter } from "./routers/creditApprovalRouter";
 import { yearEndRouter } from "./routers/yearEndRouter";
 import { treasuryRouter } from "./routers/treasuryRouter";
+import { cardAccountRouter } from "./routers/cardAccountRouter";
 import { cashTransfersRouter } from "./routers/cashTransfersRouter";
 import { conversationRouter } from "./routers/conversationRouter";
 import { integrationRouter } from "./routers/integrationRouter";
@@ -123,6 +124,8 @@ export const appRouter = router({
   creditApproval: creditApprovalRouter,
   yearEnd: yearEndRouter,
   treasury: treasuryRouter,
+  // حساب البطاقة/البنك: رصيد مشتقّ من receipts (paymentMethod='CARD') + مطابقة كشف البنك (reportViewer).
+  cardAccount: cardAccountRouter,
   cashTransfers: cashTransfersRouter,
   // شَريحة #5 (٢٣/٦/٢٦): صَندوق الوارد المُوحَّد — WhatsApp/Instagram/متجر/يَدوي.
   conversations: conversationRouter,
