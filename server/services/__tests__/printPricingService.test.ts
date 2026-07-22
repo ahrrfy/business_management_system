@@ -1,8 +1,12 @@
 // اختبارات نواة تسعير الطباعة الرقمية — الدالّة النقيّة computePrintEstimate (بلا DB).
 // تغطّي §٥ (١٠٠ نسخة A4 ملوّن وجهين + تغليف ⇒ أوجه=٢٠٠؛ فلكس ٣م×١م ⇒ مساحة=٣م²) + الرتابة
 // (وضع مباشر/هامش، ورق مميّز لكل وجه/ورقة، رسم التجهيز، تقريب decimal، الحاصرات).
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import * as s from "../../../drizzle/schema";
+import { getDb } from "../../db";
+import { truncateTables } from "./__testUtils__";
 import { computePrintEstimate, type ResolvedEstimateConfig } from "../printPricing/compute";
+import { getPrintPricingBundle, updatePrintPricingSettings } from "../printPricing";
 import type { PrintEstimateInput } from "@shared/printPricing";
 
 const baseSettings = { pricingMode: "MARGIN" as const, defaultMarginPercent: "0", setupFee: "0" };
@@ -183,5 +187,41 @@ describe("computePrintEstimate — وضع التسعير", () => {
     );
     expect(res.suggestedPrice).toBe("1100.00"); // ١٬٠٠٠ × ١٫١
     expect(res.marginPercent).toBe("10");
+  });
+});
+
+// إصلاح Codex P2: الإعدادات صفٌّ مفردٌ مثبَّت على id=1 لا يتكاثر (لا صفّان يُضيّعان أحدث حفظ).
+describe("updatePrintPricingSettings — الصفّ المفرد (id=1)", () => {
+  function db() {
+    const d = getDb();
+    if (!d) throw new Error("DATABASE_URL not set for tests");
+    return d;
+  }
+  beforeEach(async () => {
+    await truncateTables(["printPricingSettings", "users"]);
+    await db().insert(s.users).values({ id: 1, openId: "pp_test", name: "admin", role: "admin", loginMethod: "local" });
+  });
+
+  it("حفظان متتاليان يبقيان صفّاً واحداً (id=1) والتحديث الجزئيّ يُطبَّق دون مسح الباقي", async () => {
+    await updatePrintPricingSettings({ pricingMode: "MARGIN", defaultMarginPercent: "10", setupFee: "1000" }, 1);
+    await updatePrintPricingSettings({ defaultMarginPercent: "25" }, 1); // تحديث جزئيّ (الهامش فقط)
+
+    const rows = await db().select().from(s.printPricingSettings);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(1);
+
+    const { settings } = await getPrintPricingBundle();
+    expect(settings.pricingMode).toBe("MARGIN"); // محفوظ من الحفظ الأول
+    expect(settings.defaultMarginPercent).toBe("25.000"); // طُبِّق الحفظ الثاني
+    expect(settings.setupFee).toBe("1000.00"); // محفوظ من الحفظ الأول (لم يُمسَح)
+  });
+
+  it("الإدراج بمفتاح مكرّر (id=1) لا يُنشئ صفّاً ثانياً حتى لو سبق وُجِد الصفّ", async () => {
+    await db().insert(s.printPricingSettings).values({ id: 1, pricingMode: "DIRECT", defaultMarginPercent: "0", setupFee: "0", updatedBy: 1 });
+    await updatePrintPricingSettings({ pricingMode: "MARGIN", setupFee: "500" }, 1);
+    const rows = await db().select().from(s.printPricingSettings);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].pricingMode).toBe("MARGIN");
+    expect(rows[0].setupFee).toBe("500.00");
   });
 });

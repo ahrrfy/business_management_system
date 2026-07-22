@@ -252,26 +252,27 @@ export interface UpdateSettingsInput {
   setupFee?: string;
 }
 
-/** يكتب/يُحدّث الصفّ المفرد (get-or-create، نمط taxSettings). */
+/** يكتب/يُحدّث الصفّ المفرد المثبَّت على **id=1** (نمط contractPriceService/commissions).
+ *  `onDuplicateKeyUpdate` ذرّيّ على مستوى MySQL ⇒ حفظان متزامنان قبل وجود الصفّ يلتقيان على
+ *  **صفٍّ واحد** (id=1) بدل صفّين يتكاثران فيضيع أحدث حفظ صامتاً (قراءة `readSettings` تأخذ الأول).
+ *  كان الـget-or-create بقراءةٍ ثم إدراج auto-increment عرضةً لهذا السباق (Codex P2، ٢٢/٧).
+ *  التحديث جزئيّ: يُطبَّق ما وُرِّد فقط، والباقي محفوظ. */
 export async function updatePrintPricingSettings(input: UpdateSettingsInput, updatedBy: number): Promise<void> {
+  const patch: Record<string, unknown> = { updatedBy };
+  if (input.pricingMode !== undefined) patch.pricingMode = input.pricingMode;
+  if (input.defaultMarginPercent !== undefined) patch.defaultMarginPercent = input.defaultMarginPercent;
+  if (input.setupFee !== undefined) patch.setupFee = toDbMoney(input.setupFee);
   await withTx(async (tx) => {
-    const existing = (
-      await tx.select({ id: printPricingSettings.id }).from(printPricingSettings).orderBy(asc(printPricingSettings.id)).limit(1)
-    )[0];
-    const patch: Record<string, unknown> = { updatedBy };
-    if (input.pricingMode !== undefined) patch.pricingMode = input.pricingMode;
-    if (input.defaultMarginPercent !== undefined) patch.defaultMarginPercent = input.defaultMarginPercent;
-    if (input.setupFee !== undefined) patch.setupFee = toDbMoney(input.setupFee);
-    if (existing) {
-      await tx.update(printPricingSettings).set(patch).where(eq(printPricingSettings.id, existing.id));
-    } else {
-      await tx.insert(printPricingSettings).values({
+    await tx
+      .insert(printPricingSettings)
+      .values({
+        id: 1,
         pricingMode: input.pricingMode ?? "MARGIN",
         defaultMarginPercent: input.defaultMarginPercent ?? "0",
         setupFee: input.setupFee !== undefined ? toDbMoney(input.setupFee) : "0",
         updatedBy,
-      });
-    }
+      })
+      .onDuplicateKeyUpdate({ set: patch });
   });
 }
 
