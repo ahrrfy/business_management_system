@@ -141,7 +141,11 @@ describe("cashHandoverService — عبر closeShift (المسار الحقيقي
     );
     expect(r1.handover!.handoverNumber).toMatch(/-0001$/);
 
-    const s2 = await openShift({ branchId: 1, openingBalance: "80" }, { userId: CASHIER2, branchId: 1 });
+    // ①ج وردية تالية على نفس الدرج برصيدٍ مختلف عن متبقّي السابقة ⇒ سببٌ مطلوب (حارس الاستمرارية).
+    const s2 = await openShift(
+      { branchId: 1, openingBalance: "80", openingDiscrepancyReason: "بدء وردية تالية" },
+      { userId: CASHIER2, branchId: 1 },
+    );
     const r2 = await closeShift(
       { shiftId: s2.shiftId, countedCash: "80", handover: { amount: "30", handoverTo: MANAGER1 } },
       { userId: CASHIER2, branchId: 1, role: "cashier" },

@@ -715,6 +715,13 @@
       "when": 1785024000015,
       "tag": "0102_purchase_landed_cost",
       "breakpoints": true
+    },
+    {
+      "idx": 103,
+      "version": "5",
+      "when": 1785024000016,
+      "tag": "0103_shift_opening_continuity",
+      "breakpoints": true
     }
   ]
 }

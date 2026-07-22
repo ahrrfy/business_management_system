@@ -896,6 +896,17 @@ export const shifts = mysqlTable(
     // treasury-stage2: snapshot لعدّاد الفئات وقت الإغلاق (تدقيق فقط، بلا تأثير محاسبي).
     // يَخزّن {250: n, 500: n, ...} للفئات السبع لـIQD. nullable لتوافق ورديات تاريخية.
     countedBreakdown: json("countedBreakdown"),
+    // ①ج استمرارية نقد الورديات — المتبقّي فعلياً في الدرج بعد إغلاق هذه الوردية = المعدود − المُسلَّم
+    // للخزينة عند الإغلاق (cash drop منتصف الوردية لا يُطرَح: سبق أن غادر الدرج قبل العدّ). يُصبح
+    // «الرصيد الافتتاحيّ المتوقَّع» للوردية التالية لنفس (الفرع×النوع). nullable: الورديات المفتوحة
+    // والتاريخية (قبل هذه الهجرة) لا تَحمله ⇒ لا مطابقة (سلوك «أوّل وردية»، بلا تحذير زائف).
+    closingDrawerCash: decimal("closingDrawerCash", { precision: 15, scale: 2 }),
+    // الرصيد الافتتاحيّ المتوقَّع الملتقَط لحظة فتح هذه الوردية (= closingDrawerCash لآخر وردية مغلقة
+    // لنفس الفرع/النوع). null حين لا سابقة (أوّل وردية). لِلتدقيق وتقرير فجوات الاستمرارية.
+    openingExpectedCash: decimal("openingExpectedCash", { precision: 15, scale: 2 }),
+    // سبب اختلاف الرصيد الافتتاحيّ المُدخَل عن المتوقَّع (إلزاميّ عند الاختلاف — تحذيرٌ يُسجَّل لا حظر).
+    // null حين لا اختلاف أو لا سابقة.
+    openingDiscrepancyReason: varchar("openingDiscrepancyReason", { length: 500 }),
   },
   (table) => ({
     branchIdx: index("idx_shift_branch").on(table.branchId),
