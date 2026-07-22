@@ -56,28 +56,47 @@ docker exec -i erp-mysql mysql -uroot -p"$DB_ROOT_PW" < restore.sql
 
 ## ٣. اختبار استعادة دوري (ربع سنوي — إلزامي)
 
-نسخة لا تُختبَر استعادتها = نسخة وهمية. كل ٣ أشهر:
+نسخة لا تُختبَر استعادتها = نسخة وهمية. كل ٣ أشهر.
 
-```powershell
-# 1) أنشئ قاعدة مؤقّتة للاختبار
-docker exec erp-mysql mysql -uroot -perp_root_pw -e "CREATE DATABASE erp_restore_test;"
+> ⚠️ **خطر يدمّر الإنتاج — لا تستعد نسخة تطبيق على الإنتاج لغرض الاختبار.** نسخ التطبيق
+> (`scripts/backup.mjs` / `maintenanceService`) هي `mysqldump --databases erp` ⇒ تبدأ بعبارتَي
+> `CREATE DATABASE` و`USE erp;`. وعبارة `USE erp` تُوجّه **كلّ ما بعدها** إلى قاعدة الإنتاج `erp`
+> وتتجاوز أيّ قاعدة هدف تُمرَّر على سطر الأمر — فمجرّد استيراد نسخة «للاختبار» في قاعدة مؤقّتة
+> **بلا تنظيف يكتب على الإنتاج ويدمّره**. لذلك احذف أسطر `CREATE DATABASE`/`USE`/`DROP DATABASE`
+> قبل الاستيراد (كما في الخطوة ٢ أدناه) لتُستعاد النسخة في قاعدة مؤقّتة معزولة فعلاً.
+> (ثبت عملياً ٢٢/٧: النسخ تحوي هذين السطرين.)
 
-# 2) استعد آخر نسخة إليها (مع تغيير اسم القاعدة في السطر USE داخل الـdump عند الحاجة،
-#    أو استعملها بـ--one-database)
-docker exec -i erp-mysql mysql -uroot -perp_root_pw erp_restore_test < backups\<أحدث نسخة>.sql
+> **بيئة التنفيذ:** إجراء POSIX (يستعمل `grep` وأنبوباً) ⇒ نفّذه على الخادم (VPS) عبر SSH، أو على
+> جهاز المتجر عبر Git Bash — لا في PowerShell عارياً. كلمة مرور الجذر تُقرأ من بيئة الحاوية
+> (`$MYSQL_ROOT_PASSWORD`) لا من قيمة مكتوبة (على الإنتاج القيمة سرّ في `.env` لا `erp_root_pw`)،
+> وتُمرَّر عبر `MYSQL_PWD` لا سطر الأوامر (خادم مشترك — `ps` يكشف argv؛ نفس نمط `backup.mjs`
+> و healthcheck في `docker-compose.yml`).
 
-# 3) قارن عدد الصفوف في الجداول الحرجة
-docker exec erp-mysql mysql -uroot -perp_root_pw -e "
-  SELECT 'invoices' t, COUNT(*) n FROM erp_restore_test.invoices
-  UNION SELECT 'products', COUNT(*) FROM erp_restore_test.products
-  UNION SELECT 'branchStock', COUNT(*) FROM erp_restore_test.branchStock
-  UNION SELECT 'accountingEntries', COUNT(*) FROM erp_restore_test.accountingEntries;"
+```bash
+# 1) أنشئ قاعدة مؤقّتة نظيفة — احذفها أوّلاً إن بقيت من تشغيلة سابقة توقّفت قبل التنظيف، ثمّ أنشئها.
+#    قاعدة نظيفة كلّ مرّة ضروريّة: النسخة المُنقّاة لا تحوي DROP/CREATE DATABASE، وmysqldump يُسقط
+#    الجداول الموجودة في الملف فقط ⇒ جداول/صفوف قديمة قد تُخفي نقصاً في النسخة الحالية (اختبار زائف).
+docker exec erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "DROP DATABASE IF EXISTS erp_restore_test; CREATE DATABASE erp_restore_test;"'
 
-# 4) نظّف
-docker exec erp-mysql mysql -uroot -perp_root_pw -e "DROP DATABASE erp_restore_test;"
+# 2) استعد آخر نسخة إليها — بعد حذف أسطر تحويل القاعدة (CREATE DATABASE/USE/DROP DATABASE) أوّلاً،
+#    وإلّا فعبارة USE erp تُوجّه الاستيراد إلى الإنتاج وتدمّره (انظر التحذير أعلاه).
+grep -vE '^(CREATE DATABASE|USE |DROP DATABASE)' backups/<أحدث نسخة>.sql \
+  | docker exec -i erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot erp_restore_test'
+#    للنسخ الخارجية المشفّرة (.sql.gpg): فكّها أولاً بـ gpg -d (§٢) ثمّ مرّرها عبر نفس مرشّح grep.
+
+# 3) قارن عدد الصفوف في الجداول الحرجة (على القاعدة المؤقّتة حصراً)
+#    استعادة كاملة ~١١٨ جدولاً؛ نقصٌ حادّ في العدد أو الصفوف = استيراد ناقص.
+docker exec erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot erp_restore_test -e "
+  SELECT \"invoices\" tbl, COUNT(*) n FROM invoices
+  UNION SELECT \"products\",          COUNT(*) FROM products
+  UNION SELECT \"branchStock\",       COUNT(*) FROM branchStock
+  UNION SELECT \"accountingEntries\", COUNT(*) FROM accountingEntries;"'
+
+# 4) نظّف — احذف القاعدة المؤقّتة (لا تمسّ الإنتاج erp إطلاقاً)
+docker exec erp-mysql sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "DROP DATABASE erp_restore_test;"'
 ```
 
-سجّل تاريخ آخر اختبار ناجح هن: `آخر اختبار استعادة: ____________`
+سجّل تاريخ آخر اختبار ناجح هنا: `آخر اختبار استعادة: ٢٠٢٦-٠٧-٢٢ ✓ (١١٨ جدولاً، قاعدة مؤقّتة، الإنتاج لم يُمَسّ)`
 
 ## ٤. سيناريوهات الطوارئ
 

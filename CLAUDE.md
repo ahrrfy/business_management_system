@@ -11,7 +11,7 @@
 ## ٢. التقنية والبنية
 - React 19 + Vite + Tailwind v4 + shadcn/ui + wouter + TanStack Query؛ tRPC v11؛ Express؛ Drizzle ORM (mysql2) + MySQL 8؛ decimal.js؛ TypeScript.
 - مصادقة محلية مملوكة (JWT عبر jose + scrypt) — **لا OAuth ولا Manus**.
-- البنية: `client/` (React) ، `server/` (Express+tRPC: `routers.ts`, `routers/*`, `services/*`, `trpc.ts`, `context.ts`, `db.ts`, `auth/`) ، `shared/` ، `drizzle/schema.ts` (٢٨ جدولاً).
+- البنية: `client/` (React) ، `server/` (Express+tRPC: `routers.ts`, `routers/*`, `services/*`, `trpc.ts`, `context.ts`, `db.ts`, `auth/`) ، `shared/` ، `drizzle/schema.ts` (١١٨ جدولاً).
 
 ## ٣. التشغيل (Windows + PowerShell)
 ```
