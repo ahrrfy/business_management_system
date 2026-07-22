@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, round2 } from "@/lib/money";
+import { newClientRequestId } from "@/lib/countQueue";
 import type { PosTokens } from "@/components/pos/ShiftHandoverSection";
 
 export function CashDropDialog({
@@ -21,6 +22,8 @@ export function CashDropDialog({
   const [amount, setAmount] = useState("");
   const [dropTo, setDropTo] = useState<number | null>(null);
   const [notes, setNotes] = useState("");
+  // مفتاح idempotency ثابتٌ لكل فتحةِ نافذة ⇒ إعادةُ المحاولة بعد فقد الردّ لا تُكرّر السحب.
+  const [clientRequestId] = useState(() => newClientRequestId());
   const amountRef = useRef<HTMLInputElement>(null);
   const utils = trpc.useUtils();
 
@@ -40,14 +43,17 @@ export function CashDropDialog({
     onError: (e) => notify.err(e),
   });
 
-  const amt = D(amount || 0);
-  const valid = amt.gt(0);
+  // تحليلٌ دفاعيّ: مدخلٌ مشوَّه (مثل «1..») لا يجب أن يرمي عند الرسم فيسقط في حدّ الخطأ.
+  let amt: ReturnType<typeof D> | null = null;
+  try { amt = D(amount || 0); } catch { amt = null; }
+  const valid = amt != null && amt.gt(0);
 
   function submit() {
-    if (!valid || drop.isPending) return;
+    if (!valid || !amt || drop.isPending) return;
     drop.mutate({
       shiftId,
       amount: round2(amt).toFixed(2),
+      clientRequestId,
       dropTo: dropTo ?? undefined,
       notes: notes.trim() || undefined,
     });
@@ -89,7 +95,11 @@ export function CashDropDialog({
               id="cd-amount"
               ref={amountRef}
               value={amount}
-              onChange={(e) => setAmount(e.target.value.replace(/[^\d.]/g, ""))}
+              onChange={(e) => {
+                const clean = e.target.value.replace(/[^\d.]/g, "");
+                const i = clean.indexOf(".");
+                setAmount(i === -1 ? clean : clean.slice(0, i + 1) + clean.slice(i + 1).replace(/\./g, ""));
+              }}
               onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
               dir="ltr"
               inputMode="decimal"

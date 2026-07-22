@@ -65,7 +65,7 @@ describe("createCashDrop — المسار السعيد والأثر", () => {
     await drawerReceipt(shiftId, "IN", "80000.00"); // بيع نقديّ ⇒ الدرج 180000
 
     const res = await createCashDrop(
-      { shiftId, amount: "120000", dropTo: MANAGER1, notes: "تقليل نقد الدرج" },
+      { shiftId, amount: "120000", dropTo: MANAGER1, notes: "تقليل نقد الدرج", clientRequestId: "crid-happy" },
       { userId: CASHIER1, branchId: 1, role: "cashier" },
     );
 
@@ -87,7 +87,7 @@ describe("createCashDrop — المسار السعيد والأثر", () => {
 
     const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "CASH_HANDOVER" as any));
     expect(entries).toHaveLength(1);
-    expect(entries[0].dedupeKey).toBe(`CASH_DROP:${res.dropNumber}`);
+    expect(entries[0].dedupeKey).toBe("CASH_DROP:crid-happy");
     expect(entries[0].amount).toBe("120000.00");
     expect(entries[0].receiptId).toBe(out.id);
   });
@@ -162,6 +162,49 @@ describe("createCashDrop — التسلسل والتراكم", () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const res = await createCashDrop({ shiftId, amount: "5000", dropTo: MANAGER1 }, { userId: ADMIN, branchId: 2, role: "admin" });
     expect(res.dropNumber).toMatch(/^CD-1-/);
+  });
+});
+
+describe("createCashDrop — idempotency وترقيمٌ صلب (مراجعة Codex)", () => {
+  it("نفس clientRequestId ⇒ إعادةُ تشغيل: لا سحب ثانٍ ولا حركةُ نقدٍ مزدوجة", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const crid = "crid-drop-idem-1";
+    const first = await createCashDrop({ shiftId, amount: "30000", clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    expect(first.idempotent).toBeFalsy();
+    expect(first.drawerAfter).toBe("70000.00");
+
+    const second = await createCashDrop({ shiftId, amount: "30000", clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    expect(second.idempotent).toBe(true);
+    expect(second.dropNumber).toBe(first.dropNumber);
+    expect(second.drawerAfter).toBe("70000.00"); // لم يُخصَم ثانيةً (لولا الحماية لكان 40000)
+
+    // إيصال OUT واحد فقط + قيد واحد بهذا المفتاح.
+    const outs = await db().select().from(s.receipts).where(and(eq(s.receipts.shiftId, shiftId), eq(s.receipts.direction, "OUT")));
+    expect(outs).toHaveLength(1);
+    const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.dedupeKey, `CASH_DROP:${crid}`));
+    expect(entries).toHaveLength(1);
+  });
+
+  it("مفتاح idempotency مستعمَل لوردية أخرى ⇒ CONFLICT", async () => {
+    const a = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const b = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER2, branchId: 1 });
+    const crid = "crid-cross-shift";
+    await createCashDrop({ shiftId: a.shiftId, amount: "10000", clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    await expect(
+      createCashDrop({ shiftId: b.shiftId, amount: "10000", clientRequestId: crid }, { userId: CASHIER2, branchId: 1, role: "cashier" }),
+    ).rejects.toThrow(/idempotency/);
+  });
+
+  it("يتجاهل مرجع CD- حرّاً غير رقميّ عند الترقيم (لا NaN)", async () => {
+    const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
+    const ymd = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    // مرجعٌ حرّ يشبه بادئة السحب لكن بلاحقةٍ غير رقمية (سند/بطاقة أُدخِل يدوياً).
+    await db().insert(s.receipts).values({
+      branchId: 1, shiftId, direction: "OUT", amount: "1000.00", paymentMethod: "CASH", cashBucket: "DRAWER",
+      status: "COMPLETED", referenceNumber: `CD-1-${ymd}-ABC`, createdBy: CASHIER1,
+    });
+    const d = await createCashDrop({ shiftId, amount: "5000", clientRequestId: "crid-num" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    expect(d.dropNumber).toBe(`CD-1-${ymd}-0001`); // ليس CD-…-NaN
   });
 });
 

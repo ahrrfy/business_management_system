@@ -15,8 +15,8 @@
 //   المعدود عند الإغلاق يُنقِص بالمثل (النقد غادر الدرج فعلاً) ⇒ **الفرق (drift) لا يتأثّر**. تقرير إقفال
 //   اليوم يصنّفه في دلو `cashDrops` (ضمن الخارج التشغيليّ الذي يُنقِص المتوقَّع).
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, like, sql } from "drizzle-orm";
-import { receipts, shifts, users } from "../../drizzle/schema";
+import { and, eq, like, sql } from "drizzle-orm";
+import { accountingEntries, receipts, shifts, users } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
 import { postEntry } from "./ledgerService";
@@ -26,6 +26,8 @@ import { withTx, type Actor } from "./tx";
 export interface CashDropInput {
   shiftId: number;
   amount: string; // > 0
+  /** مفتاح idempotency من العميل (uuid): يمنع التكرار عند فقد ردّ الشبكة/النقر المزدوج. */
+  clientRequestId?: string | null;
   /** مستلِمٌ اختياريّ (مدير/إداريّ يتسلّم عهدة النقد للخزينة). بدونه: يُنسَب إيصال الاستلام للفاعل. */
   dropTo?: number | null;
   notes?: string | null;
@@ -37,6 +39,8 @@ export interface CashDropResult {
   inReceiptId: number;
   drawerBefore: string; // النقد في الدرج قبل السحب
   drawerAfter: string;  // بعده (= before − amount)
+  /** true ⇒ إعادةُ تشغيلٍ لمفتاح idempotency موجود (لم يُنشأ سحبٌ جديد). */
+  idempotent?: boolean;
 }
 
 /** ترقيم سند السحب CD-فرع-تاريخ-تسلسل (idempotent على مستوى الفرع/اليوم عبر GET_LOCK + آخر رقم). */
@@ -50,15 +54,21 @@ async function nextDropNumber(tx: Tx, branchId: number): Promise<string> {
     throw new Error(`cash drop numbering lock timeout for ${lockName}`);
   }
   try {
+    // نأخذ أعلى **لاحقة رقمية بحتة** لا أعلى id: مرجعٌ حرّ (سند/بطاقة) أُدخِل كـ«CD-فرع-تاريخ-ABC»
+    // قد يحمل id أعلى ولاحقةً غير رقمية ⇒ parseInt=NaN ⇒ «CD-…-NaN» وتصادم dedupe. نتجاهل غير الرقميّ.
     const rows = await tx
       .select({ n: receipts.referenceNumber })
       .from(receipts)
-      .where(like(receipts.referenceNumber, `${prefix}%`))
-      .orderBy(desc(receipts.id))
-      .limit(1);
-    const last = rows[0]?.n;
-    const seq = last ? parseInt(String(last).slice(prefix.length), 10) + 1 : 1;
-    return prefix + String(seq).padStart(4, "0");
+      .where(like(receipts.referenceNumber, `${prefix}%`));
+    let maxSeq = 0;
+    for (const r of rows) {
+      const suffix = String(r.n ?? "").slice(prefix.length);
+      if (/^\d+$/.test(suffix)) {
+        const n = parseInt(suffix, 10);
+        if (n > maxSeq) maxSeq = n;
+      }
+    }
+    return prefix + String(maxSeq + 1).padStart(4, "0");
   } finally {
     await tx.execute(sql`SELECT RELEASE_LOCK(${lockName})`);
   }
@@ -95,9 +105,39 @@ export async function createCashDrop(
 }
 
 async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: string }): Promise<CashDropResult> {
-  // 1. الوردية: موجودة + مفتوحة (تحت القفل — يمنع سحباً بالتزامن مع الإغلاق).
+  // 1. الوردية: موجودة (تحت القفل — يمنع سحباً بالتزامن مع الإغلاق).
   const sh = (await tx.select().from(shifts).where(eq(shifts.id, input.shiftId)).for("update").limit(1))[0];
   if (!sh) throw new TRPCError({ code: "NOT_FOUND", message: "الوردية غير موجودة" });
+
+  // 1b. Idempotency: أعِد تشغيل السحب الموجود لنفس المفتاح (فقدُ ردٍّ/نقرٌ مزدوج) — **قبل** فحص الفتح
+  //   والحدّ كي ينجح الاستعلام حتى لو أُغلقت الوردية بعده (النقد غادر مرّة واحدة فعلاً). مرآةٌ لمسار البيع.
+  //   قيد uq_entry_dedupe الفريد على accountingEntries.dedupeKey يجعل التكرار مستحيلاً بنيوياً حتى عند
+  //   التزامن (الخاسر يرتدّ بـER_DUP_ENTRY ⇒ retryOnDup يعيد المحاولة فيلتقط هذا الفرع).
+  if (input.clientRequestId) {
+    const dedupeKey = `CASH_DROP:${input.clientRequestId}`;
+    const prior = (await tx.select().from(accountingEntries).where(eq(accountingEntries.dedupeKey, dedupeKey)).limit(1))[0];
+    if (prior && prior.receiptId != null) {
+      const out = (await tx.select().from(receipts).where(eq(receipts.id, Number(prior.receiptId))).limit(1))[0];
+      if (!out || Number(out.shiftId) !== input.shiftId) {
+        throw new TRPCError({ code: "CONFLICT", message: "مفتاح idempotency مستعمَل لسحبٍ مختلف" });
+      }
+      const inn = (await tx.select().from(receipts).where(and(
+        eq(receipts.referenceNumber, String(out.referenceNumber)),
+        eq(receipts.direction, "IN"),
+        eq(receipts.cashBucket, "TREASURY"),
+      )).limit(1))[0];
+      const drawerNow = await currentDrawerCash(tx, input.shiftId, sh.openingBalance);
+      return {
+        dropNumber: String(out.referenceNumber),
+        outReceiptId: Number(out.id),
+        inReceiptId: inn ? Number(inn.id) : 0,
+        drawerBefore: toDbMoney(drawerNow.plus(money(out.amount))),
+        drawerAfter: toDbMoney(drawerNow),
+        idempotent: true,
+      };
+    }
+  }
+
   if (sh.status !== "OPEN") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية مغلقة — لا يمكن السحب منها" });
   }
@@ -186,13 +226,14 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
   });
   const inReceiptId = extractInsertId(inRes);
 
-  // 9. قيد CASH_HANDOVER (نقلٌ بين دلوَين، revenue/cost=0). dedupeKey بلاحقة CASH_DROP يميّزه عن التسليم.
+  // 9. قيد CASH_HANDOVER (نقلٌ بين دلوَين، revenue/cost=0). dedupeKey = مفتاح العميل (idempotency
+  //   الحقيقيّ عبر uq_entry_dedupe) بلاحقة CASH_DROP تميّزه عن التسليم؛ null إن غاب المفتاح (بلا ضمان).
   await postEntry(tx, {
     entryType: "CASH_HANDOVER",
     branchId,
     receiptId: outReceiptId,
     amount,
-    dedupeKey: `CASH_DROP:${dropNumber}`,
+    dedupeKey: input.clientRequestId ? `CASH_DROP:${input.clientRequestId}` : null,
     notes: input.notes ?? undefined,
   });
 
