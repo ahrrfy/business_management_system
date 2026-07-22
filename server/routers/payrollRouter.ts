@@ -8,8 +8,10 @@ import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import * as adv from "../services/advancesService";
 import * as svc from "../services/payrollService";
+import * as legal from "../services/payrollLegalService";
 import { getPayrollSummary } from "../services/reportsHrService";
-import { protectedProcedure, requireModule, router } from "../trpc";
+import { managerProcedure, protectedProcedure, requireModule, router } from "../trpc";
+import { nonNegMoneyString, percentString, positiveMoneyString } from "../lib/schemas";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const hrRead = protectedProcedure.use(requireModule("hr", "READ"));
@@ -92,6 +94,59 @@ export const payrollRouter = router({
       const res = await svc.cancelRun(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0 });
       await logAudit(ctx, { action: "payroll.cancel", entityType: "payrollRun", entityId: input.id, newValue: { status: res.status } });
       return res;
+    }),
+
+  /* ───────────── المكوّنات القانونية العراقية (البند ④) — إعدادات معطَّلة افتراضياً ───────────── */
+
+  /** قراءة إعدادات المكوّنات القانونية (ضمان/ضريبة/نهاية خدمة). hr/READ — القيم غير حسّاسة للاطلاع. */
+  legalSettings: hrRead.query(() => legal.getPayrollLegalSettings()),
+
+  /** تحديث الإعدادات — محصور بالمدير/الأدمن (managerProcedure = admin+manager). كل مكوّن بمفتاح
+   *  تفعيل مستقلّ؛ النِّسب/الشرائح يضبطها المالك مع محاسبه. يُدقَّق كامل (logAudit). */
+  updateLegalSettings: managerProcedure
+    .input(
+      z.object({
+        socialSecurityEnabled: z.boolean(),
+        socialSecurityEmployeeRate: percentString,
+        socialSecurityEmployerRate: percentString,
+        socialSecurityBase: z.enum(["basic", "gross"]),
+        incomeTaxEnabled: z.boolean(),
+        // شرائح تصاعدية: upTo حدّ أعلى موجب (سلسلة مالية) أو null للشريحة المفتوحة العليا، rate نسبة.
+        incomeTaxBrackets: z
+          .array(z.object({ upTo: positiveMoneyString.nullable(), rate: percentString }))
+          .max(20),
+        incomeTaxExemption: nonNegMoneyString,
+        endOfServiceEnabled: z.boolean(),
+        endOfServiceDaysPerYear: z.string().trim().regex(/^\d+(\.\d{1,2})?$/, "عدد أيام غير صالح"),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { before, after } = await legal.updatePayrollLegalSettings(input, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 0,
+      });
+      await logAudit(ctx, {
+        action: "payroll.updateLegalSettings",
+        entityType: "payrollLegalSettings",
+        entityId: 1,
+        oldValue: {
+          socialSecurityEnabled: before.socialSecurityEnabled,
+          incomeTaxEnabled: before.incomeTaxEnabled,
+          endOfServiceEnabled: before.endOfServiceEnabled,
+        },
+        newValue: {
+          socialSecurityEnabled: after.socialSecurityEnabled,
+          socialSecurityEmployeeRate: after.socialSecurityEmployeeRate,
+          socialSecurityEmployerRate: after.socialSecurityEmployerRate,
+          socialSecurityBase: after.socialSecurityBase,
+          incomeTaxEnabled: after.incomeTaxEnabled,
+          incomeTaxBrackets: after.incomeTaxBrackets,
+          incomeTaxExemption: after.incomeTaxExemption,
+          endOfServiceEnabled: after.endOfServiceEnabled,
+          endOfServiceDaysPerYear: after.endOfServiceDaysPerYear,
+        },
+      });
+      return after;
     }),
 
   /* ───────────── سلف الموظفين (بند 12ج) — نفس بوّابات hr ───────────── */

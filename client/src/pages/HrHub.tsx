@@ -8,6 +8,7 @@ import { PageTabs, type HubTab } from "@/components/PageTabs";
 const Employees = lazy(() => import("@/pages/Employees"));
 const Attendance = lazy(() => import("@/pages/Attendance"));
 const Payroll = lazy(() => import("@/pages/Payroll"));
+const PayrollLegalSettings = lazy(() => import("@/pages/PayrollLegalSettings"));
 const EmployeeAdvances = lazy(() => import("@/pages/EmployeeAdvances"));
 const CommissionPlans = lazy(() => import("@/pages/CommissionPlans"));
 const CommissionTargets = lazy(() => import("@/pages/CommissionTargets"));
@@ -27,6 +28,9 @@ const TABS: HubTab[] = [
   { value: "employees", label: "الموظفون", gate: HR_GATE, Component: Employees },
   { value: "attendance", label: "الحضور والدوام", gate: HR_GATE, Component: Attendance },
   { value: "payroll", label: "الرواتب", gate: HR_GATE, Component: Payroll },
+  // المكوّنات القانونية (البند ④): إعدادات معطَّلة افتراضياً — محصورة بالمدير/الأدمن (بلا module ⇒
+  // لا تظهر لمحاسب/مدقّق؛ الخادم يفرض managerProcedure على الكتابة).
+  { value: "payroll-legal", label: "المكوّنات القانونية", gate: { roles: ["admin", "manager"] }, Component: PayrollLegalSettings },
   { value: "advances", label: "سلف الموظفين", gate: HR_GATE, Component: EmployeeAdvances },
   { value: "commission-plans", label: "خطط العمولات", gate: COMMISSIONS_GATE, Component: CommissionPlans },
   { value: "commission-targets", label: "الأهداف الشهرية", gate: COMMISSIONS_GATE, Component: CommissionTargets },
