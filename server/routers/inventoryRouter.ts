@@ -18,7 +18,8 @@ import {
   pendingIncomingCount,
   receiveStockTransfer,
 } from "../services/transferService";
-import { createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
+import { countReorderAlerts, createReorderDraft, listReorderAlerts, setReorderThresholds } from "../services/inventory/reorder";
+import { countSeasonBelowTarget, listSeasonPlan, searchSeasonCandidates, setSeasonTarget } from "../services/inventory/seasonPlanning";
 import {
   requestStockAdjustment,
   approveStockAdjustment,
@@ -702,6 +703,59 @@ export const inventoryRouter = router({
       });
       return res;
     }),
+
+  /**
+   * خطة موسم المدارس: كل متغيّرٍ موسميّ (seasonTarget > 0) بمخزونه الكلّيّ عبر كل الفروع مقابل الهدف —
+   * الأبعد عن الهدف أولاً، مع الفجوة (كمية الشراء المقترحة). أداة تجهيزٍ على مستوى العمل كلّه (لا عزل
+   * فرعٍ — تُشترى الكمية دفعةً ثم تُوزَّع)، بلا تكلفة. المدير/المخزن (inventoryWarehouseProcedure).
+   */
+  seasonPlan: inventoryWarehouseProcedure
+    .input(
+      z
+        .object({
+          onlyBelowTarget: z.boolean().optional(),
+          limit: z.number().int().positive().max(1000).default(300),
+          offset: z.number().int().min(0).default(0),
+        })
+        .optional(),
+    )
+    .query(({ input }) =>
+      listSeasonPlan({ onlyBelowTarget: input?.onlyBelowTarget, limit: input?.limit, offset: input?.offset }),
+    ),
+
+  /** بحث المتغيّرات لإضافتها لخطة الموسم (يُعيد الهدف الحاليّ فيميّز المُضاف سلفاً) — المدير/المخزن. */
+  seasonVariantSearch: inventoryWarehouseProcedure
+    .input(z.object({ q: z.string().min(1).max(120), limit: z.number().int().positive().max(50).default(20) }))
+    .query(({ input }) => searchSeasonCandidates(input.q, input.limit)),
+
+  /** ضبط هدف موسم المدارس لمتغيّر (0 = يُزيله من الخطة) — المدير/المخزن (التحقّق داخل الخدمة). */
+  setSeasonTarget: inventoryWarehouseProcedure
+    .input(z.object({ variantId: z.number().int().positive(), seasonTarget: z.number().int().min(0) }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await setSeasonTarget(input);
+      await logAudit(ctx, {
+        action: "inventory.setSeasonTarget",
+        entityType: "variant",
+        entityId: input.variantId,
+        newValue: { seasonTarget: input.seasonTarget },
+      });
+      return res;
+    }),
+
+  /**
+   * ملخّص تخطيط المخزون لمؤشّر رأس شاشة المخزون (استباقيّ): عدد صفوف إعادة الطلب (بنطاق فرع المستخدم —
+   * admin=الكل، غير الأدمن بفرعه، وبلا فرع ⇒ 0 لا تسريب) + عدد الأصناف الموسمية تحت الهدف (مستوى العمل).
+   */
+  planningSummary: inventoryWarehouseProcedure.query(async ({ ctx }) => {
+    let reorderCount = 0;
+    if (ctx.user.role === "admin") {
+      reorderCount = await countReorderAlerts({ branchId: null });
+    } else if (ctx.user.branchId != null) {
+      reorderCount = await countReorderAlerts({ branchId: Number(ctx.user.branchId) });
+    }
+    const seasonBelowTargetCount = await countSeasonBelowTarget();
+    return { reorderCount, seasonBelowTargetCount };
+  }),
 
   /**
    * إنشاء حركة مخزون يدوية (IN/OUT/RETURN) — أمين المخزن فأعلى.

@@ -680,6 +680,13 @@
       "when": 1784937600011,
       "tag": "0097_image_studio_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 98,
+      "version": "5",
+      "when": 1784937600012,
+      "tag": "0098_season_target",
+      "breakpoints": true
     }
   ]
 }

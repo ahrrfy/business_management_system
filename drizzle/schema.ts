@@ -478,6 +478,9 @@ export const productVariants = mysqlTable(
     costPrice: decimal("costPrice", { precision: 15, scale: 2 }).default("0").notNull(),
     minStock: int("minStock").default(0),
     reorderPoint: int("reorderPoint").default(0),
+    // هدف مخزون موسم المدارس (بالوحدة الأساس، عبر كل الفروع) — تجهيز ذروة أيلول. هجرة 0098.
+    // seasonTarget > 0 يَسِم المتغيّر كصنفٍ موسميّ (مدرسيّ)؛ 0 = غير موسميّ (نمط reorderPoint > 0).
+    seasonTarget: int("seasonTarget").default(0),
     isActive: boolean("isActive").default(true),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
