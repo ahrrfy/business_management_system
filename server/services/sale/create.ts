@@ -623,7 +623,10 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
           notes: openingAllow ? "وضع الافتتاح — بيع نقدي مسموح بالسالب لصنف غير مُفتتَح" : undefined,
           // أوفلاين (ش٣): البيع الملتقَط دون اتصال يُسجَّل ولو هبط الرصيد تحت الصفر — البضاعة
           // خرجت فعلاً (قرار مالك: سالب موسوم بـoriginatedOffline، يظهر في تقرير المراجعة).
-          allowNegative: input.allowNegativeStock ?? false,
+          // **استثناء بضاعة الأمانة (§٥-ج، مرآة حارس وضع الافتتاح أعلاه):** لا بيع بالسالب لصنف
+          // أمانة حتى عبر الأوفلاين — بيعُ ما لم يُودَع يُلفّق التزاماً للمودِع (AP) لوحداتٍ لم تصل
+          // (استحقاق PURCHASE يتيم أدناه). يُرفض بـCONFLICT فيرتدّ ويُعلَّق لمراجعة المدير كالمسار الحيّ.
+          allowNegative: (input.allowNegativeStock ?? false) && !consignByVariant.has(vid),
           allowNegativeUnopened: openingAllow,
         });
         // معلومة استشارية للمحاولة الفائزة فقط (لا تُعاد في replay الـidempotency — لا حالة دائمة عليها).
