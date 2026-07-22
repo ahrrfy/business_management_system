@@ -429,19 +429,25 @@ export async function bounceCheck(
       // ويقلب حالتها خطأً. الاستعادة الصحيحة والمتماثلة جرت أعلاه: adjustCustomerBalance(+amount) فقط.
     }
 
-    // حلّ تعارُض إصلاحين (idempotency): نحرّر مفتاح الـidempotency الثابت instpay-<lineId> الذي سجّله
-    // التحصيل (payLine → createVoucher). دلالة المفتاح «القسط يُسدَّد مرّة واحدة في عمره» صحيحةٌ لإعادة
-    // محاولةٍ داخل محاولة سدادٍ واحدة، لكنّ ارتداد الشيك حدثٌ صريح يُبطل تلك الدفعة ⇒ السطر (BOUNCED)
-    // يقبل تحصيلاً **جديداً** يجب أن يُنشئ سنداً + قيد PAYMENT_IN + خفض ذمّةٍ فعليّاً. بدون الحذف: إعادة
-    // السداد تجد الإيصال الأصل (يبقى COMPLETED عمداً — AR-BOUNCE) فـisDead=false في voucher/create ⇒
-    // replay صامت يسِم القسط PAID بلا نقدٍ مُسجَّل ولا خفض ذمّة (النقد يتبخّر، الذمّة تبقى مرتفعة). no-op
-    // إن لم يوجد مفتاح (شيك معلَّق لم يُحصَّل قطّ).
-    await tx.delete(idempotencyKeys).where(
-      and(
-        eq(idempotencyKeys.operation, "voucher.create"),
-        eq(idempotencyKeys.clientRequestId, `instpay-${Number(input.lineId)}`),
-      ),
-    );
+    // حلّ تعارُض إصلاحين (idempotency) — **مشروطٌ بعكسِ تحصيلٍ نافذ فعلاً (reversed)**: نحرّر مفتاح
+    // instpay-<lineId> الثابت الذي سجّله التحصيل (payLine → createVoucher). حين يكون الأصل COMPLETED/APPROVED
+    // (شيك محصَّل فعلاً) ثم يرتدّ، نُبقيه COMPLETED عمداً (AR-BOUNCE) فـisDead=false في voucher/create ⇒
+    // إعادة السداد تُعيد تشغيله صامتاً (replay) فيُوسم القسط PAID بلا نقدٍ مُسجَّل ولا خفض ذمّة (Bug A) —
+    // لذا نحرّر المفتاح ليُنشئ التحصيلُ التالي سنداً + قيد PAYMENT_IN + خفضَ ذمّةٍ فعليّاً.
+    //
+    // ⚠️ لا نحرّره إن لم يُعكَس تحصيلٌ نافذ (reversed=false): ارتدادُ قسطٍ **PENDING** سنده ما يزال
+    // PENDING_APPROVAL (Maker-Checker، لم يُعتمَد بعد — createVoucher يسجّل المفتاح حتى للسند المعلَّق) —
+    // حذف مفتاحه يُيتّم السند المعلَّق: لو اعتُمد لاحقاً خصم الذمّة، وإعادةُ السداد تُنشئ سنداً ثانياً (لا
+    // replay) ⇒ تحصيلٌ مزدوج (Codex P1). بإبقاء المفتاح: إعادة السداد تُعيد السند المعلَّق نفسه (idempotent)
+    // فلا ازدواج. (وحين لا يوجد تحصيلٌ أصلاً — شيك معلَّق لم يُحصَّل قطّ — لا مفتاح ولا reversed، فلا شيء نحذفه.)
+    if (reversed) {
+      await tx.delete(idempotencyKeys).where(
+        and(
+          eq(idempotencyKeys.operation, "voucher.create"),
+          eq(idempotencyKeys.clientRequestId, `instpay-${Number(input.lineId)}`),
+        ),
+      );
+    }
 
     await tx
       .update(installmentLines)
