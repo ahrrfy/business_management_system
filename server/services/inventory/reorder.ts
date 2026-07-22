@@ -110,6 +110,30 @@ export async function listReorderAlerts(input: ListReorderAlertsInput = {}): Pro
   });
 }
 
+/**
+ * عدد صفوف (متغيّر × فرع) البالغة حدّ إعادة الطلب — مؤشّر إعادة الطلب الحيّ (استباقيّ).
+ * نفس شروط listReorderAlerts لكن COUNT بلا جلب صفوف ⇒ خفيفٌ للاستدعاء المتكرّر في رأس شاشة المخزون.
+ */
+export async function countReorderAlerts(input: { branchId?: number | null } = {}): Promise<number> {
+  const db = getDb();
+  if (!db) return 0;
+  const conds = [
+    sql`${productVariants.reorderPoint} > 0`,
+    lte(branchStock.quantity, productVariants.reorderPoint),
+    eq(productVariants.isActive, true),
+    eq(products.isActive, true),
+  ];
+  if (input.branchId != null) conds.push(eq(branchStock.branchId, input.branchId));
+
+  const rows = await db
+    .select({ c: sql<number>`count(*)` })
+    .from(branchStock)
+    .innerJoin(productVariants, eq(productVariants.id, branchStock.variantId))
+    .innerJoin(products, eq(products.id, productVariants.productId))
+    .where(and(...conds));
+  return Number(rows[0]?.c ?? 0);
+}
+
 export interface SetReorderThresholdsInput {
   variantId: number;
   minStock: number;

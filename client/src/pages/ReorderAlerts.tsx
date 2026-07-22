@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -157,6 +158,27 @@ export default function ReorderAlerts() {
     createDraft.mutate({ supplierId, branchId: draftBranch, lines });
   }
 
+  // ── تصدير قائمة إعادة الطلب إلى Excel ───────────────────────────────────
+  function doExport() {
+    if (rows.length === 0) {
+      notify.err("لا بيانات للتصدير");
+      return;
+    }
+    exportRows(rows, {
+      filename: "إعادة-الطلب",
+      title: "الأصناف الواجب إعادة طلبها",
+      columns: [
+        { key: "productName", header: "المنتج" },
+        { key: "variant", header: "المتغيّر / SKU", map: (r) => `${variantLabel(r)} (${r.sku})` },
+        { key: "branchName", header: "الفرع" },
+        { key: "quantity", header: "الرصيد", map: (r) => r.quantity },
+        { key: "minStock", header: "الحد الأدنى", map: (r) => r.minStock },
+        { key: "reorderPoint", header: "حدّ الطلب", map: (r) => r.reorderPoint },
+        { key: "suggestedQty", header: "الكمية المقترحة", map: (r) => r.suggestedQty },
+      ],
+    });
+  }
+
   return (
     <div className="space-y-4">
       <PageHeader
@@ -205,11 +227,16 @@ export default function ReorderAlerts() {
       )}
 
       <Card>
-        <CardHeader className="flex-row items-center justify-between">
+        <CardHeader className="flex-row items-center justify-between gap-3">
           <CardTitle className="text-base">الأصناف الواجب إعادة طلبها</CardTitle>
-          <span className="text-xs text-muted-foreground">
-            {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} صنف`}
-          </span>
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">
+              {alerts.isLoading ? "جارٍ التحميل…" : `${fmtInt(rows.length)} صنف`}
+            </span>
+            <Button variant="outline" size="sm" disabled={rows.length === 0} onClick={doExport}>
+              تصدير Excel
+            </Button>
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <ScrollTableShell bordered={false}>
