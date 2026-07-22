@@ -722,6 +722,13 @@
       "when": 1785024000016,
       "tag": "0103_shift_opening_continuity",
       "breakpoints": true
+    },
+    {
+      "idx": 104,
+      "version": "5",
+      "when": 1785024000017,
+      "tag": "0104_ai_image_studio",
+      "breakpoints": true
     }
   ]
 }

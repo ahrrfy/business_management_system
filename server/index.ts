@@ -165,7 +165,8 @@ async function startServer() {
     }
     // استوديو صور المنتجات: proCutout يرسل صورة المنتج data-URL لقصّها عبر remove.bg (حتى ٢م.ب خام
     // ⇒ ~٢.٧م.ب نصاً). استثناء ٤mb (نمط vouchers.create أعلاه). راجع server/routers/imageStudioRouter.ts.
-    if (req.path.includes("imageStudio.proCutout")) {
+    // aiStudioTransform: يرسل صورة المنتج data-URL (وضع EDIT) لإعادة تصميمها عبر مزوّد الذكاء الاصطناعي — نفس الحجم.
+    if (req.path.includes("imageStudio.proCutout") || req.path.includes("imageStudio.aiStudioTransform")) {
       return express.json({ limit: "4mb" })(req, res, next);
     }
     // #9 (تدقيق التثبيت): system.restoreUpload يستقبل ملف نسخة احتياطية base64. الخدمة تقبل حتى

@@ -3645,6 +3645,22 @@ export const imageStudioSettings = mysqlTable("imageStudioSettings", {
   /** آخر فحص اتصال ناجح (للعرض) + آخر خطأ (تشخيص، ≤٥٠٠ حرف). */
   lastVerifiedAt: timestamp("lastVerifiedAt"),
   lastError: varchar("lastError", { length: 500 }),
+  // ── مسار الذكاء الاصطناعي (استوديو موحّد بإعادة تصميم من برومت جاهز) — مستقلّ عن remove.bg ──
+  //  توليديّ (Gemini/أي مزوّد): يُعيد تصميم صورة المنتج كتصوير استوديو موحّد (خلفية بيضاء + إضاءة
+  //  + ظلّ) بحفظ الأصل. لأنّه توليديّ (يعيد رسم البكسلات، بخلاف remove.bg القاصّ) ⇒ مراجعة/اعتماد
+  //  بشريّ إلزاميّ قبل استبدال الأصل، والأصل يبقى دائماً. معطَّل افتراضياً. المفتاح مشفَّر مثل remove.bg.
+  /** تفعيل مسار الذكاء الاصطناعي. معطَّل افتراضياً. */
+  aiEnabled: boolean("aiEnabled").default(false).notNull(),
+  /** المزوّد — GEMINI افتراضياً، قابل للتوسّع لمزوّدين آخرين بلا هجرة. */
+  aiProvider: varchar("aiProvider", { length: 20 }).default("GEMINI").notNull(),
+  /** معرّف النموذج (null ⇒ الافتراضي في الكود، مثل gemini-2.5-flash-image). */
+  aiModel: varchar("aiModel", { length: 80 }),
+  /** مفتاح مزوّد الذكاء الاصطناعي مُشفَّراً (صيغة v1:iv:tag:ct) — null ⇒ AI لا يعمل. */
+  encryptedAiKey: text("encryptedAiKey"),
+  /** البرومت الجاهز لاستوديو الذكاء الاصطناعي (null ⇒ الافتراضي المُحصَّن في الكود). */
+  aiStudioPrompt: text("aiStudioPrompt"),
+  aiLastVerifiedAt: timestamp("aiLastVerifiedAt"),
+  aiLastError: varchar("aiLastError", { length: 500 }),
   updatedBy: int("updatedBy").references(() => users.id),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 });
