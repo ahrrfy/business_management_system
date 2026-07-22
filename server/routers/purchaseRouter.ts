@@ -80,6 +80,10 @@ export const purchaseRouter = router({
         // usd-po-reconcile: مطابقة سعر الشراء بالدولار (إعلامي — لا يمسّ total/paidAmount الديناريَين).
         agreedCurrency: z.enum(["IQD", "USD"]).optional(),
         usdTotal: positiveMoneyString.optional(),
+        // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
+        // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
+        shippingCost: nonNegMoneyString.optional(),
+        customsCost: nonNegMoneyString.optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
@@ -263,6 +267,9 @@ export const purchaseRouter = router({
           orderDate: purchaseOrders.orderDate,
           subtotal: purchaseOrders.subtotal,
           taxAmount: purchaseOrders.taxAmount,
+          // landed-cost: الشحن/الكمرك المُرسمَلان — للعرض في شاشة الاستلام/التفاصيل (تكلفة ⇒ محجوبة عن غير المدير).
+          shippingCost: purchaseOrders.shippingCost,
+          customsCost: purchaseOrders.customsCost,
           total: purchaseOrders.total,
           paidAmount: purchaseOrders.paidAmount,
           status: purchaseOrders.status,
@@ -302,7 +309,7 @@ export const purchaseRouter = router({
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
     if (!canSeeCostForUser(ctx.user)) {
-      const poMasked = { ...po, subtotal: null, taxAmount: null, total: null, paidAmount: null, usdTotal: null, agreedRate: null };
+      const poMasked = { ...po, subtotal: null, taxAmount: null, shippingCost: null, customsCost: null, total: null, paidAmount: null, usdTotal: null, agreedRate: null };
       const itemsMasked = items.map((row) => maskCostFields(row, ctx.user.role));
       return { ...poMasked, items: itemsMasked };
     }

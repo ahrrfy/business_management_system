@@ -1776,6 +1776,10 @@ export const purchaseOrders = mysqlTable(
     expectedDeliveryDate: date("expectedDeliveryDate"),
     subtotal: decimal("subtotal", { precision: 15, scale: 2 }).notNull(),
     taxAmount: decimal("taxAmount", { precision: 15, scale: 2 }).default("0").notNull(),
+    // landed-cost (0098): تكلفة الشحن/الكمرك الكلّية — تُوزَّع على البنود بنسبة القيمة وتُرسمَل في
+    // تكلفة المخزون (WAVG) عند الاستلام، وتُضاف إلى ذمّة المورّد. total = subtotal + tax + شحن + كمرك.
+    shippingCost: decimal("shippingCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    customsCost: decimal("customsCost", { precision: 15, scale: 2 }).default("0").notNull(),
     // 0018: DB-level CHECK (>= 0) أُضيف على total/paidAmount في migration 0018.
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 }).default("0").notNull(),
