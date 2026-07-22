@@ -3911,3 +3911,72 @@ export const advanceSettlements = mysqlTable(
 );
 export type AdvanceSettlement = typeof advanceSettlements.$inferSelect;
 export type EmployeeAdvance = typeof employeeAdvances.$inferSelect;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// تسعير الطباعة الرقمية (Digital) — البند⑥ الطبقة٢ (٢٢/٧). المطبعة ديجيتال لا أوفست: الوحدة =
+// الوجه المطبوع (الورق مشمول في سعره)، والعريض (فلكس) بالمتر المربّع. الأرقام كلّها إعداداتٌ
+// يملؤها المدير. راجع shared/printPricing.ts + server/services/printPricing.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** إعدادات تسعير الطباعة (صفّ singleton id=1، نمط taxSettings): وضع التسعير (هامش على الكلفة /
+ *  سعر بيع مباشر) + نسبة الهامش الافتراضية + رسم التجهيز. يملؤها المدير من شاشة الإعدادات. */
+export const printPricingSettings = mysqlTable("printPricingSettings", {
+  id: int("id").autoincrement().primaryKey(),
+  pricingMode: mysqlEnum("pricingMode", ["MARGIN", "DIRECT"]).default("MARGIN").notNull(),
+  defaultMarginPercent: decimal("defaultMarginPercent", { precision: 6, scale: 3 }).default("0").notNull(),
+  setupFee: decimal("setupFee", { precision: 15, scale: 2 }).default("0").notNull(),
+  updatedBy: int("updatedBy").references(() => users.id),
+  updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+});
+export type PrintPricingSettings = typeof printPricingSettings.$inferSelect;
+
+/** سعر الوجه المطبوع لكل (مقاس ISO × نمط ملوّن/أبيض-أسود) — يشمل الورق. قيد فريد على الزوج
+ *  (سعرٌ واحدٌ لكل تركيبة، upsert). المقاس غير المُسعَّر لا يظهر في الحاسبة. */
+export const printFacePrices = mysqlTable(
+  "printFacePrices",
+  {
+    id: int("id").autoincrement().primaryKey(),
+    paperSize: mysqlEnum("paperSize", [
+      "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10",
+      "B0", "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "B10",
+    ]).notNull(),
+    colorMode: mysqlEnum("colorMode", ["COLOR", "BW"]).notNull(),
+    pricePerFace: decimal("pricePerFace", { precision: 15, scale: 2 }).notNull(),
+    updatedBy: int("updatedBy").references(() => users.id),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({ faceUq: unique("uq_print_face_price").on(t.paperSize, t.colorMode) }),
+);
+export type PrintFacePrice = typeof printFacePrices.$inferSelect;
+
+/** ورق مميّز اختياريّ (كوشيه/لاصق/شفاف…) — زيادةٌ لكل وجه أو ورقة فوق سعر الوجه القياسيّ. */
+export const printPaperUpcharges = mysqlTable("printPaperUpcharges", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 120 }).notNull(),
+  unit: mysqlEnum("unit", ["PER_FACE", "PER_SHEET"]).default("PER_SHEET").notNull(),
+  upcharge: decimal("upcharge", { precision: 15, scale: 2 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type PrintPaperUpcharge = typeof printPaperUpcharges.$inferSelect;
+
+/** وسائط الطباعة العريضة (فلكس/استيكر/فينيل…) — سعرٌ لكل متر مربّع. */
+export const printWideMedia = mysqlTable("printWideMedia", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 120 }).notNull(),
+  pricePerSqm: decimal("pricePerSqm", { precision: 15, scale: 2 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type PrintWideMedia = typeof printWideMedia.$inferSelect;
+
+/** خيارات التشطيب (تغليف/تجليد/قصّ/طيّ…) — سعرٌ لكل نسخة أو لكل شغلة. */
+export const printFinishingOptions = mysqlTable("printFinishingOptions", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 120 }).notNull(),
+  unit: mysqlEnum("unit", ["PER_COPY", "PER_JOB"]).default("PER_COPY").notNull(),
+  price: decimal("price", { precision: 15, scale: 2 }).notNull(),
+  isActive: boolean("isActive").default(true).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+export type PrintFinishingOption = typeof printFinishingOptions.$inferSelect;

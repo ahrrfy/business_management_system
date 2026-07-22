@@ -694,6 +694,13 @@
       "when": 1785024000000,
       "tag": "0099_payroll_legal_components",
       "breakpoints": true
+    },
+    {
+      "idx": 100,
+      "version": "5",
+      "when": 1785024000013,
+      "tag": "0100_print_pricing",
+      "breakpoints": true
     }
   ]
 }
