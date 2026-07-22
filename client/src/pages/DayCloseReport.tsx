@@ -76,6 +76,7 @@ export default function DayCloseReport() {
         { key: "returnsCash", header: "مرتجعات", map: (r) => Number(r.returnsCash) },
         { key: "expensesCash", header: "مصروفات/سندات", map: (r) => Number(r.expensesCash) },
         { key: "otherOut", header: "مصروفات أخرى", map: (r) => Number(r.otherOut) },
+        { key: "cashDrops", header: "سحب أثناء الوردية", map: (r) => Number(r.cashDrops) },
         { key: "operatingOut", header: "إجمالي الخارج التشغيلي", map: (r) => Number(r.operatingOut) },
         { key: "expected", header: "المتوقَّع", map: (r) => Number(r.expected) },
         { key: "counted", header: "المعدود", map: (r) => (r.counted == null ? "" : Number(r.counted)) },
@@ -243,7 +244,7 @@ function ShiftTable({ dc }: { dc: DC }) {
                     <td className="p-3 text-right tabular-nums text-xs text-money-positive" dir="ltr" title={`مبيعات ${fmtAr(sh.salesCash)} · تحصيلات ${fmtAr(sh.collectionsCash)} · أخرى ${fmtAr(sh.otherIn)}`}>
                       {fmtAr(sh.cashIn)}
                     </td>
-                    <td className="p-3 text-right tabular-nums text-xs text-money-negative" dir="ltr" title={`مرتجعات ${fmtAr(sh.returnsCash)} · مصروفات ${fmtAr(sh.expensesCash)} · أخرى ${fmtAr(sh.otherOut)}`}>
+                    <td className="p-3 text-right tabular-nums text-xs text-money-negative" dir="ltr" title={`مرتجعات ${fmtAr(sh.returnsCash)} · مصروفات ${fmtAr(sh.expensesCash)} · سحب أثناء الوردية ${fmtAr(sh.cashDrops)} · أخرى ${fmtAr(sh.otherOut)}`}>
                       {fmtAr(sh.operatingOut)}
                     </td>
                     <td className="p-3 text-right font-semibold tabular-nums text-[var(--sem-info)]" dir="ltr">{fmtAr(sh.expected)}</td>

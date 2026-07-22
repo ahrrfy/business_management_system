@@ -4,6 +4,7 @@
  */
 import CustomerPicker from "@/components/CustomerPicker";
 import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
+import { CashDropDialog } from "@/components/pos/CashDropDialog";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
@@ -369,6 +370,7 @@ export default function POS() {
   const [saleError,      setSaleError]      = useState<string | null>(null);
   const [lastInv,        setLastInv]        = useState<{ num: string; total: number } | null>(null);
   const [shifting,       setShifting]       = useState(false);
+  const [cashDropping,   setCashDropping]   = useState(false);
   const [opening,        setOpening]        = useState("0");
   const [creditPrompt,   setCreditPrompt]   = useState<string | null>(null);
   const [mgrEmail,       setMgrEmail]       = useState("");
@@ -621,7 +623,7 @@ export default function POS() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lookupBarcode]);
 
-  useBarcodeScanner(handleHidScan, { enabled: !receipt && !shifting && !creditPrompt });
+  useBarcodeScanner(handleHidScan, { enabled: !receipt && !shifting && !creditPrompt && !cashDropping });
 
   // ── Numpad ────────────────────────────────────────────────────────────────
   function numPress(k: string) {
@@ -963,6 +965,7 @@ export default function POS() {
       if (creditPrompt) { if (e.key === "Escape") setCreditPrompt(null); return; }
       if (receipt)      { if (e.key === "Escape" || e.key === "Enter") setReceipt(null); return; }
       if (shifting)     { if (e.key === "Escape") setShifting(false); return; }
+      if (cashDropping) { if (e.key === "Escape") setCashDropping(false); return; }
       switch (e.key) {
         case "F2":  e.preventDefault(); searchRef.current?.focus(); break;
         case "F4":  e.preventDefault(); if (cart.length && !sale.isPending) submitSale(); break;
@@ -986,7 +989,7 @@ export default function POS() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart, sale.isPending, receipt, creditPrompt, shifting]);
+  }, [cart, sale.isPending, receipt, creditPrompt, shifting, cashDropping]);
 
   const connectPrinter = async () => {
     try { await pairPrinter(); setPrinterReady(true); notify.ok("تم ربط الطابعة"); }
@@ -1095,6 +1098,7 @@ export default function POS() {
         me={me.data}
         lastInv={lastInv}
         onCloseShift={() => setShifting(true)}
+        onCashDrop={() => setCashDropping(true)}
         printerReady={printerReady}
         onConnectPrinter={connectPrinter}
         bridgeEnabled={bridge.enabled}
@@ -1185,6 +1189,13 @@ export default function POS() {
           branches={branches.data}
         />
       )}
+      {cashDropping && shift && (
+        <CashDropDialog
+          C={C}
+          shiftId={shift.id}
+          onClose={() => setCashDropping(false)}
+        />
+      )}
       {creditPrompt && (
         <CreditApprovalDialog
           C={C} message={creditPrompt}
@@ -1220,6 +1231,7 @@ interface POSHeaderProps {
   me: RouterOutputs["auth"]["me"] | undefined;
   lastInv: { num: string; total: number } | null;
   onCloseShift: () => void;
+  onCashDrop: () => void;
   printerReady: boolean;
   onConnectPrinter: () => void;
   bridgeEnabled: boolean;
@@ -1227,7 +1239,7 @@ interface POSHeaderProps {
   onTestPrint: () => void;
 }
 
-function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
+function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searching, searchSettled, addToCart, searchRef, handleScanKeyDown, shift, me, lastInv, onCloseShift, onCashDrop, printerReady, onConnectPrinter, bridgeEnabled, bridgeDesc, onTestPrint }: POSHeaderProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     function h(e: MouseEvent) {
@@ -1388,6 +1400,14 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
           aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
           style={{ background: "none", border: `1.5px solid ${printerReady ? C.success : C.border}`, borderRadius: 8, padding: "5px 10px", cursor: "pointer", color: printerReady ? C.success : C.mutedFg, fontFamily: "inherit", fontWeight: 600, flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}>
           <Printer size={15} aria-hidden />{printerReady && <Check size={13} aria-hidden strokeWidth={3} />}
+        </button>
+      )}
+
+      {/* Cash drop — سحب نقديّ من الدرج إلى الخزينة أثناء الوردية (يقلّل مخاطرة تكدّس النقد) */}
+      {shift && (
+        <button onClick={onCashDrop} title="سحب نقديّ من الدرج إلى الخزينة أثناء الوردية"
+          style={{ height: 44, padding: "0 12px", background: "transparent", border: `1.5px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 13.5, fontWeight: 700, color: C.fg, flexShrink: 0, display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
+          <Banknote size={16} aria-hidden /> سحب نقدي
         </button>
       )}
 

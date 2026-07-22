@@ -7,6 +7,7 @@ import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { closeShift, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
+import { createCashDrop } from "../services/cashDropService";
 import { router, treasuryCashierProcedure, treasuryReadProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 
@@ -164,6 +165,52 @@ export const shiftRouter = router({
                 handoverTo: input.handover?.handoverTo ?? null,
               }
             : null,
+        },
+      });
+      return res;
+    }),
+
+  // السحب النقديّ أثناء الوردية (cash drop) — نقلٌ مِن الدرج إلى الخزينة في منتصف الوردية لتقليل
+  // مخاطرة تكدّس النقد. مرآةٌ لحوكمة close (نفس treasuryCashierProcedure + فحص الملكية داخل الخدمة).
+  // retryOnDup: ترقيم CD يحرّر GET_LOCK قبل الالتزام ⇒ سحبان متزامنان قد يحسبان نفس الرقم، القيد
+  // الفريد يرفض الثاني فنعيد المحاولة (createCashDrop ذرّيّ داخل withTx فتتراجع المحاولة الفاشلة).
+  cashDrop: treasuryCashierProcedure
+    .input(
+      z.object({
+        shiftId: z.number().int().positive(),
+        amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح"),
+        // مفتاح idempotency من العميل ⇒ فقدُ ردٍّ/نقرٌ مزدوج لا يُكرّر حركة النقد (نمط createSale).
+        clientRequestId: z.string().min(1).max(64),
+        // مستلِمٌ اختياريّ (مدير/إداريّ يتسلّم العهدة)؛ بدونه يُنسَب الاستلام للفاعل (درج أمانٍ بلا شخص).
+        dropTo: z.number().int().positive().nullish(),
+        notes: z.string().max(500).nullish(),
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && ctx.user.branchId == null) {
+        throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
+      }
+      const res = await retryOnDup(() =>
+        createCashDrop(
+          { shiftId: input.shiftId, amount: input.amount, clientRequestId: input.clientRequestId, dropTo: input.dropTo ?? null, notes: input.notes ?? null },
+          {
+            userId: ctx.user.id,
+            branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
+            role: ctx.user.role,
+          },
+        ),
+      );
+      await logAudit(ctx, {
+        action: "shift.cashDrop",
+        entityType: "shift",
+        entityId: input.shiftId,
+        newValue: {
+          dropNumber: res.dropNumber,
+          amount: input.amount,
+          dropTo: input.dropTo ?? null,
+          drawerBefore: res.drawerBefore,
+          drawerAfter: res.drawerAfter,
         },
       });
       return res;

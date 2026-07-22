@@ -19,8 +19,9 @@
 // نطاق اليوم عبر businessDay.utcDayRange (نطاق نصف مفتوح [00:00, +يوم)) — لا بناء Date محليّ
 //   (حارس check:date-boundaries). المصدر الوحيد لحدّ اليوم.
 //
-// خطاف مستقبليّ: «السحب النقديّ أثناء الوردية (cash drop)» شريحةٌ لاحقة لم تُبنَ بعد — الحقل
-//   cashDrops مُعدٌّ (صفر حالياً) لينضمّ كطرحٍ تشغيليّ إضافيّ عند بنائه (نمط تسليمات الخزينة).
+// السحب النقديّ أثناء الوردية (cash drop, referenceNumber LIKE 'CD-%' — cashDropService): يقع
+//   **أثناء** الوردية فيُدرَج في computeExpectedCash (يُنقِص المتوقَّع) والنقد المعدود يُنقِص بالمثل ⇒
+//   الفرق لا يتأثّر. يُصنَّف في دلو cashDrops (ضمن الخارج التشغيليّ)، خلافاً لتسليم الإغلاق CH.
 import { and, eq, gte, inArray, lt, sql } from "drizzle-orm";
 import { branches, expenses, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
@@ -101,6 +102,7 @@ interface ReceiptAgg {
   salesCash: string;
   collectionsCash: string;
   handoversCash: string;
+  cashDropsCash: string;
   expensesCash: string;
   returnsCash: string;
 }
@@ -182,6 +184,7 @@ export async function getDayCloseReconciliation(opts: {
       salesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
       collectionsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'IN' AND ${receipts.voucherNumber} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
       handoversCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.referenceNumber} LIKE 'CH-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
+      cashDropsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND ${receipts.referenceNumber} LIKE 'CD-%' THEN ${receipts.amount} ELSE 0 END), 0)`,
       expensesCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} IS NULL OR ${receipts.referenceNumber} NOT LIKE 'CH-%') AND (${receipts.voucherNumber} IS NOT NULL OR ${expenses.id} IS NOT NULL) THEN ${receipts.amount} ELSE 0 END), 0)`,
       returnsCash: sql<string>`COALESCE(SUM(CASE WHEN ${receipts.direction} = 'OUT' AND (${receipts.referenceNumber} IS NULL OR ${receipts.referenceNumber} NOT LIKE 'CH-%') AND ${receipts.voucherNumber} IS NULL AND ${expenses.id} IS NULL AND ${receipts.invoiceId} IS NOT NULL THEN ${receipts.amount} ELSE 0 END), 0)`,
     })
@@ -195,6 +198,7 @@ export async function getDayCloseReconciliation(opts: {
     aggByShift.set(Number(r.shiftId), {
       cashIn: r.cashIn, cashOut: r.cashOut, salesCash: r.salesCash,
       collectionsCash: r.collectionsCash, handoversCash: r.handoversCash,
+      cashDropsCash: r.cashDropsCash,
       expensesCash: r.expensesCash, returnsCash: r.returnsCash,
     });
   }
@@ -202,7 +206,7 @@ export async function getDayCloseReconciliation(opts: {
   // مُجمِّعات الإجماليات (decimal).
   let tOpening = money(0), tSales = money(0), tColl = money(0), tOtherIn = money(0), tCashIn = money(0);
   let tReturns = money(0), tExpenses = money(0), tOtherOut = money(0), tOpOut = money(0);
-  let tHandovers = money(0), tExpected = money(0), tCounted = money(0), tDrift = money(0), tRetained = money(0);
+  let tHandovers = money(0), tCashDrops = money(0), tExpected = money(0), tCounted = money(0), tDrift = money(0), tRetained = money(0);
   let openCount = 0, closedCount = 0, balancedCount = 0, driftCount = 0, overCount = 0, shortCount = 0;
 
   const lines: DayCloseShiftLine[] = shiftRows.map((sh) => {
@@ -213,13 +217,15 @@ export async function getDayCloseReconciliation(opts: {
     const salesCash = money(agg?.salesCash ?? 0);
     const collectionsCash = money(agg?.collectionsCash ?? 0);
     const handoversCash = money(agg?.handoversCash ?? 0);
+    const cashDrops = money(agg?.cashDropsCash ?? 0); // سحبٌ أثناء الوردية (CD-…) — يُنقِص المتوقَّع
     const expensesCash = money(agg?.expensesCash ?? 0);
     const returnsCash = money(agg?.returnsCash ?? 0);
 
     // بواقٍ تضمن Σ الأجزاء = الإجمالي القانونيّ حتى لو ظهر نمطٌ غير مصنَّف.
     const otherIn = cashIn.minus(salesCash).minus(collectionsCash);
-    const operatingOut = cashOut.minus(handoversCash); // الخارج التشغيليّ (بلا تسليم الخزينة)
-    const otherOut = operatingOut.minus(returnsCash).minus(expensesCash);
+    // الخارج التشغيليّ (بلا تسليم الإغلاق CH؛ يشمل السحب CD لأنه يقع أثناء الوردية فيُنقِص المتوقَّع).
+    const operatingOut = cashOut.minus(handoversCash);
+    const otherOut = operatingOut.minus(returnsCash).minus(expensesCash).minus(cashDrops);
 
     // المتوقَّع في الدرج عند العدّ = الافتتاحيّ + الداخل − الخارج التشغيليّ (بلا تسليم الخزينة).
     const expected = opening.plus(cashIn).minus(operatingOut);
@@ -252,6 +258,7 @@ export async function getDayCloseReconciliation(opts: {
     tOtherOut = tOtherOut.plus(otherOut);
     tOpOut = tOpOut.plus(operatingOut);
     tHandovers = tHandovers.plus(handoversCash);
+    tCashDrops = tCashDrops.plus(cashDrops);
     tExpected = tExpected.plus(expected);
     if (counted) tCounted = tCounted.plus(counted);
     if (drift) tDrift = tDrift.plus(drift);
@@ -277,7 +284,7 @@ export async function getDayCloseReconciliation(opts: {
       otherOut: toDbMoney(otherOut),
       operatingOut: toDbMoney(operatingOut),
       handoversCash: toDbMoney(handoversCash),
-      cashDrops: "0.00",
+      cashDrops: toDbMoney(cashDrops),
       expected: toDbMoney(expected),
       counted: counted ? toDbMoney(counted) : null,
       drift: drift ? toDbMoney(drift) : null,
@@ -305,7 +312,7 @@ export async function getDayCloseReconciliation(opts: {
       otherOut: toDbMoney(tOtherOut),
       operatingOut: toDbMoney(tOpOut),
       handoversCash: toDbMoney(tHandovers),
-      cashDrops: "0.00",
+      cashDrops: toDbMoney(tCashDrops),
       expected: toDbMoney(tExpected),
       counted: toDbMoney(tCounted),
       drift: toDbMoney(tDrift),
