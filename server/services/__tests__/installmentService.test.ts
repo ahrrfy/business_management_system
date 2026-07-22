@@ -309,6 +309,147 @@ describe("bounceCheck", () => {
     expect(await customerBalance()).toBe("900000.00");
     expect((await getPlan(planId)).lines[1].status).toBe("BOUNCED");
   });
+
+  // الثابت الحرِج (تعارُض إصلاحين): بدون حذف مفتاح idempotency في bounceCheck، إعادة السداد تُعيد
+  // الإيصال الأصل صامتاً (replay) فيُوسم القسط PAID بلا سند/قيد/خفض ذمّة — النقد يتبخّر والذمّة تبقى.
+  it("شيك مُحصَّل يرتدّ ثم يُعاد سداده ⇒ سند + قيد PAYMENT_IN جديدان فعليّاً وتنخفض الذمّة (لا replay صامت للإيصال الأصل)", async () => {
+    const { planId } = await seedPlan();
+    const checkLine = (await getPlan(planId)).lines[1]; // شيك 50000
+
+    // 1) تحصيل أول (شيك) ⇒ الذمّة تنخفض.
+    const pay1 = await payLine({ lineId: checkLine.id }, actor);
+    expect(pay1.status).toBe("PAID");
+    expect(await customerBalance()).toBe("850000.00"); // 900000 − 50000
+
+    // 2) ارتداد الشيك ⇒ استعادة الذمّة، القسط BOUNCED، ومفتاح idempotency يُحرَّر.
+    const b1 = await bounceCheck({ lineId: checkLine.id, note: "ارتدّ من المصرف" }, actor);
+    expect(b1.reversed).toBe(true);
+    expect(await customerBalance()).toBe("900000.00");
+    expect((await getPlan(planId)).lines[1].status).toBe("BOUNCED");
+
+    // 3) إعادة السداد نقداً ⇒ يجب أن يُنشئ تحصيلاً حقيقياً جديداً (لا يُعيد الإيصال الأصل).
+    const pay2 = await payLine({ lineId: checkLine.id, paymentMethod: "CASH" }, actor);
+    expect(pay2.status).toBe("PAID");
+
+    // (أ) الإيصال الجديد مغايرٌ للأصل، والقسط يحمله.
+    expect(pay2.receiptId).not.toBe(pay1.receiptId);
+    expect(Number((await getPlan(planId)).lines[1].receiptId)).toBe(pay2.receiptId);
+
+    // (ب) الذمّة انخفضت فعلاً بالتحصيل الجديد — لا نقدَ متبخّراً.
+    expect(await customerBalance()).toBe("850000.00");
+
+    // (ج) قيدا PAYMENT_IN منفصلان بإيصالين مختلفين (الأصل + إعادة السداد).
+    const paymentIns = await db()
+      .select()
+      .from(s.accountingEntries)
+      .where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
+    expect(paymentIns).toHaveLength(2);
+    const inReceiptIds = new Set(paymentIns.map((e) => Number(e.receiptId)));
+    expect(inReceiptIds.has(pay1.receiptId)).toBe(true);
+    expect(inReceiptIds.has(pay2.receiptId)).toBe(true);
+
+    // (د) مفتاح idempotency الجديد يشير للإيصال الثاني لا الأول.
+    const key = (
+      await db().select().from(s.idempotencyKeys).where(eq(s.idempotencyKeys.clientRequestId, `instpay-${checkLine.id}`))
+    )[0];
+    expect(key).toBeTruthy();
+    expect(Number(key.refId)).toBe(pay2.receiptId);
+  });
+
+  it("دورات ارتداد متعدّدة لا تُراكم خطأً: كل (سداد↔ارتداد) يُبقي الذمّة متّسقة، وكل تحصيلٍ سندٌ مستقل", async () => {
+    const { planId } = await seedPlan();
+    const checkLine = (await getPlan(planId)).lines[1]; // شيك 50000
+
+    for (let i = 0; i < 3; i++) {
+      const pay = await payLine({ lineId: checkLine.id }, actor);
+      expect(pay.status).toBe("PAID");
+      expect(await customerBalance()).toBe("850000.00"); // سُدِّد ⇒ 900000 − 50000
+      await bounceCheck({ lineId: checkLine.id }, actor);
+      expect(await customerBalance()).toBe("900000.00"); // ارتدّ ⇒ استُعيدت
+    }
+    // سدادٌ نهائيّ يستقرّ عند 850000 (لا تضخّمَ ذمّةٍ ولا نقدَ متبخّراً).
+    const finalPay = await payLine({ lineId: checkLine.id }, actor);
+    expect(finalPay.status).toBe("PAID");
+    expect(await customerBalance()).toBe("850000.00");
+
+    // ٤ تحصيلات ناجحة ⇒ ٤ قيود PAYMENT_IN بإيصالاتٍ مختلفة، و٣ قيود PAYMENT_OUT للارتدادات.
+    const ins = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN"));
+    const outs = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(ins).toHaveLength(4);
+    expect(outs).toHaveLength(3);
+    expect(new Set(ins.map((e) => Number(e.receiptId))).size).toBe(4);
+  });
+
+  it("تماثُل paidAmount: ارتداد قسطٍ مرتبطٍ بفاتورة لا يمسّ invoices.paidAmount ولا حالتها (لا يمحو سداداً مباشراً)", async () => {
+    const d = db();
+    // فاتورة بيع للعميل ١، سُدِّد منها مباشرةً 40000 (عربون/سداد مباشر) ⇒ PARTIALLY_PAID.
+    await d.insert(s.invoices).values({
+      id: 10,
+      invoiceNumber: "INV-10",
+      sourceType: "POS",
+      branchId: 1,
+      customerId: 1,
+      subtotal: "100000.00",
+      total: "100000.00",
+      paidAmount: "40000.00",
+      status: "PARTIALLY_PAID",
+    });
+    // خطة أقساط مرتبطة بالفاتورة، قسط شيك 50000.
+    const { planId } = await createPlan(
+      {
+        customerId: 1,
+        branchId: 1,
+        invoiceId: 10,
+        totalAmount: "60000.00",
+        downPayment: "10000.00",
+        lines: [{ dueDate: ymd(30), amount: "50000.00", kind: "CHECK", checkNumber: "CHK-INV", bankName: "الرشيد" }],
+      },
+      actor,
+    );
+    const checkLine = (await getPlan(planId)).lines[0];
+
+    // تحصيل القسط عبر السند — يخفّض ذمّة العميل فقط ولا يمسّ paidAmount الفاتورة.
+    await payLine({ lineId: checkLine.id }, actor);
+    let inv = (await d.select().from(s.invoices).where(eq(s.invoices.id, 10)))[0];
+    expect(inv.paidAmount).toBe("40000.00");
+    expect(inv.status).toBe("PARTIALLY_PAID");
+    expect(await customerBalance()).toBe("850000.00"); // 900000 − 50000
+
+    // الارتداد — الإصلاح: لا يطرح 50000 من paidAmount (لم يَزِدها التحصيل قطّ) فيمحو الـ40000 المشروعة.
+    await bounceCheck({ lineId: checkLine.id, note: "ارتدّ" }, actor);
+    inv = (await d.select().from(s.invoices).where(eq(s.invoices.id, 10)))[0];
+    expect(inv.paidAmount).toBe("40000.00"); // ثابتة — لم تُمحَ الدفعة المباشرة
+    expect(inv.status).toBe("PARTIALLY_PAID");
+    expect(await customerBalance()).toBe("900000.00"); // استُعيدت ذمّة العميل فقط
+    expect((await getPlan(planId)).lines[0].status).toBe("BOUNCED");
+  });
+
+  // اختبار مُستلَم من جلسة epic-moser (تسليم شريحة «paidAmount غير متماثل») — فِخِّرة seedPlan({invoiceId})
+  // بدفعة مقدّمة مسجّلة، مكمِّلة للاختبار السابق بمسار إعدادٍ مختلف.
+  it("ارتداد شيك لفاتورة عليها دفعة مقدّمة مسجّلة ⇒ لا يمسّ invoice.paidAmount (عكسٌ متماثل مع مسار السداد)", async () => {
+    const d = db();
+    // فاتورة مرتبطة بالخطة عليها دفعة مقدّمة نقدية مسجّلة (paidAmount=20000) من مصدرٍ آخر.
+    await d.insert(s.invoices).values({
+      id: 7, invoiceNumber: "INV-7", sourceType: "POS", branchId: 1, customerId: 1,
+      subtotal: "50000.00", total: "50000.00", paidAmount: "20000.00", status: "PARTIALLY_PAID",
+    });
+    const { planId } = await seedPlan({ invoiceId: 7 });
+    const checkLine = (await getPlan(planId)).lines[1]; // شيك 50000
+
+    // تحصيل الشيك عبر المسار الحقيقي (createVoucher لا يمسّ paidAmount).
+    const pay = await payLine({ lineId: checkLine.id }, actor);
+    expect(pay.status).toBe("PAID");
+    expect((await d.select().from(s.invoices).where(eq(s.invoices.id, 7)))[0].paidAmount).toBe("20000.00");
+
+    // الارتداد يجب ألّا يمسّ الدفعة المقدّمة المسجّلة.
+    const res = await bounceCheck({ lineId: checkLine.id, note: "ارتدّ من المصرف" }, actor);
+    expect(res.reversed).toBe(true);
+
+    const inv = (await d.select().from(s.invoices).where(eq(s.invoices.id, 7)))[0];
+    expect(inv.paidAmount).toBe("20000.00");     // ثابت — الدفعة سليمة (كان يصير "0.00")
+    expect(inv.status).toBe("PARTIALLY_PAID");   // بلا إعادة حساب مضلِّلة (كان يصير "PENDING")
+    expect(await customerBalance()).toBe("900000.00"); // الذمّة استُعيدت بالكامل (عكس متماثل)
+  });
 });
 
 describe("cancelPlan", () => {
