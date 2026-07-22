@@ -86,24 +86,29 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
     setNotice(null);
     const userPrompt = aiPromptText.trim() || undefined;
     try {
-      // allSettled: عملية مدفوعة وقابلة للفشل الجزئيّ (حجب أمان صورة واحدة مثلاً) ⇒ نُظهر ما نجح
-      // وننبّه على ما فشل بدل إسقاط الكلّ.
-      const settled = await Promise.allSettled(
-        value.map(async (it): Promise<StudioPreview> => {
+      // تسلسليّ لا متوازٍ: httpBatchLink يجمع النداءات المتزامنة في طلبٍ HTTP واحد، فعدّة صور data-URL
+      // (~٧٠٠ك لكلٍّ) تتجاوز حدّ جسم 4mb ⇒ 413 قبل بلوغ الراوتر. الإرسال واحداً-تلو-آخر يجعل كلّ صورة
+      // طلباً مستقلّاً (والتوليد بطيء أصلاً ⇒ لا فائدة من التوازي). فشلٌ جزئيّ ⇒ نُظهر ما نجح وننبّه.
+      const ok: StudioPreview[] = [];
+      let firstErr = "";
+      let failedCount = 0;
+      for (const it of value) {
+        try {
           const res = await aiTransform.mutateAsync({ imageDataUrl: it.dataUrl, userPrompt, mode: "EDIT" });
           const norm = await normalizeAiStudioImage(res.imageDataUrl);
-          return { id: it.id, before: it.dataUrl, after: norm.dataUrl, sizeKB: Math.round(norm.sizeKB), mode: "AI" };
-        }),
-      );
-      const ok = settled.filter((s): s is PromiseFulfilledResult<StudioPreview> => s.status === "fulfilled").map((s) => s.value);
-      const failed = settled.filter((s) => s.status === "rejected") as PromiseRejectedResult[];
+          ok.push({ id: it.id, before: it.dataUrl, after: norm.dataUrl, sizeKB: Math.round(norm.sizeKB), mode: "AI" });
+        } catch (e) {
+          failedCount++;
+          if (!firstErr) firstErr = String((e as { message?: string })?.message ?? e ?? "");
+        }
+      }
       if (ok.length === 0) {
-        setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + String(failed[0]?.reason?.message ?? failed[0]?.reason ?? ""));
+        setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + firstErr);
         return;
       }
       setPreviews(ok);
-      if (failed.length > 0) {
-        setNotice(`تعذّر تحويل ${failed.length} من ${value.length} صورة (${String(failed[0]?.reason?.message ?? "")}).`);
+      if (failedCount > 0) {
+        setNotice(`تعذّر تحويل ${failedCount} من ${value.length} صورة (${firstErr}).`);
       }
     } catch (e) {
       setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + String((e as Error)?.message ?? e));

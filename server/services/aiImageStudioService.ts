@@ -198,11 +198,14 @@ export interface VerifyGeminiResult {
   ok: boolean;
   /** عدد النماذج المتاحة (إن نجح الفحص) — مؤشّر بسيط على صلاحية المفتاح. */
   modelCount: number | null;
+  /** أسماء النماذج المتاحة (مجرَّدة من بادئة "models/") — للتحقّق من توفّر النموذج المُختار. */
+  models: string[];
 }
 
 /**
  * يفحص صلاحية مفتاح Gemini بنداء **رخيص بلا توليد صورة** (GET /models) ⇒ لا كلفة توليد.
- * يرمي AiImageError عند مفتاح خاطئ/تعطّل.
+ * يعيد قائمة أسماء النماذج المتاحة ليتحقّق المستدعي من توفّر النموذج المُختار. يرمي AiImageError عند
+ * مفتاح خاطئ/تعطّل.
  */
 export async function verifyGeminiKey(apiKey: string, fetchImpl?: typeof fetch): Promise<VerifyGeminiResult> {
   const doFetch = fetchImpl ?? fetch;
@@ -225,6 +228,16 @@ export async function verifyGeminiKey(apiKey: string, fetchImpl?: typeof fetch):
     }
     throw new AiImageError(classifyHttpError(res.status, String(detail)), res.status, String(detail) || `HTTP ${res.status}`);
   }
-  const j = (await res.json().catch(() => ({}))) as { models?: unknown[] };
-  return { ok: true, modelCount: Array.isArray(j?.models) ? j.models.length : null };
+  const j = (await res.json().catch(() => ({}))) as { models?: Array<{ name?: string }> };
+  const models = Array.isArray(j?.models)
+    ? j.models.map((m) => String(m?.name ?? "").replace(/^models\//, "")).filter(Boolean)
+    : [];
+  return { ok: true, modelCount: models.length || null, models };
+}
+
+/** هل النموذج المُختار ضمن قائمة النماذج المتاحة؟ (يتساهل عند قائمة فارغة — تعذّر الجلب لا منع). */
+export function isModelAvailable(effectiveModel: string, models: string[]): boolean {
+  if (!models.length) return true;
+  const target = effectiveModel.replace(/^models\//, "");
+  return models.some((m) => m === target);
 }

@@ -23,7 +23,7 @@ import {
 } from "@shared/imageStudio/aiPrompt";
 import { imageStudioSettings } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { AiImageError, aiImageErrorMessageAr, verifyGeminiKey } from "./aiImageStudioService";
+import { AiImageError, aiImageErrorMessageAr, isModelAvailable, verifyGeminiKey } from "./aiImageStudioService";
 import { decryptSecret, encryptSecret, isCryptoReady, maskSecret } from "./cryptoService";
 import { getRemovebgAccount, RemovebgError, removebgErrorMessageAr } from "./removebgService";
 import { withTx } from "./tx";
@@ -123,11 +123,14 @@ export async function updateImageStudioSettings(
   }
 
   await withTx(async (tx) => {
+    // يضمن الصفّ المفرد (id=1) ذرّيّاً (نمط taxSettings) — يمنع تسابق كاتبَي remove.bg والذكاء
+    // الاصطناعي على مستأجرٍ جديد من إدراج صفّين مستقلّين يُفقِد أحدهما (readRow يقرأ الأوّل فقط).
+    await tx.insert(imageStudioSettings).values({ id: 1 }).onDuplicateKeyUpdate({ set: { id: 1 } });
     const existing = (
       await tx
         .select({ id: imageStudioSettings.id, encryptedRemovebgKey: imageStudioSettings.encryptedRemovebgKey })
         .from(imageStudioSettings)
-        .orderBy(imageStudioSettings.id)
+        .where(eq(imageStudioSettings.id, 1))
         .limit(1)
     )[0];
 
@@ -155,15 +158,7 @@ export async function updateImageStudioSettings(
       if (!input.removebgKey && input.proEnabled === undefined) patch.proEnabled = false;
     }
 
-    if (existing) {
-      await tx.update(imageStudioSettings).set(patch).where(eq(imageStudioSettings.id, existing.id));
-    } else {
-      await tx.insert(imageStudioSettings).values({
-        proEnabled: input.proEnabled ?? false,
-        encryptedRemovebgKey: input.removebgKey ? encryptSecret(input.removebgKey) : null,
-        updatedBy,
-      });
-    }
+    await tx.update(imageStudioSettings).set(patch).where(eq(imageStudioSettings.id, 1));
   });
 }
 
@@ -304,11 +299,14 @@ export async function updateAiImageStudioSettings(
   }
 
   await withTx(async (tx) => {
+    // يضمن الصفّ المفرد (id=1) ذرّيّاً (نمط taxSettings) — يمنع تسابق كاتبَي remove.bg والذكاء
+    // الاصطناعي على مستأجرٍ جديد من إدراج صفّين مستقلّين يُفقِد أحدهما (readRow يقرأ الأوّل فقط).
+    await tx.insert(imageStudioSettings).values({ id: 1 }).onDuplicateKeyUpdate({ set: { id: 1 } });
     const existing = (
       await tx
         .select({ id: imageStudioSettings.id, encryptedAiKey: imageStudioSettings.encryptedAiKey })
         .from(imageStudioSettings)
-        .orderBy(imageStudioSettings.id)
+        .where(eq(imageStudioSettings.id, 1))
         .limit(1)
     )[0];
 
@@ -325,7 +323,12 @@ export async function updateAiImageStudioSettings(
     const patch: Record<string, unknown> = { updatedBy };
     if (input.aiEnabled !== undefined) patch.aiEnabled = input.aiEnabled;
     if (input.aiProvider !== undefined) patch.aiProvider = input.aiProvider;
-    if (input.aiModel !== undefined) patch.aiModel = input.aiModel ? input.aiModel.trim().slice(0, 80) : null;
+    if (input.aiModel !== undefined) {
+      patch.aiModel = input.aiModel ? input.aiModel.trim().slice(0, 80) : null;
+      // تغيير النموذج ⇒ صفّر حالة الفحص (الفحص السابق قد يخصّ نموذجاً آخر، فلا يُطمأنّ إليه).
+      patch.aiLastVerifiedAt = null;
+      patch.aiLastError = null;
+    }
     if (input.aiStudioPrompt !== undefined) {
       patch.aiStudioPrompt = input.aiStudioPrompt ? input.aiStudioPrompt.trim().slice(0, MAX_STUDIO_PROMPT_LEN) : null;
     }
@@ -338,35 +341,34 @@ export async function updateAiImageStudioSettings(
       if (!input.aiKey && input.aiEnabled === undefined) patch.aiEnabled = false;
     }
 
-    if (existing) {
-      await tx.update(imageStudioSettings).set(patch).where(eq(imageStudioSettings.id, existing.id));
-    } else {
-      await tx.insert(imageStudioSettings).values({
-        aiEnabled: input.aiEnabled ?? false,
-        aiProvider: input.aiProvider ?? "GEMINI",
-        aiModel: input.aiModel ? input.aiModel.trim().slice(0, 80) : null,
-        encryptedAiKey: input.aiKey ? encryptSecret(input.aiKey) : null,
-        aiStudioPrompt: input.aiStudioPrompt ? input.aiStudioPrompt.trim().slice(0, MAX_STUDIO_PROMPT_LEN) : null,
-        updatedBy,
-      });
-    }
+    await tx.update(imageStudioSettings).set(patch).where(eq(imageStudioSettings.id, 1));
   });
 }
 
-/** يفحص مفتاح الذكاء الاصطناعي فعلياً (نداء رخيص بلا توليد صورة) ويكتب النتيجة. */
+/** يفحص مفتاح الذكاء الاصطناعي **والنموذج المُختار** فعلياً (نداء رخيص بلا توليد صورة) ويكتب النتيجة. */
 export async function verifyAiConnection(): Promise<{ ok: boolean; message: string }> {
   const row = await readRow();
   const key = safeDecrypt(row?.encryptedAiKey ?? null);
   if (!key) {
     return { ok: false, message: "لا مفتاح ذكاء اصطناعي محفوظ." };
   }
+  const effectiveModel = row?.aiModel?.trim() || DEFAULT_GEMINI_IMAGE_MODEL;
 
   let result: { ok: boolean; message: string };
   try {
     const r = await verifyGeminiKey(key);
-    const parts: string[] = ["المفتاح صالح."];
-    if (r.modelCount != null) parts.push(`نماذج متاحة: ${r.modelCount}`);
-    result = { ok: true, message: parts.join(" ") };
+    // لا يكفي أنّ المفتاح صالح: نتحقّق أنّ النموذج المُختار متاح فعلاً، وإلا «نجح» الفحص بينما كلّ
+    // تحويلٍ لاحق يفشل بنموذجٍ غير صالح (P2 مراجعة). يتساهل عند تعذّر جلب قائمة النماذج.
+    if (!isModelAvailable(effectiveModel, r.models)) {
+      result = {
+        ok: false,
+        message: `المفتاح صالح لكنّ النموذج «${effectiveModel}» غير متاح لهذا المفتاح — تحقّق من اسم النموذج في الإعدادات.`,
+      };
+    } else {
+      const parts: string[] = [`المفتاح والنموذج «${effectiveModel}» صالحان.`];
+      if (r.modelCount != null) parts.push(`نماذج متاحة: ${r.modelCount}`);
+      result = { ok: true, message: parts.join(" ") };
+    }
   } catch (e) {
     const msg = e instanceof AiImageError ? aiImageErrorMessageAr(e.kind) : "فشل الفحص.";
     result = { ok: false, message: msg };

@@ -13,13 +13,15 @@ import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AI_STUDIO_FIDELITY_GUARD, buildAiStudioPrompt, DEFAULT_AI_STUDIO_PROMPT } from "@shared/imageStudio/aiPrompt";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { AiImageError, generateStudioImage, verifyGeminiKey } from "../aiImageStudioService";
+import { AiImageError, generateStudioImage, isModelAvailable, verifyGeminiKey } from "../aiImageStudioService";
 import { __resetKeyCacheForTests } from "../cryptoService";
 import {
   getAiImageStudioSettings,
   getAiStudioConfig,
   getAiStudioRuntime,
+  getImageStudioSettings,
   updateAiImageStudioSettings,
+  updateImageStudioSettings,
   verifyAiConnection,
 } from "../imageStudioSettingsService";
 
@@ -132,17 +134,31 @@ describe("generateStudioImage (fetch مُموَّه)", () => {
 });
 
 describe("verifyGeminiKey", () => {
-  it("نجاح ⇒ ok + modelCount", async () => {
+  it("نجاح ⇒ ok + modelCount + أسماء مجرَّدة من بادئة models/", async () => {
     const fakeFetch: typeof fetch = async () =>
-      new Response(JSON.stringify({ models: [{ name: "a" }, { name: "b" }] }), { status: 200, headers: { "content-type": "application/json" } });
+      new Response(JSON.stringify({ models: [{ name: "models/gemini-2.5-flash-image" }, { name: "models/gemini-2.5-pro" }] }), { status: 200, headers: { "content-type": "application/json" } });
     const r = await verifyGeminiKey("K", fakeFetch);
     expect(r.ok).toBe(true);
     expect(r.modelCount).toBe(2);
+    expect(r.models).toEqual(["gemini-2.5-flash-image", "gemini-2.5-pro"]);
   });
   it("403 ⇒ AuthError", async () => {
     const fakeFetch: typeof fetch = async () => new Response("{}", { status: 403 });
     await expect(verifyGeminiKey("K", fakeFetch)).rejects.toBeInstanceOf(AiImageError);
     await expect(verifyGeminiKey("K", fakeFetch)).rejects.toMatchObject({ kind: "AUTH" });
+  });
+});
+
+describe("isModelAvailable", () => {
+  it("قائمة فارغة ⇒ تساهل (لا منع)", () => {
+    expect(isModelAvailable("gemini-2.5-flash-image", [])).toBe(true);
+  });
+  it("موجود ⇒ true، غائب ⇒ false", () => {
+    expect(isModelAvailable("gemini-2.5-flash-image", ["gemini-2.5-flash-image", "gemini-2.5-pro"])).toBe(true);
+    expect(isModelAvailable("gemini-typo-999", ["gemini-2.5-flash-image"])).toBe(false);
+  });
+  it("يتجاهل بادئة models/ في المُدخَل", () => {
+    expect(isModelAvailable("models/gemini-2.5-flash-image", ["gemini-2.5-flash-image"])).toBe(true);
   });
 });
 
@@ -262,10 +278,10 @@ describe("imageStudioSettingsService — AI (DB)", () => {
     expect(st.aiStudioPromptIsDefault).toBe(true);
   });
 
-  it("verifyAiConnection (fetch عام مُموَّه) ⇒ ok + يُثبِت aiLastVerifiedAt", async () => {
+  it("verifyAiConnection (النموذج المُختار متاح) ⇒ ok + يُثبِت aiLastVerifiedAt", async () => {
     await updateAiImageStudioSettings({ aiKey: "MYKEY123456" }, 1);
     const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(JSON.stringify({ models: [{ name: "a" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+      new Response(JSON.stringify({ models: [{ name: "models/gemini-2.5-flash-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
     );
     try {
       const r = await verifyAiConnection();
@@ -275,5 +291,44 @@ describe("imageStudioSettingsService — AI (DB)", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it("verifyAiConnection (النموذج المُختار غير متاح) ⇒ ok=false ولا يُثبِت الفحص", async () => {
+    await updateAiImageStudioSettings({ aiKey: "MYKEY123456", aiModel: "gemini-typo-999" }, 1);
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ models: [{ name: "models/gemini-2.5-flash-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    try {
+      const r = await verifyAiConnection();
+      expect(r.ok).toBe(false);
+      expect(r.message).toContain("gemini-typo-999");
+      expect((await getAiImageStudioSettings()).aiLastVerifiedAt).toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("تغيير النموذج يُصفّر حالة الفحص السابقة", async () => {
+    await updateAiImageStudioSettings({ aiKey: "MYKEY123456" }, 1);
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ models: [{ name: "models/gemini-2.5-flash-image" }] }), { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    try {
+      await verifyAiConnection();
+      expect((await getAiImageStudioSettings()).aiLastVerifiedAt).not.toBeNull();
+    } finally {
+      spy.mockRestore();
+    }
+    await updateAiImageStudioSettings({ aiModel: "gemini-2.5-pro" }, 1);
+    expect((await getAiImageStudioSettings()).aiLastVerifiedAt).toBeNull();
+  });
+
+  it("singleton: حفظ remove.bg ثمّ AI ⇒ صفٌّ واحد (id=1) والمفتاحان محفوظان (لا فقدان صامت)", async () => {
+    await updateImageStudioSettings({ removebgKey: "RBG-key-123456" }, 1);
+    await updateAiImageStudioSettings({ aiKey: "AI-key-123456" }, 1);
+    const rows = await db().select({ c: sql<number>`count(*)` }).from(s.imageStudioSettings);
+    expect(Number(rows[0]?.c ?? 0)).toBe(1);
+    expect((await getImageStudioSettings()).hasKey).toBe(true); // remove.bg لم يُفقَد
+    expect((await getAiImageStudioSettings()).hasAiKey).toBe(true); // AI لم يُفقَد
   });
 });
