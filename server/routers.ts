@@ -61,6 +61,7 @@ import { courierRouter } from "./routers/courierRouter";
 import { crmRouter } from "./routers/crmRouter";
 import { offlineRouter } from "./routers/offlineRouter";
 import { imageStudioRouter } from "./routers/imageStudioRouter";
+import { printPricingRouter } from "./routers/printPricingRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -114,6 +115,8 @@ export const appRouter = router({
   hrDevices: hrDeviceRouter,
   promotions: promotionRouter,
   printPos: printPosRouter,
+  // printPricing (٢٢/٧): محرّك تسعير الطباعة الرقمية (Digital) — حاسبة + إعدادات، محصورة بالمدير.
+  printPricing: printPricingRouter,
   globalSearch: globalSearchRouter,
   // المرحلة ٦ (١٩/٦/٢٦): إقفال فترات + موافقات ائتمان + إقفال سنوي.
   periodLock: periodLockRouter,
