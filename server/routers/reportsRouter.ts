@@ -29,6 +29,7 @@ import { getArApAgingDetail } from "../services/reportsAgingDetailService";
 import { getInventoryValuation, getStockStatus } from "../services/reportsInventoryService";
 import { getItemLedger, getAbcAnalysis } from "../services/reportsInventoryAnalyticsService";
 import { getTreasurySummary, getExpensesReport, getCashOrphansReport } from "../services/reportsTreasuryService";
+import { getDayCloseReconciliation } from "../services/reportsDayCloseService";
 import { getProductionReport, getWorkOrdersReport } from "../services/reportsProductionService";
 import { workOrderProfitability } from "../services/reports/workOrderProfitability";
 import { getMonthlyClosePack } from "../services/reports/monthlyClosePack";
@@ -661,6 +662,18 @@ export const reportsRouter = router({
         limit: input?.limit,
         category: input?.category,
       });
+    }),
+
+  /**
+   * مطابقة إقفال اليوم للنقد — لكل وردية في يومٍ (UTC) وفرع: المتوقَّع (من الدفتر، مطابقٌ لصيغة
+   * computeExpectedCash) مقابل المعدود (نقد الإغلاق) مقابل الفرق (drift = variance الوردية). يكشف
+   * قيمة/تحصيل النقد ⇒ نفس بوّابة التقارير (reportViewerProcedure) + عزل الفرع بـscopedBranchId.
+   */
+  dayCloseReconciliation: reportsBranchScoped
+    .input(z.object({ date: ymdStr, branchId: z.number().int().positive().optional() }))
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return getDayCloseReconciliation({ date: input.date, branchId });
     }),
 
   /** تقرير الإنتاج — مستندات الإنتاج المؤكَّدة + تفصيل الكلفة. manager + عزل الفرع. */
