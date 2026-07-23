@@ -62,6 +62,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "inventory",    label: "المخزون والأرصدة",  description: "حركات المخزون، التحويلات، الجرد" },
   { key: "workorders",   label: "خدمة العملاء",       description: "إنشاء ومتابعة طلبات خدمة العملاء (طباعة وتخصيص)" },
   { key: "channels",     label: "القنوات والوارد",     description: "صندوق الوارد الموحّد (واتساب/إنستغرام/المتجر) والمحادثات" },
+  { key: "tasks",        label: "المهام والتذاكر",     description: "طلبات الخدمة والدعم والاستفسارات: الإسناد والمتابعة وSLA" },
   { key: "store",        label: "المتجر الإلكتروني",   description: "طلبات المتجر الإلكترونية: تثبيتها وطباعة الملصقات، والبنرات وإعدادات المتجر" },
   { key: "treasury",     label: "الخزينة والمدفوعات",  description: "لوحة الخزينة، السندات، التحويلات النقدية، الورديات" },
   { key: "suppliers",    label: "الموردون",           description: "إدارة الموردين وكشوف الحساب" },
@@ -87,6 +88,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "FULL",
     consignments: "FULL",
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL", channels: "FULL", treasury: "FULL",
+    tasks: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "FULL", settings: "FULL",
   },
@@ -98,6 +100,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "FULL",
     consignments: "FULL",
     pos: "FULL", sales: "FULL", purchases: "FULL", inventory: "FULL", workorders: "FULL", channels: "FULL", treasury: "FULL",
+    tasks: "FULL",
     customers: "FULL", suppliers: "FULL", products: "FULL", expenses: "FULL", reports: "FULL",
     users: "READ", settings: "READ",
   },
@@ -111,6 +114,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // FULL: المحاسب يسجّل سندات الأمانة وينشئ كشوف التسوية؛ اعتماد الصرف مديريّ عبر treasury (الفصل محفوظ).
     consignments: "FULL",
     pos: "NONE", sales: "READ", purchases: "READ", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "FULL",
+    // READ: يراجع طلبات الخدمة/الدعم (سياق الذمم والتحصيل) بلا إسناد/إدارة تدفّق العمل.
+    tasks: "READ",
     customers: "READ", suppliers: "READ", products: "NONE", expenses: "FULL", reports: "FULL",
     users: "NONE", settings: "NONE",
   },
@@ -127,6 +132,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // الاستقبال الهجين (workOrders.create/deliver على cashierProcedure)؛ كان القالب READ سهواً
     // فبعد ربط requireModule("workorders","FULL") كان سيُحجب الكاشير القالبي عن سلوكه القائم.
     pos: "FULL", sales: "FULL", purchases: "NONE", inventory: "READ", workorders: "FULL", channels: "FULL", treasury: "READ",
+    // FULL: الكاشير يستقبل طلبات الخدمة/الدعم من زبائنه ويتابعها (نمط channels/workorders).
+    tasks: "FULL",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "FULL", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
@@ -138,6 +145,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // FULL: أمين المخزن يسجّل سندات الإيداع/السحب الكمّية (استلام فعليّ)؛ لا يرى الحصة (ليس canSeeCost).
     consignments: "FULL",
     pos: "NONE", sales: "READ", purchases: "FULL", inventory: "FULL", workorders: "READ", channels: "NONE", treasury: "NONE",
+    // READ: يرى مهام مرتبطة باستلام/تجهيز الطلبات بلا إسناد/إدارة.
+    tasks: "READ",
     // products: READ لا FULL — كتابة الكتالوج «مدير فأعلى» (productsManagerProcedure)؛ كان القالب
     // يَعِد FULL بينما البوّابة تمنعها فتظهر الصلاحية في المصفوفة ثم تفشل كل كتابة (تدقيق التثبيت
     // #26). صدق القالب (قرار المالك: الخادم هو الحقيقة). أمين المخزن يقرأ المنتجات (مخزون/استلام)
@@ -153,6 +162,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // READ: يرى المودِعين كي لا يفتح لهم أمر شراء خطأً؛ لا يكتب سندات أمانة.
     consignments: "READ",
     pos: "NONE", sales: "NONE", purchases: "FULL", inventory: "READ", workorders: "NONE", channels: "NONE", treasury: "NONE",
+    tasks: "NONE",
     customers: "NONE", suppliers: "FULL", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
   },
@@ -163,6 +173,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "NONE",
     consignments: "NONE",
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "FULL", channels: "READ", treasury: "NONE",
+    // FULL: طلبات خدمة الطباعة/الاستقبال هي عمله الأساسي (نمط workorders).
+    tasks: "FULL",
     customers: "READ", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
@@ -175,6 +187,8 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "NONE",
     consignments: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "READ", treasury: "NONE",
+    // FULL: يتابع طلبات/استفسارات عملائه (نمط crm/customers).
+    tasks: "FULL",
     customers: "FULL", suppliers: "NONE", products: "READ", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
@@ -186,6 +200,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "READ",
     consignments: "READ",
     pos: "READ", sales: "READ", purchases: "READ", inventory: "READ", workorders: "READ", channels: "READ", treasury: "READ",
+    tasks: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "READ", reports: "READ",
     users: "READ", settings: "READ",
   },
@@ -196,6 +211,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     commissions: "NONE",
     consignments: "NONE",
     pos: "NONE", sales: "READ", purchases: "NONE", inventory: "READ", workorders: "READ", channels: "NONE", treasury: "NONE",
+    tasks: "READ",
     customers: "READ", suppliers: "READ", products: "READ", expenses: "NONE", reports: "READ",
     users: "NONE", settings: "NONE",
   },
@@ -206,6 +222,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     courier: "FULL",
     store: "NONE", assets: "NONE", hr: "NONE", commissions: "NONE", consignments: "NONE",
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "NONE", treasury: "NONE",
+    tasks: "NONE",
     customers: "NONE", suppliers: "NONE", products: "NONE", expenses: "NONE", reports: "NONE",
     users: "NONE", settings: "NONE",
   },
