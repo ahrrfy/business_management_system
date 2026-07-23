@@ -5,6 +5,7 @@ const CrmOverview=lazy(()=>import("@/pages/CrmOverview"));
 const Customers=lazy(()=>import("@/pages/Customers"));
 const CustomerNotes=lazy(()=>import("@/pages/CustomerNotes"));
 const Inbox=lazy(()=>import("@/pages/Inbox"));
+const ContactsBank=lazy(()=>import("@/pages/ContactsBank"));
 const Quotations=lazy(()=>import("@/pages/Quotations"));
 const Campaigns=lazy(()=>import("@/pages/Campaigns"));
 const Offers=lazy(()=>import("@/pages/Offers"));
@@ -20,6 +21,7 @@ const TABS:HubTab[]=[
   {value:"customers",label:"العملاء",gate:{module:"crm",level:"READ"},Component:Customers},
   {value:"followups",label:"المتابعات",gate:{module:"crm",level:"READ"},Component:CustomerNotes},
   {value:"inbox",label:"التواصل والوارد",gate:{module:"channels",level:"READ"},Component:Inbox},
+  {value:"contacts",label:"جهات الاتصال",gate:{module:"crm",level:"READ"},Component:ContactsBank},
   {value:"quotations",label:"الفرص وعروض الأسعار",gate:{module:"sales",level:"READ"},Component:Quotations},
   {value:"campaigns",label:"الحملات",gate:{module:"campaigns",level:"READ"},Component:Campaigns},
   {value:"offers",label:"العروض والخصومات",gate:{module:"campaigns",level:"READ"},Component:Offers},
