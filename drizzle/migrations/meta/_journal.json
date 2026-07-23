@@ -729,6 +729,13 @@
       "when": 1785024000017,
       "tag": "0104_ai_image_studio",
       "breakpoints": true
+    },
+    {
+      "idx": 105,
+      "version": "5",
+      "when": 1785024000018,
+      "tag": "0105_shift_type_print_services",
+      "breakpoints": true
     }
   ]
 }

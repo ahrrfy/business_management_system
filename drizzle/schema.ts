@@ -883,10 +883,12 @@ export const shifts = mysqlTable(
     countedCash: decimal("countedCash", { precision: 15, scale: 2 }),
     variance: decimal("variance", { precision: 15, scale: 2 }),
     status: mysqlEnum("shiftStatus", ["OPEN", "CLOSED"]).default("OPEN").notNull(),
-    // نوع الوردية: RETAIL (كاشير المبيعات) أو RECEPTION (خدمة الزبائن — درج/رصيد افتتاحي/عرابين
-    // وZ-report مستقلّ). DEFAULT RETAIL ⇒ كل الورديات القائمة تجزئة. يدخل في openGuard ⇒ وردية
-    // مفتوحة واحدة لكل (موظّف×فرع×نوع)، فيُمكن لموظّفٍ حملُ وردية تجزئة ووردية استقبال معاً.
-    shiftType: mysqlEnum("shiftType", ["RETAIL", "RECEPTION"]).default("RETAIL").notNull(),
+    // نوع الوردية: RETAIL (كاشير المبيعات/التجزئة) أو RECEPTION (خدمة الزبائن) أو PRINT_SERVICES
+    // (كاشير خدمات الطباعة والاستنساخ) — كلٌّ درج/رصيد افتتاحي/عرابين وZ-report مستقلّ. قرار المالك
+    // (٢٣/٧/٢٦): فصلٌ كامل بين كاشير التجزئة وكاشير خدمات الطباعة (صلاحية + درج). DEFAULT RETAIL ⇒ كل
+    // الورديات القائمة تجزئة. يدخل في openGuard ⇒ وردية مفتوحة واحدة لكل (موظّف×فرع×نوع)، فيُمكن
+    // لموظّفٍ حملُ ورديات تجزئة واستقبال وطباعة معاً.
+    shiftType: mysqlEnum("shiftType", ["RETAIL", "RECEPTION", "PRINT_SERVICES"]).default("RETAIL").notNull(),
     // حارس ذرّي: «userId:branchId:shiftType» عند الفتح، NULL عند الإغلاق. UNIQUE يسمح بـNULL متعدّد
     // ⇒ وردية مفتوحة واحدة لكل (موظّف×فرع×نوع)؛ فتحٌ متزامن ثانٍ لنفس النوع يفشل بـER_DUP_ENTRY.
     openGuard: varchar("openGuard", { length: 64 }).unique("uq_shift_open_guard"),

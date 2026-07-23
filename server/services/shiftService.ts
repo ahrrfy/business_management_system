@@ -8,8 +8,13 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
 
-/** نوع الوردية: تجزئة (كاشير) أو استقبال (خدمة الزبائن — درج/عرابين مستقلّة). */
-export type ShiftType = "RETAIL" | "RECEPTION";
+/**
+ * نوع الوردية — كلٌّ درجٌ/رصيد افتتاحي/Z-report مستقلّ:
+ *  - RETAIL: كاشير التجزئة/القرطاسية.
+ *  - RECEPTION: خدمة الزبائن (استقبال أوامر الشغل — عرابين).
+ *  - PRINT_SERVICES: كاشير خدمات الطباعة والاستنساخ (قرار المالك ٢٣/٧/٢٦: فصلٌ كامل عن التجزئة).
+ */
+export type ShiftType = "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
 
 /**
  * ①ج عتبة اعتبار فرقٍ في الرصيد الافتتاحيّ «اختلافاً» يستوجب سبباً: أيّ فرقٍ مقداره ≥ 0.01 (فلس
@@ -101,7 +106,7 @@ export async function getExpectedOpening(branchId: number, shiftType: ShiftType 
   return { expected: toDbMoney(money(last.remaining)) };
 }
 
-/** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION). */
+/** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION/PRINT_SERVICES). */
 export async function openShift(
   input: {
     branchId: number;
@@ -132,7 +137,9 @@ export async function openShift(
         message:
           shiftType === "RECEPTION"
             ? "لديك وردية خدمة زبائن مفتوحة بالفعل في هذا الفرع"
-            : "لديك وردية مفتوحة بالفعل في هذا الفرع",
+            : shiftType === "PRINT_SERVICES"
+              ? "لديك وردية خدمات طباعة مفتوحة بالفعل في هذا الفرع"
+              : "لديك وردية مفتوحة بالفعل في هذا الفرع",
       });
     }
 

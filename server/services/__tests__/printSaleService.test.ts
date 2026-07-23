@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { createPrintSale } from "../printSaleService";
+import { getShiftReport } from "../shiftService";
 import { withTx } from "../tx";
 
 const actor = { userId: 1, branchId: 1 };
@@ -248,5 +249,38 @@ describe("بيع الطباعة: سلة مختلطة + فئة تسعير", () =>
       lines: [{ variantId: 10, productUnitId: 10, quantity: "1" }],
       payment: { amount: "250", method: "CASH" },
     }, actor)).rejects.toThrow();
+  });
+});
+
+describe("بيع الطباعة: فصل درج الطباعة عن التجزئة (قرار المالك ٢٣/٧/٢٦)", () => {
+  it("نقد بيع الطباعة يُنسَب لدرج PRINT_SERVICES ولا يظهر في تسوية درج التجزئة", async () => {
+    // درجان مفتوحان لنفس الموظّف/الفرع: التجزئة (seed id:1، RETAIL) + الطباعة (id:2، PRINT_SERVICES).
+    await db().insert(s.shifts).values({
+      id: 2, branchId: 1, userId: 1, openingBalance: "50000", status: "OPEN",
+      shiftType: "PRINT_SERVICES", openGuard: "1:1:PRINT_SERVICES",
+    });
+
+    // بيع طباعة نقديّ على درج الطباعة صراحةً (كما يمرّره PrintPOS بعد الفصل).
+    const r = await createPrintSale({
+      branchId: 1, shiftId: 2,
+      lines: [{ variantId: 10, productUnitId: 10, quantity: "5" }],
+      payment: { amount: "1250", method: "CASH" },
+    }, actor);
+
+    // الإيصال منسوبٌ لدرج الطباعة (id:2) لا التجزئة (id:1).
+    const rec = (await db().select().from(s.receipts))[0];
+    expect(Number(rec.shiftId)).toBe(2);
+    expect(rec.cashBucket).toBe("DRAWER");
+
+    // Z-report درج الطباعة يعكس البيع؛ درج التجزئة يبقى نظيفاً (عزلٌ نقديّ فعليّ).
+    const printReport = await getShiftReport(2);
+    expect(printReport?.invoiceCount).toBe(1);
+    expect(printReport?.salesTotal).toBe("1250.00");
+    expect(printReport?.payments.some((p: any) => p.method === "CASH" && p.direction === "IN" && p.total === "1250.00")).toBe(true);
+
+    const retailReport = await getShiftReport(1);
+    expect(retailReport?.invoiceCount).toBe(0);
+    expect(retailReport?.salesTotal).toBe("0.00");
+    expect(retailReport?.payments.length).toBe(0);
   });
 });

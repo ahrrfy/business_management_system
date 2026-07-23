@@ -35,7 +35,7 @@ export interface DayCloseShiftLine {
   branchName: string | null;
   userId: number;
   userName: string | null;
-  shiftType: "RETAIL" | "RECEPTION";
+  shiftType: "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
   status: "OPEN" | "CLOSED";
   openedAt: Date | string;
   closedAt: Date | string | null;
@@ -270,7 +270,7 @@ export async function getDayCloseReconciliation(opts: {
       branchName: sh.branchName ?? null,
       userId: Number(sh.userId),
       userName: sh.userName ?? null,
-      shiftType: sh.shiftType as "RETAIL" | "RECEPTION",
+      shiftType: sh.shiftType as "RETAIL" | "RECEPTION" | "PRINT_SERVICES",
       status: sh.status as "OPEN" | "CLOSED",
       openedAt: sh.openedAt,
       closedAt: sh.closedAt ?? null,

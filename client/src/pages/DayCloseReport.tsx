@@ -27,6 +27,11 @@ function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/** تسمية عربية لنوع الوردية (درجٌ مستقلّ لكل نوع: تجزئة / استقبال / خدمات طباعة). */
+function shiftTypeLabel(t: string): string {
+  return t === "RECEPTION" ? "استقبال" : t === "PRINT_SERVICES" ? "خدمات طباعة" : "تجزئة";
+}
+
 export default function DayCloseReport() {
   const [date, setDate] = useState<string>(todayUtc);
   const [branchId, setBranchId] = useState<number | "">("");
@@ -66,7 +71,7 @@ export default function DayCloseReport() {
         { key: "shiftId", header: "الوردية", map: (r) => `#${r.shiftId}` },
         { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
         { key: "userName", header: "الكاشير", map: (r) => r.userName ?? "" },
-        { key: "shiftType", header: "النوع", map: (r) => (r.shiftType === "RECEPTION" ? "استقبال" : "تجزئة") },
+        { key: "shiftType", header: "النوع", map: (r) => shiftTypeLabel(r.shiftType) },
         { key: "status", header: "الحالة", map: (r) => (r.status === "CLOSED" ? "مغلقة" : "مفتوحة") },
         { key: "opening", header: "افتتاحي", map: (r) => Number(r.opening) },
         { key: "salesCash", header: "مبيعات نقدية", map: (r) => Number(r.salesCash) },
@@ -225,8 +230,8 @@ function ShiftTable({ dc }: { dc: DC }) {
                     <td className="p-3 text-right">
                       <div className="flex items-center gap-1.5">
                         <span className="font-mono text-xs" dir="ltr">#{sh.shiftId}</span>
-                        {sh.shiftType === "RECEPTION" && (
-                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">استقبال</span>
+                        {sh.shiftType !== "RETAIL" && (
+                          <span className="rounded-full bg-muted px-1.5 py-0.5 text-[9px] text-muted-foreground">{shiftTypeLabel(sh.shiftType)}</span>
                         )}
                         {sh.status === "OPEN" ? (
                           <span className="inline-flex items-center gap-0.5 rounded-full px-1.5 py-0.5 text-[9px] badge-status-pending">
