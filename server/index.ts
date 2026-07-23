@@ -163,6 +163,13 @@ async function startServer() {
     if (req.path.includes("assets.addDocument")) {
       return express.json({ limit: "3mb" })(req, res, next);
     }
+    // product-image-edit: إنشاء/تعديل منتج يحمل حتى ١٠ صور عامّة (data-URL مضغوطة ~٩٣٣ك لكلٍّ) +
+    // صورة مستقلّة لكل لون ⇒ الحمولة تتجاوز ١mb بسهولة. رفعٌ لـ١٠mb (نمط /api/print/raw): محصورٌ
+    // بـproductsManagerProcedure (مصادَق، سطح DoS ضيّق) وكلّ صورة محدودة خادمياً بـ٢m.ب و≤١٠ صور.
+    // كان الغياب يجعل حفظ منتجٍ بصورة يفشل ٤١٣ صامتاً (شمل صور المتغيّرات القائمة أيضاً).
+    if (req.path.includes("catalog.createProduct") || req.path.includes("catalog.updateProductVariants")) {
+      return express.json({ limit: "10mb" })(req, res, next);
+    }
     // استوديو صور المنتجات: proCutout يرسل صورة المنتج data-URL لقصّها عبر remove.bg (حتى ٢م.ب خام
     // ⇒ ~٢.٧م.ب نصاً). استثناء ٤mb (نمط vouchers.create أعلاه). راجع server/routers/imageStudioRouter.ts.
     // aiStudioTransform: يرسل صورة المنتج data-URL (وضع EDIT) لإعادة تصميمها عبر مزوّد الذكاء الاصطناعي — نفس الحجم.

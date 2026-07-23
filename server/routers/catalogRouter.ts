@@ -97,10 +97,18 @@ const editVariantSchema = z.object({
   unitBarcodes: z.record(z.string(), z.string()),
 });
 
-// v3-add-screens: صور المنتج.
+// v3-add-screens: صور المنتج (الإنشاء) — url إلزاميّ (كلّها جديدة).
 const imageSchema = z.object({
   // v3-add-screens(100%): TEXT في DB ⇒ نسمح بـdata URLs الكبيرة (5MB كحد عملي).
   url: z.string().min(1).max(5_000_000),
+  isPrimary: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).optional(),
+});
+
+// product-image-edit: صور المنتج (التعديل) — id مملوك ⇒ تُبقى/تُحدَّث، url يُرسَل فقط للجديدة/المستبدَلة.
+const editImageSchema = z.object({
+  id: z.number().int().positive().optional(),
+  url: z.string().min(1).max(5_000_000).nullish(),
   isPrimary: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
 });
@@ -373,10 +381,15 @@ export const catalogRouter = router({
         isActive: z.boolean().optional(),
         unitTemplate: z.array(updateUnitTemplateSchema).min(1),
         variants: z.array(editVariantSchema).min(1),
+        // product-image-edit: صور المنتج العامّة (variantId=NULL). غياب الحقل ⇒ لا تُمَسّ؛ مصفوفة ⇒ توفيق.
+        images: z.array(editImageSchema).max(10).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       for (const v of input.variants) assertValidImageDataUrl(v.image, 2_000_000, true);
+      // صور المنتج الجديدة/المستبدَلة فقط تحمل بايتات (data URL) — نتحقّق منها كما في الإنشاء
+      // (الصورة غير المتغيّرة تُرسَل بمعرّفها بلا url ⇒ تمرّ بلا فحص، assertValidImageDataUrl يقبل الفارغ).
+      for (const img of input.images ?? []) assertValidImageDataUrl(img.url, 2_000_000, true);
       const before = await getProductForVariantEdit(input.productId);
       const res = await updateProductWithVariants(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
