@@ -17,7 +17,7 @@ import {
 } from "../services/categoryService";
 import { logAudit } from "../services/auditService";
 import { getProductUsage } from "../services/entityUsage";
-import { productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
+import { posOrProductsReadProcedure, productsManagerProcedure, productsPurchaseProcedure, productsReadProcedure, router } from "../trpc";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 
 const tier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]).default("RETAIL");
@@ -114,7 +114,7 @@ const editImageSchema = z.object({
 });
 
 export const catalogRouter = router({
-  posList: productsReadProcedure
+  posList: posOrProductsReadProcedure
     // بند 12ب (٧/٧): customerId اختياري — عميل بسعر تعاقدي نشط يرى سعره بدل سعر الفئة (isContractPrice).
     .input(z.object({ branchId: z.number().int().positive(), tier, query: z.string().optional(), limit: z.number().default(200), includeReceptionServices: z.boolean().optional(), customerId: z.number().int().positive().nullish() }))
     .query(({ input, ctx }) => listForPos(scopeBranch(ctx, input.branchId), input.tier, input.query, input.limit, { includeReceptionServices: input.includeReceptionServices, customerId: input.customerId ?? undefined })),
@@ -185,7 +185,7 @@ export const catalogRouter = router({
       return res;
     }),
 
-  byBarcode: productsReadProcedure
+  byBarcode: posOrProductsReadProcedure
     .input(z.object({ barcode: z.string().min(1), branchId: z.number().int().positive(), tier, customerId: z.number().int().positive().nullish() }))
     .query(({ input, ctx }) => lookupByBarcode(input.barcode, scopeBranch(ctx, input.branchId), input.tier, input.customerId ?? undefined)),
 

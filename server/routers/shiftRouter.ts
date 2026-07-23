@@ -8,7 +8,7 @@ import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
 import { closeShift, getExpectedOpening, getOpenShift, getShiftReport, openShift } from "../services/shiftService";
 import { createCashDrop } from "../services/cashDropService";
-import { router, treasuryCashierProcedure, treasuryReadProcedure } from "../trpc";
+import { router, shiftCashierProcedure, shiftReadProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
 
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
@@ -17,7 +17,7 @@ const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح 
 export const shiftRouter = router({
   // سجلّ الورديات — قائمة مُصفّحة branch-scoped (IDOR كـreport): الكاشير يرى ورديات فرعه فقط،
   // المرتفعون يرون الكل أو يفلترون بفرع. تُغذّي شاشة /shifts وإعادة طباعة Z-report.
-  list: treasuryReadProcedure
+  list: shiftReadProcedure
     .input(
       z
         .object({
@@ -83,7 +83,7 @@ export const shiftRouter = router({
       return { rows, total, hasMore, nextCursor };
     }),
 
-  open: treasuryCashierProcedure
+  open: shiftCashierProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -134,7 +134,7 @@ export const shiftRouter = router({
   // ①ج الرصيد الافتتاحيّ المتوقَّع = متبقّي آخر وردية مغلقة لنفس (الفرع×النوع) — تُعرَض في شاشة فتح
   // الوردية لمطابقة المُدخَل قبل الفتح (اطّلاعٌ فقط؛ الفرض النهائيّ داخل open، يُعاد الحساب تحت المعاملة).
   // نفس نمط عزل الفرع في current: الكاشير على فرعه (scopedBranch)، المرتفعون بـinput.branchId.
-  expectedOpening: treasuryReadProcedure
+  expectedOpening: shiftReadProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),
@@ -146,7 +146,7 @@ export const shiftRouter = router({
       return getExpectedOpening(effective, input.shiftType);
     }),
 
-  close: treasuryCashierProcedure
+  close: shiftCashierProcedure
     .input(
       z.object({
         shiftId: z.number().int().positive(),
@@ -207,10 +207,10 @@ export const shiftRouter = router({
     }),
 
   // السحب النقديّ أثناء الوردية (cash drop) — نقلٌ مِن الدرج إلى الخزينة في منتصف الوردية لتقليل
-  // مخاطرة تكدّس النقد. مرآةٌ لحوكمة close (نفس treasuryCashierProcedure + فحص الملكية داخل الخدمة).
+  // مخاطرة تكدّس النقد. مرآةٌ لحوكمة close (نفس shiftCashierProcedure + فحص الملكية داخل الخدمة).
   // retryOnDup: ترقيم CD يحرّر GET_LOCK قبل الالتزام ⇒ سحبان متزامنان قد يحسبان نفس الرقم، القيد
   // الفريد يرفض الثاني فنعيد المحاولة (createCashDrop ذرّيّ داخل withTx فتتراجع المحاولة الفاشلة).
-  cashDrop: treasuryCashierProcedure
+  cashDrop: shiftCashierProcedure
     .input(
       z.object({
         shiftId: z.number().int().positive(),
@@ -254,8 +254,8 @@ export const shiftRouter = router({
 
   // treasury-stage2: مستلِمو تسليم النقد عند إغلاق الوردية. يطابق تحقّق cashHandoverService
   // (المستلِم admin/manager نشط) ⇒ نُرجِع فقط الإداريين/المديرين النشطين. متاح للكاشير
-  // (treasuryCashierProcedure نفس بوّابة الإغلاق) كي يختار من يُسلّمه نقد الدرج.
-  handoverRecipients: treasuryCashierProcedure.query(async () => {
+  // (shiftCashierProcedure نفس بوّابة الإغلاق) كي يختار من يُسلّمه نقد الدرج.
+  handoverRecipients: shiftCashierProcedure.query(async () => {
     const db = getDb();
     if (!db) return [] as { id: number; name: string }[];
     const rows = await db
@@ -268,7 +268,7 @@ export const shiftRouter = router({
 
   // §٧ IDOR: كان كاشير من فرع A يستطيع `report` لوردية فرع B بمعرفة shiftId.
   // الآن نفرض ctx.scopedBranchId: إن كانت الوردية في فرع آخر ⇒ FORBIDDEN لغير المرتفعين.
-  report: treasuryReadProcedure
+  report: shiftReadProcedure
     .input(z.object({ shiftId: z.number().int().positive() }))
     .query(async ({ input, ctx }) => {
       const report = await getShiftReport(input.shiftId);
@@ -284,7 +284,7 @@ export const shiftRouter = router({
 
   // §٧: الكاشير يبقى في فرعه؛ المرتفعون يجوز لهم تمرير branchId لأي فرع. ctx.scopedBranchId
   // أقوى من ctx.user.branchId (يغلق ثغرة إن كان branchId الخام null).
-  current: treasuryReadProcedure
+  current: shiftReadProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),

@@ -1,6 +1,6 @@
 import { NOT_ADMIN_ERR_MSG, UNAUTHED_ERR_MSG } from "@shared/const";
 import { GENERIC_INTERNAL_AR, mysqlCodeFrom, toArabicMessage } from "@shared/errorMap.ar";
-import { canSeeCost as _canSeeCost, moduleAccessAllowed, resolvePermissions, type AccessLevel, type RoleKey } from "@shared/permissions";
+import { canSeeCost as _canSeeCost, hasModuleAccess, moduleAccessAllowed, resolvePermissions, type AccessLevel, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import type { TrpcContext } from "./context";
@@ -248,7 +248,23 @@ function moduleProcedure(allowedRoles: readonly string[], moduleKey: string, min
 export const posCashierProcedure = moduleProcedure(["cashier", "manager"], "pos", "FULL");
 // sales
 export const salesReadProcedure = branchScopedProcedure.use(requireModule("sales", "READ"));
-export const salesCashierProcedure = moduleProcedure(["cashier", "manager"], "sales", "FULL");
+// المبيعات (POS): تمرّ إن كانت sales=FULL (كما كان تماماً: requireModuleGate) **أو** pos=FULL
+// لبيع POS تحديداً — مُشغِّل «نقطة البيع» يُتمّ بيع الصندوق دون منح وحدة المبيعات الخلفية. المصادر
+// الأخرى (ONLINE/ORDER/WORKORDER) تبقى على بوّابة sales وحدها؛ يُفحَص sourceType من الحمولة الخام
+// قبل التحليل (نمط reportViewerProcedure). ثم إلزام فرع مُسنَد لغير المرتفعين (كما moduleProcedure).
+export const salesCashierProcedure = t.procedure
+  .use(async ({ ctx, getRawInput, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as PermissionMap | null | undefined;
+    let ok = moduleAccessAllowed(ctx.user.role, override, "sales", "FULL", ["cashier", "manager"]);
+    if (!ok && hasModuleAccess(ctx.user.role, override, "pos", "FULL")) {
+      const raw = (await getRawInput()) as { sourceType?: string } | undefined;
+      ok = (raw?.sourceType ?? "POS") === "POS";
+    }
+    if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  })
+  .use(requireOwnBranch);
 export const salesManagerProcedure = moduleProcedure(["manager"], "sales", "FULL");
 // purchases — «مسؤول مشتريات» قالبه purchases=FULL ووصفه المعلن «أوامر شراء وموردون».
 export const purchasesReadProcedure = branchScopedProcedure.use(requireModule("purchases", "READ"));
@@ -320,8 +336,40 @@ export const workordersManagerProcedure = moduleProcedure(["manager"], "workorde
 // **الورديات بمستوى READ** لأن قالب cashier treasury=READ (فتح/إغلاق الوردية سلوك كاشير قائم).
 export const treasuryManagerProcedure = moduleProcedure(["manager", "accountant"], "treasury", "FULL");
 export const treasuryManagerReadProcedure = moduleProcedure(["manager", "accountant"], "treasury", "READ");
-export const treasuryReadProcedure = branchScopedProcedure.use(requireModule("treasury", "READ"));
-export const treasuryCashierProcedure = moduleProcedure(["cashier", "manager"], "treasury", "READ");
+
+// ─── بوّابات الوردية «تشغيل الصندوق» (إصلاح صلاحيات الكاشير، ٢٣/٧/٢٦) ───────────
+// الخلل: فتح/إغلاق الوردية كان محبوساً خلف وحدة treasury وحدها، فكاشيرٌ مُنِح «نقطة البيع»
+// فقط (التخصيص يجعل treasury=NONE) يُحجب عن فتح ورديته — والوردية شرطٌ لا غنى عنه لتشغيل
+// الصندوق. القاعدة الآن: تمرّ treasury (تماماً كما كان) **أو** pos=FULL (مُشغِّل الصندوق).
+// كل الإتاحات إضافية بحتة؛ pos=FULL موجودٌ قالبياً في admin/manager/cashier فقط (بقيّة
+// القوالب pos=NONE) ⇒ لا دور غير مقصود يكتسب وصولاً، وأدوار treasury تبقى دون أيّ تغيير.
+function requirePosOr(moduleKey: string, minLevel: AccessLevel) {
+  return t.middleware(async ({ ctx, next }) => {
+    if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+    const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as PermissionMap | null | undefined;
+    const ok = hasModuleAccess(ctx.user.role, override, moduleKey, minLevel)
+      || hasModuleAccess(ctx.user.role, override, "pos", "FULL");
+    if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+    return next({ ctx: { ...ctx, user: ctx.user } });
+  });
+}
+// قراءات الوردية (القائمة/الحالية/التقرير/المتوقَّع) — treasury≥READ (كما كان requireModule) أو
+// pos=FULL، فوق branchScoped (يُبقي scopedBranchId/scopedOwnerId لعزل الفرع الذي يعتمده shiftRouter).
+export const shiftReadProcedure = branchScopedProcedure.use(requirePosOr("treasury", "READ"));
+// فتح/إغلاق/سحب نقديّ — البوّابة المُقيَّدة (cashier/manager بالخريطة أو منح صريح، كما كان
+// treasuryCashierProcedure) **أو** pos=FULL، ثم إلزام فرع مُسنَد لغير المرتفعين. الكتابة تبقى
+// مقصورة: auditor بـtreasury=READ قالبياً لا يفتح وردية (ليس في القائمة ولا يملك pos=FULL).
+const requireShiftWrite = t.middleware(async ({ ctx, next }) => {
+  if (!ctx.user) throw new TRPCError({ code: "UNAUTHORIZED", message: UNAUTHED_ERR_MSG });
+  const override = (ctx.user as { permissionsOverride?: unknown }).permissionsOverride as PermissionMap | null | undefined;
+  const ok = moduleAccessAllowed(ctx.user.role, override, "treasury", "READ", ["cashier", "manager"])
+    || hasModuleAccess(ctx.user.role, override, "pos", "FULL");
+  if (!ok) throw new TRPCError({ code: "FORBIDDEN", message: FORBIDDEN_MSG });
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+export const shiftCashierProcedure = protectedProcedure.use(requireShiftWrite).use(requireOwnBranch);
+// قراءات كتالوج الصندوق (posList/byBarcode — بلا تكلفة) — products≥READ (كما كان) أو pos=FULL.
+export const posOrProductsReadProcedure = protectedProcedure.use(requirePosOr("products", "READ"));
 
 // ─── الأهداف والعمولات «commissions» — خطط/أهداف شهرية/تشغيلات عمولات البائعين ───
 // الكتابة (خطط/إسناد/أهداف/احتساب/اعتماد) مديرية بقالبها + منح صريح عبر البوّابة

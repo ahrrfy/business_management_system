@@ -164,8 +164,10 @@ describe("F7 — إنفاذ وحدة treasury على الكتابة المالي
       await expect(call(caller("manager", { treasury: "NONE" }))).rejects.toThrow(FORBIDDEN);
     });
   }
-  it("cashier + {treasury: NONE} ⇒ shifts.open FORBIDDEN", async () => {
-    await expect(caller("cashier", { treasury: "NONE" }).shifts.open({ branchId: 1, openingBalance: "0" } as any)).rejects.toThrow(FORBIDDEN);
+  it("cashier + {treasury: NONE, pos: NONE} ⇒ shifts.open FORBIDDEN (لا خزينة ولا نقطة بيع)", async () => {
+    // ٢٣/٧/٢٦: الوردية صارت treasury **أو** pos=FULL (تشغيل الصندوق)؛ فالحجب يتطلّب تجريد
+    // الاثنين معاً. الكاشير «pos فقط» يفتح الوردية الآن — يُغطّى في «POS-REGISTER» أدناه.
+    await expect(caller("cashier", { treasury: "NONE", pos: "NONE" }).shifts.open({ branchId: 1, openingBalance: "0" } as any)).rejects.toThrow(FORBIDDEN);
   });
   it("مدير قالبيّ (treasury=FULL) ⇒ لا يُرفَض بالخريطة على الكتابة المالية (لا انحدار)", async () => {
     // قد ينجح أو يفشل لسبب أعمالي (لا طرف/لا صيرفة) — المهم ألّا يكون FORBIDDEN صلاحيات.
@@ -215,5 +217,64 @@ describe("المنح الصريح يفتح بوّابة أضيق من الدور
   });
   it("user بلا منح يبقى مرفوضاً عن بوّابة المبيعات المديرية", async () => {
     await expect(caller("user", null).returns.list({} as any)).rejects.toThrow(FORBIDDEN);
+  });
+});
+
+// ─── ٢٣/٧/٢٦: «نقطة البيع» (pos=FULL) تُشغّل صندوق التجزئة كاملاً ─────────────────────
+// بلاغ المالك: أنشأ حساب كاشير ومنحه «نقطة البيع» فقط، فظهر «صلاحيات غير كافية» عند فتح
+// الوردية. السبب: الوردية كانت treasury، والبيع sales، وكتالوج الصندوق products — لا pos.
+// الإصلاح (إتاحات إضافية بحتة): pos=FULL يُجيز الوردية (فتح/إغلاق/الحالية) + بيع POS +
+// قراءة posList/byBarcode. الحدود محفوظة: المصادر الخلفية للبيع + الموردون/التقارير +
+// العملاء (crm) تبقى على بوّاباتها؛ وpos=NONE يبقى محجوباً؛ ولا انحدار على أدوار treasury.
+describe("POS-REGISTER — «نقطة البيع=كامل» تُشغّل الصندوق دون منح الخزينة/المبيعات/المنتجات", () => {
+  // كاشير «pos فقط»: كل الوحدات NONE عدا pos=FULL (قالبيّ) — يطابق تخصيص المالك في البلاغ.
+  const posOnly = {
+    treasury: "NONE", sales: "NONE", products: "NONE", crm: "NONE", customers: "NONE",
+    inventory: "NONE", workorders: "NONE", expenses: "NONE", campaigns: "NONE",
+    collections: "NONE", store: "NONE", suppliers: "NONE", reports: "NONE",
+  };
+
+  it("يفتح الوردية (كان يُرفَض FORBIDDEN — جوهر البلاغ)", async () => {
+    // لا يُرفَض صلاحياتياً؛ قد يمرّ أو يفشل لسبب أعمالي — المهم ألّا «صلاحيات غير كافية».
+    try { await caller("cashier", posOnly).shifts.open({ branchId: 1, openingBalance: "0" } as any); }
+    catch (e: any) { expect(String(e?.message)).not.toMatch(/صلاحيات غير كافية/); }
+  });
+  it("يقرأ الوردية الحالية (shifts.current)", async () => {
+    await expect(caller("cashier", posOnly).shifts.current({ branchId: 1 } as any)).resolves.toBeDefined();
+  });
+  it("يقرأ كتالوج الصندوق (catalog.posList)", async () => {
+    await expect(caller("cashier", posOnly).catalog.posList({ branchId: 1, tier: "RETAIL" } as any)).resolves.toBeDefined();
+  });
+  it("يُتمّ بيع POS (sales.create sourceType=POS) — لا يُرفَض صلاحياتياً", async () => {
+    try {
+      await caller("cashier", posOnly).sales.create({
+        branchId: 1, sourceType: "POS", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+      } as any);
+    } catch (e: any) { expect(String(e?.message)).not.toMatch(/صلاحيات غير كافية/); }
+  });
+
+  // ─── الحدود: pos لا يفتح إلا الصندوق (لا إتاحة زائدة) ───
+  it("يُرفَض عن بيع WORKORDER (pos لا يفتح المصادر الخلفية للبيع)", async () => {
+    await expect(caller("cashier", posOnly).sales.create({
+      branchId: 1, sourceType: "WORKORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }],
+    } as any)).rejects.toThrow(FORBIDDEN);
+  });
+  it("يبقى محجوباً عن الموردين والتقارير (pos وحده لا يفتحهما)", async () => {
+    await expect(caller("cashier", posOnly).suppliers.list()).rejects.toThrow(FORBIDDEN);
+    await expect(caller("cashier", posOnly).reports.arAging({ branchId: 1 })).rejects.toThrow(FORBIDDEN);
+  });
+  it("العملاء يبقون على crm (البيع النقدي لا يحتاجهم؛ الائتمان يتطلّب منح crm صريحاً)", async () => {
+    await expect(caller("cashier", posOnly).customers.list()).rejects.toThrow(FORBIDDEN);
+  });
+
+  // ─── لا انحدار ───
+  it("cashier + {pos: NONE, treasury: NONE} ⇒ shifts.open FORBIDDEN (لا وصول إطلاقاً)", async () => {
+    await expect(caller("cashier", { pos: "NONE", treasury: "NONE" }).shifts.open({ branchId: 1, openingBalance: "0" } as any)).rejects.toThrow(FORBIDDEN);
+  });
+  it("auditor (treasury=READ قالباً، بلا pos) لا يفتح الوردية (الكتابة مقصورة على cashier/manager+pos)", async () => {
+    await expect(caller("auditor", null).shifts.open({ branchId: 1, openingBalance: "0" } as any)).rejects.toThrow(FORBIDDEN);
+  });
+  it("auditor يقرأ قائمة الورديات (treasury=READ قالباً — لا انحدار على القراءة)", async () => {
+    await expect(caller("auditor", null).shifts.list({})).resolves.toBeDefined();
   });
 });
