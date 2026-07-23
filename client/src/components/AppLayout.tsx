@@ -8,7 +8,7 @@ import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign, CreditCard,
-  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck,
+  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -36,6 +36,9 @@ const NAV_LINKS: NavLink[] = [
   { href: "/price-checker", label: "قارئ الأسعار", icon: ScanLine },
   { href: "/work-orders", label: "المطبعة والإنتاج", icon: Printer },
   { href: "/crm", label: "CRM والعلاقات", icon: Users, module: "crm" },
+  // نظام المهام الموحّد (S2/T2.3) — module فقط (بلا roles) ⇒ مرآة hasModuleAccess تماماً كبوّابة
+  // الخادم tasksReadProcedure (requireModule("tasks","READ") — لا قائمة أدوار صريحة هناك أيضاً).
+  { href: "/tasks", label: "المهام والتذاكر", icon: ListChecks, module: "tasks" },
   { href: "/invoices", label: "المبيعات", icon: Receipt },
   // (ب) يومي مالي/تشغيلي
   // الخزينة: كل تبويباتها مُقيَّدة (treasury/expenses ≥ READ في TreasuryHub) — بلا قيدٍ هنا يهبط

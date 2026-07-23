@@ -4,7 +4,7 @@ import { fmtTime } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
 import { CopyButton } from "@/components/CopyButton";
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
    مَربوطة بـ:root و.dark تِلقائياً ⇒ لا حاجة لـMutationObserver أو ThemeContext. */
@@ -1031,6 +1031,86 @@ const WOIco = ({ color }: { color: string }) => (
   </svg>
 );
 
+const TasksIco = ({ color }: { color: string }) => (
+  <svg width={20} height={20} viewBox="0 0 20 20" fill="none">
+    <rect x="3" y="3" width="14" height="14" rx="2.5" stroke={color} strokeWidth="1.6" />
+    <path d="M6.5 7.5h7M6.5 10.5h7M6.5 13.5h4" stroke={color} strokeWidth="1.6" strokeLinecap="round" />
+  </svg>
+);
+
+/* ═══════════ المهام والتذاكر (نظام المهام الموحّد S2/T2.3) ═══════════
+   بطاقتان: «مهامي المفتوحة» (شخصيّ — assignedTo=أنا، لا RESOLVED/CANCELLED) و«مهام متأخّرة»
+   (تشغيليّ — نطاق فرع المستخدم نفسه المُستعمَل في MetricsBar/MorningBrief). يظهر لأي دور يملك
+   tasks≥READ (أوسع من MorningBrief المُقتصر على المدير/الأدمن — طابور شخصي يهمّ الكاشير/الفنّي
+   أيضاً)، ويختفي كلياً عند صفرَين (لا بانر فارغ).
+   myOpenTasks الحيّة تُحسب هنا عبر tasks.list (لا عبر dashboardMetrics.morningBrief.myOpenTasks —
+   ذلك الحقل محسوبٌ خادمياً فعلاً لكن الراوتر الحيّ reports.dashboardMetrics خارج نطاق هذا التكليف
+   فلا يمرّر هويّة المستخدم إليه؛ الحقل يبقى صحيحاً ومُستهلَكاً فعلياً عبر morningPushScheduler.ts). */
+function TasksBrief() {
+  const T = useT();
+  const me = trpc.auth.me.useQuery();
+  const role = me.data?.role ?? "";
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const elevated = role === "admin" || role === "manager";
+  const myBranch = me.data?.branchId ?? 1;
+  const branchScope = elevated ? undefined : myBranch;
+  const myId = me.data?.id != null ? Number(me.data.id) : undefined;
+
+  // بوّابة رؤية — مرآة hasModuleAccess (القالب فقط، بلا استثناء أدوار خارج القائمة) مطابقةً تماماً
+  // لبوّابة الخادم tasksReadProcedure (requireModule("tasks","READ")، بلا قائمة أدوار صريحة هناك أيضاً).
+  const canSeeTasks = !!role && hasModuleAccess(role, override, "tasks", "READ");
+
+  // overdueTasks تشغيليّ — نفس مفتاح استعلام dashboardMetrics المُستهلَك أصلاً في MetricsBar/
+  // MorningBrief (branchId مطابق) ⇒ react-query يُدَدِّب الطلب، لا شبكة إضافية.
+  const metrics = trpc.reports.dashboardMetrics.useQuery({ branchId: branchScope }, { enabled: canSeeTasks });
+  const overdueTasks = metrics.data?.morningBrief.overdueTasks ?? 0;
+
+  // myOpenTasks — نفس استعلام تبويب «مهامي» في TasksHub (limit=200 يغطّي أي طابور شخصي واقعي).
+  const mine = trpc.tasks.list.useQuery(
+    { assignedTo: myId, limit: 200 },
+    { enabled: canSeeTasks && myId != null },
+  );
+  const myOpenTasks = (mine.data?.rows ?? []).filter(
+    (t) => t.taskStatus !== "RESOLVED" && t.taskStatus !== "CANCELLED",
+  ).length;
+
+  if (!canSeeTasks) return null;
+  if (metrics.isLoading || mine.isLoading) return null;
+  if (myOpenTasks === 0 && overdueTasks === 0) return null;
+
+  return (
+    <section style={{ padding: "8px 24px 4px", display: "flex", flexDirection: "column", gap: 10 }} aria-label="المهام والتذاكر">
+      <h2 style={{ fontSize: 13, fontWeight: 800, color: T.text, margin: 0, letterSpacing: "0.01em" }}>
+        المهام والتذاكر
+      </h2>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+        {myOpenTasks > 0 && (
+          <BriefCard
+            href="/tasks?tab=mine"
+            label="مهامي المفتوحة"
+            count={myOpenTasks}
+            sub="مهام مُسنَدة إليك بانتظار المتابعة"
+            accent="var(--sem-info)"
+            iconBg="var(--sem-info-bg)"
+            icon={<TasksIco color="var(--sem-info)" />}
+          />
+        )}
+        {overdueTasks > 0 && (
+          <BriefCard
+            href="/tasks?tab=list&overdue=1"
+            label="مهام متأخّرة"
+            count={overdueTasks}
+            sub="تجاوزت الاستحقاق الفعلي — تحتاج متابعة"
+            accent="var(--sem-neg)"
+            iconBg="var(--sem-neg-bg)"
+            icon={<TasksIco color="var(--sem-neg)" />}
+          />
+        )}
+      </div>
+    </section>
+  );
+}
+
 /* ═══════════ DASHBOARD ═══════════ */
 
 export default function Dashboard() {
@@ -1046,6 +1126,7 @@ export default function Dashboard() {
     >
       <MetricsBar />
       <MorningBrief />
+      <TasksBrief />
       <div
         style={{
           padding: "18px 24px 32px",

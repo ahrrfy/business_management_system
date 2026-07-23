@@ -70,6 +70,9 @@ const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
 const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
+// نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
+const TasksHub = lazy(() => import("@/pages/TasksHub"));
+const TaskDetail = lazy(() => import("@/pages/TaskDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
 const AssetDetail = lazy(() => import("@/pages/AssetDetail"));
@@ -288,6 +291,22 @@ export default function App() {
       <Route path="/inbox"><Redirect to="/crm?tab=inbox" /></Route>
       <Route path="/settings/integrations"><Redirect to="/settings?tab=integrations" /></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
+      {/* نظام المهام الموحّد (S2/T2.3) — حارس واجهي مرآة tasksReadProcedure (requireModule("tasks","READ"))؛
+          الأدوار المذكورة = كل قوالب الأدوار بقيمة tasks≥READ (استثناء purchasing/courier=NONE). */}
+      <Route path="/tasks">
+        <Shell>
+          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
+            <TasksHub />
+          </RequireRole>
+        </Shell>
+      </Route>
+      <Route path="/tasks/:id">
+        <Shell>
+          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
+            <TaskDetail />
+          </RequireRole>
+        </Shell>
+      </Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
