@@ -5,7 +5,7 @@ import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
 import { createSupplier } from "../supplierService";
-import { createConsignmentNote, consignmentBalancesReport, consignmentMarginsReport } from "../consignment/noteService";
+import { createConsignmentNote, consignmentBalancesReport, consignmentMarginsReport, consignmentSettlementStatement } from "../consignment/noteService";
 import { getInventoryValuation } from "../reportsInventoryService";
 import { createSale } from "../saleService";
 import { returnSale } from "../returnService";
@@ -168,5 +168,69 @@ describe("بضاعة الأمانة ش٤ — تقرير الهوامش", () => {
     expect(rep.rows[0].consignorId).toBe(cid);
     expect(rep.rows[0].soldValue).toBe("5000.00"); // سطر الأمانة فقط (لا 1850 المملوك)
     expect(rep.rows[0].libraryMargin).toBe("1000.00"); // 5000 − 4000
+  });
+});
+
+describe("بضاعة الأمانة ش٥ — كشف تسوية المودِع (قراءة فقط)", () => {
+  it("كشف مودِع بعد بيع 3 (من 10 مودَعة): ترويسة + سطر صنف + متبقٍّ 7", async () => {
+    const cid = await mkConsignor("أ. سالم");
+    const { variantId, productUnitId } = await mkConsignProduct(cid, "4000", "5000");
+    await depositC(cid, variantId, productUnitId, "10");
+    const shiftId = await openShift();
+    await createSale({ branchId: 1, shiftId, priceTier: "RETAIL", sourceType: "POS",
+      lines: [{ variantId, productUnitId, quantity: "3" }], payment: { amount: "15000", method: "CASH" } }, actor);
+
+    const st = (await consignmentSettlementStatement({ consignorId: cid, ...WIDE }))!;
+    expect(st).not.toBeNull();
+    expect(st.consignorName).toBe("أ. سالم");
+    expect(st.currentOwed).toBe("12000.00"); // AP الحاليّ = الحصة المُستحقّة عن المبيع
+    // إجماليات الفترة (net).
+    expect(st.period.soldQty).toBe(3);
+    expect(st.period.soldValue).toBe("15000.00");
+    expect(st.period.share).toBe("12000.00");
+    expect(st.period.margin).toBe("3000.00");
+    expect(st.period.marginPct).toBe("20.00");
+    // سطر الصنف المُباع.
+    expect(st.lines).toHaveLength(1);
+    expect(st.lines[0].soldQty).toBe(3);
+    expect(st.lines[0].margin).toBe("3000.00");
+    // المتبقّي الحيّ = 10 − 3 = 7 بقيمة 7×4000 = 28000 بالحصّة.
+    expect(st.remaining.qty).toBe(7);
+    expect(st.remaining.valueByShare).toBe("28000.00");
+  });
+
+  it("الكشف صافٍ من المرتجعات: بيع 3 ثم إرجاع 1 ⇒ الفترة تعكس صافي 2 والمتبقّي يعود 8", async () => {
+    const cid = await mkConsignor();
+    const { variantId, productUnitId } = await mkConsignProduct(cid, "4000", "5000");
+    await depositC(cid, variantId, productUnitId, "10");
+    const shiftId = await openShift();
+    const sale = await createSale({ branchId: 1, shiftId, priceTier: "RETAIL", sourceType: "POS",
+      lines: [{ variantId, productUnitId, quantity: "3" }], payment: { amount: "15000", method: "CASH" } }, actor);
+    const item = (await db().select().from(s.invoiceItems).where(eq(s.invoiceItems.invoiceId, sale.invoiceId)))[0];
+    await returnSale({ invoiceId: sale.invoiceId, lines: [{ invoiceItemId: Number(item.id), baseQuantity: 1 }], refund: { amount: "5000", method: "CASH" }, restock: true }, actor);
+
+    const st = (await consignmentSettlementStatement({ consignorId: cid, ...WIDE }))!;
+    expect(st.period.soldQty).toBe(2);
+    expect(st.period.soldValue).toBe("10000.00");
+    expect(st.period.margin).toBe("2000.00");
+    expect(st.currentOwed).toBe("8000.00"); // 12000 − 4000 (عكس المرتجع)
+    expect(st.remaining.qty).toBe(8); // 10 − 3 + 1 restock
+  });
+
+  it("مودِع بلا مبيعات في الفترة: كشفٌ بلا أسطر وإجماليات صفرية + متبقٍّ يعكس المُودَع", async () => {
+    const cid = await mkConsignor();
+    const { variantId, productUnitId } = await mkConsignProduct(cid, "4000", "5000");
+    await depositC(cid, variantId, productUnitId, "5");
+    const st = (await consignmentSettlementStatement({ consignorId: cid, ...WIDE }))!;
+    expect(st.lines).toHaveLength(0);
+    expect(st.period.soldValue).toBe("0.00");
+    expect(st.currentOwed).toBe("0.00");
+    expect(st.remaining.qty).toBe(5);
+    expect(st.remaining.valueByShare).toBe("20000.00");
+  });
+
+  it("مورّد اعتياديّ (ليس مودِعاً) ⇒ null (لا كشف أمانة)", async () => {
+    const reg = (await createSupplier({ name: "مورّد عاديّ", supplierKind: "REGULAR" }, actor)).supplierId;
+    expect(await consignmentSettlementStatement({ consignorId: reg, ...WIDE })).toBeNull();
   });
 });
