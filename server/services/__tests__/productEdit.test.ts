@@ -3,7 +3,7 @@
  * شقيق catalogService.createProduct المُغطّى جيّداً، لكن مسار التعديل (updateProductVariants،
  * managerProcedure) كان بصفر تغطية رغم تعقيده الذرّي (متغيّرات/وحدات/أسعار/باركود/صور).
  */
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -389,5 +389,166 @@ describe("updateProductWithVariants — الكتابة", () => {
     );
     const prod = (await db().select().from(s.products).where(eq(s.products.id, 1)))[0];
     expect(prod.name).toBe("الاسم الصريح");
+  });
+});
+
+describe("product-image-edit — صور المنتج العامّة (variantId=NULL)", () => {
+  // متغيّرٌ ثابت يمرّ فحوص التعديل دون لمس صورة اللون (image=undefined).
+  const baseVariant = () => [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }];
+  const productImgs = () =>
+    db().select().from(s.productImages).where(and(eq(s.productImages.productId, 1), isNull(s.productImages.variantId)));
+
+  it("القراءة: getProductForVariantEdit يُعيد صور المنتج العامّة فقط (لا صور الألوان)", async () => {
+    await db().insert(s.productImages).values([
+      { productId: 1, variantId: null, url: "data:image/png;base64,PROD1", isPrimary: true, sortOrder: 0 },
+      { productId: 1, variantId: null, url: "data:image/png;base64,PROD2", isPrimary: false, sortOrder: 1 },
+      { productId: 1, variantId: 1, url: "data:image/png;base64,VARIANT", isPrimary: false, sortOrder: 0 }, // صورة لون — تُستثنى
+    ]);
+    const p = await getProductForVariantEdit(1);
+    expect(p!.images).toHaveLength(2);
+    expect(p!.images.map((i) => i.url)).toEqual(["data:image/png;base64,PROD1", "data:image/png;base64,PROD2"]);
+    expect(p!.images[0].isPrimary).toBe(true);
+    // صورة اللون تظهر في variants[0].image لا في images العامّة.
+    expect(p!.variants[0].image).toBe("data:image/png;base64,VARIANT");
+  });
+
+  it("images=undefined ⇒ صور المنتج لا تُمَسّ", async () => {
+    await db().insert(s.productImages).values({ productId: 1, variantId: null, url: "data:image/png;base64,KEEP", isPrimary: true, sortOrder: 0 });
+    await updateProductWithVariants({ productId: 1, unitTemplate: baseTemplate(), variants: baseVariant() }, actor); // بلا images
+    const imgs = await productImgs();
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].url).toBe("data:image/png;base64,KEEP");
+  });
+
+  it("صورة جديدة (بلا id) ⇒ تُدرَج بـvariantId=NULL", async () => {
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [{ url: "data:image/png;base64,NEW", isPrimary: true, sortOrder: 0 }] },
+      actor,
+    );
+    const imgs = await productImgs();
+    expect(imgs).toHaveLength(1);
+    expect(imgs[0].url).toBe("data:image/png;base64,NEW");
+    expect(imgs[0].isPrimary).toBe(true);
+    expect(imgs[0].variantId).toBeNull();
+  });
+
+  it("صورة قائمة بمعرّفها بلا url ⇒ تُصان بايتاتها ويصون id (لا حذف+إدراج ⇒ لا تتدلّى روابط /api/img)", async () => {
+    await db().insert(s.productImages).values({ id: 100, productId: 1, variantId: null, url: "data:image/png;base64,ORIG", isPrimary: true, sortOrder: 0 });
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [{ id: 100, isPrimary: true, sortOrder: 0 }] },
+      actor,
+    );
+    const imgs = await productImgs();
+    expect(imgs).toHaveLength(1);
+    expect(Number(imgs[0].id)).toBe(100); // id ثابت
+    expect(imgs[0].url).toBe("data:image/png;base64,ORIG"); // بايتات مصونة (لم تُرسَل ⇒ لم تُكتَب)
+  });
+
+  it("صورة قائمة بمعرّفها + url جديد ⇒ تُحدَّث في المكان (id ثابت، بايتات جديدة)", async () => {
+    await db().insert(s.productImages).values({ id: 101, productId: 1, variantId: null, url: "data:image/png;base64,OLD", isPrimary: true, sortOrder: 0 });
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [{ id: 101, url: "data:image/png;base64,FRESH", isPrimary: true, sortOrder: 0 }] },
+      actor,
+    );
+    const imgs = await productImgs();
+    expect(imgs).toHaveLength(1);
+    expect(Number(imgs[0].id)).toBe(101);
+    expect(imgs[0].url).toBe("data:image/png;base64,FRESH");
+  });
+
+  it("صورة قائمة غير مذكورة في الحمولة ⇒ تُحذَف", async () => {
+    await db().insert(s.productImages).values([
+      { id: 102, productId: 1, variantId: null, url: "data:image/png;base64,A", isPrimary: true, sortOrder: 0 },
+      { id: 103, productId: 1, variantId: null, url: "data:image/png;base64,B", isPrimary: false, sortOrder: 1 },
+    ]);
+    await updateProductWithVariants( // نُبقي 102 فقط
+      { productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [{ id: 102, isPrimary: true, sortOrder: 0 }] },
+      actor,
+    );
+    const imgs = await productImgs();
+    expect(imgs.map((i) => Number(i.id))).toEqual([102]);
+  });
+
+  it("images=[] ⇒ تُحذَف كل صور المنتج العامّة، وصورة اللون (variantId مضبوط) تبقى دون مساس", async () => {
+    await db().insert(s.productImages).values([
+      { id: 104, productId: 1, variantId: null, url: "data:image/png;base64,P", isPrimary: true, sortOrder: 0 },
+      { id: 105, productId: 1, variantId: 1, url: "data:image/png;base64,V", isPrimary: false, sortOrder: 0 }, // صورة لون
+    ]);
+    await updateProductWithVariants({ productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [] }, actor);
+    expect(await productImgs()).toHaveLength(0); // العامّة حُذفت
+    const variantImgs = await db().select().from(s.productImages).where(eq(s.productImages.variantId, 1));
+    expect(variantImgs).toHaveLength(1); // صورة اللون لم تُمَسّ
+  });
+
+  it("لا رئيسية مُعلَّمة ⇒ الأولى رئيسيّة (يطابق منطق الإنشاء)", async () => {
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        unitTemplate: baseTemplate(),
+        variants: baseVariant(),
+        images: [
+          { url: "data:image/png;base64,X", sortOrder: 0 },
+          { url: "data:image/png;base64,Y", sortOrder: 1 },
+        ],
+      },
+      actor,
+    );
+    const imgs = (await productImgs()).sort((a, b) => a.sortOrder - b.sortOrder);
+    expect(imgs).toHaveLength(2);
+    expect(imgs[0].isPrimary).toBe(true);
+    expect(imgs[1].isPrimary).toBe(false);
+  });
+
+  it("id لا يخصّ هذا المنتج ⇒ يُتجاهَل ولا يُعدَّل صفّ منتجٍ آخر (لا IDOR)", async () => {
+    // صورة تخصّ المنتج ٢.
+    await db().insert(s.productImages).values({ id: 200, productId: 2, variantId: null, url: "data:image/png;base64,OTHER", isPrimary: true, sortOrder: 0 });
+    // نحاول تمرير id=200 (لغير المنتج ١) مع url جديد ⇒ لا يُعدَّل صفّ المنتج ٢، بل يُدرَج صفٌّ جديد للمنتج ١.
+    await updateProductWithVariants(
+      { productId: 1, unitTemplate: baseTemplate(), variants: baseVariant(), images: [{ id: 200, url: "data:image/png;base64,HIJACK", isPrimary: true, sortOrder: 0 }] },
+      actor,
+    );
+    const other = (await db().select().from(s.productImages).where(eq(s.productImages.id, 200)))[0];
+    expect(other.url).toBe("data:image/png;base64,OTHER"); // لم يُمَسّ صفّ المنتج ٢
+    expect(Number(other.productId)).toBe(2);
+    const mine = await productImgs();
+    expect(mine).toHaveLength(1);
+    expect(mine[0].url).toBe("data:image/png;base64,HIJACK"); // أُدرِجت للمنتج ١
+  });
+});
+
+describe("تطبيع معامل التحويل — تعديل متعدّد الوحدات (حاصر: decimal(15,4) مقابل حارس العدد الصحيح)", () => {
+  it("القراءة تُطبّع «12.0000» ⇒ «12» و«1.0000» ⇒ «1»", async () => {
+    // العمود decimal(15,4) يُخزّن «12» كـ«12.0000»؛ التطبيع يمنع رفض assertValidUnitFactors عند إعادة الإرسال.
+    const p = await getProductForVariantEdit(1);
+    const dozen = p!.unitTemplate.find((u) => u.unitName === "درزن")!;
+    const piece = p!.unitTemplate.find((u) => u.unitName === "قطعة")!;
+    expect(dozen.conversionFactor).toBe("12");
+    expect(piece.conversionFactor).toBe("1");
+  });
+
+  it("regression: حفظٌ يُعيد إرسال القالب المقروء (كما يفعل النموذج بلا لمس حقل المعامل) لا يُرفَض", async () => {
+    // قبل التطبيع كان p.unitTemplate يحمل «12.0000» فيرفضه الحارس ⇒ تعذّر حفظ أيّ تعديل (اسم/سعر/صورة)
+    // على منتجٍ بوحدةٍ أكبر. نحاكي مسار النموذج: اقرأ ثم احفظ القالب كما هو.
+    const p = await getProductForVariantEdit(1);
+    await updateProductWithVariants(
+      {
+        productId: 1,
+        name: p!.name,
+        unitTemplate: p!.unitTemplate.map((u) => ({
+          unitName: u.unitName,
+          conversionFactor: u.isBaseUnit ? "1" : u.conversionFactor, // النموذج يُثبّت الأساس «1»
+          isBaseUnit: u.isBaseUnit,
+          prices: [
+            ...(u.retail ? [{ priceTier: "RETAIL" as const, price: u.retail }] : []),
+            ...(u.wholesale ? [{ priceTier: "WHOLESALE" as const, price: u.wholesale }] : []),
+            ...(u.government ? [{ priceTier: "GOVERNMENT" as const, price: u.government }] : []),
+          ],
+        })),
+        variants: [{ id: 1, sku: "NB-100", costPrice: "500", unitBarcodes: { قطعة: "BC-PIECE-1", درزن: "BC-DOZEN-1" } }],
+      },
+      actor,
+    );
+    const rows = await db().select().from(s.productVariants).where(eq(s.productVariants.productId, 1));
+    expect(rows).toHaveLength(1); // نجح الحفظ (لولا التطبيع لرُفِض بـ«معامل التحويل… عدد صحيح موجب»)
   });
 });

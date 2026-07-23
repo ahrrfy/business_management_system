@@ -9,7 +9,7 @@
  * (متغيّر×وحدة)**. لا يلمس المخزون — أرصدة الفروع تُدار عبر شاشات الجرد/الحركات.
  */
 import { TRPCError } from "@trpc/server";
-import { and, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { branchStock, productImages, productPrices, productUnits, productVariants, products, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import type { Tx } from "../db";
@@ -52,6 +52,15 @@ export interface VariantEditRow {
   image: string | null;
 }
 
+/** صورة على مستوى المنتج (variantId=NULL) — مشتركة لكل المتغيّرات، تُحرَّر في شاشة التعديل. */
+export interface ProductImageRow {
+  id: number;
+  /** data URL مضغوط (نفس ما يُخدَم عبر /api/img/product) — يُعرَض مباشرةً في رافع الصور. */
+  url: string;
+  isPrimary: boolean;
+  sortOrder: number;
+}
+
 export interface ProductForVariantEdit {
   id: number;
   name: string;
@@ -72,6 +81,24 @@ export interface ProductForVariantEdit {
   /** قالب الوحدات المشترك — مُشتقّ من وحدات أوّل متغيّر فعّال (النموذج يصنعها موحّدة). */
   unitTemplate: VariantEditUnit[];
   variants: VariantEditRow[];
+  /** صور المنتج العامّة (variantId=NULL) — مشتركة، تُحرَّر بشاشة التعديل (منفصلة عن صورة كل لون). */
+  images: ProductImageRow[];
+}
+
+/**
+ * يُطبّع معامل التحويل المخزَّن (`decimal(15,4)` ⇒ «12.0000») إلى عددٍ صحيحٍ نصّيّ نظيف («12»).
+ *
+ * **لماذا (إصلاح حاصر لتعديل متعدّد الوحدات):** العمود عشريّ، فالقراءة تُعيد «12.0000»، والنموذج يُبقيها
+ * في الحالة إلى أن يُركِّز المستخدم حقل المعامل ويغادره (NumberInput يُطبّع عند blur فقط) ⇒ حفظٌ بلا لمس
+ * الحقل يُرسل «12.0000» فيرفضها `assertValidUnitFactors` (`/^[1-9]\d*$/`) برسالة «معامل التحويل… عدد صحيح
+ * موجب» — أي تعذّرُ تعديل أيّ منتجٍ بوحدةٍ أكبر (درزن/كرتون) بلا سببٍ يخصّ ما عُدِّل. التطبيع هنا يجعل
+ * الحالة تبدأ نظيفةً «12». (المعاملات كلّها صحيحةٌ بحكم الحارس، فالتطبيع بلا فقدِ معنى.)
+ */
+function normalizeFactor(f: string): string {
+  const s = (f ?? "").trim();
+  if (!s.includes(".")) return s;
+  const trimmed = s.replace(/0+$/, "").replace(/\.$/, "");
+  return trimmed || "0";
 }
 
 /** يقرأ منتجاً بكامل متغيّراته/وحداته/أسعاره/أرصدته لتعبئة شاشة التعديل. */
@@ -93,6 +120,20 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     consignorName,
   };
 
+  // صور المنتج العامّة (variantId=NULL) — مشتركة لكل المتغيّرات؛ منفصلة عن صور الألوان (variantId مضبوط).
+  // تُقرأ هنا لكلا مسارَي الإرجاع (بمتغيّرات أو بلا) بترتيب العرض (الرئيسية أولاً).
+  const productImageRows = await db
+    .select({ id: productImages.id, url: productImages.url, isPrimary: productImages.isPrimary, sortOrder: productImages.sortOrder })
+    .from(productImages)
+    .where(and(eq(productImages.productId, productId), isNull(productImages.variantId)))
+    .orderBy(desc(productImages.isPrimary), asc(productImages.sortOrder), asc(productImages.id));
+  const images: ProductImageRow[] = productImageRows.map((r) => ({
+    id: Number(r.id),
+    url: r.url,
+    isPrimary: !!r.isPrimary,
+    sortOrder: r.sortOrder ?? 0,
+  }));
+
   const variants = await db.select().from(productVariants).where(eq(productVariants.productId, productId));
   if (!variants.length) {
     return {
@@ -110,6 +151,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
       ...consignFields,
       unitTemplate: [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
       variants: [],
+      images,
     };
   }
   const variantIds = variants.map((v) => Number(v.id));
@@ -157,7 +199,8 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     .sort((a, b) => Number(b.isBaseUnit) - Number(a.isBaseUnit));
   const unitTemplate: VariantEditUnit[] = (firstUnits.length ? firstUnits : []).map((u) => ({
     unitName: u.unitName,
-    conversionFactor: u.conversionFactor,
+    // «12.0000» ⇒ «12»: يمنع رفض assertValidUnitFactors عند حفظٍ لا يلمس حقل المعامل (إصلاح حاصر).
+    conversionFactor: normalizeFactor(u.conversionFactor),
     isBaseUnit: !!u.isBaseUnit,
     retail: priceOf(Number(u.id), "RETAIL"),
     wholesale: priceOf(Number(u.id), "WHOLESALE"),
@@ -179,6 +222,7 @@ export async function getProductForVariantEdit(productId: number): Promise<Produ
     ...consignFields,
     unitTemplate: unitTemplate.length ? unitTemplate : [{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }],
     variants: variantRows,
+    images,
   };
 }
 
@@ -209,6 +253,15 @@ export interface UpdateVariantRow {
   unitBarcodes: Record<string, string>;
 }
 
+/** صورة منتج عامّة في حمولة التعديل — مطابقةٌ بالمعرّف: id مملوك ⇒ تُبقى/تُحدَّث، بلا id ⇒ جديدة.
+ *  `url` (data URL) يُرسَل فقط للجديدة/المستبدَلة؛ الصورة غير المتغيّرة تُرسَل بمعرّفها بلا بايتات. */
+export interface UpdateProductImageInput {
+  id?: number;
+  url?: string | null;
+  isPrimary?: boolean;
+  sortOrder?: number;
+}
+
 export interface UpdateProductVariantsInput {
   productId: number;
   name?: string | null;
@@ -222,6 +275,9 @@ export interface UpdateProductVariantsInput {
   isActive?: boolean;
   unitTemplate: UpdateUnitTemplate[];
   variants: UpdateVariantRow[];
+  /** صور المنتج العامّة (variantId=NULL). `undefined` ⇒ لا تُمَسّ؛ مصفوفة (ولو فارغة) ⇒ يُعاد التوفيق:
+   *  الموجود يُبقى/يُحدَّث بالمعرّف، الجديد يُدرَج، والمُزال يُحذَف. (مطابقٌ لدلالة `image` أعلاه لكن للمنتج.) */
+  images?: UpdateProductImageInput[];
 }
 
 // الاسم الصريح (input.name) هو المرجع الأول: المنتجات المستوردة تحمل اسماً كاملاً في `name`
@@ -342,6 +398,45 @@ async function upsertVariantUnits(
   if (drop.length) await tx.update(productUnits).set({ isActive: false }).where(inArray(productUnits.id, drop.map((u) => Number(u.id))));
 }
 
+/**
+ * يوفّق صور المنتج العامّة (variantId=NULL) بمطابقة المعرّف — دون مسّ صور الألوان (variantId مضبوط):
+ *   • id مملوك ⇒ تحديثٌ في المكان (isPrimary/sortOrder، والبايتات فقط لو أُرسل `url`) ⇒ يصون
+ *     `productImages.id` فلا تتدلّى روابط /api/img المُفتَّحة بالـid، ولا يُعاد إرسال بايتات لم تتغيّر.
+ *   • بلا id (أو id غير مملوك) + `url` ⇒ إدراج صورة جديدة.
+ *   • صورة قائمة لم تُذكَر في الحمولة ⇒ حذف (المستخدم أزالها).
+ * الرئيسية: تُحترَم `isPrimary` المُرسَلة، وإلّا فالأولى رئيسيّة (يطابق منطق الإنشاء createProduct).
+ */
+async function reconcileProductImages(tx: Tx, productId: number, desired: UpdateProductImageInput[]) {
+  const items = desired.slice(0, 10); // نفس سقف الإنشاء (١٠ صور)
+  const existing = await tx
+    .select({ id: productImages.id })
+    .from(productImages)
+    .where(and(eq(productImages.productId, productId), isNull(productImages.variantId)));
+  const existingIds = new Set(existing.map((r) => Number(r.id)));
+  const anyPrimary = items.some((it) => it.isPrimary);
+  const keep = new Set<number>();
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const isPrimary = anyPrimary ? !!it.isPrimary : i === 0;
+    const sortOrder = it.sortOrder ?? i;
+    const url = (it.url ?? "").trim();
+    if (it.id != null && existingIds.has(it.id)) {
+      // صورة قائمة مملوكة ⇒ تحديثٌ في المكان (id ثابت)؛ البايتات تُكتَب فقط عند استبدالها.
+      keep.add(it.id);
+      await tx
+        .update(productImages)
+        .set({ isPrimary, sortOrder, ...(url ? { url } : {}) })
+        .where(eq(productImages.id, it.id));
+    } else if (url) {
+      // جديدة (أو id لا يخصّ هذا المنتج ⇒ يُتجاهَل ويُعامَل جديداً — لا IDOR على صفوف غيره).
+      await tx.insert(productImages).values({ productId, variantId: null, url, isPrimary, sortOrder });
+    }
+    // id مذكور بلا url ولا ملكية ⇒ تجاهُلٌ آمن (لا إدراج بلا بايتات).
+  }
+  const toDelete = existing.map((r) => Number(r.id)).filter((id) => !keep.has(id));
+  if (toDelete.length) await tx.delete(productImages).where(inArray(productImages.id, toDelete));
+}
+
 /** تعديل منتج بنموذج المتغيّرات ضمن معاملة ذرّية. لا يحذف متغيّراً (تعطيل فقط) حفظاً للمخزون. */
 export async function updateProductWithVariants(input: UpdateProductVariantsInput, _actor: Actor) {
   return withTx(async (tx) => {
@@ -426,6 +521,11 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
           await tx.delete(productImages).where(eq(productImages.variantId, variantId));
         }
       }
+    }
+
+    // صور المنتج العامّة (variantId=NULL): undefined ⇒ لا تُمَسّ؛ مصفوفة ⇒ يُعاد التوفيق بالمعرّف.
+    if (input.images !== undefined) {
+      await reconcileProductImages(tx, input.productId, input.images);
     }
 
     return { productId: input.productId, added };

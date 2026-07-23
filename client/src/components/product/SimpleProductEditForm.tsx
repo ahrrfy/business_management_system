@@ -7,6 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { MoneyInput } from "@/components/form/MoneyInput";
+import { type ImageItem } from "@/components/form/ImageUploader";
+import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { PageHeader } from "@/components/PageHeader";
 import { Field, MarginBadge, ScanButton } from "@/components/product/variantBits";
 import { UnitBarcodeAliases } from "@/components/product/UnitBarcodeAliases";
@@ -23,9 +26,10 @@ import { cn } from "@/lib/utils";
  * العريض (أعمدة لون/قياس بـ«—») — الباركود موجودٌ وقابلٌ للتعديل هناك لكنّ التجربة ثقيلة. هذا
  * النموذج يعرض حقولاً مباشرة: الاسم + وحدات بباركود لكلٍّ + التكلفة/الأسعار + الحدود + الحالة،
  * ويحفظ عبر `catalog.updateProductVariants` (متغيّر واحد بلا لون/قياس). المخزون قراءة فقط
- * (يُدار عبر الجرد/الحركات). زرّ «التحرير المتقدّم» يفتح محرّر المتغيّرات لإضافة ألوان/صور.
+ * (يُدار عبر الجرد/الحركات). زرّ «التحرير المتقدّم» يفتح محرّر المتغيّرات لإضافة ألوان.
  *
- * صورة المنتج لا تُحرَّر هنا (تُدار في التحرير المتقدّم) — نتركها دون مساس (image=undefined ⇒ الخادم لا يمسّها).
+ * صور المنتج العامّة (المشتركة) تُحرَّر هنا مباشرةً (رافع صور — نفس شاشة الإضافة) وتُوفَّق بمطابقة
+ * المعرّف عبر `lib/productImages`. صورة اللون المستقلّة (variant.image) تبقى دون مساس (تُدار في المتقدّم).
  */
 
 type EditUnit = { id: number; name: string; factor: string; isBase: boolean; barcode: string; retail: string; wholesale: string; government: string };
@@ -55,10 +59,13 @@ export default function SimpleProductEditForm({
   const [reorderPoint, setReorderPoint] = useState("0");
   const [isCustomizable, setIsCustomizable] = useState(false);
   const [isActive, setIsActive] = useState(true);
+  // صور المنتج العامّة (مشتركة) — تُحمَّل من الخادم وتُحفَظ بمطابقة المعرّف (lib/productImages).
+  const [images, setImages] = useState<ImageItem[]>([]);
 
   const unitSeq = useRef(1);
   const [units, setUnits] = useState<EditUnit[]>([]);
-  // معرّف المتغيّر الوحيد + رصيده الحالي (قراءة فقط). الصورة لا تُحرَّر هنا (تُترَك دون مساس).
+  // معرّف المتغيّر الوحيد + رصيده الحالي (قراءة فقط). صورة اللون (variant.image) تُترَك دون مساس؛
+  // صور المنتج العامّة تُحرَّر عبر حالة `images` أعلاه.
   const variantId = useRef<number | null>(null);
   const baseline = useRef<string | null>(null); // لقطة توقيع النموذج بعد التعبئة (لكشف التعديلات غير المحفوظة)
   const [currentStock, setCurrentStock] = useState<Record<number, number>>({});
@@ -101,6 +108,7 @@ export default function SimpleProductEditForm({
     }));
     unitSeq.current = tmpl.length + 1;
     setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, barcode: "", retail: "", wholesale: "", government: "" }]);
+    setImages(hydrateProductImages(d.images));
     setHydrated(true);
   }, [product.data, hydrated]);
 
@@ -110,10 +118,15 @@ export default function SimpleProductEditForm({
   );
   const finalName = name.trim() || composedName;
 
+  // توقيع خفيف للصور (لا نُدرِج data URLs الضخمة): المعرّف + الرئيسية + طول البايتات (يكشف الاستبدال).
+  const imagesSig = useMemo(
+    () => images.map((i) => `${i.id}:${i.isPrimary ? 1 : 0}:${i.dataUrl.length}`).join("|"),
+    [images]
+  );
   // ── كشف «تعديلات غير محفوظة»: نقارن توقيع النموذج بلقطة الأساس المُلتقَطة بعد التعبئة ──
   const formSig = useMemo(
-    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, isActive, units }),
-    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, isActive, units]
+    () => JSON.stringify({ name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, isActive, units, imagesSig }),
+    [name, productType, brand, modelName, description, categoryId, sku, costPrice, minStock, reorderPoint, isCustomizable, isActive, units, imagesSig]
   );
   useEffect(() => {
     if (hydrated && baseline.current === null) baseline.current = formSig;
@@ -241,10 +254,12 @@ export default function SimpleProductEditForm({
           minStock: clampInt(minStock),
           reorderPoint: clampInt(reorderPoint),
           isActive,
-          // الصورة لا تُحرَّر هنا: نتركها دون مساس (image=undefined ⇒ الخادم لا يمسّها).
+          // صورة اللون (variant.image) لا تُحرَّر هنا: نتركها دون مساس (image=undefined ⇒ الخادم لا يمسّها).
           unitBarcodes,
         },
       ],
+      // صور المنتج العامّة: تُرسَل دائماً (ولو فارغة) ⇒ الحذف يُوفَّق؛ غير المتغيّرة بمعرّفها بلا بايتات.
+      images: buildProductImagesPayload(images),
     });
   }
 
@@ -474,6 +489,19 @@ export default function SimpleProductEditForm({
               ))}
             </div>
           )}
+        </CardContent>
+      </Card>
+
+      {/* ── صور المنتج (مشتركة) ── */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">صور المنتج (اختياري)</CardTitle></CardHeader>
+        <CardContent>
+          <ImageStudioUploader
+            value={images}
+            onChange={setImages}
+            maxItems={10}
+            hint="حتى 10 صور للمنتج (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً."
+          />
         </CardContent>
       </Card>
 

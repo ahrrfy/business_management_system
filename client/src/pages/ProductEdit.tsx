@@ -28,6 +28,9 @@ import { ColorDot, Field, MarginBadge } from "@/components/product/variantBits";
 import { BulkTools, MatrixGenerator } from "@/components/product/VariantMatrix";
 import { VariantsTable } from "@/components/product/VariantsTable";
 import { NameAssistant } from "@/components/product/NameAssistant";
+import { type ImageItem } from "@/components/form/ImageUploader";
+import { ImageStudioUploader } from "@/components/product/ImageStudioUploader";
+import { buildProductImagesPayload, hydrateProductImages } from "@/lib/productImages";
 import { ImportModal, LabelPrintModal } from "@/components/product/variantModals";
 import SimpleProductEditForm from "@/components/product/SimpleProductEditForm";
 import BundleRecipeCard from "@/components/product/BundleRecipeCard";
@@ -76,6 +79,8 @@ export default function ProductEdit() {
   const [units, setUnits] = useState<ClientUnit[]>([]);
   const unitSeq = useRef(1);
   const [variants, setVariants] = useState<ClientVariant[]>([]);
+  // صور المنتج العامّة (مشتركة) — تُحمَّل من الخادم وتُحفَظ بمطابقة المعرّف (lib/productImages).
+  const [images, setImages] = useState<ImageItem[]>([]);
   const [colors, setColors] = useState<string[]>([]);
   const [sizes, setSizes] = useState<string[]>([]);
   const [excluded, setExcluded] = useState<Set<string>>(() => new Set());
@@ -151,6 +156,7 @@ export default function ProductEdit() {
       };
     });
     setVariants(rows);
+    setImages(hydrateProductImages(d.images));
     setHydrated(true);
   }, [product.data, hydrated]);
 
@@ -159,6 +165,7 @@ export default function ProductEdit() {
     [productType, brand, modelName]
   );
   const baseRetail = units.find((u) => u.isBase)?.retail.trim() ?? "";
+  const primaryImage = images.find((i) => i.isPrimary) ?? images[0];
 
   const includedCount = colors.length
     ? sizes.length
@@ -362,6 +369,8 @@ export default function ProductEdit() {
           unitBarcodes,
         };
       }),
+      // صور المنتج العامّة: تُرسَل دائماً (ولو فارغة) ⇒ الحذف يُوفَّق أيضاً؛ غير المتغيّرة بمعرّفها بلا بايتات.
+      images: buildProductImagesPayload(images),
     };
   }
 
@@ -492,9 +501,15 @@ export default function ProductEdit() {
           <CardHeader><CardTitle className="text-base">معاينة</CardTitle></CardHeader>
           <CardContent>
             <div className="rounded-lg border bg-muted/30 overflow-hidden">
-              <div className="aspect-[4/3] flex items-center justify-center text-muted-foreground" style={{ background: "repeating-linear-gradient(135deg, oklch(0.95 0.005 250), oklch(0.95 0.005 250) 10px, oklch(0.93 0.005 250) 10px, oklch(0.93 0.005 250) 20px)" }}>
-                <span className="font-mono text-[11px] bg-card/80 px-2 py-1 rounded">{originalName || composedName || "—"}</span>
-              </div>
+              {primaryImage ? (
+                <div className="aspect-[4/3] bg-card">
+                  <img src={primaryImage.dataUrl || primaryImage.url} alt={originalName || composedName || "صورة المنتج"} className="w-full h-full object-cover" />
+                </div>
+              ) : (
+                <div className="aspect-[4/3] flex items-center justify-center text-muted-foreground" style={{ background: "repeating-linear-gradient(135deg, oklch(0.95 0.005 250), oklch(0.95 0.005 250) 10px, oklch(0.93 0.005 250) 10px, oklch(0.93 0.005 250) 20px)" }}>
+                  <span className="font-mono text-[11px] bg-card/80 px-2 py-1 rounded">{originalName || composedName || "—"}</span>
+                </div>
+              )}
               <div className="p-3 space-y-2">
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-[11px] text-muted-foreground">{toArabicDigits(variants.length)} متغيّر ({toArabicDigits(activeCount)} مفعّل):</span>
@@ -594,6 +609,20 @@ export default function ProductEdit() {
             onColorCommit={commitColorRename}
             stockEditable={false}
             emptyHint="لا متغيّرات — أضِف عبر المولّد أعلاه."
+          />
+        </CardContent>
+      </Card>
+
+      {/* صور المنتج المشتركة (على مستوى المنتج) — تُعرَض في المتجر/الكشك والمعاينة. لكل لون صورته المستقلّة
+          في صفّ المتغيّر أعلاه؛ هذه صور عامّة للمنتج كاملاً. */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">صور المنتج (مشتركة)</CardTitle></CardHeader>
+        <CardContent>
+          <ImageStudioUploader
+            value={images}
+            onChange={setImages}
+            maxItems={10}
+            hint="حتى 10 صور للمنتج عامّةً (تُضغط تلقائياً قبل الحفظ) — الأولى رئيسيّة افتراضياً. ولكل لون صورته المستقلّة في صفّ المتغيّر أعلاه."
           />
         </CardContent>
       </Card>
