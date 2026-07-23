@@ -227,6 +227,12 @@ export const customers = mysqlTable(
     // ثانياً عند إعادة الإرسال (نقر مزدوج/إعادة محاولة شبكة). NULL متعدّد للمسارات القديمة. هجرة 0051.
     clientRequestId: varchar("clientRequestId", { length: 64 }),
     isActive: boolean("isActive").default(true),
+    // بنك جهات الاتصال (S3، هجرة 0108): موافقة/رفض تسويق واتساب — UNKNOWN افتراضياً حتى تصريح
+    // العميل، أو التقاط كلمة إلغاء اشتراك تلقائي من الوارد (waConsentSource='AUTO_KEYWORD')،
+    // أو تسجيل يدوي من الموظف لاحقاً.
+    waConsent: mysqlEnum("waConsent", ["UNKNOWN", "OPTED_IN", "OPTED_OUT"]).default("UNKNOWN").notNull(),
+    waConsentAt: timestamp("waConsentAt"),
+    waConsentSource: varchar("waConsentSource", { length: 40 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     // توسعة D2 (١/٧): عمود مولَّد STORED بتطبيع عربي، نفس نمط products.searchNorm (هَجرة 0039).
@@ -318,6 +324,11 @@ export const suppliers = mysqlTable(
     agreementNotes: text("agreementNotes"),
     agreementAttachmentUrl: mediumtext("agreementAttachmentUrl"),
     isActive: boolean("isActive").default(true),
+    // بنك جهات الاتصال (S3، هجرة 0108): نظير customers.waConsent — موافقة/رفض تسويق واتساب
+    // للمورّد (محادثات B2B).
+    waConsent: mysqlEnum("waConsent", ["UNKNOWN", "OPTED_IN", "OPTED_OUT"]).default("UNKNOWN").notNull(),
+    waConsentAt: timestamp("waConsentAt"),
+    waConsentSource: varchar("waConsentSource", { length: 40 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
     // توسعة D2 (١/٧): عمود مولَّد STORED بتطبيع عربي، نفس نمط products.searchNorm (هَجرة 0039).
@@ -3684,6 +3695,36 @@ export const waHubSettings = mysqlTable("waHubSettings", {
 });
 export type WaHubSettings = typeof waHubSettings.$inferSelect;
 export type InsertWaHubSettings = typeof waHubSettings.$inferInsert;
+
+/* ============================ بنك جهات الاتصال — أشخاص الاتصال B2B (S3، هجرة 0108) ============================ */
+
+/** شَخص اتّصال مَربوط بِعَميل أَو مورّد (لا كِلَيهما — لا قَيد CHECK عَلى MySQL، يُفرَض تَطبيقياً):
+ *  جِهة تَواصُل فِعلية داخِل مُؤسَّسة الطَرَف (مُفَوَّض/مُحاسِب/مُدير مُشتَريات…) بِهاتف مُستَقِل.
+ *  البَحث لاحِقاً عَلى name/phone مُباشَرةً — بِلا searchNorm (تَعقيد زائِد لِحَجم بَيانات صَغير). */
+export const contactPersons = mysqlTable(
+  "contactPersons",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
+    name: varchar("name", { length: 160 }).notNull(),
+    phone: varchar("phone", { length: 20 }),
+    // صِفة نَصّية حُرّة: مُفَوَّض/مُحاسِب/مُدير مُشتَريات…
+    role: varchar("role", { length: 60 }),
+    isPrimary: boolean("isPrimary").default(false).notNull(),
+    notes: varchar("notes", { length: 255 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    customerIdx: index("idx_contact_person_customer").on(t.customerId),
+    supplierIdx: index("idx_contact_person_supplier").on(t.supplierId),
+    phoneIdx: index("idx_contact_person_phone").on(t.phone),
+  })
+);
+export type ContactPerson = typeof contactPersons.$inferSelect;
+export type InsertContactPerson = typeof contactPersons.$inferInsert;
 
 /* ============================ التوصيل (COD) — جهات التوصيل والعهد والترحيل ============================ */
 

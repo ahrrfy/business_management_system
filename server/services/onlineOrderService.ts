@@ -27,6 +27,7 @@ import {
 import { deliveryFeeFor, governorateById } from "@shared/governorates";
 import { getDb } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { money, round2, sumMoney, toDbMoney, toDbQty } from "./money";
 import { resolvePromotionForLine } from "./salesPromotionService";
 import { resolveStorefrontBranchId } from "./storefrontService";
@@ -74,20 +75,13 @@ export interface CreateOnlineOrderResult {
  * تطبيع رقم عراقي إلى صيغة E.164 قانونية واحدة (+964…) قبل استعماله في مفتاح القفل + البحث +
  * الإدراج (مراجعة عدائية ١٢/٧): بدونه «07701234567» و«+9647701234567» لنفس المشترك يعطيان مفتاحَي
  * قفل مختلفَين وتطابقَين مختلفَين ⇒ عميلان متكرّران. نُوحّدهما هنا فتتلاقى الصيغ على سجلّ واحد.
+ *
+ * (T3.1، بنك جهات الاتصال): المنطق انتُقل حرفياً إلى `server/lib/phone.ts` (normalizeIraqPhoneE164)
+ * ليُشارَك مع customerService/supplierService — هذا التصدير توجيهٌ محض (صفر تغيير سلوكي، يحرسه
+ * onlineOrderPhone.test.ts القائم).
  */
 export function normalizeStorePhone(raw: string): string {
-  const trimmed = raw.trim();
-  let s = trimmed.replace(/[\s\-()]/g, "");
-  if (s.startsWith("00")) s = "+" + s.slice(2);
-  if (s.startsWith("+")) {
-    const digits = s.slice(1).replace(/\D/g, "");
-    return digits ? "+" + digits : trimmed;
-  }
-  const digits = s.replace(/\D/g, "");
-  if (!digits) return trimmed;
-  if (digits.startsWith("964")) return "+" + digits;
-  if (digits.startsWith("0")) return "+964" + digits.slice(1);
-  return "+964" + digits;
+  return normalizeIraqPhoneE164(raw);
 }
 
 /** طلب متجر جديد — server-priced، مُتحقَّق، idempotent، ذرّي. لا أثر مالي (PENDING فقط). */

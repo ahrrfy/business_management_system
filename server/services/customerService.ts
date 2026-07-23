@@ -8,6 +8,7 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -49,10 +50,16 @@ export interface ListCustomersInput {
   offset?: number;
 }
 
+/**
+ * تطبيع E.164 خادمي (T3.1، بنك جهات الاتصال) — أيّ هاتف مُدخَل (phone/phone2/phone3/whatsapp)
+ * يُوحَّد على صيغة +964… واحدة قبل التخزين، فتتلاقى «07701234567» و«+9647701234567» على سجلّ
+ * واحد بدل عميلين متكرّرين (نفس مبدأ normalizeStorePhone في مسار المتجر). فارغ يبقى null.
+ */
 function normPhone(s: string | null | undefined): string | null {
   if (!s) return null;
   const t = s.trim();
-  return t || null;
+  if (!t) return null;
+  return normalizeIraqPhoneE164(t);
 }
 
 /**

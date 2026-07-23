@@ -750,6 +750,13 @@
       "when": 1785024000020,
       "tag": "0107_tasks_module",
       "breakpoints": true
+    },
+    {
+      "idx": 108,
+      "version": "5",
+      "when": 1785024000021,
+      "tag": "0108_contacts_consent",
+      "breakpoints": true
     }
   ]
 }

@@ -8,6 +8,7 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { normalizeIraqPhoneE164 } from "../lib/phone";
 import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -61,6 +62,16 @@ export interface ListSuppliersInput {
 const norm = (s: string | null | undefined): string | null => {
   const t = s?.trim();
   return t || null;
+};
+
+/**
+ * تطبيع E.164 خادمي (T3.1، بنك جهات الاتصال) — خاصّ بحقول الهاتف فقط (phone/phone2/phone3/
+ * whatsapp)؛ `norm()` أعلاه يبقى بلا تغيير لبقية الحقول (بريد/عنوان/ملاحظات…) كي لا تُقحَم صيغة
+ * الهاتف عليها. فارغ يبقى null.
+ */
+const normPhoneField = (s: string | null | undefined): string | null => {
+  const t = norm(s);
+  return t ? normalizeIraqPhoneE164(t) : null;
 };
 
 /** بضاعة الأمانة: تطبيع حقول اتفاقية المودِع + التحقّق منها (مشترك بين الإنشاء والتعديل). */
@@ -142,7 +153,7 @@ async function createSupplierTx(input: CreateSupplierInput, clientRequestId: str
       if (prior) return { supplierId: prior.id, id: prior.id, idempotentReplay: true };
     }
 
-    const phone = norm(input.phone);
+    const phone = normPhoneField(input.phone);
     await assertUniquePhone(tx, phone);
     const rating = input.rating != null ? Math.min(5, Math.max(0, Math.trunc(input.rating))) : null;
     const leadTime = input.leadTimeDays != null ? Math.max(0, Math.trunc(input.leadTimeDays)) : null;
@@ -160,10 +171,10 @@ async function createSupplierTx(input: CreateSupplierInput, clientRequestId: str
     const res = await tx.insert(suppliers).values({
       name,
       phone,
-      phone2: norm(input.phone2),
-      phone3: norm(input.phone3),
+      phone2: normPhoneField(input.phone2),
+      phone3: normPhoneField(input.phone3),
       email: norm(input.email),
-      whatsapp: norm(input.whatsapp),
+      whatsapp: normPhoneField(input.whatsapp),
       address: norm(input.address),
       city: norm(input.city),
       taxId: norm(input.taxId),
@@ -203,14 +214,14 @@ export async function updateSupplier(input: UpdateSupplierInput, _actor: Actor) 
       patch.name = name;
     }
     if (input.phone !== undefined) {
-      const phone = norm(input.phone);
+      const phone = normPhoneField(input.phone);
       await assertUniquePhone(tx, phone, input.supplierId);
       patch.phone = phone;
     }
-    if (input.phone2 !== undefined) patch.phone2 = norm(input.phone2);
-    if (input.phone3 !== undefined) patch.phone3 = norm(input.phone3);
+    if (input.phone2 !== undefined) patch.phone2 = normPhoneField(input.phone2);
+    if (input.phone3 !== undefined) patch.phone3 = normPhoneField(input.phone3);
     if (input.email !== undefined) patch.email = norm(input.email);
-    if (input.whatsapp !== undefined) patch.whatsapp = norm(input.whatsapp);
+    if (input.whatsapp !== undefined) patch.whatsapp = normPhoneField(input.whatsapp);
     if (input.address !== undefined) patch.address = norm(input.address);
     if (input.city !== undefined) patch.city = norm(input.city);
     if (input.taxId !== undefined) patch.taxId = norm(input.taxId);

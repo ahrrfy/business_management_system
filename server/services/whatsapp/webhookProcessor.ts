@@ -23,6 +23,8 @@ import {
   channelIntegrations,
   conversationMessages,
   conversations,
+  customers,
+  waHubSettings,
   waOutbox,
   waWebhookEvents,
 } from "../../../drizzle/schema";
@@ -184,6 +186,55 @@ async function maybeLinkCustomer(conv: { id: number; isNew: boolean }, from: str
     .where(and(eq(conversations.id, conv.id), isNull(conversations.customerId)));
 }
 
+// ── إلغاء الاشتراك التلقائي من الوارد (بنك جهات الاتصال، S3) ─────────────────────────────────
+
+/** افتراضي حين waHubSettings.optOutKeywords فارغ/غير مضبوط — كلمات إلغاء اشتراك عربية/إنجليزية شائعة. */
+const DEFAULT_OPT_OUT_KEYWORDS = ["ايقاف", "إيقاف", "الغاء", "إلغاء", "stop", "unsubscribe"];
+
+/** يقرأ optOutKeywords (نصّ مفصول بفواصل/أسطر) ويُعيد قائمة كلمات مُطبَّعة (lowercase، بلا فراغات). */
+function parseOptOutKeywords(raw: string | null | undefined): string[] {
+  const t = (raw ?? "").trim();
+  if (!t) return DEFAULT_OPT_OUT_KEYWORDS;
+  const parsed = t
+    .split(/[,\n]+/)
+    .map((k) => k.trim().toLowerCase())
+    .filter(Boolean);
+  return parsed.length ? parsed : DEFAULT_OPT_OUT_KEYWORDS;
+}
+
+/**
+ * يفحص نصّ رسالة IN مقابل كلمات إلغاء الاشتراك المفتاحية (مطابقة «يحوي» بسيطة حتمية — نفس نهج
+ * waKeywordRules في autoCreate.ts) ويُحدّث waConsent='OPTED_OUT' على العميل المربوط إن تطابقت.
+ * محميّة بذاتها (try/catch داخلي) — فشلها **لا يجب** أن يُفشل استقبال رسالة واتساب فعلية؛ ولا ردّ
+ * آلي هنا (قالب التأكيد يأتي لاحقاً في S4) — فقط تسجيل الحالة. بلا customerId ⇒ لا شيء (لا نعرف
+ * صاحب الموافقة).
+ */
+async function maybeCaptureOptOut(customerId: number | null, messageBody: string): Promise<void> {
+  if (!customerId) return;
+  try {
+    const db = requireDb();
+    const normalizedBody = (messageBody ?? "").trim().toLowerCase();
+    if (!normalizedBody) return;
+
+    const settings = (
+      await db.select({ optOutKeywords: waHubSettings.optOutKeywords }).from(waHubSettings).where(eq(waHubSettings.id, 1)).limit(1)
+    )[0];
+    const keywords = parseOptOutKeywords(settings?.optOutKeywords);
+    const matched = keywords.some((k) => k && normalizedBody.includes(k));
+    if (!matched) return;
+
+    const cust = (await db.select({ waConsent: customers.waConsent }).from(customers).where(eq(customers.id, customerId)).limit(1))[0];
+    if (!cust || cust.waConsent === "OPTED_OUT") return;
+
+    await db
+      .update(customers)
+      .set({ waConsent: "OPTED_OUT", waConsentAt: sql`NOW()`, waConsentSource: "AUTO_KEYWORD" })
+      .where(eq(customers.id, customerId));
+  } catch (e) {
+    logger.warn({ err: e instanceof Error ? e.message : String(e) }, "wa-webhook: تعذّر التقاط إلغاء الاشتراك من الوارد — تُجوهل");
+  }
+}
+
 // ── الرسائل الواردة (messages[]) ──────────────────────────────────────────────────────────────
 
 async function processInboundMessages(value: WaWebhookValue, branchId: number): Promise<void> {
@@ -229,15 +280,21 @@ async function processInboundMessages(value: WaWebhookValue, branchId: number): 
       // (maybeCreateTaskForInbound تفتح withTx خاصة بها لأن addMessage أعلاه أغلقت معاملتها
       // بالفعل) محميّة بـtry: فشل الفرز التلقائي **لا يجب** أن يُفشل استقبال رسالة واتساب فعلية
       // (وإلا الحدث كاملاً FAILED فيُعاد لاحقاً عبر retryFailedWaEvents رغم نجاح استلام الرسالة).
+      const convNow = (
+        await db.select({ customerId: conversations.customerId }).from(conversations).where(eq(conversations.id, conv.id)).limit(1)
+      )[0];
+      const linkedCustomerId = convNow?.customerId != null ? Number(convNow.customerId) : null;
+
+      // بنك جهات الاتصال (S3، ٢٣/٧/٢٦): كلمة إلغاء اشتراك في الوارد ⇒ waConsent='OPTED_OUT' على
+      // العميل المربوط. الدالة محميّة بذاتها (try/catch داخلي) — لا حاجة لغلافٍ هنا.
+      await maybeCaptureOptOut(linkedCustomerId, desc.body);
+
       try {
-        const convNow = (
-          await db.select({ customerId: conversations.customerId }).from(conversations).where(eq(conversations.id, conv.id)).limit(1)
-        )[0];
         await withTx((tx) =>
           maybeCreateTaskForInbound(tx, {
             conversationId: conv.id,
             branchId,
-            customerId: convNow?.customerId != null ? Number(convNow.customerId) : null,
+            customerId: linkedCustomerId,
             messageBody: desc.body,
             sourceChannel: "WHATSAPP",
           }),
