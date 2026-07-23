@@ -7,6 +7,7 @@ import { getDb, isMultiTenantModeActive } from "../db";
 import { decryptSecret } from "../services/cryptoService";
 import { addMessage, upsertConversation } from "../services/conversationService";
 import { findIntegrationByVerifyToken } from "../services/integrationService";
+import { persistWaEvent, processWaEvent } from "../services/whatsapp/webhookProcessor";
 import { getCurrentCompanyId } from "../tenancy/context";
 import { companyCodeTenancyMiddleware } from "../tenancy/expressMiddleware";
 
@@ -93,6 +94,22 @@ function verifyStoreSignature(rawBody: Buffer, sig: string, secret: string): boo
   return crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected));
 }
 
+/** يَجلب مُعرّف تَكامل واتساب لِفَرعٍ مُعطى (بَعد نَجاح HMAC) — لِتَسجيله في waWebhookEvents.integrationId
+ *  (سِجلّ خام، تَشخيص/إعادة مُعالَجة — راجِع webhookProcessor.ts). خاصّ بِمَسار whatsapp POST فَقط.
+ *  لا فِلتر status: uq_int_branch_channel يَضمن صفّاً واحِداً لِـ(branchId, WHATSAPP). */
+async function resolveHmacIntegrationId(branchId: number): Promise<number | null> {
+  const db = getDb();
+  if (!db) return null;
+  const row = (
+    await db
+      .select({ id: channelIntegrations.id })
+      .from(channelIntegrations)
+      .where(and(eq(channelIntegrations.branchId, branchId), eq(channelIntegrations.channel, "WHATSAPP")))
+      .limit(1)
+  )[0];
+  return row ? Number(row.id) : null;
+}
+
 /**
  * ⛔ حارِس تَعدّد الشركات: `channelWebhooksRouter()` يُستَعمَل بِطَريقَتين — مَسار مُطلَق
  * `/api/webhooks/*` (بَلا سِياق شَركة إطلاقاً؛ لا كوكي جَلسة يَصِل مِن مُزوّد خارِجي) وَمَسار
@@ -140,6 +157,18 @@ export function channelWebhooksRouter(): Router {
     return res.status(200).send(String(challenge ?? ""));
   });
 
+  /**
+   * الجسم يصل هنا كـBuffer خام (rawJson أعلاه) — **بشرط** ألّا يستهلكه محلِّل json عام مُسجَّل قبل
+   * تركيب هذا الراوتر (كان `express.json()` العام في server/index.ts يفعل ذلك بالضبط، فيَستحيل
+   * تحقّق HMAC من الأصل — راجع server/middleware/bodyParsers.ts والاختبار الانحداري
+   * `waWebhookComposed.test.ts` الذي يُثبت هذا حيّاً بترتيب التركيب الحقيقي).
+   *
+   * التسلسل: HMAC كالسابق (فشل ⇒ 401 دون أي كتابة) ⇒ نجاح ⇒ حفظ الحدث الخام (persistWaEvent)
+   * ثم معالجة متزامنة (processWaEvent) داخل try — فشل المعالجة **لا يغيّر الردّ**: الحدث يُعلَّم
+   * FAILED داخلياً (processWaEvent نفسها لا ترمي) والكنّاس (outboxSweeper) يعيد محاولته لاحقاً.
+   * 200 دائماً بعد نجاح HMAC — المعالجة خفيفة حتماً (الثقيل مؤجَّل لصندوق MEDIA_FETCH) فالردّ يبقى
+   * سريعاً وحتمياً؛ لا setImmediate هنا (بخلاف outboxService.enqueueAndDispatch).
+   */
   r.post("/whatsapp", rawJson, async (req: Request, res: Response) => {
     const raw = req.body as Buffer;
     const sig = req.headers["x-hub-signature-256"] as string | undefined;
@@ -149,38 +178,22 @@ export function channelWebhooksRouter(): Router {
       return res.status(401).send("invalid signature");
     }
     try {
-      const payload = JSON.parse(raw.toString("utf8"));
-      // WhatsApp Cloud API: entry[].changes[].value.messages[]
-      for (const entry of payload?.entry ?? []) {
-        for (const change of entry?.changes ?? []) {
-          const value = change?.value;
-          for (const msg of value?.messages ?? []) {
-            const from = String(msg?.from ?? "");
-            const externalId = String(msg?.id ?? "");
-            const body = msg?.text?.body ?? null;
-            const mediaType = msg?.image ? "image/jpeg" : msg?.audio ? "audio/ogg" : msg?.document ? "application/pdf" : null;
-            if (!from || !externalId) continue;
-            const conv = await upsertConversation({
-              branchId: match.branchId,
-              channel: "WHATSAPP",
-              channelHandle: from,
-              displayName: value?.contacts?.[0]?.profile?.name ?? null,
-            });
-            await addMessage({
-              conversationId: conv.id,
-              direction: "IN",
-              body,
-              mediaType,
-              externalId,
-            });
-          }
-        }
+      const integrationId = await resolveHmacIntegrationId(match.branchId);
+      let payload: unknown;
+      try {
+        payload = JSON.parse(raw.toString("utf8"));
+      } catch (e: any) {
+        log.warn({ err: e?.message, branchId: match.branchId }, "WhatsApp webhook POST: JSON غَير صالِح");
+        return res.status(200).send("ok");
       }
-      return res.status(200).send("ok");
+      const { id: eventId } = await persistWaEvent(payload, integrationId);
+      await processWaEvent(eventId);
     } catch (e: any) {
-      log.error({ err: e?.message, branchId: match.branchId }, "WhatsApp webhook: فَشل المُعالجة");
-      return res.status(200).send("error logged");
+      // processWaEvent لا تَرمي عادةً (تَلتقط استثناءها داخلياً وتُعلِّم الحدث FAILED)؛ هذا التقاطٌ
+      // دِفاعيّ إضافي (مَثلاً فَشل persistWaEvent نَفسها — اِتصال DB) كَي لا يَنكسِر الرَدّ أبداً.
+      log.error({ err: e?.message, branchId: match.branchId }, "WhatsApp webhook: فَشل حِفظ/مُعالَجة الحَدث");
     }
+    return res.status(200).send("ok");
   });
 
   /**

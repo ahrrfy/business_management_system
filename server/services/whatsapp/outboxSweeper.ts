@@ -9,6 +9,7 @@ import { waOutbox } from "../../../drizzle/schema";
 import { logger } from "../../logger";
 import { withTx } from "../tx";
 import { dispatchClaimedRow, hasAnyActiveWaIntegration } from "./outboxService";
+import { retryFailedWaEvents } from "./webhookProcessor";
 
 const BATCH_LIMIT = 25;
 
@@ -45,6 +46,10 @@ export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
   for (const id of ids) {
     await dispatchClaimedRow(id);
   }
+  // إعادة محاولة أحداث webhook الفاشلة (سباق ترتيب: حالة سبقت رسالتها) — بعد الصندوق الصادر،
+  // بنفس نبضة الدقيقة (لا جدولة cron مستقلّة). processWaEvent لا ترمي أبداً (تلتقط استثناءها
+  // داخلياً وتُعلِّم الحدث FAILED) فلا حاجة لحماية إضافية هنا — نفس افتراض الحلقة أعلاه.
+  await retryFailedWaEvents();
   return { claimed: ids.length };
 }
 

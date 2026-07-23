@@ -20,12 +20,14 @@ import { logger } from "./logger";
 import { appRouter } from "./routers";
 import { serveStatic, setupVite } from "./vite";
 import { registerWellKnown } from "./wellKnown";
+import { applyBodyParsers } from "./middleware/bodyParsers";
 import { csrfGuard } from "./middleware/csrf";
 import { isTrpcSurface, sendTrpcError, trpcAwareRateLimitHandler } from "./middleware/trpcError";
 import { printRouter } from "./printRoute";
 import { imageRouter } from "./imageRoute";
 import { backupRouter } from "./backupRoutes";
 import { channelWebhooksRouter, companyChannelWebhooksRouter } from "./routes/channelWebhooks";
+import { waMediaRouter } from "./routes/waMedia";
 import { tenancyMiddleware } from "./tenancy/expressMiddleware";
 
 function isPortAvailable(port: number, host?: string): Promise<boolean> {
@@ -133,60 +135,21 @@ async function startServer() {
       handler: rateLimitHandler("محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة."),
       // لا تَعُدّ الأصول الساكنة المُجزّأة (immutable، تُخبَّأ في المتصفّح) ضمن الحدّ:
       // فتح أي صفحة يجلب عشرات حُزَم الأصول دفعةً ⇒ كان يستنزف حدّ المعدّل ويُعلّق التحميل.
-      skip: (req) => req.path.startsWith("/assets/"),
+      // /api/webhooks: مُزوّدون خارجيون (Meta) يضربونها بمعدّل مستقل عن حركة المستخدمين — حدّ عام
+      // مشترك معهم قد يحجب رسائل عملاء حقيقيين وقت الازدحام؛ الأمان هناك عبر HMAC لا حدّ المعدّل.
+      skip: (req) => req.path.startsWith("/assets/") || req.path.startsWith("/api/webhooks"),
     })
   );
 
   // HTTP compression (gzip/brotli) — مهم على الشبكات البطيئة (العراق).
   app.use(compression());
 
-  // حجم الجسم: ١mb افتراضياً لكل المسارات (سطح هجوم DoS أصغر على /auth.login وغيرها).
-  // الاستثناء الوحيد: /api/print/raw يرفع لـ١٠mb لأن العميل يرسل raster ESC/POS كبير
-  // (نقطية الإيصال العربي مُولَّدة على Canvas) — لا حدّ ١mb لأنه يقطع الطباعة الفعلية.
-  app.use("/api/print/raw", express.json({ limit: "10mb" }));
-  // attachment-upload (٥/٧): سند بمرفق صورة (data URL مضغوطة حتى ٧٠٠ك ⇒ ~٩٣٣ك نصاً) قد يُقارب/يتجاوز
-  // ١mb مع بقية حمولة السند. استثناء مماثل لـ/api/print/raw أعلاه — لكن بفحص substring لا مسار ثابت
-  // (batch tRPC قد يُجمِّع عدّة إجراءات في مسار واحد ك"vouchers.create,other").
-  app.use("/api/trpc", (req, res, next) => {
-    if (req.path.includes("vouchers.create")) {
-      return express.json({ limit: "3mb" })(req, res, next);
-    }
-    // بنرات المتجر تحمل صورة data-URL مضغوطة (نمط vouchers.create) ⇒ استثناء ٣mb لإنشائها/تعديلها.
-    if (req.path.includes("storeAdmin.banners")) {
-      return express.json({ limit: "3mb" })(req, res, next);
-    }
-    // كتالوج المتجر: setImage يرفع صورة المنتج الرئيسية data-URL مضغوطة (نفس نمط البنرات) ⇒ ٣mb.
-    if (req.path.includes("storeAdmin.catalog")) {
-      return express.json({ limit: "3mb" })(req, res, next);
-    }
-    // مستندات الأصل: addDocument يرفع صورة مستند data-URL مضغوطة (نفس نمط البنرات) ⇒ ٣mb.
-    if (req.path.includes("assets.addDocument")) {
-      return express.json({ limit: "3mb" })(req, res, next);
-    }
-    // product-image-edit: إنشاء/تعديل منتج يحمل حتى ١٠ صور عامّة (data-URL مضغوطة ~٩٣٣ك لكلٍّ) +
-    // صورة مستقلّة لكل لون ⇒ الحمولة تتجاوز ١mb بسهولة. رفعٌ لـ١٠mb (نمط /api/print/raw): محصورٌ
-    // بـproductsManagerProcedure (مصادَق، سطح DoS ضيّق) وكلّ صورة محدودة خادمياً بـ٢m.ب و≤١٠ صور.
-    // كان الغياب يجعل حفظ منتجٍ بصورة يفشل ٤١٣ صامتاً (شمل صور المتغيّرات القائمة أيضاً).
-    if (req.path.includes("catalog.createProduct") || req.path.includes("catalog.updateProductVariants")) {
-      return express.json({ limit: "10mb" })(req, res, next);
-    }
-    // استوديو صور المنتجات: proCutout يرسل صورة المنتج data-URL لقصّها عبر remove.bg (حتى ٢م.ب خام
-    // ⇒ ~٢.٧م.ب نصاً). استثناء ٤mb (نمط vouchers.create أعلاه). راجع server/routers/imageStudioRouter.ts.
-    // aiStudioTransform: يرسل صورة المنتج data-URL (وضع EDIT) لإعادة تصميمها عبر مزوّد الذكاء الاصطناعي — نفس الحجم.
-    if (req.path.includes("imageStudio.proCutout") || req.path.includes("imageStudio.aiStudioTransform")) {
-      return express.json({ limit: "4mb" })(req, res, next);
-    }
-    // #9 (تدقيق التثبيت): system.restoreUpload يستقبل ملف نسخة احتياطية base64. الخدمة تقبل حتى
-    // ٢٠٠MB مفكوكاً (maintenanceService.MAX_UPLOAD_BYTES) لكن هذا الوسيط كان يحبس عند ١MB ⇒ النسخ
-    // الحقيقية لا تُستعاد أبداً. adminProcedure + كلمة مرور + رمز تأكيد ⇒ سطح DoS محدود بحساب مدير
-    // متحقَّق. الحدّ = 300mb (يسع ٢٠٠MB مفكوكاً بحاشية base64 ~٣٣٪) وقابل للتجاوز عبر ENV للنموّ.
-    if (req.path.includes("system.restoreUpload")) {
-      return express.json({ limit: process.env.RESTORE_UPLOAD_LIMIT ?? "300mb" })(req, res, next);
-    }
-    next();
-  });
-  app.use(express.json({ limit: "1mb" }));
-  app.use(express.urlencoded({ limit: "1mb", extended: true }));
+  // حجم الجسم لكل المسارات (استثناءات /api/print/raw، /api/trpc الحجمية، وjson/urlencoded
+  // العامّان يتخطّيان /api/webhooks) — مُستخرَجة إلى middleware/bodyParsers.ts (نقل حرفي صفري
+  // السلوك) لتكون قابلة للاختبار بمعزل عن startServer الكامل (راجع الملف لتفصيل كل استثناء
+  // وسبب وجوده، وسبب استثناء /api/webhooks تحديداً: express.raw() الخاص بـchannelWebhooks.ts
+  // يحتاج Buffer خاماً كاملاً لتوقيع HMAC — json العام هنا كان يستهلك التدفّق أولاً فيُفسده).
+  applyBodyParsers(app);
 
   // فحص صحّة للمراقبة/الحارس: يتأكّد أنّ القاعدة تستجيب.
   app.get("/healthz", async (_req, res) => {
@@ -380,6 +343,10 @@ async function startServer() {
   // قاعدتها) — راجع server/services/maintenanceService.ts.
   app.use("/api/backups", tenancy, csrfGuard, backupRouter());
 
+  // وسائط واتساب الواردة (GET stream، خارج tRPC — نفس فلسفة /api/backups أعلاه): محمي بنفس
+  // آلية المصادقة (كوكي الجلسة عبر getUserFromRequest داخل waMediaRouter نفسها، وإلا 401).
+  app.use("/api/wa/media", tenancy, waMediaRouter());
+
   // Webhooks خارِجية لِلقَنوات (شَريحة #5): WhatsApp/Instagram/Store.
   // ⚠️ لا csrfGuard هُنا — webhooks تَأتي مِن مُزوّدين خارِجيين بَلا كوكي/Origin، ولا
   // tenancyMiddleware (لا كوكي جلسة إطلاقاً) — الأَمان يُطبَّق عبر HMAC verify داخل كل route.
@@ -416,6 +383,11 @@ async function startServer() {
   // غيابها ⇒ الخدمة تُسجّل «disabled» وتصمت، لا انهيار (تعمل جميع بقية المسارات).
   const { startMorningPushCron } = await import("./services/morningPushScheduler");
   startMorningPushCron();
+
+  // كنّاس صندوق واتساب الصادر (waOutbox) — إرسال فعلي + إعادة محاولة بتراجع أسّي + إعادة محاولة
+  // أحداث webhook الفاشلة (سباق ترتيب). لا cron في بيئة الاختبار (NODE_ENV=test) — راجع outboxSweeper.ts.
+  const { startWaOutboxSweeper } = await import("./services/whatsapp/outboxSweeper");
+  startWaOutboxSweeper();
 
   // جسر أجهزة الحضور (بصمة الوجه/ZKTeco) — يُفعَّل بـHR_DEVICE_BRIDGE=1 (منفذ 7788 افتراضاً)
   // أو HR_DEVICE_PORT لمنفذ مخصّص. غيابهما ⇒ صفر أثر (نمط CONTROL_DATABASE_URL). منفذ مستقل
