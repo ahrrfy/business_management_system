@@ -7,6 +7,7 @@ import { consignmentNoteLines, consignmentNotes, productUnits, productVariants, 
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
+import { money, round2 } from "../money";
 import { nextConsignmentNumber } from "../numbering";
 import { withTx, type Actor } from "../tx";
 
@@ -236,6 +237,86 @@ export async function consignmentBalancesReport(branchId?: number) {
     remainingQty: Number(r.remainingQty ?? 0),
     remainingValueByShare: String(r.remainingValueByShare ?? "0"),
   }));
+}
+
+export interface ConsignmentMarginRow {
+  consignorId: number;
+  consignorName: string;
+  soldQty: number;
+  soldValue: string;
+  consignorShare: string;
+  libraryMargin: string;
+  marginPct: string;
+}
+
+/**
+ * تقرير هوامش الأمانة (ش٤، قراءةٌ فقط خلف بوّابة التقارير): ربح المكتبة المُحقَّق من بيع بضاعة كل
+ * مودِع خلال فترة. لكل مودِع: القيمة المُباعة (صافية) − حصّته (صافية) = هامش المكتبة.
+ *
+ * نموذج البيانات (طريقة الإجمالي، §٣): سطر بيع أمانة في `invoiceItems` يحمل `total` (إيراد السطر)
+ * و`unitCost` (حصّة المودِع لكل وحدة أساس — لقطة عند البيع، مطابقةٌ لِـ`share = unitCost×baseQty` في
+ * التقاط البيع). المرتجعات تُتتبَّع لكل سطر في `returnedBaseQuantity` (returnService)، فالصافي دقيقٌ
+ * ومُراعٍ للمرتجع من الجدول نفسه بلا اعتمادٍ على قيود الدفتر:
+ *   netBase = baseQuantity − returnedBaseQuantity
+ *   netRevenue = total × netBase / baseQuantity   (تناسبيّ — مرآة returnService)
+ *   netShare   = unitCost × netBase
+ *   margin     = netRevenue − netShare
+ * التجميع بالقسمة يتمّ في MySQL (DECIMAL)، والطرح النهائيّ للهامش بـdecimal.js (قاعدة الأموال §٥).
+ * لا يمسّ أي حالة (SELECT صرف). نطاق التاريخ sargable ([start، endDate+1) — نمط S2).
+ */
+export async function consignmentMarginsReport(input: { startDate: string; endDate: string; branchId?: number }) {
+  const db = getDb();
+  const empty = { rows: [] as ConsignmentMarginRow[], totals: { soldValue: "0.00", consignorShare: "0.00", libraryMargin: "0.00", marginPct: "0.00" } };
+  if (!db) return empty;
+  const branchCond = input.branchId ? sql`AND inv.branchId = ${input.branchId}` : sql``;
+  const rows: any = await db.execute(sql`
+    SELECT
+      s.id AS consignorId, s.name AS consignorName,
+      CAST(COALESCE(SUM(ii.baseQuantity - ii.returnedBaseQuantity), 0) AS CHAR) AS soldQty,
+      CAST(COALESCE(SUM(ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity), 0) AS CHAR) AS soldValue,
+      CAST(COALESCE(SUM(ii.unitCost * (ii.baseQuantity - ii.returnedBaseQuantity)), 0) AS CHAR) AS consignorShare
+    FROM invoiceItems ii
+      JOIN invoices inv ON inv.id = ii.invoiceId
+      JOIN productVariants pv ON pv.id = ii.variantId
+      JOIN products p ON p.id = pv.productId AND p.isConsignment = true
+      JOIN suppliers s ON s.id = p.consignorId AND s.supplierKind = 'CONSIGNOR'
+    WHERE ii.baseQuantity > 0
+      AND inv.invoiceDate >= ${input.startDate} AND inv.invoiceDate < DATE_ADD(${input.endDate}, INTERVAL 1 DAY)
+      ${branchCond}
+    GROUP BY s.id, s.name
+    HAVING SUM(ii.baseQuantity - ii.returnedBaseQuantity) <> 0
+    ORDER BY SUM(ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity) DESC
+  `);
+  const list = Array.isArray(rows) ? (rows[0] ?? rows) : rows?.rows ?? [];
+  let tSold = money(0), tShare = money(0);
+  const mapped: ConsignmentMarginRow[] = (list as any[]).map((r) => {
+    const soldValue = round2(money(r.soldValue ?? "0"));
+    const share = round2(money(r.consignorShare ?? "0"));
+    const margin = round2(soldValue.minus(share));
+    const marginPct = soldValue.gt(0) ? round2(margin.dividedBy(soldValue).times(100)) : money(0);
+    tSold = tSold.plus(soldValue);
+    tShare = tShare.plus(share);
+    return {
+      consignorId: Number(r.consignorId),
+      consignorName: String(r.consignorName),
+      soldQty: Number(r.soldQty ?? 0),
+      soldValue: soldValue.toFixed(2),
+      consignorShare: share.toFixed(2),
+      libraryMargin: margin.toFixed(2),
+      marginPct: marginPct.toFixed(2),
+    };
+  });
+  const totalMargin = round2(tSold.minus(tShare));
+  const totalPct = tSold.gt(0) ? round2(totalMargin.dividedBy(tSold).times(100)) : money(0);
+  return {
+    rows: mapped,
+    totals: {
+      soldValue: round2(tSold).toFixed(2),
+      consignorShare: round2(tShare).toFixed(2),
+      libraryMargin: totalMargin.toFixed(2),
+      marginPct: totalPct.toFixed(2),
+    },
+  };
 }
 
 /** أصناف مودِع بعينه — لمنتقي أصناف سند الإيداع/السحب (أصناف هذا المودِع فقط + وحدة الأساس). */

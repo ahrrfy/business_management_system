@@ -4,6 +4,7 @@ import { positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import {
   consignmentBalancesReport,
+  consignmentMarginsReport,
   createConsignmentNote,
   getConsignmentNote,
   listConsignmentNotes,
@@ -49,6 +50,15 @@ export const consignmentRouter = router({
   balancesReport: reportViewerProcedure
     .input(z.object({ branchId: z.number().int().positive().optional() }).optional())
     .query(({ input }) => consignmentBalancesReport(input?.branchId)),
+
+  // تقرير هوامش الأمانة — ربح المكتبة المُحقَّق من بيع بضاعة كل مودِع خلال فترة (قراءة فقط، بوّابة التقارير).
+  marginsReport: reportViewerProcedure
+    .input(z.object({
+      startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "التاريخ بصيغة YYYY-MM-DD"),
+      endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "التاريخ بصيغة YYYY-MM-DD"),
+      branchId: z.number().int().positive().optional(),
+    }))
+    .query(({ input }) => consignmentMarginsReport(input)),
 
   // بضاعة الأمانة (ش٥): تسوية مودِع = سند صرف على مستحقّه. مديريّ (treasury) ويُنشأ PENDING **دائماً**
   // (حارس createVoucher لمودِع أمانة) + سقف ≤ المستحق يُعاد فحصه عند الاعتماد. الفصل محفوظ (اعتماد مدير آخر).
