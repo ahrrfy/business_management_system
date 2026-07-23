@@ -30,6 +30,7 @@ import { extractInsertId } from "../../lib/insertId";
 import { phoneMatchSuffix } from "../../lib/similarMatch";
 import { logger } from "../../logger";
 import { addMessage, upsertConversation } from "../conversationService";
+import { maybeCreateTaskForInbound } from "../tasks/autoCreate";
 import { requireDb, withTx } from "../tx";
 import { resolveWaSender } from "./contactResolver";
 import { enqueueOutbox } from "./outboxService";
@@ -221,6 +222,29 @@ async function processInboundMessages(value: WaWebhookValue, branchId: number): 
     // للأبد — لا فرصة ثانية لجلبها.
     if (!deduped) {
       await db.update(conversations).set({ lastInboundAt: sql`NOW()` }).where(eq(conversations.id, conv.id));
+
+      // نظام المهام (S2، ٢٣/٧/٢٦): كل رسالة IN أولى (غير مُكرَّرة) قد تُنشئ مهمة تلقائياً حسب وضع
+      // فرز waHubSettings. نقطة الاستدعاء هنا لا في addMessage (الأقلّ تدخلاً — addMessage عامّة
+      // تُستعمَل أيضاً لصدى OUT ولقنوات أخرى بلا سياق فرع/قناة كافٍ لبناء مهمة). معاملة مستقلّة
+      // (maybeCreateTaskForInbound تفتح withTx خاصة بها لأن addMessage أعلاه أغلقت معاملتها
+      // بالفعل) محميّة بـtry: فشل الفرز التلقائي **لا يجب** أن يُفشل استقبال رسالة واتساب فعلية
+      // (وإلا الحدث كاملاً FAILED فيُعاد لاحقاً عبر retryFailedWaEvents رغم نجاح استلام الرسالة).
+      try {
+        const convNow = (
+          await db.select({ customerId: conversations.customerId }).from(conversations).where(eq(conversations.id, conv.id)).limit(1)
+        )[0];
+        await withTx((tx) =>
+          maybeCreateTaskForInbound(tx, {
+            conversationId: conv.id,
+            branchId,
+            customerId: convNow?.customerId != null ? Number(convNow.customerId) : null,
+            messageBody: desc.body,
+            sourceChannel: "WHATSAPP",
+          }),
+        );
+      } catch (e) {
+        logger.warn({ err: e instanceof Error ? e.message : String(e) }, "wa-webhook: تعذّر إنشاء مهمة تلقائية من الوارد — تُجوهل");
+      }
     }
 
     if (desc.mediaId) {

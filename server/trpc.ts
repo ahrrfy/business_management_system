@@ -271,6 +271,14 @@ export const campaignsManagerProcedure = moduleProcedure(["manager"], "campaigns
 export const collectionsReadProcedure = branchScopedProcedure.use(requireModule("collections", "READ"));
 export const collectionsManagerProcedure = moduleProcedure(["manager", "accountant"], "collections", "FULL");
 
+// ─── نظام المهام الموحّد «tasks» (S2 — مركز واتساب الأعمال) — تذكرة موحّدة لأي طلب خدمة/دعم/
+// استفسار/متابعة/داخلية بغضّ النظر عن قناة الورود (واتساب/إنستغرام/متجر/هاتف/حضوري). الكتابة
+// اليومية (إنشاء/سحب/تعليق/انتظار/استئناف/حلّ) بأدوار التنفيذ التي تستقبل طلبات الزبائن فعلياً
+// (كاشير/مندوب مبيعات/فني مطبعة) + المدير؛ العمليات الإشرافية (إسناد قسري/إعادة فتح/إلغاء) مديرية حصراً.
+export const tasksReadProcedure = branchScopedProcedure.use(requireModule("tasks", "READ"));
+export const tasksWriteProcedure = moduleProcedure(["cashier", "manager", "sales_rep", "print_operator"], "tasks", "FULL");
+export const tasksManagerProcedure = moduleProcedure(["manager"], "tasks", "FULL");
+
 // المتجر الإلكتروني (وحدة store): قراءة الطلبات/البنرات، تثبيت الطلبات وطباعة الملصقات (تشغيلي)،
 // وإدارة البنرات/الإعدادات (مديري). branchScopedProcedure للقراءة ⇒ عزل فرع لغير المرتفعين.
 export const storeReadProcedure = branchScopedProcedure.use(requireModule("store", "READ"));

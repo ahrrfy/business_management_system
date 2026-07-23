@@ -63,6 +63,7 @@ import { crmRouter } from "./routers/crmRouter";
 import { offlineRouter } from "./routers/offlineRouter";
 import { imageStudioRouter } from "./routers/imageStudioRouter";
 import { printPricingRouter } from "./routers/printPricingRouter";
+import { tasksRouter } from "./routers/tasksRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -149,6 +150,8 @@ export const appRouter = router({
   crm: crmRouter,
   // تعدد الشركات — شاشة إدارة المنصّة (منفصلة تماماً عن جلسة/أدوار أي شركة).
   platformAdmin: platformAdminRouter,
+  // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، ٢٣/٧/٢٦): تذكرة موحّدة لكل طلب خدمة/دعم/استفسار.
+  tasks: tasksRouter,
 });
 
 export type AppRouter = typeof appRouter;

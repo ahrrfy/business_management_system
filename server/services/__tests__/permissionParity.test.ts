@@ -181,11 +181,9 @@ describe("تماثُل الصلاحيات (المخاطرة #٨)", () => {
     //     (لا module) عمداً (تعليق AppLayout: محاور بتبويبات managerOnly لا تُفتَح بمنح وحدة). لهما قالبٌ
     //     في المصفوفة للعرض/التحرير فقط. الباقي يجب أن يُنفَّذ بوّابةَ وحدةٍ خادمية.
     const ROLE_GATED = new Set(["customers", "users", "settings"]);
-    // مُستثنى مؤقّتاً (نظام المهام الموحّد، هجرة 0107 — ش١ S2): هذه المهمّة تضع الأساس فقط (جداول
-    // + قالب صلاحيات + بذر)، بلا راوتر/خدمة بعد — تُبنى في مهمّة S2 لاحقة تربط requireModule("tasks", …)
-    // فعلياً. أزل "tasks" من هنا حين تُضاف أوّل بوّابة خادمية لها.
-    const PENDING_GATE = new Set(["tasks"]);
-    const orphan = declared.filter((k) => !gatedModules.has(k) && !ROLE_GATED.has(k) && !PENDING_GATE.has(k));
+    // "tasks" لم تعد مُستثناة (S2، ٢٣/٧/٢٦): tasksReadProcedure/tasksWriteProcedure/tasksManagerProcedure
+    // في server/trpc.ts تربطها ببوّابة وحدة خادمية فعلية الآن (tasksRouter.ts).
+    const orphan = declared.filter((k) => !gatedModules.has(k) && !ROLE_GATED.has(k));
     expect(orphan).toEqual([]);
   });
 });
