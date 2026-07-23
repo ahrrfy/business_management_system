@@ -40,6 +40,13 @@ export interface ImageUploaderProps {
   /** نصّ توضيحي يظهر تحت منطقة الإفلات. */
   hint?: string;
   className?: string;
+  /**
+   * إن مُرِّر، يظهر زرّ «استوديو» على كل صورة لاستهدافها بالتعديل بعينها (يُستعمل من ImageStudioUploader).
+   * الاستهداف الفرديّ يحلّ علّة «تعديل كل الصور دفعةً» — لكل صورة استوديوها المستقل.
+   */
+  onEditImage?: (id: string) => void;
+  /** معرّفات الصور المُستهدَفة حالياً بالتعديل في الاستوديو — تُبرَز بإطار/شارة مميّزة. */
+  activeEditIds?: Set<string>;
 }
 
 const ACCEPT_DEFAULT = "image/png,image/jpeg,image/webp";
@@ -192,6 +199,8 @@ export function ImageUploader({
   singlePrimary = true,
   hint,
   className,
+  onEditImage,
+  activeEditIds,
 }: ImageUploaderProps) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -301,7 +310,9 @@ export function ImageUploader({
               key={img.id}
               className={cn(
                 "group relative aspect-square rounded-md overflow-hidden border bg-card",
-                img.isPrimary && singlePrimary && "ring-2 ring-primary"
+                activeEditIds?.has(img.id)
+                  ? "ring-2 ring-violet-500"
+                  : img.isPrimary && singlePrimary && "ring-2 ring-primary"
               )}
             >
               <img src={img.dataUrl || img.url} alt={img.name || "صورة"} className="w-full h-full object-cover" />
@@ -310,7 +321,27 @@ export function ImageUploader({
                   رئيسية
                 </div>
               )}
+              {activeEditIds?.has(img.id) && (
+                <div className="absolute top-1 left-1 bg-violet-600 text-white text-[10px] font-medium px-1.5 py-0.5 rounded">
+                  قيد التعديل
+                </div>
+              )}
               <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center gap-1 p-1">
+                {onEditImage && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="h-6 text-[10px] px-2 bg-violet-600 text-white hover:bg-violet-700"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onEditImage(img.id);
+                    }}
+                    title="تعديل هذه الصورة في الاستوديو"
+                  >
+                    استوديو
+                  </Button>
+                )}
                 {singlePrimary && !img.isPrimary && (
                   <Button
                     type="button"

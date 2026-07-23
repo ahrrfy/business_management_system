@@ -1,8 +1,9 @@
 import { ArrowLeft, Check, Info, Sparkles, Wand2, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ImageUploader, type ImageUploaderProps } from "@/components/form/ImageUploader";
 import { Button } from "@/components/ui/button";
 import { normalizeAiStudioImage } from "@/lib/imageStudio/aiStudio";
+import { applyStudioPreviews } from "@/lib/imageStudio/applyPreviews";
 import { finishCutFromCutout, runFreeStudio, type StudioResult } from "@/lib/imageStudio/freePipeline";
 import { trpc } from "@/lib/trpc";
 
@@ -15,19 +16,23 @@ interface StudioPreview {
 }
 
 /**
- * ImageStudioUploader — يلفّ `ImageUploader` ويضيف تحويل «استوديو»: خلفية بيضاء موحّدة + قالب موحّد
- * + ظلّ تماس، بمعاينة قبل/بعد ثمّ **اعتماد صريح** (الأصل لا يُستبدَل إلا بموافقة).
+ * ImageStudioUploader — يلفّ `ImageUploader` ويضيف تحويل «استوديو» **لكل صورة على حدة**: خلفية بيضاء
+ * موحّدة + قالب موحّد + ظلّ تماس، بمعاينة قبل/بعد ثمّ **اعتماد صريح** (الأصل لا يُستبدَل إلا بموافقة).
  *
- * ثلاثة مسارات (بحسب الإعداد):
- *   - **المجانيّ (FLATTEN)**: توسيط على أبيض (canvas بحت ⇒ يستحيل أكل بكسلة منتج). دائماً متاح.
- *   - **Pro (remove.bg)**: قصّ خلفية احترافيّ (segmentation — بكسلات المنتج تبقى). فشلٌ ⇒ تدهور FLATTEN.
- *   - **الذكاء الاصطناعي (توليديّ)**: يُعيد تصميم الصورة كاستوديو موحّد من برومت جاهز. ⚠️ توليديّ ⇒
- *     يعيد رسم البكسلات، فقد يغيّر تفاصيل دقيقة/كتابة — لذا **مراجعة بشرية إلزامية** والأصل محفوظ.
+ * **الاستهداف الفرديّ (إصلاح ٢٣/٧):** الاستوديو كان يعالج **كل** صور المنتج دفعةً واحدة بلا اختيار،
+ * فتعذّر تعديل صورةٍ بعينها (اختيار المستخدم بلا أثر، وبدا كأنّه يخلط/يكرّر). الآن: زرّ «استوديو» على
+ * كل صورة يستهدفها وحدها، والمعالجة/المعاينة/الاعتماد تسري على **المستهدَف فقط** (بمطابقة المعرّف عبر
+ * `applyStudioPreviews`). زرّ «تحديد كل الصور» يُبقي راحة الدفعة لمن أرادها. ⇒ تعديلٌ متعدّدٌ مستقلّ.
+ *
+ * ثلاثة مسارات (بحسب الإعداد): **FLATTEN** (توسيط على أبيض، دائماً متاح) · **Pro (remove.bg)** (قصّ
+ * احترافيّ) · **الذكاء الاصطناعي** (توليديّ يُعيد التصميم — مراجعة بشرية إلزامية والأصل محفوظ).
  * راجع client/src/lib/imageStudio/README.md.
  */
 export function ImageStudioUploader(props: ImageUploaderProps) {
   const { value, onChange } = props;
   const [busy, setBusy] = useState(false);
+  // الاستهداف: أيّ الصور تُعدَّل الآن. «استوديو» على صورة ⇒ [تلك]، «تحديد الكل» ⇒ كلّها.
+  const [targetIds, setTargetIds] = useState<string[]>([]);
   const [previews, setPreviews] = useState<StudioPreview[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -43,7 +48,43 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
 
   const aiInPreview = !!previews?.some((p) => p.mode === "AI");
 
+  // الصور المستهدَفة فعلياً (تقاطع مع القائمة الحالية — تُصان عند حذف صورة).
+  const targetSet = new Set(targetIds);
+  const targets = value.filter((it) => targetSet.has(it.id));
+
+  // صورة مستهدَفة حُذِفت من القائمة ⇒ نظّف الاستهداف (وأغلق المعاينة إن فرغ).
+  useEffect(() => {
+    if (!targetIds.length) return;
+    const alive = targetIds.filter((id) => value.some((v) => v.id === id));
+    if (alive.length !== targetIds.length) {
+      setTargetIds(alive);
+      if (!alive.length) {
+        setPreviews(null);
+        setNotice(null);
+      }
+    }
+  }, [value, targetIds]);
+
+  const selectOne = (id: string) => {
+    setTargetIds([id]);
+    setPreviews(null);
+    setError(null);
+    setNotice(null);
+  };
+  const selectAll = () => {
+    setTargetIds(value.map((v) => v.id));
+    setPreviews(null);
+    setError(null);
+    setNotice(null);
+  };
+  const clearTargets = () => {
+    setTargetIds([]);
+    setPreviews(null);
+    setNotice(null);
+  };
+
   const runStudio = async () => {
+    if (!targets.length) return;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -51,7 +92,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
     let lowResPreview = false;
     try {
       const results = await Promise.all(
-        value.map(async (it): Promise<StudioPreview> => {
+        targets.map(async (it): Promise<StudioPreview> => {
           let r: StudioResult;
           if (proAvailable) {
             try {
@@ -81,6 +122,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
   };
 
   const runAiStudio = async () => {
+    if (!targets.length) return;
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -92,7 +134,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
       const ok: StudioPreview[] = [];
       let firstErr = "";
       let failedCount = 0;
-      for (const it of value) {
+      for (const it of targets) {
         try {
           const res = await aiTransform.mutateAsync({ imageDataUrl: it.dataUrl, userPrompt, mode: "EDIT" });
           const norm = await normalizeAiStudioImage(res.imageDataUrl);
@@ -108,7 +150,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
       }
       setPreviews(ok);
       if (failedCount > 0) {
-        setNotice(`تعذّر تحويل ${failedCount} من ${value.length} صورة (${firstErr}).`);
+        setNotice(`تعذّر تحويل ${failedCount} من ${targets.length} صورة (${firstErr}).`);
       }
     } catch (e) {
       setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + String((e as Error)?.message ?? e));
@@ -119,58 +161,97 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
 
   const accept = () => {
     if (!previews) return;
-    const byId = new Map(previews.map((p) => [p.id, p.after]));
-    // نستبدل dataUrl بالنسخة الاستوديوية ونمسح url (الرابط القديم) ليُعاد الحفظ بالمعالَجة.
-    onChange(value.map((it) => (byId.has(it.id) ? { ...it, dataUrl: byId.get(it.id) as string, url: undefined } : it)));
+    // نطبّق كلّ ناتجٍ على صورته بالمعرّف حصراً (لا خلط/تكرار على غير المستهدَف) — راجع applyStudioPreviews.
+    onChange(applyStudioPreviews(value, previews));
     setPreviews(null);
     setNotice(null);
+    setTargetIds([]);
   };
 
   const modeLabel = (m: StudioPreview["mode"]) => (m === "AI" ? "ذكاء اصطناعي" : m === "CUT" ? "قصّ" : "آمن");
 
+  const targetLabel =
+    targets.length === 1
+      ? `الصورة المحدّدة${targets[0].name ? ` — ${targets[0].name}` : ""}`
+      : `${targets.length} صور`;
+
   return (
     <div className="space-y-3">
-      <ImageUploader {...props} />
+      <ImageUploader {...props} onEditImage={selectOne} activeEditIds={targetSet} />
 
       {value.length > 0 && !previews && (
         <div className="space-y-3">
-          <div className="space-y-1">
-            <Button type="button" variant="outline" size="sm" onClick={runStudio} disabled={busy}>
-              <Sparkles aria-hidden className="size-4" />
-              {busy
-                ? "جارٍ التحويل…"
-                : proAvailable
-                  ? "قصّ الخلفية (استوديو احترافي)"
-                  : "توسيط على خلفية بيضاء"}
-            </Button>
-            {!proAvailable && (
-              <p className="text-[11px] text-muted-foreground">
-                المسار المجانيّ يوسّط الصورة على أبيض فقط (لا يُزيل الخلفية). إزالة الخلفية الاحترافيّة تحتاج تفعيل remove.bg من الإعدادات.
-              </p>
-            )}
-          </div>
-
-          {aiAvailable && (
-            <div className="space-y-2 rounded-md border border-violet-500/30 bg-violet-500/[0.03] p-2.5">
-              <div className="flex items-center gap-1.5 text-sm font-medium text-violet-700 dark:text-violet-300">
-                <Wand2 aria-hidden className="size-4" /> استوديو الذكاء الاصطناعي (استوديو موحّد)
+          {targets.length === 0 ? (
+            // لا استهداف بعد: إرشادٌ لاختيار صورة + راحة «تحديد الكل».
+            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed bg-muted/20 px-3 py-2.5 text-sm text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <Sparkles aria-hidden className="size-4 text-violet-500" />
+                لتعديل صورةٍ في الاستوديو: مرّر فوقها ثمّ انقر <b className="text-foreground">«استوديو»</b> — لكل صورة تعديلها المستقل.
+              </span>
+              {value.length > 1 && (
+                <Button type="button" variant="outline" size="sm" onClick={selectAll}>
+                  تحديد كل الصور
+                </Button>
+              )}
+            </div>
+          ) : (
+            // صورةٌ (أو أكثر) مستهدَفة: لوحة الاستوديو تعمل عليها وحدها.
+            <div className="space-y-3 rounded-md border border-violet-500/30 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="text-sm font-medium">
+                  الاستوديو يعمل على: <span className="text-violet-700 dark:text-violet-300">{targetLabel}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  {value.length > 1 && targets.length < value.length && (
+                    <Button type="button" variant="ghost" size="sm" onClick={selectAll}>
+                      تحديد الكل
+                    </Button>
+                  )}
+                  <Button type="button" variant="ghost" size="sm" onClick={clearTargets}>
+                    <X aria-hidden className="size-4" /> إلغاء التحديد
+                  </Button>
+                </div>
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                يُعيد تصميم الصورة كتصوير استوديو موحّد (خلفية بيضاء + إضاءة + ظلّ) بحفظ المنتج. برومت
-                الاستوديو الجاهز مُطبَّق تلقائياً — أضِف تعليمات اختيارية للخلفية/الإطار فقط.
-              </p>
-              <textarea
-                value={aiPromptText}
-                onChange={(e) => setAiPromptText(e.target.value)}
-                placeholder="تعليمات إضافية اختيارية (للخلفية/الإطار فقط) — مثلاً: أظهر المنتج من الأمام على أرضية بيضاء ناعمة"
-                rows={2}
-                maxLength={2000}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              />
-              <Button type="button" size="sm" onClick={runAiStudio} disabled={busy} className="bg-violet-600 hover:bg-violet-700 text-white">
-                <Wand2 aria-hidden className="size-4" />
-                {busy ? "جارٍ الإنشاء…" : "إنشاء استوديو بالذكاء الاصطناعي"}
-              </Button>
+
+              <div className="space-y-1">
+                <Button type="button" variant="outline" size="sm" onClick={runStudio} disabled={busy}>
+                  <Sparkles aria-hidden className="size-4" />
+                  {busy
+                    ? "جارٍ التحويل…"
+                    : proAvailable
+                      ? "قصّ الخلفية (استوديو احترافي)"
+                      : "توسيط على خلفية بيضاء"}
+                </Button>
+                {!proAvailable && (
+                  <p className="text-[11px] text-muted-foreground">
+                    المسار المجانيّ يوسّط الصورة على أبيض فقط (لا يُزيل الخلفية). إزالة الخلفية الاحترافيّة تحتاج تفعيل remove.bg من الإعدادات.
+                  </p>
+                )}
+              </div>
+
+              {aiAvailable && (
+                <div className="space-y-2 rounded-md border border-violet-500/30 bg-violet-500/[0.03] p-2.5">
+                  <div className="flex items-center gap-1.5 text-sm font-medium text-violet-700 dark:text-violet-300">
+                    <Wand2 aria-hidden className="size-4" /> استوديو الذكاء الاصطناعي (استوديو موحّد)
+                  </div>
+                  <p className="text-[11px] text-muted-foreground">
+                    يُعيد تصميم الصورة كتصوير استوديو موحّد (خلفية بيضاء + إضاءة + ظلّ) بحفظ المنتج. برومت
+                    الاستوديو الجاهز مُطبَّق تلقائياً — أضِف تعليمات اختيارية للخلفية/الإطار فقط.
+                  </p>
+                  <textarea
+                    value={aiPromptText}
+                    onChange={(e) => setAiPromptText(e.target.value)}
+                    placeholder="تعليمات إضافية اختيارية (للخلفية/الإطار فقط) — مثلاً: أظهر المنتج من الأمام على أرضية بيضاء ناعمة"
+                    rows={2}
+                    maxLength={2000}
+                    className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                  <Button type="button" size="sm" onClick={runAiStudio} disabled={busy} className="bg-violet-600 hover:bg-violet-700 text-white">
+                    <Wand2 aria-hidden className="size-4" />
+                    {busy ? "جارٍ الإنشاء…" : "إنشاء استوديو بالذكاء الاصطناعي"}
+                  </Button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -184,7 +265,9 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
 
       {previews && (
         <div className="space-y-3 rounded-md border p-3">
-          <p className="text-sm font-medium">معاينة الاستوديو — خلفية بيضاء موحّدة بإطار وظلّ (الأصل يمينًا):</p>
+          <p className="text-sm font-medium">
+            معاينة الاستوديو — خلفية بيضاء موحّدة بإطار وظلّ (الأصل يمينًا):
+          </p>
           {aiInPreview && (
             <div className="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/5 p-2.5 text-xs text-amber-700 dark:text-amber-400">
               <Info aria-hidden className="size-4 shrink-0 mt-0.5" />
@@ -211,7 +294,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
           </div>
           <div className="flex gap-2">
             <Button type="button" size="sm" onClick={accept}>
-              <Check aria-hidden className="size-4" /> اعتماد الكل
+              <Check aria-hidden className="size-4" /> اعتماد {previews.length > 1 ? "الكل" : ""}
             </Button>
             <Button type="button" variant="ghost" size="sm" onClick={() => { setPreviews(null); setNotice(null); }}>
               <X aria-hidden className="size-4" /> إلغاء
