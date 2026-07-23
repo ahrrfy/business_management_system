@@ -1,8 +1,9 @@
 import "dotenv/config";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { assetCustodyLog, assetMaintenance, branches, categories, deliveryParties, employees, fixedAssets, productVariants, products, suppliers, users } from "../drizzle/schema";
+import { assetCustodyLog, assetMaintenance, branches, categories, deliveryParties, employees, fixedAssets, productVariants, products, roles, suppliers, users } from "../drizzle/schema";
 import { isStrongPassword } from "../shared/const";
+import { SECTION_CASHIER_ROLES } from "../shared/permissions";
 import { hashPassword } from "./auth/password";
 import { getDb } from "./db";
 import { createProduct } from "./services/catalogService";
@@ -91,6 +92,26 @@ async function seed() {
     console.log(`• admin ${email} already exists — synced password (إعادة محاولة توفير)`);
   } else {
     console.log(`• admin ${email} already exists, skipping`);
+  }
+
+  // أدوار قسم الكاشير الجاهزة «كاشير تجزئة»/«كاشير طباعة» (٢٣/٧) — دورا cashier مخصّصان يحصر كلٌّ
+  // منهما في تبويب قسمه. idempotent بالمفتاح ⇒ آمن في الإنتاج (يُبذَر قبل عودة isProd فيَعمل بالوضعين).
+  for (const r of SECTION_CASHIER_ROLES) {
+    const existingRole = (await db.select().from(roles).where(eq(roles.key, r.key)).limit(1))[0];
+    if (!existingRole) {
+      await db.insert(roles).values({
+        key: r.key,
+        label: r.label,
+        description: r.description,
+        baseRole: r.baseRole,
+        permissions: r.permissions,
+        canSeeCost: false, // يتبع فئة cashier (لا يرى التكلفة)
+        isActive: true,
+      });
+      console.log(`✓ seeded section role ${r.key}`);
+    } else {
+      console.log(`• role ${r.key} already exists, skipping`);
+    }
   }
 
   if (isProd) {

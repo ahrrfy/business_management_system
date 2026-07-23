@@ -3,7 +3,15 @@
  * يوثّق مصفوفة العزل كـ«مواصفة تنفيذية» تحرس ضدّ أيّ انزلاقٍ مستقبليّ في ربط التبويب بوحدته.
  */
 import { describe, expect, it } from "vitest";
+import { SECTION_CASHIER_ROLES, diffFromTemplate, type RoleKey } from "@shared/permissions";
 import { MODE_GATES, canSeeMode } from "../posModeGates";
+
+/** يحاكي حلّ context للدور المخصّص: role=baseRole + override مشتقّ من الخريطة الكاملة. */
+function resolveSectionRole(key: string) {
+  const spec = SECTION_CASHIER_ROLES.find((r) => r.key === key);
+  if (!spec) throw new Error(`role spec ${key} not found`);
+  return { role: spec.baseRole as RoleKey, override: diffFromTemplate(spec.baseRole, spec.permissions) };
+}
 
 describe("عزل تبويبات نقطة البيع (posModeGates)", () => {
   it("ربط كل تبويب بوحدته الخادمية الصحيحة (حارس ضدّ إعادة الربط الخاطئ)", () => {
@@ -55,5 +63,27 @@ describe("عزل تبويبات نقطة البيع (posModeGates)", () => {
     expect(canSeeMode("RETAIL", undefined)).toBe(false);
     expect(canSeeMode("PRINT_SERVICES", undefined)).toBe(false);
     expect(canSeeMode("RECEPTION", undefined)).toBe(false);
+  });
+});
+
+describe("أدوار قسم الكاشير الجاهزة (SECTION_CASHIER_ROLES)", () => {
+  it("«كاشير تجزئة» يرى تبويب التجزئة فقط", () => {
+    const { role, override } = resolveSectionRole("retail_cashier");
+    expect(canSeeMode("RETAIL", role, override)).toBe(true);
+    expect(canSeeMode("PRINT_SERVICES", role, override)).toBe(false);
+    expect(canSeeMode("RECEPTION", role, override)).toBe(false);
+  });
+
+  it("«كاشير طباعة» يرى تبويب خدمات الطباعة فقط", () => {
+    const { role, override } = resolveSectionRole("print_cashier");
+    expect(canSeeMode("PRINT_SERVICES", role, override)).toBe(true);
+    expect(canSeeMode("RETAIL", role, override)).toBe(false);
+    expect(canSeeMode("RECEPTION", role, override)).toBe(false);
+  });
+
+  it("كلاهما دورا cashier مخصّصان (تعمل بوّابات الخادم بلا تغيير)", () => {
+    for (const spec of SECTION_CASHIER_ROLES) {
+      expect(spec.baseRole).toBe("cashier");
+    }
   });
 });

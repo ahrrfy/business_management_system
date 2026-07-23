@@ -211,6 +211,39 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   },
 };
 
+/**
+ * أدوار قسم الكاشير الجاهزة (٢٣/٧/٢٦) — «كاشير تجزئة» و«كاشير طباعة»: دورا `cashier` مخصّصان يحصر
+ * كلٌّ منهما في **تبويب قسمه الواحد**، مع بقاء سائر قدرات الكاشير (وردية/عملاء/مصروفات/متجر…).
+ * تُبذَر في جدول `roles` (baseRole=cashier + خريطة كاملة) فتُحَلّ في context إلى permissionsOverride
+ * مشتقّ ⇒ تعمل كل بوّابات الخادم بلا تغيير. العزل: تجزئة⇐`sales`، طباعة⇐`pos`، استقبال⇐`workorders`.
+ *  - «كاشير تجزئة»: يبيع التجزئة فقط ⇒ pos=NONE (لا خدمات طباعة) + workorders=NONE (لا استقبال).
+ *  - «كاشير طباعة»: يبيع خدمات الطباعة فقط ⇒ sales=NONE (لا تجزئة) + workorders=NONE (لا استقبال).
+ */
+export interface SectionRoleSpec {
+  key: string;
+  label: string;
+  description: string;
+  baseRole: RoleKey;
+  permissions: PermissionMap;
+}
+
+export const SECTION_CASHIER_ROLES: SectionRoleSpec[] = [
+  {
+    key: "retail_cashier",
+    label: "كاشير تجزئة",
+    description: "كاشير مخصّص لقسم التجزئة فقط — لا يرى «خدمات طباعة» ولا «استقبال أوامر شغل».",
+    baseRole: "cashier",
+    permissions: { ...ROLE_TEMPLATES.cashier, pos: "NONE", workorders: "NONE" },
+  },
+  {
+    key: "print_cashier",
+    label: "كاشير طباعة",
+    description: "كاشير مخصّص لقسم خدمات الطباعة والاستنساخ فقط — لا يرى «التجزئة» ولا «استقبال أوامر شغل».",
+    baseRole: "cashier",
+    permissions: { ...ROLE_TEMPLATES.cashier, sales: "NONE", workorders: "NONE" },
+  },
+];
+
 export function resolvePermissions(
   role: RoleKey,
   override: PermissionMap | null | undefined
