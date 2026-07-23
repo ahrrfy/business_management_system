@@ -8,7 +8,7 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { normalizeIraqPhoneE164 } from "../lib/phone";
+import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
 import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -360,20 +360,36 @@ export async function listCustomers(input: ListCustomersInput = {}) {
   if (input.customerType) conds.push(eq(customers.customerType, input.customerType));
   if (input.priceTier) conds.push(eq(customers.defaultPriceTier, input.priceTier));
   if (input.q?.trim()) {
-    const q = `%${escLike(input.q.trim())}%`;
+    const raw = input.q.trim();
+    const q = `%${escLike(raw)}%`;
     // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط المنتجات) — «ازرق» يجد
     // «أزرق». الهواتف/الرقم القديم تبقى مطابقة خام (لا معنى للتطبيع العربي على أرقام).
-    const qFolded = `%${escLike(normalizeSearchText(input.q.trim()))}%`;
-    // v3-add-screens: البحث يطال هواتف العميل الثلاثة + الواتساب.
-    // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
-    conds.push(or(
+    const qFolded = `%${escLike(normalizeSearchText(raw))}%`;
+    const orConds = [
       sql`coalesce(${customers.searchNorm}, '') LIKE ${qFolded} ESCAPE '!'`,
+      // v3-add-screens: البحث يطال هواتف العميل الثلاثة + الواتساب.
       sql`${customers.phone} LIKE ${q} ESCAPE '!'`,
       sql`${customers.phone2} LIKE ${q} ESCAPE '!'`,
       sql`${customers.phone3} LIKE ${q} ESCAPE '!'`,
       sql`${customers.whatsapp} LIKE ${q} ESCAPE '!'`,
+      // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
       sql`${customers.legacyCode} LIKE ${q} ESCAPE '!'`,
-    ));
+    ];
+    // T3.2 (إصلاح إلزامي — انحدار بحث الهاتف): T3.1 طبّع الهواتف الجديدة إلى E.164 (+964…) لكن
+    // LIKE الخام أعلاه لا يطابق «0770…» المحلي ضدّ «+964770…» المخزَّن. لاحقة آخر ١٠ أرقام تطابق
+    // كلا الصيغتين (نفس نواة phoneMatchSuffix المُستعملة في findSimilarCustomers) — تُضاف OR
+    // لا تحذف الشروط الخامة القائمة (البحث الجزئي/الرقم القديم يبقيان كما هما).
+    const suf = phoneSuffix10(raw);
+    if (suf) {
+      const sufPat = `%${escLike(suf)}`;
+      orConds.push(
+        sql`${customers.phone} LIKE ${sufPat} ESCAPE '!'`,
+        sql`${customers.phone2} LIKE ${sufPat} ESCAPE '!'`,
+        sql`${customers.phone3} LIKE ${sufPat} ESCAPE '!'`,
+        sql`${customers.whatsapp} LIKE ${sufPat} ESCAPE '!'`,
+      );
+    }
+    conds.push(or(...orConds));
   }
   const where = conds.length ? and(...conds) : undefined;
 
@@ -427,6 +443,25 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
   const like_ = `%${escLike(q)}%`;
   // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط listCustomers أعلاه).
   const likeFolded = `%${escLike(normalizeSearchText(q))}%`;
+  const smartOrConds = [
+    sql`coalesce(${customers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'`,
+    sql`${customers.phone} LIKE ${like_} ESCAPE '!'`,
+    sql`${customers.phone2} LIKE ${like_} ESCAPE '!'`,
+    sql`${customers.phone3} LIKE ${like_} ESCAPE '!'`,
+    sql`${customers.whatsapp} LIKE ${like_} ESCAPE '!'`,
+  ];
+  // T3.2 (إصلاح إلزامي — انحدار بحث الهاتف): هذه الدالة تغذّي CustomerPicker في الكاشير مباشرةً —
+  // أخطر مستهلكٍ للانحدار (بند ٠ الإلزامي). نفس منطق اللاحقة في listCustomers أعلاه.
+  const smartSuf = phoneSuffix10(q);
+  if (smartSuf) {
+    const sufPat = `%${escLike(smartSuf)}`;
+    smartOrConds.push(
+      sql`${customers.phone} LIKE ${sufPat} ESCAPE '!'`,
+      sql`${customers.phone2} LIKE ${sufPat} ESCAPE '!'`,
+      sql`${customers.phone3} LIKE ${sufPat} ESCAPE '!'`,
+      sql`${customers.whatsapp} LIKE ${sufPat} ESCAPE '!'`,
+    );
+  }
   // S5 (٣٠/٦): إضافة defaultPriceTier + currentBalance — حقلان رخيصان من نفس صفّ العملاء
   // يُمكّنان CustomerPicker الكاشير من البحث الخادمي بدل تحميل ٥٠٠ عميل عند الإقلاع.
   const matched = await db
@@ -438,16 +473,7 @@ export async function smartSearchCustomers(input: { q: string; limit?: number })
       currentBalance: customers.currentBalance,
     })
     .from(customers)
-    .where(and(
-      eq(customers.isActive, true),
-      or(
-        sql`coalesce(${customers.searchNorm}, '') LIKE ${likeFolded} ESCAPE '!'`,
-        sql`${customers.phone} LIKE ${like_} ESCAPE '!'`,
-        sql`${customers.phone2} LIKE ${like_} ESCAPE '!'`,
-        sql`${customers.phone3} LIKE ${like_} ESCAPE '!'`,
-        sql`${customers.whatsapp} LIKE ${like_} ESCAPE '!'`,
-      ),
-    ))
+    .where(and(eq(customers.isActive, true), or(...smartOrConds)))
     .orderBy(asc(customers.name))
     .limit(limit);
 

@@ -8,7 +8,7 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
-import { normalizeIraqPhoneE164 } from "../lib/phone";
+import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
 import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -342,21 +342,36 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
   if (!input.includeInactive) conds.push(eq(suppliers.isActive, true));
   if (input.kind) conds.push(eq(suppliers.supplierKind, input.kind));
   if (input.q?.trim()) {
-    const q = `%${escapeLike(input.q.trim())}%`;
+    const raw = input.q.trim();
+    const q = `%${escapeLike(raw)}%`;
     // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط المنتجات/العملاء) — «ازرق»
     // يجد «أزرق». بقية الحقول تبقى مطابقة خام (لا معنى للتطبيع العربي على أرقام/تصنيف إنجليزي).
-    const qFolded = `%${escapeLike(normalizeSearchText(input.q.trim()))}%`;
-    // v3-add-screens: البحث يشمل هواتف المورّد الثلاثة + المدينة + التصنيف.
-    // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
-    conds.push(or(
+    const qFolded = `%${escapeLike(normalizeSearchText(raw))}%`;
+    const orConds = [
       sql`coalesce(${suppliers.searchNorm}, '') LIKE ${qFolded}`,
+      // v3-add-screens: البحث يشمل هواتف المورّد الثلاثة + المدينة + التصنيف.
       like(suppliers.phone, q),
       like(suppliers.phone2, q),
       like(suppliers.phone3, q),
       like(suppliers.city, q),
       like(suppliers.supplierCategory, q),
+      // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
       like(suppliers.legacyCode, q),
-    ));
+    ];
+    // T3.2 (إصلاح إلزامي — انحدار بحث الهاتف): نظير customerService.listCustomers — لاحقة آخر
+    // ١٠ أرقام تطابق «0770…» المحلي ضدّ «+964770…» المخزَّن بعد تطبيع T3.1. تُضاف OR على أعمدة
+    // الهاتف الأربعة (يشمل whatsapp التي لم تكن مطابَقة أصلاً هنا) — لا تُحذف الشروط الخامة القائمة.
+    const suf = phoneSuffix10(raw);
+    if (suf) {
+      const sufPat = `%${escapeLike(suf)}`;
+      orConds.push(
+        like(suppliers.phone, sufPat),
+        like(suppliers.phone2, sufPat),
+        like(suppliers.phone3, sufPat),
+        like(suppliers.whatsapp, sufPat),
+      );
+    }
+    conds.push(or(...orConds));
   }
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db

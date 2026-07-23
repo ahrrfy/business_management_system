@@ -304,11 +304,26 @@ describe("customerService.listCustomers", () => {
     const byName = await listCustomers({ q: "أحمد" });
     expect(byName.rows).toHaveLength(1);
     // T3.1 (بنك جهات الاتصال): تطبيع E.164 خادمي يُخزّن +9647702222222 لا «07702222222» الخام —
-    // بحث السلسلة الفرعية يطابق الصيغة المخزَّنة الآن (بحث محلي الصيغة «0770…» خارج نطاق هذا
-    // التطبيع؛ توحيد البحث بمطابقة لاحقة الأرقام مؤجَّل لمهمة بنك جهات الاتصال اللاحقة).
+    // بحث السلسلة الفرعية يطابق الصيغة المخزَّنة الآن.
     const byPhone = await listCustomers({ q: "+9647702" });
     expect(byPhone.rows).toHaveLength(1);
     expect(byPhone.rows[0].name).toBe("علي حسن");
+  });
+
+  it("T3.2 (إصلاح إلزامي): بحث محلي «0770…» يجد عميلاً مخزَّناً E.164 «+9647702…» — انحدار بحث الهاتف", async () => {
+    await createCustomer({ name: "زبون الهاتف", phone: "07702123456" }, actor);
+    await createCustomer({ name: "آخر", phone: "07709999999" }, actor);
+    // بحث محلي (الصيغة التي يكتبها الكاشير فعلياً) يجد المخزَّن دولياً +9647702123456.
+    const byLocal = await listCustomers({ q: "07702123456" });
+    expect(byLocal.rows).toHaveLength(1);
+    expect(byLocal.rows[0].name).toBe("زبون الهاتف");
+    // بحث دولي جزئي يبقى يعمل (لم يُكسَر بالإصلاح).
+    const byIntlPartial = await listCustomers({ q: "+9647702" });
+    expect(byIntlPartial.rows).toHaveLength(1);
+    expect(byIntlPartial.rows[0].name).toBe("زبون الهاتف");
+    // البحث بالاسم يبقى يعمل.
+    const byName = await listCustomers({ q: "زبون الهاتف" });
+    expect(byName.rows).toHaveLength(1);
   });
 
   it("D2 (١/٧): البحث بالاسم يتجاوز الهمزات/التاء المربوطة عبر searchNorm", async () => {
@@ -355,6 +370,13 @@ describe("customerService.smartSearchCustomers", () => {
     const r = await smartSearchCustomers({ q: "انس" });
     expect(r).toHaveLength(1);
     expect(r[0].name).toBe("أنس التاجر");
+  });
+
+  it("T3.2 (إصلاح إلزامي): بحث محلي يجد عميلاً مخزَّناً E.164 — يغذّي CustomerPicker الكاشير", async () => {
+    await createCustomer({ name: "زبون سمارت", phone: "07702123456" }, actor);
+    const r = await smartSearchCustomers({ q: "07702123456" });
+    expect(r).toHaveLength(1);
+    expect(r[0].name).toBe("زبون سمارت");
   });
 });
 

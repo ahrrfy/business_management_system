@@ -70,4 +70,19 @@ describe("الموردون CRUD", () => {
     expect(noHamza.total).toBe(1);
     expect(noHamza.rows[0].name).toBe("شركة الأمانة للتجارة");
   });
+
+  it("T3.2 (إصلاح إلزامي): بحث محلي «0770…» يجد مورداً مخزَّناً E.164 «+9647702…» — انحدار بحث الهاتف", async () => {
+    // ⚠️ الاسم بلا شدّة عمداً (بذور الاختبار تُكتب بلا شدّات — searchNorm المولَّد لا يطوي
+    // التشكيل، فشدّة في نص الاستعلام JS-normalized تُسقَط بينما تبقى في العمود المخزَّن).
+    await createSupplier({ name: "مورد الهاتف", phone: "07702123456" }, actor);
+    await createSupplier({ name: "آخر", phone: "07709999999" }, actor);
+    const byLocal = await listSuppliers({ q: "07702123456" });
+    expect(byLocal.rows).toHaveLength(1);
+    expect(byLocal.rows[0].name).toBe("مورد الهاتف");
+    const byIntlPartial = await listSuppliers({ q: "+9647702" });
+    expect(byIntlPartial.rows).toHaveLength(1);
+    expect(byIntlPartial.rows[0].name).toBe("مورد الهاتف");
+    const byName = await listSuppliers({ q: "مورد الهاتف" });
+    expect(byName.rows).toHaveLength(1);
+  });
 });
