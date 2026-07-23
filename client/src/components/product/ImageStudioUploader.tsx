@@ -1,5 +1,5 @@
 import { ArrowLeft, Check, Info, Sparkles, Wand2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ImageUploader, type ImageUploaderProps } from "@/components/form/ImageUploader";
 import { Button } from "@/components/ui/button";
 import { normalizeAiStudioImage } from "@/lib/imageStudio/aiStudio";
@@ -37,6 +37,9 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [aiPromptText, setAiPromptText] = useState("");
+  // رمز التشغيل: يتزايد عند كلّ إعادة استهداف ⇒ نتيجةُ تشغيلٍ بطيء (Pro/AI) أُطلق على هدفٍ سابق
+  // تُتجاهَل إن تغيّر الهدف قبل وصولها (وإلّا ظهرت/اعتُمدت معاينةٌ لصورةٍ غير المحدَّدة — سباق Codex P2).
+  const runToken = useRef(0);
 
   const proConfig = trpc.imageStudio.proConfig.useQuery(undefined, { staleTime: 60_000 });
   const proCutout = trpc.imageStudio.proCutout.useMutation();
@@ -66,18 +69,21 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
   }, [value, targetIds]);
 
   const selectOne = (id: string) => {
+    runToken.current++; // يُبطل أيّ تشغيلٍ لهدفٍ سابق ما زال جارياً
     setTargetIds([id]);
     setPreviews(null);
     setError(null);
     setNotice(null);
   };
   const selectAll = () => {
+    runToken.current++;
     setTargetIds(value.map((v) => v.id));
     setPreviews(null);
     setError(null);
     setNotice(null);
   };
   const clearTargets = () => {
+    runToken.current++;
     setTargetIds([]);
     setPreviews(null);
     setNotice(null);
@@ -85,6 +91,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
 
   const runStudio = async () => {
     if (!targets.length) return;
+    const myToken = runToken.current; // لقطة الهدف؛ إن تغيّر قبل الوصول تُهمَل النتيجة
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -111,11 +118,12 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
           return { id: it.id, before: it.dataUrl, after: r.dataUrl, sizeKB: Math.round(r.sizeKB), mode: r.mode };
         }),
       );
+      if (myToken !== runToken.current) return; // أُعيد الاستهداف أثناء المعالجة ⇒ تجاهُل نتيجةٍ لهدفٍ قديم
       setPreviews(results);
       if (fellBackMsg) setNotice(`تعذّر القصّ الاحترافي (${fellBackMsg}) — استُعمل المسار المجاني الآمن.`);
       else if (lowResPreview) setNotice("قُصّت الخلفية بدقّة معاينة منخفضة (الباقة المجانيّة). للنتيجة الاحترافيّة كاملة الدقّة، اشحن رصيد remove.bg.");
     } catch (e) {
-      setError("تعذّرت معالجة الاستوديو: " + String((e as Error)?.message ?? e));
+      if (myToken === runToken.current) setError("تعذّرت معالجة الاستوديو: " + String((e as Error)?.message ?? e));
     } finally {
       setBusy(false);
     }
@@ -123,6 +131,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
 
   const runAiStudio = async () => {
     if (!targets.length) return;
+    const myToken = runToken.current; // لقطة الهدف؛ توليد الذكاء الاصطناعي بطيء ⇒ الحارس أهمّ هنا
     setBusy(true);
     setError(null);
     setNotice(null);
@@ -144,6 +153,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
           if (!firstErr) firstErr = String((e as { message?: string })?.message ?? e ?? "");
         }
       }
+      if (myToken !== runToken.current) return; // أُعيد الاستهداف أثناء التوليد ⇒ تجاهُل النتيجة القديمة
       if (ok.length === 0) {
         setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + firstErr);
         return;
@@ -153,7 +163,7 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
         setNotice(`تعذّر تحويل ${failedCount} من ${targets.length} صورة (${firstErr}).`);
       }
     } catch (e) {
-      setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + String((e as Error)?.message ?? e));
+      if (myToken === runToken.current) setError("تعذّر إنشاء استوديو الذكاء الاصطناعي: " + String((e as Error)?.message ?? e));
     } finally {
       setBusy(false);
     }
@@ -182,17 +192,32 @@ export function ImageStudioUploader(props: ImageUploaderProps) {
       {value.length > 0 && !previews && (
         <div className="space-y-3">
           {targets.length === 0 ? (
-            // لا استهداف بعد: إرشادٌ لاختيار صورة + راحة «تحديد الكل».
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-dashed bg-muted/20 px-3 py-2.5 text-sm text-muted-foreground">
-              <span className="flex items-center gap-1.5">
+            // لا استهداف بعد: منتقي صورٍ **ظاهرٌ دائماً** (يعمل باللمس بلا hover — الأجهزة اللوحية، حيث زرّ
+            // «استوديو» المخفيّ في طبقة التمرير لا يُدرَك). النقر على مصغّرةٍ يستهدفها. يشمل حالة الصورة الواحدة.
+            <div className="space-y-2 rounded-md border border-dashed bg-muted/20 p-3">
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
                 <Sparkles aria-hidden className="size-4 text-violet-500" />
-                لتعديل صورةٍ في الاستوديو: مرّر فوقها ثمّ انقر <b className="text-foreground">«استوديو»</b> — لكل صورة تعديلها المستقل.
-              </span>
-              {value.length > 1 && (
-                <Button type="button" variant="outline" size="sm" onClick={selectAll}>
-                  تحديد كل الصور
-                </Button>
-              )}
+                اختر صورةً لتعديلها في الاستوديو — لكل صورة تعديلها المستقل.
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {value.map((it) => (
+                  <button
+                    key={it.id}
+                    type="button"
+                    onClick={() => selectOne(it.id)}
+                    className="size-14 shrink-0 overflow-hidden rounded-md border bg-card transition hover:ring-2 hover:ring-violet-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet-500"
+                    title={`تعديل ${it.name || "الصورة"} في الاستوديو`}
+                    aria-label={`تعديل ${it.name || "الصورة"} في الاستوديو`}
+                  >
+                    <img src={it.dataUrl || it.url} alt={it.name || "صورة"} className="h-full w-full object-cover" />
+                  </button>
+                ))}
+                {value.length > 1 && (
+                  <Button type="button" variant="outline" size="sm" onClick={selectAll} className="h-14">
+                    تحديد الكل
+                  </Button>
+                )}
+              </div>
             </div>
           ) : (
             // صورةٌ (أو أكثر) مستهدَفة: لوحة الاستوديو تعمل عليها وحدها.
