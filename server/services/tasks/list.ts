@@ -1,10 +1,11 @@
 // قراءة المهام: قائمة مُرقَّمة (keyset) + تفاصيل مهمة + قائمة الموظفين القابلين للإسناد.
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { customers, taskEvents, tasks, users } from "../../../drizzle/schema";
 import { paginateKeyset } from "../../lib/paginateKeyset";
 import { escLike } from "../../lib/sqlLike";
 import { requireDb } from "../tx";
+import { isTaskVisibleToOwnerScope } from "./helpers";
 
 export type TaskStatus = "NEW" | "IN_PROGRESS" | "WAITING_CUSTOMER" | "RESOLVED" | "CANCELLED";
 export type TaskKindFilter = "SERVICE_REQUEST" | "SUPPORT" | "INQUIRY" | "FOLLOW_UP" | "INTERNAL";
@@ -96,7 +97,15 @@ export async function listTasks(ctx: TaskListCtx, filters: ListTasksFilters = {}
   if (effectiveBranchId != null) conds.push(eq(tasks.branchId, effectiveBranchId));
 
   if (ctx.scopedOwnerId != null) {
-    conds.push(or(eq(tasks.assignedTo, ctx.scopedOwnerId), eq(tasks.createdBy, ctx.scopedOwnerId)) as SQL);
+    // مسنَدة له ∪ أنشأها هو ∪ الطابور الوارد غير المسند (NEW بلا assignedTo — مرئيٌّ لكل منفّذي
+    // الفرع ليسحبه أيّهم، نمط أمر الشغل RECEIVED. راجع isTaskVisibleToOwnerScope في helpers.ts).
+    conds.push(
+      or(
+        eq(tasks.assignedTo, ctx.scopedOwnerId),
+        eq(tasks.createdBy, ctx.scopedOwnerId),
+        and(isNull(tasks.assignedTo), eq(tasks.taskStatus, "NEW")),
+      ) as SQL,
+    );
   }
 
   if (filters.status) conds.push(eq(tasks.taskStatus, filters.status));
@@ -172,10 +181,8 @@ export async function getTask(ctx: TaskListCtx, taskId: number) {
   if (ctx.scopedBranchId != null && Number(row.branchId) !== ctx.scopedBranchId) {
     throw new TRPCError({ code: "FORBIDDEN", message: "المهمة لا تخصّ فرعك" });
   }
-  if (ctx.scopedOwnerId != null) {
-    const isAssignee = row.assignedTo != null && Number(row.assignedTo) === ctx.scopedOwnerId;
-    const isCreator = row.createdBy != null && Number(row.createdBy) === ctx.scopedOwnerId;
-    if (!isAssignee && !isCreator) throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة لا تخصّك" });
+  if (ctx.scopedOwnerId != null && !isTaskVisibleToOwnerScope(row, ctx.scopedOwnerId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة لا تخصّك" });
   }
 
   const events = await db

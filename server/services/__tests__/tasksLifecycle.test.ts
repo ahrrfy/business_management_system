@@ -5,7 +5,10 @@
 //  4) resolve مهمة SUPPORT بلا resolutionNote ⇒ BAD_REQUEST؛ معها ⇒ RESOLVED + resolvedAt.
 //  5) setWaiting ثم resume يراكم waitingAccumMs (>٠)؛ effectiveDueAt يزيد بمقدار الانتظار.
 //  6) reopen خلال ٧ أيام ⇒ IN_PROGRESS + reopenCount=1؛ بعد ٨ أيام ⇒ BAD_REQUEST.
-//  7) عزل الموظف: لا يرى ولا يحوّل مهمة ليست له (assignedTo/createdBy).
+//  7) عزل الكتابة صارم حتى مع رؤية الطابور: زميل يرى مهمة NEW غير مسندة لكن لا يعلّق عليها؛
+//     مهمة مُسنَدة صراحةً لغيره تبقى محجوبة رؤيةً وكتابةً.
+//  8) إصلاح S2 حاصر — الطابور الوارد غير المسند: أيّ منفّذ في الفرع يراه ويسحبه (claim)؛ بعد
+//     السحب يختفي عن الزميل الآخر؛ ومهمة مُسنَدة لغير الفاعل لا يراها إطلاقاً.
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
@@ -161,18 +164,64 @@ describe("tasks — آلة الحالات (FSM)", () => {
     await expect(manager.tasks.reopen({ taskId: created2.taskId })).rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
-  it("7) عزل: موظف غير مدير لا يرى ولا يحوّل مهمة ليست له (assignedTo/createdBy)", async () => {
+  it("7) عزل الكتابة صارم حتى مع رؤية الطابور؛ مهمة مُسنَدة لغيره محجوبة رؤيةً وكتابةً", async () => {
     const cashierA = await callerFor(3);
     const cashierB = await callerFor(4);
     const created = await cashierA.tasks.create({ branchId: 1, title: "مهمة خاصة بكاشير أ" });
 
+    // هذه المهمة NEW بلا assignedTo ⇒ طابور وارد مرئيّ للجميع في الفرع (إصلاح S2 حاصر) — كاشير ب
+    // يراها في list/get رغم أنها ليست له، لكنه لا يستطيع الكتابة عليها (addComment يبقى بنطاق
+    // الملكية الفعلية فقط — لا يُفتَح للطابور).
     const list = await cashierB.tasks.list({});
-    expect(list.rows.find((r) => Number(r.id) === created.taskId)).toBeUndefined();
-
+    expect(list.rows.find((r) => Number(r.id) === created.taskId)).toBeDefined();
+    await expect(cashierB.tasks.get({ taskId: created.taskId })).resolves.toBeDefined();
     await expect(cashierB.tasks.addComment({ taskId: created.taskId, note: "تعليق" })).rejects.toMatchObject({ code: "FORBIDDEN" });
 
     // بالمقابل صاحب المهمة (المُنشئ) يستطيع التعليق عليها رغم عدم كونه المُسنَد إليه بعد.
     const commentRes = await cashierA.tasks.addComment({ taskId: created.taskId, note: "متابعة" });
     expect(commentRes.ok).toBe(true);
+
+    // مهمة أخرى مُسنَدة صراحةً لكاشير أ عند الإنشاء (ليست NEW-غير-مسندة) — محجوبة تماماً عن كاشير ب
+    // رؤيةً وكتابةً؛ عزل الملكية الحقيقي بلا تغيير.
+    const createdAssigned = await cashierA.tasks.create({ branchId: 1, title: "مهمة مسنَدة صراحةً لكاشير أ", assignedTo: 3 });
+    const list2 = await cashierB.tasks.list({});
+    expect(list2.rows.find((r) => Number(r.id) === createdAssigned.taskId)).toBeUndefined();
+    await expect(cashierB.tasks.get({ taskId: createdAssigned.taskId })).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("8) الطابور الوارد غير المسند: أيّ منفّذ يراه ويسحبه؛ بعد السحب يختفي عن الزميل؛ مهمة مُسنَدة لغيره لا تُرى", async () => {
+    const admin = await callerFor(1);
+    const cashierA = await callerFor(3);
+    const cashierB = await callerFor(4);
+    const printOp = await callerFor(5);
+
+    // مهمة NEW بلا assignedTo/createdBy (تحاكي إنشاء واتساب التلقائي) — أنشأها admin فلا تتقاطع
+    // مع عزل «أنشأها هو» لكاشير أ/ب، فتختبر طابور «غير المسند» بمعزلٍ عن الملكية.
+    const created = await admin.tasks.create({ branchId: 1, title: "استفسار وارد تلقائياً" });
+    const row = (await db().select().from(s.tasks).where(eq(s.tasks.id, created.taskId)))[0];
+    expect(row.assignedTo).toBeNull();
+    expect(row.createdBy).toBe(1);
+    expect(row.taskStatus).toBe("NEW");
+
+    // كل منفّذي الفرع (كاشير أ/ب وفنّي المطبعة) يرونها في list ويستطيعون فتحها.
+    for (const caller of [cashierA, cashierB, printOp]) {
+      const list = await caller.tasks.list({});
+      expect(list.rows.find((r) => Number(r.id) === created.taskId)).toBeDefined();
+      await expect(caller.tasks.get({ taskId: created.taskId })).resolves.toBeDefined();
+    }
+
+    // كاشير أ يسحبها (claim) — لا حارس ملكية سابق يمنع فتح غير المسند، فقط عزل الفرع + حالة NEW.
+    const claimRes = await cashierA.tasks.claim({ taskId: created.taskId });
+    expect(claimRes.status).toBe("IN_PROGRESS");
+    expect(claimRes.assignedTo).toBe(3);
+
+    // بعد السحب: كاشير ب (لا مُسنَد ولا مُنشئ، والمهمة لم تعُد NEW) لا يراها في list ولا get.
+    const listBAfter = await cashierB.tasks.list({});
+    expect(listBAfter.rows.find((r) => Number(r.id) === created.taskId)).toBeUndefined();
+    await expect(cashierB.tasks.get({ taskId: created.taskId })).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // كاشير أ (المُسنَد إليه الآن فعلاً) ما زال يراها بعد السحب.
+    const listAAfter = await cashierA.tasks.list({});
+    expect(listAAfter.rows.find((r) => Number(r.id) === created.taskId)).toBeDefined();
   });
 });

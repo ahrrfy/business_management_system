@@ -41,8 +41,9 @@ export function assertTaskBranch(task: { branchId: number | string }, actor: Act
 }
 
 /**
- * عزل نطاق الموظف — للقراءة (list/get) وللكتابات «بنطاق واسع» (addComment): غير المرتفع يعمل فقط
- * على مهمّة أسندها لنفسه أو أنشأها (assignedTo=هو ∪ createdBy=هو). admin/manager يعبُران دائماً.
+ * عزل نطاق الموظف — **للكتابات الفعلية «بنطاق واسع» فقط** (addComment): غير المرتفع يعمل حصراً
+ * على مهمّة أسندها لنفسه أو أنشأها (assignedTo=هو ∪ createdBy=هو) — **لا** يشمل الطابور غير المسند
+ * (بخلاف `isTaskVisibleToOwnerScope` أدناه المُستعمَلة للقراءة والسحب). admin/manager يعبُران دائماً.
  */
 export function assertTaskActorScope(
   task: { assignedTo: number | string | null; createdBy: number | string | null },
@@ -55,6 +56,22 @@ export function assertTaskActorScope(
   if (!isAssignee && !isCreator) {
     throw new TRPCError({ code: "FORBIDDEN", message: "هذه المهمة لا تخصّك" });
   }
+}
+
+/**
+ * شرط الرؤية للقراءة (listTasks/getTask) لغير المرتفع — **أوسع** من `assertTaskActorScope`: يضيف
+ * الطابور الوارد غير المسند (مهمة NEW بلا assignedTo) — مرئيٌّ لكل منفّذي الفرع ليسحبه أيّهم (نمط
+ * أمر الشغل RECEIVED غير المسند/claimWorkOrder). المسندة لغيرك أو المغلقة لغيرك تبقى محجوبة.
+ * المُستدعي مسؤول عن عزل الفرع (scopedBranchId) بمعزل عن هذه الدالة.
+ */
+export function isTaskVisibleToOwnerScope(
+  task: { assignedTo: number | string | null; createdBy: number | string | null; taskStatus: string },
+  scopedOwnerId: number,
+): boolean {
+  const isAssignee = task.assignedTo != null && Number(task.assignedTo) === scopedOwnerId;
+  const isCreator = task.createdBy != null && Number(task.createdBy) === scopedOwnerId;
+  const isUnassignedQueue = task.assignedTo == null && task.taskStatus === "NEW";
+  return isAssignee || isCreator || isUnassignedQueue;
 }
 
 /**

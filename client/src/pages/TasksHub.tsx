@@ -135,14 +135,25 @@ function BoardCard({ task, onClick }: { task: TaskRow; onClick: () => void }) {
 }
 
 function BoardColumn({ status, onOpen }: { status: TaskStatus; onOpen: (id: number) => void }) {
-  const q = trpc.tasks.list.useQuery({ status, limit: status === "RESOLVED" ? 20 : 50 });
+  const limit = status === "RESOLVED" ? 20 : 50;
+  const q = trpc.tasks.list.useQuery({ status, limit });
   const meta = STATUS_META[status];
   const rows = q.data?.rows ?? [];
+  // اقتطاع صامت: العمود يجلب صفحة أولى فقط (limit ثابت) بلا ترقيم — العدد المعروض قد يكون
+  // العمود كاملاً لا الإجمالي الحقيقي. hasMore من paginateKeyset (server/lib/paginateKeyset.ts)
+  // يكشف ذلك بدقّة؛ fallback على length===limit إن غاب الحقل لأيّ سبب (توافق عكسي).
+  const truncated = q.data ? (q.data.hasMore ?? rows.length === limit) : false;
   return (
     <div className="flex flex-col gap-2 min-w-[270px] flex-1">
       <div className="flex items-center gap-2 px-1">
         <span className="text-sm font-bold">{meta.label}</span>
-        <Badge variant="neutral" className="tabular-nums">{q.isLoading ? "…" : rows.length}</Badge>
+        <Badge
+          variant="neutral"
+          className="tabular-nums"
+          title={truncated ? "قد توجد مهام إضافية غير معروضة هنا — افتح تبويب «قائمة» لعرضها كاملة." : undefined}
+        >
+          {q.isLoading ? "…" : truncated ? `${rows.length}+` : rows.length}
+        </Badge>
       </div>
       <div className="flex flex-col gap-2 rounded-lg bg-muted/30 p-2 min-h-[140px]">
         {q.isLoading && <LoadingState className="p-6" />}
@@ -153,6 +164,11 @@ function BoardColumn({ status, onOpen }: { status: TaskStatus; onOpen: (id: numb
         {rows.map((t) => (
           <BoardCard key={t.id} task={t} onClick={() => onOpen(Number(t.id))} />
         ))}
+        {!q.isLoading && !q.isError && truncated && (
+          <p className="text-xs text-muted-foreground text-center py-1.5 border-t">
+            معروض أوّل {rows.length} فقط — قد توجد مهام إضافية، افتح تبويب «قائمة» لعرضها كاملة.
+          </p>
+        )}
       </div>
     </div>
   );
