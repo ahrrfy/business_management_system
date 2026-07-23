@@ -736,6 +736,13 @@
       "when": 1785024000018,
       "tag": "0105_shift_type_print_services",
       "breakpoints": true
+    },
+    {
+      "idx": 106,
+      "version": "5",
+      "when": 1785024000019,
+      "tag": "0106_wa_cloud_core",
+      "breakpoints": true
     }
   ]
 }

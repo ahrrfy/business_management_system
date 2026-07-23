@@ -3334,6 +3334,12 @@ export const conversations = mysqlTable(
     lastMessagePreview: varchar("lastMessagePreview", { length: 280 }),
     // OPEN = نَشِط، ARCHIVED = مُؤرشَف يَدوياً، CLOSED = بَعد تَسليم أَمر شَغل.
     status: mysqlEnum("convStatus", ["OPEN", "ARCHIVED", "CLOSED"]).default("OPEN").notNull(),
+    // مُوظَّف مُسنَد لِلمُحادثة — اِختياري (نَمط 0106، مركز واتساب الأعمال).
+    assignedTo: int("assignedTo").references(() => users.id),
+    // آخِر رِسالة IN وَاردة مِن العَميل — مِرساة حِساب نافِذة الرَدّ الحُرّ ٢٤ ساعة (WhatsApp Cloud API).
+    lastInboundAt: timestamp("lastInboundAt"),
+    // رَبط اِختياري بِمورّد (مُحادثات B2B مع مورّدين عبر نَفس صَندوق الوارِد).
+    supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -3365,6 +3371,16 @@ export const conversationMessages = mysqlTable(
     authorUserId: int("authorUserId").references(() => users.id),
     // حالة التَوصيل لِـOUT (لِواتساب: sent/delivered/read).
     deliveryStatus: mysqlEnum("msgDelivery", ["PENDING", "SENT", "DELIVERED", "READ", "FAILED"]),
+    // خَتم زَمني مِن Meta نَفسها (قد يَختلف عَن createdAt بِبُرهة الشَبكة) — نَمط 0106.
+    waTimestamp: timestamp("waTimestamp"),
+    // آخِر تَحديث لِـdeliveryStatus (مِن أَحداث statuses[] في الـwebhook).
+    statusUpdatedAt: timestamp("statusUpdatedAt"),
+    // كود خَطأ Meta عِند FAILED (مِثلاً 131047 = اِنتهاء نافِذة الرَدّ الحُرّ).
+    errorCode: varchar("errorCode", { length: 20 }),
+    // اِسم القالب المُعتمَد لَو الرِسالة مِن نَوع TEMPLATE.
+    templateName: varchar("templateName", { length: 128 }),
+    // مَصدر الرِسالة: API (نِظامنا) أَو PHONE_APP (تَطبيق واتساب الأَعمال على الهاتِف مُباشرةً) أَو SYSTEM.
+    origin: mysqlEnum("origin", ["API", "PHONE_APP", "SYSTEM"]),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (t) => ({
@@ -3410,6 +3426,10 @@ export const channelIntegrations = mysqlTable(
     lastVerifiedAt: timestamp("lastVerifiedAt"),
     // نَتيجة آخر تَحقّق (إن فَشل): سَبب مَقروء لِلعَرض في الشاشة.
     lastError: varchar("lastError", { length: 500 }),
+    // مُعرّف حِساب واتساب الأَعمال (WABA ID) — لِـWhatsApp Cloud API فَقط.
+    wabaId: varchar("wabaId", { length: 80 }),
+    // قاعِدة API مُخصَّصة (حِيادية المُزوّد) — NULL = graph.facebook.com الاِفتراضي.
+    apiBaseUrl: varchar("apiBaseUrl", { length: 160 }),
     updatedBy: int("updatedBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
@@ -3422,6 +3442,97 @@ export const channelIntegrations = mysqlTable(
 );
 export type ChannelIntegration = typeof channelIntegrations.$inferSelect;
 export type InsertChannelIntegration = typeof channelIntegrations.$inferInsert;
+
+/* ============================ مَركز واتساب الأَعمال — نَواة Cloud API (شَريحة #١، 0106) ============================
+ *
+ * المَنطق: طابور إرسال صادِر واحِد (waOutbox) بِـidempotency (dedupeKey) + إعادة مُحاولة (attempts/
+ * nextAttemptAt) + جَدوَلة/حَملات مُستقبَلية (campaignId/taskId رَوابط مَنطقية فَقط — الجَدولان
+ * مَحجوزان لِشَرائح S2/S5 لاحِقاً، بِلا FK فِعلي حَتى تُنشآ). waMedia يَحفظ وَسائط الرَسائل (base64)
+ * بَعد جَلبٍ مُؤجَّل (رَوابط Graph تَنتهي صَلاحيتها بِسُرعة). waWebhookEvents سِجلّ خام تَسلسلي
+ * لِأَحداث الـwebhook الوارِدة (تَشخيص/إعادة مُعالَجة عِند الفَشل).
+ */
+
+/** طابور الإرسال الصادِر لِواتساب (وَ لاحِقاً قَنوات أُخرى) — مَصدر الحَقيقة الوَحيد لِلإرسال. */
+export const waOutbox = mysqlTable(
+  "waOutbox",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).notNull(),
+    // مُعَرّف idempotency — يَمنع إرسالاً مُزدَوجاً لِنَفس الحَدث (إعادة مُحاولة/طَلب مُكَرَّر).
+    dedupeKey: varchar("dedupeKey", { length: 190 }).notNull(),
+    conversationId: bigint("conversationId", { mode: "number" }),
+    toPhoneE164: varchar("toPhoneE164", { length: 20 }),
+    // SESSION_TEXT = رَدّ حُرّ ضِمن نافِذة ٢٤ساعة، TEMPLATE = قالِب مُعتمَد، MEDIA = إرسال وَسائط،
+    // MEDIA_FETCH = جَلب مُؤجَّل لِوَسائط وارِدة (رَوابط Graph تَنتهي بِسُرعة).
+    kind: mysqlEnum("kind", ["SESSION_TEXT", "TEMPLATE", "MEDIA", "MEDIA_FETCH"]).notNull(),
+    // حُمولة الطَلب الكامِلة (نَصّ/قالِب/وَسائط) — شَكلها يَعتمد على kind.
+    payloadJson: json("payloadJson").notNull(),
+    templateName: varchar("templateName", { length: 128 }),
+    templateLang: varchar("templateLang", { length: 10 }),
+    status: mysqlEnum("status", ["QUEUED", "SENDING", "SENT", "FAILED", "CANCELLED"]).default("QUEUED").notNull(),
+    attempts: int("attempts").default(0).notNull(),
+    nextAttemptAt: timestamp("nextAttemptAt"),
+    lastError: varchar("lastError", { length: 500 }),
+    // مُعَرّف الرِسالة عِند Meta بَعد الإرسال (لِمُطابَقة أَحداث statuses[] في الـwebhook).
+    wamid: varchar("wamid", { length: 200 }),
+    // رَوابط مَنطقية فَقط (بِلا FK) — الجَدولان campaigns/tasks لَم يُنشآ بَعد (S2/S5).
+    campaignId: bigint("campaignId", { mode: "number" }),
+    taskId: bigint("taskId", { mode: "number" }),
+    scheduledAt: timestamp("scheduledAt"),
+    createdBy: int("createdBy"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    dedupeUq: unique("uq_wa_outbox_dedupe").on(t.dedupeKey),
+    // الكَنّاس يَنتقي الصُفوف الجاهِزة لِلإرسال/إعادة المُحاولة بِسُرعة (status + وَقت الاِستِحقاق).
+    pickIdx: index("idx_wa_outbox_pick").on(t.status, t.nextAttemptAt),
+    wamidIdx: index("idx_wa_outbox_wamid").on(t.wamid),
+    campaignIdx: index("idx_wa_outbox_campaign").on(t.campaignId, t.status),
+  })
+);
+export type WaOutbox = typeof waOutbox.$inferSelect;
+export type InsertWaOutbox = typeof waOutbox.$inferInsert;
+
+/** وَسائط الرَسائل (وارِدة/صادِرة) — base64 بَعد جَلب مُؤجَّل (رَوابط Graph تَنتهي بِسُرعة). */
+export const waMedia = mysqlTable(
+  "waMedia",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    messageId: bigint("messageId", { mode: "number" }).notNull(),
+    mimeType: varchar("mimeType", { length: 80 }).notNull(),
+    bytesBase64: mediumtext("bytesBase64").notNull(),
+    sizeBytes: int("sizeBytes").notNull(),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    // وَسائط فَريدة لِكُل رِسالة — لا تَكرار لِنَفس messageId.
+    messageUq: unique("uq_wa_media_message").on(t.messageId),
+  })
+);
+export type WaMedia = typeof waMedia.$inferSelect;
+export type InsertWaMedia = typeof waMedia.$inferInsert;
+
+/** سِجلّ خام تَسلسلي لِأَحداث الـwebhook الوارِدة (تَشخيص/إعادة مُعالَجة عِند الفَشل). */
+export const waWebhookEvents = mysqlTable(
+  "waWebhookEvents",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    channel: varchar("channel", { length: 20 }).notNull(),
+    integrationId: bigint("integrationId", { mode: "number" }),
+    payloadJson: json("payloadJson").notNull(),
+    status: mysqlEnum("status", ["PENDING", "PROCESSED", "FAILED"]).default("PENDING").notNull(),
+    attempts: int("attempts").default(0).notNull(),
+    lastError: varchar("lastError", { length: 500 }),
+    receivedAt: timestamp("receivedAt").defaultNow().notNull(),
+    processedAt: timestamp("processedAt"),
+  },
+  (t) => ({
+    pickIdx: index("idx_wa_events_pick").on(t.status, t.receivedAt),
+  })
+);
+export type WaWebhookEvent = typeof waWebhookEvents.$inferSelect;
+export type InsertWaWebhookEvent = typeof waWebhookEvents.$inferInsert;
 
 /* ============================ التوصيل (COD) — جهات التوصيل والعهد والترحيل ============================ */
 
