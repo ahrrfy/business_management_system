@@ -3,7 +3,7 @@ import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { D, round2, formatIqd } from "@/lib/money";
 
-export type ShiftKind = "RETAIL" | "RECEPTION";
+export type ShiftKind = "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
 
 export interface OpeningContinuity {
   loading: boolean;

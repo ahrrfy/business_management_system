@@ -89,8 +89,9 @@ export const shiftRouter = router({
         branchId: z.number().int().positive(),
         // SHIFT-VALIDATE (تدقيق ٢/٧): الرصيد الافتتاحي مالٌ غير سالب (كان z.string() يقبل السالب).
         openingBalance: z.string().regex(/^\d+(\.\d{1,2})?$/, "الرصيد الافتتاحي مبلغ غير سالب").default("0"),
-        // نوع الوردية: RETAIL (كاشير) أو RECEPTION (خدمة الزبائن). يُفتَح من شاشة الاستقبال بـRECEPTION.
-        shiftType: z.enum(["RETAIL", "RECEPTION"]).default("RETAIL"),
+        // نوع الوردية: RETAIL (كاشير التجزئة) / RECEPTION (خدمة الزبائن، يُفتَح من شاشة الاستقبال) /
+        // PRINT_SERVICES (كاشير خدمات الطباعة، يُفتَح من شاشة الطباعة — درج مستقلّ بقرار المالك ٢٣/٧/٢٦).
+        shiftType: z.enum(["RETAIL", "RECEPTION", "PRINT_SERVICES"]).default("RETAIL"),
         // ①ج سبب اختلاف الرصيد الافتتاحيّ عن المتبقّي من الوردية السابقة (إلزاميّ عند الاختلاف —
         // يُفرَض داخل openShift خادمياً تحت المعاملة). اختياريّ هنا: أوّل وردية/لا اختلاف لا يَطلبه.
         openingDiscrepancyReason: z.string().max(500).optional(),
@@ -138,7 +139,7 @@ export const shiftRouter = router({
     .input(
       z.object({
         branchId: z.number().int().positive(),
-        shiftType: z.enum(["RETAIL", "RECEPTION"]).default("RETAIL"),
+        shiftType: z.enum(["RETAIL", "RECEPTION", "PRINT_SERVICES"]).default("RETAIL"),
       }),
     )
     .query(({ input, ctx }) => {
@@ -288,8 +289,9 @@ export const shiftRouter = router({
     .input(
       z.object({
         branchId: z.number().int().positive(),
-        // بوّابة الاستقبال تستعلم عن وردية RECEPTION صراحةً؛ بدونه يُرجَع أيّ وردية مفتوحة.
-        shiftType: z.enum(["RETAIL", "RECEPTION"]).optional(),
+        // كل شاشة تستعلم عن نوع ورديتها صراحةً (RECEPTION للاستقبال، PRINT_SERVICES للطباعة)؛
+        // بدونه يُرجَع أيّ وردية مفتوحة.
+        shiftType: z.enum(["RETAIL", "RECEPTION", "PRINT_SERVICES"]).optional(),
       }),
     )
     .query(({ input, ctx }) => {

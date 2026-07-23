@@ -4,7 +4,8 @@ import { ShoppingCart, Printer, Palette, Lock, Home } from "lucide-react";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
-import { levelSatisfies, type PermissionMap, type RoleKey } from "@shared/permissions";
+import { type PermissionMap, type RoleKey } from "@shared/permissions";
+import { type Mode, canSeeMode } from "./pos/posModeGates";
 
 /**
  * نقطة البيع المُوحَّدة — Shell واحد لـ٣ أوضاع: تجزئة / خدمات طباعة / استقبال.
@@ -28,15 +29,22 @@ import { levelSatisfies, type PermissionMap, type RoleKey } from "@shared/permis
  * - P3: lazyWithRetry بَدل React.lazy لتَجاوز فَشل تَحميل chunks بعد النَشر (نَمط App.tsx).
  */
 
-type Mode = "RETAIL" | "PRINT_SERVICES" | "RECEPTION";
-
 // lazyWithRetry: حارس chunks مُسَتَهلَكة بعد النَشر (تَطابق نَمط App.tsx الذي يَفعل
 // `import { lazyWithRetry as lazy }`).
 const POS = lazyWithRetry(() => import("@/pages/POS"));
 const PrintPOS = lazyWithRetry(() => import("@/pages/PrintPOS"));
 const Reception = lazyWithRetry(() => import("@/pages/Reception"));
 
-const MODES: { v: Mode; label: string; subtitle: string; Icon: typeof ShoppingCart; activeCls: string; roles?: RoleKey[] }[] = [
+// عزل الصلاحيات بين الأقسام (٢٣/٧/٢٦): بوّابة كل تبويب مُعرَّفة في posModeGates (سياسةٌ نقيّة قابلة
+// للاختبار) — RETAIL→sales ، PRINT_SERVICES→pos ، RECEPTION→workorders، موحَّدةٌ مع بوّابات الخادم
+// عبر canSeeMode. MODES هنا للعرض فقط (تسمية/أيقونة/تنسيق).
+const MODES: {
+  v: Mode;
+  label: string;
+  subtitle: string;
+  Icon: typeof ShoppingCart;
+  activeCls: string;
+}[] = [
   {
     v: "RETAIL",
     label: "تجزئة",
@@ -57,8 +65,6 @@ const MODES: { v: Mode; label: string; subtitle: string; Icon: typeof ShoppingCa
     subtitle: "تصميم • أمر شغل • قنوات",
     Icon: Palette,
     activeCls: "border-violet-500 bg-violet-50 text-violet-700",
-    // حارس دور P2 — كان على /work-orders/reception كَـRequireRole في App.tsx السابق.
-    roles: ["admin", "manager", "cashier"],
   },
 ];
 
@@ -66,20 +72,6 @@ function readMode(searchString: string): Mode {
   const m = new URLSearchParams(searchString).get("mode");
   if (m === "PRINT_SERVICES" || m === "RECEPTION" || m === "RETAIL") return m;
   return "RETAIL";
-}
-
-// ٦/٧: admin يمرّ دائماً، والمنح الصريح لوحدة «خدمة العملاء» (workorders=FULL عبر مصفوفة
-// الصلاحيات/دور مخصّص) يفتح وضع الاستقبال أيضاً — مرآة بوّابة الخادم workordersCashierProcedure.
-function canSee(
-  roles: RoleKey[] | undefined,
-  current: RoleKey | undefined,
-  override?: PermissionMap | null
-): boolean {
-  if (!roles) return true;
-  if (!current) return false;
-  if (current === "admin") return true;
-  if (roles.includes(current)) return true;
-  return levelSatisfies(override?.workorders, "FULL");
 }
 
 export default function PointOfSale() {
@@ -99,17 +91,17 @@ export default function PointOfSale() {
   const meLoading = me.isLoading;
 
   const visibleModes = useMemo(
-    () => (meLoading ? [] : MODES.filter((m) => canSee(m.roles, myRole, myPerms))),
+    () => (meLoading ? [] : MODES.filter((m) => canSeeMode(m.v, myRole, myPerms))),
     [meLoading, myRole, myPerms],
   );
   const activeModeMeta = MODES.find((m) => m.v === activeMode);
-  const accessDenied = !meLoading && activeModeMeta != null && !canSee(activeModeMeta.roles, myRole, myPerms);
+  const accessDenied = !meLoading && activeModeMeta != null && !canSeeMode(activeModeMeta.v, myRole, myPerms);
 
   function setMode(next: Mode) {
     if (next === activeMode) return;
     if (meLoading) return; // لا تَبديل قَبل اِكتمال الدور.
     const meta = MODES.find((m) => m.v === next);
-    if (!canSee(meta?.roles, myRole, myPerms)) return;
+    if (!meta || !canSeeMode(meta.v, myRole, myPerms)) return;
     const url = next === "RETAIL" ? "/pos" : `/pos?mode=${next}`;
     navigate(url, { replace: true });
   }
@@ -125,22 +117,23 @@ export default function PointOfSale() {
       const idx = e.key === "1" ? 0 : e.key === "2" ? 1 : e.key === "3" ? 2 : -1;
       if (idx < 0) return;
       const target = MODES[idx];
-      if (!canSee(target.roles, myRole)) return;
+      if (!canSeeMode(target.v, myRole, myPerms)) return;
       e.preventDefault();
       setMode(target.v);
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeMode, myRole, meLoading]);
+  }, [activeMode, myRole, myPerms, meLoading]);
 
-  // P2 edge (ورشة): إن هَبَط دور المستخدم لحظياً (auth.me refetch) وأَصبح الوَضع الحالي مَمنوعاً،
-  // أعِد توجيهه تِلقائياً لـRETAIL (الوَضع الآمن للجَميع) بَدل تَركه على Forbidden صَامتاً.
+  // إن كان الوَضع الحالي مَمنوعاً (وصولٌ مُباشر بـURL لقسمٍ لا يملكه، أو هبوط دورٍ لحظيّ) ⇒ أعِد
+  // توجيهه تِلقائياً لأوّل قسمٍ مسموحٍ له (لا لـRETAIL المُثبَّت — كاشير الطباعة لا يراه بعد الفصل).
+  // إن لم يملك أيّ قسم ⇒ يَبقى على شاشة Forbidden (لا توجيه).
   useEffect(() => {
-    if (accessDenied && activeMode !== "RETAIL") {
-      navigate("/pos", { replace: true });
-    }
-  }, [accessDenied, activeMode, navigate]);
+    if (meLoading || !accessDenied || visibleModes.length === 0) return;
+    const first = visibleModes[0];
+    navigate(first.v === "RETAIL" ? "/pos" : `/pos?mode=${first.v}`, { replace: true });
+  }, [meLoading, accessDenied, visibleModes, navigate]);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background" dir="rtl">
@@ -217,10 +210,10 @@ function Forbidden({ mode }: { mode: Mode }) {
         <Lock aria-hidden className="size-16 text-muted-foreground" />
         <h1 className="text-xl font-semibold">لا تَملك صلاحية للوصول إلى وَضع «{meta?.label}»</h1>
         <p className="text-sm text-muted-foreground">
-          هذا الوَضع مَخصّص لأدوار: {meta?.roles?.map((r) => `«${r}»`).join("، ")}. تَواصل مع مدير النظام لمَنحك الصلاحية.
+          هذا الوَضع مَخصّص للمُصرَّح لهم بوحدة الصلاحيات المرتبطة به. تَواصل مع مدير النظام لمَنحك الصلاحية.
         </p>
-        <Link href="/pos" className="mt-2 text-sm text-primary hover:underline">
-          عُد إلى وَضع «تجزئة»
+        <Link href="/" className="mt-2 text-sm text-primary hover:underline">
+          العودة إلى الرئيسية
         </Link>
       </div>
     </div>

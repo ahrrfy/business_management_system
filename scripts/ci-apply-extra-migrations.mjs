@@ -58,6 +58,10 @@ const EXTRA_MIGRATIONS = [
   "drizzle/migrations/0074_banner_placement.sql",
   "drizzle/migrations/0076_banner_smart_rendering.sql",
   "drizzle/migrations/0077_store_conversion_metrics.sql",
+  // ٢٣/٧/٢٦: نوع وردية PRINT_SERVICES — توسيع enum على shifts.shiftType. db:push لا يُمثّل توسيع
+  // enum موثوقاً على قواعد CI الدائمة (نظير 0068). MODIFY idempotent (يُعيد ضبط العمود لنفس التعريف)
+  // ⇒ آمن للتطبيق المتكرّر بعد db:push. يضمن وجود القيمة الثالثة قبل اختبارات فصل درج الطباعة.
+  "drizzle/migrations/0105_shift_type_print_services.sql",
 ];
 
 const url = process.env.DATABASE_URL;

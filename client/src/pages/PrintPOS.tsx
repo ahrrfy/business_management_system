@@ -123,8 +123,9 @@ export default function PrintPOS() {
   const needsBranchChoice = noAssignedBranch && isElevatedRole && pickedBranch == null;
   const utils = trpc.useUtils();
 
-  // قسم الطباعة: بيع فوري عبر درج التجزئة (RETAIL).
-  const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RETAIL" });
+  // قسم الطباعة: درج/وردية مستقلّة (PRINT_SERVICES) — فصلٌ كامل عن كاشير التجزئة (قرار المالك ٢٣/٧/٢٦).
+  // كان يبيع سابقاً عبر درج التجزئة نفسه (RETAIL) ⇒ لا محاسبة نقدية منفصلة.
+  const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "PRINT_SERVICES" });
   const shift = shiftQ.data;
 
   const servicesQ = trpc.printPos.services.useQuery({ tier: "RETAIL" });
@@ -307,8 +308,8 @@ export default function PrintPOS() {
     onError: (e) => setMessage({ kind: "err", text: e.message }),
   });
 
-  // ①ج استمرارية نقد الورديات: المتوقَّع = متبقّي آخر وردية RETAIL مغلقة لهذا الفرع (يُطابق المُدخَل).
-  const openingCont = useOpeningContinuity({ branchId, shiftType: "RETAIL", opening, enabled: !shift });
+  // ①ج استمرارية نقد الورديات: المتوقَّع = متبقّي آخر وردية PRINT_SERVICES مغلقة لهذا الفرع (يُطابق المُدخَل).
+  const openingCont = useOpeningContinuity({ branchId, shiftType: "PRINT_SERVICES", opening, enabled: !shift });
 
   // ── اختصارات ──
   useEffect(() => {
@@ -390,7 +391,7 @@ export default function PrintPOS() {
             style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box", marginBottom: 16 }} />
           {message && <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : C.danger, marginBottom: 12 }}>{message.text}</div>}
           <OpeningContinuityInline C={C} oc={openingCont} />
-          <button disabled={openShift.isPending || needsBranchChoice || openingCont.blocked} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "RETAIL", openingDiscrepancyReason: openingCont.reasonPayload })}
+          <button disabled={openShift.isPending || needsBranchChoice || openingCont.blocked} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "PRINT_SERVICES", openingDiscrepancyReason: openingCont.reasonPayload })}
             style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice || openingCont.blocked ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice || openingCont.blocked ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice || openingCont.blocked ? "not-allowed" : "pointer" }}>
             {openShift.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح الوردية"}
           </button>
