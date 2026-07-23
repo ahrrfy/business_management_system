@@ -28,6 +28,30 @@ export async function listContactPersons(input: ListContactPersonsInput) {
     .orderBy(desc(contactPersons.isPrimary), asc(contactPersons.name));
 }
 
+export interface ContactPersonOwner {
+  customerId: number | null;
+  supplierId: number | null;
+}
+
+/** يحدّد الطرف المالك لشخص اتصال (عميل XOR مورّد) — للبوّابة الأمنية في الراوتر قبل التعديل/
+ *  التعطيل (update/setInactive لا يحملان supplierId في مدخلهما، بخلاف create/list). لا يرمي
+ *  NOT_FOUND هنا — الاستدعاء اللاحق للخدمة الفعلية يتولّى ذلك برسالة موحّدة. */
+export async function getContactPersonOwner(id: number): Promise<ContactPersonOwner | null> {
+  const db = requireDb();
+  const row = (
+    await db
+      .select({ customerId: contactPersons.customerId, supplierId: contactPersons.supplierId })
+      .from(contactPersons)
+      .where(eq(contactPersons.id, id))
+      .limit(1)
+  )[0];
+  if (!row) return null;
+  return {
+    customerId: row.customerId != null ? Number(row.customerId) : null,
+    supplierId: row.supplierId != null ? Number(row.supplierId) : null,
+  };
+}
+
 function normPersonPhone(s: string | null | undefined): string | null {
   const t = s?.trim();
   return t ? normalizeIraqPhoneE164(t) : null;

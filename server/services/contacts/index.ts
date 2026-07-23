@@ -2,15 +2,16 @@
 export type { ContactKind, ContactsSearchCtx, ContactsSearchInput, ContactsSearchResult, UnifiedContact } from "./search";
 export { searchContacts } from "./search";
 
-export type { Contact360Input } from "./contact360";
+export type { Contact360Ctx, Contact360Input } from "./contact360";
 export { contact360 } from "./contact360";
 
 export type {
+  ContactPersonOwner,
   CreateContactPersonInput,
   ListContactPersonsInput,
   UpdateContactPersonInput,
 } from "./persons";
-export { createContactPerson, listContactPersons, setContactPersonInactive, updateContactPerson } from "./persons";
+export { createContactPerson, getContactPersonOwner, listContactPersons, setContactPersonInactive, updateContactPerson } from "./persons";
 
 export type { FindContactDuplicatesInput } from "./duplicates";
 export { findContactDuplicates } from "./duplicates";

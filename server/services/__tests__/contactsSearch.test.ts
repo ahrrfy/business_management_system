@@ -49,6 +49,9 @@ async function seedBase() {
     { id: 1, openId: "local_admin", name: "أدمن", role: "admin", loginMethod: "local", branchId: 1 },
     { id: 2, openId: "local_manager", name: "مدير", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 3, openId: "local_cashier1", name: "كاشير الفرع ١", role: "cashier", loginMethod: "local", branchId: 1 },
+    // suppliers=FULL (≥READ) بقالبه — لاختبار بوّابة وحدة الموردين (T3.2): دور خارج
+    // مجموعة crmWriteProcedure لكنه يملك وصول suppliers للقراءة (وللكتابة أيضاً).
+    { id: 4, openId: "local_warehouse1", name: "أمين مخزن الفرع ١", role: "warehouse", loginMethod: "local", branchId: 1 },
   ]);
 }
 
@@ -56,7 +59,7 @@ function makeCtx(user: { id: number; role: string; branchId: number | null }) {
   return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as any;
 }
 
-async function callerFor(userId: 1 | 2 | 3) {
+async function callerFor(userId: number) {
   const row = (await db().select().from(s.users).where(eq(s.users.id, userId)).limit(1))[0];
   return appRouter.createCaller(makeCtx(row as any));
 }
@@ -334,5 +337,145 @@ describe("contacts.findDuplicates — كشف ازدواج للقراءة فقط"
 
     const after = Number((await d.select({ n: sql<number>`COUNT(*)` }).from(s.customers))[0].n);
     expect(after).toBe(before);
+  });
+});
+
+// ─── T3.2 إصلاح أمني: عزل contact360 عبر الفروع (IDOR) ─────────────────────
+describe("contacts.contact360 — عزل الفرع للمحادثات/المهام (T3.2 إصلاح أمني)", () => {
+  it("كاشير الفرع ١ لا يرى محادثة/مهمة عميل موجودتين على الفرع ٢ فقط؛ الأدمن يراهما", async () => {
+    const d = db();
+    const custRes = await d.insert(s.customers).values({ name: "عميل عزل الفرع ٣٦٠" });
+    const customerId = extractInsertId(custRes);
+
+    await d.insert(s.tasks).values({
+      taskNumber: "TSK-ISO360-1",
+      branchId: 2,
+      title: "مهمة الفرع ٢ فقط",
+      customerId,
+      taskStatus: "NEW",
+    });
+    await d.insert(s.conversations).values({
+      branchId: 2,
+      channel: "WHATSAPP",
+      channelHandle: "+9647709090909",
+      customerId,
+      displayName: "محادثة الفرع ٢ فقط",
+      lastMessageAt: new Date(),
+    });
+
+    const cashierBranch1 = await callerFor(3);
+    const cashierRes = await cashierBranch1.contacts.contact360({ kind: "customer", id: customerId });
+    expect(cashierRes.openTasks).toHaveLength(0);
+    expect(cashierRes.conversations).toHaveLength(0);
+
+    const adminCaller = await callerFor(1);
+    const adminRes = await adminCaller.contacts.contact360({ kind: "customer", id: customerId });
+    expect(adminRes.openTasks).toHaveLength(1);
+    expect(adminRes.conversations).toHaveLength(1);
+
+    const managerCaller = await callerFor(2);
+    const managerRes = await managerCaller.contacts.contact360({ kind: "customer", id: customerId });
+    expect(managerRes.openTasks).toHaveLength(1);
+    expect(managerRes.conversations).toHaveLength(1);
+  });
+
+  it("كاشير الفرع ١ يرى محادثة/مهمة عميل موجودتين على فرعه هو", async () => {
+    const d = db();
+    const custRes = await d.insert(s.customers).values({ name: "عميل فرع مطابق ٣٦٠" });
+    const customerId = extractInsertId(custRes);
+
+    await d.insert(s.tasks).values({
+      taskNumber: "TSK-ISO360-2",
+      branchId: 1,
+      title: "مهمة الفرع ١",
+      customerId,
+      taskStatus: "NEW",
+    });
+    await d.insert(s.conversations).values({
+      branchId: 1,
+      channel: "WHATSAPP",
+      channelHandle: "+9647709090910",
+      customerId,
+      displayName: "محادثة الفرع ١",
+      lastMessageAt: new Date(),
+    });
+
+    const cashierBranch1 = await callerFor(3);
+    const res = await cashierBranch1.contacts.contact360({ kind: "customer", id: customerId });
+    expect(res.openTasks).toHaveLength(1);
+    expect(res.conversations).toHaveLength(1);
+  });
+});
+
+// ─── T3.2 إصلاح أمني: بوّابة وحدة suppliers على مسارات contacts (تجاوز عبر crm) ──
+describe("contacts — بوّابة وحدة الموردين (T3.2 إصلاح أمني)", () => {
+  async function seedSupplier(name: string) {
+    const d = db();
+    const res = await d.insert(s.suppliers).values({ name });
+    return extractInsertId(res);
+  }
+
+  it("كاشير (suppliers=NONE، crm=FULL) يُرفض FORBIDDEN على contact360/findDuplicates/persons.create لمورّد", async () => {
+    // بلا شدّة/أرقام هندية في القيم الفعلية المُخزَّنة أو المُستعلَمة — searchNorm المولَّد لا
+    // يطويهما (فخّ موثَّق: name-assistant-2026-07-20) فيُفشِل مطابقة q بصمت لا علاقة له بالبوّابة.
+    const supplierId = await seedSupplier("مورد بوابة الصلاحية واحد");
+    const cashierCaller = await callerFor(3);
+
+    await expect(cashierCaller.contacts.contact360({ kind: "supplier", id: supplierId })).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    await expect(cashierCaller.contacts.findDuplicates({ kind: "supplier", id: supplierId })).rejects.toMatchObject({
+      code: "FORBIDDEN",
+    });
+    await expect(
+      cashierCaller.contacts.persons.create({ supplierId, name: "شخص اتصال مورد" }),
+    ).rejects.toMatchObject({ code: "FORBIDDEN" });
+  });
+
+  it("كاشير لا يرى نوع supplier في contacts.search رغم مطابقة الاسم (يُستبعَد بصمت بلا خطأ)", async () => {
+    await seedSupplier("مورد بحث محجوب عن الكاشير");
+    const cashierCaller = await callerFor(3);
+    const res = await cashierCaller.contacts.search({ q: "بحث محجوب عن الكاشير" });
+    // تأكيد إيجابي أنّ المطابقة نفسها كانت لتنجح لولا البوّابة (استبعاد صامت لا فشل بحث خفي):
+    // المدير (suppliers=FULL) يرى نفس المورّد بنفس الاستعلام.
+    const managerRes = await (await callerFor(2)).contacts.search({ q: "بحث محجوب عن الكاشير" });
+    expect(managerRes.rows.some((r) => r.kind === "supplier")).toBe(true);
+    expect(res.rows.some((r) => r.kind === "supplier")).toBe(false);
+  });
+
+  it("كاشير يطلب kinds:['supplier'] صراحةً ⇒ نتيجة فارغة بلا خطأ (لا FORBIDDEN على search)", async () => {
+    await seedSupplier("مورد طلب صريح محجوب");
+    const cashierCaller = await callerFor(3);
+    const res = await cashierCaller.contacts.search({ q: "طلب صريح محجوب", kinds: ["supplier"] });
+    expect(res.rows).toHaveLength(0);
+  });
+
+  it("أمين مخزن (suppliers=FULL بقالبه، دور خارج قائمة crmWriteProcedure) يرى المورّد في contact360 وsearch وfindDuplicates بلا رفض", async () => {
+    // ملاحظة نطاق: persons.create يبقى محجوباً عن أمين المخزن لأن crmWriteProcedure نفسها
+    // (بوّابة crm الحالية، خارج نطاق هذا الإصلاح) لا تُدرجه ولا يملك crm=FULL بقالبه — لا علاقة
+    // ببوّابة suppliers الجديدة. الفحص هنا يقتصر على مسارات القراءة الثلاثة.
+    const supplierId = await seedSupplier("مورد بوابة الصلاحية اثنان");
+    await seedSupplier("مورد بحث امين المخزن");
+    const warehouseCaller = await callerFor(4);
+
+    const res360 = await warehouseCaller.contacts.contact360({ kind: "supplier", id: supplierId });
+    expect(res360.kind).toBe("supplier");
+
+    const searchRes = await warehouseCaller.contacts.search({ q: "بحث امين المخزن" });
+    expect(searchRes.rows.some((r) => r.kind === "supplier")).toBe(true);
+
+    const dupRes = await warehouseCaller.contacts.findDuplicates({ kind: "supplier", id: supplierId });
+    expect(Array.isArray(dupRes)).toBe(true);
+  });
+
+  it("مدير (crm=FULL و suppliers=FULL) غير متأثّر — contact360/findDuplicates/search/persons.create كلها تعمل كما كانت", async () => {
+    const supplierId = await seedSupplier("مورد بوابة الصلاحية ثلاثة");
+    const managerCaller = await callerFor(2);
+    const res360 = await managerCaller.contacts.contact360({ kind: "supplier", id: supplierId });
+    expect(res360.kind).toBe("supplier");
+    const searchRes = await managerCaller.contacts.search({ q: "بوابة الصلاحية ثلاثة" });
+    expect(searchRes.rows.some((r) => r.kind === "supplier")).toBe(true);
+    const created = await managerCaller.contacts.persons.create({ supplierId, name: "شخص اتصال مورد المدير" });
+    expect(created.id).toBeGreaterThan(0);
   });
 });

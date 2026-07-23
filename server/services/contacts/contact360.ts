@@ -13,7 +13,15 @@ export interface Contact360Input {
   id: number;
 }
 
-async function customer360(id: number) {
+/** عزل الفرع لبطاقة ٣٦٠° — نفس شكل ctx المحقون عبر branchScopedProcedure (search.ts/tasks/list.ts
+ *  النمط المرجعي). null = عابر للفروع (مدير/أدمن)؛ رقم = يقصر conversations/tasks على ذلك الفرع
+ *  (الجدولان الوحيدان اللذان يحملان branchId هنا — العميل/المورّد/الفواتير/أشخاص الاتصال بلا
+ *  branchId منطقياً فتبقى عابرة للفروع كما كانت). */
+export interface Contact360Ctx {
+  scopedBranchId: number | null;
+}
+
+async function customer360(id: number, scopedBranchId: number | null) {
   const db = requireDb();
   const customer = (await db.select().from(customers).where(eq(customers.id, id)).limit(1))[0];
   if (!customer) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
@@ -31,6 +39,8 @@ async function customer360(id: number) {
     .orderBy(desc(invoices.id))
     .limit(5);
 
+  const taskConds = [eq(tasks.customerId, id), notInArray(tasks.taskStatus, [...CLOSED_TASK_STATUSES])];
+  if (scopedBranchId != null) taskConds.push(eq(tasks.branchId, scopedBranchId));
   const openTasks = await db
     .select({
       id: tasks.id,
@@ -41,10 +51,12 @@ async function customer360(id: number) {
       dueAt: tasks.dueAt,
     })
     .from(tasks)
-    .where(and(eq(tasks.customerId, id), notInArray(tasks.taskStatus, [...CLOSED_TASK_STATUSES])))
+    .where(and(...taskConds))
     .orderBy(desc(tasks.id))
     .limit(20);
 
+  const convConds = [eq(conversations.customerId, id)];
+  if (scopedBranchId != null) convConds.push(eq(conversations.branchId, scopedBranchId));
   const convs = await db
     .select({
       id: conversations.id,
@@ -55,7 +67,7 @@ async function customer360(id: number) {
       unreadCount: conversations.unreadCount,
     })
     .from(conversations)
-    .where(eq(conversations.customerId, id))
+    .where(and(...convConds))
     .orderBy(desc(conversations.lastMessageAt))
     .limit(10);
 
@@ -75,7 +87,7 @@ async function customer360(id: number) {
   };
 }
 
-async function supplier360(id: number) {
+async function supplier360(id: number, scopedBranchId: number | null) {
   const db = requireDb();
   const supplier = (await db.select().from(suppliers).where(eq(suppliers.id, id)).limit(1))[0];
   if (!supplier) throw new TRPCError({ code: "NOT_FOUND", message: "المورّد غير موجود" });
@@ -87,6 +99,8 @@ async function supplier360(id: number) {
     .orderBy(desc(contactPersons.isPrimary), contactPersons.name);
 
   // ربط اختياري بمحادثات B2B (conversations.supplierId — مركز واتساب الأعمال، 0106).
+  const convConds = [eq(conversations.supplierId, id)];
+  if (scopedBranchId != null) convConds.push(eq(conversations.branchId, scopedBranchId));
   const convs = await db
     .select({
       id: conversations.id,
@@ -97,7 +111,7 @@ async function supplier360(id: number) {
       unreadCount: conversations.unreadCount,
     })
     .from(conversations)
-    .where(eq(conversations.supplierId, id))
+    .where(and(...convConds))
     .orderBy(desc(conversations.lastMessageAt))
     .limit(10);
 
@@ -109,6 +123,6 @@ async function supplier360(id: number) {
   };
 }
 
-export async function contact360(input: Contact360Input) {
-  return input.kind === "customer" ? customer360(input.id) : supplier360(input.id);
+export async function contact360(input: Contact360Input, ctx: Contact360Ctx) {
+  return input.kind === "customer" ? customer360(input.id, ctx.scopedBranchId) : supplier360(input.id, ctx.scopedBranchId);
 }
