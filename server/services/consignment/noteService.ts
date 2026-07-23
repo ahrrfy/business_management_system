@@ -319,6 +319,107 @@ export async function consignmentMarginsReport(input: { startDate: string; endDa
   };
 }
 
+export interface ConsignmentStatementLine {
+  productId: number;
+  variantId: number;
+  productName: string;
+  sku: string;
+  soldQty: number;
+  soldValue: string;
+  share: string;
+  margin: string;
+  marginPct: string;
+}
+export interface ConsignmentSettlementStatement {
+  consignorId: number;
+  consignorName: string;
+  currentOwed: string;
+  period: { startDate: string; endDate: string; soldQty: number; soldValue: string; share: string; margin: string; marginPct: string };
+  lines: ConsignmentStatementLine[];
+  remaining: { qty: number; valueByShare: string };
+}
+
+/**
+ * كشف تسوية مودِع (ش٥، قراءةٌ فقط للمعاينة/الطباعة — لا جدول مقفول ولا مسّ تدفّق المال): تفصيل نشاط
+ * مودِعٍ خلال فترة لتحرير سند التسوية القائم (voucher-with-cap). الترويسة: المستحقّ الحاليّ
+ * (`suppliers.currentBalance` — كامل المدى، AP) + إجماليات الفترة (net). الأسطر: لكل صنف بيعٌ
+ * (net المرتجعات، نفس نموذج تقرير الهوامش). المتبقّي: بضاعته الحيّة بالحصّة (نفس تقرير الأرصدة).
+ * الجزء «المقفول» من تصميم 0093 (أسطر مرتبطة بقيود الدفتر + uq_cstl_entry أساساً للتسوية) مؤجَّلٌ
+ * صراحةً — يمسّ حوكمة المال. هذا الكشف مستندٌ استرشاديّ يرافق التسوية القائمة، لا يستبدلها.
+ */
+export async function consignmentSettlementStatement(input: {
+  consignorId: number; startDate: string; endDate: string; branchId?: number;
+}): Promise<ConsignmentSettlementStatement | null> {
+  const db = getDb();
+  if (!db) return null;
+  const [sup] = await db
+    .select({ id: suppliers.id, name: suppliers.name, owed: suppliers.currentBalance, kind: suppliers.supplierKind })
+    .from(suppliers).where(eq(suppliers.id, input.consignorId)).limit(1);
+  if (!sup || sup.kind !== "CONSIGNOR") return null;
+
+  const branchCond = input.branchId ? sql`AND inv.branchId = ${input.branchId}` : sql``;
+  const lineRows: any = await db.execute(sql`
+    SELECT
+      p.id AS productId, pv.id AS variantId, p.name AS productName, pv.sku AS sku,
+      CAST(COALESCE(SUM(ii.baseQuantity - ii.returnedBaseQuantity), 0) AS CHAR) AS soldQty,
+      CAST(COALESCE(SUM(ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity), 0) AS CHAR) AS soldValue,
+      CAST(COALESCE(SUM(ii.unitCost * (ii.baseQuantity - ii.returnedBaseQuantity)), 0) AS CHAR) AS share
+    FROM invoiceItems ii
+      JOIN invoices inv ON inv.id = ii.invoiceId
+      JOIN productVariants pv ON pv.id = ii.variantId
+      JOIN products p ON p.id = pv.productId AND p.isConsignment = true AND p.consignorId = ${input.consignorId}
+    WHERE ii.baseQuantity > 0
+      AND inv.invoiceDate >= ${input.startDate} AND inv.invoiceDate < DATE_ADD(${input.endDate}, INTERVAL 1 DAY)
+      ${branchCond}
+    GROUP BY p.id, pv.id, p.name, pv.sku
+    HAVING SUM(ii.baseQuantity - ii.returnedBaseQuantity) <> 0
+    ORDER BY SUM(ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity) DESC
+  `);
+  const rawLines = Array.isArray(lineRows) ? (lineRows[0] ?? lineRows) : lineRows?.rows ?? [];
+  let pSold = money(0), pShare = money(0), pQty = 0;
+  const lines: ConsignmentStatementLine[] = (rawLines as any[]).map((r) => {
+    const soldValue = round2(money(r.soldValue ?? "0"));
+    const share = round2(money(r.share ?? "0"));
+    const margin = round2(soldValue.minus(share));
+    const marginPct = soldValue.gt(0) ? round2(margin.dividedBy(soldValue).times(100)) : money(0);
+    pSold = pSold.plus(soldValue); pShare = pShare.plus(share); pQty += Number(r.soldQty ?? 0);
+    return {
+      productId: Number(r.productId), variantId: Number(r.variantId),
+      productName: String(r.productName), sku: String(r.sku ?? ""),
+      soldQty: Number(r.soldQty ?? 0), soldValue: soldValue.toFixed(2), share: share.toFixed(2),
+      margin: margin.toFixed(2), marginPct: marginPct.toFixed(2),
+    };
+  });
+  const pMargin = round2(pSold.minus(pShare));
+  const pPct = pSold.gt(0) ? round2(pMargin.dividedBy(pSold).times(100)) : money(0);
+
+  // المتبقّي الحيّ بالحصّة (نفس نموذج تقرير الأرصدة).
+  const branchCondBs = input.branchId ? sql`AND bs.branchId = ${input.branchId}` : sql``;
+  const remRows: any = await db.execute(sql`
+    SELECT
+      CAST(COALESCE(SUM(bs.quantity), 0) AS CHAR) AS qty,
+      CAST(COALESCE(SUM(bs.quantity * pv.costPrice), 0) AS CHAR) AS valueByShare
+    FROM products p
+      JOIN productVariants pv ON pv.productId = p.id
+      LEFT JOIN branchStock bs ON bs.variantId = pv.id ${branchCondBs}
+    WHERE p.isConsignment = true AND p.consignorId = ${input.consignorId}
+  `);
+  const rem = (Array.isArray(remRows) ? (remRows[0] ?? remRows) : remRows?.rows ?? [])[0] ?? {};
+
+  return {
+    consignorId: Number(sup.id),
+    consignorName: String(sup.name),
+    currentOwed: round2(money(sup.owed ?? "0")).toFixed(2),
+    period: {
+      startDate: input.startDate, endDate: input.endDate, soldQty: pQty,
+      soldValue: round2(pSold).toFixed(2), share: round2(pShare).toFixed(2),
+      margin: pMargin.toFixed(2), marginPct: pPct.toFixed(2),
+    },
+    lines,
+    remaining: { qty: Number(rem.qty ?? 0), valueByShare: round2(money(rem.valueByShare ?? "0")).toFixed(2) },
+  };
+}
+
 /** أصناف مودِع بعينه — لمنتقي أصناف سند الإيداع/السحب (أصناف هذا المودِع فقط + وحدة الأساس). */
 export async function listConsignorProducts(consignorId: number, _branchId: number) {
   const db = getDb();

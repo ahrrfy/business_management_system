@@ -1,5 +1,6 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { PageHeader } from "@/components/PageHeader";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
@@ -33,6 +34,13 @@ export default function ConsignmentSettlements() {
   const margins = trpc.consignments.marginsReport.useQuery({ startDate, endDate });
   const marginRows = margins.data?.rows ?? [];
   const marginTotals = margins.data?.totals;
+
+  // كشف تسوية مودِع (معاينة، نفس فترة تقرير الهوامش) — يُفتح بحوار عند اختيار مودِع.
+  const [stmtConsignor, setStmtConsignor] = useState<number | null>(null);
+  const statement = trpc.consignments.settlementStatement.useQuery(
+    { consignorId: stmtConsignor ?? 0, startDate, endDate },
+    { enabled: stmtConsignor != null },
+  );
 
   const settle = trpc.consignments.createSettlement.useMutation({
     onSuccess: () => {
@@ -89,6 +97,7 @@ export default function ConsignmentSettlements() {
                           <Button size="sm" variant="outline" disabled={owed <= 0 || settle.isPending} onClick={() => doSettle(r.consignorId, r.consignorName, r.owed)}>
                             {owed > 0 ? "تسوية" : "لا مستحق"}
                           </Button>
+                          <Button size="sm" variant="ghost" onClick={() => setStmtConsignor(r.consignorId)}>كشف تسوية</Button>
                           <Link href={`/suppliers-statement?id=${r.consignorId}`} className="text-xs text-primary underline">كشف حساب</Link>
                         </div>
                       </td>
@@ -163,6 +172,64 @@ export default function ConsignmentSettlements() {
           </ScrollTableShell>
         </CardContent>
       </Card>
+
+      <Dialog open={stmtConsignor != null} onOpenChange={(o) => !o && setStmtConsignor(null)}>
+        <DialogContent className="max-w-3xl max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>كشف تسوية مودِع{statement.data ? ` — ${statement.data.consignorName}` : ""}</DialogTitle>
+          </DialogHeader>
+          {statement.isLoading && <p className="text-sm text-muted-foreground py-6 text-center">جارٍ التحميل…</p>}
+          {statement.data && (
+            <div className="space-y-4">
+              <p className="text-xs text-muted-foreground">الفترة من {statement.data.period.startDate} إلى {statement.data.period.endDate}. مستندٌ استرشاديٌّ للمعاينة يرافق سند التسوية.</p>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <Kpi label="المستحقّ الحاليّ" value={fmt(statement.data.currentOwed)} strong />
+                <Kpi label="مبيعات الفترة" value={fmt(statement.data.period.soldValue)} />
+                <Kpi label="حصّة المودِع" value={fmt(statement.data.period.share)} />
+                <Kpi label={`هامش المكتبة (${statement.data.period.marginPct}٪)`} value={fmt(statement.data.period.margin)} />
+              </div>
+              <div>
+                <div className="text-sm font-medium mb-1">تفصيل المبيعات (صافي المرتجعات)</div>
+                <ScrollTableShell bordered>
+                  <table className="w-full text-sm">
+                    <thead className="bg-muted/50">
+                      <tr>
+                        <th className="p-2">الصنف</th><th className="p-2 text-center">كمية</th>
+                        <th className="p-2 text-start">مُباع</th><th className="p-2 text-start">حصّة</th><th className="p-2 text-start">هامش</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {statement.data.lines.map((l) => (
+                        <tr key={l.variantId} className="border-t">
+                          <td className="p-2">{l.productName} <span className="text-xs text-muted-foreground">{l.sku}</span></td>
+                          <td className="p-2 text-center tabular-nums">{l.soldQty}</td>
+                          <td className="p-2 text-start tabular-nums" dir="ltr">{fmt(l.soldValue)}</td>
+                          <td className="p-2 text-start tabular-nums text-muted-foreground" dir="ltr">{fmt(l.share)}</td>
+                          <td className="p-2 text-start tabular-nums text-emerald-600 dark:text-emerald-400" dir="ltr">{fmt(l.margin)}</td>
+                        </tr>
+                      ))}
+                      {statement.data.lines.length === 0 && <TableEmptyRow colSpan={5} message="لا مبيعات في هذه الفترة." />}
+                    </tbody>
+                  </table>
+                </ScrollTableShell>
+              </div>
+              <div className="flex items-center gap-6 text-sm border-t pt-3">
+                <span>البضاعة المتبقية لدى المكتبة: <b className="tabular-nums">{statement.data.remaining.qty}</b> قطعة</span>
+                <span className="text-muted-foreground">قيمتها بالحصّة: <span className="tabular-nums" dir="ltr">{fmt(statement.data.remaining.valueByShare)}</span></span>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function Kpi({ label, value, strong }: { label: string; value: string; strong?: boolean }) {
+  return (
+    <div className="rounded-md border p-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className={`tabular-nums ${strong ? "text-base font-semibold" : "text-sm"}`} dir="ltr">{value}</div>
     </div>
   );
 }
