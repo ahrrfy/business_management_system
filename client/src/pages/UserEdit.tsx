@@ -18,6 +18,7 @@ import { AlertTriangle, Check, Monitor, Zap } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_OPTIONS, ROLE_LABEL } from "./Users";
+import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
 import {
   ROLES,
   ROLE_TEMPLATES,
@@ -371,6 +372,16 @@ export default function UserEdit() {
             {customRoleId ? (
               <p className="text-[11px] text-muted-foreground">دور مخصّص — صلاحياته تُدار من شاشة «الأدوار والصلاحيات».</p>
             ) : roleInfo ? <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p> : null}
+            {/* معاينة حيّة للأثر الفعليّ (ش١ RBAC): «سيرى: تجزئة فقط» — تلتقط خطأ اختيار الدور قبل الحفظ. */}
+            <div className="pt-1">
+              <EffectiveAccessForAssignment
+                role={role}
+                permsOverride={permsOverride}
+                customRoleId={customRoleId}
+                customRoles={customRoles}
+                title="بعد الحفظ سيرى هذا الحساب:"
+              />
+            </div>
           </div>
           <div className="space-y-1">
             <Label htmlFor="branch">الفرع</Label>

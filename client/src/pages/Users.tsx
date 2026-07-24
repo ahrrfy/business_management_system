@@ -10,6 +10,20 @@ import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
 import { Link, useSearch } from "wouter";
 import { AlertTriangle } from "lucide-react";
+import { POS_STATION_LABEL, type PosStation } from "@shared/permissions";
+
+/** شارة «القسم الفعليّ» — ما سيفتحه الحساب فعلاً في نقطة البيع (طبقة الشفافية ش١، محسوب خادمياً). */
+function StationBadge({ station }: { station?: PosStation | "MULTI" | "NONE" }) {
+  if (!station || station === "NONE") return <span className="text-muted-foreground text-xs">—</span>;
+  const cls: Record<string, string> = {
+    RETAIL: "bg-emerald-100 text-emerald-700",
+    PRINT_SERVICES: "bg-[var(--sem-info-bg)] text-[var(--sem-info)]",
+    RECEPTION: "bg-violet-100 text-violet-700",
+    MULTI: "bg-muted text-foreground",
+  };
+  const label = station === "MULTI" ? "متعدّد الأقسام" : POS_STATION_LABEL[station];
+  return <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${cls[station]}`}>{label}</span>;
+}
 
 export const ROLE_OPTIONS = [
   { value: "admin",          label: "مدير النظام" },
@@ -185,6 +199,7 @@ export default function Users() {
                 <th className="p-2">الاسم</th>
                 <th className="p-2">معرّف الدخول</th>
                 <th className="p-2">الدور</th>
+                <th className="p-2">القسم الفعليّ</th>
                 <th className="p-2">الفرع</th>
                 <th className="p-2">آخر دخول</th>
                 <th className="p-2 text-center">الحالة</th>
@@ -216,6 +231,7 @@ export default function Users() {
                         hasOverride={Object.keys((u.permissionsOverride as Record<string, string> | null) ?? {}).length > 0}
                       />
                     </td>
+                    <td className="p-2"><StationBadge station={(u as { effectiveStation?: PosStation | "MULTI" | "NONE" }).effectiveStation} /></td>
                     <td className="p-2 text-xs">{u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{fmtDate(u.lastSignedIn)}</td>
                     <td className="p-2 text-center">
@@ -242,10 +258,10 @@ export default function Users() {
                 );
               })}
               {list.isError && (
-                <tr><td colSpan={7} className="p-0"><ErrorState message="تعذّر تحميل المستخدمين." onRetry={() => list.refetch()} /></td></tr>
+                <tr><td colSpan={8} className="p-0"><ErrorState message="تعذّر تحميل المستخدمين." onRetry={() => list.refetch()} /></td></tr>
               )}
               {!list.isLoading && !list.isError && rows.length === 0 && (
-                <TableEmptyRow colSpan={7} message="لا مستخدمين مطابقين." />
+                <TableEmptyRow colSpan={8} message="لا مستخدمين مطابقين." />
               )}
             </tbody>
           </table>
