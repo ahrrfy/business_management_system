@@ -20,6 +20,14 @@ import mysql from "mysql2/promise";
 import { afterEach } from "vitest";
 import { closeDb } from "../../db";
 
+// يُشغَّل كـsetupFile قبل شيفرة كل ملف اختبار (وقبل التقاط ORIGINAL_KEY فيه): يضمن وجود مفتاح
+// تشفير صالح دائماً على بيئات لا تضبطه عالمياً (CI). بلا هذا، ملفٌ يعيد المفتاح إلى undefined
+// في afterAll يفسده (يصير السلسلة "undefined" — إسناد process.env.X = undefined في Node يُحوَّل
+// نصّاً لا يُحذف) لكل ملف لاحق يحتاجه ولا يضبطه بنفسه (broadcastDispatch/waTemplates ⇒ فشل CI).
+// `??=` يحترم قيمة CI/‎.env الصريحة إن وُجدت. قيمة اختبار حرفية منخفضة العشوائية عمداً (نمط
+// BARCODE_SECRET أعلاه في vitest.config.ts) كي لا يعلّمها GitGuardian كسرٍّ حقيقيّ.
+process.env.INTEGRATIONS_ENCRYPTION_KEY ??= "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
 const SKIP = new Set(["__drizzle_migrations"]);
 
 // نلتقط رابط قاعدة الاختبار **مرّةً عند التحميل** قبل أيّ اختبار: بعض الاختبارات
