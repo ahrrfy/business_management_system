@@ -12,10 +12,10 @@
 //  • **الاسم والباركود مفصولان** بكتلٍ وفراغٍ صريح — **بلا خطوط رفيعة** تَضيع في الطباعة الحرارية.
 //  • **خطوط ثقيلة فقط** (700–900) — لا كتابة ناعمة/رفيعة.
 import { CAIRO_FONT, esc, fmtC } from "./brand";
-import { code128Svg } from "./barcode";
+import { productBarcodeSvg } from "./barcode";
 import { attrsLineText } from "./labelItem";
 import { type LabelRenderItem, type LabelRenderOpts } from "./labelRaster";
-import { type LabelSize } from "./labelSize";
+import { PRINT_DPMM, type LabelSize } from "./labelSize";
 import { GAP_MM, PAD_Y_MM, labelContentOf, solveLabelLayout } from "./labelLayout";
 
 /** يتحقّق من لون HEX «#RRGGBB» فقط (يمنع حقن CSS عبر قيمة colorHex) — وإلّا لا لون. */
@@ -23,11 +23,34 @@ function safeHex(hex?: string | null): string | null {
   return hex && /^#[0-9a-fA-F]{6}$/.test(hex) ? hex : null;
 }
 
-/** قضبان Code128 متّجهة تملأ صندوقها (أثخن قضبان ممكنة). فارغ إن تعذّر ترميز القيمة. */
-function barcodeSvg(barcode: string): string {
+/** الهامش الأفقيّ للملصق (مم) — يطابق padding قاعدة `.lbl` أدناه. */
+const PAD_X_MM = 1.5;
+
+/**
+ * عرض الباركود الفيزيائيّ (مم) **مثبَّتاً على شبكة نقاط الطابعة**: أكبر عرض وحدةٍ بنقاط 203dpi
+ * كاملة (مضاعفات 0.125مم) يتّسع في العرض المتاح. التمديد الكسريّ السابق (fitToBox على كامل
+ * العرض) كان يجعل الوحدة ~1.7 نقطة ⇒ يقرّبها تعريف الطابعة قضباناً متفاوتة (1 أو 2 نقطة لنفس
+ * العرض الاسميّ) فيختلّ ميزان نسب Code128 — سبب «مرّة تُمسح ومرّة لا» على المقاسات الصغيرة.
+ * يعيد 0 إن لم تتّسع ولا وحدة نقطةٍ واحدة (يتكفّل المستدعي بالتمدّد الكامل كملاذ أخير).
+ */
+export function snappedBarcodeWidthMm(unitCount: number, labelWidthMm: number): number {
+  const usableMm = labelWidthMm - 2 * PAD_X_MM;
+  const dotsPerModule = Math.floor((usableMm * PRINT_DPMM) / unitCount);
+  return dotsPerModule >= 1 ? (unitCount * dotsPerModule) / PRINT_DPMM : 0;
+}
+
+/**
+ * كتلة الباركود المتّجهة: EAN أصليّ للأرقام الصالحة (أكثف ⇒ قضبان أثخن) وإلا Code128، داخل
+ * حاويةٍ بعرضٍ فيزيائيٍّ مثبَّتٍ على شبكة النقاط ومتوسّطة أفقياً. فارغة إن تعذّر الترميز.
+ */
+function barcodeBoxHtml(barcode: string, labelWidthMm: number, heightMm: number): string {
   try {
-    // moduleWidth/height للـviewBox فقط؛ التمدّد الفعليّ عبر fitToBox=true (width/height=100%).
-    return code128Svg(barcode, { moduleWidth: 2, height: 80, showText: false, fitToBox: true }).svg;
+    // moduleWidth/height للـviewBox فقط؛ widthPx بوحدة mw=1 = عدد وحدات الرمز (قضبان + هدوء).
+    const units = productBarcodeSvg(barcode, { moduleWidth: 1, height: 80, showText: false }).widthPx;
+    const svg = productBarcodeSvg(barcode, { moduleWidth: 2, height: 80, showText: false, fitToBox: true }).svg;
+    const wMm = snappedBarcodeWidthMm(units, labelWidthMm);
+    const sized = wMm > 0 ? `<div class="lbl-bcs" style="width:${wMm}mm">${svg}</div>` : svg;
+    return `<div class="lbl-bc" style="height:${heightMm}mm">${sized}</div>`;
   } catch {
     return ""; // قيمة غير قابلة للترميز ⇒ ملصق بلا قضبان (يبقى الاسم/الرمز/السعر)
   }
@@ -62,8 +85,7 @@ function labelInnerHtml(item: LabelRenderItem, size: LabelSize, opts: LabelRende
     }
   }
 
-  const bc = barcodeSvg(item.barcode);
-  const bcHtml = bc && L.barcode.show ? `<div class="lbl-bc" style="height:${L.barcode.heightMm}mm">${bc}</div>` : "";
+  const bcHtml = L.barcode.show ? barcodeBoxHtml(item.barcode, size.widthMm, L.barcode.heightMm) : "";
   const bnHtml = L.digits.show ? `<div class="lbl-bn" style="font-size:${L.digits.fsPt}pt">${esc(item.barcode)}</div>` : "";
 
   // الصفّ السفليّ = مجموعتان: [الرمز + شارة الفئة] يميناً | [السعر القديم مشطوباً + السعر] يساراً.
@@ -95,7 +117,7 @@ function labelInnerHtml(item: LabelRenderItem, size: LabelSize, opts: LabelRende
 function labelCss(size: LabelSize): string {
   const { widthMm, heightMm } = size;
   return `
-    .lbl{box-sizing:border-box;width:${widthMm}mm;height:${heightMm}mm;padding:${PAD_Y_MM}mm 1.5mm;
+    .lbl{box-sizing:border-box;width:${widthMm}mm;height:${heightMm}mm;padding:${PAD_Y_MM}mm ${PAD_X_MM}mm;
       display:flex;flex-direction:column;align-items:stretch;justify-content:center;gap:${GAP_MM}mm;
       overflow:hidden;font-family:'Cairo',sans-serif;color:#000;background:#fff;direction:rtl}
     .lbl *{box-sizing:border-box;margin:0;padding:0}
@@ -109,6 +131,8 @@ function labelCss(size: LabelSize): string {
       flex:0 0 auto;-webkit-print-color-adjust:exact;print-color-adjust:exact}
     .lbl-bc{flex:0 0 auto;display:flex;align-items:center;justify-content:center}
     .lbl-bc svg{width:100%;height:100%;display:block}
+    /* حاوية الباركود المثبَّتة على شبكة النقاط: عرضها الفيزيائيّ مضاعف نقاط كاملة (يُحسب سطرياً). */
+    .lbl-bcs{height:100%;flex:0 0 auto}
     .lbl-bn{font-weight:700;text-align:center;line-height:1.05;letter-spacing:0.6px;
       font-variant-numeric:tabular-nums}
     .lbl-bt{display:flex;justify-content:space-between;align-items:baseline;gap:2mm;
