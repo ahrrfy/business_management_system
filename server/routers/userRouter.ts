@@ -8,6 +8,7 @@ import {
   createUser,
   deleteUser,
   generateStrongPassword,
+  getEffectivePermissions,
   getUser,
   listUserSessions,
   listUsers,
@@ -54,6 +55,12 @@ export const userRouter = router({
   get: adminProcedure
     .input(z.object({ userId: z.number().int().positive() }))
     .query(({ input }) => getUser(input.userId)),
+
+  /** الأثر الفعليّ لحساب (طبقة الشفافية ش١): الصلاحيات المحلولة + مصدر كل قيمة + القسم الفعليّ —
+   *  يجيب المالك «ماذا سيرى/يفعل هذا الحساب ولماذا؟». قراءة بحتة، adminProcedure. */
+  effectivePermissions: adminProcedure
+    .input(z.object({ userId: z.number().int().positive() }))
+    .query(({ input }) => getEffectivePermissions(input.userId)),
 
   /** فحص توفّر البريد لحظياً (onBlur في الواجهة). */
   checkEmail: adminProcedure

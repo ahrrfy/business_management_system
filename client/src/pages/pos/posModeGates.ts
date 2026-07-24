@@ -12,30 +12,32 @@
  * المحلولة FULL؛ أيّ دور آخر يمرّ **بمنحٍ صريح** للوحدة (permissionsOverride) — فلا مِنحةَ ميتة
  * ولا تبويبٌ يُرى بلا صلاحية بيعٍ فعلية. الفصل النقديّ (درج مستقلّ لكل وضع) في طبقة الوردية.
  */
-import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
+import {
+  POS_STATION_GATES,
+  canUseStation,
+  type PermissionMap,
+  type PosStation,
+  type RoleKey,
+} from "@shared/permissions";
 
-export type Mode = "RETAIL" | "PRINT_SERVICES" | "RECEPTION";
+// طبقة الشفافية (ش١ RBAC): بوّابات أقسام POS صارت مصدرَ حقيقةٍ واحداً في shared/permissions.ts
+// (POS_STATION_GATES) يستهلكه الخادم (users.effectivePermissions) والعميل معاً — فلا تعريفان متباينان.
+// هذا الملف يُبقي أسماءه القديمة (Mode/MODE_GATES/canSeeMode) غلافاً رقيقاً فوق المصدر الموحَّد
+// حفاظاً على مستهلكيه (PointOfSale.tsx واختباراته) بلا تغيير سلوكيّ.
+export type Mode = PosStation;
 
 export interface ModeGate {
-  /** وحدة الصلاحيات الحارسة — مرآة بوّابة الخادم للوضع. */
   module: string;
-  /** الأدوار القالبية المسموح لها (خارجها: منحٌ صريح فقط). */
   allowedRoles: RoleKey[];
 }
 
-export const MODE_GATES: Record<Mode, ModeGate> = {
-  RETAIL: { module: "sales", allowedRoles: ["cashier", "manager"] },
-  PRINT_SERVICES: { module: "pos", allowedRoles: ["cashier", "manager"] },
-  RECEPTION: { module: "workorders", allowedRoles: ["cashier", "manager"] },
-};
+export const MODE_GATES: Record<Mode, ModeGate> = POS_STATION_GATES;
 
-/** هل يرى هذا المستخدمُ تبويبَ الوضع؟ — موحَّدة مع الخادم عبر moduleAccessAllowed. */
+/** هل يرى هذا المستخدمُ تبويبَ الوضع؟ — موحَّدة مع الخادم عبر canUseStation. */
 export function canSeeMode(
   mode: Mode,
   role: RoleKey | undefined,
   override?: PermissionMap | null,
 ): boolean {
-  if (!role) return false;
-  const gate = MODE_GATES[mode];
-  return moduleAccessAllowed(role, override ?? null, gate.module, "FULL", gate.allowedRoles);
+  return canUseStation(mode, role, override);
 }

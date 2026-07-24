@@ -361,6 +361,78 @@ export function canSeeCost(role: string): boolean {
   return info?.canSeeCost === true;
 }
 
+/* ============================ الأثر الفعليّ (طبقة الشفافية — ش١ RBAC) ============================
+ * «العرض يقول الحقيقة عن السلوك». هذه الدوال تشتقّ من الخريطة المحلولة **ما سيراه/يستطيعه الحساب فعلاً**
+ * (لا من الـdiff الخام) — مصدرٌ واحد يستهلكه الخادم (users.effectivePermissions) والعميل (عمود «القسم
+ * الفعليّ» + معاينة الإسناد الحيّة) فيستحيل أن ينحرف العرض عن الإنفاذ. الإنفاذ يبقى خادمياً كما هو. */
+
+/** أقسام نقطة البيع الثلاثة — كلٌّ محروسٌ بوحدته الخادمية بالضبط (مرآة posModeGates/بوّابات الخادم). */
+export type PosStation = "RETAIL" | "PRINT_SERVICES" | "RECEPTION";
+
+/** بوّابة كل قسم: الوحدة الحارسة + الأدوار القالبية المسموح لها (خارجها: منحٌ صريح). مصدر حقيقة واحد
+ *  يستهلكه posModeGates (العميل) وderiveEffectiveAccess (الخادم+العميل) — لا تعريفان متباينان. */
+export const POS_STATION_GATES: Record<PosStation, { module: string; allowedRoles: RoleKey[] }> = {
+  RETAIL: { module: "sales", allowedRoles: ["cashier", "manager"] },
+  PRINT_SERVICES: { module: "pos", allowedRoles: ["cashier", "manager"] },
+  RECEPTION: { module: "workorders", allowedRoles: ["cashier", "manager"] },
+};
+
+export const POS_STATION_LABEL: Record<PosStation, string> = {
+  RETAIL: "تجزئة",
+  PRINT_SERVICES: "خدمات طباعة",
+  RECEPTION: "استقبال أوامر شغل",
+};
+
+/** هل يستطيع هذا (الدور + الأوفررايد) استخدام هذا القسم فعلاً؟ — موحَّدة مع moduleAccessAllowed. */
+export function canUseStation(
+  station: PosStation,
+  role: string | undefined,
+  override?: PermissionMap | null,
+): boolean {
+  if (!role) return false;
+  const g = POS_STATION_GATES[station];
+  return moduleAccessAllowed(role, override ?? null, g.module, "FULL", g.allowedRoles);
+}
+
+/** الأقسام التي يفتحها الحساب فعلاً (بالترتيب الثابت تجزئة→طباعة→استقبال). */
+export function visibleStations(role: string | undefined, override?: PermissionMap | null): PosStation[] {
+  return (Object.keys(POS_STATION_GATES) as PosStation[]).filter((s) => canUseStation(s, role, override));
+}
+
+export interface EffectiveAccessSummary {
+  /** الخريطة المحلولة الكاملة (قالب + أوفررايد) — القيمة الفعّالة لكل وحدة. */
+  resolved: PermissionMap;
+  /** القسم الفعليّ المشتقّ: قسمٌ واحد بعينه، أو MULTI (أكثر من قسم/مدير)، أو NONE (لا قسم بيع). */
+  station: PosStation | "MULTI" | "NONE";
+  /** كل الأقسام المرئية (لتفصيل «سيرى: تجزئة + استقبال»). */
+  stations: PosStation[];
+  /** هل يرى التكلفة/الربح؟ */
+  canSeeCost: boolean;
+}
+
+/**
+ * يشتقّ «الأثر الفعليّ» لحساب من دوره الفعّال (baseRole للأدوار المخصّصة) وأوفررايده المحلول.
+ * ⚠️ للأدوار المخصّصة: مرّر role=baseRole وoverride=diffFromTemplate(baseRole, roleMap) — أي المُحلَّل
+ * كما يفعل السياق تماماً، لا العمود الخام. الخادم يوفّر هذا عبر computeEffectivePermissions.
+ */
+export function deriveEffectiveAccess(
+  role: string | undefined,
+  override?: PermissionMap | null,
+): EffectiveAccessSummary {
+  const resolved = role ? resolvePermissions(role as RoleKey, override ?? null) : {};
+  const stations = visibleStations(role, override);
+  const station: PosStation | "MULTI" | "NONE" =
+    stations.length === 0 ? "NONE" : stations.length === 1 ? stations[0] : "MULTI";
+  return { resolved, station, stations, canSeeCost: canSeeCost(role ?? "") };
+}
+
+/** وصفٌ عربيّ موجز للقسم الفعليّ (للعرض في القوائم والمعاينة). */
+export function effectiveStationLabel(summary: EffectiveAccessSummary): string {
+  if (summary.station === "NONE") return "لا قسم بيع";
+  if (summary.station === "MULTI") return summary.stations.map((s) => POS_STATION_LABEL[s]).join(" + ");
+  return POS_STATION_LABEL[summary.station];
+}
+
 export function accessLabel(a: AccessLevel): string {
   return a === "FULL" ? "كامل" : a === "READ" ? "قراءة" : "لا وصول";
 }

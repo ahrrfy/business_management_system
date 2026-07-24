@@ -19,6 +19,7 @@ import {
 import { trpc } from "@/lib/trpc";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ROLE_OPTIONS } from "@/pages/Users";
+import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
 import { AlertTriangle, Check, Zap } from "lucide-react";
 
 /**
@@ -367,6 +368,16 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
             ) : roleInfo ? (
               <p className="text-[11px] text-muted-foreground">{roleInfo.description}</p>
             ) : null}
+            {/* معاينة حيّة للأثر الفعليّ (ش١ RBAC): «سيرى: تجزئة فقط» — قبل إنشاء الحساب. */}
+            <div className="pt-1">
+              <EffectiveAccessForAssignment
+                role={value.role}
+                permsOverride={value.permsOverride}
+                customRoleId={value.customRoleId}
+                customRoles={customRoles}
+                title="سيرى هذا الحساب:"
+              />
+            </div>
           </div>
           <div className="space-y-1">
             <Label htmlFor="acc-branch">الفرع</Label>

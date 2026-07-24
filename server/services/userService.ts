@@ -8,7 +8,18 @@ import {
   isValidUsername,
   normalizeUsername,
 } from "@shared/const";
-import { ALL_ROLES } from "@shared/permissions";
+import {
+  ALL_ROLES,
+  PERMISSION_MODULES,
+  ROLE_TEMPLATES,
+  deriveEffectiveAccess,
+  diffFromTemplate,
+  resolvePermissions,
+  type AccessLevel,
+  type EffectiveAccessSummary,
+  type PermissionMap,
+  type RoleKey,
+} from "@shared/permissions";
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, gt, gte, isNull, like, ne, or, sql } from "drizzle-orm";
 import { nanoid } from "nanoid";
@@ -616,6 +627,90 @@ export async function getUser(userId: number) {
   )[0] ?? null;
 }
 
+/* ============================ الأثر الفعليّ (طبقة الشفافية — ش١ RBAC) ============================
+ * يحسب الصلاحيات الفعّالة لحساب **بنفس منطق السياق** (resolveCustomRole): الدور المخصّص النشط يقود
+ * عبر baseRole + diffFromTemplate، والمعطَّل/المفقود يسقط لقالب baseRole المخزَّن، والمبنيّ يستعمل
+ * أوفررايده الفرديّ. مصدرٌ واحد للحقيقة يجيب المالك «ماذا سيرى/يفعل هذا الحساب ولماذا؟». قراءة بحتة. */
+
+export interface EffectiveModuleRow {
+  key: string;
+  label: string;
+  level: AccessLevel;
+  /** مصدر هذه القيمة: قالب الفئة / دور مخصّص / أوفررايد فرديّ / تجاوز admin. */
+  source: "template" | "customRole" | "individual" | "admin";
+}
+
+export interface EffectivePermissionsResult {
+  userId: number;
+  /** الفئة الأساس الفعّالة (baseRole للأدوار المخصّصة). */
+  effectiveRole: string;
+  customRoleLabel: string | null;
+  /** الدور المخصّص مُسنَد لكن معطَّل/مفقود ⇒ الحساب يعمل بقالب الفئة الأساس (تحذير للمالك). */
+  customRoleInactive: boolean;
+  access: EffectiveAccessSummary;
+  modules: EffectiveModuleRow[];
+}
+
+/** يحلّ (role، override) الفعّالين لحساب — يعكس resolveCustomRole دون تعديل السياق (قراءة). */
+async function resolveEffective(
+  row: { role: string; customRoleId: number | null; permissionsOverride: unknown },
+): Promise<{ role: string; override: PermissionMap | null; label: string | null; inactive: boolean }> {
+  if (row.customRoleId != null) {
+    const db = getDb();
+    const r = db
+      ? (await db.select({ baseRole: roles.baseRole, label: roles.label, permissions: roles.permissions })
+          .from(roles).where(and(eq(roles.id, row.customRoleId), eq(roles.isActive, true))).limit(1))[0]
+      : undefined;
+    if (r) {
+      const base = r.baseRole as RoleKey;
+      return { role: base, override: diffFromTemplate(base, r.permissions as PermissionMap), label: r.label, inactive: false };
+    }
+    // الدور المخصّص معطَّل/محذوف ⇒ السياق يبقي baseRole المخزَّن (users.role) ساري المفعول.
+    return { role: row.role, override: (row.permissionsOverride as PermissionMap) ?? null, label: null, inactive: true };
+  }
+  return { role: row.role, override: (row.permissionsOverride as PermissionMap) ?? null, label: null, inactive: false };
+}
+
+export async function getEffectivePermissions(userId: number): Promise<EffectivePermissionsResult | null> {
+  const db = getDb();
+  if (!db) return null;
+  const row = (await db.select({
+    id: users.id, role: users.role, customRoleId: users.customRoleId, permissionsOverride: users.permissionsOverride,
+  }).from(users).where(eq(users.id, userId)).limit(1))[0];
+  if (!row) return null;
+  const eff = await resolveEffective(row);
+  const access = deriveEffectiveAccess(eff.role, eff.override);
+  const isAdmin = eff.role === "admin";
+  const base = ROLE_TEMPLATES[eff.role as RoleKey] ?? ROLE_TEMPLATES.user;
+  const modules: EffectiveModuleRow[] = PERMISSION_MODULES.map((m) => {
+    const level = (access.resolved[m.key] ?? "NONE") as AccessLevel;
+    let source: EffectiveModuleRow["source"];
+    if (isAdmin) source = "admin";
+    else if (level !== (base[m.key] ?? "NONE")) source = eff.label ? "customRole" : "individual";
+    else source = "template";
+    return { key: m.key, label: m.label, level, source };
+  });
+  return {
+    userId: Number(row.id), effectiveRole: eff.role, customRoleLabel: eff.label,
+    customRoleInactive: eff.inactive, access, modules,
+  };
+}
+
+/** القسم الفعليّ لصفٍّ في القائمة (تجزئة/طباعة/استقبال/متعدّد/لا قسم) — يعكس منطق السياق مباشرةً. */
+function effectiveStationForRow(row: {
+  role: string; customRoleId: number | null; permissionsOverride: unknown;
+  roleBaseRole: string | null; rolePermissions: unknown;
+}): EffectiveAccessSummary["station"] {
+  let role = row.role;
+  let override: PermissionMap | null = (row.permissionsOverride as PermissionMap) ?? null;
+  // الدور المخصّص النشط (roleBaseRole غير فارغ = الـLEFT JOIN وجد صفّاً نشطاً) يقود بخريطته.
+  if (row.customRoleId != null && row.roleBaseRole) {
+    role = row.roleBaseRole;
+    override = diffFromTemplate(row.roleBaseRole as RoleKey, (row.rolePermissions as PermissionMap) ?? {});
+  }
+  return deriveEffectiveAccess(role, override).station;
+}
+
 export async function listUsers(input: ListUsersInput = {}) {
   const db = getDb();
   if (!db) return { rows: [], total: 0 };
@@ -630,11 +725,22 @@ export async function listUsers(input: ListUsersInput = {}) {
     conds.push(or(like(users.name, q), like(users.email, q), like(users.username, q), like(users.phone, q)));
   }
   const where = conds.length ? and(...conds) : undefined;
-  const rows = await db
-    .select(SAFE_COLUMNS_WITH_ROLE).from(users)
+  // نضمّ خريطة الدور المخصّص النشط لحساب «القسم الفعليّ» لكل صفّ خادمياً (العميل لا يملك خريطة
+  // الدور المخصّص، فلو اشتقّ القسم من العمود الخام لكذب على أصحاب الأدوار المخصّصة). لا نُسرّب الخريطة
+  // الكاملة للعميل — نحسب القسم ونُسقطها.
+  const raw = await db
+    .select({ ...SAFE_COLUMNS_WITH_ROLE, _roleBaseRole: roles.baseRole, _rolePermissions: roles.permissions })
+    .from(users)
     .leftJoin(roles, and(eq(users.customRoleId, roles.id), eq(roles.isActive, true)))
     .where(where as any)
     .orderBy(asc(users.name), desc(users.id)).limit(limit).offset(offset);
+  const rows = raw.map(({ _roleBaseRole, _rolePermissions, ...r }) => ({
+    ...r,
+    effectiveStation: effectiveStationForRow({
+      role: r.role as string, customRoleId: (r.customRoleId as number | null) ?? null,
+      permissionsOverride: r.permissionsOverride, roleBaseRole: _roleBaseRole, rolePermissions: _rolePermissions,
+    }),
+  }));
   const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(users).where(where as any))[0];
   return { rows, total: Number(totalRow?.n ?? 0) };
 }
