@@ -15,7 +15,7 @@ import {
   Calculator, Receipt, Banknote, Clock, Clock8, Palmtree, User, Archive,
   Handshake, Recycle, Microscope, ShoppingCart, Users, Truck, Boxes,
   Wallet, Printer, Briefcase, Server, ShieldCheck, Factory, FileStack,
-  LayoutDashboard, Star, type LucideIcon,
+  LayoutDashboard, Star, MessageCircle, type LucideIcon,
 } from "lucide-react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import type { RoleKey } from "@shared/permissions";
@@ -134,6 +134,14 @@ const SECTIONS: Section[] = [
     ],
   },
   {
+    key: "communications",
+    label: "التواصل مع العملاء (واتساب)",
+    icon: MessageCircle,
+    items: [
+      { title: "تقارير مركز واتساب", desc: "استجابة/حلّ + أحجام الموظفين + رضا العملاء CSAT + أداء الحملات", href: "/reports/whatsapp-hub", icon: MessageCircle, gate: "manager", status: "ready" },
+    ],
+  },
+  {
     key: "hr",
     label: "الموارد البشرية",
     icon: Briefcase,
@@ -177,6 +185,7 @@ const SECTION_ROLES: Record<string, RoleKey[]> = {
   inventory:  ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"],
   treasury:   ["admin", "manager", "accountant", "auditor"],
   production: ["admin", "manager", "auditor"],
+  communications: ["admin", "manager", "accountant", "auditor"],
   hr:         ["admin", "manager", "auditor"],
   assets:     ["admin", "manager", "accountant", "auditor"],
   audit:      ["admin"],

@@ -117,6 +117,7 @@ const CashOrphanReport = lazy(() => import("@/pages/CashOrphanReport"));
 const DayCloseReport = lazy(() => import("@/pages/DayCloseReport"));
 const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
 const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
+const WhatsappHubReport = lazy(() => import("@/pages/WhatsappHubReport"));
 const PayrollReport = lazy(() => import("@/pages/PayrollReport"));
 const AttendanceReport = lazy(() => import("@/pages/AttendanceReport"));
 const LeaveReport = lazy(() => import("@/pages/LeaveReport"));
@@ -381,6 +382,9 @@ export default function App() {
       {/* تدقيق ١٧/٧: أُضيف accountant — الخادم reportViewerProcedure يخوّله فكان محجوباً واجهياً فقط. */}
       <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
       <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
+      {/* تقارير مركز واتساب (S6، T6.2) — الأربعة خلف reportViewerProcedure (استجابة/حلّ + أحجام
+          موظفين + CSAT + أداء الحملات)، مرآة بقية مسارات reports أعلاه. */}
+      <Route path="/reports/whatsapp-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><WhatsappHubReport /></RequireRole></Shell></Route>
       {/* تقارير الموارد البشرية تستدعي راوترات hr (requireModule("hr","READ")) لا reports —
           فتُبوَّب بوحدة hr كي يفتحها مَن مُنح الموارد البشرية لا مَن مُنح التقارير (مراجعة Codex).
           قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة
