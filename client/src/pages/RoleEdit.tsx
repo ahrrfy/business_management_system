@@ -3,14 +3,17 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { PermissionMatrix } from "@/components/form/PermissionMatrix";
+import { EffectiveAccessPreview } from "@/components/form/EffectiveAccessPreview";
 import {
   PERMISSION_MODULES,
   ROLE_TEMPLATES,
   ROLES,
+  diffFromTemplate,
   type AccessLevel,
   type PermissionMap,
   type RoleKey,
 } from "@/lib/permissionsModel";
+import { confirm } from "@/lib/confirm";
 import { trpc } from "@/lib/trpc";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
@@ -37,6 +40,11 @@ export default function RoleEdit() {
   const isEdit = roleId > 0;
 
   const detail = trpc.roles.get.useQuery({ id: roleId }, { enabled: isEdit });
+  const rolesList = trpc.roles.list.useQuery();
+  // عدد المستخدمين المُسنَد لهم هذا الدور (حوكمة الحفظ: «سيؤثّر على N حساباً»).
+  const assignedCount = isEdit ? Number((rolesList.data?.counts as Record<string, number> | undefined)?.[roleId] ?? 0) : 0;
+  // الأدوار الجاهزة للاشتقاق «انسخ ثم عدّل»: القياسية المخصّصة (isSystem) + قوالب النظام المبنية.
+  const standardRoles = (rolesList.data?.custom ?? []).filter((r: { isSystem?: boolean }) => r.isSystem);
 
   const [label, setLabel] = useState("");
   const [description, setDescription] = useState("");
@@ -73,6 +81,26 @@ export default function RoleEdit() {
   function handlePermChange(moduleKey: string, level: AccessLevel) {
     setPermissions((p) => ({ ...p, [moduleKey]: level }));
   }
+  // ش٤ «انسخ ثم عدّل»: يبدأ الدور من دورٍ جاهز (قياسيّ أو قالب مبنيّ) بخريطته الكاملة، ثم يُعدَّل بالفروق.
+  function cloneFrom(value: string) {
+    if (value.startsWith("builtin:")) {
+      const key = value.slice(8) as RoleKey;
+      setBaseRole(key);
+      setPermissions(fullMapFromBase(key));
+      return;
+    }
+    if (value.startsWith("system:")) {
+      const id = Number(value.slice(7));
+      const src = standardRoles.find((r: { id: number | string }) => Number(r.id) === id);
+      if (!src) return;
+      const base = (src.baseRole as RoleKey) ?? "cashier";
+      const map = (src.permissions as PermissionMap) ?? {};
+      const full: PermissionMap = {};
+      for (const m of PERMISSION_MODULES) full[m.key] = map[m.key] ?? "NONE";
+      setBaseRole(base);
+      setPermissions(full);
+    }
+  }
 
   const createM = trpc.roles.create.useMutation({
     onSuccess: () => { utils.roles.list.invalidate(); navigate("/roles"); },
@@ -84,9 +112,19 @@ export default function RoleEdit() {
   });
   const pending = createM.isPending || updateM.isPending;
 
-  function submit() {
+  async function submit() {
     setError("");
     if (!label.trim()) { setError("اسم الدور مطلوب."); return; }
+    // حوكمة الحفظ (ش٤): تعديل دورٍ مُسنَد يُغيّر صلاحيات أصحابه فوراً ويُبطل جلساتهم — تأكيدٌ صريح.
+    if (isEdit && assignedCount > 0) {
+      const ok = await confirm({
+        variant: "warning",
+        title: "تعديل دور مُسنَد",
+        description: `هذا الدور مُسنَد لـ${assignedCount} حساباً — سيسري التعديل عليهم فوراً وتُبطَل جلساتهم. هل تتابع؟`,
+        confirmText: "حفظ وتطبيق",
+      });
+      if (!ok) return;
+    }
     const payload = { label: label.trim(), description: description.trim() || null, baseRole, permissions: permissions as Record<string, AccessLevel> };
     if (isEdit) updateM.mutate({ id: roleId, ...payload });
     else createM.mutate(payload);
@@ -121,6 +159,26 @@ export default function RoleEdit() {
             <Label htmlFor="desc">وصف (اختياري)</Label>
             <Input id="desc" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="وصف موجز لمهام هذا الدور" />
           </div>
+          {/* ش٤ «انسخ ثم عدّل»: بداية من دورٍ جاهز (قياسيّ/مبنيّ) بدل الصفر — يُلغي فخّ «نسيتُ وحدة». */}
+          <div className="space-y-1">
+            <Label htmlFor="clone">ابدأ من دورٍ جاهز (اختياري)</Label>
+            <select id="clone" className={selectCls} value="" onChange={(e) => cloneFrom(e.target.value)}>
+              <option value="">— انسخ صلاحيات دورٍ ثم عدّل —</option>
+              {standardRoles.length > 0 && (
+                <optgroup label="أدوار قياسية">
+                  {standardRoles.map((r: { id: number | string; label: string }) => (
+                    <option key={`s${r.id}`} value={`system:${r.id}`}>{r.label}</option>
+                  ))}
+                </optgroup>
+              )}
+              <optgroup label="قوالب النظام">
+                {BASE_ROLE_OPTIONS.map((r) => <option key={`b${r.key}`} value={`builtin:${r.key}`}>{r.label}</option>)}
+              </optgroup>
+            </select>
+          </div>
+          {isEdit && assignedCount > 0 && (
+            <p className="text-[11px] text-amber-600 md:col-span-3">مُسنَد حالياً لـ{assignedCount} حساباً — أي تعديل يسري عليهم فوراً.</p>
+          )}
         </CardContent>
       </Card>
 
@@ -131,7 +189,13 @@ export default function RoleEdit() {
             {customCount > 0 && <span className="text-[10px] font-medium text-primary mr-2 align-middle">{customCount} مخصّص عن القالب</span>}
           </CardTitle>
         </CardHeader>
-        <CardContent>
+        <CardContent className="space-y-3">
+          {/* معاينة الأثر الفعليّ (ش١) للدور أثناء بنائه — «سيفتح: تجزئة فقط» محسوباً من الخريطة الحيّة. */}
+          <EffectiveAccessPreview
+            role={baseRole}
+            override={diffFromTemplate(baseRole, permissions)}
+            title="هذا الدور سيمنح أصحابه:"
+          />
           <PermissionMatrix
             role={baseRole}
             permissions={permissions}
