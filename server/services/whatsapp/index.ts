@@ -52,3 +52,45 @@ export type {
   FlowNotifyResult,
   FlowNotifySkipReason,
 } from "./flowNotify";
+
+// البث التسويقي (S5، T5.1): باني شرائح RFM + معاينة عدد/كلفة + إنشاء/إطلاق/اعتماد (SOD)/عرض.
+export {
+  RFM_AT_RISK_MIN_FREQUENCY,
+  RFM_AT_RISK_RECENCY_DAYS,
+  RFM_DORMANT_RECENCY_DAYS,
+  RFM_NEW_WITHIN_DAYS,
+  RFM_VIP_MIN_FREQUENCY,
+  RFM_VIP_MIN_SPEND,
+  resolveSegmentCount,
+  resolveSegmentList,
+} from "./segmentService";
+export type {
+  CustomerTypeValue,
+  PriceTierValue,
+  RfmCriteria,
+  RfmPreset,
+  SegmentCriteria,
+  SegmentRecipient,
+} from "./segmentService";
+
+export {
+  MARKETING_MSG_COST,
+  approveBroadcast,
+  cancelBroadcast,
+  createBroadcast,
+  getBroadcast,
+  launchBroadcast,
+  listBroadcasts,
+  pauseBroadcast,
+  previewAudience,
+} from "./broadcastService";
+export type {
+  ApproveBroadcastResult,
+  BroadcastDetail,
+  BroadcastListRow,
+  CreateBroadcastInput,
+  CreateBroadcastResult,
+  LaunchBroadcastResult,
+  LaunchBroadcastStatus,
+  PreviewAudienceResult,
+} from "./broadcastService";

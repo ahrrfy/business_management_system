@@ -4386,3 +4386,76 @@ export const printFinishingOptions = mysqlTable("printFinishingOptions", {
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 export type PrintFinishingOption = typeof printFinishingOptions.$inferSelect;
+
+/* ============================ البث التسويقي — واتساب (S5، هجرة 0110) ============================
+ *
+ * قناة تنفيذ مراسلة جماعية فوق عالم `crmCampaigns` القائم (`crmCampaignId` رابط اختياري للعزو
+ * التقريري فقط — لا تكرار لآلة حالات الحملات). الشريحة (`segmentJson`) تُبنى وقت الإنشاء/الإطلاق
+ * عبر باني RFM حيّ (`server/services/whatsapp/segmentService.ts`) على customers/invoices —
+ * تُخزَّن كلقطة معايير لا نتائج (النتائج الفعلية = صفوف `waBroadcastRecipients` وقت التقطير، T5.2).
+ * القالب (`templateId`) يُشترَط من فئة MARKETING ومُعتمَداً فعلياً عند Meta (`waTemplates`).
+ * `audienceCount`/`costEstimate` لقطة وقت الإنشاء تُعاد حسابها حيّاً عند الإطلاق (قد تكون تغيّرت).
+ * اعتماد ثانٍ إلزامي (Maker-Checker) فوق عتبة حجم الجمهور (`waHubSettings.campaignApprovalThreshold`)
+ * — بلا استثناء لـadmin (قرار مالك موثَّق، خلافاً لنمط السندات المعتاد SOD-04).
+ */
+export const waBroadcasts = mysqlTable(
+  "waBroadcasts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    // NULL = كل الفروع (بثّ عامّ — محصور بالأدمن فعلياً في الخدمة، نمط crmCampaigns.branchId).
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    crmCampaignId: bigint("crmCampaignId", { mode: "number" }).references(() => crmCampaigns.id),
+    name: varchar("name", { length: 160 }).notNull(),
+    templateId: bigint("templateId", { mode: "number" }).notNull().references(() => waTemplates.id),
+    templateLang: varchar("templateLang", { length: 10 }).default("ar").notNull(),
+    // تعيين متغيّرات القالب لحقول العميل: {"1": "name", "2": "currentBalance", ...}.
+    varsMapJson: json("varsMapJson"),
+    // معايير باني الشرائح (SegmentCriteria) — لقطة معايير لا نتائج؛ يُعاد حلّها حيّاً وقت الإطلاق.
+    segmentJson: json("segmentJson").notNull(),
+    broadcastStatus: mysqlEnum("broadcastStatus", [
+      "DRAFT", "PENDING_APPROVAL", "APPROVED", "RUNNING", "PAUSED", "COMPLETED", "CANCELLED",
+    ]).default("DRAFT").notNull(),
+    audienceCount: int("audienceCount").default(0).notNull(),
+    costEstimate: decimal("costEstimate", { precision: 15, scale: 2 }).default("0").notNull(),
+    throttlePerMinute: int("throttlePerMinute").default(10).notNull(),
+    scheduledAt: timestamp("scheduledAt"),
+    pausedReason: varchar("pausedReason", { length: 200 }),
+    createdBy: int("createdBy").references(() => users.id),
+    approvedBy: int("approvedBy").references(() => users.id),
+    startedAt: timestamp("startedAt"),
+    completedAt: timestamp("completedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    statusIdx: index("idx_wa_broadcast_status").on(t.broadcastStatus),
+  })
+);
+export type WaBroadcast = typeof waBroadcasts.$inferSelect;
+export type InsertWaBroadcast = typeof waBroadcasts.$inferInsert;
+
+/** صفٌّ لكل مستلم — يُدرَج كسولاً دفعة-دفعة وقت التقطير (T5.2)، لا عند الإنشاء/الإطلاق. */
+export const waBroadcastRecipients = mysqlTable(
+  "waBroadcastRecipients",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    broadcastId: bigint("broadcastId", { mode: "number" }).notNull().references(() => waBroadcasts.id, { onDelete: "cascade" }),
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    phoneE164: varchar("phoneE164", { length: 20 }).notNull(),
+    recipientStatus: mysqlEnum("recipientStatus", [
+      "PENDING", "QUEUED", "SENT", "DELIVERED", "READ", "FAILED", "SKIPPED_OPTOUT",
+    ]).default("PENDING").notNull(),
+    outboxId: bigint("outboxId", { mode: "number" }),
+    wamid: varchar("wamid", { length: 200 }),
+    errorCode: varchar("errorCode", { length: 20 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    // مستلم مكرّر في نفس الحملة (نفس الهاتف) — يمنع إدراجاً مزدوجاً لدفعة التقطير idempotent.
+    recipientUq: unique("uq_wa_broadcast_recipient").on(t.broadcastId, t.phoneE164),
+    pickIdx: index("idx_wa_broadcast_recip_pick").on(t.broadcastId, t.recipientStatus),
+  })
+);
+export type WaBroadcastRecipient = typeof waBroadcastRecipients.$inferSelect;
+export type InsertWaBroadcastRecipient = typeof waBroadcastRecipients.$inferInsert;

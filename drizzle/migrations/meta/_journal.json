@@ -764,6 +764,13 @@
       "when": 1785024000022,
       "tag": "0109_wa_templates",
       "breakpoints": true
+    },
+    {
+      "idx": 110,
+      "version": "5",
+      "when": 1785024000023,
+      "tag": "0110_wa_broadcasts",
+      "breakpoints": true
     }
   ]
 }
