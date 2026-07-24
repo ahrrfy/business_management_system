@@ -9,6 +9,7 @@ import { waOutbox } from "../../../drizzle/schema";
 import { logger } from "../../logger";
 import { withTx } from "../tx";
 import { dripRunningBroadcasts } from "./broadcastDispatch";
+import { getWaHubSettings } from "./flowNotify";
 import { dispatchClaimedRow, hasAnyActiveWaIntegration } from "./outboxService";
 import { retryFailedWaEvents } from "./webhookProcessor";
 
@@ -43,20 +44,35 @@ export interface WaOutboxSweepResult {
 /** دورة كنس واحدة — تُستعمل من cron ومن الاختبار مباشرة (بلا انتظار مؤقّت دقيقة). */
 export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
   if (!(await hasAnyActiveWaIntegration())) return { claimed: 0 };
-  const ids = await claimDueBatch();
-  for (const id of ids) {
-    await dispatchClaimedRow(id);
+  // Kill Switch = تجميد **الصادر الآلي** فوراً بالكامل — يشمل التقاط الكنّاس نفسه لصفوف outbox
+  // القائمة (بثّ مُقطَّر مسبقاً، مجدولة scheduledAt، أو إعادات محاولة FAILED→QUEUED)، لا فقط توليد
+  // صفوف جديدة (flowNotify/checkAutomationGate). بلا هذا الفحص كانت هذه الصفوف تستمرّ بالإرسال رغم
+  // كتم المفتاح — يخالف §٣-٧/§١٢ («يجمّد كل إرسال آلي فوراً» / «يوقف الكنّاس عن الالتقاط»).
+  // retryFailedWaEvents (معالجة أحداث webhook **الواردة**) ليست إرسالاً آلياً صادراً ⇒ تبقى تعمل
+  // عمداً حتى مع تفعيل المفتاح، كي لا تُفقد رسائل العملاء الواردة أثناء الإيقاف.
+  const killSwitchOn = (await getWaHubSettings()).killSwitch;
+  let ids: number[] = [];
+  if (!killSwitchOn) {
+    ids = await claimDueBatch();
+    for (const id of ids) {
+      await dispatchClaimedRow(id);
+    }
   }
   // إعادة محاولة أحداث webhook الفاشلة (سباق ترتيب: حالة سبقت رسالتها) — بعد الصندوق الصادر،
   // بنفس نبضة الدقيقة (لا جدولة cron مستقلّة). processWaEvent لا ترمي أبداً (تلتقط استثناءها
   // داخلياً وتُعلِّم الحدث FAILED) فلا حاجة لحماية إضافية هنا — نفس افتراض الحلقة أعلاه.
+  // تعمل دائماً بصرف النظر عن killSwitch (وارد لا صادر — انظر التعليق أعلاه).
   await retryFailedWaEvents();
   // البث التسويقي (S5، T5.2): تقطير الحملات RUNNING — محمي صراحةً (try/catch) فلا يُفشل النبضة
-  // بأكملها؛ dripRunningBroadcasts نفسها تحمي كل حملة على حدة داخلياً (نفس بروتوكول الحلقة أعلاه).
-  try {
-    await dripRunningBroadcasts();
-  } catch (e) {
-    logger.error({ err: e }, "wa-outbox sweep: dripRunningBroadcasts threw — تُجوهل (لا تُفشل النبضة)");
+  // بأكملها؛ dripRunningBroadcasts نفسها تحمي كل حملة على حدة داخلياً (نفس بروتوكول الحلقة أعلاه)
+  // وتحترم killSwitch داخلياً أيضاً (نفس settings المقروءة هنا) — نتجنّب استدعاءها أصلاً عند تفعيل
+  // المفتاح توفيراً لاستعلام مكرّر لا طائل منه.
+  if (!killSwitchOn) {
+    try {
+      await dripRunningBroadcasts();
+    } catch (e) {
+      logger.error({ err: e }, "wa-outbox sweep: dripRunningBroadcasts threw — تُجوهل (لا تُفشل النبضة)");
+    }
   }
   return { claimed: ids.length };
 }

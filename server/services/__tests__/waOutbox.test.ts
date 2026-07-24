@@ -2,7 +2,7 @@
  * اختبارات waOutbox (DB حقيقية) — الصندوق الصادر لواتساب: idempotency الإدراج، دورة الإرسال
  * الناجحة (outbox + صفّ conversationMessages OUT معاً)، تصنيف الفشل (retryable/permanent) وأثره
  * على attempts/nextAttemptAt/status، فحص نافذة الردّ الحرّ ٢٤ ساعة، والتقاط دفعة الكنّاس (يستبعد
- * scheduledAt مستقبلياً).
+ * scheduledAt مستقبلياً)، وKill Switch يوقف الكنّاس عن الالتقاط فوراً (ثم يستأنف تلقائياً عند إطفائه).
  *
  * fetch مزيف يُحقن عبر vi.spyOn(globalThis, "fetch") (نمط imageStudioSettingsService.test.ts) —
  * dispatchOutboxRow/sweepWaOutboxOnce لا تقبلان fetchImpl (تفصيل داخلي)، فالحقن على المستوى العام.
@@ -294,5 +294,41 @@ describe("sweepWaOutboxOnce — التقاط الدفعة", () => {
     expect(result.claimed).toBe(0);
     const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, id)))[0];
     expect(row.status).toBe("QUEUED");
+  });
+
+  it("Kill Switch مفعّل ⇒ الكنّاس لا يلتقط أي صفّ QUEUED مستحقّ (claimed=0، يبقى QUEUED بلا إرسال)؛ وبعد إطفائه يُلتقط ويُرسَل فوراً", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1 });
+    const { id } = await enqueueOutbox({
+      dedupeKey: "dedupe-killswitch",
+      branchId: 1,
+      kind: "SESSION_TEXT",
+      conversationId: convId,
+      toPhoneE164: "+9647701234567",
+      payloadJson: { text: "يجب ألّا يُرسَل أثناء الإيقاف" },
+    });
+
+    await db().insert(s.waHubSettings).values({ id: 1, campaignApprovalThreshold: 500, killSwitch: true });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(successResponder("wamid.SHOULD_NOT_SEND"));
+    try {
+      const resultBlocked = await sweepWaOutboxOnce();
+      expect(resultBlocked.claimed).toBe(0);
+      expect(spy).not.toHaveBeenCalled(); // لا محاولة إرسال فعلية أثناء الإيقاف.
+
+      const rowBlocked = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, id)))[0];
+      expect(rowBlocked.status).toBe("QUEUED"); // لم يُلتقَط — لم يُلمَس.
+
+      // رفع Kill Switch ⇒ الكنّاس يستأنف تلقائياً التقاط نفس الصفّ الباقي QUEUED.
+      await db().update(s.waHubSettings).set({ killSwitch: false }).where(eq(s.waHubSettings.id, 1));
+      const resultResumed = await sweepWaOutboxOnce();
+      expect(resultResumed.claimed).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+
+    const rowSent = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, id)))[0];
+    expect(rowSent.status).toBe("SENT");
+    expect(rowSent.wamid).toBe("wamid.SHOULD_NOT_SEND");
   });
 });
