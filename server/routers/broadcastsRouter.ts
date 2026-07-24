@@ -6,7 +6,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { moneyString } from "../lib/schemas";
+import { moneyString, nonNegMoneyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import type { Actor } from "../services/tx";
 import {
@@ -35,6 +35,21 @@ function ownBranch(ctx: UserCtx, requested?: number | null): number | null {
   return branchId;
 }
 
+/**
+ * عزل فرع الشريحة (`segment.branchId` — يُستعمَل لحساب جمهور RFM من `invoices`، مستقلٌّ تماماً
+ * عن `branchId` الإداري للبثّ أعلاه): كان غير مُصفّى بموازاة فرع المستخدم ⇒ مديرُ فرعٍ ١ يستطيع
+ * تمرير `segment.branchId=2` فيُحسَب جمهوره من فواتير فرع ٢ رغم كونه بلا صلاحية إدارته (يمرّ من
+ * `ownBranch` أعلاه لأن ذاك الفحص يخصّ حقل `branchId` الإداري المنفصل لا `segment.branchId`).
+ * الإصلاح: للأدمن — يُحترَم ما أرسله العميل (بما فيه `null` = كل الفروع)؛ لغير الأدمن — يُستبدَل
+ * **دائماً** بفرعه المُحلَّل عبر `ownBranch(ctx)` (بلا تمرير `requested` فلا يَرمي على تعارض — مجرّد
+ * استبدال صامت، خلافاً لـ`ownBranch(ctx, requested)` أعلاه التي ترفض صراحةً طلب فرعٍ آخر لحقل
+ * `branchId` الإداري). يُستدعى في `preview`/`create` قبل بناء/تخزين المعايير.
+ */
+function resolveSegmentBranch(ctx: UserCtx, requestedSegmentBranchId?: number | null): number | null {
+  if (ctx.user.role === "admin") return requestedSegmentBranchId ?? null;
+  return ownBranch(ctx);
+}
+
 /** بصمة actor للخدمة — `branchId: 0` بلا فرع مُسنَد (سنتينل آمن: لا فرع حقيقي بمعرّف 0؛ **عمداً
  *  بلا** fallback `?? 1` الموثَّق كمصدر ثغرات IDOR سابقة — راجع CLAUDE.md §٦). admin يتجاوز فحص
  *  الفرع داخل الخدمة أصلاً فلا يتأثّر بالسنتينل. */
@@ -59,7 +74,9 @@ const rfmCriteriaSchema = z
   .object({
     recencyDays: z.number().int().positive().max(3650).optional(),
     minInvoices: z.number().int().positive().max(100000).optional(),
-    minSpend: moneyString.optional(),
+    // غير سالبة (nonNegMoneyString لا moneyString الموقَّع): عتبة إنفاق سالبة بلا معنى وتُفرِغ
+    // الفلتر صامتاً (كل الفواتير ≥ سالب دائماً).
+    minSpend: nonNegMoneyString.optional(),
     preset: rfmPresetEnum.optional(),
   })
   .strict();
@@ -81,10 +98,14 @@ function toCriteria(input: z.infer<typeof segmentCriteriaSchema>): SegmentCriter
 }
 
 export const broadcastsRouter = router({
-  /** معاينة العدد والكلفة التقديرية قبل الإنشاء — بلا حفظ. */
+  /** معاينة العدد والكلفة التقديرية قبل الإنشاء — بلا حفظ. عزل فرع الشريحة عبر resolveSegmentBranch
+   *  (راجع تعليقها أعلاه) — لغير الأدمن يُستبدَل segment.branchId بفرعه دائماً. */
   preview: campaignsManagerProcedure
     .input(z.object({ segment: segmentCriteriaSchema }))
-    .query(async ({ input }) => previewAudience(toCriteria(input.segment))),
+    .query(async ({ input, ctx }) => {
+      const branchId = resolveSegmentBranch(ctx, input.segment.branchId);
+      return previewAudience(toCriteria({ ...input.segment, branchId }));
+    }),
 
   create: campaignsManagerProcedure
     .input(
@@ -101,6 +122,9 @@ export const broadcastsRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const branchId = ownBranch(ctx, input.branchId);
+      // عزل فرع الشريحة (segment.branchId) — مستقلّ عن branchId الإداري أعلاه؛ راجع تعليق
+      // resolveSegmentBranch. يُطبَّق قبل التخزين في segmentJson فلا يُحفَظ فرعٌ آخر لغير الأدمن.
+      const segmentBranchId = resolveSegmentBranch(ctx, input.segment.branchId);
       const scheduledAt = parseOptionalDateTime(input.scheduledAt, "تاريخ الجدولة");
       const res = await createBroadcast(
         {
@@ -109,7 +133,7 @@ export const broadcastsRouter = router({
           crmCampaignId: input.crmCampaignId ?? null,
           templateId: input.templateId,
           varsMapJson: input.varsMapJson ?? null,
-          segment: toCriteria(input.segment),
+          segment: toCriteria({ ...input.segment, branchId: segmentBranchId }),
           throttlePerMinute: input.throttlePerMinute,
           scheduledAt,
         },

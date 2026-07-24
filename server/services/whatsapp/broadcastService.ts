@@ -76,6 +76,24 @@ function assertBroadcastBranchAccess(actor: Actor, broadcastBranchId: number | n
   }
 }
 
+/**
+ * تأكيد دفاعيّ إضافي (T5.1، إصلاح ثغرة عزل فرع الشريحة): الراوتر (`broadcastsRouter.ts`) صار يفرض
+ * `segment.branchId = فرع المستخدم` لغير الأدمن وقت `create`، فيُفترَض أن `segmentJson` المخزَّن
+ * دائماً متّسق مع فرع البثّ لصفوفٍ أُنشئت بعد هذا الإصلاح. هذا الفحص **لا يعتمد على ذلك الافتراض
+ * وحده** — يحمي من صفوفٍ سابقة على الإصلاح (لو وُجدت) أو أي مسار كتابة مستقبليّ يُخالفه: عند إعادة
+ * حساب الجمهور هنا (`launchBroadcast`/`approveBroadcast`)، إن كان الفاعل غير أدمن ولم يطابق
+ * `segmentJson.branchId` فرعه (بما في ذلك شريحة عامة `null`) — يُرفَض بـFORBIDDEN بدل حساب جمهور
+ * فرعٍ آخر صامتاً. (يُستدعى بعد `assertBroadcastBranchAccess` التي تضمن أصلاً أن `row.branchId`
+ * يطابق فرع الفاعل لغير الأدمن — فمقارنة segBranchId بفرع الفاعل مكافئة لمقارنته بـrow.branchId.)
+ */
+function assertSegmentBranchMatchesActor(actor: Actor, criteria: SegmentCriteria): void {
+  if (actor.role === "admin") return;
+  const segBranchId = criteria.branchId == null ? null : Number(criteria.branchId);
+  if (segBranchId == null || segBranchId !== Number(actor.branchId)) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "شريحة هذا البثّ لا تطابق فرعك — يلزم صلاحية أدمن." });
+  }
+}
+
 // ── إنشاء بثّ (DRAFT بلقطة معاينة) ───────────────────────────────────────────────────────────
 
 export interface CreateBroadcastInput {
@@ -140,12 +158,15 @@ export async function launchBroadcast(broadcastId: number, actor: Actor): Promis
   return withTx(async (tx) => {
     const row = (await tx.select().from(waBroadcasts).where(eq(waBroadcasts.id, broadcastId)).for("update").limit(1))[0];
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
+    // فحص الفرع أولاً (قبل أي رسالة تكشف حالة البثّ) — نمط الفحص المبكر: مستخدم فرعٍ آخر يجب أن
+    // يُصدَم بـFORBIDDEN لا برسالة BAD_REQUEST تسرّب أن البثّ موجود وبأيّ حالة.
+    assertBroadcastBranchAccess(actor, row.branchId == null ? null : Number(row.branchId));
     if (row.broadcastStatus !== "DRAFT" && row.broadcastStatus !== "APPROVED") {
       throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن إطلاق بثّ بحالة ${row.broadcastStatus}` });
     }
-    assertBroadcastBranchAccess(actor, row.branchId == null ? null : Number(row.branchId));
 
     const criteria = row.segmentJson as SegmentCriteria;
+    assertSegmentBranchMatchesActor(actor, criteria);
     const audienceCount = await resolveSegmentCount(criteria, tx);
     const costEstimate = toDbMoney(money(MARKETING_MSG_COST).mul(audienceCount));
 
@@ -180,6 +201,9 @@ export async function approveBroadcast(broadcastId: number, actor: Actor): Promi
   return withTx(async (tx) => {
     const row = (await tx.select().from(waBroadcasts).where(eq(waBroadcasts.id, broadcastId)).for("update").limit(1))[0];
     if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
+    // فحص الفرع أولاً (قبل أي رسالة تكشف حالة البثّ أو علاقة المُنشئ) — نمط الفحص المبكر: مستخدم
+    // فرعٍ آخر يجب أن يُصدَم بـFORBIDDEN لا برسالة BAD_REQUEST/SOD تسرّب معلومات عن البثّ.
+    assertBroadcastBranchAccess(actor, row.branchId == null ? null : Number(row.branchId));
     if (row.broadcastStatus !== "PENDING_APPROVAL") {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البثّ ليس بانتظار الاعتماد" });
     }
@@ -190,11 +214,11 @@ export async function approveBroadcast(broadcastId: number, actor: Actor): Promi
         message: "لا يجوز اعتماد بثٍّ أنشأتَه بنفسك — يلزم فاعل آخر (فصل المهام، بلا استثناء).",
       });
     }
-    assertBroadcastBranchAccess(actor, row.branchId == null ? null : Number(row.branchId));
 
     // إعادة فحص العدد حيّاً وقت الاعتماد (اللقطة عند PENDING_APPROVAL قد تكون قديمة) — نمط
     // إعادة فحص سقف تسوية بضاعة الأمانة عند اعتماد السند (server/services/voucher/approval.ts).
     const criteria = row.segmentJson as SegmentCriteria;
+    assertSegmentBranchMatchesActor(actor, criteria);
     const audienceCount = await resolveSegmentCount(criteria, tx);
     const costEstimate = toDbMoney(money(MARKETING_MSG_COST).mul(audienceCount));
 
