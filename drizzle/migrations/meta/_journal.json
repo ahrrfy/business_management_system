@@ -757,6 +757,13 @@
       "when": 1785024000021,
       "tag": "0108_contacts_consent",
       "breakpoints": true
+    },
+    {
+      "idx": 109,
+      "version": "5",
+      "when": 1785024000022,
+      "tag": "0109_wa_templates",
+      "breakpoints": true
     }
   ]
 }

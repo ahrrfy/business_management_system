@@ -1,7 +1,9 @@
 // نظام المهام الموحّد — راوتر tRPC (S2). نمط workOrderRouter.ts: قراءة/كتابة تنفيذية/كتابة مديرية،
 // كل الكتابات مُدقَّقة عبر logAudit.
 import { TRPCError } from "@trpc/server";
+import { asc, eq } from "drizzle-orm";
 import { z } from "zod";
+import { serviceTypes } from "../../drizzle/schema";
 import { logAudit } from "../services/auditService";
 import {
   addComment,
@@ -17,6 +19,7 @@ import {
   resumeTask,
   setWaiting,
 } from "../services/tasks";
+import { requireDb } from "../services/tx";
 import { router, tasksManagerProcedure, tasksReadProcedure, tasksWriteProcedure } from "../trpc";
 
 const taskKind = z.enum(["SERVICE_REQUEST", "SUPPORT", "INQUIRY", "FOLLOW_UP", "INTERNAL"]);
@@ -166,4 +169,23 @@ export const tasksRouter = router({
       await logAudit(ctx, { action: "task.cancel", entityType: "task", entityId: input.taskId, newValue: { note: input.note } });
       return res;
     }),
+
+  // أنواع الخدمة المرجعية (S2/0107) — لمنتقي «نوع الخدمة» في حوار إنشاء المهمة (يسدّ فجوة S2،
+  // T4.1). قراءة فقط، بلا كتابة/إدارة هنا (شاشة إدارة أنواع الخدمة خارج نطاق هذه المهمة).
+  serviceTypes: router({
+    list: tasksReadProcedure.query(async () => {
+      const db = requireDb();
+      return db
+        .select({
+          id: serviceTypes.id,
+          name: serviceTypes.name,
+          defaultKind: serviceTypes.defaultKind,
+          defaultPriority: serviceTypes.defaultPriority,
+          slaHours: serviceTypes.slaHours,
+        })
+        .from(serviceTypes)
+        .where(eq(serviceTypes.isActive, true))
+        .orderBy(asc(serviceTypes.name));
+    }),
+  }),
 });

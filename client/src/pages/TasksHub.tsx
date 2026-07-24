@@ -404,11 +404,26 @@ function NewTaskDialog({
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<TaskPriority>("NORMAL");
   const [customerId, setCustomerId] = useState<number | null>(null);
+  const [serviceTypeId, setServiceTypeId] = useState<string>("");
+
+  // منتقي نوع الخدمة (S4/T4.1 — serviceTypes.list): اختيار نوع خدمة يُطبِّق نوعه/أولويته
+  // الافتراضيَين تلقائياً (المستخدم قد يُعدّلهما لاحقاً يدوياً) — SLA الفعلي يُشتقّ خادمياً من
+  // serviceTypeId المُرسَل، لا من هذين الحقلين المحليَّين.
+  const serviceTypesQ = trpc.tasks.serviceTypes.list.useQuery();
 
   const create = trpc.tasks.create.useMutation({
     onSuccess: (r) => { notify.ok(`أُنشئت المهمة ${r.taskNumber}`); onCreated(r.taskId); },
     onError: (e) => notify.err(e),
   });
+
+  function selectServiceType(id: string) {
+    setServiceTypeId(id);
+    const st = (serviceTypesQ.data ?? []).find((s) => String(s.id) === id);
+    if (st) {
+      setKind(st.defaultKind as TaskKind);
+      setPriority(st.defaultPriority as TaskPriority);
+    }
+  }
 
   function submit() {
     if (!title.trim()) { notify.err("عنوان المهمة مطلوب"); return; }
@@ -420,8 +435,7 @@ function NewTaskDialog({
       description: description.trim() || null,
       priority,
       customerId,
-      // لا endpoint لسرد serviceTypes حالياً (نطاق الخادم الجاهز لهذا التكليف لا يشمل راوتراً
-      // لعرضها) ⇒ serviceTypeId يبقى فارغاً؛ الخادم يشتقّ الأولوية/الاستحقاق من قيمهما الصريحة هنا فقط.
+      serviceTypeId: serviceTypeId ? Number(serviceTypeId) : null,
     });
   }
 
@@ -442,6 +456,17 @@ function NewTaskDialog({
               </select>
             </div>
           )}
+          <div className="space-y-1">
+            <label className="text-xs text-muted-foreground">نوع الخدمة (اختياري)</label>
+            <select className={`${selectCls} w-full`} value={serviceTypeId} onChange={(e) => selectServiceType(e.target.value)}>
+              <option value="">بلا نوع خدمة محدَّد</option>
+              {(serviceTypesQ.data ?? []).map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.name}{s.slaHours != null ? ` — SLA ${s.slaHours}س` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
               <label className="text-xs text-muted-foreground">النوع</label>

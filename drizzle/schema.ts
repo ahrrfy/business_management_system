@@ -3696,6 +3696,40 @@ export const waHubSettings = mysqlTable("waHubSettings", {
 export type WaHubSettings = typeof waHubSettings.$inferSelect;
 export type InsertWaHubSettings = typeof waHubSettings.$inferInsert;
 
+/* ============================ قوالب Meta — مركز واتساب الأعمال (S4، هجرة 0109) ============================
+ *
+ * المَنطق: القوالب المُعتمَدة عِند Meta هي الوَسيلة الوَحيدة لِلإرسال خارِج نافِذة ٢٤ ساعة (تَذكيرات
+ * آجِلة/إشعارات جاهِزية/حَملات — templateService.syncTemplatesFromGraph تَسحَبها دَورياً عَبر
+ * GET /{wabaId}/message_templates وتُخَزّنها هُنا). name+language مُميَّزان عَلى مُستَوى WABA (وَثيقة
+ * Meta) ⇒ UNIQUE مُرَكَّب. bodyText/variableCount مُستَخرَجان مِن componentsJson (type=BODY) وَقت
+ * المُزامَنة — عَرض/تَعبِئة سَريعة بِلا تَفكيك JSON في كل اِستِهلاك. branchId=NULL = قالِب عامّ (الحالة
+ * الغالِبة — القَوالِب على مُستَوى WABA لا الفَرع).
+ */
+export const waTemplates = mysqlTable(
+  "waTemplates",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
+    name: varchar("name", { length: 128 }).notNull(),
+    language: varchar("language", { length: 10 }).default("ar").notNull(),
+    category: mysqlEnum("category", ["MARKETING", "UTILITY", "AUTHENTICATION"]).default("UTILITY").notNull(),
+    templateStatus: mysqlEnum("templateStatus", ["PENDING", "APPROVED", "REJECTED", "PAUSED", "DISABLED"]).default("PENDING").notNull(),
+    bodyText: text("bodyText"),
+    componentsJson: json("componentsJson"),
+    variableCount: int("variableCount").default(0).notNull(),
+    qualityScore: varchar("qualityScore", { length: 20 }),
+    syncedAt: timestamp("syncedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
+  },
+  (t) => ({
+    nameLangUq: unique("uq_wa_template_name_lang").on(t.name, t.language),
+    statusIdx: index("idx_wa_template_status").on(t.templateStatus),
+  })
+);
+export type WaTemplate = typeof waTemplates.$inferSelect;
+export type InsertWaTemplate = typeof waTemplates.$inferInsert;
+
 /* ============================ بنك جهات الاتصال — أشخاص الاتصال B2B (S3، هجرة 0108) ============================ */
 
 /** شَخص اتّصال مَربوط بِعَميل أَو مورّد (لا كِلَيهما — لا قَيد CHECK عَلى MySQL، يُفرَض تَطبيقياً):
@@ -4034,6 +4068,9 @@ export const arReminders = mysqlTable(
      *  إظهاره في القائمة يوم الوعد نفسه (يتخطّى تبريد ٧ أيام) بشارة «موعود اليوم»، حتى لو
      *  كان تذكيره الأخير ضمن نافذة التبريد الاعتيادية — يمكن أن يفوّت الموظفُ متابعة الوعد. */
     promisedDate: date("promisedDate", { mode: "string" }),
+    /** وسيلة الإرسال: MANUAL (زر شاشة المتابعة القائمة، الوضع الوحيد قبل S4) أو API (قالب Meta
+     *  معتمَد عبر Cloud API، S4/S5). NULL للسجلّات القديمة قبل هذه الهجرة (يدويّة فعلياً). */
+    sentVia: mysqlEnum("sentVia", ["MANUAL", "API"]),
     createdBy: int("createdBy").notNull().references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
@@ -4069,6 +4106,9 @@ export const apReminders = mysqlTable(
     /** تاريخ وعدنا بالسداد (اختياري، YYYY-MM-DD). حين مُلئ يوم التخطّي ⇒ المورد يُعاد إظهاره
      *  في القائمة يوم الوعد نفسه (يتخطّى تبريد ٧ أيام) بشارة «موعود اليوم» لمتابعة السداد. */
     promisedDate: date("promisedDate", { mode: "string" }),
+    /** وسيلة الإرسال: MANUAL (زر شاشة المتابعة القائمة) أو API (قالب Meta معتمَد، S4/S5).
+     *  NULL للسجلّات القديمة قبل هذه الهجرة (يدويّة فعلياً). */
+    sentVia: mysqlEnum("sentVia", ["MANUAL", "API"]),
     createdBy: int("createdBy").notNull().references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },

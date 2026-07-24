@@ -27,3 +27,11 @@ export type { MediaFetchResult } from "./mediaService";
 
 export { startWaOutboxSweeper, stopWaOutboxSweeper, sweepWaOutboxOnce } from "./outboxSweeper";
 export type { WaOutboxSweepResult } from "./outboxSweeper";
+
+export {
+  getActiveWaTemplateIntegration,
+  getUsableTemplate,
+  listTemplates,
+  syncTemplatesFromGraph,
+} from "./templateService";
+export type { ListTemplatesFilter, SyncTemplatesResult, WaTemplateIntegration } from "./templateService";
