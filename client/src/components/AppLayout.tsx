@@ -14,6 +14,7 @@ import {
 import { Link, useLocation } from "wouter";
 import { useEffect, useRef, useState } from "react";
 import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
+import { ROLE_LABEL } from "@/pages/Users";
 
 type NavLink = RoleGate & { href: string; label: string; icon: LucideIcon };
 
@@ -105,9 +106,18 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
   // المندوب (courier) شاشةٌ واحدة «توصيلاتي» فقط — نخفي بقية الروابط (كلها إمّا محجوبة خادمياً أو
   // بلا معنى له) بدل عرض جدارٍ من روابط ميتة (مراجعة عدائية ١٢/٧). العزل الحقيقي خادميّ؛ هذا تحسين UX.
   const isCourier = role === "courier";
+  // «مساحة العمل المركّزة» لفئة الكاشير (٢٤/٧، قرار المالك): موظف الوردية عمله فتح وردية ← بيع ←
+  // إغلاق وتسليم — يرى أدوات منضدته فقط لا جدار وحدات النظام (تعميم نمط المندوب أعلاه). القائمة
+  // البيضاء تُقاطَع مع canSeeGate ⇒ ما يظهر محكوم بصلاحيات دوره الفعلية (كاشير طباعة بلا store
+  // لا يرى «طلبات المتجر»)، وإطفاء وحدةٍ من شاشة «الأدوار» يُسقط بندها هنا فوراً. العزل الحقيقي
+  // خادميّ كما هو؛ وبقية الشاشات المسموحة تبقى بلوغاً بالبحث (Ctrl+K) — تركيزٌ لا حجبٌ جديد.
+  const isCashier = role === "cashier";
+  const CASHIER_NAV = ["/pos", "/price-checker", "/tasks", "/store-admin"];
   const visibleNav = isCourier
     ? NAV_LINKS.filter((m) => m.roles?.includes("courier"))
-    : NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride));
+    : isCashier
+      ? NAV_LINKS.filter((m) => CASHIER_NAV.includes(m.href) && canSeeGate(m, role, permsOverride))
+      : NAV_LINKS.filter((m) => canSeeGate(m, role, permsOverride));
 
   const sidebarInner = (
     <>
@@ -125,8 +135,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
         </div>
 
         <nav className="sb-scroll flex-1 overflow-y-auto py-2">
-          {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب: شاشته «توصيلاتي» فقط) */}
-          {!isCourier && (
+          {/* لوحة التحكم — رابط مستقلّ (يُخفى عن المندوب والكاشير: مساحتاهما مركّزتان) */}
+          {!isCourier && !isCashier && (
             <>
               <Link
                 href="/"
@@ -190,7 +200,8 @@ export function AppLayout({ children }: { children: React.ReactNode }) {
                 "truncate text-[11px] leading-tight",
                 loc === "/account" ? "opacity-80" : "sb-sub",
               )}>
-                حسابي{me.data?.role ? ` · ${me.data.role}` : ""}
+                {/* تسمية الدور الحقيقية بالعربية (الدور المخصّص أولاً) — كان يعرض المفتاح الخام «cashier». */}
+                حسابي{me.data?.role ? ` · ${me.data.customRoleLabel ?? ROLE_LABEL[me.data.role] ?? me.data.role}` : ""}
               </div>
             </div>
             <ChevronLeft className="size-4 shrink-0 opacity-60" aria-hidden />

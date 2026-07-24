@@ -6,7 +6,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, getTableColumns, isNull, like, ne, or, sql } from "drizzle-orm";
 import { fullEmployeeName, type EmployeeEducation } from "@shared/hr";
-import { branches, employees, users } from "../../drizzle/schema";
+import { branches, employees, roles, users } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { requireDb, withTx, type Actor } from "./tx";
 import { toDbMoney } from "./money";
@@ -77,11 +77,13 @@ export async function getEmployee(id: number) {
     if (m) managerName = fullEmployeeName(m);
   }
   // الحساب المرتبط (إن وُجد) — لتعبئة قسم «حساب النظام» في شاشة التعديل (نمط managerName).
-  let linkedUser: { id: number; name: string | null; email: string | null; username: string | null; role: string } | null = null;
+  // customRoleLabel: تسمية الدور المخصّص النشط (شرط isActive يطابق دلالة الإنفاذ في loadActiveCustomRole).
+  let linkedUser: { id: number; name: string | null; email: string | null; username: string | null; role: string; customRoleLabel: string | null } | null = null;
   if (e.userId) {
     const [u] = await db
-      .select({ id: users.id, name: users.name, email: users.email, username: users.username, role: users.role })
+      .select({ id: users.id, name: users.name, email: users.email, username: users.username, role: users.role, customRoleLabel: roles.label })
       .from(users)
+      .leftJoin(roles, and(eq(users.customRoleId, roles.id), eq(roles.isActive, true)))
       .where(eq(users.id, e.userId))
       .limit(1);
     if (u) linkedUser = u;

@@ -202,6 +202,9 @@ function RootRoute() {
   if (me.isLoading) return <RouteFallback />;
   if (me.data?.role === "courier") return <Redirect to="/my-deliveries" />;
   if (storeHost) return <Redirect to="/store" />; // زائر (أو موظف دخل خطأً) على الدومين العام ⇒ المتجر
+  {/* الكاشير لا يُوجَّه بعيداً بل تُعرَض له «مساحة العمل المركّزة» داخل Dashboard نفسها —
+      التوجيه الأعمى إلى /pos كان سيحبسه (زر «الرئيسية» في POS يعود إلى "/") بلا مسار
+      لحسابي/مهامه/تسجيل الخروج. */}
   return (
     <Shell>
       <Dashboard />

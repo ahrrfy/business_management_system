@@ -1381,7 +1381,8 @@ function POSHeader({ C, search, setSearch, showDrop, setShowDrop, results, searc
           <div style={{ textAlign: "left" }}>
             <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.2, color: C.fg }}>{me.name}</div>
             <div style={{ fontSize: 10.5, color: C.mutedFg, lineHeight: 1.2 }}>
-              {me.role === "admin" ? "مدير" : me.role === "manager" ? "مدير فرع" : "كاشير"}
+              {/* تسمية الدور المخصّص أولاً («كاشير تجزئة/طباعة») — كانت «كاشير» مثبّتةً نصاً. */}
+              {me.customRoleLabel ?? (me.role === "admin" ? "مدير" : me.role === "manager" ? "مدير فرع" : "كاشير")}
             </div>
           </div>
           <div style={{ width: 36, height: 36, borderRadius: "50%", background: C.primary, color: C.primaryFg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800, flexShrink: 0 }}>

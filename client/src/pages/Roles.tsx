@@ -61,7 +61,17 @@ export default function Roles() {
                       {r.description ? <div className="text-[11px] text-muted-foreground">{r.description}</div> : null}
                     </td>
                     <td className="p-2 text-xs">{roleLabel(r.baseRole)}{r.canSeeCost ? " · يرى التكلفة" : ""}</td>
-                    <td className="p-2 text-center">{count}</td>
+                    <td className="p-2 text-center">
+                      {count > 0 ? (
+                        <Link
+                          href={`/users?customRoleId=${id}`}
+                          className="underline decoration-dotted underline-offset-2 hover:text-primary"
+                          title="عرض المستخدمين المُسنَد لهم هذا الدور"
+                        >
+                          {count}
+                        </Link>
+                      ) : count}
+                    </td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${active ? "badge-status-active" : "badge-stock-out"}`}>
                         {active ? "مفعّل" : "معطّل"}

@@ -296,7 +296,16 @@ export default function UserEdit() {
         <CardContent className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3 text-sm">
           <div><div className="text-muted-foreground text-xs">المعرّف</div><div className="font-mono" dir="ltr">#{Number(u.id)}</div></div>
           <div><div className="text-muted-foreground text-xs">اسم المستخدم</div><div className="font-mono" dir="ltr">{(u as { username?: string | null }).username || "—"}</div></div>
-          <div><div className="text-muted-foreground text-xs">الدور الحالي</div><div>{ROLE_LABEL[u.role] ?? u.role}</div></div>
+          <div>
+            <div className="text-muted-foreground text-xs">الدور الحالي</div>
+            {/* دور مخصّص ⇒ تسميته الحقيقية + فئته الأساس (صدق العرض — لا «كاشير» مجرّدة). */}
+            <div>
+              {u.customRoleLabel ?? ROLE_LABEL[u.role] ?? u.role}
+              {u.customRoleLabel ? (
+                <span className="text-muted-foreground text-xs"> (الفئة: {ROLE_LABEL[u.role] ?? u.role})</span>
+              ) : null}
+            </div>
+          </div>
           <div>
             <div className="text-muted-foreground text-xs">الحالة</div>
             <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>

@@ -1111,9 +1111,101 @@ function TasksBrief() {
   );
 }
 
+/* ═══════════ مساحة عمل الكاشير المركّزة (٢٤/٧، قرار المالك) ═══════════
+   موظف الوردية عمله: فتح وردية ← بيع ← إغلاق وتسليم. رئيسيته «محطة عمل» بأدوات منضدته فقط —
+   لا شبكة وحدات النظام (تلك تبقى للأدوار الإدارية). البنود الثانوية محكومة بصلاحيات دوره
+   الفعلية (hasModuleAccess — نفس مرآة الشريط الجانبي) فإطفاء وحدةٍ يُسقط بطاقتها فوراً.
+   العزل الحقيقي خادميّ كما هو؛ هذه طبقة تركيز UX خالصة. */
+
+function CashierHome() {
+  const T = useT();
+  const me = trpc.auth.me.useQuery();
+  const role = me.data?.role ?? "";
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
+  const roleLabel = me.data?.customRoleLabel ?? "كاشير";
+  const canTasks = !!role && hasModuleAccess(role, override, "tasks", "READ");
+  const canStore = !!role && hasModuleAccess(role, override, "store", "READ");
+
+  const tiles: { href: string; name: string; desc: string }[] = [
+    { href: "/price-checker", name: "قارئ الأسعار", desc: "فحص سعر أي صنف بالباركود" },
+    ...(canTasks ? [{ href: "/tasks", name: "المهام والتذاكر", desc: "طلبات الزبائن المُسنَدة إليك" }] : []),
+    ...(canStore ? [{ href: "/store-admin", name: "طلبات المتجر", desc: "تثبيت طلبات المتجر الإلكتروني" }] : []),
+    { href: "/account", name: "حسابي", desc: "بياناتك وكلمة المرور وجلساتك" },
+  ];
+
+  return (
+    <div
+      style={{
+        minHeight: "100vh",
+        background: T.bg,
+        direction: "rtl",
+        fontFamily: "'Cairo', sans-serif",
+        margin: "-24px",
+        padding: "28px 24px 32px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 18,
+      }}
+    >
+      <div>
+        <h1 style={{ fontSize: 20, fontWeight: 800, color: T.text, margin: 0 }}>
+          أهلاً {me.data?.name ?? ""} — {roleLabel}
+        </h1>
+        <p style={{ fontSize: 13, color: T.sub, margin: "4px 0 0" }}>
+          محطة عملك: افتح ورديتك، بِع لزبائنك، أغلق وسلّم الصندوق.
+        </p>
+      </div>
+
+      <Link
+        href="/pos"
+        style={{
+          display: "block",
+          background: T.featuredBg,
+          border: `2px solid ${T.featuredBd}`,
+          borderRadius: 14,
+          padding: "26px 24px",
+          textDecoration: "none",
+        }}
+      >
+        <div style={{ fontSize: 22, fontWeight: 800, color: T.text }}>نقطة البيع</div>
+        <div style={{ fontSize: 13, color: T.sub, marginTop: 6 }}>
+          افتح الوردية وابدأ البيع — وعند نهاية عملك أغلقها وسلّم المبلغ من الشاشة نفسها.
+        </div>
+      </Link>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+        {tiles.map((t) => (
+          <Link
+            key={t.href}
+            href={t.href}
+            style={{
+              background: T.cardBg,
+              border: `1px solid ${T.cardBord}`,
+              borderRadius: 12,
+              padding: "16px 14px",
+              textDecoration: "none",
+            }}
+          >
+            <div style={{ fontSize: 15, fontWeight: 700, color: T.text }}>{t.name}</div>
+            <div style={{ fontSize: 12, color: T.muted, marginTop: 4 }}>{t.desc}</div>
+          </Link>
+        ))}
+      </div>
+
+      {/* طابور مهامه الشخصي (إن وُجد وسمحت صلاحيته) — نفس مكوّن اللوحة العامة */}
+      <div style={{ margin: "0 -24px" }}>
+        <TasksBrief />
+      </div>
+    </div>
+  );
+}
+
 /* ═══════════ DASHBOARD ═══════════ */
 
 export default function Dashboard() {
+  const me = trpc.auth.me.useQuery();
+  // فئة الكاشير (القالبي + المخصّص المشتق «كاشير تجزئة/طباعة») ⇒ محطة عمل مركّزة لا شبكة الوحدات.
+  if (me.data?.role === "cashier") return <CashierHome />;
   return (
     <div
       style={{

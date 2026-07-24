@@ -300,8 +300,16 @@ export function diffFromTemplate(
     changed++;
   }
   for (const m of PERMISSION_MODULES) {
-    const v = permissions[m.key];
-    if (v && v !== base[m.key]) { diff[m.key] = v; changed++; }
+    // المفتاح الغائب = NONE («منع افتراضي») — توحيد الدلالات الثلاث (مراجعة عدائية ٢٤/٧):
+    // كانت خرائط الأدوار المخصّصة المخزَّنة قبل إضافة وحدة جديدة إلى PERMISSION_MODULES تُحَلّ
+    // هنا إلى قيمة **القالب الحالي** (المفتاح الغائب يُتخطّى ⇒ لا override) بينما محرّر الأدوار
+    // يعرضه «لا وصول» وnormalizePermissions يخزّنه NONE عند أول حفظ ⇒ إنفاذٌ يكذب على مصفوفة
+    // التدقيق ثم ينقلب صامتاً. الغائب الآن NONE في كل الطبقات؛ فتح وحدة جديدة لدور مخزَّن قرارٌ
+    // صريح من شاشة «الأدوار والصلاحيات» لا أثرٌ جانبيّ لتوسّع القالب.
+    const raw = permissions[m.key];
+    const v: AccessLevel = raw === "FULL" || raw === "READ" || raw === "NONE" ? raw : "NONE";
+    const b: AccessLevel = base[m.key] ?? "NONE";
+    if (v !== b) { diff[m.key] = v; changed++; }
   }
   return changed > 0 ? diff : null;
 }

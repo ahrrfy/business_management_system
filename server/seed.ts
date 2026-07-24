@@ -110,7 +110,19 @@ async function seed() {
       });
       console.log(`✓ seeded section role ${r.key}`);
     } else {
-      console.log(`• role ${r.key} already exists, skipping`);
+      // ترحيل الوحدات الجديدة (٢٤/٧): لقطة الدور المخزَّنة تسبق أي وحدة أُضيفت لاحقاً إلى
+      // PERMISSION_MODULES، والمفتاح الغائب دلالته NONE موحَّدةً (diffFromTemplate/المحرّر/التخزين).
+      // نستكمل **الغائب فقط** من المواصفة الحالية — قيم المالك المخزَّنة لا تُمسّ أبداً.
+      const stored = (existingRole.permissions ?? {}) as Record<string, string>;
+      const missing = Object.entries(r.permissions).filter(([k]) => stored[k] === undefined);
+      if (missing.length) {
+        await db.update(roles)
+          .set({ permissions: { ...Object.fromEntries(missing), ...stored } })
+          .where(eq(roles.id, existingRole.id));
+        console.log(`✓ role ${r.key}: backfilled ${missing.length} new module key(s) (${missing.map(([k]) => k).join(", ")})`);
+      } else {
+        console.log(`• role ${r.key} already exists, skipping`);
+      }
     }
   }
 

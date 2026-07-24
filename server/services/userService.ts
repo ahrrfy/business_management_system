@@ -58,6 +58,8 @@ export interface UpdateUserInput {
 export interface ListUsersInput {
   q?: string;
   role?: string;
+  /** فلترة بدور مخصّص بعينه (شاشة الأدوار ← «مَن على هذا الدور؟»). */
+  customRoleId?: number;
   includeInactive?: boolean;
   limit?: number;
   offset?: number;
@@ -280,6 +282,24 @@ export async function updateUser(input: UpdateUserInput, actor: Actor) {
         patch.sessionsValidFrom = new Date();
       }
     }
+    // الدور المخصّص يقود الصلاحيات **دائماً** لا لحظة الإسناد فقط (مراجعة عدائية ٢٤/٧): ما دام
+    // الحساب سيبقى على دور مخصّص لا يُخزَّن override فردي أبداً — وإلا بقي «ميتاً» في الصف (السياق
+    // يتجاهله) ثم استيقظ صامتاً عند مسح الدور لاحقاً بقيم قديمة لا يذكرها أحد. وأي تعديل يمرّ
+    // على الحساب يكنس بقايا ميتة مخزَّنة سابقاً (شفاء ذاتي).
+    {
+      const effectiveCustomRoleId = nextCustomRoleId !== undefined ? nextCustomRoleId : (existing.customRoleId ?? null);
+      if (effectiveCustomRoleId != null && (input.permissionsOverride !== undefined || existing.permissionsOverride != null)) {
+        patch.permissionsOverride = null;
+      } else if (
+        effectiveCustomRoleId == null &&
+        existing.customRoleId != null &&
+        input.permissionsOverride === undefined
+      ) {
+        // مسح الدور المخصّص بلا override صريح في الطلب ⇒ هبوطٌ على قالب الدور **النظيف** — لا
+        // على بقايا override قديمة خُزّنت قبل هذا الحارس فتستيقظ بقيم لا يذكرها أحد.
+        patch.permissionsOverride = null;
+      }
+    }
 
     if (Object.keys(patch).length === 0) return { userId: input.userId, changed: false };
     try {
@@ -333,6 +353,21 @@ export async function setUserActive(userId: number, isActive: boolean, actor: Ac
       if (u.role === "admin") await assertNotLastActiveAdmin(tx, userId);
       await tx.update(users).set({ isActive: false, sessionsValidFrom: new Date() }).where(eq(users.id, userId));
       return { userId, isActive: false };
+    }
+    // حارس التوسيع الصامت (مراجعة عدائية ٢٤/٧): مستخدم دوره المخصّص مُعطَّل يسقط تشغيلياً لقالب
+    // فئته الأساس **الكامل** (resolveCustomRole يتجاهل الدور المعطَّل وoverride الفردي مُصفَّر) —
+    // إعادة تفعيله بلا حسم = «كاشير طباعة» يستيقظ كاشيراً كامل الأقسام بلا قرار واعٍ من أحد.
+    if (u.customRoleId != null) {
+      const activeRole = (
+        await tx.select({ id: roles.id }).from(roles)
+          .where(and(eq(roles.id, u.customRoleId), eq(roles.isActive, true))).limit(1)
+      )[0];
+      if (!activeRole) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "دور هذا المستخدم المخصّص مُعطَّل — فعِّل الدور أو أسنِد له دوراً آخر قبل تفعيل الحساب (وإلا عمل بصلاحيات فئته الأساس كاملةً).",
+        });
+      }
     }
     await tx.update(users).set({ isActive: true }).where(eq(users.id, userId));
     return { userId, isActive: true };
@@ -558,10 +593,27 @@ export async function suggestUsername(name: string): Promise<string> {
   return "";
 }
 
+/**
+ * الأعمدة الآمنة + هوية الدور المخصّص للعرض (customRoleLabel من جدول roles عبر LEFT JOIN).
+ * سدّ «فجوة صدق الدور» (٢٤/٧): مستخدمٌ على دورٍ مخصّص (مثل «كاشير طباعة») كان يظهر في قائمة
+ * المستخدمين وشاشة «حسابي» بتسمية فئته الأساس («كاشير») فقط، بينما سلوكه الفعلي يتبع خريطة
+ * الدور المخصّص ⇒ «الحساب كاشير لكن يفتح كاشير الطباعة؟». التسمية الحقيقية تُعاد الآن دائماً.
+ */
+const SAFE_COLUMNS_WITH_ROLE = { ...SAFE_COLUMNS, customRoleLabel: roles.label } as const;
+
 export async function getUser(userId: number) {
   const db = getDb();
   if (!db) return null;
-  return (await db.select(SAFE_COLUMNS).from(users).where(eq(users.id, userId)).limit(1))[0] ?? null;
+  return (
+    await db
+      .select(SAFE_COLUMNS_WITH_ROLE)
+      .from(users)
+      // شرط isActive يطابق loadActiveCustomRole حرفياً: دور معطَّل ⇒ الإنفاذ الفعلي يسقط لقالب
+      // الفئة الأساس، فيجب أن يسقط العرض معه (وإلا كذبت الشارة في الاتجاه الأخطر — مراجعة عدائية ٢٤/٧).
+      .leftJoin(roles, and(eq(users.customRoleId, roles.id), eq(roles.isActive, true)))
+      .where(eq(users.id, userId))
+      .limit(1)
+  )[0] ?? null;
 }
 
 export async function listUsers(input: ListUsersInput = {}) {
@@ -572,13 +624,16 @@ export async function listUsers(input: ListUsersInput = {}) {
   const conds: any[] = [];
   if (!input.includeInactive) conds.push(eq(users.isActive, true));
   if (input.role) conds.push(eq(users.role, input.role as any));
+  if (input.customRoleId) conds.push(eq(users.customRoleId, input.customRoleId));
   if (input.q?.trim()) {
     const q = `%${escapeLike(input.q.trim())}%`;
     conds.push(or(like(users.name, q), like(users.email, q), like(users.username, q), like(users.phone, q)));
   }
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db
-    .select(SAFE_COLUMNS).from(users).where(where as any)
+    .select(SAFE_COLUMNS_WITH_ROLE).from(users)
+    .leftJoin(roles, and(eq(users.customRoleId, roles.id), eq(roles.isActive, true)))
+    .where(where as any)
     .orderBy(asc(users.name), desc(users.id)).limit(limit).offset(offset);
   const totalRow = (await db.select({ n: sql<number>`COUNT(*)` }).from(users).where(where as any))[0];
   return { rows, total: Number(totalRow?.n ?? 0) };

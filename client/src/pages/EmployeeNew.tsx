@@ -57,6 +57,8 @@ export default function EmployeeNew() {
   // —— حساب النظام (admin فقط) ——
   const me = trpc.auth.me?.useQuery?.();
   const isAdmin = me?.data?.role === "admin";
+  // تسمية الدور المخصّص الحقيقية لبطاقة بيانات الدخول (كانت «دور مخصّص» عامّة تُخفي الهوية).
+  const rolesQ = trpc.roles.list.useQuery(undefined, { enabled: isAdmin });
   const [accountMode, setAccountMode] = useState<AccountMode>("none"); // وضع الإضافة
   const [editAccountMode, setEditAccountMode] = useState<"new" | "link">("link"); // وضع التعديل (لا حساب بعد)
   const [account, setAccount] = useState<AccountFieldsValue>(emptyAccountValue);
@@ -125,7 +127,9 @@ export default function EmployeeNew() {
       username: cred.username ?? undefined,
       password: cred.password,
       phone: form.phone.trim() || undefined,
-      roleLabel: cred.customRoleId ? "دور مخصّص" : roleLabelOf(cred.role),
+      roleLabel: cred.customRoleId
+        ? (rolesQ.data?.custom?.find((r: { id: number | string; label: string }) => Number(r.id) === cred.customRoleId)?.label ?? "دور مخصّص")
+        : roleLabelOf(cred.role),
       // مفتاح الدور يحدّد دومين رابط الدعوة (المندوب ⇒ تطبيق الدومين العام).
       roleKey: cred.customRoleId ? null : cred.role,
       branchName: accBranchId ? opts.data?.branches.find((b) => b.id === accBranchId)?.name ?? null : null,
@@ -391,7 +395,9 @@ export default function EmployeeNew() {
                 <span className="flex items-center gap-2 min-w-0">
                   <span className="text-muted-foreground">الحساب المرتبط:</span>
                   <span dir="ltr" className="truncate">{existing.data.linkedUser.username || existing.data.linkedUser.email || existing.data.linkedUser.name || `#${existing.data.linkedUser.id}`}</span>
-                  <Badge variant="outline" className="text-[10px]">{roleLabelOf(existing.data.linkedUser.role)}</Badge>
+                  <Badge variant="outline" className="text-[10px]" title={existing.data.linkedUser.customRoleLabel ? `دور مخصّص — الفئة الأساس: ${roleLabelOf(existing.data.linkedUser.role)}` : undefined}>
+                    {existing.data.linkedUser.customRoleLabel ?? roleLabelOf(existing.data.linkedUser.role)}
+                  </Badge>
                 </span>
                 <Button
                   variant="ghost" size="sm" className="text-destructive shrink-0"
