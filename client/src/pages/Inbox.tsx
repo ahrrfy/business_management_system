@@ -12,6 +12,8 @@ import {
   Clock,
   Download,
   Inbox as InboxIcon,
+  LayoutTemplate,
+  Loader2,
   MessageSquare,
   Phone,
   Send,
@@ -19,6 +21,7 @@ import {
   Store,
   User,
   UserPlus,
+  X,
 } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
@@ -226,6 +229,134 @@ function MessageBubble({ m, onRetry }: { m: Msg; onRetry: (outboxId: number) => 
   );
 }
 
+type WaTemplateRow = RouterOutputs["integrations"]["templates"]["list"][number];
+
+/** مُنتَقي القَوالِب (T4.3) — الوَسيلة الوَحيدة لِلإرسال خارِج نافِذة الرَدّ الحُرّ (القَوالِب مُعفاة مِن
+ *  فَحص النافِذة فِعلياً في الخادِم؛ هَذا سَبب وُجودها). يَعرض المُعتَمَدة (APPROVED) فَقط + حُقول
+ *  مُتَغيّراتها {{1}}..{{n}} + مُعاينة نَصّية حَيّة قَبل الإرسال. */
+function TemplatePicker({
+  conversationId,
+  onSent,
+  onCancel,
+}: {
+  conversationId: number;
+  onSent: () => void;
+  onCancel?: () => void;
+}) {
+  const templatesQ = trpc.integrations.templates.list.useQuery({ statusFilter: "APPROVED" });
+  const templates = templatesQ.data ?? [];
+  const [selectedKey, setSelectedKey] = useState("");
+  const [params, setParams] = useState<string[]>([]);
+
+  const selected: WaTemplateRow | null = templates.find((t) => `${t.name}::${t.language}` === selectedKey) ?? null;
+
+  useEffect(() => {
+    setParams(selected ? Array.from({ length: selected.variableCount }, () => "") : []);
+  }, [selectedKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const send = trpc.conversations.sendTemplate.useMutation({
+    onSuccess: () => {
+      notify.ok("أُرسِل القالِب");
+      setSelectedKey("");
+      setParams([]);
+      onSent();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  const preview = useMemo(() => {
+    if (!selected) return "";
+    let text = selected.bodyText ?? "";
+    params.forEach((v, i) => {
+      text = text.replace(new RegExp(`\\{\\{\\s*${i + 1}\\s*\\}\\}`, "g"), v.trim() || `{{${i + 1}}}`);
+    });
+    return text;
+  }, [selected, params]);
+
+  const canSend = selected != null && params.every((p) => p.trim().length > 0) && !send.isPending;
+
+  if (templatesQ.isLoading) {
+    return <div className="text-xs text-muted-foreground py-2">جارٍ تحميل القَوالِب…</div>;
+  }
+
+  if (templates.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed p-3 text-xs text-muted-foreground inline-flex items-start gap-1.5">
+        <LayoutTemplate aria-hidden className="size-3.5 flex-shrink-0 mt-0.5" />
+        <span>لا قَوالِب مُعتَمَدة بَعد — زامِنها مِن الإعدادات (مَركَز واتساب).</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border bg-muted/20 p-3 space-y-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-xs font-bold text-muted-foreground">
+          <LayoutTemplate aria-hidden className="size-3.5" />
+          إرسال قالِب مُعتَمَد
+        </div>
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+          >
+            <X aria-hidden className="size-3.5" /> إلغاء
+          </button>
+        )}
+      </div>
+      <select
+        value={selectedKey}
+        onChange={(e) => setSelectedKey(e.target.value)}
+        className="w-full h-9 border rounded-md px-2 text-sm bg-background"
+      >
+        <option value="">اِختَر قالِباً…</option>
+        {templates.map((t) => (
+          <option key={`${t.name}::${t.language}`} value={`${t.name}::${t.language}`}>
+            {t.name} ({t.language})
+          </option>
+        ))}
+      </select>
+      {selected && selected.variableCount > 0 && (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {params.map((v, i) => (
+            <input
+              key={i}
+              value={v}
+              onChange={(e) => setParams((arr) => arr.map((x, idx) => (idx === i ? e.target.value : x)))}
+              placeholder={`مُتَغيّر {{${i + 1}}}`}
+              dir="rtl"
+              className="h-9 px-3 rounded-md border border-input bg-background text-sm"
+            />
+          ))}
+        </div>
+      )}
+      {selected && (
+        <div className="rounded-md border bg-background p-2 text-xs whitespace-pre-wrap">
+          {preview || "—"}
+        </div>
+      )}
+      <Button
+        size="sm"
+        onClick={() =>
+          selected &&
+          send.mutate({
+            conversationId,
+            templateName: selected.name,
+            templateLang: selected.language,
+            bodyParams: params.map((p) => p.trim()),
+            clientRequestId: crypto.randomUUID(),
+          })
+        }
+        disabled={!canSend}
+      >
+        {send.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : <Send aria-hidden className="size-4 me-1" />}
+        إرسال القالِب
+      </Button>
+    </div>
+  );
+}
+
 function ComposerPanel({
   conversationId,
   apiActive,
@@ -239,6 +370,7 @@ function ComposerPanel({
 }) {
   const [body, setBody] = useState("");
   const [direction, setDirection] = useState<"OUT" | "IN" | "NOTE">("OUT");
+  const [templateOpen, setTemplateOpen] = useState(false);
   const send = trpc.conversations.sendMessage.useMutation({
     onSuccess: () => { setBody(""); onSent(); },
     onError: (e) => notify.err(e),
@@ -266,27 +398,51 @@ function ComposerPanel({
           </button>
         ))}
       </div>
-      {blocked && (
-        <p className="text-xs text-muted-foreground mb-2">الرد الحر غير متاح — قوالب معتمدة في شريحة لاحقة.</p>
+
+      {/* النافِذة مُغلَقة (تَكامل ACTIVE فِعلي) ⇒ القَوالِب المُعتَمَدة هي الوَسيلة الوَحيدة (§ب) —
+          تَستَبدل الملحن الحُرّ كُلياً، لا زِرّ تَبديل (لا بَديل يُعرَض). */}
+      {blocked ? (
+        <TemplatePicker conversationId={conversationId} onSent={onSent} />
+      ) : (
+        <>
+          <div className="flex gap-2 items-end">
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } }}
+              rows={2}
+              placeholder={
+                direction === "OUT" ? "اكتب رِسالتك للعَميل... (Ctrl+Enter للإرسال)" : direction === "IN" ? "اكتب ما قاله العَميل في الاتصال..." : "اكتب مُلاحظة داخِلية..."
+              }
+              className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none"
+            />
+            <Button onClick={submit} disabled={send.isPending || !body.trim()} className="h-10">
+              <Send aria-hidden className="size-4 me-1" /> إرسال
+            </Button>
+          </div>
+
+          {/* خِيار إضافي دائم عِند تَكامل ACTIVE (حَتى مَع نافِذة مَفتوحة) — §ب في المُواصَفة. */}
+          {direction === "OUT" && apiActive && (
+            <div className="mt-2">
+              {templateOpen ? (
+                <TemplatePicker
+                  conversationId={conversationId}
+                  onSent={() => { onSent(); setTemplateOpen(false); }}
+                  onCancel={() => setTemplateOpen(false)}
+                />
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => setTemplateOpen(true)}
+                  className="text-xs text-muted-foreground hover:text-foreground inline-flex items-center gap-1.5"
+                >
+                  <LayoutTemplate aria-hidden className="size-3.5" /> أو أَرسِل قالِباً مُعتَمَداً بَدلاً مِن ذَلك
+                </button>
+              )}
+            </div>
+          )}
+        </>
       )}
-      <div className="flex gap-2 items-end">
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); submit(); } }}
-          rows={2}
-          disabled={blocked}
-          placeholder={
-            blocked
-              ? "الرد الحر غير متاح — قوالب معتمدة في شريحة لاحقة"
-              : direction === "OUT" ? "اكتب رِسالتك للعَميل... (Ctrl+Enter للإرسال)" : direction === "IN" ? "اكتب ما قاله العَميل في الاتصال..." : "اكتب مُلاحظة داخِلية..."
-          }
-          className="flex-1 rounded-lg border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-none disabled:opacity-50 disabled:cursor-not-allowed"
-        />
-        <Button onClick={submit} disabled={send.isPending || !body.trim() || blocked} className="h-10">
-          <Send aria-hidden className="size-4 me-1" /> إرسال
-        </Button>
-      </div>
     </div>
   );
 }

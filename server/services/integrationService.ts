@@ -30,6 +30,9 @@ export interface UpsertIntegrationInput {
   channel: IntegrationChannel;
   displayName?: string | null;
   phoneNumberId?: string | null;
+  /** مُعرّف حِساب واتساب الأَعمال (WABA ID) — لِـWhatsApp فَقط، مَعلومة لا secret. لازِم لِمَزامَنة
+   *  القَوالِب (integrations.syncTemplates ← syncTemplatesFromGraph). undefined = لا تُغَيّر. */
+  wabaId?: string | null;
   /** undefined = لا تُغَيّر؛ null = اِمسح؛ string = اِكتب جَديد. */
   verifyToken?: string | null;
   appSecret?: string | null;
@@ -44,6 +47,8 @@ export interface IntegrationDisplay {
   channel: IntegrationChannel;
   displayName: string | null;
   phoneNumberId: string | null;
+  /** مَعلومة لا secret ⇒ نَصّ عاديّ (بِخِلاف verifyToken/appSecret/accessToken أَدناه). */
+  wabaId: string | null;
   /** قِناع آمن لِلعَرض ('•••abcd' أو null). أَبداً نَصّاً عادياً. */
   verifyTokenMasked: string | null;
   appSecretMasked: string | null;
@@ -90,6 +95,7 @@ export async function listIntegrations(branchId?: number): Promise<IntegrationDi
       channel: channelIntegrations.channel,
       displayName: channelIntegrations.displayName,
       phoneNumberId: channelIntegrations.phoneNumberId,
+      wabaId: channelIntegrations.wabaId,
       encryptedVerifyToken: channelIntegrations.encryptedVerifyToken,
       encryptedAppSecret: channelIntegrations.encryptedAppSecret,
       encryptedAccessToken: channelIntegrations.encryptedAccessToken,
@@ -108,6 +114,7 @@ export async function listIntegrations(branchId?: number): Promise<IntegrationDi
     channel: r.channel as IntegrationChannel,
     displayName: r.displayName,
     phoneNumberId: r.phoneNumberId,
+    wabaId: r.wabaId,
     // تَفُكّ-ثُمَّ-تُقَنّع: لا تُسَرّب النَصّ الكامل لِلواجهة أَبداً.
     verifyTokenMasked: maskSecret(safeDecrypt(r.encryptedVerifyToken)),
     appSecretMasked: maskSecret(safeDecrypt(r.encryptedAppSecret)),
@@ -155,6 +162,7 @@ export async function upsertIntegration(input: UpsertIntegrationInput): Promise<
     };
     if (input.displayName !== undefined) patch.displayName = input.displayName;
     if (input.phoneNumberId !== undefined) patch.phoneNumberId = input.phoneNumberId;
+    if (input.wabaId !== undefined) patch.wabaId = input.wabaId;
     if (input.verifyToken !== undefined) patch.encryptedVerifyToken = encryptSecret(input.verifyToken);
     if (input.appSecret !== undefined) patch.encryptedAppSecret = encryptSecret(input.appSecret);
     if (input.accessToken !== undefined) patch.encryptedAccessToken = encryptSecret(input.accessToken);
@@ -173,6 +181,7 @@ export async function upsertIntegration(input: UpsertIntegrationInput): Promise<
       channel: input.channel,
       displayName: input.displayName ?? null,
       phoneNumberId: input.phoneNumberId ?? null,
+      wabaId: input.wabaId ?? null,
       encryptedVerifyToken: encryptSecret(input.verifyToken),
       encryptedAppSecret: encryptSecret(input.appSecret),
       encryptedAccessToken: encryptSecret(input.accessToken),

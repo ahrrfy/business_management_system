@@ -64,6 +64,32 @@ async function seedConversation(opts: { branchId: number; hoursAgo: number | nul
   return id;
 }
 
+/** يُنشئ قالِب Meta مُخزَّناً محلّياً (waTemplates — نمط templateService.syncTemplatesFromGraph،
+ *  لكن بلا ضَرب شبكة). templateStatus الافتراضي APPROVED (الحالة المُستَعملة في مُعظَم الاختبارات). */
+async function seedTemplate(opts: {
+  name: string;
+  language?: string;
+  status?: "PENDING" | "APPROVED" | "REJECTED" | "PAUSED" | "DISABLED";
+  variableCount?: number;
+  bodyText?: string;
+}): Promise<void> {
+  await db().insert(s.waTemplates).values({
+    name: opts.name,
+    language: opts.language ?? "ar",
+    category: "UTILITY",
+    templateStatus: opts.status ?? "APPROVED",
+    bodyText: opts.bodyText ?? "مرحباً {{1}}",
+    variableCount: opts.variableCount ?? 1,
+  });
+}
+
+/** محادثة قناة غير واتساب (channel=PHONE) — لاختبار رفض sendTemplate خارج واتساب. */
+async function seedNonWaConversation(branchId: number): Promise<number> {
+  const id = convSeq++;
+  await db().insert(s.conversations).values({ id, branchId, channel: "PHONE", channelHandle: `phone-${id}` });
+  return id;
+}
+
 /** رد Graph API فاشل (500 — retryable) بلا اعتماد على الشبكة الحقيقية. */
 function failureResponder(): typeof fetch {
   return (async () =>
@@ -280,5 +306,184 @@ describe("retrySend", () => {
 
     const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, outboxId)))[0];
     expect(row.status).toBe("SENT"); // لم يتغيَّر.
+  });
+});
+
+describe("sendTemplate — T4.3 (منتقي القوالب في الوارد)", () => {
+  it("١) قالب غير موجود/غير معتمَد ⇒ BAD_REQUEST، بلا outbox", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 25, channelHandle: "9647700001001" });
+    await seedTemplate({ name: "not_approved_yet", status: "PENDING", variableCount: 1 });
+
+    await expect(
+      caller("cashier", 1, 2).conversations.sendTemplate({
+        conversationId: convId,
+        templateName: "not_approved_yet",
+        bodyParams: ["زَبون"],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const outboxRows = await db().select().from(s.waOutbox).where(eq(s.waOutbox.conversationId, convId));
+    expect(outboxRows).toHaveLength(0);
+  });
+
+  it("٢) قالب APPROVED بعدد متغيّرات مطابق ⇒ {queued:true} + صفّ waOutbox kind=TEMPLATE بdedupeKey CHATTPL", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 25, channelHandle: "9647700001002" });
+    await seedTemplate({ name: "payment_reminder", status: "APPROVED", variableCount: 2, bodyText: "مرحباً {{1}}، المبلغ {{2}}" });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(failureResponder());
+    try {
+      const result = await caller("cashier", 1, 2).conversations.sendTemplate({
+        conversationId: convId,
+        templateName: "payment_reminder",
+        bodyParams: ["أحمد", "10,000 د.ع"],
+        clientRequestId: "tpl-click-1",
+      });
+
+      expect(result).toMatchObject({ queued: true });
+      const outboxId = (result as { outboxId: number }).outboxId;
+      const row = (await db().select().from(s.waOutbox).where(eq(s.waOutbox.id, outboxId)))[0];
+      expect(row).toBeDefined();
+      expect(row.kind).toBe("TEMPLATE");
+      expect(row.templateName).toBe("payment_reminder");
+      expect(row.templateLang).toBe("ar");
+      expect(row.dedupeKey).toBe(`CHATTPL:${convId}:tpl-click-1`);
+      expect(row.conversationId).toBe(convId);
+    } finally {
+      spy.mockRestore();
+    }
+    await settleBackgroundDispatch();
+  });
+
+  it("٣) نافذة مغلقة (٢٥ساعة) ⇒ القوالب مُعفاة، تُقيَّد رغم إغلاق النافذة (بخلاف sendMessage)", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 25, channelHandle: "9647700001003" });
+    await seedTemplate({ name: "window_exempt_tpl", status: "APPROVED", variableCount: 0, bodyText: "رسالة بلا متغيّرات" });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(failureResponder());
+    try {
+      const result = await caller("cashier", 1, 2).conversations.sendTemplate({
+        conversationId: convId,
+        templateName: "window_exempt_tpl",
+        bodyParams: [],
+      });
+      expect(result).toMatchObject({ queued: true });
+    } finally {
+      spy.mockRestore();
+    }
+    await settleBackgroundDispatch();
+  });
+
+  it("٤) عدد متغيّرات غير مطابق ⇒ BAD_REQUEST، بلا outbox", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1, channelHandle: "9647700001004" });
+    await seedTemplate({ name: "two_vars_tpl", status: "APPROVED", variableCount: 2 });
+
+    await expect(
+      caller("cashier", 1, 2).conversations.sendTemplate({
+        conversationId: convId,
+        templateName: "two_vars_tpl",
+        bodyParams: ["واحد فقط"],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    const outboxRows = await db().select().from(s.waOutbox).where(eq(s.waOutbox.conversationId, convId));
+    expect(outboxRows).toHaveLength(0);
+  });
+
+  it("٥) محادثة قناة غير واتساب ⇒ BAD_REQUEST", async () => {
+    const convId = await seedNonWaConversation(1);
+    await seedTemplate({ name: "any_tpl", status: "APPROVED", variableCount: 0 });
+
+    await expect(
+      caller("cashier", 1, 2).conversations.sendTemplate({
+        conversationId: convId,
+        templateName: "any_tpl",
+        bodyParams: [],
+      }),
+    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
+  it("٦) نفس clientRequestId مرّتين ⇒ صفّ outbox واحد (idempotency)", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1, channelHandle: "9647700001006" });
+    await seedTemplate({ name: "dup_tpl", status: "APPROVED", variableCount: 0, bodyText: "رسالة ثابتة" });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(failureResponder());
+    try {
+      const first = await caller("cashier", 1, 2).conversations.sendTemplate({
+        conversationId: convId,
+        templateName: "dup_tpl",
+        bodyParams: [],
+        clientRequestId: "dup-tpl-click",
+      });
+      const second = await caller("cashier", 1, 2).conversations.sendTemplate({
+        conversationId: convId,
+        templateName: "dup_tpl",
+        bodyParams: [],
+        clientRequestId: "dup-tpl-click",
+      });
+
+      expect((first as { outboxId: number }).outboxId).toBe((second as { outboxId: number }).outboxId);
+      const rows = await db().select().from(s.waOutbox).where(eq(s.waOutbox.conversationId, convId));
+      expect(rows).toHaveLength(1);
+    } finally {
+      spy.mockRestore();
+    }
+    await settleBackgroundDispatch();
+  });
+
+  it("٧) محادثة فَرع آخر ⇒ يُرفَض (عزل الفروع، IDOR)", async () => {
+    const convBranch1 = await seedConversation({ branchId: 1, hoursAgo: 1, channelHandle: "9647700001007" });
+    await seedTemplate({ name: "idor_tpl", status: "APPROVED", variableCount: 0 });
+
+    await expect(
+      caller("cashier", 2, 3).conversations.sendTemplate({
+        conversationId: convBranch1,
+        templateName: "idor_tpl",
+        bodyParams: [],
+      }),
+    ).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+
+  it("٨) صفّ TEMPLATE فاشِل يَظهر كَفُقاعة OUT مُعَلَّقة في conversations.messages (كان مَقصوراً عَلى SESSION_TEXT — فَجوة اُكتُشِفت بِجَولة حَيّة) + retrySend يَقبَله", async () => {
+    await seedActiveIntegration(1);
+    const convId = await seedConversation({ branchId: 1, hoursAgo: 1, channelHandle: "9647700001008" });
+    await seedTemplate({ name: "bubble_tpl", status: "APPROVED", variableCount: 0, bodyText: "رسالة قالب ثابتة" });
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(failureResponder());
+    let outboxId: number;
+    try {
+      const result = await caller("cashier", 1, 2).conversations.sendTemplate({
+        conversationId: convId,
+        templateName: "bubble_tpl",
+        bodyParams: [],
+      });
+      outboxId = (result as { outboxId: number }).outboxId;
+    } finally {
+      spy.mockRestore();
+    }
+    await settleBackgroundDispatch();
+
+    // بعد استقرار الإرسال الخلفي الفاشل (500 retryable) الصفّ يبقى QUEUED (لم يبلغ ٦ محاولات بعد) —
+    // pendingRows تشمل QUEUED/SENDING/FAILED كلها ⇒ يظهر كفقاعة مُعلَّقة بغضّ النظر عن أيّهما بالضبط.
+    const messages = await caller("cashier", 1, 2).conversations.messages({ conversationId: convId });
+    const bubble = messages.find((m) => m.pending?.outboxId === outboxId);
+    expect(bubble).toBeDefined();
+    expect(bubble!.body).toBe("قالب: bubble_tpl");
+    expect(bubble!.direction).toBe("OUT");
+    expect(bubble!.pending!.status).toMatch(/QUEUED|SENDING|FAILED/);
+
+    // retrySend يقبل صفّ TEMPLATE الآن (لا NOT_FOUND) — نجبره FAILED أوّلاً لأنّ retrySend يرفض غير الفاشل.
+    await db().update(s.waOutbox).set({ status: "FAILED", lastError: "فشل اختباري" }).where(eq(s.waOutbox.id, outboxId));
+    const retrySpy = vi.spyOn(globalThis, "fetch").mockImplementation(failureResponder());
+    try {
+      const retryResult = await caller("cashier", 1, 2).conversations.retrySend({ outboxId });
+      expect(retryResult).toMatchObject({ outboxId, ok: true });
+    } finally {
+      retrySpy.mockRestore();
+    }
+    await settleBackgroundDispatch();
   });
 });

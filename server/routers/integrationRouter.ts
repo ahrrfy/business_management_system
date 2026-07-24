@@ -99,6 +99,7 @@ export const integrationRouter = router({
       channel: channelEnum,
       displayName: z.string().max(120).nullable().optional(),
       phoneNumberId: z.string().max(80).nullable().optional(),
+      wabaId: z.string().max(80).nullable().optional(),
       verifyToken: z.string().max(500).nullable().optional(),
       appSecret: z.string().max(500).nullable().optional(),
       accessToken: z.string().max(2000).nullable().optional(),
@@ -120,6 +121,7 @@ export const integrationRouter = router({
           changed: {
             displayName: input.displayName !== undefined,
             phoneNumberId: input.phoneNumberId !== undefined,
+            wabaId: input.wabaId !== undefined,
             verifyToken: input.verifyToken !== undefined,
             appSecret: input.appSecret !== undefined,
             accessToken: input.accessToken !== undefined,

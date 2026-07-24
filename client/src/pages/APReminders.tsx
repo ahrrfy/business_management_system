@@ -2,7 +2,7 @@
 // الموظف يسجّل «تمّت المتابعة» (يُخفيه ٧ أيام) أو يؤجّل بتاريخ وعد سداد. كل فعل يُسجَّل في `apReminders`
 // مع snapshots لحظية للتدقيق. تبريد ٧ أيام يمنع تكرار المورد. لا cron ولا أيّ مراسلة خارجية.
 import { useMemo, useState } from "react";
-import { CheckCircle2, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Info } from "lucide-react";
+import { CheckCircle2, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Info, Bot } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { sum } from "@/lib/money";
@@ -26,6 +26,22 @@ import { fmtDateTime } from "@/lib/date";
 
 function fmtAmount(v: string | number): string {
   return Number(v).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
+}
+
+/** أَسباب تَخطّي flowNotify (رُموز إنجليزية — راجِع server/services/whatsapp/flowNotify.ts) مُترجَمة
+ *  لِلعَربية. بَعض الأَسباب المُرسَلة مِن الخادِم عَربية جاهِزة أَصلاً (مِثلاً «لا رَقم هاتف...») ⇒
+ *  تَمُرّ كَما هي (fallback). مِرآة ARReminders.tsx. */
+const SEND_VIA_API_REASON_AR: Record<string, string> = {
+  kill_switch: "الإرسال الآلي مُوقَف مؤقّتاً (إيقاف الطوارئ) — فعِّله من إعدادات مركز واتساب.",
+  disabled: "الإرسال الآلي معطّل — فعِّله من إعدادات المركز (مفتاح تذكير الذمم).",
+  no_integration: "لا تكامل واتساب فعّال على هذا الفرع.",
+  no_phone: "لا رقم هاتف مسجَّل.",
+  opted_out: "المورّد ألغى الاشتراك في رسائل واتساب.",
+  template_unavailable: "القالب غير معتمَد بعد عند Meta — زامنه من إعدادات المركز.",
+  error: "تعذّر الإرسال — حاول لاحقاً.",
+};
+function sendViaApiReasonAr(reason: string): string {
+  return SEND_VIA_API_REASON_AR[reason] ?? reason;
 }
 
 function daysBadgeCls(days: number): string {
@@ -69,6 +85,18 @@ export default function APReminders() {
     },
     onError: (e) => notify.err(e.message || "تعذّر تسجيل المتابعة"),
   });
+  const sendViaApi = trpc.apReminders.sendViaApi.useMutation({
+    onSuccess: async (r) => {
+      if (r.sent) {
+        notify.ok("أُرسِل التذكير عبر واتساب (API)");
+      } else {
+        notify.warn("لم يُرسَل عبر API", sendViaApiReasonAr(r.reason));
+      }
+      await utils.apReminders.queue.invalidate();
+      await utils.apReminders.history.invalidate();
+    },
+    onError: (e) => notify.err(e.message || "تعذّر الإرسال عبر API"),
+  });
   const logSkipped = trpc.apReminders.logSkipped.useMutation({
     onSuccess: async () => {
       notify.ok("تمّ التخطّي");
@@ -108,6 +136,20 @@ export default function APReminders() {
       oldestPoDate: row.oldestPoDate,
       daysOverdue: row.daysOverdue,
       messageBody: "متابعة داخلية (بلا مراسلة للمورد)",
+      branchId: writeBranchId,
+    });
+  }
+
+  function handleSendViaApi(row: QueueRow) {
+    if (!row.phone) {
+      notify.err("لا رقم هاتف مسجَّل لهذا المورّد — أضف الهاتف من صفحة المورّد أولاً.");
+      return;
+    }
+    sendViaApi.mutate({
+      supplierId: row.supplierId,
+      totalUnpaidSnapshot: row.totalUnpaid,
+      oldestPoDate: row.oldestPoDate,
+      daysOverdue: row.daysOverdue,
       branchId: writeBranchId,
     });
   }
@@ -220,8 +262,10 @@ export default function APReminders() {
           search={search}
           setSearch={setSearch}
           onSend={handleFollowUp}
+          onSendViaApi={handleSendViaApi}
           onSkip={setSkipTarget}
           sendingId={logSent.isPending ? logSent.variables?.supplierId ?? null : null}
+          sendingViaApiId={sendViaApi.isPending ? sendViaApi.variables?.supplierId ?? null : null}
         />
       ) : (
         <HistoryTab
@@ -301,8 +345,10 @@ function QueueTab({
   search,
   setSearch,
   onSend,
+  onSendViaApi,
   onSkip,
   sendingId,
+  sendingViaApiId,
 }: {
   data: QueueRow[];
   isLoading: boolean;
@@ -312,8 +358,10 @@ function QueueTab({
   search: string;
   setSearch: (v: string) => void;
   onSend: (row: QueueRow) => void;
+  onSendViaApi: (row: QueueRow) => void;
   onSkip: (row: QueueRow) => void;
   sendingId: number | null;
+  sendingViaApiId: number | null;
 }) {
   if (isLoading) return <LoadingState />;
   if (isError) {
@@ -405,6 +453,17 @@ function QueueTab({
                       >
                         <CheckCircle2 className="size-3.5" aria-hidden />
                         تمّت المتابعة
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!row.phone || sendingViaApiId === row.supplierId}
+                        onClick={() => onSendViaApi(row)}
+                        className="me-1 inline-flex items-center gap-1"
+                        title="إرسال تلقائي بقالب Meta معتمَد (خلف مفتاح الأتمتة في إعدادات المركز)"
+                      >
+                        <Bot className="size-3.5" aria-hidden />
+                        أرسل عبر API
                       </Button>
                       <Button
                         size="sm"

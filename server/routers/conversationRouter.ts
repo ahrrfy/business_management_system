@@ -17,7 +17,7 @@ import {
 } from "../services/conversationService";
 // الاستهلاك الخارجي لِمَركَز واتساب الأَعمال يَمُرّ عَبر البِرميل `services/whatsapp` حَصراً (تَعليق
 // index.ts) — لا اِستيراد مُباشر مِن outboxService/sendService داخِل هَذا الراوتر.
-import { dispatchOutboxRow, enqueueAndDispatch, getActiveWaIntegration } from "../services/whatsapp";
+import { dispatchOutboxRow, enqueueAndDispatch, getActiveWaIntegration, getUsableTemplate } from "../services/whatsapp";
 
 const channelEnum = z.enum(["WHATSAPP", "INSTAGRAM", "TIKTOK", "STORE", "PHONE", "WALK_IN", "OTHER"]);
 
@@ -168,18 +168,23 @@ export const conversationRouter = router({
         .where(eq(conversationMessages.conversationId, input.conversationId))
         .orderBy(conversationMessages.createdAt);
 
+      // kind IN (SESSION_TEXT, TEMPLATE) — T4.3: مُنتَقي القَوالِب في الوارِد يَجب أَن يَظهر كَصَفّ OUT
+      // مُعَلَّق ثُم SENT/FAILED مِثل النَصّ الحُرّ حَرفياً (كان مَقصوراً عَلى SESSION_TEXT فَقط قَبل
+      // T4.3 ⇒ إرسال قالِب كان يَختفي بِلا أَثَر بَصَري حَتى النَجاح الفِعلي — اُكتُشِف بِجَولة حَيّة).
       const pendingRows = await db
         .select({
           outboxId: waOutbox.id,
           status: waOutbox.status,
           lastError: waOutbox.lastError,
           payloadJson: waOutbox.payloadJson,
+          kind: waOutbox.kind,
+          templateName: waOutbox.templateName,
           createdAt: waOutbox.createdAt,
         })
         .from(waOutbox)
         .where(and(
           eq(waOutbox.conversationId, input.conversationId),
-          eq(waOutbox.kind, "SESSION_TEXT"),
+          inArray(waOutbox.kind, ["SESSION_TEXT", "TEMPLATE"]),
           inArray(waOutbox.status, ["QUEUED", "SENDING", "FAILED"]),
         ))
         .orderBy(waOutbox.createdAt);
@@ -191,7 +196,12 @@ export const conversationRouter = router({
           // مِفتاح React مُستقرّ بَلا استعارة نِطاق مُعَرّفات الرَسائل الحَقيقية.
           id: -Number(p.outboxId),
           direction: "OUT" as const,
-          body: String((p.payloadJson as { text?: string } | null)?.text ?? ""),
+          // نَمط finalizeSendSuccess (outboxService.ts) حَرفياً — لا يَتغَيَّر نَصّ الفُقاعة بَين
+          // المُعَلَّق والنِهائي.
+          body:
+            p.kind === "TEMPLATE"
+              ? `قالب: ${p.templateName ?? ""}`
+              : String((p.payloadJson as { text?: string } | null)?.text ?? ""),
           mediaUrl: null as string | null,
           mediaType: null as string | null,
           authorUserId: null as number | null,
@@ -200,7 +210,7 @@ export const conversationRouter = router({
           statusUpdatedAt: null as Date | null,
           errorCode: null as string | null,
           origin: null as "API" | "PHONE_APP" | "SYSTEM" | null,
-          templateName: null as string | null,
+          templateName: p.kind === "TEMPLATE" ? p.templateName : (null as string | null),
           createdAt: p.createdAt,
           pending: { outboxId: Number(p.outboxId), status: p.status, lastError: p.lastError },
         })),
@@ -296,6 +306,59 @@ export const conversationRouter = router({
       });
     }),
 
+  /** إرسال قالِب Meta مُعتَمَد (T4.3) — مُنتَقي القَوالِب في الوارِد يَستَهلكه عِند إغلاق نافِذة الرَدّ
+   *  الحُرّ (القَوالِب مُعفاة مِن فَحص النافِذة — هَذا سَبب وُجودها أَصلاً، خِلافاً لِـsendMessage الذي
+   *  يَرفض OUT نَصّياً بَعد إغلاقها). idempotent عَبر dedupeKey `CHATTPL:{conversationId}:{...}`. */
+  sendTemplate: channelsWrite
+    .input(z.object({
+      conversationId: z.number().int().positive(),
+      templateName: z.string().min(1).max(512),
+      templateLang: z.string().min(1).max(10).optional(),
+      bodyParams: z.array(z.string().max(1000)).max(20),
+      clientRequestId: z.string().max(64).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const conv = await assertConversationBranch(input.conversationId, deriveScopedBranchId(ctx.user));
+      if (conv.channel !== "WHATSAPP") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "القَوالِب مُتاحة لِمُحادَثات واتساب فَقط." });
+      }
+      const lang = input.templateLang?.trim() || "ar";
+      const template = await getUsableTemplate(input.templateName, lang);
+      if (!template) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "القالِب غَير مُعتَمَد بَعد عِند Meta — زامِن القَوالِب مِن الإعدادات (مَركَز واتساب).",
+        });
+      }
+      if (input.bodyParams.length !== template.variableCount) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `القالِب يَحتاج ${template.variableCount} مُتَغيّر(ات) — أُرسِل ${input.bodyParams.length}.`,
+        });
+      }
+      const dedupeKey = `CHATTPL:${input.conversationId}:${input.clientRequestId?.trim() || nanoid()}`;
+      // channelHandle لِـWHATSAPP = wa_id خام (بِلا "+"، نَمط sendMessage أَعلاه).
+      const toPhoneE164 = conv.channelHandle.startsWith("+") ? conv.channelHandle : `+${conv.channelHandle}`;
+      const { id: outboxId } = await enqueueAndDispatch({
+        dedupeKey,
+        branchId: conv.branchId,
+        conversationId: input.conversationId,
+        toPhoneE164,
+        kind: "TEMPLATE",
+        payloadJson: { bodyParams: input.bodyParams },
+        templateName: input.templateName,
+        templateLang: lang,
+        createdBy: Number(ctx.user.id),
+      });
+      await logAudit(ctx, {
+        action: "conversation.sendTemplate",
+        entityType: "conversation",
+        entityId: input.conversationId,
+        newValue: { templateName: input.templateName, templateLang: lang, outboxId },
+      });
+      return { queued: true as const, outboxId };
+    }),
+
   /** رَبط مُحادثة بِعَميل مَوجود نَشِط (شَريحة الوارِد — الكاشير يَتعرَّف عَلى الزَبون أَثناء المُحادثة). */
   linkCustomer: channelsWrite
     .input(z.object({
@@ -344,7 +407,8 @@ export const conversationRouter = router({
           .where(eq(waOutbox.id, input.outboxId))
           .limit(1)
       )[0];
-      if (!row || row.kind !== "SESSION_TEXT" || row.conversationId == null) {
+      // TEMPLATE مُتاحة لِلإعادة أَيضاً (T4.3 — مُنتَقي القَوالِب في الوارِد يَستَعمِل نَفس زِرّ الإعادة).
+      if (!row || !["SESSION_TEXT", "TEMPLATE"].includes(row.kind) || row.conversationId == null) {
         throw new TRPCError({ code: "NOT_FOUND", message: "لا يوجَد صَفّ إرسال بِهَذا المُعَرّف" });
       }
       // عَزل الفُروع: صَفّ الصَندوق الصادِر يُنسَب لِفَرع مُحادثته — نَفس نَمط الرَسائل.
