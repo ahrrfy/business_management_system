@@ -247,6 +247,27 @@ export async function pauseBroadcast(broadcastId: number, reason: string, actor:
   });
 }
 
+/** يستأنف بثّاً PAUSED (سواءً أوقفه فاعلٌ يدوياً عبر `pauseBroadcast` أو أوقفه قاطع الجودة الآلي في
+ *  T5.2 `broadcastDispatch.dripRunningBroadcasts`) — يعيده RUNNING فيستكمل التقطير من حيث توقّف
+ *  (`waBroadcastRecipients` المتبقّية PENDING/QUEUED لم تُمسّ أثناء الإيقاف). killSwitch مفعّل ⇒
+ *  رفض (نمط launchBroadcast/approveBroadcast — لا استئناف إرسال آليّ والمفتاح مطفأ). */
+export async function resumeBroadcast(broadcastId: number, actor: Actor): Promise<{ status: "RUNNING" }> {
+  const settings = await getWaHubSettings();
+  if (settings.killSwitch) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "الإرسال الآلي موقوف (Kill Switch)." });
+  }
+  return withTx(async (tx) => {
+    const row = (await tx.select().from(waBroadcasts).where(eq(waBroadcasts.id, broadcastId)).for("update").limit(1))[0];
+    if (!row) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
+    assertBroadcastBranchAccess(actor, row.branchId == null ? null : Number(row.branchId));
+    if (row.broadcastStatus !== "PAUSED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن استئناف بثّ إلا وهو مُوقَّف مؤقّتاً" });
+    }
+    await tx.update(waBroadcasts).set({ broadcastStatus: "RUNNING", pausedReason: null }).where(eq(waBroadcasts.id, broadcastId));
+    return { status: "RUNNING" as const };
+  });
+}
+
 const CANCELLABLE_STATUSES = new Set(["DRAFT", "PENDING_APPROVAL", "APPROVED", "RUNNING", "PAUSED"]);
 
 export async function cancelBroadcast(broadcastId: number, actor: Actor): Promise<{ status: "CANCELLED" }> {
@@ -331,4 +352,43 @@ export async function getBroadcast(id: number, opts: { branchId?: number | null 
   const recipientCounts: Record<string, number> = {};
   for (const c of counts) recipientCounts[String(c.status)] = Number(c.cnt);
   return { ...normalizeRow(row), recipientCounts };
+}
+
+// ── النتائج (T5.2) — تجميع حالات المستلمين بنسب مئوية، لاستهلاك تقرير الحملات (T5.3/S6) ─────────
+
+export interface BroadcastResults {
+  broadcastId: number;
+  audienceCount: number;
+  totalRecipients: number;
+  counts: Record<string, number>;
+  /** نسبة كل حالة من totalRecipients — سلسلة "٪" بدقّتين عشريّتين (decimal.js — لا Number/parseFloat). */
+  percentages: Record<string, string>;
+}
+
+/** تجميع نتائج بثٍّ (عدّ + نسب لكل recipientStatus) — لا يفلتر بالفرع (استهلاك تقريريّ خلف بوّابة
+ *  التقارير في الراوتر؛ راجع broadcastsRouter.results). NOT_FOUND صريح بدل مصفوفة فارغة مُضلِّلة. */
+export async function broadcastResults(broadcastId: number): Promise<BroadcastResults> {
+  const db = requireDb();
+  const broadcastRow = (await db.select({ audienceCount: waBroadcasts.audienceCount }).from(waBroadcasts).where(eq(waBroadcasts.id, broadcastId)).limit(1))[0];
+  if (!broadcastRow) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
+
+  const counts = await db
+    .select({ status: waBroadcastRecipients.recipientStatus, cnt: sql<number>`COUNT(*)` })
+    .from(waBroadcastRecipients)
+    .where(eq(waBroadcastRecipients.broadcastId, broadcastId))
+    .groupBy(waBroadcastRecipients.recipientStatus);
+
+  const countsMap: Record<string, number> = {};
+  let totalRecipients = 0;
+  for (const c of counts) {
+    const n = Number(c.cnt);
+    countsMap[String(c.status)] = n;
+    totalRecipients += n;
+  }
+  const percentages: Record<string, string> = {};
+  for (const [status, n] of Object.entries(countsMap)) {
+    percentages[status] = totalRecipients > 0 ? money(n).mul(100).div(totalRecipients).toDecimalPlaces(2).toFixed(2) : "0.00";
+  }
+
+  return { broadcastId, audienceCount: Number(broadcastRow.audienceCount), totalRecipients, counts: countsMap, percentages };
 }

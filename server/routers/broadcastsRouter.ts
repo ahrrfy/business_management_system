@@ -11,6 +11,7 @@ import { logAudit } from "../services/auditService";
 import type { Actor } from "../services/tx";
 import {
   approveBroadcast,
+  broadcastResults,
   cancelBroadcast,
   createBroadcast,
   getBroadcast,
@@ -18,6 +19,7 @@ import {
   listBroadcasts,
   pauseBroadcast,
   previewAudience,
+  resumeBroadcast,
   type SegmentCriteria,
 } from "../services/whatsapp";
 import { campaignsManagerProcedure, campaignsReadProcedure, router } from "../trpc";
@@ -195,6 +197,15 @@ export const broadcastsRouter = router({
       return res;
     }),
 
+  /** يستأنف بثّاً PAUSED (يدوياً أو بقاطع الجودة الآلي — T5.2 broadcastDispatch) فيستكمل التقطير. */
+  resume: campaignsManagerProcedure
+    .input(z.object({ broadcastId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await resumeBroadcast(input.broadcastId, actorOf(ctx));
+      await logAudit(ctx, { action: "broadcast.resume", entityType: "waBroadcast", entityId: input.broadcastId });
+      return res;
+    }),
+
   list: campaignsReadProcedure.query(async ({ ctx }) => {
     return listBroadcasts({ branchId: ctx.scopedBranchId ?? null });
   }),
@@ -205,5 +216,15 @@ export const broadcastsRouter = router({
       const res = await getBroadcast(input.broadcastId, { branchId: ctx.scopedBranchId ?? null });
       if (!res) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
       return res;
+    }),
+
+  /** نتائج البثّ (عدّ+نسب مئوية لكل recipientStatus) — عزل فرع نمط `get` أعلاه (لا endpoint مخصّص
+   *  بالفرع في broadcastResults ذاتها؛ نتحقّق من ownership الفرع أولاً عبر getBroadcast). */
+  results: campaignsReadProcedure
+    .input(z.object({ broadcastId: z.number().int().positive() }))
+    .query(async ({ input, ctx }) => {
+      const owned = await getBroadcast(input.broadcastId, { branchId: ctx.scopedBranchId ?? null });
+      if (!owned) throw new TRPCError({ code: "NOT_FOUND", message: "البثّ غير موجود" });
+      return broadcastResults(input.broadcastId);
     }),
 });

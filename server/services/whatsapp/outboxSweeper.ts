@@ -8,6 +8,7 @@ import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import { waOutbox } from "../../../drizzle/schema";
 import { logger } from "../../logger";
 import { withTx } from "../tx";
+import { dripRunningBroadcasts } from "./broadcastDispatch";
 import { dispatchClaimedRow, hasAnyActiveWaIntegration } from "./outboxService";
 import { retryFailedWaEvents } from "./webhookProcessor";
 
@@ -50,6 +51,13 @@ export async function sweepWaOutboxOnce(): Promise<WaOutboxSweepResult> {
   // بنفس نبضة الدقيقة (لا جدولة cron مستقلّة). processWaEvent لا ترمي أبداً (تلتقط استثناءها
   // داخلياً وتُعلِّم الحدث FAILED) فلا حاجة لحماية إضافية هنا — نفس افتراض الحلقة أعلاه.
   await retryFailedWaEvents();
+  // البث التسويقي (S5، T5.2): تقطير الحملات RUNNING — محمي صراحةً (try/catch) فلا يُفشل النبضة
+  // بأكملها؛ dripRunningBroadcasts نفسها تحمي كل حملة على حدة داخلياً (نفس بروتوكول الحلقة أعلاه).
+  try {
+    await dripRunningBroadcasts();
+  } catch (e) {
+    logger.error({ err: e }, "wa-outbox sweep: dripRunningBroadcasts threw — تُجوهل (لا تُفشل النبضة)");
+  }
   return { claimed: ids.length };
 }
 

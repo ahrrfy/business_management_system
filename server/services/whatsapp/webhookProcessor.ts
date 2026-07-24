@@ -36,6 +36,7 @@ import { logger } from "../../logger";
 import { addMessage, upsertConversation } from "../conversationService";
 import { maybeCreateTaskForInbound } from "../tasks/autoCreate";
 import { requireDb, withTx } from "../tx";
+import { syncBroadcastRecipientFromOutbox } from "./broadcastDispatch";
 import { resolveWaSender } from "./contactResolver";
 import { baghdadYmdCompact, checkAutomationGate, isOutsideBusinessHours } from "./flowNotify";
 import { enqueueAndDispatch, enqueueOutbox } from "./outboxService";
@@ -481,30 +482,45 @@ async function processStatuses(statuses: WaStatus[]): Promise<void> {
         .where(eq(conversationMessages.externalId, wamid))
         .limit(1)
     )[0];
-    if (!row) {
-      // سباق الترتيب (بند ٤): الحالة سبقت صفّ الرسالة (finalizeSendSuccess لم يكتب بعد، أو
-      // حدثا webhook متزامنان). نرمي خطأً مميّزاً يُعلِّم الحدث **كاملاً** FAILED ليُعاد عبر
+    // البث التسويقي (S5، T5.2): رسائل الحملات (waOutbox.campaignId مضبوط) لا صفّ conversationMessages
+    // لها إطلاقاً — لا محادثة فردية لبثٍّ جماعي (broadcastDispatch لا يمرّر conversationId عند
+    // enqueueOutbox). غياب row أعلاه إذن لا يعني بالضرورة سباق ترتيب؛ نبحث أيضاً في waOutbox
+    // بالwamid لنعرف: صفّ waOutbox موجود (بحملة أو بدونها) ⇒ الرسالة وصلت فعلاً ولا تنتظر شيئاً.
+    const outboxRow = (
+      await db.select({ id: waOutbox.id, campaignId: waOutbox.campaignId }).from(waOutbox).where(eq(waOutbox.wamid, wamid)).limit(1)
+    )[0];
+
+    if (!row && !outboxRow) {
+      // سباق الترتيب (بند ٤): الحالة سبقت صفّ الرسالة/waOutbox.wamid (finalizeSendSuccess لم يكتب
+      // بعد، أو حدثا webhook متزامنان). نرمي خطأً مميّزاً يُعلِّم الحدث **كاملاً** FAILED ليُعاد عبر
       // retryFailedWaEvents بعد وصول الرسالة — لا نُسقط تحديث الحالة صامتاً.
       throw new Error(`wa-status-race: wamid ${wamid} لا يطابق أيّ رسالة صادرة بعد.`);
     }
 
     const waTimestamp = parseWaTimestamp(st.timestamp);
+    const isCampaignRow = outboxRow?.campaignId != null;
 
     if (rawStatus === "failed") {
       const errorCode = st.errors?.[0]?.code != null ? String(st.errors[0].code).slice(0, 20) : null;
       const lastError = (st.errors?.[0]?.title ?? "فشل تسليم الرسالة عبر واتساب.").slice(0, 500);
-      // ذرّي: تحديث حالة الرسالة + إعلام waOutbox معاً — عملية عمل واحدة (بند §٥ الذرّية).
+      // ذرّي: تحديث حالة الرسالة + إعلام waOutbox (+ ربط مستلم الحملة إن وُجد) معاً — عملية عمل
+      // واحدة (بند §٥ الذرّية).
       await withTx(async (tx) => {
-        await tx
-          .update(conversationMessages)
-          .set({
-            deliveryStatus: "FAILED",
-            errorCode,
-            statusUpdatedAt: sql`NOW()`,
-            ...(waTimestamp ? { waTimestamp } : {}),
-          })
-          .where(eq(conversationMessages.id, row.id));
+        if (row) {
+          await tx
+            .update(conversationMessages)
+            .set({
+              deliveryStatus: "FAILED",
+              errorCode,
+              statusUpdatedAt: sql`NOW()`,
+              ...(waTimestamp ? { waTimestamp } : {}),
+            })
+            .where(eq(conversationMessages.id, row.id));
+        }
         await tx.update(waOutbox).set({ status: "FAILED", lastError }).where(eq(waOutbox.wamid, wamid));
+        if (isCampaignRow) {
+          await syncBroadcastRecipientFromOutbox(tx, { outboxId: outboxRow!.id, wamid, status: "FAILED", errorCode });
+        }
       });
       continue;
     }
@@ -515,17 +531,24 @@ async function processStatuses(statuses: WaStatus[]): Promise<void> {
       logger.info({ status: rawStatus, wamid }, "wa-webhook: حالة غير معروفة — تُجوهل (بند ٥)");
       continue;
     }
-    const currentRank = STATUS_RANK[row.deliveryStatus ?? "PENDING"] ?? 0;
-    if (newRank <= currentRank) continue; // رتابة: delivered بعد read لا تُخفّض الحالة.
 
-    await db
-      .update(conversationMessages)
-      .set({
-        deliveryStatus: normalized as "SENT" | "DELIVERED" | "READ",
-        statusUpdatedAt: sql`NOW()`,
-        ...(waTimestamp ? { waTimestamp } : {}),
-      })
-      .where(eq(conversationMessages.id, row.id));
+    if (row) {
+      const currentRank = STATUS_RANK[row.deliveryStatus ?? "PENDING"] ?? 0;
+      if (newRank > currentRank) {
+        // رتابة: delivered بعد read لا تُخفّض الحالة.
+        await db
+          .update(conversationMessages)
+          .set({
+            deliveryStatus: normalized as "SENT" | "DELIVERED" | "READ",
+            statusUpdatedAt: sql`NOW()`,
+            ...(waTimestamp ? { waTimestamp } : {}),
+          })
+          .where(eq(conversationMessages.id, row.id));
+      }
+    }
+    if (isCampaignRow && (normalized === "SENT" || normalized === "DELIVERED" || normalized === "READ")) {
+      await syncBroadcastRecipientFromOutbox(db, { outboxId: outboxRow!.id, wamid, status: normalized, errorCode: null });
+    }
   }
 }
 

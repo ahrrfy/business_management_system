@@ -76,6 +76,7 @@ export type {
 export {
   MARKETING_MSG_COST,
   approveBroadcast,
+  broadcastResults,
   cancelBroadcast,
   createBroadcast,
   getBroadcast,
@@ -83,14 +84,21 @@ export {
   listBroadcasts,
   pauseBroadcast,
   previewAudience,
+  resumeBroadcast,
 } from "./broadcastService";
 export type {
   ApproveBroadcastResult,
   BroadcastDetail,
   BroadcastListRow,
+  BroadcastResults,
   CreateBroadcastInput,
   CreateBroadcastResult,
   LaunchBroadcastResult,
   LaunchBroadcastStatus,
   PreviewAudienceResult,
 } from "./broadcastService";
+
+// تقطير البث عبر الكنّاس (S5، T5.2): إدراج كسول يحترم opt-in/opt-out + تقطير مقنَّن + قاطع جودة
+// + ربط حالات التسليم بالمستلمين (تُستهلك من webhookProcessor.ts).
+export { dripRunningBroadcasts, syncBroadcastRecipientFromOutbox } from "./broadcastDispatch";
+export type { BroadcastDeliveryStatus, DripBroadcastsResult } from "./broadcastDispatch";
