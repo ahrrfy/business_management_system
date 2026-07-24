@@ -2,10 +2,12 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq, inArray, sql } from "drizzle-orm";
-import { productVariants, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import { customers, productVariants, workOrderMaterials, workOrders } from "../../../drizzle/schema";
+import { logger } from "../../logger";
 import { applyMovement } from "../inventoryService";
 import { money, round2 } from "../money";
-import { type Actor, withTx } from "../tx";
+import { type Actor, requireDb, withTx } from "../tx";
+import { flowNotify } from "../whatsapp";
 import { assertOperatorOwns, assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 
 /**
@@ -88,7 +90,7 @@ export async function startWorkOrder(workOrderId: number, actor: Actor & { role?
  *  ⇒ لا انجراف ولا اعتماد على عَميل. لو workStartedAt = NULL (أَوامر قَديمة قبل الهجرة)
  *  يَبقى workSeconds = NULL ولا يَكسر شَيئاً (الواجهة تَتعامل مع NULL بِفقاطِع رَمادية). */
 export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { role?: string }) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const wo = await loadWorkOrder(tx, workOrderId);
     if (actor) { assertWorkOrderBranch(wo, actor); assertOperatorOwns(wo, actor); }
     if (wo.status !== "IN_PROGRESS") throw new TRPCError({ code: "BAD_REQUEST", message: "الأمر ليس قيد التنفيذ" });
@@ -100,6 +102,45 @@ export async function markWorkOrderReady(workOrderId: number, actor?: Actor & { 
         workSeconds: sql`GREATEST(TIMESTAMPDIFF(SECOND, ${workOrders.workStartedAt}, NOW()), 0)`,
       })
       .where(eq(workOrders.id, workOrderId));
-    return { workOrderId, status: "READY" };
+    return {
+      workOrderId,
+      status: "READY" as const,
+      branchId: Number(wo.branchId),
+      customerId: wo.customerId != null ? Number(wo.customerId) : null,
+      orderNumber: wo.orderNumber,
+    };
+  });
+
+  // إشعار «طلبك جاهز» (T4.2، خلف مفتاح flowOrderReady) — خارج المعاملة تماماً وبعد نجاحها فقط،
+  // محمي بذاته (flowNotify لا يرمي) + غلاف دفاعيّ هنا. **لا يُفشِل الانتقال أبداً** (القاعدة الحاكمة،
+  // راجع server/services/whatsapp/flowNotify.ts).
+  try {
+    await notifyOrderReady(result);
+  } catch (e) {
+    logger.warn(
+      { err: e instanceof Error ? e.message : String(e), workOrderId: result.workOrderId },
+      "workOrder: تعذّر إرسال إشعار طلبك جاهز — تُجوهل",
+    );
+  }
+
+  return { workOrderId: result.workOrderId, status: result.status };
+}
+
+/** يجلب هاتف/اسم عميل الأمر (إن عُرف) ويستدعي flowNotify — لا شيء إن لا عميل/لا هاتف. */
+async function notifyOrderReady(params: { workOrderId: number; branchId: number; customerId: number | null; orderNumber: string }): Promise<void> {
+  if (params.customerId == null) return;
+  const db = requireDb();
+  const cust = (
+    await db.select({ name: customers.name, phone: customers.phone }).from(customers).where(eq(customers.id, params.customerId)).limit(1)
+  )[0];
+  if (!cust?.phone) return;
+  await flowNotify({
+    flowKey: "flowOrderReady",
+    branchId: params.branchId,
+    toPhoneE164: cust.phone,
+    customerId: params.customerId,
+    templateName: "order_ready",
+    bodyParams: [cust.name, params.orderNumber],
+    dedupeKey: `WO_READY:${params.workOrderId}`,
   });
 }

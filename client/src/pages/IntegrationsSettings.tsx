@@ -1,14 +1,15 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, Copy, Eye, EyeOff, KeyRound, Loader2, Plus, RefreshCw, RotateCcw, Scissors, ShoppingBag, Trash2, User, Wand2, MessageSquare } from "lucide-react";
+import { AlertCircle, AlertTriangle, CheckCircle2, ChevronDown, Clock, Copy, Eye, EyeOff, KeyRound, LayoutTemplate, Loader2, Plus, Power, RefreshCw, RotateCcw, Save, Scissors, Settings2, ShoppingBag, Trash2, User, Wand2, MessageSquare } from "lucide-react";
 import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState } from "@/components/PageState";
-import { useMemo, useState } from "react";
+import { Switch } from "@/components/ui/switch";
+import { useEffect, useMemo, useState } from "react";
 
 /**
  * شاشة تَكاملات القَنوات الخارِجية — `/settings/integrations` (شَريحة #6).
@@ -88,6 +89,7 @@ function SecretField({
 interface DraftState {
   displayName: string;
   phoneNumberId: string;
+  wabaId: string;
   verifyToken: string;
   appSecret: string;
   accessToken: string;
@@ -99,6 +101,7 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
   const [draft, setDraft] = useState<DraftState>({
     displayName: integ.displayName ?? "",
     phoneNumberId: integ.phoneNumberId ?? "",
+    wabaId: integ.wabaId ?? "",
     verifyToken: "",
     appSecret: "",
     accessToken: "",
@@ -133,6 +136,7 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
       channel: integ.channel as Channel,
       displayName: draft.displayName.trim() || null,
       phoneNumberId: draft.phoneNumberId.trim() || null,
+      wabaId: draft.wabaId.trim() || null,
       // فَقط الحُقول التي كُتب فيها نَصّ جَديد ⇒ undefined لِبقاء القَديم.
       verifyToken: draft.verifyToken ? draft.verifyToken : undefined,
       appSecret: draft.appSecret ? draft.appSecret : undefined,
@@ -214,6 +218,20 @@ function IntegrationCard({ integ, onChanged }: { integ: Integration; onChanged: 
                     value={draft.phoneNumberId}
                     onChange={(e) => setDraft({ ...draft, phoneNumberId: e.target.value })}
                     placeholder="مَثلاً: 123456789012345"
+                    dir="ltr"
+                    className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  />
+                </div>
+              )}
+              {integ.channel === "WHATSAPP" && (
+                <div className="space-y-1">
+                  <label className="text-xs font-medium">WABA ID (حِساب واتساب الأَعمال)</label>
+                  <div className="text-[11px] text-muted-foreground">مِن WhatsApp Manager → Overview — مَطلوب لِمَزامَنة القَوالِب مِن مَركَز واتساب.</div>
+                  <input
+                    type="text"
+                    value={draft.wabaId}
+                    onChange={(e) => setDraft({ ...draft, wabaId: e.target.value })}
+                    placeholder="مَثلاً: 987654321098765"
                     dir="ltr"
                     className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   />
@@ -653,6 +671,440 @@ function AiImageStudioIntegrationCard() {
   );
 }
 
+/**
+ * مَركَز واتساب الأَعمال — الإعدادات والأَتمتة (T4.3). القِسم كامِلاً مَحصور بِالأَدمن (نَفس بَوّابة
+ * هَذه الشاشة gate: adminOnly في AdminHub.tsx) ⇒ لا حاجة لِفَصل عَرض/تَحرير لِلمُدير هُنا — **القَرار
+ * الأَنظَف** المَذكور في المُواصَفة: get على managerProcedure خادِمياً (تَستَهلكه شاشات أُخرى لاحِقاً)،
+ * وواجِهياً القِسم بِأَكمَله خَلف بَوّابة الأَدمن أَصلاً.
+ */
+type WaHubSettingsData = RouterOutputs["integrations"]["waHubSettings"]["get"];
+type TriageMode = WaHubSettingsData["triageMode"];
+
+interface AutomationDraft {
+  triageMode: TriageMode;
+  autoTaskEnabled: boolean;
+  days: number[];
+  hoursFrom: string;
+  hoursTo: string;
+  afterHoursReply: string;
+  welcomeReply: string;
+  autoReplyAfterHours: boolean;
+  autoReplyWelcome: boolean;
+  flowArReminder: boolean;
+  flowOrderReady: boolean;
+  flowPurchaseThanks: boolean;
+  flowConsignmentWithdraw: boolean;
+  csatOnResolve: boolean;
+  throttlePerMinute: string;
+  campaignApprovalThreshold: string;
+  optOutKeywords: string;
+}
+
+const DAY_LABELS = ["الأحد", "الاثنين", "الثلاثاء", "الأربعاء", "الخميس", "الجمعة", "السبت"];
+
+/** يُطابِق `parseBusinessHours` الخادِمية (flowNotify.ts) — قِراءة عَرض فَقط، لا تَحقّق صارِم هُنا
+ *  (الخادِم مَصدر الحَقيقة النِهائي؛ قِيمة غَير صالِحة تُعرَض كَـ«بِلا ساعات دَوام مَضبوطة»). */
+function parseBusinessHoursDraft(raw: unknown): { days: number[]; from: string; to: string } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const days = Array.isArray(o.days)
+    ? (o.days.filter((d): d is number => typeof d === "number" && d >= 0 && d <= 6) as number[])
+    : null;
+  const from = typeof o.from === "string" ? o.from : null;
+  const to = typeof o.to === "string" ? o.to : null;
+  if (!days || !days.length || !from || !to) return null;
+  return { days, from, to };
+}
+
+function draftFromServer(d: WaHubSettingsData): AutomationDraft {
+  const hours = parseBusinessHoursDraft(d.businessHoursJson);
+  return {
+    triageMode: d.triageMode,
+    autoTaskEnabled: d.autoTaskEnabled,
+    days: hours?.days ?? [],
+    hoursFrom: hours?.from ?? "09:00",
+    hoursTo: hours?.to ?? "17:00",
+    afterHoursReply: d.afterHoursReply ?? "",
+    welcomeReply: d.welcomeReply ?? "",
+    autoReplyAfterHours: d.autoReplyAfterHours,
+    autoReplyWelcome: d.autoReplyWelcome,
+    flowArReminder: d.flowArReminder,
+    flowOrderReady: d.flowOrderReady,
+    flowPurchaseThanks: d.flowPurchaseThanks,
+    flowConsignmentWithdraw: d.flowConsignmentWithdraw,
+    csatOnResolve: d.csatOnResolve,
+    throttlePerMinute: String(d.throttlePerMinute),
+    campaignApprovalThreshold: String(d.campaignApprovalThreshold),
+    optOutKeywords: d.optOutKeywords ?? "",
+  };
+}
+
+/** إيقاف الطوارئ — بارِز أَعلى القِسم، يَعمَل فَوراً (بِلا انتِظار زِرّ حِفظ الأَتمتة) + تَأكيد عِند
+ *  التَفعيل (خَطير: يوقِف كل إرسال آلي — تَذكيرات/إشعارات/رُدود). الإرسال اليَدَوي مِن الوارِد لا يَتأثَّر. */
+function KillSwitchCard() {
+  const utils = trpc.useUtils();
+  const q = trpc.integrations.waHubSettings.get.useQuery();
+  const update = trpc.integrations.waHubSettings.update.useMutation({
+    onSuccess: () => { utils.integrations.waHubSettings.invalidate(); },
+    onError: (e) => notify.err(e),
+  });
+  const killSwitch = q.data?.killSwitch ?? false;
+
+  const handleToggle = async (next: boolean) => {
+    if (next) {
+      if (!(await confirm({
+        variant: "danger",
+        title: "إيقاف كل الإرسال الآلي فوراً",
+        description: "سَيَتَوقَّف كل إرسال تِلقائي (تَذكيرات/إشعارات/رُدود آلية) عَبر مَركَز واتساب فَوراً حَتى إعادة التَفعيل. الإرسال اليَدَوي مِن الوارِد يَبقى يَعمَل.",
+        confirmText: "إيقاف الآن",
+        cancelText: "تَراجع",
+      }))) return;
+    }
+    update.mutate({ killSwitch: next }, { onSuccess: () => notify.ok(next ? "أُوقِف الإرسال الآلي" : "أُعيد تَفعيل الإرسال الآلي") });
+  };
+
+  return (
+    <Card className={killSwitch ? "border-destructive/40 bg-destructive/5" : "border-emerald-500/30 bg-emerald-500/[0.03]"}>
+      <CardContent className="p-4 flex items-center justify-between gap-3 flex-wrap">
+        <div className="flex items-center gap-3">
+          <div className={`size-10 rounded-lg grid place-items-center flex-shrink-0 border ${killSwitch ? "bg-destructive/10 text-destructive border-destructive/30" : "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 border-emerald-500/30"}`}>
+            <Power aria-hidden className="size-5" />
+          </div>
+          <div>
+            <div className="font-bold text-sm">إيقاف الطوارئ (Kill Switch)</div>
+            <div className="text-xs text-muted-foreground">يوقِف كل إرسال آلي فَوراً — الإرسال اليَدَوي مِن الوارِد يَبقى يَعمَل.</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge variant="outline" className={killSwitch ? "badge-stock-out" : "badge-status-active"}>
+            {killSwitch ? "الإرسال الآلي مُوقَف" : "الإرسال الآلي فَعّال"}
+          </Badge>
+          <Switch
+            checked={killSwitch}
+            onCheckedChange={handleToggle}
+            disabled={q.isLoading || update.isPending}
+            aria-label="إيقاف كل الإرسال الآلي"
+          />
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const FLOW_KEYS: { key: "flowArReminder" | "flowOrderReady" | "flowPurchaseThanks" | "flowConsignmentWithdraw" | "csatOnResolve"; label: string }[] = [
+  { key: "flowArReminder", label: "تَذكير ذِمَم آجِلة (AR/AP)" },
+  { key: "flowOrderReady", label: "إشعار جاهِزية الطَلب" },
+  { key: "flowPurchaseThanks", label: "شُكر الشِراء" },
+  { key: "flowConsignmentWithdraw", label: "إشعار سَحب بِضاعة أَمانة" },
+  { key: "csatOnResolve", label: "استِبيان رِضا (CSAT) عِند إغلاق المُحادَثة" },
+];
+
+/** نَموذَج إعدادات الأَتمتة (وَضع الفَرز/ساعات الدَوام/الرُدود الآلية/مَفاتيح التَدفّقات/الحُدود) —
+ *  حِفظ شامِل بِزِرّ واحِد (undefined لِلحُقول غَير المُهيَّأة بَعد = لا تُغَيّر خادِمياً، لَكِن هُنا
+ *  الدَرافت دائِماً مُهيَّأ كامِلاً مِن آخِر قِراءة خادِمية فَنُرسِل كل الحُقول). */
+function AutomationSettingsCard() {
+  const utils = trpc.useUtils();
+  const q = trpc.integrations.waHubSettings.get.useQuery();
+  const [draft, setDraft] = useState<AutomationDraft | null>(null);
+
+  useEffect(() => {
+    if (q.data) setDraft(draftFromServer(q.data));
+  }, [q.data]);
+
+  const update = trpc.integrations.waHubSettings.update.useMutation({
+    onSuccess: (row) => {
+      notify.ok("حُفظت إعدادات الأَتمتة");
+      utils.integrations.waHubSettings.invalidate();
+      setDraft(draftFromServer(row));
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  if (q.isLoading || !draft) return <LoadingState />;
+
+  function toggleDay(d: number) {
+    setDraft((cur) => (cur ? { ...cur, days: cur.days.includes(d) ? cur.days.filter((x) => x !== d) : [...cur.days, d].sort((a, b) => a - b) } : cur));
+  }
+
+  function save() {
+    if (!draft) return;
+    const throttle = Math.round(Number(draft.throttlePerMinute));
+    const threshold = Math.round(Number(draft.campaignApprovalThreshold));
+    if (!Number.isFinite(throttle) || throttle < 1 || throttle > 1000) {
+      notify.err("حدّ الإرسال بالدقيقة يجب أن يكون رقماً بين ١ و١٠٠٠");
+      return;
+    }
+    if (!Number.isFinite(threshold) || threshold < 0) {
+      notify.err("سقف اعتماد الحملة يجب أن يكون رقماً صحيحاً ≥ صفر");
+      return;
+    }
+    update.mutate({
+      triageMode: draft.triageMode,
+      autoTaskEnabled: draft.autoTaskEnabled,
+      businessHoursJson: draft.days.length > 0 ? { days: draft.days, from: draft.hoursFrom, to: draft.hoursTo } : null,
+      afterHoursReply: draft.afterHoursReply.trim() || null,
+      welcomeReply: draft.welcomeReply.trim() || null,
+      throttlePerMinute: throttle,
+      campaignApprovalThreshold: threshold,
+      optOutKeywords: draft.optOutKeywords.trim() || null,
+      autoReplyAfterHours: draft.autoReplyAfterHours,
+      autoReplyWelcome: draft.autoReplyWelcome,
+      flowArReminder: draft.flowArReminder,
+      flowOrderReady: draft.flowOrderReady,
+      flowPurchaseThanks: draft.flowPurchaseThanks,
+      flowConsignmentWithdraw: draft.flowConsignmentWithdraw,
+      csatOnResolve: draft.csatOnResolve,
+    });
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <Settings2 aria-hidden className="size-4.5 text-primary" /> إعدادات الأَتمتة
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <div className="grid gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <label className="text-xs font-medium">وَضع الفَرز</label>
+            <select
+              value={draft.triageMode}
+              onChange={(e) => setDraft({ ...draft, triageMode: e.target.value as TriageMode })}
+              className="w-full h-9 border rounded-md px-2 text-sm bg-background"
+            >
+              <option value="AUTO_ALL">تِلقائي لِلكُلّ</option>
+              <option value="KEYWORD_ONLY">حَسب الكَلِمات المفتاحية فَقط</option>
+              <option value="MANUAL">يَدَوي بِالكامِل</option>
+            </select>
+          </div>
+          <div className="flex items-center justify-between rounded-md border px-3 h-9 self-end">
+            <label className="text-xs font-medium">إنشاء مَهام تِلقائياً</label>
+            <Switch checked={draft.autoTaskEnabled} onCheckedChange={(v) => setDraft({ ...draft, autoTaskEnabled: v })} aria-label="إنشاء مهام تلقائياً" />
+          </div>
+        </div>
+
+        <div className="space-y-2 border-t pt-4">
+          <label className="text-xs font-medium inline-flex items-center gap-1.5">
+            <Clock aria-hidden className="size-3.5" /> ساعات الدَوام
+          </label>
+          <div className="flex flex-wrap gap-1.5">
+            {DAY_LABELS.map((label, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => toggleDay(i)}
+                className={`text-xs px-2.5 py-1 rounded-md border font-medium ${
+                  draft.days.includes(i) ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-accent"
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <input type="time" value={draft.hoursFrom} onChange={(e) => setDraft({ ...draft, hoursFrom: e.target.value })} dir="ltr" className="h-9 border rounded-md px-2 text-sm bg-background" />
+            <span className="text-xs text-muted-foreground">إلى</span>
+            <input type="time" value={draft.hoursTo} onChange={(e) => setDraft({ ...draft, hoursTo: e.target.value })} dir="ltr" className="h-9 border rounded-md px-2 text-sm bg-background" />
+          </div>
+          <p className="text-[11px] text-muted-foreground">اترُك الأَيام كُلها بِلا اختِيار لِإلغاء ساعات الدَوام (كل الأَوقات ضِمن الدَوام). تَوقيت بَغداد (UTC+3).</p>
+        </div>
+
+        <div className="space-y-3 border-t pt-4">
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium">رَدّ خارِج الدَوام</label>
+            <Switch checked={draft.autoReplyAfterHours} onCheckedChange={(v) => setDraft({ ...draft, autoReplyAfterHours: v })} aria-label="تفعيل ردّ خارج الدوام" />
+          </div>
+          <textarea
+            value={draft.afterHoursReply}
+            onChange={(e) => setDraft({ ...draft, afterHoursReply: e.target.value })}
+            rows={2}
+            maxLength={2000}
+            placeholder="مِثال: شُكراً لِتَواصُلكم، نَحن خارِج أَوقات الدَوام حالياً وَسَنُعاود الرَدّ في أَقرَب وَقت."
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+          <div className="flex items-center justify-between">
+            <label className="text-xs font-medium">رَدّ التَرحيب (أَوّل رِسالة وارِدة)</label>
+            <Switch checked={draft.autoReplyWelcome} onCheckedChange={(v) => setDraft({ ...draft, autoReplyWelcome: v })} aria-label="تفعيل ردّ الترحيب" />
+          </div>
+          <textarea
+            value={draft.welcomeReply}
+            onChange={(e) => setDraft({ ...draft, welcomeReply: e.target.value })}
+            rows={2}
+            maxLength={2000}
+            placeholder="مِثال: أَهلاً بِك في المَكتبة العَربية لِلطِباعة وَالقِرطاسية! كَيف يُمكِننا خِدمَتك؟"
+            className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          />
+        </div>
+
+        <div className="space-y-2 border-t pt-4">
+          <label className="text-xs font-medium">مَفاتيح التَدفّقات الآلية بِقالِب مُعتَمَد (كُلّها مُعطَّلة افتراضياً)</label>
+          <div className="grid gap-2 sm:grid-cols-2">
+            {FLOW_KEYS.map(({ key, label }) => (
+              <div key={key} className="flex items-center justify-between rounded-md border px-3 h-9">
+                <span className="text-xs">{label}</span>
+                <Switch checked={draft[key]} onCheckedChange={(v) => setDraft({ ...draft, [key]: v })} aria-label={label} />
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 border-t pt-4">
+          <div className="space-y-1">
+            <label className="text-xs font-medium">حَدّ الإرسال بِالدَقيقة (throttle)</label>
+            <input
+              type="number"
+              min={1}
+              max={1000}
+              value={draft.throttlePerMinute}
+              onChange={(e) => setDraft({ ...draft, throttlePerMinute: e.target.value })}
+              dir="ltr"
+              className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-xs font-medium">سَقف اعتِماد الحَملة (يَدَوياً تَحته)</label>
+            <input
+              type="number"
+              min={0}
+              value={draft.campaignApprovalThreshold}
+              onChange={(e) => setDraft({ ...draft, campaignApprovalThreshold: e.target.value })}
+              dir="ltr"
+              className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
+            />
+          </div>
+          <div className="space-y-1 sm:col-span-2">
+            <label className="text-xs font-medium">كَلِمات إلغاء الاشتِراك (opt-out)</label>
+            <input
+              type="text"
+              value={draft.optOutKeywords}
+              onChange={(e) => setDraft({ ...draft, optOutKeywords: e.target.value })}
+              placeholder="مِثال: إيقاف، الغاء، stop"
+              className="w-full h-9 px-3 rounded-md border border-input bg-background text-sm"
+            />
+          </div>
+        </div>
+
+        <div className="pt-1">
+          <Button onClick={save} disabled={update.isPending}>
+            {update.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : <Save aria-hidden className="size-4 me-1" />}
+            حِفظ إعدادات الأَتمتة
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+const TEMPLATE_STATUS_META: Record<string, { label: string; cls: string }> = {
+  APPROVED: { label: "مُعتَمَد", cls: "badge-status-active" },
+  PENDING: { label: "قَيد المُراجَعة", cls: "badge-status-pending" },
+  REJECTED: { label: "مَرفوض", cls: "badge-stock-out" },
+  PAUSED: { label: "مُعلَّق", cls: "badge-status-cancelled" },
+  DISABLED: { label: "مُعطَّل", cls: "badge-status-cancelled" },
+};
+
+/** مَزامَنة قَوالِب Meta + جَدوَل القَوالِب المُخَزَّنة (waTemplates — عامّة، لَيسَت بِحَسب الفَرع؛
+ *  الفَرع هُنا يُحدِّد فَقط أَيّ تَكامل واتساب ACTIVE يُستَعمَل كَمَصدر لِلمُزامَنة). */
+function TemplateSyncSection({ branches }: { branches: { id: number; name: string }[] }) {
+  const utils = trpc.useUtils();
+  const [branchId, setBranchId] = useState<number>(branches[0]?.id ?? 0);
+  useEffect(() => {
+    if (!branchId && branches[0]) setBranchId(branches[0].id);
+  }, [branches, branchId]);
+
+  const templatesQ = trpc.integrations.templates.list.useQuery();
+  const sync = trpc.integrations.syncTemplates.useMutation({
+    onSuccess: (r) => {
+      notify.ok("تَمّت المُزامَنة", `${r.synced} قالِباً (${r.approved} مُعتَمَد).`);
+      utils.integrations.templates.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-base flex items-center gap-2">
+          <LayoutTemplate aria-hidden className="size-4.5 text-primary" /> قَوالِب Meta
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-end gap-2">
+          <div className="space-y-1">
+            <label className="text-xs font-medium">الفَرع (لِتَحديد تَكامل واتساب المَصدر)</label>
+            <select
+              value={branchId || ""}
+              onChange={(e) => setBranchId(Number(e.target.value))}
+              className="h-9 border rounded-md px-2 text-sm bg-background"
+            >
+              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+            </select>
+          </div>
+          <Button variant="outline" onClick={() => sync.mutate({ branchId })} disabled={sync.isPending || !branchId}>
+            {sync.isPending ? <Loader2 aria-hidden className="size-4 me-1 animate-spin" /> : <RefreshCw aria-hidden className="size-4 me-1" />}
+            مَزامَنة القَوالِب مِن Meta
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground">يَتطَلَّب تَكامل واتساب ACTIVE عَلى الفَرع المُختار + WABA ID مَضبوطاً في بِطاقة تَكامله أَعلاه.</p>
+
+        {templatesQ.isLoading ? (
+          <LoadingState />
+        ) : (templatesQ.data?.length ?? 0) === 0 ? (
+          <div className="text-xs text-muted-foreground border border-dashed rounded-lg p-4 text-center">
+            لا قَوالِب مُزامَنة بَعد. اِضغط «مَزامَنة القَوالِب مِن Meta» بَعد ضَبط WABA ID.
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-md border">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40 text-xs text-muted-foreground">
+                <tr>
+                  <th className="text-right p-2 font-medium">الاسم</th>
+                  <th className="text-center p-2 font-medium">اللغة</th>
+                  <th className="text-center p-2 font-medium">الفِئة</th>
+                  <th className="text-center p-2 font-medium">الحالة</th>
+                  <th className="text-center p-2 font-medium">المُتَغيّرات</th>
+                  <th className="text-center p-2 font-medium">آخِر مُزامَنة</th>
+                </tr>
+              </thead>
+              <tbody>
+                {templatesQ.data?.map((t) => {
+                  const st = TEMPLATE_STATUS_META[t.templateStatus] ?? TEMPLATE_STATUS_META.PENDING;
+                  return (
+                    <tr key={t.id} className="border-t">
+                      <td className="p-2 font-medium">{t.name}</td>
+                      <td className="p-2 text-center" dir="ltr">{t.language}</td>
+                      <td className="p-2 text-center text-xs text-muted-foreground">{t.category}</td>
+                      <td className="p-2 text-center"><Badge variant="outline" className={st.cls}>{st.label}</Badge></td>
+                      <td className="p-2 text-center tabular-nums">{t.variableCount}</td>
+                      <td className="p-2 text-center text-xs text-muted-foreground" dir="ltr">{t.syncedAt ? fmtDateTime(t.syncedAt) : "—"}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+/** القِسم الكامِل — يُركَّب تَحت PageHeader في الشاشة الرَئيسية. */
+function WaHubAutomationSection({ branches }: { branches: { id: number; name: string }[] }) {
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <MessageSquare aria-hidden className="size-5 text-emerald-600 dark:text-emerald-400" />
+        <h2 className="text-base font-bold">مَركَز واتساب الأَعمال — الإعدادات وَالأَتمتة</h2>
+      </div>
+      <KillSwitchCard />
+      <AutomationSettingsCard />
+      <TemplateSyncSection branches={branches} />
+    </div>
+  );
+}
+
 export default function IntegrationsSettings() {
   const cryptoReady = trpc.integrations.cryptoReady.useQuery();
   const list = trpc.integrations.list.useQuery(undefined, { enabled: cryptoReady.data?.ready });
@@ -709,6 +1161,8 @@ pnpm prod:deploy
           </Button>
         }
       />
+
+      <WaHubAutomationSection branches={branches} />
 
       <ImageStudioIntegrationCard />
 

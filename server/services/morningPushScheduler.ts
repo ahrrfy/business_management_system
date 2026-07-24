@@ -14,7 +14,7 @@ import cron, { type ScheduledTask } from "node-cron";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { pushSubscriptions, users } from "../../drizzle/schema";
 import { getDb } from "../db";
-import { getDashboardMetrics } from "./reports/dashboard";
+import { getDashboardMetrics, getMyOpenTasksCount } from "./reports/dashboard";
 import {
   claimDailyPushSlot,
   isPushEnabled,
@@ -22,22 +22,37 @@ import {
   type MorningBriefPayload,
 } from "./pushService";
 
+/** عدّادا المهام (نظام المهام الموحّد S2) — myOpenTasks شخصيّ بحت (لا يمرّ بـ`metricsFor`
+ *  المُخزَّنة مؤقّتاً)، overdueTasks يأتي من نفس نتيجة `getDashboardMetrics` المُخزَّنة (تشغيليّ،
+ *  نطاق كل الفروع مثل overdueWorkOrders). كلاهما اختياريّان في التوقيع (مطابقة توافقية لأي
+ *  استدعاء لا يزوّدهما — لا مستدعٍ حالياً غير هذا الملف). */
+type MorningBriefCounts = {
+  arRemindersDue: number;
+  promisedToday: number;
+  overdueWorkOrders: number;
+  myOpenTasks?: number;
+  overdueTasks?: number;
+};
+
 /** الصياغة العربية للجسم — أعداد فقط (يظهر في شريط إشعارات النظام، بلا أسماء عملاء). */
-function buildBody(counts: { arRemindersDue: number; promisedToday: number; overdueWorkOrders: number }, total: number): string {
+function buildBody(counts: MorningBriefCounts, total: number): string {
   const parts: string[] = [];
   if (counts.promisedToday > 0) parts.push(`${counts.promisedToday} موعود`);
   if (counts.arRemindersDue > 0) parts.push(`${counts.arRemindersDue} تذكير`);
   if (counts.overdueWorkOrders > 0) parts.push(`${counts.overdueWorkOrders} أمر شغل متأخّر`);
+  if (counts.myOpenTasks) parts.push(`${counts.myOpenTasks} مهمة مفتوحة`);
+  if (counts.overdueTasks) parts.push(`${counts.overdueTasks} مهمة متأخّرة`);
   return `${total} بند للمتابعة${parts.length > 0 ? ": " + parts.join("، ") : ""}`;
 }
 
 /** الرابط الأنسب للإشعار حسب ما هو مُستحقّ فعلاً (gap-audit ٥/٧ item 10) — كان مُثبَّتاً على
  *  /dashboard دائماً رغم أنّ محتوى الإشعار غالباً تذكير ذمم أو أمر شغل متأخّر تحديداً؛ الآن يوجّه
  *  المستخدم مباشرةً لشاشة العمل ذات الصلة بدل تحويلة إضافية عبر لوحة التحكم.
- *  الأولوية: تذكيرات AR/وعد اليوم (الأكثر إلحاحاً مالياً) > أوامر شغل متأخّرة > /dashboard. */
-function pickMorningBriefUrl(counts: { arRemindersDue: number; promisedToday: number; overdueWorkOrders: number }): string {
+ *  الأولوية: تذكيرات AR/وعد اليوم (الأكثر إلحاحاً مالياً) > أوامر شغل متأخّرة > مهام (S2) > /dashboard. */
+function pickMorningBriefUrl(counts: MorningBriefCounts): string {
   if (counts.arRemindersDue > 0 || counts.promisedToday > 0) return "/reports/ar-reminders";
   if (counts.overdueWorkOrders > 0) return "/work-orders"; // مركز أوامر الشغل التشغيلي (PrintHub) — لا /reports/work-orders الثابتة.
+  if (counts.overdueTasks || counts.myOpenTasks) return "/tasks";
   return "/dashboard";
 }
 
@@ -102,8 +117,11 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
       // مدينو الرصيد الافتتاحي (openingScope) للأدمن حصراً — مطابقةً لحصر النطاق في الراوتر
       // (كانوا غائبين كلياً عن هذا الإشعار رغم أنه القناة اليومية المصمَّمة لهذا الغرض بالضبط).
       const m = await metricsFor(role === "admin");
-      const { arRemindersDue, promisedToday, overdueWorkOrders } = m.morningBrief;
-      const total = arRemindersDue + promisedToday + overdueWorkOrders;
+      // myOpenTasks شخصيّ ⇒ خارج الـcache المشترك (لا يُدمَج داخل m.morningBrief كي لا يُلوَّث
+      // الكائن المُخزَّن مؤقّتاً بين مستخدمين مختلفين) — استعلامٌ خفيف مستقلّ لكل مستخدم.
+      const myOpenTasks = await getMyOpenTasksCount(userId);
+      const counts: MorningBriefCounts = { ...m.morningBrief, myOpenTasks };
+      const total = counts.arRemindersDue + counts.promisedToday + counts.overdueWorkOrders + myOpenTasks + (counts.overdueTasks ?? 0);
       if (total === 0) {
         result.skippedEmpty++;
         continue;
@@ -111,9 +129,9 @@ export async function runMorningBriefPush(): Promise<MorningPushRunResult> {
       const payload: MorningBriefPayload = {
         kind: "MORNING_BRIEF",
         title: "برنامج اليوم — الرؤية العربية",
-        body: buildBody(m.morningBrief, total),
-        url: pickMorningBriefUrl(m.morningBrief),
-        counts: m.morningBrief,
+        body: buildBody(counts, total),
+        url: pickMorningBriefUrl(counts),
+        counts,
       };
       const r = await sendPushToUser(userId, payload);
       result.sent += r.sent;

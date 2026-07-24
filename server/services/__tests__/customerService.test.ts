@@ -77,7 +77,8 @@ describe("customerService.createCustomer", () => {
     expect(r.customerId).toBeGreaterThan(0);
     const c = (await db().select().from(s.customers).where(eq(s.customers.id, r.customerId)).limit(1))[0];
     expect(c.name).toBe("شركة الرفيع");
-    expect(c.phone).toBe("07701234567");
+    // T3.1 (بنك جهات الاتصال): تطبيع E.164 خادمي في customerService — الهاتف يُخزَّن +964… لا خاماً.
+    expect(c.phone).toBe("+9647701234567");
     expect(c.customerType).toBe("شركة");
     expect(c.defaultPriceTier).toBe("WHOLESALE");
     expect(c.creditLimit).toBe("500000.00");
@@ -156,7 +157,8 @@ describe("customerService.updateCustomer", () => {
     const c = await getCustomer(customerId);
     expect(c?.name).toBe("بسام محمد");
     expect(c?.city).toBe("كركوك");
-    expect(c?.phone).toBe("07700001");
+    // T3.1: تطبيع E.164 خادمي — +9647700001 لا الصيغة الخام.
+    expect(c?.phone).toBe("+9647700001");
   });
 
   it("يُرجع changed=false إن لم تتغيّر أيّ حقول", async () => {
@@ -301,9 +303,27 @@ describe("customerService.listCustomers", () => {
     await createCustomer({ name: "علي حسن", phone: "07702222222" }, actor);
     const byName = await listCustomers({ q: "أحمد" });
     expect(byName.rows).toHaveLength(1);
-    const byPhone = await listCustomers({ q: "07702" });
+    // T3.1 (بنك جهات الاتصال): تطبيع E.164 خادمي يُخزّن +9647702222222 لا «07702222222» الخام —
+    // بحث السلسلة الفرعية يطابق الصيغة المخزَّنة الآن.
+    const byPhone = await listCustomers({ q: "+9647702" });
     expect(byPhone.rows).toHaveLength(1);
     expect(byPhone.rows[0].name).toBe("علي حسن");
+  });
+
+  it("T3.2 (إصلاح إلزامي): بحث محلي «0770…» يجد عميلاً مخزَّناً E.164 «+9647702…» — انحدار بحث الهاتف", async () => {
+    await createCustomer({ name: "زبون الهاتف", phone: "07702123456" }, actor);
+    await createCustomer({ name: "آخر", phone: "07709999999" }, actor);
+    // بحث محلي (الصيغة التي يكتبها الكاشير فعلياً) يجد المخزَّن دولياً +9647702123456.
+    const byLocal = await listCustomers({ q: "07702123456" });
+    expect(byLocal.rows).toHaveLength(1);
+    expect(byLocal.rows[0].name).toBe("زبون الهاتف");
+    // بحث دولي جزئي يبقى يعمل (لم يُكسَر بالإصلاح).
+    const byIntlPartial = await listCustomers({ q: "+9647702" });
+    expect(byIntlPartial.rows).toHaveLength(1);
+    expect(byIntlPartial.rows[0].name).toBe("زبون الهاتف");
+    // البحث بالاسم يبقى يعمل.
+    const byName = await listCustomers({ q: "زبون الهاتف" });
+    expect(byName.rows).toHaveLength(1);
   });
 
   it("D2 (١/٧): البحث بالاسم يتجاوز الهمزات/التاء المربوطة عبر searchNorm", async () => {
@@ -351,6 +371,13 @@ describe("customerService.smartSearchCustomers", () => {
     expect(r).toHaveLength(1);
     expect(r[0].name).toBe("أنس التاجر");
   });
+
+  it("T3.2 (إصلاح إلزامي): بحث محلي يجد عميلاً مخزَّناً E.164 — يغذّي CustomerPicker الكاشير", async () => {
+    await createCustomer({ name: "زبون سمارت", phone: "07702123456" }, actor);
+    const r = await smartSearchCustomers({ q: "07702123456" });
+    expect(r).toHaveLength(1);
+    expect(r[0].name).toBe("زبون سمارت");
+  });
 });
 
 describe("customerService.getCustomer", () => {
@@ -359,7 +386,8 @@ describe("customerService.getCustomer", () => {
     const c = await getCustomer(customerId);
     expect(c).toBeTruthy();
     expect(c?.name).toBe("ك");
-    expect(c?.phone).toBe("07703333");
+    // T3.1: تطبيع E.164 خادمي — +9647703333 لا الصيغة الخام.
+    expect(c?.phone).toBe("+9647703333");
   });
 
   it("يُرجع null لمعرّف غير موجود", async () => {

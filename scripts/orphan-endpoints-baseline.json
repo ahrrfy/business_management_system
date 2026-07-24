@@ -5,7 +5,6 @@
     "catalog.getForEdit",
     "catalog.productImages",
     "catalog.updateProduct",
-    "delivery.consignments",
     "delivery.getParty",
     "delivery.setPartyActive",
     "delivery.updateParty",
@@ -15,7 +14,6 @@
     "sales.listPage",
     "salesPromotions.activeToday",
     "salesPromotions.getById",
-    "storefront.trackOrder",
     "system.health"
   ]
 }

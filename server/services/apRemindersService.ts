@@ -15,6 +15,7 @@ import { apReminders, suppliers, purchaseOrders } from "../../drizzle/schema";
 import { requireDb } from "./tx";
 import { getAPAging } from "./reports/apAging";
 import { money, toDbMoney } from "./money";
+import { flowNotify } from "./whatsapp";
 
 /** حدّ الأيام لأوّل تذكير (يوم من أقدم أمر شراء مستحقّ). قرار المالك (مرآة AR). */
 export const REMINDER_MIN_DAYS_OVERDUE = 7;
@@ -169,6 +170,9 @@ export interface LogReminderInput {
   oldestPoDate: string; // YYYY-MM-DD
   daysOverdue: number;
   messageBody: string;
+  /** وسيلة الإرسال: MANUAL (زرّ wa.me اليدوي القائم) أو API (T4.2). undefined يبقي السلوك القديم
+   *  تماماً (يُخزَّن null). */
+  sentVia?: "MANUAL" | "API";
 }
 
 /** حماية IDOR: المورد «يخصّ الفرع» إن كان له أمر شراء ملتزَم (CONFIRMED/RECEIVED) في هذا الفرع. */
@@ -219,10 +223,75 @@ export async function logReminderSent(
     messageBody: input.messageBody,
     status: "SENT",
     skipReason: null,
+    sentVia: input.sentVia ?? null,
     createdBy: actor.userId,
   });
   const id = (res as unknown as [{ insertId: number }])[0].insertId;
   return { id };
+}
+
+// ── إرسال عبر Cloud API (T4.2 — خلف مفتاح flowArReminder، افتراضياً OFF؛ مرآة arRemindersService) ─
+
+const COMPANY_NAME_AR = "شركة الرؤية العربية للتجارة العامة وتجارة القرطاسية";
+
+function formatIQD(amount: string): string {
+  return money(amount).toNumber().toLocaleString("ar-IQ-u-nu-latn") + " د.ع";
+}
+
+export interface SendViaApiInput {
+  supplierId: number;
+  totalUnpaidSnapshot: string;
+  oldestPoDate: string;
+  daysOverdue: number;
+}
+
+export type SendViaApiResult = { sent: true; reminderId: number } | { sent: false; reason: string };
+
+/** مرآة `arRemindersService.sendViaApi` — نفس المفتاح `flowArReminder` (لا مفتاح AP منفصل في
+ *  waHubSettings) ونفس القالب `payment_reminder`، بجانب المورّد بدل العميل.
+ *  ⚠️ `flowNotify` يقبل `customerId` فقط (توقيعه محكوم بالمواصفة §أ) — لا يفحص OPTED_OUT للموردين.
+ *  `suppliers.waConsent` (بنك جهات الاتصال، S3) يُفحَص هنا صراحةً قبل الاستدعاء (القاعدة الحاكمة:
+ *  لا رسالة تُرسَل لطرف OPTED_OUT، بلا استثناء — عميلاً كان أو مورّداً). */
+export async function sendViaApi(
+  input: SendViaApiInput,
+  actor: { userId: number; branchId: number },
+): Promise<SendViaApiResult> {
+  const db = requireDb();
+  const sup = (
+    await db
+      .select({ name: suppliers.name, phone: suppliers.phone, waConsent: suppliers.waConsent })
+      .from(suppliers)
+      .where(eq(suppliers.id, input.supplierId))
+      .limit(1)
+  )[0];
+  if (!sup) throw new TRPCError({ code: "NOT_FOUND", message: "المورّد غير موجود." });
+  if (!sup.phone) return { sent: false, reason: "لا رقم هاتف مسجَّل لهذا المورّد." };
+  if (sup.waConsent === "OPTED_OUT") return { sent: false, reason: "opted_out" };
+
+  const result = await flowNotify({
+    flowKey: "flowArReminder",
+    branchId: actor.branchId,
+    toPhoneE164: sup.phone,
+    templateName: "payment_reminder",
+    bodyParams: [sup.name, formatIQD(input.totalUnpaidSnapshot), COMPANY_NAME_AR],
+    dedupeKey: `AP:${input.supplierId}:${todayUTC().replace(/-/g, "")}`,
+  });
+  if (!("queued" in result)) {
+    return { sent: false, reason: result.skipped };
+  }
+
+  const logged = await logReminderSent(
+    {
+      supplierId: input.supplierId,
+      totalUnpaidSnapshot: input.totalUnpaidSnapshot,
+      oldestPoDate: input.oldestPoDate,
+      daysOverdue: input.daysOverdue,
+      messageBody: `[API] payment_reminder — ${formatIQD(input.totalUnpaidSnapshot)}`,
+      sentVia: "API",
+    },
+    actor,
+  );
+  return { sent: true, reminderId: logged.id };
 }
 
 /** مدخل تسجيل تخطٍّ (قرار مؤقّت بعدم الإرسال — وعدنا بالسداد يوم كذا مثلاً). */

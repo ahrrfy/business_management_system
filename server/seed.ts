@@ -1,7 +1,7 @@
 import "dotenv/config";
 import { eq } from "drizzle-orm";
 import { nanoid } from "nanoid";
-import { assetCustodyLog, assetMaintenance, branches, categories, deliveryParties, employees, fixedAssets, productVariants, products, roles, suppliers, users } from "../drizzle/schema";
+import { assetCustodyLog, assetMaintenance, branches, categories, deliveryParties, employees, fixedAssets, productVariants, products, roles, serviceTypes, suppliers, users, waHubSettings } from "../drizzle/schema";
 import { isStrongPassword } from "../shared/const";
 import { SECTION_CASHIER_ROLES } from "../shared/permissions";
 import { hashPassword } from "./auth/password";
@@ -111,6 +111,31 @@ async function seed() {
       console.log(`✓ seeded section role ${r.key}`);
     } else {
       console.log(`• role ${r.key} already exists, skipping`);
+    }
+  }
+
+  // نظام المهام الموحّد — الأساس (هجرة 0107، ش١ S2): singleton إعدادات + أنواع خدمة مرجعية أولية.
+  // idempotent وآمن في وضعَي dev/prod (إعدادات/بيانات مرجعية لا عيّنات) — يُبذَر قبل عودة isProd.
+  const existingHubSettings = (await db.select().from(waHubSettings).where(eq(waHubSettings.id, 1)).limit(1))[0];
+  if (!existingHubSettings) {
+    await db.insert(waHubSettings).values({ id: 1 });
+    console.log("✓ seeded waHubSettings singleton (defaults)");
+  } else {
+    console.log("• waHubSettings already exists, skipping");
+  }
+
+  const initialServiceTypes: { name: string; defaultKind: "SERVICE_REQUEST" | "SUPPORT" | "INQUIRY" | "FOLLOW_UP" | "INTERNAL"; defaultPriority: "LOW" | "NORMAL" | "HIGH" | "URGENT"; slaHours: number | null }[] = [
+    { name: "طباعة وخدمات", defaultKind: "SERVICE_REQUEST", defaultPriority: "NORMAL", slaHours: 24 },
+    { name: "استفسار عام", defaultKind: "INQUIRY", defaultPriority: "LOW", slaHours: 8 },
+    { name: "شكوى ودعم", defaultKind: "SUPPORT", defaultPriority: "HIGH", slaHours: 4 },
+    { name: "متابعة طلب", defaultKind: "FOLLOW_UP", defaultPriority: "NORMAL", slaHours: 24 },
+    { name: "مهمة داخلية", defaultKind: "INTERNAL", defaultPriority: "NORMAL", slaHours: null },
+  ];
+  for (const st of initialServiceTypes) {
+    const exists = (await db.select().from(serviceTypes).where(eq(serviceTypes.name, st.name)).limit(1))[0];
+    if (!exists) {
+      await db.insert(serviceTypes).values(st);
+      console.log(`✓ seeded service type ${st.name}`);
     }
   }
 

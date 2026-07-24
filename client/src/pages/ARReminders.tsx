@@ -4,7 +4,7 @@
 // كل تذكير مُرسَل يُسجَّل في `arReminders` مع snapshots اللحظية (مبلغ + أقدم فاتورة + نصّ الرسالة).
 // نافذة التبريد ٧ أيام تمنع تكرار العميل في القائمة قبل استحقاق تذكير جديد.
 import { useMemo, useState } from "react";
-import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info } from "lucide-react";
+import { Send, SkipForward, Clock, Search, RotateCcw, History, CalendarClock, Landmark, Info, Bot } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { sum } from "@/lib/money";
@@ -65,6 +65,22 @@ function fmtAmount(v: string | number): string {
   return Number(v).toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 }
 
+/** أَسباب تَخطّي flowNotify (رُموز إنجليزية — راجِع server/services/whatsapp/flowNotify.ts) مُترجَمة
+ *  لِلعَربية. بَعض الأَسباب المُرسَلة مِن الخادِم عَربية جاهِزة أَصلاً (مِثلاً «لا رَقم هاتف...») ⇒
+ *  تَمُرّ كَما هي (fallback). */
+const SEND_VIA_API_REASON_AR: Record<string, string> = {
+  kill_switch: "الإرسال الآلي مُوقَف مؤقّتاً (إيقاف الطوارئ) — فعِّله من إعدادات مركز واتساب.",
+  disabled: "الإرسال الآلي معطّل — فعِّله من إعدادات المركز (مفتاح تذكير الذمم).",
+  no_integration: "لا تكامل واتساب فعّال على هذا الفرع.",
+  no_phone: "لا رقم هاتف مسجَّل.",
+  opted_out: "العميل ألغى الاشتراك في رسائل واتساب.",
+  template_unavailable: "القالب غير معتمَد بعد عند Meta — زامنه من إعدادات المركز.",
+  error: "تعذّر الإرسال — حاول لاحقاً.",
+};
+function sendViaApiReasonAr(reason: string): string {
+  return SEND_VIA_API_REASON_AR[reason] ?? reason;
+}
+
 function daysBadgeCls(days: number): string {
   if (days >= 90) return "bg-destructive/15 text-destructive font-semibold";
   if (days >= 60) return "bg-amber-500/15 text-amber-700 font-semibold";
@@ -120,6 +136,18 @@ export default function ARReminders() {
     },
     onError: (e) => notify.err(e.message || "تعذّر تسجيل التذكير"),
   });
+  const sendViaApi = trpc.arReminders.sendViaApi.useMutation({
+    onSuccess: async (r) => {
+      if (r.sent) {
+        notify.ok("أُرسِل التذكير عبر واتساب (API)");
+      } else {
+        notify.warn("لم يُرسَل عبر API", sendViaApiReasonAr(r.reason));
+      }
+      await utils.arReminders.queue.invalidate();
+      await utils.arReminders.history.invalidate();
+    },
+    onError: (e) => notify.err(e.message || "تعذّر الإرسال عبر API"),
+  });
   const logSkipped = trpc.arReminders.logSkipped.useMutation({
     onSuccess: async () => {
       notify.ok("تمّ التخطّي");
@@ -167,6 +195,21 @@ export default function ARReminders() {
       oldestInvoiceDate: row.oldestInvoiceDate,
       daysOverdue: row.daysOverdue,
       messageBody: message,
+      isOpeningBalance: row.isOpeningBalance || undefined,
+      branchId: writeBranchId,
+    });
+  }
+
+  function handleSendViaApi(row: QueueRow) {
+    if (!row.phone) {
+      notify.err("لا رقم هاتف مسجَّل لهذا العميل — أضف الهاتف من صفحة العميل أولاً.");
+      return;
+    }
+    sendViaApi.mutate({
+      customerId: row.customerId,
+      totalUnpaidSnapshot: row.totalUnpaid,
+      oldestInvoiceDate: row.oldestInvoiceDate,
+      daysOverdue: row.daysOverdue,
       isOpeningBalance: row.isOpeningBalance || undefined,
       branchId: writeBranchId,
     });
@@ -289,8 +332,10 @@ export default function ARReminders() {
           search={search}
           setSearch={setSearch}
           onSend={handleSend}
+          onSendViaApi={handleSendViaApi}
           onSkip={setSkipTarget}
           sendingId={logSent.isPending ? logSent.variables?.customerId ?? null : null}
+          sendingViaApiId={sendViaApi.isPending ? sendViaApi.variables?.customerId ?? null : null}
         />
       ) : (
         <HistoryTab
@@ -370,8 +415,10 @@ function QueueTab({
   search,
   setSearch,
   onSend,
+  onSendViaApi,
   onSkip,
   sendingId,
+  sendingViaApiId,
 }: {
   data: QueueRow[];
   isLoading: boolean;
@@ -381,8 +428,10 @@ function QueueTab({
   search: string;
   setSearch: (v: string) => void;
   onSend: (row: QueueRow) => void;
+  onSendViaApi: (row: QueueRow) => void;
   onSkip: (row: QueueRow) => void;
   sendingId: number | null;
+  sendingViaApiId: number | null;
 }) {
   if (isLoading) return <LoadingState />;
   if (isError) {
@@ -482,6 +531,17 @@ function QueueTab({
                       >
                         <Send className="size-3.5" aria-hidden />
                         أرسل
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        disabled={!row.phone || sendingViaApiId === row.customerId}
+                        onClick={() => onSendViaApi(row)}
+                        className="me-1 inline-flex items-center gap-1"
+                        title="إرسال تلقائي بقالب Meta معتمَد (خلف مفتاح الأتمتة في إعدادات المركز)"
+                      >
+                        <Bot className="size-3.5" aria-hidden />
+                        أرسل عبر API
                       </Button>
                       <Button
                         size="sm"

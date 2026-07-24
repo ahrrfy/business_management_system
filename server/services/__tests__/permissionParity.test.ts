@@ -181,6 +181,8 @@ describe("تماثُل الصلاحيات (المخاطرة #٨)", () => {
     //     (لا module) عمداً (تعليق AppLayout: محاور بتبويبات managerOnly لا تُفتَح بمنح وحدة). لهما قالبٌ
     //     في المصفوفة للعرض/التحرير فقط. الباقي يجب أن يُنفَّذ بوّابةَ وحدةٍ خادمية.
     const ROLE_GATED = new Set(["customers", "users", "settings"]);
+    // "tasks" لم تعد مُستثناة (S2، ٢٣/٧/٢٦): tasksReadProcedure/tasksWriteProcedure/tasksManagerProcedure
+    // في server/trpc.ts تربطها ببوّابة وحدة خادمية فعلية الآن (tasksRouter.ts).
     const orphan = declared.filter((k) => !gatedModules.has(k) && !ROLE_GATED.has(k));
     expect(orphan).toEqual([]);
   });

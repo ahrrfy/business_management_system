@@ -15,6 +15,7 @@ import { accountingEntries, arReminders, customers, invoices } from "../../drizz
 import { requireDb } from "./tx";
 import { getARAging } from "./reports/arAging";
 import { money, toDbMoney } from "./money";
+import { flowNotify } from "./whatsapp";
 
 /** حدّ الأيام لأوّل تذكير (يوم من الاستحقاق). قرار المالك. */
 export const REMINDER_MIN_DAYS_OVERDUE = 7;
@@ -256,6 +257,9 @@ export interface LogReminderInput {
   messageBody: string;
   /** مدين رصيد افتتاحي (بلا فاتورة فرعيّة) ⇒ يُتحقَّق بقيد OPENING بدل الفاتورة الفرعيّة. */
   isOpeningBalance?: boolean;
+  /** وسيلة الإرسال: MANUAL (زرّ wa.me اليدوي القائم) أو API (T4.2، قالب Meta معتمَد عبر Cloud API).
+   *  الترك بلا تمرير (undefined) يبقي السلوك القديم تماماً — يُخزَّن null (لا تغيير رجعي). */
+  sentVia?: "MANUAL" | "API";
 }
 
 /** حماية IDOR: العميل «يخصّ الفرع» إن كانت له فاتورة (مؤكَّدة/غير ملغاة) في هذا الفرع.
@@ -332,10 +336,77 @@ export async function logReminderSent(
     messageBody: input.messageBody,
     status: "SENT",
     skipReason: null,
+    sentVia: input.sentVia ?? null,
     createdBy: actor.userId,
   });
   const id = (res as unknown as [{ insertId: number }])[0].insertId;
   return { id };
+}
+
+// ── إرسال عبر Cloud API (T4.2 — خلف مفتاح flowArReminder، افتراضياً OFF) ───────────────────────
+
+/** اسم الشركة كما يظهر في نصوص القوالب (نمط `CO.name` في `client/src/lib/printing/brand.ts` — لا
+ *  يجوز استيراد ملف عميل من الخادم، فالنصّ مكرَّر هنا عمداً بنفس القيمة الحرفية). */
+const COMPANY_NAME_AR = "شركة الرؤية العربية للتجارة العامة وتجارة القرطاسية";
+
+/** "٥٠٬٠٠٠ د.ع" — نمط `barcodeService.ts` (توطين أرقام لاتينية بفواصل عربية + وحدة العملة). */
+function formatIQD(amount: string): string {
+  return money(amount).toNumber().toLocaleString("ar-IQ-u-nu-latn") + " د.ع";
+}
+
+export interface SendViaApiInput {
+  customerId: number;
+  totalUnpaidSnapshot: string;
+  oldestInvoiceDate: string;
+  daysOverdue: number;
+  isOpeningBalance?: boolean;
+}
+
+export type SendViaApiResult = { sent: true; reminderId: number } | { sent: false; reason: string };
+
+/**
+ * إرسال تذكير عبر قالب Meta معتمَد (`payment_reminder`) بدل فتح wa.me يدوياً — يمرّ حصراً عبر
+ * `flowNotify` (كل الحراس: killSwitch/المفتاح/التكامل/OPTED_OUT/اعتماد القالب). عند النجاح الفعلي
+ * (صفّ outbox قُيِّد) يُسجَّل التذكير بـ`sentVia='API'`؛ أي تخطٍّ (مفتاح مطفأ/لا تكامل/…) **لا يسجّل
+ * شيئاً** — الواجهة تُبلَّغ بالسبب فتقرّر (الرجوع لمسار wa.me اليدوي القائم يبقى متاحاً دون أي تغيير).
+ */
+export async function sendViaApi(
+  input: SendViaApiInput,
+  actor: { userId: number; branchId: number },
+): Promise<SendViaApiResult> {
+  const db = requireDb();
+  const cust = (
+    await db.select({ name: customers.name, phone: customers.phone }).from(customers).where(eq(customers.id, input.customerId)).limit(1)
+  )[0];
+  if (!cust) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود." });
+  if (!cust.phone) return { sent: false, reason: "لا رقم هاتف مسجَّل لهذا العميل." };
+
+  const result = await flowNotify({
+    flowKey: "flowArReminder",
+    branchId: actor.branchId,
+    toPhoneE164: cust.phone,
+    customerId: input.customerId,
+    templateName: "payment_reminder",
+    bodyParams: [cust.name, formatIQD(input.totalUnpaidSnapshot), COMPANY_NAME_AR],
+    dedupeKey: `AR:${input.customerId}:${todayUTC().replace(/-/g, "")}`,
+  });
+  if (!("queued" in result)) {
+    return { sent: false, reason: result.skipped };
+  }
+
+  const logged = await logReminderSent(
+    {
+      customerId: input.customerId,
+      totalUnpaidSnapshot: input.totalUnpaidSnapshot,
+      oldestInvoiceDate: input.oldestInvoiceDate,
+      daysOverdue: input.daysOverdue,
+      messageBody: `[API] payment_reminder — ${formatIQD(input.totalUnpaidSnapshot)}`,
+      isOpeningBalance: input.isOpeningBalance,
+      sentVia: "API",
+    },
+    actor,
+  );
+  return { sent: true, reminderId: logged.id };
 }
 
 /** مدخل تسجيل تخطٍّ (المستخدم قرّر عدم إرسال — العميل وعد بالدفع مثلاً). */

@@ -8,6 +8,7 @@ import { normalizeSearchText } from "../../shared/searchNormalize";
 import { money } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
 import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
@@ -61,6 +62,16 @@ export interface ListSuppliersInput {
 const norm = (s: string | null | undefined): string | null => {
   const t = s?.trim();
   return t || null;
+};
+
+/**
+ * تطبيع E.164 خادمي (T3.1، بنك جهات الاتصال) — خاصّ بحقول الهاتف فقط (phone/phone2/phone3/
+ * whatsapp)؛ `norm()` أعلاه يبقى بلا تغيير لبقية الحقول (بريد/عنوان/ملاحظات…) كي لا تُقحَم صيغة
+ * الهاتف عليها. فارغ يبقى null.
+ */
+const normPhoneField = (s: string | null | undefined): string | null => {
+  const t = norm(s);
+  return t ? normalizeIraqPhoneE164(t) : null;
 };
 
 /** بضاعة الأمانة: تطبيع حقول اتفاقية المودِع + التحقّق منها (مشترك بين الإنشاء والتعديل). */
@@ -142,7 +153,7 @@ async function createSupplierTx(input: CreateSupplierInput, clientRequestId: str
       if (prior) return { supplierId: prior.id, id: prior.id, idempotentReplay: true };
     }
 
-    const phone = norm(input.phone);
+    const phone = normPhoneField(input.phone);
     await assertUniquePhone(tx, phone);
     const rating = input.rating != null ? Math.min(5, Math.max(0, Math.trunc(input.rating))) : null;
     const leadTime = input.leadTimeDays != null ? Math.max(0, Math.trunc(input.leadTimeDays)) : null;
@@ -160,10 +171,10 @@ async function createSupplierTx(input: CreateSupplierInput, clientRequestId: str
     const res = await tx.insert(suppliers).values({
       name,
       phone,
-      phone2: norm(input.phone2),
-      phone3: norm(input.phone3),
+      phone2: normPhoneField(input.phone2),
+      phone3: normPhoneField(input.phone3),
       email: norm(input.email),
-      whatsapp: norm(input.whatsapp),
+      whatsapp: normPhoneField(input.whatsapp),
       address: norm(input.address),
       city: norm(input.city),
       taxId: norm(input.taxId),
@@ -203,14 +214,14 @@ export async function updateSupplier(input: UpdateSupplierInput, _actor: Actor) 
       patch.name = name;
     }
     if (input.phone !== undefined) {
-      const phone = norm(input.phone);
+      const phone = normPhoneField(input.phone);
       await assertUniquePhone(tx, phone, input.supplierId);
       patch.phone = phone;
     }
-    if (input.phone2 !== undefined) patch.phone2 = norm(input.phone2);
-    if (input.phone3 !== undefined) patch.phone3 = norm(input.phone3);
+    if (input.phone2 !== undefined) patch.phone2 = normPhoneField(input.phone2);
+    if (input.phone3 !== undefined) patch.phone3 = normPhoneField(input.phone3);
     if (input.email !== undefined) patch.email = norm(input.email);
-    if (input.whatsapp !== undefined) patch.whatsapp = norm(input.whatsapp);
+    if (input.whatsapp !== undefined) patch.whatsapp = normPhoneField(input.whatsapp);
     if (input.address !== undefined) patch.address = norm(input.address);
     if (input.city !== undefined) patch.city = norm(input.city);
     if (input.taxId !== undefined) patch.taxId = norm(input.taxId);
@@ -331,21 +342,36 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
   if (!input.includeInactive) conds.push(eq(suppliers.isActive, true));
   if (input.kind) conds.push(eq(suppliers.supplierKind, input.kind));
   if (input.q?.trim()) {
-    const q = `%${escapeLike(input.q.trim())}%`;
+    const raw = input.q.trim();
+    const q = `%${escapeLike(raw)}%`;
     // D2 (١/٧): الاسم يُطابَق عبر searchNorm المُطبَّع عربياً (نفس نمط المنتجات/العملاء) — «ازرق»
     // يجد «أزرق». بقية الحقول تبقى مطابقة خام (لا معنى للتطبيع العربي على أرقام/تصنيف إنجليزي).
-    const qFolded = `%${escapeLike(normalizeSearchText(input.q.trim()))}%`;
-    // v3-add-screens: البحث يشمل هواتف المورّد الثلاثة + المدينة + التصنيف.
-    // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
-    conds.push(or(
+    const qFolded = `%${escapeLike(normalizeSearchText(raw))}%`;
+    const orConds = [
       sql`coalesce(${suppliers.searchNorm}, '') LIKE ${qFolded}`,
+      // v3-add-screens: البحث يشمل هواتف المورّد الثلاثة + المدينة + التصنيف.
       like(suppliers.phone, q),
       like(suppliers.phone2, q),
       like(suppliers.phone3, q),
       like(suppliers.city, q),
       like(suppliers.supplierCategory, q),
+      // import-integration: + «الرقم القديم» (legacyCode) — معرّف النظام القديم بعد الاستيراد.
       like(suppliers.legacyCode, q),
-    ));
+    ];
+    // T3.2 (إصلاح إلزامي — انحدار بحث الهاتف): نظير customerService.listCustomers — لاحقة آخر
+    // ١٠ أرقام تطابق «0770…» المحلي ضدّ «+964770…» المخزَّن بعد تطبيع T3.1. تُضاف OR على أعمدة
+    // الهاتف الأربعة (يشمل whatsapp التي لم تكن مطابَقة أصلاً هنا) — لا تُحذف الشروط الخامة القائمة.
+    const suf = phoneSuffix10(raw);
+    if (suf) {
+      const sufPat = `%${escapeLike(suf)}`;
+      orConds.push(
+        like(suppliers.phone, sufPat),
+        like(suppliers.phone2, sufPat),
+        like(suppliers.phone3, sufPat),
+        like(suppliers.whatsapp, sufPat),
+      );
+    }
+    conds.push(or(...orConds));
   }
   const where = conds.length ? and(...conds) : undefined;
   const rows = await db

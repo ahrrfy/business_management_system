@@ -8,6 +8,7 @@ import {
   getReminderQueue,
   logReminderSent,
   logReminderSkipped,
+  sendViaApi,
 } from "../services/apRemindersService";
 import { logAudit } from "../services/auditService";
 import { router, suppliersManagerProcedure } from "../trpc";
@@ -96,6 +97,36 @@ export const apRemindersRouter = router({
           daysOverdue: input.daysOverdue,
         },
       });
+      return r;
+    }),
+
+  /** إرسال تذكير عبر قالب Meta معتمَد (T4.2 — خلف مفتاح flowArReminder، افتراضياً OFF؛ مرآة
+   *  arRemindersRouter.sendViaApi) بدل فتح wa.me يدوياً. */
+  sendViaApi: suppliersManagerProcedure
+    .input(
+      z.object({
+        supplierId: z.number().int().positive(),
+        totalUnpaidSnapshot: moneyStr,
+        oldestPoDate: ymd,
+        daysOverdue: z.number().int().nonnegative(),
+        branchId: optionalBranch,
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { branchId: requestedBranchId, ...payload } = input;
+      const r = await sendViaApi(payload, { userId: ctx.user.id, branchId: scopedBranch(ctx, requestedBranchId) });
+      if (r.sent) {
+        await logAudit(ctx, {
+          action: "apReminder.sentViaApi",
+          entityType: "apReminder",
+          entityId: r.reminderId,
+          newValue: {
+            supplierId: input.supplierId,
+            totalUnpaidSnapshot: input.totalUnpaidSnapshot,
+            daysOverdue: input.daysOverdue,
+          },
+        });
+      }
       return r;
     }),
 

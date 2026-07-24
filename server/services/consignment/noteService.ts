@@ -6,10 +6,12 @@ import { isDupEntry } from "@shared/errorMap.ar";
 import { consignmentNoteLines, consignmentNotes, productUnits, productVariants, products, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { logger } from "../../logger";
 import { applyMovement, convertToBaseQuantity } from "../inventoryService";
 import { money, round2 } from "../money";
 import { nextConsignmentNumber } from "../numbering";
 import { withTx, type Actor } from "../tx";
+import { flowNotify } from "../whatsapp";
 
 export type ConsignmentNoteType = "DEPOSIT" | "WITHDRAW" | "EXCHANGE";
 export interface ConsignmentNoteLineInput {
@@ -41,8 +43,9 @@ const norm = (s: string | null | undefined): string | null => {
  */
 export async function createConsignmentNote(input: CreateConsignmentNoteInput, actor: Actor) {
   const clientRequestId = norm(input.clientRequestId);
+  let result: Awaited<ReturnType<typeof createConsignmentNoteTx>>;
   try {
-    return await createConsignmentNoteTx(input, clientRequestId, actor);
+    result = await createConsignmentNoteTx(input, clientRequestId, actor);
   } catch (e) {
     // سباق متزامن على نفس المفتاح: الفائز ملتزم ⇒ اقرأه (نمط createSupplier).
     if (clientRequestId && isDupEntry(e)) {
@@ -51,10 +54,66 @@ export async function createConsignmentNote(input: CreateConsignmentNoteInput, a
         ? (await db.select({ id: consignmentNotes.id }).from(consignmentNotes)
             .where(eq(consignmentNotes.clientRequestId, clientRequestId)).limit(1))[0]
         : undefined;
-      if (prior) return { noteId: prior.id, idempotentReplay: true };
+      if (prior) {
+        result = { noteId: Number(prior.id), idempotentReplay: true };
+      } else {
+        throw e;
+      }
+    } else {
+      throw e;
     }
-    throw e;
   }
+
+  // إشعار سحب الأمانة (T4.2، خلف مفتاح flowConsignmentWithdraw) — بعد نجاح إنشاء السند فقط،
+  // لسندَي WITHDRAW/EXCHANGE فقط (لا DEPOSIT). خارج ذرّية إنشاء السند تماماً + محمي بغلاف دفاعيّ —
+  // لا يُفشِل إنشاء السند أبداً (القاعدة الحاكمة، راجع server/services/whatsapp/flowNotify.ts).
+  try {
+    await notifyConsignmentWithdraw(result.noteId);
+  } catch (e) {
+    logger.warn(
+      { err: e instanceof Error ? e.message : String(e), noteId: result.noteId },
+      "consignment: تعذّر إرسال إشعار سحب الأمانة — تُجوهل",
+    );
+  }
+
+  return result;
+}
+
+/** يجلب نوع السند + المودِع + هاتفه (إن كان WITHDRAW/EXCHANGE وله هاتف وليس OPTED_OUT) ويستدعي
+ *  flowNotify. اسم قالب منطقيّ `consignment_withdraw` — لم يُعتمَد بعد عند Meta (لا نبذر قوالب في
+ *  DB)؛ `getUsableTemplate` داخل flowNotify يتخطّى بأمان حتى اعتماده لاحقاً من المالك. */
+async function notifyConsignmentWithdraw(noteId: number): Promise<void> {
+  const db = getDb();
+  if (!db) return;
+  const note = (
+    await db
+      .select({
+        noteType: consignmentNotes.noteType,
+        branchId: consignmentNotes.branchId,
+        noteNumber: consignmentNotes.noteNumber,
+        consignorName: suppliers.name,
+        consignorPhone: suppliers.phone,
+        waConsent: suppliers.waConsent,
+      })
+      .from(consignmentNotes)
+      .innerJoin(suppliers, eq(suppliers.id, consignmentNotes.consignorId))
+      .where(eq(consignmentNotes.id, noteId))
+      .limit(1)
+  )[0];
+  if (!note) return;
+  if (note.noteType !== "WITHDRAW" && note.noteType !== "EXCHANGE") return;
+  if (!note.consignorPhone) return;
+  // المودِعون (suppliers) لهم waConsent أيضاً (بنك جهات الاتصال، S3)؛ flowNotify.customerId مخصَّص
+  // لجدول customers فقط ⇒ يُفحَص هنا صراحةً (القاعدة الحاكمة: لا رسالة لطرف OPTED_OUT مهما كان نوعه).
+  if (note.waConsent === "OPTED_OUT") return;
+  await flowNotify({
+    flowKey: "flowConsignmentWithdraw",
+    branchId: Number(note.branchId),
+    toPhoneE164: note.consignorPhone,
+    templateName: "consignment_withdraw",
+    bodyParams: [note.consignorName, note.noteNumber],
+    dedupeKey: `CONSIG_WD:${noteId}`,
+  });
 }
 
 async function createConsignmentNoteTx(input: CreateConsignmentNoteInput, clientRequestId: string | null, actor: Actor) {

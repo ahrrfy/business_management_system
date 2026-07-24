@@ -38,6 +38,12 @@ import { getCreditExposure } from "../services/reportsCreditExposureService";
 import { getManagementAlerts } from "../services/reportsAlertsService";
 import { getAnomalyWatch } from "../services/reports/anomalyWatch";
 import { getDeadStockValue, getNegativeStock, getReorderRisk, getStocktakeVariance } from "../services/reportsInventoryOpsService";
+import {
+  agentVolumeReport,
+  campaignPerformanceReport,
+  csatReport,
+  taskResponseReport,
+} from "../services/reports/whatsappReports";
 import { money, toDbMoney } from "../services/money";
 import { adminProcedure, canViewReports, protectedProcedure, reportViewerProcedure, router } from "../trpc";
 
@@ -735,5 +741,45 @@ export const reportsRouter = router({
     .query(async ({ input, ctx }) => {
       const branchId = scopedBranchId(ctx, input?.branchId);
       return getCourierPerformance({ from: input?.from, to: input?.to, branchId });
+    }),
+
+  // ─────────────────────── تقارير مركز واتساب (S6، T6.1) ───────────────────────
+  // الأربعة خلف reportViewerProcedure + عزل الفرع (بيانات أداء موظفين/كلفة حملات — خط §٦ الأحمر).
+  // لا واجهة تستهلكها بعد (T6.2) — check:orphans سيُبلّغ عن يتمٍ متوقَّع حتى ذلك الحين.
+
+  /** زمن أول رد P50/P90 + زمن الحل P50/P90 + التزام SLA + الحل من أول تواصل + معدّل إعادة الفتح،
+   *  إجمالاً وتجميعاً حسب نوع المهمة (taskKind). الفترة = تاريخ إنشاء المهمة (createdAt). */
+  whatsappTaskResponse: reportsBranchScoped
+    .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return taskResponseReport({ from: input.from, to: input.to, branchId });
+    }),
+
+  /** أحجام العمل لكل موظف مُسنَد — **حِمل عمل لا مراقبة أداء** (لا عدّ رسائل/زمن اتصال، فقط
+   *  إسناد/إنجاز/CSAT). الفترة = تاريخ إنشاء المهمة (createdAt). */
+  whatsappAgentVolume: reportsBranchScoped
+    .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return agentVolumeReport({ from: input.from, to: input.to, branchId });
+    }),
+
+  /** توزيع درجات CSAT (١-٥) + المتوسط + معدّل الاستجابة. الفترة = تاريخ طلب التقييم
+   *  (csatRequestedAt) — عمداً لا createdAt، راجع تعليق whatsappReports.ts أعلى الملف. */
+  whatsappCsat: reportsBranchScoped
+    .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return csatReport({ from: input.from, to: input.to, branchId });
+    }),
+
+  /** قمع أداء الحملات التسويقية (أُرسل→سُلّم→قُرئ) لكل حملة ضمن الفترة + الكلفة التقديرية مقابل
+   *  الفعلية. الفترة = تاريخ إنشاء الحملة (waBroadcasts.createdAt). */
+  whatsappCampaignPerformance: reportsBranchScoped
+    .input(z.object({ from: ymdStr, to: ymdStr, branchId: z.number().int().positive().optional() }))
+    .query(async ({ input, ctx }) => {
+      const branchId = scopedBranchId(ctx, input.branchId);
+      return campaignPerformanceReport({ from: input.from, to: input.to, branchId });
     }),
 });

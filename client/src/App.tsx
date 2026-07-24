@@ -70,6 +70,9 @@ const SalesReturnNew = lazy(() => import("@/pages/SalesReturnNew"));
 const PurchaseReturnNew = lazy(() => import("@/pages/PurchaseReturnNew"));
 const WorkOrderDetail = lazy(() => import("@/pages/WorkOrderDetail"));
 const WorkOrderNew = lazy(() => import("@/pages/WorkOrderNew"));
+// نظام المهام الموحّد (S2 — مركز واتساب الأعمال، T2.3): تذكرة موحّدة لأي طلب خدمة/دعم/استفسار.
+const TasksHub = lazy(() => import("@/pages/TasksHub"));
+const TaskDetail = lazy(() => import("@/pages/TaskDetail"));
 const ProductionNew = lazy(() => import("@/pages/ProductionNew"));
 const ProductionDetail = lazy(() => import("@/pages/ProductionDetail"));
 const AssetDetail = lazy(() => import("@/pages/AssetDetail"));
@@ -114,6 +117,7 @@ const CashOrphanReport = lazy(() => import("@/pages/CashOrphanReport"));
 const DayCloseReport = lazy(() => import("@/pages/DayCloseReport"));
 const ProductionReport = lazy(() => import("@/pages/ProductionReport"));
 const WorkOrdersReport = lazy(() => import("@/pages/WorkOrdersReport"));
+const WhatsappHubReport = lazy(() => import("@/pages/WhatsappHubReport"));
 const PayrollReport = lazy(() => import("@/pages/PayrollReport"));
 const AttendanceReport = lazy(() => import("@/pages/AttendanceReport"));
 const LeaveReport = lazy(() => import("@/pages/LeaveReport"));
@@ -288,6 +292,22 @@ export default function App() {
       <Route path="/inbox"><Redirect to="/crm?tab=inbox" /></Route>
       <Route path="/settings/integrations"><Redirect to="/settings?tab=integrations" /></Route>
       <Route path="/work-orders/:id"><Shell><WorkOrderDetail /></Shell></Route>
+      {/* نظام المهام الموحّد (S2/T2.3) — حارس واجهي مرآة tasksReadProcedure (requireModule("tasks","READ"))؛
+          الأدوار المذكورة = كل قوالب الأدوار بقيمة tasks≥READ (استثناء purchasing/courier=NONE). */}
+      <Route path="/tasks">
+        <Shell>
+          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
+            <TasksHub />
+          </RequireRole>
+        </Shell>
+      </Route>
+      <Route path="/tasks/:id">
+        <Shell>
+          <RequireRole roles={["admin","manager","accountant","cashier","warehouse","print_operator","sales_rep","auditor","user"]} module="tasks" level="READ">
+            <TaskDetail />
+          </RequireRole>
+        </Shell>
+      </Route>
       <Route path="/production"><Redirect to="/work-orders?tab=production" /></Route>
       <Route path="/production/new"><Shell><ProductionNew /></Shell></Route>
       <Route path="/production/:id"><Shell><ProductionDetail /></Shell></Route>
@@ -362,6 +382,9 @@ export default function App() {
       {/* تدقيق ١٧/٧: أُضيف accountant — الخادم reportViewerProcedure يخوّله فكان محجوباً واجهياً فقط. */}
       <Route path="/reports/production"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ProductionReport /></RequireRole></Shell></Route>
       <Route path="/reports/work-orders"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><WorkOrdersReport /></RequireRole></Shell></Route>
+      {/* تقارير مركز واتساب (S6، T6.2) — الأربعة خلف reportViewerProcedure (استجابة/حلّ + أحجام
+          موظفين + CSAT + أداء الحملات)، مرآة بقية مسارات reports أعلاه. */}
+      <Route path="/reports/whatsapp-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><WhatsappHubReport /></RequireRole></Shell></Route>
       {/* تقارير الموارد البشرية تستدعي راوترات hr (requireModule("hr","READ")) لا reports —
           فتُبوَّب بوحدة hr كي يفتحها مَن مُنح الموارد البشرية لا مَن مُنح التقارير (مراجعة Codex).
           قائمة الأدوار = حاملو hr قالبياً (accountant/auditor قالباهما hr=READ) — مرآة بوّابة

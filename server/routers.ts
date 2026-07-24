@@ -63,6 +63,9 @@ import { crmRouter } from "./routers/crmRouter";
 import { offlineRouter } from "./routers/offlineRouter";
 import { imageStudioRouter } from "./routers/imageStudioRouter";
 import { printPricingRouter } from "./routers/printPricingRouter";
+import { tasksRouter } from "./routers/tasksRouter";
+import { contactsRouter } from "./routers/contactsRouter";
+import { broadcastsRouter } from "./routers/broadcastsRouter";
 
 /**
  * Root API router. Business module routers are mounted here as they are built.
@@ -149,6 +152,16 @@ export const appRouter = router({
   crm: crmRouter,
   // تعدد الشركات — شاشة إدارة المنصّة (منفصلة تماماً عن جلسة/أدوار أي شركة).
   platformAdmin: platformAdminRouter,
+  // نظام المهام الموحّد (S2 — مركز واتساب الأعمال، ٢٣/٧/٢٦): تذكرة موحّدة لكل طلب خدمة/دعم/استفسار.
+  tasks: tasksRouter,
+  // بنك جهات الاتصال (S3، T3.2): بحث موحّد + بطاقة ٣٦٠° + أشخاص اتصال B2B + كشف ازدواج.
+  // مفتاح صلاحيات «crm» القائم يُعاد استخدامه (لا مفتاح جديد) — لا علاقة بـ`crm:` أعلاه
+  // (ذاك مفتاح راوتر حملات/كوبونات تاريخي على وحدة «campaigns» رغم الاسم).
+  contacts: contactsRouter,
+  // البث التسويقي (S5، T5.1): باني شرائح RFM + معاينة عدد/كلفة + إنشاء/إطلاق/اعتماد (SOD).
+  // يعيد استعمال مفتاح صلاحيات «campaigns» القائم (campaignsManagerProcedure/campaignsReadProcedure)
+  // — لا مفتاح جديد. لا واجهة مستهلكة بعد (T5.3).
+  broadcasts: broadcastsRouter,
 });
 
 export type AppRouter = typeof appRouter;
