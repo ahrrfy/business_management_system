@@ -2,6 +2,7 @@ import {
   POS_STATION_LABEL,
   deriveEffectiveAccess,
   diffFromTemplate,
+  type EffectiveAccessSummary,
   type PermissionMap,
   type PosStation,
   type RoleKey,
@@ -31,13 +32,16 @@ const STATION_CLS: Record<PosStation, string> = {
 export function EffectiveAccessPreview({
   role,
   override,
+  summary,
   title = "الأثر الفعليّ لهذا الحساب",
 }: {
   role: RoleKey | string | undefined;
-  override: PermissionMap | null | undefined;
+  override?: PermissionMap | null;
+  /** ملخّصٌ محسوبٌ مسبقاً (خادمياً) — يُستعمل مباشرةً بدل إعادة الاشتقاق (يصدق على الأدوار المخصّصة). */
+  summary?: EffectiveAccessSummary;
   title?: string;
 }) {
-  const eff = deriveEffectiveAccess(role, override ?? null);
+  const eff = summary ?? deriveEffectiveAccess(role, override ?? null);
   const isAdmin = role === "admin";
 
   return (

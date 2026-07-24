@@ -19,6 +19,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation, useRoute } from "wouter";
 import { ROLE_OPTIONS, ROLE_LABEL } from "./Users";
 import { EffectiveAccessForAssignment } from "@/components/form/EffectiveAccessPreview";
+import { EffectivePermissionsPanel } from "@/components/form/EffectivePermissionsPanel";
 import {
   ROLES,
   ROLE_TEMPLATES,
@@ -326,6 +327,14 @@ export default function UserEdit() {
               showCode128={false}
             />
           </div>
+        </CardContent>
+      </Card>
+
+      {/* الأثر الفعليّ الحاليّ (طبقة الشفافية ش١): «لماذا يرى هذا الحساب هذا؟» — مصدر كل صلاحية + القسم الفعليّ. */}
+      <Card>
+        <CardHeader><CardTitle className="text-base">الأثر الفعليّ لهذا الحساب</CardTitle></CardHeader>
+        <CardContent>
+          <EffectivePermissionsPanel userId={userId} />
         </CardContent>
       </Card>
 
