@@ -11,14 +11,20 @@
  *     recipientStatus يتبعه (عبر processStatuses في webhookProcessor.ts).
  *  6) الإكمال: لا PENDING متبقٍّ (يشمل شريحة فارغة تماماً) ⇒ COMPLETED.
  *  7) idempotency: نداءان متتاليان لا يُدرجان مستلمين مكرَّرين (uq) ولا يُرسلان مكرَّراً (dedupeKey).
+ *  8) 🔴 T5.2 hotfix — فشل متزامن (استجابة Graph POST نفسها) عبر **المسار الحقيقي** (dispatch فعلي
+ *     بـfetch مزيَّف، لا حقن حالة مباشرة في DB): صفوف المستلمين تتبع outbox إلى FAILED فلا تبقى
+ *     QUEUED للأبد، فيراها القاطع فعلياً ويوقف الحملة PAUSED (لا COMPLETED صامت رغم فشل جماعي).
+ *  9) T5.2 hotfix — حملة فرع بلا تكامل واتساب ACTIVE ⇒ PAUSED بسبب واضح بدل الإدراج/التقطير في فراغ.
  */
 import { eq } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
+import { encryptSecret } from "../cryptoService";
 import { broadcastResults, resumeBroadcast } from "../whatsapp/broadcastService";
 import { dripRunningBroadcasts } from "../whatsapp/broadcastDispatch";
+import { dispatchOutboxRow } from "../whatsapp/outboxService";
 import { persistWaEvent, processWaEvent } from "../whatsapp/webhookProcessor";
 import type { Actor } from "../tx";
 
@@ -29,6 +35,20 @@ function db() {
 }
 
 const admin: Actor = { userId: 1, branchId: 1, role: "admin" };
+
+/** تكامل واتساب ACTIVE فعلي (accessToken مشفَّر حقيقياً — نفس مسار الإنتاج، نمط waOutbox.test.ts)
+ *  — لازمٌ منذ T5.2 hotfix: dripOneBroadcast يتحقّق الآن من تكامل فرع الحملة **قبل** أي إدراج/تقطير
+ *  (الإصلاح ٣)، فبلا هذا الاستدعاء كانت كل حملة فرعها 1 (الافتراضي في insertRunningBroadcast) ستُوقَف
+ *  PAUSED فوراً بسبب «لا تكامل واتساب نشط لفرع الحملة» قبل الوصول لأي من السلوكيات المُختبَرة أعلاه. */
+async function seedActiveIntegration(branchId: number, phoneNumberId = "15550009999"): Promise<void> {
+  await db().insert(s.channelIntegrations).values({
+    branchId,
+    channel: "WHATSAPP",
+    phoneNumberId,
+    encryptedAccessToken: encryptSecret("fake-access-token"),
+    status: "ACTIVE",
+  });
+}
 
 beforeEach(async () => {
   await db().insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
@@ -43,6 +63,7 @@ beforeEach(async () => {
     bodyText: "عرض خاص لك {{1}}",
     variableCount: 1,
   });
+  await seedActiveIntegration(1);
 });
 
 async function seedCustomer(id: number, consent: "UNKNOWN" | "OPTED_IN" | "OPTED_OUT"): Promise<void> {
@@ -328,5 +349,173 @@ describe("broadcastResults — تجميع العدّ والنسب", () => {
 
   it("بثّ غير موجود ⇒ NOT_FOUND", async () => {
     await expect(broadcastResults(999999)).rejects.toMatchObject({ code: "NOT_FOUND" });
+  });
+});
+
+// ── T5.2 hotfix: قاطع الجودة على فشل الإرسال المتزامن (المسار الحقيقي) ─────────────────────────
+//
+// المشكلة (قبل الإصلاح): أكواد Meta الحرجة (131048/131056/130429) قد تصل **متزامنةً** على استجابة
+// Graph POST نفسها (classifyGraphError في sendService.ts) — outboxService كان يُعلِّم waOutbox=FAILED
+// بلا أي تحديث لـwaBroadcastRecipients المرتبط (لا wamid ⇒ لا حدث webhook لاحق ⇒ لا
+// syncBroadcastRecipientFromOutbox) فيبقى صفّ المستلم QUEUED للأبد ⇒ checkCircuitBreaker (يقرأ فقط
+// SENT/DELIVERED/READ/FAILED) لا يراه أبداً ⇒ القاطع معطَّل فعلياً والحملة تكتمل COMPLETED بصمت رغم
+// فشل جماعي حقيقي — خطر حظر حساب Meta. الاختبارات هنا تُشغّل **المسار الفعلي**: enqueue حقيقي عبر
+// dripRunningBroadcasts ثم dispatch حقيقي عبر dispatchOutboxRow بـfetch عالميّ مزيَّف (لا حقن حالة
+// مباشرة في DB) — يجب أن تفشل هذه الاختبارات قبل إصلاح outboxService.ts (تحقّقتُ من ذلك يدوياً).
+function failureResponder(status: number, body: unknown): typeof fetch {
+  return (async () =>
+    new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } })) as typeof fetch;
+}
+
+async function dispatchAllQueuedOutbox(broadcastId: number): Promise<void> {
+  const rows = await outboxOf(broadcastId);
+  for (const row of rows) {
+    if (row.status === "QUEUED") await dispatchOutboxRow(Number(row.id));
+  }
+}
+
+describe("القاطع — فشل متزامن عبر المسار الحقيقي (dispatch فعلي، T5.2 hotfix)", () => {
+  it("Graph POST يعيد 400 وerrorCode=131048 متزامناً على دفعة أولى ⇒ صفوف مستلميها FAILED لا QUEUED عالقة، والقاطع يوقف الحملة PAUSED **قبل** تقطير الدفعة التالية (لا COMPLETED صامت رغم فشل جماعي)", async () => {
+    // جمهور (١٠) أكبر من throttlePerMinute (٢) عمداً — لو اكتمل التقطير من أوّل دورة (جمهور ≤
+    // throttle) لصار maybeCompleteBroadcast يُكمل الحملة فور انعدام PENDING بصرف النظر عن نتيجة
+    // الإرسال الفعلي لاحقاً (سلوكٌ قائم غير مطلوب تغييره)، فلا تُتاح للقاطع فرصة الفحص أصلاً قبل
+    // COMPLETED. هذا هو السيناريو الحقيقي الذي يحمي منه القاطع: حملة متعدّدة الدُفعات تفشل مبكراً.
+    for (let i = 1; i <= 10; i++) await seedCustomer(i, "OPTED_IN");
+    const broadcastId = await insertRunningBroadcast({ throttlePerMinute: 2 });
+
+    // دورة ١: بلا أي محاولة إرسال فعلية بعد — dripRunningBroadcasts تُدرج كل الجمهور (١٠ PENDING)
+    // وتُقطِّر أوّل دفعة فقط (٢) إلى outbox (QUEUED). القاطع لا يرى شيئاً بعد فلا يوقف شيئاً هنا.
+    await dripRunningBroadcasts();
+    let recipients = await recipientsOf(broadcastId);
+    expect(recipients).toHaveLength(10);
+    const firstBatch = recipients.filter((r) => r.recipientStatus === "QUEUED");
+    expect(firstBatch).toHaveLength(2);
+    expect(recipients.filter((r) => r.recipientStatus === "PENDING")).toHaveLength(8);
+    expect((await broadcastRow(broadcastId)).broadcastStatus).toBe("RUNNING");
+
+    // دورة ٢ (تحاكي التقاط الكنّاس الفعلي لصفوف outbox المستحقّة): كل صفّ من الدفعة الأولى يُرسَل
+    // فعلياً عبر sendService.sendTemplate → graph.graphFetch → globalThis.fetch المزيَّف، الذي يفشل
+    // متزامناً بكود Meta 131048 (pauseworthy) — بلا أي حقن حالة مباشرة في waOutbox/waBroadcastRecipients.
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(failureResponder(400, { error: { code: 131048, message: "Rate limit hit" } }));
+    try {
+      await dispatchAllQueuedOutbox(broadcastId);
+    } finally {
+      spy.mockRestore();
+    }
+
+    // صفّا outbox الدفعة الأولى صارا FAILED فعلياً (محاولة واحدة — pauseworthy مثل permanent في applyFailure).
+    const outboxRows = await outboxOf(broadcastId);
+    expect(outboxRows).toHaveLength(2);
+    expect(outboxRows.every((o) => o.status === "FAILED")).toBe(true);
+
+    // ✅ الإصلاح الحرِج: صفّا المستلمين من الدفعة الأولى يتبعان outbox فوراً — FAILED لا QUEUED عالقة
+    // للأبد، وerrorCode مضبوط (يغذّي القاطع)، بلا أي wamid (الفشل حدث قبل توليد أيّ معرّف رسالة).
+    recipients = await recipientsOf(broadcastId);
+    const firstBatchAfter = recipients.filter((r) => firstBatch.some((f) => f.id === r.id));
+    expect(firstBatchAfter.every((r) => r.recipientStatus === "FAILED")).toBe(true);
+    expect(firstBatchAfter.every((r) => r.errorCode === "131048")).toBe(true);
+    expect(firstBatchAfter.every((r) => r.wamid == null)).toBe(true);
+
+    // دورة ٣: نبضة كنّاس تالية — checkCircuitBreaker يرى الآن فشل الدفعة الأولى الحقيقي (لا اقتطاع
+    // صامت) **قبل** تقطير أيٍّ من الـ٨ PENDING المتبقّين ويوقف الحملة تلقائياً.
+    await dripRunningBroadcasts();
+
+    const row = await broadcastRow(broadcastId);
+    expect(row.broadcastStatus).toBe("PAUSED"); // ✅ لا COMPLETED صامت رغم فشل الدفعة الأولى كاملة.
+    expect(row.pausedReason).toBeTruthy();
+
+    // لم تُقطَّر أيّ دفعة إضافية بعد الإيقاف — الـ٨ المتبقّون ما زالوا PENDING (لم يُهدَروا في فراغ).
+    recipients = await recipientsOf(broadcastId);
+    expect(recipients.filter((r) => r.recipientStatus === "PENDING")).toHaveLength(8);
+
+    // ✅ النتائج المُبلَّغة تعكس الواقع: FAILED صحيحة للدفعة الأولى، لا QUEUED مضلِّلة عالقة.
+    const results = await broadcastResults(broadcastId);
+    expect(results.counts.FAILED).toBe(2);
+    expect(results.counts.QUEUED ?? 0).toBe(0);
+  });
+
+  it("130429 متزامن (retryable بحدّ ٦ محاولات) ⇒ يبلغ FAILED نهائياً فيراه القاطع أيضاً — لا يعلق QUEUED إلى الأبد", async () => {
+    await seedCustomer(1, "OPTED_IN");
+    const broadcastId = await insertRunningBroadcast({ throttlePerMinute: 10 });
+    await dripRunningBroadcasts();
+    const outboxId = (await outboxOf(broadcastId))[0].id;
+
+    const spy = vi.spyOn(globalThis, "fetch").mockImplementation(failureResponder(400, { error: { code: 130429, message: "Too many requests" } }));
+    try {
+      // 130429 مصنَّف retryable (RETRYABLE_CODES في sendService.ts) — تفريغ الباكوف بتقديم
+      // nextAttemptAt للماضي بين المحاولات (نفس نمط waOutbox.test.ts) حتى بلوغ الحدّ ٦ ⇒ FAILED.
+      await dispatchOutboxRow(outboxId);
+      for (let i = 2; i <= 6; i++) {
+        await db().update(s.waOutbox).set({ nextAttemptAt: new Date(Date.now() - 1000) }).where(eq(s.waOutbox.id, outboxId));
+        await dispatchOutboxRow(outboxId);
+      }
+    } finally {
+      spy.mockRestore();
+    }
+
+    const outboxRow = (await outboxOf(broadcastId))[0];
+    expect(outboxRow.status).toBe("FAILED");
+    expect(outboxRow.attempts).toBe(6);
+
+    // ✅ حالة outbox النهائية (بعد استنفاد إعادات المحاولة) تتبعها المستلم — لا QUEUED عالقة.
+    const recipient = (await recipientsOf(broadcastId))[0];
+    expect(recipient.recipientStatus).toBe("FAILED");
+    expect(recipient.errorCode).toBe("130429");
+  });
+});
+
+describe("فرع بلا تكامل واتساب نشط — تُوقَف بدل الإدراج/التقطير في فراغ (T5.2 hotfix)", () => {
+  it("حملة بفرع بلا تكامل ACTIVE (بينما فرعٌ آخر يملك تكاملاً) ⇒ PAUSED بسبب واضح، بلا إدراج أي مستلم", async () => {
+    await db().insert(s.branches).values([{ id: 2, name: "فرع بلا تكامل", code: "NOINT", type: "SALES" }]);
+    await seedCustomer(1, "OPTED_IN");
+    // hasAnyActiveWaIntegration العامة كانت ستمرّ (الفرع ١ يملك تكاملاً من beforeEach) بينما فرع
+    // هذه الحملة تحديداً (٢) بلا تكامل — بالضبط الفجوة التي يسدّها الإصلاح ٣.
+    const broadcastId = await insertRunningBroadcast({ branchId: 2 });
+
+    await dripRunningBroadcasts();
+
+    const row = await broadcastRow(broadcastId);
+    expect(row.broadcastStatus).toBe("PAUSED");
+    expect(row.pausedReason).toContain("تكامل");
+    expect(await recipientsOf(broadcastId)).toHaveLength(0); // توقّفت قبل أي إدراج — لا تقطير في فراغ.
+    expect(await outboxOf(broadcastId)).toHaveLength(0);
+  });
+
+  it("resumeBroadcast بعد إضافة تكامل الفرع ⇒ RUNNING ويُدرج/يُقطِّر بنجاح في الدورة التالية", async () => {
+    await db().insert(s.branches).values([{ id: 3, name: "فرع سيُضاف له تكامل", code: "LATER", type: "SALES" }]);
+    await seedCustomer(1, "OPTED_IN");
+    const broadcastId = await insertRunningBroadcast({ branchId: 3 });
+
+    await dripRunningBroadcasts();
+    expect((await broadcastRow(broadcastId)).broadcastStatus).toBe("PAUSED");
+
+    await seedActiveIntegration(3, "15550003333");
+    await resumeBroadcast(broadcastId, admin);
+    expect((await broadcastRow(broadcastId)).broadcastStatus).toBe("RUNNING");
+
+    await dripRunningBroadcasts();
+    const recipients = await recipientsOf(broadcastId);
+    expect(recipients).toHaveLength(1);
+    expect(recipients[0].recipientStatus).toBe("QUEUED");
+  });
+});
+
+describe("ذرّية إدراج المستلمين — معاملة واحدة (T5.2 hotfix)", () => {
+  it("جمهور صغير ⇒ كل المستلمين المؤهَّلين موجودون دفعة واحدة بعد أول drip (فحص+إدراج في معاملة واحدة)، ودrip ثانٍ لا يُكرِّر", async () => {
+    // ملاحظة توثيقية: محاكاة انهيار فعلي منتصف الإدراج يصعب في اختبار تكامل (يحتاج قطع الاتصال أثناء
+    // معاملة جارية) — هذا الاختبار يتحقّق من النتيجة السلوكية المتوقَّعة من التصميم الذرّي (كل الجمهور
+    // المؤهَّل يظهر معاً دفعة واحدة، لا تراكمياً عبر دورات)، والذرّية الفعلية (معاملة واحدة بدل دفعات
+    // 500 منفصلة) مؤكَّدة بمراجعة الكود في ensureRecipientsSeeded (broadcastDispatch.ts).
+    for (let i = 1; i <= 7; i++) await seedCustomer(i, "OPTED_IN");
+    const broadcastId = await insertRunningBroadcast({ throttlePerMinute: 100 });
+
+    await dripRunningBroadcasts();
+    const recipients = await recipientsOf(broadcastId);
+    expect(recipients).toHaveLength(7);
+    expect(new Set(recipients.map((r) => r.phoneE164)).size).toBe(7);
+
+    await dripRunningBroadcasts();
+    const recipientsAfterSecondDrip = await recipientsOf(broadcastId);
+    expect(recipientsAfterSecondDrip).toHaveLength(7); // لا إدراج مكرَّر (already-check تحت القفل).
   });
 });

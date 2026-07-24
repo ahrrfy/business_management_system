@@ -20,15 +20,16 @@
  *      بعد إدراج صفّه PENDING ⇒ `SKIPPED_OPTOUT` ولا يُرسَل أبداً) ثم `enqueueOutbox` بـ`campaignId`.
  *   ٤) الإكمال: لا PENDING متبقٍّ ⇒ `COMPLETED`.
  *
- * **ربط حالات التسليم:** `syncBroadcastRecipientFromOutbox` (مُصدَّرة) تُستدعى من
- * `webhookProcessor.processStatuses` — نقطة تحديث حالة `waOutbox` الفعلية من webhook Meta — لا من
- * هذا الملف (رسائل الحملات لا تُنشئ صفّ `conversationMessages`، فتحديث حالتها لا يمرّ من هناك).
- *
- * **نطاقٌ مُتعمَّد خارج هذه الشريحة (موثَّق لا مسكوت عنه):** فشل **متزامن** فوري عند استدعاء Graph
- * (استجابة الـPOST نفسها 4xx) لرسالة حملة **لا** يُحدِّث `waBroadcastRecipients` (`outboxService.ts`
- * خارج نطاق ملفات هذا التكليف — لا تعديل عليه). هذا مقبول عملياً: القوالب التسويقية تُقبَل من Graph
- * متزامناً في الغالب الأعمّ، وإخفاقات حدود المعدّل/الجودة (`131048`/`131056`/`130429`) تصل فعلياً عبر
- * webhook `statuses[]` غير متزامن (سلوك Cloud API الحقيقي) — وهو تحديداً المسار الذي يغذّي القاطع هنا.
+ * **ربط حالات التسليم (مصدر منطق واحد — T5.2 hotfix):** `syncBroadcastRecipientFromOutbox` تعيش
+ * فعلياً في `outboxService.ts` (يُعاد تصديرها هنا لأن `webhookProcessor.ts` وbarrel `index.ts`
+ * يستوردانها من هذا الملف تاريخياً) وتُستدعى من مكانين: (أ) `webhookProcessor.processStatuses` —
+ * تحديث `waOutbox` غير المتزامن من webhook Meta (رسائل الحملات لا تُنشئ صفّ `conversationMessages`،
+ * فتحديث حالتها لا يمرّ من هناك)؛ (ب) `outboxService.finalizeSendSuccess`/`applyFailure` — تحديث
+ * `waOutbox` **المتزامن** على استجابة Graph POST نفسها مباشرة (كان هذا المسار **مفقوداً بالكامل**
+ * قبل T5.2 hotfix: أكواد حدود المعدّل/الجودة الحرجة من Meta — 131048/131056/130429 — تصل غالباً
+ * متزامنةً على استجابة POST لا عبر webhook لاحق فقط كما ظُنّ سابقاً؛ بدون (ب) كان صفّ
+ * `waBroadcastRecipients` يبقى `QUEUED` للأبد رغم فشل الإرسال الفعلي، فلا يراه `checkCircuitBreaker`
+ * أدناه أبداً — القاطع كان معطَّلاً فعلياً أمام أشيَع أسباب فشل البثّ التسويقي تحديداً).
  */
 import { and, asc, desc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import {
@@ -39,27 +40,22 @@ import {
   waTemplates,
   type WaBroadcast,
 } from "../../../drizzle/schema";
-import type { DB, Tx } from "../../db";
 import { logger } from "../../logger";
 import { requireDb, withTx } from "../tx";
 import { getWaHubSettings } from "./flowNotify";
-import { enqueueOutbox } from "./outboxService";
+import { enqueueOutbox, getActiveWaIntegration } from "./outboxService";
 import { resolveSegmentList, type SegmentCriteria } from "./segmentService";
-
-type DbOrTx = DB | Tx;
-
-function chunkArray<T>(arr: T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
-  return out;
-}
 
 // ── حلّ فرع الإرسال (waOutbox.branchId إلزاميّ NOT NULL) ────────────────────────────────────────
 
-/** بثّ لفرعٍ محدَّد ⇒ يُرسَل منه. بثّ عامّ (`branchId=null`، كل الفروع) ⇒ لا معنى فرعيّ للإرسال فعلياً
- *  (رقم واتساب واحد فعلياً على الأغلب) — يُحَلّ إلى أوّل تكامل واتساب ACTIVE (نفس الحارس الذي يمنع
- *  الكنّاس من العمل أصلاً بلا تكامل — `hasAnyActiveWaIntegration`). لا تكامل نشط إطلاقاً ⇒ `null`
- *  (المستدعي يتخطّى تقطير هذه الحملة هذه الدورة بأمان — لا رمي). */
+/** بثّ لفرعٍ محدَّد ⇒ يُرسَل منه — `dripOneBroadcast` يتحقّق **مسبقاً** (قبل استدعاء هذه الدالة) أن
+ *  لهذا الفرع تحديداً تكاملاً ACTIVE (`getActiveWaIntegration`، T5.2 hotfix — راجع تعليقها هناك)
+ *  فيُوقِف الحملة PAUSED بسببٍ واضح لو لا؛ فحين تُستدعى هذه الدالة بـ`broadcastBranchId` غير null فهو
+ *  مضمونٌ سلفاً أن له تكاملاً نشطاً. بثّ عامّ (`branchId=null`، كل الفروع) ⇒ لا معنى فرعيّ للإرسال
+ *  فعلياً (رقم واتساب واحد فعلياً على الأغلب) — يُحَلّ إلى أوّل تكامل واتساب ACTIVE (نفس الحارس الذي
+ *  يمنع الكنّاس من العمل أصلاً بلا تكامل — `hasAnyActiveWaIntegration`). لا تكامل نشط إطلاقاً ⇒
+ *  `null` (المستدعي يتخطّى تقطير هذه الحملة هذه الدورة بأمان — لا رمي؛ حالة نادرة عملياً لأن
+ *  `hasAnyActiveWaIntegration` في `outboxSweeper` تمنع الوصول لهنا أصلاً لو لا تكامل إطلاقاً). */
 async function resolveSendingBranchId(broadcastBranchId: number | null): Promise<number | null> {
   if (broadcastBranchId != null) return broadcastBranchId;
   const row = (
@@ -75,37 +71,65 @@ async function resolveSendingBranchId(broadcastBranchId: number | null): Promise
 
 // ── الإدراج الكسول (مرّة واحدة لكل حملة) ────────────────────────────────────────────────────────
 
-/** لا أثر لو سبق إدراج أي صفّ لهذه الحملة (فحص وجود بسيط — لا حاجة لعلَم إضافي: حملة بجمهور صفريّ
- *  حقيقي تبقى بلا صفوف للأبد، و`maybeCompleteBroadcast` يتعامل معها بإكمالٍ فوريّ بلا حاجة لتمييزها
- *  عن «لم تُدرَج بعد» — النتيجة العملية متطابقة: صفر PENDING). حدّ ٢٠٠٠٠ = سقف `resolveSegmentList`
- *  ذاته (أعداد الجمهور المتوقَّعة آلاف لا ملايين — راجع تعليق الملف هناك). */
+/** سقف مُوثَّق لإدراج مستلمي حملة واحدة **ذرّياً** (معاملة واحدة، صفّ الحملة نفسه مقفولاً طوال
+ *  العملية). الكتالوج الفعلي ~١٤٥٣ عميلاً، والجمهور التسويقي المؤهَّل (OPTED_IN بعد فرض القاعدة
+ *  الذهبية) مجموعة فرعية منه — أصغر بكثير من هذا الحدّ عملياً. تجاوزه لا يُقتطَع صامتاً: يُسجَّل
+ *  خطأً صريحاً (`logger.error`) ويُقتطع الجمهور إلى الحدّ (بدل إدراج آلاف الصفوف في عبارة واحدة أو
+ *  الفشل الصامت) — راجع اللوق عند حدوثه ووسّع الحدّ بقرارٍ صريح لو لزم فعلاً. */
+const MAX_BROADCAST_RECIPIENTS = 10_000;
+
+/**
+ * لا أثر لو سبق إدراج أي صفّ لهذه الحملة (فحص وجود بسيط — لا حاجة لعلَم إضافي: حملة بجمهور صفريّ
+ * حقيقي تبقى بلا صفوف للأبد، و`maybeCompleteBroadcast` يتعامل معها بإكمالٍ فوريّ بلا حاجة لتمييزها
+ * عن «لم تُدرَج بعد» — النتيجة العملية متطابقة: صفر PENDING).
+ *
+ * **ذرّية الإدراج (T5.2 hotfix):** الفحص («هل يوجد صفّ؟») والإدراج الكامل يجريان الآن داخل
+ * **معاملة واحدة** (لا دفعات 500 عبر معاملات منفصلة كما كان سابقاً) مع قفل صفّ الحملة نفسه
+ * (`FOR UPDATE`) طوال العملية — انهيارٌ في منتصف الإدراج القديم كان يترك جمهوراً جزئياً **دائماً**
+ * (المحاولة التالية تجد صفوفاً موجودة فتتخطّى الإدراج بالكامل ⇒ `COMPLETED` بعدد أصغر بصمت). معاملة
+ * واحدة ذرّية تعني: إمّا كل الجمهور المؤهَّل يُدرَج، أو لا شيء (rollback كامل) فتُعاد المحاولة كاملةً
+ * في الدورة التالية — لا حالة وسيطة دائمة ممكنة.
+ */
 async function ensureRecipientsSeeded(broadcast: WaBroadcast): Promise<void> {
-  const db = requireDb();
-  const already = (
-    await db.select({ id: waBroadcastRecipients.id }).from(waBroadcastRecipients).where(eq(waBroadcastRecipients.broadcastId, broadcast.id)).limit(1)
-  )[0];
-  if (already) return;
+  await withTx(async (tx) => {
+    // قفل صفّ الحملة نفسها (لا صفوف waBroadcastRecipients — لا وجود لها بعد وقت الفحص) يمنع سباق
+    // إدراج مزدوج لو استُدعيت الدالة لنفس الحملة من دورتَي كنّاس متداخلتين؛ ويضمن أن «هل يوجد صفّ؟»
+    // والإدراج الكامل يريان لقطة بيانات واحدة متّسقة.
+    const lockedBroadcast = (
+      await tx.select({ id: waBroadcasts.id }).from(waBroadcasts).where(eq(waBroadcasts.id, broadcast.id)).for("update").limit(1)
+    )[0];
+    if (!lockedBroadcast) return; // حُذفت الحملة بين الفحص والقفل (سباق نادر جداً) — لا شيء لفعله.
 
-  // 🔴 القاعدة الذهبية: فرض requireOptIn=true حتماً — يطغى على أي قيمة مخزَّنة في segmentJson.
-  const criteria: SegmentCriteria = { ...(broadcast.segmentJson as SegmentCriteria), requireOptIn: true };
-  const recipients = await resolveSegmentList(criteria, { limit: 20000 }, db);
-  if (recipients.length === 0) return;
+    const already = (
+      await tx.select({ id: waBroadcastRecipients.id }).from(waBroadcastRecipients).where(eq(waBroadcastRecipients.broadcastId, broadcast.id)).limit(1)
+    )[0];
+    if (already) return;
 
-  const rows = recipients.map((r) => ({
-    broadcastId: broadcast.id,
-    customerId: r.customerId,
-    phoneE164: r.phoneE164,
-    recipientStatus: "PENDING" as const,
-  }));
-  for (const part of chunkArray(rows, 500)) {
-    await withTx(async (tx) => {
-      await tx
-        .insert(waBroadcastRecipients)
-        .values(part)
-        // idempotent (uq_wa_broadcast_recipient) — تحديث no-op يحاكي INSERT IGNORE (نمط inventoryService.ts).
-        .onDuplicateKeyUpdate({ set: { id: sql`${waBroadcastRecipients.id}` } });
-    });
-  }
+    // 🔴 القاعدة الذهبية: فرض requireOptIn=true حتماً — يطغى على أي قيمة مخزَّنة في segmentJson.
+    const criteria: SegmentCriteria = { ...(broadcast.segmentJson as SegmentCriteria), requireOptIn: true };
+    // نطلب حدّاً واحداً أكبر من MAX_BROADCAST_RECIPIENTS لنكتشف التجاوز فعلياً (لا اقتطاع صامت).
+    let recipients = await resolveSegmentList(criteria, { limit: MAX_BROADCAST_RECIPIENTS + 1 }, tx);
+    if (recipients.length === 0) return;
+    if (recipients.length > MAX_BROADCAST_RECIPIENTS) {
+      logger.error(
+        { broadcastId: broadcast.id, resolvedCount: recipients.length, cap: MAX_BROADCAST_RECIPIENTS },
+        "wa-broadcast: الجمهور المؤهَّل يتجاوز الحدّ الأقصى المدعوم للإدراج الذرّي — يُقتطَع إلى الحدّ (راجع الحملة يدوياً)",
+      );
+      recipients = recipients.slice(0, MAX_BROADCAST_RECIPIENTS);
+    }
+
+    const rows = recipients.map((r) => ({
+      broadcastId: broadcast.id,
+      customerId: r.customerId,
+      phoneE164: r.phoneE164,
+      recipientStatus: "PENDING" as const,
+    }));
+    await tx
+      .insert(waBroadcastRecipients)
+      .values(rows)
+      // idempotent (uq_wa_broadcast_recipient) — تحديث no-op يحاكي INSERT IGNORE (نمط inventoryService.ts).
+      .onDuplicateKeyUpdate({ set: { id: sql`${waBroadcastRecipients.id}` } });
+  });
 }
 
 // ── بناء متغيّرات القالب من حقول العميل ─────────────────────────────────────────────────────────
@@ -248,10 +272,13 @@ async function checkCircuitBreaker(broadcastId: number): Promise<CircuitBreakerR
   return { shouldPause: false, reason: null };
 }
 
-async function pauseForCircuitBreaker(broadcastId: number, reason: string): Promise<boolean> {
+/** يُوقِف حملة RUNNING بسبب مُعطى (قاطع الجودة أو فرع بلا تكامل — أي سببٍ يقتضي إيقافاً تلقائياً
+ *  فورياً). تحت قفل `FOR UPDATE` على صفّ الحملة فيعيد فحص RUNNING قبل الكتابة — سباق نادر: أُوقفت/
+ *  أُلغيت يدوياً بين خطوات هذه الدورة ⇒ `false` (لا تجاوز حالة يدوية بحالة تلقائية متأخّرة). */
+async function pauseBroadcast(broadcastId: number, reason: string): Promise<boolean> {
   return withTx(async (tx) => {
     const row = (await tx.select({ status: waBroadcasts.broadcastStatus }).from(waBroadcasts).where(eq(waBroadcasts.id, broadcastId)).for("update").limit(1))[0];
-    if (!row || row.status !== "RUNNING") return false; // سباق نادر: أُوقفت/أُلغيت يدوياً للتوّ.
+    if (!row || row.status !== "RUNNING") return false;
     await tx.update(waBroadcasts).set({ broadcastStatus: "PAUSED", pausedReason: reason.slice(0, 200) }).where(eq(waBroadcasts.id, broadcastId));
     return true;
   });
@@ -262,9 +289,26 @@ async function pauseForCircuitBreaker(broadcastId: number, reason: string): Prom
 async function dripOneBroadcast(broadcast: WaBroadcast): Promise<void> {
   const breaker = await checkCircuitBreaker(broadcast.id);
   if (breaker.shouldPause && breaker.reason) {
-    const paused = await pauseForCircuitBreaker(broadcast.id, breaker.reason);
+    const paused = await pauseBroadcast(broadcast.id, breaker.reason);
     if (paused) logger.warn({ broadcastId: broadcast.id, reason: breaker.reason }, "wa-broadcast: قاطع الجودة أوقف الحملة تلقائياً");
     return;
+  }
+
+  // فرع محدَّد (لا بثّ عامّ): تحقّق أن لفرع الحملة تحديداً تكاملاً WHATSAPP ACTIVE **قبل** أي
+  // إدراج/تقطير (T5.2 hotfix). `hasAnyActiveWaIntegration` في outboxSweeper (بوّابة الدخول الحقيقية
+  // لهذا الملف) عامّة عبر كل الفروع — قد تمرّ بفضل فرعٍ آخر تماماً بينما فرع هذه الحملة تحديداً بلا
+  // تكامل، فكانت الحملة تُدرِج مستلمين وتُقطِّر رسائل إلى outbox تفشل واحدة تلو الأخرى عند الإرسال
+  // الفعلي (`processClaimedRow` في outboxService: «لا تكامل واتساب نشطاً لهذا الفرع») — إدراج/تقطير
+  // في فراغ. فحصٌ مبكر صريح هنا أوضح ويوفّر دورات كنّاس مهدورة.
+  if (broadcast.branchId != null) {
+    const branchIntegration = await getActiveWaIntegration(Number(broadcast.branchId));
+    if (!branchIntegration) {
+      const paused = await pauseBroadcast(broadcast.id, "لا تكامل واتساب نشط لفرع الحملة.");
+      if (paused) {
+        logger.warn({ broadcastId: broadcast.id, branchId: broadcast.branchId }, "wa-broadcast: أُوقفت — لا تكامل واتساب نشط لفرع الحملة");
+      }
+      return;
+    }
   }
 
   await ensureRecipientsSeeded(broadcast);
@@ -313,44 +357,12 @@ export async function dripRunningBroadcasts(): Promise<DripBroadcastsResult> {
   return { processed: running.length };
 }
 
-// ── ربط حالات التسليم بالمستلمين (تُستدعى من webhookProcessor.processStatuses) ──────────────────
+// ── ربط حالات التسليم بالمستلمين ─────────────────────────────────────────────────────────────
 
-export type BroadcastDeliveryStatus = "SENT" | "DELIVERED" | "READ" | "FAILED";
-
-const RECIPIENT_STATUS_RANK: Record<string, number> = { SENT: 1, DELIVERED: 2, READ: 3 };
-
-/**
- * يربط تحديث حالة `waOutbox` القادم من webhook Meta (`statuses[]`) بصفّ `waBroadcastRecipients`
- * المطابق عبر `outboxId` — لا أثر لو لا صفّ مستلم مرتبط بهذا `outboxId` (رسالة عادية خارج أي حملة؛
- * المستدعي `webhookProcessor.processStatuses` يفحص `campaignId != null` قبل النداء أصلاً، لكن هذه
- * الدالة تبقى آمنة الاستدعاء بذاتها حتى بلا ذلك الفحص). رتابة صارمة لـSENT/DELIVERED/READ (نفس نمط
- * `STATUS_RANK` في `webhookProcessor.ts` — delivered بعد read لا تُخفّض الحالة)؛ FAILED لا يتراجع عن
- * DELIVERED/READ مؤكَّدَين سلفاً (حالة "failed" متأخّرة نادرة لا تُلغي نجاحاً سابقاً).
- */
-export async function syncBroadcastRecipientFromOutbox(
-  runner: DbOrTx,
-  params: { outboxId: number; wamid: string; status: BroadcastDeliveryStatus; errorCode: string | null },
-): Promise<void> {
-  const recip = (
-    await runner
-      .select({ id: waBroadcastRecipients.id, recipientStatus: waBroadcastRecipients.recipientStatus })
-      .from(waBroadcastRecipients)
-      .where(eq(waBroadcastRecipients.outboxId, params.outboxId))
-      .limit(1)
-  )[0];
-  if (!recip) return;
-
-  if (params.status === "FAILED") {
-    if (recip.recipientStatus === "DELIVERED" || recip.recipientStatus === "READ") return;
-    await runner
-      .update(waBroadcastRecipients)
-      .set({ recipientStatus: "FAILED", wamid: params.wamid, errorCode: params.errorCode })
-      .where(eq(waBroadcastRecipients.id, recip.id));
-    return;
-  }
-
-  const newRank = RECIPIENT_STATUS_RANK[params.status];
-  const currentRank = RECIPIENT_STATUS_RANK[recip.recipientStatus] ?? 0;
-  if (newRank <= currentRank) return;
-  await runner.update(waBroadcastRecipients).set({ recipientStatus: params.status, wamid: params.wamid }).where(eq(waBroadcastRecipients.id, recip.id));
-}
+// `syncBroadcastRecipientFromOutbox` انتقلت فعلياً إلى outboxService.ts (T5.2 hotfix — راجع تعليق
+// رأس الملف): مصدر منطقها الوحيد هناك الآن (يستدعيها outboxService داخلياً للمسار المتزامن على
+// استجابة Graph POST، ومن هنا webhookProcessor.processStatuses للمسار غير المتزامن من webhook Meta).
+// يُعاد تصديرها هنا فقط لأن webhookProcessor.ts وbarrel index.ts يستوردانها من هذا الملف تاريخياً —
+// لا تُعِد تعريفها هنا (تكرار منطق يكسر «مصدر واحد»).
+export { syncBroadcastRecipientFromOutbox } from "./outboxService";
+export type { BroadcastDeliveryStatus } from "./outboxService";

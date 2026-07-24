@@ -13,12 +13,27 @@
  * الصفّ» — الخطر ١ في وثيقة التصميم). البديل: إدراج مباشر بنفس بنية `addMessage` (نفس الحقول ونفس
  * تحديث lastMessageAt/lastMessagePreview لاتجاه OUT، بلا لمس unreadCount الذي addMessage لا يزيده
  * أصلاً لـOUT) داخل withTx واحدة هنا (finalizeSendSuccess).
+ *
+ * **إصلاح قاطع جودة البث (T5.2 hotfix):** حالة `waOutbox` النهائية (SENT/FAILED) قد تُحسم هنا
+ * **متزامنةً** على استجابة Graph POST نفسها (لا فقط لاحقاً عبر webhook) — أكواد حدود المعدّل/الجودة
+ * الحرجة من Meta (131048/131056/130429) شائعة الوصول بهذا المسار المتزامن فعلياً. `finalizeSendSuccess`
+ * و`applyFailure` أدناه يستدعيان `syncBroadcastRecipientFromOutbox` (**مصدر المنطق الوحيد** لتحديث
+ * مستلم الحملة من outbox — يستدعيها أيضاً `webhookProcessor.processStatuses` للمسار غير المتزامن)
+ * كلّما كان للصفّ `campaignId`؛ بدون هذا الاستدعاء يبقى صفّ `waBroadcastRecipients` QUEUED للأبد رغم
+ * فشل الإرسال الفعلي، فلا يراه `checkCircuitBreaker` (broadcastDispatch.ts) أبداً.
  */
 import { TRPCError } from "@trpc/server";
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { channelIntegrations, conversationMessages, conversations, waOutbox, type WaOutbox } from "../../../drizzle/schema";
-import { getDb, type Tx } from "../../db";
+import {
+  channelIntegrations,
+  conversationMessages,
+  conversations,
+  waBroadcastRecipients,
+  waOutbox,
+  type WaOutbox,
+} from "../../../drizzle/schema";
+import { getDb, type DB, type Tx } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { logger } from "../../logger";
 import { decryptSecret } from "../cryptoService";
@@ -192,6 +207,70 @@ async function isWithinFreeWindow(conversationId: number | null): Promise<boolea
   return Date.now() - row.lastInboundAt.getTime() < 24 * 3600 * 1000;
 }
 
+// ── ربط حالات outbox النهائية بمستلمي الحملات (مصدر منطق واحد — T5.2 hotfix) ──────────────────
+
+type DbOrTx = DB | Tx;
+
+export type BroadcastDeliveryStatus = "SENT" | "DELIVERED" | "READ" | "FAILED";
+
+const RECIPIENT_STATUS_RANK: Record<string, number> = { SENT: 1, DELIVERED: 2, READ: 3 };
+
+/**
+ * يربط تحديث حالة `waOutbox` النهائية بصفّ `waBroadcastRecipients` المطابق عبر `outboxId` — لا أثر
+ * لو لا صفّ مستلم مرتبط بهذا `outboxId` (رسالة عادية خارج أي حملة). **مصدر المنطق الوحيد** لهذا
+ * الربط — يُستدعى من هنا (finalizeSendSuccess/applyFailure أدناه، المسار **المتزامن** على استجابة
+ * Graph POST مباشرة) ومن `webhookProcessor.processStatuses` (المسار **غير المتزامن** من webhook
+ * Meta لاحقاً؛ تستورده عبر إعادة تصدير `broadcastDispatch.ts`).
+ *
+ * رتابة صارمة لـSENT/DELIVERED/READ (delivered بعد read لا تُخفّض الحالة)؛ FAILED لا يتراجع عن
+ * DELIVERED/READ مؤكَّدَين سلفاً (فشل متأخّر نادر لا يُلغي نجاحاً سابقاً). `wamid` قد يكون `null`
+ * هنا خصيصاً (المسار المتزامن يصل **قبل** توليد أي wamid — الفشل حدث في استجابة الـPOST نفسها) ⇒
+ * لا يُكتب فوق `wamid` مخزَّن سابقاً لو لم يُمرَّر جديد.
+ */
+export async function syncBroadcastRecipientFromOutbox(
+  runner: DbOrTx,
+  params: { outboxId: number; wamid: string | null; status: BroadcastDeliveryStatus; errorCode: string | null },
+): Promise<void> {
+  const recip = (
+    await runner
+      .select({ id: waBroadcastRecipients.id, recipientStatus: waBroadcastRecipients.recipientStatus })
+      .from(waBroadcastRecipients)
+      .where(eq(waBroadcastRecipients.outboxId, params.outboxId))
+      .limit(1)
+  )[0];
+  if (!recip) return;
+
+  if (params.status === "FAILED") {
+    if (recip.recipientStatus === "DELIVERED" || recip.recipientStatus === "READ") return;
+    await runner
+      .update(waBroadcastRecipients)
+      .set({ recipientStatus: "FAILED", errorCode: params.errorCode, ...(params.wamid ? { wamid: params.wamid } : {}) })
+      .where(eq(waBroadcastRecipients.id, recip.id));
+    return;
+  }
+
+  const newRank = RECIPIENT_STATUS_RANK[params.status];
+  const currentRank = RECIPIENT_STATUS_RANK[recip.recipientStatus] ?? 0;
+  if (newRank <= currentRank) return;
+  await runner
+    .update(waBroadcastRecipients)
+    .set({ recipientStatus: params.status, ...(params.wamid ? { wamid: params.wamid } : {}) })
+    .where(eq(waBroadcastRecipients.id, recip.id));
+}
+
+/** يستدعي syncBroadcastRecipientFromOutbox فقط لو الصفّ ينتمي لحملة (campaignId مضبوط) — no-op
+ *  صامت لرسائل خارج أي حملة (الغالبية العظمى). تُستعمَل داخلياً من finalizeSendSuccess/applyFailure. */
+async function syncCampaignRecipientIfAny(
+  tx: Tx,
+  row: WaOutbox,
+  status: BroadcastDeliveryStatus,
+  wamid: string | null,
+  errorCode: string | null,
+): Promise<void> {
+  if (row.campaignId == null) return;
+  await syncBroadcastRecipientFromOutbox(tx, { outboxId: row.id, wamid, status, errorCode });
+}
+
 // ── نتائج الإرسال ─────────────────────────────────────────────────────────────
 
 function previewForOutbound(body: string): string {
@@ -224,6 +303,7 @@ async function finalizeSendSuccess(row: WaOutbox, wamid: string): Promise<void> 
         .set({ lastMessageAt: sql`NOW()`, lastMessagePreview: previewForOutbound(bodyText) })
         .where(eq(conversations.id, row.conversationId));
     }
+    await syncCampaignRecipientIfAny(tx, row, "SENT", wamid, null);
   });
 }
 
@@ -236,15 +316,20 @@ async function finalizeMediaFetchSuccess(id: number): Promise<void> {
 }
 
 /** فشل — retryable: attempts+1، FAILED عند بلوغ ٦ وإلا QUEUED بموعد باكوف أسّي (min(2^attempts,32)
- *  دقيقة ± ٢٠٪ عشوائية). permanent/pauseworthy: FAILED فوراً (تفريق pauseworthy للحملات لاحقاً —
- *  لا حملات بعد ⇒ نفس مصير permanent الآن). */
-async function applyFailure(row: WaOutbox, classification: GraphErrorClassification, detail: string): Promise<void> {
+ *  دقيقة ± ٢٠٪ عشوائية). permanent/pauseworthy: FAILED فوراً (محاولة واحدة — القوالب التسويقية
+ *  pauseworthy مثل 131048 هي بالضبط ما يُغذّي قاطع جودة البث T5.2). `code` رمز خطأ Meta الرقمي إن
+ *  وُجد (من classifyGraphError) — يُمرَّر كـerrorCode لمستلم الحملة (إن وُجدت) ليقرأه
+ *  checkCircuitBreaker. المزامنة مع waBroadcastRecipients تحدث **فقط** عند الحالة النهائية FAILED
+ *  (لا عند إعادة محاولة تبقي الصفّ QUEUED — تلك ليست حالة outbox نهائية بعد). */
+async function applyFailure(row: WaOutbox, classification: GraphErrorClassification, detail: string, code: number | null = null): Promise<void> {
   const message = detail.slice(0, 500);
+  const errorCode = code != null ? String(code) : null;
   if (classification === "retryable") {
     const attempts = row.attempts + 1;
     if (attempts >= 6) {
       await withTx(async (tx) => {
         await tx.update(waOutbox).set({ status: "FAILED", attempts, lastError: message }).where(eq(waOutbox.id, row.id));
+        await syncCampaignRecipientIfAny(tx, row, "FAILED", row.wamid ?? null, errorCode);
       });
       return;
     }
@@ -253,11 +338,14 @@ async function applyFailure(row: WaOutbox, classification: GraphErrorClassificat
     const nextAttemptAt = new Date(Date.now() + backoffMinutes * 60_000 * jitterFactor);
     await withTx(async (tx) => {
       await tx.update(waOutbox).set({ status: "QUEUED", attempts, nextAttemptAt, lastError: message }).where(eq(waOutbox.id, row.id));
+      // لا مزامنة مستلم هنا عمداً — الصفّ لا يزال QUEUED (إعادة محاولة لاحقة)، وcheckCircuitBreaker
+      // يتجاهل QUEUED أصلاً (يقرأ فقط SENT/DELIVERED/READ/FAILED).
     });
     return;
   }
   await withTx(async (tx) => {
     await tx.update(waOutbox).set({ status: "FAILED", lastError: message }).where(eq(waOutbox.id, row.id));
+    await syncCampaignRecipientIfAny(tx, row, "FAILED", row.wamid ?? null, errorCode);
   });
 }
 
@@ -278,7 +366,7 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
   // فحص النافذة لـSESSION_TEXT وMEDIA فقط (القوالب معفاة) — الخادم مصدر الحقيقة لا فحص الواجهة.
   if (row.kind === "SESSION_TEXT" || row.kind === "MEDIA") {
     if (!(await isWithinFreeWindow(row.conversationId))) {
-      await applyFailure(row, "permanent", GRAPH_ERROR_AR[131047] ?? "نافذة المحادثة مغلقة — استخدم قالباً معتمداً.");
+      await applyFailure(row, "permanent", GRAPH_ERROR_AR[131047] ?? "نافذة المحادثة مغلقة — استخدم قالباً معتمداً.", 131047);
       return;
     }
   }
@@ -323,7 +411,10 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
   if (sendResult.ok) {
     await finalizeSendSuccess(row, sendResult.wamid);
   } else {
-    await applyFailure(row, sendResult.classification, sendResult.detail);
+    // إغلاق حلقة قاطع الجودة (T5.2 hotfix): sendResult.code هو رمز خطأ Meta الرقمي (131048/131056/
+    // 130429/...) حين وصل متزامناً على استجابة Graph POST نفسها — يُمرَّر إلى applyFailure ليصل
+    // بدوره لمستلم الحملة (syncCampaignRecipientIfAny) فيراه checkCircuitBreaker.
+    await applyFailure(row, sendResult.classification, sendResult.detail, sendResult.code);
   }
 }
 
