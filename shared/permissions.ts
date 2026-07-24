@@ -242,8 +242,16 @@ export interface SectionRoleSpec {
   description: string;
   baseRole: RoleKey;
   permissions: PermissionMap;
+  /** قسم POS المرتبط بالدور (تلميح عرض في منتقي الدور — الحقيقة مشتقّة). */
+  station?: PosStation;
 }
 
+/**
+ * الأدوار القياسية المرتبطة بأقسام POS (٢٣/٧ + ش٣ ٢٤/٧) — دورا كاشير القسمين + **موظف الاستقبال**
+ * الجديد. تُبذَر صفوف `isSystem=true` محميّة من الحذف/تغيير الفئة، قابلة للتحرير المُدقَّق، وأيّ دور
+ * دقيق يُبنى «انسخ ثم عدّل» منها. baseRole=cashier ⇒ تُحَلّ في context إلى permissionsOverride مشتقّ
+ * فتعمل كل بوّابات الخادم بلا تغيير. العزل: تجزئة⇐`sales`، طباعة⇐`pos`، استقبال⇐`workorders`.
+ */
 export const SECTION_CASHIER_ROLES: SectionRoleSpec[] = [
   {
     key: "retail_cashier",
@@ -251,6 +259,7 @@ export const SECTION_CASHIER_ROLES: SectionRoleSpec[] = [
     description: "كاشير مخصّص لقسم التجزئة فقط — لا يرى «خدمات طباعة» ولا «استقبال أوامر شغل».",
     baseRole: "cashier",
     permissions: { ...ROLE_TEMPLATES.cashier, pos: "NONE", workorders: "NONE" },
+    station: "RETAIL",
   },
   {
     key: "print_cashier",
@@ -258,6 +267,17 @@ export const SECTION_CASHIER_ROLES: SectionRoleSpec[] = [
     description: "كاشير مخصّص لقسم خدمات الطباعة والاستنساخ فقط — لا يرى «التجزئة» ولا «استقبال أوامر شغل».",
     baseRole: "cashier",
     permissions: { ...ROLE_TEMPLATES.cashier, sales: "NONE", workorders: "NONE" },
+    station: "PRINT_SERVICES",
+  },
+  {
+    // ش٣ (قرار المالك): دور جديد يسدّ فجوة — كان موظف الاستقبال يُجبَر على «كاشير» الأوسع أو تخصيصٍ
+    // يدويّ (فخّ سوء الإسناد نفسه). استقبال أوامر الشغل (عربون/تصميم) بلا تجزئة ولا خدمات طباعة.
+    key: "reception_clerk",
+    label: "موظف استقبال",
+    description: "موظف استقبال أوامر الشغل (عربون/تصميم) فقط — لا يرى «التجزئة» ولا «خدمات الطباعة».",
+    baseRole: "cashier",
+    permissions: { ...ROLE_TEMPLATES.cashier, sales: "NONE", pos: "NONE" },
+    station: "RECEPTION",
   },
 ];
 
@@ -374,7 +394,9 @@ export type PosStation = "RETAIL" | "PRINT_SERVICES" | "RECEPTION";
 export const POS_STATION_GATES: Record<PosStation, { module: string; allowedRoles: RoleKey[] }> = {
   RETAIL: { module: "sales", allowedRoles: ["cashier", "manager"] },
   PRINT_SERVICES: { module: "pos", allowedRoles: ["cashier", "manager"] },
-  RECEPTION: { module: "workorders", allowedRoles: ["cashier", "manager"] },
+  // ش٣ (قرار المالك): فنّي المطبعة يُضاف لمحطة الاستقبال — اتّساقاً مع قالبه workorders=FULL ومع
+  // workordersExecProcedure الخادميّة التي تسرده أصلاً (كان يُحجب عن تبويب RECEPTION رغم صلاحيته).
+  RECEPTION: { module: "workorders", allowedRoles: ["cashier", "manager", "print_operator"] },
 };
 
 export const POS_STATION_LABEL: Record<PosStation, string> = {

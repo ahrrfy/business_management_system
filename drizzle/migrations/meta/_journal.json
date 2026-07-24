@@ -771,6 +771,13 @@
       "when": 1785024000023,
       "tag": "0110_wa_broadcasts",
       "breakpoints": true
+    },
+    {
+      "idx": 111,
+      "version": "5",
+      "when": 1785110400000,
+      "tag": "0111_rbac_standard_roles",
+      "breakpoints": true
     }
   ]
 }

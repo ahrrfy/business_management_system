@@ -118,6 +118,10 @@ export const roles = mysqlTable(
     permissions: json("permissions").notNull(),
     canSeeCost: boolean("canSeeCost").default(false).notNull(),
     isActive: boolean("isActive").default(true).notNull(),
+    // RBAC ش٣: الأدوار القياسية المبذورة محميّة من الحذف/تغيير الفئة (قابلة للتحرير المُدقَّق).
+    isSystem: boolean("isSystem").default(false).notNull(),
+    // تلميح عرض لقسم POS (RETAIL/PRINT_SERVICES/RECEPTION) — الحقيقة مشتقّة من الخريطة (deriveStation).
+    station: varchar("station", { length: 20 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   }
