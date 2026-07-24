@@ -29,14 +29,16 @@ import {
 } from "../salesPromotionService";
 import { consumeCoupon, hashCouponCode, lockCouponForSale } from "../couponService";
 import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
+import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
 import { getUnitPrice, resolveTier, type PriceTier } from "../pricing";
-import { type Actor, withTx } from "../tx";
+import { type Actor, requireDb, withTx } from "../tx";
+import { flowNotify } from "../whatsapp";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
 
 export async function createSale(input: CreateSaleInput, actor: Actor): Promise<CreateSaleResult> {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     // 1. Idempotency: replay the existing invoice for a repeated clientRequestId.
     //    SALES-04 (تدقيق ٢٣/٦/٢٦): البصمة كانت قاصرة على branchId ⇒ كاشير يُعيد استعمال المفتاح
     //    على بيع مختلف فيستلم فاتورة بيعٍ سابق ولا يُسجَّل البيع الجديد ⇒ منفذ سرقة نقد. الحلّ على
@@ -744,5 +746,39 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       priceOverride: belowCost,
       ...(negativeDips.length ? { negativeDips } : {}),
     };
+  });
+
+  // إشعار الشكر (T4.2، خلف مفتاح flowPurchaseThanks) — خارج معاملة البيع تماماً وبعد نجاحها فقط.
+  // ⚠️ لا يمسّ ذرّية البيع أبداً: يعمل بعد الالتزام (commit) لا داخله، ومحمي بغلاف دفاعيّ هنا فوق
+  // حماية flowNotify الداخلية — فشله (لأي سبب) **لا يُسقِط** بيعاً ناجحاً بالفعل (القاعدة الحاكمة،
+  // راجع server/services/whatsapp/flowNotify.ts).
+  try {
+    await notifyPurchaseThanks(input, result);
+  } catch (e) {
+    logger.warn(
+      { err: e instanceof Error ? e.message : String(e), invoiceId: result.invoiceId },
+      "sale: تعذّر إرسال إشعار الشكر — تُجوهل",
+    );
+  }
+
+  return result;
+}
+
+/** يجلب هاتف/اسم عميل الفاتورة (إن عُرف) ويستدعي flowNotify — لا شيء إن لا عميل/لا هاتف. */
+async function notifyPurchaseThanks(input: CreateSaleInput, result: CreateSaleResult): Promise<void> {
+  if (!input.customerId) return;
+  const db = requireDb();
+  const cust = (
+    await db.select({ name: customers.name, phone: customers.phone }).from(customers).where(eq(customers.id, input.customerId)).limit(1)
+  )[0];
+  if (!cust?.phone) return;
+  await flowNotify({
+    flowKey: "flowPurchaseThanks",
+    branchId: input.branchId,
+    toPhoneE164: cust.phone,
+    customerId: input.customerId,
+    templateName: "purchase_thanks",
+    bodyParams: [cust.name, result.invoiceNumber],
+    dedupeKey: `SALE_THANKS:${result.invoiceId}`,
   });
 }

@@ -35,3 +35,20 @@ export {
   syncTemplatesFromGraph,
 } from "./templateService";
 export type { ListTemplatesFilter, SyncTemplatesResult, WaTemplateIntegration } from "./templateService";
+
+export {
+  baghdadYmdCompact,
+  checkAutomationGate,
+  flowNotify,
+  getWaHubSettings,
+  isOutsideBusinessHours,
+} from "./flowNotify";
+export type {
+  AutomationFlagKey,
+  AutomationFlowKey,
+  AutomationGateResult,
+  BusinessHoursConfig,
+  FlowNotifyInput,
+  FlowNotifyResult,
+  FlowNotifySkipReason,
+} from "./flowNotify";

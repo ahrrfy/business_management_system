@@ -7,6 +7,7 @@ import {
   getReminderQueue,
   logReminderSent,
   logReminderSkipped,
+  sendViaApi,
 } from "../services/arRemindersService";
 import { logAudit } from "../services/auditService";
 import { collectionsManagerProcedure, router } from "../trpc";
@@ -145,6 +146,44 @@ export const arRemindersRouter = router({
           daysOverdue: input.daysOverdue,
         },
       });
+      return r;
+    }),
+
+  /** إرسال تذكير عبر قالب Meta معتمَد (T4.2 — خلف مفتاح flowArReminder، افتراضياً OFF) بدل فتح
+   *  wa.me يدوياً. عند النجاح الفعلي يُسجَّل التذكير آلياً بـsentVia='API' (لا حاجة لاستدعاء logSent
+   *  بعدها)؛ أي تخطٍّ (مفتاح مطفأ/لا تكامل/OPTED_OUT/قالب غير معتمَد) لا يسجّل شيئاً — الواجهة تُبلَّغ
+   *  بالسبب فتقرّر (الرجوع للمسار اليدوي القائم `logSent` يبقى متاحاً دون أي تغيير). */
+  sendViaApi: collectionsManagerProcedure
+    .input(
+      z.object({
+        customerId: z.number().int().positive(),
+        totalUnpaidSnapshot: moneyStr,
+        oldestInvoiceDate: ymd,
+        daysOverdue: z.number().int().nonnegative(),
+        isOpeningBalance: z.boolean().optional(),
+        branchId: optionalBranch,
+      }),
+    )
+    .mutation(async ({ input, ctx }) => {
+      const { branchId: requestedBranchId, ...payload } = input;
+      const r = await sendViaApi(payload, {
+        userId: ctx.user.id,
+        branchId: input.isOpeningBalance
+          ? openingWriteBranch(ctx, requestedBranchId)
+          : scopedBranch(ctx, requestedBranchId),
+      });
+      if (r.sent) {
+        await logAudit(ctx, {
+          action: "arReminder.sentViaApi",
+          entityType: "arReminder",
+          entityId: r.reminderId,
+          newValue: {
+            customerId: input.customerId,
+            totalUnpaidSnapshot: input.totalUnpaidSnapshot,
+            daysOverdue: input.daysOverdue,
+          },
+        });
+      }
       return r;
     }),
 

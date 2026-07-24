@@ -12,9 +12,11 @@
 //   addComment:  بلا تغيير حالة (تنفيذ بنطاق الموظف)
 import { TRPCError } from "@trpc/server";
 import { eq, sql } from "drizzle-orm";
-import { taskEvents, tasks, users } from "../../../drizzle/schema";
+import { conversations, taskEvents, tasks, users } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { type Actor, withTx } from "../tx";
+import { logger } from "../../logger";
+import { type Actor, requireDb, withTx } from "../tx";
+import { checkAutomationGate, enqueueAndDispatch } from "../whatsapp";
 import { assertTaskActorScope, assertTaskAssigneeOrElevated, assertTaskBranch, loadTask } from "./helpers";
 
 type TaskEventType = "COMMENT" | "STATUS" | "ASSIGN" | "LINK" | "SYSTEM" | "CSAT";
@@ -116,7 +118,7 @@ export async function resumeTask(taskId: number, actor: TaskActor) {
 
 /** IN_PROGRESS/WAITING_CUSTOMER → RESOLVED. resolutionNote إلزامي لمهام SUPPORT. يراكم الانتظار أولاً إن كان جارياً. */
 export async function resolveTask(taskId: number, actor: TaskActor, resolutionNote?: string | null) {
-  return withTx(async (tx) => {
+  const result = await withTx(async (tx) => {
     const task = await loadTask(tx, taskId);
     assertTaskBranch(task, actor);
     assertTaskAssigneeOrElevated(task, actor);
@@ -138,8 +140,67 @@ export async function resolveTask(taskId: number, actor: TaskActor, resolutionNo
     }
     await tx.update(tasks).set(patch).where(eq(tasks.id, taskId));
     await insertEvent(tx, { taskId, eventType: "STATUS", fromStatus: task.taskStatus, toStatus: "RESOLVED", note: resolutionNote ?? null, userId: actor.userId });
-    return { taskId, status: "RESOLVED" as const };
+    return {
+      taskId,
+      status: "RESOLVED" as const,
+      taskKind: task.taskKind,
+      branchId: Number(task.branchId),
+      conversationId: task.conversationId != null ? Number(task.conversationId) : null,
+    };
   });
+
+  // CSAT (T4.2، خلف مفتاح csatOnResolve) — خارج المعاملة تماماً وبعد نجاحها فقط، محمي بذاته
+  // (checkAutomationGate/enqueueAndDispatch لا يُتوقَّع أن يرميا هنا، لكن الغلاف دفاعيّ صريح فوقهما)
+  // — **لا يُفشِل resolve أبداً** (القاعدة الحاكمة، راجع server/services/whatsapp/flowNotify.ts).
+  try {
+    await maybeRequestCsat(result);
+  } catch (e) {
+    logger.warn({ err: e instanceof Error ? e.message : String(e), taskId: result.taskId }, "resolveTask: تعذّر إطلاق CSAT — تُجوهل");
+  }
+
+  return { taskId: result.taskId, status: result.status };
+}
+
+/**
+ * يُطلق طلب تقييم CSAT (رسالة تفاعلية بأزرار ردّ سريع) عبر الصندوق الصادر — فقط لمهام SUPPORT
+ * بمفتاح `csatOnResolve` مفعَّل ومحادثة مربوطة نافذتها الحرّة مفتوحة (آخر ٢٤ ساعة). Cloud API يسمح
+ * بحدّ أقصى ٣ أزرار ردّ سريع لكل رسالة (حدّ منصّة صارم — `sendInteractiveButtons` يقصّ لأوّل ٣) ⇒
+ * مقياس ١-٥ يُختزَل لثلاث درجات ممثِّلة (٥/٣/١، بعناوين «ممتاز/عادي/سيّئ» — أحد البديلين اللذين
+ * تسمح بهما المواصفة صراحةً)؛ منطق **الالتقاط** في webhookProcessor.ts يبقى عاماً (يقبل ١..٥ أياً
+ * كان المُرسَل فعلاً). dedupeKey `CSAT:{taskId}` ⇒ مرّة واحدة لكل مهمة (لا تتكرّر حتى بعد reopen). */
+async function maybeRequestCsat(params: { taskId: number; taskKind: string; branchId: number; conversationId: number | null }): Promise<void> {
+  if (params.taskKind !== "SUPPORT" || params.conversationId == null) return;
+
+  const gate = await checkAutomationGate("csatOnResolve", params.branchId);
+  if (!gate.ok) return;
+
+  const db = requireDb();
+  const conv = (
+    await db
+      .select({ channelHandle: conversations.channelHandle, lastInboundAt: conversations.lastInboundAt })
+      .from(conversations)
+      .where(eq(conversations.id, params.conversationId))
+      .limit(1)
+  )[0];
+  if (!conv?.channelHandle || !conv.lastInboundAt) return;
+  const windowOpen = Date.now() - conv.lastInboundAt.getTime() < 24 * 3600 * 1000;
+  if (!windowOpen) return;
+
+  const buttons = [
+    { id: `csat:${params.taskId}:5`, title: "ممتاز" },
+    { id: `csat:${params.taskId}:3`, title: "عادي" },
+    { id: `csat:${params.taskId}:1`, title: "سيّئ" },
+  ];
+  await enqueueAndDispatch({
+    dedupeKey: `CSAT:${params.taskId}`,
+    branchId: params.branchId,
+    conversationId: params.conversationId,
+    toPhoneE164: conv.channelHandle,
+    kind: "SESSION_TEXT",
+    payloadJson: { text: "كيف كانت تجربتك معنا؟ نسعد بتقييمك.", buttons },
+    taskId: params.taskId,
+  });
+  await db.update(tasks).set({ csatRequestedAt: sql`NOW()` }).where(eq(tasks.id, params.taskId));
 }
 
 /** RESOLVED → IN_PROGRESS خلال ≤٧ أيام من resolvedAt فقط (مدير). */

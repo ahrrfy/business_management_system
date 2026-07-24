@@ -24,6 +24,8 @@ import {
   conversationMessages,
   conversations,
   customers,
+  taskEvents,
+  tasks,
   waHubSettings,
   waOutbox,
   waWebhookEvents,
@@ -35,7 +37,8 @@ import { addMessage, upsertConversation } from "../conversationService";
 import { maybeCreateTaskForInbound } from "../tasks/autoCreate";
 import { requireDb, withTx } from "../tx";
 import { resolveWaSender } from "./contactResolver";
-import { enqueueOutbox } from "./outboxService";
+import { baghdadYmdCompact, checkAutomationGate, isOutsideBusinessHours } from "./flowNotify";
+import { enqueueAndDispatch, enqueueOutbox } from "./outboxService";
 
 // ── أشكال حمولة Cloud API (تفكيك متسامح — أي حقل غائب لا يرمي) ──────────────────────────────
 
@@ -58,7 +61,7 @@ interface WaInboundMessage {
   video?: WaMediaRef;
   sticker?: WaMediaRef;
   button?: { text?: string };
-  interactive?: { button_reply?: { title?: string }; list_reply?: { title?: string } };
+  interactive?: { button_reply?: { id?: string; title?: string }; list_reply?: { id?: string; title?: string } };
 }
 
 interface WaStatus {
@@ -235,6 +238,106 @@ async function maybeCaptureOptOut(customerId: number | null, messageBody: string
   }
 }
 
+async function isCustomerOptedOut(customerId: number): Promise<boolean> {
+  const db = requireDb();
+  const row = (await db.select({ waConsent: customers.waConsent }).from(customers).where(eq(customers.id, customerId)).limit(1))[0];
+  return row?.waConsent === "OPTED_OUT";
+}
+
+// ── الردّ الآلي (T4.2 §ج) ─────────────────────────────────────────────────────────────────────
+
+/**
+ * الردّ الآلي بعد ساعات الدوام — خلف مفتاح `autoReplyAfterHours` (افتراضياً OFF). النافذة الحرّة
+ * مفتوحة يقيناً هنا (العميل راسلنا للتو) ⇒ نصّ جلسة حرّ (SESSION_TEXT) لا قالب — أوفر وأسرع.
+ * throttle مرّة واحدة/محادثة/يوم (توقيت بغداد) عبر dedupeKey `AH:{convId}:{yyyymmdd}`. محميّة
+ * بذاتها (try/catch داخلي) — فشلها لا يجب أن يُفشل استقبال رسالة واتساب فعلية.
+ */
+async function maybeSendAfterHoursReply(params: {
+  conversationId: number;
+  branchId: number;
+  toPhoneE164: string;
+  customerId: number | null;
+}): Promise<void> {
+  try {
+    const gate = await checkAutomationGate("autoReplyAfterHours", params.branchId);
+    if (!gate.ok) return;
+    if (!gate.settings.afterHoursReply?.trim()) return;
+    if (!isOutsideBusinessHours(gate.settings.businessHoursJson)) return;
+    if (params.customerId != null && (await isCustomerOptedOut(params.customerId))) return;
+
+    await enqueueAndDispatch({
+      dedupeKey: `AH:${params.conversationId}:${baghdadYmdCompact()}`,
+      branchId: params.branchId,
+      conversationId: params.conversationId,
+      toPhoneE164: params.toPhoneE164,
+      kind: "SESSION_TEXT",
+      payloadJson: { text: gate.settings.afterHoursReply },
+    });
+  } catch (e) {
+    logger.warn({ err: e instanceof Error ? e.message : String(e) }, "wa-webhook: تعذّر إرسال الردّ الآلي خارج الدوام — تُجوهل");
+  }
+}
+
+/**
+ * ردّ الترحيب — أوّل رسالة من محادثة **جديدة تماماً** (أُنشئت الآن)، خلف مفتاح `autoReplyWelcome`
+ * (افتراضياً OFF). نصّ جلسة حرّ، dedupeKey `WELCOME:{convId}` ⇒ مرّة واحدة للأبد لكل محادثة. محميّة
+ * بذاتها — فشلها لا يجب أن يُفشل استقبال رسالة واتساب فعلية.
+ */
+async function maybeSendWelcomeReply(params: {
+  conversationId: number;
+  isNew: boolean;
+  branchId: number;
+  toPhoneE164: string;
+  customerId: number | null;
+}): Promise<void> {
+  if (!params.isNew) return;
+  try {
+    const gate = await checkAutomationGate("autoReplyWelcome", params.branchId);
+    if (!gate.ok) return;
+    if (!gate.settings.welcomeReply?.trim()) return;
+    if (params.customerId != null && (await isCustomerOptedOut(params.customerId))) return;
+
+    await enqueueAndDispatch({
+      dedupeKey: `WELCOME:${params.conversationId}`,
+      branchId: params.branchId,
+      conversationId: params.conversationId,
+      toPhoneE164: params.toPhoneE164,
+      kind: "SESSION_TEXT",
+      payloadJson: { text: gate.settings.welcomeReply },
+    });
+  } catch (e) {
+    logger.warn({ err: e instanceof Error ? e.message : String(e) }, "wa-webhook: تعذّر إرسال ردّ الترحيب — تُجوهل");
+  }
+}
+
+// ── CSAT — التقاط ردّ الزرّ التفاعلي (T4.2 §د) ───────────────────────────────────────────────────
+
+/**
+ * يلتقط ردّ CSAT (زرّ تفاعليّ بمعرّف `csat:{taskId}:{1..5}` — أطلقه tasks/lifecycle.resolveTask)
+ * ويُحدّث `tasks.csatScore` + حدث CSAT. عامّ يقبل ١..٥ أياً كان المُرسَل فعلاً (الإرسال يقتصر على
+ * ٣ أزرار — حدّ Cloud API — لكن الالتقاط لا يفترض ذلك). idempotent: لا يكتب فوق تقييم مُسجَّل
+ * مسبقاً (إعادة إرسال webhook/ضغط مزدوج). محميّة بذاتها — لا رسالة IN عادية تُفقَد بسببها (تبقى
+ * الرسالة العادية بجسم عنوان الزرّ تُدرَج كالمعتاد من `addMessage` في المستدعي).
+ */
+async function maybeCaptureCsat(buttonId: string | undefined): Promise<void> {
+  if (!buttonId) return;
+  const m = /^csat:(\d+):([1-5])$/.exec(buttonId);
+  if (!m) return;
+  try {
+    const taskId = Number(m[1]);
+    const score = Number(m[2]);
+    const db = requireDb();
+    const existing = (await db.select({ id: tasks.id, csatScore: tasks.csatScore }).from(tasks).where(eq(tasks.id, taskId)).limit(1))[0];
+    if (!existing || existing.csatScore != null) return; // لا مهمّة مطابقة، أو مُقيَّمة مسبقاً.
+    await withTx(async (tx) => {
+      await tx.update(tasks).set({ csatScore: score }).where(eq(tasks.id, taskId));
+      await tx.insert(taskEvents).values({ taskId, eventType: "CSAT", note: `تقييم العميل عبر واتساب: ${score}/٥` });
+    });
+  } catch (e) {
+    logger.warn({ err: e instanceof Error ? e.message : String(e), buttonId }, "wa-webhook: تعذّر التقاط تقييم CSAT — تُجوهل");
+  }
+}
+
 // ── الرسائل الواردة (messages[]) ──────────────────────────────────────────────────────────────
 
 async function processInboundMessages(value: WaWebhookValue, branchId: number): Promise<void> {
@@ -288,6 +391,12 @@ async function processInboundMessages(value: WaWebhookValue, branchId: number): 
       // بنك جهات الاتصال (S3، ٢٣/٧/٢٦): كلمة إلغاء اشتراك في الوارد ⇒ waConsent='OPTED_OUT' على
       // العميل المربوط. الدالة محميّة بذاتها (try/catch داخلي) — لا حاجة لغلافٍ هنا.
       await maybeCaptureOptOut(linkedCustomerId, desc.body);
+
+      // الأتمتة الخلفية (T4.2): الردّ الآلي (ترحيب/خارج الدوام) + التقاط تقييم CSAT — كلّها خلف
+      // مفاتيح OFF افتراضياً ومحميّة بذاتها (try/catch داخلي في كل دالة) — لا تُفشِل الاستقبال أبداً.
+      await maybeSendWelcomeReply({ conversationId: conv.id, isNew: conv.isNew, branchId, toPhoneE164: from, customerId: linkedCustomerId });
+      await maybeSendAfterHoursReply({ conversationId: conv.id, branchId, toPhoneE164: from, customerId: linkedCustomerId });
+      await maybeCaptureCsat(msg.interactive?.button_reply?.id);
 
       try {
         await withTx((tx) =>

@@ -25,7 +25,14 @@ import { decryptSecret } from "../cryptoService";
 import { requireDb, withTx } from "../tx";
 import type { GraphIntegration } from "./graph";
 import { fetchInboundMedia } from "./mediaService";
-import { GRAPH_ERROR_AR, sendSessionText, sendTemplate, type GraphErrorClassification, type SendResult } from "./sendService";
+import {
+  GRAPH_ERROR_AR,
+  sendInteractiveButtons,
+  sendSessionText,
+  sendTemplate,
+  type GraphErrorClassification,
+  type SendResult,
+} from "./sendService";
 
 export interface EnqueueOutboxInput {
   dedupeKey: string;
@@ -294,8 +301,14 @@ async function processClaimedRow(row: WaOutbox): Promise<void> {
   // SESSION_TEXT / TEMPLATE
   let sendResult: SendResult;
   if (row.kind === "SESSION_TEXT") {
-    const payload = row.payloadJson as { text?: string };
-    sendResult = await sendSessionText(graphIntegration, row.toPhoneE164 ?? "", payload.text ?? "");
+    // `buttons` في الحمولة (T4.2/CSAT) ⇒ رسالة تفاعلية بأزرار ردّ سريع بدل نصّ عادي — بلا قيمة kind
+    // جديدة (لا هجرة: "INTERACTIVE" غير موجود في تعداد waOutbox.kind). فحص النافذة أعلاه يشملها
+    // (SESSION_TEXT/MEDIA فقط) تماماً كالنصّ العادي — القوالب فقط معفاة.
+    const payload = row.payloadJson as { text?: string; buttons?: Array<{ id: string; title: string }> };
+    sendResult =
+      payload.buttons && payload.buttons.length > 0
+        ? await sendInteractiveButtons(graphIntegration, row.toPhoneE164 ?? "", payload.text ?? "", payload.buttons)
+        : await sendSessionText(graphIntegration, row.toPhoneE164 ?? "", payload.text ?? "");
   } else {
     const payload = row.payloadJson as { bodyParams?: string[] };
     sendResult = await sendTemplate(
