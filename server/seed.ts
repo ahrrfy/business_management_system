@@ -107,6 +107,8 @@ async function seed() {
         permissions: r.permissions,
         canSeeCost: false, // يتبع فئة cashier (لا يرى التكلفة)
         isActive: true,
+        isSystem: true,               // ش٣: دور قياسيّ محميّ من الحذف/تغيير الفئة
+        station: r.station ?? null,   // تلميح عرض القسم
       });
       console.log(`✓ seeded section role ${r.key}`);
     } else {
@@ -115,11 +117,15 @@ async function seed() {
       // نستكمل **الغائب فقط** من المواصفة الحالية — قيم المالك المخزَّنة لا تُمسّ أبداً.
       const stored = (existingRole.permissions ?? {}) as Record<string, string>;
       const missing = Object.entries(r.permissions).filter(([k]) => stored[k] === undefined);
-      if (missing.length) {
-        await db.update(roles)
-          .set({ permissions: { ...Object.fromEntries(missing), ...stored } })
-          .where(eq(roles.id, existingRole.id));
-        console.log(`✓ role ${r.key}: backfilled ${missing.length} new module key(s) (${missing.map(([k]) => k).join(", ")})`);
+      // ش٣: ترقية بنيوية للأدوار القياسية القائمة (isSystem/station) — **حين تكون غير مضبوطة فقط**،
+      // دون مسّ label/description/permissions (قد يكون المالك حرّرها). structural-only، آمنة idempotent.
+      const structuralPatch: Record<string, unknown> = {};
+      if (!existingRole.isSystem) structuralPatch.isSystem = true;
+      if (existingRole.station == null && r.station) structuralPatch.station = r.station;
+      const permPatch = missing.length ? { permissions: { ...Object.fromEntries(missing), ...stored } } : {};
+      if (missing.length || Object.keys(structuralPatch).length) {
+        await db.update(roles).set({ ...permPatch, ...structuralPatch }).where(eq(roles.id, existingRole.id));
+        console.log(`✓ role ${r.key}: ${missing.length ? `backfilled ${missing.length} module(s); ` : ""}structural ${Object.keys(structuralPatch).join("/") || "—"}`);
       } else {
         console.log(`• role ${r.key} already exists, skipping`);
       }

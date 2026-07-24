@@ -132,7 +132,8 @@ export async function listCustomRoles(includeInactive = false) {
   if (!db) return [];
   const where = includeInactive ? undefined : eq(roles.isActive, true);
   const rows = await db.select().from(roles).where(where as any).orderBy(asc(roles.label));
-  return rows.map((r) => ({ ...r, isSystem: false as const }));
+  // ش٣: الأدوار القياسية المبذورة (كاشير تجزئة/طباعة/موظف استقبال) تحمل isSystem=true فعلياً في DB.
+  return rows.map((r) => ({ ...r, isSystem: !!r.isSystem }));
 }
 
 export async function getRole(id: number) {
@@ -190,6 +191,11 @@ export async function updateRole(input: UpdateRoleInput, _actor: Actor) {
     }
     if (input.description !== undefined) patch.description = input.description?.trim() || null;
     if (input.baseRole !== undefined) {
+      // ش٣: الدور القياسيّ (isSystem) محميّ من تغيير فئته الأساس (يقلب معنى الأمان جذرياً) — التسمية
+      // والوصف والخريطة قابلة للتحرير المُدقَّق، أمّا الفئة فثابتة. الأدوار المخصّصة بلا قيد.
+      if (existing.isSystem && input.baseRole !== existing.baseRole) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تغيير الفئة الأساسية لدور قياسيّ محميّ. أنشئ دوراً مخصّصاً بدله." });
+      }
       assertBaseRole(input.baseRole);
       patch.baseRole = input.baseRole;
       patch.canSeeCost = builtinCanSeeCost(input.baseRole); // التكلفة تتبع الفئة الأساسية
@@ -226,6 +232,10 @@ export async function deleteRole(id: number, _actor: Actor) {
   return withTx(async (tx) => {
     const r = (await tx.select().from(roles).where(eq(roles.id, id)).for("update").limit(1))[0];
     if (!r) throw new TRPCError({ code: "NOT_FOUND", message: "الدور غير موجود." });
+    // ش٣: الأدوار القياسية المبذورة محميّة من الحذف (تُعطَّل عند عدم الحاجة، لا تُحذف).
+    if (r.isSystem) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف دور قياسيّ محميّ — عطّله بدل حذفه." });
+    }
     const inUse = (await tx.select({ n: sql<number>`COUNT(*)` }).from(users).where(eq(users.customRoleId, id)))[0];
     if (Number(inUse?.n ?? 0) > 0) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف دور مُسنَد لمستخدمين — عطّله أو غيّر أدوارهم أولاً." });

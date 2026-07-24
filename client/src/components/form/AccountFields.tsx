@@ -51,11 +51,14 @@ export interface AccountFieldsValue {
   mustChangePassword: boolean;
 }
 
-/** قيمة ابتدائية فارغة لحساب جديد. */
+/** قيمة ابتدائية فارغة لحساب جديد.
+ *  ش٣ — قلب الافتراضي الآمن: كان الافتراضي «cashier» العام (pos+sales+workorders=FULL ⇒ الأقسام
+ *  الثلاثة) فيسهل أن يُنشأ حسابٌ يرى كلَّ شيء بلا قصد. الآن «user» (قراءة محدودة) — يستحيل أن يفتح
+ *  حسابٌ الأقسام إلا بإسنادٍ صريح لدورٍ قياسيّ (كاشير تجزئة/طباعة/موظف استقبال)، ومعاينة الأثر تُظهره. */
 export const emptyAccountValue: AccountFieldsValue = {
   name: "", email: "", username: "", password: "", passwordConfirm: "",
   phone: "", jobTitle: "", hiredAt: "",
-  role: "cashier", customRoleId: null, branchId: "", permsOverride: {}, mustChangePassword: true,
+  role: "user", customRoleId: null, branchId: "", permsOverride: {}, mustChangePassword: true,
 };
 
 /** تحويل الاسم العربي إلى بريد مقترح @alroya.local. */
