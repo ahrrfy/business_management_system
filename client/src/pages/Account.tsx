@@ -125,7 +125,22 @@ export default function Account() {
         <CardContent className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
           <div><div className="text-muted-foreground text-xs">الاسم</div><div>{me.data?.name ?? "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">البريد</div><div className="font-mono" dir="ltr">{me.data?.email ?? "—"}</div></div>
-          <div><div className="text-muted-foreground text-xs">الدور</div><div>{me.data ? (ROLE_LABEL[me.data.role] ?? me.data.role) : "—"}</div></div>
+          <div>
+            <div className="text-muted-foreground text-xs">الدور</div>
+            {/* الدور المخصّص (مثل «كاشير طباعة») يُعرض بتسميته الحقيقية لا بفئته الأساس —
+                كان يظهر «كاشير» فيبدو حصر نقطة البيع في قسمٍ واحد غير منطقي لصاحب الحساب. */}
+            <div>
+              {me.data
+                ? (me.data.customRoleLabel ?? ROLE_LABEL[me.data.role] ?? me.data.role)
+                : "—"}
+              {me.data && me.data.customRoleLabel ? (
+                <span className="text-muted-foreground text-xs"> (الفئة: {ROLE_LABEL[me.data.role] ?? me.data.role})</span>
+              ) : me.data && Object.keys((me.data.permissionsOverride as Record<string, string> | null) ?? {}).length > 0 ? (
+                /* تخصيص فردي بلا دور مخصّص — نفس فجوة الصدق بطريق ثانٍ (مراجعة عدائية ٢٤/٧). */
+                <span className="text-muted-foreground text-xs"> (صلاحيات مخصّصة)</span>
+              ) : null}
+            </div>
+          </div>
         </CardContent>
       </Card>
 

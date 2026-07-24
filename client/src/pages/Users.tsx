@@ -8,6 +8,7 @@ import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
+import { Link, useSearch } from "wouter";
 import { AlertTriangle } from "lucide-react";
 
 export const ROLE_OPTIONS = [
@@ -31,8 +32,11 @@ export const ROLE_LABEL: Record<string, string> = Object.fromEntries(
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
-/** ملصق لوني للدور */
-function RoleBadge({ role }: { role: string }) {
+/** ملصق لوني للدور — الدور المخصّص يُعرض بتسميته الحقيقية (لا فئته الأساس) مع تمييز بصري.
+ *  فجوة صدق الدور (٢٤/٧): «كاشير طباعة» كان يظهر «كاشير» فيبدو سلوك النظام غير منطقي.
+ *  hasOverride: تخصيص فردي (permissionsOverride) بلا دور مخصّص ⇒ لاحقة «مُخصَّص» — الشكوى نفسها
+ *  تتكرر حرفياً لو حُصر الحساب بالمصفوفة اليدوية بدل دور مخصّص وظلّت شارته «كاشير» مجرّدة. */
+export function RoleBadge({ role, customRoleLabel, hasOverride }: { role: string; customRoleLabel?: string | null; hasOverride?: boolean }) {
   const colors: Record<string, string> = {
     admin:          "bg-red-100 text-red-700",
     manager:        "bg-purple-100 text-purple-700",
@@ -46,9 +50,23 @@ function RoleBadge({ role }: { role: string }) {
     courier:        "bg-lime-100 text-lime-700",
     user:           "bg-muted text-muted-foreground",
   };
+  if (customRoleLabel) {
+    return (
+      <span
+        className="inline-block rounded-full px-2 py-0.5 text-xs font-medium bg-indigo-100 text-indigo-700"
+        title={`دور مخصّص — الفئة الأساس: ${ROLE_LABEL[role] ?? role}`}
+      >
+        {customRoleLabel}
+      </span>
+    );
+  }
   return (
-    <span className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${colors[role] ?? "bg-muted text-muted-foreground"}`}>
+    <span
+      className={`inline-block rounded-full px-2 py-0.5 text-xs font-medium ${colors[role] ?? "bg-muted text-muted-foreground"}`}
+      title={hasOverride ? "صلاحيات معدَّلة يدوياً عن قالب الدور" : undefined}
+    >
       {ROLE_LABEL[role] ?? role}
+      {hasOverride ? <span className="opacity-70"> · مُخصَّص</span> : null}
     </span>
   );
 }
@@ -61,15 +79,24 @@ export default function Users() {
   const [page, setPage] = useState(0);
   const limit = 50;
 
+  // فلتر «مَن على هذا الدور المخصّص؟» — يصل من شاشة الأدوار عبر ?customRoleId=N (مراجعة ٢٤/٧).
+  const search = useSearch();
+  const customRoleId = useMemo(() => {
+    const v = new URLSearchParams(search).get("customRoleId");
+    const n = v ? Number(v) : NaN;
+    return Number.isInteger(n) && n > 0 ? n : undefined;
+  }, [search]);
+
   const input = useMemo(
     () => ({
       q: q.trim() || undefined,
       role: role || undefined,
+      customRoleId,
       includeInactive,
       limit,
       offset: page * limit,
     }),
-    [q, role, includeInactive, page],
+    [q, role, customRoleId, includeInactive, page],
   );
 
   const list = trpc.users.list.useQuery(input);
@@ -111,6 +138,12 @@ export default function Users() {
       />
 
       {err && <p className="text-sm text-destructive">{err}</p>}
+      {customRoleId != null && (
+        <p className="text-xs text-muted-foreground">
+          القائمة مفلترة بمستخدمي دورٍ مخصّص محدّد —{" "}
+          <Link href="/users" className="text-primary hover:underline">إزالة الفلتر</Link>
+        </p>
+      )}
 
       <Card>
         <CardHeader>
@@ -176,7 +209,13 @@ export default function Users() {
                       {u.email ? <div className="text-muted-foreground">{u.email}</div> : null}
                       {!(u as { username?: string | null }).username && !u.email ? "—" : null}
                     </td>
-                    <td className="p-2"><RoleBadge role={u.role} /></td>
+                    <td className="p-2">
+                      <RoleBadge
+                        role={u.role}
+                        customRoleLabel={u.customRoleLabel}
+                        hasOverride={Object.keys((u.permissionsOverride as Record<string, string> | null) ?? {}).length > 0}
+                      />
+                    </td>
                     <td className="p-2 text-xs">{u.branchId ? (branchName.get(Number(u.branchId)) ?? `#${Number(u.branchId)}`) : "—"}</td>
                     <td className="p-2 text-xs" dir="ltr">{fmtDate(u.lastSignedIn)}</td>
                     <td className="p-2 text-center">

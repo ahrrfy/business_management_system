@@ -42,6 +42,8 @@ export const userRouter = router({
       z.object({
         q: z.string().optional(),
         role: z.string().optional(),
+        // فلترة بدورٍ مخصّص بعينه — مدخل «مَن على هذا الدور؟» من شاشة الأدوار (مراجعة ٢٤/٧).
+        customRoleId: z.number().int().positive().optional(),
         includeInactive: z.boolean().default(false),
         limit: z.number().int().positive().max(500).default(50),
         offset: z.number().int().min(0).default(0),

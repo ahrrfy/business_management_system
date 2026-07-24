@@ -162,9 +162,23 @@ export default function PointOfSale() {
           })}
         </div>
         <div className="ms-auto flex items-center gap-3">
-          <span className="hidden text-[11px] text-muted-foreground sm:block">
-            Ctrl+1/2/3 لتَبديل الوَضع
-          </span>
+          {/* صدق الهوية: صاحب الدور المخصّص المحصور بقسمٍ (مثل «كاشير طباعة») يرى لماذا
+              يظهر له قسم واحد — كان يظهر تبويب وحيد بلا تفسير فيبدو النظام «غير منطقي».
+              والتخصيص الفرديّ (permissionsOverride بلا دور مخصّص) يُعلَن كذلك — نفس الفجوة بطريق ثانٍ. */}
+          {me.data?.customRoleLabel ? (
+            <span className="hidden text-[11px] font-medium text-muted-foreground sm:block">
+              الدور: {me.data.customRoleLabel}
+            </span>
+          ) : me.data && Object.keys((me.data.permissionsOverride as Record<string, string> | null) ?? {}).length > 0 ? (
+            <span className="hidden text-[11px] font-medium text-muted-foreground sm:block">
+              صلاحيات مخصّصة
+            </span>
+          ) : null}
+          {visibleModes.length > 1 && (
+            <span className="hidden text-[11px] text-muted-foreground sm:block">
+              Ctrl+1/2/3 لتَبديل الوَضع
+            </span>
+          )}
           <Link
             href="/"
             className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
