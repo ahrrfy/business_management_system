@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { fmtAr as money } from "@/lib/money";
-import { code128Svg, internalBarcode } from "@/lib/printing/barcode";
+import { internalBarcode, productBarcodeSvg } from "@/lib/printing/barcode";
 import {
   printLabel, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
   getLabelSize, setLabelSize, LABEL_PRESETS, presetIdFor,
@@ -715,7 +715,7 @@ export default function BarcodeLabels() {
                 {queue.map((q) => {
                   let preview = "";
                   try {
-                    preview = code128Svg(q.barcode, { moduleWidth: 1.4, height: 34, showText: false }).svg;
+                    preview = productBarcodeSvg(q.barcode, { moduleWidth: 1.4, height: 34, showText: false }).svg;
                   } catch {
                     preview = "";
                   }

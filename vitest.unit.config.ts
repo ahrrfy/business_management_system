@@ -8,6 +8,11 @@ export default defineConfig({
     environment: "node",
     include: [
       "client/src/lib/printing/couponCard.test.ts",
+      "client/src/lib/printing/barcode.test.ts",
+      "client/src/lib/printing/labelDesign.test.ts",
+      "client/src/lib/printing/labelLayout.test.ts",
+      "client/src/lib/printing/labelItem.test.ts",
+      "client/src/lib/printing/labelSize.test.ts",
       "server/services/__tests__/couponService.test.ts",
       "server/services/__tests__/businessDay.test.ts",
       "server/services/__tests__/permissionParity.test.ts",

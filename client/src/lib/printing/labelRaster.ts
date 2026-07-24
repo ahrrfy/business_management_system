@@ -10,7 +10,7 @@
 //
 // قيد العتبة في imageDataToRaster هو lum<128 ⇒ كل شيء يُرسم بأسود صافٍ (#000).
 import { EscPos, imageDataToRaster, type Raster } from "./escpos";
-import { code128Svg } from "./barcode";
+import { productBarcodeSvg } from "./barcode";
 import { fmtC } from "./brand";
 import { attrsLineText, ellipsize, wrapTwoLines } from "./labelItem";
 import { labelContentOf, PT_MM, solveLabelLayout } from "./labelLayout";
@@ -163,16 +163,15 @@ export async function labelToCanvas(
     y += attrsH + gap;
   }
 
-  // ───── ٢) باركود Code128 يملأ عرضه بأثخن قضبانٍ ممكنة ─────
+  // ───── ٢) الباركود (EAN أصليّ للأرقام الصالحة — أكثف؛ وإلا Code128) بأثخن قضبانٍ ممكنة ─────
   if (L.barcode.show && barH > 0) {
     try {
       const target = W - PADX * 2;
-      // اختر أكبر moduleWidth صحيح يلائم العرض فعلياً (منطقة الهدوء ثابتة ⇒ العرض غير خطّيّ مع mw).
+      // اختر أكبر moduleWidth صحيح (نقاط طابعة كاملة) يلائم العرض فعلياً.
+      const mk = (mw: number) => productBarcodeSvg(item.barcode, { moduleWidth: mw, height: barH, showText: false });
       let mw = 1;
-      while (mw < 6 && code128Svg(item.barcode, { moduleWidth: mw + 1, height: barH, showText: false }).widthPx <= target) {
-        mw++;
-      }
-      const bcode = code128Svg(item.barcode, { moduleWidth: mw, height: barH, showText: false });
+      while (mw < 6 && mk(mw + 1).widthPx <= target) mw++;
+      const bcode = mk(mw);
       const img = await loadImage(svgToDataUrl(bcode.svg));
       if (img) {
         // لا نُصغّر القضبان دون 1 بكسل/وحدة (تصير غير قابلة للمسح): نرسمها بعرضها الطبيعيّ ضمن الملصق.
@@ -180,7 +179,8 @@ export async function labelToCanvas(
         const sm = ctx as unknown as { imageSmoothingEnabled: boolean };
         const prevSmooth = sm.imageSmoothingEnabled;
         sm.imageSmoothingEnabled = false;
-        ctx.drawImage(img, (W - drawW) / 2, y, drawW, barH);
+        // إزاحة صحيحة (نقاط كاملة) — إزاحة كسرية تُعيد أخذ العيّنات فتُفسد نسب عرض القضبان.
+        ctx.drawImage(img, Math.round((W - drawW) / 2), y, drawW, barH);
         sm.imageSmoothingEnabled = prevSmooth;
       }
     } catch {
