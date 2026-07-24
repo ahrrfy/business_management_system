@@ -98,7 +98,7 @@ describe("getEffectivePermissions — المسار الخادميّ الكامل
     expect(eff?.modules.find((m) => m.key === "pos")?.source).toBe("template");
   });
 
-  it("دور مخصّص معطَّل ⇒ يسقط لقالب الفئة الكامل + customRoleInactive=true", async () => {
+  it("دور مخصّص معطَّل ⇒ فشلٌ مغلق إلى user (ش٢) + customRoleInactive=true + لا قسم بيع", async () => {
     const role = await createRole(
       { label: "كاشير طباعة", baseRole: "cashier", permissions: { pos: "FULL", sales: "NONE", workorders: "NONE" } },
       actor,
@@ -108,8 +108,9 @@ describe("getEffectivePermissions — المسار الخادميّ الكامل
     await setRoleActive(role.id, false, actor);
     const eff = await getEffectivePermissions(userId);
     expect(eff?.customRoleInactive).toBe(true);
-    // قالب cashier الكامل ⇒ الأقسام الثلاثة (تجزئة+طباعة) ⇒ MULTI (كشف اتساع الصلاحية الصامت).
-    expect(eff?.access.station).toBe("MULTI");
+    // ش٢ إغلاق الفشل المفتوح: الهبوط لأضيق دور «user» (لا cashier الكامل) ⇒ لا قسم بيع (كان يسرّب الثلاثة).
+    expect(eff?.effectiveRole).toBe("user");
+    expect(eff?.access.station).toBe("NONE");
   });
 
   it("admin ⇒ كل الوحدات مصدرها admin + station=MULTI", async () => {

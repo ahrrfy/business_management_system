@@ -214,6 +214,9 @@ export async function setRoleActive(id: number, isActive: boolean, _actor: Actor
       }
     }
     await tx.update(roles).set({ isActive }).where(eq(roles.id, id));
+    // ش٢: تغيير حالة الدور يُبطل جلسات أصحابه (تناظرٌ مع updateRole:201 الذي يُبطلها عند تعديل الخريطة).
+    // تعطيلٌ ⇒ يُعاد تحميل السياق فيهبطون فشلاً مغلقاً؛ تفعيلٌ ⇒ يستعيدون صلاحيات الدور فوراً بلا كاش قديم.
+    await tx.update(users).set({ sessionsValidFrom: new Date() }).where(eq(users.customRoleId, id));
     return { id, isActive };
   });
 }
