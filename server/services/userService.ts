@@ -665,8 +665,8 @@ async function resolveEffective(
       const base = r.baseRole as RoleKey;
       return { role: base, override: diffFromTemplate(base, r.permissions as PermissionMap), label: r.label, inactive: false };
     }
-    // الدور المخصّص معطَّل/محذوف ⇒ السياق يبقي baseRole المخزَّن (users.role) ساري المفعول.
-    return { role: row.role, override: (row.permissionsOverride as PermissionMap) ?? null, label: null, inactive: true };
+    // الدور المخصّص معطَّل/محذوف ⇒ السياق يهبط فشلاً مغلقاً إلى «user» (ش٢) — العرض يطابق الإنفاذ.
+    return { role: "user", override: null, label: null, inactive: true };
   }
   return { role: row.role, override: (row.permissionsOverride as PermissionMap) ?? null, label: null, inactive: false };
 }

@@ -10,6 +10,8 @@ import type { PlatformAdmin } from "./tenancy/controlSchema";
 export type AuthUser = User & {
   customRoleLabel?: string | null;
   customRoleKey?: string | null;
+  /** ش٢: دورٌ مخصّص مُسنَد لكنه معطَّل/محذوف ⇒ هبط الحساب فشلاً مغلقاً إلى «user» (لا الفئة الكاملة). */
+  roleLockedByInactiveCustomRole?: boolean;
 };
 
 export type TrpcContext = {
@@ -33,7 +35,19 @@ export type TrpcContext = {
 export async function resolveCustomRole(user: AuthUser): Promise<void> {
   if (!user.customRoleId) return;
   const role = await loadActiveCustomRole(user.customRoleId);
-  if (!role) return; // الدور معطّل/محذوف ⇒ يبقى baseRole المخزَّن في users.role ساري المفعول
+  if (!role) {
+    // ش٢ — إغلاق الفشل المفتوح: كان دورٌ مخصّص معطَّل/محذوف يُبقي baseRole المخزَّن (users.role)
+    // ساري المفعول — وقد يكون «cashier» الكامل ⇒ الحساب يستعيد الأقسام الثلاثة صامتاً (تسريب
+    // الفصل). نهبط الآن **فشلاً مغلقاً** إلى أضيق دور «user» (قراءة محدودة) ونصفّر الأوفررايد
+    // ونوسم الحالة كي تظهر للمالك ويُصحَّح الإسناد. (الحرّاس القائمة تمنع تعطيل/حذف دورٍ عليه
+    // مستخدمون، فهذا المسار دفاعٌ في العمق نادر البلوغ — لكنه يفشل بأمان لا باتّساع.)
+    user.role = "user" as User["role"];
+    user.permissionsOverride = null;
+    user.customRoleLabel = null;
+    user.customRoleKey = null;
+    user.roleLockedByInactiveCustomRole = true;
+    return;
+  }
   user.role = role.baseRole as RoleKey as User["role"];
   user.permissionsOverride = diffFromTemplate(role.baseRole as RoleKey, role.permissions as PermissionMap);
   user.customRoleLabel = role.label;
