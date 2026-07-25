@@ -61,6 +61,8 @@ export function maskCustomerSensitive<T extends Partial<Customer> & Record<strin
     ...row,
     creditLimit: null,
     currentBalance: "0",
+    // getCustomer يُرفق الرصيد الافتتاحيّ (قيد OPENING) لشاشة التعديل — يُحجب كـcurrentBalance تماماً.
+    openingBalance: "0",
   } as unknown as T;
 }
 
@@ -77,6 +79,8 @@ export function maskSupplierSensitive<T extends Partial<Supplier> & Record<strin
   return {
     ...row,
     currentBalance: "0",
+    // getSupplier يُرفق الرصيد الافتتاحيّ (قيد OPENING) لشاشة التعديل — يُحجب كـcurrentBalance تماماً.
+    openingBalance: "0",
     iban: null,
     bankName: null,
   } as unknown as T;

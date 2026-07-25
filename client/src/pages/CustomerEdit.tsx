@@ -32,7 +32,9 @@ import { Link, useLocation, useRoute } from "wouter";
  *  - غير المدير: الحقل محجوب (get يحجب creditLimit أصلاً) ⇒ نرسل undefined
  *    فلا تُطمَس القيمة المخزّنة بقيمة محجوبة.
  *
- * لا حقول رصيد افتتاحي هنا — الرصيد الافتتاحي خاصية إنشاء فقط (قيد OPENING لا يتكرّر).
+ * تصحيح الرصيد الافتتاحي (٢٥/٧): بطاقةٌ للأدمن/المدير وحدهما تُعدّل قيد OPENING المرجعيّ وتُطبّق
+ * الفارق على الرصيد الجاري (تصون النشاط اللاحق) — لتصحيح أخطاء الإدخال الأوّليّ. غير المرتفعين
+ * لا يرون البطاقة ولا يرسلون الحقل (والخادم يُجرّده لهم احتياطاً).
  */
 
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
@@ -80,6 +82,9 @@ export default function CustomerEdit() {
   const [creditMode, setCreditMode] = useState<CreditMode>("none");
   const [creditLimit, setCreditLimit] = useState("");
   const [notes, setNotes] = useState("");
+  // تصحيح الرصيد الافتتاحي (أدمن/مدير) — مبدئياً من قيد OPENING الحاليّ (openingBalance من get).
+  const [openingAmount, setOpeningAmount] = useState("");
+  const [openingDir, setOpeningDir] = useState<"OWED_TO_US" | "OWED_BY_US">("OWED_TO_US");
   const [error, setError] = useState("");
   const [loaded, setLoaded] = useState(false);
 
@@ -101,6 +106,10 @@ export default function CustomerEdit() {
       else if (Number(c.creditLimit) === 0) { setCreditMode("none"); setCreditLimit(""); }
       else { setCreditMode("limit"); setCreditLimit(String(c.creditLimit)); }
       setNotes(c.notes ?? "");
+      // الرصيد الافتتاحي الموقَّع (من قيد OPENING): موجب = «لنا عليه»، سالب = «له علينا».
+      const signedOpen = Number((c as { openingBalance?: string }).openingBalance ?? 0);
+      setOpeningAmount(signedOpen !== 0 ? String(Math.abs(signedOpen)) : "");
+      setOpeningDir(signedOpen < 0 ? "OWED_BY_US" : "OWED_TO_US");
       setLoaded(true);
     }
   }, [detail.data, loaded]);
@@ -191,6 +200,10 @@ export default function CustomerEdit() {
       customerType,
       defaultPriceTier,
       creditLimit: creditLimitPayload,
+      // تصحيح الرصيد الافتتاحي — للمرتفعين فقط (undefined ⇒ الخادم لا يمسّ قيد OPENING). فارغ ⇒ "0"
+      // يزيل القيد. القيمة غير المتغيّرة تصير فارقاً صفرياً بلا كتابة (لا مسّ بفترةٍ مُقفَلة).
+      openingBalance: isElevated ? (openingAmount.trim() || "0") : undefined,
+      openingBalanceDirection: isElevated ? openingDir : undefined,
       notes: notes.trim() || null,
     });
   }
@@ -210,7 +223,7 @@ export default function CustomerEdit() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, phone, phone2, phone3, whatsapp, customerType, defaultPriceTier, city, district, address, creditMode, creditLimit, notes, isElevated]);
+  }, [name, phone, phone2, phone3, whatsapp, customerType, defaultPriceTier, city, district, address, creditMode, creditLimit, notes, openingAmount, openingDir, isElevated]);
 
   const wa = whatsappLink(whatsapp || phone);
 
@@ -419,6 +432,38 @@ export default function CustomerEdit() {
             </div>
           </CardContent>
         </Card>
+
+        {isElevated && (
+          <Card className="lg:col-span-2 border-sky-200">
+            <CardHeader>
+              <CardTitle className="text-base">تصحيح الرصيد الافتتاحي</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="openDir">اتجاه الرصيد</Label>
+                <select
+                  id="openDir"
+                  className={selectCls}
+                  value={openingDir}
+                  onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
+                >
+                  <option value="OWED_TO_US">لنا على العميل (مدين لنا)</option>
+                  <option value="OWED_BY_US">للعميل علينا (دفعة مقدّمة منه)</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="openAmt">المبلغ (د.ع)</Label>
+                <MoneyInput id="openAmt" value={openingAmount} onChange={setOpeningAmount} placeholder="0" ariaLabel="مبلغ الرصيد الافتتاحي" />
+              </div>
+              <div className="md:col-span-2">
+                <p className="text-[11px] text-sky-800">
+                  يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الجاري
+                  دون المساس بأي حركةٍ لاحقة. اتركه فارغاً لإزالة الرصيد الافتتاحي. لا يتغيّر شيء إن لم تُعدّله.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* بطاقة QR العميل — تُمسح في POS لتحديده تلقائياً */}
         {c.qrPayload && (

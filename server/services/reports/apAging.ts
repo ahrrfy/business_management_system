@@ -68,7 +68,9 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
     ) ret ON ret.purchaseOrderId = po.id
     WHERE s.isActive = TRUE
     GROUP BY s.id, s.name, s.phone, s.currentBalance
-    HAVING unpaidTotal > 0 OR s.currentBalance > 0
+    -- currentBalance <> 0 (لا > 0): يُظهر أيضاً الرصيد المدين للمورّد (دفعة مقدّمة «لنا عليه»/رصيد
+    -- افتتاحيّ) فلا يختفي أيّ طرفٍ له رصيدٌ غير صفريّ من «الذمم». الموجب دائن، السالب مدين (unbucketed موقَّع).
+    HAVING unpaidTotal > 0 OR s.currentBalance <> 0
     ORDER BY unpaidTotal DESC, s.currentBalance DESC
     LIMIT ${limit}
   `);

@@ -1,15 +1,29 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, like, ne, or, sql } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { branchStock, productVariants, products, purchaseOrders, suppliers } from "../../drizzle/schema";
+import {
+  accountingEntries,
+  apReminders,
+  branchStock,
+  consignmentNotes,
+  contactPersons,
+  conversations,
+  exchangeTransactions,
+  fixedAssets,
+  productVariants,
+  products,
+  purchaseOrders,
+  suppliers,
+  tasks,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escapeLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "../../shared/searchNormalize";
-import { money } from "./money";
+import { money, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
-import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
+import { signedOpeningBalance, postOpeningEntry, upsertOpeningEntry, type OpeningDirection } from "./openingBalance";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
 export interface CreateSupplierInput {
@@ -268,9 +282,78 @@ export async function updateSupplier(input: UpdateSupplierInput, _actor: Actor) 
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُغيَّر نوع حساب له حركات (أوامر شراء أو أصناف أمانة)" });
       patch.supplierKind = input.supplierKind;
     }
-    if (Object.keys(patch).length === 0) return { supplierId: input.supplierId, changed: false };
+    // تصحيح الرصيد الافتتاحي (إدخال أوّليّ خاطئ) — يُحدَّث قيد OPENING ويُطبَّق الفارق على الرصيد الجاري
+    // بزيادةٍ نسبيةٍ ذرّية تصون أثر أيّ نشاطٍ لاحق (لا يُعاد بناء الرصيد من الصفر). حصريّ للمرتفعين —
+    // يُفرَض على مستوى الراوتر (يُجرَّد openingBalance لغير admin/manager). الصفر/الفراغ ⇒ إزالة القيد.
+    let openingChanged = false;
+    if (input.openingBalance !== undefined) {
+      const newSigned = signedOpeningBalance(
+        "SUPPLIER",
+        input.openingBalance,
+        input.openingBalanceDirection ?? "OWED_BY_US",
+      );
+      const { delta } = await upsertOpeningEntry(tx, "SUPPLIER", input.supplierId, newSigned);
+      if (!money(delta).isZero()) {
+        await tx
+          .update(suppliers)
+          .set({ currentBalance: sql`${suppliers.currentBalance} + ${delta}` })
+          .where(eq(suppliers.id, input.supplierId));
+        openingChanged = true;
+      }
+    }
+
+    if (Object.keys(patch).length === 0) return { supplierId: input.supplierId, changed: openingChanged };
     await tx.update(suppliers).set(patch).where(eq(suppliers.id, input.supplierId));
     return { supplierId: input.supplierId, changed: true };
+  });
+}
+
+/**
+ * حذف مورّد نهائياً — للتنظيف بعد أخطاء الإدخال الأوّليّ فقط. يُرفض إن كان للمورّد **أيّ نشاط**:
+ * أوامر شراء، قيود دفتر غير القيد الافتتاحي، أصول ثابتة، حركات صيرفة، سندات أمانة، أصناف أمانة
+ * مربوطة، محادثات، أو مهامّ. الوحيد الذي يُزال معه: قيده الافتتاحيّ (OPENING) وجهاته وتذكيراته
+ * (بيانات تابعة بلا معنى ماليّ). ذرّي — يفشل بأكمله عند أيّ FK غير متوقَّع فلا يترك يُتماً.
+ */
+export async function deleteSupplier(supplierId: number, _actor: Actor) {
+  return withTx(async (tx) => {
+    const s = (await tx.select().from(suppliers).where(eq(suppliers.id, supplierId)).for("update").limit(1))[0];
+    if (!s) throw new TRPCError({ code: "NOT_FOUND", message: "المورّد غير موجود" });
+
+    // حارس النشاط: أيّ صفٍّ في هذه الجداول = حركةٌ حقيقية ⇒ لا حذف (عطِّل بدلاً منه).
+    const [po] = await tx.select({ id: purchaseOrders.id }).from(purchaseOrders).where(eq(purchaseOrders.supplierId, supplierId)).limit(1);
+    if (po) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد له أوامر شراء — عطِّله بدلاً من الحذف" });
+
+    const [ae] = await tx
+      .select({ id: accountingEntries.id })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.supplierId, supplierId), ne(accountingEntries.entryType, "OPENING")))
+      .limit(1);
+    if (ae) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد له حركات مالية — عطِّله بدلاً من الحذف" });
+
+    const [asset] = await tx.select({ id: fixedAssets.id }).from(fixedAssets).where(eq(fixedAssets.supplierId, supplierId)).limit(1);
+    if (asset) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد مرتبط بأصلٍ ثابت — عطِّله بدلاً من الحذف" });
+
+    const [ex] = await tx.select({ id: exchangeTransactions.id }).from(exchangeTransactions).where(eq(exchangeTransactions.supplierId, supplierId)).limit(1);
+    if (ex) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد له حركات صيرفة — عطِّله بدلاً من الحذف" });
+
+    const [note] = await tx.select({ id: consignmentNotes.id }).from(consignmentNotes).where(eq(consignmentNotes.consignorId, supplierId)).limit(1);
+    if (note) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مودِع له سندات أمانة — عطِّله بدلاً من الحذف" });
+
+    const [prod] = await tx.select({ id: products.id }).from(products).where(eq(products.consignorId, supplierId)).limit(1);
+    if (prod) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مودِع له أصناف أمانة مربوطة — افصلها أوّلاً" });
+
+    const [conv] = await tx.select({ id: conversations.id }).from(conversations).where(eq(conversations.supplierId, supplierId)).limit(1);
+    if (conv) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد له محادثات مرتبطة — عطِّله بدلاً من الحذف" });
+
+    const [task] = await tx.select({ id: tasks.id }).from(tasks).where(eq(tasks.supplierId, supplierId)).limit(1);
+    if (task) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف مورّد له مهامّ مرتبطة — عطِّله بدلاً من الحذف" });
+
+    // إزالة البيانات التابعة الوحيدة الآمنة: القيد الافتتاحيّ + جهات الاتصال + التذكيرات.
+    await tx.delete(accountingEntries).where(and(eq(accountingEntries.supplierId, supplierId), eq(accountingEntries.entryType, "OPENING")));
+    await tx.delete(contactPersons).where(eq(contactPersons.supplierId, supplierId));
+    await tx.delete(apReminders).where(eq(apReminders.supplierId, supplierId));
+    await tx.delete(suppliers).where(eq(suppliers.id, supplierId));
+    return { supplierId, deleted: true, name: s.name };
   });
 }
 
@@ -322,11 +405,19 @@ export async function activateSupplier(supplierId: number, _actor: Actor) {
   });
 }
 
-/** قراءة بطاقة مورّد. */
+/** قراءة بطاقة مورّد + رصيده الافتتاحيّ الحاليّ (مبلغ قيد OPENING الموقَّع) لشاشة التعديل. */
 export async function getSupplier(supplierId: number) {
   const db = getDb();
   if (!db) return null;
-  return (await db.select().from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0] ?? null;
+  const row = (await db.select().from(suppliers).where(eq(suppliers.id, supplierId)).limit(1))[0] ?? null;
+  if (!row) return null;
+  const op = (
+    await db
+      .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.supplierId, supplierId)))
+  )[0];
+  return { ...row, openingBalance: toDbMoney(money(op?.v ?? "0")) };
 }
 
 /** قائمة موردين مع بحث وتقسيم صفحات.

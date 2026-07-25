@@ -37,6 +37,9 @@ export default function Suppliers() {
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "suppliers", "FULL", ["manager", "warehouse", "purchasing"]);
   // الاستيراد بوّابته أضيق: imports.suppliers = managerProcedure (المدير فأعلى) — server/routers/imports.ts.
   const canImport = me.data?.role === "admin" || me.data?.role === "manager";
+  // الحذف النهائيّ: suppliers.delete = managerProcedure (أدمن/مدير) — عمليةٌ لا رجعة فيها لتنظيف
+  // أخطاء الإدخال الأوّليّ، والحارس الخادميّ يرفض أيّ مورّدٍ له حركة (يوجّه للتعطيل).
+  const canDelete = me.data?.role === "admin" || me.data?.role === "manager";
   const [q, setQ] = useState("");
   const [includeInactive, setIncludeInactive] = useState(false);
   // بضاعة الأمانة (٢٠/٧): فلتر نوع الطرف — الكل / موردون اعتياديون / مودِعو أمانة.
@@ -64,6 +67,10 @@ export default function Suppliers() {
     onSuccess: () => { invalidate(); notify.ok("تم تفعيل المورّد"); },
     onError: (e) => notify.err(e),
   });
+  const del = trpc.suppliers.delete.useMutation({
+    onSuccess: () => { invalidate(); notify.ok("تم حذف المورّد نهائياً"); },
+    onError: (e) => notify.err(e),
+  });
 
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
@@ -83,6 +90,16 @@ export default function Suppliers() {
     } else {
       activate.mutate({ supplierId: id });
     }
+  }
+
+  async function remove(id: number, name: string) {
+    if (!(await confirm({
+      variant: "danger",
+      title: "حذف المورّد نهائياً",
+      description: `سيُحذف «${name}» نهائياً مع رصيده الافتتاحي — لا يمكن التراجع. الحذف مسموح فقط لمورّدٍ بلا أي حركة (أوامر شراء/دفعات/أصول…)؛ إن كان له حركة استعمل «تعطيل» بدلاً منه.`,
+      confirmText: "حذف نهائي",
+    }))) return;
+    del.mutate({ supplierId: id });
   }
 
   return (
@@ -252,6 +269,14 @@ export default function Suppliers() {
                             disabled: deactivate.isPending || activate.isPending,
                             hidden: !canWrite,
                             onSelect: () => void toggle(id, isActive, s.name ?? ""),
+                          },
+                          {
+                            key: "delete",
+                            label: "حذف نهائي",
+                            variant: "destructive",
+                            disabled: del.isPending,
+                            hidden: !canDelete,
+                            onSelect: () => void remove(id, s.name ?? ""),
                           },
                         ]}
                       />
