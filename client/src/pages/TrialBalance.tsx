@@ -5,6 +5,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { fmtAr, D } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -66,7 +67,7 @@ export default function TrialBalance() {
     printReportDoc({
       title: "ميزان المراجعة",
       headerExtra: [
-        { label: "كما في", value: new Date().toLocaleDateString("ar-IQ-u-nu-latn") },
+        { label: "كما في", value: fmtDate(new Date()) },
         { label: "الفرع", value: branchLabel },
       ],
       note: NOTE,

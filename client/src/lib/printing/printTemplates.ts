@@ -7,6 +7,7 @@
  * وخطّ التذييل الجديدة عبر brand.ts + docHtml.ts).
  */
 import { BRAND as B, CO, RECEIPT_PHONES, esc, fmt, fmtC, openPrintWindow, logoUrl } from './brand';
+import { fmtDate, fmtDateTime } from '../date';
 import {
   wrapA4Doc, wrapReceiptDoc,
   docHeader, docMeta, docTable, docSummary, docFooter, agingSummaryBars,
@@ -98,9 +99,7 @@ export interface InvoicePrintData {
 export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
   // hifi-redesign (٥/٧/٢٦): ينفَّذ عبر printSalesInvoiceV2 بالتصميم المرجعي. الحقول الوصفية (customerTaxId/
   // companyTaxId/notes) لم تعُد تظهر بالترويسة الجديدة (الأرقام القانونية تُقرأ من إعدادات الشركة).
-  const date = d.invoiceDate
-    ? new Date(d.invoiceDate as string).toLocaleDateString('en-GB')
-    : new Date().toLocaleDateString('en-GB');
+  const date = fmtDate(d.invoiceDate ?? new Date());
 
   const qrPayload = [
     CO.sub,
@@ -713,7 +712,7 @@ export function printProductionDoc(d: ProductionDocData, mode: 'order' | 'docume
   const isOrder = mode === 'order';
   const title = isOrder ? 'أمر تشغيل' : 'مستند إنتاج';
   const blank = '__________';
-  const date = d.date ?? new Date().toLocaleDateString('en-GB');
+  const date = d.date ?? fmtDate(new Date());
 
   const h2 = (t: string) => `<div style="font-size:11px;font-weight:800;color:${B.green};margin:5mm 0 2.5mm;padding-bottom:1.5mm;border-bottom:1px solid ${B.borderLight};">${esc(t)}</div>`;
 
@@ -1066,9 +1065,9 @@ export interface ShiftOpenData {
 
 export function printShiftOpenBrowser(d: ShiftOpenData): void {
   const logo    = logoUrl();
-  const date    = d.openedAt.toLocaleDateString('en-GB');
-  const time    = d.openedAt.toLocaleTimeString('ar-IQ', { hour: '2-digit', minute: '2-digit' });
-  const printed = d.openedAt.toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' });
+  const date    = fmtDate(d.openedAt);
+  const time    = fmtDateTime(d.openedAt).split('، ')[1] ?? '—';
+  const printed = fmtDateTime(d.openedAt);
 
   const metaRows = [
     ['رقم الوردية', `#${d.shiftId}`],
@@ -1198,9 +1197,9 @@ export interface ShiftCloseData {
 export function printShiftCloseBrowser(d: ShiftCloseData): void {
   const logo     = logoUrl();
   const openedStr  = d.openedAt
-    ? new Date(d.openedAt).toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' })
+    ? fmtDateTime(d.openedAt)
     : '—';
-  const closedStr  = d.closedAt.toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'short', timeStyle: 'short' });
+  const closedStr  = fmtDateTime(d.closedAt);
   const duration   = calcDuration(d.openedAt, d.closedAt);
 
   // صفوف بيانات الوردية

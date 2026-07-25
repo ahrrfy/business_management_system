@@ -9,6 +9,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatInvoiceAsWhatsApp } from "@/lib/copy/formatters";
 import { buildInvoiceMessage } from "@/lib/whatsapp";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { confirm } from "@/lib/confirm";
 import { printInvoiceA4 } from "@/lib/printing/printTemplates";
 import { allocateLineTax } from "@/components/invoice";
@@ -253,7 +254,7 @@ export default function InvoiceDetail() {
             <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="المصدر">{SOURCE[data.sourceType] ?? data.sourceType}</Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
-              <Field label="التاريخ">{new Date(data.invoiceDate).toLocaleString("ar-IQ-u-nu-latn")}</Field>
+              <Field label="التاريخ">{fmtDate(data.invoiceDate)}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               {data.customerId && (
                 <div className="col-span-2 space-y-0.5">
@@ -358,7 +359,7 @@ export default function InvoiceDetail() {
               <tbody>
                 {(data.payments ?? []).map((p) => (
                   <tr key={p.id} className="border-t hover:bg-muted/30">
-                    <td className="px-3 py-2">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
+                    <td className="px-3 py-2 whitespace-nowrap tabular-nums" dir="ltr">{fmtDateTime(p.createdAt)}</td>
                     <td className="px-3 py-2">
                       <span className={cn(
                         "inline-flex rounded-full px-2 py-0.5 text-xs font-medium",
@@ -418,7 +419,7 @@ export default function InvoiceDetail() {
               barcodeSet={{
                 barcode128: data.invoiceNumber,
                 qrPayload: data.qrPayload,
-                displayLabel: `فاتورة: ${data.invoiceNumber}\n${new Date(data.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn")} — ${fmt(data.total)} د.ع`,
+                displayLabel: `فاتورة: ${data.invoiceNumber}\n${fmtDate(data.invoiceDate)} — ${fmt(data.total)} د.ع`,
               }}
               size="md"
             />

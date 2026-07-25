@@ -1,4 +1,5 @@
 import { BRAND, CAIRO_FONT, CO, esc, logoUrl } from "./brand";
+import { fmtDate } from "../date";
 import { qrCodeSvg } from "./qr";
 
 export const COUPON_CARD_SIZE = { widthMm: 54, heightMm: 84 } as const;
@@ -15,7 +16,7 @@ export interface CouponCardData {
 function validDate(value: string | Date | null | undefined) {
   if (!value) return "حتى نفاد/انتهاء الحملة";
   const date = value instanceof Date ? value : new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : date.toLocaleDateString("ar-IQ-u-nu-latn");
+  return Number.isNaN(date.getTime()) ? String(value).slice(0, 10) : fmtDate(date);
 }
 
 export async function couponCardsHtml(cards: CouponCardData[]): Promise<string> {

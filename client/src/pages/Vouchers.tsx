@@ -10,6 +10,7 @@ import { RowActions } from "@/components/list";
 import { confirm } from "@/lib/confirm";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { fmtDate } from "@/lib/date";
 import { fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printVoucherReceipt, printVoucherA4, type VoucherPrintData } from "@/lib/printing/voucherPrint";
@@ -34,12 +35,6 @@ const APPROVAL_LABEL: Record<string, string> = {
   PENDING_APPROVAL: "بانتظار الاعتماد",
   REJECTED: "مَرفوض",
 };
-
-function fmtDate(d: Date | string | null | undefined): string {
-  if (!d) return "—";
-  const dt = typeof d === "string" ? new Date(d) : d;
-  return dt.toLocaleDateString("ar-IQ-u-nu-latn");
-}
 
 function shortHash(h?: string | null): string {
   return h ? String(h).slice(0, 8).toUpperCase() : "—";

@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Input } from "@/components/ui/input";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -155,7 +156,7 @@ export default function SalesReturns() {
                   <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
                   <td className="p-2 text-xs" dir="ltr">
                     {/* entryDate حقل تاريخ بلا وقت ⇒ نعرض التاريخ فقط (لا timeStyle مُختلَق). */}
-                    {r.entryDate ? new Date(r.entryDate).toLocaleDateString("ar-IQ-u-nu-latn") : "—"}
+                    {fmtDate(r.entryDate)}
                   </td>
                   <td className="p-2 tabular-nums" dir="ltr">{r.invoiceNumber ?? "—"}</td>
                   {/* customerName فارغ = بيع نقدي بلا عميل مسجَّل. */}

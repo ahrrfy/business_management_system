@@ -49,7 +49,7 @@ export default function AssetDisposalLog() {
                     printReportDoc({
                       title: "سجلّ الاستبعاد والإخراج",
                       headerExtra: [
-                        { label: "تاريخ التقرير", value: new Date().toLocaleDateString("ar-IQ-u-nu-latn") },
+                        { label: "تاريخ التقرير", value: fmtDate(new Date()) },
                       ],
                       columns: [
                         { key: "asset", label: "الأصل" },
@@ -63,7 +63,7 @@ export default function AssetDisposalLog() {
                       rows: rows.map((r) => ({
                         asset: r.name,
                         type: r.status === "disposed" ? "مُستبعَد" : "خارج الخدمة",
-                        date: r.disposalDate ? new Date(r.disposalDate).toLocaleDateString("ar-IQ-u-nu-latn") : "—",
+                        date: fmtDate(r.disposalDate),
                         purchase: iqd(r.purchaseValue),
                         book: iqd(r.bookValue),
                         proceeds: r.proceeds != null ? iqd(r.proceeds) : "—",

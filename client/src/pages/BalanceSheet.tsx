@@ -6,6 +6,7 @@ import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
 import { LoadingState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -78,7 +79,7 @@ export default function BalanceSheet() {
     printReportDoc({
       title: "الميزانية العمومية",
       headerExtra: [
-        { label: "كما في", value: new Date().toLocaleDateString("ar-IQ-u-nu-latn") },
+        { label: "كما في", value: fmtDate(new Date()) },
         { label: "الفرع", value: branchLabel },
       ],
       note: NOTE,

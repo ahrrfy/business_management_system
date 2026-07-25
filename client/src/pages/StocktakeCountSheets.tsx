@@ -6,6 +6,7 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { fmtDate } from "@/lib/date";
 import { fmtInt } from "@/lib/money";
 import { printCountSheets } from "@/lib/printing/stocktakeTemplates";
 import { trpc } from "@/lib/trpc";
@@ -38,7 +39,7 @@ type SessionHeader = {
 };
 
 const dOnly = (v?: string | Date | null): string =>
-  v ? new Date(v).toLocaleDateString("ar-IQ-u-nu-latn", { dateStyle: "medium" }) : "—";
+  fmtDate(v);
 
 export default function StocktakeCountSheets() {
   const params = useParams();

@@ -9,6 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { CashCounter } from "@/components/CashCounter";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
+import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -77,7 +78,7 @@ function printRemittanceReceipt(partyName: string, r: { remittanceNumber: string
     kind: "zreport",
     title: "إيصال تسوية توصيل",
     subtitle: r.remittanceNumber,
-    meta: [`الجهة: ${partyName}`, new Date().toLocaleString("ar-IQ-u-nu-latn")],
+    meta: [`الجهة: ${partyName}`, fmtDateTime(new Date())],
     totals: [
       { label: "إجمالي التحصيل", value: `${fmt(r.collectedTotal)} د.ع` },
       { label: "مستحقات الجهة (الأجور)", value: `${fmt(r.feesTotal)} د.ع` },

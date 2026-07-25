@@ -8,6 +8,7 @@ import { CashDropDialog } from "@/components/pos/CashDropDialog";
 import { clearCartDraft } from "@/lib/cartDraft";
 import { newClientRequestId } from "@/lib/countQueue";
 import { confirm } from "@/lib/confirm";
+import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { D, roundCashIQD, round2 } from "@/lib/money";
 import { isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter, printReceipt, printShiftOpen, printShiftClose, getServerBridgeStatus, serverPrintTest, type ReceiptBrowserData } from "@/lib/printing/print";
@@ -690,9 +691,9 @@ export default function POS() {
       const rec: Receipt = {
         invoiceNumber: r.invoiceNumber,
         invoiceId:     r.invoiceId,
-        date: now.toLocaleString("ar-IQ-u-nu-latn"),
-        printDate: now.toLocaleDateString("en-GB"),
-        printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+        date: fmtDateTime(now),
+        printDate: fmtDate(now),
+        printTime: fmtTime(now),
         cashierName: ctx.cashierName,
         customerName: ctx.customerName,
         lines: ctx.lines,
@@ -871,9 +872,9 @@ export default function POS() {
     const rec: Receipt = {
       invoiceNumber: receiptNumber,
       invoiceId: 0, // لا فاتورة رسمية بعد — الطباعة تستعمل الرقم فقط.
-      date: now.toLocaleString("ar-IQ-u-nu-latn"),
-      printDate: now.toLocaleDateString("en-GB"),
-      printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+      date: fmtDateTime(now),
+      printDate: fmtDate(now),
+      printTime: fmtTime(now),
       cashierName: ctx.cashierName,
       customerName: ctx.customerName,
       lines: ctx.lines,
@@ -2231,7 +2232,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
 
         <div style={{ fontWeight: 900, fontSize: 19, marginBottom: 4, color: C.fg }}>إغلاق الوردية #{shift?.id}</div>
         <div style={{ fontSize: 12.5, color: C.mutedFg, marginBottom: 18 }}>
-          {new Date().toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+          {fmtDate(new Date())}
         </div>
 
         {reportQ.isLoading ? (

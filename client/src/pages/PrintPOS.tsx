@@ -5,6 +5,7 @@
  * (الكلفة شأن إداري لا يراه الكاشير). إيصال حراري ٨٠mm + وردية + تقريب نقدي IQD — كنظامك تماماً.
  */
 import { confirm } from "@/lib/confirm";
+import { fmtDate, fmtDateTime, fmtTime } from "@/lib/date";
 import { D, roundCashIQD } from "@/lib/money";
 import {
   printDoc, printReceipt, isPaired, isWebUsbSupported, pairPrinter, tryReconnectPrinter,
@@ -235,9 +236,9 @@ export default function PrintPOS() {
       const now = new Date();
       const rec: Receipt = {
         num: r.invoiceNumber, invoiceId: r.invoiceId,
-        date: now.toLocaleString("ar-IQ-u-nu-latn"),
-        printDate: now.toLocaleDateString("en-GB"),
-        printTime: now.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" }),
+        date: fmtDateTime(now),
+        printDate: fmtDate(now),
+        printTime: fmtTime(now),
         cashier: me.data?.name ?? undefined, customer: p?.customerName,
         lines: p?.lines ?? [],
         total: p?.cashTotal ?? 0, received: p?.received ?? 0, change: p?.change ?? 0,
@@ -300,7 +301,7 @@ export default function PrintPOS() {
       await shiftQ.refetch();
       await printDoc({
         kind: "opening", title: SHOP, subtitle: "بيان الرصيد الافتتاحي — قسم الطباعة",
-        meta: [`وردية #${res.shiftId}`, new Date().toLocaleString("ar-IQ-u-nu-latn")],
+        meta: [`وردية #${res.shiftId}`, fmtDateTime(new Date())],
         totals: [{ label: "الرصيد الافتتاحي", value: fmt(Number(opening || 0)) }],
         footer: "بداية الوردية",
       });
@@ -928,7 +929,7 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
       const payRows: [string, string, string][] = (report?.payments ?? []).map((p) => [`${p.method} ${p.direction === "IN" ? "وارد" : "صادر"}`, String(p.count), String(p.total)]);
       await printDoc({
         kind: "zreport", title: SHOP, subtitle: "تقرير نهاية الوردية (Z) — قسم الطباعة",
-        meta: [`وردية #${r.shiftId}`, new Date().toLocaleString("ar-IQ-u-nu-latn")],
+        meta: [`وردية #${r.shiftId}`, fmtDateTime(new Date())],
         columns: ["الحركة", "عدد", "مبلغ"], rows: payRows.length ? payRows : [["لا حركات", "0", "0.00"]],
         totals: [
           { label: "عدد الفواتير", value: String(report?.invoiceCount ?? 0) },
@@ -956,7 +957,7 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgb(0 0 0/.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
       <div onClick={(e) => e.stopPropagation()} style={{ background: C.card, borderRadius: 18, padding: "24px 28px", width: 460, maxHeight: "92vh", overflowY: "auto", boxShadow: "0 24px 64px rgb(0 0 0/.32)" }}>
         <div style={{ fontWeight: 900, fontSize: 19, marginBottom: 3, color: C.fg }}>إغلاق الوردية #{shift.id}</div>
-        <div style={{ fontSize: 12.5, color: C.mutedFg, marginBottom: 16 }}>{new Date().toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}</div>
+        <div style={{ fontSize: 12.5, color: C.mutedFg, marginBottom: 16 }}>{fmtDate(new Date())}</div>
         {reportQ.isLoading ? (
           <div style={{ padding: "24px 0", textAlign: "center", color: C.mutedFg }}>جارٍ تحميل التقرير…</div>
         ) : (

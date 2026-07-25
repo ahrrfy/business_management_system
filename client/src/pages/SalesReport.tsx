@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { PageHeader } from "@/components/PageHeader";
 import { exportRows } from "@/lib/export";
+import { fmtDate } from "@/lib/date";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
 import { D, fmtAr, positiveDiff } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -56,7 +57,7 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
   {
     accessorKey: "invoiceDate",
     header: "التاريخ",
-    cell: (c) => new Date(c.getValue() as string).toLocaleDateString("ar-IQ-u-nu-latn"),
+    cell: (c) => fmtDate(c.getValue() as string),
   },
   {
     accessorKey: "customerName",
@@ -441,7 +442,7 @@ function InvoicesTab({
                   unpaidSum: totals?.unpaid ?? "0",
                   rows: rows.map((r) => ({
                     invoiceNumber: r.invoiceNumber,
-                    date: new Date(r.invoiceDate).toLocaleDateString("en-GB"),
+                    date: fmtDate(r.invoiceDate),
                     customerName: r.customerName ?? "—",
                     total: r.total,
                     paid: r.paidAmount,
@@ -471,7 +472,7 @@ function InvoicesTab({
                       {
                         key: "invoiceDate",
                         header: "التاريخ",
-                        map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
+                        map: (r) => fmtDate(r.invoiceDate),
                       },
                       { key: "customerName", header: "العميل" },
                       { key: "sourceType", header: "النوع", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
@@ -603,7 +604,7 @@ const slowColumns: ColumnDef<SlowRow, unknown>[] = [
     header: "آخر بيع",
     cell: (c) => {
       const v = c.getValue() as string | null;
-      return v ? new Date(v).toLocaleDateString("ar-IQ-u-nu-latn") : <span className="text-destructive font-medium">لم يُبَع قط</span>;
+      return v ? fmtDate(v) : <span className="text-destructive font-medium">لم يُبَع قط</span>;
     },
   },
   {
@@ -649,7 +650,7 @@ function SlowMoversTab({
                 {
                   key: "lastSaleDate",
                   header: "آخر بيع",
-                  map: (r) => (r.lastSaleDate ? new Date(r.lastSaleDate).toLocaleDateString("ar-IQ-u-nu-latn") : "لم يُبَع قط"),
+                  map: (r) => (r.lastSaleDate ? fmtDate(r.lastSaleDate) : "لم يُبَع قط"),
                 },
                 { key: "daysSinceLastSale", header: "أيام منذ آخر بيع", map: (r) => r.daysSinceLastSale ?? "" },
               ],

@@ -24,6 +24,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { trpc } from "@/lib/trpc";
+import { fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { confirm } from "@/lib/confirm";
 import { D, fmt, fmtInt } from "@/lib/money";
@@ -90,7 +91,7 @@ const money = (v: string | number | null | undefined) => {
 const pctStr = (v: string | number | null | undefined) =>
   D(v ?? 0).toNumber().toLocaleString("ar-IQ-u-nu-latn", { maximumFractionDigits: 2 });
 const dt = (v: string | number | Date | null | undefined) =>
-  v ? new Date(v).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "medium", timeStyle: "short" }) : "—";
+  fmtDateTime(v);
 
 function StatusBadge({ status }: { status: string }) {
   const m = STATUS_META[status] ?? { label: status, cls: "bg-muted text-muted-foreground border-border" };

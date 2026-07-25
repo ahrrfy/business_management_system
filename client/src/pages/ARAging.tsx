@@ -10,6 +10,7 @@ import { printARAging } from "@/lib/printing/printTemplates";
 import { D, fmt as fmtMoney, fmtAr } from "@/lib/money";
 import { sanitizeForWhatsApp } from "@/lib/whatsapp";
 import { trpc } from "@/lib/trpc";
+import { fmtDate } from "@/lib/date";
 import { useMemo, useState } from "react";
 import { Link } from "wouter";
 import { useRowSelection, SelectionBar } from "@/components/list/SelectionBar";
@@ -75,7 +76,7 @@ export default function ARAging() {
     if (selectedRows.length === 0) return "";
     const L: string[] = [];
     L.push("*ذِمم مُستَحَقّة — لَنا عَلَيكُم*");
-    L.push(`التاريخ: ${new Date().toLocaleDateString("en-GB")}`);
+    L.push(`التاريخ: ${fmtDate(new Date())}`);
     L.push("المَكتَبة العَرَبية لِلطِباعة والقِرطاسية");
     L.push("————————————————");
     let grand = D(0);
@@ -151,7 +152,7 @@ export default function ARAging() {
               تصدير Excel
             </Button>
             <Button variant="outline" size="sm" disabled={!aging.data?.length} onClick={() => printARAging({
-              date: new Date().toLocaleDateString('en-GB'),
+              date: fmtDate(new Date()),
               rows: (aging.data ?? []).map(r => ({
                 name: r.customerName,
                 d0_30: D(r.d0_30||0).toNumber(), d31_60: D(r.d31_60||0).toNumber(),

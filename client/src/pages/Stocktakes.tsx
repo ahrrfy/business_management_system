@@ -454,7 +454,7 @@ export default function Stocktakes() {
           isManagerPlus={isManagerPlus}
           onCreate={() => {
             const ids = due.map((d) => d.variantId);
-            const name = `جرد دوري مجدول — ${new Date().toLocaleDateString("ar-IQ-u-nu-latn", { dateStyle: "medium" })}`;
+            const name = `جرد دوري مجدول — ${fmtDate(new Date())}`;
             navigate(buildNewSessionUrl(ids, name));
           }}
         />

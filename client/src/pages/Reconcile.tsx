@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmt } from "@/lib/money";
+import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, Check, ClipboardList } from "lucide-react";
 import { Link } from "wouter";
@@ -48,7 +49,7 @@ export default function Reconcile() {
           <div className="flex items-center gap-3">
             {data && (
               <span className="text-xs text-muted-foreground" dir="ltr">
-                آخر فحص: {new Date(data.runAt).toLocaleString("ar-IQ-u-nu-latn")}
+                آخر فحص: <span dir="ltr" className="tabular-nums">{fmtDateTime(data.runAt)}</span>
               </span>
             )}
             <Button

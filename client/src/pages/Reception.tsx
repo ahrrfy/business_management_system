@@ -40,6 +40,7 @@ import { confirm } from "@/lib/confirm";
 import { D, fmt, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { parseScan } from "@/lib/scanRouter";
+import { fmtDate } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue, type PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { cn } from "@/lib/utils";
@@ -756,7 +757,7 @@ export default function Reception() {
           >
             <h3 className="mb-1 text-lg font-extrabold">إغلاق وردية خدمة الزبائن #{shift.id}</h3>
             <p className="mb-4 text-xs text-muted-foreground">
-              {new Date().toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
+              {fmtDate(new Date())}
             </p>
             {reportQ.isLoading ? (
               <div className="py-6 text-center text-muted-foreground">جارٍ تحميل التقرير…</div>

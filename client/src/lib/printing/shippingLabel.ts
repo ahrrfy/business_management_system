@@ -11,6 +11,7 @@
  * إدخال يدوي، Poka-Yoke). كلّه أسود على أبيض بخطوطٍ ثقيلة وحدودٍ سميكة (آمنٌ للطباعة الحرارية).
  */
 import { governorateById } from "@shared/governorates";
+import { fmtDate as formatDate } from "../date";
 import { code128Svg } from "./barcode";
 import { qrCodeSvg } from "./qr";
 import { CAIRO_FONT, CO, esc, fmt } from "./brand";
@@ -40,13 +41,7 @@ export interface ShippingLabelData {
 }
 
 function fmtDate(d: Date | string | null | undefined): string {
-  if (!d) return "";
-  try {
-    const dt = typeof d === "string" ? new Date(d) : d;
-    return dt.toLocaleDateString("en-GB");
-  } catch {
-    return "";
-  }
+  return d ? formatDate(d) : "";
 }
 
 /** يبني وثيقة HTML كاملة لملصق شحن بالقياس المطلوب (تُطبع تلقائياً بعد جهوز الخطّ). */

@@ -8,6 +8,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { fmt, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -180,7 +181,7 @@ export default function Purchases() {
               columns: [
                 { key: "poNumber", header: "رقم الأمر" },
                 { key: "supplierName", header: "المورد" },
-                { key: "orderDate", header: "التاريخ", map: (r) => new Date(r.orderDate).toLocaleString("ar-IQ-u-nu-latn") },
+                { key: "orderDate", header: "التاريخ", map: (r) => fmtDate(r.orderDate) },
                 { key: "total", header: "الإجمالي", map: (r) => Number(r.total ?? 0) },
                 { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount ?? 0) },
                 { key: "status", header: "الحالة", map: (r) => PO_STATUS[r.status] ?? r.status },
@@ -211,7 +212,7 @@ export default function Purchases() {
                   <tr key={p.id} ref={fr.ref} className={`border-t ${fr.className}`}>
                     <td className="p-2"><CopyInline value={p.poNumber} /></td>
                     <td className="p-2">{p.supplierName ?? "—"}</td>
-                    <td className="p-2">{new Date(p.orderDate).toLocaleString("ar-IQ-u-nu-latn")}</td>
+                    <td className="p-2 whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.orderDate)}</td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.total)}</td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
                     <td className="p-2">{PO_STATUS[p.status] ?? p.status}</td>

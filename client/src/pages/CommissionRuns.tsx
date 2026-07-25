@@ -15,6 +15,7 @@ import { MonthPicker, thisMonth } from "@/components/form/MonthPicker";
 import { confirm, confirmDelete } from "@/lib/confirm";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { exportRows } from "@/lib/export";
+import { fmtDate } from "@/lib/date";
 import { D, round2 } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -181,7 +182,7 @@ export default function CommissionRuns() {
       fixedBonus: l.fixedBonus,
       commissionAmount: l.commissionAmount,
       carryOut: l.carryOut,
-      computedAt: run.computedAt ? new Date(run.computedAt).toLocaleDateString("en-GB") : null,
+      computedAt: fmtDate(run.computedAt),
     });
   }
 

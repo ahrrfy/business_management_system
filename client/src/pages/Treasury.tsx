@@ -6,6 +6,7 @@ import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/DataTable";
+import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { type ColumnDef } from "@tanstack/react-table";
@@ -36,7 +37,7 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
-  d ? new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" }) : "—";
+  fmtDateTime(d);
 
 const fmtRelativeShort = (iso: string) => {
   const then = new Date(iso).getTime();

@@ -6,6 +6,7 @@
  * كل القيم المالية تصل مُحتسبة سلفاً (decimal.js في الشاشات) — القالب يعرض فقط ولا يجري حساباً مالياً.
  */
 import { BRAND as B, esc, fmt, fmtC, openPrintWindow, CAIRO_FONT } from './brand';
+import { fmtDate, fmtDateTime } from '../date';
 import { wrapA4Doc, docHeader, docMeta, docTable, docFooter } from './docHtml';
 import { code128Svg } from './barcode';
 
@@ -36,10 +37,10 @@ export const STOCKTAKE_STATUS_LABEL: Record<string, string> = {
 // ─── أدوات تنسيق محلية (عرض فقط) ─────────────────────────────────────────────
 
 const dOnly = (v?: string | Date | null): string =>
-  v ? new Date(v).toLocaleDateString('ar-IQ-u-nu-latn', { dateStyle: 'medium' }) : '—';
+  fmtDate(v);
 
 const dts = (v?: string | Date | null): string =>
-  v ? new Date(v).toLocaleString('ar-IQ-u-nu-latn', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
+  fmtDateTime(v);
 
 /** كمية صحيحة مُشارة (+/−) — للعرض فقط. */
 const signedInt = (n: number): string =>
