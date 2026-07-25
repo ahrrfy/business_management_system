@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
+import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { D, fmtAr } from "@/lib/money";
 import { confirm } from "@/lib/confirm";
@@ -36,7 +37,7 @@ type TxnRow = {
   createdAt: string;
 };
 
-const fmtDT = (d: string) => new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" });
+const fmtDT = (d: string) => fmtDateTime(d);
 
 export default function ExchangeStatement() {
   const houses = trpc.exchange.list.useQuery({ limit: 200, offset: 0 });

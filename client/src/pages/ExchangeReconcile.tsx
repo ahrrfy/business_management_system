@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
+import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { D, fmtAr } from "@/lib/money";
@@ -119,7 +120,7 @@ export default function ExchangeReconcile() {
                         <td className="py-2">{TYPE_AR[p.type] ?? p.type}</td>
                         <td className="py-2 tabular-nums" dir="ltr">{D(p.iqdAmount).isZero() ? "—" : fmtAr(p.iqdAmount)}</td>
                         <td className="py-2 tabular-nums" dir="ltr">{D(p.usdAmount).isZero() ? "—" : fmtAr(p.usdAmount)}</td>
-                        <td className="py-2 text-xs text-muted-foreground" dir="ltr">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" })}</td>
+                        <td className="py-2 text-xs text-muted-foreground whitespace-nowrap tabular-nums" dir="ltr">{fmtDateTime(p.createdAt)}</td>
                       </tr>
                     ))}
                   </tbody>

@@ -3,6 +3,7 @@
 // وزمن ترحيلها، ووسم «مُزامنة لاحقاً» — مع مؤشرات إجمالية تطابق معايير نجاح التجربة.
 
 import { PageHeader } from "@/components/PageHeader";
+import { fmtDateTime as formatDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, CloudUpload, Timer } from "lucide-react";
 import { useState } from "react";
@@ -12,8 +13,7 @@ function fmtIQD(v: string | number): string {
 }
 
 function fmtDateTime(iso: string | null): string {
-  if (!iso) return "—";
-  return new Date(iso).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" });
+  return formatDateTime(iso);
 }
 
 export default function OfflineSalesReport() {

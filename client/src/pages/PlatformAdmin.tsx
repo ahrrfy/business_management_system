@@ -15,7 +15,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { ErrorState } from "@/components/PageState";
 import { AlertTriangle, CheckCircle2, CopyIcon, XCircle } from "lucide-react";
-import { fmtDateTime } from "@/lib/date";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 
 function PlatformAdminLoginForm({ onSuccess }: { onSuccess: () => void }) {
@@ -277,7 +277,7 @@ function CompaniesDashboard() {
                         <td className="px-2 py-2">{c.name}</td>
                         <td className="px-2 py-2 font-mono text-xs text-muted-foreground" dir="ltr">{c.dbName}</td>
                         <td className="px-2 py-2 text-xs text-muted-foreground" dir="ltr">
-                          {new Date(c.createdAt).toLocaleDateString("ar-IQ")}
+                          {fmtDate(c.createdAt)}
                         </td>
                         <td className="px-2 py-2">
                           <Switch

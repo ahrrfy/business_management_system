@@ -472,7 +472,7 @@ export default function Settings() {
                           <div className="flex items-center justify-between text-sm">
                             <span className="font-bold">{b.branchName}</span>
                             <span className="tabular-nums text-muted-foreground">
-                              {b.openedVariants.toLocaleString("ar-IQ")} / {b.totalVariants.toLocaleString("ar-IQ")} مُفتتَح ({pct}%)
+                              {b.openedVariants.toLocaleString("en-US")} / {b.totalVariants.toLocaleString("en-US")} مُفتتَح ({pct}%)
                             </span>
                           </div>
                           <div className="mt-2 h-2 overflow-hidden rounded-full bg-muted" role="progressbar" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>

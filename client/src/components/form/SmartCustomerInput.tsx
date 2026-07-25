@@ -1,6 +1,7 @@
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { trpc } from "@/lib/trpc";
+import { fmtDate } from "@/lib/date";
 import { cn } from "@/lib/utils";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
@@ -198,7 +199,7 @@ export function SmartCustomerInput({ value, onChange, placeholder, className }: 
           <span><span className="text-muted-foreground">الطلبات:</span> <span dir="ltr">{selectedStats.orderCount ?? 0}</span></span>
           {selectedStats.lastOrderAt && (
             <span>
-              <span className="text-muted-foreground">آخر طلب:</span> <span dir="ltr">{new Date(selectedStats.lastOrderAt).toLocaleDateString("en-GB")}</span>
+              <span className="text-muted-foreground">آخر طلب:</span> <span dir="ltr">{fmtDate(selectedStats.lastOrderAt)}</span>
             </span>
           )}
           {selectedStats.totalSpent && (

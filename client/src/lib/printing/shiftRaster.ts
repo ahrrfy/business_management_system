@@ -6,6 +6,7 @@
 // قيد: كل العناصر بأسود صافٍ (#000) والكتل المعكوسة خلفية سوداء + نصّ أبيض، بعتبة لمعان
 // مرفوعة (THRESHOLD) لتسمين الخطوط فيظهر الإيصال غامقاً واضحاً لا باهتاً.
 import { imageDataToRaster, type Raster } from "./escpos";
+import { fmtDate, fmtDateTime } from "../date";
 import { CO, RECEIPT_PHONES, fmt, logoUrl } from "./brand";
 import type { ShiftOpenData, ShiftCloseData } from "./printTemplates";
 
@@ -174,9 +175,9 @@ export async function shiftOpenToCanvas(
   (ctx as unknown as { direction: string }).direction = "rtl";
   ctx.textBaseline = "alphabetic";
 
-  const date    = d.openedAt.toLocaleDateString("en-GB");
-  const time    = d.openedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" });
-  const printed = d.openedAt.toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" });
+  const date    = fmtDate(d.openedAt);
+  const time    = fmtDateTime(d.openedAt).split("، ")[1] ?? "—";
+  const printed = fmtDateTime(d.openedAt);
 
   let y = PAD;
   y = await drawHeader(ctx, y);
@@ -256,9 +257,9 @@ export async function shiftCloseToCanvas(
   ctx.textBaseline = "alphabetic";
 
   const openedStr = d.openedAt
-    ? new Date(d.openedAt).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" })
+    ? fmtDateTime(d.openedAt)
     : "—";
-  const closedStr = d.closedAt.toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" });
+  const closedStr = fmtDateTime(d.closedAt);
   const duration  = calcDuration(d.openedAt, d.closedAt);
 
   const discounts = Number(d.discountsTotal ?? 0);

@@ -9,6 +9,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { WhatsAppShare } from "@/components/WhatsAppShare";
 import { exportRows } from "@/lib/export";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { D, round2, fmt, fmtInt } from "@/lib/money";
 import {
   printStocktakeReport,
@@ -76,9 +77,9 @@ type ReportData = {
 // ─── أدوات عرض ───
 
 const dOnly = (v?: string | Date | null): string =>
-  v ? new Date(v).toLocaleDateString("ar-IQ-u-nu-latn", { dateStyle: "medium" }) : "—";
+  fmtDate(v);
 const dts = (v?: string | Date | null): string =>
-  v ? new Date(v).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "medium", timeStyle: "short" }) : "—";
+  fmtDateTime(v);
 
 const signedInt = (n: number): string =>
   n > 0 ? `+${fmtInt(n)}` : n < 0 ? `−${fmtInt(Math.abs(n))}` : "0";

@@ -16,6 +16,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { EmpAvatar, iqd } from "@/lib/hr/ui";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -146,7 +147,7 @@ export default function EmployeeAdvances() {
                       </td>
                       <td className="p-2.5 text-center text-xs tabular-nums" dir="ltr">{r.voucherNumber ?? "—"}</td>
                       <td className="p-2.5 text-center text-xs text-muted-foreground tabular-nums" dir="ltr">
-                        {r.grantedAt ? new Date(r.grantedAt).toLocaleDateString("ar-IQ-u-nu-latn") : "—"}
+                        {fmtDate(r.grantedAt)}
                       </td>
                       <td className="p-2.5 text-center"><StatusBadge status={r.status} /></td>
                       <td className="p-2.5 text-center">

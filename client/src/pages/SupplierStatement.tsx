@@ -183,8 +183,8 @@ export default function SupplierStatement() {
     const d = stmt.data;
     printSupplierStmt({
       supplierName: d.supplier.name, supplierPhone: d.supplier.phone ?? undefined,
-      fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString("en-GB") : undefined,
-      toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString("en-GB"),
+      fromDate: from ? fmtDate(new Date(`${from}T00:00:00`)) : undefined,
+      toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
       transactions: ledger.rows,
       // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
       totalDebit: ledger.totalDebit, totalCredit: ledger.totalCredit,
@@ -367,7 +367,7 @@ export default function SupplierStatement() {
                     return (
                       <tr key={p.id} className="border-t">
                         <td className="p-2"><CopyInline value={p.poNumber} /></td>
-                        <td className="p-2 text-xs" dir="ltr">{new Date(p.orderDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
+                        <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.orderDate)}</td>
                         <td className="p-2 text-xs" dir="ltr">{p.expectedDeliveryDate ? String(p.expectedDeliveryDate).slice(0, 10) : "—"}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.total)}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
@@ -408,7 +408,7 @@ export default function SupplierStatement() {
                 <tbody>
                   {stmt.data.payments.map((p) => (
                     <tr key={p.id} className="border-t">
-                      <td className="p-2 text-xs" dir="ltr">{new Date(p.entryDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
+                      <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.entryDate)}</td>
                       <td className="p-2">
                         {p.purchaseOrderId ? (
                           <CopyInline value={p.purchaseOrderId} />

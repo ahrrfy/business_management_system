@@ -26,6 +26,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
 import { trpc } from "@/lib/trpc";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { internalUrl } from "@/lib/siteHosts";
 import { confirm } from "@/lib/confirm";
@@ -79,7 +80,7 @@ const LOG_LABEL: Record<string, string> = {
 /* ───────── أدوات تنسيق (أرقام لاتينية دائماً) ───────── */
 const nf = (n: number | null | undefined) => fmtInt(n ?? 0);
 const dt = (v: string | number | Date | null | undefined) =>
-  v ? new Date(v).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "medium", timeStyle: "short" }) : "—";
+  fmtDateTime(v);
 /** وقت نسبي مقروء: «قبل ٥ دقائق» — بأرقام لاتينية. */
 function rel(v: string | number | Date | null | undefined): string {
   if (!v) return "—";
@@ -92,7 +93,7 @@ function rel(v: string | number | Date | null | undefined): string {
   const days = Math.floor(hrs / 24);
   if (days === 1) return "أمس";
   if (days < 30) return `قبل ${nf(days)} يوماً`;
-  return d.toLocaleDateString("ar-IQ-u-nu-latn", { dateStyle: "medium" });
+  return fmtDate(d);
 }
 async function copyText(t: string): Promise<boolean> {
   try {

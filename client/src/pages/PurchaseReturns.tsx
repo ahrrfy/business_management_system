@@ -7,6 +7,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { fmtDate } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { trpc } from "@/lib/trpc";
 import { useMemo, useState } from "react";
@@ -164,7 +165,7 @@ export default function PurchaseReturns() {
                   <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
                   <td className="p-2 text-xs" dir="ltr">
                     {/* entryDate حقل تاريخ بلا وقت ⇒ نعرض التاريخ فقط (لا timeStyle مُختلَق). */}
-                    {r.entryDate ? new Date(r.entryDate).toLocaleDateString("ar-IQ-u-nu-latn") : "—"}
+                    {fmtDate(r.entryDate)}
                   </td>
                   <td className="p-2 font-medium">{supplierName(r.supplierId)}</td>
                   <td className="p-2">{branchName(r.branchId)}</td>

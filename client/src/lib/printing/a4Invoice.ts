@@ -1,6 +1,7 @@
 // فاتورة A4 رسمية (للحكومة/الشركات) — تُطبع عبر المتصفّح (تشكيل عربي مثالي + «حفظ كـPDF»).
 // نُفضّلها على @react-pdf/renderer لأنّ الأخير لا يصل/يشكّل الحروف العربية صحيحاً.
 import { CAIRO_FONT } from "./brand";
+import { fmtDate } from "../date";
 
 export type A4InvoiceItem = {
   productName: string;
@@ -28,7 +29,7 @@ const esc = (s: unknown) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&
 
 function buildHtml(inv: A4Invoice): string {
   const remaining = Number(inv.total ?? 0) - Number(inv.paidAmount ?? 0);
-  const date = inv.invoiceDate ? new Date(inv.invoiceDate).toLocaleString("ar-IQ-u-nu-latn") : new Date().toLocaleString("ar-IQ-u-nu-latn");
+  const date = fmtDate(inv.invoiceDate ?? new Date());
   const rows = inv.items
     .map(
       (it, i) => `<tr>

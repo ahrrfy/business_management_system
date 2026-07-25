@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { notify } from "@/lib/notify";
 import { fmt } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -46,7 +47,7 @@ export default function DeliveryParties() {
     const txs: { date: string; ref: string; description: string; debit: string | null; credit: string | null; balance: string }[] = [];
     for (const e of data.entries) {
       const amt = Number(e.amount);
-      const date = new Date(e.entryDate).toLocaleDateString("en-GB");
+      const date = fmtDate(e.entryDate);
       const ref = (e.notes ?? "").replace(/^.*?([CD][NR]-\S+).*$/, "$1") || "—";
       if (e.type === "DELIVERY_DISPATCH") { bal += amt; totDispatch += amt; txs.push({ date, ref, description: "إرسالية (عهدة COD)", debit: e.amount, credit: null, balance: bal.toFixed(2) }); }
       else if (e.type === "DELIVERY_REMIT") { bal -= amt; totSettled += amt; txs.push({ date, ref, description: "توريد/تسوية", debit: null, credit: e.amount, balance: bal.toFixed(2) }); }

@@ -8,6 +8,7 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatTableAsTSV } from "@/lib/copy/formatters";
+import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -180,7 +181,7 @@ export default function Invoices() {
         filename: "المبيعات",
         columns: [
           { key: "invoiceNumber", header: "رقم الفاتورة" },
-          { key: "invoiceDate", header: "التاريخ", map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn") },
+          { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
           { key: "customerName", header: "العميل" },
           { key: "sourceType", header: "المصدر" },
           { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
@@ -197,7 +198,7 @@ export default function Invoices() {
 
   const columns = useMemo<ColumnDef<Row, unknown>[]>(() => [
     { accessorKey: "invoiceNumber", header: "رقم الفاتورة", cell: (c) => <CopyInline value={c.getValue() as string} /> },
-    { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => new Date(c.getValue() as string).toLocaleString("ar-IQ-u-nu-latn") },
+    { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => fmtDate(c.getValue() as string) },
     { accessorKey: "customerName", header: "العميل", cell: (c) => (c.getValue() as string) ?? "—" },
     { accessorKey: "sourceType", header: "المصدر", cell: (c) => SOURCE[c.getValue() as string] ?? (c.getValue() as string) },
     { accessorKey: "total", header: "الإجمالي", cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span> },
@@ -244,7 +245,7 @@ export default function Invoices() {
     if (!selectedRows.length) return "";
     const rows = selectedRows.map((r) => ({
       "رقم الفاتورة": r.invoiceNumber,
-      "التاريخ": new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn"),
+      "التاريخ": fmtDate(r.invoiceDate),
       "العميل": r.customerName ?? "",
       "المصدر": SOURCE[r.sourceType] ?? r.sourceType,
       "الإجمالي": Number(r.total),
@@ -332,7 +333,7 @@ export default function Invoices() {
             filename: "المبيعات-المُحَدَّدة",
             columns: [
               { key: "invoiceNumber", header: "رقم الفاتورة" },
-              { key: "invoiceDate", header: "التاريخ", map: (r) => new Date(r.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn") },
+              { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
               { key: "customerName", header: "العميل" },
               { key: "sourceType", header: "المصدر", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
               { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },

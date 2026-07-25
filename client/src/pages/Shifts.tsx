@@ -7,6 +7,7 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Input } from "@/components/ui/input";
 import { useClipboard } from "@/hooks/useClipboard";
 import { formatZReportAsText } from "@/lib/copy/formatters";
+import { fmtDateTime } from "@/lib/date";
 import { D, fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printShiftClose } from "@/lib/printing/print";
@@ -31,7 +32,7 @@ const STATUS_CLS: Record<string, string> = {
 };
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
-  d ? new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" }) : "—";
+  fmtDateTime(d);
 
 // نوع الصفّ صريحاً (الإجراء يُعيد {rows,total}) — حسمٌ يُجنّب فشل استدلال T في fetchAllPaged.
 type Row = RouterOutputs["shifts"]["list"]["rows"][number];
@@ -268,8 +269,8 @@ export default function Shifts() {
                   <td className="p-2 tabular-nums" dir="ltr">{r.id}</td>
                   <td className="p-2 font-medium">{r.userName ?? `#${r.userId}`}</td>
                   <td className="p-2">{branchName(r.branchId)}</td>
-                  <td className="p-2 text-xs" dir="ltr">{fmtDT(r.openedAt)}</td>
-                  <td className="p-2 text-xs" dir="ltr">{fmtDT(r.closedAt)}</td>
+                  <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDT(r.openedAt)}</td>
+                  <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDT(r.closedAt)}</td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(r.openingBalance)}</td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{r.expectedCash != null ? fmt(r.expectedCash) : "—"}</td>
                   <td className="p-2 text-right tabular-nums" dir="ltr">{r.countedCash != null ? fmt(r.countedCash) : "—"}</td>

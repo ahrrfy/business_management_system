@@ -6,6 +6,7 @@ import { CopyInline } from "@/components/CopyButton";
 import { CopyAsMenu } from "@/lib/copy/CopyAsMenu";
 import { formatQuotationAsWhatsApp } from "@/lib/copy/formatters";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { buildQuotationMessage } from "@/lib/whatsapp";
 import { D, fmt, round2 } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
@@ -145,7 +146,7 @@ export default function QuotationDetail() {
             <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="العميل">{data.customerName ?? "—"}</Field>
               <Field label="فئة السعر">{TIER[data.priceTier] ?? data.priceTier}</Field>
-              <Field label="التاريخ">{new Date(data.quoteDate).toLocaleDateString("ar-IQ-u-nu-latn")}</Field>
+              <Field label="التاريخ">{fmtDate(data.quoteDate)}</Field>
               <Field label="صالح حتى">{data.validUntil ? String(data.validUntil).slice(0, 10) : "—"}</Field>
               {data.convertedInvoiceId && (
                 <Field label="الفاتورة">

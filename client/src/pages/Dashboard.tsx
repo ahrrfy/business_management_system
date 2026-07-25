@@ -1,6 +1,6 @@
 import { trpc } from "@/lib/trpc";
 import { D, fmtAr } from "@/lib/money";
-import { fmtTime } from "@/lib/date";
+import { fmtDate, fmtTime } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
 import { CopyButton } from "@/components/CopyButton";
@@ -942,7 +942,7 @@ function MorningBrief() {
   if (total === 0) return null;
 
   const dt = new Date();
-  const dateLabel = dt.toLocaleDateString("ar-IQ-u-nu-latn", { weekday: "long", day: "numeric", month: "long" });
+  const dateLabel = fmtDate(dt);
 
   return (
     <section

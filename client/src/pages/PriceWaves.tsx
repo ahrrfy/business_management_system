@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Field } from "@/components/product/variantBits";
 import { PageHeader } from "@/components/PageHeader";
+import { fmtDateTime } from "@/lib/date";
 import { trpc } from "@/lib/trpc";
 
 type ChangeType = "INCREASE_PERCENT" | "DECREASE_PERCENT" | "INCREASE_AMOUNT" | "DECREASE_AMOUNT" | "SET_MARGIN";
@@ -288,7 +289,7 @@ export default function PriceWaves() {
                 <tbody>
                   {waves.map((w: any) => (
                     <tr key={w.id} className="border-t">
-                      <td className="px-3 py-2 text-xs text-muted-foreground">{new Date(w.appliedAt).toLocaleString("en-GB")}</td>
+                      <td className="px-3 py-2 text-xs text-muted-foreground whitespace-nowrap tabular-nums" dir="ltr">{fmtDateTime(w.appliedAt)}</td>
                       <td className="px-3 py-2 font-medium">{w.name}</td>
                       <td className="px-3 py-2">{CHANGE_LABELS[w.changeType as ChangeType]}</td>
                       <td className="px-3 py-2">{Number(w.changeValue).toLocaleString("en-US")}</td>

@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { exportSheets, type SheetSpec } from "@/lib/export";
 import { fmtAr } from "@/lib/money";
+import { fmtDateTime } from "@/lib/date";
 import { loadReportPrefs, saveReportPrefs } from "@/lib/reportPrefs";
 
 const selectCls =
@@ -276,7 +277,7 @@ function QualityCheck({ enabled }: { enabled: boolean }) {
             ))}
           </div>
         )}
-        {q.data && <p className="text-[11px] text-muted-foreground">آخر فحص: {new Date(q.data.runAt).toLocaleString("ar-IQ-u-nu-latn")}</p>}
+        {q.data && <p className="text-[11px] text-muted-foreground">آخر فحص: <span dir="ltr" className="tabular-nums">{fmtDateTime(q.data.runAt)}</span></p>}
       </CardContent>
     </Card>
   );

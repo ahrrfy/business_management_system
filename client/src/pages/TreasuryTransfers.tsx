@@ -3,6 +3,7 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { DataTable } from "@/components/DataTable";
 import { PageHeader } from "@/components/PageHeader";
+import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
@@ -30,7 +31,7 @@ const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 const fmtDT = (d: string | number | Date | null | undefined) =>
-  d ? new Date(d).toLocaleString("ar-IQ-u-nu-latn", { dateStyle: "short", timeStyle: "short" }) : "—";
+  fmtDateTime(d);
 
 interface TransferRow {
   id: number;

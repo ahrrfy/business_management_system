@@ -3,6 +3,8 @@
  * المستخدم يضغط الزر فيفتح واتساب بالرسالة جاهزة، ثم يضغط "إرسال" مرة واحدة.
  */
 
+import { fmtDate } from "./date";
+
 const COMPANY_NAME = "المكتبة العربية للطباعة والقرطاسية";
 
 /** تحويل رقم عراقي (07XX-XXX-XXXX أو 07XXXXXXXXX) إلى صيغة دولية +964 */
@@ -60,7 +62,7 @@ function fmtMoney(n: string | number | null | undefined): string {
 }
 
 function today(): string {
-  return new Date().toLocaleDateString("ar-IQ-u-nu-latn");
+  return fmtDate(new Date());
 }
 
 export interface InvoiceMessageData {
@@ -81,7 +83,7 @@ export function buildInvoiceMessage(data: InvoiceMessageData): string {
 
   const lines: string[] = [
     `*فاتورة بيع #${data.invoiceNumber}*`,
-    `التاريخ: ${data.invoiceDate ? new Date(data.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn") : today()}`,
+    `التاريخ: ${data.invoiceDate ? fmtDate(data.invoiceDate) : today()}`,
     COMPANY_NAME,
     "",
   ];

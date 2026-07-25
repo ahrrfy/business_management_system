@@ -6,6 +6,7 @@ import { CAIRO_FONT, CO, esc, logoUrl, openPrintWindow } from "@/lib/printing/br
 import { docFooter, docHeader, docTable, wrapA4Doc } from "@/lib/printing/docHtml";
 import { qrCodeSvg } from "@/lib/printing/qr";
 import { fmtInt } from "@/lib/money";
+import { fmtDate } from "@/lib/date";
 
 export interface AssetLabelData {
   code: string;
@@ -87,7 +88,7 @@ export function printCustodyAck(d: CustodyAckData): void {
   </div>`;
 
   const body = [
-    docHeader("إقرار استلام عهدة", undefined, d.date ?? new Date().toLocaleDateString("en-GB"), [{ label: "الموظف", value: d.employeeName }]),
+    docHeader("إقرار استلام عهدة", undefined, d.date ?? fmtDate(new Date()), [{ label: "الموظف", value: d.employeeName }]),
     intro,
     docTable(cols, rows),
     totalRow,

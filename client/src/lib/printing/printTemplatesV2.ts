@@ -9,6 +9,7 @@
  * غير المشمولة بالتسليم هذا. الأسماء المُعاد تصديرها في هذا الملف هي المداخل الرئيسية للثمانية أعلاه.
  */
 import { BRAND as B, esc, fmt, fmtC, openPrintWindow } from './brand';
+import { fmtDate as formatDate } from '../date';
 import {
   wrapA4Doc,
   pageHeader,
@@ -36,14 +37,7 @@ import { formatArabicMoneyWords } from './tafqit';
  *   للسندات/الفواتير هو يوم التقويم في العراق، فنُنسّق مباشرةً بلا مرور بـDate.
  */
 function fmtDate(d?: string | Date | null): string {
-  if (!d) return new Date().toLocaleDateString('en-GB');
-  if (typeof d === 'string') {
-    const m = /^(\d{4})-(\d{2})-(\d{2})(?:$|T)/.exec(d);
-    if (m) return `${m[3]}/${m[2]}/${m[1]}`;
-  }
-  const date = typeof d === 'string' ? new Date(d) : d;
-  if (Number.isNaN(date.getTime())) return String(d);
-  return date.toLocaleDateString('en-GB');
+  return formatDate(d ?? new Date());
 }
 
 /** أرقام IQD بلا كسور — الفلوس لا تُتداول. للمبالغ فقط لا الكميات. */

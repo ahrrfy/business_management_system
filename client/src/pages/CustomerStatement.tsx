@@ -9,6 +9,7 @@ import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState"
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { StatementReconcile } from "@/components/StatementReconcile";
 import { buildStatementMessage } from "@/lib/whatsapp";
+import { fmtDate, fmtDateTime } from "@/lib/date";
 import { exportRows } from "@/lib/export";
 import { printCustomerStmt } from "@/lib/printing/printTemplates";
 import { D, fmt, positiveDiff } from "@/lib/money";
@@ -93,13 +94,13 @@ export default function CustomerStatement() {
     const d = stmt.data;
     const invTxs = d.invoices.map((i) => ({
       t: new Date(i.invoiceDate).getTime(),
-      date: new Date(i.invoiceDate).toLocaleDateString("en-GB"),
+      date: fmtDate(i.invoiceDate),
       ref: i.invoiceNumber, description: "فاتورة مبيعات",
       debit: i.total as string | null, credit: null as string | null,
     }));
     const payTxs = d.payments.map((p) => ({
       t: new Date(p.createdAt).getTime(),
-      date: new Date(p.createdAt).toLocaleDateString("en-GB"),
+      date: fmtDate(p.createdAt),
       ref: p.voucherNumber ?? "دفعة",
       description: p.isStandalone
         ? (p.direction === "IN" ? "سند قبض مستقل" : "سند صرف مستقل")
@@ -169,8 +170,8 @@ export default function CustomerStatement() {
     const { txs, totDebit, totCredit, closingBalance } = ledger;
     printCustomerStmt({
       customerName: d.customer.name, customerPhone: d.customer.phone ?? undefined,
-      fromDate: from ? new Date(`${from}T00:00:00`).toLocaleDateString("en-GB") : undefined,
-      toDate: (to ? new Date(`${to}T00:00:00`) : new Date()).toLocaleDateString("en-GB"),
+      fromDate: from ? fmtDate(new Date(`${from}T00:00:00`)) : undefined,
+      toDate: fmtDate(to ? new Date(`${to}T00:00:00`) : new Date()),
       transactions: txs,
       // مجاميع المدين/الدائن = جمع عمودي الجدول المطبوع نفسه (اتساق بصري ومحاسبي).
       totalDebit: totDebit, totalCredit: totCredit,
@@ -354,7 +355,7 @@ export default function CustomerStatement() {
                     return (
                       <tr key={i.id} className="border-t">
                         <td className="p-2"><CopyInline value={i.invoiceNumber} /></td>
-                        <td className="p-2 text-xs" dir="ltr">{new Date(i.invoiceDate).toLocaleDateString("ar-IQ-u-nu-latn")}</td>
+                        <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(i.invoiceDate)}</td>
                         <td className="p-2 text-xs" dir="ltr">{i.dueDate ? String(i.dueDate).slice(0, 10) : "—"}</td>
                         <td className="p-2 text-xs">{i.sourceType}</td>
                         <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(i.total)}</td>
@@ -401,7 +402,7 @@ export default function CustomerStatement() {
                 <tbody>
                   {stmt.data.payments.map((p) => (
                     <tr key={p.id} className="border-t">
-                      <td className="p-2 text-xs" dir="ltr">{new Date(p.createdAt).toLocaleString("ar-IQ-u-nu-latn")}</td>
+                      <td className="p-2 text-xs whitespace-nowrap tabular-nums" dir="ltr">{fmtDateTime(p.createdAt)}</td>
                       <td className="p-2">
                         {p.isStandalone ? (
                           // سند مستقل (بلا فاتورة): كان غائباً عن الكشف فيبدو الرصيد منحرفاً بلا تفسير.

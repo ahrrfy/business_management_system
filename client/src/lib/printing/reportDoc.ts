@@ -12,6 +12,7 @@
 //     summary: [{ label: "الإجمالي", value: "1,000 د.ع", large: true, bold: true }],
 //   });
 import { openPrintWindow } from "./brand";
+import { fmtDate } from "../date";
 import {
   wrapA4Doc,
   docHeader,
@@ -62,7 +63,7 @@ function noteBlock(note: string): string {
  * المحتوى: رأس الشركة → تنويه (اختياري) → بطاقات وصفية (اختياري) → جدول → صندوق ملخّص (اختياري) → تذييل.
  */
 export function printReportDoc(input: ReportDocInput): boolean {
-  const date = input.docDate ?? new Date().toLocaleDateString("ar-IQ-u-nu-latn");
+  const date = input.docDate ?? fmtDate(new Date());
   const head = docHeader(input.title, input.docNum ?? null, date, input.headerExtra);
   const note = input.note ? noteBlock(input.note) : "";
   const meta = input.meta && input.meta.length ? docMeta(input.meta) : "";

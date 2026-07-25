@@ -10,6 +10,7 @@ import { Label } from "@/components/ui/label";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
 import { confirm } from "@/lib/confirm";
+import { fmtDate } from "@/lib/date";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { notify } from "@/lib/notify";
@@ -121,7 +122,7 @@ export default function Expenses() {
 
   // أعمدة التصدير (مشتركة بين زرّ التصدير وجلب-الكل).
   const exportColumns: ExportColumn<ExpenseRow>[] = [
-    { key: "expenseDate", header: "التاريخ", map: (r) => r.expenseDate ? new Date(r.expenseDate as unknown as string).toLocaleDateString("ar-IQ-u-nu-latn") : "" },
+    { key: "expenseDate", header: "التاريخ", map: (r) => fmtDate(r.expenseDate as unknown as string) },
     { key: "branchName", header: "الفرع", map: (r) => r.branchName ?? "" },
     { key: "category", header: "الفئة", map: (r) => CATEGORY_LABEL[r.category] ?? r.category },
     { key: "description", header: "الوصف", map: (r) => r.description ?? "" },
