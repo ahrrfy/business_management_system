@@ -7,6 +7,12 @@ import type { Tx } from "../db";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { isDupEntry } from "@shared/errorMap.ar";
+import {
+  IQD_DENOMINATIONS,
+  MATERIAL_SHIFT_VARIANCE_IQD,
+  SHIFT_VARIANCE_CODES,
+  type ShiftVarianceCode,
+} from "@shared/shiftCashGovernance";
 
 /**
  * نوع الوردية — كلٌّ درجٌ/رصيد افتتاحي/Z-report مستقلّ:
@@ -21,6 +27,39 @@ export type ShiftType = "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
  * واحد). نستعمل نصف الفلس عتبةً كي تُصفَّر ضوضاء الكسور العائمة وتُلتقَط أيّ خانتين عشريتين حقيقيتين.
  */
 const OPENING_DISCREPANCY_EPSILON = money("0.005");
+const VARIANCE_EPSILON = money("0.005");
+const ALLOWED_DENOMINATIONS = new Set<number>(IQD_DENOMINATIONS);
+
+function validateCountedBreakdown(
+  breakdown: Record<string, number> | null | undefined,
+  countedCash: ReturnType<typeof money>,
+) {
+  if (!breakdown) return null;
+  let total = money("0");
+  for (const [rawDenomination, rawCount] of Object.entries(breakdown)) {
+    const denomination = Number(rawDenomination);
+    if (!ALLOWED_DENOMINATIONS.has(denomination)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `فئة نقدية غير معتمدة في العد: ${rawDenomination}`,
+      });
+    }
+    if (!Number.isSafeInteger(rawCount) || rawCount < 0 || rawCount > 10_000) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `عدد الأوراق غير صالح لفئة ${rawDenomination}`,
+      });
+    }
+    total = total.plus(money(String(denomination)).times(rawCount));
+  }
+  if (!total.eq(countedCash)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: `مجموع عدّ الفئات (${total.toFixed(2)}) لا يساوي النقد المعدود (${countedCash.toFixed(2)}). أعد العد قبل الإغلاق.`,
+    });
+  }
+  return total;
+}
 
 /**
  * ①ج المتبقّي فعلياً في الدرج بعد إغلاق آخر وردية مغلقة لنفس (الفرع×النوع) = closingDrawerCash
@@ -221,6 +260,12 @@ export async function closeShift(
     shiftId: number;
     countedCash: string;
     countedBreakdown?: Record<string, number> | null;
+    varianceReasonCode?: ShiftVarianceCode | null;
+    varianceReason?: string | null;
+    /** هوية مدير تحقّق الراوتر من بياناته؛ لا تُقبل أبداً من حمولة العميل مباشرة. */
+    managerApprovedByUserId?: number | null;
+    /** تضبطها بوابة API. تُترك اختيارية لتوافق مهام الصيانة/الاختبارات الداخلية القديمة. */
+    enforceCashGovernance?: boolean;
     handover?: { amount: string; handoverTo: number; notes?: string | null } | null;
   },
   actor: Actor & { role?: string },
@@ -257,6 +302,10 @@ export async function closeShift(
         expectedCash: toDbMoney(money(sh.expectedCash ?? "0")),
         countedCash: toDbMoney(money(sh.countedCash ?? "0")),
         variance: toDbMoney(money(sh.variance ?? "0")),
+        reconciliationStatus: sh.reconciliationStatus,
+        varianceReasonCode: sh.varianceReasonCode,
+        varianceReason: sh.varianceReason,
+        requiresManagerReview: money(sh.variance ?? "0").abs().gte(MATERIAL_SHIFT_VARIANCE_IQD),
         handover: null,
         alreadyClosed: true as const,
       };
@@ -265,6 +314,43 @@ export async function closeShift(
     const expected = await computeExpectedCash(tx, input.shiftId, sh.openingBalance);
     const counted = money(input.countedCash);
     const variance = counted.minus(expected);
+    const hasVariance = variance.abs().gt(VARIANCE_EPSILON);
+    const isMaterialVariance = variance.abs().gte(MATERIAL_SHIFT_VARIANCE_IQD);
+    const reason = (input.varianceReason ?? "").trim();
+    const reasonCode = input.varianceReasonCode ?? null;
+    const varianceApproverId =
+      role === "manager" || role === "admin" ? actor.userId : input.managerApprovedByUserId ?? null;
+
+    // الرقم المعدود لا ينشئ مصدراً نقدياً. إثبات العد + تفسير المصدر شرطان
+    // قبل قبول الفرق، والفارق الجوهري لا يعتمده صاحب العهدة بنفسه.
+    validateCountedBreakdown(input.countedBreakdown, counted);
+    if (input.enforceCashGovernance && hasVariance && !input.countedBreakdown) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "يوجد فرق في الصندوق. أعد عدّ النقد حسب الفئات وأرسل تفصيل العد قبل الإغلاق.",
+      });
+    }
+    if (input.enforceCashGovernance && hasVariance && (!reasonCode || !SHIFT_VARIANCE_CODES.includes(reasonCode))) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "صنّف مصدر فرق الصندوق قبل الإغلاق؛ الرقم المعدود وحده لا يثبت مصدر الأموال.",
+      });
+    }
+    if (input.enforceCashGovernance && hasVariance && reason.length < 10) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "اشرح مصدر فرق الصندوق بوضوح (10 أحرف على الأقل) ليمكن تدقيقه.",
+      });
+    }
+    if (input.enforceCashGovernance && hasVariance && reason.length > 500) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "تفسير فرق الصندوق يتجاوز 500 حرف." });
+    }
+    if (input.enforceCashGovernance && isMaterialVariance && !varianceApproverId) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `فرق الصندوق جوهري (${variance.toFixed(2)} د.ع) ويتجاوز حد الرقابة ${MATERIAL_SHIFT_VARIANCE_IQD.toFixed(2)} د.ع. لا يجوز للكاشير اعتماد فرق عهدته بنفسه؛ يجب أن يراجع مدير الفرع العدّ والمصدر ثم يغلق الوردية.`,
+      });
+    }
 
     // treasury-stage2: تسليم اختياري للخزينة قبل التعيين CLOSED — يَكتب receipts داخل
     // الـtx الحالية بـcashHandoverService. يَفشل إن handover.amount > counted (تَحقّق داخلي).
@@ -308,6 +394,15 @@ export async function closeShift(
         variance: toDbMoney(variance),
         countedBreakdown: input.countedBreakdown ?? null,
         closingDrawerCash: toDbMoney(closingDrawerCash), // ①ج متبقّي الدرج للوردية التالية
+        varianceReasonCode: hasVariance ? reasonCode : null,
+        varianceReason: hasVariance ? reason : null,
+        reconciliationStatus: !hasVariance
+          ? "MATCHED"
+          : varianceApproverId
+            ? "MANAGER_APPROVED"
+            : "EXPLAINED",
+        closedByUserId: actor.userId,
+        varianceReviewedByUserId: hasVariance ? varianceApproverId : null,
       })
       .where(eq(shifts.id, input.shiftId));
 
@@ -317,6 +412,14 @@ export async function closeShift(
       expectedCash: toDbMoney(expected),
       countedCash: toDbMoney(counted),
       variance: toDbMoney(variance),
+      reconciliationStatus: !hasVariance
+        ? "MATCHED" as const
+        : varianceApproverId
+          ? "MANAGER_APPROVED" as const
+          : "EXPLAINED" as const,
+      varianceReasonCode: hasVariance ? reasonCode : null,
+      varianceReason: hasVariance ? reason : null,
+      requiresManagerReview: isMaterialVariance,
       handover: handoverResult,
     };
   });

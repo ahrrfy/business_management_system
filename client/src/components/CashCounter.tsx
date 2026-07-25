@@ -1,8 +1,8 @@
 import { Input } from "@/components/ui/input";
 import { D, fmtAr } from "@/lib/money";
+import { IQD_DENOMINATIONS } from "@shared/shiftCashGovernance";
 import { useEffect, useMemo, useState } from "react";
 
-const DENOMINATIONS = [50000, 25000, 10000, 5000, 1000, 500, 250] as const;
 const PER_BILL_CAP = 10_000;
 
 interface CashCounterProps {
@@ -20,7 +20,7 @@ export function CashCounter({ value, onChange, disabled }: CashCounterProps) {
 
   const total = useMemo(() => {
     let t = D(0);
-    for (const denom of DENOMINATIONS) {
+    for (const denom of IQD_DENOMINATIONS) {
       const n = Math.max(0, Math.floor(counts[denom] ?? 0));
       t = t.plus(D(denom).times(n));
     }
@@ -41,10 +41,10 @@ export function CashCounter({ value, onChange, disabled }: CashCounterProps) {
     <div className="rounded-lg border bg-card">
       <div className="px-4 py-2.5 border-b flex items-center justify-between">
         <h4 className="text-sm font-semibold">عدّاد فئات العملة (د.ع)</h4>
-        <span className="text-[11px] text-muted-foreground">اختياري</span>
+        <span className="text-[11px] text-muted-foreground">دليل العد</span>
       </div>
       <div className="p-3 space-y-1.5">
-        {DENOMINATIONS.map((denom) => {
+        {IQD_DENOMINATIONS.map((denom) => {
           const n = counts[denom] ?? 0;
           const subtotal = D(denom).times(n).toNumber();
           return (

@@ -785,6 +785,13 @@
       "when": 1785196800000,
       "tag": "0112_role_branches",
       "breakpoints": true
+    },
+    {
+      "idx": 113,
+      "version": "5",
+      "when": 1785283200000,
+      "tag": "0113_shift_cash_variance_governance",
+      "breakpoints": true
     }
   ]
 }

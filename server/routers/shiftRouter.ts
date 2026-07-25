@@ -10,6 +10,8 @@ import { closeShift, getExpectedOpening, getOpenShift, getShiftReport, openShift
 import { createCashDrop } from "../services/cashDropService";
 import { router, treasuryCashierProcedure, treasuryReadProcedure } from "../trpc";
 import { retryOnDup } from "../lib/retryDup";
+import { SHIFT_VARIANCE_CODES } from "@shared/shiftCashGovernance";
+import { verifyManagerApproval } from "./saleRouter";
 
 // تاريخ فلترة YYYY-MM-DD (فلتر الفترة الخادمي على openedAt).
 const ymd = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "تاريخ غير صالح (YYYY-MM-DD)");
@@ -155,6 +157,12 @@ export const shiftRouter = router({
         countedCash: z.string().regex(/^\d+(\.\d{1,2})?$/, "النقد المعدود مبلغ غير سالب"),
         // treasury-stage2: snapshot عدّاد الفئات (اختياري).
         countedBreakdown: z.record(z.string(), z.number().int().min(0).max(10000)).nullish(),
+        varianceReasonCode: z.enum(SHIFT_VARIANCE_CODES).nullish(),
+        varianceReason: z.string().trim().max(500).nullish(),
+        managerApproval: z.object({
+          email: z.string().min(1),
+          password: z.string().min(1),
+        }).optional(),
         // treasury-stage2: تسليم نقد للخزينة (اختياري).
         handover: z
           .object({
@@ -176,8 +184,16 @@ export const shiftRouter = router({
       // NUMBERING-RACE (تدقيق ٢/٧): ترقيم سند التسليم (CH) يحرّر GET_LOCK قبل الالتزام ⇒ إغلاقان
       // متزامنان لنفس الفرع/اليوم قد يحسبان نفس الرقم؛ القيد الفريد يرفض الثاني. نعيد المحاولة على
       // التصادم (closeShift ذرّية داخل withTx فتتراجع المحاولة الفاشلة كاملةً).
+      const { managerApproval, ...closeInput } = input;
+      const managerApprovedByUserId = managerApproval
+        ? await verifyManagerApproval(
+            managerApproval,
+            ctx,
+            ctx.user.branchId != null ? Number(ctx.user.branchId) : undefined,
+          )
+        : undefined;
       const res = await retryOnDup(() =>
-        closeShift(input, {
+        closeShift({ ...closeInput, managerApprovedByUserId, enforceCashGovernance: true }, {
           userId: ctx.user.id,
           branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
           role: ctx.user.role,
@@ -195,6 +211,10 @@ export const shiftRouter = router({
           expectedCash: res.expectedCash,
           variance: res.variance,
           openingBalance: res.openingBalance,
+          reconciliationStatus: res.reconciliationStatus,
+          varianceReasonCode: res.varianceReasonCode,
+          varianceReason: res.varianceReason,
+          requiresManagerReview: res.requiresManagerReview,
           handover: res.handover
             ? {
                 handoverNumber: res.handover.handoverNumber,
