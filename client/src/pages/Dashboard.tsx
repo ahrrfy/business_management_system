@@ -4,6 +4,7 @@ import { fmtDate, fmtTime } from "@/lib/date";
 import { useMediaQuery } from "@/hooks/useMobile";
 import { Link } from "wouter";
 import { CopyButton } from "@/components/CopyButton";
+import { canSeeGate, type RoleGate } from "@/lib/navVisibility";
 import { hasModuleAccess, moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 
 /* ═══════════ THEME — CSS variables in tokens.css ═══════════
@@ -34,11 +35,11 @@ const SECTIONS = [
   { id: 1, name: "المبيعات والتحصيل",  accent: "var(--sec1-ink)" },
   { id: 2, name: "المخزون والمشتريات", accent: "var(--sec2-ink)" },
   { id: 3, name: "المالية والحسابات",  accent: "var(--sec3-ink)" },
-  { id: 4, name: "التشغيل",            accent: "var(--sec4-ink)" },
+  { id: 4, name: "التشغيل والقنوات",   accent: "var(--sec4-ink)" },
   { id: 5, name: "الإدارة والنظام",    accent: "var(--sec5-ink)" },
 ];
 
-type ModuleDef = {
+type ModuleDef = RoleGate & {
   id: string;
   href: string;
   name: string;
@@ -51,27 +52,40 @@ type ModuleDef = {
 
 const MODULES: ModuleDef[] = [
   { id: "pos",           href: "/pos",                 name: "نقطة البيع",       desc: "مبيعات وورديات",    sec: 1, color: "var(--sec1-ink)",  featured: true },
-  { id: "sales",         href: "/invoices",            name: "المبيعات",          desc: "فواتير ومدفوعات",   sec: 1, color: "var(--sec1-ink)" },
-  { id: "quotations",    href: "/quotations",          name: "عروض الأسعار",      desc: "تسعير وعروض",       sec: 1, color: "var(--sec1-ink)" },
-  { id: "customers",     href: "/customers",           name: "العملاء",           desc: "إدارة العملاء",     sec: 1, color: "var(--sec1-ink)" },
-  { id: "returns",       href: "/returns",             name: "المرتجعات",         desc: "تسجيل المرتجعات",   sec: 1, color: "var(--sec1-ink)" },
-  { id: "products",      href: "/products",            name: "المنتجات",          desc: "منتجات وأسعار",      sec: 2, color: "var(--sec2-ink)" },
-  { id: "purchases",     href: "/purchases",           name: "المشتريات",         desc: "أوامر وموردين",     sec: 2, color: "var(--sec2-ink)" },
-  { id: "inventory",     href: "/inventory",           name: "المخزون والأرصدة",  desc: "أرصدة + تسوية",     sec: 2, color: "var(--sec2-ink)" },
-  { id: "movements",     href: "/inventory-movements", name: "حركات المخزون",     desc: "وارد وصادر يدوي",   sec: 2, color: "var(--sec2-ink)" },
-  { id: "transfers",     href: "/transfers",           name: "التحويلات",         desc: "نقل بين الفروع",    sec: 2, color: "var(--sec2-ink)" },
-  { id: "barcode",       href: "/barcode-labels",      name: "الباركود",          desc: "طباعة الملصقات",    sec: 2, color: "var(--sec2-ink)" },
-  { id: "suppliers",     href: "/suppliers",           name: "الموردون",          desc: "إدارة الموردين",    sec: 2, color: "var(--sec2-ink)" },
-  { id: "purchaseReturns", href: "/purchase-returns",  name: "مرتجعات الشراء",    desc: "سجلّ المرتجعات",    sec: 2, color: "var(--sec2-ink)" },
-  { id: "expenses",      href: "/expenses",            name: "المصروفات",         desc: "مصروفات يومية",     sec: 3, color: "var(--sec3-ink)" },
-  { id: "vouchers",      href: "/vouchers",            name: "السندات",           desc: "قبض وصرف",          sec: 3, color: "var(--sec3-ink)" },
-  { id: "shifts",        href: "/shifts",              name: "سجلّ الورديات",     desc: "إغلاقات وZ-report", sec: 3, color: "var(--sec3-ink)" },
-  { id: "arAging",       href: "/ar-aging",            name: "الذمم المدينة",     desc: "أعمار ومتابعة",     sec: 3, color: "var(--sec3-ink)" },
-  { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "var(--sec3-ink)" },
-  { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "var(--sec3-ink)" },
-  { id: "suppStatement", href: "/suppliers-statement", name: "كشف حساب مورد",     desc: "حسابات الموردين",   sec: 3, color: "var(--sec3-ink)" },
-  { id: "salesReport",   href: "/sales-report",        name: "تقرير المبيعات",    desc: "ملخّص وأرباح",      sec: 3, color: "var(--sec3-ink)" },
-  { id: "workOrders",    href: "/work-orders",         name: "خدمة العملاء",      desc: "طلبات الطباعة والتخصيص",  sec: 4, color: "var(--sec4-ink)" },
+  { id: "crm",           href: "/crm",                 name: "CRM والعلاقات",      desc: "عملاء ومحادثات وعروض", sec: 1, color: "var(--sec1-ink)", module: "crm" },
+  { id: "sales",         href: "/invoices",            name: "المبيعات",          desc: "فواتير ومدفوعات",   sec: 1, color: "var(--sec1-ink)", module: "sales" },
+  { id: "quotations",    href: "/quotations",          name: "عروض الأسعار",      desc: "تسعير وعروض",       sec: 1, color: "var(--sec1-ink)", module: "crm" },
+  { id: "customers",     href: "/customers",           name: "العملاء",           desc: "إدارة العملاء",     sec: 1, color: "var(--sec1-ink)", module: "crm" },
+  { id: "returns",       href: "/returns",             name: "المرتجعات",         desc: "تسجيل المرتجعات",   sec: 1, color: "var(--sec1-ink)", module: "sales" },
+  { id: "products",      href: "/products",            name: "المنتجات",          desc: "منتجات وأسعار",      sec: 2, color: "var(--sec2-ink)", module: "products" },
+  { id: "purchases",     href: "/purchases",           name: "المشتريات",         desc: "أوامر وموردين",     sec: 2, color: "var(--sec2-ink)", module: "purchases" },
+  { id: "inventory",     href: "/inventory",           name: "المخزون والأرصدة",  desc: "أرصدة + تسوية",     sec: 2, color: "var(--sec2-ink)", module: "inventory" },
+  { id: "stocktakes",    href: "/stocktakes",          name: "الجرد المخزني",     desc: "جلسات وعدّ ومراجعة", sec: 2, color: "var(--sec2-ink)", module: "inventory" },
+  { id: "movements",     href: "/inventory-movements", name: "حركات المخزون",     desc: "وارد وصادر يدوي",   sec: 2, color: "var(--sec2-ink)", module: "inventory" },
+  { id: "transfers",     href: "/transfers",           name: "التحويلات",         desc: "نقل بين الفروع",    sec: 2, color: "var(--sec2-ink)", module: "inventory" },
+  { id: "barcode",       href: "/barcode-labels",      name: "الباركود",          desc: "طباعة الملصقات",    sec: 2, color: "var(--sec2-ink)", module: "inventory" },
+  { id: "suppliers",     href: "/suppliers",           name: "الموردون",          desc: "إدارة الموردين",    sec: 2, color: "var(--sec2-ink)", module: "suppliers" },
+  { id: "purchaseReturns", href: "/purchase-returns",  name: "مرتجعات الشراء",    desc: "سجلّ المرتجعات",    sec: 2, color: "var(--sec2-ink)", module: "purchases" },
+  { id: "treasury",      href: "/treasury",            name: "الخزينة والمدفوعات", desc: "أرصدة وسندات وتحويلات", sec: 3, color: "var(--sec3-ink)", roles: ["admin", "manager", "accountant", "cashier", "auditor"], module: "treasury", featured: true },
+  { id: "expenses",      href: "/expenses",            name: "المصروفات",         desc: "مصروفات يومية",     sec: 3, color: "var(--sec3-ink)", module: "expenses" },
+  { id: "vouchers",      href: "/vouchers",            name: "السندات",           desc: "قبض وصرف",          sec: 3, color: "var(--sec3-ink)", module: "treasury" },
+  { id: "shifts",        href: "/shifts",              name: "سجلّ الورديات",     desc: "إغلاقات وZ-report", sec: 3, color: "var(--sec3-ink)", module: "treasury" },
+  { id: "arAging",       href: "/ar-aging",            name: "الذمم المدينة",     desc: "أعمار ومتابعة",     sec: 3, color: "var(--sec3-ink)", module: "collections" },
+  { id: "apAging",       href: "/ap-aging",            name: "الذمم الدائنة",     desc: "ذمم الموردين",      sec: 3, color: "var(--sec3-ink)", module: "suppliers" },
+  { id: "custStatement", href: "/customers-statement", name: "كشف حساب عميل",     desc: "حسابات العملاء",    sec: 3, color: "var(--sec3-ink)", module: "collections" },
+  { id: "suppStatement", href: "/suppliers-statement", name: "كشف حساب مورد",     desc: "حسابات الموردين",   sec: 3, color: "var(--sec3-ink)", module: "suppliers" },
+  { id: "salesReport",   href: "/sales-report",        name: "تقرير المبيعات",    desc: "ملخّص وأرباح",      sec: 3, color: "var(--sec3-ink)", module: "reports" },
+  { id: "reports",       href: "/reports",             name: "التقارير والكشوفات", desc: "مالية وتشغيلية ورقابية", sec: 3, color: "var(--sec3-ink)", module: "reports" },
+  { id: "cardAccount",   href: "/card-account",        name: "حساب البطاقة والبنك", desc: "أرصدة وتسويات البطاقة", sec: 3, color: "var(--sec3-ink)", roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
+  { id: "exchange",      href: "/exchange",            name: "الصيرفة",           desc: "صرف وتسوية العملات", sec: 3, color: "var(--sec3-ink)", roles: ["admin", "manager", "accountant"], module: "treasury" },
+  { id: "workOrders",    href: "/work-orders",         name: "المطبعة والإنتاج",  desc: "أوامر الشغل والتخصيص", sec: 4, color: "var(--sec4-ink)", module: "workorders" },
+  { id: "tasks",         href: "/tasks",               name: "المهام والتذاكر",   desc: "إسناد ومتابعة وSLA", sec: 4, color: "var(--sec4-ink)", module: "tasks" },
+  { id: "delivery",      href: "/delivery",            name: "التوصيل",           desc: "طلبات وشركات وتحصيل COD", sec: 4, color: "var(--sec4-ink)", roles: ["admin", "manager", "accountant", "cashier", "auditor"] },
+  { id: "store",         href: "/store-admin",         name: "طلبات المتجر",      desc: "طلبات وبنرات وإعدادات", sec: 4, color: "var(--sec4-ink)", roles: ["admin", "manager", "cashier", "sales_rep", "accountant", "auditor"], module: "store" },
+  { id: "assets",        href: "/assets",              name: "الأصول الثابتة",    desc: "سجلّ وإهلاك وعهدة", sec: 5, color: "var(--sec5-ink)", managerOnly: true },
+  { id: "hr",            href: "/hr",                  name: "الموارد البشرية",   desc: "موظفون وحضور ورواتب", sec: 5, color: "var(--sec5-ink)", roles: ["admin", "manager", "accountant", "auditor"], module: "hr" },
+  { id: "closing",       href: "/closing",             name: "الإقفال والرقابة",  desc: "فترات واعتمادات وتوافق", sec: 5, color: "var(--sec5-ink)", managerOnly: true },
+  { id: "settings",      href: "/settings",            name: "الإدارة والإعدادات", desc: "فروع وأدوار وتكاملات", sec: 5, color: "var(--sec5-ink)", managerOnly: true },
   { id: "users",         href: "/users",               name: "المستخدمون",        desc: "صلاحيات وأدوار",    sec: 5, color: "var(--sec5-ink)", adminOnly: true },
   { id: "audit",         href: "/audit",               name: "سجلّ التدقيق",      desc: "مراقبة العمليات",   sec: 5, color: "var(--sec5-ink)", adminOnly: true },
   { id: "reconcile",     href: "/reconcile",           name: "تدقيق التوافق",     desc: "كشف الانحراف",      sec: 5, color: "var(--sec5-ink)",  adminOnly: true },
@@ -88,6 +102,7 @@ type Action = { ic: string; label: string; href: string; adminOnly?: boolean };
 
 const ACTIONS: Record<string, Action[]> = {
   pos:           [{ ic: "plus",    label: "فاتورة", href: "/sales/new" }],
+  crm:           [{ ic: "plus",    label: "عميل", href: "/customers/new" }, { ic: "plus", label: "عرض", href: "/quotations/new" }, { ic: "rows", label: "الوارد", href: "/inbox" }],
   sales:         [{ ic: "plus",    label: "بيع",    href: "/sales/new" },             { ic: "return",  label: "مرتجع",   href: "/sales-returns/new" },    { ic: "doc",  label: "تقرير", href: "/sales-report" }],
   quotations:    [{ ic: "plus",    label: "عرض",    href: "/quotations/new" },       { ic: "doc",     label: "فواتير",  href: "/invoices" }],
   customers:     [{ ic: "plus",    label: "عميل",   href: "/customers/new" },        { ic: "doc",     label: "كشف",     href: "/customers-statement" },  { ic: "coin", label: "ذمم",   href: "/ar-aging" }],
@@ -95,6 +110,7 @@ const ACTIONS: Record<string, Action[]> = {
   products:      [{ ic: "plus",    label: "منتج",    href: "/products/new" },         { ic: "barcode", label: "باركود",  href: "/barcode-labels" },       { ic: "rows", label: "أرصدة", href: "/inventory" }],
   purchases:     [{ ic: "plus",    label: "أمر",    href: "/purchases/new" },        { ic: "return",  label: "إرجاع",   href: "/purchase-returns/new" }, { ic: "coin", label: "ذمم",   href: "/ap-aging" }],
   inventory:     [{ ic: "rows",    label: "حركة",   href: "/inventory-movements" },  { ic: "return",  label: "تحويل",   href: "/transfers" },            { ic: "plus", label: "منتج",   href: "/products/new" }],
+  stocktakes:    [{ ic: "plus",    label: "جرد", href: "/stocktakes/new" }, { ic: "rows", label: "أرصدة", href: "/inventory" }],
   movements:     [{ ic: "rows",    label: "أرصدة",  href: "/inventory" },            { ic: "return",  label: "تحويل",   href: "/transfers" },            { ic: "barcode", label: "باركود", href: "/barcode-labels" }],
   transfers:     [{ ic: "rows",    label: "أرصدة",  href: "/inventory" },            { ic: "rows",    label: "حركة",    href: "/inventory-movements" }],
   barcode:       [{ ic: "plus",    label: "منتج",    href: "/products/new" },         { ic: "rows",    label: "منتجات",   href: "/products" }],
@@ -102,12 +118,23 @@ const ACTIONS: Record<string, Action[]> = {
   purchaseReturns: [{ ic: "return", label: "إرجاع",  href: "/purchase-returns/new" }, { ic: "rows",    label: "موردون",  href: "/suppliers" }],
   expenses:      [{ ic: "plus",    label: "مصروف",  href: "/expenses/new" },         { ic: "coin",    label: "ذمم",     href: "/ap-aging" }],
   vouchers:      [{ ic: "coin",    label: "قبض",    href: "/vouchers/receipt/new" }, { ic: "export",  label: "صرف",     href: "/vouchers/payment/new" }],
+  treasury:      [{ ic: "coin",    label: "قبض", href: "/vouchers/receipt/new" }, { ic: "export", label: "صرف", href: "/vouchers/payment/new" }, { ic: "return", label: "تحويل", href: "/treasury/transfers" }],
   arAging:       [{ ic: "doc",     label: "كشف",    href: "/customers-statement" },  { ic: "rows",    label: "عملاء",   href: "/customers" },            { ic: "doc",  label: "تقرير", href: "/sales-report" }],
   apAging:       [{ ic: "doc",     label: "كشف",    href: "/suppliers-statement" },  { ic: "rows",    label: "موردون",  href: "/suppliers" },            { ic: "plus", label: "مصروف", href: "/expenses/new" }],
   custStatement: [{ ic: "coin",    label: "ذمم",    href: "/ar-aging" },             { ic: "rows",    label: "عملاء",   href: "/customers" }],
   suppStatement: [{ ic: "coin",    label: "ذمم",    href: "/ap-aging" },             { ic: "rows",    label: "موردون",  href: "/suppliers" }],
   salesReport:   [{ ic: "rows",    label: "فواتير", href: "/invoices" },             { ic: "coin",    label: "ذمم",     href: "/ar-aging" }],
+  reports:       [{ ic: "doc",     label: "مبيعات", href: "/reports/sales-hub" }, { ic: "coin", label: "ذمم", href: "/reports/aging-hub" }, { ic: "rows", label: "تنفيذي", href: "/reports/executive" }],
+  cardAccount:   [{ ic: "doc",     label: "الخزينة", href: "/treasury" }],
+  exchange:      [{ ic: "doc",     label: "الخزينة", href: "/treasury" }],
   workOrders:    [{ ic: "plus",    label: "أمر",    href: "/work-orders/new" },      { ic: "plus",    label: "عرض",     href: "/quotations/new" },       { ic: "rows", label: "خامات", href: "/inventory" }],
+  tasks:         [{ ic: "rows",    label: "مهامي", href: "/tasks?tab=mine" }, { ic: "rows", label: "المتأخرة", href: "/tasks?tab=list&overdue=1" }],
+  delivery:      [{ ic: "rows",    label: "الطلبات", href: "/delivery" }, { ic: "rows", label: "الشركات", href: "/delivery/parties" }],
+  store:         [{ ic: "rows",    label: "الطلبات", href: "/store-admin" }, { ic: "eye", label: "المتجر", href: "/store" }],
+  assets:        [{ ic: "plus",    label: "أصل", href: "/assets/new" }, { ic: "rows", label: "العهدة", href: "/assets/custody-report" }],
+  hr:            [{ ic: "plus",    label: "موظف", href: "/hr/employees/new" }, { ic: "rows", label: "الحضور", href: "/hr/attendance" }, { ic: "coin", label: "الرواتب", href: "/hr/payroll" }],
+  closing:       [{ ic: "shield",  label: "الفترات", href: "/period-lock" }, { ic: "eye", label: "التوافق", href: "/reconcile" }],
+  settings:      [{ ic: "shield",  label: "الأدوار", href: "/roles" }, { ic: "rows", label: "المستخدمون", href: "/users" }, { ic: "eye", label: "التدقيق", href: "/audit" }],
   users:         [{ ic: "plus",    label: "مستخدم", href: "/users/new", adminOnly: true }, { ic: "eye", label: "تدقيق", href: "/audit", adminOnly: true }],
   audit:         [{ ic: "shield",  label: "مستخدمون", href: "/users", adminOnly: true }],
   reconcile:     [{ ic: "eye",     label: "تدقيق",   href: "/audit", adminOnly: true },   { ic: "coin", label: "ذمم", href: "/ar-aging", adminOnly: true }],
@@ -289,6 +316,46 @@ function Shape({ id, sec, isPos = false, size = 76 }: { id: string; sec: number;
         <rect x="16.5" y="5.5" width="3" height="12.5" rx="0.6" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
       </>
     ),
+    crm: (
+      <>
+        <circle cx="8" cy="8" r="3.5" stroke={w} strokeWidth={sw} />
+        <path d="M2.5,19 C2.5,15.5 5,13.5 8,13.5 C11,13.5 13.5,15.5 13.5,19" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+        <path d="M15,6 H21 V15 H18 L15,18 V6 Z" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+      </>
+    ),
+    stocktakes: (
+      <>
+        <rect x="4" y="3" width="16" height="18" rx="2" stroke={w} strokeWidth={sw} />
+        <path d="M8,3.5 V6 H16 V3.5" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M8,11 L10,13 L14,9 M8,17 H16" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    treasury: (
+      <>
+        <rect x="2.5" y="7" width="19" height="13" rx="2" stroke={w} strokeWidth={sw} />
+        <path d="M6,7 L8,4 H16 L18,7 M2.5,11 H21.5" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+        <circle cx="17" cy="15.5" r="2" stroke={w} strokeWidth={sw} />
+      </>
+    ),
+    reports: (
+      <>
+        <path d="M4,3 V21 H21" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M7,17 L11,12 L14,14 L20,7" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M16,7 H20 V11" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    cardAccount: (
+      <>
+        <rect x="2" y="5" width="20" height="14" rx="2" stroke={w} strokeWidth={sw} />
+        <path d="M2,10 H22 M6,15 H11" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+      </>
+    ),
+    exchange: (
+      <>
+        <path d="M4,8 H19 M16,5 L19,8 L16,11" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M20,16 H5 M8,13 L5,16 L8,19" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
     workOrders: (
       <>
         <rect x="4" y="5" width="16" height="16" rx="2" stroke={w} strokeWidth={sw} />
@@ -296,6 +363,52 @@ function Shape({ id, sec, isPos = false, size = 76 }: { id: string; sec: number;
         <line x1="8" y1="12" x2="16" y2="12" stroke={w} strokeWidth={sw} strokeLinecap="round" />
         <line x1="8" y1="15.5" x2="16" y2="15.5" stroke={w} strokeWidth={sw} strokeLinecap="round" />
         <path d="M8,19 L10,21 L15,16" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    tasks: (
+      <>
+        <rect x="4" y="3" width="16" height="18" rx="2" stroke={w} strokeWidth={sw} />
+        <path d="M7,8 L8.5,9.5 L11,6.5 M13,8 H17 M7,14 L8.5,15.5 L11,12.5 M13,14 H17" stroke={w} strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ),
+    delivery: (
+      <>
+        <path d="M2,7 H14 V18 H2 Z M14,11 H18 L22,15 V18 H14 Z" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <circle cx="6" cy="19" r="2" stroke={w} strokeWidth={sw} />
+        <circle cx="18" cy="19" r="2" stroke={w} strokeWidth={sw} />
+      </>
+    ),
+    store: (
+      <>
+        <path d="M3,9 L5,4 H19 L21,9" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M4,9 V21 H20 V9 M9,21 V14 H15 V21" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+        <path d="M3,9 C3,11 6,11 6,9 C6,11 9,11 9,9 C9,11 12,11 12,9 C12,11 15,11 15,9 C15,11 18,11 18,9 C18,11 21,11 21,9" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+      </>
+    ),
+    assets: (
+      <>
+        <rect x="3" y="6" width="18" height="14" rx="2" stroke={w} strokeWidth={sw} />
+        <path d="M8,6 V3 H16 V6 M3,11 H21 M9,11 V14 H15 V11" stroke={w} strokeWidth={sw} strokeLinejoin="round" />
+      </>
+    ),
+    hr: (
+      <>
+        <circle cx="12" cy="7" r="4" stroke={w} strokeWidth={sw} />
+        <path d="M4,21 C4,16.5 7.5,14 12,14 C16.5,14 20,16.5 20,21" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+        <path d="M18,3 V8 M15.5,5.5 H20.5" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+      </>
+    ),
+    closing: (
+      <>
+        <rect x="5" y="10" width="14" height="11" rx="2" stroke={w} strokeWidth={sw} />
+        <path d="M8,10 V7 C8,2.5 16,2.5 16,7 V10" stroke={w} strokeWidth={sw} strokeLinecap="round" />
+        <circle cx="12" cy="15.5" r="1.5" stroke={w} strokeWidth={sw} />
+      </>
+    ),
+    settings: (
+      <>
+        <circle cx="12" cy="12" r="3.5" stroke={w} strokeWidth={sw} />
+        <path d="M12,2.5 V5 M12,19 V21.5 M2.5,12 H5 M19,12 H21.5 M5.3,5.3 L7.1,7.1 M16.9,16.9 L18.7,18.7 M18.7,5.3 L16.9,7.1 M7.1,16.9 L5.3,18.7" stroke={w} strokeWidth={sw} strokeLinecap="round" />
       </>
     ),
     users: (
@@ -775,43 +888,13 @@ function ModuleCard({ m }: { m: (typeof MODULES)[number] }) {
   );
 }
 
-/* ═══════════ PLACEHOLDER CARD ═══════════ */
-
-function PlaceholderCard() {
-  const T = useT();
-  return (
-    <div
-      style={{
-        // مُطابِق لِـModuleCard: ارتِفاع ثابِت ٢٤٠ + minWidth:0 (بِلا aspect-ratio) لِتَوحيد ارتِفاع
-        // الصَفّ وَمَنع تَمَدُّد العَرض فَوق مَسار 1fr الضَيّق ⇒ تَراكُب (راجِع تَعليق ModuleCard).
-        minWidth: 0,
-        minHeight: 150,
-        borderRadius: 16,
-        border: `1.5px dashed ${T.secLine}`,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 8,
-        opacity: 0.4,
-      }}
-    >
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-        <circle cx="12" cy="12" r="9" stroke={T.muted} strokeWidth="1.4" strokeDasharray="3 2" />
-        <line x1="12" y1="8" x2="12" y2="16" stroke={T.muted} strokeWidth="1.6" strokeLinecap="round" />
-        <line x1="8" y1="12" x2="16" y2="12" stroke={T.muted} strokeWidth="1.6" strokeLinecap="round" />
-      </svg>
-      <span style={{ fontSize: 9.5, color: T.muted, fontWeight: 500 }}>وحدة قادمة</span>
-    </div>
-  );
-}
-
 /* ═══════════ SECTION ROW ═══════════ */
 
 function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
   const T = useT();
   const me = trpc.auth.me.useQuery(); // مُخزَّن مؤقتاً (deduped) — لا طلب إضافي.
-  const isAdmin = me.data?.role === "admin";
+  const role = me.data?.role;
+  const override = (me.data?.permissionsOverride ?? null) as PermissionMap | null;
   // عدد الأعمدة متجاوب — كَسر ذَكي يَحفَظ نِسبة البِطاقة قَريبة من المُربَّع:
   //   ≤640px      ⇒ 2 (مَوبايل)
   //   641-1023px  ⇒ 3 (لَوحي)
@@ -826,12 +909,11 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
   const isMidNarrow = useMediaQuery("(max-width: 1280px)");
   const isMidWide = useMediaQuery("(max-width: 1600px)");
   const cols = isXNarrow ? 2 : isNarrow ? 3 : isMidNarrow ? 4 : isMidWide ? 5 : 6;
-  // البطاقات adminOnly تظهر للأدمن فقط (اتّساقاً مع مجموعة «الإدارة» المحجوبة في الشريط الجانبي).
-  const mods = MODULES.filter((m) => m.sec === sec.id && (!m.adminOnly || isAdmin));
+  // نفس بوابة الشريط الجانبي: الدور القالبي + المنح الفردي/الدور المخصّص + مستوى الوحدة.
+  // هكذا لا تظهر بطاقة تقود المستخدم إلى 403، وتظهر تلقائياً عند منحه الوحدة صراحةً.
+  const mods = MODULES.filter((m) => m.sec === sec.id && canSeeGate(m, role, override));
   // قسم بلا بطاقات مرئية للدور الحالي ⇒ يُخفى كاملاً (لا رأس ولا فراغات).
   if (mods.length === 0) return null;
-  // يملأ بقية الصف الأخير فقط، وفق عدد الأعمدة الفعّال (يدعم 7+ وحدات في القسم الواحد).
-  const placeholders = (cols - (mods.length % cols)) % cols;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
@@ -845,9 +927,6 @@ function SectionRow({ sec }: { sec: (typeof SECTIONS)[number] }) {
       <div style={{ display: "grid", gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 14 }}>
         {mods.map((m) => (
           <ModuleCard key={m.id} m={m} />
-        ))}
-        {Array.from({ length: placeholders }).map((_, i) => (
-          <PlaceholderCard key={`ph${i}`} />
         ))}
       </div>
     </div>
