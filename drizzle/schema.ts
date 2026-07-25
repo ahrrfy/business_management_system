@@ -131,6 +131,23 @@ export type Role = typeof roles.$inferSelect;
 export type InsertRole = typeof roles.$inferInsert;
 
 /**
+ * RBAC ش٦ — فروع الدور الصريحة (نطاق متعدّد القيم). **أساسٌ خاملٌ مؤجَّل التفعيل**: غير موصولٍ بأي
+ * مخنق إنفاذ بعد ⇒ جدولٌ فارغ = صفر أثر (كل الأدوار بسلوكها الحاليّ). التفعيل حملةٌ واعية تحوّل مخانق
+ * العزل الـ٧٣ إلى فحص عضوية `IN(allowedBranchIds)` — قرار المالك.
+ */
+export const roleBranches = mysqlTable(
+  "roleBranches",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    roleId: bigint("roleId", { mode: "number" }).notNull().references(() => roles.id, { onDelete: "cascade" }),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id, { onDelete: "cascade" }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({ uqRoleBranch: unique("uq_role_branch").on(t.roleId, t.branchId) }),
+);
+export type RoleBranch = typeof roleBranches.$inferSelect;
+
+/**
  * تتبّع الجلسات الفردية (لكل تسجيل دخول) — مكمِّل لا بديل لـ`users.sessionsValidFrom`
  * (الإبطال الجماعي القائم لكل الأجهزة). كل توكن JWT جديد (بعد هذه الميزة) يحمل `sid`
  * يشير لسطرٍ هنا؛ إبطال سطرٍ واحد (`revokedAt`) يطرد ذلك الجهاز تحديداً بلا مسّ البقية.
