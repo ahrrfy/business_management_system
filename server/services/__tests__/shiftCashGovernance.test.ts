@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { branches, shifts, users } from "../../../drizzle/schema";
+import { branches, receipts, shifts, users } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { closeShift, openShift } from "../shiftService";
 
@@ -35,7 +35,7 @@ describe("حوكمة فروقات درج النقد", () => {
 
     await expect(
       closeShift({ shiftId: shift.shiftId, countedCash: "750000", enforceCashGovernance: true }, CASHIER),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     expect((await row(shift.shiftId)).status).toBe("OPEN");
   });
@@ -57,24 +57,20 @@ describe("حوكمة فروقات درج النقد", () => {
     expect((await row(shift.shiftId)).status).toBe("OPEN");
   });
 
-  it("يسمح للمدير بعد التحقيق ويحفظ المصدر وهوية المراجع وحالة الاعتماد", async () => {
+  it("لا يسمح حتى للمدير بإغلاق مال بلا مصدر مسجل", async () => {
     const shift = await openZeroShift();
-    const result = await closeShift({
-      shiftId: shift.shiftId,
-      countedCash: "750000",
-      countedBreakdown: { "50000": 15 },
-      varianceReasonCode: "UNRECORDED_CASH_IN",
-      varianceReason: "استلام عهدة نقدية فعلية لم يسجل سندها بعد، راجعها المدير",
-      enforceCashGovernance: true,
-    }, MANAGER);
+    await expect(
+      closeShift({
+        shiftId: shift.shiftId,
+        countedCash: "750000",
+        countedBreakdown: { "50000": 15 },
+        varianceReasonCode: "UNRECORDED_CASH_IN",
+        varianceReason: "استلام عهدة نقدية فعلية لم يسجل مصدرها",
+        enforceCashGovernance: true,
+      }, MANAGER),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
-    expect(result.reconciliationStatus).toBe("MANAGER_APPROVED");
-    const saved = await row(shift.shiftId);
-    expect(saved.variance).toBe("750000.00");
-    expect(saved.varianceReasonCode).toBe("UNRECORDED_CASH_IN");
-    expect(saved.varianceReason).toContain("عهدة نقدية");
-    expect(saved.closedByUserId).toBe(MANAGER.userId);
-    expect(saved.varianceReviewedByUserId).toBe(MANAGER.userId);
+    expect((await row(shift.shiftId)).status).toBe("OPEN");
   });
 
   it("يرفض عدم تطابق مجموع الفئات مع الرقم المعدود", async () => {
@@ -92,19 +88,56 @@ describe("حوكمة فروقات درج النقد", () => {
     ).rejects.toThrow(/مجموع عدّ الفئات/);
   });
 
-  it("يسمح بفرق صغير موثّق للكاشير ويصنّفه EXPLAINED", async () => {
+  it("يمنع الفرق الصغير أيضاً لأن التسامح المالي لا يخلق مصدراً", async () => {
     const shift = await openZeroShift();
+    await expect(
+      closeShift({
+        shiftId: shift.shiftId,
+        countedCash: "1000",
+        countedBreakdown: { "250": 4 },
+        enforceCashGovernance: true,
+      }, CASHIER),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect((await row(shift.shiftId)).status).toBe("OPEN");
+  });
+
+  it("يطبق المعادلة: افتتاح 100,000 + مبيعات نقدية 200,000 = إغلاق 300,000 فقط", async () => {
+    const shift = await openShift(
+      { branchId: 1, openingBalance: "100000", shiftType: "RETAIL" },
+      CASHIER,
+    );
+    await db().insert(receipts).values({
+      branchId: 1,
+      shiftId: shift.shiftId,
+      direction: "IN",
+      amount: "200000",
+      paymentMethod: "CASH",
+      cashBucket: "DRAWER",
+      status: "COMPLETED",
+      createdBy: CASHIER.userId,
+    });
+
+    await expect(
+      closeShift({
+        shiftId: shift.shiftId,
+        countedCash: "400000",
+        countedBreakdown: { "50000": 8 },
+        enforceCashGovernance: true,
+      }, MANAGER),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
     const result = await closeShift({
       shiftId: shift.shiftId,
-      countedCash: "1000",
-      countedBreakdown: { "250": 4 },
-      varianceReasonCode: "COUNT_ERROR",
-      varianceReason: "فرق صغير ظهر بعد إعادة العد مرتين وسيُتابع",
+      countedCash: "300000",
+      countedBreakdown: { "50000": 6 },
       enforceCashGovernance: true,
     }, CASHIER);
 
-    expect(result.reconciliationStatus).toBe("EXPLAINED");
-    expect((await row(shift.shiftId)).varianceReviewedByUserId).toBeNull();
+    expect(result.expectedCash).toBe("300000.00");
+    expect(result.countedCash).toBe("300000.00");
+    expect(result.variance).toBe("0.00");
+    expect(result.reconciliationStatus).toBe("MATCHED");
   });
 
   it("يغلق الوردية المطابقة بلا تفسير ويسجل MATCHED", async () => {
