@@ -22,12 +22,6 @@ import { CopyButton } from "@/components/CopyButton";
 import { notify } from "@/lib/notify";
 import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue } from "@/components/pos/ShiftHandoverSection";
 import { CashCounter } from "@/components/CashCounter";
-import {
-  MATERIAL_SHIFT_VARIANCE_IQD,
-  SHIFT_VARIANCE_CODES,
-  SHIFT_VARIANCE_LABELS,
-  type ShiftVarianceCode,
-} from "@shared/shiftCashGovernance";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 type PaymentMethod = "CASH" | "CARD" | "TRANSFER";
@@ -926,10 +920,6 @@ function Bar({ C, c, k, v, copyTitle }: { C: C; c: string; k: string; v: number;
 function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNullable<ShiftData>; onClose: () => void; onClosed: () => void }) {
   const [counted, setCounted] = useState("");
   const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
-  const [varianceCode, setVarianceCode] = useState<ShiftVarianceCode | "">("");
-  const [varianceReason, setVarianceReason] = useState("");
-  const [managerEmail, setManagerEmail] = useState("");
-  const [managerPassword, setManagerPassword] = useState("");
   const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
   const reportQ = trpc.shifts.report.useQuery({ shiftId: shift.id });
@@ -965,9 +955,6 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
   const expected = report != null ? D(shift.openingBalance ?? 0).plus(cashIn).minus(cashOut).toNumber() : null;
   const diff = expected != null && counted ? Number(counted) - expected : null;
   const hasVariance = diff != null && Math.abs(diff) >= 0.01;
-  const materialVariance = hasVariance && Math.abs(diff!) >= MATERIAL_SHIFT_VARIANCE_IQD;
-  const varianceIncomplete = hasVariance && (!varianceCode || varianceReason.trim().length < 10);
-  const approvalIncomplete = materialVariance && (!managerEmail.trim() || !managerPassword);
 
   return (
     <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgb(0 0 0/.55)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, direction: "rtl", fontFamily: "'Cairo', system-ui, sans-serif" }}>
@@ -1003,25 +990,13 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
               )}
             </div>
             {hasVariance && (
-              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${materialVariance ? C.danger : C.amber}`, borderRadius: 9, background: C.muted }}>
-                <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 7, color: C.fg }}>هذا النقد لا يطابق الحركات المسجّلة. حدّد مصدر الفرق.</div>
-                <select value={varianceCode} onChange={(e) => setVarianceCode(e.target.value as ShiftVarianceCode)}
-                  style={{ width: "100%", height: 42, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit" }}>
-                  <option value="">— تصنيف الفرق —</option>
-                  {SHIFT_VARIANCE_CODES.map((code) => <option key={code} value={code}>{SHIFT_VARIANCE_LABELS[code]}</option>)}
-                </select>
-                <textarea value={varianceReason} onChange={(e) => setVarianceReason(e.target.value)} maxLength={500}
-                  placeholder="من أين جاءت الزيادة أو لماذا حدث العجز؟ اذكر السند/العملية أو نتيجة إعادة العد."
-                  style={{ width: "100%", minHeight: 72, marginTop: 8, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: 10, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }} />
-                {materialVariance && (
-                  <>
-                    <div style={{ margin: "8px 0 6px", fontSize: 12.5, fontWeight: 800, color: C.danger }}>فرق جوهري يتجاوز {MATERIAL_SHIFT_VARIANCE_IQD.toLocaleString("en-US")} د.ع — يلزم اعتماد مدير.</div>
-                    <input value={managerEmail} onChange={(e) => setManagerEmail(e.target.value)} type="email" placeholder="بريد المدير"
-                      style={{ width: "100%", height: 40, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit", boxSizing: "border-box" }} />
-                    <input value={managerPassword} onChange={(e) => setManagerPassword(e.target.value)} type="password" placeholder="كلمة مرور المدير"
-                      style={{ width: "100%", height: 40, marginTop: 7, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit", boxSizing: "border-box" }} />
-                  </>
-                )}
+              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${C.danger}`, borderRadius: 9, background: C.muted }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: C.danger }}>
+                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة.
+                </div>
+                <div style={{ marginTop: 6, fontSize: 12.5, color: C.mutedFg }}>
+                  أعد العد وراجع الفواتير والمرتجعات. لا يستطيع المدير اعتماد مال بلا مصدر من شاشة الإغلاق.
+                </div>
               </div>
             )}
             <ShiftHandoverSection
@@ -1033,17 +1008,14 @@ function ShiftCloseDialog({ C, shift, onClose, onClosed }: { C: C; shift: NonNul
             />
             <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
               <button onClick={onClose} style={{ flex: 1, height: 46, background: C.card, border: `1.5px solid ${C.border}`, borderRadius: 9, cursor: "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700, color: C.fg }}>إلغاء</button>
-              <button disabled={!counted || closeShift.isPending || handoverIncomplete(handover) || varianceIncomplete || approvalIncomplete}
+              <button disabled={!counted || closeShift.isPending || hasVariance || handoverIncomplete(handover)}
                 onClick={() => closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
                   countedBreakdown: closeCounts,
-                  varianceReasonCode: hasVariance ? varianceCode || undefined : undefined,
-                  varianceReason: hasVariance ? varianceReason.trim() : undefined,
-                  managerApproval: materialVariance ? { email: managerEmail.trim(), password: managerPassword } : undefined,
                   handover: buildHandoverPayload(handover),
                 })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || varianceIncomplete || approvalIncomplete ? C.muted : C.danger, color: !counted || closeShift.isPending || varianceIncomplete || approvalIncomplete ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || varianceIncomplete || approvalIncomplete ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeShift.isPending ? "جارٍ الإغلاق…" : "إغلاق وطباعة Z"}</button>
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? C.muted : C.danger, color: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || hasVariance || handoverIncomplete(handover) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>{closeShift.isPending ? "جارٍ الإغلاق…" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}</button>
             </div>
           </>
         )}
