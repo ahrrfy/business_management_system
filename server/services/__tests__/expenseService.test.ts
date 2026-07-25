@@ -215,20 +215,23 @@ describe("المصروفات اليومية", () => {
  * المصاريف غير النقدية (TRANSFER/CARD/WALLET/CHECK) لا تَمسّ الصندوق فتبقى مسموحة.
  */
 describe("إنفاذ الوردية النقدية (shift-gate) للمصاريف", () => {
-  it("مصروف نقدي للكاشير بلا وردية مفتوحة ⇒ يُرفض بـPRECONDITION_FAILED", async () => {
-    // cash-treasury-mode: admin/manager مُعفَون ⇒ نَختبر cashier صراحةً للحارس الصارم.
+  it("الكاشير لا يملك صلاحية إنشاء مصروف نقدي ⇒ يُرفض بلا أثر مالي", async () => {
+    // الحارس الأعلى أولوية الآن هو فصل الواجبات: الكاشير لا ينشئ مصروفاً
+    // أصلاً، فلا يصل التنفيذ إلى فحص وجود وردية.
     await expect(
       createExpense(
         { branchId: 1, category: "TRANSPORT", amount: "20000", paymentMethod: "CASH", description: "أجور نقل" },
         { ...actor, role: "cashier" }
       )
-    ).rejects.toThrow(/افتح وردية/);
+    ).rejects.toThrow(/صلاحية المدير\/الخزينة فقط/);
 
-    // لا expense ولا receipt كُتب (rollback ذرّي).
+    // لا expense ولا receipt ولا قيد دفتري كُتب.
     const exps = await db().select().from(s.expenses);
     expect(exps).toHaveLength(0);
     const recs = await db().select().from(s.receipts);
     expect(recs).toHaveLength(0);
+    const entries = await db().select().from(s.accountingEntries);
+    expect(entries).toHaveLength(0);
   });
 
   it("مصروف نقدي مع وردية مفتوحة ⇒ يُملأ shiftId تلقائياً ويُخصم من Z-report", async () => {

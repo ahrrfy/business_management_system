@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { DataTable } from "@/components/DataTable";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
+import { notify } from "@/lib/notify";
 import { trpc } from "@/lib/trpc";
 import { type ColumnDef } from "@tanstack/react-table";
 import {
@@ -15,6 +16,8 @@ import {
   ArrowRight,
   ArrowUpRight,
   Building2,
+  CheckCircle2,
+  Clock3,
   Layers,
   Receipt as ReceiptIcon,
   RefreshCcw,
@@ -96,6 +99,25 @@ export default function Treasury() {
     { branchId: branchId ? Number(branchId) : undefined },
     { refetchInterval: 30_000 },
   );
+  const pendingHandovers = trpc.treasury.pendingHandoverReceipts.useQuery(
+    undefined,
+    { refetchInterval: 15_000 },
+  );
+  const acceptHandover = trpc.treasury.acceptHandoverReceipt.useMutation({
+    onSuccess: (result) => {
+      notify.ok(
+        result.idempotent ? "العهدة مقبولة مسبقاً" : "تم قبول عهدة النقد",
+        `السند ${result.referenceNumber} — ${fmtAr(result.amount)} د.ع`,
+      );
+      void utils.treasury.pendingHandoverReceipts.invalidate();
+      void utils.treasury.getDashboard.invalidate();
+      void utils.treasury.getKpiTrends.invalidate();
+      void utils.treasury.getCashFlowSeries.invalidate();
+      void utils.treasury.getPaymentMethodBreakdown.invalidate();
+      void utils.treasury.getRecentMovements.invalidate();
+    },
+    onError: (error) => notify.err(error),
+  });
 
   const userRole = me.data?.role ?? "";
   const isAdmin = userRole === "admin";
@@ -110,6 +132,7 @@ export default function Treasury() {
     void utils.treasury.getPaymentMethodBreakdown.invalidate();
     void utils.treasury.getRecentMovements.invalidate();
     void utils.treasury.getOpenShifts.invalidate();
+    void utils.treasury.pendingHandoverReceipts.invalidate();
   };
 
   const movementCols: ColumnDef<MovementRow>[] = useMemo(
@@ -284,6 +307,59 @@ export default function Treasury() {
           </Button>
         </Link>
       </div>
+
+      {(pendingHandovers.data?.length ?? 0) > 0 && (
+        <section className="rounded-md border border-[var(--sem-warning)]/40 bg-[var(--sem-warning)]/5 p-4">
+          <div className="mb-3 flex items-center gap-2">
+            <Clock3 className="h-4 w-4 text-[var(--sem-warning)]" />
+            <div>
+              <h2 className="text-sm font-bold">عهد نقد بانتظار استلامك</h2>
+              <p className="text-xs text-muted-foreground">
+                لا يدخل المبلغ رصيد الخزينة حتى تؤكد أنك استلمته فعلياً.
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2">
+            {pendingHandovers.data?.map((handover) => {
+              const accepting =
+                acceptHandover.isPending &&
+                acceptHandover.variables?.receiptId === handover.id;
+              return (
+                <div
+                  key={handover.id}
+                  className="flex flex-wrap items-center gap-3 rounded-md border bg-card px-3 py-2.5"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold tabular-nums" dir="ltr">
+                        {handover.referenceNumber}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {handover.source === "CASH_DROP" ? "سحب أثناء الوردية" : "تسليم إغلاق وردية"}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      أُنشئ {fmtRelativeShort(String(handover.createdAt))}
+                    </div>
+                  </div>
+                  <div className="text-base font-bold tabular-nums" dir="ltr">
+                    {fmtAr(handover.amount)} د.ع
+                  </div>
+                  <Button
+                    size="sm"
+                    onClick={() => acceptHandover.mutate({ receiptId: handover.id })}
+                    disabled={acceptHandover.isPending}
+                    className="gap-1.5"
+                  >
+                    <CheckCircle2 className="h-4 w-4" />
+                    {accepting ? "جارٍ القبول…" : "تأكيد الاستلام"}
+                  </Button>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       {/* ═══ صف ١: KPI cards ═══ */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">

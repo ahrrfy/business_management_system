@@ -66,7 +66,8 @@ export const attendanceRouter = router({
         checkIn: timeStr.nullish(),
         checkOut: timeStr.nullish(),
         status: z.enum(["PRESENT", "ABSENT", "LATE", "LEAVE"]).optional(),
-        source: z.enum(["fingerprint", "manual"]).optional(),
+        // الإدخال العام يدوي حصراً؛ "fingerprint" لا يأتي إلا من تكامل الجهاز الخادمي.
+        source: z.literal("manual").optional(),
         notes: z.string().trim().optional(),
       }),
     )
@@ -78,7 +79,7 @@ export const attendanceRouter = router({
         checkIn: input.checkIn ?? null,
         checkOut: input.checkOut ?? null,
         status: input.status,
-        source: input.source ?? "manual",
+        source: "manual",
         notes: input.notes ?? null,
       });
       await logAudit(ctx, {
@@ -90,7 +91,7 @@ export const attendanceRouter = router({
           date: input.attendanceDate,
           hours: input.hours,
           amount: row?.amount,
-          source: input.source ?? "manual",
+          source: "manual",
         },
       });
       return row;

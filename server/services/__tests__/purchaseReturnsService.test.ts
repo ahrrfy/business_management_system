@@ -7,7 +7,7 @@ import { purchaseReturnsRouter } from "../../routers/purchaseReturns";
 import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createPurchaseReturn } from "../purchaseReturnsService";
 
-const actor = { userId: 1, branchId: 1 };
+const actor = { userId: 1, branchId: 1, role: "admin" as const };
 
 const TABLES = [
   "accountingEntries",
@@ -60,7 +60,7 @@ async function stockOf(variantId: number, branchId: number): Promise<number> {
   return rows[0]?.q ?? 0;
 }
 
-async function receivePurchaseOf100() {
+async function receivePurchaseOf100(paymentAmount?: string) {
   const po = await createPurchaseOrder(
     {
       supplierId: 1,
@@ -78,6 +78,7 @@ async function receivePurchaseOf100() {
     {
       purchaseOrderId: po.purchaseOrderId,
       lines: [{ purchaseOrderItemId: Number(poItem.id), receivedBaseQuantity: 100 }],
+      payment: paymentAmount ? { amount: paymentAmount, method: "CASH" as const } : undefined,
     },
     actor
   );
@@ -132,14 +133,15 @@ describe("مرتجع المشتريات", () => {
   });
 
   it("إرجاع نقدي (CASH): receipt IN + قيد PAYMENT_IN + الذمم تظل ثابتة صافياً (الصندوق ارتفع بدلها)", async () => {
-    await receivePurchaseOf100();
+    const poId = await receivePurchaseOf100("500.00");
     const supBefore = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
-    expect(supBefore.currentBalance).toBe("500.00");
+    expect(supBefore.currentBalance).toBe("0.00");
 
     await createPurchaseReturn(
       {
         supplierId: 1,
         branchId: 1,
+        purchaseOrderRefId: poId,
         items: [{ variantId: 1, productUnitId: 1, quantity: "20", unitPrice: "5.00" }],
         settlement: "CASH",
         paymentMethod: "CASH",
@@ -148,9 +150,8 @@ describe("مرتجع المشتريات", () => {
     );
 
     // receipt IN بالقيمة الكاملة (المورد ردّ النقد)
-    const rcs = await db().select().from(s.receipts);
+    const rcs = (await db().select().from(s.receipts)).filter((r) => r.direction === "IN");
     expect(rcs).toHaveLength(1);
-    expect(rcs[0].direction).toBe("IN");
     expect(rcs[0].amount).toBe("100.00");
 
     // قيدا RETURN و PAYMENT_IN موجودان
@@ -159,9 +160,33 @@ describe("مرتجع المشتريات", () => {
     const pin = (await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_IN")))[0];
     expect(pin.amount).toBe("100.00");
 
-    // صافي AP: 500 − 100 (مرتجع) + 100 (نقد عاد ⇒ يُلغي خصم الذمم) = 500
+    // صافي AP يبقى صفراً: الشراء دُفع سابقاً، والنقد المسترد لا ينشئ ذمّة.
     const sup = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
-    expect(sup.currentBalance).toBe("500.00");
+    expect(sup.currentBalance).toBe("0.00");
+  });
+
+  it("إرجاع CASH بلا أمر شراء ودفعة موثقة ⇒ يُرفض ولا يترك أثراً", async () => {
+    await receivePurchaseOf100();
+    const stockBefore = await stockOf(1, 1);
+    const supBefore = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+
+    await expect(
+      createPurchaseReturn(
+        {
+          supplierId: 1,
+          branchId: 1,
+          items: [{ variantId: 1, productUnitId: 1, quantity: "20", unitPrice: "5.00" }],
+          settlement: "CASH",
+          paymentMethod: "CASH",
+        },
+        actor,
+      ),
+    ).rejects.toThrow(/أمر شراء مرجعياً/);
+
+    expect(await stockOf(1, 1)).toBe(stockBefore);
+    const supAfter = (await db().select().from(s.suppliers).where(eq(s.suppliers.id, 1)))[0];
+    expect(supAfter.currentBalance).toBe(supBefore.currentBalance);
+    expect((await db().select().from(s.receipts)).filter((r) => r.direction === "IN")).toHaveLength(0);
   });
 
   it("ذرّية: مخزون غير كافٍ ⇒ ROLLBACK كامل (لا حركة ولا قيد ولا تغيير ذمم)", async () => {

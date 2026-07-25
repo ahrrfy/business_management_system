@@ -4,7 +4,7 @@ import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
 import { deliveryConsignments, deliveryParties, deliveryRemittances, invoices, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { shiftIdForCashTx } from "../shiftService";
@@ -28,10 +28,34 @@ export interface RemittanceInput {
 
 export async function recordDeliveryRemittance(input: RemittanceInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
+    const canonicalLines = input.lines
+      .map((line) => ({
+        consignmentId: Number(line.consignmentId),
+        collectedAmount: toDbMoney(round2(money(line.collectedAmount))),
+      }))
+      .sort((a, b) => a.consignmentId - b.consignmentId);
+    const payloadHash = idempotencyHash({
+      branchId: Number(input.branchId),
+      partyId: Number(input.partyId),
+      shiftType: input.shiftType ?? "RECEPTION",
+      lines: canonicalLines,
+    });
     if (input.clientRequestId) {
-      const existingId = await findIdempotentRefId(tx, "delivery.remit", input.clientRequestId);
+      const existingId = await checkIdempotency(tx, "delivery.remit", input.clientRequestId, payloadHash);
       if (existingId != null) {
         const rm = (await tx.select().from(deliveryRemittances).where(eq(deliveryRemittances.id, existingId)).limit(1))[0];
+        const replayTotal = round2(input.lines.reduce((sum, line) => sum.plus(money(line.collectedAmount)), new Decimal(0)));
+        if (
+          !rm
+          || Number(rm.branchId) !== Number(input.branchId)
+          || Number(rm.partyId) !== Number(input.partyId)
+          || !money(rm.collectedTotal).eq(replayTotal)
+        ) {
+          throw new TRPCError({
+            code: "CONFLICT",
+            message: "تعارض idempotency: المفتاح مستعمل لتوريد مختلف",
+          });
+        }
         return {
           remittanceId: existingId,
           remittanceNumber: rm?.remittanceNumber ?? "",
@@ -45,9 +69,16 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       }
     }
     if (!input.lines.length) throw new TRPCError({ code: "BAD_REQUEST", message: "لا إرساليات للتسوية" });
+    const uniqueConsignmentIds = new Set(input.lines.map((line) => line.consignmentId));
+    if (uniqueConsignmentIds.size !== input.lines.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تكرار الإرسالية نفسها داخل التوريد" });
+    }
 
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party) throw new TRPCError({ code: "NOT_FOUND", message: "جهة التوصيل غير موجودة" });
+    if (party.branchId != null && Number(party.branchId) !== Number(input.branchId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع التوريد" });
+    }
 
     // المرور ١: قفل + تحقّق + حساب (بلا كتابة) — ترتيب أقفال الإرساليات تصاعدياً يمنع الجمود.
     type Work = { id: number; invoiceId: number; collected: Decimal; newCollected: Decimal; delivered: boolean; fee: Decimal; remaining: Decimal };
@@ -60,6 +91,9 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       const cn = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, line.consignmentId)).for("update").limit(1))[0];
       if (!cn) throw new TRPCError({ code: "NOT_FOUND", message: `إرسالية ${line.consignmentId} غير موجودة` });
       if (Number(cn.partyId) !== input.partyId) throw new TRPCError({ code: "BAD_REQUEST", message: "إرسالية لجهة أخرى" });
+      if (Number(cn.branchId) !== Number(input.branchId)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `إرسالية ${cn.consignmentNumber} تخصّ فرعاً آخر` });
+      }
       if (cn.status !== "DISPATCHED" && cn.status !== "PARTIAL") throw new TRPCError({ code: "BAD_REQUEST", message: `إرسالية ${cn.consignmentNumber} غير قابلة للتسوية` });
       const collected = round2(money(line.collectedAmount));
       if (collected.lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ سالب" });
@@ -68,6 +102,12 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       const newCollected = round2(money(cn.collectedAmount).plus(collected));
       const delivered = newCollected.gte(money(cn.codAmount));
       const fee = delivered ? round2(money(cn.deliveryFee)) : new Decimal(0); // الأجرة تُحقَّق عند التسليم الكامل فقط
+      if (fee.gt(collected)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `أجرة توصيل الإرسالية ${cn.consignmentNumber} تتجاوز النقد المورّد في هذه التسوية`,
+        });
+      }
       work.push({ id: Number(cn.id), invoiceId: Number(cn.invoiceId), collected, newCollected, delivered, fee, remaining });
       collectedTotal = collectedTotal.plus(collected);
       feesTotal = feesTotal.plus(fee);
@@ -156,7 +196,7 @@ export async function recordDeliveryRemittance(input: RemittanceInput, actor: De
       }
     }
 
-    if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.remit", input.clientRequestId, remittanceId);
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.remit", input.clientRequestId, remittanceId, payloadHash);
     return {
       remittanceId, remittanceNumber,
       collectedTotal: collectedTotal.toFixed(2), feesTotal: feesTotal.toFixed(2),

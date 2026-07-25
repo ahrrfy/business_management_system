@@ -78,9 +78,21 @@ export async function createHandover(
       message: "مستلِم النقد يَجب أن يَكون مديراً أو إدارياً (admin/manager) — لا كاشير",
     });
   }
+  if (Number(recipient.id) === Number(actor.userId)) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "لا يجوز أن يكون مُسلِّم النقد هو المستلم نفسه",
+    });
+  }
 
   // 3. الفاعل: الكاشير صاحب الوردية، أو admin/manager في نفس الفرع.
   const branchId = Number(sh.branchId);
+  if (recipient.branchId == null || Number(recipient.branchId) !== branchId) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "مستلِم النقد يجب أن يكون من فرع الوردية نفسه",
+    });
+  }
   if (actor.role !== "admin") {
     if (actor.role === "manager") {
       if (Number(actor.branchId) !== branchId) {
@@ -118,7 +130,8 @@ export async function createHandover(
   });
   const outReceiptId = extractInsertId(outRes);
 
-  // 7. receipt #2: IN إلى TREASURY (شيء بلا shiftId — لا يَدخل Z-report).
+  // 7. عقد استلام معلّق: لا يدخل رصيد TREASURY قبل قبول المستلم بهويته.
+  // اختيار المستلم من طرف المُسلِّم لا يثبت انتقال الحيازة.
   const inRes = await tx.insert(receipts).values({
     branchId,
     shiftId: null,
@@ -127,7 +140,7 @@ export async function createHandover(
     paymentMethod: "CASH",
     cashBucket: "TREASURY",
     referenceNumber: handoverNumber,
-    status: "COMPLETED",
+    status: "PENDING",
     partyType: "OTHER",
     description: `استلام من وردية #${input.shiftId} (المُسلِّم: ${actor.userId})${input.notes ? " — " + input.notes : ""}`,
     createdBy: input.handoverTo, // المستلِم هو من ينسب إليه إيصال الاستلام

@@ -365,6 +365,10 @@ describe("getDashboardMetrics", () => {
       { id: 601, invoiceNumber: "INV-Y", sourceType: "ORDER", sourceId: "t-601", branchId: 1, priceTier: "RETAIL", subtotal: "200000", total: "200000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(1) },
       { id: 602, invoiceNumber: "INV-P", sourceType: "ORDER", sourceId: "t-602", branchId: 1, priceTier: "RETAIL", subtotal: "500000", total: "500000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(2) },
     ]);
+    await d.insert(s.accountingEntries).values([
+      { entryType: "SALE", branchId: 1, invoiceId: 601, revenue: "200000", profit: "200000", amount: "200000", entryDate: dayNoonUTC(1) },
+      { entryType: "SALE", branchId: 1, invoiceId: 602, revenue: "500000", profit: "500000", amount: "500000", entryDate: dayNoonUTC(2) },
+    ]);
     const m = await getDashboardMetrics({ branchId: 1 });
     expect(m.salesPulse.yesterday).toBe("200000.00");
     expect(m.salesPulse.avg7d).toBe("100000.00");
@@ -380,6 +384,11 @@ describe("getDashboardMetrics", () => {
       { id: 701, invoiceNumber: "INV-FY", sourceType: "ORDER", sourceId: "t-701", branchId: 1, priceTier: "RETAIL", subtotal: "100000", total: "100000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(1) },
       { id: 702, invoiceNumber: "INV-FP", sourceType: "ORDER", sourceId: "t-702", branchId: 1, priceTier: "RETAIL", subtotal: "600000", total: "600000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(2) },
       { id: 703, invoiceNumber: "INV-TODAY", sourceType: "ORDER", sourceId: "t-703", branchId: 1, priceTier: "RETAIL", subtotal: "9000000", total: "9000000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(0) },
+    ]);
+    await d.insert(s.accountingEntries).values([
+      { entryType: "SALE", branchId: 1, invoiceId: 701, revenue: "100000", profit: "100000", amount: "100000", entryDate: dayNoonUTC(1) },
+      { entryType: "SALE", branchId: 1, invoiceId: 702, revenue: "600000", profit: "600000", amount: "600000", entryDate: dayNoonUTC(2) },
+      { entryType: "SALE", branchId: 1, invoiceId: 703, revenue: "9000000", profit: "9000000", amount: "9000000", entryDate: dayNoonUTC(0) },
     ]);
     const m = await getDashboardMetrics({ branchId: 1 });
     expect(m.salesPulse.yesterday).toBe("100000.00");
@@ -412,6 +421,18 @@ describe("getDashboardMetrics — بوّابة includeFinancials (حجب الم�
       // (ماليّ) مبيعات أمس ⇒ salesPulse.
       { id: 802, invoiceNumber: "INV-YDAY", sourceType: "ORDER", sourceId: "t-802", branchId: 1, priceTier: "RETAIL", subtotal: "300000", total: "300000", paidAmount: "0", status: "PENDING", invoiceDate: dayNoonUTC(1) },
     ]);
+    // نبض المبيعات مصدره الدفتر لا مجرد لقطة الفاتورة: الفاتورة بلا SALE موثق
+    // لا يجوز أن تظهر كإيراد، خصوصاً بعد أن صار تاريخ RETURN هو تاريخ أثره المالي الحقيقي.
+    await d.insert(s.accountingEntries).values({
+      entryType: "SALE",
+      branchId: 1,
+      invoiceId: 802,
+      revenue: "300000.00",
+      cost: "0.00",
+      profit: "300000.00",
+      amount: "300000.00",
+      entryDate: dayNoonUTC(1),
+    });
   }
 
   it("(ل) includeFinancials:false ⇒ overdueAR/salesPulse/عدّادا AR أصفار، وlowStock+أوامر متأخّرة محفوظة", async () => {

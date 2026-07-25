@@ -1,10 +1,11 @@
 // اختبارات البحث الذكي في الكتالوج — تطبيع عربي + كلمات مستقلة + ترتيب بالملاءمة + تهريب الأنماط.
 // تعمل على قاعدة الاختبار الحقيقية (MySQL) لأن جوهر التطبيع REPLACE يُنفَّذ في SQL.
 import { sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { listForPos, listForPurchase, lookupByBarcode } from "../catalogService";
+import { ensureProductSearchNormFixture } from "./__searchNormFixture__";
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
@@ -47,6 +48,7 @@ async function seed() {
   ]);
 }
 
+beforeAll(ensureProductSearchNormFixture);
 beforeEach(async () => { await reset(); await seed(); });
 
 const names = (rows: Array<{ productName: string }>) => rows.map((r) => r.productName);

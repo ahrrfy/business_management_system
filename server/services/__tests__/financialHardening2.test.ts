@@ -87,7 +87,7 @@ describe("#1 idempotency عبر الراوتر الفعلي (النقر المز
 
   it("vouchers.create: نفس clientRequestId ⇒ سند واحد", async () => {
     await openShift({ branchId: 1, openingBalance: "0" }, actor); // shift-gate-cash: السند النقدي يَستوجب وردية.
-    const input = { voucherType: "PAYMENT" as const, branchId: 1, amount: "30.00", paymentMethod: "CASH" as const, partyType: "OTHER" as const, description: "إيجار", clientRequestId: "vch-key-1" };
+    const input = { voucherType: "PAYMENT" as const, branchId: 1, amount: "30.00", paymentMethod: "CASH" as const, partyType: "OTHER" as const, counterpartyName: "المؤجر", description: "إيجار", clientRequestId: "vch-key-1" };
     const r1 = await caller().vouchers.create(input);
     const r2 = await caller().vouchers.create(input);
     expect(r2.receiptId).toBe(r1.receiptId); // نفس السند (replay)
@@ -125,7 +125,7 @@ describe("#3 تقريب IQD النقدي على الخادم", () => {
     await db().insert(s.productPrices).values([{ productUnitId: 1, priceTier: "WHOLESALE", price: "1240.00" }]);
     // M8: البيع النقدي يَستوجب وردية مفتوحة.
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "0" }, actor);
-    const sale = await createSale({ branchId: 1, shiftId, sourceType: "POS", priceTier: "WHOLESALE", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }], payment: { amount: "1240.00", method: "CASH" }, cashRoundIQD: true }, actor);
+    const sale = await createSale({ branchId: 1, shiftId, sourceType: "POS", priceTier: "WHOLESALE", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }], payment: { amount: "1250.00", method: "CASH" }, cashRoundIQD: true }, actor);
     expect(sale.total).toBe("1250.00"); // 1240 → 1250 (أقرب 250)
     const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, sale.invoiceId)))[0];
     expect(inv.total).toBe("1250.00");

@@ -105,6 +105,7 @@ export async function getDashboardMetrics(
   const branchId = opts.branchId ?? null;
   const branchFilterStock = branchId == null ? sql`` : sql`AND bs.branchId = ${branchId}`;
   const branchFilterInv = branchId == null ? sql`` : sql`AND i.branchId = ${branchId}`;
+  const branchFilterAe = branchId == null ? sql`` : sql`AND ae.branchId = ${branchId}`;
   const branchFilterWo = branchId == null ? sql`` : sql`AND wo.branchId = ${branchId}`;
   const branchFilterTasks = branchId == null ? sql`` : sql`AND t.branchId = ${branchId}`;
 
@@ -207,13 +208,14 @@ export async function getDashboardMetrics(
   if (includeFinancials) try {
     const spRows = await db.execute(sql`
       SELECT
-        CAST(COALESCE(SUM(CASE WHEN i.invoiceDate >= DATE_SUB(UTC_DATE(), INTERVAL 1 DAY) AND i.invoiceDate < UTC_DATE() THEN i.total - i.returnedTotal ELSE 0 END), 0) AS CHAR) AS yday,
-        CAST(COALESCE(SUM(i.total - i.returnedTotal), 0) AS CHAR) AS last7
-      FROM invoices i
-      WHERE i.invoiceStatus <> 'CANCELLED'
-        AND i.invoiceDate >= DATE_SUB(UTC_DATE(), INTERVAL 7 DAY)
-        AND i.invoiceDate < UTC_DATE()
-        ${branchFilterInv}
+        CAST(COALESCE(SUM(CASE WHEN ae.entryDate = DATE_SUB(UTC_DATE(), INTERVAL 1 DAY) THEN ae.revenue ELSE 0 END), 0) AS CHAR) AS yday,
+        CAST(COALESCE(SUM(ae.revenue), 0) AS CHAR) AS last7
+      FROM accountingEntries ae
+      WHERE ae.entryType IN ('SALE', 'RETURN')
+        AND (ae.entryType <> 'RETURN' OR ae.supplierId IS NULL)
+        AND ae.entryDate >= DATE_SUB(UTC_DATE(), INTERVAL 7 DAY)
+        AND ae.entryDate < UTC_DATE()
+        ${branchFilterAe}
     `);
     const spData = (spRows as any)[0] ?? spRows;
     const spRow = Array.isArray(spData) ? spData[0] : null;

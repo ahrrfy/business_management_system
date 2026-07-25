@@ -56,7 +56,7 @@ export const voucherRouter = router({
         internalNote: z.string().max(2000).nullish(),
         // attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (اختياري).
         invoiceId: z.number().int().positive().nullish(),
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(80),
       }),
     )
     .mutation(async ({ input, ctx }) => {

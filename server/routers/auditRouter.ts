@@ -1,15 +1,23 @@
 import { and, desc, eq, gte, inArray, lte, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
+import { TRPCError } from "@trpc/server";
 import { auditLogs, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
-import { adminProcedure, router } from "../trpc";
+import { protectedProcedure, router } from "../trpc";
+
+const auditReadProcedure = protectedProcedure.use(({ ctx, next }) => {
+  if (ctx.user.role !== "admin" && ctx.user.role !== "auditor") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "سجل التدقيق متاح للأدمن والمدقق المستقل فقط" });
+  }
+  return next({ ctx });
+});
 
 const escLike = (s: string) => s.replace(/[!%_]/g, "!$&");
 
-/** سجلّ التدقيق — عرض فقط للأدمن (من فعل ماذا، متى، من أين). */
+/** سجلّ التدقيق — عرض فقط للأدمن أو المدقق المستقل (من فعل ماذا، متى، من أين). */
 export const auditRouter = router({
-  list: adminProcedure
+  list: auditReadProcedure
     .input(
       z
         .object({
@@ -107,7 +115,7 @@ export const auditRouter = router({
     }),
 
   /** قيم مميّزة للفلاتر (أنواع الكيانات + الأفعال + المستخدمون الذين نفّذوا فعلاً ما). */
-  facets: adminProcedure.query(async () => {
+  facets: auditReadProcedure.query(async () => {
     const db = getDb();
     if (!db) return { entityTypes: [], actions: [], users: [] };
     // PERF-03 (تدقيق ٢٠/٦): SELECT DISTINCT بلا حدّ = مسح كامل لجدول auditLogs (ينمو بلا سقف)

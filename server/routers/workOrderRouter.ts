@@ -26,6 +26,7 @@ import { workOrderBarcodeSet } from "../services/barcodeService";
 import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { assertValidImageDataUrl } from "../lib/imageValidation";
 import { isDupEntry } from "@shared/errorMap.ar";
+import { money } from "../services/money";
 
 const method = z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]);
 
@@ -345,6 +346,12 @@ export const workOrderRouter = router({
       // التسليم باسم فرعٍ خاطئ). نَمنع غير-elevated من خَلق أمرٍ خارج فرعهم بـFORBIDDEN صريح
       // (نمط inventoryRouter.transferBatch وsaleRouter G1).
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (!elevated && money(input.laborCost ?? "0").gt(0)) {
+        throw new TRPCError({
+          code: "FORBIDDEN",
+          message: "تكلفة العمالة قيمة إدارية موثّقة وليست مدخلاً للكاشير — يحددها المدير من مسار التكلفة",
+        });
+      }
       let effectiveBranchId = input.branchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
@@ -360,7 +367,11 @@ export const workOrderRouter = router({
       // أعد المحاولة على سباق idempotency (طلبان متزامنان بنفس المفتاح ⇒ الثاني يُعيد الأول).
       for (let attempt = 0; attempt < 3; attempt++) {
         try {
-          const res = await createWorkOrder(enforcedInput, { userId: ctx.user.id, branchId: effectiveBranchId });
+          const res = await createWorkOrder(enforcedInput, {
+            userId: ctx.user.id,
+            branchId: effectiveBranchId,
+            role: ctx.user.role,
+          });
           if (!(res as { idempotent?: boolean }).idempotent) {
             await logAudit(ctx, {
               action: "workOrder.create",

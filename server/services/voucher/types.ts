@@ -24,7 +24,7 @@ export interface VoucherInput {
   /** attachment-upload (٥/٧): ربط سند العميل بفاتورة بيع مُحدَّدة (تظهر في سجلّ دفعات الفاتورة). partyType=CUSTOMER فقط. */
   invoiceId?: number | null;
   /** Idempotency: نفس المفتاح ⇒ سند واحد (لا صرف/قبض نقدي مزدوج عند النقر المزدوج/إعادة الشبكة). */
-  clientRequestId?: string | null;
+  clientRequestId: string;
 }
 
 export interface VoucherResult {

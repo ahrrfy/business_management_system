@@ -284,6 +284,7 @@ export const reportsRouter = router({
           status: invoices.status,
           total: invoices.total,
           paidAmount: invoices.paidAmount,
+          returnedTotal: invoices.returnedTotal,
           costTotal: invoices.costTotal,
           customerName: customers.name,
         })
@@ -304,7 +305,7 @@ export const reportsRouter = router({
             cnt: sql<number>`COUNT(*)`,
             total: sql<string>`CAST(COALESCE(SUM(${invoices.total}), 0) AS CHAR)`,
             paid: sql<string>`CAST(COALESCE(SUM(${invoices.paidAmount}), 0) AS CHAR)`,
-            unpaid: sql<string>`CAST(COALESCE(SUM(GREATEST(${invoices.total} - ${invoices.paidAmount}, 0)), 0) AS CHAR)`,
+            unpaid: sql<string>`CAST(COALESCE(SUM(GREATEST(${invoices.total} - ${invoices.paidAmount} - ${invoices.returnedTotal}, 0)), 0) AS CHAR)`,
           })
           .from(invoices)
           .where(filterWhere)

@@ -92,7 +92,7 @@ export default function CustomerStatement() {
   const ledger = useMemo(() => {
     if (!stmt.data) return null;
     const d = stmt.data;
-    const invTxs = d.invoices.map((i) => ({
+    const invTxs = d.invoices.filter((i) => i.status !== "CANCELLED").map((i) => ({
       t: new Date(i.invoiceDate).getTime(),
       date: fmtDate(i.invoiceDate),
       ref: i.invoiceNumber, description: "فاتورة مبيعات",

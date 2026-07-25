@@ -2,8 +2,10 @@
 // الثوابت:
 //   L1: الوحدة ذات البدائل تعود بها مرتّبةً بترتيب الإدراج، والوحدات الأخرى بمصفوفة فارغة.
 //   L2: البدائل لا تضاعف صفوف القائمة ولا العدّ الإجمالي (استعلام دفعي منفصل لا LEFT JOIN).
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
 import { listProductsAdmin } from "../catalog/adminList";
@@ -18,6 +20,28 @@ function db() {
   const d = getDb();
   if (!d) throw new Error("DATABASE_URL not set for tests");
   return d;
+}
+
+async function syncProductSearchNormFixture() {
+  const d = db();
+  const meta: any = await d.execute(sql`
+    SELECT COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'products'
+      AND COLUMN_NAME = 'searchNorm'
+    LIMIT 1
+  `);
+  const column = Array.isArray(meta) ? meta[0]?.[0] : meta?.rows?.[0];
+  if (String(column?.expr ?? "").trim()) return;
+
+  const rows = await d.select({ id: s.products.id, name: s.products.name }).from(s.products);
+  for (const row of rows) {
+    await d
+      .update(s.products)
+      .set({ searchNorm: normalizeSearchText(row.name) })
+      .where(eq(s.products.id, row.id));
+  }
 }
 
 async function seedBase() {
@@ -42,6 +66,7 @@ async function seedBase() {
     { variantId: 1, branchId: 1, quantity: 100 },
     { variantId: 2, branchId: 1, quantity: 50 },
   ]);
+  await syncProductSearchNormFixture();
 }
 
 describe("adminList — الباركودات البديلة في القائمة/التصدير", () => {

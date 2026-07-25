@@ -70,6 +70,7 @@ export async function getDashboard(
           SELECT SUM(r.amount)
           FROM receipts r
           WHERE r.cashBucket = 'DRAWER'
+            AND r.receiptApprovalStatus = 'APPROVED'
             AND r.direction = 'IN'
             AND r.shiftId IN (
               SELECT s2.id FROM shifts s2
@@ -80,6 +81,7 @@ export async function getDashboard(
           SELECT SUM(r.amount)
           FROM receipts r
           WHERE r.cashBucket = 'DRAWER'
+            AND r.receiptApprovalStatus = 'APPROVED'
             AND r.direction = 'OUT'
             AND r.shiftId IN (
               SELECT s2.id FROM shifts s2
@@ -121,6 +123,7 @@ export async function getDashboard(
         LEFT JOIN receipts r ON r.branchId = b.id
           AND r.cashBucket = 'TREASURY'
           AND r.receiptStatus = 'COMPLETED'
+          AND r.receiptApprovalStatus = 'APPROVED'
         WHERE b.isActive = TRUE
           ${branchFilter}
         GROUP BY b.id, b.name
@@ -145,6 +148,7 @@ export async function getDashboard(
       FROM receipts
       WHERE direction = 'IN'
         AND receiptStatus = 'COMPLETED'
+        AND receiptApprovalStatus = 'APPROVED'
         AND DATE(createdAt) = CURDATE()
         ${branchFilterRaw}
     `),

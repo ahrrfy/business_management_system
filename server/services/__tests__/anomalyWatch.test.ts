@@ -12,6 +12,7 @@ import { returnSale } from "../returnService";
 import { createVoucher } from "../voucher/create";
 import { cancelVoucher } from "../voucher/cancel";
 import { getAnomalyWatch } from "../reports/anomalyWatch";
+import { todayUtcDate } from "../businessDay";
 
 const actor1 = { userId: 1, branchId: 1 }; // أدمن
 const actor2 = { userId: 2, branchId: 1 }; // مدير
@@ -81,12 +82,8 @@ async function setStock(variantId: number, branchId: number, qty: number) {
   await db().insert(s.branchStock).values({ variantId, branchId, quantity: qty });
 }
 
-/** YYYY-MM-DD محلي (نمط dateRange — لا toISOString). */
-function localYmd(d: Date): string {
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-const TODAY = () => localYmd(new Date());
+/** يوم العمل الحتمي بتوقيت UTC، مطابق لتخزين الطوابع وحدود dateRange. */
+const TODAY = () => todayUtcDate();
 
 /** بيع آجل (بلا نقد ⇒ لا وردية لازمة). */
 async function creditSale(
@@ -227,7 +224,16 @@ describe("D4 — عجوزات الورديات", () => {
 describe("D5 — عكس السندات", () => {
   it("سند يُعكس يظهر بمنشئه وعاكسه، وعكسٌ واحد لا يُعلَّم", async () => {
     const v = await createVoucher(
-      { voucherType: "PAYMENT", branchId: 1, amount: "50.00", paymentMethod: "CASH", partyType: "OTHER", description: "اختبار عكس" },
+      {
+        voucherType: "PAYMENT",
+        branchId: 1,
+        amount: "50.00",
+        paymentMethod: "CASH",
+        partyType: "OTHER",
+        counterpartyName: "طرف الاختبار",
+        description: "اختبار عكس",
+        clientRequestId: "anomaly-reversed-voucher-1",
+      },
       { ...actor2, role: "manager" } as any,
     );
     await cancelVoucher(v.receiptId, { ...actor1, role: "admin" } as any);

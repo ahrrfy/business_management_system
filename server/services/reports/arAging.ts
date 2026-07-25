@@ -32,6 +32,30 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
   const db = getDb();
   if (!db) return [];
   const branchFilter = opts.branchId ? sql`AND i.branchId = ${opts.branchId}` : sql``;
+  // بطاقة العميل currentBalance على مستوى الشركة. عند تقرير فرع نعيد بناء رصيده من
+  // القيود ذات المصدر الفرعي، مع fallback لمتبقي الفواتير للبيانات التاريخية السابقة للدفتر.
+  const branchBalanceJoin = opts.branchId
+    ? sql`LEFT JOIN (
+        SELECT ae.customerId,
+          SUM(CASE
+            WHEN ae.entryType IN ('SALE','RETURN','OPENING') THEN ae.amount
+            WHEN ae.entryType = 'PAYMENT_IN' THEN -ae.amount
+            WHEN ae.entryType = 'PAYMENT_OUT' THEN ae.amount
+            ELSE 0 END) AS balance
+        FROM accountingEntries ae
+        WHERE ae.customerId IS NOT NULL
+          AND ae.branchId = ${opts.branchId}
+          AND ae.entryType IN ('SALE','RETURN','OPENING','PAYMENT_IN','PAYMENT_OUT')
+        GROUP BY ae.customerId
+      ) cb ON cb.customerId = c.id`
+    : sql``;
+  const currentBalanceExpr = opts.branchId
+    ? sql`COALESCE(cb.balance, COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0))`
+    : sql`c.currentBalance`;
+  const branchGroup = opts.branchId ? sql`, cb.balance` : sql``;
+  const balanceHaving = opts.branchId
+    ? sql`unpaidTotal > 0 OR currentBalance <> 0`
+    : sql`unpaidTotal > 0 OR c.currentBalance <> 0`;
   // G13 (١٩/٦/٢٦): LIMIT حارس ضدّ OOM عند تحميل عشرات الآلاف من العملاء في الذاكرة.
   // ORDER BY unpaidTotal DESC ⇒ أكبر الذمم أولاً (المطلوبة فعلياً في المتابعة).
   // ٥٠٠٠ افتراضياً يفوق سقف عملاء أي متجر منفرد، لكن يمنع تسارع الفشل عند نموّ الجدول.
@@ -47,7 +71,7 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       c.name AS customerName,
       c.phone,
       c.customerType,
-      CAST(c.currentBalance AS CHAR) AS currentBalance,
+      CAST(${currentBalanceExpr} AS CHAR) AS currentBalance,
       CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) <= 30 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
       CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 31 AND 60 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
       CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(COALESCE(i.dueDate, i.invoiceDate))) BETWEEN 61 AND 90 THEN GREATEST(i.total - i.paidAmount - i.returnedTotal, 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
@@ -59,11 +83,11 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       ON i.customerId = c.id
       AND i.invoiceStatus IN ('PENDING', 'PARTIALLY_PAID')
       ${branchFilter}
-    WHERE c.isActive = TRUE
-    GROUP BY c.id, c.name, c.phone, c.customerType, c.currentBalance
-    -- currentBalance <> 0 (لا > 0): يُظهر أيضاً الرصيد الدائن (دفعة مقدّمة/رصيد افتتاحيّ «له علينا»)
-    -- فلا يختفي أيّ طرفٍ له رصيدٌ غير صفريّ من «الذمم». الموجب مدين، السالب دائن (عمود unbucketed موقَّع).
-    HAVING unpaidTotal > 0 OR c.currentBalance <> 0
+    ${branchBalanceJoin}
+    GROUP BY c.id, c.name, c.phone, c.customerType, c.currentBalance ${branchGroup}
+    -- الطرف غير النشط لا يعني أن رصيده سقط محاسبياً. في نطاق الشركة نظهر كل رصيد
+    -- غير صفري؛ وفي نطاق الفرع لا نُدخل رصيد بطاقة العميل العمومي غير القابل للتوزيع.
+    HAVING ${balanceHaving}
     ORDER BY unpaidTotal DESC, c.currentBalance DESC
     LIMIT ${limit}
   `);
@@ -72,10 +96,14 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
   // REP-04: الدلاء تُعمَّر من الفواتير المستحقّة فقط؛ الرصيد الافتتاحي (OPENING) والسندات المستقلّة
   // تقع خارجها ⇒ unbucketed = currentBalance − unpaidTotal (مُوقَّع، بلا قصّ) يُغلق الفرق فتتّزن
   // الدلاء مع الرصيد الجاري. بدقّة decimal (§٥).
-  return (data as any[]).map((r) => ({
-    ...(r as ARAgingRow),
-    unbucketed: toDbMoney(money(r.currentBalance).sub(money(r.unpaidTotal))),
-  }));
+  return (data as any[]).map((r) => {
+    const scopedBalance = money(r.currentBalance);
+    return {
+      ...(r as ARAgingRow),
+      currentBalance: toDbMoney(scopedBalance),
+      unbucketed: toDbMoney(scopedBalance.sub(money(r.unpaidTotal))),
+    };
+  });
 }
 
 export interface CustomerStatementInvoice {
@@ -252,6 +280,10 @@ export async function getCustomerStatement(
   // الدفعات تُفلتَر على تاريخها هي (createdAt) لا على فواتيرها: دفعةٌ داخل الفترة على
   // فاتورة أقدم منها يجب أن تظهر — هذا جوهر الدلالة المحاسبية للكشف بفترة.
   const payConds = [customerPaymentLink(customerId)];
+  // لا تدخل الحركة إلا إذا أثرت مالياً فعلاً. السند المعلّق/المرفوض لا قيد له،
+  // وREVERSED يبقى ليتصافي مع الإيصال التعويضي.
+  payConds.push(eq(receipts.approvalStatus, "APPROVED"));
+  payConds.push(sql`${receipts.status} IN ('COMPLETED', 'REVERSED')`);
   if (from) payConds.push(sql`${receipts.createdAt} >= ${`${from} 00:00:00`}`);
   if (to) payConds.push(sql`${receipts.createdAt} < ${`${nextDayStr(to)} 00:00:00`}`);
   const payments = await db
@@ -286,6 +318,27 @@ export async function getCustomerStatement(
     .select({ id: accountingEntries.id, invoiceId: accountingEntries.invoiceId, amount: accountingEntries.amount, createdAt: accountingEntries.entryDate, notes: accountingEntries.notes })
     .from(accountingEntries)
     .where(and(...codPayConds));
+
+  // مرتجع البيع الائتماني يخفض ذمة العميل بلا receipt. نعرض قيد RETURN نفسه
+  // كدائن، ويظل رد النقد (receipt OUT) مديناً؛ فيتطابق صافي الكشف مع currentBalance.
+  const returnConds = [
+    eq(accountingEntries.entryType, "RETURN"),
+    eq(accountingEntries.customerId, customerId),
+    isNull(accountingEntries.supplierId),
+  ];
+  if (from) returnConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
+  if (to) returnConds.push(sql`${accountingEntries.entryDate} <= ${to}`);
+  if (branchId) returnConds.push(eq(accountingEntries.branchId, branchId));
+  const returnPayments = await db
+    .select({
+      id: accountingEntries.id,
+      invoiceId: accountingEntries.invoiceId,
+      amount: accountingEntries.amount,
+      createdAt: accountingEntries.entryDate,
+      notes: accountingEntries.notes,
+    })
+    .from(accountingEntries)
+    .where(and(...returnConds));
 
   const openingBalance = await customerOpeningBalance(customerId, from);
 
@@ -344,6 +397,18 @@ export async function getCustomerStatement(
         isStandalone: false,
         voucherNumber: null,
         description: e.notes ? String(e.notes) : "تحصيل مندوب التوصيل",
+      })),
+      ...returnPayments.map((e) => ({
+        id: -1_000_000_000 - Number(e.id),
+        invoiceId: e.invoiceId ? Number(e.invoiceId) : null,
+        direction: "IN" as const,
+        amount: money(e.amount).abs().toFixed(2),
+        paymentMethod: "RETURN",
+        status: "COMPLETED",
+        createdAt: e.createdAt,
+        isStandalone: false,
+        voucherNumber: null,
+        description: e.notes ? String(e.notes) : "مرتجع مبيعات",
       })),
     ].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()),
     summary: {

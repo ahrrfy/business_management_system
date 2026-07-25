@@ -67,8 +67,23 @@ export async function getManagementAlerts(opts: {
   const branchShift = branchId ? sql`AND s.branchId = ${branchId}` : sql``;
 
   const alerts: AlertItem[] = [];
+  let sourceFailureCount = 0;
   const safe = async <T>(p: Promise<T>, fallback: T): Promise<T> => {
-    try { return await p; } catch { return fallback; }
+    try {
+      return await p;
+    } catch {
+      sourceFailureCount += 1;
+      alerts.push({
+        key: `report-source-failure-${sourceFailureCount}`,
+        severity: "critical",
+        title: "تعذّر التحقق من مصدر مالي — النتائج أدناه غير مكتملة",
+        count: 1,
+        amount: null,
+        href: "/reports/tools",
+        actionLabel: "فحص سلامة التقارير",
+      });
+      return fallback;
+    }
   };
 
   // ── (أ) أعمار الذمم المدينة: شرائح 31-60 / 61-90 / +90 (عدد عملاء + مبلغ لكل شريحة) ──

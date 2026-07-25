@@ -153,11 +153,13 @@ describe("بيع الطباعة: التقريب النقدي + الذمم + idem
     const r = await createPrintSale({
       branchId: 1, shiftId: 1,
       lines: [{ variantId: 10, productUnitId: 10, quantity: "1", unitPriceOverride: "1240" }],
-      payment: { amount: "1240", method: "CASH" },
+      payment: { amount: "1250", method: "CASH" },
       cashRoundIQD: true,
     }, actor);
     const inv = await invoice(r.invoiceId);
     expect(inv.total).toBe("1250.00"); // 1240 ⇒ 1250
+    expect(inv.paidAmount).toBe("1250.00");
+    expect(inv.status).toBe("PAID");
     expect(inv.cashRoundingAdjustment).toBe("10.00");
     const adj = (await entries()).find((e: any) => e.entryType === "ADJUST")!;
     expect(adj.amount).toBe("10.00");

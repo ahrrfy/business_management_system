@@ -20,6 +20,9 @@ import type { VoucherInput, VoucherResult } from "./types";
  */
 export async function createVoucher(input: VoucherInput, actor: Actor): Promise<VoucherResult> {
   return withTx(async (tx) => {
+    if (!input.clientRequestId?.trim()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مفتاح idempotency إلزامي لإنشاء السند" });
+    }
     // Idempotency: تكرار نفس المفتاح يُعاد بنتيجة السند الأول (لا قيد/نقد مزدوج).
     // #installments-3 (تدقيق التثبيت): كان الـreplay يُرجع أي سند مخزَّن — بما فيها المرفوض/الملغى —
     // فمسار الأقساط يستعمل clientRequestId ثابتاً `instpay-${lineId}`، ومحاولةٌ بعد رفض السند تُرجع
@@ -146,8 +149,14 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
         }
       }
     } else if (input.partyType === "OTHER") {
-      // counterpartyName مَوصى به (تَحذير ناعم بأن يُعرَض في الواجهة) لكنّ ليس إلزامياً —
-      // الـdescription يَكفي لتَحديد الهوية. النَموذج المُلزم يَكون عبر فئة الإيجار/الراتب.
+      if (!input.counterpartyName?.trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الطرف المقابل إلزامي لسندات «أخرى»" });
+      }
+      if (input.voucherType === "RECEIPT" && !input.referenceNumber?.trim()) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع المصدر إلزامي لسندات «أخرى» (عقد/وصل/قرار/مستند مؤيد)" });
+      }
+      // قبض OTHER يخلق نقداً من مصدر خارجي مجهول وقابل للتجزئة؛ لذلك يخضع دائماً إلى Maker‑Checker.
+      if (input.voucherType === "RECEIPT") forcePendingApproval = true;
     }
 
     const voucherNumber = await nextVoucherNumber(tx, input.voucherType, input.branchId);
@@ -168,6 +177,9 @@ export async function createVoucher(input: VoucherInput, actor: Actor): Promise<
     }
 
     const voucherDate = (input.voucherDate?.trim() || toDateStr()).slice(0, 10);
+    if (voucherDate > toDateStr()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `لا يجوز تأريخ السند في المستقبل (${voucherDate})` });
+    }
 
     const rRes = await tx.insert(receipts).values({
       branchId: input.branchId,

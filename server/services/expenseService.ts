@@ -177,6 +177,17 @@ async function createStockExpenseTx(tx: any, input: CreateExpenseInput, actor: A
 /** Record a daily expense: CASH ⇒ receipt(OUT)+PAYMENT_OUT ; STOCK ⇒ صرف مخزون بالكلفة (نثرية/تلف، بلا صندوق). */
 export async function createExpense(input: CreateExpenseInput, actor: Actor) {
   return withTx(async (tx) => {
+    // Defense in depth behind the router gate. A cashier-controlled expense
+    // would be an alternate way to reduce expected drawer cash and conceal a
+    // shortage. Legacy internal maintenance callers may omit role; every API
+    // caller supplies it through context.
+    if (actor.role && actor.role !== "admin" && actor.role !== "manager") {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "تسجيل المصروفات المالية من صلاحية المدير/الخزينة فقط",
+      });
+    }
+
     // G4 (١٩/٦/٢٦): مفتاح idempotency مفصول حسب المصدر — كان توحيد المفتاح بين CASH/STOCK
     // يسمح بـreplay صامت يُرجع نتيجة لا تطابق المُدخل عند تغيّر source بين طلبَين بنفس الـID.
     const opKey = (input.source ?? "CASH") === "STOCK" ? "expense.create.STOCK" : "expense.create.CASH";

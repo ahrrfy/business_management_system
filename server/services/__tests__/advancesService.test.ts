@@ -15,13 +15,30 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { cancelAdvance, employeeBalance, grantAdvance, listAdvances, suggestDeductionsForPeriod } from "../advancesService";
+import {
+  cancelAdvance,
+  employeeBalance,
+  grantAdvance as grantAdvanceService,
+  listAdvances,
+  suggestDeductionsForPeriod,
+  type GrantAdvanceInput,
+} from "../advancesService";
 import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, payRun, updateItem } from "../payrollService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" };
 // SOD: المُعتمِد/الدافع يجب أن يختلف عن المُولِّد.
 const APPROVER = { userId: 2, branchId: 1, role: "manager" };
+let requestSeq = 0;
+function grantAdvance(
+  input: Omit<GrantAdvanceInput, "clientRequestId"> & { clientRequestId?: string },
+  actor: typeof ACTOR,
+) {
+  return grantAdvanceService(
+    { ...input, clientRequestId: input.clientRequestId ?? `advance-test-${++requestSeq}` },
+    actor,
+  );
+}
 
 const TABLES = [
   "accountingEntries",
@@ -62,6 +79,7 @@ async function seedBase() {
   ]);
 }
 beforeEach(async () => {
+  requestSeq = 0;
   await reset();
   await seedBase();
 });

@@ -28,7 +28,7 @@ export interface CashDropInput {
   amount: string; // > 0
   /** مفتاح idempotency من العميل (uuid): يمنع التكرار عند فقد ردّ الشبكة/النقر المزدوج. */
   clientRequestId?: string | null;
-  /** مستلِمٌ اختياريّ (مدير/إداريّ يتسلّم عهدة النقد للخزينة). بدونه: يُنسَب إيصال الاستلام للفاعل. */
+  /** مستلِمٌ إلزاميّ، مختلف عن المُسلِّم ومن الفرع نفسه. */
   dropTo?: number | null;
   notes?: string | null;
 }
@@ -175,20 +175,28 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
     });
   }
 
-  // 5. المستلِم الاختياريّ: إن مُرِّر يجب أن يكون مديراً/إدارياً نشطاً (مرآة تحقّق التسليم).
+  // 5. سلسلة الحيازة: لا يوجد «سحب إلى خزينة بلا شخص». المستلم إلزامي،
+  // مختلف عن المنشئ ومن الفرع نفسه.
   let recipientId: number | null = null;
   let recipientName: string | null = null;
-  if (input.dropTo != null) {
-    const recipient = (await tx.select().from(users).where(eq(users.id, input.dropTo)).limit(1))[0];
-    if (!recipient || !recipient.isActive) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "المستلِم غير موجود أو معطّل" });
-    }
-    if (recipient.role !== "admin" && recipient.role !== "manager") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون مديراً أو إدارياً (admin/manager)" });
-    }
-    recipientId = Number(recipient.id);
-    recipientName = recipient.name ?? `#${recipient.id}`;
+  if (input.dropTo == null) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "يجب تحديد مدير مستلم للنقد" });
   }
+  const recipient = (await tx.select().from(users).where(eq(users.id, input.dropTo)).limit(1))[0];
+  if (!recipient || !recipient.isActive) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "المستلِم غير موجود أو معطّل" });
+  }
+  if (recipient.role !== "admin" && recipient.role !== "manager") {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون مديراً أو إدارياً (admin/manager)" });
+  }
+  if (Number(recipient.id) === Number(actor.userId)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "لا يجوز أن يكون مُسلِّم النقد هو المستلم نفسه" });
+  }
+  if (recipient.branchId == null || Number(recipient.branchId) !== branchId) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "مستلِم النقد يجب أن يكون من فرع الوردية نفسه" });
+  }
+  recipientId = Number(recipient.id);
+  recipientName = recipient.name ?? `#${recipient.id}`;
 
   // 6. رقم السند CD-…
   const dropNumber = await nextDropNumber(tx, branchId);
@@ -210,7 +218,8 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
   });
   const outReceiptId = extractInsertId(outRes);
 
-  // 8. receipt #2: IN إلى TREASURY (shiftId=null ⇒ خارج Z-report). يُنسَب للمستلِم إن وُجد وإلا للفاعل.
+  // 8. عقد الاستلام: يبقى PENDING ولا يدخل رصيد TREASURY حتى يقبله
+  // المستلم بهويته في تدفق ثنائي. اختيار اسمه من المُسلِّم ليس قبولاً.
   const inRes = await tx.insert(receipts).values({
     branchId,
     shiftId: null,
@@ -219,10 +228,10 @@ async function cashDropTx(tx: Tx, input: CashDropInput, actor: Actor & { role?: 
     paymentMethod: "CASH",
     cashBucket: "TREASURY",
     referenceNumber: dropNumber,
-    status: "COMPLETED",
+    status: "PENDING",
     partyType: "OTHER",
     description: `استلام سحبٍ نقديّ من وردية #${input.shiftId} (المُسلِّم: ${actor.userId})${noteSuffix}`,
-    createdBy: recipientId ?? actor.userId,
+    createdBy: recipientId,
   });
   const inReceiptId = extractInsertId(inRes);
 

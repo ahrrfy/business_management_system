@@ -34,6 +34,7 @@ export async function getCashFlowSeries(
         CAST(COALESCE(SUM(CASE WHEN r.direction = 'OUT' THEN r.amount ELSE 0 END), 0) AS CHAR) AS outflow
       FROM receipts r
       WHERE r.receiptStatus = 'COMPLETED'
+        AND r.receiptApprovalStatus = 'APPROVED'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL ${days - 1} DAY)
         ${branchFilter}
         ${bucketFilter}

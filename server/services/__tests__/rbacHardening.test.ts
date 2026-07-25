@@ -192,6 +192,7 @@ describe("RBAC الجديد: شريحة precision-rbac", () => {
         caller("manager", null).vouchers.create({
           voucherType: "RECEIPT", branchId: 1, amount: "100", paymentMethod: "CASH",
           partyType: "CUSTOMER", description: "تجربة",
+          clientRequestId: "rbac-manager-without-branch-voucher",
         })
       )
     );

@@ -31,6 +31,12 @@ export async function createWorkOrder(input: CreateWorkOrderInput, actor: Actor)
     if (!input.title.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "عنوان الأمر مطلوب" });
     if (!input.salePrice || money(input.salePrice).lte(0))
       throw new TRPCError({ code: "BAD_REQUEST", message: "سعر البيع يجب أن يكون موجباً" });
+    if (actor.role != null && actor.role !== "admin" && actor.role !== "manager" && money(input.laborCost ?? "0").gt(0)) {
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message: "تكلفة العمالة لا يحددها الكاشير؛ يلزم مسار إداري موثّق",
+      });
+    }
     const qty = Math.trunc(input.quantity ?? 1);
     if (!Number.isInteger(qty) || qty <= 0)
       throw new TRPCError({ code: "BAD_REQUEST", message: "الكمية يجب أن تكون عدداً صحيحاً موجباً" });
