@@ -93,47 +93,48 @@
 
 .dark {
   /* WCAG AA: كان 0.623 (نصّ الزرّ الأبيض ٣.٦٥:١). أُظلِم لـ٤.٨٨:١ — يشمل كل زرّ primary وعنصر التنقّل النشِط في الوضع الداكن. */
-  --primary: oklch(0.55 0.15 262);
-  --primary-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.55 0.15 262);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --background: oklch(0.185 0.007 75);
-  --foreground: oklch(0.885 0.007 82);
-  --card: oklch(0.225 0.009 75);
-  --card-foreground: oklch(0.885 0.007 82);
-  --popover: oklch(0.225 0.009 75);
-  --popover-foreground: oklch(0.885 0.007 82);
-  --secondary: oklch(0.255 0.009 75);
-  --secondary-foreground: oklch(0.742 0.008 82);
-  --muted: oklch(0.255 0.009 75);
-  --muted-foreground: oklch(0.660 0.009 82);
-  --accent: oklch(0.255 0.009 75);
-  --accent-foreground: oklch(0.885 0.007 82);
-  --destructive: oklch(0.704 0.191 22.216);
-  --destructive-foreground: oklch(0.985 0 0);
-  --border: oklch(0.325 0.010 75);
-  --input: oklch(0.52 0.012 75);
-  --ring: oklch(0.60 0.15 262);
+  color-scheme: dark;
+  --primary: #1f6feb;
+  --primary-foreground: #ffffff;
+  --sidebar-primary: #1f6feb;
+  --sidebar-primary-foreground: #ffffff;
+  --background: #0d1117;
+  --foreground: #e6edf3;
+  --card: #161b22;
+  --card-foreground: #e6edf3;
+  --popover: #161b22;
+  --popover-foreground: #e6edf3;
+  --secondary: #21262d;
+  --secondary-foreground: #c9d1d9;
+  --muted: #21262d;
+  --muted-foreground: #8b949e;
+  --accent: #30363d;
+  --accent-foreground: #f0f6fc;
+  --destructive: #da3633;
+  --destructive-foreground: #ffffff;
+  --border: #30363d;
+  --input: #484f58;
+  --ring: #2f81f7;
   --chart-1: oklch(0.55 0.12 262);
   --chart-2: oklch(0.58 0.11 200);
   --chart-3: oklch(0.55 0.12 152);
   --chart-4: oklch(0.62 0.11 70);
   --chart-5: oklch(0.58 0.12 340);
-  --sidebar: oklch(0.225 0.009 75);
-  --sidebar-foreground: oklch(0.885 0.007 82);
-  --sidebar-accent: oklch(0.255 0.009 75);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.325 0.010 75);
-  --sidebar-ring: oklch(0.60 0.15 262);
+  --sidebar: #161b22;
+  --sidebar-foreground: #c9d1d9;
+  --sidebar-accent: #21262d;
+  --sidebar-accent-foreground: #f0f6fc;
+  --sidebar-border: #30363d;
+  --sidebar-ring: #2f81f7;
   /* الشريط الأزرق (الداكن): أزرق عميق مريح + شريحة تندمج بلون المحتوى الداكن */
-  --sidebar-solid: oklch(0.225 0.028 262);
-  --sidebar-on: oklch(1 0 0 / 0.80);
-  --sidebar-on-strong: oklch(1 0 0 / 0.97);
-  --sidebar-soft: oklch(1 0 0 / 0.12);
-  --sidebar-soft-hover: oklch(1 0 0 / 0.20);
-  --sidebar-line: oklch(1 0 0 / 0.15);
-  --sidebar-pill: oklch(0.190 0.007 75);             /* = لون خلفية المحتوى الداكن الدافئ ⇒ تتدفّق الخلفية خلال الشريحة */
-  --sidebar-pill-on: oklch(0.82 0.11 262);           /* نصّ أزرق فاتح للتباين على الشريحة الداكنة */
+  --sidebar-solid: #161b22;
+  --sidebar-on: rgb(201 209 217 / 0.82);
+  --sidebar-on-strong: #f0f6fc;
+  --sidebar-soft: rgb(177 186 196 / 0.12);
+  --sidebar-soft-hover: rgb(177 186 196 / 0.20);
+  --sidebar-line: #30363d;
+  --sidebar-pill: #0d1117;
+  --sidebar-pill-on: #58a6ff;
 }
 
 @layer base {
@@ -144,6 +145,9 @@
     @apply bg-background text-foreground;
     font-family: "Cairo", system-ui, -apple-system, sans-serif;
     direction: rtl;
+  }
+  .dark body {
+    scrollbar-color: #484f58 #0d1117;
   }
   button:not(:disabled),
   [role="button"]:not([aria-disabled="true"]),
