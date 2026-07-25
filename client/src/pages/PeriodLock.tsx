@@ -18,6 +18,8 @@ export default function PeriodLockPage() {
   const status = trpc.periodLock.status.useQuery();
   const [cutoffDate, setCutoffDate] = useState<string>("");
   const [notes, setNotes] = useState<string>("");
+  const [unlockReason, setUnlockReason] = useState("");
+  const [unlockPassword, setUnlockPassword] = useState("");
 
   const lockMut = trpc.periodLock.lock.useMutation({
     onSuccess: () => {
@@ -33,6 +35,8 @@ export default function PeriodLockPage() {
     onSuccess: () => {
       notify.ok("تم فتح أحدث قفل");
       utils.periodLock.status.invalidate();
+      setUnlockReason("");
+      setUnlockPassword("");
     },
     onError: (e) => notify.err(e),
   });
@@ -63,11 +67,33 @@ export default function PeriodLockPage() {
                 <AlertTriangle aria-hidden className="size-4" />
                 <span>أي قيد محاسبي بتاريخ ≤ {fmtDate(lock.cutoffDate)} سيُرفَض.</span>
               </p>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">سبب فتح الفترة</label>
+                <input
+                  value={unlockReason}
+                  onChange={(e) => setUnlockReason(e.target.value)}
+                  maxLength={500}
+                  placeholder="اذكر سبب التصحيح والمستند أو التذكرة المرتبطة"
+                  className="h-9 px-3 rounded-md border bg-transparent text-sm"
+                />
+                <label className="text-sm font-medium">كلمة مرور المدير</label>
+                <input
+                  type="password"
+                  value={unlockPassword}
+                  onChange={(e) => setUnlockPassword(e.target.value)}
+                  autoComplete="current-password"
+                  className="h-9 px-3 rounded-md border bg-transparent text-sm"
+                />
+              </div>
               <Button
                 variant="destructive"
                 onClick={async () => {
+                  if (unlockReason.trim().length < 10 || !unlockPassword) {
+                    notify.err("أدخل سبباً واضحاً وكلمة مرور المدير قبل فتح الفترة");
+                    return;
+                  }
                   if (await confirm({ title: "فتح القفل", description: "هل أنت متأكد من فتح أحدث قفل؟ هذا يسمح بكتابة قيود تاريخية.", variant: "danger" })) {
-                    unlockMut.mutate();
+                    unlockMut.mutate({ reason: unlockReason.trim(), password: unlockPassword });
                   }
                 }}
                 disabled={unlockMut.isPending}

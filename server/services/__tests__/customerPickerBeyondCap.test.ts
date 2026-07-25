@@ -8,11 +8,13 @@
 // العلاج: `customers.search` (q + limit + offset، سقف ٢٠٠٠) للبحث، و`customers.get` بـid لاسم
 // المختار. الثوابت هنا تُثبّت أن **المسار الذي صارت الواجهة تستعمله** يصل فعلاً لما بعد ٥٠٠.
 import { beforeEach, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import * as s from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
 import { appRouter } from "../../routers";
 import { getDb } from "../../db";
 import { truncateTables } from "./__testUtils__";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 
 function db() {
   const d = getDb();
@@ -44,17 +46,33 @@ beforeEach(async () => {
   await d.insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
   await d.insert(s.users).values({ id: 1, openId: "t", name: "admin", role: "admin", loginMethod: "local" });
 
+  const meta: any = await d.execute(sql`
+    SELECT COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'customers' AND COLUMN_NAME = 'searchNorm'
+    LIMIT 1
+  `);
+  const column = Array.isArray(meta) ? meta[0]?.[0] : meta?.rows?.[0];
+  const writesSearchNorm = !String(column?.expr ?? "").trim();
+
   // ٥٢٠ عميلاً — إدراج **دفعةً واحدة** (لا حلقة): تنظيف __setup__ التسلسلي على ~١٠٢ جدولاً قد
   // يتجاوز مهلة الخطّاف على قاعدة بطيئة فيحذف أثناء الحلقة (راجع attendanceListPagination).
   const bulk = Array.from({ length: 519 }, (_, i) => ({
     name: `احمد رقم ${String(i + 1).padStart(3, "0")}`,
+    ...(writesSearchNorm ? { searchNorm: normalizeSearchText(`احمد رقم ${String(i + 1).padStart(3, "0")}`) } : {}),
     defaultPriceTier: "RETAIL" as const,
     currentBalance: "0",
     isActive: true,
   }));
   await d.insert(s.customers).values(bulk);
   // بحرف «ي» ⇒ آخر الترتيب الأبجدي بعد كل «احمد …» ⇒ الموضع ٥٢٠ ⇒ خارج سقف الـ٥٠٠ يقيناً.
-  await d.insert(s.customers).values({ name: BEYOND, defaultPriceTier: "WHOLESALE", currentBalance: "0", isActive: true });
+  await d.insert(s.customers).values({
+    name: BEYOND,
+    ...(writesSearchNorm ? { searchNorm: normalizeSearchText(BEYOND) } : {}),
+    defaultPriceTier: "WHOLESALE",
+    currentBalance: "0",
+    isActive: true,
+  });
 });
 
 describe("منتقي العميل — ما بعد سقف الـ٥٠٠", () => {

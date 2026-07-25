@@ -6,7 +6,7 @@
  *   ٣) رفض الخصم السالب (سطر/رأس فاتورة)
  *   ٤) closeShift فحص ملكية/فرع
  *   ٥) لا مسار حذف لـreceipts/returns ⇒ النقد لا يبقى بلا مقابل
- *   ٦) الدفع الزائد مسموح (قرار مالك §٦) — يُضبط بالاختبار كي لا ينقلب الحكم سهواً
+ *   ٦) الدفع الزائد مرفوض — لا يُنشأ سند ولا يتحول رصيد العميل إلى دائن
  */
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
@@ -178,9 +178,9 @@ describe("السياسة ٥: استرداد لا يُحذف يدوياً (الح
   });
 });
 
-// ─── ٦) الدفع الزائد مسموح (قرار مالك §٦) ────────────────────────────
-describe("السياسة ٦: الدفع الزائد مسموح ويُسجَّل AR سالباً (قرار مالك)", () => {
-  it("دفع أعلى من إجمالي الفاتورة يُقبَل، الحالة PAID والـcustomerBalance سالب (دائن للعميل)", async () => {
+// ─── ٦) الدفع الزائد مرفوض ───────────────────────────────────────────
+describe("السياسة ٦: الدفع الزائد مرفوض بلا سند أو رصيد دائن وهمي", () => {
+  it("دفع أعلى من المتبقي يُرفض ولا يُنشئ سنداً أو رصيداً دائناً وهمياً", async () => {
     await setStock(1, 1, 10);
     const cust = await db().insert(s.customers).values({ name: "علي", customerType: "فرد", defaultPriceTier: "RETAIL" });
     const customerId = insertId(cust);
@@ -192,11 +192,11 @@ describe("السياسة ٦: الدفع الزائد مسموح ويُسجَّل
     expect(sale.status).toBe("PENDING");
     // M5/M8: الدفع النقدي يَستوجب وردية مفتوحة لمستخدم actor.
     await openShiftRow(1, 1);
-    // دفع ١٥ (زائد ٥): النظام يقبل (قرار مالك "مسموح").
-    const pay = await processPayment({ invoiceId: sale.invoiceId, amount: "15.00", method: "CASH" }, { userId: 1, branchId: 1 });
-    expect(pay.status).toBe("PAID");
+    await expect(
+      processPayment({ invoiceId: sale.invoiceId, amount: "15.00", method: "CASH" }, { userId: 1, branchId: 1 }),
+    ).rejects.toThrow(/تتجاوز المتبقي/);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
     const c = (await db().select().from(s.customers).where(eq(s.customers.id, customerId)))[0];
-    // AR سالب = الشركة مدينة للعميل بـ٥.
-    expect(money(c.currentBalance).toFixed(2)).toBe("-5.00");
+    expect(money(c.currentBalance).toFixed(2)).toBe("10.00");
   });
 });

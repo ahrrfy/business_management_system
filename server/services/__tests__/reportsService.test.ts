@@ -191,6 +191,13 @@ describe("تقارير الذمم الدائنة (AP)", () => {
     await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
     const po = await makePO(1, 100, "5.00", true, "200.00");
 
+    const [storedPo] = await db().select().from(s.purchaseOrders).where(sql`id = ${po.purchaseOrderId}`);
+    expect(storedPo.paidAmount).toBe("200.00");
+    const linkedPayments = await db().select().from(s.accountingEntries)
+      .where(sql`entryType = 'PAYMENT_OUT' AND purchaseOrderId = ${po.purchaseOrderId}`);
+    expect(linkedPayments).toHaveLength(1);
+    expect(linkedPayments[0].amount).toBe("200.00");
+
     const stmt = await getSupplierStatement(1);
     expect(stmt).not.toBeNull();
     expect(stmt!.purchaseOrders).toHaveLength(1);

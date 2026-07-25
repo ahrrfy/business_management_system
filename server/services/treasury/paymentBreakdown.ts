@@ -50,6 +50,7 @@ export async function getPaymentMethodBreakdown(
         COUNT(*) AS cnt
       FROM receipts r
       WHERE r.receiptStatus = 'COMPLETED'
+        AND r.receiptApprovalStatus = 'APPROVED'
         AND r.createdAt >= ${from}
         AND r.createdAt < ${to}
         ${branchFilter}

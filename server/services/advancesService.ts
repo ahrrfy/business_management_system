@@ -103,7 +103,7 @@ export interface GrantAdvanceInput {
   /** مُرفق سند الصرف (صورة data URL أو رابط) — إلزامي خادمياً للمبالغ ≥ عتبة المُرفق (vouchers-pro). */
   attachmentUrl?: string | null;
   /** idempotency (تدقيق ١٧/٧): إعادة إرسال بنفس المفتاح ⇒ لا سند/صرف ثانٍ (منع الصرف النقدي المزدوج). */
-  clientRequestId?: string | null;
+  clientRequestId: string;
 }
 
 /** فئة السند الافتراضية للسلف: «رواتب» (OUT، من بذرة 0036). غيابها لا يمنع المنح (فئة اختيارية). */
@@ -128,6 +128,9 @@ async function payrollCategoryId(): Promise<number | null> {
  * رقم السند في الخطأ ليُلغى يدوياً — لا سلفة بلا سند ولا صرف صامت بلا سلفة.
  */
 export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
+  if (!input.clientRequestId?.trim()) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "معرّف الطلب إلزامي لمنع صرف السلفة مرتين" });
+  }
   const amount = money(input.amount);
   if (amount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ السلفة يجب أن يكون موجباً" });
   const monthly = input.monthlyDeduction != null && String(input.monthlyDeduction).trim() !== "" ? money(input.monthlyDeduction) : null;
@@ -151,25 +154,36 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
   if (!emp.isActive || emp.employmentStatus === "terminated") {
     throw new TRPCError({ code: "BAD_REQUEST", message: "لا تُمنح سلفة لموظف معطَّل أو منتهي الخدمة" });
   }
+  if (emp.branchId != null && Number(emp.branchId) !== Number(input.branchId)) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "فرع صرف السلفة يجب أن يطابق فرع الموظف" });
+  }
   const empName = fullEmployeeName(emp);
 
   // idempotency (تدقيق ١٧/٧، صرف نقدي مزدوج): إعادة إرسال بنفس المفتاح ⇒ أعِد السلفة القائمة بلا
   // إنشاء سند صرف ثانٍ. الفحص قبل createVoucher كي لا يخرج نقدٌ مرّتين. (سباق الطلبين المتزامنين
   // يحسمه القيد الفريد على idempotencyKeys داخل معاملة السلفة أدناه ⇒ الخاسر يُلغى سنده تعويضياً.)
-  if (input.clientRequestId) {
-    const [hit] = await db
-      .select({ refId: idempotencyKeys.refId })
-      .from(idempotencyKeys)
-      .where(and(eq(idempotencyKeys.operation, "advance.grant"), eq(idempotencyKeys.clientRequestId, input.clientRequestId)))
-      .limit(1);
-    if (hit) {
-      const [row] = await db.select().from(employeeAdvances).where(eq(employeeAdvances.id, Number(hit.refId))).limit(1);
-      if (row) {
-        const rc = row.receiptId
-          ? await db.select({ vn: receipts.voucherNumber }).from(receipts).where(eq(receipts.id, Number(row.receiptId))).limit(1)
-          : [];
-        return { ...row, employeeName: empName, voucherNumber: rc[0]?.vn ?? "" };
+  const [hit] = await db
+    .select({ refId: idempotencyKeys.refId })
+    .from(idempotencyKeys)
+    .where(and(eq(idempotencyKeys.operation, "advance.grant"), eq(idempotencyKeys.clientRequestId, input.clientRequestId)))
+    .limit(1);
+  if (hit) {
+    const [row] = await db.select().from(employeeAdvances).where(eq(employeeAdvances.id, Number(hit.refId))).limit(1);
+    if (row) {
+      if (
+        Number(row.employeeId) !== Number(input.employeeId) ||
+        Number(row.branchId) !== Number(input.branchId) ||
+        !money(row.amount).eq(amount)
+      ) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: "تعارض idempotency: المفتاح مستعمل لسلفة موظف أو فرع أو مبلغ مختلف",
+        });
       }
+      const rc = row.receiptId
+        ? await db.select({ vn: receipts.voucherNumber }).from(receipts).where(eq(receipts.id, Number(row.receiptId))).limit(1)
+        : [];
+      return { ...row, employeeName: empName, voucherNumber: rc[0]?.vn ?? "" };
     }
   }
 
@@ -182,10 +196,13 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       paymentMethod: "CASH",
       partyType: "OTHER",
       counterpartyName: empName,
+      referenceNumber: `EMP-ADV-${input.employeeId}-${input.clientRequestId}`,
       description: `سلفة موظف — ${empName}${input.note?.trim() ? ` — ${input.note.trim()}` : ""}`,
       voucherCategoryId: await payrollCategoryId(),
       // عتبة المُرفق (vouchers-pro) تسري على سند السلفة كأي سند صرف — createVoucher يفرضها.
       attachmentUrl: input.attachmentUrl?.trim() || null,
+      // حراسة رجل النقد نفسه، لا صف السلفة اللاحق فقط.
+      clientRequestId: `ADVANCE:${input.clientRequestId}`,
     },
     actor,
   );
@@ -212,11 +229,32 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       });
       const advanceId = extractInsertId(res);
       // ختم المفتاح داخل نفس معاملة السلفة ⇒ سباق طلبين متزامنين يصطدم بالقيد الفريد فيُلغى الخاسر (catch).
-      if (input.clientRequestId) await recordIdempotencyKey(tx, "advance.grant", input.clientRequestId, advanceId);
+      await recordIdempotencyKey(tx, "advance.grant", input.clientRequestId, advanceId);
       const [row] = await tx.select().from(employeeAdvances).where(eq(employeeAdvances.id, advanceId)).limit(1);
       return { ...row!, employeeName: empName, voucherNumber: voucher.voucherNumber };
     });
   } catch (err) {
+    // إذا فاز طلب متزامن بالمفتاح، فقد أعاد createVoucher السند نفسه. نعيد السلفة
+    // التي ثبتها الفائز ولا نحاول إلغاء سند مشترك صالح.
+    const [concurrentHit] = await db
+      .select({ refId: idempotencyKeys.refId })
+      .from(idempotencyKeys)
+      .where(and(eq(idempotencyKeys.operation, "advance.grant"), eq(idempotencyKeys.clientRequestId, input.clientRequestId)))
+      .limit(1);
+    if (concurrentHit) {
+      const [row] = await db.select().from(employeeAdvances).where(eq(employeeAdvances.id, Number(concurrentHit.refId))).limit(1);
+      if (
+        row &&
+        Number(row.employeeId) === Number(input.employeeId) &&
+        Number(row.branchId) === Number(input.branchId) &&
+        money(row.amount).eq(amount)
+      ) {
+        const rc = row.receiptId
+          ? await db.select({ vn: receipts.voucherNumber }).from(receipts).where(eq(receipts.id, Number(row.receiptId))).limit(1)
+          : [];
+        return { ...row, employeeName: empName, voucherNumber: rc[0]?.vn ?? voucher.voucherNumber };
+      }
+    }
     // تعويض: أُنشئ السند ولم تُسجَّل السلفة ⇒ نحاول إلغاء السند؛ وإن تعذّر نسمّيه للمستخدم.
     const reversed = await cancelVoucher(voucher.receiptId, actor).then(() => true).catch(() => false);
     throw new TRPCError({

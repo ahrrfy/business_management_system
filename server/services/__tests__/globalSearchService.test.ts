@@ -14,6 +14,7 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 import { getDb } from "../../db";
 import { classifyQuery, globalSearch } from "../globalSearchService";
 
@@ -49,6 +50,47 @@ type SeedRefs = {
   poId: number;
   expenseId: number;
 };
+
+async function syncGlobalSearchNormFixture() {
+  const d = db();
+  const metadata: any = await d.execute(sql`
+    SELECT TABLE_NAME AS tableName, COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME IN ('products', 'customers', 'suppliers')
+      AND COLUMN_NAME = 'searchNorm'
+  `);
+  const columns = (Array.isArray(metadata) ? metadata[0] : metadata?.rows) as
+    | Array<{ tableName: string; expr: string }>
+    | undefined;
+  const isGenerated = (tableName: string) =>
+    Boolean(String(columns?.find((column) => column.tableName === tableName)?.expr ?? "").trim());
+
+  if (!isGenerated("products")) {
+    const rows = await d.select({ id: s.products.id, name: s.products.name }).from(s.products);
+    for (const row of rows) {
+      await d.update(s.products)
+        .set({ searchNorm: normalizeSearchText(row.name) })
+        .where(eq(s.products.id, row.id));
+    }
+  }
+  if (!isGenerated("customers")) {
+    const rows = await d.select({ id: s.customers.id, name: s.customers.name }).from(s.customers);
+    for (const row of rows) {
+      await d.update(s.customers)
+        .set({ searchNorm: normalizeSearchText(row.name) })
+        .where(eq(s.customers.id, row.id));
+    }
+  }
+  if (!isGenerated("suppliers")) {
+    const rows = await d.select({ id: s.suppliers.id, name: s.suppliers.name }).from(s.suppliers);
+    for (const row of rows) {
+      await d.update(s.suppliers)
+        .set({ searchNorm: normalizeSearchText(row.name) })
+        .where(eq(s.suppliers.id, row.id));
+    }
+  }
+}
 
 async function seed(): Promise<SeedRefs> {
   const d = db();
@@ -122,6 +164,8 @@ async function seed(): Promise<SeedRefs> {
       amount: "300000.00", paymentMethod: "CASH", description: "إيجار شهر يونيو", payee: "صاحب العقار" },
   ]);
   const [exp] = await d.select({ id: s.expenses.id }).from(s.expenses).where(eq(s.expenses.description, "إيجار شهر يونيو"));
+
+  await syncGlobalSearchNormFixture();
 
   return {
     branchMain: branchMain.id, branchSales: branchSales.id,

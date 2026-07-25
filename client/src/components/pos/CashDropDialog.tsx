@@ -46,15 +46,15 @@ export function CashDropDialog({
   // تحليلٌ دفاعيّ: مدخلٌ مشوَّه (مثل «1..») لا يجب أن يرمي عند الرسم فيسقط في حدّ الخطأ.
   let amt: ReturnType<typeof D> | null = null;
   try { amt = D(amount || 0); } catch { amt = null; }
-  const valid = amt != null && amt.gt(0);
+  const valid = amt != null && amt.gt(0) && dropTo != null;
 
   function submit() {
-    if (!valid || !amt || drop.isPending) return;
+    if (!valid || !amt || dropTo == null || drop.isPending) return;
     drop.mutate({
       shiftId,
       amount: round2(amt).toFixed(2),
       clientRequestId,
-      dropTo: dropTo ?? undefined,
+      dropTo,
       notes: notes.trim() || undefined,
     });
   }
@@ -110,7 +110,7 @@ export function CashDropDialog({
           </div>
 
           <div>
-            <label htmlFor="cd-recipient" style={{ fontSize: 12, color: C.mutedFg, display: "block", marginBottom: 4 }}>المستلِم (اختياري — مدير/إداري)</label>
+            <label htmlFor="cd-recipient" style={{ fontSize: 12, color: C.mutedFg, display: "block", marginBottom: 4 }}>المستلِم (إلزامي — مدير/إداري من الفرع نفسه)</label>
             <select
               id="cd-recipient"
               value={dropTo ?? ""}
@@ -118,7 +118,7 @@ export function CashDropDialog({
               onChange={(e) => setDropTo(e.target.value ? Number(e.target.value) : null)}
               style={{ ...fieldBase, height: 40, fontSize: 14 }}
             >
-              <option value="">{recipientsQ.isLoading ? "جارٍ التحميل…" : "— بلا مستلِم (درج أمان) —"}</option>
+              <option value="">{recipientsQ.isLoading ? "جارٍ التحميل…" : "— اختر المستلِم —"}</option>
               {(recipientsQ.data ?? []).map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
             </select>
           </div>

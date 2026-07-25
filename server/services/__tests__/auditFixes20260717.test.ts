@@ -71,6 +71,7 @@ describe("قفل الفترة — السندات (تدقيق ١٧/٧)", () => {
         {
           voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH",
           partyType: "CUSTOMER", partyId: 1, description: "سند رجعيّ", voucherDate: "2020-06-01",
+          clientRequestId: "audit-fix-locked-retroactive-voucher",
         },
         admin,
       ),
@@ -84,6 +85,7 @@ describe("قفل الفترة — السندات (تدقيق ١٧/٧)", () => {
       {
         voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH",
         partyType: "CUSTOMER", partyId: 1, description: "سند اليوم",
+        clientRequestId: "audit-fix-current-voucher",
       },
       admin,
     );
@@ -97,6 +99,7 @@ describe("قفل الفترة — السندات (تدقيق ١٧/٧)", () => {
       {
         voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH",
         partyType: "CUSTOMER", partyId: 1, description: "سند ٢٠٢٠", voucherDate: "2020-06-01",
+        clientRequestId: "audit-fix-cancel-retroactive-voucher",
       },
       admin,
     );

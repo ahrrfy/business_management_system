@@ -104,7 +104,6 @@ export const productionRouter = router({
         notes: z.string().nullish(),
         linkedWorkOrderId: z.number().int().positive().nullish(),
         linkedRecipeId: z.number().int().positive().nullish(),
-        allowSelfConvert: z.boolean().optional(),
         clientRequestId: z.string().min(1).max(80).optional(),
         run: runInput.nullish(),
       })

@@ -5,11 +5,25 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { reconcileCustomerBalances } from "../reconcileService";
-import { createVoucher, cancelVoucher } from "../voucherService";
+import { createVoucher as createVoucherService, cancelVoucher } from "../voucherService";
 import { recordAttendance, monthSummary } from "../attendanceService";
 import { getSupplierStatement } from "../reportsService";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
+let voucherRequestSeq = 0;
+
+async function createVoucher(
+  input: Parameters<typeof createVoucherService>[0],
+  requestActor: Parameters<typeof createVoucherService>[1],
+) {
+  return createVoucherService(
+    {
+      ...input,
+      clientRequestId: input.clientRequestId ?? `security-hardening:${++voucherRequestSeq}`,
+    },
+    requestActor,
+  );
+}
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",

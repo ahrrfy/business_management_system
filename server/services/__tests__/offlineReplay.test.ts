@@ -5,7 +5,7 @@
  *  2) idempotency: إرسال مزدوج بنفس clientRequestId ⇒ فاتورة واحدة وخصم مخزون واحد.
  *  3) تجاوز المخزون: البيع يُسجَّل والرصيد يهبط سالباً (قرار مالك: سالب موسوم لا رفض).
  *  4) نافذة الالتقاط: مستقبلي/أقدم من ٧٢ ساعة ⇒ PRECONDITION_FAILED (يُعلَّق لدى العميل).
- *  5) نقدي فقط + تحت التكلفة FORBIDDEN + وردية مغلقة BAD_REQUEST.
+ *  5) نقدي فقط + تحت التكلفة FORBIDDEN + وردية مغلقة PRECONDITION_FAILED بلا كتابة بأثر رجعي.
  *  6) عزل الفرع في الراوتر: كاشير فرع ٢ يُجبَر على فرعه مهما مرّر.
  */
 import { eq, sql } from "drizzle-orm";
@@ -14,6 +14,7 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
 import { replayOfflineSale, type ReplayOfflineSaleInput } from "../offline/replaySale";
+import { truncateTables } from "./__testUtils__";
 
 const TABLES = [
   "idempotencyKeys",
@@ -41,10 +42,7 @@ function db() {
 }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seed() {
@@ -206,24 +204,26 @@ describe("replayOfflineSale — نافذة الالتقاط والحرّاس", (
     ).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 
-  it("ش٤ — مزامنة متأخرة: التُقط قبل الإغلاق ووصل بعده ⇒ يُقبل في الوردية المغلقة", async () => {
-    // الالتقاط قبل ساعة (baseInput) ثم أُغلقت الوردية الآن ⇒ النقد كان بالدرج عند العدّ.
+  it("ش٤ — مزامنة متأخرة: التُقط قبل الإغلاق ووصل بعده ⇒ يُرفض ولا يكتب بأثر رجعي", async () => {
     await db().update(s.shifts).set({ status: "CLOSED", openGuard: null, closedAt: new Date() }).where(eq(s.shifts.id, 1));
-    const res = await replayOfflineSale(baseInput({ clientRequestId: "offline-latesync-1", offlineReceiptNumber: "OFF-1-ab12-8" }), cashier1);
-    expect(res.status).toBe("PAID");
-    const inv = (await db().select().from(s.invoices).where(eq(s.invoices.id, res.invoiceId)))[0];
-    expect(Number(inv.shiftId)).toBe(1);
-    expect(!!inv.originatedOffline).toBe(true);
+    await expect(
+      replayOfflineSale(
+        baseInput({ clientRequestId: "offline-latesync-1", offlineReceiptNumber: "OFF-1-ab12-8" }),
+        cashier1,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 
-  it("ش٤ — التُقط بعد إغلاق الوردية ⇒ BAD_REQUEST (شذوذ يستحق مراجعة لا ترحيلاً)", async () => {
+  it("ش٤ — التُقط بعد إغلاق الوردية ⇒ PRECONDITION_FAILED للتسوية اللاحقة", async () => {
     // أُغلقت قبل ساعتين والالتقاط قبل ساعة (بعد الإغلاق) ⇒ يُرفض ويُعلَّق لدى العميل.
     await db().update(s.shifts)
       .set({ status: "CLOSED", openGuard: null, closedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
       .where(eq(s.shifts.id, 1));
     await expect(
       replayOfflineSale(baseInput({ clientRequestId: "offline-latesync-2", offlineReceiptNumber: "OFF-1-ab12-9" }), cashier1),
-    ).rejects.toMatchObject({ code: "BAD_REQUEST" });
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
   it("ش٤ — سعر تحت التكلفة مع priceOverrideApproved (اعتماد مدير مُتحقَّق) ⇒ يُرحَّل موسوماً", async () => {

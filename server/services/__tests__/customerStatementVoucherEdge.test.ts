@@ -11,7 +11,7 @@
  * الإصلاح: payRow يجمع الإيصالات التي أثّرت فعلاً على الرصيد = `status IN ('COMPLETED','REVERSED')
  *          AND approvalStatus='APPROVED'` ⇒ الأصل REVERSED يوازن تعويضه (الزوج=صفر)، والمعلّق يُستبعَد.
  */
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -22,6 +22,7 @@ import { startWorkOrder, markWorkOrderReady } from "../workOrder/lifecycle";
 import { deliverWorkOrder } from "../workOrder/deliver";
 import { getCustomerStatement } from "../reports/arAging";
 import { money } from "../money";
+import { truncateTables } from "./__testUtils__";
 
 const admin = { userId: 1, branchId: 1, role: "admin" as const };
 const OLD = new Date("2020-01-01T00:00:00.000Z");
@@ -39,10 +40,7 @@ function db() {
   return d;
 }
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 async function seed() {
   const d = db();
@@ -63,7 +61,16 @@ beforeEach(async () => { await reset(); await seed(); });
 describe("F5 حافّة (ب) — كشف العميل يتّزن مع السند الملغى/المعلّق", () => {
   it("(ب-١) سند قبض مُعتمَد ثم ملغى ⇒ openingBalance = currentBalance = 0 (لا ساق واحدة)", async () => {
     const v = await createVoucher(
-      { voucherType: "RECEIPT", branchId: 1, amount: "50.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "دفعة على الحساب" },
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "50.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "دفعة على الحساب",
+        clientRequestId: "stmt-voucher-cancelled",
+      },
       admin,
     );
     // مُعتمَد فوراً (50 < عتبة الاعتماد) ⇒ currentBalance = −50.
@@ -86,7 +93,16 @@ describe("F5 حافّة (ب) — كشف العميل يتّزن مع السند 
     process.env.VOUCHER_APPROVAL_THRESHOLD_IQD = "10"; // 50 ≥ 10 ⇒ يحتاج اعتماد ⇒ PENDING
     try {
       const v = await createVoucher(
-        { voucherType: "RECEIPT", branchId: 1, amount: "50.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "دفعة معلّقة" },
+        {
+          voucherType: "RECEIPT",
+          branchId: 1,
+          amount: "50.00",
+          paymentMethod: "CASH",
+          partyType: "CUSTOMER",
+          partyId: 1,
+          description: "دفعة معلّقة",
+          clientRequestId: "stmt-voucher-pending",
+        },
         admin,
       );
       expect(v.approvalStatus).toBe("PENDING_APPROVAL");
@@ -106,7 +122,16 @@ describe("F5 حافّة (ب) — كشف العميل يتّزن مع السند 
 
   it("(ضبط) دفعة سند مُعتمَدة قبل الفترة (لم تُلغَ) ⇒ تُحتسَب طبيعياً (لا انحدار على الدفعات العادية)", async () => {
     await createVoucher(
-      { voucherType: "RECEIPT", branchId: 1, amount: "30.00", paymentMethod: "CASH", partyType: "CUSTOMER", partyId: 1, description: "دفعة" },
+      {
+        voucherType: "RECEIPT",
+        branchId: 1,
+        amount: "30.00",
+        paymentMethod: "CASH",
+        partyType: "CUSTOMER",
+        partyId: 1,
+        description: "دفعة",
+        clientRequestId: "stmt-voucher-approved",
+      },
       admin,
     );
     expect(await currentBalance()).toBe("-30.00");

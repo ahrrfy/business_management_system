@@ -60,6 +60,37 @@ async function makeCustomerWithOverdueInvoice(opts: {
     paidAmount: opts.paid ?? "0",
     status: (opts.paid && Number(opts.paid) > 0) ? "PARTIALLY_PAID" : "PENDING",
   });
+  // رصيد الفرع يُعاد بناؤه من الدفتر، لا من customers.currentBalance العمومي.
+  // SALE يثبت أصل الذمة؛ والفارق الاختباري يمثّل دفعة على الحساب أو رصيداً افتتاحياً.
+  await d.insert(s.accountingEntries).values({
+    entryType: "SALE",
+    branchId,
+    invoiceId: opts.invoiceId,
+    customerId: opts.customerId,
+    revenue: opts.total,
+    profit: opts.total,
+    amount: opts.total,
+    entryDate: new Date(),
+  });
+  const intendedBalance = Number(opts.currentBalance ?? opts.total);
+  const delta = intendedBalance - Number(opts.total);
+  if (delta < 0 && intendedBalance >= 0) {
+    await d.insert(s.accountingEntries).values({
+      entryType: "PAYMENT_IN",
+      branchId,
+      customerId: opts.customerId,
+      amount: String(Math.abs(delta)),
+      entryDate: new Date(),
+    });
+  } else if (delta !== 0) {
+    await d.insert(s.accountingEntries).values({
+      entryType: "OPENING",
+      branchId,
+      customerId: opts.customerId,
+      amount: String(delta),
+      entryDate: new Date(),
+    });
+  }
 }
 
 /** تاريخ منذ N يوماً (YYYY-MM-DD)، UTC. */

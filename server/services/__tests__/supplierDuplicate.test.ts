@@ -1,8 +1,9 @@
 // dup-detect (٢٠/٧): كشف التكرار الحيّ للمورّدين findSimilarSuppliers — مرآة كاشف العميل
 // على نواة similarMatch (أغلبية الكلمات على searchNorm + لاحقة هاتف + شمول المعطَّلين).
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 import { getDb } from "../../db";
 import { findSimilarSuppliers } from "../supplierService";
 
@@ -23,11 +24,30 @@ async function reset() {
 async function seedSuppliers() {
   const d = db();
   await d.insert(s.suppliers).values([
-    { id: 1, name: "شركة المعارف للأختام", phone: "+9647701112233", city: "بغداد", supplierCategory: "محلي" },
-    { id: 2, name: "مطبعة الرشيد الحديثة", phone: "+9647809998877" },
+    { id: 1, name: "شركة المعارف للأختام", searchNorm: normalizeSearchText("شركة المعارف للأختام"), phone: "+9647701112233", city: "بغداد", supplierCategory: "محلي" },
+    { id: 2, name: "مطبعة الرشيد الحديثة", searchNorm: normalizeSearchText("مطبعة الرشيد الحديثة"), phone: "+9647809998877" },
     // بلا تشكيل: العمود المولَّد (0039) لا يجرّد الحركات — «مورّد» بالشدة لا يطابق «مورد».
-    { id: 3, name: "مورد معطل قديم", isActive: false },
-  ]);
+    { id: 3, name: "مورد معطل قديم", searchNorm: normalizeSearchText("مورد معطل قديم"), isActive: false },
+  ].map(({ searchNorm: _searchNorm, ...row }) => row));
+
+  const meta: any = await d.execute(sql`
+    SELECT COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'suppliers'
+      AND COLUMN_NAME = 'searchNorm'
+    LIMIT 1
+  `);
+  const column = Array.isArray(meta) ? meta[0]?.[0] : meta?.rows?.[0];
+  if (!String(column?.expr ?? "").trim()) {
+    const rows = await d.select({ id: s.suppliers.id, name: s.suppliers.name }).from(s.suppliers);
+    for (const row of rows) {
+      await d
+        .update(s.suppliers)
+        .set({ searchNorm: normalizeSearchText(row.name) })
+        .where(eq(s.suppliers.id, row.id));
+    }
+  }
 }
 
 beforeEach(async () => {

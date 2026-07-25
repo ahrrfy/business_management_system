@@ -2,12 +2,13 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
-import { exchangeHouses, exchangeTransactions, receipts } from "../../../drizzle/schema";
+import { branches, exchangeHouses, exchangeTransactions, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
 import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
+import { getTreasuryBalance } from "../cashTransferService";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
 
 export interface DepositInput {
@@ -87,6 +88,21 @@ export async function depositToExchange(input: DepositInput, actor: Actor): Prom
     }
 
     // receipt OUT TREASURY — نقد فعلي يغادر خزينة الفرع.
+    const [branch] = await tx
+      .select({ id: branches.id })
+      .from(branches)
+      .where(eq(branches.id, input.branchId))
+      .for("update")
+      .limit(1);
+    if (!branch) throw new TRPCError({ code: "BAD_REQUEST", message: "الفرع غير موجود" });
+    const availableTreasury = await getTreasuryBalance(tx, input.branchId);
+    if (amount.gt(availableTreasury)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: `الإيداع مرفوض: رصيد الخزينة ${availableTreasury.toFixed(2)} د.ع أقلّ من المطلوب ${amount.toFixed(2)} د.ع. لا يجوز إخراج نقد غير موجود.`,
+      });
+    }
+
     const recRes = await tx.insert(receipts).values({
       branchId: input.branchId,
       shiftId: null,

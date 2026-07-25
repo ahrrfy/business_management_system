@@ -67,7 +67,7 @@ export const installmentRouter = router({
       if (restrict == null && ctx.user.role !== "admin" && ctx.user.branchId == null) {
         throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم — لا يمكن إنشاء خطة" });
       }
-      const res = await createPlan(input, {
+      const res = await createPlan({ ...input, enforceFinancialIntegrity: true }, {
         userId: ctx.user.id,
         branchId: Number(ctx.user.branchId ?? input.branchId),
         role: ctx.user.role,

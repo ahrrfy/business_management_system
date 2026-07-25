@@ -107,7 +107,21 @@ export const purchaseRouter = router({
     .input(
       z.object({
         purchaseOrderId: z.number().int().positive(),
-        lines: z.array(z.object({ purchaseOrderItemId: z.number().int().positive(), receivedBaseQuantity: z.number().int().positive() })).min(1),
+        lines: z.array(z.object({ purchaseOrderItemId: z.number().int().positive(), receivedBaseQuantity: z.number().int().positive() }))
+          .min(1)
+          .superRefine((lines, ctx) => {
+            const seen = new Set<number>();
+            lines.forEach((line, index) => {
+              if (seen.has(line.purchaseOrderItemId)) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: [index, "purchaseOrderItemId"],
+                  message: "لا يجوز تكرار بند أمر الشراء في الاستلام نفسه",
+                });
+              }
+              seen.add(line.purchaseOrderItemId);
+            });
+          }),
         payment: z.object({ amount: positiveMoneyString, method }).optional(),
         // idempotency: نفس المفتاح ⇒ استلام واحد (لا مخزون/AP/قيد/دفعة مزدوجة عند النقر المزدوج/إعادة الشبكة).
         clientRequestId: z.string().min(1).max(80).optional(),

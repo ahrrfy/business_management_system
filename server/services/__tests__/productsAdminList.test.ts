@@ -2,11 +2,12 @@
 // includeInactive يُظهر المعطّل، البحث الذكي NULL-safe، تقسيم صفحات حتمي،
 // + تفعيل/تعطيل المنتج (setProductActive) وانعكاسه على POS.
 import { eq, sql } from "drizzle-orm";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { deleteProduct, listForPos, listProductsAdmin, setProductActive } from "../catalogService";
 import { getProductUsage } from "../entityUsage";
+import { ensureProductSearchNormFixture } from "./__searchNormFixture__";
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
@@ -48,6 +49,7 @@ async function seed() {
   ]);
 }
 
+beforeAll(ensureProductSearchNormFixture);
 beforeEach(async () => { await reset(); await seed(); });
 
 const names = (rows: Array<{ productName: string }>) => rows.map((r) => r.productName);

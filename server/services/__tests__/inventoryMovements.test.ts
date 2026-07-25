@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { appRouter } from "../../routers";
+import { todayUtcDate } from "../businessDay";
 
 /**
  * اختبارات شريحة «حركات المخزون اليدوية» — تغطّي:
@@ -86,75 +87,14 @@ beforeEach(async () => {
 });
 
 describe("inventory.createManualMovement", () => {
-  it("(أ) IN يدوي بقطعة واحدة يزيد الرصيد ويسجّل referenceType=MANUAL_IN + سطر تدقيق", async () => {
+  it("يرفض IN اليدوي حتى للأدمن لأنه بلا مستند مصدر", async () => {
     const caller = appRouter.createCaller(makeCtx(await userRow(1))); // admin
-    const r = await caller.inventory.createManualMovement({
-      variantId: 1,
-      branchId: 1,
-      movementType: "IN",
-      productUnitId: 1,
-      quantity: "5",
-      reason: "STOCK_TAKE",
-      notes: "جرد افتتاحي",
-    });
-    expect(r.newQuantity).toBe(25); // 20 + 5
-    expect(await stockOf(1, 1)).toBe(25);
-
-    const mv = (await db()
-      .select()
-      .from(s.inventoryMovements)
-      .where(eq(s.inventoryMovements.id, r.movementId)))[0];
-    expect(mv.movementType).toBe("IN");
-    expect(mv.quantity).toBe(5);
-    expect(mv.referenceType).toBe("MANUAL_IN");
-    expect(mv.referenceId).toBeNull();
-    expect(mv.notes).toContain("جرد");
-    expect(mv.notes).toContain("جرد افتتاحي");
-    expect(Number(mv.createdBy)).toBe(1);
-
-    const audit = await db()
-      .select()
-      .from(s.auditLogs)
-      .where(eq(s.auditLogs.action, "inventory.manualMovement"))
-      .limit(1);
-    expect(audit).toHaveLength(1);
-    const v = audit[0].newValue as any;
-    expect(v.type).toBe("IN");
-    expect(v.reason).toBe("STOCK_TAKE");
-    expect(v.baseQuantity).toBe(5);
-    expect(v.branchId).toBe(1);
-  });
-
-  it("idempotency (تدقيق ١٧/٧): نفس clientRequestId لا يكرّر الحركة ولا قيد ADJUST", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    const inp = {
-      variantId: 1, branchId: 1, movementType: "IN" as const, productUnitId: 1,
-      quantity: "5", reason: "STOCK_TAKE" as const, notes: "إعادة إرسال", clientRequestId: "mv-req-1",
-    };
-    const first = await caller.inventory.createManualMovement(inp);
-    const replay = await caller.inventory.createManualMovement(inp); // إعادة إرسال بنفس المفتاح
-
-    expect(first.newQuantity).toBe(25); // 20 + 5
-    expect(replay.movementId).toBe(first.movementId); // نفس الحركة تعود
-    expect(replay.newQuantity).toBe(25); // لم تُضَف 5 ثانية
-    expect(await stockOf(1, 1)).toBe(25); // الرصيد لم يتضاعف
-
-    // حركة MANUAL_IN واحدة فقط + قيد ADJUST واحد (لا ازدواج).
-    const moves = await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.referenceType, "MANUAL_IN"));
-    expect(moves.length).toBe(1);
-    const adjusts = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "ADJUST"));
-    expect(adjusts.length).toBe(1);
-  });
-
-  it("IN بدرزن واحد يضاعف بمعامل التحويل (12 وحدة أساس)", async () => {
-    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    const r = await caller.inventory.createManualMovement({
-      variantId: 1, branchId: 1, movementType: "IN",
-      productUnitId: 2, quantity: "1", reason: "CORRECTION",
-    });
-    expect(r.newQuantity).toBe(32); // 20 + 12
-    const mv = (await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.id, r.movementId)))[0];
-    expect(mv.quantity).toBe(12);
+    await expect(caller.inventory.createManualMovement({
+      variantId: 1, branchId: 1, movementType: "IN", productUnitId: 1,
+      quantity: "5", reason: "STOCK_TAKE", notes: "جرد افتتاحي",
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await stockOf(1, 1)).toBe(20);
+    expect(await db().select().from(s.inventoryMovements)).toHaveLength(0);
   });
 
   it("(ب) OUT (شطب) يُرفَض على الحركة اليدوية — يُوجَّه لتسوية معتمَدة (فصل مهام #٦)", async () => {
@@ -168,32 +108,24 @@ describe("inventory.createManualMovement", () => {
     expect(await stockOf(1, 1)).toBe(20); // بلا تغيير — الشطب لا يُطبَّق بفاعلٍ واحد
   });
 
-  it("(ج) RETURN يدوي يزيد المخزون مع referenceType=MANUAL_RETURN", async () => {
+  it("يرفض RETURN اليدوي ويوجّه إلى شاشة المرتجع الموثّق", async () => {
     const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    const r = await caller.inventory.createManualMovement({
+    await expect(caller.inventory.createManualMovement({
       variantId: 1, branchId: 1, movementType: "RETURN",
       productUnitId: 1, quantity: "3", reason: "OTHER",
-    });
-    expect(r.newQuantity).toBe(23); // 20 + 3
-    const mv = (await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.id, r.movementId)))[0];
-    expect(mv.movementType).toBe("RETURN");
-    expect(mv.referenceType).toBe("MANUAL_RETURN");
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
+    expect(await stockOf(1, 1)).toBe(20);
   });
 
-  it("(هـ) أمين المخزن مُجبَر على فرعه — لا يستطيع تعديل فرع غير فرعه", async () => {
-    // wh2 فرعه = 2؛ يحاول إدخال في فرع 1 ⇒ يُجبَر على فرعه 2.
+  it("أمين المخزن لا يستطيع إنشاء كمية في فرعه أو فرع آخر", async () => {
     const wh2 = appRouter.createCaller(makeCtx(await userRow(3)));
-    const r = await wh2.inventory.createManualMovement({
-      variantId: 1, branchId: 1, // محاولة الاحتيال على الفرع.
+    await expect(wh2.inventory.createManualMovement({
+      variantId: 1, branchId: 1,
       movementType: "IN",
       productUnitId: 1, quantity: "4", reason: "CORRECTION",
-    });
-    // الفرع 1 لم يتغيّر؛ الفرع 2 زاد من 5 إلى 9.
+    })).rejects.toMatchObject({ code: "FORBIDDEN" });
     expect(await stockOf(1, 1)).toBe(20);
-    expect(await stockOf(1, 2)).toBe(9);
-    expect(r.newQuantity).toBe(9);
-    const mv = (await db().select().from(s.inventoryMovements).where(eq(s.inventoryMovements.id, r.movementId)))[0];
-    expect(Number(mv.branchId)).toBe(2);
+    expect(await stockOf(1, 2)).toBe(5);
   });
 
   it("الكاشير ممنوع من إنشاء حركة يدوية (warehouse فأعلى)", async () => {
@@ -222,12 +154,13 @@ describe("inventory.createManualMovement", () => {
 
 describe("inventory.movementsRich", () => {
   async function seedMovements() {
-    const caller = appRouter.createCaller(makeCtx(await userRow(1)));
-    // ٣ حركات في فرع ١، ١ في فرع ٢ (OUT اليدويّ صار يمرّ بالتسوية المعتمَدة #٦ ⇒ استُبدِل بـRETURN).
-    await caller.inventory.createManualMovement({ variantId: 1, branchId: 1, movementType: "IN", productUnitId: 1, quantity: "2", reason: "STOCK_TAKE" });
-    await caller.inventory.createManualMovement({ variantId: 1, branchId: 1, movementType: "RETURN", productUnitId: 1, quantity: "1", reason: "OTHER" });
-    await caller.inventory.createManualMovement({ variantId: 1, branchId: 1, movementType: "RETURN", productUnitId: 1, quantity: "3", reason: "OTHER" });
-    await caller.inventory.createManualMovement({ variantId: 1, branchId: 2, movementType: "IN", productUnitId: 1, quantity: "5", reason: "CORRECTION" });
+    // بيانات تاريخية لتمرين شاشة الكاردكس؛ endpoint اليدوي الجديد مغلق ولا يُستخدم للتهيئة.
+    await db().insert(s.inventoryMovements).values([
+      { variantId: 1, branchId: 1, movementType: "IN", quantity: 2, referenceType: "MANUAL_IN", createdBy: 1 },
+      { variantId: 1, branchId: 1, movementType: "RETURN", quantity: 1, referenceType: "MANUAL_RETURN", createdBy: 1 },
+      { variantId: 1, branchId: 1, movementType: "RETURN", quantity: 3, referenceType: "MANUAL_RETURN", createdBy: 1 },
+      { variantId: 1, branchId: 2, movementType: "IN", quantity: 5, referenceType: "MANUAL_IN", createdBy: 1 },
+    ]);
   }
 
   it("(د1) يجلب كل الحركات بأسماء المنتج والفرع والمستخدم", async () => {
@@ -271,10 +204,8 @@ describe("inventory.movementsRich", () => {
   it("(د4) فلترة بالتاريخ — toDate يشمل اليوم كاملاً", async () => {
     await seedMovements();
     const admin = appRouter.createCaller(makeCtx(await userRow(1)));
-    // التاريخ **المحلي** (لا UTC): حدود الفلترة بمنتصف ليلٍ محلي (dateRange.localDayStart)، فلو استعملنا
-    // toISOString (UTC) لانزاحت النافذة في الساعات ٢١–٢٤ UTC حيث يسبق التاريخ المحلي تاريخَ UTC بيوم.
-    const now = new Date();
-    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+    // يوم العمل وتقسيم طوابع قاعدة البيانات كلاهما UTC؛ لا نعتمد على منطقة جهاز تشغيل الاختبار.
+    const today = todayUtcDate();
     const todayAll = await admin.inventory.movementsRich({ fromDate: today, toDate: today });
     expect(todayAll.total).toBe(4); // toDate شامل ⇒ يلتقط ما حصل اليوم.
 

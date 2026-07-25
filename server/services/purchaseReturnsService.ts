@@ -22,6 +22,11 @@ import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
+export function refundablePurchaseCash(returned: Decimal, paid: Decimal, priorRefunded: Decimal): Decimal {
+  const available = Decimal.max(new Decimal(0), paid.minus(priorRefunded));
+  return round2(Decimal.min(returned, available));
+}
+
 export interface PurchaseReturnLineInput {
   variantId: number;
   productUnitId: number;
@@ -85,6 +90,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
 
     // إن وُجد أمر شراء مرجعي ⇒ تحقّق ملكية المورد/الفرع + سقف الكميّات.
     let refPo: typeof purchaseOrders.$inferSelect | undefined;
+    let refItems: (typeof purchaseOrderItems.$inferSelect)[] = [];
     if (input.purchaseOrderRefId) {
       const r = await tx
         .select()
@@ -100,6 +106,8 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       if (Number(refPo.branchId) !== input.branchId) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء لا يخصّ هذا الفرع" });
       }
+      refItems = await tx.select().from(purchaseOrderItems)
+        .where(eq(purchaseOrderItems.purchaseOrderId, Number(refPo.id)));
     }
 
     // حضِّر العمل: حوِّل لوحدة الأساس + احسب صافي البند.
@@ -120,7 +128,20 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       const bookCostPerBase = money(v.costPrice ?? "0");
       const factor = money(baseQuantity).dividedBy(money(it.quantity)); // وحدات الأساس لكل وحدة شراء
       const bookUnitCost = round2(bookCostPerBase.times(factor)); // تكلفة وحدة الشراء بالكتب
-      const reqUnit = money(it.unitPrice);
+      let reqUnit = money(it.unitPrice);
+      if (refPo) {
+        const matching = refItems.filter(
+          (row) => Number(row.variantId) === it.variantId && Number(row.productUnitId) === it.productUnitId,
+        );
+        if (matching.length !== 1) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `تعذرت مطابقة المتغيّر ${it.variantId} ببند مرجعي واحد` });
+        }
+        const poUnitPrice = money(matching[0].unitPrice);
+        if (!reqUnit.eq(poUnitPrice)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: `سعر المرتجع يجب أن يطابق سعر أمر الشراء (${poUnitPrice.toFixed(2)})` });
+        }
+        reqUnit = poUnitPrice;
+      }
       // PROC-02: سعر الإرجاع لا يصحّ أن يكون سالباً — السقف العلوي وحده أعمى عن الإشارة
       // (reqUnit.gt(bookUnitCost) يَمرّ على السالب) ⇒ كان سعرٌ سالب يَعكس اتجاه AP ويَحقن قيمة.
       if (reqUnit.lt(0)) {
@@ -138,10 +159,6 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
 
     // سقف الكميّات حسب أمر الشراء المرجعي: لا يتجاوز (مستلم − مُرتجَع سابقاً) لكل (variantId).
     if (refPo) {
-      const refItems = await tx
-        .select()
-        .from(purchaseOrderItems)
-        .where(eq(purchaseOrderItems.purchaseOrderId, Number(refPo.id)));
       const receivedByVariant = new Map<number, number>();
       for (const ri of refItems) {
         receivedByVariant.set(
@@ -247,6 +264,30 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     const settlement = input.settlement ?? "CREDIT";
     if (settlement === "CASH") {
       const method = input.paymentMethod ?? "CASH";
+      if (method !== "CASH") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد غير النقدي يتطلب سند قبض موثقاً" });
+      }
+      if (!refPo) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد النقدي يتطلب أمر شراء مرجعياً يثبت دفعة سابقة" });
+      }
+      const priorRefundRow = (
+        await tx
+          .select({ v: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)` })
+          .from(accountingEntries)
+          .where(and(
+            eq(accountingEntries.entryType, "PAYMENT_IN"),
+            eq(accountingEntries.purchaseOrderId, Number(refPo.id)),
+            eq(accountingEntries.supplierId, input.supplierId),
+          ))
+      )[0];
+      const cashRefund = refundablePurchaseCash(
+        returnedTotal,
+        money(refPo.paidAmount),
+        money(priorRefundRow?.v ?? "0"),
+      );
+      if (cashRefund.lte(0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا توجد دفعة سابقة تبرر استرداداً نقدياً؛ استخدم خصماً من الذمة" });
+      }
       // G14 (١٩/٦/٢٦): استرداد نقدي من المورد يَلزم وردية مفتوحة (متّسق مع receivePurchase).
       const isCash = method === "CASH";
       let shiftId: number | null = null;
@@ -266,7 +307,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         shiftId,
         cashBucket,
         direction: "IN",
-        amount: toDbMoney(returnedTotal),
+        amount: toDbMoney(cashRefund),
         paymentMethod: method,
         status: "COMPLETED",
         createdBy: actor.userId,
@@ -278,10 +319,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         purchaseOrderId: input.purchaseOrderRefId ?? null,
         supplierId: input.supplierId,
         receiptId,
-        amount: returnedTotal,
+        amount: cashRefund,
       });
       // العاكس: لأنّ النقد دخل صندوقنا، نُلغي خصم الذمم بمقدار النقد المُسترد.
-      await adjustSupplierBalance(tx, input.supplierId, returnedTotal);
+      await adjustSupplierBalance(tx, input.supplierId, cashRefund);
     }
 
     // ── landed-cost على مرتجع الشراء (متابعة Codex على #311، تصحيح #318 — قرار المالك ٢٢/٧/٢٦) ──

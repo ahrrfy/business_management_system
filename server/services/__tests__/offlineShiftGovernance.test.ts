@@ -1,15 +1,16 @@
 /**
- * حوكمة الوردية للأوفلاين (الشريحة ٤): إغلاق idempotent + قسم «مبيعات مُزامنة لاحقاً» في Z-report.
+ * حوكمة الوردية للأوفلاين (الشريحة ٤): إغلاق idempotent + منع الكتابة بأثر رجعي بعد إغلاق الوردية.
  *  - انقطاع منتصف الإغلاق (الالتزام تم والردّ ضاع) ⇒ إعادة المحاولة تعيد اللقطة الملتزمة كما هي
  *    بلا كتابة (countedCash الجديدة تُهمَل — لا تعديل Z بأثر رجعي).
- *  - فاتورة أوفلاينية رُحِّلت بعد الإغلاق تظهر في lateSynced (تفسّر زيادة الدرج عند العدّ).
+ *  - فاتورة أوفلاينية تصل بعد الإغلاق تُرفض وتنتقل لمسار التسوية اللاحقة، فلا تغيّر لقطة Z.
  */
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { replayOfflineSale } from "../offline/replaySale";
 import { closeShift, getShiftReport } from "../shiftService";
+import { truncateTables } from "./__testUtils__";
 
 const TABLES = [
   "idempotencyKeys",
@@ -37,10 +38,7 @@ function db() {
 }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 async function seed() {
@@ -94,31 +92,32 @@ describe("closeShift — إغلاق idempotent (ش٤)", () => {
   });
 });
 
-describe("getShiftReport — قسم «مبيعات مُزامنة لاحقاً» (ش٤)", () => {
-  it("فاتورة أوفلاينية رُحِّلت بعد الإغلاق تُحتسب في lateSynced وتبقى ضمن إجمالي الوردية", async () => {
+describe("getShiftReport — منع الترحيل الأوفلايني بعد الإغلاق (ش٤)", () => {
+  it("فاتورة أوفلاينية تصل بعد الإغلاق تُرفض ولا تغيّر الفواتير أو لقطة الوردية", async () => {
     await closeShift({ shiftId: 1, countedCash: "10250.00" }, cashier1);
-    // دقّة timestamp ثانية واحدة: الإغلاق والترحيل يقعان بنفس الثانية داخل الاختبار فلا تتحقق
-    // gt() — نُرجع closedAt خمس ثوانٍ (واقعياً الترحيل يتأخر دقائق/ساعات عن الإغلاق).
-    await db().update(s.shifts).set({ closedAt: new Date(Date.now() - 5000) }).where(eq(s.shifts.id, 1));
-    // ترحيل متأخر: التُقطت قبل الإغلاق (قبل ساعة) ووصلت بعده.
-    await replayOfflineSale(
-      {
-        branchId: 1,
-        shiftId: 1,
-        priceTier: "RETAIL",
-        lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "250.00" }],
-        payment: { amount: "250.00", method: "CASH" },
-        clientRequestId: "late-1",
-        capturedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
-        offlineReceiptNumber: "OFF-1-zz99-1",
-      },
-      cashier1,
-    );
+    await expect(
+      replayOfflineSale(
+        {
+          branchId: 1,
+          shiftId: 1,
+          priceTier: "RETAIL",
+          lines: [{ variantId: 1, productUnitId: 1, quantity: "1", unitPriceOverride: "250.00" }],
+          payment: { amount: "250.00", method: "CASH" },
+          clientRequestId: "late-1",
+          capturedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+          offlineReceiptNumber: "OFF-1-zz99-1",
+        },
+        cashier1,
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
+
+    expect(await db().select().from(s.invoices)).toHaveLength(0);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
     const report = await getShiftReport(1);
     expect(report).not.toBeNull();
-    expect(report!.lateSyncedCount).toBe(1);
-    expect(report!.lateSyncedTotal).toBe("250.00");
-    expect(report!.invoiceCount).toBe(1); // ضمن إجمالي الوردية أيضاً — القسم تفسيري لا استثنائي.
+    expect(report!.lateSyncedCount).toBe(0);
+    expect(report!.lateSyncedTotal).toBe("0.00");
+    expect(report!.invoiceCount).toBe(0);
   });
 
   it("وردية مفتوحة أو بلا فواتير متأخرة ⇒ lateSynced صفر", async () => {

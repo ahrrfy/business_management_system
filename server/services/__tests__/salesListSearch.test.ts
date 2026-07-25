@@ -6,7 +6,7 @@
 //   ب٢) q يطابق رقم الفاتورة **واسم العميل**، والاسم مطبَّع عربياً («احمد» يجد «أحمد» — D2).
 //   ب٣) listSummary.count يطابق عدد صفوف list تحت نفس q (وإلا كذب الترقيم: «من N» ≠ الواقع).
 //   ب٤) offset يتنقّل بلا تكرار ولا فقد.
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import type { TrpcContext } from "../../context";
@@ -14,6 +14,7 @@ import { appRouter } from "../../routers";
 import { getDb } from "../../db";
 import { createSale } from "../saleService";
 import { truncateTables } from "./__testUtils__";
+import { normalizeSearchText } from "@shared/searchNormalize";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -51,9 +52,39 @@ beforeEach(async () => {
   await d.insert(s.productPrices).values([{ productUnitId: 1, priceTier: "RETAIL", price: "10.00" }]);
   // عميلان: الاسم مهموز ليُختبَر التطبيع العربي عبر searchNorm (عمود مولَّد STORED).
   await d.insert(s.customers).values([
-    { id: 1, name: "أحمد التاجر", defaultPriceTier: "RETAIL", currentBalance: "0" },
-    { id: 2, name: "زينب للقرطاسية", defaultPriceTier: "RETAIL", currentBalance: "0" },
-  ]);
+    {
+      id: 1,
+      name: "أحمد التاجر",
+      searchNorm: normalizeSearchText("أحمد التاجر"),
+      defaultPriceTier: "RETAIL",
+      currentBalance: "0",
+    },
+    {
+      id: 2,
+      name: "زينب للقرطاسية",
+      searchNorm: normalizeSearchText("زينب للقرطاسية"),
+      defaultPriceTier: "RETAIL",
+      currentBalance: "0",
+    },
+  ].map(({ searchNorm: _searchNorm, ...row }) => row));
+  const meta: any = await d.execute(sql`
+    SELECT COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'customers'
+      AND COLUMN_NAME = 'searchNorm'
+    LIMIT 1
+  `);
+  const column = Array.isArray(meta) ? meta[0]?.[0] : meta?.rows?.[0];
+  if (!String(column?.expr ?? "").trim()) {
+    const rows = await d.select({ id: s.customers.id, name: s.customers.name }).from(s.customers);
+    for (const row of rows) {
+      await d
+        .update(s.customers)
+        .set({ searchNorm: normalizeSearchText(row.name) })
+        .where(eq(s.customers.id, row.id));
+    }
+  }
   await d.insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 100000 });
 });
 

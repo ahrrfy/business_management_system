@@ -8,7 +8,23 @@ import { getDb } from "../../db";
 import { money } from "../money";
 import { reconcileSupplierBalances } from "../reconcileService";
 import { closeShift } from "../shiftService";
-import { cancelVoucher, createVoucher, listVouchers } from "../voucherService";
+import { cancelVoucher, createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
+
+type LegacyVoucherInput = Omit<Parameters<typeof createVoucherRaw>[0], "clientRequestId"> & {
+  clientRequestId?: string;
+};
+let voucherRequestSequence = 0;
+function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof createVoucherRaw>[1]) {
+  voucherRequestSequence += 1;
+  const isOther = input.partyType === "OTHER";
+  const isOtherReceipt = isOther && input.voucherType === "RECEIPT";
+  return createVoucherRaw({
+    ...input,
+    counterpartyName: isOther ? (input.counterpartyName ?? "طرف اختباري موثق") : input.counterpartyName,
+    referenceNumber: isOtherReceipt ? (input.referenceNumber ?? `SRC-CANCEL-${voucherRequestSequence}`) : input.referenceNumber,
+    clientRequestId: input.clientRequestId ?? `voucher-cancel-test-${voucherRequestSequence}`,
+  }, actor);
+}
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 

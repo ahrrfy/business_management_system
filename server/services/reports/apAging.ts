@@ -3,7 +3,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { accountingEntries, purchaseOrders, suppliers } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { money, sumMoney, toDbMoney } from "../money";
-import { nextDayStr, positiveDiff, type StatementPeriod } from "./shared";
+import { nextDayStr, type StatementPeriod } from "./shared";
 
 export interface APAgingRow {
   supplierId: number;
@@ -45,12 +45,12 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
       s.name AS supplierName,
       s.phone,
       CAST(s.currentBalance AS CHAR) AS currentBalance,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) <= 30 THEN GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 31 AND 60 THEN GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 61 AND 90 THEN GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
-      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) > 90 THEN GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) ELSE 0 END), 0) AS CHAR) AS d91p,
-      CAST(COALESCE(SUM(GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0)), 0) AS CHAR) AS unpaidTotal,
-      DATE_FORMAT(MIN(CASE WHEN po.poStatus IN ('CONFIRMED','RECEIVED') AND (po.total - po.paidAmount - COALESCE(ret.creditReturned, 0)) > 0 THEN po.orderDate END), '%Y-%m-%d') AS oldestPoDate
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) <= 30 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d0_30,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 31 AND 60 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d31_60,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) BETWEEN 61 AND 90 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d61_90,
+      CAST(COALESCE(SUM(CASE WHEN DATEDIFF(UTC_DATE(), DATE(po.orderDate)) > 90 THEN GREATEST(COALESCE(gl.balance, 0), 0) ELSE 0 END), 0) AS CHAR) AS d91p,
+      CAST(COALESCE(SUM(GREATEST(COALESCE(gl.balance, 0), 0)), 0) AS CHAR) AS unpaidTotal,
+      DATE_FORMAT(MIN(CASE WHEN COALESCE(gl.balance, 0) > 0 THEN po.orderDate END), '%Y-%m-%d') AS oldestPoDate
     FROM suppliers s
     LEFT JOIN purchaseOrders po
       ON po.supplierId = s.id
@@ -58,14 +58,17 @@ export async function getAPAging(opts: { branchId?: number; limit?: number } = {
       ${branchFilter}
     LEFT JOIN (
       SELECT ae.purchaseOrderId,
-        COALESCE(SUM(CASE WHEN ae.entryType = 'RETURN' THEN -ae.amount ELSE 0 END), 0)
-        - COALESCE(SUM(CASE WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount ELSE 0 END), 0)
-        AS creditReturned
+        COALESCE(SUM(CASE
+          WHEN ae.entryType = 'PURCHASE' THEN ae.amount
+          WHEN ae.entryType = 'RETURN' THEN ae.amount
+          WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount
+          WHEN ae.entryType IN ('PAYMENT_OUT','EXCHANGE_SETTLE') THEN -ae.amount
+          ELSE 0 END), 0) AS balance
       FROM accountingEntries ae
       WHERE ae.purchaseOrderId IS NOT NULL AND ae.supplierId IS NOT NULL
-        AND ae.entryType IN ('RETURN', 'PAYMENT_IN')
+        AND ae.entryType IN ('PURCHASE','RETURN','PAYMENT_IN','PAYMENT_OUT','EXCHANGE_SETTLE')
       GROUP BY ae.purchaseOrderId
-    ) ret ON ret.purchaseOrderId = po.id
+    ) gl ON gl.purchaseOrderId = po.id
     WHERE s.isActive = TRUE
     GROUP BY s.id, s.name, s.phone, s.currentBalance
     -- currentBalance <> 0 (لا > 0): يُظهر أيضاً الرصيد المدين للمورّد (دفعة مقدّمة «لنا عليه»/رصيد
@@ -125,33 +128,23 @@ export interface SupplierStatementResult {
  *  - مع from: + مشترياته الملتزمة قبل from (CONFIRMED/RECEIVED فقط — DRAFT/SENT/CANCELLED
  *    غير ملتزمة مالياً، كما في getAPAging/reconcile) − دفعات PAYMENT_OUT قبل from على entryDate.
  */
-async function supplierOpeningBalance(supplierId: number, from?: string) {
+async function supplierOpeningBalance(supplierId: number, from?: string, branchId?: number) {
   const db = getDb()!;
+  const branchCond = branchId ? eq(accountingEntries.branchId, branchId) : undefined;
   const openRow = await db
     .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
     .from(accountingEntries)
-    .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.supplierId, supplierId)));
+    .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.supplierId, supplierId), branchCond));
   let opening = money(openRow[0]?.v ?? 0);
   if (!from) return opening;
 
-  const poRow = await db
-    .select({ v: sql<string>`COALESCE(SUM(CAST(${purchaseOrders.total} AS DECIMAL(15,2))), 0)` })
-    .from(purchaseOrders)
-    .where(
-      and(
-        eq(purchaseOrders.supplierId, supplierId),
-        inArray(purchaseOrders.status, ["CONFIRMED", "RECEIVED"]),
-        sql`${purchaseOrders.orderDate} < ${`${from} 00:00:00`}`
-      )
-    );
   // صافي تأثير القيود قبل الفترة على AP (مرآة reconcileSupplierBalances):
   //   PAYMENT_OUT يطرح، PAYMENT_IN يضيف (استرداد من مورد)، RETURN.amount مخزَّن سالباً فيطرح المرتجع.
   // كان نظير العميل (customerOpeningBalance) يضمّ الاتجاهين بصحّة، بينما المورد كان PAYMENT_OUT فقط
   // ⇒ كشف حساب لا يتّزن عند استرداد من مورد أو مرتجع شراء.
-  // FI-01 (تكامل الأصول↔كشف المورد، تحقيق عدائي ٢٠/٦): اقتناء أصل على ذمّة المورد يُقيَّد PURCHASE
-  // (بلا purchaseOrderId) ويَرفع currentBalance؛ كان الكشف يُعيد بناء AP من أوامر الشراء + الدفعات
-  // فقط ⇒ شراء الأصل يَغيب فلا يتّزن الرصيد. نُدرج PURCHASE اليتيمة (purchaseOrderId IS NULL) موجبةً
-  // على AP (شراء الأصول عبر PO تُحتسَب من purchaseOrders.total ⇒ لا ازدواج).
+  // كل PURCHASE موثّق قبل الفترة يدخل الرصيد المُرحّل، سواء ارتبط بأمر شراء أم كان شراء أصل
+  // مستقلاً. لم نعد نجمع purchaseOrders.total هنا، لذلك إدراج القيد المرتبط لا يسبب ازدواجاً؛
+  // كما أن branchCond وentryDate يجعلان المصدر دفتر الأستاذ ضمن الفرع والفترة المطلوبين.
   // EXCHANGE-SETTLE (تدقيق ٢/٧): تسديد ذمّة المورد عبر بيت صيرفة يُقيَّد EXCHANGE_SETTLE ويخفّض AP
   // (مرآة reconcileSupplierBalances السطر ١٨٠). كان مُغفَلاً من المُرحَّل ⇒ الكشف لا يتّزن مع الرصيد
   // الجاري عند وجود تسديد صيرفة. نُدرجه بإشارة سالبة هنا وفي حركة الفترة أدناه (متماثلاً فلا انحراف).
@@ -168,12 +161,13 @@ async function supplierOpeningBalance(supplierId: number, from?: string) {
     .from(accountingEntries)
     .where(
       and(
-        sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
+        inArray(accountingEntries.entryType, ["PURCHASE", "PAYMENT_OUT", "PAYMENT_IN", "RETURN", "EXCHANGE_SETTLE"]),
         eq(accountingEntries.supplierId, supplierId),
+        branchCond,
         sql`${accountingEntries.entryDate} < ${from}`
       )
     );
-  return opening.plus(money(poRow[0]?.v ?? 0)).plus(money(entriesRow[0]?.v ?? 0));
+  return opening.plus(money(entriesRow[0]?.v ?? 0));
 }
 
 /** كشف حساب مورد: أوامر شراء + دفعات (من accountingEntries.PAYMENT_OUT) + ملخّص.
@@ -203,13 +197,43 @@ export async function getSupplierStatement(
       poNumber: purchaseOrders.poNumber,
       orderDate: purchaseOrders.orderDate,
       expectedDeliveryDate: purchaseOrders.expectedDeliveryDate,
-      total: purchaseOrders.total,
+      // paidAmount هو إجمالي ما نُسب لهذا الأمر، ويُحدَّث ذرياً مع قيد PAYMENT_OUT
+      // داخل receivePurchase. استعمال scalar subquery ثانية هنا أعاد صفراً في MySQL/Drizzle
+      // رغم وجود القيد المرتبط، فكان صف الأمر وsummary.totalPaid يناقضان حركة الدفعة نفسها.
+      // نبقي total من قيود PURCHASE لأنه يمثل المستلم فعلاً عند الاستلام الجزئي، بينما
+      // paidAmount هو الحقل التراكمي المرجعي للأمر (والاسترداد يظهر كحركة PAYMENT_IN مستقلة).
       paidAmount: purchaseOrders.paidAmount,
       status: purchaseOrders.status,
     })
     .from(purchaseOrders)
     .where(and(...poConds))
     .orderBy(desc(purchaseOrders.orderDate));
+
+  // نجمع مشتريات كل أمر من GL باستعلام مستقل. الاستعلام الفرعي المرتبط أعاد صفراً
+  // في MySQL/Drizzle في بعض الخطط، بينما التجميع الصريح يثبت أن المصدر هو PURCHASE
+  // الموثّق ويمنع الرجوع إلى purchaseOrders.total الاسمي.
+  const purchaseTotals = pos.length
+    ? await db
+        .select({
+          purchaseOrderId: accountingEntries.purchaseOrderId,
+          total: sql<string>`COALESCE(SUM(${accountingEntries.amount}), 0)`,
+        })
+        .from(accountingEntries)
+        .where(
+          and(
+            eq(accountingEntries.entryType, "PURCHASE"),
+            inArray(accountingEntries.purchaseOrderId, pos.map((p) => Number(p.id))),
+          ),
+        )
+        .groupBy(accountingEntries.purchaseOrderId)
+    : [];
+  const totalByPurchaseOrder = new Map(
+    purchaseTotals.map((row) => [Number(row.purchaseOrderId), String(row.total)]),
+  );
+  const posWithTotals = pos.map((po) => ({
+    ...po,
+    total: totalByPurchaseOrder.get(Number(po.id)) ?? "0.00",
+  }));
 
   // كل حركات الدفتر المؤثّرة على AP المورد ضمن الفترة (PAYMENT_OUT/PAYMENT_IN/RETURN).
   // كان السابق PAYMENT_OUT فقط ⇒ استرداد المورد ومرتجع الشراء يغيبان عن الكشف فلا يتّزن
@@ -222,6 +246,7 @@ export async function getSupplierStatement(
     sql`(${accountingEntries.entryType} IN ('PAYMENT_OUT','PAYMENT_IN','RETURN','EXCHANGE_SETTLE') OR (${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} IS NULL))`,
     eq(accountingEntries.supplierId, supplierId),
   ];
+  if (branchId) payConds.push(eq(accountingEntries.branchId, branchId));
   if (from) payConds.push(sql`${accountingEntries.entryDate} >= ${from}`);
   if (to) payConds.push(sql`${accountingEntries.entryDate} <= ${to}`);
   const payments = await db
@@ -238,20 +263,22 @@ export async function getSupplierStatement(
     .where(and(...payConds))
     .orderBy(asc(accountingEntries.entryDate), asc(accountingEntries.id));
 
-  const openingBalance = await supplierOpeningBalance(supplierId, from);
+  const openingBalance = await supplierOpeningBalance(supplierId, from, branchId);
 
   // أموال بدقّة decimal.js (§٥).
-  const totalPurchases = sumMoney(pos.map((p) => p.total ?? 0));
-  const totalPaid = sumMoney(pos.map((p) => p.paidAmount ?? 0));
-  const unpaid = sumMoney(
-    pos
-      .filter((p) => p.status === "CONFIRMED" || p.status === "RECEIVED")
-      .map((p) => positiveDiff(p.total, p.paidAmount))
-  );
+  const totalPurchases = sumMoney(posWithTotals.map((p) => p.total ?? 0));
+  const totalPaid = sumMoney(posWithTotals.map((p) => p.paidAmount ?? 0));
+  const periodEntryEffect = payments.reduce((acc, p) => {
+    const amount = money(p.amount);
+    if (p.entryType === "PAYMENT_OUT" || p.entryType === "EXCHANGE_SETTLE") return acc.minus(amount);
+    return acc.plus(amount); // RETURN is already signed negative; PAYMENT_IN/PURCHASE are positive.
+  }, money(0));
+  const closingBalance = openingBalance.plus(totalPurchases).plus(periodEntryEffect);
+  const unpaid = closingBalance.isPositive() ? closingBalance : money(0);
 
   return {
     supplier: s,
-    purchaseOrders: pos.map((p) => ({
+    purchaseOrders: posWithTotals.map((p) => ({
       id: Number(p.id),
       poNumber: p.poNumber,
       orderDate: p.orderDate,
@@ -275,7 +302,7 @@ export async function getSupplierStatement(
       totalPurchases: toDbMoney(totalPurchases),
       totalPaid: toDbMoney(totalPaid),
       unpaid: toDbMoney(unpaid),
-      currentBalance: String(s.currentBalance ?? "0"),
+      currentBalance: toDbMoney(branchId ? closingBalance : money(s.currentBalance ?? "0")),
       openingBalance: toDbMoney(openingBalance),
     },
   };

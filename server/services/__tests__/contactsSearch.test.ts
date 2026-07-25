@@ -7,6 +7,7 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 import { getDb } from "../../db";
 import { extractInsertId } from "../../lib/insertId";
 import { appRouter } from "../../routers";
@@ -64,6 +65,49 @@ async function callerFor(userId: number) {
   return appRouter.createCaller(makeCtx(row as any));
 }
 
+async function syncContactsSearchNormFixture() {
+  const d = db();
+  const metadata: any = await d.execute(sql`
+    SELECT TABLE_NAME AS tableName, COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME IN ('customers', 'suppliers')
+      AND COLUMN_NAME = 'searchNorm'
+  `);
+  const columns = (Array.isArray(metadata) ? metadata[0] : metadata?.rows) as
+    | Array<{ tableName: string; expr: string }>
+    | undefined;
+  const isGenerated = (tableName: string) =>
+    Boolean(String(columns?.find((column) => column.tableName === tableName)?.expr ?? "").trim());
+
+  if (!isGenerated("customers")) {
+    const rows = await d.select({ id: s.customers.id, name: s.customers.name }).from(s.customers);
+    for (const row of rows) {
+      await d.update(s.customers)
+        .set({ searchNorm: normalizeSearchText(row.name) })
+        .where(eq(s.customers.id, row.id));
+    }
+  }
+  if (!isGenerated("suppliers")) {
+    const rows = await d.select({ id: s.suppliers.id, name: s.suppliers.name }).from(s.suppliers);
+    for (const row of rows) {
+      await d.update(s.suppliers)
+        .set({ searchNorm: normalizeSearchText(row.name) })
+        .where(eq(s.suppliers.id, row.id));
+    }
+  }
+}
+
+async function searchContacts(caller: any, input: any) {
+  await syncContactsSearchNormFixture();
+  return caller.contacts.search(input);
+}
+
+async function findDuplicateContacts(caller: any, input: any) {
+  await syncContactsSearchNormFixture();
+  return caller.contacts.findDuplicates(input);
+}
+
 /** كاشير مصنَّع بفرع صريح (بلا صفّ DB — كافٍ لقراءات لا تكتب auditLogs/FK). */
 function syntheticCashierCaller(branchId: number) {
   return appRouter.createCaller(makeCtx({ id: 999, role: "cashier", branchId }));
@@ -89,7 +133,7 @@ describe("contacts.search — بحث موحّد", () => {
     });
 
     const caller = await callerFor(2); // manager — عابر للفروع
-    const res = await caller.contacts.search({ q: "بحث الاختبار" });
+    const res = await searchContacts(caller, { q: "بحث الاختبار" });
     const kinds = res.rows.map((r) => r.kind).sort();
     expect(kinds).toEqual(["customer", "delivery", "supplier", "wa_unlinked"]);
     const waRow = res.rows.find((r) => r.kind === "wa_unlinked");
@@ -101,7 +145,7 @@ describe("contacts.search — بحث موحّد", () => {
     const d = db();
     await d.insert(s.customers).values({ name: "عميل هاتف موحّد", phone: "+9647705555555" });
     const caller = await callerFor(2);
-    const res = await caller.contacts.search({ q: "07705555555", kinds: ["customer"] });
+    const res = await searchContacts(caller, { q: "07705555555", kinds: ["customer"] });
     expect(res.rows).toHaveLength(1);
     expect(res.rows[0].name).toBe("عميل هاتف موحّد");
   });
@@ -114,17 +158,17 @@ describe("contacts.search — بحث موحّد", () => {
     ]);
 
     const branch1Caller = syntheticCashierCaller(1);
-    const branch1Res = await branch1Caller.contacts.search({ q: "مندوب مشترك الاسم", kinds: ["delivery"] });
+    const branch1Res = await searchContacts(branch1Caller, { q: "مندوب مشترك الاسم", kinds: ["delivery"] });
     expect(branch1Res.rows).toHaveLength(1);
     expect(branch1Res.rows[0].branchId).toBe(1);
 
     const branch2Caller = syntheticCashierCaller(2);
-    const branch2Res = await branch2Caller.contacts.search({ q: "مندوب مشترك الاسم", kinds: ["delivery"] });
+    const branch2Res = await searchContacts(branch2Caller, { q: "مندوب مشترك الاسم", kinds: ["delivery"] });
     expect(branch2Res.rows).toHaveLength(1);
     expect(branch2Res.rows[0].branchId).toBe(2);
 
     const managerCaller = await callerFor(2);
-    const managerRes = await managerCaller.contacts.search({ q: "مندوب مشترك الاسم", kinds: ["delivery"] });
+    const managerRes = await searchContacts(managerCaller, { q: "مندوب مشترك الاسم", kinds: ["delivery"] });
     expect(managerRes.rows).toHaveLength(2);
   });
 
@@ -133,7 +177,7 @@ describe("contacts.search — بحث موحّد", () => {
     await d.insert(s.customers).values({ name: "زبون مقصور الاختبار" });
     await d.insert(s.suppliers).values({ name: "مورّد مقصور الاختبار" });
     const caller = await callerFor(2);
-    const res = await caller.contacts.search({ q: "مقصور الاختبار", kinds: ["customer"] });
+    const res = await searchContacts(caller, { q: "مقصور الاختبار", kinds: ["customer"] });
     expect(res.rows).toHaveLength(1);
     expect(res.rows[0].kind).toBe("customer");
   });
@@ -322,7 +366,7 @@ describe("contacts.findDuplicates — كشف ازدواج للقراءة فقط"
     await d.insert(s.customers).values({ name: "عميل بلا علاقة" });
 
     const caller = await callerFor(2);
-    const rows = await caller.contacts.findDuplicates({ kind: "customer", id: aId });
+    const rows = await findDuplicateContacts(caller, { kind: "customer", id: aId });
     expect(rows.some((r: any) => r.name === "شركة النور للاستيراد")).toBe(true);
     expect(rows.some((r: any) => Number(r.id) === aId)).toBe(false);
   });
@@ -333,7 +377,7 @@ describe("contacts.findDuplicates — كشف ازدواج للقراءة فقط"
     const before = Number((await d.select({ n: sql<number>`COUNT(*)` }).from(s.customers))[0].n);
 
     const caller = await callerFor(2);
-    await caller.contacts.findDuplicates({ kind: "customer", name: "شركة الأمين للطباعة" });
+    await findDuplicateContacts(caller, { kind: "customer", name: "شركة الأمين للطباعة" });
 
     const after = Number((await d.select({ n: sql<number>`COUNT(*)` }).from(s.customers))[0].n);
     expect(after).toBe(before);
@@ -424,7 +468,7 @@ describe("contacts — بوّابة وحدة الموردين (T3.2 إصلاح �
     await expect(cashierCaller.contacts.contact360({ kind: "supplier", id: supplierId })).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
-    await expect(cashierCaller.contacts.findDuplicates({ kind: "supplier", id: supplierId })).rejects.toMatchObject({
+    await expect(findDuplicateContacts(cashierCaller, { kind: "supplier", id: supplierId })).rejects.toMatchObject({
       code: "FORBIDDEN",
     });
     await expect(
@@ -435,10 +479,10 @@ describe("contacts — بوّابة وحدة الموردين (T3.2 إصلاح �
   it("كاشير لا يرى نوع supplier في contacts.search رغم مطابقة الاسم (يُستبعَد بصمت بلا خطأ)", async () => {
     await seedSupplier("مورد بحث محجوب عن الكاشير");
     const cashierCaller = await callerFor(3);
-    const res = await cashierCaller.contacts.search({ q: "بحث محجوب عن الكاشير" });
+    const res = await searchContacts(cashierCaller, { q: "بحث محجوب عن الكاشير" });
     // تأكيد إيجابي أنّ المطابقة نفسها كانت لتنجح لولا البوّابة (استبعاد صامت لا فشل بحث خفي):
     // المدير (suppliers=FULL) يرى نفس المورّد بنفس الاستعلام.
-    const managerRes = await (await callerFor(2)).contacts.search({ q: "بحث محجوب عن الكاشير" });
+    const managerRes = await searchContacts(await callerFor(2), { q: "بحث محجوب عن الكاشير" });
     expect(managerRes.rows.some((r) => r.kind === "supplier")).toBe(true);
     expect(res.rows.some((r) => r.kind === "supplier")).toBe(false);
   });
@@ -446,7 +490,7 @@ describe("contacts — بوّابة وحدة الموردين (T3.2 إصلاح �
   it("كاشير يطلب kinds:['supplier'] صراحةً ⇒ نتيجة فارغة بلا خطأ (لا FORBIDDEN على search)", async () => {
     await seedSupplier("مورد طلب صريح محجوب");
     const cashierCaller = await callerFor(3);
-    const res = await cashierCaller.contacts.search({ q: "طلب صريح محجوب", kinds: ["supplier"] });
+    const res = await searchContacts(cashierCaller, { q: "طلب صريح محجوب", kinds: ["supplier"] });
     expect(res.rows).toHaveLength(0);
   });
 
@@ -461,10 +505,10 @@ describe("contacts — بوّابة وحدة الموردين (T3.2 إصلاح �
     const res360 = await warehouseCaller.contacts.contact360({ kind: "supplier", id: supplierId });
     expect(res360.kind).toBe("supplier");
 
-    const searchRes = await warehouseCaller.contacts.search({ q: "بحث امين المخزن" });
+    const searchRes = await searchContacts(warehouseCaller, { q: "بحث امين المخزن" });
     expect(searchRes.rows.some((r) => r.kind === "supplier")).toBe(true);
 
-    const dupRes = await warehouseCaller.contacts.findDuplicates({ kind: "supplier", id: supplierId });
+    const dupRes = await findDuplicateContacts(warehouseCaller, { kind: "supplier", id: supplierId });
     expect(Array.isArray(dupRes)).toBe(true);
   });
 
@@ -473,7 +517,7 @@ describe("contacts — بوّابة وحدة الموردين (T3.2 إصلاح �
     const managerCaller = await callerFor(2);
     const res360 = await managerCaller.contacts.contact360({ kind: "supplier", id: supplierId });
     expect(res360.kind).toBe("supplier");
-    const searchRes = await managerCaller.contacts.search({ q: "بوابة الصلاحية ثلاثة" });
+    const searchRes = await searchContacts(managerCaller, { q: "بوابة الصلاحية ثلاثة" });
     expect(searchRes.rows.some((r) => r.kind === "supplier")).toBe(true);
     const created = await managerCaller.contacts.persons.create({ supplierId, name: "شخص اتصال مورد المدير" });
     expect(created.id).toBeGreaterThan(0);

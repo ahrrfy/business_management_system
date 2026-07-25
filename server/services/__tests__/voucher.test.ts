@@ -3,7 +3,23 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { closeShift } from "../shiftService";
-import { createVoucher, listVouchers } from "../voucherService";
+import { createVoucher as createVoucherRaw, listVouchers } from "../voucherService";
+
+type LegacyVoucherInput = Omit<Parameters<typeof createVoucherRaw>[0], "clientRequestId"> & {
+  clientRequestId?: string;
+};
+let voucherRequestSequence = 0;
+function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof createVoucherRaw>[1]) {
+  voucherRequestSequence += 1;
+  const isOther = input.partyType === "OTHER";
+  const isOtherReceipt = isOther && input.voucherType === "RECEIPT";
+  return createVoucherRaw({
+    ...input,
+    counterpartyName: isOther ? (input.counterpartyName ?? "طرف اختباري موثق") : input.counterpartyName,
+    referenceNumber: isOtherReceipt ? (input.referenceNumber ?? `SRC-${voucherRequestSequence}`) : input.referenceNumber,
+    clientRequestId: input.clientRequestId ?? `voucher-test-${voucherRequestSequence}`,
+  }, actor);
+}
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 
@@ -78,7 +94,7 @@ describe("سند قبض (RECEIPT) — IN", () => {
     expect(cust.currentBalance).toBe("70.00"); // 100 − 30
   });
 
-  it("قبض من OTHER (إيرادات متفرّقة): receipt + قيد، لا تأثير على ذمم", async () => {
+  it("قبض من OTHER موثق: يبقى معلقاً بلا قيد أو أثر نقدي حتى الاعتماد", async () => {
     await openShift(1, 1); // shift-gate
     const r = await createVoucher(
       {
@@ -93,6 +109,11 @@ describe("سند قبض (RECEIPT) — IN", () => {
       actor,
     );
     expect(r.voucherNumber).toMatch(/^RV-/);
+    expect(r.approvalStatus).toBe("PENDING_APPROVAL");
+    const receipt = (await db().select().from(s.receipts).where(eq(s.receipts.id, r.receiptId)))[0];
+    expect(receipt.cashBucket).toBeNull();
+    expect(receipt.shiftId).toBeNull();
+    expect(await db().select().from(s.accountingEntries)).toHaveLength(0);
     const cust = (await db().select().from(s.customers).where(eq(s.customers.id, 1)))[0];
     expect(cust.currentBalance).toBe("100.00"); // لم يتغيّر
   });
@@ -132,8 +153,8 @@ describe("سند صرف (PAYMENT) — OUT", () => {
         branchId: 1,
         amount: "500.00",
         paymentMethod: "CASH",
-        partyType: "OTHER",
-        partyId: null,
+        partyType: "CUSTOMER",
+        partyId: 1,
         description: "راتب الموظف أحمد لشهر يونيو",
       },
       actor,
@@ -153,8 +174,8 @@ describe("تسوية الصندوق — السند يُنسب للوردية ا�
         branchId: 1,
         amount: "100.00",
         paymentMethod: "CASH",
-        partyType: "OTHER",
-        partyId: null,
+        partyType: "CUSTOMER",
+        partyId: 1,
         description: "إيرادات",
       },
       actor,
@@ -260,8 +281,8 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
           branchId: 1,
           amount: "50.00",
           paymentMethod: "CASH",
-          partyType: "OTHER",
-          partyId: null,
+          partyType: "CUSTOMER",
+          partyId: 1,
           description: "إيرادات نقدية بدون وردية",
         },
         { userId: 2, branchId: 1, role: "cashier" },
@@ -283,8 +304,8 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
         branchId: 1,
         amount: "100.00",
         paymentMethod: "CASH",
-        partyType: "OTHER",
-        partyId: null,
+        partyType: "CUSTOMER",
+        partyId: 1,
         description: "إيرادات نقدية",
       },
       actor,
@@ -338,8 +359,8 @@ describe("إنفاذ الوردية النقدية (shift-gate)", () => {
         branchId: 1,
         amount: "100.00",
         paymentMethod: "CASH",
-        partyType: "OTHER",
-        partyId: null,
+        partyType: "CUSTOMER",
+        partyId: 1,
         description: "إيرادات نقدية",
       },
       actor,
@@ -365,8 +386,8 @@ describe("إعفاء الخزينة الإدارية (admin/manager) للسند�
         branchId: 1,
         amount: "75.00",
         paymentMethod: "CASH",
-        partyType: "OTHER",
-        partyId: null,
+        partyType: "CUSTOMER",
+        partyId: 1,
         description: "تَحصيل ميداني من تاجر",
       },
       actor,

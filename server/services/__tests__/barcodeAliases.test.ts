@@ -3,7 +3,7 @@
 //   A1: الأساسيّ + البديل يشيران للوحدة نفسها ⇒ lookupByBarcode يحلّ الاثنين إلى POS row واحد.
 //   A2: تفرّد عالميّ — باركود موجود كأساسيّ لسلعة أخرى، أو بديلاً لسلعة أخرى، يُرفض عند الإضافة كبديل.
 //   A3: حذف الوحدة يحذف بدائلها بـcascade (بلا orphan aliases).
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -156,13 +156,17 @@ describe("barcodeAliases — ثوابت السلامة", () => {
     it("حذف وحدة المنتج يحذف كل بدائلها (FK cascade)", async () => {
       await addUnitBarcodeAlias(1, "9990000000001", null, 1);
       await addUnitBarcodeAlias(1, "9990000000002", null, 1);
-      // حذف productUnits.id=1 مباشرةً — يجب أن تختفي البدائل تلقائياً.
-      await db().delete(s.productUnits).where(eq(s.productUnits.id, 1));
-      const orphans = await db()
-        .select({ id: s.productUnitBarcodes.id })
-        .from(s.productUnitBarcodes)
-        .where(eq(s.productUnitBarcodes.productUnitId, 1));
-      expect(orphans).toHaveLength(0);
+      // ثبّت FK_CHECKS على نفس اتصال الحذف/القراءة: بعض fixtures القديمة تغيّره
+      // على اتصال pool آخر، واختبار القيد يجب ألا يعتمد على حالة جلسة متسرّبة.
+      await db().transaction(async (tx) => {
+        await tx.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+        await tx.delete(s.productUnits).where(eq(s.productUnits.id, 1));
+        const orphans = await tx
+          .select({ id: s.productUnitBarcodes.id })
+          .from(s.productUnitBarcodes)
+          .where(eq(s.productUnitBarcodes.productUnitId, 1));
+        expect(orphans).toHaveLength(0);
+      });
     });
 
     it("resolveProductUnitId يحلّ (variantId + unitName) → productUnitId", async () => {

@@ -12,10 +12,24 @@ import { createPurchaseOrder, receivePurchase } from "../purchaseService";
 import { createSale, processPayment } from "../saleService";
 import { returnSale } from "../returnService";
 import { money } from "../money";
-import { createVoucher } from "../voucherService";
+import { createVoucher as createVoucherService } from "../voucherService";
 import { getCustomerStatement, getSupplierStatement } from "../reportsService";
 
 const actor = { userId: 1, branchId: 1 };
+let voucherRequestSeq = 0;
+
+async function createVoucher(
+  input: Parameters<typeof createVoucherService>[0],
+  requestActor: Parameters<typeof createVoucherService>[1],
+) {
+  return createVoucherService(
+    {
+      ...input,
+      clientRequestId: input.clientRequestId ?? `statement-period:${++voucherRequestSeq}`,
+    },
+    requestActor,
+  );
+}
 
 const TABLES = [
   "accountingEntries",
@@ -252,6 +266,12 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
   }
   async function backdatePO(purchaseOrderId: number, ymd: string) {
     await db().update(s.purchaseOrders).set({ orderDate: new Date(`${ymd}T10:00:00`) }).where(eq(s.purchaseOrders.id, purchaseOrderId));
+    // Supplier statements are ledger-sourced; the posting date, not only the
+    // PO header date, determines whether the purchase belongs to opening AP.
+    await db()
+      .update(s.accountingEntries)
+      .set({ entryDate: new Date(`${ymd}T00:00:00`) })
+      .where(and(eq(s.accountingEntries.entryType, "PURCHASE"), eq(s.accountingEntries.purchaseOrderId, purchaseOrderId)));
   }
   async function backdateSupplierPayments(supplierId: number, ymd: string) {
     await db()
@@ -288,6 +308,50 @@ describe("كشف حساب المورد بفترة + رصيد مُرحَّل", ()
     expect(all!.summary.totalPurchases).toBe("620.00");
     expect(all!.summary.totalPaid).toBe("200.00");
     expect(all!.summary.openingBalance).toBe("500.00");
+  });
+
+  it("الرصيد المُرحّل من GL لا يضاعف PURCHASE المرتبط ويحترم الفرع وتاريخ القيد", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+    await db().insert(s.accountingEntries).values({
+      entryType: "OPENING", branchId: 1, supplierId: 1, amount: "100.00",
+      entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "OPENING:SUPPLIER:GL-SCOPE",
+    });
+    await db().insert(s.purchaseOrders).values([
+      {
+        id: 9101, poNumber: "PO-GL-B1", supplierId: 1, branchId: 1,
+        orderDate: new Date(`${OLD}T10:00:00`), subtotal: "9999.00", total: "9999.00", status: "RECEIVED",
+      },
+      {
+        id: 9102, poNumber: "PO-GL-B2", supplierId: 1, branchId: 2,
+        orderDate: new Date(`${OLD}T10:00:00`), subtotal: "900.00", total: "900.00", status: "RECEIVED",
+      },
+      {
+        id: 9103, poNumber: "PO-GL-POSTED-NOW", supplierId: 1, branchId: 1,
+        orderDate: new Date(`${OLD}T10:00:00`), subtotal: "200.00", total: "200.00", status: "RECEIVED",
+      },
+    ]);
+    await db().insert(s.accountingEntries).values([
+      {
+        entryType: "PURCHASE", branchId: 1, supplierId: 1, purchaseOrderId: 9101,
+        amount: "500.00", entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "PURCHASE:GL-B1",
+      },
+      {
+        entryType: "PAYMENT_OUT", branchId: 1, supplierId: 1, purchaseOrderId: 9101,
+        amount: "50.00", entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "PAYMENT:GL-B1",
+      },
+      {
+        entryType: "PURCHASE", branchId: 2, supplierId: 1, purchaseOrderId: 9102,
+        amount: "900.00", entryDate: new Date(`${OLD}T00:00:00`), dedupeKey: "PURCHASE:GL-B2",
+      },
+      {
+        entryType: "PURCHASE", branchId: 1, supplierId: 1, purchaseOrderId: 9103,
+        amount: "200.00", entryDate: new Date(`${TODAY}T00:00:00`), dedupeKey: "PURCHASE:GL-NOW",
+      },
+    ]);
+
+    const stmt = await getSupplierStatement(1, { from: FROM, branchId: 1 });
+    // 100 OPENING + 500 PURCHASE − 50 PAYMENT_OUT؛ لا total=9999، لا فرع 2، ولا قيد اليوم.
+    expect(stmt!.summary.openingBalance).toBe("550.00");
   });
 
   it("أمر DRAFT قبل from لا يدخل الرصيد المُرحَّل (غير ملتزم مالياً)", async () => {

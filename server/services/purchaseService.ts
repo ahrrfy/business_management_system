@@ -1,7 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { desc, eq, inArray, like, sql } from "drizzle-orm";
-import { branchStock, productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../drizzle/schema";
+import { accountingEntries, branchStock, productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../drizzle/schema";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
 import { adjustSupplierBalance, postEntry } from "./ledgerService";
@@ -11,6 +11,30 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
+
+export function assertUniqueReceiveLines(lines: Array<{ purchaseOrderItemId: number }>): void {
+  const seen = new Set<number>();
+  for (const line of lines) {
+    if (seen.has(line.purchaseOrderItemId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يجوز تكرار بند أمر الشراء في الاستلام نفسه" });
+    }
+    seen.add(line.purchaseOrderItemId);
+  }
+}
+
+export function cumulativePurchaseTax(
+  poTax: string,
+  priorTax: string,
+  receivedNet: Decimal,
+  rate: Decimal,
+  fullyReceived: boolean,
+): Decimal {
+  const tax = fullyReceived ? round2(money(poTax).minus(money(priorTax))) : round2(receivedNet.times(rate));
+  if (tax.lt(0) || money(priorTax).plus(tax).gt(money(poTax))) {
+    throw new TRPCError({ code: "CONFLICT", message: "تراكم ضريبة الاستلام يتجاوز ضريبة أمر الشراء" });
+  }
+  return tax;
+}
 
 export interface PurchaseLineInput {
   variantId: number;
@@ -238,6 +262,13 @@ export interface ReceivePurchaseInput {
 
 export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor & { role?: string }) {
   return withTx(async (tx) => {
+    assertUniqueReceiveLines(input.lines);
+    if (input.payment && input.payment.method !== "CASH") {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "الدفع غير النقدي للمورد يتطلب سند صرف موثقاً بمرجع الأداة المالية",
+      });
+    }
     // Idempotency: تكرار الطلب نفسه يُعاد تشغيله بنتيجة الاستلام الأول بلا تكرار للمخزون أو AP.
     // قبل أيّ replay، نتحقّق أنّ المفتاح المخزَّن يخصّ نفس أمر الشراء وفرعه والكميات المطلوبة.
     // كان الـreplay يَعود بنتيجة مضلِّلة (receivedTotal=0.00) دون أيّ تحقّق ⇒ مفتاح يُعاد استعماله
@@ -297,8 +328,8 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     const po = poRows[0];
     if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "أمر الشراء غير موجود" });
     assertPurchaseBranch(po, actor);
-    if (po.status === "RECEIVED" || po.status === "CANCELLED") {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "أمر الشراء مستلَم أو ملغى" });
+    if (po.status !== "CONFIRMED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُستلم إلا أمر شراء معتمد بحالة مؤكدة" });
     }
     // SOD-06 (تدقيق ٢٠/٦، قرار المالك): اعتماد الشراء بفصل المهام — الاستلام يُلزِم الذمم الدائنة (AP)
     // ويُرحّل قيد PURCHASE، فيجب أن يَختلف المُستلِم (المُعتمِد) عن مُنشئ الأمر، إلّا للأدمن. يضمن
@@ -356,6 +387,19 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         throw new TRPCError({ code: "BAD_REQUEST", message: `الكمية المستلمة تتجاوز المطلوب للبند ${l.purchaseOrderItemId}` });
       }
       return { line: l, item };
+    });
+    const requestedByItem = new Map<number, number>();
+    for (const { line } of work) {
+      requestedByItem.set(
+        line.purchaseOrderItemId,
+        (requestedByItem.get(line.purchaseOrderItemId) ?? 0) + line.receivedBaseQuantity,
+      );
+    }
+    requestedByItem.forEach((requested, itemId) => {
+      const item = itemById.get(itemId)!;
+      if ((item.receivedBaseQuantity ?? 0) + requested > item.baseQuantity) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: `إجمالي الكمية المستلمة يتجاوز المطلوب للبند ${itemId}` });
+      }
     });
     work.sort((a, b) => Number(a.item.variantId) - Number(b.item.variantId));
 
@@ -490,17 +534,25 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     // Proportional tax from the PO's effective rate.
     const poSubtotal = money(po.subtotal);
     const rate = poSubtotal.gt(0) ? money(po.taxAmount).dividedBy(poSubtotal) : new Decimal(0);
-    const receivedTax = round2(receivedNet.times(rate));
     // landed-cost: الإجماليّ المستلَم = البضاعة + الضريبة + حصّة الشحن/الكمرك ⇒ AP يعكس التكلفة
     // الشاملة، ومجموعه عبر الاستلام الكامل يطابق po.total (البضاعة + الضريبة + الشحن + الكمرك).
-    const receivedTotal = round2(receivedNet.plus(receivedTax).plus(receivedLanded));
-
     // Final status: fully received if every item meets its ordered base qty.
     const refreshed = await tx
       .select({ baseQuantity: purchaseOrderItems.baseQuantity, receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity })
       .from(purchaseOrderItems)
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     const fullyReceived = refreshed.every((r) => (r.receivedBaseQuantity ?? 0) >= r.baseQuantity);
+    const priorTaxRow = (
+      await tx
+        .select({ v: sql<string>`COALESCE(SUM(${accountingEntries.taxAmount}), 0)` })
+        .from(accountingEntries)
+        .where(
+          sql`${accountingEntries.entryType} = 'PURCHASE' AND ${accountingEntries.purchaseOrderId} = ${input.purchaseOrderId}`,
+        )
+    )[0];
+    const priorTax = money(priorTaxRow?.v ?? "0");
+    const receivedTax = cumulativePurchaseTax(String(po.taxAmount), priorTax.toFixed(2), receivedNet, rate, fullyReceived);
+    const receivedTotal = round2(receivedNet.plus(receivedTax).plus(receivedLanded));
     await tx
       .update(purchaseOrders)
       .set({ status: fullyReceived ? "RECEIVED" : "CONFIRMED" })

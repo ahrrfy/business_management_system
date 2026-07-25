@@ -79,6 +79,7 @@ export const consignmentRouter = router({
       amount: positiveMoneyString,
       paymentMethod: z.enum(["CASH", "CARD", "TRANSFER", "CHECK"]).default("CASH"),
       branchId: z.number().int().positive(),
+      clientRequestId: z.string().min(8).max(64),
       description: z.string().max(500).optional(),
     }))
     .mutation(async ({ input, ctx }) => {
@@ -86,6 +87,7 @@ export const consignmentRouter = router({
       const res = await createVoucher({
         voucherType: "PAYMENT", branchId, amount: input.amount, paymentMethod: input.paymentMethod,
         partyType: "SUPPLIER", partyId: input.consignorId,
+        clientRequestId: input.clientRequestId,
         description: input.description?.trim() || "تسوية بضاعة أمانة",
       }, { userId: ctx.user.id, branchId, role: ctx.user.role });
       await logAudit(ctx, { action: "consignment.settlementCreate", entityType: "receipt", entityId: res.receiptId, newValue: { consignorId: input.consignorId, amount: input.amount } });

@@ -197,14 +197,18 @@ describe("period.unlock — يَلتقط cutoffDate المُفتَك", () => {
   it("سجلٌّ يَربط الفتح بتاريخ القفل (لا «unlocked: true» مجرّد)", async () => {
     const caller = appRouter.createCaller(makeCtx(await admin()));
     await caller.periodLock.lock({ cutoffDate: "2026-03-31", notes: "Q1" });
-    await caller.periodLock.unlock();
+    await caller.periodLock.unlock({
+      reason: "تصحيح تدقيقي موثق للاختبار",
+      password: "Admin@12345",
+    });
     const row = await lastAudit("period.unlock");
     expect(row).toBeTruthy();
     const oldV = row.oldValue as { cutoffDate?: string; notes?: string };
-    const newV = row.newValue as { unlocked?: boolean };
+    const newV = row.newValue as { unlocked?: boolean; reason?: string };
     expect(oldV.cutoffDate).toBe("2026-03-31");
     expect(oldV.notes).toBe("Q1");
     expect(newV.unlocked).toBe(true);
+    expect(newV.reason).toBe("تصحيح تدقيقي موثق للاختبار");
   });
 });
 

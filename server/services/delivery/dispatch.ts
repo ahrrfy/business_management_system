@@ -13,7 +13,7 @@ import {
   workOrders,
 } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
-import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
+import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../idempotency";
 import { adjustDeliveryBalance, computeInvoiceStatus, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
@@ -37,8 +37,16 @@ export interface DispatchInput {
 
 export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTxActor) {
   return withTx(async (tx) => {
+    const payloadHash = idempotencyHash({
+      workOrderId: Number(input.workOrderId),
+      partyId: Number(input.partyId),
+      deliveryFee: input.deliveryFee == null ? null : toDbMoney(round2(money(input.deliveryFee))),
+      recipientName: input.recipientName ?? null,
+      recipientPhone: input.recipientPhone ?? null,
+      deliveryAddress: input.deliveryAddress ?? null,
+    });
     if (input.clientRequestId) {
-      const existingId = await findIdempotentRefId(tx, "delivery.dispatch", input.clientRequestId);
+      const existingId = await checkIdempotency(tx, "delivery.dispatch", input.clientRequestId, payloadHash);
       if (existingId != null) {
         const cn = (await tx.select().from(deliveryConsignments).where(eq(deliveryConsignments.id, existingId)).limit(1))[0];
         return {
@@ -63,6 +71,9 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
 
     const party = (await tx.select().from(deliveryParties).where(eq(deliveryParties.id, input.partyId)).for("update").limit(1))[0];
     if (!party || !party.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل غير متاحة" });
+    if (party.branchId != null && Number(party.branchId) !== Number(wo.branchId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "جهة التوصيل لا تخصّ فرع أمر الشغل" });
+    }
 
     const salePrice = money(wo.salePrice);
     const quantity = wo.quantity;
@@ -71,6 +82,12 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     if (depositPaid.gt(salePrice)) throw new TRPCError({ code: "BAD_REQUEST", message: "العربون يتجاوز إجمالي الأمر" });
     const codAmount = round2(salePrice.minus(depositPaid)); // >= 0
     const fee = round2(money(input.deliveryFee ?? party.defaultFee ?? "0"));
+    if (fee.gt(codAmount)) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "أجرة التوصيل لا يمكن أن تتجاوز مبلغ التحصيل عند خصمها منه",
+      });
+    }
 
     // فاتورة COD: customerId=NULL (الطرف المقابل = جهة التوصيل، عهدة لا AR ⇒ مطابقة AR/الائتمان سليمة).
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
@@ -168,7 +185,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     }
 
     await tx.update(workOrders).set({ status: "DELIVERED", invoiceId, deliveredAt: new Date() }).where(eq(workOrders.id, Number(wo.id)));
-    if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.dispatch", input.clientRequestId, consignmentId);
+    if (input.clientRequestId) await recordIdempotencyKey(tx, "delivery.dispatch", input.clientRequestId, consignmentId, payloadHash);
 
     return { consignmentId, consignmentNumber, invoiceId, invoiceNumber, codAmount: codAmount.toFixed(2), deliveryFee: fee.toFixed(2) };
   });

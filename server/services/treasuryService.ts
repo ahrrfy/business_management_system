@@ -31,3 +31,8 @@ export type { KpiTrendPoint, KpiTrends } from "./treasury/kpiTrends";
 export { getKpiTrends } from "./treasury/kpiTrends";
 export type { OpenShiftCard } from "./treasury/openShifts";
 export { getOpenShifts } from "./treasury/openShifts";
+export type { PendingTreasuryReceipt } from "./treasury/pendingReceipts";
+export {
+  acceptPendingTreasuryReceipt,
+  listMyPendingTreasuryReceipts,
+} from "./treasury/pendingReceipts";

@@ -313,7 +313,14 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     const tendered = money(input.payment?.amount ?? "0");
     // SALES-05 (تدقيق ٢/٧): كنفس إصلاح saleService — التقريب على الإجمالي دائماً، لكن paidNow=الإجمالي
     // المقرّب فقط عند دفعٍ كامل فعلاً؛ الدفعة الجزئية تُسجَّل بالمبلغ المُسلَّم والباقي ذمّة.
-    const paidNow = roundCash && tendered.gte(grandTotalD) ? effectiveTotalD : tendered;
+    if (input.payment?.method !== "CASH" && tendered.gt(effectiveTotalD)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `المبلغ المدفوع (${tendered.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
+      });
+    }
+    // ما زاد نقداً هو باقي للعميل، وليس دفعة أو نقداً باقياً في الدرج.
+    const paidNow = tendered.gt(effectiveTotalD) ? effectiveTotalD : tendered;
     const unpaid = effectiveTotalD.minus(paidNow);
     if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });

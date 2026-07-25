@@ -172,9 +172,17 @@ export async function generatePayroll(period: string, actor: Actor) {
         payType: employees.payType,
         salary: employees.salary,
         allowances: employees.allowances,
+        hireDate: employees.hireDate,
+        terminationDate: employees.terminationDate,
       })
       .from(employees)
-      .where(sql`${employees.employmentStatus} <> 'terminated'`)
+      .where(
+        and(
+          sql`(${employees.hireDate} IS NULL OR ${employees.hireDate} <= ${periodEndYmd})`,
+          sql`(${employees.terminationDate} IS NULL OR ${employees.terminationDate} >= ${`${p}-01`})`,
+          sql`(${employees.employmentStatus} <> 'terminated' OR ${employees.terminationDate} IS NOT NULL)`,
+        ),
+      )
       .orderBy(employees.id);
 
     // commissions (٦/٧/٢٦): التقاط تشغيلة العمولات **المعتمدة** لنفس الشهر — بند «عمولة» لكل
@@ -206,7 +214,14 @@ export async function generatePayroll(period: string, actor: Actor) {
     const missingIds = Array.from(commissionByEmp.keys()).filter((id) => money(commissionByEmp.get(id) ?? 0).gt(0) && !listedIds.has(id));
     if (missingIds.length > 0) {
       const extra = await tx
-        .select({ id: employees.id, payType: employees.payType, salary: employees.salary, allowances: employees.allowances })
+        .select({
+          id: employees.id,
+          payType: employees.payType,
+          salary: employees.salary,
+          allowances: employees.allowances,
+          hireDate: employees.hireDate,
+          terminationDate: employees.terminationDate,
+        })
         .from(employees)
         .where(inArray(employees.id, missingIds));
       for (const e of extra) {
@@ -285,7 +300,18 @@ export async function generatePayroll(period: string, actor: Actor) {
     for (const e of emps) {
       const monthly = e.payType === "monthly";
       const zeroGross = zeroGrossIds.has(Number(e.id));
-      const allowances = zeroGross ? new Decimal(0) : money(e.allowances ?? 0);
+      const periodStart = `${p}-01`;
+      const employmentStart = e.hireDate && e.hireDate > periodStart ? e.hireDate : periodStart;
+      const employmentEnd = e.terminationDate && e.terminationDate < periodEndYmd ? e.terminationDate : periodEndYmd;
+      const activeDays =
+        employmentEnd < employmentStart
+          ? 0
+          : Math.floor(
+              (Date.parse(`${employmentEnd}T00:00:00Z`) - Date.parse(`${employmentStart}T00:00:00Z`)) / 86_400_000,
+            ) + 1;
+      const daysInPeriod = Number(periodEndYmd.slice(8, 10));
+      const employmentRatio = new Decimal(activeDays).div(daysInPeriod);
+      const allowances = zeroGross ? new Decimal(0) : round2(money(e.allowances ?? 0).times(employmentRatio));
       let gross: Decimal;
       let hours: string | null;
       if (zeroGross) {
@@ -293,7 +319,7 @@ export async function generatePayroll(period: string, actor: Actor) {
         gross = new Decimal(0);
         hours = null;
       } else if (monthly) {
-        gross = round2(money(e.salary ?? 0).plus(allowances));
+        gross = round2(money(e.salary ?? 0).times(employmentRatio).plus(allowances));
         hours = null;
       } else {
         const att = attMap.get(Number(e.id));
@@ -389,7 +415,7 @@ export interface UpdateItemInput {
   note?: string | null;
 }
 
-export async function updateItem(itemId: number, input: UpdateItemInput) {
+export async function updateItem(itemId: number, input: UpdateItemInput, actor?: Actor) {
   return withTx(async (tx) => {
     const [item] = await tx.select().from(payrollItems).where(eq(payrollItems.id, itemId)).for("update").limit(1);
     if (!item) throw new TRPCError({ code: "NOT_FOUND", message: "بند المسيّر غير موجود" });
@@ -421,6 +447,12 @@ export async function updateItem(itemId: number, input: UpdateItemInput) {
     }
     // العمولة قراءة فقط هنا — تعديلها = إعادة احتساب تشغيلة العمولات قبل توليد المسيّر.
     const net = computeNet(money(item.gross), overtime, money(item.commission), deductions);
+    if (net.isNegative()) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: "لا يمكن أن يكون صافي راتب أي موظف سالباً — خفّض الاستقطاع إلى حد الأجر المستحق.",
+      });
+    }
 
     await tx
       .update(payrollItems)
@@ -433,6 +465,11 @@ export async function updateItem(itemId: number, input: UpdateItemInput) {
       .where(eq(payrollItems.id, itemId));
 
     await recomputeRunTotals(tx, Number(item.runId));
+    if (actor) {
+      // The last person who changes a financial amount becomes the maker for SOD purposes.
+      // The original generator remains preserved in the immutable audit log.
+      await tx.update(payrollRuns).set({ createdBy: actor.userId }).where(eq(payrollRuns.id, Number(item.runId)));
+    }
     return Number(item.runId);
   }).then((runId) => getRun(runId));
 }
@@ -447,6 +484,14 @@ export async function approveRun(id: number, actor: Actor) {
     if (Number(run.employeeCount) === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر فارغ" });
     // حارس المسيّر «الشبح»: صافٍ كلّي صفر/سالب لا يُعتمد (لا شيء يُدفع) ⇒ يُمنع اعتماد/دفع بلا قيد.
     if (money(run.totalNet).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر صافيه صفر" });
+    const items = await tx.select({ net: payrollItems.net }).from(payrollItems).where(eq(payrollItems.runId, id));
+    if (items.some((item) => money(item.net).isNegative())) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن اعتماد مسيّر يحتوي على صافي راتب سالب" });
+    }
+    const payableTotal = items.reduce((sum, item) => sum.plus(money(item.net)), new Decimal(0));
+    if (!round2(payableTotal).eq(round2(money(run.totalNet)))) {
+      throw new TRPCError({ code: "CONFLICT", message: "إجمالي المسيّر لا يطابق مجموع مبالغ الدفع — أعد توليد المسيّر" });
+    }
     // #12 (تدقيق التثبيت): حارس التقاط العمولة — تشغيلة عمولات معتمدة لنفس الشهر بلا payrollRunId
     // يعني عمولة معتمدة ستضيع (تُدفع في مسيّر لاحق أو لا تُدفع). التوليد كان يلتقط عند الإنشاء فقط،
     // فتشغيلة اعتُمدت بعد التوليد لا تُلتقَط. الاعتماد يحرس: يُرفض حتى يُعاد توليد المسيّر أو يُلغى
@@ -523,6 +568,16 @@ export async function payRun(id: number, actor: Actor) {
       .where(eq(payrollItems.runId, id))
       .orderBy(payrollItems.employeeId);
     if (items.length === 0) throw new TRPCError({ code: "BAD_REQUEST", message: "لا بنود لدفعها" });
+    if (items.some((item) => money(item.net).isNegative())) {
+      throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الدفع مرفوض: يوجد بند راتب بصافٍ سالب" });
+    }
+    const payoutTotal = items.reduce((sum, item) => sum.plus(money(item.net)), new Decimal(0));
+    if (!round2(payoutTotal).eq(round2(money(run.totalNet)))) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "الدفع مرفوض: مجموع مبالغ الموظفين لا يساوي إجمالي صافي المسيّر",
+      });
+    }
 
     // advances (بند 12ج): هل هذا **أول** دفع لهذا المسيّر أم إعادة دفع بعد عكس؟ تسوية السلف
     // (إنقاص remaining) تُطبَّق مرّة واحدة عند أول دفع فقط — عكس الدفع لا يُعيد أرصدة السلف
@@ -613,10 +668,16 @@ export async function payRun(id: number, actor: Actor) {
  * واقعة الخصم؛ وإعادة الدفع اللاحقة لا تخصم السلف مرّة ثانية (payRun يتسوّى مرة واحدة فقط
  * عبر فحص isFirstPay). تصحيح السلف بعد عكس نهائي = شأن يدوي بقرار مدير.
  */
-export async function cancelRun(id: number, actor: Actor) {
+export async function cancelRun(id: number, actor: Actor & { enforceCashReturnEvidence?: boolean }) {
   return withTx(async (tx) => {
     const [run] = await tx.select().from(payrollRuns).where(eq(payrollRuns.id, id)).for("update").limit(1);
     if (!run) throw new TRPCError({ code: "NOT_FOUND", message: "المسيّر غير موجود" });
+    if (run.status === "paid" && actor.enforceCashReturnEvidence) {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "لا يمكن عكس راتب مدفوع من شاشة الرواتب لأن ذلك لا يثبت رجوع النقد. سجّل تحصيل النقد فعلياً من مسار الخزينة ثم نفّذ تسوية محاسبية موثقة.",
+      });
+    }
 
     if (run.status === "draft") {
       // استعادة تسويات السلف (تدقيق ١٧/٧): إن كان المسيّر قد دُفع سابقاً ثم عُكس فأُعيد لمسودة، فحذفه

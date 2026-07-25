@@ -53,7 +53,7 @@ async function nextTransferNumber(tx: Tx, fromBranchId: number): Promise<string>
 }
 
 /** يَحسب رصيد TREASURY الحالي لفرع معيّن. تَكلفة استعلام واحد. */
-async function getTreasuryBalance(tx: Tx, branchId: number): Promise<ReturnType<typeof money>> {
+export async function getTreasuryBalance(tx: Tx, branchId: number): Promise<ReturnType<typeof money>> {
   const rows: any = await tx.execute(sql`
     SELECT CAST(COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END), 0) AS CHAR) AS balance
     FROM receipts
@@ -113,7 +113,7 @@ export async function sendTransfer(
       throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ يَجب أن يَكون موجباً" });
     }
     const fromBranch = (
-      await tx.select().from(branches).where(eq(branches.id, input.fromBranchId)).limit(1)
+      await tx.select().from(branches).where(eq(branches.id, input.fromBranchId)).for("update").limit(1)
     )[0];
     const toBranch = (
       await tx.select().from(branches).where(eq(branches.id, input.toBranchId)).limit(1)
@@ -135,12 +135,12 @@ export async function sendTransfer(
       }
     }
 
-    // 4. Q1: فحص رصيد TREASURY للمُرسِل. إن تجاوز ⇒ رفض ناعم تَطلب confirmNegative.
+    // فحص رصيد TREASURY تحت قفل الفرع؛ النقد المادي غير الموجود لا يقبل التجاوز.
     const available = await getTreasuryBalance(tx, input.fromBranchId);
-    if (amount.gt(available) && !input.confirmNegative) {
+    if (amount.gt(available)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `الرصيد المتاح ${available.toFixed(2)} د.ع أقلّ من المطلوب ${amount.toFixed(2)} د.ع. أرسل confirmNegative=true لتجاوز التحذير.`,
+        message: `التحويل مرفوض: الرصيد النقدي المتاح ${available.toFixed(2)} د.ع أقلّ من المطلوب ${amount.toFixed(2)} د.ع. لا يجوز نقل نقد مادي غير موجود.`,
         cause: {
           balanceWarning: { available: available.toFixed(2), requested: amount.toFixed(2) },
         } as never,

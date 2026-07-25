@@ -148,19 +148,12 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
       }
       if (s[0].status !== "OPEN") {
-        // أوفلاين (ش٤): بيع التُقط دون اتصال **قبل** إغلاق الوردية ووصل ترحيله بعده ⇒ يُقبل
-        // في وردية مغلقة (النقد كان فعلياً في الدرج عند العدّ — الرفض يترك نقداً بلا فاتورة).
-        // يُميَّز في Z-report بقسم «مبيعات مُزامنة لاحقاً» (invoices.createdAt > closedAt +
-        // originatedOffline). سماحية ٥ دقائق لانحراف ساعة الجهاز. ما التُقط بعد الإغلاق يُرفض
-        // (واجهة POS لا تبيع بلا وردية مفتوحة — التقاطٌ كهذا شذوذ يستحق مراجعة لا ترحيلاً).
-        const closedAtMs = s[0].closedAt ? new Date(s[0].closedAt).getTime() : null;
-        const lateSyncOk =
-          !!input.offlineCapture &&
-          closedAtMs != null &&
-          input.offlineCapture.capturedAt.getTime() <= closedAtMs + 5 * 60_000;
-        if (!lateSyncOk) {
-          throw new TRPCError({ code: "BAD_REQUEST", message: "الوردية غير مفتوحة أو لا تخص هذا الفرع" });
-        }
+        // الإقفال حدّ محاسبي غير قابل للكتابة بأثر رجعي. يبقى البيع الأوفلايني في طابور
+        // المراجعة ويُسوّى من مسار إداري لاحق، ولا يعدّل expected/count لوردية مقفلة.
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "الوردية مغلقة — لا يمكن ترحيل بيع إليها بعد الإقفال. حوّل العملية إلى مراجعة التسوية اللاحقة.",
+        });
       }
       // SHIFT-OWN (تدقيق ٢/٧): فرض ملكية الوردية — كما في processPayment. غياب هذا الفحص كان
       // يُتيح لكاشير تمرير shiftId لوردية زميلٍ في نفس الفرع فيُنسَب نقده لدرج الزميل (عجز مزوّر عند
@@ -425,7 +418,14 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     // (والنقد الوهمي يظهر عجزاً بدرج الكاشير). الآن: التقريب يطبَّق على الإجمالي دائماً، لكن نعامل
     // البيع كمدفوعٍ بالكامل (paidNow = الإجمالي المقرّب) فقط إذا كان المُسلَّم يغطّي الإجمالي فعلاً؛
     // وإلا فهي دفعة جزئية ⇒ paidNow = المُسلَّم بالضبط والباقي ذمّة على العميل.
-    const paidNow = roundCash && tendered.gte(grandTotalD) ? effectiveTotalD : tendered;
+    if (input.payment?.method !== "CASH" && tendered.gt(effectiveTotalD)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `المبلغ المدفوع (${tendered.toFixed(2)}) يتجاوز مستحق الفاتورة (${effectiveTotalD.toFixed(2)}).`,
+      });
+    }
+    // الزيادة النقدية هي باقي للعميل، لا paidAmount ولا receipt ولا نقداً باقياً في الدرج.
+    const paidNow = tendered.gt(effectiveTotalD) ? effectiveTotalD : tendered;
     const unpaid = effectiveTotalD.minus(paidNow);
     if (unpaid.gt(0) && !input.customerId) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "البيع الآجل يتطلب عميلاً محدداً" });

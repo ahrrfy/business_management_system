@@ -189,20 +189,19 @@ export async function openShift(
     const entered = money(input.openingBalance);
     let hasDiscrepancy = false;
     let difference: string | null = null;
-    let reasonToStore: string | null = null;
+    const reasonToStore: string | null = null;
     if (expectedStr != null) {
       const diff = entered.minus(money(expectedStr));
       hasDiscrepancy = diff.abs().gt(OPENING_DISCREPANCY_EPSILON);
       difference = toDbMoney(diff);
       if (hasDiscrepancy) {
-        const reason = (input.openingDiscrepancyReason ?? "").trim();
-        if (!reason) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `الرصيد الافتتاحيّ المُدخَل (${entered.toFixed(2)}) يختلف عن المتبقّي من الوردية السابقة (${money(expectedStr).toFixed(2)}) — أدخل سبب الاختلاف للمتابعة.`,
-          });
-        }
-        reasonToStore = reason.slice(0, 500);
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            `لا يمكن فتح الوردية: الرصيد الافتتاحي (${entered.toFixed(2)}) يجب أن يطابق ` +
+            `المتبقي المثبت من الوردية السابقة (${money(expectedStr).toFixed(2)}). ` +
+            "صحّح مصدر النقد أو تسوية التسليم أولاً.",
+        });
       }
     }
 

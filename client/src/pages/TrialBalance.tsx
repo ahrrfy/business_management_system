@@ -12,13 +12,17 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type Pos = RouterOutputs["reports"]["financialPosition"];
 
 const NOTE =
-  "ميزان مبسّط/مشتقّ: النقد تقديريّ، الأصول بالتكلفة، حقوق الملكية = الأصول − الخصوم (يجعل الميزان متوازناً). الذمم على مستوى الشركة؛ النقد والمخزون حسب الفرع.";
+  "معادلة مركز مالي مبسّطة وليست ميزان مراجعة قيود مزدوجة. حقوق الملكية مشتقّة = الأصول − الخصوم، لذلك لا يجوز اعتبار تساوي الطرفين دليلاً على سلامة القيود. الذمم على مستوى الشركة؛ النقد والمخزون حسب الفرع.";
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
 function buildRows(p: Pos) {
   return [
     { label: "النقد (تقديريّ)", debit: p.cash, credit: "0" },
+    { label: "مقبوضات البطاقة/البنك", debit: p.card, credit: "0" },
+    { label: "شيكات قيد التحصيل", debit: p.check, credit: "0" },
+    { label: "تحويلات مصرفية", debit: p.transfer, credit: "0" },
+    { label: "محافظ إلكترونية", debit: p.wallet, credit: "0" },
     { label: "الذمم المدينة (عملاء)", debit: p.arDebit, credit: "0" },
     { label: "سُلف للموردين", debit: p.apDebit, credit: "0" },
     { label: "المخزون (بالتكلفة)", debit: p.inventory, credit: "0" },
@@ -45,7 +49,7 @@ export default function TrialBalance() {
     ? [
         { label: "إجمالي المدين", value: fmtAr(totalDebit), tone: "info" },
         { label: "إجمالي الدائن", value: fmtAr(totalCredit), tone: "info" },
-        { label: "التوازن", value: D(totalDebit).sub(D(totalCredit)).abs().lt(D("0.01")) ? "متوازن" : "غير متوازن", tone: "positive" },
+        { label: "نوع المطابقة", value: "معادلة مشتقّة — ليست اختبار قيود", tone: "warning" },
       ]
     : [];
 
@@ -91,8 +95,8 @@ export default function TrialBalance() {
 
   return (
     <ReportShell
-      title="ميزان المراجعة"
-      description="أرصدة الحسابات بصيغة مدين/دائن (لقطة)."
+      title="معادلة المركز المالي"
+      description="عرض مشتق للأصول والخصوم، وليس ميزان مراجعة محاسبياً من قيود مزدوجة."
       note={NOTE}
       kpis={kpis}
       onExport={onExport}

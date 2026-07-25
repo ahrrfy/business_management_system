@@ -222,8 +222,9 @@ export const shiftRouter = router({
         amount: z.string().regex(/^\d+(\.\d{1,2})?$/, "مبلغ غير صالح"),
         // مفتاح idempotency من العميل ⇒ فقدُ ردٍّ/نقرٌ مزدوج لا يُكرّر حركة النقد (نمط createSale).
         clientRequestId: z.string().min(1).max(64),
-        // مستلِمٌ اختياريّ (مدير/إداريّ يتسلّم العهدة)؛ بدونه يُنسَب الاستلام للفاعل (درج أمانٍ بلا شخص).
-        dropTo: z.number().int().positive().nullish(),
+        // سلسلة حيازة ثنائية: المستلم إلزامي، والخدمة تتحقق أنه مدير نشط
+        // مختلف عن المُسلّم ومن فرع الوردية نفسه.
+        dropTo: z.number().int().positive(),
         notes: z.string().max(500).nullish(),
       }),
     )
@@ -234,7 +235,7 @@ export const shiftRouter = router({
       }
       const res = await retryOnDup(() =>
         createCashDrop(
-          { shiftId: input.shiftId, amount: input.amount, clientRequestId: input.clientRequestId, dropTo: input.dropTo ?? null, notes: input.notes ?? null },
+          { shiftId: input.shiftId, amount: input.amount, clientRequestId: input.clientRequestId, dropTo: input.dropTo, notes: input.notes ?? null },
           {
             userId: ctx.user.id,
             branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : -1,
@@ -249,7 +250,7 @@ export const shiftRouter = router({
         newValue: {
           dropNumber: res.dropNumber,
           amount: input.amount,
-          dropTo: input.dropTo ?? null,
+          dropTo: input.dropTo,
           drawerBefore: res.drawerBefore,
           drawerAfter: res.drawerAfter,
         },

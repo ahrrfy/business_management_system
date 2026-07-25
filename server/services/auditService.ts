@@ -7,6 +7,7 @@ import { auditLogs } from "../../drizzle/schema";
 import type { TrpcContext } from "../context";
 import { getDb } from "../db";
 import { logger } from "../logger";
+import type { Tx } from "../db";
 
 export type AuditData = {
   action: string; // مثل "sale.create" / "product.update" / "inventory.transfer"
@@ -137,4 +138,29 @@ export async function logAudit(ctx: Pick<TrpcContext, "user" | "req">, data: Aud
   } catch (e) {
     logger.warn({ err: e, action: data.action }, "تعذّر كتابة سجلّ التدقيق");
   }
+}
+
+/**
+ * سجل تدقيق إلزامي داخل معاملة العمل نفسها.
+ * يُستعمل للضوابط الحاكمة التي لا يجوز نجاحها بلا أثر؛ فشل INSERT يرمي ويُرجع المعاملة كاملة.
+ */
+export async function logAuditTx(
+  tx: Tx,
+  ctx: Pick<TrpcContext, "user" | "req">,
+  data: AuditData,
+): Promise<void> {
+  const ip =
+    (ctx.req?.headers?.["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ??
+    ctx.req?.ip ??
+    null;
+  await tx.insert(auditLogs).values({
+    userId: ctx.user?.id ?? null,
+    branchId: ctx.user?.branchId ?? null,
+    action: data.action,
+    entityType: data.entityType,
+    entityId: data.entityId != null ? String(data.entityId) : null,
+    oldValue: redactAuditValue(data.oldValue),
+    newValue: redactAuditValue(data.newValue),
+    ipAddress: ip,
+  });
 }

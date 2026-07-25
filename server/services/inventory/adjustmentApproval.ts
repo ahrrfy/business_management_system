@@ -20,6 +20,23 @@ import { money } from "../money";
 import { requireDb } from "../tx";
 import { type Actor, withTx } from "../tx";
 
+const COST_SNAPSHOT_RE = /^\[COST_SNAPSHOT:([0-9]+(?:\.[0-9]{1,2})?)\](?:\n|$)/;
+
+function encodeAdjustmentNotes(cost: string, notes?: string | null): string {
+  const human = notes?.trim();
+  return `[COST_SNAPSHOT:${money(cost).toFixed(2)}]${human ? `\n${human}` : ""}`;
+}
+
+function decodeAdjustmentNotes(notes?: string | null): { cost: string | null; human: string | null } {
+  const raw = notes ?? "";
+  const match = raw.match(COST_SNAPSHOT_RE);
+  if (!match) return { cost: null, human: raw.trim() || null };
+  return {
+    cost: money(match[1]).toFixed(2),
+    human: raw.slice(match[0].length).trim() || null,
+  };
+}
+
 export interface RequestAdjustmentInput {
   variantId: number;
   branchId: number;
@@ -34,7 +51,7 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
       throw new TRPCError({ code: "BAD_REQUEST", message: "الرصيد المستهدف يجب أن يكون صحيحاً غير سالب" });
     }
     const v = (
-      await tx.select({ id: productVariants.id }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1)
+      await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1)
     )[0];
     if (!v) throw new TRPCError({ code: "NOT_FOUND", message: "المتغيّر غير موجود" });
     // C2 (مراجعة عدائية): مرآة حراس setStock عند الطلب — لا نُنشئ طلباً يستحيل اعتماده (البكج يُرفَض عند
@@ -55,7 +72,9 @@ export async function requestStockAdjustment(input: RequestAdjustmentInput, acto
       branchId: input.branchId,
       targetQuantity: input.targetQuantity,
       expectedQuantity: Number(cur?.q ?? 0),
-      notes: input.notes?.trim() || null,
+      // لقطة تكلفة داخل الحقل الموجود (لا تغيير schema): الاعتماد يرفض إن تغيّرت WAVG منذ الطلب،
+      // كي لا تتبدّل قيمة الربح/الخسارة بينما كمية الفرع بقيت كما هي.
+      notes: encodeAdjustmentNotes(v.costPrice ?? "0", input.notes),
       status: "PENDING_APPROVAL",
       createdBy: actor.userId,
     });
@@ -114,7 +133,21 @@ export async function approveStockAdjustment(
       const v = (
         await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, Number(r.variantId))).limit(1)
       )[0];
-      const adjustValue = money(v?.costPrice ?? "0").times(stockRes.delta);
+      const noteData = decodeAdjustmentNotes(r.notes);
+      if (noteData.cost == null) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "طلب التسوية قديم ولا يحتوي لقطة تكلفة موثّقة — ارفضه وأنشئ طلباً جديداً",
+        });
+      }
+      const liveCost = money(v?.costPrice ?? "0").toFixed(2);
+      if (liveCost !== noteData.cost) {
+        throw new TRPCError({
+          code: "CONFLICT",
+          message: `تغيّرت تكلفة الصنف منذ الطلب (كانت ${noteData.cost}، الآن ${liveCost}) — أعد الطلب لتثبيت القيمة الصحيحة`,
+        });
+      }
+      const adjustValue = money(noteData.cost).times(stockRes.delta);
       if (!adjustValue.isZero()) {
         await postEntry(tx, {
           entryType: "ADJUST",
@@ -123,7 +156,7 @@ export async function approveStockAdjustment(
           profit: adjustValue,
           amount: money(0),
           dedupeKey: `INV_ADJUST:${stockRes.movementId}`,
-          notes: `تسوية مخزون معتمَدة (طلب #${id})${r.notes ? ` — ${r.notes}` : ""}`,
+          notes: `تسوية مخزون معتمَدة (طلب #${id})${noteData.human ? ` — ${noteData.human}` : ""}`,
         });
       }
     }
@@ -169,7 +202,7 @@ export async function listStockAdjustmentRequests(scope: {
   const conds = [];
   if (scope.branchId != null) conds.push(eq(stockAdjustmentRequests.branchId, scope.branchId));
   if (scope.status) conds.push(eq(stockAdjustmentRequests.status, scope.status));
-  return db
+  const rows = await db
     .select({
       id: stockAdjustmentRequests.id,
       variantId: stockAdjustmentRequests.variantId,
@@ -200,4 +233,5 @@ export async function listStockAdjustmentRequests(scope: {
     .where(conds.length ? and(...conds) : undefined)
     .orderBy(desc(stockAdjustmentRequests.id))
     .limit(500);
+  return rows.map((row) => ({ ...row, notes: decodeAdjustmentNotes(row.notes).human }));
 }
