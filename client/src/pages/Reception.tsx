@@ -46,6 +46,12 @@ import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHa
 import { cn } from "@/lib/utils";
 import { CashCounter } from "@/components/CashCounter";
 import { printShiftClose, printShiftOpen } from "@/lib/printing/print";
+import {
+  MATERIAL_SHIFT_VARIANCE_IQD,
+  SHIFT_VARIANCE_CODES,
+  SHIFT_VARIANCE_LABELS,
+  type ShiftVarianceCode,
+} from "@shared/shiftCashGovernance";
 
 // رموز قسم تسليم النقد بمتغيّرات النظام الدلالية (الاستقبال shadcn لا يستعمل رموز الكاشير C).
 const HANDOVER_TOKENS: PosTokens = {
@@ -151,6 +157,10 @@ export default function Reception() {
   const [closing, setClosing] = useState(false);
   const [counted, setCounted] = useState("");
   const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
+  const [varianceCode, setVarianceCode] = useState<ShiftVarianceCode | "">("");
+  const [varianceReason, setVarianceReason] = useState("");
+  const [managerEmail, setManagerEmail] = useState("");
+  const [managerPassword, setManagerPassword] = useState("");
   const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: closing });
   const branchName = useMemo(
@@ -203,6 +213,10 @@ export default function Reception() {
       setClosing(false);
       setCounted("");
       setCloseCounts({});
+      setVarianceCode("");
+      setVarianceReason("");
+      setManagerEmail("");
+      setManagerPassword("");
       setHandover(emptyHandover);
       await utils.shifts.current.invalidate();
     },
@@ -741,6 +755,12 @@ export default function Reception() {
     .reduce((s, p) => s + Number(p.total), 0);
   const recExpected = Number(shift.openingBalance ?? 0) + recCashIn - recCashOut;
   const recDiff = counted ? Number(counted) - recExpected : null;
+  const hasRecVariance = recDiff != null && Math.abs(recDiff) >= 0.01;
+  const materialRecVariance = hasRecVariance && Math.abs(recDiff!) >= MATERIAL_SHIFT_VARIANCE_IQD;
+  const canSelfApproveVariance = me.data?.role === "admin" || me.data?.role === "manager";
+  const recVarianceIncomplete = hasRecVariance && (!varianceCode || varianceReason.trim().length < 10);
+  const recApprovalIncomplete =
+    materialRecVariance && !canSelfApproveVariance && (!managerEmail.trim() || !managerPassword);
 
   return (
     <div className="flex h-full flex-col overflow-hidden bg-background" dir="rtl">
@@ -785,15 +805,6 @@ export default function Reception() {
                     }}
                   />
                 </div>
-                <label className="mb-1.5 block text-sm font-bold">النقد المعدود في الصندوق (د.ع)</label>
-                <Input
-                  dir="ltr"
-                  inputMode="decimal"
-                  value={counted}
-                  onChange={(e) => setCounted(e.target.value)}
-                  className="h-11 text-end text-lg font-extrabold tabular-nums"
-                  placeholder="0"
-                />
                 {recDiff !== null && (
                   <div
                     className={cn(
@@ -811,6 +822,52 @@ export default function Reception() {
                     {recDiff < 0 && <span>(عجز)</span>}
                   </div>
                 )}
+                {hasRecVariance && (
+                  <div className={cn(
+                    "mt-4 space-y-2 rounded-xl border p-3",
+                    materialRecVariance ? "border-destructive/60 bg-destructive/10" : "border-amber-500/60 bg-amber-500/10",
+                  )}>
+                    <p className="text-sm font-extrabold">
+                      هذا النقد لا يطابق الحركات المسجّلة. حدّد مصدر الفرق قبل الإغلاق.
+                    </p>
+                    <select
+                      value={varianceCode}
+                      onChange={(e) => setVarianceCode(e.target.value as ShiftVarianceCode)}
+                      className="h-11 w-full rounded-md border bg-background px-3 text-sm"
+                    >
+                      <option value="">— تصنيف الفرق —</option>
+                      {SHIFT_VARIANCE_CODES.map((code) => (
+                        <option key={code} value={code}>{SHIFT_VARIANCE_LABELS[code]}</option>
+                      ))}
+                    </select>
+                    <textarea
+                      value={varianceReason}
+                      onChange={(e) => setVarianceReason(e.target.value)}
+                      maxLength={500}
+                      className="min-h-20 w-full rounded-md border bg-background p-3 text-sm"
+                      placeholder="من أين جاءت الزيادة أو لماذا حدث العجز؟ اذكر السند/العملية أو نتيجة إعادة العد."
+                    />
+                    {materialRecVariance && !canSelfApproveVariance && (
+                      <>
+                        <p className="text-xs font-bold text-destructive">
+                          فرق جوهري يتجاوز {MATERIAL_SHIFT_VARIANCE_IQD.toLocaleString("en-US")} د.ع — يلزم اعتماد مدير.
+                        </p>
+                        <Input
+                          type="email"
+                          value={managerEmail}
+                          onChange={(e) => setManagerEmail(e.target.value)}
+                          placeholder="بريد المدير"
+                        />
+                        <Input
+                          type="password"
+                          value={managerPassword}
+                          onChange={(e) => setManagerPassword(e.target.value)}
+                          placeholder="كلمة مرور المدير"
+                        />
+                      </>
+                    )}
+                  </div>
+                )}
                 <ShiftHandoverSection
                   C={HANDOVER_TOKENS}
                   recipients={recipientsQ.data ?? []}
@@ -824,8 +881,18 @@ export default function Reception() {
                   </Button>
                   <Button
                     className="flex-1"
-                    disabled={!counted || closeShiftM.isPending || handoverIncomplete(handover)}
-                    onClick={() => closeShiftM.mutate({ shiftId: shift.id, countedCash: counted, countedBreakdown: closeCounts, handover: buildHandoverPayload(handover) })}
+                    disabled={!counted || closeShiftM.isPending || handoverIncomplete(handover) || recVarianceIncomplete || recApprovalIncomplete}
+                    onClick={() => closeShiftM.mutate({
+                      shiftId: shift.id,
+                      countedCash: counted,
+                      countedBreakdown: closeCounts,
+                      varianceReasonCode: hasRecVariance ? varianceCode || undefined : undefined,
+                      varianceReason: hasRecVariance ? varianceReason.trim() : undefined,
+                      managerApproval: materialRecVariance && !canSelfApproveVariance
+                        ? { email: managerEmail.trim(), password: managerPassword }
+                        : undefined,
+                      handover: buildHandoverPayload(handover),
+                    })}
                   >
                     {closeShiftM.isPending ? "جارٍ الإغلاق…" : "إغلاق وطباعة Z"}
                   </Button>

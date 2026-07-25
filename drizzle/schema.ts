@@ -942,6 +942,26 @@ export const shifts = mysqlTable(
     // سبب اختلاف الرصيد الافتتاحيّ المُدخَل عن المتوقَّع (إلزاميّ عند الاختلاف — تحذيرٌ يُسجَّل لا حظر).
     // null حين لا اختلاف أو لا سابقة.
     openingDiscrepancyReason: varchar("openingDiscrepancyReason", { length: 500 }),
+    // حوكمة تسوية الدرج: «المعدود» ليس مصدر مال. عند أي فرق تُحفظ العلّة والتفسير،
+    // والفروق الجوهرية لا تعتمد إلا بفاعل إداري (فصل واجبات). nullable للورديات التاريخية/المفتوحة.
+    varianceReasonCode: mysqlEnum("varianceReasonCode", [
+      "COUNT_ERROR",
+      "UNRECORDED_SALE",
+      "UNRECORDED_CASH_IN",
+      "UNRECORDED_CASH_OUT",
+      "CHANGE_FUND_TRANSFER",
+      "OFFLINE_SALE",
+      "REFUND_ERROR",
+      "OTHER",
+    ]),
+    varianceReason: varchar("varianceReason", { length: 500 }),
+    reconciliationStatus: mysqlEnum("reconciliationStatus", [
+      "MATCHED",
+      "EXPLAINED",
+      "MANAGER_APPROVED",
+    ]),
+    closedByUserId: int("closedByUserId").references(() => users.id),
+    varianceReviewedByUserId: int("varianceReviewedByUserId").references(() => users.id),
   },
   (table) => ({
     branchIdx: index("idx_shift_branch").on(table.branchId),

@@ -29,6 +29,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, RefreshCw, Zap, ChevronDown } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
+import { CashCounter } from "@/components/CashCounter";
+import {
+  MATERIAL_SHIFT_VARIANCE_IQD,
+  SHIFT_VARIANCE_CODES,
+  SHIFT_VARIANCE_LABELS,
+  type ShiftVarianceCode,
+} from "@shared/shiftCashGovernance";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2149,6 +2156,11 @@ interface ShiftCloseDialogProps {
 function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches }: ShiftCloseDialogProps) {
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
+  const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
+  const [varianceCode, setVarianceCode] = useState<ShiftVarianceCode | "">("");
+  const [varianceReason, setVarianceReason] = useState("");
+  const [managerEmail, setManagerEmail] = useState("");
+  const [managerPassword, setManagerPassword] = useState("");
   const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
   const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: !!shift });
@@ -2216,6 +2228,11 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD).plus(D(outboxQueued.total)) : null;
   const countedD    = counted ? D(counted) : null;
   const diffD       = expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
+  const hasVariance = diffD != null && diffD.abs().gt("0.005");
+  const materialVariance = hasVariance && diffD!.abs().gte(MATERIAL_SHIFT_VARIANCE_IQD);
+  const varianceIncomplete = hasVariance && (!varianceCode || varianceReason.trim().length < 10);
+  const approvalIncomplete =
+    materialVariance && !isElevated && (!managerEmail.trim() || !managerPassword);
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
   const cashIn      = cashInD.toNumber();
   const cashOut     = cashOutD.toNumber();
@@ -2265,15 +2282,14 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             ))}
 
-            {/* Counted cash */}
+            {/* Counted cash: denomination evidence prevents a typed number from becoming unexplained money. */}
             <div style={{ marginTop: 16 }}>
-              <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>النقد المعدود في الصندوق (د.ع)</label>
-              <input
-                value={counted} onChange={(e) => setCounted(e.target.value)}
-                dir="ltr" placeholder="0"
-                style={{ width: "100%", height: 50, border: `1.5px solid ${C.border}`, borderRadius: 9, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 20, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box" }}
-                onFocus={(e) => (e.target.style.borderColor = C.primary)}
-                onBlur={(e)  => (e.target.style.borderColor = C.border)}
+              <CashCounter
+                value={closeCounts}
+                onChange={(counts, total) => {
+                  setCloseCounts(counts);
+                  setCounted(total);
+                }}
               />
               {diff !== null && (
                 <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
@@ -2284,6 +2300,38 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 </div>
               )}
             </div>
+
+            {hasVariance && (
+              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${materialVariance ? C.danger : C.amber}`, borderRadius: 9, background: materialVariance ? C.dangerSoft : C.amberSoft }}>
+                <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 7 }}>
+                  هذا النقد لا يطابق الحركات المسجّلة. حدّد مصدر الفرق قبل الإغلاق.
+                </div>
+                <select
+                  value={varianceCode}
+                  onChange={(e) => setVarianceCode(e.target.value as ShiftVarianceCode)}
+                  style={{ width: "100%", height: 42, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit" }}
+                >
+                  <option value="">— تصنيف الفرق —</option>
+                  {SHIFT_VARIANCE_CODES.map((code) => <option key={code} value={code}>{SHIFT_VARIANCE_LABELS[code]}</option>)}
+                </select>
+                <textarea
+                  value={varianceReason}
+                  onChange={(e) => setVarianceReason(e.target.value)}
+                  maxLength={500}
+                  placeholder="من أين جاءت الزيادة أو لماذا حدث العجز؟ اذكر السند/العملية أو نتيجة إعادة العد."
+                  style={{ width: "100%", minHeight: 72, marginTop: 8, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: 10, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
+                />
+                {materialVariance && !isElevated && (
+                  <div style={{ marginTop: 9 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 800, color: C.danger, marginBottom: 6 }}>
+                      فرق جوهري يتجاوز {MATERIAL_SHIFT_VARIANCE_IQD.toLocaleString("en-US")} د.ع — يلزم اعتماد مدير.
+                    </div>
+                    <input value={managerEmail} onChange={(e) => setManagerEmail(e.target.value)} type="email" placeholder="بريد المدير" style={{ width: "100%", height: 40, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit", boxSizing: "border-box" }} />
+                    <input value={managerPassword} onChange={(e) => setManagerPassword(e.target.value)} type="password" placeholder="كلمة مرور المدير" style={{ width: "100%", height: 40, marginTop: 7, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit", boxSizing: "border-box" }} />
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* تسليم نقد الدرج للخزينة (treasury-stage2) — اختياريّ، بيد مديرٍ مستلِم. */}
             <ShiftHandoverSection
@@ -2320,9 +2368,19 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending || closeBlocked || handoverIncomplete(handover)}
-                onClick={() => shift && closeShift.mutate({ shiftId: shift.id, countedCash: counted, handover: buildHandoverPayload(handover) })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
+                disabled={!counted || closeShift.isPending || closeBlocked || handoverIncomplete(handover) || varianceIncomplete || approvalIncomplete}
+                onClick={() => shift && closeShift.mutate({
+                  shiftId: shift.id,
+                  countedCash: counted,
+                  countedBreakdown: closeCounts,
+                  varianceReasonCode: hasVariance ? varianceCode || undefined : undefined,
+                  varianceReason: hasVariance ? varianceReason.trim() : undefined,
+                  managerApproval: materialVariance && !isElevated
+                    ? { email: managerEmail.trim(), password: managerPassword }
+                    : undefined,
+                  handover: buildHandoverPayload(handover),
+                })}
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || varianceIncomplete || approvalIncomplete ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || varianceIncomplete || approvalIncomplete ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || varianceIncomplete || approvalIncomplete ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
                 {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : "إغلاق وطباعة Z"}
               </button>
             </div>
