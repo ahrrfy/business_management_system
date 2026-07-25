@@ -61,7 +61,9 @@ export async function getARAging(opts: { branchId?: number; limit?: number } = {
       ${branchFilter}
     WHERE c.isActive = TRUE
     GROUP BY c.id, c.name, c.phone, c.customerType, c.currentBalance
-    HAVING unpaidTotal > 0 OR c.currentBalance > 0
+    -- currentBalance <> 0 (لا > 0): يُظهر أيضاً الرصيد الدائن (دفعة مقدّمة/رصيد افتتاحيّ «له علينا»)
+    -- فلا يختفي أيّ طرفٍ له رصيدٌ غير صفريّ من «الذمم». الموجب مدين، السالب دائن (عمود unbucketed موقَّع).
+    HAVING unpaidTotal > 0 OR c.currentBalance <> 0
     ORDER BY unpaidTotal DESC, c.currentBalance DESC
     LIMIT ${limit}
   `);

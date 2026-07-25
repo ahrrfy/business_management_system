@@ -90,6 +90,16 @@ export default function Customers() {
     },
     onError: (e) => notify.err(e),
   });
+  // الحذف النهائيّ: customers.delete = managerProcedure (أدمن/مدير) — لتنظيف أخطاء الإدخال الأوّليّ،
+  // والحارس الخادميّ يرفض أيّ عميلٍ له نشاط (فواتير/أوامر شغل/…) فيوجّه للتعطيل.
+  const del = trpc.customers.delete.useMutation({
+    onSuccess: () => {
+      utils.customers.search.invalidate();
+      utils.customers.list.invalidate();
+      notify.ok("تم حذف العميل نهائياً");
+    },
+    onError: (e) => notify.err(e),
+  });
 
   const total = list.data?.total ?? 0;
   const rows = list.data?.rows ?? [];
@@ -167,6 +177,16 @@ export default function Customers() {
     } else {
       activate.mutate({ customerId: id });
     }
+  }
+
+  async function remove(id: number, name: string) {
+    if (!(await confirm({
+      variant: "danger",
+      title: "حذف العميل نهائياً",
+      description: `سيُحذف «${name}» نهائياً مع رصيده الافتتاحي — لا يمكن التراجع. الحذف مسموح فقط لعميلٍ بلا أي نشاط (فواتير/أوامر شغل/طلبات…)؛ إن كان له نشاط استعمل «تعطيل» بدلاً منه.`,
+      confirmText: "حذف نهائي",
+    }))) return;
+    del.mutate({ customerId: id });
   }
 
   return (
@@ -363,6 +383,14 @@ export default function Customers() {
                             variant: isActive ? "destructive" : "default",
                             disabled: deactivate.isPending || activate.isPending,
                             onSelect: () => void toggle(id, isActive, c.name ?? ""),
+                          },
+                          {
+                            key: "delete",
+                            label: "حذف نهائي",
+                            variant: "destructive",
+                            disabled: del.isPending,
+                            hidden: !isElevated,
+                            onSelect: () => void remove(id, c.name ?? ""),
                           },
                         ]}
                       />

@@ -9,6 +9,7 @@
 //   - المورّد: موجب = «علينا للمورّد» (ذمّة دائنة AP).
 // لذا الاتجاه نفسه يُنتج إشارتين متعاكستين بين العميل والمورّد.
 import { TRPCError } from "@trpc/server";
+import { and, eq } from "drizzle-orm";
 import { accountingEntries } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { localTodayDate } from "./dateRange";
@@ -79,4 +80,65 @@ export async function postOpeningEntry(
     notes,
     dedupeKey: `OPENING:${party}:${partyId}`,
   });
+}
+
+/** المبلغ الموقَّع لقيد OPENING الحالي للطرف ("0.00" إن لم يوجد) — لعرضه في شاشة التعديل. */
+export async function getOpeningEntryAmount(
+  tx: Tx,
+  party: "CUSTOMER" | "SUPPLIER",
+  partyId: number,
+): Promise<string> {
+  const col = party === "CUSTOMER" ? accountingEntries.customerId : accountingEntries.supplierId;
+  const row = (
+    await tx
+      .select({ amount: accountingEntries.amount })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.entryType, "OPENING"), eq(col, partyId)))
+      .limit(1)
+  )[0];
+  return toDbMoney(money(row?.amount ?? "0"));
+}
+
+/**
+ * تصحيح الرصيد الافتتاحي لطرفٍ قائم (إدخال أوّليّ خاطئ) — مصدر حقيقة واحد لتعديل قيد OPENING.
+ * يجعل قيد OPENING المرجعيّ يطابق `newSigned` (قيمة موقَّعة، نظير currentBalance المخزَّن):
+ *  - لا قيد سابق + هدف ≠ 0 ⇒ يُنشئ قيداً (postOpeningEntry، يفحص فترة اليوم).
+ *  - قيد قائم + هدف ≠ 0 ⇒ يُحدّث مبلغه (يفحص فترة القيد نفسه — لا تُعدَّل فترة مُقفَلة).
+ *  - قيد قائم + هدف = 0 ⇒ يحذف القيد (إزالة الرصيد الافتتاحي).
+ * يعيد **الفارق الموقَّع** (newSigned − oldOpening) لتطبيقه على currentBalance بزيادة نسبية ذرّية
+ * تصون أثر النشاط اللاحق (لا يُعاد بناء الرصيد من الصفر). أموال بدقّة decimal.js (§٥).
+ */
+export async function upsertOpeningEntry(
+  tx: Tx,
+  party: "CUSTOMER" | "SUPPLIER",
+  partyId: number,
+  newSigned: string,
+  notes = "رصيد افتتاحي",
+): Promise<{ delta: string }> {
+  const col = party === "CUSTOMER" ? accountingEntries.customerId : accountingEntries.supplierId;
+  const existing = (
+    await tx
+      .select({ id: accountingEntries.id, amount: accountingEntries.amount, entryDate: accountingEntries.entryDate })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.entryType, "OPENING"), eq(col, partyId)))
+      .limit(1)
+  )[0];
+  const oldSigned = money(existing?.amount ?? "0");
+  const target = round2(money(newSigned));
+  const delta = round2(target.minus(oldSigned));
+  if (delta.isZero()) return { delta: "0.00" }; // لا تغيير فعليّ.
+
+  if (existing) {
+    // تعديل/حذف قيدٍ قائم ⇒ افحص فترة القيد نفسه (لا اليوم): لا يُمسّ رصيدٌ افتتاحيّ في فترة مُقفَلة.
+    await assertPeriodOpen(tx, new Date(existing.entryDate as unknown as string));
+    if (target.isZero()) {
+      await tx.delete(accountingEntries).where(eq(accountingEntries.id, existing.id));
+    } else {
+      await tx.update(accountingEntries).set({ amount: toDbMoney(target) }).where(eq(accountingEntries.id, existing.id));
+    }
+  } else {
+    // لا قيد سابق ⇒ أنشئ (postOpeningEntry يفحص فترة اليوم بنفسه).
+    await postOpeningEntry(tx, party, partyId, toDbMoney(target), notes);
+  }
+  return { delta: toDbMoney(delta) };
 }

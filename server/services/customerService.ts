@@ -1,15 +1,34 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, desc, eq, inArray, like, ne, or, sql } from "drizzle-orm";
 import { isDupEntry } from "@shared/errorMap.ar";
-import { customers, invoices, workOrders } from "../../drizzle/schema";
+import {
+  accountingEntries,
+  arReminders,
+  contactPersons,
+  conversations,
+  couponRedemptions,
+  coupons,
+  creditApprovals,
+  customerContractPrices,
+  customerNotes,
+  customers,
+  deliveryConsignments,
+  installmentPlans,
+  invoices,
+  onlineOrders,
+  quotations,
+  tasks,
+  waBroadcastRecipients,
+  workOrders,
+} from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "../../shared/searchNormalize";
-import { money } from "./money";
+import { money, toDbMoney } from "./money";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
-import { signedOpeningBalance, postOpeningEntry, type OpeningDirection } from "./openingBalance";
+import { signedOpeningBalance, postOpeningEntry, upsertOpeningEntry, type OpeningDirection } from "./openingBalance";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
@@ -275,10 +294,78 @@ export async function updateCustomer(input: UpdateCustomerInput, _actor: Actor) 
       patch.creditLimit = normalizeCreditLimit(input.creditLimit);
     }
 
-    if (Object.keys(patch).length === 0) return { customerId: input.customerId, changed: false };
+    // تصحيح الرصيد الافتتاحي (إدخال أوّليّ خاطئ) — يُحدَّث قيد OPENING ويُطبَّق الفارق على الرصيد الجاري
+    // بزيادةٍ نسبيةٍ ذرّية تصون أثر أيّ نشاطٍ لاحق. حصريّ للمرتفعين — يُفرَض على مستوى الراوتر.
+    let openingChanged = false;
+    if (input.openingBalance !== undefined) {
+      const newSigned = signedOpeningBalance(
+        "CUSTOMER",
+        input.openingBalance,
+        input.openingBalanceDirection ?? "OWED_TO_US",
+      );
+      const { delta } = await upsertOpeningEntry(tx, "CUSTOMER", input.customerId, newSigned);
+      if (!money(delta).isZero()) {
+        await tx
+          .update(customers)
+          .set({ currentBalance: sql`${customers.currentBalance} + ${delta}` })
+          .where(eq(customers.id, input.customerId));
+        openingChanged = true;
+      }
+    }
+
+    if (Object.keys(patch).length === 0) return { customerId: input.customerId, changed: openingChanged };
 
     await tx.update(customers).set(patch).where(eq(customers.id, input.customerId));
     return { customerId: input.customerId, changed: true };
+  });
+}
+
+/**
+ * حذف عميل نهائياً — للتنظيف بعد أخطاء الإدخال الأوّليّ فقط. يُرفض إن كان للعميل **أيّ نشاط**
+ * (فواتير/عروض/أوامر شغل/طلبات/أقساط/موافقات ائتمان/أسعار عقدية/كوبونات/إرساليات/محادثات/مهامّ/
+ * قوائم بثّ) أو قيود دفتر غير القيد الافتتاحيّ. الوحيد الذي يُزال معه: قيده الافتتاحيّ + ملاحظاته
+ * + جهاته + تذكيراته (بيانات تابعة بلا معنى ماليّ). ذرّي — يفشل بأكمله عند أيّ FK غير متوقَّع.
+ */
+export async function deleteCustomer(customerId: number, _actor: Actor) {
+  return withTx(async (tx) => {
+    const c = (await tx.select().from(customers).where(eq(customers.id, customerId)).for("update").limit(1))[0];
+    if (!c) throw new TRPCError({ code: "NOT_FOUND", message: "العميل غير موجود" });
+
+    // حارس النشاط: أيّ صفٍّ في هذه الجداول = حركةٌ حقيقية ⇒ لا حذف (عطِّل بدلاً منه).
+    const checks: [any, any, string][] = [
+      [invoices, invoices.customerId, "فواتير"],
+      [quotations, quotations.customerId, "عروض أسعار"],
+      [workOrders, workOrders.customerId, "أوامر شغل"],
+      [onlineOrders, onlineOrders.customerId, "طلبات متجر"],
+      [creditApprovals, creditApprovals.customerId, "موافقات ائتمان"],
+      [installmentPlans, installmentPlans.customerId, "خطط أقساط"],
+      [customerContractPrices, customerContractPrices.customerId, "أسعار عقدية"],
+      [couponRedemptions, couponRedemptions.customerId, "استخدام كوبونات"],
+      [coupons, coupons.customerId, "كوبونات مخصّصة"],
+      [deliveryConsignments, deliveryConsignments.endCustomerId, "إرساليات توصيل"],
+      [conversations, conversations.customerId, "محادثات"],
+      [tasks, tasks.customerId, "مهامّ"],
+      [waBroadcastRecipients, waBroadcastRecipients.customerId, "قوائم بثّ تسويقيّ"],
+    ];
+    for (const [table, col, label] of checks) {
+      const [row] = await tx.select({ x: sql<number>`1` }).from(table).where(eq(col, customerId)).limit(1);
+      if (row) throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن حذف عميل له ${label} — عطِّله بدلاً من الحذف` });
+    }
+    // قيود دفتر غير القيد الافتتاحيّ = حركة مالية حقيقية.
+    const [ae] = await tx
+      .select({ id: accountingEntries.id })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.customerId, customerId), ne(accountingEntries.entryType, "OPENING")))
+      .limit(1);
+    if (ae) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف عميل له حركات مالية — عطِّله بدلاً من الحذف" });
+
+    // إزالة البيانات التابعة الآمنة الوحيدة: القيد الافتتاحيّ + الملاحظات + جهات الاتصال + التذكيرات.
+    await tx.delete(accountingEntries).where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));
+    await tx.delete(customerNotes).where(eq(customerNotes.customerId, customerId));
+    await tx.delete(contactPersons).where(eq(contactPersons.customerId, customerId));
+    await tx.delete(arReminders).where(eq(arReminders.customerId, customerId));
+    await tx.delete(customers).where(eq(customers.id, customerId));
+    return { customerId, deleted: true, name: c.name };
   });
 }
 
@@ -336,13 +423,21 @@ export async function activateCustomer(customerId: number, _actor: Actor) {
   });
 }
 
-/** قراءة بطاقة عميل واحدة. */
+/** قراءة بطاقة عميل + رصيده الافتتاحيّ الحاليّ (مبلغ قيد OPENING الموقَّع) لشاشة التعديل. */
 export async function getCustomer(customerId: number) {
   const db = getDb();
   if (!db) return null;
-  return (
+  const row = (
     await db.select().from(customers).where(eq(customers.id, customerId)).limit(1)
   )[0] ?? null;
+  if (!row) return null;
+  const op = (
+    await db
+      .select({ v: sql<string>`COALESCE(SUM(CAST(${accountingEntries.amount} AS DECIMAL(15,2))), 0)` })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.entryType, "OPENING"), eq(accountingEntries.customerId, customerId)))
+  )[0];
+  return { ...row, openingBalance: toDbMoney(money(op?.v ?? "0")) };
 }
 
 /** قائمة عملاء مع بحث وفلاتر وتقسيم صفحات.

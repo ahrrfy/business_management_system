@@ -3,6 +3,7 @@ import {
   activateCustomer,
   createCustomer,
   deactivateCustomer,
+  deleteCustomer,
   findSimilarCustomers,
   getCustomer,
   listCustomers,
@@ -19,7 +20,7 @@ import { logAudit } from "../services/auditService";
 import { customerBarcodeSet } from "../services/barcodeService";
 import { maskCustomerSensitive } from "../lib/redact";
 import { positiveMoneyString } from "../lib/schemas";
-import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, router } from "../trpc";
+import { customersCashierProcedure, customersManagerProcedure, customersReadProcedure, managerProcedure, router } from "../trpc";
 
 const priceTier = z.enum(["RETAIL", "WHOLESALE", "GOVERNMENT"]);
 const customerType = z.enum(["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"]);
@@ -121,14 +122,17 @@ export const customerRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // AUTHZ-3: حدّ الائتمان + الرصيد الافتتاحي حقلان ماليّان للمدير (محجوبان عن الكاشير) ⇒ لا يَضبطهما
-      // الكاشير كتابةً. للكاشير نُثبّت الائتمان "0" (نقدي فقط) ونُجرّد الرصيد الافتتاحي (null ⇒ لا قيد).
+      // سياسة المالك (٢٥/٧): مَن يملك صلاحية إدارة العملاء (customersCashierProcedure — كاشير/مندوب/
+      // مدير + منح صريح) يُسجّل الرصيد الافتتاحي لحظة الإضافة. كان يُجرَّد صامتاً لغير الأدمن/المدير
+      // ⇒ **خسارة مالية صامتة** (العميل يُنشأ برصيد صفر بلا قيد OPENING فلا يظهر في الكشف/الأعمار).
+      // سقف الائتمان يبقى حقلاً إدارياً للأدمن/المدير وحدهما — قرارُ ائتمانٍ مستقبليّ لا قيمةٌ تاريخية —
+      // فنُثبّته "0" (نقدي فقط) لغير المرتفعين، بينما نُبقي الرصيد الافتتاحي كما أُدخِل.
       const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      const safeInput = elevated ? input : { ...input, creditLimit: "0", openingBalance: null };
+      const safeInput = elevated ? input : { ...input, creditLimit: "0" };
       const r = await createCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       // إعادة تشغيل idempotent = لا كتابة جديدة ⇒ لا نكرّر سجلّ التدقيق.
       if (!r.idempotentReplay) {
-        await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: elevated && !!input.openingBalance } });
+        await logAudit(ctx, { action: "customer.create", entityType: "customer", entityId: r.customerId, newValue: { name: input.name, creditLimitSet: elevated && input.creditLimit != null, openingBalanceSet: !!input.openingBalance } });
       }
       // التوافق: المستهلكون القدامى يقرؤون `.id` (مثل WorkOrderNew)؛ نُبقي الكليهما.
       return { id: r.customerId, customerId: r.customerId, idempotentReplay: !!r.idempotentReplay };
@@ -150,12 +154,19 @@ export const customerRouter = router({
         defaultPriceTier: priceTier.optional(),
         creditLimit: z.string().nullish(),
         notes: z.string().nullish(),
+        // تصحيح الرصيد الافتتاحي (إدخال أوّليّ خاطئ) — حقلٌ ماليّ للأدمن/المدير وحدهما (يُجرَّد أدناه).
+        openingBalance: z.string().nullish(),
+        openingBalanceDirection: z.enum(["OWED_TO_US", "OWED_BY_US"]).optional(),
       })
     )
     .mutation(async ({ input, ctx }) => {
       // §٧ audit oldValue: نلتقط لقطة قبل التحديث لمسار تدقيق فروقات حقيقي.
       const before = await getCustomer(input.customerId);
-      const res = await updateCustomer(input, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      // تعديل رصيدٍ افتتاحيٍّ قائم (يُزيح الرصيد الجاري) للأدمن/المدير وحدهما — غير المرتفعين يعدّلون
+      // بقية الحقول بلا مسّ الرصيد (openingBalance=undefined ⇒ يتخطّاه updateCustomer).
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const safeInput = elevated ? input : { ...input, openingBalance: undefined, openingBalanceDirection: undefined };
+      const res = await updateCustomer(safeInput, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, {
         action: "customer.update",
         entityType: "customer",
@@ -189,6 +200,22 @@ export const customerRouter = router({
     .mutation(async ({ input, ctx }) => {
       const res = await activateCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
       await logAudit(ctx, { action: "customer.activate", entityType: "customer", entityId: input.customerId });
+      return res;
+    }),
+
+  /** حذف نهائيّ لعميلٍ بلا نشاط — تنظيفُ أخطاء الإدخال الأوّليّ فقط. للأدمن/المدير (لا رجعة فيه).
+   *  الحارس البنيويّ في deleteCustomer يرفض أيّ عميلٍ له نشاط (يوجّه للتعطيل بدلاً منه). */
+  delete: managerProcedure
+    .input(z.object({ customerId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const before = await getCustomer(input.customerId);
+      const res = await deleteCustomer(input.customerId, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 1 });
+      await logAudit(ctx, {
+        action: "customer.delete",
+        entityType: "customer",
+        entityId: input.customerId,
+        oldValue: before ? { name: before.name, currentBalance: before.currentBalance, openingBalance: before.openingBalance } : null,
+      });
       return res;
     }),
 

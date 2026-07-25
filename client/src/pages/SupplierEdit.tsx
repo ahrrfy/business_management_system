@@ -33,7 +33,9 @@ import { Star, Handshake, Printer } from "lucide-react";
  * البيانات البنكية محجوبة خادمياً لغير المدير/الأدمن (maskBankFields) ⇒ البطاقة
  * تظهر للمدير فقط، وغيره يرسل undefined كي لا تُطمَس القيم المخزّنة بقيم محجوبة.
  *
- * لا حقول رصيد افتتاحي هنا — الرصيد الافتتاحي خاصية إنشاء فقط (قيد OPENING لا يتكرّر).
+ * تصحيح الرصيد الافتتاحي (٢٥/٧): بطاقةٌ للأدمن/المدير وحدهما تُعدّل قيد OPENING المرجعيّ وتُطبّق
+ * الفارق على الرصيد الجاري (تصون النشاط اللاحق) — لتصحيح أخطاء الإدخال الأوّليّ. غير المرتفعين
+ * لا يرون البطاقة ولا يرسلون الحقل (والخادم يُجرّده لهم احتياطاً).
  */
 
 const CATEGORIES = ["محلي", "إقليمي", "دولي"] as const;
@@ -70,6 +72,9 @@ export default function SupplierEdit() {
   const [iban, setIban] = useState("");
   const [bankName, setBankName] = useState("");
   const [notes, setNotes] = useState("");
+  // تصحيح الرصيد الافتتاحي (أدمن/مدير) — مبدئياً من قيد OPENING الحاليّ (openingBalance من get).
+  const [openingAmount, setOpeningAmount] = useState("");
+  const [openingDir, setOpeningDir] = useState<"OWED_TO_US" | "OWED_BY_US">("OWED_BY_US");
   // بضاعة الأمانة (٢٠/٧): حقول اتفاقية المودِع (تظهر لنوع CONSIGNOR فقط).
   const [settlementCycle, setSettlementCycle] = useState("MONTHLY");
   const [abandonedAfterMonths, setAbandonedAfterMonths] = useState("12");
@@ -101,6 +106,10 @@ export default function SupplierEdit() {
       setIban(s.iban ?? "");
       setBankName(s.bankName ?? "");
       setNotes(s.notes ?? "");
+      // الرصيد الافتتاحي الموقَّع (من قيد OPENING): موجب = «علينا له»، سالب = «لنا عليه».
+      const signedOpen = Number((s as { openingBalance?: string }).openingBalance ?? 0);
+      setOpeningAmount(signedOpen !== 0 ? String(Math.abs(signedOpen)) : "");
+      setOpeningDir(signedOpen < 0 ? "OWED_TO_US" : "OWED_BY_US");
       const sc = s as typeof s & {
         settlementCycle?: string | null; abandonedAfterMonths?: number | null;
         autoSettleThreshold?: string | null; agreementNotes?: string | null; agreementAttachmentUrl?: string | null;
@@ -168,6 +177,10 @@ export default function SupplierEdit() {
       // البيانات البنكية محجوبة عن غير المدير في get ⇒ لا نرسلها كي لا تُطمَس القيم المخزّنة.
       iban: isElevated ? (iban.trim() || null) : undefined,
       bankName: isElevated ? (bankName.trim() || null) : undefined,
+      // تصحيح الرصيد الافتتاحي — للمرتفعين فقط (undefined ⇒ الخادم لا يمسّ قيد OPENING). فارغ ⇒ "0"
+      // يزيل القيد. القيمة غير المتغيّرة تصير فارقاً صفرياً بلا كتابة (لا مسّ بفترةٍ مُقفَلة).
+      openingBalance: isElevated ? (openingAmount.trim() || "0") : undefined,
+      openingBalanceDirection: isElevated ? openingDir : undefined,
       notes: notes.trim() || null,
       // بضاعة الأمانة: حقول الاتفاقية تُرسَل للمودِع فقط (وإلا undefined ⇒ لا تُمسّ).
       settlementCycle: isConsignor ? settlementCycle : undefined,
@@ -193,7 +206,7 @@ export default function SupplierEdit() {
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, phone, phone2, phone3, whatsapp, email, address, city, taxId, productTypes, supplierCategory, paymentTerms, leadTimeDays, minOrderAmount, rating, iban, bankName, notes, isElevated, isConsignor, settlementCycle, abandonedAfterMonths, autoSettleThreshold, agreementNotes, agreementImages]);
+  }, [name, phone, phone2, phone3, whatsapp, email, address, city, taxId, productTypes, supplierCategory, paymentTerms, leadTimeDays, minOrderAmount, rating, iban, bankName, notes, openingAmount, openingDir, isElevated, isConsignor, settlementCycle, abandonedAfterMonths, autoSettleThreshold, agreementNotes, agreementImages]);
 
   const wa = whatsappLink(whatsapp || phone);
   // قيمة مخزّنة خارج الخيارات القياسية تبقى ظاهرة وقابلة للاختيار (لا فقد بيانات صامت).
@@ -397,6 +410,38 @@ export default function SupplierEdit() {
             </div>
           </CardContent>
         </Card>
+
+        {isElevated && (
+          <Card className="lg:col-span-2 border-sky-200">
+            <CardHeader>
+              <CardTitle className="text-base">تصحيح الرصيد الافتتاحي</CardTitle>
+            </CardHeader>
+            <CardContent className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <Label htmlFor="openDir">اتجاه الرصيد</Label>
+                <select
+                  id="openDir"
+                  className={selectCls}
+                  value={openingDir}
+                  onChange={(e) => setOpeningDir(e.target.value as "OWED_TO_US" | "OWED_BY_US")}
+                >
+                  <option value="OWED_BY_US">علينا للمورّد (مستحق له)</option>
+                  <option value="OWED_TO_US">لنا على المورّد (دفعة مقدّمة لنا)</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="openAmt">المبلغ (د.ع)</Label>
+                <MoneyInput id="openAmt" value={openingAmount} onChange={setOpeningAmount} placeholder="0" ariaLabel="مبلغ الرصيد الافتتاحي" />
+              </div>
+              <div className="md:col-span-2">
+                <p className="text-[11px] text-sky-800">
+                  يُصحّح قيد الرصيد الافتتاحي (لأخطاء الإدخال الأوّليّ) ويُطبّق الفارق على الرصيد الجاري
+                  دون المساس بأي حركةٍ لاحقة. اتركه فارغاً لإزالة الرصيد الافتتاحي. لا يتغيّر شيء إن لم تُعدّله.
+                </p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {isConsignor && (
           <Card className="lg:col-span-2 border-amber-200">
