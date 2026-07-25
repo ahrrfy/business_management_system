@@ -126,6 +126,23 @@ if (typeof window !== "undefined" && "serviceWorker" in navigator) {
   void import("virtual:pwa-register").then(({ registerSW }) => {
     registerSW({
       immediate: true,
+      onRegisteredSW(_swUrl, registration) {
+        if (!registration) return;
+
+        const checkForUpdate = () => {
+          void registration.update().catch(() => {
+            // الشبكة قد تكون مقطوعة؛ سيُعاد الفحص عند عودة التركيز أو في الدورة التالية.
+          });
+        };
+
+        // register() وحده قد يخضع لتهدئة المتصفّح ويبقي نسخة precache قديمة.
+        // update() الصريح يجلب sw.js ذي Cache-Control:no-cache فور فتح التطبيق.
+        checkForUpdate();
+        window.setInterval(checkForUpdate, 60 * 60 * 1000);
+        document.addEventListener("visibilitychange", () => {
+          if (document.visibilityState === "visible") checkForUpdate();
+        });
+      },
       onOfflineReady() {
         toast.success("النظام جاهز للعمل دون اتصال");
       },
