@@ -181,7 +181,8 @@ export default function SalesInvoiceNew() {
       // وحدها) لتفادي الإيجابيات الكاذبة من رسائل أعمال أخرى تذكر «سقف الائتمان» مثلاً.
       // نفس الحوار يحلّ الخطأين: الخادم يشتقّ من managerApproval المتحقَّق منه سلطتَي
       // creditApproved وpriceOverrideApproved معاً (saleRouter.create).
-      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة"))) {
+      // H6 (٢٧/٧): بوّابة الخصم اليدويّ فوق التكلفة ترمي «...يتطلب موافقة مدير» ⇒ نضيف العبارة الجامعة.
+      if (e.message && (e.message.includes("حدّ الائتمان") || e.message.includes("بأقل من التكلفة") || e.message.includes("موافقة مدير"))) {
         setCreditPrompt(e.message);
         return;
       }
