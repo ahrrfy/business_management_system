@@ -9,7 +9,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { formatIqd } from "@/lib/money";
 import { cn } from "@/lib/utils";
 import {
-  Home, BarChart3, TrendingUp, Scale, BookOpen, Landmark, Droplet,
+  Home, TrendingUp, Scale, BookOpen, Landmark, Droplet,
   ScrollText, Search, Ruler, FileText, Hourglass, SearchCheck, CreditCard,
   Package, RefreshCw, ClipboardList, AlertTriangle, FolderOpen, ListOrdered,
   Calculator, Receipt, Banknote, Clock, Clock8, Palmtree, User, Archive,
@@ -46,7 +46,6 @@ const SECTIONS: Section[] = [
     icon: TrendingUp,
     items: [
       { title: "لوحة التحكم", desc: "مؤشّرات اليوم والوردية والتنبيهات", href: "/", icon: Home, gate: "all", status: "ready" },
-      { title: "لوحة المؤشّرات التنفيذية", desc: "إيراد/ربح/هامش/نقد + اتّجاهات ومقارنة فترات", href: "/reports/executive", icon: BarChart3, gate: "manager", status: "ready" },
       { title: "رقيب الشذوذ", desc: "كواشف تسرّب الأموال: دون الكلفة/خصومات/مرتجعات/عجوزات/عكوس/تسلسل", href: "/reports/anomaly-watch", icon: ShieldCheck, gate: "manager", status: "ready" },
     ],
   },
