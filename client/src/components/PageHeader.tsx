@@ -27,6 +27,10 @@ type PageHeaderProps = {
    * آخر عنصر = الصفحة الحالية (بلا href). مثال: `[{label:"العملاء", href:"/customers"}, {label:"كشف حساب"}]`.
    */
   breadcrumbs?: Crumb[];
+  /** رابط رجوع صغير أعلى العنوان (نمط «← مركز التقارير») — بديلٌ خفيف عن breadcrumbs لشاشةٍ ذات أصلٍ واحد. */
+  backHref?: string;
+  /** نصّ رابط الرجوع (افتراضي «رجوع»). */
+  backLabel?: React.ReactNode;
   className?: string;
 };
 
@@ -43,10 +47,19 @@ type PageHeaderProps = {
  * @example شاشة تفصيلية بمسار تنقّل:
  * <PageHeader title="كشف حساب — أحمد" breadcrumbs={[{label:"العملاء", href:"/customers"}, {label:"كشف حساب"}]} />
  */
-export function PageHeader({ title, description, actions, icon, breadcrumbs, className }: PageHeaderProps) {
+export function PageHeader({ title, description, actions, icon, breadcrumbs, backHref, backLabel, className }: PageHeaderProps) {
   const headerRow = (
     <div className={cn("flex items-start justify-between gap-3 flex-wrap", className)}>
       <div className="min-w-0 space-y-1">
+        {backHref && (
+          <Link
+            href={backHref}
+            className="inline-flex items-center gap-0.5 text-xs text-muted-foreground transition-colors hover:text-foreground hover:underline"
+          >
+            <span aria-hidden>←</span>
+            {backLabel ?? "رجوع"}
+          </Link>
+        )}
         <h1 className="flex items-center gap-2 text-2xl font-bold leading-tight">
           {icon}
           <span className="truncate">{title}</span>
