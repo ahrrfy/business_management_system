@@ -201,6 +201,7 @@ export default function Suppliers() {
                 { key: "city", header: "المدينة" },
                 { key: "paymentTerms", header: "شروط الدفع" },
                 { key: "currentBalance", header: "الرصيد الحالي", map: (r) => Number(r.currentBalance ?? 0) },
+                { key: "currentBalanceUsd", header: "الرصيد الدولاري", map: (r) => Number(r.currentBalanceUsd ?? 0) },
                 { key: "isActive", header: "نشط", map: (r) => (r.isActive ? "نعم" : "لا") },
               ],
             }}
@@ -220,6 +221,7 @@ export default function Suppliers() {
                 <th className="p-2">المدينة</th>
                 <th className="p-2">شروط الدفع</th>
                 <th className="p-2 text-start">الرصيد</th>
+                <th className="p-2 text-start">الرصيد $</th>
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -248,6 +250,9 @@ export default function Suppliers() {
                     <td className="p-2 text-xs">{s.paymentTerms ?? "—"}</td>
                     <td className="p-2 text-start">
                       <BalanceCell amount={s.currentBalance} entityType="supplier" />
+                    </td>
+                    <td className="p-2 text-start font-medium tabular-nums" dir="ltr">
+                      {Number(s.currentBalanceUsd ?? 0) !== 0 ? `$${fmt(s.currentBalanceUsd)}` : "—"}
                     </td>
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>

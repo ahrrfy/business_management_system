@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import { calcLineTotal, calcMargin, fmtNum } from "./totals";
 import { ProductSearchBar } from "./ProductSearchBar";
-import type { InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
+import type { Currency, InvoiceAction, InvoiceLine, InvoiceType, PriceTier } from "./types";
 
 export interface ProductTableProps {
   items: InvoiceLine[];
@@ -25,6 +25,8 @@ export interface ProductTableProps {
   invoiceType: InvoiceType;
   /** false = hide cost & margin columns (cashier role). */
   showCost: boolean;
+  purchaseCurrency?: Currency;
+  purchaseRate?: string;
   /**
    * حصص الضريبة الموزَّعة لكل سطر (عرض فقط). مصفوفة نصوص decimal 2dp بطول `items` بالضبط
    * (يحسبها الأب عبر `allocateLineTax(items.map(i => ({total: calcLineTotal(i)})), totals.totalTax,
@@ -118,6 +120,8 @@ export function ProductTable({
   tier,
   invoiceType,
   showCost,
+  purchaseCurrency = "IQD",
+  purchaseRate = "",
   taxShares,
   onOpenBulkPicker,
   onNotify,
@@ -127,6 +131,7 @@ export function ProductTable({
   // تناسبياً من إجماليّات بنود الفاتورة المصدر المخزَّنة، فتحريرهما وهمٌ يضلّل الموظّف.
   const readOnlyPricing = invoiceType === "SALE_RETURN";
   const showCostCol = showCost && !isPurchase;
+  const showIqdEquivalent = isPurchase && purchaseCurrency === "USD" && Number(purchaseRate) > 0;
   // عمود «حصة الضريبة» يظهر فقط حين يمرِّر الأبُ حصصاً بطول items وفيها قيمة موجبة واحدة على
   // الأقلّ (لا نُظهر عموداً كامل الأصفار حين تكون الضريبة غير مفعَّلة أو صفريّة).
   const showTaxCol =
@@ -134,7 +139,7 @@ export function ProductTable({
     taxShares.length === items.length &&
     taxShares.some((s) => Number(s) > 0);
   // عدد الأعمدة لصفّ «السلة فارغة»: ١٠ ثابتة + (تكلفة+هامش) + (حصة ضريبة).
-  const colCount = 10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0);
+  const colCount = 10 + (showCostCol ? 2 : 0) + (showTaxCol ? 1 : 0) + (showIqdEquivalent ? 1 : 0);
 
   const totalQty = items.reduce((s, i) => s + (Number(i.qty) || 0), 0);
 
@@ -218,12 +223,13 @@ export function ProductTable({
               <th className={cn(th, "w-16")}>الوحدة</th>
               <th className={cn(th, "w-16")}>المخزون</th>
               {showCostCol && <th className={cn(th, "w-20")}>التكلفة</th>}
-              <th className={cn(th, "w-24")}>{isPurchase ? "سعر الشراء" : "السعر"}</th>
+              <th className={cn(th, "w-24")}>{isPurchase ? `سعر الشراء ${purchaseCurrency === "USD" ? "$" : "د.ع"}` : "السعر"}</th>
               <th className={cn(th, "w-32")}>الكمية</th>
               <th className={cn(th, "w-20")}>خصم %</th>
               {showTaxCol && <th className={cn(th, "w-24")}>حصة الضريبة</th>}
               {showCostCol && <th className={cn(th, "w-16")}>هامش%</th>}
               <th className={cn(th, "w-28")}>الإجمالي</th>
+              {showIqdEquivalent && <th className={cn(th, "w-28")}>المعادل د.ع</th>}
               <th className={cn(th, "w-10")} aria-label="حذف" />
             </tr>
           </thead>
@@ -344,8 +350,13 @@ export function ProductTable({
                     </td>
                   )}
                   <td className={cn(td, "text-base font-extrabold")} dir="ltr">
-                    {fmtNum(Math.round(Number(lineTotal)))}
+                    {fmtNum(lineTotal)} {isPurchase && purchaseCurrency === "USD" ? "$" : ""}
                   </td>
+                  {showIqdEquivalent && (
+                    <td className={cn(td, "text-sm font-bold")} dir="ltr">
+                      {fmtNum(Number(lineTotal) * Number(purchaseRate))}
+                    </td>
+                  )}
                   <td className={td}>
                     <Button
                       type="button"

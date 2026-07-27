@@ -4,7 +4,7 @@ import { desc, eq, inArray, like, sql } from "drizzle-orm";
 import { accountingEntries, branchStock, productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, receipts, suppliers, users } from "../../drizzle/schema";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
-import { adjustSupplierBalance, postEntry } from "./ledgerService";
+import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDateStr, toDbMoney } from "./money";
 import { shiftIdForCashTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
@@ -54,10 +54,22 @@ export interface CreatePurchaseOrderInput {
   agreedCurrency?: "IQD" | "USD";
   /** مبلغ فاتورة المورد الفعلية بالدولار — إلزامي فقط حين agreedCurrency=USD. */
   usdTotal?: string | null;
+  /** سعر التثبيت بالدينار لكل دولار. وجوده يعني أن unitPrice في البنود سعر المورد بالدولار. */
+  agreedRate?: string | null;
   /** landed-cost: تكلفة الشحن الكلّية على أمر الشراء (تُرسمَل في تكلفة المخزون عند الاستلام، لا مصروف P&L). */
   shippingCost?: string | null;
   /** landed-cost: تكلفة الكمرك الكلّية على أمر الشراء (تُرسمَل مثل الشحن تماماً). */
   customsCost?: string | null;
+}
+
+export interface SettlePurchaseUsdDirectInput {
+  purchaseOrderId: number;
+  settledUsd: string;
+  chargedIqd: string;
+  feeIqd?: string | null;
+  method: "CARD" | "TRANSFER" | "WALLET";
+  referenceNumber: string;
+  clientRequestId?: string | null;
 }
 
 /** تسلسل سعر ضمني لعمود decimal(15,4) — نظير toDbRate في exchangeHouseService. */
@@ -108,23 +120,42 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
       }
     }
 
+    const agreedCurrency = input.agreedCurrency ?? "IQD";
+    const explicitUsdRate = agreedCurrency === "USD" && input.agreedRate != null
+      ? money(input.agreedRate)
+      : null;
+    if (explicitUsdRate && explicitUsdRate.lte(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "سعر صرف تثبيت الفاتورة يجب أن يكون موجباً" });
+    }
+
     const rows = [];
     const lineNets: string[] = [];
+    const usdLineNets: string[] = [];
     for (const it of input.items) {
       // PROC-01: حدّ ثقة الخدمة — money() لا يَرفض السالب وحده، فنَفحص الإشارة صراحةً
       // (الخدمة تُستدعى أيضاً من importService/seed لا الراوتر فقط ⇒ دفاع متعمّق إلزامي).
       if (money(it.unitPrice).lt(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "سعر الشراء لا يصحّ أن يكون سالباً" });
       if (money(it.quantity).lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "كمية الشراء يجب أن تكون موجبة" });
       const { baseQuantity } = await convertToBaseQuantity(tx, it.productUnitId, it.quantity, it.variantId);
-      const lineNet = round2(money(it.unitPrice).times(money(it.quantity)));
+      const qty = money(it.quantity);
+      const sourceUnitPrice = money(it.unitPrice);
+      const usdUnitPrice = explicitUsdRate ? sourceUnitPrice : null;
+      const usdLineNet = usdUnitPrice ? round2(usdUnitPrice.times(qty)) : null;
+      // المسار الجديد: سعر البند المُدخل USD ويُحوّل بسعر التثبيت. المسار القديم بلا agreedRate
+      // يبقى متوافقاً: unitPrice ديناري وusdTotal مرجع إجمالي فقط.
+      const iqdUnitPrice = explicitUsdRate ? round2(sourceUnitPrice.times(explicitUsdRate)) : sourceUnitPrice;
+      const lineNet = round2(iqdUnitPrice.times(qty));
       lineNets.push(lineNet.toFixed(2));
+      if (usdLineNet) usdLineNets.push(usdLineNet.toFixed(2));
       rows.push({
         variantId: it.variantId,
         productUnitId: it.productUnitId,
         quantity: money(it.quantity).toFixed(3),
         baseQuantity,
-        unitPrice: toDbMoney(it.unitPrice),
+        unitPrice: toDbMoney(iqdUnitPrice),
         total: lineNet.toFixed(2),
+        usdUnitPrice: usdUnitPrice ? toDbRate(usdUnitPrice) : null,
+        usdTotal: usdLineNet ? usdLineNet.toFixed(2) : null,
       });
     }
     // PROC-03: نسبة الضريبة في [٠، ١٠٠] — تَمنع ضريبة سالبة تُخفّض الإجمالي/AP، أو نسبة شاذّة.
@@ -154,17 +185,19 @@ export async function createPurchaseOrder(input: CreatePurchaseOrderInput, actor
     }
     const total = round2(subtotal.plus(tax).plus(landed));
 
-    // usd-po-reconcile: usdTotal إلزامي وموجب حين agreedCurrency=USD؛ agreedRate ضمني = total/usdTotal
-    // (سعر الصرف الذي يجعل الإجمالي الديناري المُدخَل مساوياً لفاتورة المورّد الدولارية الفعلية).
-    const agreedCurrency = input.agreedCurrency ?? "IQD";
+    // USD الجديد: الإجمالي يُشتق من البنود الأصلية وسعر التثبيت صريح. يبقى المسار القديم مدعوماً
+    // للفواتير التاريخية/الاستدعاءات التي ترسل إجمالياً دولارياً بعد إدخال أسعار دينارية.
     let usdTotalVal: Decimal | null = null;
     let agreedRateVal: Decimal | null = null;
     if (agreedCurrency === "USD") {
-      usdTotalVal = money(input.usdTotal ?? 0);
+      usdTotalVal = explicitUsdRate ? round2(sumMoney(usdLineNets)) : money(input.usdTotal ?? 0);
       if (usdTotalVal.lte(0)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "المبلغ بالدولار (فاتورة المورد) يجب أن يكون موجباً" });
       }
-      agreedRateVal = total.dividedBy(usdTotalVal);
+      if (explicitUsdRate && input.usdTotal != null && !round2(input.usdTotal).eq(usdTotalVal)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "إجمالي فاتورة المورد بالدولار لا يطابق مجموع البنود" });
+      }
+      agreedRateVal = explicitUsdRate ?? total.dividedBy(usdTotalVal);
     }
 
     const ymd = toDateStr().replace(/-/g, "");
@@ -453,6 +486,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     const costMap = new Map(variantRows.map((v) => [Number(v.id), v.cost]));
 
     let receivedNet = new Decimal(0);
+    let receivedUsd = new Decimal(0);
     let receivedLanded = new Decimal(0);
     for (const { line, item } of work) {
       const factor = new Decimal(unitFactorMap.get(Number(item.productUnitId)) ?? "1");
@@ -522,6 +556,18 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
         .where(eq(purchaseOrderItems.id, Number(item.id)));
       receivedNet = receivedNet.plus(lineNet);
 
+      if (po.agreedCurrency === "USD" && item.usdTotal != null) {
+        const priorReceivedUsd = money(item.receivedUsd ?? "0");
+        const lineUsd = isLastReceive
+          ? round2(money(item.usdTotal).minus(priorReceivedUsd))
+          : round2(money(item.usdTotal).times(new Decimal(line.receivedBaseQuantity).dividedBy(item.baseQuantity)));
+        await tx
+          .update(purchaseOrderItems)
+          .set({ receivedUsd: toDbMoney(priorReceivedUsd.plus(lineUsd)) })
+          .where(eq(purchaseOrderItems.id, Number(item.id)));
+        receivedUsd = receivedUsd.plus(lineUsd);
+      }
+
       // landed-cost: حصّة البند من الشحن/الكمرك المُرسمَلة في هذه الدفعة — cumulative مقرَّب بنفس
       // منطق «آخر استلامٍ يمتصّ الباقي» ⇒ Σ عبر كلّ الاستلامات = حصّة البند بالضبط (لا انجراف).
       const cumLanded = (k: number): Decimal =>
@@ -529,6 +575,7 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       receivedLanded = receivedLanded.plus(cumLanded(priorQty + line.receivedBaseQuantity).minus(cumLanded(priorQty)));
     }
     receivedNet = round2(receivedNet);
+    receivedUsd = round2(receivedUsd);
     receivedLanded = round2(receivedLanded);
 
     // Proportional tax from the PO's effective rate.
@@ -553,6 +600,10 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
     const priorTax = money(priorTaxRow?.v ?? "0");
     const receivedTax = cumulativePurchaseTax(String(po.taxAmount), priorTax.toFixed(2), receivedNet, rate, fullyReceived);
     const receivedTotal = round2(receivedNet.plus(receivedTax).plus(receivedLanded));
+    // في الفاتورة الدولارية الشحن المحلي ليس ديناً على المورد الأجنبي؛ يُرسمَل في المخزون فقط.
+    const supplierIqd = po.agreedCurrency === "USD"
+      ? round2(receivedNet.plus(receivedTax))
+      : receivedTotal;
     await tx
       .update(purchaseOrders)
       .set({ status: fullyReceived ? "RECEIVED" : "CONFIRMED" })
@@ -573,13 +624,22 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       supplierId: Number(po.supplierId),
       cost: round2(receivedNet.plus(receivedLanded)),
       taxAmount: receivedTax,
-      amount: receivedTotal,
+      amount: supplierIqd,
     });
-    await adjustSupplierBalance(tx, Number(po.supplierId), receivedTotal);
+    await adjustSupplierBalance(tx, Number(po.supplierId), supplierIqd);
+    if (po.agreedCurrency === "USD") {
+      await adjustSupplierBalanceUsd(tx, Number(po.supplierId), receivedUsd);
+    }
 
     // Optional payment to supplier.
     const paidNow = money(input.payment?.amount ?? "0");
     if (paidNow.gt(0)) {
+      if (po.agreedCurrency === "USD") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "الفاتورة الدولارية تُسدَّد من شاشة الصيرفة/التسديد لتسجيل مبلغ الدولار وسعر الصرف الفعلي",
+        });
+      }
       // PROC-05 (تدقيق ٢/٧): السقف الأوّل — رصيد المورد الفعلي (منع AP سالبة على مستوى المورد).
       const supAfter = money(
         (await tx.select({ b: suppliers.currentBalance }).from(suppliers).where(eq(suppliers.id, Number(po.supplierId))).limit(1))[0]?.b ?? "0",
@@ -646,6 +706,146 @@ export async function receivePurchase(input: ReceivePurchaseInput, actor: Actor 
       await recordIdempotencyKey(tx, "purchase.receive", input.clientRequestId, input.purchaseOrderId);
     }
 
-    return { purchaseOrderId: input.purchaseOrderId, fullyReceived, receivedTotal: receivedTotal.toFixed(2) };
+    return {
+      purchaseOrderId: input.purchaseOrderId,
+      fullyReceived,
+      receivedTotal: receivedTotal.toFixed(2),
+      receivedUsd: receivedUsd.toFixed(2),
+    };
+  });
+}
+
+/**
+ * Pay a USD supplier invoice directly from a card, transfer, or IQD wallet.
+ * AP is cleared at the invoice carrying rate; the receipt records actual IQD cash-out.
+ */
+export async function settlePurchaseUsdDirect(
+  input: SettlePurchaseUsdDirectInput,
+  actor: Actor & { role?: string },
+) {
+  return withTx(async (tx) => {
+    if (input.clientRequestId) {
+      const existing = await findIdempotentRefId(tx, "purchase.usd-settle", input.clientRequestId);
+      if (existing != null) return { receiptId: existing, idempotent: true };
+    }
+
+    const settledUsd = round2(input.settledUsd);
+    const chargedIqd = round2(input.chargedIqd);
+    const feeIqd = round2(input.feeIqd ?? "0");
+    if (settledUsd.lte(0) || chargedIqd.lte(0)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الدولار والمبلغ الديناري الفعلي يجب أن يكونا موجبين" });
+    }
+    if (feeIqd.isNegative()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "عمولة البطاقة أو التحويل لا تكون سالبة" });
+    }
+    if (!input.referenceNumber.trim()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مرجع عملية البطاقة أو التحويل مطلوب" });
+    }
+
+    const po = (await tx.select().from(purchaseOrders)
+      .where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update").limit(1))[0];
+    if (!po) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الشراء غير موجودة" });
+    if (po.status === "CANCELLED") {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تسديد فاتورة شراء ملغاة" });
+    }
+    if (po.agreedCurrency !== "USD" || !po.usdTotal || !po.agreedRate) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة المحددة ليست فاتورة مورد بالدولار" });
+    }
+    if (actor.branchId != null && Number(po.branchId) !== Number(actor.branchId) && actor.role !== "admin" && actor.role !== "manager") {
+      throw new TRPCError({ code: "FORBIDDEN", message: "فاتورة الشراء تخص فرعاً آخر" });
+    }
+
+    const supplier = (await tx.select().from(suppliers)
+      .where(eq(suppliers.id, Number(po.supplierId))).for("update").limit(1))[0];
+    if (!supplier) throw new TRPCError({ code: "NOT_FOUND", message: "المورد غير موجود" });
+
+    const remainingUsd = round2(money(po.usdTotal).minus(money(po.paidUsd)).minus(money(po.returnedUsd)));
+    if (settledUsd.gt(remainingUsd)) {
+      throw new TRPCError({
+        code: "BAD_REQUEST",
+        message: `الدفع (${settledUsd.toFixed(2)}$) يتجاوز المتبقي على الفاتورة (${remainingUsd.toFixed(2)}$)`,
+      });
+    }
+    if (settledUsd.gt(money(supplier.currentBalanceUsd))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الدولار يتجاوز ذمة المورد الدولارية" });
+    }
+
+    const carryingIqd = round2(settledUsd.times(money(po.agreedRate)));
+    if (carryingIqd.gt(money(supplier.currentBalance))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "القيمة الدفترية للتسديد تتجاوز ذمة المورد الدينارية" });
+    }
+    const fxDiff = carryingIqd.minus(chargedIqd);
+    const cashOut = round2(chargedIqd.plus(feeIqd));
+
+    const receiptRes = await tx.insert(receipts).values({
+      branchId: Number(po.branchId),
+      shiftId: null,
+      cashBucket: null,
+      direction: "OUT",
+      amount: toDbMoney(cashOut),
+      paymentMethod: input.method,
+      referenceNumber: input.referenceNumber.trim(),
+      partyType: "SUPPLIER",
+      partyId: Number(po.supplierId),
+      description: `USD ${settledUsd.toFixed(2)} settlement for ${po.poNumber}`,
+      status: "COMPLETED",
+      createdBy: actor.userId,
+    });
+    const receiptId = extractInsertId(receiptRes);
+
+    await adjustSupplierBalance(tx, Number(po.supplierId), carryingIqd.negated());
+    await adjustSupplierBalanceUsd(tx, Number(po.supplierId), settledUsd.negated());
+    await tx.update(purchaseOrders).set({
+      paidAmount: toDbMoney(money(po.paidAmount).plus(carryingIqd)),
+      paidUsd: toDbMoney(money(po.paidUsd).plus(settledUsd)),
+    }).where(eq(purchaseOrders.id, input.purchaseOrderId));
+
+    await postEntry(tx, {
+      entryType: "PAYMENT_OUT",
+      branchId: Number(po.branchId),
+      purchaseOrderId: input.purchaseOrderId,
+      supplierId: Number(po.supplierId),
+      receiptId,
+      amount: carryingIqd,
+      dedupeKey: `POUSD-PAY:${receiptId}`,
+      notes: `Direct USD settlement via ${input.method}`,
+    });
+    if (!fxDiff.isZero()) {
+      await postEntry(tx, {
+        entryType: "EXCHANGE_FX_DIFF",
+        branchId: Number(po.branchId),
+        purchaseOrderId: input.purchaseOrderId,
+        supplierId: Number(po.supplierId),
+        receiptId,
+        amount: fxDiff,
+        dedupeKey: `POUSD-FX:${receiptId}`,
+        notes: "Realized FX difference on direct supplier settlement",
+      });
+    }
+    if (feeIqd.gt(0)) {
+      await postEntry(tx, {
+        entryType: "EXCHANGE_FEE",
+        branchId: Number(po.branchId),
+        purchaseOrderId: input.purchaseOrderId,
+        supplierId: Number(po.supplierId),
+        receiptId,
+        amount: feeIqd,
+        cost: feeIqd,
+        profit: feeIqd.negated(),
+        dedupeKey: `POUSD-FEE:${receiptId}`,
+        notes: "Card/transfer fee for supplier settlement",
+      });
+    }
+    if (input.clientRequestId) {
+      await recordIdempotencyKey(tx, "purchase.usd-settle", input.clientRequestId, receiptId);
+    }
+    return {
+      receiptId,
+      settledUsd: settledUsd.toFixed(2),
+      carryingIqd: carryingIqd.toFixed(2),
+      chargedIqd: chargedIqd.toFixed(2),
+      feeIqd: feeIqd.toFixed(2),
+      fxDiff: toDbMoney(fxDiff),
+    };
   });
 }

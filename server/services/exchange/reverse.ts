@@ -4,9 +4,9 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { and, asc, eq, sql } from "drizzle-orm";
-import { accountingEntries, exchangeHouses, exchangeTransactions, receipts } from "../../../drizzle/schema";
+import { accountingEntries, exchangeHouses, exchangeTransactions, purchaseOrders, receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
-import { adjustSupplierBalance, postEntry } from "../ledgerService";
+import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { lockHouse, toDbRate } from "./helpers";
@@ -103,7 +103,20 @@ export async function reverseExchangeTransaction(
 
     // ٢) استعادة ذمّة المورد لتسديدٍ عكسناه (كان أطفأ settledIqd = iqdAmount).
     if (txn.type === "SETTLE" && txn.supplierId != null) {
-      await adjustSupplierBalance(tx, Number(txn.supplierId), money(txn.iqdAmount));
+      const carryingIqd = money(txn.settledIqd).gt(0) ? money(txn.settledIqd) : money(txn.iqdAmount);
+      const settledUsd = money(txn.settledUsd);
+      await adjustSupplierBalance(tx, Number(txn.supplierId), carryingIqd);
+      if (settledUsd.gt(0)) await adjustSupplierBalanceUsd(tx, Number(txn.supplierId), settledUsd);
+      if (txn.purchaseOrderId != null) {
+        const [po] = await tx.select().from(purchaseOrders)
+          .where(eq(purchaseOrders.id, Number(txn.purchaseOrderId))).for("update").limit(1);
+        if (po) {
+          await tx.update(purchaseOrders).set({
+            paidAmount: toDbMoney(Decimal.max(0, money(po.paidAmount).minus(carryingIqd))),
+            paidUsd: toDbMoney(Decimal.max(0, money(po.paidUsd).minus(settledUsd))),
+          }).where(eq(purchaseOrders.id, Number(po.id)));
+        }
+      }
     }
 
     // ٣) عكس الإيصال الخزينيّ (إيداع/سحب دينار): إيصالٌ تعويضيّ معاكس (shiftId=null ⇒ لا يمسّ درجاً).

@@ -53,6 +53,8 @@ export interface InvoiceState {
   currency: Currency;
   /** usd-po-reconcile: مبلغ فاتورة المورد الفعلية بالدولار (PURCHASE فقط، حين currency=USD). */
   usdTotal: string;
+  /** سعر تثبيت فاتورة الشراء: دينار عراقي لكل دولار. */
+  agreedRate: string;
   salesRepId: number | "";
   refInvoice: string;
   poReference: string;

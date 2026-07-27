@@ -10,7 +10,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { confirm } from "@/lib/confirm";
 import { fmtDate } from "@/lib/date";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
-import { fmt, positiveDiff } from "@/lib/money";
+import { D, fmt, positiveDiff } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { printPurchaseInvoiceV2 } from "@/lib/printing/printTemplatesV2";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
@@ -183,6 +183,8 @@ export default function Purchases() {
                 { key: "supplierName", header: "المورد" },
                 { key: "orderDate", header: "التاريخ", map: (r) => fmtDate(r.orderDate) },
                 { key: "total", header: "الإجمالي", map: (r) => Number(r.total ?? 0) },
+                { key: "usdTotal", header: "فاتورة المورد $", map: (r) => Number(r.usdTotal ?? 0) },
+                { key: "agreedRate", header: "سعر التثبيت", map: (r) => Number(r.agreedRate ?? 0) },
                 { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount ?? 0) },
                 { key: "status", header: "الحالة", map: (r) => PO_STATUS[r.status] ?? r.status },
               ],
@@ -199,7 +201,9 @@ export default function Purchases() {
                 <th className="p-2">المورد</th>
                 <th className="p-2">التاريخ</th>
                 <th className="p-2 text-right">الإجمالي</th>
-                <th className="p-2 text-right">المدفوع</th>
+                <th className="p-2 text-right">فاتورة المورد</th>
+                <th className="p-2 text-right">سعر التثبيت</th>
+                <th className="p-2 text-right">المتبقي</th>
                 <th className="p-2">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -214,7 +218,15 @@ export default function Purchases() {
                     <td className="p-2">{p.supplierName ?? "—"}</td>
                     <td className="p-2 whitespace-nowrap tabular-nums" dir="ltr">{fmtDate(p.orderDate)}</td>
                     <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.total)}</td>
-                    <td className="p-2 text-right tabular-nums" dir="ltr">{fmt(p.paidAmount)}</td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">
+                      {p.agreedCurrency === "USD" ? `${fmt(p.usdTotal)} $` : `${fmt(p.total)} د.ع`}
+                    </td>
+                    <td className="p-2 text-right tabular-nums" dir="ltr">{p.agreedCurrency === "USD" ? fmt(p.agreedRate) : "—"}</td>
+                    <td className="p-2 text-right font-bold tabular-nums" dir="ltr">
+                      {p.agreedCurrency === "USD"
+                        ? `${D(p.usdTotal ?? 0).minus(D(p.paidUsd ?? 0)).toFixed(2)} $`
+                        : `${positiveDiff(p.total ?? 0, p.paidAmount ?? 0).toFixed(2)} د.ع`}
+                    </td>
                     <td className="p-2">{PO_STATUS[p.status] ?? p.status}</td>
                     <td className="p-2 text-center">
                       <RowActions
@@ -255,7 +267,7 @@ export default function Purchases() {
                 );
               })}
               {!query.isLoading && rows.length === 0 && (
-                <tr><td colSpan={7} className="p-6 text-center text-muted-foreground">لا أوامر شراء مطابقة.</td></tr>
+                <tr><td colSpan={9} className="p-6 text-center text-muted-foreground">لا أوامر شراء مطابقة.</td></tr>
               )}
             </tbody>
           </table>
