@@ -714,7 +714,14 @@ export default function POS() {
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
 
-      await printReceipt(buildBrandedReceipt(alignedRec));
+      const printed = await printReceipt(buildBrandedReceipt(alignedRec));
+      if (printed.via === "server") {
+        notify.ok("تمت الطباعة المباشرة", `فاتورة ${r.invoiceNumber} أُرسلت إلى طابعة الكاشير`);
+      } else if (printed.via === "thermal") {
+        notify.ok("تمت الطباعة الحرارية", `فاتورة ${r.invoiceNumber} أُرسلت إلى الطابعة المربوطة`);
+      } else {
+        notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة؛ اربط طابعة الكاشير من رمز الطابعة لتعمل مباشرة لاحقاً");
+      }
       await Promise.all([
         utils.catalog.posList.invalidate(),
         utils.customers.list.invalidate(),
@@ -888,7 +895,10 @@ export default function POS() {
     clearCartDraft(branchId);
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
     patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
-    await printReceipt(buildBrandedReceipt(rec));
+    const printed = await printReceipt(buildBrandedReceipt(rec));
+    if (printed.via === "browser") {
+      notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة للإيصال المؤقت");
+    }
   }
 
   function submitSale(approval?: { email: string; password: string }) {
