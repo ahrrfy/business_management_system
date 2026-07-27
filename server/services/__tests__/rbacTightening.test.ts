@@ -74,10 +74,15 @@ async function userById(id: number) {
 beforeEach(async () => { await reset(); await seed(); });
 
 // ─── (1) inventory: مدير الفرع لا يَعبر ──────────────────────────────
-describe("inventory — مدير الفرع لا يَستعلم عن فرع آخر", () => {
-  it("stockByBranch: مدير ف١ يَطلب ف٢ ⇒ FORBIDDEN", async () => {
+// عزل المدير في المخزون تغيَّر (قرار المالك ٢٣/٧): «قراءة الكل، كتابة فرعه» بدل «قراءة فرعه» السابقة
+// (تحصين ٢٣/٦). القراءة عبر الفروع صارت مسموحةً للمدير (إشراف)؛ الكتابة (تحويل/تسوية) على فرعه —
+// مُغطّاةٌ في inventoryBranchScope.test.ts.
+describe("inventory — المدير يَقرأ كلَّ الفروع (قراءة الكل — قرار المالك ٢٣/٧)", () => {
+  it("stockByBranch: مدير ف١ يَقرأ ف٢ ⇒ يَعمل (قراءة الكل — إشراف)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2))); // مدير ف١
-    await expect(caller.inventory.stockByBranch({ branchId: 2 })).rejects.toThrow(/فرع آخر|FORBIDDEN/);
+    const rows = await caller.inventory.stockByBranch({ branchId: 2 });
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((r) => Number(r.branchId) === 2)).toBe(true);
   });
 
   it("stockByBranch: مدير ف١ يَطلب ف١ ⇒ يَعمل", async () => {
@@ -92,19 +97,23 @@ describe("inventory — مدير الفرع لا يَستعلم عن فرع آخ
     expect(rows.length).toBeGreaterThan(0);
   });
 
-  it("movements: مدير ف١ يَطلب ف٢ ⇒ FORBIDDEN", async () => {
+  it("movements: مدير ف١ يَقرأ حركات ف٢ ⇒ يَعمل (قراءة الكل)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(2)));
-    await expect(caller.inventory.movements({ branchId: 2, limit: 10 })).rejects.toThrow(/فرع آخر|FORBIDDEN/);
+    const rows = await caller.inventory.movements({ branchId: 2, limit: 10 });
+    expect(Array.isArray(rows)).toBe(true);
   });
 
-  it("onHand: مدير ف٢ يَطلب ف١ ⇒ FORBIDDEN", async () => {
+  it("onHand: مدير ف٢ يَقرأ ف١ ⇒ يَعمل (قراءة الكل)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(3))); // مدير ف٢
-    await expect(caller.inventory.onHand({ branchId: 1 })).rejects.toThrow(/فرع آخر|FORBIDDEN/);
+    const rows = await caller.inventory.onHand({ branchId: 1 });
+    expect(rows.length).toBeGreaterThan(0);
   });
 
-  it("movementsRich: مدير ف٢ يَطلب ف١ ⇒ FORBIDDEN", async () => {
+  it("movementsRich: مدير ف٢ يَقرأ ف١ ⇒ يَعمل (قراءة الكل)", async () => {
     const caller = appRouter.createCaller(makeCtx(await userById(3)));
-    await expect(caller.inventory.movementsRich({ branchId: 1, limit: 10, offset: 0 })).rejects.toThrow(/فرع آخر|FORBIDDEN/);
+    const res = await caller.inventory.movementsRich({ branchId: 1, limit: 10, offset: 0 });
+    expect(res).toBeDefined();
+    expect(Array.isArray(res.rows)).toBe(true);
   });
 
   it("الكاشير لا يَختار branchId ⇒ يُجبَر على فرعه (sanity — السلوك الموجود)", async () => {
