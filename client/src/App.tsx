@@ -125,7 +125,6 @@ const PayrollReport = lazy(() => import("@/pages/PayrollReport"));
 const AttendanceReport = lazy(() => import("@/pages/AttendanceReport"));
 const LeaveReport = lazy(() => import("@/pages/LeaveReport"));
 const HrChangesReport = lazy(() => import("@/pages/HrChangesReport"));
-const ExecutiveDashboard = lazy(() => import("@/pages/ExecutiveDashboard"));
 const StocktakeNew = lazy(() => import("@/pages/StocktakeNew"));
 const StocktakeMonitor = lazy(() => import("@/pages/StocktakeMonitor"));
 const StocktakeReview = lazy(() => import("@/pages/StocktakeReview"));
@@ -409,7 +408,8 @@ export default function App() {
       <Route path="/reports/attendance"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><AttendanceReport /></RequireRole></Shell></Route>
       <Route path="/reports/leaves"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><LeaveReport /></RequireRole></Shell></Route>
       <Route path="/reports/hr-changes"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="hr" level="READ"><HrChangesReport /></RequireRole></Shell></Route>
-      <Route path="/reports/executive"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><ExecutiveDashboard /></RequireRole></Shell></Route>
+      {/* لوحة المؤشّرات التنفيذية أُدمجت في كوكبِت «مركز التقارير» (ReportsOverview) — إعادة توجيه تَحفظ الروابط القديمة. */}
+      <Route path="/reports/executive"><Redirect to="/reports" /></Route>
       <Route path="/sales-report"><Redirect to="/invoices?tab=report" /></Route>
       <Route path="/reports/sales-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><SalesReportsHub /></RequireRole></Shell></Route>
       <Route path="/reports/aging-hub"><Shell><RequireRole roles={["admin","manager","accountant","auditor"]} module="reports"><AgingReportsHub /></RequireRole></Shell></Route>
