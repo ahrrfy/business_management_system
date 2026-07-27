@@ -115,11 +115,13 @@ export default function PurchaseNew() {
   // موحّدة على كلّ تكلفة وحدة: capUnit = price × (subtotal + شحن + كمرك) / subtotal. للمعاينة فقط.
   const landed = useMemo(() => {
     const sum = round2(safeMoney(shippingCost).plus(safeMoney(customsCost)));
-    const subtotalD = D(totals.subtotal);
-    const grand = round2(D(totals.grandTotal).plus(sum));
-    const uplift = subtotalD.gt(0) ? subtotalD.plus(sum).dividedBy(subtotalD) : D(1);
-    return { sum, grand, uplift, hasLanded: sum.gt(0), hasBase: subtotalD.gt(0) };
-  }, [shippingCost, customsCost, totals.subtotal, totals.grandTotal]);
+    const sourceSubtotal = D(totals.subtotal);
+    const rate = state.currency === "USD" ? safeMoney(state.agreedRate) : D(1);
+    const goodsIqd = round2(sourceSubtotal.times(rate));
+    const grand = round2(goodsIqd.plus(sum));
+    const uplift = goodsIqd.gt(0) ? goodsIqd.plus(sum).dividedBy(goodsIqd) : D(1);
+    return { sum, goodsIqd, grand, uplift, rate, hasLanded: sum.gt(0), hasBase: goodsIqd.gt(0) };
+  }, [shippingCost, customsCost, totals.subtotal, state.currency, state.agreedRate]);
 
   function validate(): string | null {
     if (!state.entityId) return "اختر المورد قبل الحفظ.";
@@ -134,9 +136,8 @@ export default function PurchaseNew() {
       if (!base.isInteger())
         return `الكمية في «${l.name}» تنتج كسراً بالوحدة الأساس (${l.qty} × ${l.conversionFactor}).`;
     }
-    // usd-po-reconcile: عند اختيار الدولار، مبلغ فاتورة المورد الفعلية إلزامي وموجب.
-    if (state.currency === "USD" && !(D(state.usdTotal).gt(0))) {
-      return "أدخل مبلغ فاتورة المورد بالدولار.";
+    if (state.currency === "USD" && !safeMoney(state.agreedRate).gt(0)) {
+      return "أدخل سعر الصرف المثبت للفاتورة.";
     }
     // landed-cost: التوزيع بنسبة القيمة يحتاج قيمة بضاعة موجبة (مرآة حارس الخادم).
     if (landed.hasLanded && !landed.hasBase) {
@@ -161,9 +162,10 @@ export default function PurchaseNew() {
       // المزدوج يُنشئ أمرَي شراء. الآن نمرّره في الحمولة فيَحرس الخادم من الازدواج.
       clientRequestId,
       notes: state.notes.trim() || undefined,
-      // usd-po-reconcile: مبلغ فاتورة المورد الفعلية بالدولار (إعلامي — لا يمسّ الإجمالي الديناري).
+      // USD: أسعار البنود نفسها بالدولار، والخادم يحوّلها إلى التكلفة الدينارية بسعر التثبيت.
       agreedCurrency: state.currency,
-      usdTotal: state.currency === "USD" ? round2(D(state.usdTotal)).toFixed(2) : undefined,
+      usdTotal: state.currency === "USD" ? round2(D(totals.subtotal)).toFixed(2) : undefined,
+      agreedRate: state.currency === "USD" ? safeMoney(state.agreedRate).toFixed(4) : undefined,
       // landed-cost: الشحن/الكمرك (تُرسَل فقط إن كانت موجبة — الخادم يوزّعها بنسبة القيمة ويُرسمِلها).
       // safeMoney: قيمة وسيطة غير مكتملة («.») ⇒ صفر بدل رمي D() الخام أثناء الحفظ.
       shippingCost: safeMoney(shippingCost).gt(0) ? round2(safeMoney(shippingCost)).toFixed(2) : undefined,
@@ -299,6 +301,8 @@ export default function PurchaseNew() {
             tier={state.tier}
             invoiceType={INVOICE_TYPE}
             showCost={true}
+            purchaseCurrency={state.currency}
+            purchaseRate={state.agreedRate}
             onOpenBulkPicker={() => setBulkOpen(true)}
             onNotify={(msg, kind) => (kind === "error" ? notify.err(msg) : notify.info(msg))}
           />
@@ -353,8 +357,10 @@ export default function PurchaseNew() {
                       <li key={i} className="flex items-center justify-between gap-2">
                         <span className="min-w-0 truncate text-muted-foreground">{l.name}</span>
                         <span dir="ltr" className="shrink-0 font-bold tabular-nums">
-                          {fmtAr(round2(D(l.price).times(landed.uplift)).toFixed(2))}
-                          <span className="font-normal text-muted-foreground">{" "}(من {fmtAr(l.price)})</span>
+                          {fmtAr(round2(D(l.price).times(landed.rate).times(landed.uplift)).toFixed(2))} د.ع
+                          <span className="font-normal text-muted-foreground">
+                            {" "}(الأصل {fmtAr(l.price)}{state.currency === "USD" ? "$" : " د.ع"})
+                          </span>
                         </span>
                       </li>
                     ))}
@@ -380,8 +386,24 @@ export default function PurchaseNew() {
             showOtherExpenses={false}
             showDiscount={false}
             showPayment={false}
-            overrideGrandTotal={landed.grand.toFixed(2)}
+            overrideGrandTotal={state.currency === "USD" ? totals.grandTotal : landed.grand.toFixed(2)}
           />
+          {state.currency === "USD" && landed.rate.gt(0) && (
+            <section className="rounded-xl border bg-card px-4 py-3 text-sm">
+              <div className="flex justify-between text-muted-foreground">
+                <span>إجمالي فاتورة المورد</span>
+                <span dir="ltr" className="font-bold text-foreground">{fmtAr(totals.subtotal)} $</span>
+              </div>
+              <div className="mt-1 flex justify-between text-muted-foreground">
+                <span>المعادل المثبت</span>
+                <span dir="ltr" className="font-bold text-foreground">{fmtAr(landed.goodsIqd.toFixed(2))} د.ع</span>
+              </div>
+              <div className="mt-1 flex justify-between border-t pt-2 font-bold">
+                <span>تكلفة المخزون مع الشحن</span>
+                <span dir="ltr">{fmtAr(landed.grand.toFixed(2))} د.ع</span>
+              </div>
+            </section>
+          )}
           <ActionButtons
             invoiceType={INVOICE_TYPE}
             items={state.items}

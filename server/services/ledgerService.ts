@@ -97,6 +97,15 @@ export async function adjustSupplierBalance(tx: Tx, supplierId: number, delta: D
     .where(eq(suppliers.id, supplierId));
 }
 
+/** ذمة المورد الأصلية بالدولار لفواتير USD. منفصلة عن القيمة الدفترية الدينارية. */
+export async function adjustSupplierBalanceUsd(tx: Tx, supplierId: number, delta: Decimal): Promise<void> {
+  if (delta.isZero()) return;
+  await tx
+    .update(suppliers)
+    .set({ currentBalanceUsd: sql`${suppliers.currentBalanceUsd} + ${toDbMoney(delta)}` })
+    .where(eq(suppliers.id, supplierId));
+}
+
 /** عهدة جهة التوصيل (COD float): positive = الجهة مدينة للمتجر. تُطبَّق ذرّياً بزيادة SQL نسبية. */
 export async function adjustDeliveryBalance(tx: Tx, partyId: number, delta: Decimal): Promise<void> {
   if (delta.isZero()) return;

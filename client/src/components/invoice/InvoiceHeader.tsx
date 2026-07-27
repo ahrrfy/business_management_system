@@ -220,14 +220,15 @@ export function InvoiceHeader({ state, dispatch, invoiceType, salesReps }: Invoi
             </Select>
           </FieldGroup>
 
-          {/* usd-po-reconcile: أمر الشراء فقط — مبلغ فاتورة المورد الفعلية بالدولار، للمطابقة
-              لاحقاً بسعر التسديد الفعلي عبر الصيرفة (إعلامي بحت — الإجمالي الديناري لا يتغيّر). */}
+          {/* فاتورة شراء USD: أسعار البنود نفسها بالدولار، وهذا سعر التثبيت الذي يحوّلها إلى
+              تكلفة مخزون دينارية. إجمالي الدولار يُشتق من البنود ولا يُعاد إدخاله يدوياً. */}
           {isPurchase && state.currency === "USD" && (
-            <FieldGroup label="مبلغ فاتورة المورد ($)" icon={DollarSign} required>
+            <FieldGroup label="سعر التثبيت (د.ع/$)" icon={DollarSign} required>
               <MoneyInput
-                value={state.usdTotal}
-                onChange={(v) => dispatch({ type: "SET_FIELD", field: "usdTotal", value: v })}
-                placeholder="0.00"
+                value={state.agreedRate}
+                onChange={(v) => dispatch({ type: "SET_FIELD", field: "agreedRate", value: v })}
+                decimals={4}
+                placeholder="1450"
               />
             </FieldGroup>
           )}
