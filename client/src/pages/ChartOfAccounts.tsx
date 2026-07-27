@@ -9,12 +9,14 @@ import { trpc } from "@/lib/trpc";
  * بالهجرة، وكلٌّ منها مربوطٌ بالمفهوم القائم في النظام عبر «الدور النظاميّ» (systemRole) — أساسُ محرّك
  * القيود لاحقاً. لا كتابة/قيود بعد (الدفتر المزدوج يُبنى مرحلةً مرحلة).
  */
+// توكنز دلالية (ثيم-آواره تلقائياً، لا ألوان خام — يمرّ حارس check:colors):
+// أصول/إيراد = موجب، مصروف = سالب، التزام = تحذير، حقوق ملكية = معلومة.
 const TYPE_TONE: Record<string, string> = {
-  ASSET: "text-emerald-600 dark:text-emerald-400",
-  LIABILITY: "text-amber-600 dark:text-amber-400",
-  EQUITY: "text-sky-600 dark:text-sky-400",
-  REVENUE: "text-emerald-600 dark:text-emerald-400",
-  EXPENSE: "text-rose-600 dark:text-rose-400",
+  ASSET: "text-money-positive",
+  LIABILITY: "text-[var(--sem-warning)]",
+  EQUITY: "text-[var(--sem-info)]",
+  REVENUE: "text-money-positive",
+  EXPENSE: "text-money-negative",
 };
 
 export default function ChartOfAccounts() {
