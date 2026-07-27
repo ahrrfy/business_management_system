@@ -28,8 +28,7 @@ import { closeDb } from "../../db";
 // BARCODE_SECRET أعلاه في vitest.config.ts) كي لا يعلّمها GitGuardian كسرٍّ حقيقيّ.
 process.env.INTEGRATIONS_ENCRYPTION_KEY ??= "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
-// accounts = شجرة الحسابات (بيانات مرجعية تُبذَر بالهجرة 0115) — لا تُفرَّغ بين الاختبارات، كـ__drizzle_migrations.
-const SKIP = new Set(["__drizzle_migrations", "accounts"]);
+const SKIP = new Set(["__drizzle_migrations"]);
 
 // نلتقط رابط قاعدة الاختبار **مرّةً عند التحميل** قبل أيّ اختبار: بعض الاختبارات
 // (maintenanceService.currentDbName) تُبدّل process.env.DATABASE_URL مؤقّتاً لفحص التحليل؛

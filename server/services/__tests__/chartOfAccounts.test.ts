@@ -1,8 +1,31 @@
-// شجرة الحسابات (P0، الدفتر المزدوج) — تحقّق من الشجرة المبذورة بالهجرة 0115 والربط بالمفاهيم القائمة.
-import { describe, expect, it } from "vitest";
+// شجرة الحسابات (P0، الدفتر المزدوج) — تحقّق من الشجرة والربط بالمفاهيم القائمة.
+// **بذرٌ ذاتيّ:** الاختبار يزرع الشجرة من `CHART_ACCOUNTS` في beforeEach (لا يعتمد على تهيئة CI —
+// db:push لا يُطبّق INSERT الهجرة 0115، ومحاولة بذرٍ عبر ci-apply-extra كانت هشّة). هكذا يمرّ
+// الاختبار موثوقاً حيثما وُجد الجدول. الإنتاج يُبذَر بالهجرة 0115 نفسها (SQL ثابت).
+import { beforeEach, describe, expect, it } from "vitest";
+import { accounts } from "../../../drizzle/schema";
+import { CHART_ACCOUNTS } from "../accounting/chartSeed";
 import { chartOfAccounts, listAccounts } from "../accountsService";
+import { getDb } from "../../db";
 
-describe("شجرة الحسابات (P0) — بيانات مبذورة بالهجرة 0115", () => {
+beforeEach(async () => {
+  const db = getDb();
+  if (!db) throw new Error("chartOfAccounts.test: getDb() null — قاعدة الاختبار غير مهيّأة");
+  await db.delete(accounts); // __setup__ يُفرّغه بين الاختبارات؛ نُعيد الزرع نظيفاً كلَّ مرّة.
+  await db.insert(accounts).values(
+    CHART_ACCOUNTS.map((a) => ({
+      id: a.id,
+      code: a.code,
+      name: a.name,
+      type: a.type,
+      parentId: a.parentId,
+      systemRole: a.systemRole,
+      sortOrder: a.sortOrder,
+    })),
+  );
+});
+
+describe("شجرة الحسابات (P0) — بذرٌ ذاتيّ من CHART_ACCOUNTS", () => {
   it("٣١ حساباً؛ ٢٦ مربوطاً بـsystemRole و٥ رؤوس بلا ربط", async () => {
     const all = await listAccounts();
     expect(all).toHaveLength(31);
