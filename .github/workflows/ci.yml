@@ -60,6 +60,8 @@ jobs:
         run: pnpm check:orphans
       - name: حارِس حدود اليوم المحلية (TZ #٧)
         run: pnpm check:date-boundaries
+      - name: حارِس الألوان الخام (ratchet — منع لون مال/حالة جديد يتجاوز التوكنز)
+        run: pnpm check:colors
       - name: الاختبارات
         run: pnpm test
       - name: بناء الإنتاج
