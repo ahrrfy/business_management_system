@@ -44,3 +44,40 @@ describe("canSeeType — RBAC للموظف/المستخدم (يحلّ permission
     expect(canSeeType("cashier", "EXPENSE")).toBe(false);
   });
 });
+
+describe("canSeeType — بوّابة الوحدة لكل نوع بحث (يطابق requireModule؛ إصلاح تسريب تدقيق ٢٧/٧)", () => {
+  // البوّابة الأساس صارت خريطة الصلاحيات المحلولة (قالب + override) على وحدة كل نوع عبر
+  // hasModuleAccess — لا نموذج أدوار خشن. كان دورٌ سُحبت عنه الوحدة يظلّ يرى النوع (تسريب PII/وثائق).
+
+  it("سحب الوحدة عبر override يُخفي النوع من البحث الشامل (سدّ التسريب الأساسي لكل نوع تشغيليّ)", () => {
+    expect(canSeeType("cashier", "CUSTOMER", { crm: "NONE" })).toBe(false); // crm=FULL افتراضاً
+    expect(canSeeType("cashier", "INVOICE", { sales: "NONE" })).toBe(false);
+    expect(canSeeType("cashier", "QUOTATION", { sales: "NONE" })).toBe(false);
+    expect(canSeeType("cashier", "PRODUCT", { products: "NONE" })).toBe(false);
+    expect(canSeeType("cashier", "WORK_ORDER", { workorders: "NONE" })).toBe(false);
+  });
+
+  it("النوع مربوطٌ بوحدة راوتره بالضبط: CUSTOMER→crm لا «customers» المهجورة", () => {
+    // منح مفتاح «customers» المهجور لا يفتح البحث (البوّابة الحقيقية crm) — يطابق customersReadProcedure.
+    expect(canSeeType("warehouse", "CUSTOMER", { crm: "NONE", customers: "FULL" })).toBe(false);
+    expect(canSeeType("warehouse", "CUSTOMER")).toBe(true); // warehouse crm=READ
+  });
+
+  it("المحاسب يُحكَم بوحدته: يرى العميل/الفاتورة (crm/sales READ) ولا يرى المنتج (products=NONE)", () => {
+    expect(canSeeType("accountant", "CUSTOMER")).toBe(true);
+    expect(canSeeType("accountant", "INVOICE")).toBe(true);
+    expect(canSeeType("accountant", "PRODUCT")).toBe(false); // كان يتسرّب (short-circuit) قبل الإصلاح
+  });
+
+  it("منحٌ صريحٌ عبر override يفتح النوع (لا حجب خاطئ): purchasing مُنِح sales=READ يرى الفواتير", () => {
+    expect(canSeeType("purchasing", "INVOICE")).toBe(false); // sales=NONE افتراضاً
+    expect(canSeeType("purchasing", "INVOICE", { sales: "READ" })).toBe(true);
+  });
+
+  it("الكاشير القالبيّ يرى ما تتيحه وحداته: العميل والفاتورة وأمر الشغل والمنتج", () => {
+    expect(canSeeType("cashier", "CUSTOMER")).toBe(true); // crm: FULL
+    expect(canSeeType("cashier", "INVOICE")).toBe(true); // sales: FULL
+    expect(canSeeType("cashier", "WORK_ORDER")).toBe(true); // workorders: FULL
+    expect(canSeeType("cashier", "PRODUCT")).toBe(true); // products: READ
+  });
+});
