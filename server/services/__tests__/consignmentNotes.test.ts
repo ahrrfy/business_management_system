@@ -190,17 +190,17 @@ describe("بضاعة الأمانة — عزل قراءة الفرع (تدقيق
 
     // أمين مخزن بالفرع ١ (غير مرتفع): القائمة مقصورة على فرعه رغم عدم تمرير branchId.
     const wh1 = callerAs("warehouse", 1);
-    const list = await wh1.consignment.list({});
+    const list = await wh1.consignments.list({});
     expect(list.rows.every((r) => Number(r.branchId) === 1)).toBe(true);
     expect(list.rows.some((r) => Number(r.id) === Number(n1.noteId))).toBe(true);
     expect(list.rows.some((r) => Number(r.id) === Number(n2.noteId))).toBe(false);
 
     // get: سند فرعه يُعاد؛ سند الفرع الآخر ⇒ NOT_FOUND (لا يكشف وجوده — IDOR).
-    expect((await wh1.consignment.get({ noteId: Number(n1.noteId) }))?.id).toBe(Number(n1.noteId));
-    await expect(wh1.consignment.get({ noteId: Number(n2.noteId) })).rejects.toMatchObject({ code: "NOT_FOUND" });
+    expect((await wh1.consignments.get({ noteId: Number(n1.noteId) }))?.id).toBe(Number(n1.noteId));
+    await expect(wh1.consignments.get({ noteId: Number(n2.noteId) })).rejects.toMatchObject({ code: "NOT_FOUND" });
 
     // admin (مرتفع) يرى الفرعين.
-    const all = await callerAs("admin", null).consignment.list({});
+    const all = await callerAs("admin", null).consignments.list({});
     expect(all.rows.length).toBe(2);
   });
 });
