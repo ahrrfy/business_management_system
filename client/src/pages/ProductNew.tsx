@@ -13,6 +13,8 @@ import ServiceForm from "@/components/product/ServiceForm";
 import SimpleProductForm from "@/components/product/SimpleProductForm";
 import { NameAssistant } from "@/components/product/NameAssistant";
 import BundleForm from "@/components/product/BundleForm";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 import { trpc } from "@/lib/trpc";
 import { exportRows } from "@/lib/export";
 import {
@@ -435,6 +437,11 @@ export default function ProductNew() {
 
   const activeCount = variants.filter((v) => v.isActive).length;
   const totalStock = variants.reduce((s, v) => s + variantStockTotal(v.stockByBranch), 0);
+
+  // حارس فقدان البيانات + اختصار Ctrl+S — مقصور على وضع «المتغيّرات» (الأوضاع الأخرى نماذجُ أبناءٍ
+  // لها حفظها المستقلّ). enabled=(mode==="variants") يمنع تصادم مستمعَي keydown حين يُعرَض نموذجٌ ابن.
+  useSaveShortcuts({ onSave: save, enabled: mode === "variants" && !create.isPending });
+  useUnsavedGuard(mode === "variants" && (modelName.trim() !== "" || variants.length > 0));
 
   return (
     <div className="max-w-6xl mx-auto space-y-4 pb-28">
