@@ -51,8 +51,33 @@ function caller(role: string, branchId: number, id: number) {
   const ctx = { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user: { id, role, branchId } } as any;
   return appRouter.createCaller(ctx);
 }
+function callerOverride(role: string, branchId: number, id: number, permissionsOverride: Record<string, string>) {
+  const ctx = { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user: { id, role, branchId, permissionsOverride } } as any;
+  return appRouter.createCaller(ctx);
+}
 
 beforeEach(async () => { await reset(); await seed(); });
+
+describe("M2 (تدقيق ٢٥/٧) — purchase.get يحجب تكلفة البنود اتّساقاً مع الرأس", () => {
+  it("دورٌ أساسه manager بـreports=NONE (canSeeCost=false): يُحجب الرأس والبنود معاً — كان يكشف البنود", async () => {
+    await db().insert(s.suppliers).values({ id: 1, name: "مورّد", currentBalance: "0" });
+    const actor = { userId: 1, branchId: 1 };
+    const po = await createPurchaseOrder(
+      { supplierId: 1, branchId: 1, items: [{ variantId: 1, productUnitId: 1, quantity: "5", unitPrice: "200.00" }] },
+      actor,
+    );
+
+    // مدير بـreports=NONE ⇒ canSeeCostForUser=false ⇒ يجب حجب الرأس والبنود معاً.
+    const got: any = await callerOverride("manager", 1, 1, { reports: "NONE" }).purchases.get({ purchaseOrderId: po.purchaseOrderId });
+    expect(got.total).toBeNull(); // الرأس محجوب
+    expect(got.items.length).toBeGreaterThan(0);
+    expect(got.items.every((it: any) => it.unitPrice === null && it.total === null)).toBe(true); // البنود محجوبة (الإصلاح)
+
+    // admin (canSeeCost=true) يرى التكلفة كاملةً.
+    const adminGot: any = await caller("admin", 1, 1).purchases.get({ purchaseOrderId: po.purchaseOrderId });
+    expect(adminGot.items[0].unitPrice).toBe("200.00");
+  });
+});
 
 describe("F7 #2 — IDOR كتابة عبر الفروع في عهدة التوصيل", () => {
   it("كاشير ف١ يسوّي جهةَ ف٢ ⇒ FORBIDDEN (جهة فرعٍ آخر)", async () => {
