@@ -1072,7 +1072,7 @@ export default function Storefront() {
 
       {/* شريط السلة العائم */}
       {cartCount > 0 && panel == null && (
-        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-emerald-100 bg-white/95 backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95">
+        <div className="fixed inset-x-0 bottom-0 z-20 border-t border-emerald-100 bg-white/95 pb-[env(safe-area-inset-bottom)] backdrop-blur-md dark:border-slate-800 dark:bg-slate-900/95">
           <div className="mx-auto max-w-6xl px-4 py-3">
             <button
               onClick={() => setPanel("cart")}
@@ -1568,7 +1568,7 @@ function PanelShell({ title, onClose, children }: { title: string; onClose: () =
         </button>
         <h2 className="text-base font-extrabold text-slate-900 dark:text-white">{title}</h2>
       </header>
-      <div className="mx-auto w-full max-w-2xl flex-1 overflow-y-auto px-4 py-4">{children}</div>
+      <div className="mx-auto w-full max-w-2xl flex-1 overflow-y-auto px-4 py-4" style={{ paddingBottom: "calc(1rem + env(safe-area-inset-bottom))" }}>{children}</div>
     </div>
   );
 }
