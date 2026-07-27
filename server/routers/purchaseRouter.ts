@@ -5,7 +5,6 @@ import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
-import { maskCostFields } from "../lib/redact";
 import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
@@ -324,7 +323,10 @@ export const purchaseRouter = router({
     // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
     if (!canSeeCostForUser(ctx.user)) {
       const poMasked = { ...po, subtotal: null, taxAmount: null, shippingCost: null, customsCost: null, total: null, paidAmount: null, usdTotal: null, agreedRate: null };
-      const itemsMasked = items.map((row) => maskCostFields(row, ctx.user.role));
+      // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
+      // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
+      // أساسه manager بـreports=NONE — تناقضٌ مع حجب الرأس؛ تدقيق ٢٥/٧، M2.)
+      const itemsMasked = items.map((row) => ({ ...row, unitPrice: null, total: null }) as unknown as typeof row);
       return { ...poMasked, items: itemsMasked };
     }
     return { ...po, items };
