@@ -8,6 +8,8 @@ import {
   computeInvoiceTotals,
   computeLineTotal,
   isInvoiceBelowCost,
+  lineDiscountExceedsThreshold,
+  MANUAL_DISCOUNT_APPROVAL_THRESHOLD,
   snapshotUnitCost,
 } from "../billing";
 import { assertCreditLimit } from "../../lib/credit";
@@ -32,7 +34,7 @@ import { adjustCustomerBalance, adjustSupplierBalance, computeInvoiceStatus, pos
 import { logger } from "../../logger";
 import { money, round2, roundCashIQD, toDbMoney } from "../money";
 import { nextInvoiceNumber } from "../numbering";
-import { getUnitPrice, resolveTier, type PriceTier } from "../pricing";
+import { getUnitPrice, tryGetUnitPrice, resolveTier, type PriceTier } from "../pricing";
 import { type Actor, requireDb, withTx } from "../tx";
 import { flowNotify } from "../whatsapp";
 import type { CreateSaleInput, CreateSaleResult } from "./types";
@@ -289,6 +291,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       categoryByProduct = await getProductCategoryIds(tx, productIds);
     }
     const computed = [];
+    // H6 (تدقيق ٢٧/٧): هل انحرف أيّ سطرٍ عن مرجعه بأكثر من العتبة؟ (خصمٌ/سعرٌ يدويّ فوق التكلفة يستوجب تفويضاً).
+    let manualDiscountGateTriggered = false;
     for (const l of input.lines) {
       const v = variantById.get(l.variantId);
       if (!v) throw new TRPCError({ code: "NOT_FOUND", message: `المتغيّر ${l.variantId} غير موجود` });
@@ -298,12 +302,12 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
 
       const { baseQuantity } = await convertToBaseQuantity(tx, l.productUnitId, l.quantity, l.variantId);
       const contractPrice = contractPrices.get(l.productUnitId);
-      const unitPrice =
-        l.unitPriceOverride != null && l.unitPriceOverride !== ""
-          ? money(l.unitPriceOverride)
-          : contractPrice != null
-            ? money(contractPrice)
-            : await getUnitPrice(tx, l.productUnitId, tier);
+      const hasOverride = l.unitPriceOverride != null && l.unitPriceOverride !== "";
+      // المرجع للقياس (H6): عقد ← سعر القائمة (غير رامٍ) ← بلا مرجع. لا نُجبر وجود سعرٍ عند وجود override.
+      const listRef = contractPrice != null ? money(contractPrice) : await tryGetUnitPrice(tx, l.productUnitId, tier);
+      const refUnit = listRef ?? money(0);
+      // السعر الفعليّ: override ← المرجع ← (بلا مرجعٍ ولا override) رميٌ محفوظ «عرّف السعر أولاً».
+      const unitPrice = hasOverride ? money(l.unitPriceOverride!) : (listRef ?? (await getUnitPrice(tx, l.productUnitId, tier)));
       // bundles: تكلفة البكج محسوبة لحظياً من مجموع مكوّناته (لا `productVariants.costPrice`
       // لأن البكج نفسه بلا WAVG — تكلفته صافي مجموع مكوّناته الحيّ لحظة البيع، قرار مالك ٧/٧).
       const kind = kindByVariant.get(l.variantId) ?? "STOCKED";
@@ -316,6 +320,8 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
         discountPercent: l.discountPercent,
         discountAmount: l.discountAmount,
       });
+      // H6: انحراف صافي السطر عن مرجعه لأسفل بأكثر من العتبة ⇒ يستوجب تفويض مدير (يُفرَض بعد الحلقة).
+      if (lineDiscountExceedsThreshold(refUnit, money(l.quantity), lineRes.total)) manualDiscountGateTriggered = true;
 
       // promotions v2 (idempotent verification): إن مرّر POS `promotionId`، نُعيد الحلّ خادمياً
       // ونتحقّق أن `expectedPromoDiscount = discountForUnit × qty` يتّسق مع `discountAmount` (± 1 IQD).
@@ -399,11 +405,15 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
     //     أيُّ بند/فاتورة تحت COGS يَلزمه موافقة مدير (الراوتر يَمنح المدير/الأدمن السلطة ذاتياً)؛
     //     الهدايا (تكلفة=صفر) تَبقى مسموحة.
     const belowCost = isInvoiceBelowCost(computed, totals.subtotal, totals.discountAmount, costTotal);
-    if (belowCost && !input.priceOverrideApproved) {
-      throw new TRPCError({
-        code: "FORBIDDEN",
-        message: "بيع بأقل من التكلفة يتطلب موافقة مدير (سعر أو خصم تحت التكلفة).",
-      });
+    // H6/H7: بوّابة الخصم اليدويّ فوق التكلفة — تُفرَض على قناة POS الحيّة فقط، لا على إعادة تشغيل
+    // الأوفلاين (offlineCapture): بيعٌ اكتمل والتقاطُه لا يُعاد حظره — يُوسَم للمراجعة لا غير. المرتفعون
+    // والقنوات المُقِرّة سلفاً (بث/عرض سعر) يمرّون عبر priceOverrideApproved كما في بوّابة تحت-التكلفة.
+    const manualGate = manualDiscountGateTriggered && !input.offlineCapture;
+    if ((belowCost || manualGate) && !input.priceOverrideApproved) {
+      const reason = belowCost
+        ? "بيع بأقل من التكلفة"
+        : `خصمٌ يتجاوز ${Math.round(MANUAL_DISCOUNT_APPROVAL_THRESHOLD * 100)}٪ عن السعر المرجعيّ`;
+      throw new TRPCError({ code: "FORBIDDEN", message: `${reason} يتطلب موافقة مدير.` });
     }
 
     // 7. تقريب نقدي IQD للبيع النقدي الكامل: يُقرَّب الإجمالي لفئة 250، فالنقد المستلم = الإجمالي المقرّب
@@ -743,7 +753,7 @@ export async function createSale(input: CreateSaleInput, actor: Actor): Promise<
       invoiceNumber,
       total: toDbMoney(effectiveTotalD),
       status,
-      priceOverride: belowCost,
+      priceOverride: belowCost || manualDiscountGateTriggered,
       ...(negativeDips.length ? { negativeDips } : {}),
     };
   });

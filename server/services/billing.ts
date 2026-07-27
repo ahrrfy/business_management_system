@@ -110,3 +110,15 @@ export function isInvoiceBelowCost(
   const revenue = money(subtotal).minus(money(discountAmount));
   return lineBelowCost || revenue.lt(money(costTotal));
 }
+
+/** عتبة انحراف السعر اليدويّ (لكل سطر) عن مرجعه (عقد/قائمة) لأسفل التي تتجاوزها ⇒ اعتماد مدير.
+ *  قرار المالك (٢٧/٧): ١٥٪. بيعٌ عند/فوق المرجع ⇒ لا تفويض (H6). */
+export const MANUAL_DISCOUNT_APPROVAL_THRESHOLD = 0.15;
+
+/** هل ينحرف صافي السطر (بعد الخصم) عن سعره المرجعيّ (refUnit×qty) لأسفل بأكثر من العتبة؟ بلا مرجعٍ
+ *  موجب (بند بلا سعر قائمة) ⇒ false. يُغلق H7 أيضاً: إهداء صنفٍ مُدرَجٍ بسعر 0 = انحراف ١٠٠٪ ⇒ تفويض. */
+export function lineDiscountExceedsThreshold(refUnit: Decimal, quantity: Decimal, lineTotal: string): boolean {
+  const refGross = refUnit.times(quantity);
+  if (refGross.lte(0)) return false;
+  return refGross.minus(money(lineTotal)).div(refGross).gt(MANUAL_DISCOUNT_APPROVAL_THRESHOLD);
+}
