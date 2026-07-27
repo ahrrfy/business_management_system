@@ -8,6 +8,7 @@ import {
   Check,
   CreditCard,
   FileText,
+  Globe,
   Image as ImageIcon,
   Layers,
   MessageCircle,
@@ -45,7 +46,20 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue, type PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { cn } from "@/lib/utils";
 import { CashCounter } from "@/components/CashCounter";
-import { printShiftClose, printShiftOpen } from "@/lib/printing/print";
+import {
+  getServerBridgeStatus,
+  isPaired,
+  isWebUsbSupported,
+  pairPrinter,
+  printReceipt,
+  printShiftClose,
+  printShiftOpen,
+  printWorkOrderReceipt,
+  serverPrintTest,
+  tryReconnectPrinter,
+  type ReceiptBrowserData,
+  type WorkOrderReceiptData,
+} from "@/lib/printing/print";
 
 // رموز قسم تسليم النقد بمتغيّرات النظام الدلالية (الاستقبال shadcn لا يستعمل رموز الكاشير C).
 const HANDOVER_TOKENS: PosTokens = {
@@ -72,6 +86,11 @@ const HANDOVER_TOKENS: PosTokens = {
 type PosRow = NonNullable<RouterOutputs["catalog"]["posList"]>[number];
 type NumMode = "QTY" | "DISC" | "PAY";
 type PayMethod = "CASH" | "CARD" | "TRANSFER";
+const PAY_METHOD_LABEL: Record<PayMethod, string> = {
+  CASH: "نقدي",
+  CARD: "بطاقة",
+  TRANSFER: "تحويل",
+};
 
 type CartLine = {
   key: string; // معرّف فريد للسطر (للأصناف المخصّصة المتعدّدة من نفس المنتج)
@@ -224,10 +243,63 @@ export default function Reception() {
   const [channel, setChannel] = useState<"WALK_IN" | "WHATSAPP" | "INSTAGRAM" | "TIKTOK" | "PHONE">("WALK_IN");
   const [channelHandle, setChannelHandle] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [printerReady, setPrinterReady] = useState(isPaired());
+  const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({
+    enabled: false,
+    description: "",
+  });
 
   // idempotency: مفتاح واحد لكل دورة إرسال — يتجدّد بعد النجاح.
   const reqIdRef = useRef<string>(crypto.randomUUID());
   const searchRef = useRef<HTMLInputElement>(null);
+
+  const connectPrinter = async () => {
+    try {
+      await pairPrinter();
+      setPrinterReady(true);
+      notify.ok("تم ربط طابعة الإيصالات");
+    } catch (e: unknown) {
+      notify.err(e, "تعذّر ربط الطابعة");
+    }
+  };
+
+  const testServerPrint = async () => {
+    try {
+      const result = await serverPrintTest();
+      if (result.ok) notify.ok("أُرسلت تذكرة اختبار للطابعة عبر الخادم");
+      else notify.err(result.error ?? "تعذّر اختبار الطابعة");
+    } catch (e: unknown) {
+      notify.err(e, "تعذّر اختبار جسر الطباعة");
+    }
+  };
+
+  // نفس تكامل الطابعة في كاشير التجزئة وكاشير الطباعة: حالة جسر الخادم،
+  // وإعادة ربط WebUSB الصامتة عند فتح الشاشة أو إعادة توصيل الطابعة.
+  useEffect(() => {
+    getServerBridgeStatus().then(setBridge).catch(() => { /* الجسر اختياري */ });
+  }, []);
+
+  useEffect(() => {
+    if (!isWebUsbSupported()) return;
+    tryReconnectPrinter()
+      .then((ok) => setPrinterReady(ok))
+      .catch(() => setPrinterReady(false));
+
+    const usb = (navigator as unknown as { usb?: EventTarget }).usb;
+    if (!usb) return;
+    const onConnect = () => {
+      tryReconnectPrinter()
+        .then((ok) => setPrinterReady(ok))
+        .catch(() => setPrinterReady(false));
+    };
+    const onDisconnect = () => setPrinterReady(false);
+    usb.addEventListener("connect", onConnect);
+    usb.addEventListener("disconnect", onDisconnect);
+    return () => {
+      usb.removeEventListener("connect", onConnect);
+      usb.removeEventListener("disconnect", onDisconnect);
+    };
+  }, []);
 
   // ───── حسابات هجينة ───────────────────────────────────────────────────────
   const cartCount = cart.reduce((s, c) => s + c.qty, 0);
@@ -519,6 +591,10 @@ export default function Reception() {
     try {
       let invoiceId: number | null = null;
       const createdWoIds: number[] = [];
+      const receiptsToPrint: ReceiptBrowserData[] = [];
+      const workOrdersToPrint: WorkOrderReceiptData[] = [];
+      const printedAt = new Date();
+      const customerName = customer.name.trim() || null;
 
       // ١) فاتورة البيع المباشر للأصناف العادية (إن وُجدت).
       if (regularLines.length > 0) {
@@ -542,6 +618,24 @@ export default function Reception() {
           clientRequestId: `${reqIdRef.current}-sale`,
         });
         invoiceId = res.invoiceId ?? null;
+        receiptsToPrint.push({
+          receiptNumber: res.invoiceNumber,
+          date: fmtDate(printedAt),
+          time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+          cashierName: me.data?.name ?? "موظف الخدمة",
+          customerName,
+          items: regularLines.map((c) => ({
+            name: `${c.row.productName} (${c.row.unitName})`,
+            quantity: c.qty,
+            price: round2(D(effectivePrice(c))).toFixed(2),
+            total: round2(D(lineTotal(c))).toFixed(2),
+          })),
+          subtotal: saleAmount,
+          total: saleAmount,
+          paid: saleAmount,
+          change: 0,
+          paymentMethod: PAY_METHOD_LABEL[method],
+        });
       }
 
       // ١.ب) فاتورة خدمات الطباعة (الاستقبال): createPrintSale يَخصم وصفة المواد ويُسجّل COGS
@@ -563,6 +657,24 @@ export default function Reception() {
           clientRequestId: `${reqIdRef.current}-print`,
         });
         if (invoiceId == null) invoiceId = (res as { invoiceId?: number }).invoiceId ?? null;
+        receiptsToPrint.push({
+          receiptNumber: res.invoiceNumber,
+          date: fmtDate(printedAt),
+          time: printedAt.toLocaleTimeString("ar-IQ", { hour: "2-digit", minute: "2-digit" }),
+          cashierName: me.data?.name ?? "موظف الخدمة",
+          customerName,
+          items: printLines.map((c) => ({
+            name: `${c.row.productName} (${c.row.unitName})`,
+            quantity: c.qty,
+            price: round2(D(effectivePrice(c))).toFixed(2),
+            total: round2(D(lineTotal(c))).toFixed(2),
+          })),
+          subtotal: printAmount,
+          total: printAmount,
+          paid: printAmount,
+          change: 0,
+          paymentMethod: PAY_METHOD_LABEL[method],
+        });
       }
 
       // ٢) أمر شغل لكل صنف مخصّص.
@@ -612,6 +724,42 @@ export default function Reception() {
         });
         const woId = (res as { workOrderId?: number }).workOrderId;
         if (woId) createdWoIds.push(woId);
+        workOrdersToPrint.push({
+          orderNumber: res.orderNumber,
+          orderDate: fmtDate(printedAt),
+          dueDate: custom.dueDate || null,
+          status: "RECEIVED",
+          customerName,
+          customerPhone: customer.phone,
+          jobTitle: custom.title.trim() || c.row.productName,
+          quantity: c.qty,
+          specs: finalText || null,
+          total: x.salePriceStr,
+          notes: custom.hasDelivery
+            ? `توصيل إلى: ${custom.deliveryAddress || "العنوان غير محدد"}`
+            : null,
+        });
+      }
+
+      // نجاح الحفظ لا يُلغى إذا تعذّرت الطابعة. نحاول المسارات بالترتيب الموحّد:
+      // جسر الخادم ← WebUSB ← نافذة طباعة المتصفح، ثم نُفرغ السلة دائماً.
+      let browserFallbacks = 0;
+      let printFailures = 0;
+      for (const receipt of receiptsToPrint) {
+        try {
+          const result = await printReceipt(receipt);
+          if (result.via === "browser") browserFallbacks += 1;
+        } catch {
+          printFailures += 1;
+        }
+      }
+      for (const workOrder of workOrdersToPrint) {
+        try {
+          const result = await printWorkOrderReceipt(workOrder);
+          if (result.via === "browser") browserFallbacks += 1;
+        } catch {
+          printFailures += 1;
+        }
       }
 
       // إفراغ + إشعار + تجديد idempotency key (نَجاح كامل فقط).
@@ -621,7 +769,12 @@ export default function Reception() {
       ]
         .filter(Boolean)
         .join(" + ");
-      notify.ok(`تمّ ${summary}`);
+      const printDescription = printFailures > 0
+        ? `تم الحفظ، لكن تعذّرت طباعة ${printFailures} مستند`
+        : browserFallbacks > 0
+          ? "فُتحت نافذة الطباعة لأن الطابعة المباشرة غير متصلة"
+          : "أُرسلت المستندات إلى الطابعة مباشرة";
+      notify.ok(`تمّ ${summary}`, printDescription);
       setCart([]);
       setSelKey(null);
       setPayInput("");
@@ -915,6 +1068,37 @@ export default function Reception() {
         </div>
 
         <div className="ms-auto flex items-center gap-2">
+          {bridge.enabled && (
+            <button
+              type="button"
+              onClick={() => void testServerPrint()}
+              title={`جسر طباعة صامت: ${bridge.description} — اضغط لطباعة تذكرة اختبار`}
+              aria-label="جسر طباعة على الخادم — تذكرة اختبار"
+              className="inline-flex h-9 items-center gap-1 rounded-lg border border-emerald-500 bg-card px-2.5 text-emerald-600 hover:bg-emerald-500/10"
+            >
+              <Printer aria-hidden className="size-4" />
+              <Globe aria-hidden className="size-3.5" />
+            </button>
+          )}
+          {isWebUsbSupported() && (
+            <button
+              type="button"
+              onClick={() => void connectPrinter()}
+              title={printerReady
+                ? "الطابعة الافتراضية مربوطة تلقائياً — اضغط لتبديلها"
+                : "اربط طابعة حرارية — ستُربط تلقائياً في المرات القادمة"}
+              aria-label={printerReady ? "الطابعة الافتراضية مربوطة" : "ربط طابعة حرارية"}
+              className={cn(
+                "inline-flex h-9 items-center gap-1 rounded-lg border bg-card px-2.5 hover:bg-muted/60",
+                printerReady
+                  ? "border-emerald-500 text-emerald-600"
+                  : "border-border text-muted-foreground",
+              )}
+            >
+              <Printer aria-hidden className="size-4" />
+              {printerReady && <Check aria-hidden className="size-3.5" strokeWidth={3} />}
+            </button>
+          )}
           <div className="flex items-center gap-1.5 rounded-lg border border-violet-500/25 bg-violet-500/10 px-3 py-1.5 text-xs font-bold text-violet-700">
             <span className="size-2 animate-pulse rounded-full bg-violet-500" />
             وردية خدمة الزبائن #{shift.id}
