@@ -13,11 +13,13 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
+  approveExchangeDeposit,
   buyUsdAtExchange,
   createExchangeHouse,
   depositToExchange,
   getExchangeHouse,
   getExchangeStatement,
+  listPendingExchangeDeposits,
   reconcileExchange,
   reverseExchangeTransaction,
   setExchangeActive,
@@ -39,6 +41,8 @@ const TABLES = [
 ];
 
 const actor = { userId: 1, branchId: 1, role: "manager" } as const;
+// مديرٌ ثانٍ لفصل المهام (SOD) — معتمِد إيداعات الدولار (userId 2 مبذور في seed()).
+const actorB = { userId: 2, branchId: 1, role: "manager" } as const;
 
 function db() {
   const d = getDb();
@@ -91,6 +95,14 @@ async function ledgerAmount(entryType: string, exchangeHouseId: number): Promise
     WHERE entryType=${entryType} AND exchangeHouseId=${exchangeHouseId}`);
   const r = Array.isArray(rows) ? rows[0]?.[0] : rows?.rows?.[0];
   return String(r?.a ?? "0");
+}
+
+// إيداع الدولار المباشر صار SOD (تدقيق ٢٥/٧): يُنشأ معلّقاً ثم يعتمده مديرٌ ثانٍ. مساعدٌ يجمع الخطوتين
+// للاختبارات التي تفترض دولاراً نافذاً في المحفظة (المُنشئ actor، المعتمِد actorB — فصل مهام).
+async function depositUsdApproved(input: Parameters<typeof depositToExchange>[0], creator = actor, approver = actorB) {
+  const res = await depositToExchange(input, creator);
+  await approveExchangeDeposit(res.txnId, approver);
+  return res;
 }
 
 describe("exchange-house — وحدة الصيرفة ثنائية العملة", () => {
@@ -293,10 +305,7 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     const treasuryBefore = await treasuryBalance(1);
 
-    const res = await depositToExchange(
-      { exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" },
-      actor,
-    );
+    const res = await depositUsdApproved({ exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" });
     let h = await getExchangeHouse(id);
     expect(h?.balanceUsd).toBe("1000.00");
     expect(h?.balanceIqd).toBe("0.00"); // معزول — لم يتأثّر
@@ -307,16 +316,45 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("1500000.00");
 
     // إيداع دولار إضافي بسعر مختلف ⇒ WAVG = (1000×1500 + 500×1600)/1500 = 2,300,000/1500 ≈ 1533.3333.
-    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "500", currency: "USD", exchangeRate: "1600" }, actor);
+    await depositUsdApproved({ exchangeHouseId: id, branchId: 1, amount: "500", currency: "USD", exchangeRate: "1600" });
     h = await getExchangeHouse(id);
     expect(h?.balanceUsd).toBe("1500.00");
     expect(h?.usdCostRate).toBe("1533.3333");
     expect(res.txnNumber).toMatch(/^EX-1-\d{8}-\d{5}$/);
   });
 
+  it("SOD (تدقيق ٢٥/٧): إيداع الدولار المباشر يُنشأ معلّقاً بلا أثر، ويُطبَّق فقط باعتماد مديرٍ ثانٍ", async () => {
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    const dep = await depositToExchange(
+      { exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" },
+      actor,
+    );
+    expect(dep.pendingApproval).toBe(true);
+
+    // قبل الاعتماد: لا رفع رصيد ولا WAVG ولا قيد إعلاميّ — العملية معلّقة تُستثنى من الاشتقاق.
+    let h = await getExchangeHouse(id);
+    expect(h?.balanceUsd).toBe("0.00");
+    expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("0");
+    expect((await listPendingExchangeDeposits(id)).length).toBe(1);
+
+    // فصل المهام: لا يجوز أن يعتمده مُنشئه.
+    await expect(approveExchangeDeposit(dep.txnId, actor)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // اعتماد مديرٍ ثانٍ ⇒ يُطبَّق كاملاً.
+    await approveExchangeDeposit(dep.txnId, actorB);
+    h = await getExchangeHouse(id);
+    expect(h?.balanceUsd).toBe("1000.00");
+    expect(h?.usdCostRate).toBe("1500.0000");
+    expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("1500000.00");
+    expect((await listPendingExchangeDeposits(id)).length).toBe(0);
+
+    // إعادة الاعتماد مرفوضة (لم يعُد معلّقاً).
+    await expect(approveExchangeDeposit(dep.txnId, actorB)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+  });
+
   it("سحب دولار مباشر: يخفض المحفظة فقط بلا تغيير WAVG ولا أثر دينار، ويُمنع المكشوف بتحذير", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
-    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" }, actor);
+    await depositUsdApproved({ exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" });
     const treasuryBefore = await treasuryBalance(1);
 
     await withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "300", currency: "USD" }, actor);
@@ -340,7 +378,7 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
   it("كشف الحساب: إجمالي الإيداع/السحب الدولاري المباشر لا يُخلط مع الديناري", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "500000" }, actor); // IQD
-    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" }, actor);
+    await depositUsdApproved({ exchangeHouseId: id, branchId: 1, amount: "1000", currency: "USD", exchangeRate: "1500" });
     await withdrawFromExchange({ exchangeHouseId: id, branchId: 1, amount: "200", currency: "USD" }, actor);
 
     const st = await getExchangeStatement({ exchangeHouseId: id });
