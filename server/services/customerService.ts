@@ -29,6 +29,7 @@ import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
 import { normalizeIraqPhoneE164, phoneSuffix10 } from "../lib/phone";
 import { signedOpeningBalance, postOpeningEntry, upsertOpeningEntry, type OpeningDirection } from "./openingBalance";
+import { assertPeriodOpen } from "./periodLockService";
 import { majorityTokenHitJs, majorityTokenMatch, phoneMatchSuffix } from "../lib/similarMatch";
 
 export type PriceTier = "RETAIL" | "WHOLESALE" | "GOVERNMENT";
@@ -358,6 +359,15 @@ export async function deleteCustomer(customerId: number, _actor: Actor) {
       .where(and(eq(accountingEntries.customerId, customerId), ne(accountingEntries.entryType, "OPENING")))
       .limit(1);
     if (ae) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن حذف عميل له حركات مالية — عطِّله بدلاً من الحذف" });
+
+    // قفل الفترة (اتساقاً مع مسار التصحيح upsertOpeningEntry): لا يُحذَف قيد OPENING مؤرَّخ داخل فترة
+    // مُقفَلة (يُغيّر أرقامها بأثر رجعيّ) — يُرفض حتى تُفتح الفترة (admin). لا قيد ⇒ لا شيء يُحذَف.
+    const [openingEntry] = await tx
+      .select({ entryDate: accountingEntries.entryDate })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")))
+      .limit(1);
+    if (openingEntry) await assertPeriodOpen(tx, new Date(openingEntry.entryDate as unknown as string));
 
     // إزالة البيانات التابعة الآمنة الوحيدة: القيد الافتتاحيّ + الملاحظات + جهات الاتصال + التذكيرات.
     await tx.delete(accountingEntries).where(and(eq(accountingEntries.customerId, customerId), eq(accountingEntries.entryType, "OPENING")));

@@ -153,6 +153,27 @@ describe("③ حذف طرفٍ بلا نشاط + حارس يرفض النشاط",
     expect(await openingEntry("CUSTOMER", clean.customerId)).toBeUndefined();
   });
 
+  it("قفل الفترة يمنع حذف طرفٍ قيده الافتتاحي داخل فترة مُقفَلة (اتساقاً مع مسار التصحيح)", async () => {
+    const { supplierId } = await createSupplier(
+      { name: "مورّد بفترة مقفلة", openingBalance: "50000", openingBalanceDirection: "OWED_BY_US" }, actor,
+    );
+    const cust = (await caller("admin").customers.create({
+      name: "عميل بفترة مقفلة", openingBalance: "10000", openingBalanceDirection: "OWED_TO_US",
+    })) as { customerId: number };
+
+    // قفلٌ يغطّي قيد OPENING (المؤرَّخ اليوم) — cutoffDate بعيدٌ في المستقبل ليشمله يقيناً.
+    await db().insert(s.financialPeriods).values({ cutoffDate: "2099-12-31", status: "LOCKED", lockedBy: 1 });
+
+    await expect(deleteSupplier(supplierId, actor)).rejects.toMatchObject({ code: "FORBIDDEN" });
+    await expect(deleteCustomer(cust.customerId, actor)).rejects.toMatchObject({ code: "FORBIDDEN" });
+
+    // الحذف ذرّيّ ⇒ تراجعٌ كامل: الطرفان وقيداهما الافتتاحيّان باقون.
+    expect((await db().select().from(s.suppliers).where(eq(s.suppliers.id, supplierId)).limit(1))[0]).toBeTruthy();
+    expect(await openingEntry("SUPPLIER", supplierId)).toBeTruthy();
+    expect((await db().select().from(s.customers).where(eq(s.customers.id, cust.customerId)).limit(1))[0]).toBeTruthy();
+    expect(await openingEntry("CUSTOMER", cust.customerId)).toBeTruthy();
+  });
+
   it("الراوتر: دورٌ غير مدير (مخزن) يُمنع من حذف المورّد (FORBIDDEN)", async () => {
     const { supplierId } = await createSupplier({ name: "محميّ" }, actor);
     await expect(caller("warehouse").suppliers.delete({ supplierId })).rejects.toMatchObject({ code: "FORBIDDEN" });

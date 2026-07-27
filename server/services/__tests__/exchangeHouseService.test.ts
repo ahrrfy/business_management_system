@@ -191,6 +191,31 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     expect(await ledgerAmount("EXCHANGE_FEE", id)).toBe("14000.00");
   });
 
+  it("عكس اقتناء دولار استهلكته تسويةٌ لاحقة يُرفض (حارس اتساق فرق الصرف المحقَّق)", async () => {
+    const actorB = { userId: 2, branchId: 1, role: "manager" as const };
+    const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
+    await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
+    await buyUsdAtExchange({ exchangeHouseId: id, branchId: 1, usdAmount: "1000", exchangeRate: "1400" }, actor);
+    // تسويةٌ لاحقة تستهلك ٩٠٠$ من دولار الاقتناء (تُرحِّل EXCHANGE_FX_DIFF على WAVG وقتها).
+    await settleSupplierViaExchange(
+      { exchangeHouseId: id, branchId: 1, supplierId: 1, currency: "USD", walletAmount: "900", settledIqd: "1300000", commission: "10" },
+      actor,
+    );
+
+    const buyTxnId = Number((await db().select({ id: s.exchangeTransactions.id }).from(s.exchangeTransactions)
+      .where(and(eq(s.exchangeTransactions.exchangeHouseId, id), eq(s.exchangeTransactions.type, "FX_BUY"))).limit(1))[0]!.id);
+    const settleTxnId = Number((await db().select({ id: s.exchangeTransactions.id }).from(s.exchangeTransactions)
+      .where(and(eq(s.exchangeTransactions.exchangeHouseId, id), eq(s.exchangeTransactions.type, "SETTLE"))).limit(1))[0]!.id);
+
+    // عكس الاقتناء والتسوية اللاحقة استهلكت دولاره ⇒ يُرفض (كان يترك فرق الصرف المحقَّق على قيمةٍ بطَلت).
+    await expect(reverseExchangeTransaction(buyTxnId, actorB)).rejects.toMatchObject({ code: "BAD_REQUEST" });
+
+    // بالترتيب الصحيح (التسوية أوّلاً ثم الاقتناء) يُسمح.
+    await reverseExchangeTransaction(settleTxnId, actorB);
+    const rev = await reverseExchangeTransaction(buyTxnId, actorB);
+    expect(rev.status).toBe("REVERSED");
+  });
+
   it("تسديد بالدينار: دين المورد والمحفظة الدينارية ينخفضان بلا فرق صرف", async () => {
     const { id } = await createExchangeHouse({ name: "صيرفة" }, actor);
     await depositToExchange({ exchangeHouseId: id, branchId: 1, amount: "2000000" }, actor);
