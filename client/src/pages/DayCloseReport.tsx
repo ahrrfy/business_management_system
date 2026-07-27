@@ -6,7 +6,7 @@ import { CheckCircle2, AlertTriangle, Wallet, Building2, Clock, ArrowLeftRight }
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -130,7 +130,11 @@ export default function DayCloseReport() {
         </div>
       }
     >
-      {q.isLoading || !dc ? (
+      {q.isLoading ? (
+        <LoadingState />
+      ) : q.isError ? (
+        <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+      ) : !dc ? (
         <LoadingState />
       ) : dc.shifts.length === 0 ? (
         <Card>

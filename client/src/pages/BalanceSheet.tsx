@@ -4,7 +4,7 @@ import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -121,8 +121,8 @@ export default function BalanceSheet() {
         </div>
       }
     >
-      {q.isLoading || !p || !sections ? (
-        <Card><CardContent className="p-0">{q.isLoading ? <LoadingState /> : <div className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</div>}</CardContent></Card>
+      {q.isLoading || q.isError || !p || !sections ? (
+        <Card><CardContent className="p-0">{q.isLoading ? <LoadingState /> : q.isError ? <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} /> : <div className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</div>}</CardContent></Card>
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">
           <SectionCard title="الأصول" rows={sections.assets} total={p.totalAssets} totalLabel="إجمالي الأصول" tone="emerald" />

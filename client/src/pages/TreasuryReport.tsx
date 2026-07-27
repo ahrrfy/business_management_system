@@ -10,7 +10,7 @@ import { fmtAr, formatIqd, D } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { CopyButton, CopyInline } from "@/components/CopyButton";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 
 type TS = RouterOutputs["reports"]["treasurySummary"];
 
@@ -144,12 +144,12 @@ export default function TreasuryReport() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading || !ts ? (
-            q.isLoading ? (
-              <LoadingState />
-            ) : (
-              <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
-            )
+          {q.isLoading ? (
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+          ) : !ts ? (
+            <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
           ) : (
             <table className="w-full text-sm">
               <thead>

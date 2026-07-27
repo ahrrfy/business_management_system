@@ -2,7 +2,7 @@
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). يكشف رواتب/تسويات ⇒ صلاحية hr/READ خادمياً.
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell } from "@/components/reports/ReportShell";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtAr } from "@/lib/money";
@@ -117,6 +117,8 @@ export default function HrChangesReport() {
           <div className="border-b px-4 py-2.5 text-sm font-semibold">الترقيات</div>
           {q.isLoading ? (
             <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
           ) : !promotions.length ? (
             <p className="p-6 text-center text-sm text-muted-foreground">لا ترقيات مسجّلة.</p>
           ) : (
@@ -158,6 +160,8 @@ export default function HrChangesReport() {
           <div className="border-b px-4 py-2.5 text-sm font-semibold">إنهاء الخدمات</div>
           {q.isLoading ? (
             <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
           ) : !terminations.length ? (
             <p className="p-6 text-center text-sm text-muted-foreground">لا حالات إنهاء خدمة مسجّلة.</p>
           ) : (

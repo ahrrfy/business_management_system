@@ -5,6 +5,7 @@ import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, fmtInt } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -100,7 +101,9 @@ export default function InventoryValuation() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مخزون في هذا النطاق.</p>
           ) : (

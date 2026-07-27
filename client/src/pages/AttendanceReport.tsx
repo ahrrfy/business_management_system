@@ -5,7 +5,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -128,6 +128,8 @@ export default function AttendanceReport() {
         <CardContent className="p-0">
           {q.isLoading ? (
             <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا سجلّات حضور في هذا النطاق.</p>
           ) : (

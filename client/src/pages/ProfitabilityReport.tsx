@@ -8,7 +8,7 @@ import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -65,6 +65,17 @@ export default function ProfitabilityReport() {
     (dim === "product" && products.isLoading) ||
     (dim === "category" && categories.isLoading) ||
     (dim !== "product" && dim !== "category" && byDim.isLoading);
+
+  const error =
+    (dim === "product" && products.isError) ||
+    (dim === "category" && categories.isError) ||
+    (dim !== "product" && dim !== "category" && byDim.isError);
+
+  function refetchActive() {
+    if (dim === "product") return products.refetch();
+    if (dim === "category") return categories.refetch();
+    return byDim.refetch();
+  }
 
   const subLabel =
     dim === "product" ? "الكمية" : dim === "category" ? "الأصناف" : "الفواتير";
@@ -186,6 +197,8 @@ export default function ProfitabilityReport() {
         <CardContent className="p-0">
           {loading ? (
             <LoadingState />
+          ) : error ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void refetchActive()} />
           ) : (
             <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">

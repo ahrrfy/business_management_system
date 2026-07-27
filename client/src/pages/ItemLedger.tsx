@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { exportRows } from "@/lib/export";
 import { fmtInt } from "@/lib/money";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { TablePager } from "@/components/table/TablePager";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -314,6 +314,8 @@ export default function ItemLedger() {
             </p>
           ) : ledger.isLoading ? (
             <LoadingState />
+          ) : ledger.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void ledger.refetch()} />
           ) : (
             <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">
