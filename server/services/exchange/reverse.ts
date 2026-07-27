@@ -3,7 +3,7 @@
 // الوحيدة الصحيحة لأن WAVG يعتمد على المسار). بفصل مهام (مُنشئ ≠ مُنفِّذ العكس، admin مُستثنى).
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
-import { and, asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { accountingEntries, exchangeHouses, exchangeTransactions, receipts } from "../../../drizzle/schema";
 import type { Tx } from "../../db";
 import { adjustSupplierBalance, postEntry } from "../ledgerService";
@@ -97,6 +97,32 @@ export async function reverseExchangeTransaction(
     }
     const houseId = Number(txn.exchangeHouseId);
     await lockHouse(tx, houseId); // قفل المحفظة قبل أيّ تعديل رصيد
+
+    // حارس اتساق فرق الصرف (تدقيق ٢٥/٧): عكس اقتناءِ دولارٍ (FX_BUY أو DEPOSIT-USD) استهلكته عمليةٌ
+    // لاحقة (تسوية/سحب دولار) يترك فرق الصرف المحقَّق لتلك العملية محسوباً على متوسط كلفةٍ بطَل بعد
+    // إعادة الاشتقاق (recompute يصحّح الأرصدة لا القيود المُرحَّلة سابقاً) ⇒ انحراف P&L صامت دائم.
+    // نمنعه: تُعكَس العمليات اللاحقة المستهلِكة للدولار أوّلاً (id تصاعديّ = ترتيب الإدراج، لا الساعة).
+    if (txn.type === "FX_BUY" || (txn.type === "DEPOSIT" && txn.currency === "USD")) {
+      const [laterDisposal] = await tx
+        .select({ txnNumber: exchangeTransactions.txnNumber })
+        .from(exchangeTransactions)
+        .where(
+          and(
+            eq(exchangeTransactions.exchangeHouseId, houseId),
+            eq(exchangeTransactions.status, "ACTIVE"),
+            eq(exchangeTransactions.currency, "USD"),
+            inArray(exchangeTransactions.type, ["SETTLE", "WITHDRAW"]),
+            gt(exchangeTransactions.id, txnId),
+          ),
+        )
+        .limit(1);
+      if (laterDisposal) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `لا يمكن عكس هذا الاقتناء الدولاريّ: عمليةٌ لاحقة (${laterDisposal.txnNumber}) استهلكت دولاره ⇒ عكسه يترك فرق الصرف المحقَّق لتلك العملية على قيمةٍ خاطئة. اعكس العمليات اللاحقة المستهلِكة للدولار أوّلاً.`,
+        });
+      }
+    }
 
     // ١) علّم العملية REVERSED (recompute أدناه يعتمد الحالة النشطة فيستثنيها).
     await tx.update(exchangeTransactions).set({ status: "REVERSED" }).where(eq(exchangeTransactions.id, txnId));
