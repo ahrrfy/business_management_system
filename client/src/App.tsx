@@ -27,6 +27,9 @@ import { RedirectKeepQuery } from "@/components/RedirectKeepQuery";
 import { isPublicHost, redirectTargetUrl, resolveHostRedirect } from "@/lib/siteHosts";
 
 const CustomerNew = lazy(() => import("@/pages/CustomerNew"));
+const ForceTwoFactorEnroll = lazy(() =>
+  import("@/components/ForceTwoFactorEnroll").then((m) => ({ default: m.ForceTwoFactorEnroll })),
+);
 const CustomerEdit = lazy(() => import("@/pages/CustomerEdit"));
 const SupplierNew = lazy(() => import("@/pages/SupplierNew"));
 const SupplierEdit = lazy(() => import("@/pages/SupplierEdit"));
@@ -136,7 +139,17 @@ function Protected({ children }: { children: React.ReactNode }) {
     void me.refetch();
   }, [me.refetch]);
   // جلسة معلومة (ولو فشل آخر جلب بسبب انقطاع — الكاش يبقى) ⇒ اعرض الشاشة؛ الكاش أصدق من الطرد.
-  if (me.data) return <>{children}</>;
+  if (me.data) {
+    // إلزام 2FA (قرار المالك ٢٣/٧): الأدمن/المدير بلا 2FA يُحجَبون على شاشة التفعيل حتى يُفعّلوها.
+    if ((me.data as { mustEnroll2FA?: boolean }).mustEnroll2FA) {
+      return (
+        <Suspense fallback={<div className="min-h-screen flex items-center justify-center text-muted-foreground">جارٍ التحميل…</div>}>
+          <ForceTwoFactorEnroll />
+        </Suspense>
+      );
+    }
+    return <>{children}</>;
+  }
   if (me.isLoading) {
     return <div className="min-h-screen flex items-center justify-center text-muted-foreground">جارٍ التحميل…</div>;
   }
