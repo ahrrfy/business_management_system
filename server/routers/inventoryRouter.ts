@@ -70,7 +70,7 @@ export const inventoryRouter = router({
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: warehouse يُجبَر على أن يكون فرع المصدر فرعَه (لا يُفرغ مخزن فرع ليس له
       // عبر استدعاء API مباشر). admin/manager يحترمان fromBranchId المُرسَل (نقل بين أي فرعين).
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // «كتابة فرعه»: المدير لم يعُد عابر الفروع كتابةً (قرار المالك ٢٣/٧)
       let fromBranchId = input.fromBranchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
@@ -139,7 +139,7 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // «كتابة فرعه»: المدير لم يعُد عابر الفروع كتابةً (قرار المالك ٢٣/٧)
       let fromBranchId = input.fromBranchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
@@ -224,7 +224,7 @@ export const inventoryRouter = router({
   transfersPendingIncoming: inventoryReadProcedure
     .input(z.object({ branchId: z.number().int().positive().nullish() }).optional())
     .query(({ input, ctx }) => {
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ["admin", "manager"].includes(ctx.user.role); // قراءة عبر الفروع مسموحة للمدير (قرار المالك ٢٣/٧)
       const own = ctx.user.branchId == null ? null : Number(ctx.user.branchId);
       const scope = elevated ? (input?.branchId ?? null) : own;
       if (!elevated && scope == null) return 0;
@@ -305,7 +305,7 @@ export const inventoryRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       // عزل الفرع: warehouse يُجبَر على فرعه — يمنع طلب تسوية فرع آخر عبر API مباشر.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // «كتابة فرعه»: المدير لم يعُد عابر الفروع كتابةً (قرار المالك ٢٣/٧)
       let branchId = input.branchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
@@ -371,10 +371,8 @@ export const inventoryRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      // عزل (تَدقيق ٢٣/٦/٢٦): مدير الفرع يُقيَّد بفرعه. الـadmin يَعبر.
-      if (ctx.user.role === "manager" && input?.branchId != null && input.branchId !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة مخزون فرع آخر" });
-      }
+      // «قراءة الكل» (قرار المالك ٢٣/٧): المدير يقرأ مخزون أيّ فرع (إشراف) — scopedBranchId=null له فيمرّ
+      // input.branchId؛ الأدمن كذلك. الكاشير/المخزن مُجبَران على فرعهما عبر scopedBranchId. (الكتابة تبقى على الفرع.)
       const branchId = ctx.scopedBranchId ?? input?.branchId ?? ctx.user.branchId ?? 1;
 
       const conds: any[] = [eq(branchStock.branchId, branchId)];
@@ -435,12 +433,7 @@ export const inventoryRouter = router({
     .query(async ({ input, ctx }) => {
       const db = getDb();
       if (!db) return [];
-      // عزل (تَدقيق ٢٣/٦/٢٦): inventoryReadProcedure يُعامل المدير كـelevated (scope=null) ⇒
-      // مدير ف١ كان يَقرأ مخزون ف٢ بلا حسيب. الـadmin يَبقى cross-branch (سلطة عليا)، والمدير
-      // يُحَدّ في فرعه. الكاشير/المخزن مُجبَران سلفاً عبر scopedBranchId.
-      if (ctx.user.role === "manager" && input.branchId !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة مخزون فرع آخر" });
-      }
+      // «قراءة الكل» (قرار المالك ٢٣/٧): المدير يقرأ مخزون أيّ فرع (إشراف) — scopedBranchId=null له فيمرّ input.branchId.
       const branchId = ctx.scopedBranchId ?? input.branchId;
       const q = db
         .select()
@@ -457,10 +450,7 @@ export const inventoryRouter = router({
       const db = getDb();
       if (!db) return [];
       const conds = [];
-      // عزل (تَدقيق ٢٣/٦/٢٦): مدير الفرع يُقيَّد بفرعه على movements (كاردكس عبر-فرعي = تَسريب).
-      if (ctx.user.role === "manager" && input.branchId != null && input.branchId !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة حركات فرع آخر" });
-      }
+      // «قراءة الكل» (قرار المالك ٢٣/٧): المدير يقرأ حركات أيّ فرع (إشراف) — الافتراضيّ فرعه عند غياب branchId (أدناه).
       // عزل المدير (تدقيق ١٧/٧): scopedBranchId=null للمدير ⇒ عند غياب input.branchId كان يمسح حركات
       // كل الفروع. الافتراضي فرعه المُسنَد (لا سقوط إلى null)؛ admin وحده يرى الكل بلا فرع صريح.
       const branchId =
@@ -501,10 +491,7 @@ export const inventoryRouter = router({
       if (!db) return { rows: [], total: 0, hasMore: false, nextCursor: null as number | null };
       const i = input ?? { limit: 200, offset: 0 };
 
-      // عزل (تَدقيق ٢٣/٦/٢٦): مدير الفرع يُقيَّد بفرعه على movementsRich (كاردكس عبر-فرعي = تَسريب).
-      if (ctx.user.role === "manager" && i.branchId != null && i.branchId !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة حركات فرع آخر" });
-      }
+      // «قراءة الكل» (قرار المالك ٢٣/٧): المدير يقرأ حركات أيّ فرع (إشراف) — scopedBranchId=null له فيمرّ i.branchId (null=الكل).
       const branchFilter = ctx.scopedBranchId ?? i.branchId ?? null;
 
       const conds: any[] = [];
@@ -623,9 +610,7 @@ export const inventoryRouter = router({
         .optional()
     )
     .query(async ({ input, ctx }) => {
-      if (ctx.user.role === "manager" && input?.branchId != null && input.branchId !== Number(ctx.user.branchId)) {
-        throw new TRPCError({ code: "FORBIDDEN", message: "مدير الفرع لا يَستطيع قراءة تنبيهات فرع آخر" });
-      }
+      // «قراءة الكل» (قرار المالك ٢٣/٧): المدير يقرأ تنبيهات أيّ فرع (إشراف) — يمرّ input.branchId؛ الافتراضيّ فرعه أدناه.
       // admin بلا فرع صريح ⇒ كل الفروع (null). غير الأدمن يسقط على فرعه (لا `?? 1` — نمط G3).
       const branchId =
         ctx.scopedBranchId ??
@@ -679,7 +664,7 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const elevated = ctx.user.role === "admin"; // «كتابة فرعه»: المدير لم يعُد عابر الفروع كتابةً (قرار المالك ٢٣/٧)
       let branchId = input.branchId;
       if (!elevated) {
         if (ctx.user.branchId == null) {
