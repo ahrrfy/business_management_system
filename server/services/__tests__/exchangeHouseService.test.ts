@@ -334,7 +334,8 @@ describe("exchange-house — وحدة الصيرفة ثنائية العملة",
     // قبل الاعتماد: لا رفع رصيد ولا WAVG ولا قيد إعلاميّ — العملية معلّقة تُستثنى من الاشتقاق.
     let h = await getExchangeHouse(id);
     expect(h?.balanceUsd).toBe("0.00");
-    expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("0");
+    // ledgerAmount يُرجع "0.00" لا "0" عند غياب القيود (نوع COALESCE(SUM(decimal),0) عشريّ بمنزلتين).
+    expect(await ledgerAmount("EXCHANGE_DEPOSIT", id)).toBe("0.00");
     expect((await listPendingExchangeDeposits(id)).length).toBe(1);
 
     // فصل المهام: لا يجوز أن يعتمده مُنشئه.
