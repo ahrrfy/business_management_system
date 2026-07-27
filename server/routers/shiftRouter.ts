@@ -281,7 +281,10 @@ export const shiftRouter = router({
       if (!report) return null;
       // ctx.scopedBranchId == null للمرتفعين (admin/manager): مرور حر.
       // ctx.scopedBranchId == number لغيرهم: فرض المطابقة.
-      const sBranchId = (report as { branchId?: number | null })?.branchId;
+      // إصلاح تدقيق ٢٧/٧: فرعُ الوردية مُعشَّشٌ تحت report.shift لا في جذر report — كان القالب
+      // `(report as { branchId? })` يقرأ undefined دائماً فيُبطِل الحارس صامتاً (IDOR ماليّ عابر
+      // للفروع). المسار الصحيح مُنمَّطٌ الآن فيمتنع تكرار الخطأ (لا cast).
+      const sBranchId = report.shift.branchId;
       if (ctx.scopedBranchId != null && sBranchId != null && Number(sBranchId) !== ctx.scopedBranchId) {
         throw new TRPCError({ code: "FORBIDDEN", message: "ليس لك صلاحية على ورديات هذا الفرع" });
       }
