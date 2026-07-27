@@ -208,7 +208,7 @@ export default function GiftsHub() {
                     <tr key={r.id} className="border-t">
                       <td className="px-3 py-2 font-medium">{r.giftNumber}</td>
                       <td className="px-3 py-2">
-                        <span className={r.direction === "IN" ? "text-emerald-700" : "text-blue-700"}>
+                        <span className={r.direction === "IN" ? "text-money-positive" : "text-[var(--sem-info)]"}>
                           {r.direction === "IN" ? "وارد" : "صادر"}
                         </span>
                       </td>
