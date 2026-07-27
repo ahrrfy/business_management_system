@@ -799,6 +799,13 @@
       "when": 1785369600000,
       "tag": "0114_exchange_deposit_pending",
       "breakpoints": true
+    },
+    {
+      "idx": 115,
+      "version": "5",
+      "when": 1785456000000,
+      "tag": "0115_chart_of_accounts",
+      "breakpoints": true
     }
   ]
 }

@@ -62,6 +62,8 @@ const EXTRA_MIGRATIONS = [
   // enum موثوقاً على قواعد CI الدائمة (نظير 0068). MODIFY idempotent (يُعيد ضبط العمود لنفس التعريف)
   // ⇒ آمن للتطبيق المتكرّر بعد db:push. يضمن وجود القيمة الثالثة قبل اختبارات فصل درج الطباعة.
   "drizzle/migrations/0105_shift_type_print_services.sql",
+  // ملاحظة: شجرة الحسابات (P0، الهجرة 0115) لا تُبذَر هنا — اختبار chartOfAccounts.test.ts يبذُر
+  // شجرته ذاتياً من CHART_ACCOUNTS (أمتنُ من بذرٍ عامّ عبر db:push، الذي أخفى خطأ INSERT صامتاً).
 ];
 
 const url = process.env.DATABASE_URL;
