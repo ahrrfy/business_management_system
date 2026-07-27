@@ -39,10 +39,10 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
 
     if (input.currency === "USD") {
       const availUsd = money(house.balanceUsd);
-      if (amount.gt(availUsd) && !input.confirmNegative) {
+      if (amount.gt(availUsd)) {
         throw new TRPCError({
           code: "PRECONDITION_FAILED",
-          message: `رصيد الدولار لدى الصيرفة ${availUsd.toFixed(2)}$ أقلّ من المطلوب ${amount.toFixed(2)}$. أرسل confirmNegative=true للتجاوز.`,
+          message: `السحب مرفوض: رصيد الدولار لدى الصيرفة ${availUsd.toFixed(2)}$ أقلّ من المطلوب ${amount.toFixed(2)}$. لا يجوز إنشاء رصيد خزينة من محفظة سالبة.`,
         });
       }
 
@@ -83,10 +83,10 @@ export async function withdrawFromExchange(input: WithdrawInput, actor: Actor): 
     }
 
     const availIqd = money(house.balanceIqd);
-    if (amount.gt(availIqd) && !input.confirmNegative) {
+    if (amount.gt(availIqd)) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `رصيد الدينار لدى الصيرفة ${availIqd.toFixed(2)} أقلّ من المطلوب ${amount.toFixed(2)}. أرسل confirmNegative=true للتجاوز.`,
+        message: `السحب مرفوض: رصيد الدينار لدى الصيرفة ${availIqd.toFixed(2)} أقلّ من المطلوب ${amount.toFixed(2)}. لا يجوز إنشاء نقد خزينة بلا رصيد مصدر.`,
       });
     }
 

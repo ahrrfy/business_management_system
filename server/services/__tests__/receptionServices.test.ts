@@ -1,11 +1,12 @@
 // توجيه خدمة الطباعة لكاشير الاستقبال (showInReception): الإظهار المشروط + علم isPrintService.
 // يعمل على قاعدة الاختبار الحقيقية (MySQL) لأن شرط الرؤية يُنفَّذ في SQL.
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { listForPos } from "../catalogService";
 import { PRINT_SERVICE_TYPE } from "../printSaleService";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
 
@@ -18,15 +19,56 @@ async function reset() {
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
 }
 
+async function syncProductSearchNormFixture() {
+  const d = db();
+  const meta: any = await d.execute(sql`
+    SELECT COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'products'
+      AND COLUMN_NAME = 'searchNorm'
+    LIMIT 1
+  `);
+  const column = Array.isArray(meta) ? meta[0]?.[0] : meta?.rows?.[0];
+  if (String(column?.expr ?? "").trim()) return;
+
+  const rows = await d.select({ id: s.products.id, name: s.products.name }).from(s.products);
+  for (const row of rows) {
+    await d
+      .update(s.products)
+      .set({ searchNorm: normalizeSearchText(row.name) })
+      .where(eq(s.products.id, row.id));
+  }
+}
+
 /** بذرة: صنف عادي + خدمتا طباعة (واحدة مُوجَّهة للاستقبال وأخرى لا). */
 async function seed() {
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
   await d.insert(s.products).values([
-    { id: 1, name: "قلم جاف أزرق", productType: null, isService: false, showInReception: false },
-    { id: 2, name: "تصوير A4 أبيض/أسود", productType: PRINT_SERVICE_TYPE, isService: true, showInReception: true },
-    { id: 3, name: "تجليد حراري", productType: PRINT_SERVICE_TYPE, isService: true, showInReception: false },
+    {
+      id: 1,
+      name: "قلم جاف أزرق",
+      productType: null,
+      isService: false,
+      showInReception: false,
+    },
+    {
+      id: 2,
+      name: "تصوير A4 أبيض/أسود",
+      productType: PRINT_SERVICE_TYPE,
+      isService: true,
+      showInReception: true,
+    },
+    {
+      id: 3,
+      name: "تجليد حراري",
+      productType: PRINT_SERVICE_TYPE,
+      isService: true,
+      showInReception: false,
+    },
   ]);
+  await syncProductSearchNormFixture();
   await d.insert(s.productVariants).values([
     { id: 1, productId: 1, sku: "PEN-BLUE", costPrice: "0.00" },
     { id: 2, productId: 2, sku: "SVC-COPY-A4", costPrice: "0.00" },

@@ -30,12 +30,6 @@ import { Link } from "wouter";
 import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, RefreshCw, Zap, ChevronDown } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
 import { CashCounter } from "@/components/CashCounter";
-import {
-  MATERIAL_SHIFT_VARIANCE_IQD,
-  SHIFT_VARIANCE_CODES,
-  SHIFT_VARIANCE_LABELS,
-  type ShiftVarianceCode,
-} from "@shared/shiftCashGovernance";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -720,7 +714,14 @@ export default function POS() {
       // فرّغ التبويب المُباع تحديداً (لا التبويب النشط الحالي) وجدّد مفتاحه للبيع التالي.
       patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
 
-      await printReceipt(buildBrandedReceipt(alignedRec));
+      const printed = await printReceipt(buildBrandedReceipt(alignedRec));
+      if (printed.via === "server") {
+        notify.ok("تمت الطباعة المباشرة", `فاتورة ${r.invoiceNumber} أُرسلت إلى طابعة الكاشير`);
+      } else if (printed.via === "thermal") {
+        notify.ok("تمت الطباعة الحرارية", `فاتورة ${r.invoiceNumber} أُرسلت إلى الطابعة المربوطة`);
+      } else {
+        notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة؛ اربط طابعة الكاشير من رمز الطابعة لتعمل مباشرة لاحقاً");
+      }
       await Promise.all([
         utils.catalog.posList.invalidate(),
         utils.customers.list.invalidate(),
@@ -894,7 +895,10 @@ export default function POS() {
     clearCartDraft(branchId);
     notify.ok(`بيع دون اتصال — إيصال مؤقّت ${receiptNumber}`, "الرقم الرسمي يصدر تلقائياً عند عودة الاتصال (شارة المزامنة أسفل الشاشة)");
     patchTab(ctx.tabId, { cart: [], payInput: "", selId: null, couponInput: "", couponCode: null, couponLabel: null, clientRequestId: newClientRequestId() });
-    await printReceipt(buildBrandedReceipt(rec));
+    const printed = await printReceipt(buildBrandedReceipt(rec));
+    if (printed.via === "browser") {
+      notify.warn("الطابعة المباشرة غير متاحة", "افتُتحت نافذة الطباعة للإيصال المؤقت");
+    }
   }
 
   function submitSale(approval?: { email: string; password: string }) {
@@ -2157,10 +2161,6 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
   const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
-  const [varianceCode, setVarianceCode] = useState<ShiftVarianceCode | "">("");
-  const [varianceReason, setVarianceReason] = useState("");
-  const [managerEmail, setManagerEmail] = useState("");
-  const [managerPassword, setManagerPassword] = useState("");
   const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
   const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: !!shift });
@@ -2169,7 +2169,6 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   // فواتير في Z ⇒ محجوب افتراضياً؛ المدير/الأدمن يتجاوز بإقرار صريح (تُرحَّل لاحقاً وتدخل
   // الوردية موسومةً «مُزامنة لاحقاً» في التقرير).
   const [outboxQueued, setOutboxQueued] = useState({ count: 0, total: 0 });
-  const [overrideAck, setOverrideAck] = useState(false);
   useEffect(() => {
     let alive = true;
     const load = () => {
@@ -2181,8 +2180,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
     const off = subscribeOutbox(load);
     return () => { alive = false; off(); };
   }, []);
-  const isElevated = me?.role === "admin" || me?.role === "manager";
-  const closeBlocked = outboxQueued.count > 0 && !(isElevated && overrideAck);
+  const closeBlocked = outboxQueued.count > 0;
 
   const reportQ = trpc.shifts.report.useQuery(
     { shiftId: shift!.id },
@@ -2229,10 +2227,6 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   const countedD    = counted ? D(counted) : null;
   const diffD       = expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
-  const materialVariance = hasVariance && diffD!.abs().gte(MATERIAL_SHIFT_VARIANCE_IQD);
-  const varianceIncomplete = hasVariance && (!varianceCode || varianceReason.trim().length < 10);
-  const approvalIncomplete =
-    materialVariance && !isElevated && (!managerEmail.trim() || !managerPassword);
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
   const cashIn      = cashInD.toNumber();
   const cashOut     = cashOutD.toNumber();
@@ -2302,34 +2296,13 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
             </div>
 
             {hasVariance && (
-              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${materialVariance ? C.danger : C.amber}`, borderRadius: 9, background: materialVariance ? C.dangerSoft : C.amberSoft }}>
-                <div style={{ fontSize: 13, fontWeight: 800, marginBottom: 7 }}>
-                  هذا النقد لا يطابق الحركات المسجّلة. حدّد مصدر الفرق قبل الإغلاق.
+              <div style={{ marginTop: 14, padding: 12, border: `1.5px solid ${C.danger}`, borderRadius: 9, background: C.dangerSoft }}>
+                <div style={{ fontSize: 13, fontWeight: 800, color: C.danger }}>
+                  لا يمكن إغلاق الوردية: النقد المعدود لا يساوي الرصيد الافتتاحي مضافاً إليه صافي المبيعات النقدية المسجّلة.
                 </div>
-                <select
-                  value={varianceCode}
-                  onChange={(e) => setVarianceCode(e.target.value as ShiftVarianceCode)}
-                  style={{ width: "100%", height: 42, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit" }}
-                >
-                  <option value="">— تصنيف الفرق —</option>
-                  {SHIFT_VARIANCE_CODES.map((code) => <option key={code} value={code}>{SHIFT_VARIANCE_LABELS[code]}</option>)}
-                </select>
-                <textarea
-                  value={varianceReason}
-                  onChange={(e) => setVarianceReason(e.target.value)}
-                  maxLength={500}
-                  placeholder="من أين جاءت الزيادة أو لماذا حدث العجز؟ اذكر السند/العملية أو نتيجة إعادة العد."
-                  style={{ width: "100%", minHeight: 72, marginTop: 8, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: 10, fontFamily: "inherit", resize: "vertical", boxSizing: "border-box" }}
-                />
-                {materialVariance && !isElevated && (
-                  <div style={{ marginTop: 9 }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 800, color: C.danger, marginBottom: 6 }}>
-                      فرق جوهري يتجاوز {MATERIAL_SHIFT_VARIANCE_IQD.toLocaleString("en-US")} د.ع — يلزم اعتماد مدير.
-                    </div>
-                    <input value={managerEmail} onChange={(e) => setManagerEmail(e.target.value)} type="email" placeholder="بريد المدير" style={{ width: "100%", height: 40, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit", boxSizing: "border-box" }} />
-                    <input value={managerPassword} onChange={(e) => setManagerPassword(e.target.value)} type="password" placeholder="كلمة مرور المدير" style={{ width: "100%", height: 40, marginTop: 7, border: `1px solid ${C.border}`, borderRadius: 8, background: C.card, color: C.fg, padding: "0 10px", fontFamily: "inherit", boxSizing: "border-box" }} />
-                  </div>
-                )}
+                <div style={{ marginTop: 6, fontSize: 12.5, color: C.mutedFg }}>
+                  أعد العد، ثم راجع الفواتير والمرتجعات والمزامنة. إذا بقي الفرق فاستدعِ المدير لتصحيح العملية من وحدتها المختصة؛ لا يمكن اعتماد مال بلا مصدر من شاشة الإغلاق.
+                </div>
               </div>
             )}
 
@@ -2342,7 +2315,7 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               loading={recipientsQ.isLoading}
             />
 
-            {/* ش٤ أوفلاين: حارس الطابور غير المُزامَن — حجب الإغلاق (تجاوز مديري بإقرار صريح). */}
+            {/* ش٤ أوفلاين: لا مصدر مالي قبل ترحيل الفاتورة، لذلك لا يوجد تجاوز للإغلاق. */}
             {outboxQueued.count > 0 && (
               <div style={{ marginTop: 14, padding: "10px 12px", background: C.amberSoft, border: `1.5px solid ${C.amber}`, borderRadius: 9, fontSize: 12.5, color: C.fg }}>
                 <div style={{ fontWeight: 800, display: "inline-flex", alignItems: "center", gap: 6 }}>
@@ -2351,14 +2324,9 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 <div style={{ marginTop: 4, color: C.mutedFg }}>
                   أكمل المزامنة قبل الإغلاق (شارة المزامنة أسفل الشاشة) — نقدها في الدرج ولن تظهر في Z قبل الترحيل.
                 </div>
-                {isElevated ? (
-                  <label style={{ display: "flex", alignItems: "flex-start", gap: 7, marginTop: 8, cursor: "pointer", fontWeight: 700 }}>
-                    <input type="checkbox" checked={overrideAck} onChange={(e) => setOverrideAck(e.target.checked)} style={{ marginTop: 3 }} />
-                    <span>إغلاق رغم ذلك — تُرحَّل لاحقاً وتدخل الوردية موسومةً «مُزامنة لاحقاً» في التقرير</span>
-                  </label>
-                ) : (
-                  <div style={{ marginTop: 6, fontWeight: 700 }}>يستطيع المدير الإغلاق متجاوزاً عند الضرورة.</div>
-                )}
+                <div style={{ marginTop: 6, fontWeight: 700 }}>
+                  لا يمكن الإغلاق قبل مزامنة الفواتير، حتى بصلاحية المدير.
+                </div>
               </div>
             )}
 
@@ -2368,20 +2336,15 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 إلغاء
               </button>
               <button
-                disabled={!counted || closeShift.isPending || closeBlocked || handoverIncomplete(handover) || varianceIncomplete || approvalIncomplete}
+                disabled={!counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover)}
                 onClick={() => shift && closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
                   countedBreakdown: closeCounts,
-                  varianceReasonCode: hasVariance ? varianceCode || undefined : undefined,
-                  varianceReason: hasVariance ? varianceReason.trim() : undefined,
-                  managerApproval: materialVariance && !isElevated
-                    ? { email: managerEmail.trim(), password: managerPassword }
-                    : undefined,
                   handover: buildHandoverPayload(handover),
                 })}
-                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || varianceIncomplete || approvalIncomplete ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || varianceIncomplete || approvalIncomplete ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || varianceIncomplete || approvalIncomplete ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
-                {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : "إغلاق وطباعة Z"}
+                style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
+                {closeShift.isPending ? "جارٍ الإغلاق…" : closeBlocked ? "أكمل المزامنة أولاً" : hasVariance ? "الإغلاق مرفوض لوجود فرق" : "إغلاق وطباعة Z"}
               </button>
             </div>
           </>

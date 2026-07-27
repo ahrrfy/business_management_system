@@ -13,7 +13,7 @@ import { approveVoucher } from "../voucher/approval";
  */
 const mgr = { userId: 1, branchId: 1, role: "manager" as const };
 const mgr2 = { userId: 2, branchId: 1, role: "manager" as const };
-const TABLES = ["accountingEntries", "receipts", "shifts", "suppliers", "users", "branches"];
+const TABLES = ["accountingEntries", "idempotencyKeys", "receipts", "shifts", "suppliers", "users", "branches"];
 function db() { const d = getDb(); if (!d) throw new Error("no DB"); return d; }
 async function seedBase() {
   await db().insert(s.branches).values({ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" });
@@ -31,7 +31,7 @@ beforeEach(async () => { await truncateTables(TABLES); await seedBase(); });
 describe("بضاعة الأمانة ش٥ — حوكمة تسوية المودِع", () => {
   it("سند صرف لمودِع أمانة يُنشأ PENDING دائماً (ولو صغُر المبلغ دون عتبة المليون)", async () => {
     const cid = await mkConsignorWithBalance("10000");
-    const r = await createVoucher({ voucherType: "PAYMENT", branchId: 1, amount: "5000", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: cid, description: "تسوية" }, mgr);
+    const r = await createVoucher({ voucherType: "PAYMENT", branchId: 1, amount: "5000", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: cid, description: "تسوية", clientRequestId: "consignment-settlement-pending" }, mgr);
     expect(r.approvalStatus).toBe("PENDING_APPROVAL"); // لا اعتماد ذاتيّ رغم أن 5000 < المليون
     // الأثر المالي معلَّق — الرصيد لم يتغيّر بعد.
     expect(await balance(cid)).toBe("10000.00");
@@ -39,13 +39,13 @@ describe("بضاعة الأمانة ش٥ — حوكمة تسوية المودِ�
 
   it("صرف يتجاوز المستحق يُرفض عند الإنشاء", async () => {
     const cid = await mkConsignorWithBalance("10000");
-    await expect(createVoucher({ voucherType: "PAYMENT", branchId: 1, amount: "15000", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: cid, description: "زائد" }, mgr))
+    await expect(createVoucher({ voucherType: "PAYMENT", branchId: 1, amount: "15000", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: cid, description: "زائد", clientRequestId: "consignment-settlement-exceeds-balance" }, mgr))
       .rejects.toMatchObject({ code: "BAD_REQUEST" });
   });
 
   it("الاعتماد بمدير آخر (SOD) يرحّل PAYMENT_OUT ويخفض المستحق", async () => {
     const cid = await mkConsignorWithBalance("10000");
-    const r = await createVoucher({ voucherType: "PAYMENT", branchId: 1, amount: "6000", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: cid, description: "تسوية" }, mgr);
+    const r = await createVoucher({ voucherType: "PAYMENT", branchId: 1, amount: "6000", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: cid, description: "تسوية", clientRequestId: "consignment-settlement-approved" }, mgr);
     await approveVoucher(r.receiptId, mgr2); // مدير آخر
     expect(await balance(cid)).toBe("4000.00");
     const po = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
@@ -55,7 +55,7 @@ describe("بضاعة الأمانة ش٥ — حوكمة تسوية المودِ�
 
   it("المنشئ لا يعتمد سنده (SOD-04)", async () => {
     const cid = await mkConsignorWithBalance("10000");
-    const r = await createVoucher({ voucherType: "PAYMENT", branchId: 1, amount: "3000", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: cid, description: "تسوية" }, mgr);
+    const r = await createVoucher({ voucherType: "PAYMENT", branchId: 1, amount: "3000", paymentMethod: "CASH", partyType: "SUPPLIER", partyId: cid, description: "تسوية", clientRequestId: "consignment-settlement-self-approval" }, mgr);
     await expect(approveVoucher(r.receiptId, mgr)).rejects.toMatchObject({ code: "FORBIDDEN" });
   });
 });

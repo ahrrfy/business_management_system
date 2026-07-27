@@ -1,11 +1,37 @@
 import { sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 import { getDb } from "../../db";
-import { activateSupplier, createSupplier, deactivateSupplier, getSupplier, listSuppliers, updateSupplier } from "../supplierService";
+import { activateSupplier, createSupplier as createSupplierService, deactivateSupplier, getSupplier, listSuppliers, updateSupplier } from "../supplierService";
 
 const actor = { userId: 1, branchId: 1 };
 function db() { const d = getDb(); if (!d) throw new Error("DATABASE_URL not set"); return d; }
+
+async function createSupplier(
+  input: Parameters<typeof createSupplierService>[0],
+  requestActor: Parameters<typeof createSupplierService>[1],
+) {
+  const result = await createSupplierService(input, requestActor);
+  // في قاعدة db:push المعزولة searchNorm عمود عادي؛ نزرع نفس ثابتة الهجرة المولّدة.
+  const d = db();
+  const meta: any = await d.execute(sql`
+    SELECT COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'suppliers'
+      AND COLUMN_NAME = 'searchNorm'
+    LIMIT 1
+  `);
+  const column = Array.isArray(meta) ? meta[0]?.[0] : meta?.rows?.[0];
+  if (!String(column?.expr ?? "").trim()) {
+    await d
+      .update(s.suppliers)
+      .set({ searchNorm: normalizeSearchText(input.name ?? "") })
+      .where(sql`${s.suppliers.id} = ${result.supplierId}`);
+  }
+  return result;
+}
 
 async function reset() {
   const d = db();

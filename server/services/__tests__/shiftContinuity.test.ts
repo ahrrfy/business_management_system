@@ -1,18 +1,19 @@
 /**
  * ①ج استمرارية نقد الورديات — مطابقة الرصيد الافتتاحيّ للوردية بالمتبقّي فعلياً في الدرج بعد إغلاق
  * آخر وردية مغلقة لنفس (الفرع×النوع): المتبقّي = المعدود − المُسلَّم للخزينة عند الإغلاق. عند اختلاف
- * المُدخَل عن المتوقَّع ⇒ سببٌ إلزاميّ يُسجَّل تدقيقياً (تحذيرٌ لا حظر). أوّل وردية ⇒ لا مطابقة.
+ * المُدخَل عن المتوقَّع ⇒ حظر قطعي حتى لو أُرسل سبب؛ التسوية تسبق فتح الوردية. أوّل وردية ⇒ لا مطابقة.
  *
- * يغطّي (حسب مطالب الشريحة): (أ) نفس المتبقّي ⇒ لا تحذير/سبب · (ب) مبلغٌ مختلف ⇒ سبب إلزاميّ
- * ومُسجَّل · (ج) أوّل وردية ⇒ لا مطابقة · (د) صفر انحدار: closeShift يخزّن المتبقّي بلا كسر السلوك.
+ * يغطّي (حسب مطالب الشريحة): (أ) نفس المتبقّي ⇒ لا تحذير/سبب · (ب) مبلغٌ مختلف ⇒ رفض قطعي
+ * مع السبب وبدونه · (ج) أوّل وردية ⇒ لا مطابقة · (د) صفر انحدار: closeShift يخزّن المتبقّي بلا كسر السلوك.
  * + عزل الفرع/النوع + اختيار آخر مغلقة + قراءة expectedOpening (خدمة + راوتر).
  */
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { closeShift, getExpectedOpening, openShift } from "../shiftService";
 import { appRouter } from "../../routers";
+import { truncateTables } from "./__testUtils__";
 
 function makeCtx(user: any) {
   return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as any;
@@ -27,10 +28,7 @@ function db() {
 }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 const ADMIN = 1;
@@ -74,10 +72,10 @@ async function closeWith(opts: {
 }) {
   const branchId = opts.branchId ?? 1;
   const shiftType = opts.shiftType ?? "RETAIL";
-  // سببٌ ثابت للتهيئة: يُتجاهَل حين لا اختلاف، ويُمرَّر حين يُهيّئ الاختبار وردية تالية على درجٍ له
-  // متبقٍّ سابق (لئلّا تُرفَض التهيئة بحارس الاستمرارية نفسه الذي نختبره).
+  // إن كانت هناك وردية سابقة، تفتح التهيئة على المتبقّي المثبت نفسه؛ لا تستخدم سبباً لتجاوز الحارس.
+  const expected = await getExpectedOpening(branchId, shiftType);
   const { shiftId } = await openShift(
-    { branchId, openingBalance: opts.opening, shiftType, openingDiscrepancyReason: "تهيئة اختبار" },
+    { branchId, openingBalance: expected.expected ?? opts.opening, shiftType },
     { userId: opts.user, branchId },
   );
   await closeShift(
@@ -121,12 +119,12 @@ describe("①ج استمرارية نقد الورديات — الخدمة", ()
     expect(res.expectedOpening).toBe("750.00");
   });
 
-  it("(ب) فتح بمبلغ مختلف بلا سبب ⇒ يُرفَض (سبب مطلوب) ولا وردية تُنشأ", async () => {
+  it("(ب) فتح بمبلغ مختلف بلا سبب ⇒ يُرفَض قطعياً ولا وردية تُنشأ", async () => {
     await closeWith({ user: CASHIER1, opening: "500", counted: "500", handover: "200" }); // متبقٍّ 300
 
     await expect(
       openShift({ branchId: 1, openingBalance: "500", shiftType: "RETAIL" }, { userId: CASHIER2, branchId: 1 }),
-    ).rejects.toThrow(/سبب الاختلاف/);
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     const stillOpen = await db()
       .select()
@@ -135,28 +133,26 @@ describe("①ج استمرارية نقد الورديات — الخدمة", ()
     expect(stillOpen).toHaveLength(0);
   });
 
-  it("(ب) فتح بمبلغ مختلف مع سبب ⇒ ينجح ويُخزَّن السبب + المتوقَّع + الفرق", async () => {
+  it("(ب) فتح بمبلغ مختلف مع سبب ⇒ يُرفَض قطعياً ولا تنشأ وردية", async () => {
     await closeWith({ user: CASHIER1, opening: "500", counted: "500", handover: "200" }); // متبقٍّ 300
 
-    const res = await openShift(
-      { branchId: 1, openingBalance: "500", shiftType: "RETAIL", openingDiscrepancyReason: "إيداع فكّة من الخزينة" },
-      { userId: CASHIER2, branchId: 1 },
-    );
-    expect(res.hasDiscrepancy).toBe(true);
-    expect(res.expectedOpening).toBe("300.00");
-    expect(res.difference).toBe("200.00");
+    await expect(
+      openShift(
+        { branchId: 1, openingBalance: "500", shiftType: "RETAIL", openingDiscrepancyReason: "إيداع فكّة من الخزينة" },
+        { userId: CASHIER2, branchId: 1 },
+      ),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
-    const row = await shiftRow(res.shiftId);
-    expect(row.openingExpectedCash).toBe("300.00");
-    expect(row.openingDiscrepancyReason).toBe("إيداع فكّة من الخزينة");
+    const shifts = await db().select().from(s.shifts);
+    expect(shifts).toHaveLength(1);
   });
 
-  it("عتبة صغيرة: فرقٌ ≥ 0.01 يُعدّ اختلافاً (0.01 يستوجب سبباً)", async () => {
+  it("عتبة صغيرة: فرقٌ ≥ 0.01 يُعدّ اختلافاً ويُرفض", async () => {
     await closeWith({ user: CASHIER1, opening: "0", counted: "300" }); // متبقٍّ 300.00
 
     await expect(
       openShift({ branchId: 1, openingBalance: "300.01", shiftType: "RETAIL" }, { userId: CASHIER2, branchId: 1 }),
-    ).rejects.toThrow(/سبب الاختلاف/);
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 
   it("المطابقة بلا اختلاف لا تُخزّن سبباً حتى لو مُرِّر عبثاً", async () => {
@@ -300,32 +296,26 @@ describe("①ج استمرارية نقد الورديات — الراوتر (o
     expect((await caller.shifts.expectedOpening({ branchId: 1, shiftType: "RETAIL" })).expected).toBe("300.00");
   });
 
-  it("open (راوتر) بفرقٍ + سبب ⇒ ينجح ويُسجَّل تدقيقياً (hasDiscrepancy + المتوقَّع + السبب + entityId)", async () => {
+  it("open (راوتر) بفرقٍ + سبب ⇒ يُرفَض قطعياً ولا يُسجَّل فتح وردية", async () => {
     await closeWith({ user: CASHIER1, opening: "500", counted: "500", handover: "200" }); // متبقٍّ 300
     const caller = appRouter.createCaller(makeCtx({ id: CASHIER2, role: "cashier", branchId: 1, name: "كاشير٢" }));
 
-    const res = await caller.shifts.open({
-      branchId: 1,
-      openingBalance: "500",
-      shiftType: "RETAIL",
-      openingDiscrepancyReason: "بدء برصيد جديد من الخزينة",
-    });
-    expect(res.hasDiscrepancy).toBe(true);
+    await expect(
+      caller.shifts.open({
+        branchId: 1,
+        openingBalance: "500",
+        shiftType: "RETAIL",
+        openingDiscrepancyReason: "بدء برصيد جديد من الخزينة",
+      }),
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
 
     const logs = await db()
       .select()
       .from(s.auditLogs)
       .where(eq(s.auditLogs.action, "shift.open"))
-      .orderBy(desc(s.auditLogs.id))
       .limit(1);
-    expect(logs).toHaveLength(1);
-    const nv = logs[0].newValue as any;
-    expect(nv.hasDiscrepancy).toBe(true);
-    expect(nv.expectedOpening).toBe("300.00");
-    expect(nv.difference).toBe("200.00");
-    expect(nv.discrepancyReason).toBe("بدء برصيد جديد من الخزينة");
-    // entityId كان undefined (openShift يُرجِع shiftId لا id) — أُصلح ليشير للوردية.
-    expect(String(logs[0].entityId)).toBe(String(res.shiftId));
+    expect(logs).toHaveLength(0);
+    expect(await db().select().from(s.shifts)).toHaveLength(1);
   });
 
   it("open (راوتر) بفرقٍ بلا سبب ⇒ يُرفَض", async () => {
@@ -334,6 +324,6 @@ describe("①ج استمرارية نقد الورديات — الراوتر (o
 
     await expect(
       caller.shifts.open({ branchId: 1, openingBalance: "500", shiftType: "RETAIL" }),
-    ).rejects.toThrow(/سبب الاختلاف/);
+    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
   });
 });

@@ -189,20 +189,19 @@ export async function openShift(
     const entered = money(input.openingBalance);
     let hasDiscrepancy = false;
     let difference: string | null = null;
-    let reasonToStore: string | null = null;
+    const reasonToStore: string | null = null;
     if (expectedStr != null) {
       const diff = entered.minus(money(expectedStr));
       hasDiscrepancy = diff.abs().gt(OPENING_DISCREPANCY_EPSILON);
       difference = toDbMoney(diff);
       if (hasDiscrepancy) {
-        const reason = (input.openingDiscrepancyReason ?? "").trim();
-        if (!reason) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: `الرصيد الافتتاحيّ المُدخَل (${entered.toFixed(2)}) يختلف عن المتبقّي من الوردية السابقة (${money(expectedStr).toFixed(2)}) — أدخل سبب الاختلاف للمتابعة.`,
-          });
-        }
-        reasonToStore = reason.slice(0, 500);
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message:
+            `لا يمكن فتح الوردية: الرصيد الافتتاحي (${entered.toFixed(2)}) يجب أن يطابق ` +
+            `المتبقي المثبت من الوردية السابقة (${money(expectedStr).toFixed(2)}). ` +
+            "صحّح مصدر النقد أو تسوية التسليم أولاً.",
+        });
       }
     }
 
@@ -321,34 +320,18 @@ export async function closeShift(
     const varianceApproverId =
       role === "manager" || role === "admin" ? actor.userId : input.managerApprovedByUserId ?? null;
 
-    // الرقم المعدود لا ينشئ مصدراً نقدياً. إثبات العد + تفسير المصدر شرطان
-    // قبل قبول الفرق، والفارق الجوهري لا يعتمده صاحب العهدة بنفسه.
+    // العدّ يثبت الموجود مادياً فقط ولا ينشئ مصدراً نقدياً. بوابة API لا تسمح بإغلاق
+    // الوردية مع أي فرق، حتى بموافقة مدير: يجب تصحيح الفاتورة/المرتجع أو تسجيل الحركة
+    // النظامية من وحدتها المختصة أولاً، ثم يعاد احتساب المتوقع وتتم المطابقة.
     validateCountedBreakdown(input.countedBreakdown, counted);
-    if (input.enforceCashGovernance && hasVariance && !input.countedBreakdown) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "يوجد فرق في الصندوق. أعد عدّ النقد حسب الفئات وأرسل تفصيل العد قبل الإغلاق.",
-      });
-    }
-    if (input.enforceCashGovernance && hasVariance && (!reasonCode || !SHIFT_VARIANCE_CODES.includes(reasonCode))) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "صنّف مصدر فرق الصندوق قبل الإغلاق؛ الرقم المعدود وحده لا يثبت مصدر الأموال.",
-      });
-    }
-    if (input.enforceCashGovernance && hasVariance && reason.length < 10) {
-      throw new TRPCError({
-        code: "BAD_REQUEST",
-        message: "اشرح مصدر فرق الصندوق بوضوح (10 أحرف على الأقل) ليمكن تدقيقه.",
-      });
-    }
-    if (input.enforceCashGovernance && hasVariance && reason.length > 500) {
-      throw new TRPCError({ code: "BAD_REQUEST", message: "تفسير فرق الصندوق يتجاوز 500 حرف." });
-    }
-    if (input.enforceCashGovernance && isMaterialVariance && !varianceApproverId) {
+    if (input.enforceCashGovernance && hasVariance) {
       throw new TRPCError({
         code: "PRECONDITION_FAILED",
-        message: `فرق الصندوق جوهري (${variance.toFixed(2)} د.ع) ويتجاوز حد الرقابة ${MATERIAL_SHIFT_VARIANCE_IQD.toFixed(2)} د.ع. لا يجوز للكاشير اعتماد فرق عهدته بنفسه؛ يجب أن يراجع مدير الفرع العدّ والمصدر ثم يغلق الوردية.`,
+        message:
+          `لا يمكن إغلاق الوردية لأن النقد المعدود (${counted.toFixed(2)} د.ع) ` +
+          `لا يساوي النقد المتوقع من المصادر المسجلة (${expected.toFixed(2)} د.ع)، ` +
+          `والفرق ${variance.toFixed(2)} د.ع. العدّ لا ينشئ مالاً: راجع الرصيد الافتتاحي ` +
+          `والمبيعات والمرتجعات النقدية، وسجّل أو صحّح العملية من وحدتها المختصة ثم أعد الإغلاق.`,
       });
     }
 

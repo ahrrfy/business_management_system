@@ -16,7 +16,7 @@
  */
 import { TRPCError } from "@trpc/server";
 import type Decimal from "decimal.js";
-import { and, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 import { creditApprovals, customers } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
@@ -78,15 +78,22 @@ export async function validateApproval(
   unpaid: Decimal,
 ): Promise<ApprovalRow> {
   // SELECT FOR UPDATE لمنع double-spend عبر سباق ⇒ المعاملتان لنفس approvalId تتسلسلان.
-  const rows = await tx.execute(sql`
-    SELECT id, customerId, maxAmount, expiresAt, consumedAt
-    FROM creditApprovals
-    WHERE id = ${approvalId}
-    LIMIT 1
-    FOR UPDATE
-  `);
-  const data = ((rows as any)[0] ?? rows) as Array<any>;
-  const row = Array.isArray(data) ? data[0] : null;
+  // استخدم mapper المخطط للتواريخ؛ قراءة DATETIME كنص خام ثم new Date(text)
+  // تفسّر النص كتوقيت محلي وتطرح إزاحة المنطقة مرة ثانية، فتُنهي موافقة سليمة مبكراً.
+  const row = (
+    await tx
+      .select({
+        id: creditApprovals.id,
+        customerId: creditApprovals.customerId,
+        maxAmount: creditApprovals.maxAmount,
+        expiresAt: creditApprovals.expiresAt,
+        consumedAt: creditApprovals.consumedAt,
+      })
+      .from(creditApprovals)
+      .where(eq(creditApprovals.id, approvalId))
+      .for("update")
+      .limit(1)
+  )[0];
   if (!row) {
     throw new TRPCError({ code: "NOT_FOUND", message: `موافقة الائتمان ${approvalId} غير موجودة` });
   }

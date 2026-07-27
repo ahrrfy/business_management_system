@@ -7,7 +7,7 @@
  * الدفاعية داخل createHandover نفسها (غير قابلة للوصول عبر closeShift الذي يفحص
  * الملكية أولاً — لكنها كود إنتاج حقيقي يستحق تغطية مستقلة).
  */
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
@@ -15,6 +15,7 @@ import { createHandover } from "../cashHandoverService";
 import { closeShift, openShift } from "../shiftService";
 import { withTx } from "../tx";
 import { appRouter } from "../../routers";
+import { truncateTables } from "./__testUtils__";
 
 function makeCtx(user: any) {
   return { req: { headers: {} }, res: { cookie() {}, clearCookie() {} }, user } as any;
@@ -35,10 +36,7 @@ function db() {
 }
 
 async function reset() {
-  const d = db();
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
-  for (const t of TABLES) await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
-  await d.execute(sql`SET FOREIGN_KEY_CHECKS = 1`);
+  await truncateTables(TABLES);
 }
 
 // معرّفات ثابتة لتسهيل القراءة.
@@ -118,6 +116,7 @@ describe("cashHandoverService — عبر closeShift (المسار الحقيقي
     expect(inn.shiftId).toBeNull();
     expect(inn.cashBucket).toBe("TREASURY");
     expect(inn.amount).toBe("200.00");
+    expect(inn.status).toBe("PENDING");
     expect(inn.createdBy).toBe(MANAGER1);
 
     const entries = await db()
@@ -141,13 +140,12 @@ describe("cashHandoverService — عبر closeShift (المسار الحقيقي
     );
     expect(r1.handover!.handoverNumber).toMatch(/-0001$/);
 
-    // ①ج وردية تالية على نفس الدرج برصيدٍ مختلف عن متبقّي السابقة ⇒ سببٌ مطلوب (حارس الاستمرارية).
-    const s2 = await openShift(
-      { branchId: 1, openingBalance: "80", openingDiscrepancyReason: "بدء وردية تالية" },
-      { userId: CASHIER2, branchId: 1 },
-    );
+    // المتبقّي المثبت بعد تسليم 50 من أصل 100 هو 50؛ الوردية التالية لا تُفتح إلا به.
+    const s2 = await openShift({ branchId: 1, openingBalance: "50" }, { userId: CASHIER2, branchId: 1 });
+    expect(s2.expectedOpening).toBe("50.00");
+    expect(s2.hasDiscrepancy).toBe(false);
     const r2 = await closeShift(
-      { shiftId: s2.shiftId, countedCash: "80", handover: { amount: "30", handoverTo: MANAGER1 } },
+      { shiftId: s2.shiftId, countedCash: "50", handover: { amount: "30", handoverTo: MANAGER1 } },
       { userId: CASHIER2, branchId: 1, role: "cashier" },
     );
     expect(r2.handover!.handoverNumber).toMatch(/-0002$/);

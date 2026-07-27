@@ -9,6 +9,7 @@ import {
   deactivateCustomer,
   findSimilarCustomers,
 } from "../customerService";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 
 const actor = { userId: 1, branchId: 1 };
 
@@ -58,6 +59,28 @@ async function countCustomers() {
 async function countAccountingEntries() {
   const r = (await db().execute(sql`SELECT COUNT(*) AS n FROM accountingEntries`)) as any;
   return Number(r[0][0].n);
+}
+
+/** في schema الاختبار searchNorm عمود عادي؛ الإنتاج يحوّله إلى GENERATED STORED. */
+async function syncSearchNormFixture() {
+  const d = db();
+  const meta: any = await d.execute(sql`
+    SELECT COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'customers'
+      AND COLUMN_NAME = 'searchNorm'
+    LIMIT 1
+  `);
+  const column = Array.isArray(meta) ? meta[0]?.[0] : meta?.rows?.[0];
+  if (String(column?.expr ?? "").trim()) return;
+
+  const rows = await d.select({ id: s.customers.id, name: s.customers.name }).from(s.customers);
+  for (const row of rows) {
+    await d.update(s.customers)
+      .set({ searchNorm: normalizeSearchText(row.name) })
+      .where(sql`id = ${row.id}`);
+  }
 }
 
 beforeEach(async () => {
@@ -122,6 +145,7 @@ describe("findSimilarCustomers (كشف التكرار الحيّ)", () => {
       { name: "منى الياسري", phone: "+9647809876543" },
       actor,
     );
+    await syncSearchNormFixture();
     return { a: a.customerId, b: b.customerId };
   }
 
@@ -171,6 +195,7 @@ describe("findSimilarCustomers (كشف التكرار الحيّ)", () => {
   // ترقية ٢٠/٧: أغلبية الكلمات بدل السلسلة المتصلة — حالتان كانت المطابقة القديمة تفوّتهما.
   it("ترتيب كلمات مختلف يُمسَك: «النور مكتبة» تجد «مكتبة النور الحديثة»", async () => {
     const c = await createCustomer({ name: "مكتبة النور الحديثة" }, actor);
+    await syncSearchNormFixture();
     const rows = await findSimilarCustomers({ name: "النور مكتبة" });
     const hit = rows.find((r) => r.id === c.customerId);
     expect(hit).toBeTruthy();
@@ -179,6 +204,7 @@ describe("findSimilarCustomers (كشف التكرار الحيّ)", () => {
 
   it("اسم مكتوب أطول من المخزَّن يُمسَك بالأغلبية: «مكتبة النور الحديثة» تجد «مكتبة النور»", async () => {
     const c = await createCustomer({ name: "مكتبة النور" }, actor);
+    await syncSearchNormFixture();
     const rows = await findSimilarCustomers({ name: "مكتبة النور الحديثة" });
     expect(rows.map((r) => r.id)).toContain(c.customerId);
   });

@@ -71,6 +71,7 @@ export async function getTreasurySummary(opts: {
              CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
       WHERE r.receiptStatus = 'COMPLETED'
+        AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) >= ${opts.from} AND DATE(r.createdAt) <= ${opts.to}
         ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}
       GROUP BY r.direction, r.paymentMethod
@@ -324,6 +325,7 @@ export async function getCashOrphansReport(opts: {
       WHERE r.shiftId IS NULL
         AND r.paymentMethod = 'CASH'
         AND r.receiptStatus = 'COMPLETED'
+        AND r.receiptApprovalStatus = 'APPROVED'
         ${opts.from ? sql`AND DATE(r.createdAt) >= ${opts.from}` : sql``}
         ${opts.to ? sql`AND DATE(r.createdAt) <= ${opts.to}` : sql``}
         ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}

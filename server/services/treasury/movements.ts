@@ -58,6 +58,7 @@ export async function getRecentMovements(
         FROM receipts r
         LEFT JOIN branches b ON b.id = r.branchId
         WHERE r.receiptStatus = 'COMPLETED'
+          AND r.receiptApprovalStatus = 'APPROVED'
           ${branchFilterR}
           ${bucketFilterR}
           ${ownShiftR}
@@ -79,6 +80,9 @@ export async function getRecentMovements(
         FROM expenses e
         LEFT JOIN branches b ON b.id = e.branchId
         WHERE e.expenseStatus = 'ACTIVE'
+          -- Cash expenses already appear through their linked receipt above.
+          -- Keep only non-cash/stock expenses that have no receipt.
+          AND e.receiptId IS NULL
           ${branchFilterE}
           ${bucketFilterE}
           ${ownShiftE}

@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/PageHeader";
 import { exportRows } from "@/lib/export";
 import { fmtDate } from "@/lib/date";
 import { printSalesReportV2 } from "@/lib/printing/printTemplatesV2";
-import { D, fmtAr, positiveDiff } from "@/lib/money";
+import { D, fmtAr } from "@/lib/money";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useState } from "react";
@@ -39,6 +39,10 @@ const SOURCE: Record<string, string> = {
 };
 
 const fmt = fmtAr;
+const invoiceRemaining = (r: Pick<ReportRow, "total" | "paidAmount" | "returnedTotal">) => {
+  const value = D(r.total).minus(D(r.paidAmount)).minus(D(r.returnedTotal ?? "0"));
+  return value.isNegative() ? D(0) : value;
+};
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -91,8 +95,8 @@ const invoiceColumns: ColumnDef<ReportRow, unknown>[] = [
     id: "unpaid",
     header: "المتبقّي",
     cell: (c) => {
-      // §٥: نستعمل positiveDiff (Decimal) بدلاً من parseFloat+Math.max ⇒ لا انجراف float.
-      const unpaidD = positiveDiff(c.row.original.total, c.row.original.paidAmount);
+      // المتبقي الصافي بعد المدفوع والمرتجع، بدقة Decimal.
+      const unpaidD = invoiceRemaining(c.row.original);
       const isOwing = unpaidD.gt(0);
       return (
         <span className={`tabular-nums ${isOwing ? "text-money-negative font-medium" : ""}`} dir="ltr">
@@ -446,7 +450,7 @@ function InvoicesTab({
                     customerName: r.customerName ?? "—",
                     total: r.total,
                     paid: r.paidAmount,
-                    remaining: positiveDiff(r.total, r.paidAmount).toString(),
+                    remaining: invoiceRemaining(r).toString(),
                     status: STATUS[r.status] ?? r.status,
                     statusColor:
                       r.status === "PAID" ? "#0D6B52" : r.status === "PARTIALLY_PAID" ? "#92400E" : "#8A1F11",

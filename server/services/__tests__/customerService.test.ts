@@ -1,6 +1,7 @@
 import { eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
+import { normalizeSearchText } from "../../../shared/searchNormalize";
 import { getDb } from "../../db";
 import {
   activateCustomer,
@@ -50,6 +51,33 @@ async function seedBase() {
     role: "admin",
     loginMethod: "local",
   });
+}
+
+/**
+ * قاعدة الاختبار المنشأة من Drizzle ترى searchNorm كـVARCHAR عادي، بينما الهجرة 0039
+ * تحوله في الإنتاج إلى GENERATED STORED. نعكس التوليد في fixture فقط عندما لا يكون
+ * العمود مولداً، كي تختبر استعلامات البحث نفسها بلا افتراض خاطئ عن schema الاختبار.
+ */
+async function syncCustomerSearchNormFixture() {
+  const d = db();
+  const meta: any = await d.execute(sql`
+    SELECT COALESCE(GENERATION_EXPRESSION, '') AS expr
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME = 'customers'
+      AND COLUMN_NAME = 'searchNorm'
+    LIMIT 1
+  `);
+  const column = Array.isArray(meta) ? meta[0]?.[0] : meta?.rows?.[0];
+  if (String(column?.expr ?? "").trim()) return;
+
+  const rows = await d.select({ id: s.customers.id, name: s.customers.name }).from(s.customers);
+  for (const row of rows) {
+    await d
+      .update(s.customers)
+      .set({ searchNorm: normalizeSearchText(row.name) })
+      .where(eq(s.customers.id, row.id));
+  }
 }
 
 beforeEach(async () => {
@@ -301,6 +329,7 @@ describe("customerService.listCustomers", () => {
   it("يبحث بالاسم والهاتف", async () => {
     await createCustomer({ name: "أحمد محمد", phone: "07701111111" }, actor);
     await createCustomer({ name: "علي حسن", phone: "07702222222" }, actor);
+    await syncCustomerSearchNormFixture();
     const byName = await listCustomers({ q: "أحمد" });
     expect(byName.rows).toHaveLength(1);
     // T3.1 (بنك جهات الاتصال): تطبيع E.164 خادمي يُخزّن +9647702222222 لا «07702222222» الخام —
@@ -313,6 +342,7 @@ describe("customerService.listCustomers", () => {
   it("T3.2 (إصلاح إلزامي): بحث محلي «0770…» يجد عميلاً مخزَّناً E.164 «+9647702…» — انحدار بحث الهاتف", async () => {
     await createCustomer({ name: "زبون الهاتف", phone: "07702123456" }, actor);
     await createCustomer({ name: "آخر", phone: "07709999999" }, actor);
+    await syncCustomerSearchNormFixture();
     // بحث محلي (الصيغة التي يكتبها الكاشير فعلياً) يجد المخزَّن دولياً +9647702123456.
     const byLocal = await listCustomers({ q: "07702123456" });
     expect(byLocal.rows).toHaveLength(1);
@@ -329,6 +359,7 @@ describe("customerService.listCustomers", () => {
   it("D2 (١/٧): البحث بالاسم يتجاوز الهمزات/التاء المربوطة عبر searchNorm", async () => {
     await createCustomer({ name: "أحمد التجارة" }, actor);
     await createCustomer({ name: "علي حسن" }, actor);
+    await syncCustomerSearchNormFixture();
     // «احمد» بلا همزة يجد «أحمد» بالهمزة.
     const noHamza = await listCustomers({ q: "احمد" });
     expect(noHamza.rows).toHaveLength(1);
@@ -367,6 +398,7 @@ describe("customerService.smartSearchCustomers", () => {
     const a = await createCustomer({ name: "أحمد التاجر" }, actor);
     await deactivateCustomer(a.customerId, actor);
     await createCustomer({ name: "أنس التاجر" }, actor);
+    await syncCustomerSearchNormFixture();
     const r = await smartSearchCustomers({ q: "انس" });
     expect(r).toHaveLength(1);
     expect(r[0].name).toBe("أنس التاجر");

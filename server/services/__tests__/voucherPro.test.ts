@@ -5,10 +5,26 @@ import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import {
   approveVoucher,
-  createVoucher,
+  createVoucher as createVoucherRaw,
   rejectVoucher,
   recentVouchersForParty,
 } from "../voucherService";
+
+type LegacyVoucherInput = Omit<Parameters<typeof createVoucherRaw>[0], "clientRequestId"> & {
+  clientRequestId?: string;
+};
+let voucherRequestSequence = 0;
+function createVoucher(input: LegacyVoucherInput, actor: Parameters<typeof createVoucherRaw>[1]) {
+  voucherRequestSequence += 1;
+  const isOther = input.partyType === "OTHER";
+  const isOtherReceipt = isOther && input.voucherType === "RECEIPT";
+  return createVoucherRaw({
+    ...input,
+    counterpartyName: isOther ? (input.counterpartyName ?? "طرف اختباري موثق") : input.counterpartyName,
+    referenceNumber: isOtherReceipt ? (input.referenceNumber ?? `SRC-PRO-${voucherRequestSequence}`) : input.referenceNumber,
+    clientRequestId: input.clientRequestId ?? `voucher-pro-test-${voucherRequestSequence}`,
+  }, actor);
+}
 
 const adminActor = { userId: 1, branchId: 1, role: "admin" };
 const managerActor = { userId: 2, branchId: 1, role: "manager" };
@@ -280,7 +296,7 @@ describe("vouchers-pro: السندات الأخيرة لنفس الطَرف", ()
 describe("vouchers-pro: بَصمة SHA-256 + ثَبات", () => {
   it("سَند صَغير (لا اعتماد) ⇒ بَصمة تُكتب فوراً", async () => {
     const r = await createVoucher({
-      voucherType: "RECEIPT", branchId: 1, amount: "50.00",
+      voucherType: "PAYMENT", branchId: 1, amount: "50.00",
       paymentMethod: "CASH", partyType: "OTHER",
       description: "إيراد",
     }, adminActor);
@@ -290,11 +306,11 @@ describe("vouchers-pro: بَصمة SHA-256 + ثَبات", () => {
 
   it("نَفس المُدخلات ⇒ بَصمات مُختلفة (لأنّ id مُختلف ⇒ canonical مُختلف)", async () => {
     const r1 = await createVoucher({
-      voucherType: "RECEIPT", branchId: 1, amount: "50.00",
+      voucherType: "PAYMENT", branchId: 1, amount: "50.00",
       paymentMethod: "CASH", partyType: "OTHER", description: "x",
     }, adminActor);
     const r2 = await createVoucher({
-      voucherType: "RECEIPT", branchId: 1, amount: "50.00",
+      voucherType: "PAYMENT", branchId: 1, amount: "50.00",
       paymentMethod: "CASH", partyType: "OTHER", description: "x",
     }, adminActor);
     const rc1 = (await db().select().from(s.receipts).where(eq(s.receipts.id, r1.receiptId)))[0];

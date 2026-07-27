@@ -5,12 +5,14 @@
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import {
+  acceptPendingTreasuryReceipt,
   getCashFlowSeries,
   getDashboard,
   getKpiTrends,
   getOpenShifts,
   getPaymentMethodBreakdown,
   getRecentMovements,
+  listMyPendingTreasuryReceipts,
 } from "../services/treasuryService";
 import { branchScopedProcedure, requireModule, router } from "../trpc";
 
@@ -21,6 +23,30 @@ const periodEnum = z.enum(["today", "yesterday", "week", "month"]);
 const treasuryRead = branchScopedProcedure.use(requireModule("treasury", "READ"));
 
 export const treasuryRouter = router({
+  /** عقود تسليم النقد المعلقة المسندة للمستخدم الحالي وحده. */
+  pendingHandoverReceipts: treasuryRead.query(async ({ ctx }) => {
+    return listMyPendingTreasuryReceipts({
+      userId: ctx.user.id,
+      branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+      role: ctx.user.role,
+    });
+  }),
+
+  /** قبول صريح من المستلم نفسه؛ بعده فقط يصبح النقد جزءاً من رصيد الخزينة. */
+  acceptHandoverReceipt: treasuryRead
+    .input(z.object({ receiptId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      return acceptPendingTreasuryReceipt(
+        input.receiptId,
+        {
+          userId: ctx.user.id,
+          branchId: ctx.user.branchId == null ? -1 : Number(ctx.user.branchId),
+          role: ctx.user.role,
+        },
+        ctx,
+      );
+    }),
+
   /** لوحة قيادة كاملة: drawer/treasury per branch + KPIs اليوم + عدد الورديات المفتوحة. */
   getDashboard: treasuryRead
     .input(

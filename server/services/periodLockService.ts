@@ -15,6 +15,7 @@ import { financialPeriods } from "../../drizzle/schema";
 import type { Tx } from "../db";
 
 export interface ActiveLock {
+  id: number;
   cutoffDate: string; // YYYY-MM-DD
   lockedAt: Date;
   lockedBy: number;
@@ -25,6 +26,7 @@ export interface ActiveLock {
 export async function getActiveLock(tx: Tx): Promise<ActiveLock | null> {
   const rows = await tx
     .select({
+      id: financialPeriods.id,
       cutoffDate: financialPeriods.cutoffDate,
       lockedAt: financialPeriods.lockedAt,
       lockedBy: financialPeriods.lockedBy,

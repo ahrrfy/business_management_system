@@ -52,6 +52,8 @@ export interface CreatePlanInput {
   downPayment?: string | null;
   lines: InstallmentLineInput[];
   notes?: string | null;
+  /** حارس إنتاجي: اربط الخطة بالمصدر الفعلي للذمة، وتبقيه الاختبارات/الصيانة القديمة اختيارياً. */
+  enforceFinancialIntegrity?: boolean;
 }
 
 export interface PayLineInput {
@@ -140,13 +142,46 @@ export async function createPlan(input: CreatePlanInput, actor: Actor): Promise<
     if (!br) throw new TRPCError({ code: "NOT_FOUND", message: "الفرع غير موجود" });
 
     if (input.invoiceId != null) {
-      const inv = (await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).limit(1))[0];
+      const inv = (
+        await tx.select().from(invoices).where(eq(invoices.id, input.invoiceId)).for("update").limit(1)
+      )[0];
       if (!inv) throw new TRPCError({ code: "NOT_FOUND", message: "الفاتورة المرتبطة غير موجودة" });
       if (Number(inv.customerId) !== Number(input.customerId)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة المرتبطة لا تخصّ هذا العميل" });
       }
+      if (input.enforceFinancialIntegrity && Number(inv.branchId) !== Number(input.branchId)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة المرتبطة لا تخصّ فرع الخطة" });
+      }
       if (inv.status === "CANCELLED" || inv.status === "RETURNED") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن الربط بفاتورة ملغاة أو مرتجعة" });
+      }
+      const outstanding = money(inv.total).minus(money(inv.returnedTotal ?? "0")).minus(money(inv.paidAmount));
+      if (input.enforceFinancialIntegrity && outstanding.lte(0)) {
+        throw new TRPCError({ code: "PRECONDITION_FAILED", message: "الفاتورة لا تحمل مبلغاً متبقياً للتقسيط" });
+      }
+      if (input.enforceFinancialIntegrity && !total.eq(outstanding)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `إجمالي الخطة (${toDbMoney(total)}) يجب أن يساوي متبقي الفاتورة (${toDbMoney(outstanding)})`,
+        });
+      }
+      if (input.enforceFinancialIntegrity && !down.isZero()) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "الدفعة الأولى لفاتورة مرتبطة يجب تسجيلها كدفعة فعلية أولاً، ثم إنشاء الخطة على المتبقي",
+        });
+      }
+      if (input.enforceFinancialIntegrity) {
+        const activePlan = (
+          await tx
+            .select({ id: installmentPlans.id })
+            .from(installmentPlans)
+            .where(and(eq(installmentPlans.invoiceId, input.invoiceId), eq(installmentPlans.status, "ACTIVE")))
+            .limit(1)
+        )[0];
+        if (activePlan) {
+          throw new TRPCError({ code: "CONFLICT", message: "توجد خطة أقساط نشطة لهذه الفاتورة بالفعل" });
+        }
       }
     }
 
@@ -280,7 +315,10 @@ export async function payLine(
     // لا أثر مالي بعد ⇒ القسط يبقى PENDING؛ نوثّق السند المعلَّق في ملاحظة القسط.
     await db
       .update(installmentLines)
-      .set({ note: `سند قبض ${voucher.voucherNumber} بانتظار اعتماد مدير ثانٍ (Maker-Checker)`.slice(0, 255) })
+      .set({
+        receiptId: voucher.receiptId,
+        note: `سند قبض ${voucher.voucherNumber} بانتظار اعتماد مدير ثانٍ (Maker-Checker)`.slice(0, 255),
+      })
       .where(eq(installmentLines.id, Number(line.id)));
     return { status: "PENDING_APPROVAL", receiptId: voucher.receiptId, voucherNumber: voucher.voucherNumber, planCompleted: false };
   }
@@ -384,7 +422,19 @@ export async function bounceCheck(
         .where(eq(receipts.id, Number(row.line.receiptId)))
         .for("update")
         .limit(1);
-      if (rec && rec.status === "COMPLETED") {
+      if (!rec || rec.status !== "COMPLETED" || rec.approvalStatus !== "APPROVED") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "لا يمكن ارتداد القسط: سند التحصيل المرتبط غير مكتمل أو غير معتمد",
+        });
+      }
+      if (rec.paymentMethod !== "CHECK") {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "لا يمكن ارتداد القسط: التحصيل الفعلي لم يكن بشيك",
+        });
+      }
+      if (rec.status === "COMPLETED") {
         const amount = money(rec.amount);
         const branchId = rec.branchId != null ? Number(rec.branchId) : Number(row.plan.branchId);
         // AR-BOUNCE (تدقيق ١٧/٧): كان يُعلَّم الإيصال الأصل REVERSED ⇒ إبطال إيصال وردية سابقة
@@ -427,6 +477,11 @@ export async function bounceCheck(
       // تُتابَع على مستوى العميل لا الفاتورة (راجع arRemindersService). كان العكس يطرح rec.amount من
       // paidAmount التي لم يَزِدها التحصيل قطّ ⇒ يمحو دفعاتٍ مباشرةً مشروعةً على الفاتورة (عربون/سداد مباشر)
       // ويقلب حالتها خطأً. الاستعادة الصحيحة والمتماثلة جرت أعلاه: adjustCustomerBalance(+amount) فقط.
+    } else if (row.line.status === "PAID") {
+      throw new TRPCError({
+        code: "PRECONDITION_FAILED",
+        message: "لا يمكن ارتداد قسط مدفوع بلا سند تحصيل مرتبط",
+      });
     }
 
     // حلّ تعارُض إصلاحين (idempotency) — **مشروطٌ بعكسِ تحصيلٍ نافذ فعلاً (reversed)**: نحرّر مفتاح
@@ -494,6 +549,49 @@ export async function cancelPlan(
         code: "BAD_REQUEST",
         message: "لا يمكن إلغاء خطة سُدِّد منها قسط — ألغِ السندات أولاً من شاشة السندات إن لزم",
       });
+    }
+    const planLines = await tx
+      .select({ id: installmentLines.id, receiptId: installmentLines.receiptId })
+      .from(installmentLines)
+      .where(eq(installmentLines.planId, input.planId));
+    const directReceiptIds = planLines
+      .map((line) => line.receiptId != null ? Number(line.receiptId) : null)
+      .filter((id): id is number => id != null);
+    const requestIds = planLines.map((line) => `instpay-${Number(line.id)}`);
+    const keyRows = requestIds.length
+      ? await tx
+          .select({ refId: idempotencyKeys.refId })
+          .from(idempotencyKeys)
+          .where(
+            and(
+              eq(idempotencyKeys.operation, "voucher.create"),
+              inArray(idempotencyKeys.clientRequestId, requestIds),
+            ),
+          )
+      : [];
+    const receiptIds = Array.from(new Set([
+      ...directReceiptIds,
+      ...keyRows.map((row) => Number(row.refId)),
+    ]));
+    if (receiptIds.length > 0) {
+      const approved = (
+        await tx
+          .select({ n: sql<number>`COUNT(*)` })
+          .from(receipts)
+          .where(
+            and(
+              inArray(receipts.id, receiptIds),
+              eq(receipts.approvalStatus, "APPROVED"),
+              eq(receipts.status, "COMPLETED"),
+            ),
+          )
+      )[0];
+      if (Number(approved?.n ?? 0) > 0) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: "لا يمكن إلغاء خطة لها سند تحصيل معتمد؛ زامن السداد أو اعكس السند أولاً",
+        });
+      }
     }
     const reason = input.reason?.trim();
     await tx

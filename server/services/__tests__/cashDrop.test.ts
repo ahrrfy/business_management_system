@@ -83,6 +83,7 @@ describe("createCashDrop — المسار السعيد والأثر", () => {
     const inn = rows.find((r) => r.direction === "IN")!;
     expect(inn.shiftId).toBeNull();
     expect(inn.cashBucket).toBe("TREASURY");
+    expect(inn.status).toBe("PENDING");
     expect(inn.createdBy).toBe(MANAGER1); // يُنسَب الاستلام للمستلِم
 
     const entries = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "CASH_HANDOVER" as any));
@@ -139,10 +140,10 @@ describe("createCashDrop — الحراسات", () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     await expect(createCashDrop({ shiftId, amount: "1000", dropTo: CASHIER2 }, { userId: CASHIER1, branchId: 1, role: "cashier" })).rejects.toThrow(/مديراً أو إدارياً/);
     await expect(createCashDrop({ shiftId, amount: "1000", dropTo: DISABLED_MANAGER }, { userId: CASHIER1, branchId: 1, role: "cashier" })).rejects.toThrow(/غير موجود أو معطّل/);
-    // بلا مستلِم ⇒ مقبول (درج أمانٍ)، ويُنسَب الاستلام للفاعل.
-    const res = await createCashDrop({ shiftId, amount: "1000" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
-    const inn = (await receiptsByRef(res.dropNumber)).find((r) => r.direction === "IN")!;
-    expect(inn.createdBy).toBe(CASHIER1);
+    // بلا مستلِم ⇒ مرفوض؛ لا يجوز للكاشير إنشاء استلام خزينة من طرف واحد.
+    await expect(
+      createCashDrop({ shiftId, amount: "1000" }, { userId: CASHIER1, branchId: 1, role: "cashier" }),
+    ).rejects.toThrow(/تحديد مدير مستلم/);
   });
 });
 
@@ -169,11 +170,11 @@ describe("createCashDrop — idempotency وترقيمٌ صلب (مراجعة Cod
   it("نفس clientRequestId ⇒ إعادةُ تشغيل: لا سحب ثانٍ ولا حركةُ نقدٍ مزدوجة", async () => {
     const { shiftId } = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const crid = "crid-drop-idem-1";
-    const first = await createCashDrop({ shiftId, amount: "30000", clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const first = await createCashDrop({ shiftId, amount: "30000", dropTo: MANAGER1, clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
     expect(first.idempotent).toBeFalsy();
     expect(first.drawerAfter).toBe("70000.00");
 
-    const second = await createCashDrop({ shiftId, amount: "30000", clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const second = await createCashDrop({ shiftId, amount: "30000", dropTo: MANAGER1, clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
     expect(second.idempotent).toBe(true);
     expect(second.dropNumber).toBe(first.dropNumber);
     expect(second.drawerAfter).toBe("70000.00"); // لم يُخصَم ثانيةً (لولا الحماية لكان 40000)
@@ -189,9 +190,9 @@ describe("createCashDrop — idempotency وترقيمٌ صلب (مراجعة Cod
     const a = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER1, branchId: 1 });
     const b = await openShift({ branchId: 1, openingBalance: "100000" }, { userId: CASHIER2, branchId: 1 });
     const crid = "crid-cross-shift";
-    await createCashDrop({ shiftId: a.shiftId, amount: "10000", clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    await createCashDrop({ shiftId: a.shiftId, amount: "10000", dropTo: MANAGER1, clientRequestId: crid }, { userId: CASHIER1, branchId: 1, role: "cashier" });
     await expect(
-      createCashDrop({ shiftId: b.shiftId, amount: "10000", clientRequestId: crid }, { userId: CASHIER2, branchId: 1, role: "cashier" }),
+      createCashDrop({ shiftId: b.shiftId, amount: "10000", dropTo: MANAGER1, clientRequestId: crid }, { userId: CASHIER2, branchId: 1, role: "cashier" }),
     ).rejects.toThrow(/idempotency/);
   });
 
@@ -203,7 +204,7 @@ describe("createCashDrop — idempotency وترقيمٌ صلب (مراجعة Cod
       branchId: 1, shiftId, direction: "OUT", amount: "1000.00", paymentMethod: "CASH", cashBucket: "DRAWER",
       status: "COMPLETED", referenceNumber: `CD-1-${ymd}-ABC`, createdBy: CASHIER1,
     });
-    const d = await createCashDrop({ shiftId, amount: "5000", clientRequestId: "crid-num" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
+    const d = await createCashDrop({ shiftId, amount: "5000", dropTo: MANAGER1, clientRequestId: "crid-num" }, { userId: CASHIER1, branchId: 1, role: "cashier" });
     expect(d.dropNumber).toBe(`CD-1-${ymd}-0001`); // ليس CD-…-NaN
   });
 });

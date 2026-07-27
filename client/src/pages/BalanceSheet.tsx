@@ -1,5 +1,5 @@
 // الميزانية العمومية المبسّطة (لقطة) — أصول / خصوم / حقوق ملكية (مشتقّة).
-// عرض + Excel + طباعة A4. ⚠️ مبسّطة: النقد تقديريّ، الأصول بالتكلفة، حقوق الملكية مشتقّة.
+// عرض + Excel + طباعة A4. ⚠️ مبسّطة: المقبوضات مصنفة حسب وسيلة الدفع، الأصول بالتكلفة، حقوق الملكية مشتقّة.
 import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
@@ -13,7 +13,7 @@ import { printReportDoc } from "@/lib/printing/reportDoc";
 type Pos = RouterOutputs["reports"]["financialPosition"];
 
 const NOTE =
-  "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): النقد تقديريّ (صافي المقبوضات)، الأصول بالتكلفة (بلا إهلاك متراكم)، حقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ النقد والمخزون حسب الفرع.";
+  "ميزانية مبسّطة/مشتقّة (بانتظار دليل حسابات كامل): المقبوضات المعتمدة مصنفة حسب وسيلة الدفع ولا تُعامل البطاقات والتحويلات والشيكات والمحافظ كنقد بالصندوق، الأصول بالتكلفة (بلا إهلاك متراكم)، وحقوق الملكية = الأصول − الخصوم. الذمم على مستوى الشركة؛ وسائل الدفع والمخزون حسب الفرع.";
 const selectCls =
   "h-9 rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
@@ -26,7 +26,11 @@ export default function BalanceSheet() {
   const sections = useMemo(() => {
     if (!p) return null;
     const assets = [
-      { label: "النقد (تقديريّ)", v: p.cash },
+      { label: "النقد المقبوض فعلياً", v: p.cash },
+      { label: "مقبوضات البطاقات", v: p.card },
+      { label: "الشيكات المقبوضة", v: p.check },
+      { label: "التحويلات المصرفية", v: p.transfer },
+      { label: "المحافظ الإلكترونية", v: p.wallet },
       { label: "الذمم المدينة (عملاء)", v: p.arDebit },
       { label: "سُلف للموردين", v: p.apDebit },
       { label: "المخزون (بالتكلفة)", v: p.inventory },

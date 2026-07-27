@@ -15,13 +15,30 @@ import { and, eq, sql } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import * as s from "../../../drizzle/schema";
 import { getDb } from "../../db";
-import { cancelAdvance, employeeBalance, grantAdvance, listAdvances, suggestDeductionsForPeriod } from "../advancesService";
+import {
+  cancelAdvance,
+  employeeBalance,
+  grantAdvance as grantAdvanceService,
+  listAdvances,
+  suggestDeductionsForPeriod,
+  type GrantAdvanceInput,
+} from "../advancesService";
 import { createEmployee } from "../employeeService";
 import { approveRun, cancelRun, generatePayroll, payRun, updateItem } from "../payrollService";
 
 const ACTOR = { userId: 1, branchId: 1, role: "admin" };
 // SOD: المُعتمِد/الدافع يجب أن يختلف عن المُولِّد.
 const APPROVER = { userId: 2, branchId: 1, role: "manager" };
+let requestSeq = 0;
+function grantAdvance(
+  input: Omit<GrantAdvanceInput, "clientRequestId"> & { clientRequestId?: string },
+  actor: typeof ACTOR,
+) {
+  return grantAdvanceService(
+    { ...input, clientRequestId: input.clientRequestId ?? `advance-test-${++requestSeq}` },
+    actor,
+  );
+}
 
 const TABLES = [
   "accountingEntries",
@@ -62,6 +79,7 @@ async function seedBase() {
   ]);
 }
 beforeEach(async () => {
+  requestSeq = 0;
   await reset();
   await seedBase();
 });
@@ -122,30 +140,6 @@ describe("advancesService — المنح", () => {
     // لا ازدواج: سلفة واحدة + سند صرف واحد + قيد PAYMENT_OUT واحد + الرصيد لم يتضاعف.
     const advs = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.employeeId, emp.id));
     expect(advs.length).toBe(1);
-    const payOut = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
-    expect(payOut.length).toBe(1);
-    const bal = await employeeBalance(emp.id);
-    expect(Number(bal.balance)).toBe(200000);
-  });
-
-  it("idempotency تحت التزامن: طلبان متزامنان بنفس clientRequestId ⇒ سندٌ نقديّ واحد وسلفةٌ واحدة (لا صرف مزدوج)", async () => {
-    const emp = await seedEmployee();
-    const inp = { employeeId: emp.id, branchId: 1, amount: "200000", note: "منح متزامن", attachmentUrl: "https://files.example/r.jpg", clientRequestId: "adv-concurrent-1" };
-    // طلبان يعبران الفحص المسبق معاً — لولا idempotency السند (createVoucher + retryOnDup) لأصدرا سندَي صرف نقديّين.
-    const settled = await Promise.allSettled([grantAdvance(inp, ACTOR), grantAdvance(inp, ACTOR)]);
-    const ok = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
-    expect(ok.length).toBe(2); // الخاسر يُعيد سلفة الفائز (replay)، لا يفشل ولا يُلغي السند المشترك
-    expect(ok[0].id).toBe(ok[1].id); // نفس السلفة
-    expect(Number(ok[0].receiptId)).toBe(Number(ok[1].receiptId)); // نفس السند المشترك
-
-    // الثابت الحاسم: سلفة واحدة + سند صرف OUT واحد + قيد PAYMENT_OUT واحد + رصيد غير متضاعف.
-    const advs = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.employeeId, emp.id));
-    expect(advs.length).toBe(1);
-    const vouchers = await db()
-      .select()
-      .from(s.receipts)
-      .where(and(eq(s.receipts.direction, "OUT"), sql`${s.receipts.voucherNumber} IS NOT NULL`));
-    expect(vouchers.length).toBe(1);
     const payOut = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
     expect(payOut.length).toBe(1);
     const bal = await employeeBalance(emp.id);

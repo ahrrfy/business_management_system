@@ -103,11 +103,22 @@ export async function getArApAgingDetail(opts: {
             DATE_FORMAT(po.orderDate, '%Y-%m-%d') AS date,
             NULL AS dueDate,
             DATEDIFF(UTC_DATE(), DATE(po.orderDate)) AS daysOverdue,
-            CAST(GREATEST(po.total - po.paidAmount, 0) AS CHAR) AS unpaid
+            CAST(GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) AS CHAR) AS unpaid
           FROM purchaseOrders po
           LEFT JOIN suppliers s ON s.id = po.supplierId
+          LEFT JOIN (
+            SELECT ae.purchaseOrderId,
+              COALESCE(SUM(CASE WHEN ae.entryType = 'RETURN' THEN -ae.amount ELSE 0 END), 0)
+              - COALESCE(SUM(CASE WHEN ae.entryType = 'PAYMENT_IN' THEN ae.amount ELSE 0 END), 0)
+              AS creditReturned
+            FROM accountingEntries ae
+            WHERE ae.purchaseOrderId IS NOT NULL
+              AND ae.supplierId IS NOT NULL
+              AND ae.entryType IN ('RETURN', 'PAYMENT_IN')
+            GROUP BY ae.purchaseOrderId
+          ) ret ON ret.purchaseOrderId = po.id
           WHERE po.poStatus IN ('CONFIRMED', 'RECEIVED')
-            AND po.total > po.paidAmount
+            AND GREATEST(po.total - po.paidAmount - COALESCE(ret.creditReturned, 0), 0) > 0
             ${branchId ? sql`AND po.branchId = ${branchId}` : sql``}
           ORDER BY daysOverdue DESC, po.id DESC
         `),

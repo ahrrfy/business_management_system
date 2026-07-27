@@ -7,7 +7,7 @@ import {
 } from "../services/expenseService";
 import { logAudit } from "../services/auditService";
 import { ymdDate } from "../lib/schemas";
-import { expensesCashierProcedure, expensesManagerProcedure, expensesReadProcedure, router } from "../trpc";
+import { expensesManagerProcedure, expensesReadProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
 const category = z.enum([
@@ -51,7 +51,10 @@ export const expenseRouter = router({
       })
     ),
 
-  create: expensesCashierProcedure
+  // P0 financial integrity: a cashier must never be able to turn a drawer
+  // shortage into an "expense" and thereby reduce the shift's expected cash.
+  // Cash expenses are a manager/treasury workflow only.
+  create: expensesManagerProcedure
     .input(
       z.object({
         branchId: z.number().int().positive(),

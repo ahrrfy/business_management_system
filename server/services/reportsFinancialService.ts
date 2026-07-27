@@ -235,7 +235,8 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   let totalExpenses = exRows.reduce((acc, r) => acc.add(money(r.amount ?? 0)), money(0));
 
   const payroll = money(pr.amount ?? 0);
-  if (payroll.gt(0)) {
+  // العكس في فترة لاحقة يجب أن يظهر كتخفيض مصروف، لا أن يختفي لأن صافي الفترة سالب.
+  if (!payroll.isZero()) {
     expenseLines.push({ key: "PAYROLL", label: "رواتب (مسيّر الرواتب)", amount: toDbMoney(payroll) });
     totalExpenses = totalExpenses.add(payroll);
   }
@@ -454,6 +455,10 @@ export async function getGeneralLedger(opts: {
 
 export interface FinancialPosition {
   cash: string;
+  card: string;
+  check: string;
+  transfer: string;
+  wallet: string;
   arDebit: string; // ذمم مدينة (عملاء يدينون لنا)
   arCredit: string; // سُلف العملاء (دفعوا زيادة)
   inventory: string;
@@ -484,7 +489,8 @@ export async function getFinancialPosition(
   const db = getDb();
   const zero = "0";
   const empty: FinancialPosition = {
-    cash: zero, arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
+    cash: zero, card: zero, check: zero, transfer: zero, wallet: zero,
+    arDebit: zero, arCredit: zero, inventory: zero, fixedAssets: zero,
     apCredit: zero, apDebit: zero, customerAdvances: zero,
     exchangeDebit: zero, exchangeCredit: zero,
     totalAssets: zero, totalLiabilities: zero, equity: zero,
@@ -499,14 +505,14 @@ export async function getFinancialPosition(
     SELECT
       CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS d,
       CAST(COALESCE(SUM(CASE WHEN currentBalance < 0 THEN -currentBalance ELSE 0 END), 0) AS CHAR) AS c
-    FROM customers WHERE isActive = TRUE
+    FROM customers
   `))[0] ?? { d: "0", c: "0" };
 
   const ap = rowsOf(await db.execute(sql`
     SELECT
       CAST(COALESCE(SUM(CASE WHEN currentBalance > 0 THEN currentBalance ELSE 0 END), 0) AS CHAR) AS c,
       CAST(COALESCE(SUM(CASE WHEN currentBalance < 0 THEN -currentBalance ELSE 0 END), 0) AS CHAR) AS d
-    FROM suppliers WHERE isActive = TRUE
+    FROM suppliers
   `))[0] ?? { c: "0", d: "0" };
 
   // بضاعة الأمانة (ش٤): تُستبعَد من أصول المخزون — ليست ملك المكتبة (تظهر التزاماً في AP بعد البيع فقط).
@@ -519,8 +525,15 @@ export async function getFinancialPosition(
   `))[0] ?? { v: "0" };
 
   const cashRow = rowsOf(await db.execute(sql`
-    SELECT CAST(COALESCE(SUM(CASE WHEN direction = 'IN' THEN amount ELSE -amount END), 0) AS CHAR) AS v
-    FROM receipts WHERE receiptStatus = 'COMPLETED' ${bId ? sql`AND branchId = ${bId}` : sql``}
+    SELECT
+      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CASH' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS cash,
+      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CARD' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS card,
+      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'CHECK' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS cheque,
+      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'TRANSFER' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS transfer,
+      CAST(COALESCE(SUM(CASE WHEN paymentMethod = 'WALLET' THEN CASE WHEN direction = 'IN' THEN amount ELSE -amount END ELSE 0 END), 0) AS CHAR) AS wallet
+    FROM receipts
+    WHERE receiptStatus = 'COMPLETED' AND receiptApprovalStatus = 'APPROVED'
+      ${bId ? sql`AND branchId = ${bId}` : sql``}
   `))[0] ?? { v: "0" };
 
   // FI-02: الأصول بصافي القيمة الدفترية NBV = التكلفة − الإهلاك المتراكم المُرحَّل (postMonthlyDepreciation).
@@ -555,7 +568,11 @@ export async function getFinancialPosition(
     FROM (SELECT (balanceIqd + balanceUsd * usdCostRate) AS net FROM exchangeHouses WHERE isActive = TRUE) t
   `))[0] ?? { d: "0", c: "0" };
 
-  const cash = money(cashRow.v ?? 0);
+  const cash = money(cashRow.cash ?? 0);
+  const card = money(cashRow.card ?? 0);
+  const cheque = money(cashRow.cheque ?? 0);
+  const transfer = money(cashRow.transfer ?? 0);
+  const wallet = money(cashRow.wallet ?? 0);
   const arDebit = money(ar.d ?? 0);
   const arCredit = money(ar.c ?? 0);
   const inventory = money(inv.v ?? 0);
@@ -567,7 +584,8 @@ export async function getFinancialPosition(
   const exchangeCredit = money(ex.c ?? 0); // ما نَدين به للصرّافين (خصم).
 
   // الأصول = نقد + مدينون + سُلف للموردين (ذمة لنا) + مخزون + أصول ثابتة + رصيدنا لدى الصرّافين.
-  const totalAssets = cash.add(arDebit).add(apDebit).add(inventory).add(fixedAssets).add(exchangeDebit);
+  const totalAssets = cash.add(card).add(cheque).add(transfer).add(wallet)
+    .add(arDebit).add(apDebit).add(inventory).add(fixedAssets).add(exchangeDebit);
   // الخصوم = دائنون + سُلف العملاء على الذمم + عرابين أوامر الشغل (FIN-05) + ما نَدين به للصرّافين.
   const totalLiabilities = apCredit.add(arCredit).add(customerAdvances).add(exchangeCredit);
   const equity = totalAssets.sub(totalLiabilities);
@@ -584,6 +602,10 @@ export async function getFinancialPosition(
 
   return {
     cash: toDbMoney(cash),
+    card: toDbMoney(card),
+    check: toDbMoney(cheque),
+    transfer: toDbMoney(transfer),
+    wallet: toDbMoney(wallet),
     arDebit: toDbMoney(arDebit),
     arCredit: toDbMoney(arCredit),
     inventory: toDbMoney(inventory),
@@ -640,6 +662,7 @@ export async function getCashFlow(opts: { from: string; to: string; branchId?: n
     LEFT JOIN accountingEntries ae
       ON ae.receiptId = r.id AND ae.entryType IN ('PAYMENT_IN', 'PAYMENT_OUT')
     WHERE r.receiptStatus = 'COMPLETED'
+      AND r.receiptApprovalStatus = 'APPROVED'
       AND COALESCE(ae.entryDate, DATE(r.createdAt)) >= ${opts.from}
       AND COALESCE(ae.entryDate, DATE(r.createdAt)) <= ${opts.to}
       ${opts.branchId ? sql`AND r.branchId = ${opts.branchId}` : sql``}

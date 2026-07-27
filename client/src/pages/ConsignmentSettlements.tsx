@@ -58,7 +58,13 @@ export default function ConsignmentSettlements() {
       confirmText: "إنشاء التسوية",
     });
     if (!ok) return;
-    settle.mutate({ consignorId, amount: String(owed), paymentMethod: "CASH", branchId });
+    settle.mutate({
+      consignorId,
+      amount: String(owed),
+      paymentMethod: "CASH",
+      branchId,
+      clientRequestId: crypto.randomUUID(),
+    });
   }
 
   const rows = balances.data ?? [];

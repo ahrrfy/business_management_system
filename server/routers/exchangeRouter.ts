@@ -122,7 +122,7 @@ export const exchangeRouter = router({
         currency: z.enum(["IQD", "USD"]).default("IQD"),
         exchangeRate: rateStr.nullish(),
         notes: z.string().max(500).nullish(),
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(80),
       }),
     )
     .mutation(async ({ input, ctx }) => {
@@ -148,7 +148,7 @@ export const exchangeRouter = router({
         amount: moneyStr,
         currency: z.enum(["IQD", "USD"]).default("IQD"),
         notes: z.string().max(500).nullish(),
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(80),
         confirmNegative: z.boolean().optional(),
       }),
     )
@@ -175,7 +175,7 @@ export const exchangeRouter = router({
         usdAmount: moneyStr,
         exchangeRate: rateStr,
         notes: z.string().max(500).nullish(),
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(80),
         confirmNegative: z.boolean().optional(),
       }),
     )
@@ -206,7 +206,7 @@ export const exchangeRouter = router({
         commission: moneyStr.nullish(),
         exchangeRate: rateStr.nullish(),
         notes: z.string().max(500).nullish(),
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(80),
         confirmNegative: z.boolean().optional(),
       }),
     )

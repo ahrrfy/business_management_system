@@ -8,8 +8,8 @@
 //
 // الإلغاء (سند بالطريق فقط): يعيد الكمية كاملة للمصدر بحركة TRANSFER_IN عكسية ويغلق السند.
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
-import { branches, productVariants, products, stockTransferLines, stockTransfers, users } from "../../drizzle/schema";
+import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { branches, branchStock, inventoryMovements, productVariants, products, stockTransferLines, stockTransfers, users } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { getDb } from "../db";
 import { applyMovement } from "./inventoryService";
@@ -19,6 +19,13 @@ import { money } from "./money";
 import { extractInsertId } from "../lib/insertId";
 
 export type TransferActor = { userId: number; role: string; branchId: number | null };
+
+const COST_SNAPSHOT_RE = /\[COST_SNAPSHOT:([0-9]+(?:\.[0-9]{1,2})?)\]/;
+
+function transferCostSnapshot(notes: string | null | undefined): string | null {
+  const match = notes?.match(COST_SNAPSHOT_RE);
+  return match ? money(match[1]).toFixed(2) : null;
+}
 
 /** admin/manager يتصرّفان على أي فرع؛ البقية مقيّدون بفرعهم المُسنَد. */
 function isElevated(actor: TransferActor): boolean {
@@ -92,7 +99,27 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
 
   // ترتيب حتمي بالمتغيّر ⇒ سندان متزامنان يقفلان الصفوف بنفس الترتيب (لا deadlock).
   const sorted = [...a.items].sort((x, y) => x.variantId - y.variantId);
+  const sortedVariantIds = sorted.map((it) => it.variantId);
+  // نفس ترتيب أقفال WAVG في الشراء/الإنتاج: أرصدة الصنف عالمياً ثم صف التكلفة.
+  // بذلك تكون لقطة الإرسال هي التكلفة الفعلية لحظة خروج البضاعة، لا قراءة سبقت استلاماً متزامناً.
+  await tx
+    .select({ id: branchStock.id })
+    .from(branchStock)
+    .where(inArray(branchStock.variantId, sortedVariantIds))
+    .orderBy(asc(branchStock.variantId))
+    .for("update");
+  const costRows = await tx
+    .select({ id: productVariants.id, costPrice: productVariants.costPrice })
+    .from(productVariants)
+    .where(inArray(productVariants.id, sortedVariantIds))
+    .orderBy(asc(productVariants.id))
+    .for("update");
+  const costAtDispatch = new Map(costRows.map((row) => [Number(row.id), money(row.costPrice ?? "0").toFixed(2)]));
   for (const it of sorted) {
+    const costSnapshot = costAtDispatch.get(it.variantId);
+    if (costSnapshot == null) {
+      throw new TRPCError({ code: "NOT_FOUND", message: `الصنف #${it.variantId} غير موجود` });
+    }
     await tx.insert(stockTransferLines).values({
       transferId,
       variantId: it.variantId,
@@ -106,7 +133,7 @@ export async function createStockTransfer(tx: Tx, a: CreateTransferArgs) {
       relatedBranchId: a.toBranchId,
       referenceType: "TRANSFER",
       referenceId: transferId,
-      notes: `سند تحويل ${transferNumber} — بالطريق إلى الفرع الوجهة`,
+      notes: `سند تحويل ${transferNumber} — بالطريق إلى الفرع الوجهة [COST_SNAPSHOT:${costSnapshot}]`,
       createdBy: a.createdBy,
     });
   }
@@ -200,11 +227,30 @@ export async function receiveStockTransfer(tx: Tx, a: ReceiveTransferArgs) {
   // **المصدر** — البضاعة كانت في عهدته حتى تسليمها، وعنده يبدأ تحقيق العجز. dedupeKey يمنع الازدواج.
   if (shortages.length) {
     const ids = shortages.map((s) => s.variantId);
-    const costs = await tx
-      .select({ id: productVariants.id, costPrice: productVariants.costPrice })
-      .from(productVariants)
-      .where(inArray(productVariants.id, ids));
-    const costOf = new Map(costs.map((c) => [Number(c.id), c.costPrice ?? "0"]));
+    const dispatchMoves = await tx
+      .select({ variantId: inventoryMovements.variantId, notes: inventoryMovements.notes })
+      .from(inventoryMovements)
+      .where(
+        and(
+          eq(inventoryMovements.referenceType, "TRANSFER"),
+          eq(inventoryMovements.referenceId, a.transferId),
+          eq(inventoryMovements.movementType, "TRANSFER_OUT"),
+          inArray(inventoryMovements.variantId, ids),
+        ),
+      );
+    const costOf = new Map<number, string>();
+    for (const move of dispatchMoves) {
+      const snapshot = transferCostSnapshot(move.notes);
+      if (snapshot != null) costOf.set(Number(move.variantId), snapshot);
+    }
+    for (const s of shortages) {
+      if (!costOf.has(s.variantId)) {
+        throw new TRPCError({
+          code: "PRECONDITION_FAILED",
+          message: `لا يمكن تقييم عجز الصنف #${s.variantId}: سند الإرسال لا يحتوي لقطة تكلفة موثّقة`,
+        });
+      }
+    }
     const lossValue = shortages.reduce((acc, s) => acc.plus(money(costOf.get(s.variantId) ?? "0").times(s.qty)), money(0));
     if (!lossValue.isZero()) {
       await postEntry(tx, {

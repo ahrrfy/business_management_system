@@ -93,7 +93,7 @@ describe("closeShift — تدقيق الملكية/الفرع (IDOR)", () => {
   });
 });
 
-describe("reconcileCustomerBalances — لا انحراف وهمي بعد مرتجع جزئي/دفع زائد", () => {
+describe("reconcileCustomerBalances — لا انحراف وهمي بعد مرتجع جزئي/رفض دفع زائد", () => {
   it("مرتجع جزئي على فاتورة آجلة لا يُنتج انحرافاً وهمياً", async () => {
     await setStock(1, 1, 10);
     await db().insert(s.customers).values({ id: 1, name: "تاجر", defaultPriceTier: "RETAIL", currentBalance: "0" });
@@ -109,7 +109,7 @@ describe("reconcileCustomerBalances — لا انحراف وهمي بعد مرت
     expect(issues).toHaveLength(0);
   });
 
-  it("دفع زائد لا يُنتج انحرافاً وهمياً", async () => {
+  it("الدفع الزائد يُرفض بلا سند ولا انحراف في الرصيد", async () => {
     await setStock(1, 1, 10);
     await db().insert(s.customers).values({ id: 1, name: "ت", defaultPriceTier: "RETAIL", currentBalance: "0" });
     const sale = await createSale(
@@ -119,7 +119,10 @@ describe("reconcileCustomerBalances — لا انحراف وهمي بعد مرت
     // M5/M8: الدفع النقدي يَستوجب وردية مفتوحة لمستخدم actor (admin=1).
     await openShift(1, 1);
     // ادفع أكثر من المستحق (30 على 30 ثم 20 إضافية)
-    await processPayment({ invoiceId: sale.invoiceId, amount: "50.00", method: "CASH" }, actor);
+    await expect(
+      processPayment({ invoiceId: sale.invoiceId, amount: "50.00", method: "CASH" }, actor),
+    ).rejects.toThrow(/تتجاوز المتبقي/);
+    expect(await db().select().from(s.receipts)).toHaveLength(0);
     const issues = await reconcileCustomerBalances();
     expect(issues).toHaveLength(0);
   });

@@ -53,6 +53,17 @@ function restrictedBranchOf(ctx: { user: { role: string; branchId: number | null
   return Number(b);
 }
 
+async function assertManagerStocktakeBranch(
+  ctx: { user: { role: string; branchId: number | null } },
+  sessionId: number,
+): Promise<void> {
+  if (ctx.user.role === "admin") return;
+  if (ctx.user.branchId == null) {
+    throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مسند لهذا المدير" });
+  }
+  await getStocktakeSession(sessionId, { restrictBranchId: Number(ctx.user.branchId) });
+}
+
 export const stocktakeRouter = router({
   /* ─────────── الإنشاء ─────────── */
   create: warehouseProcedure
@@ -175,6 +186,7 @@ export const stocktakeRouter = router({
   review: managerProcedure
     .input(z.object({ sessionId: idNum, autoAdjust: z.boolean().default(true) }))
     .query(async ({ input, ctx }) => {
+      await assertManagerStocktakeBranch(ctx, input.sessionId);
       return computeStocktakeReview(input.sessionId, { autoAdjust: input.autoAdjust, viewerId: ctx.user.id });
     }),
 
@@ -195,6 +207,7 @@ export const stocktakeRouter = router({
   resolveConflict: managerProcedure
     .input(z.object({ sessionId: idNum, variantId: idNum, pick: z.enum(["FIRST", "VERIFY"]) }))
     .mutation(async ({ input, ctx }) => {
+      await assertManagerStocktakeBranch(ctx, input.sessionId);
       const res = await resolveStocktakeConflict(input, { userId: ctx.user.id });
       await logAudit(ctx, {
         action: "stocktake.resolveConflict",
@@ -216,6 +229,7 @@ export const stocktakeRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
+      await assertManagerStocktakeBranch(ctx, input.sessionId);
       const res = await decideStocktakeItem(input, { userId: ctx.user.id });
       await logAudit(ctx, {
         action: "stocktake.decide",
@@ -227,6 +241,7 @@ export const stocktakeRouter = router({
     }),
 
   firstSign: managerProcedure.input(z.object({ sessionId: idNum })).mutation(async ({ input, ctx }) => {
+    await assertManagerStocktakeBranch(ctx, input.sessionId);
     const res = await firstSignStocktake(input.sessionId, { userId: ctx.user.id });
     await logAudit(ctx, {
       action: "stocktake.firstSign",
@@ -238,6 +253,7 @@ export const stocktakeRouter = router({
   }),
 
   approve: managerProcedure.input(z.object({ sessionId: idNum })).mutation(async ({ input, ctx }) => {
+    await assertManagerStocktakeBranch(ctx, input.sessionId);
     // role يلزم حوكمة الاعتماد الافتتاحي (منشئ≠معتمد وعادّ≠معتمد، admin مُستثنى للتصحيح الإداري).
     const res = await approveStocktake(input.sessionId, { userId: ctx.user.id, role: ctx.user.role });
     // لا تدقيق مكرّراً لإعادة استدعاء idempotent — الاعتماد الفعلي سُجّل في مرّته الأولى.
@@ -253,6 +269,7 @@ export const stocktakeRouter = router({
   }),
 
   forceReview: managerProcedure.input(z.object({ sessionId: idNum })).mutation(async ({ input, ctx }) => {
+    await assertManagerStocktakeBranch(ctx, input.sessionId);
     const res = await forceStocktakeReview(input.sessionId, { userId: ctx.user.id });
     await logAudit(ctx, {
       action: "stocktake.forceReview",
@@ -306,7 +323,8 @@ export const stocktakeRouter = router({
   }),
 
   /* ─────────── المخرجات ─────────── */
-  report: managerProcedure.input(z.object({ sessionId: idNum })).query(async ({ input }) => {
+  report: managerProcedure.input(z.object({ sessionId: idNum })).query(async ({ input, ctx }) => {
+    await assertManagerStocktakeBranch(ctx, input.sessionId);
     return getStocktakeReport(input.sessionId);
   }),
 
@@ -315,7 +333,8 @@ export const stocktakeRouter = router({
   }),
 
   /** سجلّ الجلسة من auditLogs (entityType=stocktake) — يشمل عدّات البوابة (user=null باسم العامل). */
-  log: managerProcedure.input(z.object({ sessionId: idNum })).query(async ({ input }) => {
+  log: managerProcedure.input(z.object({ sessionId: idNum })).query(async ({ input, ctx }) => {
+    await assertManagerStocktakeBranch(ctx, input.sessionId);
     const db = getDb();
     if (!db) return [];
     const rows = await db

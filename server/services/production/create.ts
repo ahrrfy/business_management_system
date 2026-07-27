@@ -149,13 +149,30 @@ async function resolveAndValidateLines(
     if (laborCost.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمالة لا يمكن أن تكون سالبة" });
   }
 
-  // حارس التحويل الذاتي (مسار الوصفة محصّن أصلاً لأن المخرَج ≠ أي مكوّن عند الإنشاء).
+  // التحويل الذاتي ممنوع دائماً: السماح به مع تكلفة تشغيل/عمالة كان يتيح رفع WAVG لنفس الصنف
+  // بلا تغيّر صافٍ في الكمية ولا مستند مصدر للقيمة.
   const inVarIds = new Set(inLines.map((l) => l.variantId));
-  if (!input.allowSelfConvert) {
-    for (const o of outLines) {
-      if (inVarIds.has(o.variantId)) {
-        throw new TRPCError({ code: "BAD_REQUEST", message: "صنف لا يكون مدخلاً ومخرجاً في آنٍ واحد (يُفسد حساب التكلفة)" });
+  for (const o of outLines) {
+    if (inVarIds.has(o.variantId)) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "صنف لا يكون مدخلاً ومخرجاً في آنٍ واحد (يُفسد حساب التكلفة)" });
+    }
+  }
+
+  // افشل قبل أي حركة مخزون إذا كانت نسب التوزيع اليدوي غير صالحة.
+  const manualShares = outLines.filter((l) => l.manualSharePct != null);
+  if (manualShares.length > 0) {
+    if (manualShares.length !== outLines.length) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "إمّا توزيع يدوي لكل المخرجات أو تناسبي للكل (لا خلط)" });
+    }
+    for (const l of manualShares) {
+      const pct = money(l.manualSharePct ?? "0");
+      if (pct.lt(0) || pct.gt(100)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة توزيع تكلفة كل مخرج يجب أن تكون بين 0% و100%" });
       }
+    }
+    const sumPct = manualShares.reduce((sum, l) => sum.plus(money(l.manualSharePct ?? "0")), new Decimal(0));
+    if (sumPct.minus(100).abs().gt("0.01")) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مجموع نسب التوزيع اليدوي يجب أن يساوي 100%" });
     }
   }
 
@@ -237,6 +254,12 @@ async function produceOutputs(
     throw new TRPCError({ code: "BAD_REQUEST", message: "إمّا توزيع يدوي لكل المخرجات أو تناسبي للكل (لا خلط)" });
   }
   if (useManual) {
+    for (const l of outLines) {
+      const pct = money(l.manualSharePct ?? "0");
+      if (pct.lt(0) || pct.gt(100)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "نسبة توزيع تكلفة كل مخرج يجب أن تكون بين 0% و100%" });
+      }
+    }
     const sumPct = outLines.reduce((s, l) => s.plus(money(l.manualSharePct ?? "0")), new Decimal(0));
     if (sumPct.minus(100).abs().gt("0.01")) {
       throw new TRPCError({ code: "BAD_REQUEST", message: "مجموع نسب التوزيع اليدوي يجب أن يساوي 100%" });

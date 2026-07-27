@@ -43,7 +43,7 @@ async function fetchDailySparkline(
     q = sql`
       SELECT DATE(r.createdAt) AS day, CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.receiptStatus = 'COMPLETED' AND r.direction = 'IN'
+      WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'IN'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
         ${branchFilter}
         ${bucketFilter}
@@ -53,7 +53,7 @@ async function fetchDailySparkline(
     q = sql`
       SELECT DATE(r.createdAt) AS day, CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.receiptStatus = 'COMPLETED' AND r.direction = 'OUT'
+      WHERE r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED' AND r.direction = 'OUT'
         AND r.createdAt >= DATE_SUB(CURDATE(), INTERVAL 6 DAY)
         ${branchFilter}
         ${bucketFilter}
@@ -116,7 +116,7 @@ export async function getKpiTrends(
     await db.execute(sql`
       SELECT CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED'
+      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) = CURDATE()
         ${branchFilterR} ${bucketFilterR}
     `),
@@ -125,7 +125,7 @@ export async function getKpiTrends(
     await db.execute(sql`
       SELECT CAST(COALESCE(SUM(r.amount), 0) AS CHAR) AS amount
       FROM receipts r
-      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED'
+      WHERE r.direction = 'IN' AND r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
         AND DATE(r.createdAt) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
         ${branchFilterR} ${bucketFilterR}
     `),
@@ -178,7 +178,7 @@ export async function getKpiTrends(
       await db.execute(sql`
         SELECT CAST(COALESCE(SUM(CASE WHEN r.direction = 'IN' THEN r.amount ELSE -r.amount END), 0) AS CHAR) AS amount
         FROM receipts r
-        WHERE r.cashBucket = 'TREASURY' AND r.receiptStatus = 'COMPLETED'
+        WHERE r.cashBucket = 'TREASURY' AND r.receiptStatus = 'COMPLETED' AND r.receiptApprovalStatus = 'APPROVED'
           AND DATE(r.createdAt) < CURDATE()
           ${branchFilterR}
       `),

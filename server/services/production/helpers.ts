@@ -92,9 +92,12 @@ async function resolveRunPlan(tx: any, run: NonNullable<CreateProductionInput["r
   if (!head) throw new TRPCError({ code: "NOT_FOUND", message: "الوصفة غير موجودة" });
   if (!head.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الوصفة معطّلة" });
 
-  const batch = Math.trunc(Number(run.batchQty));
-  if (!Number.isFinite(batch) || batch <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "عدد الدفعة يجب أن يكون عدداً صحيحاً موجباً" });
-  const scrap = Math.min(Math.max(0, Math.trunc(Number(run.scrapQty ?? 0))), batch);
+  const batch = Number(run.batchQty);
+  if (!Number.isSafeInteger(batch) || batch <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "عدد الدفعة يجب أن يكون عدداً صحيحاً موجباً" });
+  const scrap = Number(run.scrapQty ?? 0);
+  if (!Number.isSafeInteger(scrap) || scrap < 0 || scrap > batch) {
+    throw new TRPCError({ code: "BAD_REQUEST", message: "كمية التالف يجب أن تكون عدداً صحيحاً بين صفر وحجم الدفعة" });
+  }
   const good = batch - scrap;
   if (good <= 0) throw new TRPCError({ code: "BAD_REQUEST", message: "السليم الناتج يجب أن يكون موجباً (التالف لا يساوي الدفعة كلّها)" });
 

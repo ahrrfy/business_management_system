@@ -62,7 +62,7 @@ export const payrollRouter = router({
     )
     .mutation(async ({ input, ctx }) => {
       const { itemId, ...rest } = input;
-      const run = await svc.updateItem(itemId, rest);
+      const run = await svc.updateItem(itemId, rest, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0 });
       await logAudit(ctx, {
         action: "payroll.updateItem",
         entityType: "payrollItem",
@@ -91,7 +91,11 @@ export const payrollRouter = router({
   cancel: hrWrite
     .input(z.object({ id: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
-      const res = await svc.cancelRun(input.id, { userId: ctx.user.id, branchId: ctx.user.branchId ?? 0 });
+      const res = await svc.cancelRun(input.id, {
+        userId: ctx.user.id,
+        branchId: ctx.user.branchId ?? 0,
+        enforceCashReturnEvidence: true,
+      });
       await logAudit(ctx, { action: "payroll.cancel", entityType: "payrollRun", entityId: input.id, newValue: { status: res.status } });
       return res;
     }),
@@ -184,7 +188,7 @@ export const payrollRouter = router({
         // مُرفق سند الصرف (صورة مضغوطة data URL أو رابط) — نفس سقف voucherRouter.
         attachmentUrl: z.string().max(4_000_000).nullish(),
         // idempotency (تدقيق ١٧/٧): منع صرف نقدي مزدوج عند إعادة الإرسال.
-        clientRequestId: z.string().min(1).max(64).nullish(),
+        clientRequestId: z.string().trim().min(1).max(64),
       }),
     )
     .mutation(async ({ input, ctx }) => {

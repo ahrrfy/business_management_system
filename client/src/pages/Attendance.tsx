@@ -64,7 +64,7 @@ function StatCard({ label, value, sub, icon, accent }: { label: string; value: s
   );
 }
 
-const emptyForm = () => ({ employeeId: "", attendanceDate: today(), hours: "", checkIn: "", checkOut: "", source: "manual" as "manual" | "fingerprint" });
+const emptyForm = () => ({ employeeId: "", attendanceDate: today(), hours: "", checkIn: "", checkOut: "" });
 
 export default function Attendance() {
   const [, navigate] = useLocation();
@@ -137,7 +137,7 @@ export default function Attendance() {
       hours,
       checkIn: form.checkIn.trim() || undefined,
       checkOut: form.checkOut.trim() || undefined,
-      source: form.source,
+      source: "manual",
     });
   }
 
@@ -321,11 +321,10 @@ export default function Attendance() {
               </div>
             </div>
             <div className="space-y-1">
-              <Label htmlFor="att-source">المصدر</Label>
-              <select id="att-source" className="h-9 w-full rounded-md border border-input bg-transparent px-2 text-sm" value={form.source} onChange={(e) => setForm({ ...form, source: e.target.value as "manual" | "fingerprint" })}>
-                <option value="manual">يدوي</option>
-                <option value="fingerprint">بصمة</option>
-              </select>
+              <Label>المصدر</Label>
+              <div className="flex h-9 items-center rounded-md border border-input px-3 text-sm text-muted-foreground">
+                يدوي — سجلات البصمة تأتي من مزامنة الجهاز فقط
+              </div>
             </div>
             <p className="text-xs text-muted-foreground">أجر اليوم يُحتسب آلياً من ساعات الحضور وسعر ساعة ذلك اليوم في ملف الموظف.</p>
           </div>

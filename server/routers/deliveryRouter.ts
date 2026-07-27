@@ -178,7 +178,22 @@ export const deliveryRouter = router({
         partyId: z.number().int().positive(),
         branchId: z.number().int().positive().nullish(),
         shiftType: z.enum(["RECEPTION", "RETAIL"]).optional(),
-        lines: z.array(z.object({ consignmentId: z.number().int().positive(), collectedAmount: moneyStr })).min(1),
+        lines: z
+          .array(z.object({ consignmentId: z.number().int().positive(), collectedAmount: moneyStr }))
+          .min(1)
+          .superRefine((lines, ctx) => {
+            const seen = new Set<number>();
+            lines.forEach((line, index) => {
+              if (seen.has(line.consignmentId)) {
+                ctx.addIssue({
+                  code: z.ZodIssueCode.custom,
+                  path: [index, "consignmentId"],
+                  message: "الإرسالية مكررة داخل التوريد",
+                });
+              }
+              seen.add(line.consignmentId);
+            });
+          }),
         clientRequestId: z.string().max(64).nullish(),
       }),
     )

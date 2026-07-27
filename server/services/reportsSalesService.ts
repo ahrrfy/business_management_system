@@ -81,11 +81,17 @@ export async function getSalesRegister(opts: {
         DATE_FORMAT(i.invoiceDate, '%Y-%m-%d') AS invoiceDate,
         c.name AS customerName,
         p.name AS productName,
-        CAST(ii.quantity AS CHAR) AS quantity,
+        CAST(CASE WHEN ii.baseQuantity > 0
+          THEN ii.quantity * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+          ELSE ii.quantity END AS CHAR) AS quantity,
         CAST(ii.unitPrice AS CHAR) AS unitPrice,
         CAST(ii.unitCost AS CHAR) AS unitCost,
-        CAST(ii.total AS CHAR) AS total,
-        CAST(ii.total - (ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost AS CHAR) AS profit
+        CAST(CASE WHEN ii.baseQuantity > 0
+          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+          ELSE ii.total END AS CHAR) AS total,
+        CAST((CASE WHEN ii.baseQuantity > 0
+          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+          ELSE ii.total END) - (ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost AS CHAR) AS profit
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
       JOIN productVariants pv ON pv.id = ii.variantId
@@ -103,10 +109,16 @@ export async function getSalesRegister(opts: {
     await db.execute(sql`
       SELECT
         COUNT(*) AS cnt,
-        CAST(COALESCE(SUM(ii.total), 0) AS CHAR) AS revenue,
+        CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
+          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+          ELSE ii.total END), 0) AS CHAR) AS revenue,
         CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost,
-        CAST(COALESCE(SUM(ii.total - (ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
-        CAST(COALESCE(SUM(ii.quantity), 0) AS CHAR) AS qty
+        CAST(COALESCE(SUM((CASE WHEN ii.baseQuantity > 0
+          THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+          ELSE ii.total END) - (ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS profit,
+        CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
+          THEN ii.quantity * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+          ELSE ii.quantity END), 0) AS CHAR) AS qty
       FROM invoiceItems ii
       JOIN invoices i ON i.id = ii.invoiceId
       WHERE ${where}
@@ -236,10 +248,9 @@ export async function getSalesByDimension(opts: {
     return summarizeDimensionRows(rows);
   }
 
-  // #11 (تدقيق التثبيت): revenue = SUM(i.total - i.returnedTotal) — كان يستعمل i.total الخام
-  // (شامل الضريبة، بلا تصافي المرتجعات) فينحرف عن تبويب المنتج على نفس الشاشة وعن P&L.
-  // التصافي على مستوى الفاتورة دقيق (invoices.returnedTotal تراكميّ). التكلفة تبقى i.costTotal —
-  // إن أعيد جزء للمخزون فإن قيمته ستُخصم عبر بيع لاحق، فتكلفة هذه الفاتورة الأصلية تبقى ثابتة.
+  // أبعاد العميل/الفرع/الكاشير تتبع لقطة الفاتورة، لكن تكلفة الفاتورة تُعاد بناؤها
+  // من الكميات التي لم تُرجع إلى المخزون. هذا يحافظ على ظهور البيانات التاريخية
+  // المستوردة قبل إنشاء دفتر القيود ويمنع إبقاء تكلفة البضاعة المرتجعة ضمن الربح.
   const rows = rowsOf(
     await db.execute(sql`
       SELECT
@@ -249,8 +260,14 @@ export async function getSalesByDimension(opts: {
         CAST(COALESCE(SUM(i.total - i.returnedTotal), 0) AS CHAR) AS revenue,
         CAST(COALESCE(SUM(i.paidAmount), 0) AS CHAR) AS paid,
         CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaid,
-        CAST(COALESCE(SUM(i.costTotal), 0) AS CHAR) AS cost
+        CAST(COALESCE(SUM(COALESCE(ic.cost, i.costTotal)), 0) AS CHAR) AS cost
       FROM invoices i
+      LEFT JOIN (
+        SELECT ii.invoiceId,
+          SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost) AS cost
+        FROM invoiceItems ii
+        GROUP BY ii.invoiceId
+      ) ic ON ic.invoiceId = i.id
       ${joinClause}
       WHERE ${where}
       GROUP BY ${groupKey}, label

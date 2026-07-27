@@ -9,7 +9,6 @@ import { z } from "zod";
 import { branches, branchStock, inventoryMovements, productVariants, products, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logAudit } from "../services/auditService";
-import { applyMovement, convertToBaseQuantity } from "../services/inventoryService";
 import {
   cancelStockTransfer,
   createStockTransfer,
@@ -26,10 +25,7 @@ import {
   rejectStockAdjustment,
   listStockAdjustmentRequests,
 } from "../services/inventory/adjustmentApproval";
-import { checkIdempotency, idempotencyHash, recordIdempotencyKey } from "../services/idempotency";
 import { withTx } from "../services/tx";
-import { postEntry } from "../services/ledgerService";
-import { money } from "../services/money";
 import { retryOnDup } from "../lib/retryDup";
 import { inventoryManagerProcedure, inventoryReadProcedure, inventoryWarehouseProcedure, protectedProcedure, router } from "../trpc";
 
@@ -758,11 +754,8 @@ export const inventoryRouter = router({
   }),
 
   /**
-   * إنشاء حركة مخزون يدوية (IN/OUT/RETURN) — أمين المخزن فأعلى.
-   * مسموح فقط للأنواع غير الحوّلية والتسوية لها مسار منفصل (`inventory.adjust`).
-   * - warehouse مُقيَّد بفرعه (أي branchId يُرسَل يُتجاهَل ويُستبدَل بفرع المستخدم).
-   * - يحوّل الكمية إلى الوحدة الأساس ثم يُمرّرها لـ applyMovement داخل tx ذرّية.
-   * - يكتب سطر تدقيق بعد النجاح (best-effort).
+   * عقد API قديم للحركات اليدوية. يبقى لاستقرار العملاء لكنه يفشل مغلقاً دائماً:
+   * الزيادة تحتاج مستند شراء/مرتجع حقيقي، والتصحيح يمرّ بطلب تسوية ثنائي الاعتماد.
    */
   createManualMovement: inventoryWarehouseProcedure
     .input(
@@ -779,93 +772,11 @@ export const inventoryRouter = router({
       })
     )
     .mutation(async ({ input, ctx }) => {
-      // فصل مهام #٦ (مراجعة عدائية MF-1): الحركة المُنقِصة للمخزون (OUT/شطب: تلف/عيّنة/تصحيح…) عمليةٌ
-      // حسّاسة قد تُخفي عجزاً/سرقة بفاعلٍ واحد — كانت باب تجاوزٍ للاعتماد الثنائيّ. تُوحَّد الآن في مسار
-      // «تسوية الرصيد» المعتمَد (inventory.adjust ⇒ طلبٌ معلَّق يعتمده مديرٌ آخر). الإضافة (IN/RETURN) تبقى.
-      if (input.movementType === "OUT") {
-        throw new TRPCError({
-          code: "FORBIDDEN",
-          message: "شطب المخزون يمرّ بطلب تسوية معتمَد (فصل مهام) — استعمل «تسوية الرصيد» من شاشة المخزون بالكمية المستهدفة، يعتمده مديرٌ آخر.",
-        });
-      }
-      // عزل الفرع: warehouse يُجبَر على فرعه؛ admin/manager يحترمان branchId المُرسَل.
-      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
-      let branchId = input.branchId;
-      if (!elevated) {
-        if (ctx.user.branchId == null) {
-          throw new TRPCError({ code: "FORBIDDEN", message: "لا فرع مُسنَد لهذا المستخدم" });
-        }
-        branchId = Number(ctx.user.branchId);
-      }
-
-      const reasonLabel = REASON_LABELS[input.reason];
-      const notesLine = input.notes && input.notes.trim().length > 0
-        ? `${reasonLabel} — ${input.notes.trim()}`
-        : reasonLabel;
-      const referenceType = `MANUAL_${input.movementType}`; // ≤ 16 chars ⇒ آمن (الحدّ 24).
-
-      const { result, baseQty, replayed } = await withTx(async (tx) => {
-        // idempotency: إعادة إرسال بنفس المفتاح تعيد الحركة الأولى بدل خصم/إضافة مكرّرة + قيد ADJUST ثانٍ
-        // (نمط inventory.transferCreate). المفتاح يُسجَّل داخل نفس المعاملة ⇒ سباق متزامن يُحسَم بالقيد الفريد.
-        if (input.clientRequestId) {
-          const existing = await checkIdempotency(tx, "inventory.manualMovement", input.clientRequestId, idempotencyHash(input));
-          if (existing != null) {
-            const st = (
-              await tx.select({ q: branchStock.quantity }).from(branchStock)
-                .where(and(eq(branchStock.variantId, input.variantId), eq(branchStock.branchId, branchId))).limit(1)
-            )[0];
-            return { result: { movementId: existing, newQuantity: Number(st?.q ?? 0) }, baseQty: 0, replayed: true as const };
-          }
-        }
-        const conv = await convertToBaseQuantity(tx, input.productUnitId, input.quantity, input.variantId);
-        const res = await applyMovement(tx, {
-          variantId: input.variantId,
-          branchId,
-          baseQuantity: conv.baseQuantity,
-          movementType: input.movementType,
-          referenceType,
-          notes: notesLine,
-          createdBy: ctx.user.id,
-        });
-        // INV-MANUAL-LEDGER (تدقيق ٢/٧): حركة مخزون يدوية (بلا شراء/بيع) تغيّر قيمة المخزون بلا قيد ⇒
-        // نُرحّل قيد ADJUST بقيمة الفرق × التكلفة. IN/RETURN ترفع القيمة (cost سالب/profit موجب)،
-        // OUT يخفضها (خسارة: cost موجب/profit سالب). dedupeKey على معرّف الحركة يمنع الازدواج.
-        const signedDelta = input.movementType === "OUT" ? -conv.baseQuantity : conv.baseQuantity;
-        const v = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, input.variantId)).limit(1))[0];
-        const adjustValue = money(v?.costPrice ?? "0").times(signedDelta);
-        if (!adjustValue.isZero()) {
-          await postEntry(tx, {
-            entryType: "ADJUST",
-            branchId,
-            cost: adjustValue.neg(),
-            profit: adjustValue,
-            amount: money(0),
-            dedupeKey: `INV_MANUAL:${res.movementId}`,
-            notes: `حركة مخزون يدوية (${input.movementType}) — ${notesLine}`,
-          });
-        }
-        if (input.clientRequestId) {
-          await recordIdempotencyKey(tx, "inventory.manualMovement", input.clientRequestId, res.movementId, idempotencyHash(input));
-        }
-        return { result: res, baseQty: conv.baseQuantity, replayed: false as const };
+      // لا زيادة ولا شطب بلا مصدر: كل التصحيحات تمرّ بمسار التسوية المعتمَد.
+      throw new TRPCError({
+        code: "FORBIDDEN",
+        message:
+          "لا تُنشأ كمية مخزون يدوياً بلا مستند مصدر. الشراء والمرتجعات تُسجّل من شاشاتها، وأي تصحيح يمرّ بطلب «تسوية الرصيد» ويعتمده مسؤول آخر.",
       });
-
-      if (!replayed) await logAudit(ctx, {
-        action: "inventory.manualMovement",
-        entityType: "stock",
-        entityId: input.variantId,
-        newValue: {
-          movementId: result.movementId,
-          branchId,
-          type: input.movementType,
-          productUnitId: input.productUnitId,
-          quantity: input.quantity,
-          baseQuantity: baseQty,
-          reason: input.reason,
-          notes: input.notes ?? null,
-        },
-      });
-
-      return { movementId: result.movementId, newQuantity: result.newQuantity };
     }),
 });

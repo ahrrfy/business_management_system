@@ -255,6 +255,8 @@ export default function SalesInvoiceNew() {
     const remaining = D(totals.grandTotal).minus(paid);
     if (remaining.gt(0) && !state.entityId)
       return "هناك مبلغ آجل (ذمة) — اختر عميلاً لتسجيل الذمة عليه.";
+    if (remaining.lt(0) && state.paymentMethod !== "CASH")
+      return "الدفع غير النقدي لا يمكن أن يتجاوز إجمالي الفاتورة.";
     if (D(totals.grandTotal).lt(0)) return "الإجمالي النهائي لا يمكن أن يكون سالباً.";
     // سياسة #14: لا نسبة ضريبة سالبة (الخادم يرفضها أيضاً — نمنعها هنا برسالة أوضح).
     if (state.taxEnabled && D(state.taxRatePercent || "0").lt(0))

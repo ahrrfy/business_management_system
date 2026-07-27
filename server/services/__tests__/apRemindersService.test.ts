@@ -57,6 +57,28 @@ async function makeSupplierWithOverduePO(opts: {
     paidAmount: opts.paid ?? "0",
     status: "CONFIRMED",
   });
+  // AP aging is ledger-sourced: a PO becomes a payable only when an actual
+  // PURCHASE entry exists (normally created by receivePurchase).
+  await d.insert(s.accountingEntries).values({
+    entryType: "PURCHASE",
+    branchId,
+    supplierId: opts.supplierId,
+    purchaseOrderId: opts.poId,
+    amount: opts.total,
+    entryDate: opts.orderDate,
+    dedupeKey: `TEST:AP-REMINDER:PURCHASE:${opts.poId}`,
+  });
+  if (opts.paid && Number(opts.paid) > 0) {
+    await d.insert(s.accountingEntries).values({
+      entryType: "PAYMENT_OUT",
+      branchId,
+      supplierId: opts.supplierId,
+      purchaseOrderId: opts.poId,
+      amount: opts.paid,
+      entryDate: opts.orderDate,
+      dedupeKey: `TEST:AP-REMINDER:PAYMENT:${opts.poId}`,
+    });
+  }
 }
 
 /** تاريخ منذ N يوماً (YYYY-MM-DD)، UTC. */

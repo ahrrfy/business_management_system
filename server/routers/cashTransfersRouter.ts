@@ -24,7 +24,7 @@ export const cashTransfersRouter = router({
         toBranchId: z.number().int().positive(),
         amount: moneyStr,
         notes: z.string().max(500).nullish(),
-        clientRequestId: z.string().min(1).max(80).optional(),
+        clientRequestId: z.string().min(1).max(80),
         confirmNegative: z.boolean().optional(),
       }),
     )
