@@ -1,12 +1,12 @@
 // المبيعات حسب بُعد — تجميع الفواتير على محور مختار (عميل/فرع/طريقة دفع/كاشير) + إجماليات.
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc).
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
-import { Card, CardContent } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import { ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -62,6 +62,75 @@ export default function SalesByDimension() {
 
   const periodLabel = `${period.from} — ${period.to}`;
   const dimLabel = DIM_LABEL[dimension];
+
+  // أعمدة DataTable — كل أعمدة الأرقام/المال بفرزٍ رقميّ (accessorFn ⇒ Number). عمودا المحصّل/
+  // المتبقّي مشروطان بـshowPaidCols (بلا معنى في بُعد الصنف) ⇒ يُبنى المصفوف ببناء تدريجي typed
+  // بدل ترنري+spread داخل حرفي المصفوف (يتفادى استدلال `any` الضمني — نفس درس onExport أدناه).
+  const cols = useMemo<ColumnDef<Row>[]>(() => {
+    const base: ColumnDef<Row>[] = [
+      { header: dimLabel, accessorKey: "label" },
+      {
+        id: "invoices",
+        header: "عدد الفواتير",
+        accessorFn: (r) => Number(r.invoices),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{row.original.invoices}</span>,
+      },
+      {
+        id: "revenue",
+        header: "الإيراد",
+        accessorFn: (r) => Number(r.revenue),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.revenue)}</span>,
+      },
+    ];
+    if (showPaidCols) {
+      base.push(
+        {
+          id: "paid",
+          header: "المحصّل",
+          accessorFn: (r) => Number(r.paid),
+          cell: ({ row }) => (
+            <span dir="ltr" className="tabular-nums text-money-positive">{fmtAr(row.original.paid)}</span>
+          ),
+        },
+        {
+          id: "unpaid",
+          header: "المتبقّي",
+          accessorFn: (r) => Number(r.unpaid),
+          cell: ({ row }) => (
+            <span dir="ltr" className="tabular-nums text-money-negative">{fmtAr(row.original.unpaid)}</span>
+          ),
+        },
+      );
+    }
+    base.push(
+      {
+        id: "cost",
+        header: "التكلفة",
+        accessorFn: (r) => Number(r.cost),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.cost)}</span>,
+      },
+      {
+        id: "profit",
+        header: "الربح",
+        accessorFn: (r) => Number(r.profit),
+        cell: ({ row }) => (
+          <span
+            dir="ltr"
+            className={`tabular-nums ${Number(row.original.profit) < 0 ? "text-destructive" : "text-money-positive"}`}
+          >
+            {fmtAr(row.original.profit)}
+          </span>
+        ),
+      },
+      {
+        id: "marginPct",
+        header: "الهامش %",
+        accessorFn: (r) => Number(r.marginPct),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{row.original.marginPct}%</span>,
+      },
+    );
+    return base;
+  }, [showPaidCols, dimLabel]);
 
   function onExport() {
     exportRows(rows, {
@@ -158,57 +227,17 @@ export default function SalesByDimension() {
         </div>
       }
     >
-      <Card>
-        <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا مبيعات في هذا النطاق.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-end font-medium">{dimLabel}</th>
-                    <th className="p-2.5 text-right font-medium">عدد الفواتير</th>
-                    <th className="p-2.5 text-right font-medium">الإيراد</th>
-                    {showPaidCols && <th className="p-2.5 text-right font-medium">المحصّل</th>}
-                    {showPaidCols && <th className="p-2.5 text-right font-medium">المتبقّي</th>}
-                    <th className="p-2.5 text-right font-medium">التكلفة</th>
-                    <th className="p-2.5 text-right font-medium">الربح</th>
-                    <th className="p-2.5 text-right font-medium">الهامش %</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r: Row) => (
-                    <tr key={r.key} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-end">{r.label}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.invoices}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                      {showPaidCols && (
-                        <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.paid)}</td>
-                      )}
-                      {showPaidCols && (
-                        <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{fmtAr(r.unpaid)}</td>
-                      )}
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.cost)}</td>
-                      <td
-                        className={`p-2.5 text-right tabular-nums ${Number(r.profit) < 0 ? "text-destructive" : "text-money-positive"}`}
-                        dir="ltr"
-                      >
-                        {fmtAr(r.profit)}
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.marginPct}%</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
-        </CardContent>
-      </Card>
+      {q.isError ? (
+        <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+      ) : (
+        <DataTable
+          columns={cols}
+          data={rows}
+          loading={q.isLoading}
+          emptyText="لا مبيعات في هذا النطاق."
+          pageSize={Infinity}
+        />
+      )}
     </ReportShell>
   );
 }

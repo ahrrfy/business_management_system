@@ -1,15 +1,15 @@
 // تحليل ABC — تصنيف المنتجات حسب مساهمتها في الإيراد (باريتو) إلى فئات A/B/C.
 // فلتر فترة + فرع + مؤشّرات (عدد A/B/C + إجمالي الإيراد) + جدول (المنتج/الإيراد/النسبة التراكمية/شارة الفئة).
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
-import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import { ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 
 type Row = RouterOutputs["reports"]["abcAnalysis"]["rows"][number];
 
@@ -58,6 +58,48 @@ export default function AbcAnalysis() {
   const branchLabel = branchId
     ? (branches.data?.find((b) => Number(b.id) === Number(branchId))?.name ?? String(branchId))
     : "الكل";
+
+  // أعمدة DataTable — الإيراد/النسبة التراكمية بفرزٍ رقميّ (accessorFn ⇒ Number). عمود «#» عرضٌ
+  // بحت (بلا accessorFn ⇒ غير قابل للفرز) يعكس ترتيب الخادم الأصلي (تنازلياً حسب الإيراد) دوماً
+  // بصرف النظر عن فرز الواجهة — لأنّه رتبة باريتو لا قيمة عمود.
+  const cols = useMemo<ColumnDef<Row>[]>(
+    () => [
+      {
+        id: "rank",
+        header: "#",
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-muted-foreground">
+            {row.index + 1}
+          </span>
+        ),
+      },
+      { header: "المنتج", accessorKey: "productName" },
+      {
+        id: "revenue",
+        header: "الإيراد",
+        accessorFn: (r) => Number(r.revenue),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.revenue)}</span>,
+      },
+      {
+        id: "cumulativePct",
+        header: "النسبة التراكمية",
+        accessorFn: (r) => Number(r.cumulativePct),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-muted-foreground">{row.original.cumulativePct}%</span>
+        ),
+      },
+      {
+        header: "الفئة",
+        accessorKey: "class",
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${CLASS_CLS[row.original.class] ?? "bg-muted"}`}>
+            {CLASS_LABEL[row.original.class] ?? row.original.class}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
 
   function onExport() {
     if (!rows.length) return;
@@ -133,46 +175,17 @@ export default function AbcAnalysis() {
         </div>
       }
     >
-      <Card>
-        <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message={q.error?.message} onRetry={() => q.refetch()} />
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا مبيعات في هذا النطاق.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">#</th>
-                    <th className="p-2.5 text-right font-medium">المنتج</th>
-                    <th className="p-2.5 text-right font-medium">الإيراد</th>
-                    <th className="p-2.5 text-right font-medium">النسبة التراكمية</th>
-                    <th className="p-2.5 text-center font-medium">الفئة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={r.productId} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{i + 1}</td>
-                      <td className="p-2.5 text-right">{r.productName}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.revenue)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{r.cumulativePct}%</td>
-                      <td className="p-2.5 text-center">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${CLASS_CLS[r.class] ?? "bg-muted"}`}>
-                          {CLASS_LABEL[r.class] ?? r.class}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
-        </CardContent>
-      </Card>
+      {q.isError ? (
+        <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+      ) : (
+        <DataTable
+          columns={cols}
+          data={rows}
+          loading={q.isLoading}
+          emptyText="لا مبيعات في هذا النطاق."
+          pageSize={Infinity}
+        />
+      )}
     </ReportShell>
   );
 }

@@ -1,15 +1,15 @@
 // تقرير الحضور والانصراف — صفوف الحضور في نطاق فترة + فلتر موظف اختياري، مع إجماليات (أيام/ساعات/أجر).
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). يكشف الأجور ⇒ صلاحية hr/READ خادمياً.
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
-import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import { ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 
 type Row = RouterOutputs["attendance"]["report"]["rows"][number];
 
@@ -50,6 +50,41 @@ export default function AttendanceReport() {
         { label: "إجمالي الأجر", value: fmtAr(totals.amount), tone: "warning" },
       ]
     : [];
+
+  // أعمدة DataTable — التاريخ نصّي LTR (يُفرز صحيحاً أبجدياً لصيغة YYYY-MM-DD)، الحالة شارةٌ
+  // ملوّنة بتوكنز badge-status-*/badge-stock-out حسب statusKey، والساعات/الأجر بفرزٍ رقميّ.
+  const cols = useMemo<ColumnDef<Row>[]>(
+    () => [
+      {
+        header: "التاريخ",
+        accessorKey: "date",
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{row.original.date}</span>,
+      },
+      { header: "الموظف", accessorKey: "employeeName" },
+      {
+        header: "الحالة",
+        accessorKey: "status",
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.statusKey] ?? "bg-muted"}`}>
+            {row.original.status}
+          </span>
+        ),
+      },
+      {
+        id: "hours",
+        header: "الساعات",
+        accessorFn: (r) => Number(r.hours),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.hours)}</span>,
+      },
+      {
+        id: "amount",
+        header: "الأجر",
+        accessorFn: (r) => Number(r.amount),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.amount)}</span>,
+      },
+    ],
+    [],
+  );
 
   function onExport() {
     exportRows(rows, {
@@ -124,46 +159,17 @@ export default function AttendanceReport() {
         </div>
       }
     >
-      <Card>
-        <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا سجلّات حضور في هذا النطاق.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-end font-medium">التاريخ</th>
-                    <th className="p-2.5 text-end font-medium">الموظف</th>
-                    <th className="p-2.5 text-end font-medium">الحالة</th>
-                    <th className="p-2.5 text-start font-medium">الساعات</th>
-                    <th className="p-2.5 text-start font-medium">الأجر</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r, i) => (
-                    <tr key={i} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.date}</td>
-                      <td className="p-2.5 text-end">{r.employeeName}</td>
-                      <td className="p-2.5 text-end">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.statusKey] ?? "bg-muted"}`}>
-                          {r.status}
-                        </span>
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.hours)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.amount)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
-        </CardContent>
-      </Card>
+      {q.isError ? (
+        <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+      ) : (
+        <DataTable
+          columns={cols}
+          data={rows}
+          loading={q.isLoading}
+          emptyText="لا سجلّات حضور في هذا النطاق."
+          pageSize={Infinity}
+        />
+      )}
     </ReportShell>
   );
 }
