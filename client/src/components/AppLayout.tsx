@@ -7,7 +7,7 @@ import { openSearch } from "@/lib/searchEvents";
 import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
-  Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign, CreditCard,
+  Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, Gift, DollarSign, CreditCard,
   UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark,
   type LucideIcon,
 } from "lucide-react";
@@ -55,6 +55,7 @@ const NAV_LINKS: NavLink[] = [
   // (ج) دوري — أسبوعي/عند الحاجة
   { href: "/purchases", label: "المشتريات", icon: Package },
   { href: "/suppliers", label: "الموردون", icon: Building2 },
+  { href: "/gifts", label: "الهدايا والمجانيات", icon: Gift, roles: ["admin", "manager", "accountant", "warehouse", "purchasing", "auditor"], module: "gifts" },
   { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
   { href: "/chart-of-accounts", label: "شجرة الحسابات", icon: Landmark, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   // (د) متخصّص/نادر — الإعدادات في الأسفل دائماً

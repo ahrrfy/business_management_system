@@ -1484,7 +1484,7 @@ export const accountingEntries = mysqlTable(
     // DISPATCH/REMIT حركات عهدة لا تَمسّ revenue/cost (تُستثنى من تقارير الإيراد، كـCASH_*).
     // exchange-house (٣٠/٦): قيود الصيرفة — DEPOSIT/WITHDRAW/FX_BUY/SETTLE حركات أصل (revenue=cost=profit=0)؛
     // EXCHANGE_FEE = عمولة (مصروف P&L)؛ EXCHANGE_FX_DIFF = فرق صرف محقَّق (amount موقَّع، معزول عن إيراد البيع).
-    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF", "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF"]).notNull(),
+    entryType: mysqlEnum("entryType", ["SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "CASH_HANDOVER", "CASH_TRANSFER_OUT", "CASH_TRANSFER_IN", "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF", "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF", "GIFT_OUT"]).notNull(),
     branchId: bigint("branchId", { mode: "number" }).references(() => branches.id),
     invoiceId: bigint("invoiceId", { mode: "number" }).references(() => invoices.id),
     // F1 (تدقيق ٢/٧): أُضيف FK ⇒ purchaseOrderId يشير لأمر شراء موجود (تكامل مرجعيّ). الهجرة 0040.
@@ -4543,3 +4543,68 @@ export const accounts = mysqlTable(
 );
 export type Account = typeof accounts.$inferSelect;
 export type InsertAccount = typeof accounts.$inferInsert;
+
+// ============================================================
+// منظومة الهدايا/المجانيات (٢٧/٧/٢٦، هجرة 0116) — الوارد (IN: صفر تكلفة، تخفيف WAVG، بلا دين مورّد)
+// + الصادر (OUT: قيد GIFT_OUT، revenue=0 profit=-cost، بلا invoiceId، حوكمة SOD فوق العتبة).
+// جدول واحد بعمود `direction` يخدم الاتجاهين (نمط receipts.direction).
+// ============================================================
+export const giftVouchers = mysqlTable(
+  "giftVouchers",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    giftNumber: varchar("giftNumber", { length: 32 }).notNull(),
+    direction: mysqlEnum("direction", ["OUT", "IN"]).notNull(),
+    branchId: bigint("branchId", { mode: "number" }).notNull().references(() => branches.id),
+    // العميل (للصادر) / المورّد (للوارد) — أحدهما حسب الاتجاه.
+    customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
+    supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
+    giftType: varchar("giftType", { length: 32 }),
+    reason: varchar("reason", { length: 255 }),
+    // قابل للبيع؟ الوارد للاستخدام الداخلي/العيّنة = false (مؤجَّل التنفيذ لـ G-م١ب — يبقى العمود للتوسعة).
+    sellable: boolean("sellable").default(true).notNull(),
+    supplierRef: varchar("supplierRef", { length: 64 }),
+    estimatedValue: decimal("estimatedValue", { precision: 15, scale: 2 }),
+    status: mysqlEnum("status", ["DRAFT", "PENDING_APPROVAL", "APPROVED", "DELIVERED", "CANCELLED", "REVERSED"]).default("DRAFT").notNull(),
+    totalCost: decimal("totalCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    notes: varchar("notes", { length: 500 }),
+    signatureHash: varchar("signatureHash", { length: 128 }),
+    createdBy: int("createdBy").notNull().references(() => users.id),
+    approvedBy: int("approvedBy").references(() => users.id),
+    approvedAt: timestamp("approvedAt"),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    uqNumber: unique("uq_gift_number").on(t.giftNumber),
+    dirBranchStatusIdx: index("idx_gift_dir_branch_status").on(t.direction, t.branchId, t.status),
+    customerIdx: index("idx_gift_customer").on(t.customerId),
+    supplierIdx: index("idx_gift_supplier").on(t.supplierId),
+    createdIdx: index("idx_gift_created").on(t.createdAt),
+  })
+);
+export type GiftVoucher = typeof giftVouchers.$inferSelect;
+export type InsertGiftVoucher = typeof giftVouchers.$inferInsert;
+
+export const giftVoucherLines = mysqlTable(
+  "giftVoucherLines",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    giftVoucherId: bigint("giftVoucherId", { mode: "number" }).notNull().references(() => giftVouchers.id),
+    variantId: bigint("variantId", { mode: "number" }).notNull().references(() => productVariants.id),
+    productUnitId: bigint("productUnitId", { mode: "number" }).notNull().references(() => productUnits.id),
+    // الكمية بالوحدة المختارة + الكمية بوحدة الأساس (baseQuantity = quantity × conversionFactor).
+    quantity: decimal("quantity", { precision: 15, scale: 4 }).notNull(),
+    baseQuantity: int("baseQuantity").notNull(),
+    // لقطة تكلفة الوحدة وقت العملية (للصادر: WAVG وقت الإخراج؛ للوارد: 0).
+    unitCostSnapshot: decimal("unitCostSnapshot", { precision: 15, scale: 2 }).default("0").notNull(),
+    lineCost: decimal("lineCost", { precision: 15, scale: 2 }).default("0").notNull(),
+    // سعر البيع المرجعيّ (عرضيّ للصادر — «قيمة الهدية» على الإيصال).
+    refSalePrice: decimal("refSalePrice", { precision: 15, scale: 2 }),
+  },
+  (t) => ({
+    voucherIdx: index("idx_giftline_voucher").on(t.giftVoucherId),
+    variantIdx: index("idx_giftline_variant").on(t.variantId),
+  })
+);
+export type GiftVoucherLine = typeof giftVoucherLines.$inferSelect;
+export type InsertGiftVoucherLine = typeof giftVoucherLines.$inferInsert;
