@@ -1,12 +1,14 @@
 // تقرير أرصدة الإجازات — لكل موظف نشِط: أيام الإجازات المعتمدة المستهلكة + المعلّقة (قيد الموافقة).
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). صلاحية hr/READ خادمياً.
+import { useMemo } from "react";
+import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
-import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import { ErrorState } from "@/components/PageState";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
+import { fmtInt } from "@/lib/money";
 
 type Row = RouterOutputs["leaves"]["balanceReport"]["rows"][number];
 
@@ -24,6 +26,31 @@ export default function LeaveReport() {
         { label: "أيام معلّقة", value: totalPending, tone: "warning" },
       ]
     : [];
+
+  // أعمدة DataTable — الأيام بفرزٍ رقميّ (accessorFn ⇒ Number لا فرز نصّيّ)، والمعلّقة بلون
+  // تنبيه توكن (text-stock-low) بدل var() الخام + fallback "—" كالأصل.
+  const cols = useMemo<ColumnDef<Row>[]>(
+    () => [
+      { header: "الموظف", accessorKey: "employeeName" },
+      {
+        id: "usedDays",
+        header: "أيام مستهلكة (معتمدة)",
+        accessorFn: (r) => Number(r.usedDays),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtInt(row.original.usedDays)}</span>,
+      },
+      {
+        id: "pendingDays",
+        header: "أيام معلّقة",
+        accessorFn: (r) => Number(r.pendingDays),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-stock-low">
+            {row.original.pendingDays ? fmtInt(row.original.pendingDays) : "—"}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
 
   function onExport() {
     exportRows(rows, {
@@ -67,40 +94,17 @@ export default function LeaveReport() {
       exportDisabled={!rows.length}
       printDisabled={!rows.length}
     >
-      <Card>
-        <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا موظفين نشِطين.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">الموظف</th>
-                    <th className="p-2.5 text-right font-medium">أيام مستهلكة (معتمدة)</th>
-                    <th className="p-2.5 text-right font-medium">أيام معلّقة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.employeeId} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">{r.employeeName}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.usedDays}</td>
-                      <td className="p-2.5 text-right tabular-nums text-[var(--stock-low)]" dir="ltr">
-                        {r.pendingDays || "—"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
-        </CardContent>
-      </Card>
+      {q.isError ? (
+        <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+      ) : (
+        <DataTable
+          columns={cols}
+          data={rows}
+          loading={q.isLoading}
+          emptyText="لا موظفين نشِطين."
+          pageSize={Infinity}
+        />
+      )}
     </ReportShell>
   );
 }

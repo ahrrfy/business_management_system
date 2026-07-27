@@ -1,12 +1,12 @@
 // أداء المناديب / جهات التوصيل — من الأنشط؟ من الأعلى تحصيلاً؟ من الأعلى معدّل تعذّر؟
 // لطلبات المتجر الإلكتروني (COD) خلال فترة بتاريخ الطلب: مُسنَد/مُسلَّم/قيد التوصيل/متعذّر +
 // قيمة المُسلَّم + COD المُحصَّل + معدّل التعذّر + العهدة القائمة. عرض + تصدير Excel + طباعة A4.
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
-import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
+import { DataTable } from "@/components/data-table/DataTable";
+import { ErrorState } from "@/components/PageState";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtAr, formatIqd } from "@/lib/money";
@@ -58,6 +58,103 @@ export default function CourierPerformanceReport() {
         { label: "عهدة قائمة الآن", value: formatIqd(summary.custodyOutstanding), tone: Number(summary.custodyOutstanding) > 0 ? "warning" : "default" },
       ]
     : [];
+
+  // أعمدة DataTable — كل أعمدة الأرقام/المال بفرزٍ رقميّ (accessorFn ⇒ Number لا فرز نصّيّ).
+  const cols = useMemo<ColumnDef<Row>[]>(
+    () => [
+      {
+        header: "الجهة",
+        accessorKey: "partyName",
+        cell: ({ row }) => (
+          <>
+            <span className="font-medium">{row.original.partyName}</span>
+            {!row.original.isActive && (
+              <span className="ms-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">معطَّلة</span>
+            )}
+            {row.original.linkedUser && (
+              <div className="text-[11px] text-muted-foreground">{row.original.linkedUser}</div>
+            )}
+          </>
+        ),
+      },
+      {
+        header: "النوع",
+        accessorKey: "partyType",
+        cell: ({ row }) => (
+          <span className="text-muted-foreground">{PARTY_TYPE_LABEL[row.original.partyType] ?? row.original.partyType}</span>
+        ),
+      },
+      {
+        id: "assigned",
+        header: "مُسنَد",
+        accessorFn: (r) => Number(r.assigned),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.assigned)}</span>,
+      },
+      {
+        id: "delivered",
+        header: "مُسلَّم",
+        accessorFn: (r) => Number(r.delivered),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-money-positive">{fmtAr(row.original.delivered)}</span>
+        ),
+      },
+      {
+        id: "inTransit",
+        header: "قيد التوصيل",
+        accessorFn: (r) => Number(r.inTransit),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-muted-foreground">
+            {row.original.inTransit > 0 ? fmtAr(row.original.inTransit) : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "failed",
+        header: "متعذّر",
+        accessorFn: (r) => Number(r.failed),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-money-negative">
+            {row.original.failed > 0 ? fmtAr(row.original.failed) : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "failRate",
+        header: "معدّل التعذّر",
+        accessorFn: (r) => Number(r.failRate),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums">
+            {Number(row.original.failRate) > 0 ? `${row.original.failRate}%` : "—"}
+          </span>
+        ),
+      },
+      {
+        id: "deliveredValue",
+        header: "قيمة المُسلَّم",
+        accessorFn: (r) => Number(r.deliveredValue),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-muted-foreground">{fmtAr(row.original.deliveredValue)}</span>
+        ),
+      },
+      {
+        id: "codCollected",
+        header: "COD المُحصَّل",
+        accessorFn: (r) => Number(r.codCollected),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.codCollected)}</span>,
+      },
+      {
+        id: "custodyOutstanding",
+        header: "عهدة قائمة",
+        accessorFn: (r) => Number(r.custodyOutstanding),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums">
+            {Number(row.original.custodyOutstanding) > 0 ? fmtAr(row.original.custodyOutstanding) : "—"}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
 
   function onExport() {
     exportRows(rows, {
@@ -165,56 +262,17 @@ export default function CourierPerformanceReport() {
         </div>
       }
     >
-      <Card>
-        <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">الجهة</th>
-                    <th className="p-2.5 text-right font-medium">النوع</th>
-                    <th className="p-2.5 text-right font-medium">مُسنَد</th>
-                    <th className="p-2.5 text-right font-medium">مُسلَّم</th>
-                    <th className="p-2.5 text-right font-medium">قيد التوصيل</th>
-                    <th className="p-2.5 text-right font-medium">متعذّر</th>
-                    <th className="p-2.5 text-right font-medium">معدّل التعذّر</th>
-                    <th className="p-2.5 text-right font-medium">قيمة المُسلَّم</th>
-                    <th className="p-2.5 text-right font-medium">COD المُحصَّل</th>
-                    <th className="p-2.5 text-right font-medium">عهدة قائمة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!rows.length ? (
-                    <TableEmptyRow colSpan={10} message="لا جهات توصيل نشطة في هذا النطاق." />
-                  ) : rows.map((r) => (
-                    <tr key={r.partyId} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right font-medium">
-                        {r.partyName}
-                        {!r.isActive && <span className="ms-1.5 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">معطَّلة</span>}
-                        {r.linkedUser && <div className="text-[11px] text-muted-foreground">{r.linkedUser}</div>}
-                      </td>
-                      <td className="p-2.5 text-right text-muted-foreground">{PARTY_TYPE_LABEL[r.partyType] ?? r.partyType}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.assigned)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-positive" dir="ltr">{fmtAr(r.delivered)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{r.inTransit > 0 ? fmtAr(r.inTransit) : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums text-money-negative" dir="ltr">{r.failed > 0 ? fmtAr(r.failed) : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{Number(r.failRate) > 0 ? `${r.failRate}%` : "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtAr(r.deliveredValue)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.codCollected)}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{Number(r.custodyOutstanding) > 0 ? fmtAr(r.custodyOutstanding) : "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
-        </CardContent>
-      </Card>
+      {q.isError ? (
+        <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+      ) : (
+        <DataTable
+          columns={cols}
+          data={rows}
+          loading={q.isLoading}
+          emptyText="لا جهات توصيل نشطة في هذا النطاق."
+          pageSize={Infinity}
+        />
+      )}
     </ReportShell>
   );
 }
