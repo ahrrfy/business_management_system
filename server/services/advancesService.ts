@@ -26,6 +26,7 @@ import { fullEmployeeName } from "@shared/hr";
 import { advanceSettlements, branches, employeeAdvances, employees, idempotencyKeys, receipts, voucherCategories } from "../../drizzle/schema";
 import type { Tx } from "../db";
 import { extractInsertId } from "../lib/insertId";
+import { retryOnDup } from "../lib/retryDup";
 import { recordIdempotencyKey } from "./idempotency";
 import { money, round2, toDbMoney } from "./money";
 import { requireDb, withTx, type Actor } from "./tx";
@@ -174,20 +175,27 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
   }
 
   // ١) سند الصرف الحقيقي (ذرّي بكامل أثره: receipt + قيد PAYMENT_OUT + دلو الخزينة).
-  const voucher = await createVoucher(
-    {
-      voucherType: "PAYMENT",
-      branchId: input.branchId,
-      amount: toDbMoney(amount),
-      paymentMethod: "CASH",
-      partyType: "OTHER",
-      counterpartyName: empName,
-      description: `سلفة موظف — ${empName}${input.note?.trim() ? ` — ${input.note.trim()}` : ""}`,
-      voucherCategoryId: await payrollCategoryId(),
-      // عتبة المُرفق (vouchers-pro) تسري على سند السلفة كأي سند صرف — createVoucher يفرضها.
-      attachmentUrl: input.attachmentUrl?.trim() || null,
-    },
-    actor,
+  //    idempotent بنفس مفتاح المنح ⇒ تحت التزامن (نقر مزدوج/إعادة شبكة) لا يُصدَر سندٌ نقديّ ثانٍ:
+  //    createVoucher يحرس مفتاح voucher.create بقيد فريد، وretryOnDup يلتقط السند الفائز عند سباق المفتاح.
+  const voucherCategoryId = await payrollCategoryId();
+  const voucher = await retryOnDup(() =>
+    createVoucher(
+      {
+        voucherType: "PAYMENT",
+        branchId: input.branchId,
+        amount: toDbMoney(amount),
+        paymentMethod: "CASH",
+        partyType: "OTHER",
+        counterpartyName: empName,
+        description: `سلفة موظف — ${empName}${input.note?.trim() ? ` — ${input.note.trim()}` : ""}`,
+        voucherCategoryId,
+        // عتبة المُرفق (vouchers-pro) تسري على سند السلفة كأي سند صرف — createVoucher يفرضها.
+        attachmentUrl: input.attachmentUrl?.trim() || null,
+        // مفتاح المنح نفسه يجعل السند idempotent (منع الصرف النقدي المزدوج تحت التزامن).
+        clientRequestId: input.clientRequestId ?? null,
+      },
+      actor,
+    ),
   );
   // حارس دفاعي: العتبة فُحصت أعلاه فلا يصل سند معلَّق إلى هنا — إن وصل (تغيّرت العتبة بين
   // الفحص والإنشاء) نعوّض بالإلغاء ونرفض: سلفة نشطة على سندٍ بلا أثر مالي ممنوعة.
@@ -217,7 +225,21 @@ export async function grantAdvance(input: GrantAdvanceInput, actor: Actor) {
       return { ...row!, employeeName: empName, voucherNumber: voucher.voucherNumber };
     });
   } catch (err) {
-    // تعويض: أُنشئ السند ولم تُسجَّل السلفة ⇒ نحاول إلغاء السند؛ وإن تعذّر نسمّيه للمستخدم.
+    // تحت التزامن: لو فاز طلبٌ متزامنٌ بنفس المفتاح وسجّل المنح (advance.grant) أولاً، فالسند الذي بيدنا
+    // هو السند المشترك الذي يُسنِد سلفة الفائز (createVoucher صار idempotent) ⇒ لا نُلغيه، بل نُعيد سلفة
+    // الفائز (replay). الإلغاء هنا كان يشطب سنداً سليماً يُسنِد سلفةً قائمة — نمط sale/customer idempotency.
+    if (input.clientRequestId) {
+      const [hit] = await db
+        .select({ refId: idempotencyKeys.refId })
+        .from(idempotencyKeys)
+        .where(and(eq(idempotencyKeys.operation, "advance.grant"), eq(idempotencyKeys.clientRequestId, input.clientRequestId)))
+        .limit(1);
+      if (hit) {
+        const [row] = await db.select().from(employeeAdvances).where(eq(employeeAdvances.id, Number(hit.refId))).limit(1);
+        if (row) return { ...row, employeeName: empName, voucherNumber: voucher.voucherNumber };
+      }
+    }
+    // لا فائز سجّل المنح ⇒ السند يخصّ هذا الطلب حصراً ⇒ تعويض بإلغائه (وإن تعذّر لفصل المهام نسمّيه للإلغاء اليدوي).
     const reversed = await cancelVoucher(voucher.receiptId, actor).then(() => true).catch(() => false);
     throw new TRPCError({
       code: "INTERNAL_SERVER_ERROR",

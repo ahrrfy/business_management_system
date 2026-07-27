@@ -128,6 +128,30 @@ describe("advancesService — المنح", () => {
     expect(Number(bal.balance)).toBe(200000);
   });
 
+  it("idempotency تحت التزامن: طلبان متزامنان بنفس clientRequestId ⇒ سندٌ نقديّ واحد وسلفةٌ واحدة (لا صرف مزدوج)", async () => {
+    const emp = await seedEmployee();
+    const inp = { employeeId: emp.id, branchId: 1, amount: "200000", note: "منح متزامن", attachmentUrl: "https://files.example/r.jpg", clientRequestId: "adv-concurrent-1" };
+    // طلبان يعبران الفحص المسبق معاً — لولا idempotency السند (createVoucher + retryOnDup) لأصدرا سندَي صرف نقديّين.
+    const settled = await Promise.allSettled([grantAdvance(inp, ACTOR), grantAdvance(inp, ACTOR)]);
+    const ok = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+    expect(ok.length).toBe(2); // الخاسر يُعيد سلفة الفائز (replay)، لا يفشل ولا يُلغي السند المشترك
+    expect(ok[0].id).toBe(ok[1].id); // نفس السلفة
+    expect(Number(ok[0].receiptId)).toBe(Number(ok[1].receiptId)); // نفس السند المشترك
+
+    // الثابت الحاسم: سلفة واحدة + سند صرف OUT واحد + قيد PAYMENT_OUT واحد + رصيد غير متضاعف.
+    const advs = await db().select().from(s.employeeAdvances).where(eq(s.employeeAdvances.employeeId, emp.id));
+    expect(advs.length).toBe(1);
+    const vouchers = await db()
+      .select()
+      .from(s.receipts)
+      .where(and(eq(s.receipts.direction, "OUT"), sql`${s.receipts.voucherNumber} IS NOT NULL`));
+    expect(vouchers.length).toBe(1);
+    const payOut = await db().select().from(s.accountingEntries).where(eq(s.accountingEntries.entryType, "PAYMENT_OUT"));
+    expect(payOut.length).toBe(1);
+    const bal = await employeeBalance(emp.id);
+    expect(Number(bal.balance)).toBe(200000);
+  });
+
   it("قرار Maker-Checker: مبلغ يبلغ عتبة الاعتماد الثنائي يُرفض قبل إنشاء أي سند أو سلفة", async () => {
     const emp = await seedEmployee();
     await expect(grantAdvance({ employeeId: emp.id, branchId: 1, amount: "1000000" }, ACTOR)).rejects.toThrow(/عتبة الاعتماد/);
