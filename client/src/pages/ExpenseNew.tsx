@@ -15,6 +15,8 @@ import { cn } from "@/lib/utils";
 import { useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
 import { Landmark } from "lucide-react";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 
 /**
  * مصروف جديد — v3 add-screens.
@@ -188,6 +190,17 @@ export default function ExpenseNew() {
       clientRequestId,
     });
   }
+
+  // اختصار Ctrl+S للحفظ (Esc متروك عمداً — النموذج مكتظّ بقوائم اختيار أصلية يُغلقها Esc)،
+  // وحارس فقدان البيانات عند وجود إدخال فعليّ فقط (تجنّب تحذير كاذب).
+  useSaveShortcuts({ onSave: submit, enabled: !create.isPending });
+  useUnsavedGuard(
+    amount.trim() !== "" ||
+      description.trim() !== "" ||
+      payee.trim() !== "" ||
+      referenceNumber.trim() !== "" ||
+      items.length > 0,
+  );
 
   return (
     <div className="space-y-4">
