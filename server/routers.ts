@@ -4,6 +4,7 @@ import { authRouter } from "./routers/authRouter";
 import { saleRouter } from "./routers/saleRouter";
 import { purchaseRouter } from "./routers/purchaseRouter";
 import { inventoryRouter } from "./routers/inventoryRouter";
+import { accountsRouter } from "./routers/accountsRouter";
 import { returnRouter } from "./routers/returnRouter";
 import { purchaseReturnsRouter } from "./routers/purchaseReturns";
 import { shiftRouter } from "./routers/shiftRouter";
@@ -80,6 +81,7 @@ export const appRouter = router({
   sales: saleRouter,
   purchases: purchaseRouter,
   inventory: inventoryRouter,
+  accounts: accountsRouter,
   returns: returnRouter,
   purchaseReturns: purchaseReturnsRouter,
   shifts: shiftRouter,

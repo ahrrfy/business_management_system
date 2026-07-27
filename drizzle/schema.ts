@@ -4502,3 +4502,32 @@ export const waBroadcastRecipients = mysqlTable(
 );
 export type WaBroadcastRecipient = typeof waBroadcastRecipients.$inferSelect;
 export type InsertWaBroadcastRecipient = typeof waBroadcastRecipients.$inferInsert;
+
+/**
+ * شجرة الحسابات (Chart of Accounts) — أساس الدفتر المزدوج (P0، قرار المالك ٢٧/٧). جدولٌ **إضافيّ** لا
+ * يمسّ أيّ دفترٍ قائم. كل حساب يحمل `systemRole` يربطه بالمفهوم القائم في النظام (ذمم العملاء↔customers،
+ * المخزون↔branchStock، المبيعات↔إيراد قيود البيع…) — هذا الربط أساسُ محرّك القيود (P1) لاحقاً.
+ * systemRole فريدٌ حين وُجد (حسابٌ واحد لكل دور نظاميّ)، وnull للحسابات التفصيلية الحرّة (تعدُّد NULL مسموح).
+ */
+export const accounts = mysqlTable(
+  "accounts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    code: varchar("code", { length: 20 }).notNull(),
+    name: varchar("name", { length: 120 }).notNull(),
+    type: mysqlEnum("type", ["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]).notNull(),
+    parentId: bigint("parentId", { mode: "number" }),
+    systemRole: varchar("systemRole", { length: 40 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    notes: varchar("notes", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    uqCode: unique("uq_account_code").on(t.code),
+    uqSystemRole: unique("uq_account_system_role").on(t.systemRole),
+    typeIdx: index("idx_account_type").on(t.type),
+  })
+);
+export type Account = typeof accounts.$inferSelect;
+export type InsertAccount = typeof accounts.$inferInsert;

@@ -8,7 +8,7 @@ import {
   Menu, Search, Home, ScanLine, Receipt,
   ShoppingCart, Package, Printer, Boxes, Server,
   Briefcase, Wallet, Users, BarChart3, Settings, Lock, Truck, Building2, DollarSign, CreditCard,
-  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks,
+  UserCircle2, ChevronLeft, LogOut, Store, PackageCheck, ListChecks, Landmark,
   type LucideIcon,
 } from "lucide-react";
 import { Link, useLocation } from "wouter";
@@ -56,6 +56,7 @@ const NAV_LINKS: NavLink[] = [
   { href: "/purchases", label: "المشتريات", icon: Package },
   { href: "/suppliers", label: "الموردون", icon: Building2 },
   { href: "/reports", label: "التقارير والكشوفات", icon: BarChart3 },
+  { href: "/chart-of-accounts", label: "شجرة الحسابات", icon: Landmark, roles: ["admin", "manager", "accountant", "auditor"], module: "reports" },
   // (د) متخصّص/نادر — الإعدادات في الأسفل دائماً
   // الصيرفة تتبع وحدة «الخزينة» (راوترها يسمح لـmanager/accountant + منح صريح) — والمحاسب
   // القالبيّ يظهر عبر قائمة الأدوار، والمنح الصريح لغيره عبر module (تبويبات الصيرفة غير مُقيَّدة).
