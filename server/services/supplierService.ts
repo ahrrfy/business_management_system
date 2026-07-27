@@ -378,9 +378,20 @@ export async function deactivateSupplier(supplierId: number, _actor: Actor) {
     if (!balance.isZero())
       throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن تعطيل مورّد عليه رصيد مفتوح (${balance.toFixed(2)}) — سدّد الذمم أولاً` });
 
+    const balanceUsd = money(s.currentBalanceUsd ?? "0");
+    if (!balanceUsd.isZero()) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: `لا يمكن تعطيل المورد وعليه ذمة دولارية مفتوحة (${balanceUsd.toFixed(2)}$)` });
+    }
+
     const open = (
       await tx.select({ id: purchaseOrders.id }).from(purchaseOrders)
-        .where(and(eq(purchaseOrders.supplierId, supplierId), sql`${purchaseOrders.status} IN ('CONFIRMED','RECEIVED') AND ${purchaseOrders.paidAmount} < ${purchaseOrders.total}`))
+        .where(and(
+          eq(purchaseOrders.supplierId, supplierId),
+          sql`${purchaseOrders.status} IN ('CONFIRMED','RECEIVED') AND (
+            (${purchaseOrders.agreedCurrency} = 'USD' AND ${purchaseOrders.paidUsd} + ${purchaseOrders.returnedUsd} < ${purchaseOrders.usdTotal})
+            OR (${purchaseOrders.agreedCurrency} <> 'USD' AND ${purchaseOrders.paidAmount} < ${purchaseOrders.total})
+          )`,
+        ))
         .limit(1)
     )[0];
     if (open) throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن تعطيل مورّد له أوامر شراء غير مسوّاة" });
@@ -483,6 +494,7 @@ export async function listSuppliers(input: ListSuppliersInput = {}) {
       city: suppliers.city,
       paymentTerms: suppliers.paymentTerms,
       currentBalance: suppliers.currentBalance,
+      currentBalanceUsd: suppliers.currentBalanceUsd,
       // import-integration: «الرقم القديم» يظهر عموداً في الشاشة ويُصدَّر في Excel.
       legacyCode: suppliers.legacyCode,
       // بضاعة الأمانة: نوع الطرف — لفلتر/شارة الشاشة ومنتقي المودِعين.

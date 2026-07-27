@@ -202,9 +202,11 @@ export const exchangeRouter = router({
         exchangeHouseId: z.number().int().positive(),
         branchId: z.number().int().positive().optional(),
         supplierId: z.number().int().positive(),
+        purchaseOrderId: z.number().int().positive().optional(),
         currency: z.enum(["USD", "IQD"]),
         walletAmount: moneyStr,
-        settledIqd: moneyStr,
+        settledIqd: moneyStr.optional(),
+        settledUsd: moneyStr.optional(),
         commission: moneyStr.nullish(),
         exchangeRate: rateStr.nullish(),
         notes: z.string().max(500).nullish(),
@@ -221,7 +223,14 @@ export const exchangeRouter = router({
             action: "exchange.settle",
             entityType: "exchangeTransaction",
             entityId: res.txnId,
-            newValue: { exchangeHouseId: input.exchangeHouseId, supplierId: input.supplierId, settledIqd: input.settledIqd, currency: input.currency },
+            newValue: {
+              exchangeHouseId: input.exchangeHouseId,
+              supplierId: input.supplierId,
+              purchaseOrderId: input.purchaseOrderId,
+              settledUsd: input.settledUsd,
+              settledIqd: input.settledIqd,
+              currency: input.currency,
+            },
           });
           return res;
         } catch (e: any) {

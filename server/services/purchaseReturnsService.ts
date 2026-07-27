@@ -14,7 +14,7 @@ import { escLike } from "../lib/sqlLike";
 import { localDayStart } from "./dateRange";
 import { findIdempotentRefId, recordIdempotencyKey } from "./idempotency";
 import { applyMovement, convertToBaseQuantity } from "./inventoryService";
-import { adjustSupplierBalance, postEntry } from "./ledgerService";
+import { adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "./ledgerService";
 import { money, round2, sumMoney, toDbMoney } from "./money";
 import { shiftIdForCashTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
@@ -115,6 +115,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       input: PurchaseReturnLineInput;
       baseQuantity: number;
       lineTotal: Decimal;
+      usdTotal: Decimal;
       /** التكلفة الدفترية (WAVG) لكلّ وحدة أساس — تُستعمَل لسقف خسارة الشحن/الكمرك (landed) عند الإرجاع. */
       bookCostPerBase: Decimal;
     };
@@ -129,6 +130,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
       const factor = money(baseQuantity).dividedBy(money(it.quantity)); // وحدات الأساس لكل وحدة شراء
       const bookUnitCost = round2(bookCostPerBase.times(factor)); // تكلفة وحدة الشراء بالكتب
       let reqUnit = money(it.unitPrice);
+      let refItem: (typeof purchaseOrderItems.$inferSelect) | undefined;
       if (refPo) {
         const matching = refItems.filter(
           (row) => Number(row.variantId) === it.variantId && Number(row.productUnitId) === it.productUnitId,
@@ -136,6 +138,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         if (matching.length !== 1) {
           throw new TRPCError({ code: "BAD_REQUEST", message: `تعذرت مطابقة المتغيّر ${it.variantId} ببند مرجعي واحد` });
         }
+        refItem = matching[0];
         const poUnitPrice = money(matching[0].unitPrice);
         if (!reqUnit.eq(poUnitPrice)) {
           throw new TRPCError({ code: "BAD_REQUEST", message: `سعر المرتجع يجب أن يطابق سعر أمر الشراء (${poUnitPrice.toFixed(2)})` });
@@ -154,7 +157,10 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
         });
       }
       const lineTotal = round2(reqUnit.times(money(it.quantity)));
-      work.push({ input: it, baseQuantity, lineTotal, bookCostPerBase });
+      const usdTotal = refPo?.agreedCurrency === "USD" && refItem?.usdTotal
+        ? round2(money(refItem.usdTotal).times(new Decimal(baseQuantity).dividedBy(refItem.baseQuantity)))
+        : new Decimal(0);
+      work.push({ input: it, baseQuantity, lineTotal, usdTotal, bookCostPerBase });
     }
 
     // سقف الكميّات حسب أمر الشراء المرجعي: لا يتجاوز (مستلم − مُرتجَع سابقاً) لكل (variantId).
@@ -223,6 +229,7 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
     }
 
     const returnedTotal = round2(sumMoney(work.map((w) => w.lineTotal.toFixed(2))));
+    const returnedUsd = round2(sumMoney(work.map((w) => w.usdTotal.toFixed(2))));
 
     // قيد دفتر RETURN — الاتفاقية: قيم سالبة. cost سالب (تكلفة عُكست)، amount سالب.
     await postEntry(tx, {
@@ -257,12 +264,25 @@ export async function createPurchaseReturn(input: CreatePurchaseReturnInput, act
 
     // AP: المورد يدين لنا الآن بقيمة المرتجع ⇒ ننقص رصيده الدائن لدينا (suppliers.currentBalance) بالسالب.
     await adjustSupplierBalance(tx, input.supplierId, returnedTotal.neg());
+    if (refPo?.agreedCurrency === "USD" && returnedUsd.gt(0)) {
+      const returnableUsd = money(refPo.usdTotal ?? 0).minus(money(refPo.returnedUsd));
+      if (returnedUsd.gt(returnableUsd)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة المرتجع الدولارية تتجاوز قيمة الفاتورة القابلة للإرجاع" });
+      }
+      await adjustSupplierBalanceUsd(tx, input.supplierId, returnedUsd.neg());
+      await tx.update(purchaseOrders)
+        .set({ returnedUsd: toDbMoney(money(refPo.returnedUsd).plus(returnedUsd)) })
+        .where(eq(purchaseOrders.id, Number(refPo.id)));
+    }
 
     // الاسترداد النقدي اختياري: لو CASH ⇒ المورد ردّ النقد ⇒ receipt IN ⇒ يزيد الصندوق،
     // ولأنّنا أنقصنا الذمم بكامل القيمة فإن استلامنا نقداً يجب أن "يُعيد" قيمة النقد للذمم
     // كي يظل صافي الأثر: AP -= (returnedTotal − cashReceived). يُحقّق ذلك بـ PAYMENT_IN + adjustSupplier(+cash).
     const settlement = input.settlement ?? "CREDIT";
     if (settlement === "CASH") {
+      if (refPo?.agreedCurrency === "USD") {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "استرداد فاتورة دولارية يُسجَّل عبر عملية صيرفة مرتبطة، لا كقبض نقدي ديناري مباشر" });
+      }
       const method = input.paymentMethod ?? "CASH";
       if (method !== "CASH") {
         throw new TRPCError({ code: "BAD_REQUEST", message: "الاسترداد غير النقدي يتطلب سند قبض موثقاً" });

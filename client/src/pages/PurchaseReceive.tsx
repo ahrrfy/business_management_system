@@ -38,6 +38,12 @@ export default function PurchaseReceive() {
   const [recv, setRecv] = useState<Record<number, string>>({});
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
+  const [directUsd, setDirectUsd] = useState("");
+  const [directIqd, setDirectIqd] = useState("");
+  const [directFee, setDirectFee] = useState("");
+  const [directMethod, setDirectMethod] = useState<"CARD" | "TRANSFER" | "WALLET">("CARD");
+  const [directReference, setDirectReference] = useState("");
+  const [directRequestId, setDirectRequestId] = useState(() => crypto.randomUUID());
   const [error, setError] = useState("");
   const [done, setDone] = useState("");
 
@@ -65,12 +71,66 @@ export default function PurchaseReceive() {
     },
     onError: (e) => setError(e.message),
   });
+  const settleUsdDirect = trpc.purchases.settleUsdDirect.useMutation({
+    onSuccess: async (r) => {
+      setDone(`تم تسجيل التسديد. فرق الصرف: ${fmtAr(r.fxDiff)} د.ع`);
+      setDirectUsd("");
+      setDirectIqd("");
+      setDirectFee("");
+      setDirectReference("");
+      setDirectRequestId(crypto.randomUUID());
+      await Promise.all([
+        utils.purchases.get.invalidate({ purchaseOrderId }),
+        utils.purchases.list.invalidate(),
+        utils.suppliers.list.invalidate(),
+      ]);
+    },
+    onError: (e) => setError(e.message),
+  });
 
   if (po.isLoading) return <LoadingState />;
   if (!po.data) return <ErrorState message="أمر الشراء غير موجود." onRetry={() => po.refetch()} />;
 
   const data = po.data;
   const closed = data.status === "RECEIVED" || data.status === "CANCELLED";
+  const remainingUsd = data.agreedCurrency === "USD"
+    ? D(data.usdTotal ?? 0).minus(D(data.paidUsd ?? 0)).minus(D(data.returnedUsd ?? 0))
+    : D(0);
+
+  async function submitDirectUsdPayment() {
+    setError("");
+    setDone("");
+    let usd;
+    let iqd;
+    let fee;
+    try {
+      usd = round2(D(directUsd));
+      iqd = round2(D(directIqd));
+      fee = round2(D(directFee));
+    } catch {
+      setError("تحقق من مبالغ التسديد المدخلة.");
+      return;
+    }
+    if (usd.lte(0) || iqd.lte(0)) return setError("أدخل مبلغ الدولار والمبلغ الديناري الفعلي.");
+    if (usd.gt(remainingUsd)) return setError("مبلغ الدولار يتجاوز المتبقي على الفاتورة.");
+    if (fee.lt(0)) return setError("العمولة لا تكون سالبة.");
+    if (!directReference.trim()) return setError("أدخل رقم مرجع البطاقة أو التحويل.");
+    if (!(await confirm({
+      variant: "info",
+      title: "تأكيد تسديد فاتورة الدولار",
+      description: `سيُطفأ ${usd.toFixed(2)}$ من ذمة المورد مقابل حركة فعلية ${iqd.toFixed(2)} د.ع.`,
+      confirmText: "تسجيل التسديد",
+    }))) return;
+    settleUsdDirect.mutate({
+      purchaseOrderId,
+      settledUsd: usd.toFixed(2),
+      chargedIqd: iqd.toFixed(2),
+      feeIqd: fee.gt(0) ? fee.toFixed(2) : undefined,
+      method: directMethod,
+      referenceNumber: directReference.trim(),
+      clientRequestId: directRequestId,
+    });
+  }
 
   async function submit() {
     setError("");
@@ -112,13 +172,19 @@ export default function PurchaseReceive() {
           <div><div className="text-muted-foreground text-xs">رقم الأمر</div><div className="font-mono" dir="ltr">{data.poNumber}</div></div>
           <div><div className="text-muted-foreground text-xs">المورد</div><div>{data.supplierName ?? "—"}</div></div>
           <div><div className="text-muted-foreground text-xs">الحالة</div><div>{PO_STATUS[data.status] ?? data.status}</div></div>
-          <div><div className="text-muted-foreground text-xs">الإجمالي / المدفوع</div><div dir="ltr">{fmt(data.total)} / {fmt(data.paidAmount)}</div></div>
+          <div><div className="text-muted-foreground text-xs">تكلفة المخزون / المسدد دفترياً</div><div dir="ltr">{fmt(data.total)} / {fmt(data.paidAmount)}</div></div>
           {data.agreedCurrency === "USD" && data.usdTotal && (
             <>
-              <div><div className="text-muted-foreground text-xs">فاتورة المورد (دولار)</div><div dir="ltr" className="font-medium">${fmt(data.usdTotal)}</div></div>
+              <div><div className="text-muted-foreground text-xs">فاتورة المورد / المدفوع</div><div dir="ltr" className="font-medium">${fmt(data.usdTotal)} / ${fmt(data.paidUsd)}</div></div>
               <div>
-                <div className="text-muted-foreground text-xs">السعر الضمني (د.ع/$)</div>
+                <div className="text-muted-foreground text-xs">سعر التثبيت (د.ع/$)</div>
                 <div dir="ltr">{data.agreedRate ? fmt(data.agreedRate) : "—"}</div>
+              </div>
+              <div>
+                <div className="text-muted-foreground text-xs">المتبقي للمورد</div>
+                <div dir="ltr" className="font-bold">
+                  ${D(data.usdTotal).minus(D(data.paidUsd ?? 0)).minus(D(data.returnedUsd ?? 0)).toFixed(2)}
+                </div>
               </div>
             </>
           )}
@@ -133,6 +199,9 @@ export default function PurchaseReceive() {
               <tr>
                 <th className="p-2">المنتج</th>
                 <th className="p-2">الوحدة</th>
+                <th className="p-2 text-center">سعر المورد</th>
+                <th className="p-2 text-center">المعادل د.ع</th>
+                <th className="p-2 text-center">الكلفة بعد الشحن</th>
                 <th className="p-2 text-center">المطلوب (أساس)</th>
                 <th className="p-2 text-center">مُستلَم سابقاً</th>
                 <th className="p-2 text-center">المتبقّي</th>
@@ -143,10 +212,22 @@ export default function PurchaseReceive() {
               {data.items.map((it) => {
                 const already = it.receivedBaseQuantity ?? 0;
                 const remaining = it.baseQuantity - already;
+                const landed = D(data.shippingCost ?? 0).plus(D(data.customsCost ?? 0));
+                const share = D(data.subtotal ?? 0).gt(0)
+                  ? landed.times(D(it.total ?? 0)).dividedBy(D(data.subtotal ?? 1))
+                  : D(0);
+                const finalUnit = D(it.quantity ?? 0).gt(0)
+                  ? D(it.total ?? 0).plus(share).dividedBy(D(it.quantity))
+                  : D(0);
                 return (
                   <tr key={it.id} className="border-t">
                     <td className="p-2">{it.productName}{it.variantName ? ` — ${it.variantName}` : ""} <span className="text-xs text-muted-foreground font-mono" dir="ltr">{it.sku}</span></td>
                     <td className="p-2 text-muted-foreground">{it.unitName}</td>
+                    <td className="p-2 text-center tabular-nums" dir="ltr">
+                      {data.agreedCurrency === "USD" ? `${fmt(it.usdUnitPrice)} $` : `${fmt(it.unitPrice)} د.ع`}
+                    </td>
+                    <td className="p-2 text-center tabular-nums" dir="ltr">{fmt(it.unitPrice)} د.ع</td>
+                    <td className="p-2 text-center font-bold tabular-nums" dir="ltr">{fmt(finalUnit.toFixed(2))} د.ع</td>
                     <td className="p-2 text-center">{it.baseQuantity}</td>
                     <td className="p-2 text-center">{already}</td>
                     <td className="p-2 text-center">{remaining}</td>
@@ -167,7 +248,7 @@ export default function PurchaseReceive() {
         </CardContent>
       </Card>
 
-      {!closed && (
+      {!closed && data.agreedCurrency !== "USD" && (
         <Card>
           <CardHeader><CardTitle className="text-base">دفعة للمورد (اختياري)</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
@@ -181,6 +262,52 @@ export default function PurchaseReceive() {
                 {METHODS.map((m) => <option key={m.v} value={m.v}>{m.label}</option>)}
               </select>
             </div>
+          </CardContent>
+        </Card>
+      )}
+      {data.agreedCurrency === "USD" && data.status !== "CANCELLED" && remainingUsd.gt(0) && (
+        <Card>
+          <CardHeader><CardTitle className="text-base">تسديد فاتورة الدولار</CardTitle></CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              للدفع من الصيرفة استخدم
+              <Link href="/exchange?tab=settle" className="mx-1 font-bold text-primary">تسديد مورد عبر الصيرفة</Link>
+              أو سجّل أدناه الدفع المباشر من البطاقة/التحويل.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
+              <div className="space-y-1">
+                <Label>الدولار الواصل للمورد ($)</Label>
+                <MoneyInput value={directUsd} onChange={setDirectUsd} placeholder="0.00" />
+              </div>
+              <div className="space-y-1">
+                <Label>المبلغ المسحوب فعلياً (د.ع)</Label>
+                <MoneyInput value={directIqd} onChange={setDirectIqd} placeholder="0.00" />
+              </div>
+              <div className="space-y-1">
+                <Label>العمولة (د.ع)</Label>
+                <MoneyInput value={directFee} onChange={setDirectFee} placeholder="0.00" />
+              </div>
+              <div className="space-y-1">
+                <Label>المصدر</Label>
+                <select className={selectCls} value={directMethod} onChange={(e) => setDirectMethod(e.target.value as typeof directMethod)}>
+                  <option value="CARD">بطاقة</option>
+                  <option value="TRANSFER">تحويل مصرفي</option>
+                  <option value="WALLET">محفظة دينارية</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <Label>رقم المرجع</Label>
+                <Input value={directReference} onChange={(e) => setDirectReference(e.target.value)} placeholder="رقم العملية" />
+              </div>
+            </div>
+            {/^\d+(\.\d{0,2})?$/.test(directUsd) && data.agreedRate && (
+              <div className="rounded-md bg-muted/50 p-3 text-sm">
+                القيمة الدفترية بسعر الفاتورة: <b dir="ltr">{fmt(round2(D(directUsd).times(D(data.agreedRate))).toFixed(2))} د.ع</b>
+              </div>
+            )}
+            <Button onClick={submitDirectUsdPayment} disabled={settleUsdDirect.isPending}>
+              {settleUsdDirect.isPending ? "جارٍ تسجيل التسديد…" : "تسجيل الدفع المباشر"}
+            </Button>
           </CardContent>
         </Card>
       )}
