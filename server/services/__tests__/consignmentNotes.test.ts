@@ -6,6 +6,8 @@ import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
 import { createSupplier } from "../supplierService";
 import { createConsignmentNote, getConsignmentNote, listConsignorProducts } from "../consignment/noteService";
+import { appRouter } from "../../routers";
+import type { TrpcContext } from "../../context";
 
 /**
  * بضاعة الأمانة — ش٢: اختبارات سندات الإيداع/السحب/الاستبدال (صفر أثر ماليّ + ختم openedAt + الحراس).
@@ -44,6 +46,14 @@ async function mkConsignProduct(consignorId: number, share = "4000") {
 async function stockOf(variantId: number, branchId = 1) {
   const r = (await db().select().from(s.branchStock).where(and(eq(s.branchStock.variantId, variantId), eq(s.branchStock.branchId, branchId))))[0];
   return { qty: r?.quantity ?? 0, openedAt: r?.openedAt ?? null };
+}
+/** caller بسياق مستخدم مُحدَّد — لاختبار عزل الفرع في الراوتر عبر scopedBranchId. */
+function callerAs(role: string, branchId: number | null) {
+  const ctx = {
+    req: { headers: {} }, res: {},
+    user: { id: role === "admin" ? 1 : 9, role, branchId, name: "t", email: "t@t", isActive: true },
+  } as unknown as TrpcContext;
+  return appRouter.createCaller(ctx);
 }
 
 beforeEach(async () => { await truncateTables(TABLES); await seedBase(); });
@@ -168,5 +178,29 @@ describe("بضاعة الأمانة ش٢ — الاستبدال والقوائم
     expect(note?.noteType).toBe("DEPOSIT");
     expect(note?.lines).toHaveLength(1);
     expect(note?.lines[0].baseQuantity).toBe(7);
+  });
+});
+
+describe("بضاعة الأمانة — عزل قراءة الفرع (تدقيق ٢٥/٧)", () => {
+  it("غير المرتفع يرى سندات فرعه فقط، وget عبر-الفرعي = NOT_FOUND، وadmin يرى الكلّ", async () => {
+    const cid = await mkConsignor();
+    const p = await mkConsignProduct(cid);
+    const n1 = await createConsignmentNote({ noteType: "DEPOSIT", consignorId: cid, branchId: 1, lines: [{ lineDirection: "IN", variantId: p.variantId, productUnitId: p.productUnitId, quantity: "10" }] }, actor);
+    const n2 = await createConsignmentNote({ noteType: "DEPOSIT", consignorId: cid, branchId: 2, lines: [{ lineDirection: "IN", variantId: p.variantId, productUnitId: p.productUnitId, quantity: "5" }] }, { userId: 1, branchId: 2 });
+
+    // أمين مخزن بالفرع ١ (غير مرتفع): القائمة مقصورة على فرعه رغم عدم تمرير branchId.
+    const wh1 = callerAs("warehouse", 1);
+    const list = await wh1.consignments.list({});
+    expect(list.rows.every((r) => Number(r.branchId) === 1)).toBe(true);
+    expect(list.rows.some((r) => Number(r.id) === Number(n1.noteId))).toBe(true);
+    expect(list.rows.some((r) => Number(r.id) === Number(n2.noteId))).toBe(false);
+
+    // get: سند فرعه يُعاد؛ سند الفرع الآخر ⇒ NOT_FOUND (لا يكشف وجوده — IDOR).
+    expect((await wh1.consignments.get({ noteId: Number(n1.noteId) }))?.id).toBe(Number(n1.noteId));
+    await expect(wh1.consignments.get({ noteId: Number(n2.noteId) })).rejects.toMatchObject({ code: "NOT_FOUND" });
+
+    // admin (مرتفع) يرى الفرعين.
+    const all = await callerAs("admin", null).consignments.list({});
+    expect(all.rows.length).toBe(2);
   });
 });

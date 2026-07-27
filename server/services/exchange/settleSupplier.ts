@@ -2,10 +2,10 @@
 import { TRPCError } from "@trpc/server";
 import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
-import { exchangeHouses, exchangeTransactions, suppliers } from "../../../drizzle/schema";
+import { exchangeHouses, exchangeTransactions, purchaseOrders, suppliers } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
-import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, adjustSupplierBalance, postEntry } from "../ledgerService";
+import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, adjustSupplierBalance, adjustSupplierBalanceUsd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { lockHouse, nextTxnNumber, toDbRate } from "./helpers";
@@ -14,11 +14,14 @@ export interface SettleSupplierInput {
   exchangeHouseId: number;
   branchId: number;
   supplierId: number;
+  purchaseOrderId?: number | null;
   currency: "USD" | "IQD";
   /** المبلغ المخصوم من المحفظة (المبدأ) بعملة المحفظة. */
   walletAmount: string;
   /** الدين الديناري المُطفأ من ذمّة المورد. */
-  settledIqd: string;
+  settledIqd?: string | null;
+  /** مبلغ الدولار الذي وصل إلى المورد وأُطفئ من الفاتورة. */
+  settledUsd?: string | null;
   /** عمولة الصيرفة بعملة المحفظة (تُخصم من المحفظة، مصروف). */
   commission?: string | null;
   /** سعر الصرف وقت التسديد (للتدقيق، عملة USD). */
@@ -43,14 +46,47 @@ export async function settleSupplierViaExchange(
       }
     }
     const walletAmount = round2(input.walletAmount);
-    const settledIqd = round2(input.settledIqd);
+    let settledIqd = round2(input.settledIqd ?? 0);
+    const settledUsd = round2(input.settledUsd ?? 0);
     const commission = round2(input.commission ?? 0);
     if (walletAmount.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ التسديد يجب أن يكون موجباً" });
-    if (settledIqd.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الدين المُسوّى يجب أن يكون موجباً" });
     if (commission.isNegative()) throw new TRPCError({ code: "BAD_REQUEST", message: "العمولة لا تكون سالبة" });
 
-    const supplier = (await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId)).limit(1))[0];
+    const supplier = (await tx.select().from(suppliers).where(eq(suppliers.id, input.supplierId)).for("update").limit(1))[0];
     if (!supplier) throw new TRPCError({ code: "BAD_REQUEST", message: "المورد غير موجود" });
+
+    let purchaseOrder: typeof purchaseOrders.$inferSelect | null = null;
+    if (input.purchaseOrderId != null) {
+      purchaseOrder = (await tx.select().from(purchaseOrders)
+        .where(eq(purchaseOrders.id, input.purchaseOrderId)).for("update").limit(1))[0] ?? null;
+      if (!purchaseOrder) throw new TRPCError({ code: "NOT_FOUND", message: "فاتورة الشراء غير موجودة" });
+      if (Number(purchaseOrder.supplierId) !== input.supplierId) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "فاتورة الشراء لا تخص المورد المحدد" });
+      }
+      if (purchaseOrder.agreedCurrency !== "USD" || !purchaseOrder.usdTotal || !purchaseOrder.agreedRate) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "الفاتورة المحددة ليست فاتورة مورد دولارية" });
+      }
+      if (settledUsd.lte(0)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "أدخل مبلغ الدولار الذي سيصل إلى المورد" });
+      }
+      const remainingUsd = round2(
+        money(purchaseOrder.usdTotal).minus(money(purchaseOrder.paidUsd)).minus(money(purchaseOrder.returnedUsd)),
+      );
+      if (settledUsd.gt(remainingUsd)) {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: `الدفع (${settledUsd.toFixed(2)}$) يتجاوز المتبقي على الفاتورة (${remainingUsd.toFixed(2)}$)`,
+        });
+      }
+      settledIqd = round2(settledUsd.times(money(purchaseOrder.agreedRate)));
+    }
+    if (settledIqd.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "الدين المُسوّى يجب أن يكون موجباً" });
+    if (settledIqd.gt(money(supplier.currentBalance))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "قيمة التسديد تتجاوز رصيد المورد الدفتري" });
+    }
+    if (settledUsd.gt(0) && settledUsd.gt(money(supplier.currentBalanceUsd))) {
+      throw new TRPCError({ code: "BAD_REQUEST", message: "مبلغ الدولار يتجاوز رصيد المورد الدولاري" });
+    }
 
     const house = await lockHouse(tx, input.exchangeHouseId);
     const usdRate = money(house.usdCostRate);
@@ -61,6 +97,9 @@ export async function settleSupplierViaExchange(
     let iqdAmountCol = settledIqd;
 
     if (input.currency === "USD") {
+      if (purchaseOrder && !walletAmount.eq(settledUsd)) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "عند الدفع من محفظة الدولار يجب أن يساوي المسحوب مبلغ الدولار الواصل للمورد" });
+      }
       if (usdRate.lte(0)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "لا يوجد رصيد دولاري بكلفة معروفة — اشترِ دولاراً أولاً" });
       }
@@ -77,9 +116,8 @@ export async function settleSupplierViaExchange(
       await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, totalUsdOut.negated());
       usdAmountCol = walletAmount;
     } else {
-      // بالدينار لا صرف عملة ⇒ المسحوب من المحفظة = الدين المُسوّى. حارس ضدّ تباين يُنتج fxDiff وهمياً
-      // ويُفسد إجمالي «المُسدَّد» في الكشف (الكشف يجمع iqdAmount لصفوف SETTLE). الواجهة تُرسلهما متساويَين.
-      if (!walletAmount.eq(settledIqd)) {
+      // لفاتورة USD المسحوب هو الدينار الفعلي، بينما settledIqd قيمة الدين الدفترية بسعر التثبيت.
+      if (!purchaseOrder && !walletAmount.eq(settledIqd)) {
         throw new TRPCError({ code: "BAD_REQUEST", message: "للتسديد بالدينار يجب تساوي المبلغ المسحوب والدين المُسوّى" });
       }
       walletCostIqd = walletAmount;
@@ -93,7 +131,7 @@ export async function settleSupplierViaExchange(
         });
       }
       await adjustExchangeBalanceIqd(tx, input.exchangeHouseId, totalIqdOut.negated());
-      // iqdAmountCol يبقى = settledIqd (= walletAmount) ⇒ إجمالي الكشف صحيح بلا fxDiff وهميّ.
+      iqdAmountCol = walletAmount;
     }
 
     // فرق الصرف المحقَّق = الدين المُطفأ − كلفة ما خرج من المحفظة (بلا العمولة).
@@ -101,6 +139,17 @@ export async function settleSupplierViaExchange(
 
     // إطفاء دين المورد (التسديد الفعلي — هنا فقط).
     await adjustSupplierBalance(tx, input.supplierId, settledIqd.negated());
+    if (settledUsd.gt(0)) {
+      await adjustSupplierBalanceUsd(tx, input.supplierId, settledUsd.negated());
+    }
+    if (purchaseOrder) {
+      await tx.update(purchaseOrders)
+        .set({
+          paidAmount: toDbMoney(money(purchaseOrder.paidAmount).plus(settledIqd)),
+          paidUsd: toDbMoney(money(purchaseOrder.paidUsd).plus(settledUsd)),
+        })
+        .where(eq(purchaseOrders.id, Number(purchaseOrder.id)));
+    }
 
     // قراءة الرصيد بعد كل الخصومات (لقطة الكشف).
     const after = (await tx.select().from(exchangeHouses).where(eq(exchangeHouses.id, input.exchangeHouseId)).limit(1))[0];
@@ -114,11 +163,16 @@ export async function settleSupplierViaExchange(
       currency: input.currency,
       iqdAmount: toDbMoney(iqdAmountCol),
       usdAmount: toDbMoney(usdAmountCol),
-      exchangeRate: input.currency === "USD" ? toDbRate(money(input.exchangeRate ?? usdRate)) : "0.0000",
+      exchangeRate: settledUsd.gt(0)
+        ? toDbRate(input.exchangeRate ? money(input.exchangeRate) : walletCostIqd.dividedBy(settledUsd))
+        : (input.currency === "USD" ? toDbRate(money(input.exchangeRate ?? usdRate)) : "0.0000"),
       commission: toDbMoney(commission),
       commissionIqd: toDbMoney(commissionIqd),
       fxDiff: toDbMoney(fxDiff),
       supplierId: input.supplierId,
+      purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
+      settledUsd: toDbMoney(settledUsd),
+      settledIqd: toDbMoney(settledIqd),
       balanceIqdAfter: after ? toDbMoney(money(after.balanceIqd)) : "0.00",
       balanceUsdAfter: after ? toDbMoney(money(after.balanceUsd)) : "0.00",
       status: "ACTIVE",
@@ -131,6 +185,7 @@ export async function settleSupplierViaExchange(
     await postEntry(tx, {
       entryType: "EXCHANGE_SETTLE",
       branchId: input.branchId,
+      purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
       exchangeHouseId: input.exchangeHouseId,
       supplierId: input.supplierId,
       amount: settledIqd,
@@ -143,6 +198,7 @@ export async function settleSupplierViaExchange(
       await postEntry(tx, {
         entryType: "EXCHANGE_FX_DIFF",
         branchId: input.branchId,
+        purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
         exchangeHouseId: input.exchangeHouseId,
         supplierId: input.supplierId,
         amount: fxDiff,
@@ -156,6 +212,7 @@ export async function settleSupplierViaExchange(
       await postEntry(tx, {
         entryType: "EXCHANGE_FEE",
         branchId: input.branchId,
+        purchaseOrderId: purchaseOrder ? Number(purchaseOrder.id) : null,
         exchangeHouseId: input.exchangeHouseId,
         supplierId: input.supplierId,
         amount: commissionIqd,

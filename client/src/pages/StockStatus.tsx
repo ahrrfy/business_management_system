@@ -1,12 +1,13 @@
 // حالة المخزون / إعادة الطلب — رصيد كل (متغيّر × فرع) مقابل حدّ إعادة الطلب minStock (للقراءة فقط).
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). فلتر فرع + مفتاح «التنبيهات فقط».
+// الجدول عبر DataTable المشترك (فرز بنقرة + بحث + هيكل تحميل) — البيانات محلّية فالفرز كامل لا صفحيّ.
 // الحالة: نفد (qty<=0) · منخفض (qty<=minStock و minStock>0) · طبيعي.
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
-import { Card, CardContent } from "@/components/ui/card";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
+import { DataTable } from "@/components/data-table/DataTable";
+import { ErrorState } from "@/components/PageState";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 import { fmtInt } from "@/lib/money";
@@ -44,6 +45,50 @@ export default function StockStatus() {
     : [];
 
   const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل";
+
+  // أعمدة DataTable — الكمية/الحدّ بفرزٍ رقميّ (accessorFn ⇒ Number لا فرز نصّيّ)، والحالة شارةٌ
+  // ملوّنة بتوكنز المخزون (لا ألوان خام). البيانات محلّية ⇒ الفرز والبحث يشملان كل الصفوف.
+  const cols = useMemo<ColumnDef<Row>[]>(
+    () => [
+      { header: "المنتج", accessorKey: "productName" },
+      {
+        header: "المتغيّر",
+        accessorKey: "variantLabel",
+        cell: ({ row }) => <span className="text-muted-foreground">{row.original.variantLabel}</span>,
+      },
+      {
+        header: "الفرع",
+        accessorKey: "branchName",
+        cell: ({ row }) => <span className="text-muted-foreground">{row.original.branchName ?? "—"}</span>,
+      },
+      {
+        id: "quantity",
+        header: "الكمية",
+        accessorFn: (r) => Number(r.quantity),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums">{fmtInt(row.original.quantity)}</span>
+        ),
+      },
+      {
+        id: "minStock",
+        header: "حدّ إعادة الطلب",
+        accessorFn: (r) => Number(r.minStock),
+        cell: ({ row }) => (
+          <span dir="ltr" className="tabular-nums text-muted-foreground">{fmtInt(row.original.minStock)}</span>
+        ),
+      },
+      {
+        header: "الحالة",
+        accessorKey: "status",
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
+            {STATUS_LABEL[row.original.status] ?? row.original.status}
+          </span>
+        ),
+      },
+    ],
+    [],
+  );
 
   function onExport() {
     exportRows(rows, {
@@ -122,48 +167,18 @@ export default function StockStatus() {
         </div>
       }
     >
-      <Card>
-        <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">المنتج</th>
-                    <th className="p-2.5 text-right font-medium">المتغيّر</th>
-                    <th className="p-2.5 text-right font-medium">الفرع</th>
-                    <th className="p-2.5 text-right font-medium">الكمية</th>
-                    <th className="p-2.5 text-right font-medium">حدّ إعادة الطلب</th>
-                    <th className="p-2.5 text-right font-medium">الحالة</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!rows.length ? (
-                    <TableEmptyRow colSpan={6} message={onlyAlerts ? "لا تنبيهات في هذا النطاق." : "لا مخزون في هذا النطاق."} />
-                  ) : rows.map((r, i) => (
-                    <tr key={`${r.variantId}-${r.branchName ?? i}`} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right">{r.productName}</td>
-                      <td className="p-2.5 text-right text-muted-foreground">{r.variantLabel}</td>
-                      <td className="p-2.5 text-right text-muted-foreground">{r.branchName ?? "—"}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtInt(r.quantity)}</td>
-                      <td className="p-2.5 text-right tabular-nums text-muted-foreground" dir="ltr">{fmtInt(r.minStock)}</td>
-                      <td className="p-2.5 text-right">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
-                          {STATUS_LABEL[r.status] ?? r.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
-        </CardContent>
-      </Card>
+      {q.isError ? (
+        <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+      ) : (
+        <DataTable
+          columns={cols}
+          data={rows}
+          loading={q.isLoading}
+          emptyText={onlyAlerts ? "لا تنبيهات في هذا النطاق." : "لا مخزون في هذا النطاق."}
+          searchPlaceholder="ابحث بالمنتج/المتغيّر…"
+          pageSize={Infinity}
+        />
+      )}
     </ReportShell>
   );
 }

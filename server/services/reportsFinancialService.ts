@@ -223,6 +223,19 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
     `),
   )[0] ?? { amount: "0" };
 
+  // INVENTORY-REVALUATION (تدقيق ٢٧/٧ — H3): إعادة تقييم المخزون عند تعديل التكلفة يدوياً تُقيَّد
+  // ADJUST بمفتاح REVAL:%، profit موقَّع (موجب=مكسب لأن التكلفة ارتفعت، سالب=خسارة). لولا ضمّها هنا
+  // لتحرّكت حقوق الملكية (المخزون الحيّ) دون أن تُفسَّر في قائمة الدخل — فخّ «قيد جديد يختفي من الربح».
+  const revalRow = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.profit), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'ADJUST' AND ae.dedupeKey LIKE 'REVAL:%'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -307,6 +320,15 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   if (!iqdRoundPL.isZero()) {
     const expenseEffect = iqdRoundPL.neg();
     expenseLines.push({ key: "IQD_ROUNDING", label: "تقريب النقد العراقي", amount: toDbMoney(expenseEffect) });
+    totalExpenses = totalExpenses.add(expenseEffect);
+  }
+
+  // INVENTORY-REVALUATION (H3): أثر إعادة تقييم المخزون على الربح — profit موقَّع؛ التأثير كمصروف
+  // = −profit (مكسب ⇒ مصروف سالب يَرفع الربح، خسارة ⇒ مصروف موجب يَخفضه). نمط STOCKTAKE/IQD.
+  const revalPL = money(revalRow.amount ?? 0);
+  if (!revalPL.isZero()) {
+    const expenseEffect = revalPL.neg();
+    expenseLines.push({ key: "INVENTORY_REVALUATION", label: "إعادة تقييم المخزون", amount: toDbMoney(expenseEffect) });
     totalExpenses = totalExpenses.add(expenseEffect);
   }
 

@@ -327,6 +327,9 @@ export const suppliers = mysqlTable(
     bankName: varchar("bankName", { length: 120 }),
     notes: text("notes"),
     currentBalance: decimal("currentBalance", { precision: 15, scale: 2 }).default("0").notNull(),
+    // ذمم الشراء الدولارية: الرصيد الأصلي المستحق بالدولار. يبقى currentBalance هو القيمة
+    // الدفترية بالدينار، بينما هذا الحقل يُطفأ بمبلغ الدولار الذي وصل فعلياً إلى المورد.
+    currentBalanceUsd: decimal("currentBalanceUsd", { precision: 15, scale: 2 }).default("0").notNull(),
     // import-integration: المعرّف القديم («الرقم» في ملفات النظام السابق) — مفتاح مطابقة الاستيراد.
     // UNIQUE يسمح بتعدّد NULL ⇒ حارس بنيوي ضدّ ازدواج الطرف برصيد عند استيراد متزامن.
     legacyCode: varchar("legacyCode", { length: 40 }),
@@ -1853,13 +1856,13 @@ export const purchaseOrders = mysqlTable(
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
     paidAmount: decimal("paidAmount", { precision: 15, scale: 2 }).default("0").notNull(),
     status: mysqlEnum("poStatus", ["DRAFT", "SENT", "CONFIRMED", "RECEIVED", "CANCELLED"]).default("DRAFT").notNull(),
-    // usd-po-reconcile: مطابقة سعر الشراء بالدولار (اختياري، إعلامي بحت — لا يمسّ total/paidAmount
-    // الديناريَين ولا محرّك الحسابات). agreedCurrency=USD ⇒ usdTotal (كما في فاتورة المورد الفعلية)
-    // + agreedRate (= total/usdTotal، سعر ضمني محسوب عند الإنشاء) يُخزَّنان للمقارنة لاحقاً بسعر
-    // التسديد الفعلي عبر الصيرفة (لا ربط آلي — مطابقة بصرية بين شاشتَي أمر الشراء وكشف الصيرفة).
+    // فاتورة المورد الأصلية: عند USD تكون أسعار البنود بالدولار وagreedRate سعر التثبيت الذي
+    // حُوّلت به إلى تكلفة مخزون دينارية. التسديد اللاحق يطفئ paidUsd بسعره الفعلي ويُنتج فرق صرف.
     agreedCurrency: mysqlEnum("poCurrency", ["IQD", "USD"]).default("IQD").notNull(),
     usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
     agreedRate: decimal("agreedRate", { precision: 15, scale: 4 }),
+    paidUsd: decimal("paidUsd", { precision: 15, scale: 2 }).default("0").notNull(),
+    returnedUsd: decimal("returnedUsd", { precision: 15, scale: 2 }).default("0").notNull(),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
@@ -1890,11 +1893,15 @@ export const purchaseOrderItems = mysqlTable(
     baseQuantity: int("baseQuantity").notNull(),
     unitPrice: decimal("unitPrice", { precision: 15, scale: 2 }).notNull(),
     total: decimal("total", { precision: 15, scale: 2 }).notNull(),
+    // لقطة فاتورة المورد الأصلية. تبقى unitPrice/total أعلاه بالدينار لتغذية WAVG والدفتر.
+    usdUnitPrice: decimal("usdUnitPrice", { precision: 15, scale: 4 }),
+    usdTotal: decimal("usdTotal", { precision: 15, scale: 2 }),
     receivedBaseQuantity: int("receivedBaseQuantity").default(0),
     // receivedNet: مجموع ما قُيِّد فعلياً للبند عبر استلامات متعدّدة. عند الـreceive
     // الذي يُكمل الكمية، يُستعمل (total − receivedNet) كقيمة remainder بالضبط ⇒
     // مجموع AP/PURCHASE يطابق إجمالي الـPO تماماً (لا انجراف 0.01 IQD).
     receivedNet: decimal("receivedNet", { precision: 15, scale: 2 }).default("0").notNull(),
+    receivedUsd: decimal("receivedUsd", { precision: 15, scale: 2 }).default("0").notNull(),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -3893,6 +3900,10 @@ export const exchangeTransactions = mysqlTable(
     commissionIqd: decimal("commissionIqd", { precision: 15, scale: 2 }).default("0").notNull(),
     fxDiff: decimal("fxDiff", { precision: 15, scale: 2 }).default("0").notNull(), // مكسب(+)/خسارة(−) صرف محقَّق
     supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
+    purchaseOrderId: bigint("purchaseOrderId", { mode: "number" }).references(() => purchaseOrders.id),
+    // مبلغ الدين الدولاري الذي أُطفئ، مستقل عن عملة محفظة الصيرفة (قد نسحب IQD وتصل USD للمورد).
+    settledUsd: decimal("settledUsd", { precision: 15, scale: 2 }).default("0").notNull(),
+    settledIqd: decimal("settledIqd", { precision: 15, scale: 2 }).default("0").notNull(),
     // لقطة الرصيد بعد العملية (تدقيق + رصيد جارٍ في كشف الحساب).
     balanceIqdAfter: decimal("balanceIqdAfter", { precision: 15, scale: 2 }).default("0").notNull(),
     balanceUsdAfter: decimal("balanceUsdAfter", { precision: 15, scale: 2 }).default("0").notNull(),
@@ -3908,6 +3919,7 @@ export const exchangeTransactions = mysqlTable(
     numberIdx: index("idx_exchange_txn_number").on(table.txnNumber),
     houseIdx: index("idx_exchange_txn_house").on(table.exchangeHouseId, table.createdAt),
     supplierIdx: index("idx_exchange_txn_supplier").on(table.supplierId),
+    purchaseOrderIdx: index("idx_exchange_txn_po").on(table.purchaseOrderId),
     typeIdx: index("idx_exchange_txn_type").on(table.type),
   }),
 );
@@ -4612,3 +4624,32 @@ export const reservationStock = mysqlTable(
 );
 export type ReservationStock = typeof reservationStock.$inferSelect;
 export type InsertReservationStock = typeof reservationStock.$inferInsert;
+
+/**
+ * شجرة الحسابات (Chart of Accounts) — أساس الدفتر المزدوج (P0، قرار المالك ٢٧/٧). جدولٌ **إضافيّ** لا
+ * يمسّ أيّ دفترٍ قائم. كل حساب يحمل `systemRole` يربطه بالمفهوم القائم في النظام (ذمم العملاء↔customers،
+ * المخزون↔branchStock، المبيعات↔إيراد قيود البيع…) — هذا الربط أساسُ محرّك القيود (P1) لاحقاً.
+ * systemRole فريدٌ حين وُجد (حسابٌ واحد لكل دور نظاميّ)، وnull للحسابات التفصيلية الحرّة (تعدُّد NULL مسموح).
+ */
+export const accounts = mysqlTable(
+  "accounts",
+  {
+    id: bigint("id", { mode: "number" }).autoincrement().primaryKey(),
+    code: varchar("code", { length: 20 }).notNull(),
+    name: varchar("name", { length: 120 }).notNull(),
+    type: mysqlEnum("type", ["ASSET", "LIABILITY", "EQUITY", "REVENUE", "EXPENSE"]).notNull(),
+    parentId: bigint("parentId", { mode: "number" }),
+    systemRole: varchar("systemRole", { length: 40 }),
+    isActive: boolean("isActive").default(true).notNull(),
+    sortOrder: int("sortOrder").default(0).notNull(),
+    notes: varchar("notes", { length: 255 }),
+    createdAt: timestamp("createdAt").defaultNow().notNull(),
+  },
+  (t) => ({
+    uqCode: unique("uq_account_code").on(t.code),
+    uqSystemRole: unique("uq_account_system_role").on(t.systemRole),
+    typeIdx: index("idx_account_type").on(t.type),
+  })
+);
+export type Account = typeof accounts.$inferSelect;
+export type InsertAccount = typeof accounts.$inferInsert;

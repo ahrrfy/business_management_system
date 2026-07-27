@@ -1,12 +1,12 @@
 // تقرير الرواتب — ملخّص مسيّرات الرواتب الشهرية (إجمالي/صافي) بفلتر شهر اختياري.
 // عرض + تصدير Excel + طباعة A4 (ReportShell + printReportDoc). يكشف الرواتب ⇒ صلاحية hr/READ خادمياً.
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { type ColumnDef } from "@tanstack/react-table";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
-import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, ErrorState } from "@/components/PageState";
-import { ScrollTableShell } from "@/components/table/ScrollTableShell";
-import { fmtAr } from "@/lib/money";
+import { DataTable } from "@/components/data-table/DataTable";
+import { ErrorState } from "@/components/PageState";
+import { fmtAr, fmtInt } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
 
@@ -41,6 +41,46 @@ export default function PayrollReport() {
         { label: "صافي المدفوع", value: fmtAr(totals.net), tone: "positive" },
       ]
     : [];
+
+  // أعمدة DataTable — الشهر بتنسيق LTR أرقام (نصّي، يُفرز أبجدياً وهو صحيح لصيغة YYYY-MM)،
+  // الحالة شارةٌ ملوّنة بتوكنز badge-status-*، والأعداد/المبالغ بفرزٍ رقميّ (accessorFn⇒Number).
+  const cols = useMemo<ColumnDef<Row>[]>(
+    () => [
+      {
+        header: "الشهر",
+        accessorKey: "period",
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{row.original.period}</span>,
+      },
+      {
+        header: "الحالة",
+        accessorKey: "status",
+        cell: ({ row }) => (
+          <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[row.original.status] ?? "bg-muted"}`}>
+            {STATUS_LABEL[row.original.status] ?? row.original.status}
+          </span>
+        ),
+      },
+      {
+        id: "employees",
+        header: "عدد الموظفين",
+        accessorFn: (r) => Number(r.employees),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtInt(row.original.employees)}</span>,
+      },
+      {
+        id: "gross",
+        header: "إجمالي الرواتب",
+        accessorFn: (r) => Number(r.gross),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums">{fmtAr(row.original.gross)}</span>,
+      },
+      {
+        id: "net",
+        header: "الصافي",
+        accessorFn: (r) => Number(r.net),
+        cell: ({ row }) => <span dir="ltr" className="tabular-nums font-medium">{fmtAr(row.original.net)}</span>,
+      },
+    ],
+    [],
+  );
 
   function onExport() {
     exportRows(rows, {
@@ -111,46 +151,17 @@ export default function PayrollReport() {
         </div>
       }
     >
-      <Card>
-        <CardContent className="p-0">
-          {q.isLoading ? (
-            <LoadingState />
-          ) : q.isError ? (
-            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
-          ) : !rows.length ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">لا مسيّرات رواتب في هذا النطاق.</p>
-          ) : (
-            <ScrollTableShell bordered={false}>
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b text-xs text-muted-foreground">
-                    <th className="p-2.5 text-right font-medium">الشهر</th>
-                    <th className="p-2.5 text-right font-medium">الحالة</th>
-                    <th className="p-2.5 text-right font-medium">عدد الموظفين</th>
-                    <th className="p-2.5 text-right font-medium">إجمالي الرواتب</th>
-                    <th className="p-2.5 text-right font-medium">الصافي</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {rows.map((r) => (
-                    <tr key={r.id} className="border-b last:border-0 hover:bg-accent/40">
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.period}</td>
-                      <td className="p-2.5 text-right">
-                        <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${STATUS_CLS[r.status] ?? "bg-muted"}`}>
-                          {STATUS_LABEL[r.status] ?? r.status}
-                        </span>
-                      </td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{r.employees}</td>
-                      <td className="p-2.5 text-right tabular-nums" dir="ltr">{fmtAr(r.gross)}</td>
-                      <td className="p-2.5 text-right tabular-nums font-medium" dir="ltr">{fmtAr(r.net)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </ScrollTableShell>
-          )}
-        </CardContent>
-      </Card>
+      {q.isError ? (
+        <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+      ) : (
+        <DataTable
+          columns={cols}
+          data={rows}
+          loading={q.isLoading}
+          emptyText="لا مسيّرات رواتب في هذا النطاق."
+          pageSize={Infinity}
+        />
+      )}
     </ReportShell>
   );
 }

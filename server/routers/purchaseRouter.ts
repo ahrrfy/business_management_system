@@ -5,11 +5,10 @@ import { z } from "zod";
 import { productUnits, productVariants, products, purchaseOrderItems, purchaseOrders, suppliers } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { escLike } from "../lib/sqlLike";
-import { maskCostFields } from "../lib/redact";
-import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString } from "../lib/schemas";
+import { nonNegMoneyString, percentString, positiveMoneyString, positiveQtyString, positiveRateString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import { localDayStart, localNextDayStart } from "../services/dateRange";
-import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase } from "../services/purchaseService";
+import { cancelPurchaseOrder, createPurchaseOrder, receivePurchase, settlePurchaseUsdDirect } from "../services/purchaseService";
 import { canSeeCostForUser, purchasesManagerProcedure, purchasesReadProcedure, purchasesWarehouseProcedure, router } from "../trpc";
 import { isDupEntry } from "@shared/errorMap.ar";
 
@@ -80,6 +79,7 @@ export const purchaseRouter = router({
         // usd-po-reconcile: مطابقة سعر الشراء بالدولار (إعلامي — لا يمسّ total/paidAmount الديناريَين).
         agreedCurrency: z.enum(["IQD", "USD"]).optional(),
         usdTotal: positiveMoneyString.optional(),
+        agreedRate: positiveRateString.optional(),
         // landed-cost: تكلفة الشحن/الكمرك (nonNegMoneyString يرفض السالب/الصيغ التالفة). تُرسمَل
         // في تكلفة المخزون عند الاستلام (WAVG) وتُضاف إلى AP — لا مصروف P&L (تُحتسَب في COGS عند البيع).
         shippingCost: nonNegMoneyString.optional(),
@@ -160,6 +160,37 @@ export const purchaseRouter = router({
     }),
 
   // إلغاء أمر شراء لم يُستلم منه شيء (قلب حالة خالص — الحارس المالي/المخزني في الخدمة).
+  settleUsdDirect: purchasesManagerProcedure
+    .input(z.object({
+      purchaseOrderId: z.number().int().positive(),
+      settledUsd: positiveMoneyString,
+      chargedIqd: positiveMoneyString,
+      feeIqd: nonNegMoneyString.optional(),
+      method: z.enum(["CARD", "TRANSFER", "WALLET"]),
+      referenceNumber: z.string().trim().min(1).max(100),
+      clientRequestId: z.string().min(1).max(80).optional(),
+    }))
+    .mutation(async ({ input, ctx }) => {
+      const res = await settlePurchaseUsdDirect(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "purchase.settleUsdDirect",
+        entityType: "purchaseOrder",
+        entityId: input.purchaseOrderId,
+        newValue: {
+          settledUsd: input.settledUsd,
+          chargedIqd: input.chargedIqd,
+          feeIqd: input.feeIqd ?? "0",
+          method: input.method,
+          referenceNumber: input.referenceNumber,
+        },
+      });
+      return res;
+    }),
+
   cancel: purchasesManagerProcedure
     .input(z.object({ purchaseOrderId: z.number().int().positive() }))
     .mutation(async ({ input, ctx }) => {
@@ -219,6 +250,13 @@ export const purchaseRouter = router({
             supplierId: purchaseOrders.supplierId,
             total: purchaseOrders.total,
             paidAmount: purchaseOrders.paidAmount,
+            shippingCost: purchaseOrders.shippingCost,
+            customsCost: purchaseOrders.customsCost,
+            agreedCurrency: purchaseOrders.agreedCurrency,
+            usdTotal: purchaseOrders.usdTotal,
+            paidUsd: purchaseOrders.paidUsd,
+            returnedUsd: purchaseOrders.returnedUsd,
+            agreedRate: purchaseOrders.agreedRate,
             status: purchaseOrders.status,
             supplierName: suppliers.name,
           })
@@ -231,7 +269,7 @@ export const purchaseRouter = router({
       });
       // حجب التكلفة (total/paidAmount) عن غير المدير — نمط saleRouter.get:371.
       if (!canSeeCostForUser(ctx.user)) {
-        return rows.map((row) => ({ ...row, total: null, paidAmount: null }));
+        return rows.map((row) => ({ ...row, total: null, paidAmount: null, usdTotal: null, paidUsd: null, agreedRate: null }));
       }
       return rows;
     }),
@@ -286,6 +324,8 @@ export const purchaseRouter = router({
           customsCost: purchaseOrders.customsCost,
           total: purchaseOrders.total,
           paidAmount: purchaseOrders.paidAmount,
+          paidUsd: purchaseOrders.paidUsd,
+          returnedUsd: purchaseOrders.returnedUsd,
           status: purchaseOrders.status,
           notes: purchaseOrders.notes,
           // usd-po-reconcile: للمقارنة البصرية لاحقاً بسعر التسديد الفعلي عبر الصيرفة.
@@ -311,6 +351,8 @@ export const purchaseRouter = router({
         receivedBaseQuantity: purchaseOrderItems.receivedBaseQuantity,
         unitPrice: purchaseOrderItems.unitPrice,
         total: purchaseOrderItems.total,
+        usdUnitPrice: purchaseOrderItems.usdUnitPrice,
+        usdTotal: purchaseOrderItems.usdTotal,
         productName: products.name,
         sku: productVariants.sku,
         variantName: productVariants.variantName,
@@ -323,8 +365,11 @@ export const purchaseRouter = router({
       .where(eq(purchaseOrderItems.purchaseOrderId, input.purchaseOrderId));
     // حجب التكلفة عن غير المدير — نمط saleRouter.get:371. usdTotal/agreedRate تكلفة أيضاً (بعملة أخرى).
     if (!canSeeCostForUser(ctx.user)) {
-      const poMasked = { ...po, subtotal: null, taxAmount: null, shippingCost: null, customsCost: null, total: null, paidAmount: null, usdTotal: null, agreedRate: null };
-      const itemsMasked = items.map((row) => maskCostFields(row, ctx.user.role));
+      const poMasked = { ...po, subtotal: null, taxAmount: null, shippingCost: null, customsCost: null, total: null, paidAmount: null, usdTotal: null, paidUsd: null, returnedUsd: null, agreedRate: null };
+      // نحن داخل فرع «لا يرى التكلفة» (قرار canSeeCostForUser الكامل: يحترم المنح/الدور المخصّص) ⇒ نحجب
+      // بنود التكلفة **بلا شرط**. (كان maskCostFields يُعيد التقييم بالدور الخام فيكشف بنود دورٍ مخصّص
+      // أساسه manager بـreports=NONE — تناقضٌ مع حجب الرأس؛ تدقيق ٢٥/٧، M2.)
+      const itemsMasked = items.map((row) => ({ ...row, unitPrice: null, usdUnitPrice: null, usdTotal: null, total: null }) as unknown as typeof row);
       return { ...poMasked, items: itemsMasked };
     }
     return { ...po, items };

@@ -6,6 +6,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { reportViewerProcedure, router } from "../trpc";
+import { logAudit } from "../services/auditService";
 import { moneyString, ymdDate } from "../lib/schemas";
 
 /** أدوار كتابة المطابقة: المدير/المحاسب (+admin). القراءة أوسع (تشمل المدقّق ومنح reports الصريحة)
@@ -65,16 +66,24 @@ export const cardAccountRouter = router({
         note: z.string().max(1000).optional(),
       }),
     )
-    .mutation(({ input, ctx }) => {
+    .mutation(async ({ input, ctx }) => {
       // بوّابة كتابة صريحة: الإنشاء (سجلّ تدقيقيّ ماليّ) للمدير/المحاسب فقط — منحُ «تقارير: قراءة»
       // لدورٍ آخر (كاشير/مخزن عبر override) يُتيح القراءة لا الكتابة، والمدقّق قارئٌ فقط.
       if (!RECON_WRITERS.has(ctx.user.role)) {
         throw new TRPCError({ code: "FORBIDDEN", message: "إنشاء سجلّ المطابقة للمدير/المحاسب فقط — الوصول القرائيّ لا يكفي." });
       }
-      return createCardReconciliation(input, {
+      const res = await createCardReconciliation(input, {
         userId: ctx.user.id,
         role: ctx.user.role,
         branchId: ctx.user.branchId != null ? Number(ctx.user.branchId) : null,
       });
+      // أثرٌ تدقيقيّ: مطابقة حساب البطاقة سجلٌّ ماليّ حسّاس (رصيد النظام مقابل كشف البنك + الفرق) — يُدوَّن مُنشئه (تدقيق ٢٥/٧).
+      await logAudit(ctx, {
+        action: "cardAccount.reconcile",
+        entityType: "cardReconciliation",
+        entityId: Number(res.id),
+        newValue: { branchId: res.branchId, asOfDate: res.asOfDate, systemBalance: res.systemBalance, statementBalance: res.statementBalance, difference: res.difference },
+      });
+      return res;
     }),
 });

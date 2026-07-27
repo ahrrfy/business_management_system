@@ -137,6 +137,9 @@ const TABLE_AR: Record<string, string> = {
 type UniqueInfo = { field: string; entity: string; hint?: string } | { msg: string };
 /** مُصدَّر للاختبار الحارس (errorMap.ar.test.ts) الذي يضمن تغطية كل قيود UNIQUE في الهجرات. */
 export const UNIQUE_AR: Record<string, UniqueInfo> = {
+  // ── شجرة الحسابات (الدفتر المزدوج) ──
+  uq_account_code: { field: "رمز الحساب", entity: "شجرة الحسابات", hint: "رمز الحساب مستعمل لحسابٍ آخر — اختر رمزاً فريداً." },
+  uq_account_system_role: { field: "الدور النظاميّ للحساب", entity: "شجرة الحسابات", hint: "هذا الدور النظاميّ مرتبطٌ بحسابٍ آخر — كل دورٍ نظاميّ لحسابٍ واحد فقط." },
   // ── الكتالوج ──
   productUnits_barcode_unique: {
     field: "الباركود",
