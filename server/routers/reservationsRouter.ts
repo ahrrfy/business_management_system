@@ -2,10 +2,10 @@
 // تفادياً لتعديل trpc.ts — نمط tasksReadProcedure نفسه. عزل الفرع يدويّ في الطفرات (نمط tasks.create).
 import { TRPCError } from "@trpc/server";
 import { z } from "zod";
-import { nonNegMoneyString } from "../lib/schemas";
+import { nonNegMoneyString, positiveMoneyString } from "../lib/schemas";
 import { logAudit } from "../services/auditService";
 import {
-  cancelReservation, createReservation, expireDueReservations, extendReservation,
+  cancelReservation, convertReservationToSale, createReservation, expireDueReservations, extendReservation,
   getAvailabilityByVariant, getReservation, listReservations, releaseReservation,
 } from "../services/reservations";
 import { branchScopedProcedure, managerProcedure, requireModule, router } from "../trpc";
@@ -93,6 +93,31 @@ export const reservationsRouter = router({
         role: ctx.user.role,
       });
       await logAudit(ctx, { action: "reservation.cancel", entityType: "reservation", entityId: input.id, newValue: { reason: input.reason ?? null } });
+      return res;
+    }),
+
+  // تحويل الحجز إلى فاتورة بيع (R-م٤): عبر createSale — يخصم المخزون ويحرّر المحجوز المنفَّذ.
+  convert: reservationsWrite
+    .input(
+      z.object({
+        reservationId: z.number().int().positive(),
+        payment: z
+          .object({ amount: positiveMoneyString, method: z.enum(["CASH", "CARD", "CHECK", "TRANSFER", "WALLET"]) })
+          .nullish(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const res = await convertReservationToSale(input, {
+        userId: ctx.user.id,
+        branchId: Number(ctx.user.branchId ?? 0),
+        role: ctx.user.role,
+      });
+      await logAudit(ctx, {
+        action: "reservation.convert",
+        entityType: "reservation",
+        entityId: input.reservationId,
+        newValue: { invoiceId: res.invoiceId, invoiceNumber: res.invoiceNumber, total: res.total },
+      });
       return res;
     }),
 

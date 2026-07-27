@@ -2,7 +2,7 @@
 // الخادم جاهز: server/routers/reservationsRouter.ts + server/services/reservations/*. هذا يستهلكه فقط.
 // حجز ناعم (ATP): الإنشاء يعرض تحذير «فوق المتاح» (overbooked) لا يمنع — قرار المالك. العربون/التحويل R-م٤/م٥.
 import { useMemo, useState } from "react";
-import { CalendarClock, Clock, Plus, Search, Trash2, X } from "lucide-react";
+import { CalendarClock, Clock, Plus, Search, ShoppingCart, Trash2, X } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { notify } from "@/lib/notify";
 import { fmtDateTime } from "@/lib/date";
@@ -82,7 +82,15 @@ export default function ReservationsHub() {
     onSuccess: () => { notify.ok("مُدّد الحجز"); utils.reservations.list.invalidate(); },
     onError: (e) => notify.err(e),
   });
+  const convert = trpc.reservations.convert.useMutation({
+    onSuccess: (r) => { notify.ok(`أُنشئت الفاتورة ${r.invoiceNumber}`); utils.reservations.list.invalidate(); },
+    onError: (e) => notify.err(e),
+  });
 
+  function onConvert(r: ReservationRow) {
+    if (!window.confirm(`تحويل الحجز ${r.reservationNumber} إلى فاتورة بيع؟ (المتبقّي يُسجَّل على حساب العميل إن كان آجلاً)`)) return;
+    convert.mutate({ reservationId: Number(r.id) });
+  }
   function onCancel(r: ReservationRow) {
     const reason = window.prompt("سبب إلغاء الحجز (اختياري):", "");
     if (reason === null) return; // ألغى الحوار
@@ -169,6 +177,11 @@ export default function ReservationsHub() {
                       <TableCell className="text-xs" dir="ltr">{r.expiresAt ? fmtDateTime(r.expiresAt) : "—"}</TableCell>
                       <TableCell>
                         <div className="flex gap-1">
+                          {canWrite && closeable && (
+                            <Button size="sm" variant="ghost" onClick={() => onConvert(r)} disabled={convert.isPending} title="تحويل إلى فاتورة">
+                              <ShoppingCart aria-hidden className="size-4" />
+                            </Button>
+                          )}
                           {canWrite && closeable && (
                             <Button size="sm" variant="ghost" onClick={() => onCancel(r)} disabled={cancel.isPending} title="إلغاء الحجز">
                               <Trash2 aria-hidden className="size-4" />

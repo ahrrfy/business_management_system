@@ -1,6 +1,6 @@
 // قراءات الكاشير (POS): مطابقة الباركود وقائمة البيع.
 import { and, desc, eq, inArray } from "drizzle-orm";
-import { branchStock, bundleComponents, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
+import { branchStock, bundleComponents, productPrices, productUnits, productVariants, products, reservationStock } from "../../../drizzle/schema";
 import { getDb, type Tx } from "../../db";
 import { resolveContractPrices } from "../contractPriceService";
 import { money, toDbMoney } from "../money";
@@ -28,7 +28,9 @@ export interface PosRow {
   barcode: string | null;
   isBaseUnit: boolean;
   price: string | null; // null = no price defined for this unit×tier
-  stockBase: number; // variant stock in base units at the branch
+  stockBase: number; // variant stock in base units at the branch (الرصيد الفعليّ)
+  reservedBase: number; // المحجوز النشط بوحدة الأساس (الحجوزات R-م٤)
+  availableBase: number; // المتاح للبيع (ATP) = stockBase − reservedBase
   /** «وضع الافتتاح» (ش٥): لحظة تثبيت الرصيد الافتتاحي — null = غير مُفتتَح (يُباع نقداً بالسالب أثناء النافذة). */
   openedAt: Date | null;
   isService: boolean; // مُنتج خِدمي: لا مَخزون، POS يَتجاوز فَحص نَقص المَخزون.
@@ -73,6 +75,7 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
       isBaseUnit: productUnits.isBaseUnit,
       price: productPrices.price,
       stockBase: branchStock.quantity,
+      reservedBase: reservationStock.reservedBase,
       // «وضع الافتتاح» (ش٥): يتيح لواجهة POS تمييز الصنف غير المُفتتَح (يُباع نقداً بالسالب
       // أثناء النافذة) عن «نافذ» الصارم — الحارس الفعلي خادميّ في sale/create بأي حال.
       openedAt: branchStock.openedAt,
@@ -92,6 +95,10 @@ function baseSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number,
     .leftJoin(
       branchStock,
       and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId))
+    )
+    .leftJoin(
+      reservationStock,
+      and(eq(reservationStock.variantId, productVariants.id), eq(reservationStock.branchId, branchId))
     );
 }
 
@@ -103,6 +110,8 @@ function normalize(rows: any[]): PosRow[] {
     productUnitId: Number(r.productUnitId),
     isBaseUnit: !!r.isBaseUnit,
     stockBase: r.stockBase ?? 0,
+    reservedBase: r.reservedBase ?? 0,
+    availableBase: (r.stockBase ?? 0) - (r.reservedBase ?? 0),
     openedAt: r.openedAt ?? null,
     isService: !!r.isService,
     isCustomizable: !!r.isCustomizable,
@@ -260,7 +269,11 @@ async function applyBundleAvailability(
     availByBundle.set(bid, Math.max(0, min));
   }
 
-  return rows.map((r) => (r.isBundle ? { ...r, stockBase: availByBundle.get(r.variantId) ?? 0 } : r));
+  return rows.map((r) =>
+    r.isBundle
+      ? { ...r, stockBase: availByBundle.get(r.variantId) ?? 0, availableBase: (availByBundle.get(r.variantId) ?? 0) - r.reservedBase }
+      : r,
+  );
 }
 
 /** بند 12ب: تراكب الأسعار التعاقدية — حين يُمرَّر customerId ولديه سعر تعاقدي نشط لوحدةٍ،

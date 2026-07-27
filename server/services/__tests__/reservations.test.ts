@@ -6,7 +6,7 @@ import { truncateTables } from "./__testUtils__";
 import { createProduct } from "../catalogService";
 import { withTx } from "../tx";
 import {
-  cancelReservation, createReservation, expireDueReservations,
+  cancelReservation, convertReservationToSale, createReservation, expireDueReservations,
   extendReservation, readAvailability, releaseReservation,
 } from "../reservations";
 
@@ -47,6 +47,13 @@ async function mkProduct(sku: string, opening: number, withDozen = false) {
   const base = allUnits.find((u) => u.isBaseUnit)!;
   const dozen = allUnits.find((u) => !u.isBaseUnit);
   return { variantId: Number(v.id), baseUnitId: Number(base.id), dozenUnitId: dozen ? Number(dozen.id) : null };
+}
+
+/** عميل بلا حدّ ائتمان (creditLimit=null) — يسمح بالتحويل الآجل بلا نقد/وردية. */
+async function mkCustomer(name: string) {
+  await db().insert(s.customers).values({ name, creditLimit: null });
+  const c = (await db().select().from(s.customers).where(eq(s.customers.name, name)))[0];
+  return Number(c.id);
 }
 
 async function onHand(variantId: number, branchId = 1) {
@@ -143,5 +150,38 @@ describe("الحجوزات R-م٣ — الثوابت الحرجة", () => {
     await expect(extendReservation(r.reservationId, 100, actor)).rejects.toThrow();
     const ext = await extendReservation(r.reservationId, 48, actor);
     expect(new Date(ext.expiresAt).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("التحويل لبيع (آجل بعميل): يخصم المخزون الفعليّ، يحرّر المحجوز، يربط الفاتورة، والمتاح يبقى متسقاً", async () => {
+    const cid = await mkCustomer("زبون الحجز");
+    const { variantId, baseUnitId } = await mkProduct("RSV-H", 10);
+    const r = await createReservation(
+      { branchId: 1, customerId: cid, contactPhone: "07700000010", lines: [{ variantId, productUnitId: baseUnitId, quantity: 4 }] },
+      actor,
+    );
+    expect(await reserved(variantId)).toBe(4);
+    expect((await atp(variantId)).available).toBe(6); // 10 − 4
+
+    const conv = await convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor);
+    expect(conv.invoiceId).toBeGreaterThan(0);
+    // البيع خصم branchStock بالمباع (10→6)؛ التحرير خصم reservedBase بالمنفَّذ (4→0) ⇒ المتاح يبقى 6.
+    expect(await onHand(variantId)).toBe(6);
+    expect(await reserved(variantId)).toBe(0);
+    expect((await atp(variantId)).available).toBe(6);
+    const row = (await db().select().from(s.reservations).where(eq(s.reservations.id, r.reservationId)))[0];
+    expect(row.status).toBe("FULFILLED");
+    expect(Number(row.fulfilledInvoiceId)).toBe(conv.invoiceId);
+  });
+
+  it("التحويل idempotent: إعادة تحويل حجز منفَّذ مرفوضة (لا خصم مخزون مزدوج)", async () => {
+    const cid = await mkCustomer("زبون ٢");
+    const { variantId, baseUnitId } = await mkProduct("RSV-I", 10);
+    const r = await createReservation(
+      { branchId: 1, customerId: cid, contactPhone: "07700000011", lines: [{ variantId, productUnitId: baseUnitId, quantity: 3 }] },
+      actor,
+    );
+    await convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor);
+    await expect(convertReservationToSale({ reservationId: r.reservationId, payment: null }, actor)).rejects.toThrow();
+    expect(await onHand(variantId)).toBe(7); // خُصم مرّة واحدة (10−3)
   });
 });
