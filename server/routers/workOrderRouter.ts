@@ -247,14 +247,18 @@ export const workOrderRouter = router({
       const db = getDb();
       if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "قاعدة البيانات غير متاحة" });
       const wo = (
-        await db.select({ id: workOrders.id }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
+        await db.select({ id: workOrders.id, branchId: workOrders.branchId }).from(workOrders).where(eq(workOrders.id, input.workOrderId)).limit(1)
       )[0];
       if (!wo) throw new TRPCError({ code: "NOT_FOUND", message: "طلب الخدمة غير موجود" });
       if (input.assignedTo != null) {
         const u = (
-          await db.select({ id: users.id, isActive: users.isActive }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
+          await db.select({ id: users.id, isActive: users.isActive, branchId: users.branchId }).from(users).where(eq(users.id, input.assignedTo)).limit(1)
         )[0];
         if (!u || !u.isActive) throw new TRPCError({ code: "BAD_REQUEST", message: "الموظف غير موجود أو معطّل" });
+        // منع إسناد الطلب لموظفٍ من فرعٍ آخر لا يستطيع تنفيذه (تدقيق ٢٥/٧). الموظف بلا فرع (مشترك) مسموح.
+        if (u.branchId != null && Number(u.branchId) !== Number(wo.branchId)) {
+          throw new TRPCError({ code: "BAD_REQUEST", message: "لا يمكن إسناد الطلب لموظفٍ من فرعٍ آخر" });
+        }
       }
       await db.update(workOrders).set({ assignedTo: input.assignedTo }).where(eq(workOrders.id, input.workOrderId));
       await logAudit(ctx, {
