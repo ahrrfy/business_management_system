@@ -8,6 +8,7 @@ import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/rep
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { Button } from "@/components/ui/button";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
@@ -151,7 +152,9 @@ export default function SalesRegister() {
       <Card>
         <CardContent className="p-0">
           {q.isLoading ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">جارٍ التحميل…</p>
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مبيعات في هذا النطاق.</p>
           ) : (

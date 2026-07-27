@@ -4,6 +4,7 @@ import { useMemo, useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -115,8 +116,12 @@ export default function TrialBalance() {
     >
       <Card>
         <CardContent className="p-0">
-          {q.isLoading || !p ? (
-            <p className="p-8 text-center text-sm text-muted-foreground">{q.isLoading ? "جارٍ التحميل…" : "لا بيانات."}</p>
+          {q.isLoading ? (
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+          ) : !p ? (
+            <p className="p-8 text-center text-sm text-muted-foreground">لا بيانات.</p>
           ) : (
             <table className="w-full text-sm">
               <thead>

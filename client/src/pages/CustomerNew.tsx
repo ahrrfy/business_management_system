@@ -14,6 +14,8 @@ import { whatsappLink, displayE164 } from "@/lib/intlPhone";
 import { TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useLocation } from "wouter";
+import { useSaveShortcuts } from "@/hooks/useSaveShortcuts";
+import { useUnsavedGuard } from "@/hooks/useUnsavedGuard";
 
 /**
  * إضافة عميل — v3 add-screens (+ تحسينات الأولوية العليا ٤/٧).
@@ -173,21 +175,22 @@ export default function CustomerNew() {
   }
 
   // اختصارات: Ctrl+S حفظ، Esc إلغاء (نظير نموذج السند).
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        navigate("/customers");
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
-        e.preventDefault();
-        submit();
-      }
-    };
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [name, phone, phone2, phone3, customerType, defaultPriceTier, city, district, address, creditMode, creditLimit, openingAmount, openingDir, notes, isElevated]);
+  useSaveShortcuts({
+    onSave: submit,
+    onCancel: () => navigate("/customers"),
+    enabled: !create.isPending,
+  });
+  useUnsavedGuard(
+    name.trim() !== "" ||
+      phone.trim() !== "" ||
+      phone2.trim() !== "" ||
+      phone3.trim() !== "" ||
+      city.trim() !== "" ||
+      district.trim() !== "" ||
+      address.trim() !== "" ||
+      notes.trim() !== "" ||
+      openingAmount.trim() !== "",
+  );
 
   const wa = whatsappLink(phone);
 

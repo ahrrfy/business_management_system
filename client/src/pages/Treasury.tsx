@@ -5,7 +5,7 @@ import { OpenShiftsPanel } from "@/components/treasury/OpenShiftsPanel";
 import { PaymentMethodDonut } from "@/components/treasury/PaymentMethodDonut";
 import { TreasuryKpiCard } from "@/components/treasury/TreasuryKpiCard";
 import { Button } from "@/components/ui/button";
-import { DataTable } from "@/components/DataTable";
+import { DataTable } from "@/components/data-table/DataTable";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
 import { notify } from "@/lib/notify";
@@ -494,7 +494,7 @@ export default function Treasury() {
             columns={movementCols}
             loading={movements.isLoading}
             emptyText="لا حركات بعد."
-            showFilter={false}
+            searchable={false}
             pageSize={20}
           />
         </div>

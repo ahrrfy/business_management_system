@@ -3,7 +3,7 @@
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -71,6 +71,8 @@ export default function LeaveReport() {
         <CardContent className="p-0">
           {q.isLoading ? (
             <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا موظفين نشِطين.</p>
           ) : (

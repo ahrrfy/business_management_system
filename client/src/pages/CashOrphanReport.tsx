@@ -8,7 +8,7 @@ import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { PeriodFilter, DEFAULT_PERIOD, type PeriodValue } from "@/components/reports/PeriodFilter";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, formatIqd } from "@/lib/money";
 import { fmtDate } from "@/lib/date";
 import { exportRows } from "@/lib/export";
@@ -194,7 +194,11 @@ export default function CashOrphanReport() {
 
       <Card>
         <CardContent className="p-0">
-          {q.isLoading || !co ? (
+          {q.isLoading ? (
+            <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
+          ) : !co ? (
             <LoadingState />
           ) : co.rows.length === 0 ? (
             <p className="p-8 text-center text-sm text-money-positive">

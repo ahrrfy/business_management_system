@@ -4,7 +4,7 @@ import { type ColumnDef } from "@tanstack/react-table";
 import { FileText, Undo2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { DataTable } from "@/components/DataTable";
+import { DataTable } from "@/components/data-table/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { fmtDateTime } from "@/lib/date";
@@ -164,7 +164,7 @@ export default function ExchangeStatement() {
             columns={cols}
             loading={st.isLoading && houseId > 0}
             emptyText={houseId === 0 ? "اختر صيرفة لعرض كشفها." : "لا حركات في النطاق المحدّد."}
-            showFilter={false}
+            searchable={false}
             pageSize={25}
           />
         </div>

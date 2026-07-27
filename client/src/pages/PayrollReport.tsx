@@ -4,7 +4,7 @@ import { useState } from "react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState } from "@/components/PageState";
+import { LoadingState, ErrorState } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { fmtAr } from "@/lib/money";
 import { exportRows } from "@/lib/export";
@@ -115,6 +115,8 @@ export default function PayrollReport() {
         <CardContent className="p-0">
           {q.isLoading ? (
             <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
           ) : !rows.length ? (
             <p className="p-8 text-center text-sm text-muted-foreground">لا مسيّرات رواتب في هذا النطاق.</p>
           ) : (

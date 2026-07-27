@@ -7,7 +7,7 @@ import { MessageCircle, FileText } from "lucide-react";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -169,6 +169,8 @@ export default function CreditExposureReport() {
         <CardContent className="p-0">
           {q.isLoading ? (
             <LoadingState />
+          ) : q.isError ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void q.refetch()} />
           ) : (
             <ScrollTableShell bordered={false}>
               <table className="w-full text-sm">

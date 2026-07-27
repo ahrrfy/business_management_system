@@ -7,7 +7,7 @@ import { FolderOpen } from "lucide-react";
 import { trpc } from "@/lib/trpc";
 import { ReportShell, type KpiItem } from "@/components/reports/ReportShell";
 import { Card, CardContent } from "@/components/ui/card";
-import { LoadingState, TableEmptyRow } from "@/components/PageState";
+import { LoadingState, ErrorState, TableEmptyRow } from "@/components/PageState";
 import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { exportRows, type ExportColumn } from "@/lib/export";
 import { printReportDoc } from "@/lib/printing/reportDoc";
@@ -62,6 +62,21 @@ export default function InventoryOpsReport() {
     (view === "risk" && risk.isLoading) ||
     (view === "variance" && variance.isLoading) ||
     (view === "negatives" && negatives.isLoading);
+
+  const error =
+    (view === "reorder" && reorder.isError) ||
+    (view === "dead" && dead.isError) ||
+    (view === "risk" && risk.isError) ||
+    (view === "variance" && variance.isError) ||
+    (view === "negatives" && negatives.isError);
+
+  function refetchActive() {
+    if (view === "reorder") return reorder.refetch();
+    if (view === "dead") return dead.refetch();
+    if (view === "risk") return risk.refetch();
+    if (view === "variance") return variance.refetch();
+    return negatives.refetch();
+  }
 
   const branchLabel = branchId ? (branches.data?.find((b) => b.id === branchId)?.name ?? String(branchId)) : "الكل";
 
@@ -311,7 +326,13 @@ export default function InventoryOpsReport() {
     >
       <Card>
         <CardContent className="p-0">
-          {loading ? <LoadingState /> : <ViewTable view={view} reorder={reorder.data} dead={dead.data} risk={risk.data} variance={variance.data} negatives={negatives.data} riskDays={riskDays} />}
+          {loading ? (
+            <LoadingState />
+          ) : error ? (
+            <ErrorState message="تعذّر تحميل التقرير." onRetry={() => void refetchActive()} />
+          ) : (
+            <ViewTable view={view} reorder={reorder.data} dead={dead.data} risk={risk.data} variance={variance.data} negatives={negatives.data} riskDays={riskDays} />
+          )}
         </CardContent>
       </Card>
     </ReportShell>

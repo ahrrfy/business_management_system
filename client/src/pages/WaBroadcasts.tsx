@@ -35,7 +35,7 @@ import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { LoadingState, ErrorState } from "@/components/PageState";
-import { DataTable } from "@/components/DataTable";
+import { DataTable } from "@/components/data-table/DataTable";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -921,7 +921,7 @@ export default function WaBroadcasts() {
       {list.isLoading && <LoadingState />}
       {list.isError && <ErrorState message="تعذّر تحميل الحملات." onRetry={() => list.refetch()} />}
       {!list.isLoading && !list.isError && (
-        <DataTable data={rows} columns={columns} emptyText="لا حملات بثّ بعد." filterPlaceholder="ابحث بالاسم…" pageSize={20} />
+        <DataTable data={rows} columns={columns} emptyText="لا حملات بثّ بعد." searchPlaceholder="ابحث بالاسم…" pageSize={20} />
       )}
 
       {showNew && (
