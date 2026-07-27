@@ -5,6 +5,7 @@ import { productPrices, productUnits, productVariants, products } from "../../..
 import { extractInsertId } from "../../lib/insertId";
 import { assertValidUnitFactors } from "./unitFactors";
 import { toDbMoney } from "../money";
+import { postCostRevaluation } from "../costRevaluation";
 import type { PriceTier } from "../pricing";
 import { type Actor, withTx } from "../tx";
 
@@ -40,7 +41,7 @@ export interface UpdateProductInput {
  *  - Existing units (by id) are UPDATEd and their prices replaced.
  *  - New units (no id) are INSERTed with their prices.
  *  - Units present in DB but absent from input are soft-deactivated (isActive=false). */
-export async function updateProduct(input: UpdateProductInput, _actor: Actor) {
+export async function updateProduct(input: UpdateProductInput, actor: Actor) {
   return withTx(async (tx) => {
     if (!input.name.trim()) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم المنتج مطلوب" });
     if (!input.variants.length) throw new TRPCError({ code: "BAD_REQUEST", message: "المنتج يحتاج متغيّراً واحداً على الأقل" });
@@ -77,7 +78,8 @@ export async function updateProduct(input: UpdateProductInput, _actor: Actor) {
       if (v.units.filter((u) => u.isBaseUnit).length > 1)
         throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} يحتاج وحدة أساس واحدة فقط` });
 
-      // Variant header.
+      // Variant header. H3 (تدقيق ٢٧/٧): نلتقط التكلفة القديمة قبل التحديث لإصدار قيد إعادة تقييم.
+      const oldV = (await tx.select({ costPrice: productVariants.costPrice }).from(productVariants).where(eq(productVariants.id, v.id)).limit(1))[0];
       await tx
         .update(productVariants)
         .set({
@@ -88,6 +90,8 @@ export async function updateProduct(input: UpdateProductInput, _actor: Actor) {
           costPrice: toDbMoney(v.costPrice),
         })
         .where(eq(productVariants.id, v.id));
+      // تغيّر التكلفة على صنفٍ له رصيد ⇒ قيد إعادة تقييم (يفسّر حركة الحقوق + حارس الفترة)؛ صفريّ الأثر إن كان الفرق/الرصيد صفراً.
+      await postCostRevaluation(tx, v.id, oldV?.costPrice, toDbMoney(v.costPrice), actor);
 
       // تحقّق معامل التحويل خادمياً (تدقيق ١٧/٧): الأساس ١، غير الأساس عدد صحيح > ١.
       assertValidUnitFactors(v.units);

@@ -14,6 +14,7 @@ import { branchStock, productImages, productPrices, productUnits, productVariant
 import { getDb } from "../db";
 import type { Tx } from "../db";
 import { findBarcodeClashes, migrateAliases } from "./catalog/barcodeAliases";
+import { postCostRevaluation } from "./costRevaluation";
 import { assertValidUnitFactors } from "./catalog/unitFactors";
 import { toDbMoney } from "./money";
 import type { PriceTier } from "./pricing";
@@ -438,7 +439,7 @@ async function reconcileProductImages(tx: Tx, productId: number, desired: Update
 }
 
 /** تعديل منتج بنموذج المتغيّرات ضمن معاملة ذرّية. لا يحذف متغيّراً (تعطيل فقط) حفظاً للمخزون. */
-export async function updateProductWithVariants(input: UpdateProductVariantsInput, _actor: Actor) {
+export async function updateProductWithVariants(input: UpdateProductVariantsInput, actor: Actor) {
   return withTx(async (tx) => {
     const p = (await tx.select().from(products).where(eq(products.id, input.productId)).limit(1))[0];
     if (!p) throw new TRPCError({ code: "NOT_FOUND", message: "المنتج غير موجود" });
@@ -487,10 +488,13 @@ export async function updateProductWithVariants(input: UpdateProductVariantsInpu
       const colorHexPatch = v.colorHex !== undefined ? { colorHex: v.colorHex?.trim() || null } : {};
       let variantId: number;
       if (v.id) {
-        const owned = (await tx.select({ id: productVariants.id }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
+        const owned = (await tx.select({ id: productVariants.id, costPrice: productVariants.costPrice }).from(productVariants).where(and(eq(productVariants.id, v.id), eq(productVariants.productId, input.productId))).limit(1))[0];
         if (!owned) throw new TRPCError({ code: "BAD_REQUEST", message: `المتغيّر ${v.sku} لا يخصّ هذا المنتج` });
         variantId = v.id;
         await tx.update(productVariants).set({ ...vals, ...colorHexPatch }).where(eq(productVariants.id, variantId));
+        // H3 (تدقيق ٢٧/٧): تغيّر التكلفة على صنفٍ له رصيد يُعيد تقييم المخزون ⇒ قيد إعادة تقييم يفسّر
+        // حركة حقوق الملكية في قائمة الدخل ويمرّ على حارس الفترة (صفريّ الأثر إن كان الفرق/الرصيد صفراً).
+        await postCostRevaluation(tx, variantId, owned.costPrice, vals.costPrice, actor);
       } else {
         const res = await tx.insert(productVariants).values({ productId: input.productId, ...vals, colorHex: v.colorHex?.trim() || null });
         variantId = extractInsertId(res);
