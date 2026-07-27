@@ -1,14 +1,17 @@
 // هيكل تقرير موحّد — يمنح كل تقارير المركز مظهراً احترافياً متطابقاً (نمط عالمي):
-// رأس (عنوان + وصف + رابط رجوع للمركز + إجراءات) · شريط فلاتر · شريط مؤشّرات ملخّص (KPI) ·
-// منطقة المحتوى · شريط أدوات موحّد (تصدير Excel/CSV + طباعة A4). أزرار التصدير/الطباعة تظهر فقط
-// عند تمرير المعالِج المقابل ⇒ كل تقرير يكتفي بتمرير onExport/onPrint ويحصل على الأنماط الثلاثة.
+// رأس (رابط رجوع للمركز + عنوان + وصف + إجراءات) عبر `PageHeader` المشترك ⇒ رأسٌ واحد للنظام
+// كلّه لا نسخةٌ خاصة بالتقارير · شريط فلاتر · شريط مؤشّرات ملخّص (KPI) · منطقة المحتوى ·
+// شريط أدوات موحّد (تصدير Excel/CSV + طباعة A4). أزرار التصدير/الطباعة تظهر فقط عند تمرير
+// المعالِج المقابل ⇒ كل تقرير يكتفي بتمرير onExport/onPrint ويحصل على الأنماط الثلاثة.
 import { type ReactNode } from "react";
-import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { PageHeader } from "@/components/PageHeader";
+import { TONE_TEXT_CLASS, type Tone } from "@/lib/tone";
 
-export type KpiTone = "default" | "positive" | "negative" | "warning" | "info";
+/** نبرة مؤشّر — مُعاد تصديرها من `@/lib/tone` (مصدرٌ واحد مشترك مع StatCard). */
+export type KpiTone = Tone;
 
 export interface KpiItem {
   label: string;
@@ -19,14 +22,6 @@ export interface KpiItem {
   hintNode?: ReactNode;
   tone?: KpiTone;
 }
-
-const toneCls: Record<KpiTone, string> = {
-  default: "text-foreground",
-  positive: "text-money-positive",
-  negative: "text-money-negative",
-  warning: "text-stock-low",
-  info: "text-[var(--sem-info)]",
-};
 
 export function ReportShell({
   title,
@@ -62,36 +57,33 @@ export function ReportShell({
 }) {
   return (
     <div className="space-y-4">
-      {/* الرأس */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
-          {backHref && (
-            <Link href={backHref} className="text-xs text-muted-foreground hover:text-foreground hover:underline">
-              ← مركز التقارير
-            </Link>
-          )}
-          <h1 className="text-2xl font-bold">{title}</h1>
-          {description && <p className="text-sm text-muted-foreground">{description}</p>}
-        </div>
-        <div className="flex flex-wrap items-center gap-2">
-          {actions}
-          {onExportCsv && (
-            <Button variant="outline" size="sm" disabled={exportDisabled} onClick={onExportCsv}>
-              تصدير CSV
-            </Button>
-          )}
-          {onExport && (
-            <Button variant="outline" size="sm" disabled={exportDisabled} onClick={onExport}>
-              تصدير Excel
-            </Button>
-          )}
-          {onPrint && (
-            <Button variant="outline" size="sm" disabled={printDisabled} onClick={onPrint}>
-              طباعة / PDF
-            </Button>
-          )}
-        </div>
-      </div>
+      {/* الرأس — عبر PageHeader المشترك (رابط رجوع + عنوان + وصف)، وأزرار التصدير/الطباعة في منطقة الإجراءات. */}
+      <PageHeader
+        title={title}
+        description={description}
+        backHref={backHref ?? undefined}
+        backLabel="مركز التقارير"
+        actions={
+          <>
+            {actions}
+            {onExportCsv && (
+              <Button variant="outline" size="sm" disabled={exportDisabled} onClick={onExportCsv}>
+                تصدير CSV
+              </Button>
+            )}
+            {onExport && (
+              <Button variant="outline" size="sm" disabled={exportDisabled} onClick={onExport}>
+                تصدير Excel
+              </Button>
+            )}
+            {onPrint && (
+              <Button variant="outline" size="sm" disabled={printDisabled} onClick={onPrint}>
+                طباعة / PDF
+              </Button>
+            )}
+          </>
+        }
+      />
 
       {/* شريط الفلاتر */}
       {filters && (
@@ -114,7 +106,7 @@ export function ReportShell({
             <Card key={i}>
               <CardContent className="pt-4 pb-3 text-center">
                 <p className="text-xs text-muted-foreground">{k.label}</p>
-                <p className={cn("text-xl font-bold tabular-nums", toneCls[k.tone ?? "default"])} dir="ltr">
+                <p className={cn("text-xl font-bold tabular-nums", TONE_TEXT_CLASS[k.tone ?? "default"])} dir="ltr">
                   {k.value}
                 </p>
                 {(k.hintNode ?? k.hint) && <p className="mt-0.5 text-[10px] text-muted-foreground">{k.hintNode ?? k.hint}</p>}
