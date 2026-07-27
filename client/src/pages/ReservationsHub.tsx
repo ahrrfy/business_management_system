@@ -88,8 +88,14 @@ export default function ReservationsHub() {
   });
 
   function onConvert(r: ReservationRow) {
-    if (!window.confirm(`تحويل الحجز ${r.reservationNumber} إلى فاتورة بيع؟ (المتبقّي يُسجَّل على حساب العميل إن كان آجلاً)`)) return;
-    convert.mutate({ reservationId: Number(r.id) });
+    const raw = window.prompt(
+      `تحويل الحجز ${r.reservationNumber} إلى فاتورة.\nالمبلغ المدفوع نقداً الآن (اتركه فارغاً لبيع آجل — يتطلب عميلاً محدّداً على الحجز):`,
+      "",
+    );
+    if (raw === null) return;
+    const amount = raw.trim();
+    const payment = amount && Number(amount) > 0 ? { amount, method: "CASH" as const } : null;
+    convert.mutate({ reservationId: Number(r.id), payment });
   }
   function onCancel(r: ReservationRow) {
     const reason = window.prompt("سبب إلغاء الحجز (اختياري):", "");
@@ -122,7 +128,8 @@ export default function ReservationsHub() {
       />
 
       <div className="flex flex-wrap items-center gap-2">
-        {(branches.data?.length ?? 0) > 1 && (
+        {/* منتقي الفرع للمرتفعين فقط (Codex P2): غير المرتفع مُقيَّد بفرعه خادمياً، فإظهاره يضلّله. */}
+        {(role === "admin" || role === "manager") && (branches.data?.length ?? 0) > 1 && (
           <select
             className={selectCls}
             value={effectiveBranch ?? ""}

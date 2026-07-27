@@ -1,7 +1,8 @@
 // إنشاء الحجز — حجز ناعم تحت قفل ATP. الإنفاذ ناعم (قرار المالك): يُسمح بالحجز حتى فوق المتاح
 // مع وسم الأصناف المتجاوِزة (overbookedVariantIds) — تحذير لا منع. الكميات تُحوَّل لوحدة الأساس خادمياً.
 import { TRPCError } from "@trpc/server";
-import { reservationEvents, reservationLines, reservations } from "../../../drizzle/schema";
+import { eq, inArray } from "drizzle-orm";
+import { products, productVariants, reservationEvents, reservationLines, reservations } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { convertToBaseQuantity } from "../inventoryService";
 import { withTx, type Actor } from "../tx";
@@ -45,6 +46,20 @@ export async function createReservation(input: CreateReservationInput, actor: Ac
     for (const ln of input.lines) {
       const conv = await convertToBaseQuantity(tx, ln.productUnitId, ln.quantity, ln.variantId);
       converted.push({ variantId: ln.variantId, productUnitId: ln.productUnitId, baseQuantity: conv.baseQuantity, quotedUnitPrice: ln.quotedUnitPrice });
+    }
+
+    // حارس (مراجعة Codex P1): لا يُحجز منتج مركّب (bundle) أو خدميّ — لا رصيد branchStock ذاتيّ له
+    // (bundle مخزونه مشتقّ من مكوّناته؛ الحجز الناعم يعمل على reservationStock لكل variant مخزونيّ).
+    const variantIds = Array.from(new Set(converted.map((c) => c.variantId)));
+    const kinds = await tx
+      .select({ variantId: productVariants.id, isBundle: products.isBundle, isService: products.isService })
+      .from(productVariants)
+      .innerJoin(products, eq(products.id, productVariants.productId))
+      .where(inArray(productVariants.id, variantIds));
+    for (const k of kinds) {
+      if (k.isBundle || k.isService) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "لا يُحجز منتج مركّب (بكج) أو خدميّ — احجز أصنافاً مخزونية." });
+      }
     }
 
     // دمج الكميات لكل صنف + ترتيب تصاعديّ للـvariantId (تفادي deadlock — نمط sale/create).

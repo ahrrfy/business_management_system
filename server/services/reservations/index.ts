@@ -4,7 +4,7 @@ export type { CreateReservationInput, CreateReservationResult, ReservationLineIn
 export { convertReservationToSale } from "./convert";
 export type { ConvertReservationInput, ConvertReservationResult } from "./convert";
 export { cancelReservation, extendReservation, expireDueReservations, releaseReservation } from "./lifecycle";
-export { getAvailabilityByVariant, getReservation, listReservations } from "./list";
+export { listReservations } from "./list";
 export type { ListFilter, ListScope } from "./list";
 export { adjustReservedStock, readAvailability } from "./stock";
 export type { Availability } from "./stock";
