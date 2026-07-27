@@ -416,3 +416,55 @@ describe("قفل الحساب — نافذة العدّاد الزمنية (٦/�
     expect(u.lockedUntil).toBeTruthy();
   });
 });
+
+describe("إلزام 2FA — راية me.mustEnroll2FA (قرار المالك ٢٣/٧)", () => {
+  async function seedUserRole(role: string, id = 1) {
+    const d = db();
+    await d.insert(s.branches).values([{ id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" }]);
+    await d.insert(s.users).values({
+      id, openId: `local_${role}_${id}`, name: role, email: `${role}${id}@test.local`,
+      passwordHash: hashPassword("Admin@12345"), role, loginMethod: "local", branchId: 1,
+      sessionsValidFrom: new Date(Date.now() - 2000),
+    });
+    return (await d.select().from(s.users).where(eq(s.users.id, id)).limit(1))[0];
+  }
+
+  it("أدمن بلا 2FA + تشفير مضبوط ⇒ mustEnroll2FA = true", async () => {
+    const user = await seedUserRole("admin");
+    const me = await appRouter.createCaller(makeCtx(user).ctx).auth.me();
+    expect(me?.mustEnroll2FA).toBe(true);
+  });
+
+  it("مدير بلا 2FA ⇒ mustEnroll2FA = true", async () => {
+    const user = await seedUserRole("manager");
+    const me = await appRouter.createCaller(makeCtx(user).ctx).auth.me();
+    expect(me?.mustEnroll2FA).toBe(true);
+  });
+
+  it("أدمن فعّل 2FA ⇒ mustEnroll2FA = false", async () => {
+    const user = await seedUserRole("admin");
+    await enable2fa(user);
+    const me = await appRouter.createCaller(makeCtx(await freshUser(user.id)).ctx).auth.me();
+    expect(me?.mustEnroll2FA).toBe(false);
+  });
+
+  it("كاشير بلا 2FA ⇒ mustEnroll2FA = false (دورٌ غير مُلزَم)", async () => {
+    const user = await seedUserRole("cashier");
+    const me = await appRouter.createCaller(makeCtx(user).ctx).auth.me();
+    expect(me?.mustEnroll2FA).toBe(false);
+  });
+
+  it("فشلٌ آمن: تشفير غير مضبوط ⇒ لا إلزام حتى للأدمن (لا خطر إقفال)", async () => {
+    const user = await seedUserRole("admin");
+    const key = process.env.INTEGRATIONS_ENCRYPTION_KEY;
+    process.env.INTEGRATIONS_ENCRYPTION_KEY = "";
+    __resetKeyCacheForTests();
+    try {
+      const me = await appRouter.createCaller(makeCtx(user).ctx).auth.me();
+      expect(me?.mustEnroll2FA).toBe(false);
+    } finally {
+      process.env.INTEGRATIONS_ENCRYPTION_KEY = key;
+      __resetKeyCacheForTests();
+    }
+  });
+});

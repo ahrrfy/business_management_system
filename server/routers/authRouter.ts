@@ -5,6 +5,7 @@ import {
   PASSWORD_REGEX,
   SESSION_DEFAULT_MS,
   SESSION_REMEMBER_MAX_MS,
+  TWO_FACTOR_REQUIRED_ROLES,
 } from "@shared/const";
 import { TRPCError } from "@trpc/server";
 import { createHash } from "node:crypto";
@@ -24,6 +25,7 @@ import {
   regenerateRecoveryCodes,
   startTwoFactorSetup,
 } from "../services/twoFactorService";
+import { isCryptoReady } from "../services/cryptoService";
 import { ensureTenantDb, getDb, isMultiTenantModeActive } from "../db";
 import { logger } from "../logger";
 import { logAudit } from "../services/auditService";
@@ -122,7 +124,12 @@ export const authRouter = router({
     if (!ctx.user) return null;
     // حجب الأسرار: passwordHash + سرّ TOTP المشفَّر (لا شأن للعميل به حتى مشفَّراً).
     const { passwordHash: _passwordHash, totpSecretEncrypted: _totpSecret, ...safe } = ctx.user;
-    return safe;
+    // إلزام 2FA (قرار المالك ٢٣/٧): الأدمن/المدير يجب أن يُفعّلوا 2FA قبل استعمال النظام — تُوجّههم الواجهة
+    // إجبارياً لشاشة التفعيل. **فشلٌ آمن:** لا إلزام إن كان التشفير غير مضبوط (isCryptoReady=false) لئلّا
+    // يُقفَل حسابٌ عالي الصلاحية على خادمٍ بلا مفتاح. الكاشير/البقية اختياريّ كما كان.
+    const mustEnroll2FA =
+      TWO_FACTOR_REQUIRED_ROLES.includes(safe.role) && !safe.totpEnabledAt && isCryptoReady();
+    return { ...safe, mustEnroll2FA };
   }),
 
   /** هل الخادم في وضع تعدّد الشركات؟ تستعملها شاشة الدخول لإظهار/إخفاء حقل "رمز الشركة"
