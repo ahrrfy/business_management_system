@@ -1,7 +1,7 @@
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { DataTable } from "@/components/DataTable";
+import { DataTable } from "@/components/data-table/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { fmtDateTime } from "@/lib/date";
 import { fmtAr } from "@/lib/money";
@@ -241,7 +241,7 @@ export default function TreasuryTransfers() {
             columns={cols}
             loading={list.isLoading}
             emptyText={tab === "incoming" ? "لا تحويلات واردة." : tab === "outgoing" ? "لا تحويلات صادرة." : "لا تحويلات."}
-            showFilter={false}
+            searchable={false}
             pageSize={20}
           />
         </div>

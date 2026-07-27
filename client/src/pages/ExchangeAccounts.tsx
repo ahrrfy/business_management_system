@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { MoneyInput } from "@/components/form/MoneyInput";
-import { DataTable } from "@/components/DataTable";
+import { DataTable } from "@/components/data-table/DataTable";
 import { PageHeader } from "@/components/PageHeader";
 import { StatCard } from "@/components/StatCard";
 import { trpc } from "@/lib/trpc";
@@ -128,7 +128,7 @@ export default function ExchangeAccounts() {
             columns={cols}
             loading={list.isLoading}
             emptyText="لا صيرفات بعد — أضف صيرفة جديدة."
-            showFilter={true}
+            searchable={true}
             pageSize={20}
           />
         </div>
