@@ -3894,7 +3894,9 @@ export const exchangeTransactions = mysqlTable(
     balanceIqdAfter: decimal("balanceIqdAfter", { precision: 15, scale: 2 }).default("0").notNull(),
     balanceUsdAfter: decimal("balanceUsdAfter", { precision: 15, scale: 2 }).default("0").notNull(),
     receiptId: bigint("receiptId", { mode: "number" }).references(() => receipts.id),
-    status: mysqlEnum("exchangeTxnStatus", ["ACTIVE", "REVERSED"]).default("ACTIVE").notNull(),
+    // PENDING_APPROVAL: إيداع دولار مباشر بانتظار اعتماد مديرٍ ثانٍ (SOD) — لا يمسّ رصيد المحفظة حتى الاعتماد
+    // (recomputeHouseFromLog يرشّح ACTIVE فيستثنيه). ACTIVE = نافذ، REVERSED = معكوس.
+    status: mysqlEnum("exchangeTxnStatus", ["ACTIVE", "REVERSED", "PENDING_APPROVAL"]).default("ACTIVE").notNull(),
     notes: text("notes"),
     createdBy: int("createdBy").references(() => users.id),
     createdAt: timestamp("createdAt").defaultNow().notNull(),

@@ -1,7 +1,7 @@
 // تبويب «العمليات» — إيداع نقد / سحب / شراء دولار من الصيرفة.
 // الإيداع والسحب نقلُ أصلٍ بين الخزينة والصيرفة؛ شراء الدولار يحوّل دينار→دولار ويحدّث متوسط الكلفة.
 import { useMemo, useState } from "react";
-import { ArrowDownToLine, ArrowUpFromLine, DollarSign, Wallet } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, Check, Clock, DollarSign, Wallet } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -59,9 +59,27 @@ export default function ExchangeOperations() {
     void utils.exchange.list.invalidate();
   };
 
-  const deposit = trpc.exchange.deposit.useMutation({ onSuccess: () => afterOk("تمّ الإيداع"), onError: (e) => notify.err(e.message) });
+  const deposit = trpc.exchange.deposit.useMutation({
+    onSuccess: (r) => {
+      // إيداع الدولار المباشر صار معلّقاً باعتماد ثانٍ (SOD) — رسالة تُميّزه عن الإيداع الديناريّ النافذ.
+      afterOk(r?.pendingApproval ? "سُجِّل إيداع الدولار — بانتظار اعتماد مديرٍ ثانٍ (فصل مهام)" : "تمّ الإيداع");
+      void utils.exchange.pendingDeposits.invalidate();
+    },
+    onError: (e) => notify.err(e.message),
+  });
   const withdraw = trpc.exchange.withdraw.useMutation({ onSuccess: () => afterOk("تمّ السحب"), onError: (e) => onErr(e, () => doWithdraw(true)) });
   const buyUsd = trpc.exchange.buyUsd.useMutation({ onSuccess: (r) => afterOk(`تمّ شراء الدولار — متوسط الكلفة الجديد ${r.newRate}`), onError: (e) => onErr(e, () => doBuyUsd(true)) });
+
+  // اعتماد ثانٍ (SOD، تدقيق ٢٥/٧) لإيداع الدولار المباشر المعلّق: طابور + اعتماد (الخادم يرفض اعتماد المُنشئ لسنده).
+  const pendingDeps = trpc.exchange.pendingDeposits.useQuery({});
+  const approveDep = trpc.exchange.approveDeposit.useMutation({
+    onSuccess: () => {
+      notify.ok("اعتُمد إيداع الدولار وطُبّق على المحفظة");
+      void utils.exchange.pendingDeposits.invalidate();
+      void utils.exchange.list.invalidate();
+    },
+    onError: (e) => notify.err(e.message),
+  });
 
   const guard = (): boolean => {
     if (!houseId) { notify.err("اختر صيرفة"); return false; }
@@ -265,6 +283,37 @@ export default function ExchangeOperations() {
           </div>
         )}
       </Card>
+
+      {(pendingDeps.data ?? []).length > 0 && (
+        <Card className="p-4 space-y-3">
+          <div className="flex items-center gap-2 text-sm font-semibold">
+            <Clock className="h-4 w-4 text-amber-600" aria-hidden />
+            إيداعات دولار معلّقة — بانتظار اعتماد ثانٍ (فصل مهام: لا يعتمدها مُنشئها)
+          </div>
+          <div className="space-y-2">
+            {(pendingDeps.data ?? []).map((p) => (
+              <div key={p.id} className="flex flex-wrap items-center justify-between gap-3 rounded-md border px-3 py-2 text-sm">
+                <div className="flex flex-wrap items-center gap-3">
+                  <span className="tabular-nums text-muted-foreground" dir="ltr">{p.txnNumber}</span>
+                  <span>{p.houseName}</span>
+                  <span className="font-semibold" dir="ltr">${fmtAr(p.usdAmount)}</span>
+                  <span className="text-muted-foreground text-xs">سعر مرجعي <span dir="ltr">{fmtAr(p.exchangeRate)}</span></span>
+                  {p.notes && <span className="text-muted-foreground text-xs">{p.notes}</span>}
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => approveDep.mutate({ txnId: Number(p.id) })}
+                  disabled={approveDep.isPending || !canWrite}
+                  className="gap-1.5"
+                >
+                  <Check className="h-3.5 w-3.5" aria-hidden />اعتماد
+                </Button>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }

@@ -40,3 +40,4 @@ export { getExchangeStatement } from "./exchange/statement";
 export type { ReconcileInput } from "./exchange/reconcile";
 export { reconcileExchange } from "./exchange/reconcile";
 export { reverseExchangeTransaction } from "./exchange/reverse";
+export { approveExchangeDeposit, listPendingExchangeDeposits } from "./exchange/approveDeposit";

@@ -1,11 +1,10 @@
 // إيداع نقد (دينار) من خزينة الفرع، أو إيداع دولار مباشر لمحفظة الصيرفة الدولارية (معزولتان).
 import { TRPCError } from "@trpc/server";
-import Decimal from "decimal.js";
 import { eq } from "drizzle-orm";
-import { branches, exchangeHouses, exchangeTransactions, receipts } from "../../../drizzle/schema";
+import { branches, exchangeTransactions, receipts } from "../../../drizzle/schema";
 import { extractInsertId } from "../../lib/insertId";
 import { findIdempotentRefId, recordIdempotencyKey } from "../idempotency";
-import { adjustExchangeBalanceIqd, adjustExchangeBalanceUsd, postEntry } from "../ledgerService";
+import { adjustExchangeBalanceIqd, postEntry } from "../ledgerService";
 import { money, round2, toDbMoney } from "../money";
 import { withTx, type Actor } from "../tx";
 import { getTreasuryBalance } from "../cashTransferService";
@@ -26,7 +25,10 @@ export interface DepositInput {
 
 /** إيداع نقد (دينار) من خزينة الفرع → محفظة الصيرفة، أو إيداع دولار مباشر لمحفظتها الدولارية
  *  (معزولتان تماماً — كلٌّ بعمليّاته الخاصّة، بلا أثر على الأخرى). نقل أصل (0/0/0 دينارياً). */
-export async function depositToExchange(input: DepositInput, actor: Actor): Promise<{ txnId: number; txnNumber: string }> {
+export async function depositToExchange(
+  input: DepositInput,
+  actor: Actor,
+): Promise<{ txnId: number; txnNumber: string; pendingApproval?: boolean }> {
   return withTx(async (tx) => {
     if (input.clientRequestId) {
       const existing = await findIdempotentRefId(tx, "exchange.deposit", input.clientRequestId);
@@ -44,16 +46,11 @@ export async function depositToExchange(input: DepositInput, actor: Actor): Prom
       const rate = money(input.exchangeRate ?? 0);
       if (rate.lte(0)) throw new TRPCError({ code: "BAD_REQUEST", message: "يلزم سعر صرف مرجعي موجب لإيداع الدولار" });
 
-      // متوسط كلفة مرجّح جديد (نظير buyUsd) — الدينار لا يتأثّر إطلاقاً (محفظتان معزولتان).
-      const oldUsd = money(house.balanceUsd);
-      const oldRate = money(house.usdCostRate);
-      const newUsd = oldUsd.plus(amount);
-      const newCostBasis = oldUsd.times(oldRate).plus(amount.times(rate));
-      const newRate = newUsd.isZero() ? new Decimal(0) : newCostBasis.div(newUsd);
-
-      await adjustExchangeBalanceUsd(tx, input.exchangeHouseId, amount);
-      await tx.update(exchangeHouses).set({ usdCostRate: toDbRate(newRate) }).where(eq(exchangeHouses.id, input.exchangeHouseId));
-
+      // اعتماد ثانٍ (SOD، تدقيق ٢٥/٧): إيداع الدولار المباشر (مصدره خارج خزينة الفرع، لا نقد ديناريّ يغادر)
+      // يُنشأ **معلّقاً بلا أيّ أثر** — لا رفع رصيد، لا WAVG، لا قيد — حتى يعتمده مديرٌ ثانٍ عبر
+      // approveExchangeDeposit فيُطبَّق كاملاً تحت القفل. يمنع تضخيم المحفظة بدولارٍ لم يصل فعلاً
+      // (كان يرفع الأصل بلا طرفٍ مقابلٍ مُدقَّق). recomputeHouseFromLog يرشّح ACTIVE فيستثني المعلّق،
+      // وأرصدة After = الحالية إذ لم يُطبَّق بعد.
       const txnNumber = await nextTxnNumber(tx, input.branchId);
       const txRes = await tx.insert(exchangeTransactions).values({
         txnNumber,
@@ -64,27 +61,17 @@ export async function depositToExchange(input: DepositInput, actor: Actor): Prom
         usdAmount: toDbMoney(amount),
         exchangeRate: toDbRate(rate),
         balanceIqdAfter: toDbMoney(money(house.balanceIqd)),
-        balanceUsdAfter: toDbMoney(newUsd),
-        status: "ACTIVE",
+        balanceUsdAfter: toDbMoney(money(house.balanceUsd)),
+        status: "PENDING_APPROVAL",
         notes: input.notes ?? null,
         createdBy: actor.userId,
       });
       const txnId = extractInsertId(txRes);
 
-      // لا حركة نقد دينارية حقيقية ⇒ قيمة دينارية معادِلة إعلامية فقط (نظير قيد الرصيد الافتتاحي).
-      await postEntry(tx, {
-        entryType: "EXCHANGE_DEPOSIT",
-        branchId: input.branchId,
-        exchangeHouseId: input.exchangeHouseId,
-        amount: round2(amount.times(rate)),
-        dedupeKey: `EXDEP:${txnNumber}`,
-        notes: input.notes ?? "إيداع دولار مباشر",
-      });
-
       if (input.clientRequestId) {
         await recordIdempotencyKey(tx, "exchange.deposit", input.clientRequestId, txnId);
       }
-      return { txnId, txnNumber };
+      return { txnId, txnNumber, pendingApproval: true };
     }
 
     // receipt OUT TREASURY — نقد فعلي يغادر خزينة الفرع.

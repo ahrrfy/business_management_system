@@ -3,10 +3,12 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { logAudit } from "../services/auditService";
 import {
+  approveExchangeDeposit,
   buyUsdAtExchange,
   createExchangeHouse,
   depositToExchange,
   getExchangeHouse,
+  listPendingExchangeDeposits,
   getExchangeStatement,
   listExchangeHouses,
   reconcileExchange,
@@ -240,6 +242,25 @@ export const exchangeRouter = router({
         entityType: "exchangeTransaction",
         entityId: input.txnId,
         newValue: { txnNumber: res.txnNumber },
+      });
+      return res;
+    }),
+
+  // اعتماد ثانٍ (SOD، تدقيق ٢٥/٧) لإيداع الدولار المباشر المعلّق: طابور المعلّقات + الاعتماد.
+  pendingDeposits: treasuryManagerReadProcedure
+    .input(z.object({ exchangeHouseId: z.number().int().positive().optional() }).optional())
+    .query(async ({ input }) => listPendingExchangeDeposits(input?.exchangeHouseId)),
+
+  approveDeposit: treasuryManagerProcedure
+    .input(z.object({ txnId: z.number().int().positive() }))
+    .mutation(async ({ input, ctx }) => {
+      const branchId = ctx.user.branchId == null ? 0 : Number(ctx.user.branchId);
+      const res = await approveExchangeDeposit(input.txnId, actorOf(ctx, branchId));
+      await logAudit(ctx, {
+        action: "exchange.approveDeposit",
+        entityType: "exchangeTransaction",
+        entityId: input.txnId,
+        newValue: { txnNumber: res.txnNumber, status: res.status },
       });
       return res;
     }),
