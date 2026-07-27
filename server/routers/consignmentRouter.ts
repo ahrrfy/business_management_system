@@ -1,3 +1,4 @@
+import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { positiveMoneyString, positiveQtyString } from "../lib/schemas";
@@ -37,11 +38,25 @@ export const consignmentRouter = router({
         offset: z.number().int().min(0).default(0),
       }).optional(),
     )
-    .query(({ input }) => listConsignmentNotes(input ?? {})),
+    // عزل الفرع (تدقيق ٢٥/٧): غير المرتفع يرى سندات فرعه فقط — يُحسَب من ctx.user مباشرةً (نمط createOrder
+    // المُثبَت، أضمن من ctx.scopedBranchId). admin/manager يحترمان branchId المُرسَل (تقارير عبر-الفروع).
+    .query(({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const branchId = elevated ? input?.branchId : Number(ctx.user.branchId);
+      return listConsignmentNotes({ ...(input ?? {}), branchId });
+    }),
 
   get: consignmentReadProcedure
     .input(z.object({ noteId: z.number().int().positive() }))
-    .query(({ input }) => getConsignmentNote(input.noteId)),
+    .query(async ({ input, ctx }) => {
+      const note = await getConsignmentNote(input.noteId);
+      // عزل الفرع (IDOR، تدقيق ٢٥/٧): غير المرتفع لا يرى سند فرعٍ آخر — NOT_FOUND كي لا نكشف وجوده.
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      if (note && !elevated && Number(note.branchId) !== Number(ctx.user.branchId)) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "السند غير موجود" });
+      }
+      return note;
+    }),
 
   consignorProducts: consignmentReadProcedure
     .input(z.object({ consignorId: z.number().int().positive(), branchId: z.number().int().positive() }))

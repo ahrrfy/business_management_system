@@ -300,7 +300,10 @@ export const suppliersManagerProcedure = moduleProcedure(["manager", "warehouse"
 // بضاعة الأمانة «consignments» (ش٢): سندات الإيداع/السحب — أمين المخزن يسجّلها (استلام فعليّ) + المدير + المحاسب.
 // مقصورة على الفرع (requireOwnBranch عبر moduleProcedure) — السند لفرعه؛ admin يعبر عبر البوّابة.
 export const consignmentWriteProcedure = moduleProcedure(["warehouse", "manager", "accountant"], "consignments", "FULL");
-export const consignmentReadProcedure = protectedProcedure.use(requireModule("consignments", "READ"));
+// القراءة مقصورة بالفرع (تدقيق ٢٥/٧): كانت protectedProcedure عاريةً ⇒ أيّ مستخدم بصلاحية consignments READ
+// يقرأ سندات كلّ الفروع (تسريب PII المودِع عبر get + قوائم عبر-الفرعية)، بينما الكتابة تفرض requireOwnBranch.
+// branchScopedProcedure يوفّر scopedBranchId (null لـadmin/manager، فرع المستخدم لغيرهم) فتتماثل القراءة مع الكتابة.
+export const consignmentReadProcedure = branchScopedProcedure.use(requireModule("consignments", "READ"));
 // products (catalog)
 export const productsReadProcedure = protectedProcedure.use(requireModule("products", "READ"));
 export const productsManagerProcedure = moduleProcedure(["manager"], "products", "FULL");
