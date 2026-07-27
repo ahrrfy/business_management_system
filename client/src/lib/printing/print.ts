@@ -74,12 +74,24 @@ export async function printDoc(doc: PrintDoc): Promise<{ via: "server" | "therma
  * التصميم واحد في المسارات الثلاثة ⇒ لا يتفاوت شكل الإيصال بتفاوت الناقل.
  */
 export async function printReceipt(d: ReceiptBrowserData): Promise<{ via: "server" | "thermal" | "browser" }> {
+  // Restore a previously-authorized USB receipt printer at the point of use.
+  // Printing can be triggered from screens that do not own the POS reconnect
+  // effect, and a printer may have been unplugged and reconnected meanwhile.
+  const bridgeEnabled = await isServerBridgeEnabled();
+  if (!bridgeEnabled && !isPaired() && isWebUsbSupported()) {
+    try {
+      await tryReconnectPrinter();
+    } catch {
+      // The browser print dialog below remains the safe final fallback.
+    }
+  }
+
   // النقطية تُبنى مرة واحدة لمساري الطباعة الصامتة (الجسر/WebUSB).
-  if ((await isServerBridgeEnabled()) || isPaired()) {
+  if (bridgeEnabled || isPaired()) {
     const raster = await receiptToRaster(d);
     if (raster) {
       const bytes = new EscPos().init().raster(raster).feed(3).cut().bytes();
-      if (await isServerBridgeEnabled()) {
+      if (bridgeEnabled) {
         try {
           await sendRawToServer(bytes);
           return { via: "server" };

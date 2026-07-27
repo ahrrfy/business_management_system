@@ -166,7 +166,7 @@ export default function PrintPOS() {
   const [creditPrompt, setCreditPrompt] = useState<string | null>(null);
   const [mgrEmail, setMgrEmail] = useState("");
   const [mgrPwd, setMgrPwd] = useState("");
-  const [message, setMessage] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+  const [message, setMessage] = useState<{ kind: "ok" | "warn" | "err"; text: string } | null>(null);
   const [clientRequestId, setClientRequestId] = useState(() => crypto.randomUUID());
   const [printerReady, setPrinterReady] = useState(isPaired());
   const [bridge, setBridge] = useState<{ enabled: boolean; description: string }>({ enabled: false, description: "" });
@@ -247,10 +247,17 @@ export default function PrintPOS() {
       };
       setReceipt(rec);
       setLastInv({ num: r.invoiceNumber, total: p?.cashTotal ?? 0 });
-      setMessage({ kind: "ok", text: `تمّ البيع — فاتورة ${r.invoiceNumber}` });
       setCart([]); setPayInput(""); patch({ selUid: null });
       setClientRequestId(crypto.randomUUID());
-      await printReceipt(brandedReceipt(rec));
+      const printed = await printReceipt(brandedReceipt(rec));
+      setMessage({
+        kind: printed.via === "browser" ? "warn" : "ok",
+        text: printed.via === "server"
+          ? `تمّ البيع والطباعة المباشرة — فاتورة ${r.invoiceNumber}`
+          : printed.via === "thermal"
+            ? `تمّ البيع والطباعة على الطابعة الحرارية — فاتورة ${r.invoiceNumber}`
+            : `تمّ البيع — افتُتحت نافذة الطباعة لأن الطابعة المباشرة غير متاحة (${r.invoiceNumber})`,
+      });
       await Promise.all([utils.printPos.services.invalidate(), shiftQ.refetch()]);
       setCreditPrompt(null); setMgrEmail(""); setMgrPwd("");
     },
@@ -391,7 +398,7 @@ export default function PrintPOS() {
           <label style={{ fontSize: 13.5, fontWeight: 700, display: "block", marginBottom: 6, color: C.fg }}>الرصيد الافتتاحي للصندوق (د.ع)</label>
           <input dir="ltr" value={opening} onChange={(e) => setOpening(e.target.value.replace(/[^0-9]/g, ""))}
             style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box", marginBottom: 16 }} />
-          {message && <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : C.danger, marginBottom: 12 }}>{message.text}</div>}
+          {message && <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, marginBottom: 12 }}>{message.text}</div>}
           <OpeningContinuityInline C={C} oc={openingCont} />
           <button disabled={openShift.isPending || needsBranchChoice || openingCont.blocked} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "PRINT_SERVICES", openingDiscrepancyReason: openingCont.reasonPayload })}
             style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice || openingCont.blocked ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice || openingCont.blocked ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice || openingCont.blocked ? "not-allowed" : "pointer" }}>
@@ -430,9 +437,9 @@ export default function PrintPOS() {
       </div>
 
       {message && (
-        <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "oklch(0.95 0.05 155)" : "oklch(0.95 0.05 27)", color: message.kind === "ok" ? C.success : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <div style={{ padding: "4px 16px", background: message.kind === "ok" ? "oklch(0.95 0.05 155)" : message.kind === "warn" ? "oklch(0.95 0.05 80)" : "oklch(0.95 0.05 27)", color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, fontSize: 13, display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
           <span>{message.text}</span>
-          {message.kind === "ok" && receipt && <Link href={`/invoices/${receipt.invoiceId}`} style={{ color: C.primary, textDecoration: "underline", fontSize: 12 }}>فتح الفاتورة</Link>}
+          {message.kind !== "err" && receipt && <Link href={`/invoices/${receipt.invoiceId}`} style={{ color: C.primary, textDecoration: "underline", fontSize: 12 }}>فتح الفاتورة</Link>}
           <button onClick={() => setMessage(null)} aria-label="إغلاق التنبيه" style={{ marginRight: "auto", background: "none", border: "none", cursor: "pointer", color: C.mutedFg, display: "inline-flex" }}><X aria-hidden size={14} /></button>
         </div>
       )}
