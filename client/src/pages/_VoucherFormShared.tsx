@@ -19,7 +19,7 @@ import { printVoucherReceipt, printVoucherA4 } from "@/lib/printing/voucherPrint
 import { trpc } from "@/lib/trpc";
 import { AlertTriangle, Building2, Hourglass, Info, Printer, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { Link, useLocation } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 
 const selectCls =
   "h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
@@ -49,6 +49,7 @@ function todayYmd(): string {
 
 export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
   const [, navigate] = useLocation();
+  const search = useSearch();
   const utils = trpc.useUtils();
   const isReceipt = voucherType === "RECEIPT";
   const direction: "IN" | "OUT" = isReceipt ? "IN" : "OUT";
@@ -64,8 +65,9 @@ export default function VoucherFormShared({ voucherType }: VoucherFormProps) {
 
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<MethodValue>("CASH");
-  const [partyType, setPartyType] = useState<"CUSTOMER" | "SUPPLIER" | "OTHER">("OTHER");
-  const [customerId, setCustomerId] = useState<number | null>(null);
+  const seededCustomerId = isReceipt ? Number(new URLSearchParams(search).get("customerId")) || null : null;
+  const [partyType, setPartyType] = useState<"CUSTOMER" | "SUPPLIER" | "OTHER">(seededCustomerId ? "CUSTOMER" : "OTHER");
+  const [customerId, setCustomerId] = useState<number | null>(seededCustomerId);
   const [supplierId, setSupplierId] = useState<number | null>(null);
   const [description, setDescription] = useState("");
   const [referenceNumber, setReferenceNumber] = useState("");

@@ -7,6 +7,7 @@ import { ImportDialog } from "@/components/import/ImportDialog";
 import { ListToolbar, RowActions } from "@/components/list";
 import { PageHeader } from "@/components/PageHeader";
 import { ErrorState, TableEmptyRow } from "@/components/PageState";
+import { OperationsSummary } from "@/components/operations/OperationsSummary";
 import { confirm } from "@/lib/confirm";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
 import { SUPPLIER_FIELDS, SUPPLIER_IMPORT_META } from "@/lib/importFields";
@@ -33,6 +34,7 @@ export default function Suppliers() {
   // suppliersManagerProcedure(["manager","warehouse","purchasing"], suppliers, FULL) — server/trpc.ts.
   // بنفس دالة الخادم moduleAccessAllowed (لا قائمة أدوار حرفية) ⇒ لا تباعُد (نمط InvoiceDetail).
   const me = trpc.auth.me.useQuery();
+  const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
   const canWrite = !!me.data?.role &&
     moduleAccessAllowed(me.data.role as RoleKey, (me.data.permissionsOverride ?? null) as PermissionMap | null, "suppliers", "FULL", ["manager", "warehouse", "purchasing"]);
   // الاستيراد بوّابته أضيق: imports.suppliers = managerProcedure (المدير فأعلى) — server/routers/imports.ts.
@@ -55,9 +57,14 @@ export default function Suppliers() {
   );
 
   const list = trpc.suppliers.search.useQuery(input);
+  const summary = trpc.suppliers.summary.useQuery(
+    { q: q.trim() || undefined, includeInactive, kind: kind || undefined },
+    { enabled: isElevated },
+  );
   const invalidate = () => {
     utils.suppliers.search.invalidate();
     utils.suppliers.list.invalidate();
+    utils.suppliers.summary.invalidate();
   };
   const deactivate = trpc.suppliers.deactivate.useMutation({
     onSuccess: () => { invalidate(); notify.ok("تم تعطيل المورّد"); },
@@ -311,6 +318,63 @@ export default function Suppliers() {
           <div className="text-muted-foreground">صفحة {page + 1} من {pages}</div>
           <Button variant="outline" size="sm" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>التالي →</Button>
         </div>
+      )}
+
+      {isElevated && (
+        <OperationsSummary
+          title={kind === "CONSIGNOR" ? "ملخص مودعي الأمانة" : "ملخص نتائج الموردين"}
+          subtitle="جميع الصفحات وفق البحث والفلاتر الحالية — الدينار والدولار محسوبان كلٌّ على حدة."
+          loading={summary.isLoading}
+          metrics={[
+            {
+              key: "total",
+              label: "إجمالي الموردين",
+              value: (summary.data?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
+              detail: `${summary.data?.active ?? 0} مفعّل · ${summary.data?.inactive ?? 0} معطّل`,
+            },
+            {
+              key: "payable",
+              label: "لهم علينا",
+              value: `${fmt(summary.data?.payableIqd ?? 0)} د.ع`,
+              detail: `${summary.data?.nonZeroBalances ?? 0} أصحاب أرصدة`,
+              tone: "danger",
+            },
+            {
+              key: "receivable",
+              label: "لنا عليهم",
+              value: `${fmt(summary.data?.receivableIqd ?? 0)} د.ع`,
+              tone: "success",
+            },
+            {
+              key: "net",
+              label: Number(summary.data?.netIqd ?? 0) === 0 ? "الصافي متعادل" : Number(summary.data?.netIqd ?? 0) > 0 ? "صافي علينا" : "صافي لنا",
+              value: `${fmt(Math.abs(Number(summary.data?.netIqd ?? 0)))} د.ع`,
+              tone: Number(summary.data?.netIqd ?? 0) === 0 ? "neutral" : Number(summary.data?.netIqd ?? 0) > 0 ? "danger" : "success",
+            },
+            {
+              key: "usd",
+              label: "الرصيد الدولاري",
+              value: `$${fmt(summary.data?.payableUsd ?? 0)} علينا`,
+              detail: `$${fmt(summary.data?.receivableUsd ?? 0)} لنا`,
+              tone: "info",
+            },
+            {
+              key: "highest",
+              label: "أعلى التزام",
+              value: summary.data?.highestPayable ? `${fmt(summary.data.highestPayable.amount)} د.ع` : "—",
+              detail: summary.data?.highestPayable?.supplierName ?? "لا توجد أرصدة مستحقة",
+              tone: "warning",
+              onClick: summary.data?.highestPayable
+                ? () => { setQ(summary.data!.highestPayable!.supplierName); setPage(0); }
+                : undefined,
+            },
+          ]}
+          footer={
+            <p className="text-xs text-muted-foreground">
+              التوزيع: {summary.data?.regular ?? 0} مورد اعتيادي · {summary.data?.consignors ?? 0} مودع أمانة.
+            </p>
+          }
+        />
       )}
     </div>
   );

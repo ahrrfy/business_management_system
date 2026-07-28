@@ -9,6 +9,9 @@ import { ScrollTableShell } from "@/components/table/ScrollTableShell";
 import { useFocusHighlight } from "@/components/search/useFocusHighlight";
 import { PageHeader } from "@/components/PageHeader";
 import { TableEmptyRow } from "@/components/PageState";
+import { OperationsSummary } from "@/components/operations/OperationsSummary";
+import { CustomerFollowUpDialog, type FollowUpValue } from "@/components/customers/CustomerFollowUpDialog";
+import { Badge } from "@/components/ui/badge";
 import { useClipboard } from "@/hooks/useClipboard";
 import { confirm } from "@/lib/confirm";
 import { formatCustomerCard, formatTableAsTSV } from "@/lib/copy/formatters";
@@ -17,11 +20,16 @@ import type { CustomerImportRow } from "@/lib/importTypes";
 import { fmtAr as fmt } from "@/lib/money";
 import { notify } from "@/lib/notify";
 import { fetchAllPaged } from "@/lib/fetchAllRows";
+import { printReportDoc } from "@/lib/printing/reportDoc";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
+import { moduleAccessAllowed, type PermissionMap, type RoleKey } from "@shared/permissions";
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "wouter";
 
 // صفّ نتيجة البحث — صريح لأنّ الإجراء يُعيد اتحاداً (تقنيع التكلفة) يُفشل استدلال T في fetchAllPaged.
 type CustomerRow = RouterOutputs["customers"]["search"]["rows"][number];
+type OperationsRow = RouterOutputs["customers"]["operations"]["rows"][number];
+type DisplayRow = CustomerRow | OperationsRow;
 
 const TYPE_OPTIONS = ["فرد", "تاجر", "مؤسسة", "شركة", "حكومي"] as const;
 const TIER_LABEL: Record<string, string> = {
@@ -32,6 +40,23 @@ const TIER_LABEL: Record<string, string> = {
 
 const selectCls =
   "h-8 rounded-md border border-input bg-transparent px-2 text-sm shadow-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+
+const COLLECTION_STATUS: Record<string, { label: string; variant: "neutral" | "success" | "danger" | "warning" | "info" | "secondary" }> = {
+  CREDIT: { label: "رصيد دائن", variant: "success" },
+  CLEAR: { label: "مسوّى", variant: "neutral" },
+  OVER_LIMIT: { label: "تجاوز الحد", variant: "danger" },
+  PROMISE_BROKEN: { label: "أخلف الوعد", variant: "danger" },
+  PROMISE_DUE: { label: "وعد اليوم", variant: "warning" },
+  PROMISE_FUTURE: { label: "وعد قادم", variant: "secondary" },
+  SEVERELY_OVERDUE: { label: "متأخر بشدة", variant: "danger" },
+  OVERDUE: { label: "متأخر", variant: "warning" },
+  DUE_SOON: { label: "يستحق قريباً", variant: "info" },
+  REGULAR: { label: "منتظم", variant: "success" },
+};
+
+function isOperationsRow(row: DisplayRow): row is OperationsRow {
+  return "collectionStatus" in row;
+}
 
 /** الرقم القديم (legacyCode) من صف القائمة — null إن فارغاً (العمود يظهر فقط حين توجد قيم).
  *  select القائمة في customerService يعيده ويُدخله البحث (شريحة تكامل الاستيراد). */
@@ -46,12 +71,25 @@ export default function Customers() {
   // بل «مخفي»؛ لذا لا نعرض «بلا حدّ» إلا للمدير/الإدمن حيث null=ائتمان غير محدود فعلاً.
   const me = trpc.auth.me.useQuery();
   const isElevated = me.data?.role === "admin" || me.data?.role === "manager";
+  const canCreateTasks = !!me.data?.role && moduleAccessAllowed(
+    me.data.role as RoleKey,
+    (me.data.permissionsOverride ?? null) as PermissionMap | null,
+    "tasks",
+    "FULL",
+    ["cashier", "manager", "sales_rep", "print_operator"],
+  );
   const [q, setQ] = useState("");
   const [customerType, setCustomerType] = useState<"" | (typeof TYPE_OPTIONS)[number]>("");
   const [priceTier, setPriceTier] = useState<"" | "RETAIL" | "WHOLESALE" | "GOVERNMENT">("");
   const [includeInactive, setIncludeInactive] = useState(false);
+  const [balanceFilter, setBalanceFilter] = useState<"" | "RECEIVABLE" | "CREDIT" | "ZERO">("");
+  const [collectionFilter, setCollectionFilter] = useState<"" | "OVERDUE" | "PROMISE_DUE" | "PROMISE_FUTURE" | "NO_FOLLOWUP">("");
+  const [creditFilter, setCreditFilter] = useState<"" | "CASH_ONLY" | "NEAR_LIMIT" | "OVER_LIMIT" | "UNLIMITED">("");
+  const [inactivityDays, setInactivityDays] = useState<"" | 30 | 60 | 90>("");
+  const [sort, setSort] = useState<"NAME" | "BALANCE_DESC" | "OLDEST_DUE" | "LAST_PURCHASE">("NAME");
   const [page, setPage] = useState(0);
   const [importOpen, setImportOpen] = useState(false);
+  const [followTarget, setFollowTarget] = useState<DisplayRow | null>(null);
   const importMut = trpc.imports.customers.useMutation();
   const limit = 50;
 
@@ -73,19 +111,35 @@ export default function Customers() {
     [q, customerType, priceTier, includeInactive, page],
   );
 
-  const list = trpc.customers.search.useQuery(input);
+  const operationsInput = useMemo(
+    () => ({
+      ...input,
+      balance: balanceFilter || undefined,
+      collection: collectionFilter || undefined,
+      credit: creditFilter || undefined,
+      inactivityDays: inactivityDays || undefined,
+      sort,
+    }),
+    [input, balanceFilter, collectionFilter, creditFilter, inactivityDays, sort],
+  );
+  const basicList = trpc.customers.search.useQuery(input, { enabled: !isElevated });
+  const operations = trpc.customers.operations.useQuery(operationsInput, { enabled: isElevated });
+  const list = isElevated ? operations : basicList;
+  const invalidateCustomers = () => {
+    void utils.customers.search.invalidate();
+    void utils.customers.list.invalidate();
+    void utils.customers.operations.invalidate();
+  };
   const deactivate = trpc.customers.deactivate.useMutation({
     onSuccess: () => {
-      utils.customers.search.invalidate();
-      utils.customers.list.invalidate();
+      invalidateCustomers();
       notify.ok("تم تعطيل العميل");
     },
     onError: (e) => notify.err(e),
   });
   const activate = trpc.customers.activate.useMutation({
     onSuccess: () => {
-      utils.customers.search.invalidate();
-      utils.customers.list.invalidate();
+      invalidateCustomers();
       notify.ok("تم تفعيل العميل");
     },
     onError: (e) => notify.err(e),
@@ -94,15 +148,17 @@ export default function Customers() {
   // والحارس الخادميّ يرفض أيّ عميلٍ له نشاط (فواتير/أوامر شغل/…) فيوجّه للتعطيل.
   const del = trpc.customers.delete.useMutation({
     onSuccess: () => {
-      utils.customers.search.invalidate();
-      utils.customers.list.invalidate();
+      invalidateCustomers();
       notify.ok("تم حذف العميل نهائياً");
     },
     onError: (e) => notify.err(e),
   });
+  const createNote = trpc.customerNotes.create.useMutation();
+  const createTask = trpc.tasks.create.useMutation();
 
   const total = list.data?.total ?? 0;
-  const rows = list.data?.rows ?? [];
+  const rows = (list.data?.rows ?? []) as DisplayRow[];
+  const summary = operations.data?.summary;
   const pages = Math.max(1, Math.ceil(total / limit));
   // عمود «الرقم القديم» يظهر فقط إن وُجدت قيم فعلية في الصفحة الحالية (مخفيّ إن فارغ).
   const hasLegacy = rows.some((r) => legacyCodeOf(r) !== null);
@@ -165,6 +221,106 @@ export default function Customers() {
     if (ok) notify.ok(`تم نسخ ملخّص ${selectedRows.length} عميلاً لواتساب`);
   }
 
+  function printSelectedCollectionList() {
+    if (selectedRows.length === 0) return;
+    const totalBalance = selectedRows.reduce((sum, row) => sum + Math.max(0, Number(row.currentBalance ?? 0)), 0);
+    const opened = printReportDoc({
+      title: "قائمة متابعة التحصيل",
+      headerExtra: [
+        { label: "عدد العملاء", value: String(selectedRows.length) },
+        { label: "النطاق", value: "المحدد من شاشة العملاء" },
+      ],
+      note: "قائمة تشغيلية للمتابعة؛ الرصيد الحالي لا يساوي المتأخرات إلا بعد الرجوع إلى تاريخ استحقاق الفواتير.",
+      columns: [
+        { key: "name", label: "العميل" },
+        { key: "phone", label: "الهاتف" },
+        { key: "balance", label: "الرصيد", align: "left" },
+        { key: "status", label: "حالة التحصيل" },
+      ],
+      rows: selectedRows.map((row) => ({
+        name: row.name ?? "—",
+        phone: row.phone ?? "—",
+        balance: `${fmt(row.currentBalance)} د.ع`,
+        status: isOperationsRow(row) ? (COLLECTION_STATUS[row.collectionStatus]?.label ?? row.collectionStatus) : "—",
+      })),
+      summary: [{ label: "إجمالي المطلوب متابعته", value: `${fmt(totalBalance)} د.ع`, bold: true, large: true }],
+    });
+    if (!opened) notify.err("حجب المتصفح نافذة الطباعة");
+  }
+
+  async function saveFollowUp(value: FollowUpValue) {
+    if (!followTarget) return;
+    try {
+      await createNote.mutateAsync({
+        customerId: Number(followTarget.id),
+        note: value.note,
+        followUpDate: value.followUpDate,
+      });
+      if (value.createTask) {
+        if (!canCreateTasks) throw new Error("ليست لديك صلاحية إنشاء المهام");
+        await createTask.mutateAsync({
+          branchId: Number(me.data?.branchId ?? 1),
+          kind: "FOLLOW_UP",
+          title: `متابعة تحصيل — ${followTarget.name}`,
+          description: value.note,
+          priority: value.taskPriority,
+          customerId: Number(followTarget.id),
+          sourceChannel: "PHONE",
+          dueAt: value.followUpDate ? `${value.followUpDate}T09:00:00Z` : null,
+        });
+      }
+      await Promise.all([
+        utils.customerNotes.list.invalidate({ customerId: Number(followTarget.id) }),
+        utils.customerNotes.dueToday.invalidate(),
+        utils.tasks.list.invalidate(),
+        utils.customers.operations.invalidate(),
+      ]);
+      notify.ok(value.createTask ? "حُفظت المتابعة وأُنشئت المهمة" : "حُفظت المتابعة");
+      setFollowTarget(null);
+    } catch (error) {
+      notify.err(error);
+    }
+  }
+
+  async function createBulkFollowUpTasks() {
+    if (!canCreateTasks || selectedRows.length === 0) return;
+    const ok = await confirm({
+      title: "إنشاء مهام متابعة",
+      description: `سيتم إنشاء مهمة متابعة مرتبطة لكل عميل من العملاء المحددين (${selectedRows.length}).`,
+      confirmText: "إنشاء المهام",
+    });
+    if (!ok) return;
+    try {
+      await Promise.all(
+        selectedRows.map((row) =>
+          createTask.mutateAsync({
+            branchId: Number(me.data?.branchId ?? 1),
+            kind: "FOLLOW_UP",
+            title: `متابعة تحصيل — ${row.name}`,
+            description: `متابعة جماعية من شاشة العملاء. الرصيد الحالي: ${fmt(row.currentBalance)} د.ع`,
+            priority: "NORMAL",
+            customerId: Number(row.id),
+            sourceChannel: "OTHER",
+          }),
+        ),
+      );
+      await utils.tasks.list.invalidate();
+      notify.ok(`تم إنشاء ${selectedRows.length} مهمة متابعة`);
+      sel.clear();
+    } catch (error) {
+      notify.err(error);
+    }
+  }
+
+  function resetOperationalFilters() {
+    setBalanceFilter("");
+    setCollectionFilter("");
+    setCreditFilter("");
+    setInactivityDays("");
+    setSort("NAME");
+    setPage(0);
+  }
+
   async function toggle(id: number, isActive: boolean, name: string) {
     if (isActive) {
       if (!(await confirm({
@@ -220,6 +376,7 @@ export default function Customers() {
             if (s.committed) notify.ok(`تم: ${s.created} مُنشأ، ${s.updated} مُحدَّث، ${s.skipped} متخطّى`);
             utils.customers.list.invalidate();
             utils.customers.search.invalidate();
+            utils.customers.operations.invalidate();
           }
         }}
       />
@@ -257,6 +414,45 @@ export default function Customers() {
                   <option value="WHOLESALE">جملة</option>
                   <option value="GOVERNMENT">حكومي</option>
                 </select>
+                {isElevated && (
+                  <>
+                    <select className={selectCls} value={balanceFilter} onChange={(e) => { setBalanceFilter(e.target.value as typeof balanceFilter); setPage(0); }} aria-label="حالة الرصيد">
+                      <option value="">كل الأرصدة</option>
+                      <option value="RECEIVABLE">لنا عليهم</option>
+                      <option value="CREDIT">لهم علينا</option>
+                      <option value="ZERO">رصيد صفر</option>
+                    </select>
+                    <select className={selectCls} value={collectionFilter} onChange={(e) => { setCollectionFilter(e.target.value as typeof collectionFilter); setPage(0); }} aria-label="حالة التحصيل">
+                      <option value="">كل حالات التحصيل</option>
+                      <option value="OVERDUE">فواتير متأخرة</option>
+                      <option value="PROMISE_DUE">وعد مستحق/متأخر</option>
+                      <option value="PROMISE_FUTURE">وعد قادم</option>
+                      <option value="NO_FOLLOWUP">بلا متابعة</option>
+                    </select>
+                    <select className={selectCls} value={creditFilter} onChange={(e) => { setCreditFilter(e.target.value as typeof creditFilter); setPage(0); }} aria-label="الحالة الائتمانية">
+                      <option value="">كل الحالات الائتمانية</option>
+                      <option value="CASH_ONLY">نقدي فقط</option>
+                      <option value="NEAR_LIMIT">بلغ 80% من الحد</option>
+                      <option value="OVER_LIMIT">تجاوز الحد</option>
+                      <option value="UNLIMITED">بلا حد</option>
+                    </select>
+                    <select className={selectCls} value={inactivityDays} onChange={(e) => { setInactivityDays(e.target.value ? Number(e.target.value) as 30 | 60 | 90 : ""); setPage(0); }} aria-label="عدم الشراء">
+                      <option value="">كل نشاطات الشراء</option>
+                      <option value="30">لم يشترِ منذ 30 يوماً</option>
+                      <option value="60">لم يشترِ منذ 60 يوماً</option>
+                      <option value="90">لم يشترِ منذ 90 يوماً</option>
+                    </select>
+                    <select className={selectCls} value={sort} onChange={(e) => { setSort(e.target.value as typeof sort); setPage(0); }} aria-label="الترتيب">
+                      <option value="NAME">ترتيب بالاسم</option>
+                      <option value="BALANCE_DESC">أعلى مديونية</option>
+                      <option value="OLDEST_DUE">أقدم استحقاق</option>
+                      <option value="LAST_PURCHASE">الأطول بلا شراء</option>
+                    </select>
+                    {(balanceFilter || collectionFilter || creditFilter || inactivityDays || sort !== "NAME") && (
+                      <Button type="button" variant="ghost" size="sm" onClick={resetOperationalFilters}>مسح فلاتر التشغيل</Button>
+                    )}
+                  </>
+                )}
                 <label className="flex items-center gap-2 h-8 text-sm">
                   <input
                     type="checkbox"
@@ -274,18 +470,22 @@ export default function Customers() {
               // تصدير شامل: يجلب كل النتائج المطابقة للفلاتر الحالية (لا الصفحة المعروضة فقط).
               // نفس مدخلات الاستعلام بدون limit/offset — يُمرّرهما fetchAllPaged.
               fetchAll: () =>
-                fetchAllPaged<CustomerRow>(
+                fetchAllPaged<DisplayRow>(
                   (offset, limit) =>
-                    utils.customers.search
-                      .fetch({
-                        q: q.trim() || undefined,
-                        customerType: customerType || undefined,
-                        priceTier: priceTier || undefined,
-                        includeInactive,
-                        limit,
-                        offset,
-                      })
-                      .then((r) => ({ rows: (r.rows ?? []) as CustomerRow[], total: r.total })),
+                    isElevated
+                      ? utils.customers.operations
+                          .fetch({ ...operationsInput, limit, offset })
+                          .then((r) => ({ rows: (r.rows ?? []) as DisplayRow[], total: r.total }))
+                      : utils.customers.search
+                          .fetch({
+                            q: q.trim() || undefined,
+                            customerType: customerType || undefined,
+                            priceTier: priceTier || undefined,
+                            includeInactive,
+                            limit,
+                            offset,
+                          })
+                          .then((r) => ({ rows: (r.rows ?? []) as DisplayRow[], total: r.total })),
                   { pageSize: 500 },
                 ),
               columns: [
@@ -331,6 +531,7 @@ export default function Customers() {
                 <th className="p-2">فئة السعر</th>
                 <th className="p-2 text-right">سقف الائتمان</th>
                 <th className="p-2 text-start">الرصيد</th>
+                {isElevated && <th className="p-2 text-center">حالة التحصيل</th>}
                 <th className="p-2 text-center">الحالة</th>
                 <th className="p-2 text-center">إجراء</th>
               </tr>
@@ -365,6 +566,19 @@ export default function Customers() {
                     <td className="p-2 text-start">
                       <BalanceCell amount={c.currentBalance} entityType="customer" />
                     </td>
+                    {isElevated && (
+                      <td className="p-2 text-center">
+                        {isOperationsRow(c) ? (
+                          <div className="flex flex-col items-center gap-1">
+                            <Badge variant={COLLECTION_STATUS[c.collectionStatus]?.variant ?? "neutral"}>
+                              {COLLECTION_STATUS[c.collectionStatus]?.label ?? c.collectionStatus}
+                            </Badge>
+                            {c.daysOverdue > 0 && <span className="text-[10px] text-muted-foreground">{c.daysOverdue} يوم</span>}
+                            {c.openTasks > 0 && <span className="text-[10px] text-muted-foreground">{c.openTasks} مهمة مفتوحة</span>}
+                          </div>
+                        ) : "—"}
+                      </td>
+                    )}
                     <td className="p-2 text-center">
                       <span className={`inline-block rounded-full px-2 py-0.5 text-xs ${isActive ? "badge-status-active" : "badge-stock-out"}`}>
                         {isActive ? "مفعّل" : "معطّل"}
@@ -377,6 +591,10 @@ export default function Customers() {
                           { key: "edit", label: "تعديل", href: `/customers/${id}/edit` },
                           // كشف الحساب يقرأ ?id= من URL (نمط CustomerStatement)
                           { key: "stmt", label: "كشف حساب", href: `/customers-statement?id=${id}` },
+                          { key: "receipt", label: "تسجيل دفعة", href: `/vouchers/receipt/new?customerId=${id}`, hidden: !isElevated },
+                          { key: "follow", label: "تسجيل متابعة", hidden: !isElevated, onSelect: () => setFollowTarget(c) },
+                          { key: "notes", label: "سجل المتابعة", href: `/crm?tab=followups&id=${id}` },
+                          { key: "reminder", label: "تذكير واتساب", href: "/ar-reminders", hidden: !isElevated },
                           {
                             key: "toggle",
                             label: isActive ? "تعطيل" : "تفعيل",
@@ -399,7 +617,7 @@ export default function Customers() {
                 );
               })}
               {!list.isLoading && rows.length === 0 && (
-                <TableEmptyRow colSpan={hasLegacy ? 11 : 10} message="لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر." />
+                <TableEmptyRow colSpan={(hasLegacy ? 11 : 10) + (isElevated ? 1 : 0)} message="لا عملاء مطابقين. أضف عميلاً جديداً أو غيّر الفلاتر." />
               )}
             </tbody>
           </table>
@@ -419,14 +637,138 @@ export default function Customers() {
         </div>
       )}
 
+      {isElevated && (
+        <OperationsSummary
+          title="ملخص العملاء والتحصيل"
+          subtitle="جميع الصفحات وفق البحث والفلاتر الحالية. المتأخرات محسوبة من الاستحقاقات، ولا تساوي الرصيد الإجمالي بالضرورة."
+          loading={operations.isLoading}
+          metrics={[
+            {
+              key: "total",
+              label: "إجمالي العملاء",
+              value: (summary?.total ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
+              detail: `${summary?.active ?? 0} مفعّل · ${summary?.inactive ?? 0} معطّل`,
+              onClick: resetOperationalFilters,
+            },
+            {
+              key: "receivable",
+              label: "لنا عليهم",
+              value: `${fmt(summary?.receivable ?? 0)} د.ع`,
+              detail: `${summary?.debtors ?? 0} عميلاً`,
+              tone: "danger",
+              active: balanceFilter === "RECEIVABLE",
+              onClick: () => { setBalanceFilter(balanceFilter === "RECEIVABLE" ? "" : "RECEIVABLE"); setPage(0); },
+            },
+            {
+              key: "credit",
+              label: "لهم علينا",
+              value: `${fmt(summary?.customerCredit ?? 0)} د.ع`,
+              detail: `${summary?.creditors ?? 0} عميلاً`,
+              tone: "success",
+              active: balanceFilter === "CREDIT",
+              onClick: () => { setBalanceFilter(balanceFilter === "CREDIT" ? "" : "CREDIT"); setPage(0); },
+            },
+            {
+              key: "net",
+              label: Number(summary?.net ?? 0) === 0 ? "الصافي متعادل" : Number(summary?.net ?? 0) > 0 ? "صافي لنا" : "صافي علينا",
+              value: `${fmt(Math.abs(Number(summary?.net ?? 0)))} د.ع`,
+              detail: `${summary?.cashOnly ?? 0} نقدي فقط · ${summary?.unlimited ?? 0} بلا حد`,
+              tone: Number(summary?.net ?? 0) === 0 ? "neutral" : Number(summary?.net ?? 0) > 0 ? "danger" : "success",
+            },
+            {
+              key: "overdue",
+              label: "متأخرات واجبة التحصيل",
+              value: `${fmt(summary?.overdueAmount ?? 0)} د.ع`,
+              detail: `${summary?.overdueCustomers ?? 0} عميلاً متأخراً`,
+              tone: "warning",
+              active: collectionFilter === "OVERDUE",
+              onClick: () => { setCollectionFilter(collectionFilter === "OVERDUE" ? "" : "OVERDUE"); setPage(0); },
+            },
+            {
+              key: "limits",
+              label: "تجاوزوا الحد الائتماني",
+              value: (summary?.overLimit ?? 0).toLocaleString("ar-IQ-u-nu-latn"),
+              detail: `${summary?.nearLimit ?? 0} بلغوا 80%`,
+              tone: "danger",
+              active: creditFilter === "OVER_LIMIT",
+              onClick: () => { setCreditFilter(creditFilter === "OVER_LIMIT" ? "" : "OVER_LIMIT"); setPage(0); },
+            },
+          ]}
+          footer={
+            <div className="space-y-3 border-t pt-3">
+              <div className="grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-4">
+                <button type="button" className="rounded-md border p-2 text-start hover:bg-accent" onClick={() => { setCollectionFilter("PROMISE_DUE"); setPage(0); }}>
+                  <strong className="block">وعود مستحقة أو مخلفة</strong>
+                  <span className="text-muted-foreground">{summary?.promiseDue ?? 0} اليوم · {summary?.promiseBroken ?? 0} مخلفة</span>
+                </button>
+                <div className="rounded-md border p-2">
+                  <strong className="block">أعلى مديونية</strong>
+                  <span className="text-muted-foreground">
+                    {summary?.highestDebtor ? `${summary.highestDebtor.customerName} · ${fmt(summary.highestDebtor.amount)} د.ع` : "لا توجد مديونية"}
+                  </span>
+                </div>
+                <div className="rounded-md border p-2">
+                  <strong className="block">تركّز أكبر 5 عملاء</strong>
+                  <span className="text-muted-foreground">{summary?.topFiveConcentrationPct ?? 0}% من إجمالي الذمم</span>
+                </div>
+                <button type="button" className="rounded-md border p-2 text-start hover:bg-accent" onClick={() => { setInactivityDays(30); setPage(0); }}>
+                  <strong className="block">لم يشتروا منذ 30 يوماً</strong>
+                  <span className="text-muted-foreground">{summary?.noRecentPurchase30 ?? 0} عميلاً</span>
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Link href="/ar-reminders"><Button size="sm">برنامج التحصيل اليوم</Button></Link>
+                <Link href="/crm?tab=aging"><Button size="sm" variant="outline">أعمار الذمم</Button></Link>
+                <Link href="/crm?tab=followups"><Button size="sm" variant="outline">سجل المتابعات</Button></Link>
+                <Link href="/tasks?tab=list&overdue=1"><Button size="sm" variant="outline">المهام المتأخرة</Button></Link>
+              </div>
+              {(summary?.collectorActivity30d?.length ?? 0) > 0 && (
+                <details className="text-xs">
+                  <summary className="cursor-pointer font-medium">نشاط فريق التحصيل خلال 30 يوماً</summary>
+                  <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {summary!.collectorActivity30d.map((person) => (
+                      <div key={person.userId} className="rounded-md border p-2">
+                        <strong>{person.userName}</strong>
+                        <p className="text-muted-foreground">{person.sent} تذكيراً · {person.promisesRecorded} وعداً مسجلاً</p>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          }
+        />
+      )}
+
+      <CustomerFollowUpDialog
+        open={followTarget != null}
+        onOpenChange={(open) => { if (!open) setFollowTarget(null); }}
+        customerName={followTarget?.name ?? ""}
+        defaultAmount={followTarget?.currentBalance ?? null}
+        submitting={createNote.isPending || createTask.isPending}
+        onSubmit={(value) => void saveFollowUp(value)}
+      />
+
       {/* شريط التحديد الجماعي: TSV لـExcel + ملخّص واتساب لقائمة العملاء. */}
       <SelectionBar
         count={sel.count}
         onClear={sel.clear}
         onExport={copySelectedAsTSV}
         exportLabel="نَسخ المُحَدَّد كَـTSV"
-        onPrint={copySelectedAsWhatsAppSummary}
-        printLabel="ملخّص واتساب"
+        onPrint={printSelectedCollectionList}
+        printLabel="طباعة قائمة التحصيل"
+        actions={
+          <>
+            <Button size="sm" variant="outline" onClick={() => void copySelectedAsWhatsAppSummary()}>
+              معاينة واتساب
+            </Button>
+            {canCreateTasks && (
+              <Button size="sm" variant="outline" onClick={() => void createBulkFollowUpTasks()} disabled={createTask.isPending}>
+                إنشاء مهام متابعة
+              </Button>
+            )}
+          </>
+        }
       />
     </div>
   );
