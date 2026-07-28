@@ -29,6 +29,7 @@ export interface ProductForEdit {
       conversionFactor: string;
       barcode: string | null;
       isBaseUnit: boolean;
+      isStoreSaleUnit: boolean;
       isActive: boolean;
       prices: Array<{ priceTier: PriceTier; price: string }>;
     }>;
@@ -142,6 +143,7 @@ export async function getProductForEdit(productId: number): Promise<ProductForEd
           conversionFactor: u.conversionFactor,
           barcode: u.barcode,
           isBaseUnit: !!u.isBaseUnit,
+          isStoreSaleUnit: !!u.isStoreSaleUnit,
           isActive: !!u.isActive,
           prices: myPrices
             .filter((pp) => Number(pp.productUnitId) === Number(u.id))

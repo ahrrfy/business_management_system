@@ -86,6 +86,19 @@ export interface StorefrontProduct {
    * فلا تُضلِّل الزبون. التوفّر = رصيد الفرع > 0 لأيّ متغيّر يحمل هذا اللون (تجميعٌ عبر القياسات).
    */
   colors?: { name: string; hex: string; inStock: boolean }[];
+  /** وحدات البيع التي أتاحها المدير للمتجر؛ تُستخدم لاختيار «بند/كارتون» في صفحة المنتج. */
+  storeUnits?: StorefrontUnitOption[];
+}
+
+export interface StorefrontUnitOption {
+  productUnitId: number;
+  unitName: string;
+  conversionFactor: string;
+  price: string | null;
+  salePrice: string | null;
+  promotionName: string | null;
+  inStock: boolean;
+  stockLeft: number | null;
 }
 
 /** عتبة «كمية محدودة» — الكمية تُكشَف للزبون فقط عندها فأقلّ (ندرة، لا تسريب مخزون كامل). */
@@ -103,7 +116,7 @@ const sellable = and(
   eq(products.showInStore, true), // إخفاء المدير للمنتج من واجهة المتجر (لوحة hPanel)
   eq(productVariants.isActive, true),
   eq(productUnits.isActive, true),
-  eq(productUnits.isBaseUnit, true),
+  eq(productUnits.isStoreSaleUnit, true),
   sql`${productPrices.price} is not null`
 );
 
@@ -119,6 +132,7 @@ function safeSelect(db: NonNullable<ReturnType<typeof getDb>>, branchId: number)
       category: categories.name,
       categoryId: products.categoryId,
       unitName: productUnits.unitName,
+      conversionFactor: productUnits.conversionFactor,
       price: productPrices.price,
       imageId: productImages.id,
       imageUrl: productImages.url,
@@ -155,9 +169,11 @@ function toPublicProductImage(imageId: number | null | undefined, value: string 
 
 function toStorefront(r: {
   productId: number; productUnitId: number; variantId: number; productName: string; brand: string | null;
-  category: string | null; categoryId: number | null; unitName: string; price: string | null;
+  category: string | null; categoryId: number | null; unitName: string; conversionFactor: string; price: string | null;
   imageId?: number | null; imageUrl: string | null; isBundle: boolean | null; stockQty: number | null;
 }): StorefrontProduct {
+  const factor = Math.max(1, Number(r.conversionFactor) || 1);
+  const availableUnits = Math.floor(Number(r.stockQty ?? 0) / factor);
   return {
     productId: Number(r.productId),
     productUnitId: Number(r.productUnitId),
@@ -170,10 +186,10 @@ function toStorefront(r: {
     price: r.price ?? null,
     salePrice: null,
     promotionName: null,
-    inStock: Number(r.stockQty ?? 0) > 0,
+    inStock: availableUnits > 0,
     imageUrl: toPublicProductImage(r.imageId, r.imageUrl ?? null),
     isBundle: !!r.isBundle,
-    stockLeft: Number(r.stockQty ?? 0) > 0 && Number(r.stockQty) <= LOW_STOCK_THRESHOLD ? Number(r.stockQty) : null,
+    stockLeft: availableUnits > 0 && availableUnits <= LOW_STOCK_THRESHOLD ? availableUnits : null,
     soldCount: 0,
   };
 }
@@ -307,7 +323,7 @@ export async function storefrontCatalog(opts: {
   const cap = Math.min(Math.max(opts.limit ?? 60, 1), 120);
   // شبكة المتجر واجهة تحويل لا فهرس أرشيف: لا تعرض إلا ما يمكن شراؤه الآن.
   // صفحة المنتج المباشرة تبقي حالة «غير متوفر» واضحة إن وصل إليها الزائر من رابط سابق.
-  const conds = [sellable, gt(branchStock.quantity, 0)];
+  const conds = [sellable, sql`${branchStock.quantity} >= ${productUnits.conversionFactor}`];
   if (opts.categoryId != null) conds.push(eq(products.categoryId, opts.categoryId));
   const s = String(opts.search ?? "").trim();
   if (s) {
@@ -317,7 +333,7 @@ export async function storefrontCatalog(opts: {
   }
   const rows = await safeSelect(db, branchId)
     .where(and(...conds))
-    .orderBy(desc(products.isFeatured), desc(sql`${productImages.url} is not null`), asc(products.name))
+    .orderBy(desc(products.isFeatured), desc(sql`${productImages.url} is not null`), asc(products.name), asc(productUnits.conversionFactor))
     .limit(cap * 3);
 
   const seen = new Set<number>();
@@ -350,13 +366,19 @@ export async function storefrontCategories(branchIdInput?: number): Promise<Stor
     .innerJoin(productVariants, and(eq(productVariants.productId, products.id), eq(productVariants.isActive, true)))
     .innerJoin(
       productUnits,
-      and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isActive, true), eq(productUnits.isBaseUnit, true))
+      and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isActive, true), eq(productUnits.isStoreSaleUnit, true))
     )
     .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, RETAIL)))
     .innerJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, branchId), gt(branchStock.quantity, 0)))
     .innerJoin(categories, eq(products.categoryId, categories.id))
     // showInStore: يحترم إخفاء المدير للقسم من واجهة المتجر (لوحة hPanel)؛ والترتيب بـsortOrder.
-    .where(and(eq(products.isActive, true), eq(products.isService, false), eq(products.showInStore, true), eq(categories.showInStore, true)))
+    .where(and(
+      eq(products.isActive, true),
+      eq(products.isService, false),
+      eq(products.showInStore, true),
+      eq(categories.showInStore, true),
+      sql`${branchStock.quantity} >= ${productUnits.conversionFactor}`
+    ))
     .groupBy(categories.id, categories.name, categories.sortOrder)
     .orderBy(asc(categories.sortOrder), asc(categories.name));
   return rows.map((r) => ({ id: Number(r.id), name: r.name, productCount: Number(r.productCount) }));
@@ -369,10 +391,25 @@ export async function storefrontProduct(productId: number, branchIdInput?: numbe
   const branchId = await resolveStorefrontBranchId(branchIdInput);
   const rows = await safeSelect(db, branchId)
     .where(and(sellable, eq(products.id, productId)))
-    .limit(1);
+    .orderBy(asc(productUnits.conversionFactor));
   if (!rows.length) return null;
-  const item = toStorefront(rows[0]);
-  await applyStorefrontPromotions([item], branchId);
+  // The public page currently represents one concrete variant. Keep all selectable
+  // sale units on that same variant so a unit click cannot silently switch SKU/color.
+  const primaryVariantId = Number(rows[0].variantId);
+  const unitRows = rows.filter((row) => Number(row.variantId) === primaryVariantId);
+  const options = unitRows.map(toStorefront);
+  await applyStorefrontPromotions(options, branchId);
+  const item = options[0];
+  item.storeUnits = options.map((option, index) => ({
+    productUnitId: option.productUnitId,
+    unitName: option.unitName,
+    conversionFactor: String(unitRows[index].conversionFactor),
+    price: option.price,
+    salePrice: option.salePrice,
+    promotionName: option.promotionName,
+    inStock: option.inStock,
+    stockLeft: option.stockLeft,
+  }));
   await attachSoldCounts(db, [item]);
   await attachVariantColors(db, [item], branchId);
   if (item.isBundle) item.bundleItems = await getBundleItems(db, item.variantId);
@@ -411,8 +448,8 @@ export async function storefrontRelated(
   if (!cat || cat.categoryId == null) return [];
   const cap = Math.min(Math.max(limit, 1), 20);
   const rows = await safeSelect(db, branchId)
-    .where(and(sellable, eq(products.categoryId, Number(cat.categoryId)), ne(products.id, productId), gt(branchStock.quantity, 0)))
-    .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name))
+    .where(and(sellable, eq(products.categoryId, Number(cat.categoryId)), ne(products.id, productId), sql`${branchStock.quantity} >= ${productUnits.conversionFactor}`))
+    .orderBy(desc(sql`${productImages.url} is not null`), asc(products.name), asc(productUnits.conversionFactor))
     .limit(cap * 3);
   const seen = new Set<number>();
   const items: StorefrontProduct[] = [];

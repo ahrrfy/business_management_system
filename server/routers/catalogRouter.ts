@@ -46,6 +46,7 @@ const unitSchema = z.object({
   conversionFactor: z.string(),
   barcode: z.string().optional(),
   isBaseUnit: z.boolean().optional(),
+  isStoreSaleUnit: z.boolean().optional(),
   prices: z.array(priceSchema).optional(),
   // باركودات بديلة تُضاف مع إنشاء الوحدة — نفس السلعة/التكلفة/السعر/المخزون، عدّة باركودات.
   barcodeAliases: z.array(barcodeAliasSchema).max(20).optional(),
@@ -78,6 +79,7 @@ const updateUnitTemplateSchema = z.object({
   unitName: z.string().min(1),
   conversionFactor: z.string(),
   isBaseUnit: z.boolean(),
+  isStoreSaleUnit: z.boolean().optional(),
   prices: z.array(priceSchema),
 });
 const editVariantSchema = z.object({
@@ -305,6 +307,7 @@ export const catalogRouter = router({
                     conversionFactor: z.string(),
                     barcode: z.string().nullish(),
                     isBaseUnit: z.boolean().optional(),
+                    isStoreSaleUnit: z.boolean().optional(),
                     prices: z.array(priceSchema).optional(),
                   })
                 )
@@ -330,6 +333,7 @@ export const catalogRouter = router({
           unitName: u.unitName,
           conversionFactor: u.conversionFactor,
           isBaseUnit: u.isBaseUnit,
+          isStoreSaleUnit: u.isStoreSaleUnit,
           barcode: u.barcode,
           prices: u.prices, // priceTier+price لكل وحدة (RETAIL/WHOLESALE/GOVERNMENT)
         })),
@@ -352,6 +356,7 @@ export const catalogRouter = router({
               unitName: u.unitName,
               conversionFactor: u.conversionFactor,
               isBaseUnit: u.isBaseUnit,
+              isStoreSaleUnit: u.isStoreSaleUnit,
               barcode: u.barcode,
               prices: u.prices, // تَلتقط أيّ تَغيير في أسعار البيع — الحارس الفعلي ضدّ تلاعب الأسعار.
             })),

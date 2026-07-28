@@ -118,6 +118,7 @@ export default function ProductEdit() {
       name: u.unitName,
       factor: u.conversionFactor,
       isBase: u.isBaseUnit,
+      sellInStore: u.isStoreSaleUnit,
       retail: u.retail,
       wholesale: u.wholesale,
       government: u.government,
@@ -212,7 +213,7 @@ export default function ProductEdit() {
   });
 
   /* ── الوحدات ── */
-  const addUnit = () => setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, retail: "", wholesale: "" }]);
+  const addUnit = () => setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, sellInStore: false, retail: "", wholesale: "" }]);
   const patchUnit = (id: number, patch: Partial<ClientUnit>) => setUnits((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   const removeUnit = (id: number) => setUnits((u) => (u.length <= 1 ? u : u.filter((x) => x.id !== id)));
   const setBaseUnit = (id: number) => setUnits((u) => u.map((x) => ({ ...x, isBase: x.id === id })));
@@ -328,6 +329,7 @@ export default function ProductEdit() {
       unitName: u.name.trim(),
       conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
       isBaseUnit: u.isBase,
+      isStoreSaleUnit: u.sellInStore,
       prices: [
         ...(u.retail.trim() ? [{ priceTier: "RETAIL" as const, price: u.retail.trim() }] : []),
         ...(u.wholesale.trim() ? [{ priceTier: "WHOLESALE" as const, price: u.wholesale.trim() }] : []),
@@ -543,7 +545,7 @@ export default function ProductEdit() {
         </CardHeader>
         <CardContent className="space-y-2">
           <div className="hidden md:grid grid-cols-12 gap-2 px-1 text-[11px] font-semibold text-muted-foreground">
-            <span className="col-span-2">الوحدة</span><span className="col-span-1">معامل</span><span className="col-span-2">سعر المفرد</span><span className="col-span-2">سعر الجملة</span><span className="col-span-2">سعر الحكومي</span><span className="col-span-2">الهامش</span><span className="col-span-1 text-center">أساس</span>
+            <span className="col-span-2">الوحدة</span><span className="col-span-1">معامل</span><span className="col-span-2">سعر المفرد</span><span className="col-span-2">سعر الجملة</span><span className="col-span-2">سعر الحكومي</span><span className="col-span-2">الهامش</span><span className="col-span-1 text-center">أساس / متجر</span>
           </div>
           {units.map((u) => {
             const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
@@ -558,6 +560,7 @@ export default function ProductEdit() {
                 <div className="md:col-span-2"><MarginBadge cost={unitCost} sell={u.retail} /></div>
                 <div className="md:col-span-1 flex items-center justify-center gap-2">
                   <input type="radio" name="baseUnitEdit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} title="الوحدة الأساس" aria-label="الوحدة الأساس" />
+                  <input type="checkbox" checked={u.sellInStore} onChange={(e) => patchUnit(u.id, { sellInStore: e.target.checked })} title="متاحة للبيع في المتجر الإلكتروني" aria-label="متاحة للبيع في المتجر الإلكتروني" />
                   <button type="button" onClick={() => removeUnit(u.id)} disabled={units.length <= 1} className="text-muted-foreground hover:text-destructive disabled:opacity-30 text-xs" aria-label="حذف الوحدة"><X aria-hidden className="size-4" /></button>
                 </div>
               </div>

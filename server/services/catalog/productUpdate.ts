@@ -15,6 +15,7 @@ export interface UpdateProductUnitInput {
   conversionFactor: string;
   barcode?: string | null;
   isBaseUnit?: boolean;
+  isStoreSaleUnit?: boolean;
   prices?: Array<{ priceTier: PriceTier; price: string }>;
 }
 
@@ -111,6 +112,7 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
               conversionFactor: u.conversionFactor,
               barcode: u.barcode ?? null,
               isBaseUnit: !!u.isBaseUnit,
+              isStoreSaleUnit: u.isStoreSaleUnit ?? !!u.isBaseUnit,
               isActive: true,
             })
             .where(eq(productUnits.id, u.id));
@@ -123,6 +125,7 @@ export async function updateProduct(input: UpdateProductInput, actor: Actor) {
             conversionFactor: u.conversionFactor,
             barcode: u.barcode ?? null,
             isBaseUnit: !!u.isBaseUnit,
+            isStoreSaleUnit: u.isStoreSaleUnit ?? !!u.isBaseUnit,
           });
           productUnitId = extractInsertId(uRes);
         }

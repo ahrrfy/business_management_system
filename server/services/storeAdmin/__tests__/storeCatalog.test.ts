@@ -53,10 +53,10 @@ beforeEach(async () => {
     { id: 4, productId: 4, sku: "V4", costPrice: "1.00" },
   ]);
   await d.insert(s.productUnits).values([
-    { id: 1, variantId: 1, unitName: "قطعة", isBaseUnit: true },
-    { id: 2, variantId: 2, unitName: "قطعة", isBaseUnit: true },
-    { id: 3, variantId: 3, unitName: "قطعة", isBaseUnit: true },
-    { id: 4, variantId: 4, unitName: "قطعة", isBaseUnit: true },
+    { id: 1, variantId: 1, unitName: "قطعة", isBaseUnit: true, isStoreSaleUnit: true },
+    { id: 2, variantId: 2, unitName: "قطعة", isBaseUnit: true, isStoreSaleUnit: true },
+    { id: 3, variantId: 3, unitName: "قطعة", isBaseUnit: true, isStoreSaleUnit: true },
+    { id: 4, variantId: 4, unitName: "قطعة", isBaseUnit: true, isStoreSaleUnit: true },
   ]);
   await d.insert(s.productPrices).values([
     { productUnitId: 1, priceTier: "RETAIL", price: "1000.00" },
@@ -87,6 +87,7 @@ describe("listStoreCatalog — التجميع والترتيب", () => {
     const notebook = rows.find((r) => r.productId === 1)!;
     expect(notebook.categoryName).toBe("قرطاسية");
     expect(notebook.retailPrice).toBe("1000.00");
+    expect(notebook.saleUnitName).toBe("قطعة");
     expect(notebook.stockBase).toBe(50);
     expect(notebook.hasImage).toBe(true);
     expect(notebook.variantId).toBe(1);
@@ -94,6 +95,25 @@ describe("listStoreCatalog — التجميع والترتيب", () => {
     const pen = rows.find((r) => r.productId === 2)!;
     expect(pen.stockBase).toBe(0);
     expect(pen.hasImage).toBe(false);
+  });
+
+  it("يعرض سعر وحدة المتجر ولا يكرر المخزون عند تفعيل أكثر من وحدة بيع", async () => {
+    const d = db();
+    await d.update(s.productUnits).set({ isStoreSaleUnit: false }).where(eq(s.productUnits.id, 1));
+    await d.insert(s.productUnits).values([
+      { id: 10, variantId: 1, unitName: "بند", conversionFactor: "500", isStoreSaleUnit: true },
+      { id: 11, variantId: 1, unitName: "كارتون", conversionFactor: "2500", isStoreSaleUnit: true },
+    ]);
+    await d.insert(s.productPrices).values([
+      { productUnitId: 10, priceTier: "RETAIL", price: "5000.00" },
+      { productUnitId: 11, priceTier: "RETAIL", price: "24000.00" },
+    ]);
+
+    const { rows } = await listStoreCatalog({ branchId: 1 });
+    const notebook = rows.find((r) => r.productId === 1)!;
+    expect(notebook.retailPrice).toBe("5000.00");
+    expect(notebook.saleUnitName).toBe("بند");
+    expect(notebook.stockBase).toBe(50);
   });
 });
 

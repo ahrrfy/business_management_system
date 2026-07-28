@@ -4,7 +4,7 @@
  * الذرّي — لا كتابة branchStock عارية). الصورة على مستوى المنتج (primary). كلّه بوّابة store.
  */
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gt, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { branchStock, categories, productImages, productPrices, productUnits, productVariants, products } from "../../../drizzle/schema";
 import { getDb } from "../../db";
 import { withTx } from "../tx";
@@ -20,6 +20,7 @@ export interface StoreCatalogRow {
   showInStore: boolean;
   variantId: number | null;
   retailPrice: string | null;
+  saleUnitName: string | null;
   stockBase: number;
   hasImage: boolean;
   imageUrl: string | null;
@@ -70,15 +71,12 @@ export async function listStoreCatalog(
       isFeatured: products.isFeatured,
       showInStore: products.showInStore,
       variantId: sql<number | null>`MIN(${productVariants.id})`,
-      retailPrice: sql<string | null>`MAX(${productPrices.price})`,
       stockBase: sql<number>`COALESCE(SUM(${branchStock.quantity}), 0)`,
       imageUrl: sql<string | null>`MAX(${productImages.url})`,
     })
     .from(products)
     .leftJoin(categories, eq(categories.id, products.categoryId))
     .leftJoin(productVariants, and(eq(productVariants.productId, products.id), eq(productVariants.isActive, true)))
-    .leftJoin(productUnits, and(eq(productUnits.variantId, productVariants.id), eq(productUnits.isBaseUnit, true)))
-    .leftJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")))
     .leftJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)))
     .leftJoin(productImages, and(eq(productImages.productId, products.id), eq(productImages.isPrimary, true)))
     .where(whereClause)
@@ -88,6 +86,37 @@ export async function listStoreCatalog(
     .offset(offset);
 
   const raw = await base;
+  const productIds = raw.map((r) => Number(r.productId));
+  const salePriceRows = productIds.length
+    ? await db
+        .select({
+          productId: productVariants.productId,
+          unitName: productUnits.unitName,
+          price: productPrices.price,
+        })
+        .from(productVariants)
+        .innerJoin(
+          productUnits,
+          and(
+            eq(productUnits.variantId, productVariants.id),
+            eq(productUnits.isActive, true),
+            eq(productUnits.isStoreSaleUnit, true),
+          ),
+        )
+        .innerJoin(
+          productPrices,
+          and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")),
+        )
+        .where(and(inArray(productVariants.productId, productIds), eq(productVariants.isActive, true)))
+        .orderBy(asc(productVariants.productId), asc(productUnits.conversionFactor), asc(productUnits.id))
+    : [];
+  const firstSalePrice = new Map<number, { unitName: string; price: string }>();
+  for (const priceRow of salePriceRows) {
+    const productId = Number(priceRow.productId);
+    if (!firstSalePrice.has(productId)) {
+      firstSalePrice.set(productId, { unitName: priceRow.unitName, price: priceRow.price });
+    }
+  }
   let rows: StoreCatalogRow[] = raw.map((r) => ({
     productId: Number(r.productId),
     name: r.name,
@@ -96,7 +125,8 @@ export async function listStoreCatalog(
     isFeatured: !!r.isFeatured,
     showInStore: r.showInStore == null ? true : !!r.showInStore,
     variantId: r.variantId != null ? Number(r.variantId) : null,
-    retailPrice: r.retailPrice ?? null,
+    retailPrice: firstSalePrice.get(Number(r.productId))?.price ?? null,
+    saleUnitName: firstSalePrice.get(Number(r.productId))?.unitName ?? null,
     stockBase: Number(r.stockBase ?? 0),
     hasImage: r.imageUrl != null,
     imageUrl: r.imageUrl ?? null,
@@ -113,8 +143,9 @@ export async function listStoreCatalog(
     eq(products.showInStore, true),
     eq(productVariants.isActive, true),
     eq(productUnits.isActive, true),
-    eq(productUnits.isBaseUnit, true),
+    eq(productUnits.isStoreSaleUnit, true),
     sql`${productPrices.price} is not null`,
+    sql`${branchStock.quantity} >= ${productUnits.conversionFactor}`,
   ];
   if (input.categoryId === 0 || input.categoryId === null) sellableConds.push(isNull(products.categoryId));
   else if (input.categoryId != null) sellableConds.push(eq(products.categoryId, input.categoryId));
@@ -125,7 +156,7 @@ export async function listStoreCatalog(
     .innerJoin(productVariants, eq(productVariants.productId, products.id))
     .innerJoin(productUnits, eq(productUnits.variantId, productVariants.id))
     .innerJoin(productPrices, and(eq(productPrices.productUnitId, productUnits.id), eq(productPrices.priceTier, "RETAIL")))
-    .innerJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId), gt(branchStock.quantity, 0)))
+    .innerJoin(branchStock, and(eq(branchStock.variantId, productVariants.id), eq(branchStock.branchId, input.branchId)))
     .where(and(...sellableConds));
 
   return { rows, total: Number(cnt?.n ?? 0), sellableTotal: Number(sellableCnt?.n ?? 0) };

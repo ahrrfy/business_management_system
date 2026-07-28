@@ -83,7 +83,7 @@ export default function ProductNew() {
   // ── قالب الوحدات المشترك ──
   const unitSeq = useRef(2);
   const [units, setUnits] = useState<ClientUnit[]>([
-    { id: 1, name: "قطعة", factor: "1", isBase: true, retail: "", wholesale: "" },
+    { id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, retail: "", wholesale: "" },
   ]);
 
   // ── المصفوفة + المتغيّرات ──
@@ -157,7 +157,7 @@ export default function ProductNew() {
 
   /* ── الوحدات ── */
   const addUnit = () =>
-    setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, retail: "", wholesale: "" }]);
+    setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, sellInStore: false, retail: "", wholesale: "" }]);
   const patchUnit = (id: number, patch: Partial<ClientUnit>) =>
     setUnits((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   const removeUnit = (id: number) =>
@@ -359,6 +359,7 @@ export default function ProductNew() {
               conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
               barcode: (v.unitBarcodes[u.id] || "").trim() || undefined,
               isBaseUnit: u.isBase,
+              isStoreSaleUnit: u.sellInStore,
               prices: [
                 ...(retail ? [{ priceTier: "RETAIL" as const, price: retail }] : []),
                 ...(wholesale ? [{ priceTier: "WHOLESALE" as const, price: wholesale }] : []),
@@ -633,7 +634,7 @@ export default function ProductNew() {
             <span className="col-span-2">سعر الجملة</span>
             <span className="col-span-2">سعر الحكومي</span>
             <span className="col-span-2">الهامش</span>
-            <span className="col-span-1 text-center">أساس</span>
+            <span className="col-span-1 text-center">أساس / متجر</span>
           </div>
           {units.map((u) => {
             const factor = u.isBase ? 1 : parseFloat(u.factor) || 1;
@@ -648,6 +649,7 @@ export default function ProductNew() {
                 <div className="md:col-span-2"><MarginBadge cost={unitCost} sell={u.retail} /></div>
                 <div className="md:col-span-1 flex items-center justify-center gap-2">
                   <input type="radio" name="baseUnit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} title="الوحدة الأساس" aria-label="الوحدة الأساس" />
+                  <input type="checkbox" checked={u.sellInStore} onChange={(e) => patchUnit(u.id, { sellInStore: e.target.checked })} title="متاحة للبيع في المتجر الإلكتروني" aria-label="متاحة للبيع في المتجر الإلكتروني" />
                   <button type="button" onClick={() => removeUnit(u.id)} disabled={units.length <= 1} className="text-muted-foreground hover:text-destructive disabled:opacity-30" aria-label="حذف الوحدة"><X aria-hidden className="size-4" /></button>
                 </div>
               </div>

@@ -94,7 +94,7 @@ describe("getProductForVariantEdit — القراءة", () => {
     const p = await getProductForVariantEdit(3);
     expect(p).toBeTruthy();
     expect(p!.variants).toEqual([]);
-    expect(p!.unitTemplate).toEqual([{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, retail: "", wholesale: "", government: "" }]);
+    expect(p!.unitTemplate).toEqual([{ unitName: "قطعة", conversionFactor: "1", isBaseUnit: true, isStoreSaleUnit: true, retail: "", wholesale: "", government: "" }]);
   });
 });
 

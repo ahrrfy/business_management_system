@@ -38,6 +38,7 @@ type SimpleUnit = {
   name: string;
   factor: string;
   isBase: boolean;
+  sellInStore: boolean;
   barcode: string;
   retail: string;
   wholesale: string;
@@ -63,7 +64,7 @@ export default function SimpleProductForm() {
   // ── قالب الوحدات (باركود + أسعار + بدائل لكلّ) — الافتراضي وحدة أساس واحدة (قطعة) ──
   const unitSeq = useRef(2);
   const [units, setUnits] = useState<SimpleUnit[]>([
-    { id: 1, name: "قطعة", factor: "1", isBase: true, barcode: "", retail: "", wholesale: "", government: "", aliases: [] },
+    { id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "", aliases: [] },
   ]);
 
   // ── التكلفة المشتركة (على مستوى المتغيّر، لا الوحدة) + المخزون الافتتاحي + الضبط ──
@@ -147,7 +148,7 @@ export default function SimpleProductForm() {
   const addUnit = () =>
     setUnits((u) => [
       ...u,
-      { id: unitSeq.current++, name: "", factor: "", isBase: false, barcode: "", retail: "", wholesale: "", government: "", aliases: [] },
+      { id: unitSeq.current++, name: "", factor: "", isBase: false, sellInStore: false, barcode: "", retail: "", wholesale: "", government: "", aliases: [] },
     ]);
   const patchUnit = (id: number, patch: Partial<SimpleUnit>) =>
     setUnits((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)));
@@ -248,6 +249,7 @@ export default function SimpleProductForm() {
         conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
         barcode: u.barcode.trim() || undefined,
         isBaseUnit: u.isBase,
+        isStoreSaleUnit: u.sellInStore,
         prices: [
           ...(u.retail.trim() ? [{ priceTier: "RETAIL" as const, price: u.retail.trim() }] : []),
           ...(u.wholesale.trim() ? [{ priceTier: "WHOLESALE" as const, price: u.wholesale.trim() }] : []),
@@ -409,7 +411,7 @@ export default function SimpleProductForm() {
                 {/* هوية الوحدة: الاسم + المعامل + وحدة الأساس + الحذف — شبكة محاذاة واحدة */}
                 <div className="grid grid-cols-12 gap-2 items-center">
                   <Input
-                    className="col-span-12 sm:col-span-5 h-8 text-sm"
+                    className="col-span-12 sm:col-span-4 h-8 text-sm"
                     value={u.name}
                     onChange={(e) => patchUnit(u.id, { name: e.target.value })}
                     placeholder="اسم الوحدة (قطعة / درزن / كرتون)"
@@ -430,9 +432,13 @@ export default function SimpleProductForm() {
                       aria-label="معامل التحويل"
                     />
                   </div>
-                  <label className="col-span-5 sm:col-span-3 flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
+                  <label className="col-span-3 sm:col-span-2 flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
                     <input type="radio" name="simpleBaseUnit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} aria-label="الوحدة الأساس" />
                     وحدة أساس
+                  </label>
+                  <label className="col-span-4 sm:col-span-2 flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
+                    <input type="checkbox" checked={u.sellInStore} onChange={(e) => patchUnit(u.id, { sellInStore: e.target.checked })} aria-label="بيع في المتجر" />
+                    بيع بالمتجر
                   </label>
                   <div className="col-span-2 sm:col-span-1 flex justify-end">
                     <button

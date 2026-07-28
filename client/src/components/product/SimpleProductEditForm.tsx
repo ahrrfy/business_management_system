@@ -32,7 +32,7 @@ import { cn } from "@/lib/utils";
  * المعرّف عبر `lib/productImages`. صورة اللون المستقلّة (variant.image) تبقى دون مساس (تُدار في المتقدّم).
  */
 
-type EditUnit = { id: number; name: string; factor: string; isBase: boolean; barcode: string; retail: string; wholesale: string; government: string };
+type EditUnit = { id: number; name: string; factor: string; isBase: boolean; sellInStore: boolean; barcode: string; retail: string; wholesale: string; government: string };
 
 export default function SimpleProductEditForm({
   productId,
@@ -101,13 +101,14 @@ export default function SimpleProductEditForm({
       name: u.unitName,
       factor: u.conversionFactor,
       isBase: u.isBaseUnit,
+      sellInStore: u.isStoreSaleUnit,
       barcode: v?.unitBarcodes[u.unitName] ?? "",
       retail: u.retail,
       wholesale: u.wholesale,
       government: u.government,
     }));
     unitSeq.current = tmpl.length + 1;
-    setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, barcode: "", retail: "", wholesale: "", government: "" }]);
+    setUnits(tmpl.length ? tmpl : [{ id: 1, name: "قطعة", factor: "1", isBase: true, sellInStore: true, barcode: "", retail: "", wholesale: "", government: "" }]);
     setImages(hydrateProductImages(d.images));
     setHydrated(true);
   }, [product.data, hydrated]);
@@ -178,7 +179,7 @@ export default function SimpleProductEditForm({
 
   /* ── الوحدات ── */
   const addUnit = () =>
-    setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, barcode: "", retail: "", wholesale: "", government: "" }]);
+    setUnits((u) => [...u, { id: unitSeq.current++, name: "", factor: "", isBase: false, sellInStore: false, barcode: "", retail: "", wholesale: "", government: "" }]);
   const patchUnit = (id: number, patch: Partial<EditUnit>) =>
     setUnits((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   const removeUnit = (id: number) => setUnits((u) => (u.length <= 1 ? u : u.filter((x) => x.id !== id)));
@@ -223,6 +224,7 @@ export default function SimpleProductEditForm({
       unitName: u.name.trim(),
       conversionFactor: u.isBase ? "1" : u.factor.trim() || "1",
       isBaseUnit: u.isBase,
+      isStoreSaleUnit: u.sellInStore,
       prices: [
         ...(u.retail.trim() ? [{ priceTier: "RETAIL" as const, price: u.retail.trim() }] : []),
         ...(u.wholesale.trim() ? [{ priceTier: "WHOLESALE" as const, price: u.wholesale.trim() }] : []),
@@ -367,7 +369,7 @@ export default function SimpleProductEditForm({
                 {/* هوية الوحدة: الاسم + المعامل + وحدة الأساس + الحذف — شبكة محاذاة واحدة */}
                 <div className="grid grid-cols-12 gap-2 items-center">
                   <Input
-                    className="col-span-12 sm:col-span-5 h-8 text-sm"
+                    className="col-span-12 sm:col-span-4 h-8 text-sm"
                     value={u.name}
                     onChange={(e) => patchUnit(u.id, { name: e.target.value })}
                     placeholder="اسم الوحدة (قطعة / درزن / كرتون)"
@@ -388,9 +390,13 @@ export default function SimpleProductEditForm({
                       aria-label="معامل التحويل"
                     />
                   </div>
-                  <label className="col-span-5 sm:col-span-3 flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
+                  <label className="col-span-3 sm:col-span-2 flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
                     <input type="radio" name="simpleEditBaseUnit" checked={u.isBase} onChange={() => setBaseUnit(u.id)} aria-label="الوحدة الأساس" />
                     وحدة أساس
+                  </label>
+                  <label className="col-span-4 sm:col-span-2 flex items-center gap-1.5 text-xs cursor-pointer whitespace-nowrap">
+                    <input type="checkbox" checked={u.sellInStore} onChange={(e) => patchUnit(u.id, { sellInStore: e.target.checked })} aria-label="بيع في المتجر" />
+                    بيع بالمتجر
                   </label>
                   <div className="col-span-2 sm:col-span-1 flex justify-end">
                     <button

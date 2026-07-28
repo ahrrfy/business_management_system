@@ -71,6 +71,7 @@ async function seedProduct(opts: {
     unitName: "قطعة",
     conversionFactor: "1",
     isBaseUnit: true,
+    isStoreSaleUnit: true,
     isActive: true,
   });
   await d.insert(s.productPrices).values({ productUnitId: id, priceTier: "RETAIL", price: "1000" });
