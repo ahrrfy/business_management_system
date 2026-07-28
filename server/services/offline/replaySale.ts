@@ -87,6 +87,7 @@ export async function replayOfflineSale(
       offlineCapture: {
         capturedAt,
         offlineReceiptNumber: input.offlineReceiptNumber,
+        deviceId: input.deviceId ?? null,
       },
       allowNegativeStock: true,
       priceOverrideApproved: input.priceOverrideApproved ?? false,

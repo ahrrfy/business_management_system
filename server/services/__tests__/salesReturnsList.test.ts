@@ -52,7 +52,7 @@ async function seedBase() {
     { id: 1, name: "MAIN", code: "MAIN", type: "MAIN" },
     { id: 2, name: "SALES", code: "SALES", type: "SALES" },
   ]);
-  await d.insert(s.users).values({ id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values({ id: 1, openId: "admin", name: "مدير المرتجع", role: "admin", loginMethod: "local" });
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "4.00" });
   await d
@@ -116,6 +116,8 @@ describe("listSalesReturns — سجلّ مرتجعات البيع", () => {
     expect(Number(row.customerId)).toBe(1);
     expect(row.customerName).toBe("تاجر");
     expect(Number(row.branchId)).toBe(1);
+    expect(Number(row.performedBy)).toBe(1);
+    expect(row.performedByName).toBe("مدير المرتجع");
 
     // مرتجع ثانٍ ⇒ total يزداد (قيد RETURN لكل عملية إرجاع).
     await saleThenReturn({ customerId: 1, qty: "3", returnBase: 3 });

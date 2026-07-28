@@ -11,6 +11,7 @@ import { openShiftIdTx } from "../shiftService";
 import { type Actor, withTx } from "../tx";
 import { assertWorkOrderBranch, loadWorkOrder } from "./helpers";
 import type { PaymentMethod } from "./types";
+import { userNameSnapshot } from "../userSnapshot";
 
 export interface DeliverWorkOrderInput {
   workOrderId: number;
@@ -75,6 +76,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const status = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(totalPaid));
     const sourceId = `WO-${wo.id}`;
+    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
@@ -92,6 +94,7 @@ export async function deliverWorkOrder(input: DeliverWorkOrderInput, actor: Acto
       paymentMethod: input.payment?.method ?? null,
       paymentDate: totalPaid.gt(0) ? new Date() : null,
       notes: `طلب خدمة ${wo.orderNumber}: ${wo.title}`,
+      salespersonNameSnapshot,
       createdBy: actor.userId,
     });
     const invoiceId = extractInsertId(invRes);
