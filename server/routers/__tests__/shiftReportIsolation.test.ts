@@ -38,7 +38,7 @@ beforeEach(async () => {
   // الاختبار يعتمد ضمناً على تسرّب FOREIGN_KEY_CHECKS=0 من اختبارٍ سابق (هشّ/ترتيبيّ) — نبذره صراحةً.
   await d.insert(s.users).values([
     { id: 1, openId: "shiftrep-u1", name: "t", email: "shiftrep@t.test", role: "admin", loginMethod: "local", branchId: 1 },
-  ]);
+  ]).onDuplicateKeyUpdate({ set: { branchId: 1 } });
   await d.insert(s.shifts).values([
     { id: 10, userId: 1, branchId: 1, status: "OPEN", openedAt: new Date(), openGuard: "1:1", openingBalance: "0.00" },
     { id: 20, userId: 1, branchId: 2, status: "OPEN", openedAt: new Date(), openGuard: "1:2", openingBalance: "0.00" },
