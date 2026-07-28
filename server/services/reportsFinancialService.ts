@@ -236,6 +236,19 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
     `),
   )[0] ?? { amount: "0" };
 
+  // GIFT_OUT (G-م٢، ٢٧/٧): هدايا صادرة للعملاء بالكلفة — مصروف ترويجيّ يَخفض صافي الربح. بلا invoiceId
+  // (خارج وعاء العمولة). فخّ «قيد جديد يختفي من الربح» (خطر §٦ #1): يجب ضمّه هنا صراحةً وإلا حرّك حقوق
+  // الملكية (المخزون الحيّ) دون أن يُفسَّر في قائمة الدخل.
+  const gf = rowsOf(
+    await db.execute(sql`
+      SELECT CAST(COALESCE(SUM(ae.cost), 0) AS CHAR) AS amount
+      FROM accountingEntries ae
+      WHERE ae.entryType = 'GIFT_OUT'
+        AND ae.entryDate >= ${from} AND ae.entryDate <= ${to}
+        ${branchAe}
+    `),
+  )[0] ?? { amount: "0" };
+
   const revenue = money(rc.revenue ?? 0);
   const cogs = money(rc.cogs ?? 0);
   const grossProfit = revenue.sub(cogs);
@@ -259,6 +272,13 @@ export async function plSnapshot(from: string, to: string, branchId?: number): P
   if (stockLoss.gt(0)) {
     expenseLines.push({ key: "STOCK_LOSS", label: "نثرية وتلف (مخزون)", amount: toDbMoney(stockLoss) });
     totalExpenses = totalExpenses.add(stockLoss);
+  }
+
+  // GIFT_OUT (G-م٢): هدايا وترويج للعملاء بالكلفة — سطر مصروف مستقلّ يَخفض صافي الربح.
+  const giftExpense = money(gf.amount ?? 0);
+  if (giftExpense.gt(0)) {
+    expenseLines.push({ key: "GIFTS", label: "هدايا وترويج", amount: toDbMoney(giftExpense) });
+    totalExpenses = totalExpenses.add(giftExpense);
   }
 
   // خسائر شحن/كمرك مرتجعات الشراء — سطر مستقلّ يَخفض صافي الربح (الشحن الوارد غير مسترد عند الإرجاع).
@@ -390,7 +410,7 @@ export interface GeneralLedgerResult {
 }
 
 const LEDGER_ENTRY_TYPES = [
-  "SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE",
+  "SALE", "PURCHASE", "PAYMENT_IN", "PAYMENT_OUT", "RETURN", "ADJUST", "OPENING", "INTERNAL_USE", "WASTAGE", "GIFT_OUT",
   "DELIVERY_DISPATCH", "DELIVERY_REMIT", "DELIVERY_FEE", "DELIVERY_WRITEOFF",
   "EXCHANGE_DEPOSIT", "EXCHANGE_WITHDRAW", "EXCHANGE_FX_BUY", "EXCHANGE_SETTLE", "EXCHANGE_FEE", "EXCHANGE_FX_DIFF",
 ] as const;

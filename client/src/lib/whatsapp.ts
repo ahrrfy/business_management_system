@@ -273,6 +273,27 @@ export function buildConsignmentWithdrawMessage(data: ConsignmentWithdrawMessage
   return L.join("\n");
 }
 
+export interface GiftMessageData {
+  direction: "IN" | "OUT";
+  giftNumber: string;
+  partyName?: string | null;
+  lines: { productName: string; unit: string; quantity: number }[];
+}
+
+/**
+ * رسالة إشعار هدية عبر wa.me (يدويّة، بلا API): للصادر إشعار العميل بهديته، وللوارد شكرُ المورّد.
+ * مجاملة لا مطالبة (بلا مبالغ/تكلفة). بلا إيموجي (تظهر «�» على واتساب، انظر [[whatsapp]]).
+ */
+export function buildGiftMessage(data: GiftMessageData): string {
+  const isIn = data.direction === "IN";
+  const L: string[] = [`*${isIn ? "إشعار استلام هدية" : "إشعار هدية"}*`, COMPANY_NAME, `سند رقم: ${data.giftNumber}`, `التاريخ: ${today()}`, ""];
+  if (data.partyName) L.push(isIn ? `شكراً ${data.partyName}،` : `عزيزنا ${data.partyName}،`);
+  L.push(isIn ? "تسلّمنا منكم الأصناف التالية هديةً مجّانية:" : "يسرّنا إهداؤكم الأصناف التالية مجّاناً:");
+  for (const l of data.lines.slice(0, 15)) L.push(`  • ${l.productName} × ${l.quantity} ${l.unit}`);
+  L.push("", isIn ? "نقدّر تعاونكم الكريم." : "نتمنّى لكم يوماً سعيداً — ولا يترتّب على هذه الهدية أيّ دفع.", COMPANY_NAME);
+  return L.join("\n");
+}
+
 // ─────────────────────────────────────────────
 // متجر الجوال (B2C): استرداد السلة + متابعة الطلب
 // ─────────────────────────────────────────────

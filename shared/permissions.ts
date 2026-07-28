@@ -76,6 +76,7 @@ export const PERMISSION_MODULES: PermissionModule[] = [
   { key: "hr",           label: "الموارد البشرية",     description: "الموظفون، الحضور، الرواتب، الإجازات، التوظيف" },
   { key: "commissions",  label: "الأهداف والعمولات",   description: "خطط العمولات، الأهداف الشهرية، احتساب واعتماد عمولات البائعين" },
   { key: "consignments", label: "بضاعة الأمانة",        description: "المودِعون، سندات الإيداع/السحب/الاستبدال، كشوف التسوية — بضاعة برسم البيع" },
+  { key: "gifts",        label: "الهدايا والمجانيات",   description: "الوارد المجّاني من الموردين (صفر تكلفة) والصادر للعملاء (مصروف ترويجيّ بحوكمة اعتماد)" },
   { key: "courier",      label: "توصيلاتي (المندوب)",  description: "شاشة المندوب الذاتية: طلباتي، تأكيد التسليم والتحصيل، عهدتي" },
   { key: "users",        label: "المستخدمون",         description: "إدارة المستخدمين والصلاحيات" },
   { key: "settings",     label: "الإعدادات",          description: "إعدادات النظام والفروع" },
@@ -85,6 +86,7 @@ export type PermissionMap = Record<string, AccessLevel>;
 
 export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
   admin: {
+    gifts: "FULL",
     crm: "FULL", campaigns: "FULL", collections: "FULL", store: "FULL",
     assets: "FULL",
     hr: "FULL",
@@ -96,6 +98,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "FULL", settings: "FULL",
   },
   manager: {
+    gifts: "FULL",
     crm: "FULL", campaigns: "FULL", collections: "FULL",
     store: "FULL",
     assets: "FULL",
@@ -108,6 +111,10 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   accountant: {
+    // READ لا FULL (تدقيق Codex P1): إنشاء الهدية يحتاج بحث منتجات (catalog.posList/forPurchase) وهو
+    // خلف products≥READ، والمحاسب products=NONE ⇒ نموذج الإنشاء يفشل. المحاسب يراجع الهدايا (READ)؛
+    // الإنشاء عمليّ (مخزن/مدير، وكلّهم products≥READ). الأثر الماليّ (GIFT_OUT/WAVG) تلقائيّ يراه بالتقارير.
+    gifts: "READ",
     crm: "READ", campaigns: "READ", collections: "FULL",
     store: "READ",
     assets: "READ",
@@ -123,6 +130,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   cashier: {
+    gifts: "NONE",
     crm: "FULL", campaigns: "READ", collections: "READ",
     store: "FULL",
     assets: "NONE",
@@ -141,6 +149,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   warehouse: {
+    gifts: "FULL",
     crm: "READ", campaigns: "NONE", collections: "NONE",
     assets: "READ",
     hr: "NONE",
@@ -158,6 +167,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   purchasing: {
+    gifts: "READ",
     crm: "NONE", campaigns: "NONE", collections: "NONE",
     assets: "NONE",
     hr: "NONE",
@@ -170,6 +180,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   print_operator: {
+    gifts: "NONE",
     crm: "READ", campaigns: "READ", collections: "NONE",
     assets: "NONE",
     hr: "NONE",
@@ -182,6 +193,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   sales_rep: {
+    gifts: "NONE",
     crm: "FULL", campaigns: "READ", collections: "READ",
     store: "FULL",
     assets: "NONE",
@@ -196,6 +208,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "NONE", settings: "NONE",
   },
   auditor: {
+    gifts: "READ",
     crm: "READ", campaigns: "READ", collections: "READ",
     store: "READ",
     assets: "READ",
@@ -208,6 +221,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     users: "READ", settings: "READ",
   },
   user: {
+    gifts: "NONE",
     crm: "READ", campaigns: "NONE", collections: "NONE",
     assets: "NONE",
     hr: "NONE",
@@ -223,7 +237,7 @@ export const ROLE_TEMPLATES: Record<RoleKey, PermissionMap> = {
     // مندوب توصيل ذاتي الخدمة: يرى «توصيلاتي» فقط (courier=FULL). كل الوحدات الأخرى NONE —
     // بياناته (اسم/هاتف/عنوان الزبون + COD) تأتي من نقاط courier الذاتية لا من وحدات العملاء/المبيعات.
     courier: "FULL",
-    store: "NONE", assets: "NONE", hr: "NONE", commissions: "NONE", consignments: "NONE",
+    store: "NONE", assets: "NONE", hr: "NONE", commissions: "NONE", consignments: "NONE", gifts: "NONE",
     pos: "NONE", sales: "NONE", purchases: "NONE", inventory: "NONE", workorders: "NONE", channels: "NONE", treasury: "NONE",
     tasks: "NONE",
     customers: "NONE", suppliers: "NONE", products: "NONE", expenses: "NONE", reports: "NONE",

@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, desc, eq, gt, sql } from "drizzle-orm";
+import { and, eq, gt, sql } from "drizzle-orm";
 import { invoices, receipts, shifts, users } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { money, toDbMoney } from "./money";
@@ -22,11 +22,6 @@ import {
  */
 export type ShiftType = "RETAIL" | "RECEPTION" | "PRINT_SERVICES";
 
-/**
- * ①ج عتبة اعتبار فرقٍ في الرصيد الافتتاحيّ «اختلافاً» يستوجب سبباً: أيّ فرقٍ مقداره ≥ 0.01 (فلس
- * واحد). نستعمل نصف الفلس عتبةً كي تُصفَّر ضوضاء الكسور العائمة وتُلتقَط أيّ خانتين عشريتين حقيقيتين.
- */
-const OPENING_DISCREPANCY_EPSILON = money("0.005");
 const VARIANCE_EPSILON = money("0.005");
 const ALLOWED_DENOMINATIONS = new Set<number>(IQD_DENOMINATIONS);
 
@@ -61,89 +56,6 @@ function validateCountedBreakdown(
   return total;
 }
 
-/**
- * ①ج المتبقّي فعلياً في الدرج بعد إغلاق آخر وردية مغلقة لنفس (الفرع×النوع) = closingDrawerCash
- * (المعدود − المُسلَّم للخزينة عند الإغلاق). يُصبح «الرصيد الافتتاحيّ المتوقَّع» للوردية التالية.
- * يُرجِع null حين لا سابقة مغلقة، أو حين لا تَحمل السابقة المتبقّي (ورديات تاريخية قبل الهجرة) ⇒
- * لا مطابقة (سلوك «أوّل وردية»، بلا تحذير زائف). النوع فاصلٌ: التجزئة والاستقبال درجان مستقلّان.
- */
-export async function lastClosedRemainingTx(
-  tx: Tx,
-  branchId: number,
-  shiftType: ShiftType,
-): Promise<string | null> {
-  const rows = await tx
-    .select({ id: shifts.id, remaining: shifts.closingDrawerCash, closedAt: shifts.closedAt })
-    .from(shifts)
-    .where(
-      and(eq(shifts.branchId, branchId), eq(shifts.status, "CLOSED"), eq(shifts.shiftType, shiftType)),
-    )
-    .orderBy(desc(shifts.closedAt), desc(shifts.id))
-    .limit(1);
-  const last = rows[0];
-  if (!last || last.remaining == null) return null;
-  // ①ج تعدّد الكاشير (Codex P2 على #320): إن فُتِحت وردية لنفس (الفرع×النوع) بعد إغلاق هذه ⇒ سبق أن
-  // «استهلكت» المتبقّي، فلا يُعاد لوردية ثالثة متزامنة (وإلّا فجوة استمرارية زائفة). أوّل وردية بعد
-  // الإغلاق (لا مفتوحة بعدُ) تُطابِق المتبقّي كالمعتاد.
-  // انحدار #320 (٢٣/٧): الكشف بالمعرّف الرتيب (autoincrement) لا بمقارنة openedAt≥closedAt. العمودان
-  // يُضبَطان بساعتين مختلفتين — openedAt بساعة القاعدة (defaultNow) وclosedAt بساعة التطبيق (new Date)
-  // وكلاهما بدقّة الثانية. حين تتخلّف ساعة القاعدة ~ثانية (Docker/Windows، وأحياناً عدّاءو CI) تُقتطَع
-  // openedAt للوردية اللاحقة لثانيةٍ أسبق من closedAt فيُخطئها الاستعلام ⇒ فجوة استمرارية زائفة متقطّعة.
-  // المعرّف يُسنَد لحظة الفتح ويعكس ترتيبه ⇒ الكشف مستقلٌّ حتماً عن أيّ ساعة/تباين/دقّة (أيّ وردية
-  // مفتوحة أحدث من آخر مغلقة على الدرج نفسه تكون قد طالبت باستمراريّته).
-  if (last.closedAt) {
-    const openAfter = await tx
-      .select({ id: shifts.id })
-      .from(shifts)
-      .where(
-        and(
-          eq(shifts.branchId, branchId),
-          eq(shifts.status, "OPEN"),
-          eq(shifts.shiftType, shiftType),
-          gt(shifts.id, last.id),
-        ),
-      )
-      .limit(1);
-    if (openAfter[0]) return null;
-  }
-  return toDbMoney(money(last.remaining));
-}
-
-/**
- * ①ج قراءةٌ للاطّلاع (شاشة فتح الوردية): المتوقَّع لفتح وردية لفرع/نوع. الفرض النهائيّ يبقى خادمياً
- * داخل openShift (يُعاد الحساب تحت المعاملة) ⇒ هذه للعرض فقط ولا يُوثَق بها الأمان.
- */
-export async function getExpectedOpening(branchId: number, shiftType: ShiftType = "RETAIL") {
-  const db = getDb();
-  if (!db) return { expected: null as string | null };
-  const rows = await db
-    .select({ id: shifts.id, remaining: shifts.closingDrawerCash, closedAt: shifts.closedAt })
-    .from(shifts)
-    .where(
-      and(eq(shifts.branchId, branchId), eq(shifts.status, "CLOSED"), eq(shifts.shiftType, shiftType)),
-    )
-    .orderBy(desc(shifts.closedAt), desc(shifts.id))
-    .limit(1);
-  const last = rows[0];
-  if (!last || last.remaining == null) return { expected: null as string | null };
-  // مطابقٌ لـlastClosedRemainingTx: وردية مفتوحة فُتِحت بعد الإغلاق استهلكت المتبقّي (عرضٌ فقط).
-  if (last.closedAt) {
-    const openAfter = await db
-      .select({ id: shifts.id })
-      .from(shifts)
-      .where(
-        and(
-          eq(shifts.branchId, branchId),
-          eq(shifts.status, "OPEN"),
-          eq(shifts.shiftType, shiftType),
-          gt(shifts.id, last.id), // بالمعرّف الرتيب لا بالساعة (انحدار #320 — راجع lastClosedRemainingTx)
-        ),
-      )
-      .limit(1);
-    if (openAfter[0]) return { expected: null as string | null };
-  }
-  return { expected: toDbMoney(money(last.remaining)) };
-}
 
 /** Open a shift. One open shift per user per branch **per type** (RETAIL/RECEPTION/PRINT_SERVICES). */
 export async function openShift(
@@ -151,8 +63,6 @@ export async function openShift(
     branchId: number;
     openingBalance: string;
     shiftType?: ShiftType;
-    // ①ج سبب اختلاف الرصيد الافتتاحيّ عن المتوقَّع (إلزاميّ عند الاختلاف — يُفرَض خادمياً أدناه).
-    openingDiscrepancyReason?: string | null;
   },
   actor: Actor,
 ) {
@@ -182,29 +92,12 @@ export async function openShift(
       });
     }
 
-    // ①ج مطابقة الاستمرارية: المتوقَّع = متبقّي آخر وردية مغلقة لنفس (الفرع×النوع). عند اختلاف المُدخَل
-    // عنه ⇒ سببٌ إلزاميّ يُسجَّل (تحذيرٌ لا حظر — قد يبدأ الكاشير برصيدٍ مختلفٍ مشروعاً). أوّل وردية
-    // (لا سابقة) ⇒ لا مطابقة. الفرض خادميّ بحت: يُعاد الحساب هنا تحت المعاملة ولا يُوثَق بما ترسله الواجهة.
-    const expectedStr = await lastClosedRemainingTx(tx, input.branchId, shiftType);
-    const entered = money(input.openingBalance);
-    let hasDiscrepancy = false;
-    let difference: string | null = null;
-    const reasonToStore: string | null = null;
-    if (expectedStr != null) {
-      const diff = entered.minus(money(expectedStr));
-      hasDiscrepancy = diff.abs().gt(OPENING_DISCREPANCY_EPSILON);
-      difference = toDbMoney(diff);
-      if (hasDiscrepancy) {
-        throw new TRPCError({
-          code: "PRECONDITION_FAILED",
-          message:
-            `لا يمكن فتح الوردية: الرصيد الافتتاحي (${entered.toFixed(2)}) يجب أن يطابق ` +
-            `المتبقي المثبت من الوردية السابقة (${money(expectedStr).toFixed(2)}). ` +
-            "صحّح مصدر النقد أو تسوية التسليم أولاً.",
-        });
-      }
-    }
-
+    // ورديات مستقلّة (قرار المالك ٢٨/٧/٢٦): كلّ وردية برصيدها الافتتاحيّ الخاصّ (عهدة جديدة تُصرَف عند
+    // البدء) ورصيدها الذي تنتهي به، بمعزلٍ تامٍّ عن السابقة واللاحقة — لا مطابقةَ لمتبقّي وردية سابقة
+    // ولا حظر. النقد يُسلَّم كاملاً للخزينة بين الورديتين، ثم تبدأ التالية بعهدةٍ من الخزينة. الضبط ضدّ
+    // التسرّب يبقى قائماً *داخل* الوردية: closeShift يحسب المتوقَّع = الافتتاحيّ + المبيعات النقدية −
+    // المدفوعات ويقارنه بالمعدود ⇒ فرق الوردية مسجَّلٌ ومعزولٌ لصاحبها. العمودان openingExpectedCash/
+    // openingDiscrepancyReason مُهمَلان الآن (يبقيان null بلا هجرة إسقاط).
     try {
       const res = await tx.insert(shifts).values({
         branchId: input.branchId,
@@ -213,11 +106,17 @@ export async function openShift(
         status: "OPEN",
         shiftType,
         openGuard: `${actor.userId}:${input.branchId}:${shiftType}`, // حارس ذرّي ضدّ الفتح المزدوج المتزامن لنفس النوع
-        openingExpectedCash: expectedStr, // null إن لا سابقة ⇒ «أوّل وردية»
-        openingDiscrepancyReason: reasonToStore, // null إن لا اختلاف
+        openingExpectedCash: null,
+        openingDiscrepancyReason: null,
       });
       const shiftId = extractInsertId(res);
-      return { shiftId, expectedOpening: expectedStr, hasDiscrepancy, difference, discrepancyReason: reasonToStore };
+      return {
+        shiftId,
+        expectedOpening: null as string | null,
+        hasDiscrepancy: false,
+        difference: null as string | null,
+        discrepancyReason: null as string | null,
+      };
     } catch (e: any) {
       if (isDupEntry(e)) {
         throw new TRPCError({ code: "CONFLICT", message: "لديك وردية مفتوحة بالفعل في هذا الفرع" });
