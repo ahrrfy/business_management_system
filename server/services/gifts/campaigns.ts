@@ -19,7 +19,16 @@ export interface CreateCampaignResult {
   campaignId: number;
 }
 
+/** حوكمة الحملة (تحديد ميزانية/إغلاق) قرارٌ سياسيّ لا عمليّاتيّ — مدير/أدمن فقط (تدقيق Codex P1):
+ *  المخزن يملك gifts=FULL (عمليّاتيّ: استلام/منح) لكنه لا يُقرَّر بميزانيّات عامّة أو يُغلق حملات الغير. */
+function assertCampaignGovernance(actor: Actor): void {
+  if (actor.role !== "admin" && actor.role !== "manager") {
+    throw new TRPCError({ code: "FORBIDDEN", message: "إدارة حملات الهدايا (إنشاء/إغلاق) من صلاحية المدير فقط" });
+  }
+}
+
 export async function createGiftCampaign(input: CreateCampaignInput, actor: Actor): Promise<CreateCampaignResult> {
+  assertCampaignGovernance(actor);
   const name = input.name?.trim();
   if (!name) throw new TRPCError({ code: "BAD_REQUEST", message: "اسم الحملة مطلوب" });
   if (input.startDate && input.endDate && input.endDate < input.startDate) {
@@ -74,7 +83,8 @@ export async function listGiftCampaigns(filter: ListCampaignsFilter = {}) {
 }
 
 /** إغلاق حملة (نهائيّ — لا إعادة فتح): بعده يرفض outbound.ts أيّ هدية جديدة تُربَط بها. */
-export async function closeGiftCampaign(campaignId: number): Promise<void> {
+export async function closeGiftCampaign(campaignId: number, actor: Actor): Promise<void> {
+  assertCampaignGovernance(actor);
   return withTx(async (tx) => {
     const camp = (await tx.select({ status: giftCampaigns.status }).from(giftCampaigns).where(eq(giftCampaigns.id, campaignId)).for("update").limit(1))[0];
     if (!camp) throw new TRPCError({ code: "NOT_FOUND", message: "الحملة غير موجودة" });

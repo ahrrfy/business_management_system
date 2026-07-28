@@ -171,6 +171,9 @@ export default function GiftsHub() {
     onSuccess: (res) => {
       notify.ok(res.pending ? `الهدية بانتظار اعتماد مدير — ${res.giftNumber}` : `تم منح الهدية — ${res.giftNumber}`);
       backToList();
+      // إنجازٌ فوريّ يغيّر مُنفَق الحملة المرتبطة (إن وُجدت) — حدّث الحملات (تدقيق Codex P2) وإلا
+      // يبقى منتقي الصادر/جدول الإدارة يعرض رقماً قديماً حتى إعادة جلبٍ عرَضية أخرى.
+      utils.gifts.campaignList.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -178,6 +181,7 @@ export default function GiftsHub() {
     onSuccess: () => {
       notify.ok("تم اعتماد الهدية");
       utils.gifts.list.invalidate();
+      utils.gifts.campaignList.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -429,30 +433,34 @@ export default function GiftsHub() {
             حملة بميزانيّة (اختياريّة) تُفرَض تلقائياً: تجاوزها يُعلِّق الهدية لاعتماد مدير آخر حتى لو كان المُنشئ مديراً.
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-4">
-            <div className="space-y-1 sm:col-span-2">
-              <Label>اسم الحملة *</Label>
-              <Input value={campName} onChange={(e) => setCampName(e.target.value)} maxLength={120} placeholder="مثال: حملة العودة للمدارس ٢٠٢٦" />
+          {elevated ? (
+            // إنشاء/إغلاق الحملة سياسة عامّة (ميزانيّات/إغلاق يؤثّر على الجميع) — مدير/أدمن فقط
+            // (تدقيق Codex P1)؛ الخادم يفرضها فعلياً — هذا حجبٌ واجهيّ مطابق فقط. القراءة تبقى لكل gifts≥FULL.
+            <div className="grid gap-3 sm:grid-cols-4">
+              <div className="space-y-1 sm:col-span-2">
+                <Label>اسم الحملة *</Label>
+                <Input value={campName} onChange={(e) => setCampName(e.target.value)} maxLength={120} placeholder="مثال: حملة العودة للمدارس ٢٠٢٦" />
+              </div>
+              <div className="space-y-1">
+                <Label>الميزانيّة (اختياري)</Label>
+                <Input value={campBudget} onChange={(e) => setCampBudget(e.target.value)} inputMode="decimal" placeholder="بلا سقف" />
+              </div>
+              <div className="space-y-1">
+                <Label>تبدأ (اختياري)</Label>
+                <Input type="date" value={campStart} onChange={(e) => setCampStart(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label>تنتهي (اختياري)</Label>
+                <Input type="date" value={campEnd} onChange={(e) => setCampEnd(e.target.value)} />
+              </div>
+              <div className="flex items-end">
+                <Button size="sm" onClick={submitCampaign} disabled={!campName.trim() || createCampaign.isPending}>
+                  <Plus aria-hidden className="me-1 size-4" />
+                  إنشاء حملة
+                </Button>
+              </div>
             </div>
-            <div className="space-y-1">
-              <Label>الميزانيّة (اختياري)</Label>
-              <Input value={campBudget} onChange={(e) => setCampBudget(e.target.value)} inputMode="decimal" placeholder="بلا سقف" />
-            </div>
-            <div className="space-y-1">
-              <Label>تبدأ (اختياري)</Label>
-              <Input type="date" value={campStart} onChange={(e) => setCampStart(e.target.value)} />
-            </div>
-            <div className="space-y-1">
-              <Label>تنتهي (اختياري)</Label>
-              <Input type="date" value={campEnd} onChange={(e) => setCampEnd(e.target.value)} />
-            </div>
-            <div className="flex items-end">
-              <Button size="sm" onClick={submitCampaign} disabled={!campName.trim() || createCampaign.isPending}>
-                <Plus aria-hidden className="me-1 size-4" />
-                إنشاء حملة
-              </Button>
-            </div>
-          </div>
+          ) : null}
 
           <div className="overflow-x-auto rounded-lg border">
             <table className="w-full text-sm">
@@ -462,13 +470,13 @@ export default function GiftsHub() {
                   <th className="px-3 py-2 text-start">الحالة</th>
                   <th className="px-3 py-2 text-start">المدى</th>
                   <th className="px-3 py-2 text-end">المُنفَق / الميزانيّة</th>
-                  <th className="px-3 py-2 text-end">إجراء</th>
+                  {elevated ? <th className="px-3 py-2 text-end">إجراء</th> : null}
                 </tr>
               </thead>
               <tbody>
                 {(allCampaigns.data ?? []).length === 0 ? (
                   <tr>
-                    <td colSpan={5} className="py-6 text-center text-muted-foreground">
+                    <td colSpan={elevated ? 5 : 4} className="py-6 text-center text-muted-foreground">
                       لا حملات بعد.
                     </td>
                   </tr>
@@ -487,17 +495,19 @@ export default function GiftsHub() {
                         {c.endDate ? new Date(c.endDate as unknown as string).toISOString().slice(0, 10) : "—"}
                       </td>
                       <td className="px-3 py-2 text-end">
-                        {c.spent}
-                        {c.budgetCost ? ` / ${c.budgetCost}` : " (بلا سقف)"}
+                        {/* budgetCost/spent يُحجَبان (null) خادمياً عمّن لا يرى التكلفة — نمط بقية الشاشة. */}
+                        {c.spent == null ? "—" : `${c.spent}${c.budgetCost ? ` / ${c.budgetCost}` : " (بلا سقف)"}`}
                       </td>
-                      <td className="px-3 py-2 text-end">
-                        {c.status === "ACTIVE" ? (
-                          <Button size="sm" variant="ghost" disabled={closeCampaign.isPending} onClick={() => closeCampaign.mutate({ campaignId: Number(c.id) })}>
-                            <X aria-hidden className="me-1 size-3.5" />
-                            إغلاق
-                          </Button>
-                        ) : null}
-                      </td>
+                      {elevated ? (
+                        <td className="px-3 py-2 text-end">
+                          {c.status === "ACTIVE" ? (
+                            <Button size="sm" variant="ghost" disabled={closeCampaign.isPending} onClick={() => closeCampaign.mutate({ campaignId: Number(c.id) })}>
+                              <X aria-hidden className="me-1 size-3.5" />
+                              إغلاق
+                            </Button>
+                          ) : null}
+                        </td>
+                      ) : null}
                     </tr>
                   ))
                 )}

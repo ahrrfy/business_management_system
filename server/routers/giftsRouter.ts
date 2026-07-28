@@ -2,7 +2,7 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { canSeeCost } from "@shared/permissions";
-import { positiveMoneyString } from "../lib/schemas";
+import { positiveMoneyString, ymdDate } from "../lib/schemas";
 import { closeGiftCampaign, createGiftCampaign, listGiftCampaigns } from "../services/gifts/campaigns";
 import { receiveInboundGift } from "../services/gifts/inbound";
 import { getGiftVoucher, listGifts } from "../services/gifts/list";
@@ -166,8 +166,8 @@ export const giftsRouter = router({
       z.object({
         name: z.string().min(1).max(120),
         reason: z.string().max(255).nullish(),
-        startDate: z.string().nullish(),
-        endDate: z.string().nullish(),
+        startDate: ymdDate.nullish(),
+        endDate: ymdDate.nullish(),
         budgetCost: positiveMoneyString.nullish(),
       }),
     )
@@ -175,9 +175,16 @@ export const giftsRouter = router({
 
   campaignList: giftsRead
     .input(z.object({ status: z.enum(["ACTIVE", "CLOSED"]).optional() }).optional())
-    .query(({ input }) => listGiftCampaigns(input ?? {})),
+    .query(async ({ input, ctx }) => {
+      const rows = await listGiftCampaigns(input ?? {});
+      // حجب التكلفة عمّن لا يراها (تدقيق Codex P1) — مخزن/مشتريات لهما gifts≥READ لكنّهما ليسا canSeeCost.
+      if (canSeeCost(ctx.user.role)) return rows;
+      return rows.map((r) => ({ ...r, budgetCost: null, spent: null }));
+    }),
 
   campaignClose: giftsWrite
     .input(z.object({ campaignId: z.number().int().positive() }))
-    .mutation(({ input }) => closeGiftCampaign(input.campaignId)),
+    .mutation(({ input, ctx }) =>
+      closeGiftCampaign(input.campaignId, { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role }),
+    ),
 });

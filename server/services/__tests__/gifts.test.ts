@@ -406,7 +406,7 @@ describe("G-م٧ حملات الهدايا (ربط + فرض ميزانيّة ب�
   it("يُرفض ربط هدية بحملة مغلقة", async () => {
     await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
     const camp = await createGiftCampaign({ name: "حملة د" }, actor);
-    await closeGiftCampaign(camp.campaignId);
+    await closeGiftCampaign(camp.campaignId, actor);
     await expect(
       createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 1 }] }, mgrA),
     ).rejects.toThrow(/مغلقة/);
@@ -427,17 +427,41 @@ describe("G-م٧ حملات الهدايا (ربط + فرض ميزانيّة ب�
       mgrA,
     );
     expect(res.pending).toBe(true);
-    await closeGiftCampaign(camp.campaignId);
+    await closeGiftCampaign(camp.campaignId, actor);
     await expect(approveGift(res.giftVoucherId, mgrB)).rejects.toThrow(/أُغلقت/);
     const ap = await approveGift(res.giftVoucherId, actor); // admin يتجاوز
     expect(ap.status).toBe("DELIVERED");
   });
 
   it("closeGiftCampaign يرفض حملة غير موجودة أو مغلقة مسبقاً", async () => {
-    await expect(closeGiftCampaign(999999)).rejects.toThrow();
+    await expect(closeGiftCampaign(999999, actor)).rejects.toThrow();
     const camp = await createGiftCampaign({ name: "حملة و" }, actor);
-    await closeGiftCampaign(camp.campaignId);
-    await expect(closeGiftCampaign(camp.campaignId)).rejects.toThrow(/مسبقاً/);
+    await closeGiftCampaign(camp.campaignId, actor);
+    await expect(closeGiftCampaign(camp.campaignId, actor)).rejects.toThrow(/مسبقاً/);
+  });
+
+  it("حوكمة الحملة محصورة بمدير/أدمن — تُرفض لغير المدير (تدقيق Codex P1)", async () => {
+    const acc = { userId: 4, branchId: 1, role: "accountant" };
+    await expect(createGiftCampaign({ name: "حملة محظورة" }, acc)).rejects.toThrow(/المدير/);
+    const camp = await createGiftCampaign({ name: "حملة ح" }, mgrA);
+    await expect(closeGiftCampaign(camp.campaignId, acc)).rejects.toThrow(/المدير/);
+    await closeGiftCampaign(camp.campaignId, mgrA); // مدير حقيقيّ ⇒ ينجح
+    const list = await listGiftCampaigns();
+    expect(list.find((c) => c.id === camp.campaignId)?.status).toBe("CLOSED");
+  });
+
+  it("قفل الحملة يسلسل هديّتين متزامنتين ويمنع تجاوز الميزانيّة بلقطة قديمة (تدقيق Codex P1+P2)", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    const camp = await createGiftCampaign({ name: "حملة تزامن", budgetCost: "1500" }, actor);
+    // كلٌّ 10×100=1000 — فرادى تحت السقف (1500)، مجتمعتين 2000 > 1500. بلا قفل تسلسليّ + قراءة حيّة
+    // (الإصلاح): كلاهما يريان مُنفَقاً صفراً فيُنجَزان معاً (يتسرّب التجاوز). بالإصلاح: الأولى تُقفَل
+    // فتُنجَز منفردةً تحت السقف، والثانية (بعد تحرّر القفل) تقرأ إنفاقها المُلتزَم حيّاً فتتجاوز فتُعلَّق.
+    const [r1, r2] = await Promise.all([
+      createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, mgrA),
+      createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, mgrB),
+    ]);
+    const statuses = [r1.status, r2.status].sort();
+    expect(statuses).toEqual(["DELIVERED", "PENDING_APPROVAL"]);
   });
 
   it("listGiftCampaigns.spent يجمع المُنجَز فقط (لا يحتسب المعلَّق)", async () => {

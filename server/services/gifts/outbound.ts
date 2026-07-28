@@ -68,11 +68,12 @@ async function convertLines(tx: Tx, lines: OutboundGiftLineInput[]): Promise<Con
 }
 
 /**
- * يقفل صفّ الحملة (إن وُجدت) — يسلسل الهدايا المتزامنة المرتبطة بنفس الحملة (نمط قفل ATP في الحجوزات) فلا
- * يتجاوز مجموعها الميزانيّة رغم فحصٍ متزامن لكل واحدة على حِدة. يرمي إن كانت غير موجودة أو مغلقة، ويعيد
- * true إن كانت هذه الهدية ستُجاوِز الميزانيّة (تُفرَض حتى على المدير — نمط عتبة التكلفة العامة).
+ * المرحلة ١ لقفل الحملة: تُستدعى **قبل** أي قفل مخزون/متغيّرات — يطابق ترتيب approveGift (حملة ← مخزون ←
+ * متغيّرات) فلا ينعكس الترتيب بين الإنشاء والاعتماد (تدقيق Codex P2 — ترتيبٌ معكوس يُنتج deadlock حين
+ * يتزامن إنشاءُ هديةٍ مع اعتماد أخرى لنفس الحملة/الصنف). يرمي إن كانت الحملة غير موجودة أو مغلقة، ويعيد
+ * budgetCost (أو null) لاستعماله لاحقاً في المرحلة ٢ بعد معرفة تكلفة الهدية.
  */
-async function lockCampaignAndCheckBudget(tx: Tx, campaignId: number, additionalCost: Decimal): Promise<boolean> {
+async function lockCampaignRow(tx: Tx, campaignId: number): Promise<string | null> {
   const camp = (
     await tx
       .select({ status: giftCampaigns.status, budgetCost: giftCampaigns.budgetCost })
@@ -83,15 +84,26 @@ async function lockCampaignAndCheckBudget(tx: Tx, campaignId: number, additional
   )[0];
   if (!camp) throw new TRPCError({ code: "NOT_FOUND", message: "الحملة غير موجودة" });
   if (camp.status !== "ACTIVE") throw new TRPCError({ code: "BAD_REQUEST", message: "الحملة مغلقة — لا يمكن ربط هدية جديدة بها" });
-  if (camp.budgetCost == null) return false;
-  const spentRow = (
-    await tx
-      .select({ spent: giftVouchers.totalCost })
-      .from(giftVouchers)
-      .where(and(eq(giftVouchers.campaignId, campaignId), eq(giftVouchers.status, "DELIVERED")))
-  );
+  return camp.budgetCost;
+}
+
+/**
+ * المرحلة ٢: تتحقّق من الميزانيّة بعد حساب تكلفة الهدية (القفل من المرحلة ١ لا يزال سارياً لنفس المعاملة).
+ * ⚠️ قراءة المُنفَق **يجب** أن تكون FOR UPDATE (قراءة حيّة) لا SELECT عاديّاً (تدقيق Codex P1): تحت
+ * REPEATABLE READ الافتراضي في MySQL، قراءةٌ عاديّة تُرجع لقطة المعاملة المُثبَّتة عند أوّل قراءةٍ فيها
+ * (قبل انتظار قفل الحملة أعلاه) — فلا ترى هديةً منافِسةً على نفس الحملة التزمت (commit) بعد أخذ اللقطة
+ * وقبل حصولنا على القفل، فيتّفق مديران على «متبقٍّ كافٍ» يتجاوز مجموعهما الميزانيّة فعلياً. FOR UPDATE
+ * يفرض قراءةً حيّةً (current read) تتجاوز اللقطة القديمة، مطابقةً لأحدث التزامٍ فعليّ.
+ */
+async function checkCampaignBudget(tx: Tx, campaignId: number, budgetCost: string | null, additionalCost: Decimal): Promise<boolean> {
+  if (budgetCost == null) return false;
+  const spentRow = await tx
+    .select({ spent: giftVouchers.totalCost })
+    .from(giftVouchers)
+    .where(and(eq(giftVouchers.campaignId, campaignId), eq(giftVouchers.status, "DELIVERED")))
+    .for("update");
   const spent = spentRow.reduce((acc, r) => acc.plus(money(r.spent ?? "0")), money(0));
-  return spent.plus(additionalCost).gt(money(camp.budgetCost));
+  return spent.plus(additionalCost).gt(money(budgetCost));
 }
 
 /** يقفل المتغيّرات تصاعدياً ويقرأ WAVG (costPrice لكل وحدة أساس). يعيد خريطة التكلفة. */
@@ -167,6 +179,12 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
 
     const converted = await convertLines(tx, input.lines);
     const variantIds = Array.from(new Set(converted.map((c) => c.variantId))).sort((a, b) => a - b);
+
+    // ربط حملة (G-م٧) — المرحلة ١: قفل صفّ الحملة **قبل** قفل المخزون/المتغيّرات أدناه (يطابق ترتيب
+    // approveGift: حملة ← مخزون ← متغيّرات — تدقيق Codex P2، ترتيبٌ معكوس بين المسارين يُنتج deadlock).
+    // يرمي فوراً إن كانت الحملة مغلقة/غير موجودة، ويحفظ الميزانيّة لفحصها في المرحلة ٢ بعد حساب التكلفة.
+    const campaignBudget = input.campaignId != null ? await lockCampaignRow(tx, input.campaignId) : null;
+
     // قفل branchStock قبل productVariants (توحيد الترتيب مع الوارد/الشراء ⇒ لا deadlock — تدقيق Codex P1).
     await ensureAndLockBranchStock(tx, variantIds, input.branchId);
     const costMap = await lockCosts(tx, variantIds);
@@ -183,8 +201,8 @@ export async function createOutboundGift(input: CreateOutboundGiftInput, actor: 
     });
     const totalCost = round2(total);
 
-    // ربط حملة (G-م٧): يقفل صفّها ويتحقّق من حالتها/ميزانيّتها قبل قرار الاعتماد (يرمي إن كانت مغلقة/غير موجودة).
-    const overCampaignBudget = input.campaignId != null ? await lockCampaignAndCheckBudget(tx, input.campaignId, totalCost) : false;
+    // ربط حملة — المرحلة ٢: فحص الميزانيّة الآن بعد معرفة التكلفة (القفل من المرحلة ١ لا يزال سارياً).
+    const overCampaignBudget = input.campaignId != null ? await checkCampaignBudget(tx, input.campaignId, campaignBudget, totalCost) : false;
 
     // حوكمة SOD: admin يُنجز مباشرةً؛ المدير يُنجز تحت العتبة (العامة وميزانيّة الحملة) فقط؛ غيرهما يلزمه اعتماد دائماً.
     const isAdmin = actor.role === "admin";
