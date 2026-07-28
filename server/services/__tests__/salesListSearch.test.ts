@@ -26,6 +26,12 @@ function adminCtx(): TrpcContext {
   };
 }
 const caller = () => appRouter.createCaller(adminCtx());
+function cashierCaller(userId: number) {
+  return appRouter.createCaller({
+    ...adminCtx(),
+    user: { id: userId, role: "cashier", branchId: 1, name: `c${userId}`, isActive: true } as unknown as TrpcContext["user"],
+  });
+}
 
 const TABLES = [
   "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "invoiceItems", "invoices",
@@ -45,7 +51,10 @@ beforeEach(async () => {
   await truncateTables(TABLES);
   const d = db();
   await d.insert(s.branches).values([{ id: 1, name: "MAIN", code: "MAIN", type: "MAIN" }]);
-  await d.insert(s.users).values({ id: 1, openId: "admin", name: "admin", role: "admin", loginMethod: "local" });
+  await d.insert(s.users).values([
+    { id: 1, openId: "admin", name: "علي البائع", role: "admin", loginMethod: "local", branchId: 1 },
+    { id: 2, openId: "cashier-2", name: "زينب البائعة", role: "cashier", loginMethod: "local", branchId: 1 },
+  ]);
   await d.insert(s.products).values({ id: 1, name: "قلم" });
   await d.insert(s.productVariants).values({ id: 1, productId: 1, sku: "PEN-1", costPrice: "0.00" });
   await d.insert(s.productUnits).values([{ id: 1, variantId: 1, unitName: "قطعة", conversionFactor: "1", isBaseUnit: true }]);
@@ -89,14 +98,42 @@ beforeEach(async () => {
 });
 
 /** بيع آجل لعميل محدّد. */
-async function sale(customerId: number) {
+async function sale(customerId: number, userId = 1) {
   return createSale(
     { branchId: 1, customerId, sourceType: "ORDER", lines: [{ variantId: 1, productUnitId: 1, quantity: "1" }] },
-    actor,
+    { ...actor, userId },
   );
 }
 
 describe("sales.list — بحث خادميّ (q) + ترقيم offset", () => {
+  it("يعيد اسم موظف المبيعات الذي أنشأ الفاتورة في list وlistPage", async () => {
+    const inv = await sale(1);
+
+    const rows = await caller().sales.list({ limit: 10 });
+    expect(rows.find((r) => r.id === inv.invoiceId)?.salespersonName).toBe("علي البائع");
+
+    const page = await caller().sales.listPage({ limit: 10 });
+    expect(page.rows.find((r) => r.id === inv.invoiceId)?.salespersonName).toBe("علي البائع");
+  });
+
+  it("يثبّت لقطة اسم البائع، يفلتر للمدير، ويمنع الموظف من فاتورة زميله", async () => {
+    const mine = await sale(1, 1);
+    const other = await sale(2, 2);
+    // تعديل اسم الحساب لاحقاً لا يغيّر المستند التاريخي.
+    await db().update(s.users).set({ name: "اسم جديد" }).where(eq(s.users.id, 1));
+    const historical = await caller().sales.list({ salespersonId: 1, limit: 20 });
+    expect(historical.map((r) => r.id)).toEqual([mine.invoiceId]);
+    expect(historical[0].salespersonName).toBe("علي البائع");
+
+    const filteredOther = await caller().sales.list({ salespersonId: 2, limit: 20 });
+    expect(filteredOther.map((r) => r.id)).toEqual([other.invoiceId]);
+
+    // تمرير salespersonId لزميل لا يتجاوز عزل المالك، والرابط المباشر محجوب أيضاً.
+    const ownRows = await cashierCaller(1).sales.list({ salespersonId: 2, limit: 20 });
+    expect(ownRows.map((r) => r.id)).toEqual([mine.invoiceId]);
+    expect(await cashierCaller(1).sales.get({ invoiceId: other.invoiceId })).toBeNull();
+  });
+
   it("ب١+ب٣: فاتورة العميل خارج الصفحة الأولى تُوجَد بالبحث، وcount يطابق صفوف list", async () => {
     // ٦ فواتير لزينب ثمّ واحدة لأحمد أقدمُ منها جميعاً (الترتيب desc بالـid ⇒ أحمد الأخير).
     const ahmed = await sale(1);

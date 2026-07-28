@@ -54,6 +54,8 @@ export interface EntryInput {
   notes?: string;
   /** حارس بنيوي ضدّ التكرار (مثل «SALE:<invoiceId>») ⇒ ER_DUP_ENTRY عند قيد مزدوج. فارغ للقيود المتكرّرة مشروعاً. */
   dedupeKey?: string | null;
+  createdBy?: number | null;
+  createdByNameSnapshot?: string | null;
 }
 
 /** Insert one ledger entry. RETURN entries carry negative values by convention.
@@ -79,6 +81,8 @@ export async function postEntry(tx: Tx, e: EntryInput): Promise<void> {
     amount: toDbMoney(e.amount ?? 0),
     entryDate,
     notes: e.notes,
+    createdBy: e.createdBy ?? null,
+    createdByNameSnapshot: e.createdByNameSnapshot ?? null,
   });
 }
 
