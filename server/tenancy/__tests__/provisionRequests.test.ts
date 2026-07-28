@@ -96,7 +96,7 @@ describe("createProvisionRequest — تحقّق ومنع التكرار", () => 
       requestedByAdminId: adminId,
     });
     expect(id).toBeGreaterThan(0);
-    expect(tempPassword.length).toBeGreaterThanOrEqual(10);
+    expect(tempPassword.length).toBeGreaterThanOrEqual(8);
 
     const row = (await db().select().from(companyProvisionRequests).where(eq(companyProvisionRequests.id, id)).limit(1))[0];
     expect(row.status).toBe("PENDING");
@@ -250,7 +250,7 @@ describe("platformAdminRouter.companies — طبقة الراوتر", () => {
       code: "acme", name: "أكمي", adminEmail: "admin@acme.test", adminUsername: "admin", demo: false,
     });
     expect(res.requestId).toBeGreaterThan(0);
-    expect(res.tempPassword.length).toBeGreaterThanOrEqual(10);
+    expect(res.tempPassword.length).toBeGreaterThanOrEqual(8);
   });
 
   it("requestCreate يرفض بريداً غير صالح (zod)", async () => {

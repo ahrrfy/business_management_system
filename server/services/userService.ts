@@ -143,18 +143,21 @@ function rethrowDup(e: any): never {
   throw e;
 }
 
-/** توليد كلمة مرور قوية عشوائية (للاستخدام الخادمي عند إعادة التعيين). */
+/**
+ * توليد كلمة مرور قوية عشوائية (للاستخدام الخادمي عند إعادة التعيين/الإنشاء).
+ * ⚠️ مبسّطة عمداً (قرار المالك ٢٨/٧): حرف كبير + ٣ أحرف صغيرة + ٤-٥ أرقام — بلا رموز
+ * خاصة ولا خلط عشوائي للترتيب، لتسهيل كتابتها يدوياً في أول دخول. الحساب يُلزَم بتغييرها
+ * خلال ٧٢ ساعة (mustChangePassword) فلا حاجة لتعقيدٍ أكبر هنا.
+ */
 export function generateStrongPassword(): string {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
   const lower = "abcdefghjkmnpqrstuvwxyz";
   const digits = "23456789";
-  const special = "@#$%!";
-  const all = upper + lower + digits + special;
-  // ضمان وجود كل فئة + طول عشوائي 10-14 حرف
   const pick = (s: string) => s[Math.floor(Math.random() * s.length)];
-  const base = [pick(upper), pick(lower), pick(digits), pick(special)];
-  const extra = Array.from({ length: 8 }, () => pick(all));
-  return [...base, ...extra].sort(() => Math.random() - 0.5).join("");
+  const digitCount = Math.random() < 0.5 ? 4 : 5;
+  const letters = pick(upper) + Array.from({ length: 3 }, () => pick(lower)).join("");
+  const numbers = Array.from({ length: digitCount }, () => pick(digits)).join("");
+  return letters + numbers;
 }
 
 /** إنشاء مستخدم جديد (غلاف ذرّي مستقلّ). */
