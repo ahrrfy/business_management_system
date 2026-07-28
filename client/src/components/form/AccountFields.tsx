@@ -233,17 +233,17 @@ export function AccountFields({ value, onChange, showName, showJobData, nameForS
       const res = await utils.users.generatePassword.fetch();
       onChange({ password: res.password, passwordConfirm: res.password });
     } catch {
-      // fallback محلي يضمن اجتياز السياسة حتماً: حرف كبير + رمز مضمونان (كان عشوائياً
-      // خالصاً فيفشل أحياناً في تحقيق فئات السياسة).
+      // fallback محلي بنفس صيغة الخادم المبسّطة: حرف كبير + ٣ أحرف صغيرة + ٤-٥ أرقام
+      // (بلا رموز خاصة) — سهلة الكتابة يدوياً، وتجتاز السياسة عبر الحرف الكبير الأول.
       const upper = "ABCDEFGHJKMNPQRSTUVWXYZ";
-      const symbols = "@#$%!";
-      const chars = upper + "abcdefghjkmnpqrstuvwxyz23456789" + symbols;
-      const body = Array.from({ length: 10 }, () => chars[Math.floor(Math.random() * chars.length)]);
-      const pw = [
-        upper[Math.floor(Math.random() * upper.length)],
-        symbols[Math.floor(Math.random() * symbols.length)],
-        ...body,
-      ].join("");
+      const lower = "abcdefghjkmnpqrstuvwxyz";
+      const digits = "23456789";
+      const pick = (s: string) => s[Math.floor(Math.random() * s.length)];
+      const digitCount = Math.random() < 0.5 ? 4 : 5;
+      const pw =
+        pick(upper) +
+        Array.from({ length: 3 }, () => pick(lower)).join("") +
+        Array.from({ length: digitCount }, () => pick(digits)).join("");
       onChange({ password: pw, passwordConfirm: pw });
     }
   }

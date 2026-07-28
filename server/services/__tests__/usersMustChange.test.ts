@@ -7,9 +7,18 @@ import { generateStrongPassword } from "../userService";
 import { isStrongPassword } from "../../../shared/const";
 
 describe("generateStrongPassword", () => {
-  it("تولّد كلمة مرور قوية بأكثر من 8 خانات", () => {
-    const pw = generateStrongPassword();
-    expect(pw.length).toBeGreaterThanOrEqual(10);
+  it("تولّد كلمة مرور بطول ٨-٩ خانات (حرف كبير+٣صغار+٤-٥أرقام)", () => {
+    for (let i = 0; i < 20; i++) {
+      const pw = generateStrongPassword();
+      expect(pw.length === 8 || pw.length === 9, `طول غير متوقّع: ${pw}`).toBe(true);
+    }
+  });
+
+  it("تبدأ بحرف كبير وتنتهي بـ٤ أو ٥ أرقام", () => {
+    for (let i = 0; i < 20; i++) {
+      const pw = generateStrongPassword();
+      expect(pw, pw).toMatch(/^[A-Z][a-z]{3}\d{4,5}$/);
+    }
   });
 
   it("الكلمة المولّدة تجتاز isStrongPassword", () => {
