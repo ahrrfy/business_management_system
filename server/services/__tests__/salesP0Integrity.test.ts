@@ -254,7 +254,7 @@ describe("P0 cash-source integrity", () => {
     expect(await db().select().from(s.receipts)).toHaveLength(0);
   });
 
-  it("allows an arbitrary opening only for the first shift, then requires exact continuity", async () => {
+  it("each shift is independent — any opening is accepted, no coupling to the previous close", async () => {
     const first = await openShift(
       { branchId: 1, openingBalance: "123" },
       cashier,
@@ -270,16 +270,13 @@ describe("P0 cash-source integrity", () => {
       })
       .where(eq(s.shifts.id, first.shiftId));
 
-    await expect(
-      openShift(
-        {
-          branchId: 1,
-          openingBalance: "500",
-          openingDiscrepancyReason: "cash appeared without a recorded source",
-        },
-        { userId: 2, branchId: 1, role: "cashier" },
-      ),
-    ).rejects.toMatchObject({ code: "PRECONDITION_FAILED" });
-    expect(await db().select().from(s.shifts)).toHaveLength(1);
+    // الوردية التالية تبدأ بعهدةٍ مختلفة (500) عن متبقّي السابقة (300) — تُقبَل بلا حظر ولا سبب.
+    const second = await openShift(
+      { branchId: 1, openingBalance: "500" },
+      { userId: 2, branchId: 1, role: "cashier" },
+    );
+    expect(second.expectedOpening).toBeNull();
+    expect(second.hasDiscrepancy).toBe(false);
+    expect(await db().select().from(s.shifts)).toHaveLength(2);
   });
 });

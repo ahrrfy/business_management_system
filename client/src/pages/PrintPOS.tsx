@@ -14,7 +14,6 @@ import {
 import { categoryIcon, isCustomPriceSku, serviceIcon } from "@/lib/printServices";
 import { useDebouncedValue } from "@/hooks/useDebouncedValue";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
-import { useOpeningContinuity, OpeningContinuityInline } from "@/components/treasury/useOpeningContinuity";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, Search, Sun, Moon, Power, Globe, Check, X, Receipt as ReceiptIcon, User, Banknote, CreditCard, RefreshCw, Zap, AlertTriangle, Pencil } from "lucide-react";
@@ -317,8 +316,6 @@ export default function PrintPOS() {
     onError: (e) => setMessage({ kind: "err", text: e.message }),
   });
 
-  // ①ج استمرارية نقد الورديات: المتوقَّع = متبقّي آخر وردية PRINT_SERVICES مغلقة لهذا الفرع (يُطابق المُدخَل).
-  const openingCont = useOpeningContinuity({ branchId, shiftType: "PRINT_SERVICES", opening, enabled: !shift });
 
   // ── اختصارات ──
   useEffect(() => {
@@ -399,9 +396,8 @@ export default function PrintPOS() {
           <input dir="ltr" value={opening} onChange={(e) => setOpening(e.target.value.replace(/[^0-9]/g, ""))}
             style={{ width: "100%", height: 48, border: `1.5px solid ${C.border}`, borderRadius: 10, background: C.muted, color: C.fg, fontFamily: "inherit", fontSize: 18, fontWeight: 800, padding: "0 14px", outline: "none", textAlign: "right", boxSizing: "border-box", marginBottom: 16 }} />
           {message && <div style={{ fontSize: 13, color: message.kind === "ok" ? C.success : message.kind === "warn" ? C.amber : C.danger, marginBottom: 12 }}>{message.text}</div>}
-          <OpeningContinuityInline C={C} oc={openingCont} />
-          <button disabled={openShift.isPending || needsBranchChoice || openingCont.blocked} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "PRINT_SERVICES", openingDiscrepancyReason: openingCont.reasonPayload })}
-            style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice || openingCont.blocked ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice || openingCont.blocked ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice || openingCont.blocked ? "not-allowed" : "pointer" }}>
+          <button disabled={openShift.isPending || needsBranchChoice} onClick={() => openShift.mutate({ branchId, openingBalance: opening || "0", shiftType: "PRINT_SERVICES" })}
+            style={{ width: "100%", height: 52, background: openShift.isPending || needsBranchChoice ? C.muted : C.primary, color: openShift.isPending || needsBranchChoice ? C.mutedFg : C.primaryFg, border: "none", borderRadius: 10, fontFamily: "inherit", fontSize: 15, fontWeight: 800, cursor: openShift.isPending || needsBranchChoice ? "not-allowed" : "pointer" }}>
             {openShift.isPending ? "جارٍ الفتح…" : needsBranchChoice ? "اختر الفرع أولاً" : "فتح الوردية"}
           </button>
           <Link href="/" style={{ display: "block", textAlign: "center", marginTop: 14, fontSize: 13, color: C.mutedFg }}>← الرئيسية</Link>
