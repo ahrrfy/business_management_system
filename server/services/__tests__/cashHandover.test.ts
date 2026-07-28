@@ -140,9 +140,9 @@ describe("cashHandoverService — عبر closeShift (المسار الحقيقي
     );
     expect(r1.handover!.handoverNumber).toMatch(/-0001$/);
 
-    // المتبقّي المثبت بعد تسليم 50 من أصل 100 هو 50؛ الوردية التالية لا تُفتح إلا به.
+    // ورديات مستقلّة: الوردية التالية تبدأ بعهدتها الخاصّة بمعزلٍ عن متبقّي السابقة (لا قرن).
     const s2 = await openShift({ branchId: 1, openingBalance: "50" }, { userId: CASHIER2, branchId: 1 });
-    expect(s2.expectedOpening).toBe("50.00");
+    expect(s2.expectedOpening).toBeNull();
     expect(s2.hasDiscrepancy).toBe(false);
     const r2 = await closeShift(
       { shiftId: s2.shiftId, countedCash: "50", handover: { amount: "30", handoverTo: MANAGER1 } },
