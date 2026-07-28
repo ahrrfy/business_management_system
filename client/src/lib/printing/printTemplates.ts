@@ -77,6 +77,7 @@ export interface InvoicePrintData {
   /** الرقم الضريبي **للشركة** (من إعدادات النظام) — يُطبع في «معلومات ضريبية» بجانب رقم العميل. */
   companyTaxId?: string | null;
   paymentMethod?: string | null;
+  salespersonName?: string | null;
   notes?: string | null;
   items: {
     productName: string;
@@ -124,6 +125,7 @@ export async function printInvoiceA4(d: InvoicePrintData): Promise<void> {
     customerAddress: d.customerAddress,
     customerPhone: d.customerPhone,
     paymentMethod: d.paymentMethod,
+    salesRep: d.salespersonName,
     items: d.items.map((it) => ({
       productName: it.productName,
       unitName: it.unitName,

@@ -47,6 +47,7 @@ export default function Invoices() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [status, setStatus] = useState("");
+  const [salespersonId, setSalespersonId] = useState<number | "">("");
   // البحث خادميّ (رقم الفاتورة/اسم العميل): كان محلّياً على الصفحة المُحمَّلة وحدها ⇒ يقول
   // «لا نتائج» عن فاتورة موجودة خارج السقف. debounce ليكتب المستخدم بلا طلب لكل حرف.
   const [q, setQ] = useState("");
@@ -63,6 +64,8 @@ export default function Invoices() {
 
   // الرقم الضريبي للشركة (إعدادات النظام) — يُطبع على A4 بجانب رقم العميل الضريبي إن وُجد.
   const taxSettings = trpc.system.getTaxSettings.useQuery();
+  const me = trpc.auth.me.useQuery();
+  const salespeople = trpc.sales.salespeople.useQuery();
 
   // مدخلات الفلترة المشتركة (بلا limit/offset) — للقائمة وللمجاميع وللتصدير الشامل ⇒ الثلاثة
   // ترى نفس المجموعة حتماً (لا تصدير يخالف ما على الشاشة).
@@ -71,9 +74,10 @@ export default function Invoices() {
       from: from || undefined,
       to: to || undefined,
       status: (status || undefined) as Row["status"] | undefined,
+      salespersonId: salespersonId ? Number(salespersonId) : undefined,
       q: qDebounced || undefined,
     }),
-    [from, to, status, qDebounced],
+    [from, to, status, salespersonId, qDebounced],
   );
 
   // أي تغيير في الفلاتر/البحث يعيدنا للصفحة الأولى (وإلا بقي offset قديماً على مجموعة أصغر
@@ -105,6 +109,7 @@ export default function Invoices() {
         invoiceNumber: d.invoiceNumber,
         invoiceDate: d.invoiceDate,
         customerName: d.customerName,
+        salespersonName: d.salespersonName,
         companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
         subtotal: d.subtotal,
         discountAmount: d.discountAmount,
@@ -184,6 +189,9 @@ export default function Invoices() {
           { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
           { key: "customerName", header: "العميل" },
           { key: "sourceType", header: "المصدر" },
+          { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
+          { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
+          { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
           { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
           { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
           { key: "status", header: "الحالة" },
@@ -201,6 +209,17 @@ export default function Invoices() {
     { accessorKey: "invoiceDate", header: "التاريخ", cell: (c) => fmtDate(c.getValue() as string) },
     { accessorKey: "customerName", header: "العميل", cell: (c) => (c.getValue() as string) ?? "—" },
     { accessorKey: "sourceType", header: "المصدر", cell: (c) => SOURCE[c.getValue() as string] ?? (c.getValue() as string) },
+    { accessorKey: "salespersonName", header: "موظف المبيعات", cell: (c) => (c.getValue() as string) ?? "—" },
+    {
+      id: "shiftDevice",
+      header: "الوردية / المحطة",
+      cell: ({ row }) => (
+        <span className="text-xs">
+          {row.original.shiftId ? `#${row.original.shiftId}` : "—"}
+          {row.original.deviceId ? <span className="block text-muted-foreground font-mono" dir="ltr">{row.original.deviceId}</span> : null}
+        </span>
+      ),
+    },
     { accessorKey: "total", header: "الإجمالي", cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span> },
     { accessorKey: "paidAmount", header: "المدفوع", cell: (c) => <span className="tabular-nums" dir="ltr">{fmt(c.getValue() as string)}</span> },
     {
@@ -237,7 +256,7 @@ export default function Invoices() {
   // الصُفوف المُحَدَّدة + تَجهيز نَصّ TSV ومُلَخَّص واتساب لِزِرّ «نَسخ المُحَدَّد كَـ».
   // الفِكرة: TSV لِلَّصق في Excel، ومُلَخَّص نَصّي مُكَثَّف لِواتساب الإدارة.
   const TSV_HEADERS = useMemo(
-    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "الإجمالي", "المدفوع", "الحالة"],
+    () => ["رقم الفاتورة", "التاريخ", "العميل", "المصدر", "موظف المبيعات", "الوردية", "محطة البيع", "الإجمالي", "المدفوع", "الحالة"],
     [],
   );
   const selectedRows = useMemo(() => data.filter((r) => sel.isSelected(r.id)), [data, sel]);
@@ -248,6 +267,9 @@ export default function Invoices() {
       "التاريخ": fmtDate(r.invoiceDate),
       "العميل": r.customerName ?? "",
       "المصدر": SOURCE[r.sourceType] ?? r.sourceType,
+      "موظف المبيعات": r.salespersonName ?? "",
+      "الوردية": r.shiftId ?? "",
+      "محطة البيع": r.deviceId ?? "",
       "الإجمالي": Number(r.total),
       "المدفوع": Number(r.paidAmount),
       "الحالة": STATUS[r.status] ?? r.status,
@@ -267,7 +289,8 @@ export default function Invoices() {
       sumPaid = sumPaid.plus(p);
       const customer = r.customerName ?? "—";
       const st = STATUS[r.status] ?? r.status;
-      lines.push(`• ${r.invoiceNumber} — ${customer} — ${fmt(r.total)} (${st})`);
+      const salesperson = r.salespersonName ?? "—";
+      lines.push(`• ${r.invoiceNumber} — ${customer} — ${salesperson} — ${fmt(r.total)} (${st})`);
     }
     lines.push("");
     lines.push(`الإجمالي: ${fmt(sumTotal.toString())}`);
@@ -284,7 +307,7 @@ export default function Invoices() {
       />
 
       <Card>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-3 pt-6">
+        <CardContent className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-6">
           <div className="space-y-1">
             <Label className="text-xs">من تاريخ</Label>
             <Input type="date" dir="ltr" value={from} onChange={(e) => setFrom(e.target.value)} />
@@ -302,6 +325,15 @@ export default function Invoices() {
               ))}
             </select>
           </div>
+          <div className="space-y-1">
+            <Label className="text-xs">موظف المبيعات</Label>
+            <select className={selectCls} value={salespersonId} onChange={(e) => setSalespersonId(e.target.value ? Number(e.target.value) : "")}>
+              <option value="">— كل الموظفين —</option>
+              {(salespeople.data ?? []).map((u) => u.id != null && (
+                <option key={u.id} value={u.id}>{u.name}</option>
+              ))}
+            </select>
+          </div>
         </CardContent>
       </Card>
 
@@ -316,10 +348,17 @@ export default function Invoices() {
         serverSearch={{ value: q, onChange: setQ }}
         serverPagination={{ page, onPageChange: setPage, pageSize: PAGE_SIZE, total }}
         toolbar={
-          <Button variant="outline" size="sm" disabled={!total || exporting}
-            onClick={() => void exportAll()}>
-            {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
-          </Button>
+          <>
+            {(me.data?.role === "admin" || me.data?.role === "manager") && (
+              <Button variant="outline" size="sm" onClick={() => navigate("/reports/sales-by-dimension")}>
+                تقرير الموظفين
+              </Button>
+            )}
+            <Button variant="outline" size="sm" disabled={!total || exporting}
+              onClick={() => void exportAll()}>
+              {exporting ? "جارٍ التحضير…" : "تصدير Excel"}
+            </Button>
+          </>
         }
       />
 
@@ -336,6 +375,9 @@ export default function Invoices() {
               { key: "invoiceDate", header: "التاريخ", map: (r) => fmtDate(r.invoiceDate) },
               { key: "customerName", header: "العميل" },
               { key: "sourceType", header: "المصدر", map: (r) => SOURCE[r.sourceType] ?? r.sourceType },
+              { key: "salespersonName", header: "موظف المبيعات", map: (r) => r.salespersonName ?? "" },
+              { key: "shiftId", header: "رقم الوردية", map: (r) => r.shiftId ?? "" },
+              { key: "deviceId", header: "محطة البيع", map: (r) => r.deviceId ?? "" },
               { key: "total", header: "الإجمالي", map: (r) => Number(r.total) },
               { key: "paidAmount", header: "المدفوع", map: (r) => Number(r.paidAmount) },
               { key: "status", header: "الحالة", map: (r) => STATUS[r.status] ?? r.status },

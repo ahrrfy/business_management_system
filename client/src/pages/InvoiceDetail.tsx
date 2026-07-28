@@ -218,6 +218,7 @@ export default function InvoiceDetail() {
               invoiceNumber: data.invoiceNumber,
               invoiceDate: data.invoiceDate,
               customerName: data.customerName,
+              salespersonName: data.salespersonName,
               companyTaxId: taxSettings.data?.taxRegistrationNumber ?? null,
               subtotal: data.subtotal,
               discountAmount: data.discountAmount,
@@ -254,6 +255,9 @@ export default function InvoiceDetail() {
             <div className="md:col-span-2 grid grid-cols-2 gap-x-6 gap-y-4 text-sm content-start">
               <Field label="المصدر">{SOURCE[data.sourceType] ?? data.sourceType}</Field>
               <Field label="العميل">{data.customerName ?? "عميل نقدي"}</Field>
+              <Field label="موظف المبيعات">{data.salespersonName ?? "—"}</Field>
+              <Field label="الوردية">{data.shiftId ? `#${data.shiftId} — ${data.shiftType ?? "—"}` : "—"}</Field>
+              <Field label="محطة البيع"><span dir="ltr" className="font-mono text-xs">{data.deviceId ?? "—"}</span></Field>
               <Field label="التاريخ">{fmtDate(data.invoiceDate)}</Field>
               <Field label="الاستحقاق">{data.dueDate ? String(data.dueDate).slice(0, 10) : "—"}</Field>
               {data.customerId && (
@@ -289,8 +293,42 @@ export default function InvoiceDetail() {
               <div className="whitespace-pre-wrap">{data.notes}</div>
             </div>
           )}
+          {data.status === "CANCELLED" && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+              ألغيت بواسطة: <strong>{data.cancelledByName ?? "غير موثّق"}</strong>
+              {data.cancelledAt ? ` — ${fmtDateTime(data.cancelledAt)}` : ""}
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      {(data.returns ?? []).length > 0 && (
+        <Card>
+          <CardHeader className="pb-3"><CardTitle className="text-base">سجل المرتجعات ومنفّذها</CardTitle></CardHeader>
+          <CardContent className="p-0">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-xs text-muted-foreground">
+                  <tr>
+                    <th className="px-3 py-2 font-medium">التاريخ</th>
+                    <th className="px-3 py-2 font-medium">منفّذ المرتجع</th>
+                    <th className="px-3 py-2 font-medium text-right">القيمة</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {data.returns.map((r) => (
+                    <tr key={r.id} className="border-t">
+                      <td className="px-3 py-2" dir="ltr">{fmtDateTime(r.createdAt)}</td>
+                      <td className="px-3 py-2">{r.performedByName ?? "غير موثّق"}</td>
+                      <td className="px-3 py-2 text-right tabular-nums" dir="ltr">{fmt(D(r.amount).abs().toString())}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader className="pb-3"><CardTitle className="text-base">البنود</CardTitle></CardHeader>

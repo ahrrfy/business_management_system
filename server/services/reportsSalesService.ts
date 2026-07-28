@@ -146,6 +146,14 @@ export interface SalesByDimensionRow {
   label: string;
   invoices: number;
   revenue: string;
+  /** الإجمالي قبل خصم الخصومات والمرتجعات. */
+  grossSales: string;
+  /** خصومات رأس الفاتورة. */
+  discounts: string;
+  /** القيمة المرتجعة. */
+  returns: string;
+  /** الصافي بعد الخصومات والمرتجعات (يساوي revenue للتوافق). */
+  netSales: string;
   paid: string;
   unpaid: string;
   /** تكلفة المبيعات (SUM costTotal) — تحليل الربحية الحقيقي. */
@@ -158,7 +166,19 @@ export interface SalesByDimensionRow {
 
 export interface SalesByDimensionResult {
   rows: SalesByDimensionRow[];
-  totals: { invoices: number; revenue: string; paid: string; unpaid: string; cost: string; profit: string; marginPct: string };
+  totals: {
+    invoices: number;
+    revenue: string;
+    grossSales: string;
+    discounts: string;
+    returns: string;
+    netSales: string;
+    paid: string;
+    unpaid: string;
+    cost: string;
+    profit: string;
+    marginPct: string;
+  };
 }
 
 /** هامش % decimal-safe (نصّ بمنزلتين)؛ "0.00" حين الإيراد صفر. */
@@ -174,13 +194,14 @@ export async function getSalesByDimension(opts: {
   dimension: SalesDimension;
 }): Promise<SalesByDimensionResult> {
   const db = getDb();
-  if (!db) return { rows: [], totals: { invoices: 0, revenue: "0", paid: "0", unpaid: "0", cost: "0", profit: "0", marginPct: "0.00" } };
+  if (!db) return { rows: [], totals: { invoices: 0, revenue: "0", grossSales: "0", discounts: "0", returns: "0", netSales: "0", paid: "0", unpaid: "0", cost: "0", profit: "0", marginPct: "0.00" } };
 
   // اختيار محور التجميع + التسمية + الانضمام المطلوب (إن وُجِد).
   // المفتاح key نصّي دائماً (للتمييز في الواجهة)؛ التسمية label معروضة (تتراجع للمفتاح عند NULL).
   let groupKey;
   let labelExpr;
   let joinClause = sql``;
+  let groupLabel = true;
   switch (opts.dimension) {
     case "customer":
       groupKey = sql`i.customerId`;
@@ -198,8 +219,9 @@ export async function getSalesByDimension(opts: {
       break;
     case "cashier":
       groupKey = sql`i.createdBy`;
-      labelExpr = sql`COALESCE(u.name, 'غير معروف')`;
+      labelExpr = sql`COALESCE(MAX(i.salespersonNameSnapshot), MAX(u.name), 'غير معروف')`;
       joinClause = sql`LEFT JOIN users u ON u.id = i.createdBy`;
+      groupLabel = false;
       break;
     default:
       groupKey = sql`i.customerId`;
@@ -233,6 +255,14 @@ export async function getSalesByDimension(opts: {
           CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
             THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
             ELSE ii.total END), 0) AS CHAR) AS revenue,
+          CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
+            THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+            ELSE ii.total END), 0) AS CHAR) AS grossSales,
+          CAST(0 AS CHAR) AS discounts,
+          CAST(0 AS CHAR) AS returns,
+          CAST(COALESCE(SUM(CASE WHEN ii.baseQuantity > 0
+            THEN ii.total * (ii.baseQuantity - ii.returnedBaseQuantity) / ii.baseQuantity
+            ELSE ii.total END), 0) AS CHAR) AS netSales,
           CAST(0 AS CHAR) AS paid,
           CAST(0 AS CHAR) AS unpaid,
           CAST(COALESCE(SUM((ii.baseQuantity - ii.returnedRestockedBaseQuantity) * ii.unitCost), 0) AS CHAR) AS cost
@@ -258,6 +288,10 @@ export async function getSalesByDimension(opts: {
         ${labelExpr} AS label,
         COUNT(*) AS invoices,
         CAST(COALESCE(SUM(i.total - i.returnedTotal), 0) AS CHAR) AS revenue,
+        CAST(COALESCE(SUM(i.total + i.discountAmount), 0) AS CHAR) AS grossSales,
+        CAST(COALESCE(SUM(i.discountAmount), 0) AS CHAR) AS discounts,
+        CAST(COALESCE(SUM(i.returnedTotal), 0) AS CHAR) AS returns,
+        CAST(COALESCE(SUM(i.total - i.returnedTotal), 0) AS CHAR) AS netSales,
         CAST(COALESCE(SUM(i.paidAmount), 0) AS CHAR) AS paid,
         CAST(COALESCE(SUM(GREATEST(i.total - i.paidAmount - i.returnedTotal, 0)), 0) AS CHAR) AS unpaid,
         CAST(COALESCE(SUM(COALESCE(ic.cost, i.costTotal)), 0) AS CHAR) AS cost
@@ -270,7 +304,7 @@ export async function getSalesByDimension(opts: {
       ) ic ON ic.invoiceId = i.id
       ${joinClause}
       WHERE ${where}
-      GROUP BY ${groupKey}, label
+      GROUP BY ${groupKey}${groupLabel ? sql`, label` : sql``}
       ORDER BY SUM(i.total - i.returnedTotal) DESC
     `),
   );
@@ -282,11 +316,19 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
 
   let invCount = 0;
   let revenue = money(0);
+  let grossSales = money(0);
+  let discounts = money(0);
+  let returns = money(0);
+  let netSales = money(0);
   let paid = money(0);
   let unpaid = money(0);
   let cost = money(0);
   const out: SalesByDimensionRow[] = rows.map((r) => {
     const rev = money(r.revenue ?? 0);
+    const gross = money(r.grossSales ?? r.revenue ?? 0);
+    const disc = money(r.discounts ?? 0);
+    const returned = money(r.returns ?? 0);
+    const net = money(r.netSales ?? r.revenue ?? 0);
     const pd = money(r.paid ?? 0);
     const up = money(r.unpaid ?? 0);
     const cs = money(r.cost ?? 0);
@@ -294,6 +336,10 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
     const cnt = Number(r.invoices ?? 0);
     invCount += cnt;
     revenue = revenue.add(rev);
+    grossSales = grossSales.add(gross);
+    discounts = discounts.add(disc);
+    returns = returns.add(returned);
+    netSales = netSales.add(net);
     paid = paid.add(pd);
     unpaid = unpaid.add(up);
     cost = cost.add(cs);
@@ -302,6 +348,10 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
       label: String(r.label ?? "—"),
       invoices: cnt,
       revenue: toDbMoney(rev),
+      grossSales: toDbMoney(gross),
+      discounts: toDbMoney(disc),
+      returns: toDbMoney(returned),
+      netSales: toDbMoney(net),
       paid: toDbMoney(pd),
       unpaid: toDbMoney(up),
       cost: toDbMoney(cs),
@@ -316,6 +366,10 @@ function summarizeDimensionRows(rows: any[]): SalesByDimensionResult {
     totals: {
       invoices: invCount,
       revenue: toDbMoney(revenue),
+      grossSales: toDbMoney(grossSales),
+      discounts: toDbMoney(discounts),
+      returns: toDbMoney(returns),
+      netSales: toDbMoney(netSales),
       paid: toDbMoney(paid),
       unpaid: toDbMoney(unpaid),
       cost: toDbMoney(cost),

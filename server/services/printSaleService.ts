@@ -36,6 +36,7 @@ import { getUnitPrice, resolveTier, type PriceTier } from "./pricing";
 import { withTx, type Actor } from "./tx";
 import { consumeApproval, validateApproval } from "./creditApprovalService";
 import { extractInsertId } from "../lib/insertId";
+import { userNameSnapshot } from "./userSnapshot";
 
 /** علامة نوع المنتج لخدمات الطباعة: لا مخزون ذاتي، والاستهلاك عبر وصفة المواد فقط.
  *  (مخزّنة في products.productType — لا تحتاج تغيير مخطّط.) */
@@ -360,6 +361,7 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
     // ٩. رأس الفاتورة.
     const invoiceNumber = await nextInvoiceNumber(tx, input.branchId);
     const status = computeInvoiceStatus(toDbMoney(effectiveTotalD), toDbMoney(paidNow));
+    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
     const insRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "POS",
@@ -381,6 +383,7 @@ export async function createPrintSale(input: CreatePrintSaleInput, actor: Actor)
       paymentMethod: input.payment?.method ?? null,
       paymentDate: paidNow.gt(0) ? new Date() : null,
       notes: input.notes ?? null,
+      salespersonNameSnapshot,
       createdBy: actor.userId,
     });
     const invoiceId = extractInsertId(insRes);

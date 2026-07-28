@@ -1,17 +1,19 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, isNotNull, lt, or, sql } from "drizzle-orm";
 import { paginateKeyset, countIfOffset } from "../lib/paginateKeyset";
 import { escLike } from "../lib/sqlLike";
 import { normalizeSearchText } from "@shared/searchNormalize";
 import { z } from "zod";
 import {
   customers,
+  accountingEntries,
   invoiceItems,
   invoices,
   productUnits,
   productVariants,
   products,
   receipts,
+  shifts,
 } from "../../drizzle/schema";
 import { getDb } from "../db";
 import { logger } from "../logger";
@@ -166,6 +168,7 @@ const salesListInput = z
     to: ymd.optional(),
     status: z.enum(["PENDING", "CONFIRMED", "PAID", "PARTIALLY_PAID", "CANCELLED", "RETURNED"]).optional(),
     customerId: z.number().int().positive().optional(),
+    salespersonId: z.number().int().positive().optional(),
     // بحث نصّي خادميّ: رقم الفاتورة أو اسم العميل. كان البحث محلّياً على الصفحة المُحمَّلة وحدها
     // (سقف ٢٠٠) ⇒ فاتورة أقدم تُعطي «لا نتائج» وهي موجودة. خادميّ ⇒ يطال كل المطابق للفلتر.
     q: z.string().trim().min(1).optional(),
@@ -186,6 +189,8 @@ export function buildSalesListConds(input: SalesListInput, scopedBranchId: numbe
   if (input?.to) conds.push(lt(invoices.invoiceDate, localNextDayStart(input.to)));
   if (input?.status) conds.push(eq(invoices.status, input.status));
   if (input?.customerId) conds.push(eq(invoices.customerId, input.customerId));
+  // المدير/الأدمن يستطيعان اختيار موظف؛ الموظف العادي يبقى مُجبَراً على نفسه.
+  if (scopedOwnerId == null && input?.salespersonId) conds.push(eq(invoices.createdBy, input.salespersonId));
   if (input?.q) {
     // رقم الفاتورة يُطابَق خاماً (رموز/أرقام لا معنى للتطبيع العربي فيها)، واسم العميل عبر
     // customers.searchNorm المطبَّع عربياً (D2 ١/٧ — «احمد» يجد «أحمد»)، نفس نمط customerService.
@@ -221,6 +226,7 @@ export const saleRouter = router({
         // تقريب نقدي IQD للبيع النقدي الكامل (يُحسب على الخادم، يُسجَّل ADJUST لفرق التقريب).
         cashRoundIQD: z.boolean().optional(),
         clientRequestId: z.string().optional(),
+        deviceId: z.string().trim().min(1).max(64).optional(),
         couponCode: z.string().trim().min(3).max(64).optional(),
         notes: z.string().optional(),
         // موافقة مدير لتجاوز حدّ الائتمان (بريد+كلمة مرور، تُتحقَّق خادمياً).
@@ -362,9 +368,13 @@ export const saleRouter = router({
             paidAmount: invoices.paidAmount,
             status: invoices.status,
             customerName: customers.name,
+            salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
+            shiftId: invoices.shiftId,
+            deviceId: invoices.posDeviceId,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(users, eq(invoices.createdBy, users.id))
           .where(where)
           .orderBy(desc(invoices.id))
           .limit(lim)
@@ -398,9 +408,13 @@ export const saleRouter = router({
             paidAmount: invoices.paidAmount,
             status: invoices.status,
             customerName: customers.name,
+            salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
+            shiftId: invoices.shiftId,
+            deviceId: invoices.posDeviceId,
           })
           .from(invoices)
           .leftJoin(customers, eq(invoices.customerId, customers.id))
+          .leftJoin(users, eq(invoices.createdBy, users.id))
           .where(where)
           .orderBy(desc(invoices.id))
           .limit(lim)
@@ -408,6 +422,25 @@ export const saleRouter = router({
       });
       return { rows, nextCursor, hasMore };
     }),
+
+  /** موظفو المبيعات الذين لديهم فواتير ضمن نطاق صلاحية المستدعي — لتغذية الفلتر بلا كشف دليل المستخدمين. */
+  salespeople: salesReadProcedure.query(async ({ ctx }) => {
+    const db = getDb();
+    if (!db) return [];
+    const conds = [isNotNull(invoices.createdBy)];
+    if (ctx.scopedBranchId != null) conds.push(eq(invoices.branchId, ctx.scopedBranchId));
+    if (ctx.scopedOwnerId != null) conds.push(eq(invoices.createdBy, ctx.scopedOwnerId));
+    return db
+      .select({
+        id: invoices.createdBy,
+        name: sql<string>`COALESCE(MAX(${invoices.salespersonNameSnapshot}), MAX(${users.name}), '—')`,
+      })
+      .from(invoices)
+      .leftJoin(users, eq(invoices.createdBy, users.id))
+      .where(and(...conds))
+      .groupBy(invoices.createdBy)
+      .orderBy(sql`name ASC`);
+  }),
 
   // مجاميع كل النتائج المطابقة للفلتر (لا الصفحة المعروضة فقط) — نفس شروط list حتماً
   // عبر buildSalesListConds. الأموال نصّية كما تعيدها mysql2 (SUM على decimal) — لا parseFloat.
@@ -471,15 +504,27 @@ export const saleRouter = router({
           status: invoices.status,
           paymentMethod: invoices.paymentMethod,
           notes: invoices.notes,
+          createdBy: invoices.createdBy,
+          salespersonName: sql<string | null>`COALESCE(${invoices.salespersonNameSnapshot}, ${users.name})`,
+          shiftId: invoices.shiftId,
+          shiftType: shifts.shiftType,
+          shiftOpenedAt: shifts.openedAt,
+          deviceId: invoices.posDeviceId,
+          cancelledByName: invoices.cancelledByNameSnapshot,
+          cancelledAt: invoices.cancelledAt,
         })
         .from(invoices)
         .leftJoin(customers, eq(invoices.customerId, customers.id))
+        .leftJoin(users, eq(invoices.createdBy, users.id))
+        .leftJoin(shifts, eq(invoices.shiftId, shifts.id))
         .where(eq(invoices.id, input.invoiceId))
         .limit(1)
     )[0];
     if (!inv) return null;
     // عزل الفرع: لا تكشف وجود فاتورة فرع آخر لغير المدير.
     if (ctx.scopedBranchId && inv.branchId !== ctx.scopedBranchId) return null;
+    // عزل المالك: الكاشير/المندوب لا يستطيع فتح فاتورة زميل عبر رابط مباشر.
+    if (ctx.scopedOwnerId != null && Number(inv.createdBy) !== ctx.scopedOwnerId) return null;
     const items = await db
       .select({
         id: invoiceItems.id,
@@ -518,6 +563,17 @@ export const saleRouter = router({
       .from(receipts)
       .where(eq(receipts.invoiceId, input.invoiceId))
       .orderBy(asc(receipts.id));
+    const returns = await db
+      .select({
+        id: accountingEntries.id,
+        amount: accountingEntries.amount,
+        performedBy: accountingEntries.createdBy,
+        performedByName: accountingEntries.createdByNameSnapshot,
+        createdAt: accountingEntries.createdAt,
+      })
+      .from(accountingEntries)
+      .where(and(eq(accountingEntries.invoiceId, input.invoiceId), eq(accountingEntries.entryType, "RETURN")))
+      .orderBy(asc(accountingEntries.id));
 
     // توليد qrPayload موقَّعة بـ HMAC من الخادم — الواجهة تعرضها فقط
     const qrPayload = invoiceBarcodeSet({
@@ -531,8 +587,8 @@ export const saleRouter = router({
     if (!canSeeCostForUser(ctx.user)) {
       const { costTotal: _c, ...invNoCost } = inv;
       const itemsNoCost = items.map(({ unitCost: _u, ...rest }) => rest);
-      return { ...invNoCost, items: itemsNoCost, payments, qrPayload };
+      return { ...invNoCost, items: itemsNoCost, payments, returns, qrPayload };
     }
-    return { ...inv, items, payments, qrPayload };
+    return { ...inv, items, payments, returns, qrPayload };
   }),
 });

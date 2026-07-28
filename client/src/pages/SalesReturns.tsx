@@ -129,6 +129,7 @@ export default function SalesReturns() {
                 { key: "invoiceNumber", header: "رقم الفاتورة", map: (r) => r.invoiceNumber ?? "" },
                 { key: "customer", header: "العميل", map: (r) => r.customerName ?? "—" },
                 { key: "branch", header: "الفرع", map: (r) => branchName(r.branchId) },
+                { key: "performedByName", header: "منفّذ المرتجع", map: (r) => r.performedByName ?? "غير موثّق" },
                 { key: "returned", header: "القيمة المرتجعة", map: (r) => Number(returned(r.amount)) },
               ],
             }}
@@ -145,6 +146,7 @@ export default function SalesReturns() {
                 <th className="p-2">رقم الفاتورة</th>
                 <th className="p-2">العميل</th>
                 <th className="p-2">الفرع</th>
+                <th className="p-2">منفّذ المرتجع</th>
                 <th className="p-2 text-right">القيمة المرتجعة</th>
                 <th className="p-2">ملاحظات</th>
                 <th className="p-2 text-center">إجراء</th>
@@ -162,6 +164,7 @@ export default function SalesReturns() {
                   {/* customerName فارغ = بيع نقدي بلا عميل مسجَّل. */}
                   <td className="p-2 font-medium">{r.customerName ?? "—"}</td>
                   <td className="p-2">{branchName(r.branchId)}</td>
+                  <td className="p-2 font-medium">{r.performedByName ?? "غير موثّق"}</td>
                   <td className="p-2 text-right font-semibold tabular-nums" dir="ltr">{fmt(returned(r.amount))}</td>
                   <td className="p-2 text-xs text-muted-foreground">{noteText(r.notes)}</td>
                   <td className="p-2 text-center">
@@ -182,14 +185,14 @@ export default function SalesReturns() {
               {/* 403/فشل الخادم ⇒ خطأ صريح (نمط Vouchers) لا رسالة «لا مرتجعات» مضلِّلة. */}
               {list.isError && !list.isLoading && (
                 <tr>
-                  <td colSpan={8}>
+                  <td colSpan={9}>
                     <ErrorState message={list.error?.message} onRetry={() => void list.refetch()} />
                   </td>
                 </tr>
               )}
               {!list.isLoading && !list.isError && rows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-muted-foreground">
+                  <td colSpan={9} className="p-6 text-center text-muted-foreground">
                     {total === 0 && !customerId && !branchId && !dateFrom && !dateTo
                       ? "لا مرتجعات بيع بعد."
                       : "لا مرتجعات مطابقة. غيّر الفلتر."}
@@ -198,7 +201,7 @@ export default function SalesReturns() {
               )}
               {list.isLoading && (
                 <tr>
-                  <td colSpan={8} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td>
+                  <td colSpan={9} className="p-6 text-center text-muted-foreground">جارٍ التحميل…</td>
                 </tr>
               )}
             </tbody>

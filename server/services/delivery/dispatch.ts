@@ -20,6 +20,7 @@ import { nextInvoiceNumber } from "../numbering";
 import { withTx } from "../tx";
 import { nextConsignmentNumber } from "./numbering";
 import type { DeliveryTxActor } from "./types";
+import { userNameSnapshot } from "../userSnapshot";
 
 // ═══════════════════════════ التحوّلات (محاسبة العهدة) ═══════════════════════════
 // ترتيب أقفال موحّد لمنع الجمود: الإرسالية → الجهة → الفاتورة → الوردية.
@@ -92,6 +93,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
     // فاتورة COD: customerId=NULL (الطرف المقابل = جهة التوصيل، عهدة لا AR ⇒ مطابقة AR/الائتمان سليمة).
     const invoiceNumber = await nextInvoiceNumber(tx, Number(wo.branchId));
     const invStatus = computeInvoiceStatus(salePrice.toFixed(2), toDbMoney(depositPaid));
+    const salespersonNameSnapshot = await userNameSnapshot(tx, actor.userId);
     const invRes = await tx.insert(invoices).values({
       invoiceNumber,
       sourceType: "WORKORDER",
@@ -109,6 +111,7 @@ export async function dispatchToDelivery(input: DispatchInput, actor: DeliveryTx
       paymentMethod: null,
       paymentDate: depositPaid.gt(0) ? new Date() : null,
       notes: `توصيل طلب خدمة ${wo.orderNumber}: ${wo.title}`,
+      salespersonNameSnapshot,
       createdBy: actor.userId,
     });
     const invoiceId = extractInsertId(invRes);
