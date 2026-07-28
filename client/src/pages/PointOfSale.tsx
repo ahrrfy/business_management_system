@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useMemo } from "react";
 import { Link, useLocation, useSearch } from "wouter";
-import { ShoppingCart, Printer, Palette, Lock, Home } from "lucide-react";
+import { ShoppingCart, Printer, Palette, Lock, Home, ReceiptText } from "lucide-react";
 import { lazyWithRetry } from "@/lib/lazyWithRetry";
 import { trpc } from "@/lib/trpc";
 import { cn } from "@/lib/utils";
@@ -178,6 +178,16 @@ export default function PointOfSale() {
             <span className="hidden text-[11px] text-muted-foreground sm:block">
               Ctrl+1/2/3 لتَبديل الوَضع
             </span>
+          )}
+          {visibleModes.some((mode) => mode.v === "RETAIL") && (
+            <Link
+              href="/invoices"
+              className="inline-flex h-9 items-center gap-1.5 rounded-lg border bg-muted/40 px-3 text-sm font-bold text-foreground transition-colors hover:bg-muted"
+              title="عرض الفواتير المباعة وإعادة طباعتها"
+            >
+              <ReceiptText aria-hidden className="size-4" />
+              <span>الفواتير</span>
+            </Link>
           )}
           <Link
             href="/"
