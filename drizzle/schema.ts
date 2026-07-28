@@ -1021,7 +1021,15 @@ export const invoices = mysqlTable(
     originatedOffline: boolean("originatedOffline").default(false).notNull(),
     offlineReceiptNumber: varchar("offlineReceiptNumber", { length: 40 }),
     capturedAt: timestamp("capturedAt"),
+    // لقطة تدقيق ثابتة: الاسم وقت البيع لا يتبدّل عند إعادة تسمية/تعطيل الحساب لاحقاً.
+    salespersonNameSnapshot: varchar("salespersonNameSnapshot", { length: 255 }),
+    // معرّف محطة/جهاز نقطة البيع (يُرسل من العميل؛ ويُحفظ أيضاً لبيع الأوفلاين).
+    posDeviceId: varchar("posDeviceId", { length: 64 }),
     createdBy: int("createdBy").references(() => users.id),
+    // فواتير تاريخية/مستوردة قد تحمل CANCELLED؛ أي مسار إلغاء مستقبلي يملك حقول تدقيق صريحة.
+    cancelledBy: int("cancelledBy").references(() => users.id, { onDelete: "set null" }),
+    cancelledByNameSnapshot: varchar("cancelledByNameSnapshot", { length: 255 }),
+    cancelledAt: timestamp("cancelledAt"),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
     updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
   },
@@ -1046,6 +1054,7 @@ export const invoices = mysqlTable(
     sourceUq: unique("uq_invoice_source").on(table.sourceType, table.sourceId),
     // أوفلاين (0084): بحث بالرقم المؤقّت المطبوع على إيصال الزبون (مرتجع/استفسار).
     offlineReceiptIdx: index("idx_invoice_offline_receipt").on(table.offlineReceiptNumber),
+    salespersonDateIdx: index("idx_invoice_salesperson_date").on(table.createdBy, table.invoiceDate),
   })
 );
 
@@ -1510,6 +1519,9 @@ export const accountingEntries = mysqlTable(
     // حارس بنيوي ضدّ التكرار: مثل «SALE:<invoiceId>» ⇒ قيد SALE واحد لكل فاتورة على مستوى القاعدة.
     // UNIQUE يسمح بـNULL متعدّد، فالقيود التي تتكرّر مشروعاً (دفعات/مرتجعات) تتركه NULL.
     dedupeKey: varchar("dedupeKey", { length: 80 }).unique("uq_entry_dedupe"),
+    // منفّذ القيد ولقطة اسمه؛ تُملآن حالياً في مرتجعات البيع لتمييز منفّذ المرتجع عن البائع.
+    createdBy: int("createdBy").references(() => users.id, { onDelete: "set null" }),
+    createdByNameSnapshot: varchar("createdByNameSnapshot", { length: 255 }),
     createdAt: timestamp("createdAt").defaultNow().notNull(),
   },
   (table) => ({
@@ -4660,7 +4672,7 @@ export type InsertAccount = typeof accounts.$inferInsert;
 // جدول واحد بعمود `direction` يخدم الاتجاهين (نمط receipts.direction).
 // ============================================================
 
-// حملات الهدايا (G-م٧، هجرة 0118): تصنيف + ميزانيّة اختياريّة تُفرَض بقفل تسلسليّ عند كل هدية صادرة مرتبطة.
+// حملات الهدايا (G-م٧، هجرة 0119): تصنيف + ميزانيّة اختياريّة تُفرَض بقفل تسلسليّ عند كل هدية صادرة مرتبطة.
 // تُعرَّف قبل giftVouchers (التي تشير إليها) — نمط الإحالة الخلفية المُثبَت في هذا الملف.
 export const giftCampaigns = mysqlTable(
   "giftCampaigns",
@@ -4692,7 +4704,7 @@ export const giftVouchers = mysqlTable(
     // العميل (للصادر) / المورّد (للوارد) — أحدهما حسب الاتجاه.
     customerId: bigint("customerId", { mode: "number" }).references(() => customers.id),
     supplierId: bigint("supplierId", { mode: "number" }).references(() => suppliers.id),
-    // ربط حملة تسويقية اختياريّ (G-م٧، هجرة 0118) — للصادر دلالياً؛ ميزانيّة الحملة تُفرَض بقفل تسلسليّ.
+    // ربط حملة تسويقية اختياريّ (G-م٧، هجرة 0119) — للصادر دلالياً؛ ميزانيّة الحملة تُفرَض بقفل تسلسليّ.
     campaignId: bigint("campaignId", { mode: "number" }).references(() => giftCampaigns.id),
     giftType: varchar("giftType", { length: 32 }),
     reason: varchar("reason", { length: 255 }),

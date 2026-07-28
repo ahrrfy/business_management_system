@@ -165,6 +165,28 @@ describe("salesByDimension — بُعد الصنف والربحية", () => {
     expect(byProduct.totals.profit).toBe(byCustomer.totals.profit);
   });
 
+  it("بُعد الكاشير يفصل الإجمالي والخصومات والمرتجعات وصافي المبيعات", async () => {
+    await seedInvoice({ id: 109, customerId: 10, items: [{ variantId: 1, qty: 2, unitPrice: "500", unitCost: "100" }] });
+    await db().update(s.invoices).set({
+      createdBy: 1,
+      salespersonNameSnapshot: "موظف المبيعات",
+      // الإجمالي 1000 بعد خصم 100، والمرتجع 250 ⇒ الصافي 750.
+      discountAmount: "100.00",
+      returnedTotal: "250.00",
+    }).where(sql`${s.invoices.id} = 109`);
+
+    const res = await getSalesByDimension({ from: TODAY, to: TODAY, dimension: "cashier" });
+    expect(res.rows[0]).toMatchObject({
+      label: "موظف المبيعات",
+      invoices: 1,
+      grossSales: "1100.00",
+      discounts: "100.00",
+      returns: "250.00",
+      netSales: "750.00",
+      revenue: "750.00",
+    });
+  });
+
   it("عزل الفرع في بُعد الصنف", async () => {
     await seedInvoice({ id: 107, customerId: 10, branchId: 1, items: [{ variantId: 1, qty: 1, unitPrice: "250", unitCost: "100" }] });
     await seedInvoice({ id: 108, customerId: 10, branchId: 2, items: [{ variantId: 1, qty: 9, unitPrice: "250", unitCost: "100" }] });

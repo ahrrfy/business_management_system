@@ -11,6 +11,7 @@ import { money, round2, toDbMoney } from "./money";
 import { openShiftIdTx } from "./shiftService";
 import { withTx, type Actor } from "./tx";
 import { extractInsertId } from "../lib/insertId";
+import { userNameSnapshot } from "./userSnapshot";
 
 type PaymentMethod = "CASH" | "CARD" | "CHECK" | "TRANSFER" | "WALLET";
 
@@ -302,7 +303,8 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
     // في الحالتين (العميل أُسترِدّ/أُسقطت ذمّته بصرف النظر عن مصير البضاعة المُعادة).
     const reversedCost = restock ? returnedCost : new Decimal(0);
 
-    // RETURN ledger entry: negative values.
+    // RETURN ledger entry: negative values + منفّذ مستقلّ عن بائع الفاتورة.
+    const returnOperatorName = await userNameSnapshot(tx, actor.userId);
     await postEntry(tx, {
       entryType: "RETURN",
       branchId: Number(inv.branchId),
@@ -313,6 +315,8 @@ export async function returnSale(input: ReturnSaleInput, actor: Actor) {
       profit: returnedRevenue.minus(reversedCost).neg(),
       taxAmount: returnedTax.neg(),
       amount: returnedTotal.neg(),
+      createdBy: actor.userId,
+      createdByNameSnapshot: returnOperatorName,
     });
 
     // بضاعة الأمانة (ش٣): عكس التزام المودِع — **دائماً** (restock أو تالف)، بقيدٍ PURCHASE سالب بنفس
@@ -525,6 +529,8 @@ export async function listSalesReturns(input: ListSalesReturnsInput = {}) {
       amount: accountingEntries.amount,
       notes: accountingEntries.notes,
       createdAt: accountingEntries.createdAt,
+      performedBy: accountingEntries.createdBy,
+      performedByName: accountingEntries.createdByNameSnapshot,
     })
     .from(accountingEntries)
     .leftJoin(invoices, eq(accountingEntries.invoiceId, invoices.id))

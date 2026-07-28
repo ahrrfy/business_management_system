@@ -32,6 +32,8 @@ export interface CreateSaleInput {
   taxRatePercent?: string | null;
   payment?: { amount: string; method: PaymentMethod } | null;
   clientRequestId?: string | null;
+  /** معرّف محطة/جهاز نقطة البيع للتدقيق (ليس سراً ولا رمز مصادقة). */
+  deviceId?: string | null;
   /** رمز كوبون CRM؛ يُقفل ويُتحقق ويُستهلك ذرّياً مع الفاتورة. */
   couponCode?: string | null;
   notes?: string | null;
@@ -53,7 +55,7 @@ export interface CreateSaleInput {
   /** أوفلاين (ش٣ — داخلي، لا يعرضه saleRouter): بيانات التقاط بيعٍ جرى دون اتصال —
    *  يضبطها offline.replaySale حصراً. تُخزَّن على الفاتورة (originatedOffline/الرقم المؤقّت/
    *  لحظة الالتقاط الحقيقية) — قيود الدفتر تبقى بوقت الخادم (سلامة assertPeriodOpen). */
-  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string } | null;
+  offlineCapture?: { capturedAt: Date; offlineReceiptNumber: string; deviceId?: string | null } | null;
   /** أوفلاين (ش٣ — داخلي): سماح بمخزون سالب — البضاعة خرجت فعلاً أثناء الانقطاع والنقد قُبض؛
    *  رفض التسجيل يجعل الدفاتر تكذب (قرار مالك ١٨/٧: تسجيل بوسم مراجعة لا تعليق).
    *  يضبطه offline.replaySale فقط، والوسم = originatedOffline + تقرير المبيعات الأوفلاين. */

@@ -250,6 +250,7 @@ export async function receiptToCanvas(
     y += 30;
   };
   totRow("المجموع:", fmt(d.subtotal));
+  if (Number(d.discount ?? 0) > 0) totRow("الخصم:", `-${fmt(d.discount)}`);
   if (Number(d.tax ?? 0) > 0) totRow("الضريبة:", fmt(d.tax));
 
   y += 2;
