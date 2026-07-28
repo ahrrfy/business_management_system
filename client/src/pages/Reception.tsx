@@ -44,7 +44,7 @@ import { fmtDate } from "@/lib/date";
 import { trpc, type RouterOutputs } from "@/lib/trpc";
 import { ShiftHandoverSection, buildHandoverPayload, handoverIncomplete, emptyHandover, type ShiftHandoverValue, type PosTokens } from "@/components/pos/ShiftHandoverSection";
 import { cn } from "@/lib/utils";
-import { CashCounter } from "@/components/CashCounter";
+import { MoneyInput } from "@/components/form/MoneyInput";
 import {
   getServerBridgeStatus,
   isPaired,
@@ -165,10 +165,9 @@ export default function Reception() {
   const shiftQ = trpc.shifts.current.useQuery({ branchId, shiftType: "RECEPTION" });
   const shift = shiftQ.data ?? null;
   const [opening, setOpening] = useState("0");
-  const [openCounts, setOpenCounts] = useState<Record<number, number>>({});
   const [closing, setClosing] = useState(false);
   const [counted, setCounted] = useState("");
-  const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
+  const [countEntered, setCountEntered] = useState(false);
   const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: closing });
   const branchName = useMemo(
@@ -218,7 +217,7 @@ export default function Reception() {
       });
       setClosing(false);
       setCounted("");
-      setCloseCounts({});
+      setCountEntered(false);
       setHandover(emptyHandover);
       await utils.shifts.current.invalidate();
     },
@@ -859,15 +858,6 @@ export default function Reception() {
             onChange={(e) => setOpening(e.target.value)}
             className="mb-3 h-12 text-end text-lg font-extrabold tabular-nums"
           />
-          <div className="mb-4">
-            <CashCounter
-              value={openCounts}
-              onChange={(counts, total) => {
-                setOpenCounts(counts);
-                setOpening(total);
-              }}
-            />
-          </div>
           <Button
             className="h-12 w-full text-base font-bold"
             disabled={openShiftM.isPending || needsBranchChoice}
@@ -889,7 +879,9 @@ export default function Reception() {
     .filter((p) => p.method === "CASH" && p.direction === "OUT")
     .reduce((s, p) => s + Number(p.total), 0);
   const recExpected = Number(shift.openingBalance ?? 0) + recCashIn - recCashOut;
-  const recDiff = counted ? Number(counted) - recExpected : null;
+  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
+  const showRecExpected = isElevatedRole || countEntered;
+  const recDiff = showRecExpected && counted ? Number(counted) - recExpected : null;
   const hasRecVariance = recDiff != null && Math.abs(recDiff) >= 0.01;
 
   return (
@@ -918,7 +910,9 @@ export default function Reception() {
                     ["عدد الفواتير", `${reportQ.data?.invoiceCount ?? 0}`],
                     ["إجمالي المبيعات", `${fmt(Number(reportQ.data?.salesTotal ?? 0))} د.ع`],
                     ["الرصيد الافتتاحي", `${fmt(Number(shift.openingBalance ?? 0))} د.ع`],
-                    ["النقد المتوقَّع بالصندوق", `${fmt(recExpected)} د.ع`],
+                    ...(showRecExpected
+                      ? [["النقد المتوقَّع بالصندوق", `${fmt(recExpected)} د.ع`] as [string, string]]
+                      : []),
                   ] as [string, string][]
                 ).map(([l, v]) => (
                   <div key={l} className="flex justify-between border-b py-2 text-sm">
@@ -926,14 +920,29 @@ export default function Reception() {
                     <span className="font-bold tabular-nums" dir="ltr">{v}</span>
                   </div>
                 ))}
-                <div className="my-4">
-                  <CashCounter
-                    value={closeCounts}
-                    onChange={(counts, total) => {
-                      setCloseCounts(counts);
-                      setCounted(total);
+                <div
+                  className="my-4 space-y-1.5"
+                  onBlur={() => setCountEntered(counted.trim() !== "")}
+                >
+                  <label htmlFor="rec-counted-cash" className="block text-sm font-bold">
+                    النقد المعدود (د.ع)
+                  </label>
+                  <MoneyInput
+                    id="rec-counted-cash"
+                    value={counted}
+                    onChange={(value) => {
+                      setCounted(value);
+                      setCountEntered(false);
                     }}
+                    placeholder="0"
+                    ariaLabel="النقد المعدود عند إغلاق الوردية"
+                    className="h-12 text-center text-lg font-extrabold"
                   />
+                  {!showRecExpected && (
+                    <p className="text-xs text-muted-foreground">
+                      أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
+                    </p>
+                  )}
                 </div>
                 {recDiff !== null && (
                   <div
@@ -979,7 +988,6 @@ export default function Reception() {
                     onClick={() => closeShiftM.mutate({
                       shiftId: shift.id,
                       countedCash: counted,
-                      countedBreakdown: closeCounts,
                       handover: buildHandoverPayload(handover),
                     })}
                   >

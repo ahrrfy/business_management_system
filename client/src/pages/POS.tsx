@@ -28,7 +28,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "wouter";
 import { Printer, ShoppingCart, User, Power, Globe, Check, Store, Search, X, AlertTriangle, Banknote, CreditCard, RefreshCw, Zap, ChevronDown } from "lucide-react";
 import { CopyButton } from "@/components/CopyButton";
-import { CashCounter } from "@/components/CashCounter";
+import { MoneyInput } from "@/components/form/MoneyInput";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -2158,7 +2158,7 @@ interface ShiftCloseDialogProps {
 function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches }: ShiftCloseDialogProps) {
   const modalRef = useModalFocus<HTMLDivElement>();
   const [counted, setCounted] = useState("");
-  const [closeCounts, setCloseCounts] = useState<Record<number, number>>({});
+  const [countEntered, setCountEntered] = useState(false);
   const [handover, setHandover] = useState<ShiftHandoverValue>(emptyHandover);
   const utils = trpc.useUtils();
   const recipientsQ = trpc.shifts.handoverRecipients.useQuery(undefined, { enabled: !!shift });
@@ -2223,14 +2223,15 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
   // الإغلاق يحسب المُزامَن فقط، والفرق يُفسَّر لاحقاً بقسم «مُزامنة لاحقاً» في التقرير).
   const expectedD   = report != null ? openingD.plus(cashInD).minus(cashOutD).plus(D(outboxQueued.total)) : null;
   const countedD    = counted ? D(counted) : null;
-  const diffD       = expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
+  // فقدان التركيز من حقل المعدود يُثبّت انتهاء الإدخال ويكشف المطابقة تلقائياً بلا زر إضافي.
+  const isElevatedRole = me?.role === "admin" || me?.role === "manager";
+  const showExpected = isElevatedRole || countEntered;
+  const diffD       = showExpected && expectedD != null && countedD != null ? countedD.minus(expectedD) : null;
   const hasVariance = diffD != null && diffD.abs().gt("0.005");
   // متغيّرات عددية للعرض ولتفادي تغييرات JSX الأكبر
   const cashIn      = cashInD.toNumber();
   const cashOut     = cashOutD.toNumber();
   const openingBal  = openingD.toNumber();
-  const expectedNum = expectedD?.toNumber() ?? null;
-  const countedNum  = countedD?.toNumber() ?? null;
   const diff        = diffD?.toNumber() ?? null;
 
   return (
@@ -2255,7 +2256,9 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               ...(outboxQueued.count > 0
                 ? [["مبيعات غير مُزامنة (نقدها بالدرج)", `${outboxQueued.count} فاتورة · ${fmt(outboxQueued.total)} د.ع`] as [string, string]]
                 : []),
-              ...(report != null ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut + outboxQueued.total)} د.ع`] as [string, string]] : []),
+              ...(report != null && showExpected
+                ? [["النقد المتوقع بالصندوق", `${fmt(openingBal + cashIn - cashOut + outboxQueued.total)} د.ع`] as [string, string]]
+                : []),
             ] as [string, string][]).map(([l, v]) => (
               <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 13.5, padding: "8px 0", borderBottom: `1px solid ${C.border}` }}>
                 <span style={{ color: C.mutedFg }}>{l}</span>
@@ -2274,15 +2277,29 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
               </div>
             ))}
 
-            {/* Counted cash: denomination evidence prevents a typed number from becoming unexplained money. */}
-            <div style={{ marginTop: 16 }}>
-              <CashCounter
-                value={closeCounts}
-                onChange={(counts, total) => {
-                  setCloseCounts(counts);
-                  setCounted(total);
+            <div
+              style={{ marginTop: 16 }}
+              onBlur={() => setCountEntered(counted.trim() !== "")}
+            >
+              <label htmlFor="pos-counted-cash" style={{ display: "block", marginBottom: 6, fontSize: 13, fontWeight: 800, color: C.fg }}>
+                النقد المعدود (د.ع)
+              </label>
+              <MoneyInput
+                id="pos-counted-cash"
+                value={counted}
+                onChange={(value) => {
+                  setCounted(value);
+                  setCountEntered(false);
                 }}
+                placeholder="0"
+                ariaLabel="النقد المعدود عند إغلاق الوردية"
+                className="h-12 text-center text-lg font-extrabold"
               />
+              {!showExpected && (
+                <div style={{ marginTop: 6, fontSize: 12, color: C.mutedFg }}>
+                  أدخل ما عددته فعلياً في الصندوق لتظهر نتيجة المطابقة.
+                </div>
+              )}
               {diff !== null && (
                 <div style={{ marginTop: 7, fontSize: 14, fontWeight: 700, color: diff >= 0 ? C.success : C.danger, display: "inline-flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
                   <span>الفرق: {diff >= 0 ? "+" : ""}{fmt(diff)} د.ع</span>
@@ -2338,7 +2355,6 @@ function ShiftCloseDialog({ C, shift, branchId, onClose, onClosed, me, branches 
                 onClick={() => shift && closeShift.mutate({
                   shiftId: shift.id,
                   countedCash: counted,
-                  countedBreakdown: closeCounts,
                   handover: buildHandoverPayload(handover),
                 })}
                 style={{ flex: 1, height: 46, background: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? C.muted : C.danger, color: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? C.mutedFg : "#fff", border: "none", borderRadius: 9, cursor: !counted || closeShift.isPending || closeBlocked || hasVariance || handoverIncomplete(handover) ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: 14, fontWeight: 700 }}>
