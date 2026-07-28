@@ -30,7 +30,10 @@ export type EntryType =
   | "EXCHANGE_FX_BUY" // شراء دولار: تحويل دينار→دولار داخل الصيرفة (يُحدّث WAVG)
   | "EXCHANGE_SETTLE" // تسديد ذمّة مورد عبر الصيرفة (يخفض المحفظة ودين المورد)
   | "EXCHANGE_FEE" // عمولة الصيرفة (مصروف P&L، cost=amount)
-  | "EXCHANGE_FX_DIFF"; // فرق صرف محقَّق عند التسديد (amount موقَّع، معزول عن إيراد البيع)
+  | "EXCHANGE_FX_DIFF" // فرق صرف محقَّق عند التسديد (amount موقَّع، معزول عن إيراد البيع)
+  // gifts (G-م٢، ٢٧/٧): هدية صادرة للعميل — صرف مخزون كمصروف ترويجيّ بالكلفة (revenue=0, profit=-cost)،
+  // بلا invoiceId ⇒ خارج وعاء العمولة تلقائياً. مُضاف لـ P&L bucket «هدايا وترويج» (فخّ §٦ #1).
+  | "GIFT_OUT";
 
 export interface EntryInput {
   entryType: EntryType;

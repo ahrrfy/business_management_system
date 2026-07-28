@@ -8,6 +8,7 @@ import { LoadingState, ErrorState } from "@/components/PageState";
 import { fmtAr, D, round2 } from "@/lib/money";
 import { MoneyInput } from "@/components/form/MoneyInput";
 import { trpc } from "@/lib/trpc";
+import { hasModuleAccess } from "@shared/permissions";
 import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
 
@@ -36,6 +37,15 @@ export default function PurchaseReceive() {
 
   const po = trpc.purchases.get.useQuery({ purchaseOrderId }, { enabled: Number.isFinite(purchaseOrderId) });
   const [recv, setRecv] = useState<Record<number, string>>({});
+  // «اشترِ واحصل» (G-م٦): كمية مجّانية بونص لكل سطر — تُسجَّل هديةً واردة (لمن يملك gifts=FULL فقط).
+  const me = trpc.auth.me.useQuery();
+  const canGiftBonus = hasModuleAccess(
+    me.data?.role ?? "",
+    (me.data as { permissionsOverride?: Record<string, "NONE" | "READ" | "FULL"> | null } | undefined)?.permissionsOverride ?? null,
+    "gifts",
+    "FULL",
+  );
+  const [free, setFree] = useState<Record<number, string>>({});
   const [payAmount, setPayAmount] = useState("");
   const [payMethod, setPayMethod] = useState<(typeof METHODS)[number]["v"]>("CASH");
   const [directUsd, setDirectUsd] = useState("");
@@ -67,9 +77,17 @@ export default function PurchaseReceive() {
         utils.purchases.get.invalidate({ purchaseOrderId }),
         utils.purchases.list.invalidate(),
       ]);
-      setClientRequestId(crypto.randomUUID()); // مفتاح جديد للاستلام التالي (جزئي)
+      // تصفير مفتاح الـidempotency يتأخّر إلى ما بعد نجاح البونص أيضاً (في submit) كي تُعيد إعادةُ
+      // المحاولة تشغيلَ الاستلام بأمان (replay) بدل استلامٍ مزدوج عند فشل البونص جزئياً.
     },
     onError: (e) => setError(e.message),
+  });
+  // بونص «اشترِ واحصل» (G-م٦): الكمية المجّانية المرافقة تُسجَّل سند هدية وارد للمورّد نفسه.
+  const recordBonus = trpc.gifts.receivePurchaseBonus.useMutation({
+    onSuccess: (r) => {
+      if (r?.giftNumber) setDone((d) => `${d} + سُجّل بونص هدية ${r.giftNumber}`);
+    },
+    onError: (e) => setError((prev) => prev || `فشل تسجيل البونص المجّانيّ (سجّله يدوياً من الهدايا): ${e.message}`),
   });
   const settleUsdDirect = trpc.purchases.settleUsdDirect.useMutation({
     onSuccess: async (r) => {
@@ -154,7 +172,20 @@ export default function PurchaseReceive() {
       }))
     )
       return;
-    receive.mutate({ purchaseOrderId, lines, payment, clientRequestId });
+    const bonusLines = canGiftBonus
+      ? data.items
+          .map((it) => ({ variantId: Number(it.variantId), freeBaseQuantity: Math.trunc(Number(free[Number(it.id)] || 0)) }))
+          .filter((b) => b.freeBaseQuantity > 0)
+      : [];
+    try {
+      await receive.mutateAsync({ purchaseOrderId, lines, payment, clientRequestId });
+      // البونص المجّانيّ بعد نجاح الاستلام العاديّ (تسلسليّ idempotent — نمط convertQuotation؛ مفتاح مشتقّ).
+      if (bonusLines.length) await recordBonus.mutateAsync({ purchaseOrderId, bonusLines, clientRequestId: `${clientRequestId}:bonus` });
+      setClientRequestId(crypto.randomUUID()); // تصفيرٌ بعد نجاح الاثنين معاً
+      setFree({});
+    } catch {
+      /* onError لكلتا الطفرتين يضبط رسالة الخطأ؛ لا نُصفّر المفتاح ⇒ إعادة المحاولة آمنة (replay) */
+    }
   }
 
   const fmt = fmtAr;
@@ -206,6 +237,7 @@ export default function PurchaseReceive() {
                 <th className="p-2 text-center">مُستلَم سابقاً</th>
                 <th className="p-2 text-center">المتبقّي</th>
                 <th className="p-2 w-32">استلام الآن</th>
+                {canGiftBonus ? <th className="p-2 w-28">مجاناً (بونص، أساس)</th> : null}
               </tr>
             </thead>
             <tbody>
@@ -240,6 +272,18 @@ export default function PurchaseReceive() {
                         onChange={(e) => setRecv((prev) => ({ ...prev, [Number(it.id)]: e.target.value }))}
                       />
                     </td>
+                    {canGiftBonus ? (
+                      <td className="p-2">
+                        <Input
+                          dir="ltr"
+                          className="h-8 text-center"
+                          placeholder="0"
+                          value={free[Number(it.id)] ?? ""}
+                          disabled={closed}
+                          onChange={(e) => setFree((prev) => ({ ...prev, [Number(it.id)]: e.target.value }))}
+                        />
+                      </td>
+                    ) : null}
                   </tr>
                 );
               })}
