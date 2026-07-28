@@ -33,6 +33,12 @@ beforeEach(async () => {
     { id: 1, name: "الرئيسي", code: "MAIN", type: "MAIN" },
     { id: 2, name: "المبيعات", code: "SALES", type: "SALES" },
   ]);
+  // مستخدمٌ id=1 يطابق فاعل ctxWith — لازمٌ لأنّ FK `shifts_userId_users_id_fk` يفرضه
+  // (truncate يمسح users، فبدون بذرٍ صريح يفشل إدراج الوردية بـ ER_NO_REFERENCED_ROW_2
+  // متى لم ينجُ صفٌّ id=1 من حالةٍ سابقة ⇒ تقلقُل في تشغيلة pnpm test الكاملة).
+  await d.insert(s.users).values([
+    { id: 1, openId: "u1", name: "t", email: "t@t", role: "admin", loginMethod: "local", branchId: 1 },
+  ]);
   // ورديةٌ في كل فرع (لا حاجة لفواتير/سندات — getShiftReport يُعيد أصفاراً بأمان).
   await d.insert(s.shifts).values([
     { id: 10, userId: 1, branchId: 1, status: "OPEN", openedAt: new Date(), openGuard: "1:1", openingBalance: "0.00" },
