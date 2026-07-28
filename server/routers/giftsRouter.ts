@@ -6,7 +6,8 @@ import { positiveMoneyString } from "../lib/schemas";
 import { receiveInboundGift } from "../services/gifts/inbound";
 import { getGiftVoucher, listGifts } from "../services/gifts/list";
 import { approveGift, createOutboundGift } from "../services/gifts/outbound";
-import { branchScopedProcedure, requireModule, router } from "../trpc";
+import { giftsReport } from "../services/gifts/reports";
+import { branchScopedProcedure, reportViewerProcedure, requireModule, router } from "../trpc";
 
 /**
  * وحدة الهدايا/المجانيات — G-م١ الوارد (بضاعة مجّانية من مورّد، صفر تكلفة تُخفِّف WAVG، بلا دين).
@@ -56,6 +57,15 @@ export const giftsRouter = router({
       const gift = await getGiftVoucher({ scopedBranchId }, input.giftId);
       if (!gift) throw new TRPCError({ code: "NOT_FOUND", message: "سند الهدية غير موجود" });
       return gift;
+    }),
+
+  // تقرير الهدايا (كشف إساءة + أثر ماليّ) — خلف بوّابة التقارير الحمراء (تُظهر التكلفة). عزل الفرع لغير المرتفع.
+  report: reportViewerProcedure
+    .input(z.object({ from: z.string(), to: z.string(), branchId: z.number().int().positive().optional() }))
+    .query(({ input, ctx }) => {
+      const elevated = ctx.user.role === "admin" || ctx.user.role === "manager";
+      const branchId = elevated ? input.branchId ?? null : Number(ctx.user.branchId);
+      return giftsReport({ from: input.from, to: input.to, branchId });
     }),
 
   receiveInbound: giftsWrite

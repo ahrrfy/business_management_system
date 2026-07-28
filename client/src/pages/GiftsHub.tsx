@@ -1,7 +1,7 @@
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
 // GIFT_OUT + حوكمة SOD: فوق العتبة/غير المدير ⇒ اعتماد مدير آخر). القراءة/الكتابة خلف مفتاح `gifts`.
 import { useRef, useState } from "react";
-import { ArrowDownToLine, ArrowUpFromLine, Check, Gift, Plus, Printer, Trash2 } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Plus, Printer, Trash2 } from "lucide-react";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 import { printGiftVoucherA4 } from "@/lib/printing/giftVoucher";
 
-type Mode = "list" | "in" | "out";
+type Mode = "list" | "in" | "out" | "report";
 type DirFilter = "ALL" | "IN" | "OUT" | "PENDING";
 type GiftLine = { key: number; variantId: number; productUnitId: number; label: string; unit: string; quantity: string };
 
@@ -64,6 +64,48 @@ export default function GiftsHub() {
       : dirFilter === "ALL"
         ? {}
         : { direction: dirFilter as "IN" | "OUT" },
+  );
+
+  // تقرير الهدايا (خلف بوّابة التقارير) — كشف إساءة + أثر ماليّ.
+  const canReports = hasModuleAccess(role, override, "reports", "READ");
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [repFrom, setRepFrom] = useState(`${todayStr.slice(0, 8)}01`);
+  const [repTo, setRepTo] = useState(todayStr);
+  const report = trpc.gifts.report.useQuery({ from: repFrom, to: repTo }, { enabled: mode === "report" && canReports });
+  const reportTable = (title: string, headers: string[], rows: string[][]) => (
+    <div className="overflow-x-auto rounded-lg border">
+      <div className="bg-muted/50 px-3 py-2 text-sm font-medium">{title}</div>
+      <table className="w-full text-sm">
+        <thead className="text-muted-foreground">
+          <tr>
+            {headers.map((h, i) => (
+              <th key={i} className={`px-3 py-1.5 ${i === 0 ? "text-start" : "text-end"}`}>
+                {h}
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {rows.length === 0 ? (
+            <tr>
+              <td colSpan={headers.length} className="py-4 text-center text-muted-foreground">
+                لا بيانات
+              </td>
+            </tr>
+          ) : (
+            rows.map((r, ri) => (
+              <tr key={ri} className="border-t">
+                {r.map((c, ci) => (
+                  <td key={ci} className={`px-3 py-1.5 ${ci === 0 ? "" : "text-end"}`}>
+                    {c}
+                  </td>
+                ))}
+              </tr>
+            ))
+          )}
+        </tbody>
+      </table>
+    </div>
   );
 
   function resetForm() {
@@ -179,18 +221,26 @@ export default function GiftsHub() {
         description="الوارد المجّاني من الموردين (صفر تكلفة يخفّف متوسّط الكلفة، بلا دين) والصادر للعملاء (مصروف ترويجيّ بحوكمة اعتماد)."
         actions={
           mode === "list" ? (
-            canWrite ? (
-              <div className="flex gap-2">
-                <Button size="sm" onClick={() => openForm("in")}>
-                  <ArrowDownToLine aria-hidden className="me-1 size-4" />
-                  استلام وارد
+            <div className="flex gap-2">
+              {canWrite ? (
+                <>
+                  <Button size="sm" onClick={() => openForm("in")}>
+                    <ArrowDownToLine aria-hidden className="me-1 size-4" />
+                    استلام وارد
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => openForm("out")}>
+                    <ArrowUpFromLine aria-hidden className="me-1 size-4" />
+                    منح هدية صادرة
+                  </Button>
+                </>
+              ) : null}
+              {canReports ? (
+                <Button size="sm" variant="outline" onClick={() => setMode("report")}>
+                  <BarChart3 aria-hidden className="me-1 size-4" />
+                  تقرير الهدايا
                 </Button>
-                <Button size="sm" variant="secondary" onClick={() => openForm("out")}>
-                  <ArrowUpFromLine aria-hidden className="me-1 size-4" />
-                  منح هدية صادرة
-                </Button>
-              </div>
-            ) : null
+              ) : null}
+            </div>
           ) : (
             <Button size="sm" variant="outline" onClick={backToList}>
               رجوع للقائمة
@@ -278,6 +328,29 @@ export default function GiftsHub() {
             </table>
           </div>
         </>
+      ) : mode === "report" ? (
+        <div className="space-y-4 rounded-lg border p-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="space-y-1">
+              <Label>من</Label>
+              <Input type="date" value={repFrom} onChange={(e) => setRepFrom(e.target.value)} className="h-9 w-40" />
+            </div>
+            <div className="space-y-1">
+              <Label>إلى</Label>
+              <Input type="date" value={repTo} onChange={(e) => setRepTo(e.target.value)} className="h-9 w-40" />
+            </div>
+          </div>
+          {report.isLoading ? (
+            <div className="py-6 text-center text-muted-foreground">جارٍ التحميل…</div>
+          ) : report.data ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              {reportTable("الملخّص (مُنجَز)", ["الاتجاه", "عدد", "التكلفة"], report.data.summary.map((x) => [x.direction === "IN" ? "وارد" : "صادر", String(x.count), String(x.totalCost)]))}
+              {reportTable("حسب النوع/السبب (صادر)", ["النوع", "عدد", "التكلفة"], report.data.byType.map((x) => [x.giftType || "—", String(x.count), String(x.totalCost)]))}
+              {reportTable("تركّز حسب المُنشئ (كشف إساءة)", ["الموظف", "عدد", "التكلفة"], report.data.byCreator.map((x) => [x.userName || "—", String(x.count), String(x.totalCost)]))}
+              {reportTable("تركّز حسب العميل (كشف إساءة)", ["العميل", "عدد", "التكلفة"], report.data.byCustomer.map((x) => [x.customerName || "—", String(x.count), String(x.totalCost)]))}
+            </div>
+          ) : null}
+        </div>
       ) : (
         <div className="space-y-4 rounded-lg border p-4">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">

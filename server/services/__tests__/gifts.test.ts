@@ -7,6 +7,7 @@ import { getDb } from "../../db";
 import { receiveInboundGift } from "../gifts/inbound";
 import { getGiftVoucher, listGifts } from "../gifts/list";
 import { approveGift, createOutboundGift } from "../gifts/outbound";
+import { giftsReport } from "../gifts/reports";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 
@@ -294,5 +295,33 @@ describe("G-م٢ الهدايا الصادرة", () => {
     expect(visible[0].totalCost).toBe("1000.00");
     const redacted = await listGifts({ scopedBranchId: 1 }, { redactCost: true });
     expect(redacted[0].totalCost).toBeNull();
+  });
+});
+
+describe("G-م٤ تقارير الهدايا", () => {
+  it("giftsReport يجمّع الملخّص + تركّز المُنشئ/العميل (كشف إساءة) + حسب النوع", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    // صادرتان لنفس العميل من نفس المُنشئ (admin auto-post، 10×100=1000 لكلٍّ) ⇒ تركّز.
+    await createOutboundGift({ branchId: 1, customerId: 1, giftType: "مجاملة", lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, actor);
+    await createOutboundGift({ branchId: 1, customerId: 1, giftType: "مجاملة", lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, actor);
+    // وارد (صفر تكلفة، لا يدخل تكلفة الصادر).
+    await receiveInboundGift({ branchId: 1, supplierId: 1, lines: [{ variantId: 1, productUnitId: 1, quantity: 5 }] }, actor);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const rep = await giftsReport({ from: `${today.slice(0, 8)}01`, to: today, branchId: 1 });
+
+    const out = rep.summary.find((x) => x.direction === "OUT");
+    const inn = rep.summary.find((x) => x.direction === "IN");
+    expect(Number(out?.count)).toBe(2);
+    expect(Number(out?.totalCost)).toBe(2000);
+    expect(Number(inn?.count)).toBe(1);
+    expect(Number(inn?.totalCost)).toBe(0);
+    // كشف الإساءة: أعلى مُنشئ = admin (userId 1) بعددٍ 2، وأعلى عميل = العميل 1 بعددٍ 2.
+    expect(Number(rep.byCreator[0].count)).toBe(2);
+    expect(Number(rep.byCreator[0].createdBy)).toBe(1);
+    expect(Number(rep.byCustomer[0].count)).toBe(2);
+    expect(Number(rep.byCustomer[0].customerId)).toBe(1);
+    // حسب النوع: «مجاملة» بعددٍ 2.
+    expect(Number(rep.byType.find((x) => x.giftType === "مجاملة")?.count)).toBe(2);
   });
 });
