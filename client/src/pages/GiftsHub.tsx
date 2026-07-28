@@ -1,7 +1,7 @@
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
 // GIFT_OUT + حوكمة SOD: فوق العتبة/غير المدير ⇒ اعتماد مدير آخر). القراءة/الكتابة خلف مفتاح `gifts`.
 import { useRef, useState } from "react";
-import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, MessageCircle, Plus, Printer, Trash2 } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Megaphone, MessageCircle, Plus, Printer, Trash2, X } from "lucide-react";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ import type { InvoiceLine } from "@/components/invoice/types";
 import { printGiftVoucherA4 } from "@/lib/printing/giftVoucher";
 import { buildGiftMessage, openWhatsApp } from "@/lib/whatsapp";
 
-type Mode = "list" | "in" | "out" | "report";
+type Mode = "list" | "in" | "out" | "report" | "campaigns";
 type DirFilter = "ALL" | "IN" | "OUT" | "PENDING";
 type GiftLine = { key: number; variantId: number; productUnitId: number; label: string; unit: string; quantity: string };
 
@@ -54,6 +54,7 @@ export default function GiftsHub() {
   const [estimatedValue, setEstimatedValue] = useState(""); // وارد
   const [notes, setNotes] = useState("");
   const [sellable, setSellable] = useState(true); // وارد: قابل للبيع؟ (false = استخدام داخليّ/عيّنة)
+  const [campaignId, setCampaignId] = useState<number | null>(null); // صادر: ربط حملة (اختياري)
   const [lines, setLines] = useState<GiftLine[]>([]);
   const keyRef = useRef(1);
   // مفتاح حماية الازدواج — يُولَّد لكل فتح نموذجٍ جديد؛ إعادة الإرسال بنفسه لا تُنشئ سنداً ثانياً (Codex P1).
@@ -66,6 +67,32 @@ export default function GiftsHub() {
         ? {}
         : { direction: dirFilter as "IN" | "OUT" },
   );
+
+  // حملات الهدايا (G-م٧): للاختيار في نموذج الصادر (النشطة فقط) ولإدارتها في وضع «الحملات».
+  const activeCampaigns = trpc.gifts.campaignList.useQuery({ status: "ACTIVE" }, { enabled: canWrite });
+  const allCampaigns = trpc.gifts.campaignList.useQuery(undefined, { enabled: mode === "campaigns" });
+  const [campName, setCampName] = useState("");
+  const [campBudget, setCampBudget] = useState("");
+  const [campStart, setCampStart] = useState("");
+  const [campEnd, setCampEnd] = useState("");
+  const createCampaign = trpc.gifts.campaignCreate.useMutation({
+    onSuccess: () => {
+      notify.ok("تم إنشاء الحملة");
+      setCampName("");
+      setCampBudget("");
+      setCampStart("");
+      setCampEnd("");
+      utils.gifts.campaignList.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
+  const closeCampaign = trpc.gifts.campaignClose.useMutation({
+    onSuccess: () => {
+      notify.ok("أُغلقت الحملة");
+      utils.gifts.campaignList.invalidate();
+    },
+    onError: (e) => notify.err(e),
+  });
 
   // تقرير الهدايا (خلف بوّابة التقارير) — كشف إساءة + أثر ماليّ.
   const canReports = hasModuleAccess(role, override, "reports", "READ");
@@ -118,6 +145,7 @@ export default function GiftsHub() {
     setEstimatedValue("");
     setNotes("");
     setSellable(true);
+    setCampaignId(null);
     setLines([]);
     setFormBranchId(null);
   }
@@ -143,6 +171,9 @@ export default function GiftsHub() {
     onSuccess: (res) => {
       notify.ok(res.pending ? `الهدية بانتظار اعتماد مدير — ${res.giftNumber}` : `تم منح الهدية — ${res.giftNumber}`);
       backToList();
+      // إنجازٌ فوريّ يغيّر مُنفَق الحملة المرتبطة (إن وُجدت) — حدّث الحملات (تدقيق Codex P2) وإلا
+      // يبقى منتقي الصادر/جدول الإدارة يعرض رقماً قديماً حتى إعادة جلبٍ عرَضية أخرى.
+      utils.gifts.campaignList.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -150,6 +181,7 @@ export default function GiftsHub() {
     onSuccess: () => {
       notify.ok("تم اعتماد الهدية");
       utils.gifts.list.invalidate();
+      utils.gifts.campaignList.invalidate();
     },
     onError: (e) => notify.err(e),
   });
@@ -229,8 +261,18 @@ export default function GiftsHub() {
       giftType: giftType.trim() || undefined,
       reason: reason.trim() || undefined,
       notes: notes.trim() || undefined,
+      campaignId: campaignId ?? undefined,
       clientRequestId: reqId,
       lines: linePayload(),
+    });
+  }
+  function submitCampaign() {
+    if (!campName.trim()) return;
+    createCampaign.mutate({
+      name: campName.trim(),
+      budgetCost: campBudget.trim() || undefined,
+      startDate: campStart || undefined,
+      endDate: campEnd || undefined,
     });
   }
 
@@ -260,6 +302,12 @@ export default function GiftsHub() {
                 <Button size="sm" variant="outline" onClick={() => setMode("report")}>
                   <BarChart3 aria-hidden className="me-1 size-4" />
                   تقرير الهدايا
+                </Button>
+              ) : null}
+              {canWrite ? (
+                <Button size="sm" variant="outline" onClick={() => setMode("campaigns")}>
+                  <Megaphone aria-hidden className="me-1 size-4" />
+                  الحملات
                 </Button>
               ) : null}
             </div>
@@ -378,6 +426,95 @@ export default function GiftsHub() {
             </div>
           ) : null}
         </div>
+      ) : mode === "campaigns" ? (
+        <div className="space-y-4 rounded-lg border p-4">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Megaphone aria-hidden className="size-4" />
+            حملة بميزانيّة (اختياريّة) تُفرَض تلقائياً: تجاوزها يُعلِّق الهدية لاعتماد مدير آخر حتى لو كان المُنشئ مديراً.
+          </div>
+
+          {elevated ? (
+            // إنشاء/إغلاق الحملة سياسة عامّة (ميزانيّات/إغلاق يؤثّر على الجميع) — مدير/أدمن فقط
+            // (تدقيق Codex P1)؛ الخادم يفرضها فعلياً — هذا حجبٌ واجهيّ مطابق فقط. القراءة تبقى لكل gifts≥FULL.
+            <div className="grid gap-3 sm:grid-cols-4">
+              <div className="space-y-1 sm:col-span-2">
+                <Label>اسم الحملة *</Label>
+                <Input value={campName} onChange={(e) => setCampName(e.target.value)} maxLength={120} placeholder="مثال: حملة العودة للمدارس ٢٠٢٦" />
+              </div>
+              <div className="space-y-1">
+                <Label>الميزانيّة (اختياري)</Label>
+                <Input value={campBudget} onChange={(e) => setCampBudget(e.target.value)} inputMode="decimal" placeholder="بلا سقف" />
+              </div>
+              <div className="space-y-1">
+                <Label>تبدأ (اختياري)</Label>
+                <Input type="date" value={campStart} onChange={(e) => setCampStart(e.target.value)} />
+              </div>
+              <div className="space-y-1">
+                <Label>تنتهي (اختياري)</Label>
+                <Input type="date" value={campEnd} onChange={(e) => setCampEnd(e.target.value)} />
+              </div>
+              <div className="flex items-end">
+                <Button size="sm" onClick={submitCampaign} disabled={!campName.trim() || createCampaign.isPending}>
+                  <Plus aria-hidden className="me-1 size-4" />
+                  إنشاء حملة
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="overflow-x-auto rounded-lg border">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/50 text-muted-foreground">
+                <tr>
+                  <th className="px-3 py-2 text-start">الاسم</th>
+                  <th className="px-3 py-2 text-start">الحالة</th>
+                  <th className="px-3 py-2 text-start">المدى</th>
+                  <th className="px-3 py-2 text-end">المُنفَق / الميزانيّة</th>
+                  {elevated ? <th className="px-3 py-2 text-end">إجراء</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {(allCampaigns.data ?? []).length === 0 ? (
+                  <tr>
+                    <td colSpan={elevated ? 5 : 4} className="py-6 text-center text-muted-foreground">
+                      لا حملات بعد.
+                    </td>
+                  </tr>
+                ) : (
+                  (allCampaigns.data ?? []).map((c) => (
+                    <tr key={c.id} className="border-t">
+                      <td className="px-3 py-2 font-medium">{c.name}</td>
+                      <td className="px-3 py-2">
+                        <span className={c.status === "ACTIVE" ? "text-money-positive" : "text-muted-foreground"}>
+                          {c.status === "ACTIVE" ? "نشطة" : "مغلقة"}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-muted-foreground">
+                        {c.startDate ? new Date(c.startDate as unknown as string).toISOString().slice(0, 10) : "—"}
+                        {" → "}
+                        {c.endDate ? new Date(c.endDate as unknown as string).toISOString().slice(0, 10) : "—"}
+                      </td>
+                      <td className="px-3 py-2 text-end">
+                        {/* budgetCost/spent يُحجَبان (null) خادمياً عمّن لا يرى التكلفة — نمط بقية الشاشة. */}
+                        {c.spent == null ? "—" : `${c.spent}${c.budgetCost ? ` / ${c.budgetCost}` : " (بلا سقف)"}`}
+                      </td>
+                      {elevated ? (
+                        <td className="px-3 py-2 text-end">
+                          {c.status === "ACTIVE" ? (
+                            <Button size="sm" variant="ghost" disabled={closeCampaign.isPending} onClick={() => closeCampaign.mutate({ campaignId: Number(c.id) })}>
+                              <X aria-hidden className="me-1 size-3.5" />
+                              إغلاق
+                            </Button>
+                          ) : null}
+                        </td>
+                      ) : null}
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       ) : (
         <div className="space-y-4 rounded-lg border p-4">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -440,6 +577,25 @@ export default function GiftsHub() {
               <Label>السبب (اختياري)</Label>
               <Input value={reason} onChange={(e) => setReason(e.target.value)} maxLength={255} />
             </div>
+
+            {mode === "out" ? (
+              <div className="space-y-1">
+                <Label>الحملة (اختياري)</Label>
+                <select
+                  className="h-9 w-full rounded-md border bg-background px-2 text-sm"
+                  value={campaignId ?? ""}
+                  onChange={(e) => setCampaignId(e.target.value ? Number(e.target.value) : null)}
+                >
+                  <option value="">— بلا حملة —</option>
+                  {(activeCampaigns.data ?? []).map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                      {c.budgetCost ? ` (${c.spent}/${c.budgetCost} د.ع)` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
           </div>
 
           {mode === "in" ? (

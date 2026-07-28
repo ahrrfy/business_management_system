@@ -1,4 +1,5 @@
 // برميل وحدة الهدايا (G-م١ الوارد + G-م٢ الصادر).
+export * from "./campaigns";
 export * from "./helpers";
 export * from "./inbound";
 export * from "./list";

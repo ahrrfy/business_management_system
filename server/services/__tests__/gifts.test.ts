@@ -9,6 +9,7 @@ import { getGiftVoucher, listGifts } from "../gifts/list";
 import { approveGift, createOutboundGift } from "../gifts/outbound";
 import { giftsReport } from "../gifts/reports";
 import { recordPurchaseBonusGift } from "../gifts/purchaseBonus";
+import { closeGiftCampaign, createGiftCampaign, listGiftCampaigns } from "../gifts/campaigns";
 
 const actor = { userId: 1, branchId: 1, role: "admin" };
 
@@ -22,7 +23,7 @@ async function reset() {
   const d = db();
   await d.execute(sql`SET FOREIGN_KEY_CHECKS = 0`);
   for (const t of [
-    "giftVoucherLines", "giftVouchers", "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "purchaseOrders",
+    "giftVoucherLines", "giftVouchers", "giftCampaigns", "idempotencyKeys", "accountingEntries", "receipts", "inventoryMovements", "purchaseOrders",
     "branchStock", "productPrices", "productUnits", "productVariants", "products", "suppliers", "customers", "branches", "users",
   ]) {
     await d.execute(sql.raw(`TRUNCATE TABLE \`${t}\``));
@@ -350,5 +351,125 @@ describe("G-م٦ بونص أمر الشراء (اشترِ واحصل)", () => {
     const res = await recordPurchaseBonusGift({ purchaseOrderId: 1, bonusLines: [{ variantId: 1, freeBaseQuantity: 0 }] }, actor);
     expect(res).toBeNull();
     expect(await countRows(s.giftVouchers)).toBe(0);
+  });
+});
+
+describe("G-م٧ حملات الهدايا (ربط + فرض ميزانيّة بقفل تسلسليّ)", () => {
+  const mgrA = { userId: 2, branchId: 1, role: "manager" };
+  const mgrB = { userId: 3, branchId: 1, role: "manager" };
+
+  it("createGiftCampaign ينشئ حملة برصيد إنفاق صفر، ويرفض اسماً مكرَّراً", async () => {
+    const res = await createGiftCampaign({ name: "حملة العودة للمدارس", budgetCost: "10000" }, actor);
+    expect(res.campaignId).toBeGreaterThan(0);
+    const list = await listGiftCampaigns();
+    expect(list.length).toBe(1);
+    expect(list[0].status).toBe("ACTIVE");
+    expect(Number(list[0].spent)).toBe(0);
+    expect(String(list[0].budgetCost)).toBe("10000.00");
+    await expect(createGiftCampaign({ name: "حملة العودة للمدارس" }, actor)).rejects.toThrow();
+  });
+
+  it("هدية تحت ميزانيّة الحملة ⇒ مُنجَزة فوراً (مدير)، والمُنفَق يتراكم", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    const camp = await createGiftCampaign({ name: "حملة أ", budgetCost: "5000" }, actor);
+    const res = await createOutboundGift(
+      { branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, // 10×100=1000
+      mgrA,
+    );
+    expect(res.status).toBe("DELIVERED");
+    const list = await listGiftCampaigns();
+    expect(Number(list[0].spent)).toBe(1000);
+  });
+
+  it("تجاوز ميزانيّة الحملة ⇒ PENDING_APPROVAL حتى للمدير (لا تُنجَز رغم كونها تحت العتبة العامة)", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    const camp = await createGiftCampaign({ name: "حملة ب", budgetCost: "500" }, actor); // سقف 500
+    // 10×100=1000 > 500 (سقف الحملة) لكن < 50000 (العتبة العامة) ⇒ لولا فحص الحملة لكانت مُنجَزة.
+    const res = await createOutboundGift(
+      { branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] },
+      mgrA,
+    );
+    expect(res.status).toBe("PENDING_APPROVAL");
+    expect(await stockOf(1)).toBe(1000); // صفر أثر حتى الاعتماد
+  });
+
+  it("admin يتجاوز فرض ميزانيّة الحملة (نمط تجاوز العتبة العامة)", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    const camp = await createGiftCampaign({ name: "حملة ج", budgetCost: "500" }, actor);
+    const res = await createOutboundGift(
+      { branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] },
+      actor, // admin
+    );
+    expect(res.status).toBe("DELIVERED");
+  });
+
+  it("يُرفض ربط هدية بحملة مغلقة", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    const camp = await createGiftCampaign({ name: "حملة د" }, actor);
+    await closeGiftCampaign(camp.campaignId, actor);
+    await expect(
+      createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 1 }] }, mgrA),
+    ).rejects.toThrow(/مغلقة/);
+  });
+
+  it("يُرفض ربط هدية بحملة غير موجودة", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    await expect(
+      createOutboundGift({ branchId: 1, customerId: 1, campaignId: 999999, lines: [{ variantId: 1, productUnitId: 1, quantity: 1 }] }, mgrA),
+    ).rejects.toThrow();
+  });
+
+  it("اعتماد هدية بحملة أُغلقت لاحقاً: يُرفض لغير الأدمن، ويُقبَل للأدمن", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    const camp = await createGiftCampaign({ name: "حملة هـ", budgetCost: "100" }, actor); // سقف صغير ⇒ معلَّقة دائماً
+    const res = await createOutboundGift(
+      { branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] },
+      mgrA,
+    );
+    expect(res.pending).toBe(true);
+    await closeGiftCampaign(camp.campaignId, actor);
+    await expect(approveGift(res.giftVoucherId, mgrB)).rejects.toThrow(/أُغلقت/);
+    const ap = await approveGift(res.giftVoucherId, actor); // admin يتجاوز
+    expect(ap.status).toBe("DELIVERED");
+  });
+
+  it("closeGiftCampaign يرفض حملة غير موجودة أو مغلقة مسبقاً", async () => {
+    await expect(closeGiftCampaign(999999, actor)).rejects.toThrow();
+    const camp = await createGiftCampaign({ name: "حملة و" }, actor);
+    await closeGiftCampaign(camp.campaignId, actor);
+    await expect(closeGiftCampaign(camp.campaignId, actor)).rejects.toThrow(/مسبقاً/);
+  });
+
+  it("حوكمة الحملة محصورة بمدير/أدمن — تُرفض لغير المدير (تدقيق Codex P1)", async () => {
+    const acc = { userId: 4, branchId: 1, role: "accountant" };
+    await expect(createGiftCampaign({ name: "حملة محظورة" }, acc)).rejects.toThrow(/المدير/);
+    const camp = await createGiftCampaign({ name: "حملة ح" }, mgrA);
+    await expect(closeGiftCampaign(camp.campaignId, acc)).rejects.toThrow(/المدير/);
+    await closeGiftCampaign(camp.campaignId, mgrA); // مدير حقيقيّ ⇒ ينجح
+    const list = await listGiftCampaigns();
+    expect(list.find((c) => c.id === camp.campaignId)?.status).toBe("CLOSED");
+  });
+
+  it("قفل الحملة يسلسل هديّتين متزامنتين ويمنع تجاوز الميزانيّة بلقطة قديمة (تدقيق Codex P1+P2)", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    const camp = await createGiftCampaign({ name: "حملة تزامن", budgetCost: "1500" }, actor);
+    // كلٌّ 10×100=1000 — فرادى تحت السقف (1500)، مجتمعتين 2000 > 1500. بلا قفل تسلسليّ + قراءة حيّة
+    // (الإصلاح): كلاهما يريان مُنفَقاً صفراً فيُنجَزان معاً (يتسرّب التجاوز). بالإصلاح: الأولى تُقفَل
+    // فتُنجَز منفردةً تحت السقف، والثانية (بعد تحرّر القفل) تقرأ إنفاقها المُلتزَم حيّاً فتتجاوز فتُعلَّق.
+    const [r1, r2] = await Promise.all([
+      createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, mgrA),
+      createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 10 }] }, mgrB),
+    ]);
+    const statuses = [r1.status, r2.status].sort();
+    expect(statuses).toEqual(["DELIVERED", "PENDING_APPROVAL"]);
+  });
+
+  it("listGiftCampaigns.spent يجمع المُنجَز فقط (لا يحتسب المعلَّق)", async () => {
+    await db().insert(s.branchStock).values({ variantId: 1, branchId: 1, quantity: 1000 });
+    const camp = await createGiftCampaign({ name: "حملة ز", budgetCost: "100000" }, actor);
+    await createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 5 }] }, mgrA); // مُنجَز 500
+    await createOutboundGift({ branchId: 1, customerId: 1, campaignId: camp.campaignId, lines: [{ variantId: 1, productUnitId: 1, quantity: 3 }] }, { userId: 4, branchId: 1, role: "accountant" }); // محاسب ⇒ معلَّق 300
+    const list = await listGiftCampaigns({ status: "ACTIVE" });
+    expect(Number(list[0].spent)).toBe(500); // 300 المعلَّق لا يُحتسَب
   });
 });

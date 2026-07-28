@@ -827,6 +827,13 @@
       "when": 1785715200000,
       "tag": "0118_invoice_sales_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "5",
+      "when": 1785801600000,
+      "tag": "0119_gift_campaigns",
+      "breakpoints": true
     }
   ]
 }

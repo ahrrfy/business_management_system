@@ -2,7 +2,8 @@ import { TRPCError } from "@trpc/server";
 import { z } from "zod";
 import { isDupEntry } from "@shared/errorMap.ar";
 import { canSeeCost } from "@shared/permissions";
-import { positiveMoneyString } from "../lib/schemas";
+import { positiveMoneyString, ymdDate } from "../lib/schemas";
+import { closeGiftCampaign, createGiftCampaign, listGiftCampaigns } from "../services/gifts/campaigns";
 import { receiveInboundGift } from "../services/gifts/inbound";
 import { getGiftVoucher, listGifts } from "../services/gifts/list";
 import { approveGift, createOutboundGift } from "../services/gifts/outbound";
@@ -109,6 +110,7 @@ export const giftsRouter = router({
         giftType: z.string().max(32).nullish(),
         reason: z.string().max(255).nullish(),
         notes: z.string().max(500).nullish(),
+        campaignId: z.number().int().positive().nullish(), // ربط حملة (G-م٧) — ميزانيّتها تُفرَض إن وُجدت
         clientRequestId: z.string().max(64).nullish(),
         lines: z.array(inboundLineSchema).min(1),
       }),
@@ -157,4 +159,32 @@ export const giftsRouter = router({
         throw e;
       }
     }),
+
+  // حملات الهدايا (G-م٧): تصنيف + ميزانيّة اختياريّة تُفرَض عند الربط في createOutbound.
+  campaignCreate: giftsWrite
+    .input(
+      z.object({
+        name: z.string().min(1).max(120),
+        reason: z.string().max(255).nullish(),
+        startDate: ymdDate.nullish(),
+        endDate: ymdDate.nullish(),
+        budgetCost: positiveMoneyString.nullish(),
+      }),
+    )
+    .mutation(({ input, ctx }) => createGiftCampaign(input, { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role })),
+
+  campaignList: giftsRead
+    .input(z.object({ status: z.enum(["ACTIVE", "CLOSED"]).optional() }).optional())
+    .query(async ({ input, ctx }) => {
+      const rows = await listGiftCampaigns(input ?? {});
+      // حجب التكلفة عمّن لا يراها (تدقيق Codex P1) — مخزن/مشتريات لهما gifts≥READ لكنّهما ليسا canSeeCost.
+      if (canSeeCost(ctx.user.role)) return rows;
+      return rows.map((r) => ({ ...r, budgetCost: null, spent: null }));
+    }),
+
+  campaignClose: giftsWrite
+    .input(z.object({ campaignId: z.number().int().positive() }))
+    .mutation(({ input, ctx }) =>
+      closeGiftCampaign(input.campaignId, { userId: ctx.user.id, branchId: Number(ctx.user.branchId ?? 0), role: ctx.user.role }),
+    ),
 });
