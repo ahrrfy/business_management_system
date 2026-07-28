@@ -1,7 +1,7 @@
 // شاشة الهدايا والمجانيات — G-م١ الوارد (استلام مجّانيّ من مورّد، صفر تكلفة) + G-م٢ الصادر (منح للعميل،
 // GIFT_OUT + حوكمة SOD: فوق العتبة/غير المدير ⇒ اعتماد مدير آخر). القراءة/الكتابة خلف مفتاح `gifts`.
 import { useRef, useState } from "react";
-import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, Plus, Printer, Trash2 } from "lucide-react";
+import { ArrowDownToLine, ArrowUpFromLine, BarChart3, Check, Gift, MessageCircle, Plus, Printer, Trash2 } from "lucide-react";
 import { hasModuleAccess } from "@shared/permissions";
 import { PageHeader } from "@/components/PageHeader";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,7 @@ import CustomerPicker from "@/components/CustomerPicker";
 import { ProductSearchBar } from "@/components/invoice/ProductSearchBar";
 import type { InvoiceLine } from "@/components/invoice/types";
 import { printGiftVoucherA4 } from "@/lib/printing/giftVoucher";
+import { buildGiftMessage, openWhatsApp } from "@/lib/whatsapp";
 
 type Mode = "list" | "in" | "out" | "report";
 type DirFilter = "ALL" | "IN" | "OUT" | "PENDING";
@@ -170,6 +171,27 @@ export default function GiftsHub() {
     }
   }
 
+  async function shareGift(giftId: number) {
+    try {
+      const g = await utils.gifts.get.fetch({ giftId });
+      if (!g.partyPhone) {
+        notify.warn("لا هاتف مسجّل للطرف — أضِفه في ملفّه أولاً");
+        return;
+      }
+      openWhatsApp(
+        g.partyPhone,
+        buildGiftMessage({
+          direction: g.direction,
+          giftNumber: g.giftNumber,
+          partyName: g.partyName,
+          lines: g.lines.map((l) => ({ productName: l.productName, unit: l.unitName, quantity: Number(l.quantity) })),
+        }),
+      );
+    } catch (e) {
+      notify.err(e);
+    }
+  }
+
   function addLine(l: InvoiceLine) {
     setLines((prev) => {
       const hit = prev.find((x) => x.variantId === l.variantId && x.productUnitId === l.productUnitId);
@@ -319,6 +341,11 @@ export default function GiftsHub() {
                           <Button size="sm" variant="ghost" onClick={() => printGift(Number(r.id))} aria-label="طباعة السند">
                             <Printer aria-hidden className="size-4" />
                           </Button>
+                          {r.supplierName || r.customerName ? (
+                            <Button size="sm" variant="ghost" onClick={() => shareGift(Number(r.id))} aria-label="إشعار واتساب">
+                              <MessageCircle aria-hidden className="size-4" />
+                            </Button>
+                          ) : null}
                         </div>
                       </td>
                     </tr>

@@ -38,7 +38,7 @@ async function seed() {
     { id: 3, openId: "t3", name: "mgrB", role: "manager", loginMethod: "local", branchId: 1 },
     { id: 4, openId: "t4", name: "acc", role: "accountant", loginMethod: "local", branchId: 1 },
   ]);
-  await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0" });
+  await d.insert(s.suppliers).values({ id: 1, name: "مورد", currentBalance: "0", phone: "+9647701112233" });
   await d.insert(s.customers).values({ id: 1, name: "عميل تجريبي", currentBalance: "0" });
   // منتج عاديّ (id 1، تكلفة قائمة 100) + بكج (id 2) + خدميّ (id 3).
   await d.insert(s.products).values([
@@ -193,6 +193,7 @@ describe("G-م١ الهدايا الواردة", () => {
     expect(gv!.giftNumber).toBe(res.giftNumber);
     expect(gv!.direction).toBe("IN");
     expect(gv!.partyName).toBe("مورد"); // اسم المورّد للوارد
+    expect(gv!.partyPhone).toBe("+9647701112233"); // هاتف المورّد (لإشعار واتساب)
     expect(gv!.lines.length).toBe(1);
     expect(gv!.lines[0].productName).toBe("ورق");
     expect(gv!.lines[0].unitName).toBe("قطعة");

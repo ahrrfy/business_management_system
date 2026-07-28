@@ -77,7 +77,9 @@ export async function getGiftVoucher(scope: GiftListScope, giftId: number) {
         sellable: giftVouchers.sellable,
         createdAt: giftVouchers.createdAt,
         supplierName: suppliers.name,
+        supplierPhone: suppliers.phone,
         customerName: customers.name,
+        customerPhone: customers.phone,
       })
       .from(giftVouchers)
       .leftJoin(suppliers, eq(giftVouchers.supplierId, suppliers.id))
@@ -100,5 +102,10 @@ export async function getGiftVoucher(scope: GiftListScope, giftId: number) {
     .innerJoin(products, eq(products.id, productVariants.productId))
     .innerJoin(productUnits, eq(productUnits.id, giftVoucherLines.productUnitId))
     .where(eq(giftVoucherLines.giftVoucherId, giftId));
-  return { ...gv, partyName: gv.direction === "IN" ? gv.supplierName : gv.customerName, lines };
+  return {
+    ...gv,
+    partyName: gv.direction === "IN" ? gv.supplierName : gv.customerName,
+    partyPhone: gv.direction === "IN" ? gv.supplierPhone : gv.customerPhone,
+    lines,
+  };
 }
