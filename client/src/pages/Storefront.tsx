@@ -1143,8 +1143,8 @@ export default function Storefront() {
                               onClick={() => setSelectedStoreUnitId(unit.productUnitId)}
                               className={`rounded-xl border px-3 py-1.5 text-xs font-bold transition ${
                                 selected
-                                  ? "border-emerald-600 bg-emerald-600 text-white"
-                                  : "border-slate-200 text-slate-600 hover:border-emerald-400 dark:border-slate-700 dark:text-slate-300"
+                                  ? "border-[var(--sem-pos)] bg-[var(--sem-pos)] text-white"
+                                  : "border-slate-200 text-slate-600 hover:border-[var(--sem-pos)] dark:border-slate-700 dark:text-slate-300"
                               }`}
                             >
                               {unit.unitName} · {priceLabel(unit.salePrice ?? unit.price)}
@@ -1160,7 +1160,7 @@ export default function Storefront() {
                       </div>
                     )}
                     <div className="mt-3 flex items-baseline gap-2">
-                      <p className="text-xl font-extrabold text-emerald-600 dark:text-emerald-400">{priceLabel(detailUnit?.salePrice ?? detailUnit?.price ?? null)}</p>
+                      <p className="text-xl font-extrabold text-money-positive">{priceLabel(detailUnit?.salePrice ?? detailUnit?.price ?? null)}</p>
                       {detailUnit?.salePrice != null && detailUnit.price != null && Number(detailUnit.salePrice) < Number(detailUnit.price) && (
                         <span className="text-sm text-slate-400 line-through">{money(detailUnit.price)}</span>
                       )}
@@ -1170,7 +1170,7 @@ export default function Storefront() {
                         <Tag aria-hidden className="size-3" /> {detailUnit.promotionName}
                       </span>
                     )}
-                    <p className={`mt-2 text-xs font-bold ${detailUnit?.inStock ? "text-emerald-600 dark:text-emerald-400" : "text-rose-500"}`}>
+                    <p className={`mt-2 text-xs font-bold ${detailUnit?.inStock ? "text-[var(--stock-ok)]" : "text-stock-out"}`}>
                       {detailUnit?.inStock
                         ? detailUnit.stockLeft != null
                           ? `متوفّر — بقي ${detailUnit.stockLeft} فقط، سارع بالطلب`
